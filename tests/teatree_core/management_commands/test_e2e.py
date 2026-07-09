@@ -1,7 +1,9 @@
 """Tests for the e2e management command."""
 
+import json
 import os
 import shutil
+import sqlite3
 import subprocess
 import tempfile
 from collections.abc import Callable, Iterator
@@ -42,6 +44,23 @@ pytestmark = pytest.mark.filterwarnings(
 )
 
 _GIT = shutil.which("git") or "git"
+
+
+def _seed_config(db: Path, key: str, value: object, scope: str = "") -> None:
+    """Seed a ``teatree_config_setting`` row the cold reader resolves."""
+    conn = sqlite3.connect(str(db))
+    try:
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS teatree_config_setting "
+            "(id INTEGER PRIMARY KEY, scope TEXT NOT NULL DEFAULT '', key TEXT NOT NULL, value TEXT NOT NULL)"
+        )
+        conn.execute(
+            "INSERT INTO teatree_config_setting (scope, key, value) VALUES (?, ?, ?)",
+            (scope, key, json.dumps(value)),
+        )
+        conn.commit()
+    finally:
+        conn.close()
 
 
 def _popen_for(result: MagicMock) -> MagicMock:
@@ -438,12 +457,9 @@ class TestE2eExternal(TestCase):
         Regression for #932: returning the message exited 0, so an
         unconfigured E2E external run looked green.
         """
-        with (
-            patch.dict("os.environ", {}, clear=False),
-            patch.object(config_mod, "load_config") as mock_cfg,
-        ):
-            mock_cfg.return_value.raw = {}
+        with patch.dict("os.environ", {}, clear=False):
             os.environ.pop("T3_PRIVATE_TESTS", None)
+            os.environ.pop("T3_CONFIG_DB", None)  # no DB private_tests row → unconfigured
             with pytest.raises(SystemExit) as exc_info:
                 call_command("e2e", "external")
         assert exc_info.value.code == 1
@@ -470,13 +486,15 @@ class TestE2eExternal(TestCase):
 
     @_patch_overlays(FULL_OVERLAY)
     @override_settings(**SETTINGS)
-    def test_config_fallback(self) -> None:
+    def test_db_config_fallback(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
             wt_dir = tmp_path / "worktree"
             wt_dir.mkdir()
             private_dir = tmp_path / "private"
             private_dir.mkdir()
+            db = tmp_path / "db.sqlite3"
+            _seed_config(db, "private_tests", str(private_dir))
 
             ticket = Ticket.objects.create(overlay="test", issue_url="https://example.com/issues/cfg")
             Worktree.objects.create(
@@ -490,12 +508,10 @@ class TestE2eExternal(TestCase):
 
             mock_result = MagicMock(returncode=0)
             with (
-                patch.dict("os.environ", {"T3_ORIG_CWD": str(wt_dir)}, clear=False),
-                patch.object(config_mod, "load_config") as mock_cfg,
+                patch.dict("os.environ", {"T3_ORIG_CWD": str(wt_dir), "T3_CONFIG_DB": str(db)}, clear=False),
                 patch.object(e2e_disc_mod, "get_service_port", return_value=4200),
                 patch.object(utils_run_mod, "Popen", _popen_for(mock_result)),
             ):
-                mock_cfg.return_value.raw = {"teatree": {"private_tests": str(private_dir)}}
                 os.environ.pop("T3_PRIVATE_TESTS", None)
                 result = cast("str", call_command("e2e", "external"))
             assert "passed" in result

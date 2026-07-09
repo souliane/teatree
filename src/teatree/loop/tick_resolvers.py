@@ -41,7 +41,7 @@ def _allowed_url_prefixes_for_host(
 
     * ``owner/repo`` — emits an exact prefix ``https://host/owner/repo/``.
         This is the shape ``[overlays.<name>] workspace_repos`` opts in to in
-        ``~/.teatree.toml``.
+        the DB overlays registry.
     * Bare ``repo`` — emits a wildcard pattern ``https://host/*/repo/`` that
         :meth:`MyPrsScanner._url_allowed` matches as "any owner segment, then
         this repo segment". Overlays whose ``get_repos()`` returns bare names

@@ -7,7 +7,7 @@ merge-count (``architectural_review_after_merge_count`` ticket merges
 since the last queued review). The architectural review is a teatree-CORE
 platform behaviour — it always applies uniformly to every overlay; the
 only opt-out is the ``architectural_review_disabled`` escape hatch in
-teatree-core config (``[teatree]`` in ``~/.teatree.toml``, per-overlay
+teatree-core config (a DB-home ``ConfigSetting`` row, per-overlay
 overridable). The on/off decision lives at the wiring layer; the scanner
 itself always scans when invoked.
 

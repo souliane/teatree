@@ -9,7 +9,7 @@ Project-specific behavior lives in overlay packages. Each overlay subclasses `Ov
 
 ```
 OverlayBase
-  ├── config: OverlayConfig      (settings_module + ~/.teatree.toml overrides)
+  ├── config: OverlayConfig      (settings_module + DB overlays-registry overrides)
   │     ├── get_gitlab_token()    (dynamic from *_PASS_KEY convention)
   │     ├── get_github_token()
   │     ├── github_owner          (class-level constant)
@@ -26,7 +26,7 @@ OverlayBase
 
 ## OverlayConfig Methods (credentials & settings)
 
-Settings are defined in `overlay_settings.py` and overridden per-user in `~/.teatree.toml`.
+Settings are defined in `overlay_settings.py` and overridden per-user in the DB `overlays` registry row.
 
 | Method / Attribute | Source | Purpose |
 |---|---|---|
@@ -97,5 +97,5 @@ t3-my-project = "my_project.overlay:MyProjectOverlay"
 ## Settings Resolution Order
 
 1. `overlay_settings.py` constants (code defaults)
-2. `~/.teatree.toml` `[overlays.<name>]` section (user overrides)
+2. The DB `overlays` registry row for `<name>` (user overrides)
 3. `*_PASS_KEY` convention auto-generates `get_*()` methods reading from `pass` store

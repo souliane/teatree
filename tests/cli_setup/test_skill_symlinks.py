@@ -10,6 +10,9 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
+import pytest
+from django.test import TestCase
+
 from teatree.cli.setup.skill_linker import CORE_EXCLUDED_SKILLS, SkillLinker, _ensure_skill_link
 
 
@@ -257,8 +260,14 @@ class TestAgentSkillDirs:
         assert dirs["claude"] == tmp_path / ".claude" / "skills"
 
 
-class TestSetupSyncsCodexWhenDirExists:
-    def test_syncs_codex_core_but_leaves_claude_to_plugin(self, tmp_path: Path, monkeypatch) -> None:
+# ast-grep-ignore: ac-django-no-pytest-django-db
+class TestSetupSyncsCodexWhenDirExists(TestCase):
+    @pytest.fixture(autouse=True)
+    def _fixtures(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        self.tmp_path = tmp_path
+        self.monkeypatch = monkeypatch
+
+    def test_syncs_codex_core_but_leaves_claude_to_plugin(self) -> None:
         """Claude core skills come from the t3 plugin; Codex gets symlinks.
 
         Setup should symlink core skills into ~/.codex/skills but NOT into
@@ -266,20 +275,20 @@ class TestSetupSyncsCodexWhenDirExists:
         """
         from teatree.cli.setup import command as setup_module  # noqa: PLC0415
 
-        skills_src = tmp_path / "core_skills"
+        skills_src = self.tmp_path / "core_skills"
         skills_src.mkdir()
         (skills_src / "code").mkdir()
         (skills_src / "code" / "SKILL.md").touch()
 
-        home = tmp_path / "home"
+        home = self.tmp_path / "home"
         claude_skills = home / ".claude" / "skills"
         codex_skills = home / ".codex" / "skills"
         claude_skills.mkdir(parents=True)
         codex_skills.mkdir(parents=True)
 
-        monkeypatch.setattr("pathlib.Path.home", classmethod(lambda cls: home))
+        self.monkeypatch.setattr("pathlib.Path.home", classmethod(lambda cls: home))
 
-        repo = tmp_path / "teatree"
+        repo = self.tmp_path / "teatree"
         repo.mkdir()
         (repo / "apm.yml").touch()
         (repo / ".git").mkdir()
@@ -296,13 +305,13 @@ class TestSetupSyncsCodexWhenDirExists:
             mock_svc.collect_overlay_skills.return_value = []
             mock_load.return_value.user.contribute = False
             mock_load.return_value.user.excluded_skills = []
-            mock_load.return_value.user.workspace_dir = str(tmp_path / "workspace")
+            mock_load.return_value.user.workspace_dir = str(self.tmp_path / "workspace")
             setup_module.run(SimpleNamespace(invoked_subcommand=None), skip_plugin=True)
 
         assert not (claude_skills / "code").exists()
         assert (codex_skills / "code").is_symlink()
 
-    def test_prunes_stale_claude_core_symlinks(self, tmp_path: Path, monkeypatch) -> None:
+    def test_prunes_stale_claude_core_symlinks(self) -> None:
         """Leftover core symlinks from pre-plugin installs are removed.
 
         ~/.claude/skills/ may still contain symlinks created by earlier
@@ -311,19 +320,19 @@ class TestSetupSyncsCodexWhenDirExists:
         """
         from teatree.cli.setup import command as setup_module  # noqa: PLC0415
 
-        skills_src = tmp_path / "core_skills"
+        skills_src = self.tmp_path / "core_skills"
         skills_src.mkdir()
         (skills_src / "code").mkdir()
         (skills_src / "code" / "SKILL.md").touch()
 
-        home = tmp_path / "home"
+        home = self.tmp_path / "home"
         claude_skills = home / ".claude" / "skills"
         claude_skills.mkdir(parents=True)
         (claude_skills / "code").symlink_to(skills_src / "code")
 
-        monkeypatch.setattr("pathlib.Path.home", classmethod(lambda cls: home))
+        self.monkeypatch.setattr("pathlib.Path.home", classmethod(lambda cls: home))
 
-        repo = tmp_path / "teatree"
+        repo = self.tmp_path / "teatree"
         repo.mkdir()
         (repo / "apm.yml").touch()
         (repo / ".git").mkdir()
@@ -340,27 +349,27 @@ class TestSetupSyncsCodexWhenDirExists:
             mock_svc.collect_overlay_skills.return_value = []
             mock_load.return_value.user.contribute = False
             mock_load.return_value.user.excluded_skills = []
-            mock_load.return_value.user.workspace_dir = str(tmp_path / "workspace")
+            mock_load.return_value.user.workspace_dir = str(self.tmp_path / "workspace")
             setup_module.run(SimpleNamespace(invoked_subcommand=None), skip_plugin=True)
 
         assert not (claude_skills / "code").exists()
 
-    def test_skips_codex_when_dir_missing(self, tmp_path: Path, monkeypatch) -> None:
+    def test_skips_codex_when_dir_missing(self) -> None:
         """Setup does not create ~/.codex/skills if it doesn't already exist."""
         from teatree.cli.setup import command as setup_module  # noqa: PLC0415
 
-        skills_src = tmp_path / "core_skills"
+        skills_src = self.tmp_path / "core_skills"
         skills_src.mkdir()
         (skills_src / "code").mkdir()
         (skills_src / "code" / "SKILL.md").touch()
 
-        home = tmp_path / "home"
+        home = self.tmp_path / "home"
         (home / ".claude" / "skills").mkdir(parents=True)
         # No ~/.codex dir
 
-        monkeypatch.setattr("pathlib.Path.home", classmethod(lambda cls: home))
+        self.monkeypatch.setattr("pathlib.Path.home", classmethod(lambda cls: home))
 
-        repo = tmp_path / "teatree"
+        repo = self.tmp_path / "teatree"
         repo.mkdir()
         (repo / "apm.yml").touch()
         (repo / ".git").mkdir()
@@ -377,7 +386,7 @@ class TestSetupSyncsCodexWhenDirExists:
             mock_svc.collect_overlay_skills.return_value = []
             mock_load.return_value.user.contribute = False
             mock_load.return_value.user.excluded_skills = []
-            mock_load.return_value.user.workspace_dir = str(tmp_path / "workspace")
+            mock_load.return_value.user.workspace_dir = str(self.tmp_path / "workspace")
             setup_module.run(SimpleNamespace(invoked_subcommand=None), skip_plugin=True)
 
         assert not (home / ".codex").exists()

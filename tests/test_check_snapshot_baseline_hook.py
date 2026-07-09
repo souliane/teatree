@@ -109,7 +109,7 @@ class TestSnapshotBaselineHook:
     def test_db_kill_switch_disables_gate(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         # `t3 config_setting set snapshot_baseline_gate_enabled false` is a DB write; the
         # hook must honour it via the canonical DB-first resolver. RED before the fix: the
-        # old hook read the kill-switch from ~/.teatree.toml RAW, so the DB row was ignored
+        # old hook read the kill-switch from the legacy file tier RAW, so the DB row was ignored
         # and the un-attested baseline still blocked (main() stayed 1).
         root = _init_repo(tmp_path)
         ticket = Ticket.objects.create(issue_url="https://example.com/i/23")

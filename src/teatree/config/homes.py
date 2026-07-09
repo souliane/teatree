@@ -1,71 +1,55 @@
-"""The DB/TOML hard partition for every ``UserSettings`` field (#1775).
+"""The DB home of every ``UserSettings`` field.
 
-Every non-derived ``UserSettings`` field has EXACTLY ONE home.
-
-:attr:`SettingHome.DB` — the field's sole authoritative tier is the
-``ConfigSetting`` store (global + per-overlay rows) plus the ``T3_*`` env layer.
-The ``[teatree]`` / ``[overlays.<name>]`` TOML tables are NOT read for it: a TOML
-value for a DB-home key is ignored on read (its home is the DB), so an install
-moving to the partition migrates such keys into the store with ``t3 <overlay>
-config_setting import``.
-
-:attr:`SettingHome.TOML` — the field's sole authoritative tier is the
-``[teatree]`` / ``[overlays.<name>]`` TOML tables plus the ``T3_*`` env layer. A
-``ConfigSetting`` row for a TOML-home key is ignored on read; ``config_setting
-set`` refuses to write one.
-
-The TOML-home carve-out is now EMPTY (eliminate-~/.teatree.toml): EVERY
-``UserSettings`` field is DB-home. The last two fields — the nested structured
-tables ``speak`` and ``mr_reminder`` — moved to the DB store as JSON-dict
-``ConfigSetting`` rows (``parse_speak_setting`` / ``parse_mr_reminder_setting``),
-rebuilt bespoke by the resolver (``resolution._BESPOKE_STRUCTURED_FIELDS``). The
-cold Stop-hook ``speak`` reader now reads the canonical sqlite via
-``cold_reader.read_setting`` (a dict), so it needs no tomllib. A ``[teatree]`` /
-``[overlays.<name>]`` value for ANY ``UserSettings`` field is ignored on read (its
-home is the DB) and the resolver warns on it. ``workspace_dir`` and ``worktrees_dir``
-resolve Django-side off the store (Django ``settings.py`` hardcodes ``TIME_ZONE`` and
-configures ``DATABASES`` without reading either, so neither was ever a DB-open
-bootstrap dep); ``handover_mirror_path`` / ``statusline_chain`` / ``autoload`` resolve
-from the store on their pre-Django paths via ``cold_reader`` / the ``sqlite3`` CLI.
+Every non-derived ``UserSettings`` field is DB-home: its sole authoritative tier
+is the ``ConfigSetting`` store (global + per-overlay rows) plus the ``T3_*`` env
+layer. There is no config file — the last file tier was removed, so the resolver
+reads each field from the store (Django-side via
+``ConfigSetting.objects.get_effective``, pre-Django via ``cold_reader``). The two
+structured fields ``speak`` / ``mr_reminder`` are stored as JSON-dict rows and
+rebuilt bespoke by the resolver (``resolution._BESPOKE_STRUCTURED_FIELDS``);
+``workspace_dir`` / ``worktrees_dir`` resolve Django-side off the store;
+``handover_mirror_path`` / ``statusline_chain`` / ``autoload`` resolve from the
+store on their pre-Django paths via ``cold_reader`` / the ``sqlite3`` CLI.
 
 :data:`DERIVED_FIELDS` is the one value the resolver COMPUTES rather than
 reads (``notify_on_behalf`` derived by the autonomy collapse); it has
 no home and is excluded from the partition.
 
 The fitness functions in ``tests/config/test_settings_home_partition.py`` keep
-this exhaustive and disjoint: every ``UserSettings`` field is in exactly one of
-:data:`SETTING_HOMES` / :data:`DERIVED_FIELDS`, and the two homes never overlap.
+this exhaustive: every ``UserSettings`` field is in exactly one of
+:data:`SETTING_HOMES` / :data:`DERIVED_FIELDS`.
 """
 
 from enum import StrEnum
 
 
 class SettingHome(StrEnum):
-    """The single authoritative tier of a ``UserSettings`` field."""
+    """The single authoritative tier of a ``UserSettings`` field.
+
+    Every field is :attr:`DB` now (the config file was removed). :attr:`TOML`
+    remains as the empty legacy carve-out the fitness functions assert is empty,
+    so a future re-introduction of a file tier would be a deliberate, tested move.
+    """
 
     DB = "db"
     TOML = "toml"
 
 
-# The irreducible bootstrap set (#1775): settings that must be readable BEFORE
-# Django — and therefore the DB — is available, so they can never move into the
-# ``ConfigSetting`` store. The publish gate reads ``private_repos`` from the raw
-# ``[teatree]`` toml with ``tomllib`` in a hook that runs with no Django;
-# ``DATABASE_URL`` / ``data_dir`` / ``DJANGO_SETTINGS_MODULE`` are the env/toml
-# keys the settings module itself needs to even OPEN the DB. This typed allowlist
-# is the single machine-checked home for that boundary (replacing the former
-# prose-only docstring): the disjoint-registries invariant
-# ``BOOTSTRAP_FILE_ONLY_SETTINGS ∩ OVERLAY_OVERRIDABLE_SETTINGS == ∅`` (a fitness
-# function in the tests) makes it impossible to make a bootstrap key
-# DB-overridable without turning a test red, and ``config-setting set`` already
-# refuses every key here (none is in the overridable registry) so an admin can
-# never stash a DB row for a file-only setting.
-BOOTSTRAP_FILE_ONLY_SETTINGS: frozenset[str] = frozenset(
+# The irreducible bootstrap set: settings that must be readable BEFORE Django —
+# and therefore the DB — is available, so they can never move into the
+# ``ConfigSetting`` store. ``DATABASE_URL`` / ``data_dir`` / ``DJANGO_SETTINGS_MODULE``
+# are the ENV keys the settings module itself needs to even OPEN the DB. This typed
+# allowlist is the single machine-checked home for that boundary: the
+# disjoint-registries invariant ``BOOTSTRAP_ENV_ONLY_SETTINGS ∩
+# OVERLAY_OVERRIDABLE_SETTINGS == ∅`` (a fitness function in the tests) makes it
+# impossible to make a bootstrap key DB-overridable without turning a test red, and
+# ``config_setting set`` already refuses every key here (none is in the overridable
+# registry) so an admin can never stash a DB row for a bootstrap-only setting.
+BOOTSTRAP_ENV_ONLY_SETTINGS: frozenset[str] = frozenset(
     {
         "DATABASE_URL",
         "data_dir",
         "DJANGO_SETTINGS_MODULE",
-        "private_repos",
     }
 )
 
@@ -74,42 +58,22 @@ BOOTSTRAP_FILE_ONLY_SETTINGS: frozenset[str] = frozenset(
 # from the partition. ``notify_on_behalf`` is ORed in by the autonomy collapse.
 DERIVED_FIELDS: frozenset[str] = frozenset({"notify_on_behalf"})
 
-# The TOML-home carve-out is now EMPTY — eliminate-~/.teatree.toml moved EVERY
-# ``UserSettings`` field to the DB store. The final two were the nested structured
-# tables ``speak`` and ``mr_reminder``: each is stored as a JSON-dict
-# ``ConfigSetting`` row (``parse_speak_setting`` / ``parse_mr_reminder_setting``) and
-# rebuilt bespoke by the resolver (``resolution._BESPOKE_STRUCTURED_FIELDS``) since a
-# dict cannot flat-replace the dataclass field. The cold Stop-hook ``speak`` reader
-# (``hook_router._speak_settings``) now reads the canonical sqlite via
-# ``cold_reader.read_setting`` (a dict), so it needs no tomllib.
-#
-# Earlier moves (still DB-home): ``check_updates``, ``worktrees_dir`` / ``timezone``,
-# the two former per-overlay-TOML-overridable fields ``orchestrator_bash_gate_enabled``
-# / ``privacy`` (per-overlay override now lives in a ``ConfigSetting`` overlay-scope
-# row), ``handover_mirror_path``, and ``statusline_chain`` / ``autoload`` (read from
-# the canonical sqlite on their pre-Django paths via ``cold_reader`` / the ``sqlite3``
-# CLI). ``workspace_dir`` / ``worktrees_dir`` are read only after Django is up; the
-# worktree root regroups under ``~/workspace/t3-workspaces/<overlay>/``
-# (``config.worktree_root()``), distinct from the CLONE root ``config.clone_root()``.
-#
-# An empty carve-out is the end state of the partition: a NEW ``UserSettings`` field
-# is DB-home by default (``_build_setting_homes``); adding one here again would need a
-# genuine pre-Django/bootstrap justification that ``cold_reader`` cannot satisfy.
+# The TOML-home carve-out is EMPTY — every ``UserSettings`` field is DB-home. Kept
+# as a named empty set so the fitness functions can assert emptiness and a future
+# re-introduction of a file tier is a deliberate, reviewed change.
 _TOML_HOME: frozenset[str] = frozenset()
 
-# Every DB-home field: the canonical list, built once below from the
-# ``UserSettings`` dataclass minus the carve-out and the derived fields, so the
-# registry can never drift out of sync with the dataclass.
+# Every ``UserSettings`` field is DB-home: the canonical list, built once below from
+# the ``UserSettings`` dataclass minus the derived fields, so the registry can never
+# drift out of sync with the dataclass.
 
 
 def _build_setting_homes() -> dict[str, SettingHome]:
     """Build the exhaustive home registry from the live ``UserSettings`` fields.
 
-    Computed from ``dataclasses.fields`` so a new field is DB-home by default
-    (the A1 rule: a field that CAN live in the DB MUST be DB-home). The carve-out
-    is the only TOML-home set; the two derived fields are excluded entirely. The
-    import is deferred to avoid a settings -> homes -> settings cycle at module
-    load.
+    Computed from ``dataclasses.fields`` so a new field is DB-home by default (the
+    carve-out is empty). The two derived fields are excluded entirely. The import is
+    deferred to avoid a settings -> homes -> settings cycle at module load.
     """
     import dataclasses  # noqa: PLC0415
 

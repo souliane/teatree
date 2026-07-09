@@ -20,8 +20,8 @@ Patterns are split into ``HIGH`` (refuse publish) and ``MEDIUM`` (warn
 but allow). Both severities log to a JSONL ledger so cold review can
 reconstruct what the gate saw.
 
-The blocklist file at ``$T3_DATA_DIR/quote-blocklist.txt`` (default
-``~/.teatree/quote-blocklist.txt``) is a *regex* list, not a quote
+The blocklist file at ``$T3_DATA_DIR/quote-blocklist.txt`` (under the
+XDG data dir by default) is a *regex* list, not a quote
 archive. Each non-blank, non-``#``-prefixed line is compiled with
 ``re.IGNORECASE``. The spec is explicit: blocklists must not embed
 the raw quotes they protect against.
@@ -200,7 +200,9 @@ def _blocklist_path() -> Path:
     base = os.environ.get("T3_DATA_DIR")
     if base:
         return Path(base) / "quote-blocklist.txt"
-    return Path.home() / ".teatree" / "quote-blocklist.txt"
+    from teatree.paths import DATA_DIR  # noqa: PLC0415 — deferred: paths resolves the data dir at import
+
+    return DATA_DIR / "quote-blocklist.txt"
 
 
 def _load_blocklist_patterns(path: Path | None = None) -> list[Pattern]:

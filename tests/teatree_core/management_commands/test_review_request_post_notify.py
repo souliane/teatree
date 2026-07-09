@@ -10,8 +10,10 @@ run for real.
 
 import contextlib
 import io
+import json
 import os
 import shutil
+import sqlite3
 import tempfile
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -22,6 +24,26 @@ from django.test import TestCase
 
 from teatree.core.gates.review_request_guard import GuardDecision, GuardTarget
 from teatree.core.models import BotPing, OnBehalfApproval
+
+
+def _seed_cold_slack_user(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, user_id: str) -> None:
+    """Seed the global ``slack_user_id`` in a config-store sqlite the cold reader resolves."""
+    db = tmp_path / "config.sqlite3"
+    monkeypatch.setenv("T3_CONFIG_DB", str(db))
+    conn = sqlite3.connect(str(db))
+    try:
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS teatree_config_setting "
+            "(id INTEGER PRIMARY KEY, scope TEXT NOT NULL DEFAULT '', key TEXT NOT NULL, value TEXT NOT NULL)"
+        )
+        conn.execute(
+            "INSERT INTO teatree_config_setting (scope, key, value) VALUES ('', 'slack_user_id', ?)",
+            (json.dumps(user_id),),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
 
 _MR_URL = "https://gitlab.com/org/repo/-/merge_requests/385"
 _TARGET = GuardTarget(channel_id="C_REVIEW", channel_name="the-review-team", token="xoxp")
@@ -47,9 +69,9 @@ def _notify_backend() -> MagicMock:
 class _Base(TestCase):
     @pytest.fixture(autouse=True)
     def _ctx(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-        cfg = tmp_path / ".teatree.toml"
-        cfg.write_text('[teatree]\nslack_user_id = "U-OPERATOR"\n', encoding="utf-8")
-        monkeypatch.setattr("teatree.config.CONFIG_PATH", cfg)
+        # ``slack_user_id`` (global) resolves via the Django-free cold reader —
+        # seed it in a config-store sqlite the reader resolves via ``T3_CONFIG_DB``.
+        _seed_cold_slack_user(tmp_path, monkeypatch, "U-OPERATOR")
         self.monkeypatch = monkeypatch
 
     def setUp(self) -> None:

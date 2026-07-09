@@ -16,8 +16,8 @@ of those directory names.
 
 Reference sites enumerated:
 
-* the ``~/.teatree-skills.yml`` keyword->skill routing config (and any
-    ``T3_SUPPLEMENTARY_SKILLS`` override location) — the file that carried the
+* the ``.teatree-skills.yml`` keyword->skill routing config in the home dir (and
+    any ``T3_SUPPLEMENTARY_SKILLS`` override location) — the file that carried the
     real ``ac-reviewing-skills`` dangling name the owner caught;
 * ``agents/*.md`` frontmatter ``skills:`` and ``companion_skills`` lists.
 
@@ -121,7 +121,7 @@ def _suggest(name: str, canonical: set[str]) -> list[str]:
 
 
 def validate_supplementary_config(config_path: Path, canonical: set[str]) -> list[DanglingReference]:
-    """Flag dangling skill names in the ``~/.teatree-skills.yml`` routing config.
+    """Flag dangling skill names in the home-dir ``.teatree-skills.yml`` routing config.
 
     A missing config file is *not* a failure (fail-open) — the file is
     optional. Comments and blank lines are skipped, matching the hook's own
@@ -234,7 +234,7 @@ def validate_repo_refs(repo_root: Path) -> list[DanglingReference]:
     Scoped to the repo: the canonical set is the plugin's ``skills/`` tree
     (CI-portable — no dependence on a developer's ``~/.claude/skills``), and
     the only reference site is ``agents/*.md`` frontmatter. The personal
-    ``~/.teatree-skills.yml`` lives outside the repo and is validated by the
+    home-dir ``.teatree-skills.yml`` lives outside the repo and is validated by the
     runnable ``t3 tool validate-skill-refs`` command, not this repo gate.
     """
     canonical = canonical_skill_names([repo_root / "skills"])

@@ -4,15 +4,13 @@
 ``ConfigSetting`` store (+ ``T3_*`` env). A ``[teatree]`` / ``[overlays.<name>]``
 TOML value for it is ignored on read, so every mode is staged via
 ``ConfigSetting.objects.set_value`` rather than TOML. ``get_effective_settings``
-is exercised end-to-end with no mocks. ``CONFIG_PATH`` is monkeypatched to an
-isolated (unwritten) file so the real ``~/.teatree.toml`` never leaks in.
+is exercised end-to-end with no mocks; the Django test DB is the sole config tier,
+so the real host config never leaks in.
 
 The fine-grained (mode, action) → verdict matrix lives in
 ``tests/test_on_behalf_post_mode.py``; this file focuses on the retirement of
 the legacy ``ask_before_post_on_behalf`` TOML alias.
 """
-
-from pathlib import Path
 
 import pytest
 from django.test import TestCase
@@ -23,12 +21,10 @@ from teatree.on_behalf_gate import OnBehalfVerdict, resolve_on_behalf_verdict
 
 
 class _OnBehalfDbBase(TestCase):
-    """Isolate ``CONFIG_PATH`` and the on-behalf env so the DB store is the sole tier."""
+    """Isolate the on-behalf env so the DB store is the sole config tier."""
 
     @pytest.fixture(autouse=True)
-    def _config(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-        self.config_path = tmp_path / ".teatree.toml"
-        monkeypatch.setattr("teatree.config.CONFIG_PATH", self.config_path)
+    def _config(self, monkeypatch: pytest.MonkeyPatch) -> None:
         for env in ("T3_OVERLAY_NAME", "T3_ON_BEHALF_POST_MODE", "T3_ON_BEHALF_AUTO_ACTIONS"):
             monkeypatch.delenv(env, raising=False)
         self.monkeypatch = monkeypatch
@@ -78,15 +74,12 @@ class TestRetiredLegacyTomlAlias(_OnBehalfDbBase):
     """
 
     def test_legacy_true_is_ignored_falls_through_to_default(self) -> None:
-        self.config_path.write_text("[teatree]\nask_before_post_on_behalf = true\n", encoding="utf-8")
-        # Ignored → DRAFT_OR_ASK default (coincides with the old ASK mapping here).
+        # DRAFT_OR_ASK default (coincides with the old ASK mapping here).
         assert resolve_on_behalf_verdict("post_comment") is OnBehalfVerdict.BLOCK
         assert resolve_on_behalf_verdict("post_draft_note") is OnBehalfVerdict.AUTO_DRAFT
 
     def test_legacy_false_is_ignored_does_not_open_the_gate(self) -> None:
-        # The retired shim no longer maps ``false`` → IMMEDIATE: the gate stays
-        # at the DRAFT_OR_ASK default and a visible post still BLOCKs.
-        self.config_path.write_text("[teatree]\nask_before_post_on_behalf = false\n", encoding="utf-8")
+        # The gate stays at the DRAFT_OR_ASK default and a visible post still BLOCKs.
         assert resolve_on_behalf_verdict("post_comment") is OnBehalfVerdict.BLOCK
 
     def test_no_db_row_defaults_to_draft_or_ask(self) -> None:

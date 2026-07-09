@@ -25,9 +25,6 @@ pytestmark = pytest.mark.django_db
 
 
 def _ask_mode(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    cfg = tmp_path / ".teatree.toml"
-    cfg.write_text("[teatree]\n", encoding="utf-8")
-    monkeypatch.setattr("teatree.config.CONFIG_PATH", cfg)
     monkeypatch.setenv("T3_ON_BEHALF_POST_MODE", "ask")
     monkeypatch.delenv("T3_OVERLAY_NAME", raising=False)
 

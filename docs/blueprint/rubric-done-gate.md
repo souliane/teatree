@@ -46,7 +46,7 @@ The gate **fails loud, never skip-as-pass**: a rubric that cannot be confirmed f
 
 ## Configuration
 
-`require_rubric_verification` (default `False` = NO-OP, purely additive — matches every other opt-in gate). Registered in `OVERLAY_OVERRIDABLE_SETTINGS`, so it is DB-home and per-overlay overridable — set it in the `ConfigSetting` store (a value left in `~/.teatree.toml` is ignored on read):
+`require_rubric_verification` (default `False` = NO-OP, purely additive — matches every other opt-in gate). Registered in `OVERLAY_OVERRIDABLE_SETTINGS`, so it is DB-home and per-overlay overridable — set it in the `ConfigSetting` store:
 
 ```bash
 # global default stays off; dogfood the gate on one overlay only:

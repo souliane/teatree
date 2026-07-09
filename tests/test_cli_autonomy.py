@@ -8,14 +8,15 @@ to full merge/approve autonomy with one command instead of hand-editing config.
 
 ``autonomy`` is DB-home (#1775): its sole authoritative tier is the
 ``ConfigSetting`` store, so ``set`` writes a DB ROW (the active/``--overlay``
-overlay's OVERLAY-scoped row by default, the GLOBAL-scope row with ``--global``)
-— a ``[teatree]`` / ``[overlays.<name>]`` TOML value is ignored on read.
+overlay's OVERLAY-scoped row by default, the GLOBAL-scope row with ``--global``).
 Integration-first: the ``set`` write is asserted on the persisted
 ``ConfigSetting`` row and round-tripped through :func:`get_effective_settings`
 so the gates collapse — and the safety floor does NOT.
 """
 
+import json
 import os
+import sqlite3
 import subprocess
 import sys
 from pathlib import Path
@@ -37,6 +38,27 @@ def _app() -> typer.Typer:
     app = typer.Typer()
     register_autonomy_commands(app)
     return app
+
+
+def _seed_overlays_registry(db_path: Path, overlays: dict[str, object]) -> None:
+    """Seed the DB-home ``overlays`` registry row in a cold sqlite config DB.
+
+    Overlay discovery reads the registry through the Django-free ``cold_reader``
+    at ``T3_CONFIG_DB``, so an active-overlay test stages the overlay here.
+    """
+    conn = sqlite3.connect(str(db_path))
+    try:
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS teatree_config_setting "
+            "(id INTEGER PRIMARY KEY, scope TEXT NOT NULL DEFAULT '', key TEXT NOT NULL, value TEXT NOT NULL)"
+        )
+        conn.execute(
+            "INSERT INTO teatree_config_setting (scope, key, value) VALUES ('', 'overlays', ?)",
+            (json.dumps(overlays),),
+        )
+        conn.commit()
+    finally:
+        conn.close()
 
 
 def _in_process_managepy_core(*args: str, overlay_name: str = "") -> None:
@@ -111,14 +133,14 @@ class TestAutonomySetPerOverlay(TestCase):
     def test_defaults_to_active_overlay(self) -> None:
         """With no --overlay, the value lands in the active overlay's scope (real resolver).
 
-        Overlay discovery is RAW/TOML (#1775 KEEP-TOML): a bare
-        ``[overlays.t3-active]`` table is what makes ``t3-active`` the resolvable
-        active overlay. The autonomy *value* itself is DB-home, so the write
-        lands as an overlay-scoped ``ConfigSetting`` row, not a TOML key.
+        Overlay discovery is DB-home: a ``t3-active`` entry in the ``overlays``
+        registry (read cold from ``T3_CONFIG_DB``) makes it the resolvable active
+        overlay. The autonomy value itself is DB-home, so the write lands as an
+        overlay-scoped ``ConfigSetting`` row.
         """
-        config_path = self.tmp_path / ".teatree.toml"
-        config_path.write_text("[teatree]\n[overlays.t3-active]\n", encoding="utf-8")
-        self.monkeypatch.setattr("teatree.config.CONFIG_PATH", config_path)
+        config_db = self.tmp_path / "config.sqlite3"
+        _seed_overlays_registry(config_db, {"t3-active": {}})
+        self.monkeypatch.setenv("T3_CONFIG_DB", str(config_db))
         self.monkeypatch.setattr("importlib.metadata.entry_points", lambda **_kw: [])
         self.monkeypatch.setenv("T3_OVERLAY_NAME", "t3-active")
         result = runner.invoke(_app(), ["autonomy", "set", "full"])
@@ -166,25 +188,20 @@ class TestAutonomyShow(TestCase):
 
 
 @pytest.fixture
-def isolated_resolution(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
-    """Blank the TOML config, blank installed overlays, and a manage.py-free cwd.
+def isolated_resolution(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Deterministic overlay + env resolution: no installed overlays, a manage.py-free cwd.
 
-    Mirrors the ``config_file`` + ``no_installed_overlays`` + ``elsewhere``
-    triple the package-local ``tests/config/conftest.py`` provides — replicated
-    here because this module sits at the ``tests/`` root, outside that package.
-    The ``autonomy`` value itself is DB-home now (#1775): the staged
-    ``~/.teatree.toml`` only carries the TOML-home knobs (``privacy``) a couple
-    of cases assert the floor against. Returns the staged config path.
+    Every autonomy value is DB-home (#1775), seeded per test via ``ConfigSetting``
+    rows, so the only isolation the collapse tests need is a stable overlay/env
+    picture: blank installed overlays, a cwd with no manage.py, and no gate/mode
+    env leaks.
     """
-    cfg = tmp_path / ".teatree.toml"
-    monkeypatch.setattr("teatree.config.CONFIG_PATH", cfg)
     monkeypatch.setattr("importlib.metadata.entry_points", lambda **_kw: [])
     away = tmp_path / "no_manage"
     away.mkdir()
     monkeypatch.chdir(away)
     monkeypatch.delenv("T3_ON_BEHALF_POST_MODE", raising=False)
     monkeypatch.delenv("T3_MODE", raising=False)
-    return cfg
 
 
 class TestAutonomyKnobCollapsesGatesNotFloor(TestCase):
@@ -197,13 +214,11 @@ class TestAutonomyKnobCollapsesGatesNotFloor(TestCase):
     """
 
     @pytest.fixture(autouse=True)
-    def _fixtures(self, isolated_resolution: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-        self.isolated_resolution = isolated_resolution
+    def _fixtures(self, isolated_resolution: None, monkeypatch: pytest.MonkeyPatch) -> None:
         self.monkeypatch = monkeypatch
 
     def test_full_must_allow_colleague_autoapprove_and_automerge(self) -> None:
         """``autonomy set full`` collapses on-behalf-post (colleague approve) + merge gates."""
-        self.isolated_resolution.write_text("[teatree]\n", encoding="utf-8")
         result = runner.invoke(_app(), ["autonomy", "set", "full", "--overlay", "trusted"])
         assert result.exit_code == 0
 
@@ -219,9 +234,8 @@ class TestAutonomyKnobCollapsesGatesNotFloor(TestCase):
 
     def test_full_must_deny_relaxing_the_safety_floor(self) -> None:
         """A full-autonomy overlay never relaxes the floor — out-of-scope fields untouched."""
-        # ``autoload`` is DB-home now (eliminate-~/.teatree.toml) — seed it via a
-        # global ConfigSetting row; the autonomy collapse never touches it.
-        self.isolated_resolution.write_text("[teatree]\n", encoding="utf-8")
+        # ``autoload`` is DB-home: seed it via a global ConfigSetting row; the
+        # autonomy collapse never touches it.
         ConfigSetting.objects.set_value("autoload", value=True, scope="")
         runner.invoke(_app(), ["autonomy", "set", "full", "--overlay", "trusted"])
 
@@ -233,9 +247,7 @@ class TestAutonomyKnobCollapsesGatesNotFloor(TestCase):
 
     def test_babysit_must_deny_autonomous_merge_and_approve(self) -> None:
         """``autonomy set babysit`` keeps every approval gate blocking (the conservative default)."""
-        self.isolated_resolution.write_text("[teatree]\n", encoding="utf-8")
-        # ``mode = auto`` is a per-overlay opinion; under the partition it is the
-        # overlay-scoped DB row, not a ``[overlays.<name>]`` TOML key.
+        # ``mode = auto`` is a per-overlay opinion: the overlay-scoped DB row.
         ConfigSetting.objects.set_value("mode", Mode.AUTO.value, scope="careful")
         runner.invoke(_app(), ["autonomy", "set", "babysit", "--overlay", "careful"])
 

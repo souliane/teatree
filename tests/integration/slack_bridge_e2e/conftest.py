@@ -25,7 +25,7 @@ deliberately patch ``backend_factory._messaging_from_toml`` /
 ``teatree.config.load_config`` / ``backend_factory.get_overlay``
 rather than only ``httpx``. Exercising per-overlay token isolation
 needs multiple synthetic overlay configs that are not expressible via
-a single real ``~/.teatree.toml``, so the config-resolution seam is
+a single real config store, so the config-resolution seam is
 patched to inject them. ``httpx`` (the network) and
 ``teatree.utils.secrets.read_pass`` (the password store) remain the
 only true externals and stay real. This deviation from the epic's

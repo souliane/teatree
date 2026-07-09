@@ -7,12 +7,12 @@ in-process to call ``resolve_mode()``; under the real hook that bootstrap failed
 and the lever returned ``False`` (never away) — silently neutering
 ``t3 <overlay> availability away`` as a self-pump suppressor.
 
-Fast path (fast-hooks): the availability decision is FILE / TOML based, not a
-Django concern. Its top precedence tier — an unexpired manual override written by
-``t3 <overlay> availability away|autonomous-away|present`` — is a plain JSON
-file, and the default (no configured schedule) is ``present``. Both are resolved
-here in pure stdlib, so the common cases (a manual pause, or no schedule at all)
-never shell out. Only the cron-window ``[teatree.availability].windows`` schedule
+Fast path (fast-hooks): the availability decision is override-file / DB based,
+not a Django-boot concern. Its top precedence tier — an unexpired manual override
+written by ``t3 <overlay> availability away|autonomous-away|present`` — is a plain
+JSON file, and the default (no configured schedule) is ``present``. Both are
+resolved here in pure stdlib, so the common cases (a manual pause, or no schedule
+at all) never shell out. Only the cron-window ``availability_schedule`` DB-setting
 tier — which needs ``croniter``, absent from the bare hook — falls back to the
 ``t3`` subprocess (``availability show``) for an exact evaluation in the editable
 install's child process. This removes the ~2.5s Django cold-boot the subprocess
@@ -43,7 +43,6 @@ import json
 import os
 import shutil
 import subprocess  # noqa: S404 — reads a trusted local ``t3`` binary, fixed argv, never shell
-import tomllib
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -203,27 +202,23 @@ def _primary_data_dir() -> Path | None:
 
 
 def _schedule_has_windows() -> bool:
-    """True when ``[teatree.availability].windows`` has any configured entry.
+    """True when the DB ``availability_schedule`` setting has any configured window.
 
-    Mirrors ``availability.load_schedule``'s config-path resolution (``TEATREE_TOML``
-    env override, else ``~/.teatree.toml``). The bare hook cannot evaluate cron
-    windows (no ``croniter``), so a configured window defers to the ``t3``
-    subprocess for an exact read. An all-invalid-windows config still defers here
-    and the subprocess returns the true ``present`` — the DECISION stays exact, at
-    the cost of one avoidable subprocess in that pathological case. A missing /
-    unreadable config resolves to ``False`` (no windows ⇒ default ``present``).
+    Mirrors ``availability.load_schedule``'s DB read via the Django-free
+    ``cold_reader``. The bare hook cannot evaluate cron windows (no ``croniter``),
+    so a configured window defers to the ``t3`` subprocess for an exact read. An
+    all-invalid-windows value still defers here and the subprocess returns the
+    true ``present`` — the DECISION stays exact, at the cost of one avoidable
+    subprocess in that pathological case. A missing / unreadable DB resolves to
+    ``False`` (no windows ⇒ default ``present``).
     """
-    config_path = Path(os.environ.get("TEATREE_TOML", str(Path.home() / ".teatree.toml")))
     try:
-        if not config_path.is_file():
-            return False
-        with config_path.open("rb") as fh:
-            data = tomllib.load(fh)
-    except (OSError, ValueError):
+        with teatree_src_on_path():
+            from teatree.config.cold_reader import mapping_setting  # noqa: PLC0415
+
+            windows = mapping_setting("availability_schedule").get("windows")
+    except Exception:  # noqa: BLE001 — hook crash-proof: unreadable DB ⇒ no schedule tier
         return False
-    section = data.get("teatree", {}) if isinstance(data, dict) else {}
-    availability = section.get("availability", {}) if isinstance(section, dict) else {}
-    windows = availability.get("windows", []) if isinstance(availability, dict) else []
     if not isinstance(windows, list):
         return False
     return any(isinstance(entry, str) and entry.strip() for entry in windows)

@@ -80,7 +80,7 @@ This emits JSON listing every open PR authored by the user across the forge:
 }
 ```
 
-The `author` field is resolved from the overlay's `get_gitlab_username()` (or the configured `<host>_username` in `~/.teatree.toml`) with a fallback to `host.current_user()`. Set the username explicitly when the configured user differs from the OAuth identity.
+The `author` field is resolved from the overlay's `get_gitlab_username()` (or the configured `<host>_username` in the overlay's DB `overlays` registry row) with a fallback to `host.current_user()`. Set the username explicitly when the configured user differs from the OAuth identity.
 
 The CLI is intentionally read-only — it does not modify branches, push, or change CI. Mutating actions live in this skill so the agent can prompt for non-default-base PRs and conflict resolution.
 
@@ -242,9 +242,9 @@ Never reuse one worktree across multiple PRs in a sweep. Each PR gets its own wo
 
 ## Configuration
 
-| `~/.teatree.toml` key | Purpose |
+| Overlay `overlays`-registry key | Purpose |
 |---|---|
-| `[overlays.<name>]` `gitlab_username_pass_key` | Pass-store key holding the GitLab username for the overlay. Resolves to `overlay.config.get_gitlab_username()`. |
-| `[overlays.<name>]` `github_username` | Plain GitHub login for the overlay (no secret needed). |
+| `gitlab_username_pass_key` | Pass-store key holding the GitLab username for the overlay. Resolves to `overlay.config.get_gitlab_username()`. |
+| `github_username` | Plain GitHub login for the overlay (no secret needed). |
 
 Without a configured username, the sweep falls back to `host.current_user()` (the OAuth-authenticated identity). Set the username explicitly when the workforce identity differs from the bot identity.

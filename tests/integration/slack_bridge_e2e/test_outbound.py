@@ -26,8 +26,8 @@ pytestmark = [pytest.mark.django_db, pytest.mark.integration]
 def _text_only_speak() -> Iterator[None]:
     """Pin the speak config inert so the DM rides the ``chat.postMessage`` path.
 
-    ``deliver_user_dm`` consults ``resolve_speak``: when the developer's real
-    ``~/.teatree.toml`` has ``[teatree.speak] slack = true`` AND ``say`` is on
+    ``deliver_user_dm`` consults ``resolve_speak``: when the developer's DB-home
+    ``speak`` config enables ``slack`` AND ``say`` is on
     the host (macOS), the bot→user DM goes out as a ``files.completeUploadExternal``
     audio attach, NOT ``chat.postMessage`` — so the ``chat.postMessage`` guards
     in this module never fire and ``notify_user`` reports no ``ts``. These tests
@@ -105,7 +105,7 @@ class TestOutboundBridgeEndToEnd:
         # seam (``_messaging_from_toml`` / ``teatree.config.load_config`` /
         # ``get_overlay``) is how multiple synthetic per-overlay configs are
         # injected — they are not expressible via a single real
-        # ``~/.teatree.toml``. ``httpx`` stays the only real external. See
+        # config store. ``httpx`` stays the only real external. See
         # the conftest module docstring; do not rewrite this to real-TOML.
         with (
             patch.object(backend_factory, "_messaging_from_toml", side_effect=fake_messaging_from_toml),

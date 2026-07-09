@@ -136,7 +136,7 @@ depends_on = ["teatree.utils"]
 [[modules]]
 path = "teatree.hooks"
 layer = "platform"
-depends_on = ["teatree.utils"]
+depends_on = ["teatree.config", "teatree.utils"]
 
 [[modules]]
 path = "teatree.timeouts"
@@ -169,6 +169,9 @@ depends_on = [
   "teatree.on_behalf_gate",
   "teatree.slack_mrkdwn",
   "teatree.quality",
+  # ORM-free enum home shared with the MCP service-declaration mechanism
+  # (OverlayConfig.required_third_party_services validates against Service).
+  "teatree.backends.types",
   "teatree.core.modelkit",
   "teatree.core.models.errors",
   "teatree.core.models",

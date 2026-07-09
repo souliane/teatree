@@ -10,13 +10,17 @@ transactional ``django_db`` fixture, no committed-transaction dance needed.
 import asyncio
 import json
 from typing import Any
+from unittest.mock import patch
 
 from asgiref.sync import async_to_sync
 from django.core.management import call_command
 from django.test import TestCase
 
+from teatree.backends.types import Service
 from teatree.core.models import Task
+from teatree.core.overlay import OverlayConfig
 from teatree.mcp import build_server
+from teatree.mcp.server import _required_services
 from tests.factories import TaskFactory, TicketFactory
 
 _EXPECTED_TOOLS = {
@@ -147,6 +151,54 @@ class TestCallToolThroughServer(TestCase):
         result = async_to_sync(server.call_tool)("command_search", {"query": "mcp serve"})
 
         assert any(payload["path"] == "t3 mcp serve" for payload in _payloads(result))
+
+
+class _ServiceOverlay:
+    def __init__(self, *services: Service) -> None:
+        self.config = OverlayConfig(required_third_party_services=frozenset(services))
+
+
+_SENTRY_TOOLS = {"sentry_top_issues", "sentry_issue_get", "sentry_issue_events", "sentry_projects"}
+
+
+class TestServiceDeclarationGating(TestCase):
+    def test_union_spans_all_registered_overlays(self) -> None:
+        overlays = {"a": _ServiceOverlay(Service.GITHUB), "b": _ServiceOverlay(Service.SENTRY, Service.SLACK)}
+        with patch("teatree.mcp.server.get_all_overlays", return_value=overlays):
+            assert _required_services() == frozenset({Service.GITHUB, Service.SENTRY, Service.SLACK})
+
+    def test_no_overlays_means_no_services(self) -> None:
+        with patch("teatree.mcp.server.get_all_overlays", return_value={}):
+            assert _required_services() == frozenset()
+
+    def test_no_declaration_registers_zero_service_tools(self) -> None:
+        with patch("teatree.mcp.server.get_all_overlays", return_value={"a": _ServiceOverlay()}):
+            names = {tool.name for tool in asyncio.run(build_server().list_tools())}
+
+        assert names == _EXPECTED_TOOLS
+
+    def test_sentry_tools_registered_iff_sentry_declared(self) -> None:
+        with patch("teatree.mcp.server.get_all_overlays", return_value={"a": _ServiceOverlay(Service.SENTRY)}):
+            names = {tool.name for tool in asyncio.run(build_server().list_tools())}
+
+        assert names >= _SENTRY_TOOLS
+
+    def test_other_declaration_does_not_register_sentry_tools(self) -> None:
+        with patch("teatree.mcp.server.get_all_overlays", return_value={"a": _ServiceOverlay(Service.GITHUB)}):
+            names = {tool.name for tool in asyncio.run(build_server().list_tools())}
+
+        assert not (_SENTRY_TOOLS & names)
+
+    def test_instructions_advertise_only_registered_groups(self) -> None:
+        with patch("teatree.mcp.server.get_all_overlays", return_value={"a": _ServiceOverlay(Service.SENTRY)}):
+            declared = build_server().instructions
+        with patch("teatree.mcp.server.get_all_overlays", return_value={"a": _ServiceOverlay()}):
+            undeclared = build_server().instructions
+
+        assert declared is not None
+        assert undeclared is not None
+        assert "sentry_top_issues" in declared
+        assert "sentry" not in undeclared
 
 
 class TestFactoryScoreFlagGating(TestCase):

@@ -12,7 +12,9 @@ The migration-fork predicate (``_count_core_leaves`` /
 that module's namespace.
 """
 
+import json
 import os
+import sqlite3
 import tempfile
 from collections.abc import Iterator
 from contextlib import contextmanager
@@ -32,6 +34,22 @@ _SHA_A = "a" * 40
 _SHA_B = "b" * 40
 
 
+def _seed_config_db(db: Path, key: str, value: object) -> None:
+    """Write one global ``teatree_config_setting`` row into a temp sqlite DB.
+
+    The security predicates drive the DB-home leak guards, which read the
+    canonical config store via ``cold_reader`` — so a predicate seeds a throwaway
+    DB and points the guard at it (``db_path`` / ``T3_CONFIG_DB``), never a file.
+    """
+    conn = sqlite3.connect(str(db))
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS teatree_config_setting (id INTEGER PRIMARY KEY, scope TEXT, key TEXT, value TEXT)"
+    )
+    conn.execute("INSERT INTO teatree_config_setting (scope, key, value) VALUES ('', ?, ?)", (key, json.dumps(value)))
+    conn.commit()
+    conn.close()
+
+
 @contextmanager
 def _staged_overlay_autonomy(overlay_name: str, autonomy: str) -> Iterator[None]:
     """Run the block with *overlay_name*'s effective autonomy pinned to *autonomy*.
@@ -40,7 +58,7 @@ def _staged_overlay_autonomy(overlay_name: str, autonomy: str) -> Iterator[None]
     overlay's effective autonomy (the substrate-merge carve-out). ``autonomy`` is
     DB-home under the #1775 partition — it resolves SOLELY from the
     ``ConfigSetting`` store, not from ``[overlays.<name>]`` TOML — so this stages
-    it through that store's resolver seam rather than a hermetic ``~/.teatree.toml``
+    it through that store's resolver seam rather than a hermetic config file
     (a ``[overlays.<name>]`` / ``[teatree]`` ``autonomy`` key is ignored on read
     now — its home is the DB).
 
@@ -290,12 +308,12 @@ def _check_private_repo_allowlist_path_segment_match() -> bool:
     from teatree.hooks._repo_visibility import slug_is_allowlisted_private  # noqa: PLC0415
 
     with tempfile.TemporaryDirectory() as raw:
-        cfg = Path(raw) / ".teatree.toml"
-        cfg.write_text('[teatree]\nprivate_repos = ["org/secret", "secretorg"]\n', encoding="utf-8")
-        matches_exact = slug_is_allowlisted_private("org/secret", cfg)
-        matches_path_segment_child = slug_is_allowlisted_private("org/secret/sub", cfg)
-        matches_org_repo = slug_is_allowlisted_private("secretorg/repo", cfg)
-        matches_substring_alias = slug_is_allowlisted_private("secretorg-mirror/x", cfg)
+        db = Path(raw) / "config.sqlite3"
+        _seed_config_db(db, "private_repos", ["org/secret", "secretorg"])
+        matches_exact = slug_is_allowlisted_private("org/secret", db)
+        matches_path_segment_child = slug_is_allowlisted_private("org/secret/sub", db)
+        matches_org_repo = slug_is_allowlisted_private("secretorg/repo", db)
+        matches_substring_alias = slug_is_allowlisted_private("secretorg-mirror/x", db)
     return matches_exact and matches_path_segment_child and matches_org_repo and not matches_substring_alias
 
 
@@ -318,11 +336,11 @@ def _check_banned_terms_scanner_fails_closed_on_crash() -> bool:
         raise CommandFailedError(cmd=["check-banned-terms.sh"], returncode=2, stdout="", stderr="boom")
 
     with tempfile.TemporaryDirectory() as raw:
-        cfg = Path(raw) / ".teatree.toml"
-        cfg.write_text('[teatree]\nbanned_terms = ["acmecorp"]\n', encoding="utf-8")
+        db = Path(raw) / "config.sqlite3"
+        _seed_config_db(db, "banned_terms", ["acmecorp"])
         with patch.object(banned_terms_scanner, "run_allowed_to_fail", _crashing_scanner):
-            on_crash = scan_text("we ship to acmecorp", config_path=cfg)
-        on_no_config = scan_text("we ship to acmecorp", config_path=Path(raw) / "absent.toml")
+            on_crash = scan_text("we ship to acmecorp", config_path=db)
+        on_no_config = scan_text("we ship to acmecorp", config_path=Path(raw) / "absent.sqlite3")
     return on_crash == SCANNER_UNAVAILABLE_MARKER and on_no_config is None
 
 

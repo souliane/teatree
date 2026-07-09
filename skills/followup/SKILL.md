@@ -36,7 +36,7 @@ When invoked with `--periodic` (e.g., from a cron job or scheduler), run in **no
 - **No user confirmation** — execute safe actions (status checks, cache updates) silently. For actions that modify external state (transitions, chat posts), respect existing safeguards:
   - **Ticket transitions:** execute automatically (idempotent, gate-checked).
   - **PR reminders:** post automatically if `last_reminded` is >1 day ago. The daily cache prevents spamming.
-- **Output a summary** to stdout (for cron email) and optionally post to a team chat channel (configured via `T3_FOLLOWUP_CHANNEL` in `~/.teatree`).
+- **Output a summary** to stdout (for cron email) and optionally post to a team chat channel (configured via the `T3_FOLLOWUP_CHANNEL` environment variable).
 
 **Cron setup** (add to `crontab -e`):
 

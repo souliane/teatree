@@ -92,10 +92,9 @@ _INVESTIGATION_EDIT_TOOLS = frozenset({"Edit", "Write", "NotebookEdit"})
 def _orchestrator_investigation_gate_enabled() -> bool:
     """Whether the t3-master investigation NUDGE is enabled (default True).
 
-    Reads ``[teatree] orchestrator_investigation_gate_enabled`` from
-    ``~/.teatree.toml`` via the shared bare-boolean reader: fails OPEN to enabled
-    on a missing/broken config, and only a bare ``false`` is the one-line
-    out-of-repo kill-switch.
+    Reads the ``orchestrator_investigation_gate_enabled`` DB setting via the
+    shared bare-boolean reader: fails OPEN to enabled on a missing/broken row,
+    and only a stored ``false`` is the one-line out-of-repo kill-switch.
     """
     return teatree_bool_setting("orchestrator_investigation_gate_enabled", default=True)
 
@@ -201,7 +200,7 @@ def handle_enforce_orchestrator_investigation_boundary(data: dict) -> bool:
         "(background if >~30s). Dispatch one (Task/Agent, run_in_background) "
         "instead of doing the work inline. If this IS genuine orchestration, add "
         "`[orchestration-ok: <reason>]` to suppress this nudge; to disable the "
-        "nudge entirely set `orchestrator_investigation_gate_enabled = false` "
-        "under `[teatree]` in ~/.teatree.toml.\n"
+        "nudge entirely run `t3 <overlay> config_setting set "
+        "orchestrator_investigation_gate_enabled false`.\n"
     )
     return False

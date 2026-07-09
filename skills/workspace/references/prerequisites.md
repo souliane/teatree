@@ -51,7 +51,7 @@ When writing or modifying shell scripts, verify:
 
 ## User Configuration
 
-Configuration is stored in `~/.teatree` (a sourceable shell file). See `t3:setup` for the interactive setup wizard.
+Configuration lives in the DB `ConfigSetting` store; bootstrap paths (`T3_REPO`, `T3_WORKSPACE_DIR`) are environment variables. See `t3:setup` for the interactive setup wizard.
 
 Environment variables with auto-detected defaults:
 

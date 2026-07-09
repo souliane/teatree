@@ -1,32 +1,52 @@
 """Shared staging helpers for the t3 doctor test package.
 
 Lifted verbatim from the former monolithic ``tests/test_cli_doctor.py``
-(souliane/teatree#443). No behavior change: the same ``~/.teatree.toml``
-writer, home-sandbox stager, and fake-entry-point / editable-map builders
-every focused doctor test relies on, relocated so each split module
-imports them instead of redefining them.
+(souliane/teatree#443). The home-sandbox stager, the DB-home ``overlays``
+registry seeder (the legacy file tier is removed — the registry is read via
+the Django-free ``cold_reader`` at ``T3_CONFIG_DB``), and the fake-entry-point
+/ editable-map builders every focused doctor test relies on, relocated so each
+split module imports them instead of redefining them.
 """
 
+import json
+import sqlite3
 from pathlib import Path
 
 
-def _write_teatree_toml(config_path: Path, content: str) -> None:
-    config_path.parent.mkdir(parents=True, exist_ok=True)
-    config_path.write_text(content, encoding="utf-8")
+def _seed_overlays(tmp_path: Path, monkeypatch, overlays: dict[str, object]) -> Path:
+    """Seed the DB-home ``overlays`` registry in a cold sqlite config DB.
+
+    Overlay discovery reads the registry through the Django-free ``cold_reader``
+    at ``T3_CONFIG_DB``, so an overlay-shaped doctor test stages the overlay here.
+    """
+    db = tmp_path / "config.sqlite3"
+    conn = sqlite3.connect(str(db))
+    try:
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS teatree_config_setting "
+            "(id INTEGER PRIMARY KEY, scope TEXT NOT NULL DEFAULT '', key TEXT NOT NULL, value TEXT NOT NULL)"
+        )
+        conn.execute(
+            "INSERT INTO teatree_config_setting (scope, key, value) VALUES ('', 'overlays', ?)",
+            (json.dumps(overlays),),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+    monkeypatch.setenv("T3_CONFIG_DB", str(db))
+    return db
 
 
 def _stage_home(tmp_path: Path, monkeypatch) -> Path:
     """Isolate overlay discovery under ``tmp_path``.
 
     - Redirects ``Path.home()`` to ``tmp_path`` so ``~/.claude/...`` lookups are sandboxed.
-    - Redirects ``teatree.config.CONFIG_PATH`` to ``tmp_path/.teatree.toml``.
     - Muzzles ``importlib.metadata.entry_points`` so installed overlays (``t3-teatree``)
         don't leak into ``discover_overlays()`` / ``discover_active_overlay()``.
     - Moves cwd under ``tmp_path`` so ``_discover_from_manage_py`` cannot climb into
         the real teatree checkout.
     """
     monkeypatch.setattr("pathlib.Path.home", classmethod(lambda cls: tmp_path))
-    monkeypatch.setattr("teatree.config.CONFIG_PATH", tmp_path / ".teatree.toml")
     monkeypatch.setattr("importlib.metadata.entry_points", lambda **_kw: [])
     neutral = tmp_path / "_neutral_cwd"
     neutral.mkdir(exist_ok=True)

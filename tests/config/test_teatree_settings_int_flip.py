@@ -1,18 +1,16 @@
 # test-path: cross-cutting
-"""The cold-hook integer budgets resolve from the DB store, TOML-fallback (config-unify PR4).
+"""The cold-hook integer budgets resolve from the DB store (config-unify PR4).
 
-The integer sibling of ``test_teatree_settings_db_flip``. PR4 flips the three
-``hook_router`` budgets — the deny-circuit-breaker threshold and the orchestrator
-turn / wall-clock budgets — off their inline ``tomllib`` reads and onto the new
-``teatree_settings.teatree_int_setting`` adapter, which resolves from the canonical
-``ConfigSetting`` store FIRST (seeded by ``t3 setup``), falls back to the
-``[teatree]`` TOML value, then the per-budget default.
+The integer sibling of ``test_teatree_settings_db_flip``. The three ``hook_router``
+budgets — the deny-circuit-breaker threshold and the orchestrator turn / wall-clock
+budgets — read through ``teatree_settings.teatree_int_setting``, which resolves from
+the canonical ``ConfigSetting`` store, then the per-budget default.
 
 These integration tests build a REAL ``teatree_config_setting`` sqlite file (the
 exact Django-migration shape, JSON-encoded values) and read it back through the
 LIVE ``hook_router`` reader functions — the actual repointed consumers — so the
-DB-precedence, never-lockout TOML fallback, bool-rejection, and minimum/zero
-semantics are exercised end to end against real sqlite and a real ``~/.teatree.toml``.
+DB resolution, bool-rejection, and minimum/zero semantics are exercised end to end
+against real sqlite.
 """
 
 import json
@@ -67,12 +65,7 @@ def _make_config_db(path: Path, rows: Iterable[Row]) -> None:
 
 @pytest.fixture
 def home(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Path:
-    """A clean ``$HOME`` so a TOML fallback only fires when the test plants the file.
-
-    Clearing ``T3_CONFIG_DB`` / ``XDG_DATA_HOME`` means the cold reader resolves
-    under the isolated ``$HOME`` and never reads a host DB, so DB-precedence
-    assertions are not masked by stray host config.
-    """
+    """A clean ``$HOME`` with no host config DB so the cold reader resolves under it."""
     home_dir = tmp_path / "home"
     home_dir.mkdir(exist_ok=True)
     monkeypatch.setenv("HOME", str(home_dir))
@@ -87,54 +80,35 @@ def _seed_db(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, rows: Iterable[Row
     monkeypatch.setenv("T3_CONFIG_DB", str(db))
 
 
-def _write_teatree_toml(home: Path, body: str) -> None:
-    (home / ".teatree.toml").write_text(f"[teatree]\n{body}", encoding="utf-8")
-
-
-class TestBudgetReadersResolveDbFirst:
-    """Each repointed ``hook_router`` budget reader is DB-first, TOML-fallback, default."""
+class TestBudgetReadersResolveFromDb:
+    """Each repointed ``hook_router`` budget reader is DB-first, then default."""
 
     @pytest.mark.parametrize("budget", _BUDGETS, ids=lambda b: b.key)
     def test_seeded_db_row_is_honoured(
         self, home: Path, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, budget: Budget
     ) -> None:
-        # (a) a seeded DB row wins over the in-code default.
         _seed_db(monkeypatch, tmp_path, [("", budget.key, 7)])
         assert budget.reader() == 7
 
     @pytest.mark.parametrize("budget", _BUDGETS, ids=lambda b: b.key)
-    def test_toml_value_honoured_when_db_absent(
+    def test_no_db_returns_default(
         self, home: Path, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, budget: Budget
     ) -> None:
-        # (b) never-lockout: a present DB with no row for the budget falls back to
-        # the ``[teatree]`` TOML value — the fail-open path that keeps a configured
-        # budget working without a seeded row.
-        _seed_db(monkeypatch, tmp_path, [("", "some_other_key", 1)])
-        _write_teatree_toml(home, f"{budget.key} = 9\n")
-        assert budget.reader() == 9
-
-    @pytest.mark.parametrize("budget", _BUDGETS, ids=lambda b: b.key)
-    def test_neither_db_nor_toml_returns_default(
-        self, home: Path, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, budget: Budget
-    ) -> None:
-        # (c) no DB file and no TOML → the in-code default.
         assert budget.reader() == budget.default
 
     @pytest.mark.parametrize("budget", _BUDGETS, ids=lambda b: b.key)
-    def test_bool_db_value_is_rejected_and_falls_back(
+    def test_bool_db_value_is_rejected_and_falls_back_to_default(
         self, home: Path, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, budget: Budget
     ) -> None:
-        # (d) a stored bool is NOT a budget — a bool subclasses int but must never be
-        # read as one, so it falls through to the TOML value (here, present).
+        # A stored bool is NOT a budget — a bool subclasses int but must never be
+        # read as one, so it falls through to the default.
         _seed_db(monkeypatch, tmp_path, [("", budget.key, True)])
-        _write_teatree_toml(home, f"{budget.key} = 11\n")
-        assert budget.reader() == 11
+        assert budget.reader() == budget.default
 
     @pytest.mark.parametrize("budget", _BUDGETS, ids=lambda b: b.key)
     def test_non_int_db_value_is_rejected_and_falls_back_to_default(
         self, home: Path, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, budget: Budget
     ) -> None:
-        # (d) a JSON string in the DB is not an int → rejected → default (no TOML).
         _seed_db(monkeypatch, tmp_path, [("", budget.key, "13")])
         assert budget.reader() == budget.default
 
@@ -142,9 +116,9 @@ class TestBudgetReadersResolveDbFirst:
     def test_zero_survives_only_when_minimum_is_zero(
         self, home: Path, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, budget: Budget
     ) -> None:
-        # (e) ``0`` is an explicit "off" for the orchestrator budgets (minimum=0) and
-        # MUST survive; for the deny-circuit-breaker threshold (minimum=1) a value
-        # ``< 1`` is malformed and falls back to the default.
+        # ``0`` is an explicit "off" for the orchestrator budgets (minimum=0) and MUST
+        # survive; for the deny-circuit-breaker threshold (minimum=1) a value ``< 1``
+        # is malformed and falls back to the default.
         _seed_db(monkeypatch, tmp_path, [("", budget.key, 0)])
         expected = 0 if budget.minimum == 0 else budget.default
         assert budget.reader() == expected
@@ -153,40 +127,12 @@ class TestBudgetReadersResolveDbFirst:
     def test_below_minimum_value_falls_back_to_default(
         self, home: Path, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, budget: Budget
     ) -> None:
-        # (e) a value strictly below the minimum is always rejected to the default —
-        # a negative budget can never be mistyped into disabling the guard.
         _seed_db(monkeypatch, tmp_path, [("", budget.key, budget.minimum - 1)])
         assert budget.reader() == budget.default
 
 
 class TestIntHelperSemantics:
     """Helper-level behaviour the per-reader parametrization does not cover."""
-
-    def test_db_value_wins_over_a_conflicting_toml_value(
-        self, home: Path, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-    ) -> None:
-        from hooks.scripts import teatree_settings  # noqa: PLC0415
-
-        _seed_db(monkeypatch, tmp_path, [("", "orchestrator_turn_budget", 40)])
-        _write_teatree_toml(home, "orchestrator_turn_budget = 5\n")
-        assert teatree_settings.teatree_int_setting("orchestrator_turn_budget", default=25, minimum=0) == 40
-
-    def test_quoted_numeric_string_in_toml_is_rejected(
-        self, home: Path, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-    ) -> None:
-        from hooks.scripts import teatree_settings  # noqa: PLC0415
-
-        _write_teatree_toml(home, 'orchestrator_turn_budget = "5"\n')
-        assert teatree_settings.teatree_int_setting("orchestrator_turn_budget", default=25, minimum=0) == 25
-
-    def test_non_teatree_section_reads_its_toml_value_not_the_global_db_row(
-        self, home: Path, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-    ) -> None:
-        from hooks.scripts import teatree_settings  # noqa: PLC0415
-
-        _seed_db(monkeypatch, tmp_path, [("", "budget", 99)])  # a GLOBAL row that must NOT leak in
-        (home / ".teatree.toml").write_text("[mysection]\nbudget = 7\n", encoding="utf-8")
-        assert teatree_settings.section_int_setting("mysection", "budget", default=3, minimum=0) == 7
 
     def test_non_teatree_section_missing_returns_default(self, home: Path) -> None:
         from hooks.scripts import teatree_settings  # noqa: PLC0415

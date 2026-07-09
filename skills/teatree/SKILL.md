@@ -104,7 +104,7 @@ Canonical example: `src/teatree/core/management/commands/tasks.py` `create` subc
 
 ## Configuration
 
-`~/.teatree` sourced by hooks:
+Environment variables read by hooks:
 
 ```bash
 T3_REPO="$HOME/workspace/<your-username>/teatree"  # teatree repo path

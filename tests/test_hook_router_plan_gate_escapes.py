@@ -17,19 +17,54 @@ These tests drive the real handler + real DB rows — no monkeypatching of
 """
 
 import json
+import os
+import sqlite3
 import tempfile
 from io import StringIO
 from pathlib import Path
 from unittest.mock import patch
 
-import tomlkit
 from django.test import TestCase
 from typer.testing import CliRunner
 
 import hooks.scripts.hook_router as router
 from teatree.cli.teatree_gate import PLAN_GATE_KEY, _gate_key_is_enabled, register_gate_commands
+from teatree.config import cold_reader
 from teatree.core.models import Ticket, Worktree
 from tests._git_repo import make_git_repo, run_git
+
+_REAL_SCHEMA = (
+    'CREATE TABLE "teatree_config_setting" ('
+    '"id" integer NOT NULL PRIMARY KEY AUTOINCREMENT, '
+    '"scope" varchar(255) NOT NULL, '
+    '"key" varchar(255) NOT NULL, '
+    '"value" text NOT NULL CHECK ((JSON_VALID("value") OR "value" IS NULL)), '
+    '"created_at" datetime NOT NULL, '
+    '"updated_at" datetime NOT NULL, '
+    'CONSTRAINT "uniq_config_setting_scope_key" UNIQUE ("scope", "key"))'
+)
+
+
+def _make_canonical_db(db: Path) -> None:
+    conn = sqlite3.connect(db)
+    try:
+        conn.execute(_REAL_SCHEMA)
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def _seed_row(db: Path, key: str, json_value: str) -> None:
+    conn = sqlite3.connect(db)
+    try:
+        conn.execute(
+            "INSERT INTO teatree_config_setting (scope, key, value, created_at, updated_at) "
+            "VALUES ('', ?, ?, '2026-01-01 00:00:00.0', '2026-01-01 00:00:00.0')",
+            (key, json_value),
+        )
+        conn.commit()
+    finally:
+        conn.close()
 
 
 def _git_repo(path: Path) -> str:
@@ -203,15 +238,12 @@ class TestPlanGateCLI(TestCase):
         assert PLAN_GATE_KEY == "plan_edit_gate_enabled"
 
     def test_gate_key_is_enabled_reads_plan_gate_key(self) -> None:
-        """``_gate_key_is_enabled(PLAN_GATE_KEY)`` reads the right toml key."""
+        """``_gate_key_is_enabled(PLAN_GATE_KEY)`` reads the DB-home key."""
         with tempfile.TemporaryDirectory() as tmp:
-            config = Path(tmp) / ".teatree.toml"
-            doc = tomlkit.document()
-            teatree_tbl = tomlkit.table()
-            teatree_tbl[PLAN_GATE_KEY] = False
-            doc["teatree"] = teatree_tbl
-            config.write_text(tomlkit.dumps(doc), encoding="utf-8")
-            with patch("teatree.cli.teatree_gate._config_path", return_value=config):
+            db = Path(tmp) / "db.sqlite3"
+            _make_canonical_db(db)
+            _seed_row(db, PLAN_GATE_KEY, "false")
+            with patch.dict(os.environ, {"T3_CONFIG_DB": str(db)}):
                 assert _gate_key_is_enabled(PLAN_GATE_KEY) is False
 
     def test_gate_plan_subgroup_is_registered(self) -> None:
@@ -225,8 +257,8 @@ class TestPlanGateCLI(TestCase):
         assert result.exit_code == 0
         assert "gate" in result.output.lower()
 
-    def test_gate_plan_disable_writes_config(self) -> None:
-        """``gate plan disable`` writes ``plan_edit_gate_enabled = false``."""
+    def test_gate_plan_disable_writes_the_db(self) -> None:
+        """``gate plan disable`` writes ``plan_edit_gate_enabled = false`` to the DB."""
         import typer  # noqa: PLC0415
 
         overlay_app = typer.Typer()
@@ -234,18 +266,15 @@ class TestPlanGateCLI(TestCase):
         runner = CliRunner()
 
         with tempfile.TemporaryDirectory() as tmp:
-            config = Path(tmp) / ".teatree.toml"
-            with patch("teatree.cli.teatree_gate._config_path", return_value=config):
+            db = Path(tmp) / "db.sqlite3"
+            _make_canonical_db(db)
+            with patch.dict(os.environ, {"T3_CONFIG_DB": str(db)}):
                 result = runner.invoke(overlay_app, ["gate", "plan", "disable"])
                 assert result.exit_code == 0, result.output
-                with config.open("rb") as f:
-                    import tomllib  # noqa: PLC0415
+                assert cold_reader.read_setting(PLAN_GATE_KEY, scope="", db_path=db) is False
 
-                    data = tomllib.load(f)
-                assert data["teatree"][PLAN_GATE_KEY] is False
-
-    def test_gate_plan_enable_writes_config(self) -> None:
-        """``gate plan enable`` writes ``plan_edit_gate_enabled = true``."""
+    def test_gate_plan_enable_writes_the_db(self) -> None:
+        """``gate plan enable`` writes ``plan_edit_gate_enabled = true`` to the DB."""
         import typer  # noqa: PLC0415
 
         overlay_app = typer.Typer()
@@ -253,12 +282,9 @@ class TestPlanGateCLI(TestCase):
         runner = CliRunner()
 
         with tempfile.TemporaryDirectory() as tmp:
-            config = Path(tmp) / ".teatree.toml"
-            with patch("teatree.cli.teatree_gate._config_path", return_value=config):
+            db = Path(tmp) / "db.sqlite3"
+            _make_canonical_db(db)
+            with patch.dict(os.environ, {"T3_CONFIG_DB": str(db)}):
                 result = runner.invoke(overlay_app, ["gate", "plan", "enable"])
                 assert result.exit_code == 0, result.output
-                with config.open("rb") as f:
-                    import tomllib  # noqa: PLC0415
-
-                    data = tomllib.load(f)
-                assert data["teatree"][PLAN_GATE_KEY] is True
+                assert cold_reader.read_setting(PLAN_GATE_KEY, scope="", db_path=db) is True

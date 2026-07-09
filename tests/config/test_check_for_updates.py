@@ -7,12 +7,12 @@ fresh/empty/corrupt JSON cache paths, the ``gh`` CLI outcomes (empty
 tag, timeout, missing binary, newer vs same version) and the cache
 writer.
 
-``check_updates`` is DB-home (eliminate-~/.teatree.toml): ``check_for_updates``
-resolves it from the ``ConfigSetting`` store via the Django-free ``cold_reader``
-on its pre-Django path, so these tests seed a REAL ``teatree_config_setting``
-sqlite DB (the exact Django-migration shape, JSON-encoded values) and point
-``T3_CONFIG_DB`` at it — no mock of the read path. Other mocks are reserved for
-the ``gh`` CLI call (network) and ``importlib.metadata.version``.
+``check_updates`` is DB-home: ``check_for_updates`` resolves it from the
+``ConfigSetting`` store via the Django-free ``cold_reader`` on its pre-Django path,
+so these tests seed a REAL ``teatree_config_setting`` sqlite DB (the exact
+Django-migration shape, JSON-encoded values) and point ``T3_CONFIG_DB`` at it — no
+mock of the read path. Other mocks are reserved for the ``gh`` CLI call (network)
+and ``importlib.metadata.version``.
 """
 
 import json
@@ -66,13 +66,11 @@ class TestCheckForUpdates:
     def test_disabled_check_honoured_pre_django_via_db(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         """A DB ``check_updates=false`` is honoured with no Django and no network.
 
-        eliminate-~/.teatree.toml: ``check_for_updates`` resolves ``check_updates``
-        from the ``ConfigSetting`` store via the Django-free ``cold_reader``, so the
-        opt-out holds on the pre-Django CLI paths that are its only readers — the
-        exact concern (a pre-Django DB read failing safe to ``True``) that formerly
-        kept it TOML-home. This guard is anti-vacuous: dropping the cold-reader read
-        would resolve ``check_updates`` to its ``True`` default, skip the early
-        return, and reach the network call — turning this red.
+        ``check_for_updates`` resolves ``check_updates`` from the ``ConfigSetting``
+        store via the Django-free ``cold_reader``, so the opt-out holds on the
+        pre-Django CLI paths that are its only readers. This guard is anti-vacuous:
+        dropping the cold-reader read would resolve ``check_updates`` to its ``True``
+        default, skip the early return, and reach the network call — turning this red.
         """
         _seed_check_updates(tmp_path, monkeypatch, enabled=False)
 

@@ -1,12 +1,15 @@
 """``_check_agent_session_pins`` — the `t3 doctor` agent-config gate (teatree#2216).
 
-Validates the ``[agent]`` model + effort settings: a bad ``session_effort``
-(off the strict CLI scale) is a hard FAIL surfaced loudly (the parser raises);
-an unrecognised model in ``session_model`` or a ``[agent.skill_models]`` floor
-is a WARN (it ranks most-capable, so not fatal, but likely a typo). An absent
-or all-valid config is silently OK.
+Validates the agent model + effort settings: a bad ``agent_session_effort`` (off
+the strict CLI scale) is a hard FAIL surfaced loudly (the parser raises); an
+unrecognised model in ``agent_session_model`` or an ``agent_skill_models`` floor
+is a WARN (it ranks most-capable, so not fatal, but likely a typo). An absent or
+all-valid config is silently OK. The settings are DB-home, read via the pre-Django
+``cold_reader``, so tests seed a cold-readable DB and point ``T3_CONFIG_DB`` at it.
 """
 
+import json
+import sqlite3
 from pathlib import Path
 
 import pytest
@@ -14,40 +17,56 @@ import pytest
 from teatree.cli._doctor_checks import _check_agent_session_pins
 
 
-def _write(tmp_path: Path, body: str) -> Path:
-    cfg = tmp_path / ".teatree.toml"
-    cfg.write_text(body, encoding="utf-8")
-    return cfg
+def _seed(db: Path, **settings: object) -> None:
+    conn = sqlite3.connect(str(db))
+    try:
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS teatree_config_setting ("
+            "id INTEGER PRIMARY KEY, scope TEXT NOT NULL DEFAULT '', "
+            "key TEXT NOT NULL, value TEXT NOT NULL)"
+        )
+        for key, value in settings.items():
+            conn.execute(
+                "INSERT INTO teatree_config_setting (scope, key, value) VALUES ('', ?, ?)",
+                (key, json.dumps(value)),
+            )
+        conn.commit()
+    finally:
+        conn.close()
 
 
-def _patch_config(monkeypatch: pytest.MonkeyPatch, cfg: Path) -> None:
-    monkeypatch.setattr("teatree.config_agent.CONFIG_PATH", cfg)
+def _point_at(monkeypatch: pytest.MonkeyPatch, db: Path) -> None:
+    monkeypatch.setenv("T3_CONFIG_DB", str(db))
 
 
 class TestAgentSessionPinsCheck:
     def test_absent_config_is_ok_silent(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
     ) -> None:
-        _patch_config(monkeypatch, tmp_path / "nope.toml")
+        _point_at(monkeypatch, tmp_path / "absent.sqlite3")
         assert _check_agent_session_pins() is True
         assert capsys.readouterr().out == ""
 
     def test_all_valid_is_ok_silent(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
     ) -> None:
-        cfg = _write(
-            tmp_path,
-            '[agent]\nsession_model = "opus"\nsession_effort = "xhigh"\n[agent.skill_models]\ncode-review = "opus"\n',
+        db = tmp_path / "config.sqlite3"
+        _seed(
+            db,
+            agent_session_model="opus",
+            agent_session_effort="xhigh",
+            agent_skill_models={"code-review": "opus"},
         )
-        _patch_config(monkeypatch, cfg)
+        _point_at(monkeypatch, db)
         assert _check_agent_session_pins() is True
         assert capsys.readouterr().out == ""
 
     def test_bad_effort_is_hard_fail(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
     ) -> None:
-        cfg = _write(tmp_path, '[agent]\nsession_effort = "off"\n')
-        _patch_config(monkeypatch, cfg)
+        db = tmp_path / "config.sqlite3"
+        _seed(db, agent_session_effort="off")
+        _point_at(monkeypatch, db)
         assert _check_agent_session_pins() is False
         out = capsys.readouterr().out
         assert "FAIL" in out
@@ -58,16 +77,18 @@ class TestAgentSessionPinsCheck:
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
     ) -> None:
         # "ultracode" is a session/settings concept, never an effort scale value.
-        cfg = _write(tmp_path, '[agent]\nsession_effort = "ultracode"\n')
-        _patch_config(monkeypatch, cfg)
+        db = tmp_path / "config.sqlite3"
+        _seed(db, agent_session_effort="ultracode")
+        _point_at(monkeypatch, db)
         assert _check_agent_session_pins() is False
         assert "FAIL" in capsys.readouterr().out
 
     def test_unknown_session_model_warns(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
     ) -> None:
-        cfg = _write(tmp_path, '[agent]\nsession_model = "gpt-9"\n')
-        _patch_config(monkeypatch, cfg)
+        db = tmp_path / "config.sqlite3"
+        _seed(db, agent_session_model="gpt-9")
+        _point_at(monkeypatch, db)
         assert _check_agent_session_pins() is True
         out = capsys.readouterr().out
         assert "WARN" in out
@@ -77,8 +98,9 @@ class TestAgentSessionPinsCheck:
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
     ) -> None:
         # A floor naming no known tier substring — a real typo, no substring match.
-        cfg = _write(tmp_path, '[agent.skill_models]\ncode-review = "opsu"\n')
-        _patch_config(monkeypatch, cfg)
+        db = tmp_path / "config.sqlite3"
+        _seed(db, agent_skill_models={"code-review": "opsu"})
+        _point_at(monkeypatch, db)
         assert _check_agent_session_pins() is True
         out = capsys.readouterr().out
         assert "WARN" in out
@@ -90,19 +112,18 @@ class TestAgentSessionPinsCheck:
     ) -> None:
         # A superstring that contains a known tier (e.g. a dated id) is fine —
         # the system resolves it to that tier by substring, so no false typo WARN.
-        cfg = _write(tmp_path, '[agent.skill_models]\nc = "sonnet-4-6"\n')
-        _patch_config(monkeypatch, cfg)
+        db = tmp_path / "config.sqlite3"
+        _seed(db, agent_skill_models={"c": "sonnet-4-6"})
+        _point_at(monkeypatch, db)
         assert _check_agent_session_pins() is True
         assert capsys.readouterr().out == ""
 
     def test_known_tiers_do_not_warn(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
     ) -> None:
-        cfg = _write(
-            tmp_path,
-            '[agent.skill_models]\na = "haiku"\nb = "sonnet"\nc = "opus"\n',
-        )
-        _patch_config(monkeypatch, cfg)
+        db = tmp_path / "config.sqlite3"
+        _seed(db, agent_skill_models={"a": "haiku", "b": "sonnet", "c": "opus"})
+        _point_at(monkeypatch, db)
         assert _check_agent_session_pins() is True
         assert capsys.readouterr().out == ""
 
@@ -110,7 +131,8 @@ class TestAgentSessionPinsCheck:
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
     ) -> None:
         # A dated full id whose tier substring is recognised is fine.
-        cfg = _write(tmp_path, '[agent]\nsession_model = "claude-opus-4-9"\n')
-        _patch_config(monkeypatch, cfg)
+        db = tmp_path / "config.sqlite3"
+        _seed(db, agent_session_model="claude-opus-4-9")
+        _point_at(monkeypatch, db)
         assert _check_agent_session_pins() is True
         assert capsys.readouterr().out == ""

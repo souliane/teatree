@@ -9,10 +9,7 @@ resolver ``teatree.config.discovery._match_canonical_ep`` is the single home for
 the rule; both call sites consume it.
 """
 
-from pathlib import Path
 from unittest.mock import patch
-
-import pytest
 
 
 def test_match_canonical_ep_exact_match() -> None:
@@ -55,26 +52,23 @@ def test_match_canonical_ep_empty_ep_set() -> None:
     assert _match_canonical_ep("teatree", set()) is None
 
 
-def test_canonical_overlay_names_uses_unified_rule(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+def test_canonical_overlay_names_uses_unified_rule() -> None:
     """Inherit the strict dash-suffix rule through the unified resolver.
 
     The loop-freshness ``_canonical_overlay_names()`` now consumes the unified
-    resolver, so a ``[overlays.acme]`` table no longer folds into a non-dashed
+    resolver, so a ``[overlays.acme]`` entry no longer folds into a non-dashed
     ``t3acme`` entry-point (this was the divergence #1138 closes).
     """
+    from types import SimpleNamespace  # noqa: PLC0415
+
     from teatree.loop.tick_freshness import _canonical_overlay_names  # noqa: PLC0415
 
-    toml_path = tmp_path / ".teatree.toml"
-    toml_path.write_text(
-        "[overlays.teatree]\n[overlays.acme]\n",
-        encoding="utf-8",
-    )
-    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    fake_cfg = SimpleNamespace(raw={"overlays": {"teatree": {}, "acme": {}}})
     overlays = {"t3-teatree": object(), "t3acme": object()}
-    with patch("teatree.core.overlay_loader.get_all_overlays", return_value=overlays):
+    with (
+        patch("teatree.config.load_config", return_value=fake_cfg),
+        patch("teatree.core.overlay_loader.get_all_overlays", return_value=overlays),
+    ):
         mapping = _canonical_overlay_names()
 
     # teatree folds into t3-teatree (dash-suffix match).
@@ -83,21 +77,18 @@ def test_canonical_overlay_names_uses_unified_rule(
     assert "acme" not in mapping
 
 
-def test_canonical_overlay_names_folds_dashed_suffix(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+def test_canonical_overlay_names_folds_dashed_suffix() -> None:
     """Preserve the legitimate ``<short>`` → ``t3-<short>`` fold post-unification."""
+    from types import SimpleNamespace  # noqa: PLC0415
+
     from teatree.loop.tick_freshness import _canonical_overlay_names  # noqa: PLC0415
 
-    toml_path = tmp_path / ".teatree.toml"
-    toml_path.write_text(
-        "[overlays.teatree]\n",
-        encoding="utf-8",
-    )
-    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    fake_cfg = SimpleNamespace(raw={"overlays": {"teatree": {}}})
     overlays = {"t3-teatree": object()}
-    with patch("teatree.core.overlay_loader.get_all_overlays", return_value=overlays):
+    with (
+        patch("teatree.config.load_config", return_value=fake_cfg),
+        patch("teatree.core.overlay_loader.get_all_overlays", return_value=overlays),
+    ):
         mapping = _canonical_overlay_names()
     assert mapping == {"teatree": "t3-teatree"}
 

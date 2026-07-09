@@ -7,12 +7,10 @@ env win over the store, and raises LOUD on a corrupt stored value so a silent
 runtime switch never lands. Since #2887 this enum carries ONLY the lane
 (interactive vs headless) — the transport/credential axis lives in the two-layer
 pair ``agent_harness`` / ``agent_harness_provider`` (see
-``tests/teatree_config/test_agent_harness_provider_config.py``). ``CONFIG_PATH``
-is isolated so the real ``~/.teatree.toml`` never leaks in.
+``tests/teatree_config/test_agent_harness_provider_config.py``).
 """
 
 import os
-from pathlib import Path
 from unittest.mock import patch
 
 import pytest
@@ -24,8 +22,7 @@ from teatree.core.models import ConfigSetting
 
 class TestAgentRuntimeResolution(TestCase):
     @pytest.fixture(autouse=True)
-    def _config(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setattr("teatree.config.CONFIG_PATH", tmp_path / ".teatree.toml")
+    def _config(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.delenv("T3_OVERLAY_NAME", raising=False)
         monkeypatch.delenv("T3_AGENT_RUNTIME", raising=False)
 

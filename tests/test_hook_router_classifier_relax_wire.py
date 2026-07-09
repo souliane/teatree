@@ -30,7 +30,7 @@ def run_hook_router(event: str, payload: dict, *, home: str) -> subprocess.Compl
     """Run ``hook_router.py --event <event>`` as a subprocess with a controlled HOME.
 
     ``home`` isolates ``~/.claude/settings.json`` (the classifier-relax target) and
-    ``~/.teatree.toml`` (the fail-open kill-switch read) from the developer's real
+    the DB-home config store (the fail-open kill-switch read) from the developer's real
     config, so the deny/allow assertions depend only on the payload + transcript.
     ``Path.home()`` honours ``HOME`` on POSIX.
     """

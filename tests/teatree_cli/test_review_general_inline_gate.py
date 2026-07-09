@@ -40,12 +40,8 @@ def _gate_immediate(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
 
     Mirrors the sibling ``test_review_shape_gate`` helper: the gate under
     test is independent of the on-behalf gate, so IMMEDIATE keeps the latter
-    silent. ``on_behalf_post_mode`` is DB-home (#1775); an empty config file
-    keeps the active-config path pinned to ``tmp_path``.
+    silent. ``on_behalf_post_mode`` is DB-home (#1775).
     """
-    cfg = tmp_path / ".teatree.toml"
-    cfg.write_text("[teatree]\n", encoding="utf-8")
-    monkeypatch.setattr("teatree.config.CONFIG_PATH", cfg)
     ConfigSetting.objects.set_value("on_behalf_post_mode", OnBehalfPostMode.IMMEDIATE.value)
 
 

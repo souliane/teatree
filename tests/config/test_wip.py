@@ -5,23 +5,17 @@ A single ordered dial — ``slow`` < ``medium`` < ``full`` < ``boost`` (default
 Orthogonal to ``mode``/``autonomy`` (those gate *whether* a publish proceeds;
 this governs *how many* threads run) and never relaxes a safety gate. Resolved
 through the generic ``get_effective_settings`` layer: env (``T3_WIP``) >
-per-overlay ``[overlays.<name>]`` > global ``[teatree]`` > the ``UserSettings``
-default.
+overlay-scoped DB row > global DB row > the ``UserSettings`` default.
 
-Integration-first per the Test-Writing Doctrine: real TOML fixtures under
-``tmp_path`` with ``teatree.config.CONFIG_PATH`` monkeypatched.
+Integration-first per the Test-Writing Doctrine: DB-home overrides via the real
+``ConfigSetting`` store.
 """
-
-from pathlib import Path
 
 import pytest
 from django.test import TestCase
 
-import teatree.config as config_facade
 from teatree.config import Wip, get_effective_settings, load_config
 from teatree.core.models import ConfigSetting
-
-from ._shared import _write_toml
 
 
 class TestWipParse:
@@ -63,31 +57,17 @@ class TestWipParse:
 
 
 class TestWipDefault:
-    def test_defaults_to_medium(self, tmp_path: Path) -> None:
-        config_path = tmp_path / ".teatree.toml"
-        _write_toml(config_path, "[teatree]\n")
-        assert load_config(config_path).user.wip is Wip.MEDIUM
-
-    def test_missing_file_defaults_to_medium(self, tmp_path: Path) -> None:
-        assert load_config(tmp_path / "nonexistent.toml").user.wip is Wip.MEDIUM
+    def test_defaults_to_medium(self) -> None:
+        assert load_config().user.wip is Wip.MEDIUM
 
 
 class TestWipDbResolution(TestCase):
-    """``wip`` is DB-home (#1775): it resolves from a ``ConfigSetting`` row.
-
-    The DB twin of the old ``[teatree] wip`` / ``[overlays.<name>] wip``.
-    """
+    """``wip`` is DB-home (#1775): it resolves from a ``ConfigSetting`` row."""
 
     @pytest.fixture(autouse=True)
-    def _config(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-        self.config_path = tmp_path / ".teatree.toml"
-        monkeypatch.setattr(config_facade, "CONFIG_PATH", self.config_path)
+    def _config(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.delenv("T3_WIP", raising=False)
         monkeypatch.delenv("T3_OVERLAY_NAME", raising=False)
-        _write_toml(
-            self.config_path,
-            '[teatree]\n\n[overlays.fast]\nclass = "x:Y"\n\n[overlays.careful]\nclass = "x:Y"\n',
-        )
         self.monkeypatch = monkeypatch
 
     def test_global_db_row_full(self) -> None:

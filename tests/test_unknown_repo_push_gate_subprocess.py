@@ -18,6 +18,7 @@ this class — the subprocess is the real guard.
 
 import json
 import os
+import sqlite3
 import subprocess
 import sys
 import tempfile
@@ -32,15 +33,27 @@ _REPO_ROOT = HOOK_ROUTER.parent.parent.parent
 # Opt the always-registered t3-teatree overlay into the SCOPE gate, and disable
 # the orchestrator-bash heavy-command gate so it does not deny the `git push`
 # first and mask the gate under test.
-_OPTED_IN_TOML = """\
-[teatree]
-unknown_repo_push_gate_enabled = true
-orchestrator_bash_gate_enabled = false
+_OPTED_IN_ROWS: dict[str, object] = {
+    "unknown_repo_push_gate_enabled": True,
+    "orchestrator_bash_gate_enabled": False,
+    "overlays": {"t3-teatree": {"require_owned_repo_approval": True, "owned_repos": {"github.com": ["souliane"]}}},
+}
 
-[overlays.t3-teatree]
-require_owned_repo_approval = true
-owned_repos = { "github.com" = ["souliane"] }
-"""
+
+def _seed_config_db(path: Path, rows: dict[str, object], scope: str = "") -> None:
+    conn = sqlite3.connect(str(path))
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS teatree_config_setting "
+        "(id INTEGER PRIMARY KEY, scope TEXT NOT NULL DEFAULT '', key TEXT NOT NULL, value TEXT NOT NULL)"
+    )
+    for key, value in rows.items():
+        conn.execute(
+            "INSERT INTO teatree_config_setting (scope, key, value) VALUES (?, ?, ?)",
+            (scope, key, json.dumps(value)),
+        )
+    conn.commit()
+    conn.close()
+
 
 _DRIVER = """
 import io, sys, json
@@ -72,7 +85,7 @@ def _repo_with_remote(path: Path, remote_url: str) -> Path:
 def home_with_opt_in() -> Iterator[Path]:
     with tempfile.TemporaryDirectory() as tmp:
         home = Path(tmp)
-        (home / ".teatree.toml").write_text(_OPTED_IN_TOML, encoding="utf-8")
+        _seed_config_db(home / "config.sqlite3", _OPTED_IN_ROWS)
         yield home
 
 
@@ -90,7 +103,13 @@ def _drive_push(repo: Path, home: Path) -> subprocess.CompletedProcess[str]:
         text=True,
         check=False,
         timeout=30,
-        env={**os.environ, "HOME": str(home), "USERPROFILE": str(home), "PYTHONPATH": str(_REPO_ROOT)},
+        env={
+            **os.environ,
+            "HOME": str(home),
+            "USERPROFILE": str(home),
+            "PYTHONPATH": str(_REPO_ROOT),
+            "T3_CONFIG_DB": str(home / "config.sqlite3"),
+        },
     )
 
 

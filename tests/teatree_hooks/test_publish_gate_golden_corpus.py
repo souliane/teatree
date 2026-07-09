@@ -22,11 +22,13 @@ Synthetic namespaces / banned terms only (``acme-internal``, ``internalcorp``,
 ``acmecorp``, ``acmewidget``, and the genuinely-public ``souliane/teatree``);
 the real allowlist lives in the user's private config, never in the source or
 tests, and the fixture config is injected so the test NEVER reads the real
-``~/.teatree.toml``.
+DB-home config store (legacy file tier removed).
 """
 
+import json
 import os
 import shutil
+import sqlite3
 import stat
 import subprocess
 from pathlib import Path
@@ -37,6 +39,26 @@ from teatree.hooks import _repo_visibility, banned_terms_scanner, public_visibil
 
 # A high-confidence fake secret (never a real credential): a GitHub PAT shape.
 _FAKE_SECRET = "ghp_" + "A" * 40
+
+
+def _seed_config_db(tmp_path: Path, **rows: object) -> Path:
+    """Seed a cold config DB (``config_path`` is a DB path the cold reader reads)."""
+    db = tmp_path / "config.sqlite3"
+    conn = sqlite3.connect(str(db))
+    try:
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS teatree_config_setting "
+            "(id INTEGER PRIMARY KEY, scope TEXT NOT NULL DEFAULT '', key TEXT NOT NULL, value TEXT NOT NULL)"
+        )
+        for key, value in rows.items():
+            conn.execute(
+                "INSERT INTO teatree_config_setting (scope, key, value) VALUES ('', ?, ?)",
+                (key, json.dumps(value)),
+            )
+        conn.commit()
+    finally:
+        conn.close()
+    return db
 
 
 @pytest.fixture(autouse=True)
@@ -110,15 +132,12 @@ def config(tmp_path: Path) -> Path:
     # publish_namespaces`` is what the first-segment-only skip consulted (so
     # the chained / substitution leaks fail RED on the pre-fix code), and
     # ``private_repos`` exercises the carve-out / commit path.
-    cfg = tmp_path / ".teatree.toml"
-    cfg.write_text(
-        "[teatree]\n"
-        'private_repos = ["acme-internal", "internalcorp"]\n'
-        'internal_publish_namespaces = ["acme-internal", "internalcorp"]\n'
-        'banned_terms = ["acmecorp", "acmewidget"]\n',
-        encoding="utf-8",
+    return _seed_config_db(
+        tmp_path,
+        private_repos=["acme-internal", "internalcorp"],
+        internal_publish_namespaces=["acme-internal", "internalcorp"],
+        banned_terms=["acmecorp", "acmewidget"],
     )
-    return cfg
 
 
 @pytest.fixture
@@ -126,12 +145,11 @@ def private_repos_only_config(tmp_path: Path) -> Path:
     # Fix 3: the user's CURRENT config has only ``private_repos`` (no
     # ``internal_publish_namespaces`` key). The destination skip must still
     # fire for those namespaces by reusing the existing allowlist.
-    cfg = tmp_path / ".teatree.toml"
-    cfg.write_text(
-        '[teatree]\nprivate_repos = ["acme-internal", "internalcorp"]\nbanned_terms = ["acmecorp", "acmewidget"]\n',
-        encoding="utf-8",
+    return _seed_config_db(
+        tmp_path,
+        private_repos=["acme-internal", "internalcorp"],
+        banned_terms=["acmecorp", "acmewidget"],
     )
-    return cfg
 
 
 @pytest.fixture
@@ -140,12 +158,11 @@ def host_qualified_config(tmp_path: Path) -> Path:
     # form the carve-out doc states and ``slug_for_cwd`` emits), while
     # ``gh pr create --repo`` supplies a BARE ``owner/repo`` slug. The carve-out
     # must recognise the bare flag slug as the same private repo.
-    cfg = tmp_path / ".teatree.toml"
-    cfg.write_text(
-        '[teatree]\nprivate_repos = ["github.com/internalcorp/private-svc"]\nbanned_terms = ["acmecorp"]\n',
-        encoding="utf-8",
+    return _seed_config_db(
+        tmp_path,
+        private_repos=["github.com/internalcorp/private-svc"],
+        banned_terms=["acmecorp"],
     )
-    return cfg
 
 
 def _verdict(command: str, cwd: Path | None, config_path: Path) -> str:
@@ -548,9 +565,7 @@ class TestProbeResolvedTargetVisibility:
     def empty_allowlist_config(self, tmp_path: Path) -> Path:
         # No private_repos / internal_publish_namespaces entry: a target is
         # provably private ONLY through the live probe, never the allowlist.
-        cfg = tmp_path / ".teatree.toml"
-        cfg.write_text('[teatree]\nbanned_terms = ["acmecorp", "acmewidget"]\n', encoding="utf-8")
-        return cfg
+        return _seed_config_db(tmp_path, banned_terms=["acmecorp", "acmewidget"])
 
     @pytest.fixture(autouse=True)
     def _isolated_cache(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -654,14 +669,11 @@ class TestLeakGateEnforcesOnPublicTargetsOnly:
     def allowlist_config(self, tmp_path: Path) -> Path:
         # Both a private OWN overlay namespace and a private COLLEAGUE namespace
         # are declared private offline; ``souliane/teatree`` stays public.
-        cfg = tmp_path / ".teatree.toml"
-        cfg.write_text(
-            "[teatree]\n"
-            'private_repos = ["ownoverlay-org", "customer-org"]\n'
-            'banned_terms = ["customercorp", "customerwidget"]\n',
-            encoding="utf-8",
+        return _seed_config_db(
+            tmp_path,
+            private_repos=["ownoverlay-org", "customer-org"],
+            banned_terms=["customercorp", "customerwidget"],
         )
-        return cfg
 
     @pytest.fixture(autouse=True)
     def _isolated_cache(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -731,8 +743,7 @@ class TestLeakGateEnforcesOnPublicTargetsOnly:
         # must-ALLOW: a colleague repo NOT in the offline allowlist, proven
         # private ONLY by the live probe, still skips -- the visibility is
         # resolved from the command target via the probe.
-        cfg = tmp_path / ".teatree.toml"
-        cfg.write_text('[teatree]\nbanned_terms = ["customercorp"]\n', encoding="utf-8")
+        cfg = _seed_config_db(tmp_path, banned_terms=["customercorp"])
         bin_dir = tmp_path / "bin"
         _make_gh_shim(bin_dir, "PRIVATE")
         monkeypatch.setenv("PATH", f"{bin_dir}{os.pathsep}{os.environ.get('PATH', '')}")

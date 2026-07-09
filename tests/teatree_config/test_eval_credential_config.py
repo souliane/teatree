@@ -5,11 +5,9 @@ store (+ the ``T3_EVAL_CREDENTIAL`` env). The resolver defaults to
 ``subscription_oauth`` (the post-#2707-reversal default) when no row is set, reads a
 stored ``metered_api_key``, lets the env win over the store, and raises LOUD on a
 corrupt stored value so the eval lane never silently switches credential kind.
-``CONFIG_PATH`` is isolated so the real ``~/.teatree.toml`` never leaks in.
 """
 
 import os
-from pathlib import Path
 from unittest.mock import patch
 
 import pytest
@@ -21,8 +19,7 @@ from teatree.core.models import ConfigSetting
 
 class TestEvalCredentialResolution(TestCase):
     @pytest.fixture(autouse=True)
-    def _config(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setattr("teatree.config.CONFIG_PATH", tmp_path / ".teatree.toml")
+    def _config(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.delenv("T3_OVERLAY_NAME", raising=False)
         monkeypatch.delenv("T3_EVAL_CREDENTIAL", raising=False)
 

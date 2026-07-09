@@ -7,7 +7,7 @@ only relocated under a focused package by concern.
 
 from teatree.cli.doctor import DoctorService
 
-from ._shared import _stage_home, _write_teatree_toml
+from ._shared import _seed_overlays, _stage_home
 
 
 class TestCollectOverlaySkills:
@@ -17,10 +17,7 @@ class TestCollectOverlaySkills:
         skill = project / "skills" / "custom"
         skill.mkdir(parents=True)
         (skill / "SKILL.md").touch()
-        _write_teatree_toml(
-            tmp_path / ".teatree.toml",
-            f'[overlays.my-overlay]\npath = "{project}"\n',
-        )
+        _seed_overlays(tmp_path, monkeypatch, {"my-overlay": {"path": str(project)}})
 
         results = DoctorService.collect_overlay_skills()
 
@@ -34,10 +31,7 @@ class TestCollectOverlaySkills:
         overlay_subdir = project / "my_app"
         overlay_subdir.mkdir()
         (overlay_subdir / "SKILL.md").touch()
-        _write_teatree_toml(
-            tmp_path / ".teatree.toml",
-            f'[overlays.my-overlay]\npath = "{project}"\n',
-        )
+        _seed_overlays(tmp_path, monkeypatch, {"my-overlay": {"path": str(project)}})
 
         results = DoctorService.collect_overlay_skills()
 
@@ -45,10 +39,7 @@ class TestCollectOverlaySkills:
 
     def test_skips_entries_without_project_path(self, tmp_path, monkeypatch):
         _stage_home(tmp_path, monkeypatch)
-        _write_teatree_toml(
-            tmp_path / ".teatree.toml",
-            '[overlays.classonly]\nclass = "acme.overlay:AcmeOverlay"\n',
-        )
+        _seed_overlays(tmp_path, monkeypatch, {"classonly": {"class": "acme.overlay:AcmeOverlay"}})
 
         results = DoctorService.collect_overlay_skills()
 

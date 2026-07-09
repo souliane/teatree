@@ -159,7 +159,7 @@ LOGGING = default_logging("teatree")
 # Sourced from the canonical CORE_DEFAULTS registry in teatree.timeouts so the
 # two surfaces cannot drift; tests/test_timeouts.py::TestTimeoutRegistryParity
 # pins the binding. Override per-overlay via OverlayBase.get_timeouts() or
-# per-user via [teatree.timeouts] in ~/.teatree.toml.
+# per-user via the DB-home timeouts setting.
 TEATREE_TIMEOUTS = dict(CORE_DEFAULTS)
 TEATREE_CLAUDE_STATUSLINE_STATE_DIR = "/tmp/claude-statusline"  # noqa: S108 — fixed agent-controlled path, not user input
 

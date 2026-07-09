@@ -1,13 +1,15 @@
-"""LoopsConfig — parses ``[loops]`` + ``[loops.<name>]`` from ``~/.teatree.toml``.
+"""LoopsConfig — parses the DB-home ``loops`` setting (its global + per-loop tables).
 
-Covers: missing tables → defaults; per-loop cadence override; bad cadence →
+Covers: absent row → defaults; per-loop cadence override; bad cadence →
 fallback; cadence parser (``30s``/``5m``/``1h``). Loop-disabled state is DB-only
-(``LoopState``); the DB tier is pinned in ``test_loop_state_gating.py``, the toml
+(``LoopState``); the DB tier is pinned in ``test_loop_state_gating.py``, the config
 non-read in ``test_loops_disabled_db_not_toml_2702.py``, and the env-inertness in
 ``test_loops_disabled_db_not_toml_2702.py`` / the review chokepoint's
 ``test_review_loop_db_only_control.py``.
 """
 
+import json
+import sqlite3
 from pathlib import Path
 
 import pytest
@@ -34,8 +36,21 @@ def loop_dispatch() -> MiniLoop:
     )
 
 
-def _write_toml(path: Path, body: str) -> None:
-    path.write_text(body, encoding="utf-8")
+def _seed_loops(db: Path, table: dict[str, object]) -> None:
+    """Seed the DB-home ``loops`` setting the cold reader resolves."""
+    conn = sqlite3.connect(str(db))
+    try:
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS teatree_config_setting "
+            "(id INTEGER PRIMARY KEY, scope TEXT NOT NULL DEFAULT '', key TEXT NOT NULL, value TEXT NOT NULL)"
+        )
+        conn.execute(
+            "INSERT INTO teatree_config_setting (scope, key, value) VALUES (?, ?, ?)",
+            ("", "loops", json.dumps(table)),
+        )
+        conn.commit()
+    finally:
+        conn.close()
 
 
 class TestParseCadence:
@@ -63,70 +78,52 @@ class TestParseCadence:
 
 
 class TestLoopsConfigLoad:
-    def test_missing_file_returns_defaults(self, tmp_path: Path) -> None:
-        cfg = LoopsConfig.load(tmp_path / "missing.toml")
+    def test_absent_db_returns_defaults(self, tmp_path: Path) -> None:
+        cfg = LoopsConfig.load(tmp_path / "missing.sqlite3")
         assert cfg.default_cadence == 300
         assert cfg.parallel is True
         assert cfg.summary_dm == "errors"
         assert cfg.per_loop == {}
 
-    def test_empty_file_returns_defaults(self, tmp_path: Path) -> None:
-        toml = tmp_path / "t.toml"
-        _write_toml(toml, "")
-        cfg = LoopsConfig.load(toml)
+    def test_empty_loops_table_returns_defaults(self, tmp_path: Path) -> None:
+        db = tmp_path / "db.sqlite3"
+        _seed_loops(db, {})
+        cfg = LoopsConfig.load(db)
         assert cfg.default_cadence == 300
 
-    def test_no_loops_table_returns_defaults(self, tmp_path: Path) -> None:
-        toml = tmp_path / "t.toml"
-        _write_toml(toml, "[teatree]\nworkspace_dir = '/tmp/x'\n")
-        cfg = LoopsConfig.load(toml)
+    def test_absent_loops_row_returns_defaults(self, tmp_path: Path) -> None:
+        db = tmp_path / "db.sqlite3"
+        conn = sqlite3.connect(str(db))
+        conn.execute(
+            "CREATE TABLE teatree_config_setting "
+            "(id INTEGER PRIMARY KEY, scope TEXT NOT NULL DEFAULT '', key TEXT NOT NULL, value TEXT NOT NULL)"
+        )
+        conn.commit()
+        conn.close()
+        cfg = LoopsConfig.load(db)
         assert cfg.default_cadence == 300
 
     def test_loops_table_overrides_globals(self, tmp_path: Path) -> None:
-        toml = tmp_path / "t.toml"
-        _write_toml(
-            toml,
-            """
-            [loops]
-            default_cadence = "10m"
-            parallel = false
-            summary_dm = "always"
-            """,
-        )
-        cfg = LoopsConfig.load(toml)
+        db = tmp_path / "db.sqlite3"
+        _seed_loops(db, {"default_cadence": "10m", "parallel": False, "summary_dm": "always"})
+        cfg = LoopsConfig.load(db)
         assert cfg.default_cadence == 600
         assert cfg.parallel is False
         assert cfg.summary_dm == "always"
 
     def test_per_loop_cadence_recorded(self, tmp_path: Path) -> None:
-        toml = tmp_path / "t.toml"
-        _write_toml(
-            toml,
-            """
-            [loops.inbox]
-            cadence = "1m"
-            """,
-        )
-        cfg = LoopsConfig.load(toml)
+        db = tmp_path / "db.sqlite3"
+        _seed_loops(db, {"inbox": {"cadence": "1m"}})
+        cfg = LoopsConfig.load(db)
         assert "inbox" in cfg.per_loop
         assert cfg.per_loop["inbox"].cadence_seconds == 60
 
-    def test_loops_enabled_toml_key_is_not_read(self, tmp_path: Path) -> None:
-        # #2702: the [loops] enabled / [loops.<name>] enabled toml keys are no
-        # longer read — only cadence/parallel/summary come from toml now.
-        toml = tmp_path / "t.toml"
-        _write_toml(
-            toml,
-            """
-            [loops]
-            enabled = false
-
-            [loops.review]
-            enabled = false
-            cadence = "1m"
-            """,
-        )
-        cfg = LoopsConfig.load(toml)
+    def test_loops_enabled_config_key_is_not_read(self, tmp_path: Path) -> None:
+        # #2702: the global ``enabled`` / per-loop ``enabled`` keys are no longer
+        # read — only cadence/parallel/summary come from the ``loops`` setting now.
+        db = tmp_path / "db.sqlite3"
+        _seed_loops(db, {"enabled": False, "review": {"enabled": False, "cadence": "1m"}})
+        cfg = LoopsConfig.load(db)
         assert cfg.per_loop["review"].cadence_seconds == 60
         assert not hasattr(cfg, "enabled")
         assert not hasattr(cfg.per_loop["review"], "enabled")
@@ -169,21 +166,15 @@ class TestLoopsConfigCadence:
 
 class TestLoopsConfigLegacyShim:
     def test_bad_default_cadence_falls_back_to_300(self, tmp_path: Path) -> None:
-        toml = tmp_path / "t.toml"
-        _write_toml(toml, '[loops]\ndefault_cadence = "garbage"\n')
-        cfg = LoopsConfig.load(toml)
+        db = tmp_path / "db.sqlite3"
+        _seed_loops(db, {"default_cadence": "garbage"})
+        cfg = LoopsConfig.load(db)
         assert cfg.default_cadence == 300
 
     def test_bad_per_loop_cadence_falls_back_to_none(self, tmp_path: Path) -> None:
-        toml = tmp_path / "t.toml"
-        _write_toml(
-            toml,
-            """
-            [loops.inbox]
-            cadence = "junk"
-            """,
-        )
-        cfg = LoopsConfig.load(toml)
+        db = tmp_path / "db.sqlite3"
+        _seed_loops(db, {"inbox": {"cadence": "junk"}})
+        cfg = LoopsConfig.load(db)
         # Bad cadence value silently degrades to "no override" so the
         # loop's own default cadence wins.
         assert cfg.per_loop["inbox"].cadence_seconds is None

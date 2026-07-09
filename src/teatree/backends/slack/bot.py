@@ -12,7 +12,7 @@ events into the same backend through a queue managed by Phase 3.6.
 Slack-Connect externally-shared channels reject the bot token with
 ``mcp_externally_shared_channel_restricted`` — both for reactions and
 for ``chat.postMessage``.  When the human user's OAuth token (``xoxp-…``)
-is configured via ``user_token_ref`` in ``~/.teatree.toml``, a single
+is configured via ``user_token_ref`` in the DB ``overlays`` registry, a single
 deterministic policy (:meth:`SlackBotBackend._channel_token`) routes
 *every* outbound surface — ``post_message``, ``post_reply``, ``react``,
 ``get_reactions`` — through the user token when, and only when, the
@@ -200,7 +200,7 @@ class SlackBotBackend:  # noqa: PLR0904 — method count reflects the MessagingB
         # Pre-provisioned IM channel id (#1342). When a per-overlay bot is
         # registered through ``t3 setup``, the setup-time provisioner calls
         # ``conversations.open`` once and persists the resulting channel id
-        # in ``~/.teatree.toml`` under ``[overlays.<name>] slack_dm_channel_id``.
+        # in the DB ``overlays`` registry under the overlay's ``slack_dm_channel_id`` field.
         # Threading it here short-circuits every subsequent ``open_dm(user_id)``
         # for the configured user so DMs route through this bot's IM rather
         # than failing ``channel_not_found`` (which previously caused silent

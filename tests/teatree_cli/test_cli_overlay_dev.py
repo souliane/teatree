@@ -1,4 +1,5 @@
 import json
+import sqlite3
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -21,6 +22,24 @@ def _make_worktree(path: Path) -> Path:
     (path / "pyproject.toml").write_text('[project]\nname = "teatree"\n')
     (path / ".git").write_text("gitdir: /fake\n")
     return path
+
+
+def _seed_cold_registry(db: Path, overlays: dict[str, dict]) -> None:
+    """Seed a cold-readable config DB — the tier ``load_config`` reads the registry from."""
+    conn = sqlite3.connect(str(db))
+    try:
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS teatree_config_setting ("
+            "id INTEGER PRIMARY KEY, scope TEXT NOT NULL DEFAULT '', "
+            "key TEXT NOT NULL, value TEXT NOT NULL)"
+        )
+        conn.execute(
+            "INSERT INTO teatree_config_setting (scope, key, value) VALUES ('', 'overlays', ?)",
+            (json.dumps(overlays),),
+        )
+        conn.commit()
+    finally:
+        conn.close()
 
 
 class TestOverlayDevModule:
@@ -70,27 +89,30 @@ class TestResolveTeatreeWorktree:
 
 
 class TestResolveOverlaySource:
-    def test_resolves_from_toml_path(self, tmp_path: Path) -> None:
+    def test_resolves_from_registry_path(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         main_clone = tmp_path / "acme-workspace" / "example-overlay"
         main_clone.mkdir(parents=True)
-        config = tmp_path / "teatree.toml"
-        config.write_text(f'[overlays.example-overlay]\npath = "{main_clone}"\n')
+        db = tmp_path / "config.sqlite3"
+        _seed_cold_registry(db, {"example-overlay": {"path": str(main_clone)}})
+        monkeypatch.setenv("T3_CONFIG_DB", str(db))
 
-        assert _resolve_overlay_source("example-overlay", config_path=config) == main_clone
+        assert _resolve_overlay_source("example-overlay") == main_clone
 
-    def test_raises_when_overlay_missing(self, tmp_path: Path) -> None:
-        config = tmp_path / "teatree.toml"
-        config.write_text("")
+    def test_raises_when_overlay_missing(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        db = tmp_path / "config.sqlite3"
+        _seed_cold_registry(db, {})
+        monkeypatch.setenv("T3_CONFIG_DB", str(db))
 
         with pytest.raises(OverlayDevError, match="not configured"):
-            _resolve_overlay_source("ghost", config_path=config)
+            _resolve_overlay_source("ghost")
 
-    def test_raises_when_path_missing(self, tmp_path: Path) -> None:
-        config = tmp_path / "teatree.toml"
-        config.write_text('[overlays.example-overlay]\nclass = "foo:Bar"\n')
+    def test_raises_when_path_missing(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        db = tmp_path / "config.sqlite3"
+        _seed_cold_registry(db, {"example-overlay": {"class": "foo:Bar"}})
+        monkeypatch.setenv("T3_CONFIG_DB", str(db))
 
         with pytest.raises(OverlayDevError, match="no path configured"):
-            _resolve_overlay_source("example-overlay", config_path=config)
+            _resolve_overlay_source("example-overlay")
 
 
 class TestEnsureSiblingWorktree:
@@ -172,9 +194,9 @@ class TestInstallCommand:
         teatree_wt = _make_worktree(ticket_dir / "teatree")
         main_clone = tmp_path / "workspace" / "example-overlay"
         main_clone.mkdir(parents=True)
-        config = tmp_path / "teatree.toml"
-        config.write_text(f'[overlays.example-overlay]\npath = "{main_clone}"\n')
-        monkeypatch.setattr("teatree.cli.overlay_dev.CONFIG_PATH", config)
+        db = tmp_path / "config.sqlite3"
+        _seed_cold_registry(db, {"example-overlay": {"path": str(main_clone)}})
+        monkeypatch.setenv("T3_CONFIG_DB", str(db))
         monkeypatch.chdir(teatree_wt)
 
         captured: list[list[str]] = []

@@ -1,7 +1,9 @@
 import json
 import os
 import shutil
+import sqlite3
 import subprocess
+import tomllib
 from pathlib import Path
 
 import pytest
@@ -10,6 +12,39 @@ from hooks.scripts.hook_router import handle_banned_terms_pretool
 from teatree import find_project_root
 from teatree.hooks import _repo_visibility, banned_terms_scanner
 from teatree.hooks._command_parser import is_fail_closed_sentinel
+
+
+def _seed_config_db(db_path: Path, rows: dict) -> None:
+    """Seed a cold config DB from a parsed ``[teatree]`` table (the DB-home config store)."""
+    db_path.parent.mkdir(parents=True, exist_ok=True)
+    conn = sqlite3.connect(str(db_path))
+    try:
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS teatree_config_setting "
+            "(id INTEGER PRIMARY KEY, scope TEXT NOT NULL DEFAULT '', key TEXT NOT NULL, value TEXT NOT NULL)"
+        )
+        for key, value in rows.items():
+            conn.execute(
+                "INSERT INTO teatree_config_setting (scope, key, value) VALUES ('', ?, ?)",
+                (key, json.dumps(value)),
+            )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def _stage_hook_config(tmp_path: Path, terms: list[str]) -> tuple[Path, Path]:
+    """Stage the DB-home banned-terms config for the pre-commit hook subprocess.
+
+    Returns ``(home, db)``. ``db`` is the DB-home config store the
+    ``check-banned-terms.sh`` CLI resolves via ``T3_CONFIG_DB`` — the only tier
+    the CLI consults for the term list.
+    """
+    home = tmp_path / "home"
+    home.mkdir(exist_ok=True)
+    db = home / "config.sqlite3"
+    _seed_config_db(db, {"banned_terms": terms})
+    return home, db
 
 
 @pytest.fixture(autouse=True)
@@ -29,11 +64,8 @@ def _public_teatree_probe(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> No
 
 
 @pytest.mark.integration
-def test_banned_terms_hook_expands_tilde_config_path(tmp_path: Path) -> None:
-    home = tmp_path / "home"
-    home.mkdir(exist_ok=True)
-    config = home / ".teatree.toml"
-    config.write_text('[teatree]\nbanned_terms = ["acme"]\n', encoding="utf-8")
+def test_banned_terms_hook_flags_a_configured_term(tmp_path: Path) -> None:
+    home, db = _stage_hook_config(tmp_path, ["acme"])
 
     sample = tmp_path / "README.md"
     sample.write_text("acme overlay\n", encoding="utf-8")
@@ -43,9 +75,10 @@ def test_banned_terms_hook_expands_tilde_config_path(tmp_path: Path) -> None:
     script = root / "scripts" / "hooks" / "check-banned-terms.sh"
     env = dict(os.environ)
     env["HOME"] = str(home)
+    env["T3_CONFIG_DB"] = str(db)
 
     result = subprocess.run(
-        [str(script), "--config", "~/.teatree.toml", str(sample)],
+        [str(script), str(sample)],
         capture_output=True,
         check=False,
         env=env,
@@ -58,10 +91,7 @@ def test_banned_terms_hook_expands_tilde_config_path(tmp_path: Path) -> None:
 
 @pytest.mark.integration
 def test_banned_terms_hook_ignores_matches_inside_email_addresses(tmp_path: Path) -> None:
-    home = tmp_path / "home"
-    home.mkdir(exist_ok=True)
-    config = home / ".teatree.toml"
-    config.write_text('[teatree]\nbanned_terms = ["internalterm"]\n', encoding="utf-8")
+    home, db = _stage_hook_config(tmp_path, ["internalterm"])
 
     sample = tmp_path / "AGENTS.md"
     sample.write_text("Git author: adrien <adrien.cossa@internalterm.example>\n", encoding="utf-8")
@@ -71,9 +101,10 @@ def test_banned_terms_hook_ignores_matches_inside_email_addresses(tmp_path: Path
     script = root / "scripts" / "hooks" / "check-banned-terms.sh"
     env = dict(os.environ)
     env["HOME"] = str(home)
+    env["T3_CONFIG_DB"] = str(db)
 
     result = subprocess.run(
-        [str(script), "--config", "~/.teatree.toml", str(sample)],
+        [str(script), str(sample)],
         capture_output=True,
         check=False,
         env=env,
@@ -104,9 +135,7 @@ def test_banned_terms_skips_customer_term_to_unknown_visibility_target(
     # entirely (#1415): the post is allowed with no deny. Bias hard toward not
     # firing -- an unresolvable target is never treated as public.
     home = Path(os.environ["HOME"])  # the conftest-isolated HOME
-    (home / ".teatree.toml").write_text('[teatree]\nbanned_terms = ["acmewidget"]\n', encoding="utf-8")
-    monkeypatch.setattr(Path, "home", classmethod(lambda cls: home))
-    monkeypatch.setenv("T3_DATA_DIR", str(tmp_path / "data"))
+    _write_home_config(home, '[teatree]\nbanned_terms = ["acmewidget"]\n', monkeypatch, tmp_path)
 
     repo = tmp_path / "repo"
     repo.mkdir()
@@ -139,12 +168,12 @@ def test_banned_terms_allowed_when_target_resolvable_private(
     # so the post is allowed with no deny and no unknown NOTE. The hint only
     # fires on a genuine unknown-target block.
     home = Path(os.environ["HOME"])  # the conftest-isolated HOME
-    (home / ".teatree.toml").write_text(
+    _write_home_config(
+        home,
         '[teatree]\nbanned_terms = ["acmewidget"]\nprivate_repos = ["acme/secret-product"]\n',
-        encoding="utf-8",
+        monkeypatch,
+        tmp_path,
     )
-    monkeypatch.setattr(Path, "home", classmethod(lambda cls: home))
-    monkeypatch.setenv("T3_DATA_DIR", str(tmp_path / "data"))
 
     repo = tmp_path / "repo"
     repo.mkdir()
@@ -167,8 +196,10 @@ def test_banned_terms_allowed_when_target_resolvable_private(
 
 
 def _write_home_config(home: Path, body: str, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    (home / ".teatree.toml").write_text(body, encoding="utf-8")
+    db = home / "config.sqlite3"
+    _seed_config_db(db, tomllib.loads(body).get("teatree", {}))
     monkeypatch.setattr(Path, "home", classmethod(lambda cls: home))
+    monkeypatch.setenv("T3_CONFIG_DB", str(db))
     monkeypatch.setenv("T3_DATA_DIR", str(tmp_path / "data"))
 
 
@@ -1067,6 +1098,6 @@ def test_posting_body_file_resolves_against_cwd(tmp_path: Path) -> None:
     leaked = banned_terms_scanner.extract_publish_payload(
         "Bash", {"command": "gh pr edit 5 --body-file leak.md"}, tmp_path
     )
-    cfg = tmp_path / "cfg.toml"
-    cfg.write_text('[teatree]\nbanned_terms = ["acmewidget"]\n', encoding="utf-8")
+    cfg = tmp_path / "cfg.sqlite3"
+    _seed_config_db(cfg, {"banned_terms": ["acmewidget"]})
     assert banned_terms_scanner.scan_text(leaked, config_path=cfg) == "acmewidget"

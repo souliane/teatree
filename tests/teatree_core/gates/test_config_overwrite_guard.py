@@ -1,6 +1,6 @@
 """Read-before-overwrite gate for tracked user config / dotfiles (PR #2661).
 
-Two real incidents: a blind ``Write`` over ``~/.teatree.toml`` (a symlink into
+Two real incidents: a blind ``Write`` over a tracked dotfile (a symlink into
 a dotfiles repo), and a near-``git checkout`` restore of a config without
 reading the live on-disk content first. The gate FIRES (red) on a blind
 overwrite/restore of a tracked config and PASSES (green) once the live content
@@ -23,11 +23,11 @@ from teatree.core.gates import config_overwrite_guard as core
 
 class TestIsUserConfigPath:
     def test_dotfile_at_home_is_config(self) -> None:
-        assert core.is_user_config_path("/Users/x/.teatree.toml") is True
+        assert core.is_user_config_path("/Users/x/.appconfig.toml") is True
         assert core.is_user_config_path("/Users/x/.zshrc") is True
 
     def test_known_config_basename_is_config(self) -> None:
-        assert core.is_user_config_path("/Users/x/.teatree.toml") is True
+        assert core.is_user_config_path("/Users/x/config.toml") is True
         assert core.is_user_config_path("/anywhere/credentials.toml") is True
 
     def test_file_under_config_dir_is_config(self) -> None:
@@ -53,17 +53,17 @@ class TestIsUserConfigPath:
 
 class TestFindBlindWrite:
     def test_fires_on_blind_overwrite_of_existing_unread_config(self) -> None:
-        finding = core.find_blind_write("/Users/x/.teatree.toml", exists=True, was_read=False)
+        finding = core.find_blind_write("/Users/x/.appconfig.toml", exists=True, was_read=False)
         assert finding is not None
         assert finding.kind == "write"
-        assert finding.path == "/Users/x/.teatree.toml"
+        assert finding.path == "/Users/x/.appconfig.toml"
 
     def test_passes_when_config_was_read(self) -> None:
-        assert core.find_blind_write("/Users/x/.teatree.toml", exists=True, was_read=True) is None
+        assert core.find_blind_write("/Users/x/.appconfig.toml", exists=True, was_read=True) is None
 
     def test_passes_when_creating_a_new_config(self) -> None:
         # No existing content to discard → creating, not overwriting.
-        assert core.find_blind_write("/Users/x/.teatree.toml", exists=False, was_read=False) is None
+        assert core.find_blind_write("/Users/x/.appconfig.toml", exists=False, was_read=False) is None
 
     def test_passes_on_non_config_file(self) -> None:
         assert core.find_blind_write("/repo/src/module.py", exists=True, was_read=False) is None
@@ -72,7 +72,7 @@ class TestFindBlindWrite:
 class TestFindBlindGitRestore:
     def test_fires_on_git_checkout_of_unread_config(self) -> None:
         finding = core.find_blind_git_restore(
-            "git checkout -- ~/.teatree.toml",
+            "git checkout -- ~/.appconfig.toml",
             was_read=lambda _p: False,
         )
         assert finding is not None
@@ -88,7 +88,7 @@ class TestFindBlindGitRestore:
     def test_passes_when_config_was_read(self) -> None:
         assert (
             core.find_blind_git_restore(
-                "git checkout -- ~/.teatree.toml",
+                "git checkout -- ~/.appconfig.toml",
                 was_read=lambda _p: True,
             )
             is None
@@ -96,7 +96,7 @@ class TestFindBlindGitRestore:
 
     def test_passes_on_non_restore_git_command(self) -> None:
         assert core.find_blind_git_restore("git status", was_read=lambda _p: False) is None
-        assert core.find_blind_git_restore("git log .teatree.toml", was_read=lambda _p: False) is None
+        assert core.find_blind_git_restore("git log .appconfig.toml", was_read=lambda _p: False) is None
 
     def test_passes_on_restore_of_non_config_file(self) -> None:
         assert core.find_blind_git_restore("git checkout -- src/module.py", was_read=lambda _p: False) is None
@@ -104,12 +104,12 @@ class TestFindBlindGitRestore:
 
 class TestDenyReason:
     def test_write_reason_names_the_path_and_read_first(self) -> None:
-        msg = core.deny_reason(core.ConfigOverwriteFinding(path="/Users/x/.teatree.toml", kind="write"))
-        assert "/Users/x/.teatree.toml" in msg
+        msg = core.deny_reason(core.ConfigOverwriteFinding(path="/Users/x/.appconfig.toml", kind="write"))
+        assert "/Users/x/.appconfig.toml" in msg
         assert "Read" in msg
 
     def test_git_restore_reason_mentions_uncommitted(self) -> None:
-        msg = core.deny_reason(core.ConfigOverwriteFinding(path="~/.teatree.toml", kind="git-restore"))
+        msg = core.deny_reason(core.ConfigOverwriteFinding(path="~/.appconfig.toml", kind="git-restore"))
         assert "uncommitted" in msg.lower()
         assert "config-overwrite-ok" in msg
 
@@ -157,7 +157,7 @@ class TestHandleBlockConfigOverwrite:
         # An Edit overwrites from an old_string the agent may have assumed
         # rather than read — same risk as a blind Write.
         with tempfile.TemporaryDirectory() as tmp:
-            cfg = Path(tmp) / ".teatree.toml"
+            cfg = Path(tmp) / ".appconfig.toml"
             cfg.write_text("old = true\n", encoding="utf-8")
             state_dir = Path(tmp) / "state"
             state_dir.mkdir()
@@ -171,7 +171,7 @@ class TestHandleBlockConfigOverwrite:
 
     def test_green_edit_after_read_is_allowed(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
-            cfg = Path(tmp) / ".teatree.toml"
+            cfg = Path(tmp) / ".appconfig.toml"
             cfg.write_text("old = true\n", encoding="utf-8")
             state_dir = Path(tmp) / "state"
             state_dir.mkdir()
@@ -185,7 +185,7 @@ class TestHandleBlockConfigOverwrite:
 
     def test_red_blind_write_over_unread_existing_config_is_denied(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
-            cfg = Path(tmp) / ".teatree.toml"
+            cfg = Path(tmp) / ".appconfig.toml"
             cfg.write_text("old = true\n", encoding="utf-8")
             state_dir = Path(tmp) / "state"
             state_dir.mkdir()
@@ -200,7 +200,7 @@ class TestHandleBlockConfigOverwrite:
 
     def test_green_write_after_read_is_allowed(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
-            cfg = Path(tmp) / ".teatree.toml"
+            cfg = Path(tmp) / ".appconfig.toml"
             cfg.write_text("old = true\n", encoding="utf-8")
             state_dir = Path(tmp) / "state"
             state_dir.mkdir()
@@ -214,7 +214,7 @@ class TestHandleBlockConfigOverwrite:
 
     def test_green_creating_a_new_config_is_allowed(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
-            cfg = Path(tmp) / ".teatree.toml"  # does NOT exist
+            cfg = Path(tmp) / ".appconfig.toml"  # does NOT exist
             state_dir = Path(tmp) / "state"
             state_dir.mkdir()
             with (
@@ -239,7 +239,7 @@ class TestHandleBlockConfigOverwrite:
 
     def test_red_git_restore_of_unread_config_is_denied(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
-            cfg = Path(tmp) / ".teatree.toml"
+            cfg = Path(tmp) / ".appconfig.toml"
             cfg.write_text("old = true\n", encoding="utf-8")
             state_dir = Path(tmp) / "state"
             state_dir.mkdir()
@@ -258,7 +258,7 @@ class TestHandleBlockConfigOverwrite:
 
     def test_green_git_restore_after_read_is_allowed(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
-            cfg = Path(tmp) / ".teatree.toml"
+            cfg = Path(tmp) / ".appconfig.toml"
             cfg.write_text("old = true\n", encoding="utf-8")
             state_dir = Path(tmp) / "state"
             state_dir.mkdir()
@@ -277,7 +277,7 @@ class TestHandleBlockConfigOverwrite:
 
     def test_per_call_token_allows_a_blind_overwrite(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
-            cfg = Path(tmp) / ".teatree.toml"
+            cfg = Path(tmp) / ".appconfig.toml"
             cfg.write_text("old = true\n", encoding="utf-8")
             state_dir = Path(tmp) / "state"
             state_dir.mkdir()
@@ -299,7 +299,7 @@ class TestHandleBlockConfigOverwrite:
 
     def test_kill_switch_disables_the_gate(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
-            cfg = Path(tmp) / ".teatree.toml"
+            cfg = Path(tmp) / ".appconfig.toml"
             cfg.write_text("old = true\n", encoding="utf-8")
             state_dir = Path(tmp) / "state"
             state_dir.mkdir()
@@ -314,7 +314,7 @@ class TestHandleBlockConfigOverwrite:
 class TestSymlinkReadMatchesTargetOverwrite:
     """A Read of the symlink path satisfies an overwrite of its resolved target.
 
-    The ``~/.teatree.toml`` incident: the file is a symlink into the dotfiles
+    The dotfile-symlink incident: the file is a symlink into the dotfiles
     repo. Reading it via the symlink path must clear a restore/overwrite
     expressed against the resolved target (and vice-versa) — the normalisation
     closure makes the membership test symmetric.
@@ -322,10 +322,10 @@ class TestSymlinkReadMatchesTargetOverwrite:
 
     def test_read_via_symlink_clears_write_to_resolved_target(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
-            target = Path(tmp) / "dotfiles" / ".teatree.toml"
+            target = Path(tmp) / "dotfiles" / ".appconfig.toml"
             target.parent.mkdir()
             target.write_text("old = true\n", encoding="utf-8")
-            link = Path(tmp) / ".teatree.toml"
+            link = Path(tmp) / ".appconfig.toml"
             link.symlink_to(target)
             state_dir = Path(tmp) / "state"
             state_dir.mkdir()

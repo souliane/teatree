@@ -1,6 +1,8 @@
 """Tests for ``t3 slack listen`` and ``t3 slack status`` CLI commands."""
 
+import json
 import os
+import sqlite3
 from dataclasses import dataclass, field
 from pathlib import Path
 from unittest.mock import patch
@@ -15,6 +17,24 @@ runner = CliRunner()
 
 _DM_CHANNEL = "D_SELF"
 _USER_ID = "U_OPERATOR"
+
+
+def _seed_registry(db: Path, overlays: dict[str, dict]) -> None:
+    """Seed a cold-readable config DB with the ``overlays`` registry row."""
+    conn = sqlite3.connect(str(db))
+    try:
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS teatree_config_setting ("
+            "id INTEGER PRIMARY KEY, scope TEXT NOT NULL DEFAULT '', "
+            "key TEXT NOT NULL, value TEXT NOT NULL)"
+        )
+        conn.execute(
+            "INSERT INTO teatree_config_setting (scope, key, value) VALUES ('', 'overlays', ?)",
+            (json.dumps(overlays),),
+        )
+        conn.commit()
+    finally:
+        conn.close()
 
 
 @dataclass
@@ -47,16 +67,13 @@ class _RouteAwareFake:
 
 class TestResolveOverlays:
     def test_returns_empty_when_no_config(self, tmp_path: Path, monkeypatch) -> None:
-        monkeypatch.setattr("teatree.cli.slack_listen.Path.home", lambda: tmp_path)
+        monkeypatch.setenv("T3_CONFIG_DB", str(tmp_path / "absent.sqlite3"))
         assert _resolve_overlays("") == []
 
-    def test_reads_overlays_from_toml(self, tmp_path: Path, monkeypatch) -> None:
-        config = tmp_path / ".teatree.toml"
-        config.write_text(
-            '[overlays.myapp]\nmessaging_backend = "slack"\nslack_token_ref = "test/ref"\n',
-            encoding="utf-8",
-        )
-        monkeypatch.setattr("teatree.cli.slack_listen.Path.home", lambda: tmp_path)
+    def test_reads_overlays_from_registry(self, tmp_path: Path, monkeypatch) -> None:
+        db = tmp_path / "config.sqlite3"
+        _seed_registry(db, {"myapp": {"messaging_backend": "slack", "slack_token_ref": "test/ref"}})
+        monkeypatch.setenv("T3_CONFIG_DB", str(db))
         with patch("teatree.cli.slack_listen.read_pass", side_effect=["xoxb-bot", "xapp-app"]):
             result = _resolve_overlays("")
 
@@ -64,34 +81,30 @@ class TestResolveOverlays:
         assert result[0][0] == "myapp"
 
     def test_skips_non_slack_overlays(self, tmp_path: Path, monkeypatch) -> None:
-        config = tmp_path / ".teatree.toml"
-        config.write_text(
-            '[overlays.myapp]\nmessaging_backend = "email"\n',
-            encoding="utf-8",
-        )
-        monkeypatch.setattr("teatree.cli.slack_listen.Path.home", lambda: tmp_path)
+        db = tmp_path / "config.sqlite3"
+        _seed_registry(db, {"myapp": {"messaging_backend": "email"}})
+        monkeypatch.setenv("T3_CONFIG_DB", str(db))
         assert _resolve_overlays("") == []
 
     def test_warns_when_tokens_missing(self, tmp_path: Path, monkeypatch, capsys) -> None:
-        config = tmp_path / ".teatree.toml"
-        config.write_text(
-            '[overlays.broken]\nmessaging_backend = "slack"\nslack_token_ref = "broken/ref"\n',
-            encoding="utf-8",
-        )
-        monkeypatch.setattr("teatree.cli.slack_listen.Path.home", lambda: tmp_path)
+        db = tmp_path / "config.sqlite3"
+        _seed_registry(db, {"broken": {"messaging_backend": "slack", "slack_token_ref": "broken/ref"}})
+        monkeypatch.setenv("T3_CONFIG_DB", str(db))
         with patch("teatree.cli.slack_listen.read_pass", return_value=""):
             result = _resolve_overlays("")
 
         assert result == []
 
     def test_restricts_to_named_overlay(self, tmp_path: Path, monkeypatch) -> None:
-        config = tmp_path / ".teatree.toml"
-        config.write_text(
-            '[overlays.a]\nmessaging_backend = "slack"\nslack_token_ref = "a/ref"\n'
-            '[overlays.b]\nmessaging_backend = "slack"\nslack_token_ref = "b/ref"\n',
-            encoding="utf-8",
+        db = tmp_path / "config.sqlite3"
+        _seed_registry(
+            db,
+            {
+                "a": {"messaging_backend": "slack", "slack_token_ref": "a/ref"},
+                "b": {"messaging_backend": "slack", "slack_token_ref": "b/ref"},
+            },
         )
-        monkeypatch.setattr("teatree.cli.slack_listen.Path.home", lambda: tmp_path)
+        monkeypatch.setenv("T3_CONFIG_DB", str(db))
         with patch("teatree.cli.slack_listen.read_pass", side_effect=["xoxb-bot", "xapp-app"]):
             result = _resolve_overlays("a")
 
@@ -336,12 +349,10 @@ class TestReactCommand:
     """``t3 slack react`` routes through the on-behalf egress (#960/#1750)."""
 
     def _gate(self, tmp_path: Path, monkeypatch, mode: str) -> None:
-        cfg = tmp_path / ".teatree.toml"
-        cfg.write_text(
-            f'[teatree]\nslack_user_id = "{_USER_ID}"\non_behalf_post_mode = "{mode}"\n',
-            encoding="utf-8",
-        )
-        monkeypatch.setattr("teatree.config.CONFIG_PATH", cfg)
+        from teatree.core.models import ConfigSetting  # noqa: PLC0415
+
+        ConfigSetting.objects.set_value("slack_user_id", _USER_ID)
+        ConfigSetting.objects.set_value("on_behalf_post_mode", mode)
         monkeypatch.setattr("teatree.core.notify.messaging_from_overlay", lambda _o=None: _RouteAwareFake())
 
     def test_no_backend_exits_1(self, tmp_path: Path, monkeypatch) -> None:

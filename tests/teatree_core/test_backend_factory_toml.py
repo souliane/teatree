@@ -1,8 +1,11 @@
-"""TOML-overlay path in the backend factory — non-entry-point overlays.
+"""Registry-overlay path in the backend factory — non-entry-point overlays.
 
 Covers ``iter_overlay_backends`` + the ``_backends_from_toml`` helper chain,
-which is how teatree picks up overlay configuration written directly in
-``~/.teatree.toml`` without a registered ``teatree.overlays`` entry point.
+which is how teatree picks up overlay configuration from the DB-home
+``overlays`` registry (legacy file tier removed) without a registered
+``teatree.overlays`` entry point. The ``load_config().raw["overlays"]`` dict
+the helpers consume is fed by that registry, so the tests drive it by
+injecting the resolved config directly.
 """
 
 from collections.abc import Iterator

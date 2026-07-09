@@ -397,7 +397,7 @@
               a wave never exceeds it even when the backlog has more bucket-(a) tickets.
     11:17:22  orchestrator: a long aside on the share-db-server setting — one Postgres
               server across worktrees, each worktree its own DB name; when false each
-              worktree starts its own container; the data dir is XDG, never ~/.teatree.
+              worktree starts its own container; the data dir is XDG, never a home-dir dotfile.
     11:19:00  $ uv run python -c "from importlib.metadata import entry_points; [print(e.value) for e in entry_points(group='teatree.overlays')]"
               teatree.contrib.t3_teatree.overlay:TeatreeOverlay
     11:20:45  orchestrator: an extension-point note — when a hook on the overlay base
@@ -1230,7 +1230,7 @@
               backlog has more bucket-(a) tickets. The clamp bounds COUNT, never the per-mate tier.
     05:17:22  lead: a long aside on the share-db-server setting — one Postgres server across worktrees,
               each worktree its own DB name; when false each worktree starts its own container; the data
-              dir is XDG, never ~/.teatree.
+              dir is XDG, never a home-dir dotfile.
     05:19:00  $ uv run python -c "from importlib.metadata import entry_points; [print(e.value) for e in entry_points(group='teatree.overlays')]"
               teatree.contrib.t3_teatree.overlay:TeatreeOverlay
     05:20:45  lead: an extension-point note — when a hook on the overlay base changes, every registered

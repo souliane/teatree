@@ -1,7 +1,7 @@
 """Per-overlay ``companion_skills`` propagation through the skill-loading policy.
 
 When an overlay declares ``companion_skills = ["ac-django", "ac-python"]`` in
-its ``[overlays.<name>]`` table of ``~/.teatree.toml``, those skills must
+its ``[overlays.<name>]`` table (the DB-home overlays config), those skills must
 appear in the resolved suggestion set for both the UserPromptSubmit hook
 path (``select_for_prompt_hook``) and the runtime-phase path
 (``select_for_runtime_phase``).

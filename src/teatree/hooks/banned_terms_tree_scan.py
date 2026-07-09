@@ -32,24 +32,26 @@ Email carve-out preserved: a brand that appears only inside an email
 address (author/contact metadata) is allowed — :func:`term_match.strip_emails`
 blanks emails before matching, exactly as the shell scanner does.
 
-The brand list is read from ``[teatree].banned_brands`` in
-``~/.teatree.toml`` (a NEW optional high-confidence key, distinct from
-the flat ``banned_terms`` the shell gate consumes). The public repo
-ships with no brands configured — each operator extends it locally.
+The brand list is a NEW optional high-confidence ``banned_brands`` key
+(distinct from the flat ``banned_terms`` the shell gate consumes), read
+DB-home from the canonical ``ConfigSetting`` store via the Django-free
+:mod:`teatree.config.cold_reader`. The public repo ships with no brands
+configured — each operator extends it locally with
+``t3 <overlay> config_setting set banned_brands '["...brand..."]'``.
 """
 
 import os
-import tomllib
 from dataclasses import dataclass
 from pathlib import Path
 
+from teatree.config import cold_reader
 from teatree.hooks import term_match
 from teatree.utils.run import CommandFailedError, TimeoutExpired, run_allowed_to_fail, run_checked
 
-# Comma-separated brand list, used by CI where ``~/.teatree.toml`` is
-# absent. Mirrors ``$TEATREE_OVERLAY_LEAK_TERMS`` for the overlay-leak
+# Comma-separated brand list, used by CI where the operator's DB row is not
+# populated. Mirrors ``$TEATREE_OVERLAY_LEAK_TERMS`` for the overlay-leak
 # gate so the public repo can enforce the backstop from a CI secret
-# without committing any brand name. Takes precedence over the config.
+# without committing any brand name. Takes precedence over the DB.
 _BRANDS_ENV = "TEATREE_BANNED_BRANDS"
 _BRANDS_KEY = "banned_brands"
 
@@ -128,31 +130,24 @@ class TreeFinding:
         return f"{self.path}:{self.lineno}: {self.term!r} — {self.line.strip()}"
 
 
-def load_brand_terms(config_path: Path) -> tuple[str, ...]:
+def load_brand_terms(db_path: Path | None = None) -> tuple[str, ...]:
     """Load the high-confidence brand list, FAILING LOUD when it is unset.
 
-    ``$TEATREE_BANNED_BRANDS`` (comma-separated) takes precedence so CI —
-    where ``~/.teatree.toml`` does not exist — feeds the list from a secret;
-    a set env var short-circuits before any raise. Otherwise reads
-    ``[teatree].banned_brands`` from *config_path*. An explicit
-    ``banned_brands = []`` is the operator's deliberate no-brands choice and
-    returns an empty tuple. A genuinely-unset list — no config, an unloadable
-    config, a missing key, or a wrong-typed value — raises
-    :class:`BannedTermsUnsetError`: an unset list is too dangerous to
-    scan as empty because a load bug would look identical to a deliberate
-    no-brands choice.
+    ``$TEATREE_BANNED_BRANDS`` (comma-separated) takes precedence so CI feeds
+    the list from a secret; a set env var short-circuits before any raise.
+    Otherwise reads the DB-home ``banned_brands`` row via the Django-free
+    :mod:`teatree.config.cold_reader` (*db_path* overrides the DB path, else the
+    canonical DB / ``T3_CONFIG_DB``). An explicit ``banned_brands = []`` is the
+    operator's deliberate no-brands choice and returns an empty tuple. A
+    genuinely-unset list — no env, a missing ``banned_brands`` row, or a
+    wrong-typed value — raises :class:`BannedTermsUnsetError`: an unset list is
+    too dangerous to scan as empty because a load bug would look identical to a
+    deliberate no-brands choice.
     """
     env = os.environ.get(_BRANDS_ENV, "")
     if env.strip():
         return tuple(t.strip() for t in env.split(",") if t.strip())
-    if not config_path.is_file():
-        raise BannedTermsUnsetError.for_key(_BRANDS_KEY, _BRANDS_ENV)
-    try:
-        data = tomllib.loads(config_path.read_text(encoding="utf-8"))
-    except (OSError, tomllib.TOMLDecodeError) as exc:
-        raise BannedTermsUnsetError.for_key(_BRANDS_KEY, _BRANDS_ENV) from exc
-    section = data.get("teatree")
-    brands = section.get("banned_brands") if isinstance(section, dict) else None
+    brands = cold_reader.read_setting(_BRANDS_KEY, db_path=db_path)
     if not isinstance(brands, list):
         raise BannedTermsUnsetError.for_key(_BRANDS_KEY, _BRANDS_ENV)
     return tuple(str(t).strip() for t in brands if isinstance(t, str) and t.strip())

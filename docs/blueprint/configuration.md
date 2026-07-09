@@ -1,28 +1,25 @@
 # BLUEPRINT Appendix — Configuration
 
-Detail behind [BLUEPRINT.md](https://github.com/souliane/teatree/blob/main/BLUEPRINT.md) §10. Consumer cross-references such as `BLUEPRINT §10.1` (~/.teatree.toml, slack-bot setup) resolve here.
+Detail behind [BLUEPRINT.md](https://github.com/souliane/teatree/blob/main/BLUEPRINT.md) §10. Consumer cross-references such as `BLUEPRINT §10.1` (the config store, slack-bot setup) resolve here.
 
 ## 10. Configuration
 
-### 10.1 ~/.teatree.toml
+### 10.1 Configuration store
+
+Every setting lives in the teatree DB — the `ConfigSetting` store — set with
+`t3 <overlay> config_setting set <key> <json>` (`--overlay <name>` scopes a value
+to one overlay; omit it for the global default). There is no config file to edit.
+The overlay-definition registry (`overlays`) and the external-E2E registry
+(`e2e_repos`) are DB-home too — each is one JSON-dict `ConfigSetting` row that
+`loader._inject_db_registries` injects into `config.raw`, so teatree boots fully
+from the DB. `config_setting export` dumps the store to a TOML backup for a
+round-trip interchange.
+
+The keys and value shapes below are illustrative — set each one with
+`config_setting set`; the `[table]` syntax only shows how a key is scoped
+(`[teatree]` = global, `[overlays.<name>]` = that overlay):
 
 ```toml
-# ~/.teatree.toml is now a pre-migration FALLBACK only (#1775,
-# eliminate-~/.teatree.toml). Every UserSettings field is DB-home, and the last
-# NON-settings config — the [overlays.<name>] overlay-definition tables and the
-# [e2e_repos] tables — is DB-home too (the `overlays` / `e2e_repos` registries,
-# one JSON-dict ConfigSetting row each; loader._inject_db_registries overrides
-# config.raw from the store). A value left in any of these tables is IGNORED on
-# read once the matching DB row exists; with every value migrated, the file can be
-# DELETED and teatree boots fully from the DB. Set settings with
-# `t3 <overlay> config_setting set` (see below). `t3 setup` auto-migrates an
-# existing config into the store on every run (non-clobbering: it seeds only keys
-# absent from the store, so a value you later change via `config_setting set`
-# survives); `t3 <overlay> config_setting import` is the manual equivalent (it
-# refreshes every operational key from the file — including the overlays / e2e_repos
-# registries). `config_setting export` is the inverse — it dumps the store back to
-# TOML ([teatree] + [overlays.<name>] + [e2e_repos.<name>]) so the pair is a full
-# round-trip interchange.
 [teatree]
 # workspace_dir is DB-home now (per-overlay; default ~/workspace/t3-workspaces/<overlay>/).
 # Set it with `t3 <overlay> config_setting set workspace_dir <path> [--overlay <name>]`;
@@ -59,8 +56,8 @@ url = "git@gitlab.com:org/my-service.git"
 branch = "feature/e2e-tests"
 e2e_dir = "e2e"  # subdirectory containing playwright.config.ts (default: "e2e")
 
-# Cross-repo "my open MRs" Slack reminder (`t3 <overlay> mr_reminder`) is DB-home now
-# (eliminate-~/.teatree.toml). Routes each open MR/PR to a channel by repo slug
+# Cross-repo "my open MRs" Slack reminder (`t3 <overlay> mr_reminder`) is DB-home
+# (config-unify). Routes each open MR/PR to a channel by repo slug
 # (most-specific wins; an org-namespace prefix like "acme-engineering" routes its repos).
 # A `[mr_reminder]` table left here is ignored on read; set it as a JSON dict:
 #   t3 <overlay> config_setting set mr_reminder \
@@ -70,7 +67,7 @@ e2e_dir = "e2e"  # subdirectory containing playwright.config.ts (default: "e2e")
 
 ```
 
-The operational (DB-home) settings are set in the store, not the file above —
+The operational (DB-home) settings are set in the store —
 globally, or scoped to one overlay with `--overlay <name>`:
 
 ```bash
@@ -78,8 +75,7 @@ t3 <overlay> config_setting set mode auto                                  # glo
 t3 <overlay> config_setting set require_human_approval_to_merge false --overlay myproject
 t3 <overlay> config_setting set on_behalf_post_mode immediate
 t3 <overlay> config_setting set user_identity_aliases '["handle-a", "handle-b"]'
-t3 <overlay> config_setting import                                         # manual one-time migrate (refreshes from file); `t3 setup` runs the non-clobbering auto-migration
-t3 <overlay> config_setting export [--overlay myproject] [--output dump.toml]  # inverse of import: dump the store to TOML (stdout default); export -> import -> export is a fixed point
+t3 <overlay> config_setting export [--overlay myproject] [--output dump.toml]  # dump the store to a TOML backup (stdout default)
 ```
 
 **Cross-repo "my open MRs" reminder** (`t3 <overlay> mr_reminder`): generalises a
@@ -101,7 +97,7 @@ channel (a colleague surface) is gated + audited like any on-behalf post.
 1. Print the manifest JSON (with `messages_tab_enabled`, `app_mentions:read` scope, Socket Mode, bot events `app_mention` + `message.im`) and open the Slack app creation page. The user pastes the manifest, creates the app, installs it to the workspace, and generates an app-level token with `connections:write` scope.
 2. Capture the bot token (`xoxb-…`) and app-level token (`xapp-…`) into `pass` entries `<slack_token_ref>-bot` and `<slack_token_ref>-app`.
 3. Auto-detect the user's Slack ID from `git config user.email` via the Slack API. Falls back to a manual prompt when detection fails.
-4. Write `messaging_backend`, `slack_user_id`, and `slack_token_ref` to `[overlays.<name>]` in `~/.teatree.toml`.
+4. Store `messaging_backend`, `slack_user_id`, and `slack_token_ref` in the `overlays` registry row for `<name>` in the DB `ConfigSetting` store.
 5. Smoke-test by sending a DM via the bot and waiting for the user to react with ✅.
 
 The walkthrough never writes a bot token to disk in plaintext; tokens always go via `pass`. Re-running `t3 setup slack-bot --overlay <name> --reset` rotates both tokens but **skips the manifest** — it does **not** apply a scope change.
@@ -130,11 +126,11 @@ The env var `T3_MODE` overrides the stored DB-home value. Unknown values raise
 **Setting-home partition ([#1775](https://github.com/souliane/teatree/issues/1775)).**
 Every non-derived `UserSettings` field has EXACTLY ONE home, declared in the
 typed registry `config/homes.py` (`SettingHome` ∈ {`DB`, `TOML`}, `SETTING_HOMES`):
-a field that CAN live in the DB is **DB-home**. As of eliminate-`~/.teatree.toml`
+a field that CAN live in the DB is **DB-home**. As of config-unify
 the carve-out is **EMPTY** — every `UserSettings` field is DB-home. The two homes are
 disjoint (a fitness function asserts it) — a setting is never read from both tiers. A
 DB-home field resolves from `ConfigSetting` (global + overlay rows) + env only.
-(eliminate-`~/.teatree.toml` moved `check_updates` — its pre-Django reader
+(config-unify moved `check_updates` — its pre-Django reader
 `check_for_updates` now reads the DB via the Django-free `cold_reader` — `worktrees_dir`
 / `timezone` — the Django settings module hardcodes `TIME_ZONE` and configures
 `DATABASES` without reading either, so neither was a bootstrap dep — the two former
@@ -157,9 +153,8 @@ registry and the `[e2e_repos]` registry — is DB-home too: each is stored as on
 `ConfigSetting` row (`config/registries.py`, `REGISTRY_SETTINGS`) and
 `loader._inject_db_registries` overrides `config.raw["overlays"]` / `config.raw["e2e_repos"]`
 from the store via the Django-free `cold_reader`, so every existing reader
-(`discover_overlays`, `load_e2e_repos`) is untouched and an absent `~/.teatree.toml` boots a
-fully DB-configured teatree. The TOML tables are consulted ONLY as a pre-migration fallback,
-so the file can be deleted once `config_setting import` has run. Because the DB row REPLACES
+(`discover_overlays`, `load_e2e_repos`) is untouched and teatree boots fully DB-configured
+with no config file present. Because the DB row REPLACES
 the whole file table, a lingering `[overlays.<name>]` / `[e2e_repos.<name>]` value that
 DIVERGES from the DB row would be silently masked on read — editing an overlay `path` in the
 file had NO effect and returned the stale DB value with zero signal
@@ -364,7 +359,7 @@ below mirrors it; consult the dataclass for type signatures and defaults.
 | `private_repos` | Offline slug-NAMESPACE allowlist of known-private repos: each entry is a path-segment prefix of a host-stripped `owner/repo` slug (`acme-engineering` covers `acme-engineering/*`, host-qualified or bare), NOT a raw substring (#1953 — a substring match falsely downgraded a public SSH-alias remote). Drives the #126/#1657 carve-out and (unioned with `internal_publish_namespaces`, #1672) the destination skip, so a user with only this set needs no second list. `teatree.hooks._repo_visibility`. |
 | `internal_publish_namespaces` | Destination allowlist (default `[]`) making the #1415/#1530 publish gates destination-aware: a target that prefix-matches is internal and skipped. #1672 unions it with `private_repos`, deciding the skip PER top-level segment — a chained/substituted public post or a raw-REST `api` segment forces the whole command SCANNED. FAIL-CLOSED (empty/unresolvable stay PUBLIC). `teatree.hooks.publish_destination`; env `T3_INTERNAL_PUBLISH_NAMESPACES` supplements. |
 | `owned_repos` | The repo SCOPE axis (orthogonal to `private_repos`/visibility and to `author_is_self`/collaboration): a forge-host-keyed dict `{normalized-host: [namespace-pattern, …]}` of the repos this overlay legitimately works on (`{"github.com": ["souliane", "acme-eng/widget-overlay"]}`). Host equality is matched EXACTLY before the namespace half (`slug_namespace_matches`), so a `gitlab.com` repo never matches a `github.com` scope. A `[overlays.<name>.owned_repos]` TOML table REPLACES the settings dict (authoritative-and-complete, no deep-merge). Sole-element `["*"]` is a whole-host wildcard (self-hosted forges only). `teatree.core.intake.repo_scope`. |
-| `require_owned_repo_approval` | Opt-in (default `false`, ships INERT) for the unknown-repo gate (`teatree.core.gates.owned_repo_guard`): when `true` AND `owned_repos` non-empty, a push/merge to a repo no overlay owns is HELD for the operator. Fails CLOSED on a clean unknown verdict (opposite polarity to the visibility gate); enabling it therefore requires FIRST declaring the FULL owned host/namespace list (every private/customer forge the operator merges on) — a partial list would hold the operator's own private-forge merges as unknown. A **path-only** TOML overlay (`path` but no `class`) is skipped by `get_all_overlays` and cannot opt itself in; its repos go under an instantiable overlay's `owned_repos`. Opt in from private `~/.teatree.toml` (where brand/customer strings are allowed). Fails OPEN on a resolver exception / unresolvable host. Never-lockout: `[scope-push-ok: <reason>]` token + `[teatree] unknown_repo_push_gate_enabled = false` kill-switch. |
+| `require_owned_repo_approval` | Opt-in (default `false`, ships INERT) for the unknown-repo gate (`teatree.core.gates.owned_repo_guard`): when `true` AND `owned_repos` non-empty, a push/merge to a repo no overlay owns is HELD for the operator. Fails CLOSED on a clean unknown verdict (opposite polarity to the visibility gate); enabling it therefore requires FIRST declaring the FULL owned host/namespace list (every private/customer forge the operator merges on) — a partial list would hold the operator's own private-forge merges as unknown. A **path-only** overlay (`path` but no `class`) is skipped by `get_all_overlays` and cannot opt itself in; its repos go under an instantiable overlay's `owned_repos`. Opt in from the private DB `ConfigSetting` store (where brand/customer strings are allowed). Fails OPEN on a resolver exception / unresolvable host. Never-lockout: `[scope-push-ok: <reason>]` token + `[teatree] unknown_repo_push_gate_enabled = false` kill-switch. |
 | `speak` | #2060: text-to-speech config — `local` enum (`off`/`dm`/`all`) + `slack` bool, plus the #2171 meeting-mute opt-in `presence_backend` (`""`/`msteams`) + its `presence_token_ref` (`pass` entry). DB-home (#1775): a JSON-dict `ConfigSetting` row (`config_setting set speak '{"local":"all","slack":true}'`); the presence keys are omitted from the stored dict when empty. See §10.1.1. |
 
 `notify_on_behalf` is NOT in this registry — it is derived (read-only),
@@ -373,7 +368,7 @@ set by `_apply_autonomy` under `autonomy = "notify"`, never a user toml key.
 ### 10.1.1 Local text-to-speech (#2060)
 
 The `speak` config reads agent output aloud, gated on the macOS `say` binary (the
-whole feature is inert when it is absent). DB-home (#1775, eliminate-~/.teatree.toml):
+whole feature is inert when it is absent). DB-home (#1775, config-unify):
 a JSON-dict `ConfigSetting` row, rebuilt bespoke by the resolver. Per-overlay
 overridable via a `--overlay <name>` row that MERGES onto the global row; ad-hoc local
 read via `t3 speak "…"`. The cold Stop hook reads the global row via `cold_reader`.
@@ -462,9 +457,7 @@ the one non-generic override (its overlay sub-table merges onto the base
 rather than flat-replacing).
 
 `mode` and `autonomy` are DB-home (#1775) — they live in the
-`ConfigSetting` store, NOT in `~/.teatree.toml`. A value for one of them left in
-`[teatree]` / `[overlays.<name>]` is IGNORED on read (the resolver warns and drops
-it). Set them in the store, globally or scoped to one overlay with `--overlay`:
+`ConfigSetting` store. Set them there, globally or scoped to one overlay with `--overlay`:
 
 ```bash
 t3 <overlay> config_setting set mode interactive                      # global default
@@ -473,13 +466,10 @@ t3 <overlay> config_setting set autonomy notify --overlay t3-client   # collabor
 t3 <overlay> config_setting set mode interactive --overlay client-project   # stay gated on client code (autonomy defaults to babysit)
 ```
 
-The TOML file carries only the TOML-home carve-out and overlay
-discovery/messaging keys — for `client-project`, the genuinely TOML-home
-`privacy`:
+`privacy` is DB-home too — scope it to a client overlay:
 
-```toml
-[overlays.client-project]
-privacy = "strict"
+```bash
+t3 <overlay> config_setting set privacy '"strict"' --overlay client-project
 ```
 
 ### 10.1.2 Agent model tiering & session pins (`[agent]`)
@@ -612,8 +602,8 @@ Overlay-specific configuration lives on `overlay.config` (an `OverlayConfig` dat
 
 ### 10.5 State Placement Rule — Cache vs Intent (#628)
 
-**The text files are the source of truth for user *intent*; the DB caches *derived* state.** A datum may live DB-only **iff it can be deleted and deterministically rebuilt** from the text files (`~/.teatree.toml`, overlay config) plus repo state — deleting the DB must lose no user intent. If losing a datum would lose user intent, it stays text-file source-of-truth (the DB may cache a read view, never own it). The DB stays rebuildable from the text files indefinitely — no one-way migration.
+**The DB `ConfigSetting` store is the source of truth for user config *intent*; other DB state is *derived* cache.** Config settings are authored directly in the store (§10.1.1). A NON-config datum may live DB-only **iff it can be deleted and deterministically rebuilt** from the config store plus repo state — deleting a derived row must lose no user intent. If losing a datum would lose user intent, it is config (authored in the store), not derived cache.
 
-Consequences: bootstrap config (DB path, log level, the `mode` resolution chain) and user-authored intent (push mode, contribute, banned terms) stay in text files — they must resolve with the DB absent. Derived/observational state (cached env values, last-seen branch, lifecycle phase history) is DB-as-cache and carries a regeneration path. A DB-only user-*intent* field (e.g. #627 `Ticket.context`) is permitted **only** with a round-trip affordance so the `cat ~/.teatree.toml` affordance is not lost — `t3 config show` is that affordance: a read-only view partitioning text-file intent from DB regenerable cache, working with the DB absent.
+Consequences: genuinely bootstrap-readable settings (DB path, log level, `DJANGO_SETTINGS_MODULE`, the offline `private_repos` allowlist) resolve before the DB store is consulted — they must work with the store absent. User-authored config intent (mode, contribute, banned terms) lives in the `ConfigSetting` store. Derived/observational state (cached env values, last-seen branch, lifecycle phase history) is DB-as-cache and carries a regeneration path. The read/round-trip affordance is preserved by `t3 config show` — a read-only view of resolved config — and `t3 <overlay> config_setting export`, which dumps the store to a TOML backup.
 
 **[#1775](https://github.com/souliane/teatree/issues/1775) — moving overridable config into the DB.** The `ConfigSetting` override tier (§10.1.1) deliberately lets the DB *own* user intent for an overridable setting, rather than only cache derived state. It stays inside this rule's spirit on two counts: (1) the DB is a strictly higher tier than the file — an empty table resolves byte-identically to today and the read fails safe to no-override when the DB is absent, so deleting the DB never loses the file-authored intent that remains the floor; and (2) the round-trip affordance is preserved by the `t3 <overlay> config_setting set|clear|list` admin path. The genuinely bootstrap-readable settings (`DATABASE_URL` / data-dir / `DJANGO_SETTINGS_MODULE` / `private_repos`) remain text-only — they must resolve before Django, so they can never move to this tier.

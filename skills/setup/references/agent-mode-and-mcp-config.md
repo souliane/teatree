@@ -75,9 +75,8 @@ What teatree models today, verified against code:
   (`teatree.core.overlay.OverlayConfig`): `messaging_backend`
   (`"noop"` default, `"slack"` opt-in), `slack_token_ref`,
   `slack_user_id`. These are set as `UPPER_CASE` constants in an
-  `overlay_settings` module or as `lower_case` keys under
-  `[overlays.<name>]` in `~/.teatree.toml` (see
-  `OverlayConfig.apply_toml_overrides`). `t3 setup slack-bot --overlay
+  `overlay_settings` module or as `lower_case` keys in the overlay's
+  DB `overlays` registry row. `t3 setup slack-bot --overlay
   <name>` provisions the Slack app and stores the two tokens in `pass`
   under `<slack_token_ref>-bot` / `<slack_token_ref>-app`.
 - The plugin's own `settings.json` ships a **broad Bash `permissions.allow`

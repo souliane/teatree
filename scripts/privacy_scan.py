@@ -89,25 +89,25 @@ def _build_banned_re(terms: Sequence[str]) -> re.Pattern[str] | None:
     return re.compile(r"\b(?:" + "|".join(escaped) + r")\b", re.IGNORECASE)
 
 
-def _resolve_scan_terms(env_value: str, config_path: Path) -> tuple[str, ...]:
+def _resolve_scan_terms(env_value: str) -> tuple[str, ...]:
     """Resolve the banned-terms list from the canonical source, fail-closed.
 
     Reuses the shared :func:`resolve_banned_terms` so the public-leak scan reads
-    the SAME ``[teatree].banned_terms`` list the commit/posting gates do (the
-    ``T3_BANNED_TERMS`` env value still overrides). A present-but-unset or
-    unreadable config is the load-bug-shaped UNSET that must NOT silently degrade
-    to an empty ban list (that would quietly disable the gate on a config typo):
-    the banned-terms detector is reported INERT on stderr — the other detectors
-    still run, so the pre-push gate is never wedged — instead of going silently
-    inert. ``banned_terms = []`` is the deliberate, silent opt-out.
+    the SAME DB-home ``banned_terms`` list the commit/posting gates do (the
+    ``T3_BANNED_TERMS`` env value still overrides). A present-but-unset row is the
+    load-bug-shaped UNSET that must NOT silently degrade to an empty ban list
+    (that would quietly disable the gate on a config typo): the banned-terms
+    detector is reported INERT on stderr — the other detectors still run, so the
+    pre-push gate is never wedged — instead of going silently inert.
+    ``banned_terms = []`` is the deliberate, silent opt-out.
     """
     try:
-        return resolve_banned_terms(config_path, env_value=env_value)
+        return resolve_banned_terms(env_value=env_value)
     except BannedTermsUnsetError:
         print(
-            "Privacy scan: WARNING — banned-terms detector INERT: [teatree].banned_terms is "
-            f"present-but-unset or unreadable in {config_path} (the other detectors still run; "
-            "set `banned_terms = []` to opt out deliberately).",
+            "Privacy scan: WARNING — banned-terms detector INERT: the DB-home `banned_terms` "
+            "list is present-but-unset (the other detectors still run; set `banned_terms = []` "
+            "to opt out deliberately).",
             file=sys.stderr,
         )
         return ()
@@ -184,12 +184,7 @@ def main(
     banned_terms: str = typer.Option(
         "",
         envvar="T3_BANNED_TERMS",
-        help="Comma-separated banned terms (overrides the [teatree].banned_terms config source).",
-    ),
-    banned_terms_config: str = typer.Option(
-        "",
-        envvar="T3_BANNED_TERMS_CONFIG",
-        help="Path to the TOML carrying [teatree].banned_terms (default: ~/.teatree.toml).",
+        help="Comma-separated banned terms (overrides the DB-home banned_terms source).",
     ),
     *,
     strict: bool = typer.Option(True, help="Strict mode (exit 1 on any finding). Use --no-strict for warnings only."),
@@ -197,8 +192,7 @@ def main(
 ) -> None:
     """Scan text for privacy-sensitive patterns."""
     text = sys.stdin.read() if input_file == "-" else Path(input_file).read_text(encoding="utf-8")
-    config_path = Path(banned_terms_config).expanduser() if banned_terms_config else Path.home() / ".teatree.toml"
-    banned_re = _build_banned_re(_resolve_scan_terms(banned_terms, config_path))
+    banned_re = _build_banned_re(_resolve_scan_terms(banned_terms))
     all_findings: list[dict[str, str | int]] = []
 
     for lineno, line in enumerate(text.splitlines(), 1):

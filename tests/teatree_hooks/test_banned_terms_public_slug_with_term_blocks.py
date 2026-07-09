@@ -19,6 +19,7 @@ overlay-leak-tree runs on PRs.
 """
 
 import json
+import sqlite3
 from pathlib import Path
 
 import pytest
@@ -57,14 +58,40 @@ def _pin_probe(monkeypatch: pytest.MonkeyPatch, verdict: str | None) -> None:
     monkeypatch.setattr(_repo_visibility, "probe_visibility", lambda _slug: verdict)
 
 
-def _home_with_terms(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, toml_body: str) -> Path:
-    """Point ``~/.teatree.toml`` at a temp config and isolate the probe cache."""
+def _home_with_terms(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    banned_terms: list[str] | None = None,
+    private_repos: list[str] | None = None,
+) -> Path:
+    """Seed a DB-home config (legacy file tier removed) and isolate the probe cache."""
     home = tmp_path / "home"
     home.mkdir(parents=True, exist_ok=True)
     monkeypatch.setenv("HOME", str(home))
     monkeypatch.setattr(Path, "home", classmethod(lambda cls: home))
     monkeypatch.setenv("T3_DATA_DIR", str(tmp_path / "data"))
-    (home / ".teatree.toml").write_text(toml_body, encoding="utf-8")
+    rows: dict[str, object] = {}
+    if banned_terms is not None:
+        rows["banned_terms"] = banned_terms
+    if private_repos is not None:
+        rows["private_repos"] = private_repos
+    db = tmp_path / "config.sqlite3"
+    conn = sqlite3.connect(str(db))
+    try:
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS teatree_config_setting "
+            "(id INTEGER PRIMARY KEY, scope TEXT NOT NULL DEFAULT '', key TEXT NOT NULL, value TEXT NOT NULL)"
+        )
+        for key, value in rows.items():
+            conn.execute(
+                "INSERT INTO teatree_config_setting (scope, key, value) VALUES ('', ?, ?)",
+                (key, json.dumps(value)),
+            )
+        conn.commit()
+    finally:
+        conn.close()
+    monkeypatch.setenv("T3_CONFIG_DB", str(db))
     return home
 
 
@@ -73,11 +100,7 @@ def banned_terms_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     # No private_repos / internal_publish_namespaces: the destinations under
     # test are NOT provably-internal, so the deny path runs and the carve-out
     # (if any) decides the verdict.
-    return _home_with_terms(
-        tmp_path,
-        monkeypatch,
-        '[teatree]\nbanned_terms = ["apple", "democorp", "othercorp"]\n',
-    )
+    return _home_with_terms(tmp_path, monkeypatch, banned_terms=["apple", "democorp", "othercorp"])
 
 
 class TestPublicSlugCarryingTermStillBlocks:
@@ -135,7 +158,8 @@ class TestProvablyPrivateDestinationStillAllowed:
         _home_with_terms(
             tmp_path,
             monkeypatch,
-            '[teatree]\nprivate_repos = ["democorp-eng/tracker"]\nbanned_terms = ["democorp"]\n',
+            private_repos=["democorp-eng/tracker"],
+            banned_terms=["democorp"],
         )
         _pin_probe(monkeypatch, None)
         cmd = 'gh issue comment 5 -R democorp-eng/tracker --body "democorp customer config"'

@@ -1,6 +1,6 @@
 """Read-before-overwrite gate for tracked user config / dotfiles.
 
-Two real incidents motivate this gate: an agent overwrote ``~/.teatree.toml``
+Two real incidents motivate this gate: an agent overwrote a tracked dotfile
 (a symlink into the user's dotfiles repo) via a blind ``Write``, and an agent
 nearly restored a config file from git (``git checkout -- <config>``) without
 first reading the live on-disk content — discarding uncommitted edits the user
@@ -35,7 +35,6 @@ ReadPredicate = Callable[[str], bool]
 # dotfile (handled separately), so these are the non-dotted exceptions.
 _CONFIG_BASENAMES: frozenset[str] = frozenset(
     {
-        ".teatree.toml",
         ".teatree",
         "config.toml",
         "config.yaml",
@@ -91,7 +90,7 @@ _DOT_NAVIGATION: frozenset[str] = frozenset({".", ".."})
 
 
 def _is_dotfile(name: str) -> bool:
-    """True for a leading-dot basename (``.zshrc``, ``.teatree.toml``)."""
+    """True for a leading-dot basename (``.zshrc``, ``.gitconfig``)."""
     return name.startswith(".") and name not in _DOT_NAVIGATION
 
 

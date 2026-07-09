@@ -73,7 +73,6 @@ class TestHardDenyReason:
         # so the destination gate resolves the target from the monkeypatch alone.
         home = tmp_path / "vishome"
         home.mkdir(parents=True, exist_ok=True)
-        (home / ".teatree.toml").write_text("[teatree]\n", encoding="utf-8")
         monkeypatch.setenv("HOME", str(home))
         monkeypatch.setattr(Path, "home", classmethod(lambda cls: home))
         monkeypatch.setenv("T3_DATA_DIR", str(tmp_path / "viscache"))

@@ -437,7 +437,8 @@ t3 loops list
 ```
 
 The cadence is configurable via `T3_LOOP_CADENCE` (seconds), or by setting
-`loop_cadence_seconds` in `~/.teatree.toml` (env wins; default `720`).
+`loop_cadence_seconds` in the teatree DB (`t3 <overlay> config_setting set
+loop_cadence_seconds 720`; env wins; default `720`).
 `loop_runner_enabled` is the kill-switch — set it `false` to stop the loops
 entirely (there is no fallback plane; PR-28 retired the native `/loop` cron mirror).
 On a headless box with no Claude session ever opening, start `t3 worker` once from a
@@ -537,8 +538,9 @@ t3 startoverlay my-overlay ~/workspace/my-overlay
 Installing the plugin does **not** force teatree on. By default a fresh Claude
 session does not auto-engage teatree — no skill auto-suggest, no load-block, no
 loop scheduling — and just shows a one-line how-to. Run `/teatree` (or load any
-`t3:` skill) to engage teatree for that session, or set `[teatree] autoload =
-true` in `~/.teatree.toml` (env `T3_AUTOLOAD=1`) to auto-engage every session.
+`t3:` skill) to engage teatree for that session, or set `autoload` in the teatree
+DB (`t3 <overlay> config_setting set autoload true`; env `T3_AUTOLOAD=1`) to
+auto-engage every session.
 
 ### For contributors
 
@@ -699,27 +701,22 @@ extension point is what any other consumer would use.
 
 ## Configuration
 
-Teatree reads its config from `~/.teatree.toml`. Every key is optional; the
+Teatree stores its config in the teatree DB — the `ConfigSetting` store, set with
+`t3 <overlay> config_setting set <key> <json>` (add `--overlay <name>` to scope a
+value to one overlay, omit it for the global default). Every key is optional; the
 table below lists the ones most users touch. The full set and their defaults
-live in `UserSettings` in `src/teatree/config/settings.py`.
+live in `UserSettings` in `src/teatree/config/settings.py`. Overlays register via
+`teatree.overlays` entry points plus the DB `overlays` registry row.
 
-```toml
-[teatree]
-workspace_dir = "~/workspace"            # where ticket workspaces are created
-mode = "interactive"                      # "interactive" (default) | "auto"
-privacy = ""                              # privacy-scan profile name
-contribute = false                        # enable skill self-improvement
-excluded_skills = ["my-custom-skill"]     # extra skills to exclude
-loop_cadence_seconds = 720                # /loop tick interval (default 12 min)
-require_human_approval_to_merge = true    # auto mode: still gate merge on a 👍 / /merge
-require_human_approval_to_answer = true   # gate t3:answerer behind a DM confirmation
-agent_signature = false                   # append an AI signature to posts (default off)
-
-[teams]
-enabled = false                           # master agent-teams off switch (default)
-
-[overlays.my-overlay]
-path = "~/workspace/my-overlay"
+```bash
+t3 <overlay> config_setting set mode interactive                       # "interactive" (default) | "auto"
+t3 <overlay> config_setting set privacy '""'                           # privacy-scan profile name
+t3 <overlay> config_setting set contribute false                       # enable skill self-improvement
+t3 <overlay> config_setting set excluded_skills '["my-custom-skill"]'  # extra skills to exclude
+t3 <overlay> config_setting set loop_cadence_seconds 720               # loop tick interval (default 12 min)
+t3 <overlay> config_setting set require_human_approval_to_merge true   # auto mode: still gate merge on a 👍 / /merge
+t3 <overlay> config_setting set require_human_approval_to_answer true  # gate t3:answerer behind a DM confirmation
+t3 <overlay> config_setting set agent_signature false                  # append an AI signature to posts (default off)
 ```
 
 | Key | Default | Effect |
@@ -739,7 +736,7 @@ The `t3:contribute` skill's push gate is the `T3_PUSH` environment variable
 (default `false`), not a TOML key — it exists as a deliberate stop for
 privacy review before any skill improvement leaves the machine.
 
-Run `t3 setup` after editing `~/.teatree.toml` to apply changes to skill
+Run `t3 setup` after changing config to apply changes to skill
 symlinks and caches.
 
 ### Operating mode
@@ -785,7 +782,7 @@ default. See `BLUEPRINT.md` § 10.1.1 for the full details.
 
 After every non-trivial session, the `retro` skill runs a retrospective,
 extracts what went wrong, and writes fixes back into skill files. When
-contributors enable this (`contribute = true` in `~/.teatree.toml`),
+contributors enable this (`t3 <overlay> config_setting set contribute true`),
 improvements flow back upstream through a fork-based model.
 
 **Where improvements go:**
@@ -857,7 +854,7 @@ non-zero with the offending `file:line` list. Its matcher is
 underscore-tolerant — `wt_777_<brand>` and `<brand>_x` are caught where the
 diff gate's word-boundary matcher misses them — while common-word entries keep
 strict boundaries (no substring noise) and the email carve-out is preserved.
-The brand list comes from `[teatree].banned_brands` in `~/.teatree.toml` or the
+The brand list comes from the `banned_brands` setting in the teatree DB or the
 `$TEATREE_BANNED_BRANDS` environment variable; it is a curated high-confidence
 subset (brand-only — common words stay in `banned_terms` so the
 underscore-tolerant tree scan never substring-matches them). The public repo

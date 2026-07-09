@@ -41,9 +41,6 @@ _AUTHOR_ALICE = "alice"
 
 def _gate_immediate(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """Pin the on-behalf gate to IMMEDIATE so it does NOT also block the call."""
-    cfg = tmp_path / ".teatree.toml"
-    cfg.write_text("[teatree]\n", encoding="utf-8")
-    monkeypatch.setattr("teatree.config.CONFIG_PATH", cfg)
     ConfigSetting.objects.set_value("on_behalf_post_mode", OnBehalfPostMode.IMMEDIATE.value)
 
 

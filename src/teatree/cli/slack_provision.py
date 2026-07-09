@@ -30,12 +30,11 @@ import json
 import webbrowser
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from pathlib import Path
 
 import httpx
 import typer
 
-from teatree.cli.slack_app_resolve import resolve_overlay_app_id
+from teatree.cli.slack_app_resolve import read_overlay_registry, resolve_overlay_app_id
 from teatree.cli.slack_channel_provisioning import ChannelJoinResult, join_review_channels, render_join_result
 from teatree.cli.slack_dm_provisioning import ProvisionResult, provision_overlay_dm_channel
 from teatree.cli.slack_setup import (
@@ -50,8 +49,9 @@ from teatree.cli.slack_setup import (
     update_manifest,
 )
 from teatree.cli.slack_user_token_setup import REQUIRED_USER_SCOPES
-from teatree.config import CONFIG_PATH, discover_overlays
+from teatree.config import discover_overlays
 from teatree.core.overlay_loader import get_overlay
+from teatree.utils.django_bootstrap import ensure_django
 from teatree.utils.secrets import read_pass
 
 
@@ -68,18 +68,18 @@ class OverlayProvisionReport:
     notes: list[str] = field(default_factory=list)
 
 
-def _resolve_app_id(*, config_path: Path, overlay: str, echo: Callable[[str], None]) -> str:
-    app_id = resolve_overlay_app_id(config_path, overlay)
+def _resolve_app_id(*, overlay: str, echo: Callable[[str], None]) -> str:
+    app_id = resolve_overlay_app_id(overlay)
     if app_id:
         return app_id
-    echo(f"WARN  No slack_app_id for `{overlay}` in config and none derivable from the bot token.")
+    echo(f"WARN  No slack_app_id for `{overlay}` in the registry and none derivable from the bot token.")
     value = typer.prompt(f"Slack app id for `{overlay}` (e.g. A01ABCD1234)").strip()
     if not _APP_ID_RE.match(value):
         echo("ERROR Invalid Slack app id format.")
         raise typer.Exit(code=1)
-    from teatree.cli.slack_app_resolve import persist_overlay_field  # noqa: PLC0415
+    from teatree.cli.slack_app_resolve import write_overlay_fields  # noqa: PLC0415
 
-    persist_overlay_field(config_path, overlay, "slack_app_id", value)
+    write_overlay_fields(overlay, {"slack_app_id": value})
     return value
 
 
@@ -128,7 +128,6 @@ def _broadcast_channels(overlay: str) -> list[tuple[str, str]]:
 
 def _provision_channels(
     *,
-    config_path: Path,
     overlay: str,
     echo: Callable[[str], None],
 ) -> list[ChannelJoinResult]:
@@ -137,7 +136,7 @@ def _provision_channels(
     channels = _broadcast_channels(overlay)
     if not channels:
         return []
-    token_ref = read_overlay_field(config_path, overlay, "slack_token_ref")
+    token_ref = read_overlay_field(overlay, "slack_token_ref")
     bot_token = read_pass(f"{token_ref}-bot") if token_ref else ""
     if not bot_token:
         echo("WARN  No bot token — skipping review-channel join.")
@@ -153,7 +152,6 @@ def _provision_channels(
 
 def provision_overlay(
     *,
-    config_path: Path,
     overlay: str,
     echo: Callable[[str], None],
     open_browser: bool = True,
@@ -162,7 +160,7 @@ def provision_overlay(
     echo(f"── Provisioning Slack for overlay `{overlay}` ──")
     report = OverlayProvisionReport(overlay_name=overlay)
 
-    app_id = _resolve_app_id(config_path=config_path, overlay=overlay, echo=echo)
+    app_id = _resolve_app_id(overlay=overlay, echo=echo)
     report.app_id = app_id
     echo(f"OK    App id: {app_id} (manifest editor: {app_manifest_editor_url(app_id)})")
 
@@ -177,9 +175,9 @@ def provision_overlay(
     if open_browser:
         webbrowser.open(report.install_url)
 
-    report.channel_results = _provision_channels(config_path=config_path, overlay=overlay, echo=echo)
+    report.channel_results = _provision_channels(overlay=overlay, echo=echo)
 
-    dm_result = provision_overlay_dm_channel(config_path=config_path, overlay_name=overlay)
+    dm_result = provision_overlay_dm_channel(overlay_name=overlay)
     report.dm_result = dm_result
     _render_dm(dm_result, echo)
 
@@ -197,23 +195,13 @@ def _render_dm(result: ProvisionResult, echo: Callable[[str], None]) -> None:
         echo(f"ERROR IM channel provisioning failed: {result.detail}.")
 
 
-def _slack_overlays(config_path: Path) -> list[str]:
-    """Return the names of every overlay configured for the Slack backend."""
-    if not config_path.is_file():
-        return []
-    import tomlkit  # noqa: PLC0415
-    from tomlkit import items as tomlkit_items  # noqa: PLC0415
-
-    document = tomlkit.parse(config_path.read_text(encoding="utf-8"))
-    overlays = document.get("overlays")
-    if not isinstance(overlays, tomlkit_items.Table):
-        return []
-    names: list[str] = []
-    for name in overlays:
-        block = overlays.get(name)
-        if isinstance(block, tomlkit_items.Table) and str(block.get("messaging_backend", "")) == "slack":
-            names.append(name)
-    return names
+def _slack_overlays() -> list[str]:
+    """Return the names of every overlay configured for the Slack backend in the DB registry."""
+    return [
+        name
+        for name, block in read_overlay_registry().items()
+        if isinstance(block, dict) and str(block.get("messaging_backend", "")) == "slack"
+    ]
 
 
 def _verify_user_token(echo: Callable[[str], None]) -> None:
@@ -247,12 +235,7 @@ def slack_provision(
     overlay: str = typer.Option(
         "",
         "--overlay",
-        help="Overlay to provision (default: every Slack-backed overlay in config).",
-    ),
-    config_path: Path = typer.Option(
-        CONFIG_PATH,
-        "--config",
-        help="Path to teatree config (default: ~/.teatree.toml).",
+        help="Overlay to provision (default: every Slack-backed overlay in the DB registry).",
     ),
     open_browser: bool = typer.Option(
         True,
@@ -261,23 +244,23 @@ def slack_provision(
     ),
 ) -> None:
     """Run the full Slack app lifecycle (manifest, scopes, channels, tokens) idempotently."""
+    ensure_django()
     if overlay:
-        registered = {entry.name for entry in discover_overlays(config_path)}
+        registered = {entry.name for entry in discover_overlays()}
         if overlay not in registered:
             known = ", ".join(sorted(registered)) or "(none registered)"
             typer.echo(f"ERROR Overlay {overlay!r} is not registered. Known overlays: {known}")
             raise typer.Exit(code=1)
         overlays = [overlay]
     else:
-        overlays = _slack_overlays(config_path)
+        overlays = _slack_overlays()
         if not overlays:
-            typer.echo("No Slack-backed overlays found in config. Run `t3 setup slack-bot --overlay <name>` first.")
+            typer.echo(
+                "No Slack-backed overlays found in the DB registry. Run `t3 setup slack-bot --overlay <name>` first."
+            )
             raise typer.Exit(code=1)
 
-    reports = [
-        provision_overlay(config_path=config_path, overlay=name, echo=typer.echo, open_browser=open_browser)
-        for name in overlays
-    ]
+    reports = [provision_overlay(overlay=name, echo=typer.echo, open_browser=open_browser) for name in overlays]
 
     typer.echo("")
     typer.echo("── Shared personal xoxp user token ──")

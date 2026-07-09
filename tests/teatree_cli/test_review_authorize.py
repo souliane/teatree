@@ -54,15 +54,8 @@ def _write_cfg(
     mode: OnBehalfPostMode = OnBehalfPostMode.DRAFT_OR_ASK,
     user_id: str = "U-OPERATOR",
 ) -> None:
-    # ``slack_user_id`` is raw non-UserSettings config and keeps its TOML home;
-    # ``on_behalf_post_mode`` is DB-home (#1775) so it resolves only from the
-    # ``ConfigSetting`` store — staging it via TOML would be a no-op on read.
-    cfg = tmp_path / ".teatree.toml"
-    cfg.write_text(
-        f'[teatree]\nslack_user_id = "{user_id}"\n',
-        encoding="utf-8",
-    )
-    monkeypatch.setattr("teatree.config.CONFIG_PATH", cfg)
+    # Both settings are DB-home now — resolved only from the ``ConfigSetting`` store.
+    ConfigSetting.objects.set_value("slack_user_id", user_id)
     ConfigSetting.objects.set_value("on_behalf_post_mode", mode.value)
 
 

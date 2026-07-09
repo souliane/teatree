@@ -15,7 +15,7 @@ Enforcement mirrors the §17.6 gate contract:
 - kill-switch ``snapshot_baseline_gate_enabled`` disables it, resolved DB-first
 through ``get_effective_settings`` (the canonical resolver every sibling gate uses),
 so a DB ``config_setting set snapshot_baseline_gate_enabled false`` actuates the
-hook — not only a raw ``~/.teatree.toml`` edit.
+hook.
 - never-lockout ``ALLOW_SNAPSHOT_BASELINE='<reason>'`` sanctions one commit.
 - crash ≠ deny — a Django/DB error, or a cwd with no resolvable ticket, fails
 open with a warning (a gate bug must never wedge commits). Only a resolved
@@ -41,8 +41,8 @@ def _gate_enabled(overlay_name: str | None) -> bool:
 
     Reads the kill-switch through ``get_effective_settings`` — the same DB-home
     resolver every sibling gate consults (see ``e2e_mandatory_gate``) — so a DB
-    ``config_setting set snapshot_baseline_gate_enabled false`` actuates the hook,
-    not only a raw ``~/.teatree.toml`` edit. Requires Django, so the caller reads
+    ``config_setting set snapshot_baseline_gate_enabled false`` actuates the hook.
+    Requires Django, so the caller reads
     it only once a baseline is staged.
     """
     from teatree.config import get_effective_settings

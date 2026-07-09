@@ -2,14 +2,15 @@
 
 Each gate that can wedge the factory on a detection misfire routes its
 deny through ``_fail_open_or_deny``. This file asserts the SHARED escape
-applies to each gate end-to-end: with ``[teatree] danger_gate_fail_open = true``
-recorded, the gate that would normally deny instead passes through.
+applies to each gate end-to-end: with the DB-home ``danger_gate_fail_open``
+switch recorded on, the gate that would normally deny instead passes through.
 
 The PUBLIC-egress leak gate is deliberately NOT covered here — it stays
 fail-closed (see ``test_public_leak_gate_stays_fail_closed.py``).
 """
 
 import json
+import sqlite3
 from collections.abc import Iterator
 from io import StringIO
 from pathlib import Path
@@ -21,6 +22,21 @@ import hooks.scripts.hook_router as router
 from hooks.scripts.hook_router import handle_enforce_skill_loading, handle_validate_mr_metadata
 
 
+def _seed_config_db(path: Path, rows: dict[str, object], scope: str = "") -> None:
+    conn = sqlite3.connect(str(path))
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS teatree_config_setting "
+        "(id INTEGER PRIMARY KEY, scope TEXT NOT NULL DEFAULT '', key TEXT NOT NULL, value TEXT NOT NULL)"
+    )
+    for key, value in rows.items():
+        conn.execute(
+            "INSERT INTO teatree_config_setting (scope, key, value) VALUES (?, ?, ?)",
+            (scope, key, json.dumps(value)),
+        )
+    conn.commit()
+    conn.close()
+
+
 def _capture(handler, data: dict) -> tuple[bool, dict | None]:
     buf = StringIO()
     with patch("sys.stdout", buf):
@@ -30,11 +46,7 @@ def _capture(handler, data: dict) -> tuple[bool, dict | None]:
 
 
 def _write_fail_open(home: Path, *, on: bool) -> None:
-    home.mkdir(parents=True, exist_ok=True)
-    (home / ".teatree.toml").write_text(
-        f"[teatree]\ndanger_gate_fail_open = {'true' if on else 'false'}\n",
-        encoding="utf-8",
-    )
+    _seed_config_db(home / "config.sqlite3", {"danger_gate_fail_open": on})
 
 
 @pytest.fixture
@@ -43,6 +55,7 @@ def home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     home.mkdir(parents=True, exist_ok=True)
     monkeypatch.setenv("HOME", str(home))
     monkeypatch.setattr(Path, "home", classmethod(lambda cls: home))
+    monkeypatch.setenv("T3_CONFIG_DB", str(home / "config.sqlite3"))
     return home
 
 

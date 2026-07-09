@@ -32,6 +32,7 @@ graph TD
     teatree.update_check --> teatree.utils
     teatree.utils --> teatree.paths
     teatree.self_update --> teatree.utils
+    teatree.hooks --> teatree.config
     teatree.hooks --> teatree.utils
     teatree.timeouts --> teatree.config
     teatree.repo_mode --> teatree.paths
@@ -52,6 +53,7 @@ graph TD
     teatree.core --> teatree.on_behalf_gate
     teatree.core --> teatree.slack_mrkdwn
     teatree.core --> teatree.quality
+    teatree.core --> teatree.backends.types
     teatree.core --> teatree.core.modelkit
     teatree.core --> teatree.core.models.errors
     teatree.core --> teatree.core.models

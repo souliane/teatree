@@ -1,6 +1,7 @@
 import asyncio
 import json
 import os
+import sqlite3
 import tempfile
 import time
 from pathlib import Path
@@ -986,14 +987,11 @@ class TestBuildOptions(TestCase):
         cls.ticket = Ticket.objects.create()
 
     def _options_for_phase(self, phase: str) -> Any:
+        # No seeded ``T3_CONFIG_DB`` (the autouse env isolation clears it), so the
+        # spawn model/effort resolve through the shipped phase-tier defaults.
         session = Session.objects.create(ticket=self.ticket)
         task = Task.objects.create(ticket=self.ticket, session=session)
-        absent = Path(tempfile.mkdtemp()) / "nope.toml"
-        with (
-            patch("teatree.agents.model_tiering.CONFIG_PATH", absent),
-            patch("teatree.config_agent.CONFIG_PATH", absent),
-        ):
-            return headless_mod._build_options(task, "ctx", phase=phase, skills=[])
+        return headless_mod._build_options(task, "ctx", phase=phase, skills=[])
 
     def test_retrospecting_runs_on_frontier(self) -> None:
         options = self._options_for_phase("retrospecting")
@@ -1069,15 +1067,25 @@ class TestBuildOptionsSpawnModelFloor(TestCase):
     def setUpTestData(cls) -> None:
         cls.ticket = Ticket.objects.create()
 
-    def _options(self, phase: str, *, skills: list[str], config_body: str) -> Any:
-        cfg = Path(tempfile.mkdtemp()) / ".teatree.toml"
-        cfg.write_text(config_body, encoding="utf-8")
+    def _options(self, phase: str, *, skills: list[str], config: dict[str, object]) -> Any:
+        db = Path(tempfile.mkdtemp()) / "config.sqlite3"
+        conn = sqlite3.connect(str(db))
+        try:
+            conn.execute(
+                "CREATE TABLE IF NOT EXISTS teatree_config_setting "
+                "(id INTEGER PRIMARY KEY, scope TEXT NOT NULL DEFAULT '', key TEXT NOT NULL, value TEXT NOT NULL)"
+            )
+            for key, value in config.items():
+                conn.execute(
+                    "INSERT INTO teatree_config_setting (scope, key, value) VALUES ('', ?, ?)",
+                    (key, json.dumps(value)),
+                )
+            conn.commit()
+        finally:
+            conn.close()
         session = Session.objects.create(ticket=self.ticket)
         task = Task.objects.create(ticket=self.ticket, session=session)
-        with (
-            patch("teatree.agents.model_tiering.CONFIG_PATH", cfg),
-            patch("teatree.config_agent.CONFIG_PATH", cfg),
-        ):
+        with patch.dict(os.environ, {"T3_CONFIG_DB": str(db)}):
             return headless_mod._build_options(task, "ctx", phase=phase, skills=skills)
 
     def test_skill_floor_raises_the_headless_model(self) -> None:
@@ -1086,7 +1094,7 @@ class TestBuildOptionsSpawnModelFloor(TestCase):
         options = self._options(
             "testing",
             skills=["architecture-design"],
-            config_body='[agent.skill_models]\narchitecture-design = "opus"\n',
+            config={"agent_skill_models": {"architecture-design": "opus"}},
         )
         assert options.model == "opus"
 
@@ -1094,7 +1102,7 @@ class TestBuildOptionsSpawnModelFloor(TestCase):
         options = self._options(
             "requesting_review",
             skills=["code-review"],
-            config_body='[agent.skill_models]\ncode-review = "inherit"\n',
+            config={"agent_skill_models": {"code-review": "inherit"}},
         )
         # requesting_review's cheap phase default stands; the inherit floor is a no-op.
         assert options.model == TIER_MODELS["cheap"]
@@ -1107,7 +1115,7 @@ class TestBuildOptionsSpawnModelFloor(TestCase):
         options = self._options(
             "requesting_review",
             skills=[],
-            config_body='[agent]\nsession_effort = "xhigh"\nsession_model = "opus"\n',
+            config={"agent_session_effort": "xhigh", "agent_session_model": "opus"},
         )
         assert options.effort is None
 
@@ -1117,7 +1125,7 @@ class TestBuildOptionsSpawnModelFloor(TestCase):
         options = self._options(
             "coding",
             skills=[],
-            config_body='[agent.tier_effort]\nfrontier = "max"\n',
+            config={"agent_tier_effort": {"frontier": "max"}},
         )
         assert options.effort == "max"
 
