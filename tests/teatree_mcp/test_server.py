@@ -23,7 +23,7 @@ from teatree.mcp import build_server
 from teatree.mcp.server import _required_services
 from tests.factories import TaskFactory, TicketFactory
 
-_EXPECTED_TOOLS = {
+_READ_TOOLS = {
     "ticket_search",
     "ticket_get",
     "ticket_list",
@@ -38,6 +38,23 @@ _EXPECTED_TOOLS = {
     "command_search",
 }
 
+# The teatree-own write tools are always registered (they are not service-gated).
+_WRITE_TOOLS = {
+    "pr_create",
+    "pr_merge",
+    "ticket_visit_phase",
+    "record_e2e_run",
+    "config_setting_set",
+    "task_complete",
+    "task_fail",
+    "question_answer",
+    "worktree_teardown",
+    "review_post_draft_note",
+    "review_post_comment",
+}
+
+_EXPECTED_TOOLS = _READ_TOOLS | _WRITE_TOOLS
+
 
 def _payloads(result: Any) -> list[Any]:
     """Decode the JSON carried in a call_tool result's content blocks."""
@@ -51,11 +68,15 @@ def _payloads(result: Any) -> list[Any]:
 
 
 class TestToolRegistration(TestCase):
-    def test_registers_exactly_the_read_only_tool_surface(self) -> None:
-        tools = asyncio.run(build_server().list_tools())
+    def test_registers_the_expected_tool_surface_with_correct_read_write_hints(self) -> None:
+        # No service declared ⇒ the base surface is exactly the read + write tools.
+        with patch("teatree.mcp.server.get_all_overlays", return_value={"a": _ServiceOverlay()}):
+            tools = asyncio.run(build_server().list_tools())
 
-        assert {tool.name for tool in tools} == _EXPECTED_TOOLS
-        assert all(tool.annotations and tool.annotations.readOnlyHint for tool in tools)
+        by_name = {tool.name: tool for tool in tools}
+        assert set(by_name) == _EXPECTED_TOOLS
+        assert all(by_name[name].annotations and by_name[name].annotations.readOnlyHint for name in _READ_TOOLS)
+        assert all(not by_name[name].annotations.readOnlyHint for name in _WRITE_TOOLS)
 
     def test_ticket_search_advertises_its_filter_parameters(self) -> None:
         tools = {tool.name: tool for tool in asyncio.run(build_server().list_tools())}

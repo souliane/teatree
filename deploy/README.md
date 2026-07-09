@@ -61,9 +61,12 @@ Do this once as an admin on the box.
    sudo -u teatree chmod 600 /home/teatree/.ssh/authorized_keys
    ```
 
-2. **Install Docker Engine + the compose plugin** and enable it on boot:
+2. **Install git and Docker Engine** (the compose plugin ships with Docker) and
+   enable Docker on boot. git is needed for the box-side checkout that `deploy.sh`
+   keeps current:
 
    ```bash
+   sudo apt-get update && sudo apt-get install -y git
    curl -fsSL https://get.docker.com | sudo sh
    sudo systemctl enable --now docker
    ```
@@ -120,8 +123,12 @@ verify the fingerprint out of band).
 
 - **No Tailscale.** SSH is the only inbound port. This works with a corporate VPN
   up — the tunnel rides your normal SSH access.
-- **Loop notifications / questions** go out over Slack (Socket Mode, outbound only)
-  — no inbound webhook, nothing extra to expose.
+- **Loop notifications / questions:** this workflow provisions **no** Slack
+  credential, so notifications are not wired out of the box. To enable them, set
+  the overlay's Slack bot token on the box and re-deploy (`t3 setup slack-bot`, or
+  add the Slack config to `teatree.env`); teatree then talks to Slack over Socket
+  Mode (outbound only — no inbound webhook, nothing extra to expose). Until then,
+  follow the loop through the admin dashboard and `docker compose logs`.
 - **Autostart on reboot:** the compose `restart: unless-stopped` policy plus Docker
   enabled on boot bring the worker and admin back after a reboot.
 - **Updates:** teatree self-updates in-loop via `t3 update` (deferred reinstall on
@@ -131,7 +138,7 @@ verify the fingerprint out of band).
 ## Caveats
 
 - **Headless orchestration is still maturing** — expect to babysit early runs via
-  the admin and Slack.
+  the admin dashboard and `docker compose logs` (and Slack once you wire it up).
 - **The admin is a Django dev server** behind a loopback + SSH tunnel. Never expose
   it publicly; `DEBUG` is on for the admin service only (the worker runs with
   `DEBUG` off to avoid `connection.queries` growth in a long-running process).
