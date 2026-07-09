@@ -138,6 +138,30 @@ class TestLifecycleTools(TestCase):
         assert E2eMandatoryRun.objects.filter(ticket=ticket, spec="e2e/smoke.spec.ts").exists()
 
 
+class _GhStub:
+    """Scripted `gh` replies: head at the reviewed SHA, not draft, green rollup.
+
+    Keeps the keystone merge path hermetic — no gh binary, no network.
+    """
+
+    def __init__(self, head: str) -> None:
+        self.head = head
+
+    def __call__(self, argv: list[str]) -> tuple[int, str, str]:
+        joined = " ".join(argv)
+        if "baseRefName" in joined:
+            return (0, "main", "")
+        if "required_status_checks" in joined:
+            return (0, '{"contexts": []}', "")
+        if "headRefOid" in joined:
+            return (0, self.head, "")
+        if "isDraft" in joined:
+            return (0, "false", "")
+        if "statusCheckRollup" in joined:
+            return (0, '[{"status": "COMPLETED", "conclusion": "SUCCESS"}]', "")
+        return (0, "", "")
+
+
 class TestShipAndMergeGatePreservation(TestCase):
     def test_pr_create_blocks_without_visited_phases(self) -> None:
         # The shipping gate must fire identically over MCP: a worktree'd ticket
@@ -172,7 +196,8 @@ class TestShipAndMergeGatePreservation(TestCase):
         # fire identically over MCP.
         clear = MergeClearFactory(substrate=True, ticket__state=Ticket.State.IN_REVIEW)
 
-        result = _call("pr_merge", {"clear_id": clear.pk})
+        with patch("teatree.backends.forge_merge_rpc.gh_runner", return_value=_GhStub(clear.reviewed_sha)):
+            result = _call("pr_merge", {"clear_id": clear.pk})
 
         assert result["merged"] is False
         assert result["escalated"]
@@ -227,7 +252,10 @@ class TestReviewSeamRegistration(TestCase):
     def test_cli_import_registers_the_review_service_seam(self) -> None:
         import teatree.cli  # noqa: F401, PLC0415 — the import side-effect under test registers the seam
 
-        seam = review_seam.review_post_seam()
+        # The factory resolves the GitLab token via the external `glab` binary;
+        # stub it so the registration proof does not depend on glab being installed.
+        with patch("teatree.cli.review.service.ReviewService.get_gitlab_token", return_value="tok"):
+            seam = review_seam.review_post_seam()
         assert callable(seam.post_draft_note)
         assert callable(seam.post_comment)
 

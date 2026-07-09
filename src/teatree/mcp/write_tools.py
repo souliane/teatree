@@ -9,7 +9,7 @@ identically on both surfaces. Command-shaped writes go through
 ``django.core.management.call_command`` — the literal CLI code path — and the
 review posts go through the :mod:`teatree.mcp.review_seam` registration seam.
 ``TOOL_SEAMS`` names each tool's seam; the transport-boundary fitness test
-(``tests/quality/test_mcp_transport_boundary.py``) pins both the mapping's
+(``tests/teatree_mcp/test_transport_boundary.py``) pins both the mapping's
 coverage and the no-transport-import rule.
 
 Gate-satisfier commands (``review approve-on-behalf``, ``review
@@ -62,8 +62,8 @@ def _run_command(command: str, *args: object, **kwargs: object) -> object:
 # feature flags (directive-/lifecycle-governed), the opt-in ``require_*``
 # training wheels, ``*_gate_enabled`` kill-switches, and the registry rows
 # (``overlays`` / ``e2e_repos`` redirect overlay code paths). Flipping these
-# stays a human/CLI act — this is a TIGHTENING over Bash ``t3 config_setting
-# set``, per the no-unilateral-gate-flip rule.
+# stays a human/CLI act — this is a TIGHTENING over the Bash
+# ``t3 <overlay> config_setting set`` path, per the no-unilateral-gate-flip rule.
 _REFUSED_KEY_GLOBS = ("*_gate_enabled", "require_*")
 
 TOOL_SEAMS: dict[str, str] = {
