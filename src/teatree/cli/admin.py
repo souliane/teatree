@@ -87,7 +87,7 @@ def _ensure_superuser() -> SuperuserResult:
     if existing is not None:
         return SuperuserResult(username=existing.get_username(), created_password=None)
 
-    username = os.environ.get("T3_ADMIN_USER", _DEFAULT_ADMIN_USER)
+    username = os.environ.get("T3_ADMIN_USER") or _DEFAULT_ADMIN_USER
     password = os.environ.get("T3_ADMIN_PASSWORD") or secrets.token_urlsafe(_GENERATED_PASSWORD_BYTES)
     user_model.objects.create_superuser(username=username, password=password)
     return SuperuserResult(username=username, created_password=password)
