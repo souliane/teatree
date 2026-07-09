@@ -249,9 +249,9 @@ Three kinds of file get confused for one another — classify before deciding wh
 |---|---|---|
 | **Artifact** — *records* a run | `step1.png`, `run.webm` | Never committed to a product repo; uploaded to the ticket note by `post-test-plan`. |
 | **Fixture** — *produces* state | flag/message seed, API seed | The spec's own `beforeAll` / fixture, in the specs tree. Never a loose script under `artifacts/`. |
-| **Manifest** — *authored intent* | `manifest.json` (workflow names, human `steps`, claim→capture mapping) | Source, not output: hand-written, not deterministically regenerable. Keep it beside the spec it describes. |
+| **Manifest** — *authored intent* | `manifest.json` (workflow names, human `steps`, claim→capture mapping) | Source, not output: hand-written, not deterministically regenerable. It stays git-tracked at `artifacts/<TICKET>/manifest.json` (the gitignore covers only the per-env subdirs, not the ticket root). |
 
-The **run provenance** (which sha, which env, the rubric score, the posted note URL) is DB-home — `Ticket.extra['e2e_recipe']` already records it. Never re-derive provenance from files in the tree.
+The **run provenance** is DB-home, not in the tree — never re-derive it from files. `Ticket.extra['e2e_recipe']` records the run's sha and env; the rubric score lives on the `Rubric` model and the posted-note URL on `E2eMandatoryRun.posted_url`.
 
 A loose `seed-*.py` under `artifacts/` is a smell: fixture logic escaped the spec. Fold it into the spec's fixture and delete the script, or the next run silently depends on a human having executed it by hand.
 
