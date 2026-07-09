@@ -21,7 +21,7 @@ from mcp.types import ToolAnnotations
 from teatree.backends.types import Service
 from teatree.config import get_effective_settings
 from teatree.core.overlay_loader import get_all_overlays
-from teatree.mcp import introspection, search, services_sentry
+from teatree.mcp import introspection, search, services_sentry, write_tools
 
 _READ_ONLY = ToolAnnotations(readOnlyHint=True)
 
@@ -291,10 +291,15 @@ def build_server() -> FastMCP:
     configured (the ``t3 mcp serve`` entry point calls ``ensure_django`` first).
     """
     declared = _required_services()
-    instructions = _INSTRUCTIONS + "".join(
-        f"\n\nDeclared-service tools ({service}):\n{group_instructions}"
-        for service, (_, group_instructions) in sorted(_SERVICE_GROUPS.items())
-        if service in declared
+    instructions = (
+        _INSTRUCTIONS
+        + "".join(
+            f"\n\nDeclared-service tools ({service}):\n{group_instructions}"
+            for service, (_, group_instructions) in sorted(_SERVICE_GROUPS.items())
+            if service in declared
+        )
+        + "\n\nTeatree write tools (gate-preserved — each wraps the seam the `t3` CLI calls):\n"
+        + write_tools.INSTRUCTIONS
     )
     server: FastMCP = FastMCP("teatree", instructions=instructions)
     server.add_tool(_command_search, name="command_search", annotations=_READ_ONLY)
@@ -318,4 +323,5 @@ def build_server() -> FastMCP:
     for service, (register_group, _) in sorted(_SERVICE_GROUPS.items()):
         if service in declared:
             register_group(server)
+    write_tools.register(server)
     return server

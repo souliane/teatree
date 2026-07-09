@@ -80,6 +80,9 @@ from teatree.cli.overlay import OverlayAppBuilder
 from teatree.cli.overlay_dev import overlay_dev_app
 from teatree.cli.prompts import prompts_app
 from teatree.cli.recover import recover_app
+from teatree.cli.review import (
+    mcp_seam as _review_mcp_seam,  # noqa: F401  (side-effect: registers the MCP review-post seam #3076)
+)
 from teatree.cli.review import review_app, review_request_app
 from teatree.cli.setup import setup_app
 from teatree.cli.slack_listen import slack_app
