@@ -46,6 +46,16 @@ class AdminSuperuserTestCase(TestCase):
         assert user.is_superuser
         assert user.check_password("s3cret-pw")
 
+    def test_empty_admin_user_falls_back_to_default(self) -> None:
+        # The deploy workflow writes T3_ADMIN_USER= (empty) for an unset secret;
+        # an empty value must fall back to the default, not crash create_superuser.
+        with patch.dict("os.environ", {"T3_ADMIN_USER": "", "T3_ADMIN_PASSWORD": "s3cret-pw"}):
+            result, _run_server, _browser = _invoke("--no-browser")
+        assert result.exit_code == 0
+        user = get_user_model().objects.get(username="admin")
+        assert user.is_superuser
+        assert user.check_password("s3cret-pw")
+
     def test_reuses_existing_superuser_without_resetting_password(self) -> None:
         get_user_model().objects.create_superuser(username="existing", password="already-set")
         result, _run_server, _browser = _invoke("--no-browser")
