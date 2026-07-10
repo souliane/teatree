@@ -44,11 +44,12 @@ SECRET_KEY = "teatree-dev-insecure"  # noqa: S105 — local-dev CLI, never deplo
 def _debug_enabled() -> bool:
     """Whether ``DEBUG`` is on — env-gated so it can differ per service.
 
-    Default on preserves local-dev behaviour (the admin needs DEBUG to mount
-    ``/admin/`` and auto-login the superuser). A long-running Django process
-    with DEBUG on grows ``connection.queries`` unboundedly, so the headless
-    worker sets ``T3_DEBUG=0`` to run with DEBUG off while the admin service
-    leaves it on.
+    Default on preserves local-dev convenience (rich error pages). Nothing
+    functional depends on it: ``/admin/`` mounts unconditionally and the
+    admin auto-login is gated on the ``admin_autologin_enabled`` setting +
+    loopback, not ``DEBUG``. A long-running Django process with DEBUG on grows
+    ``connection.queries`` unboundedly, so every long-running service (the
+    worker AND the admin) sets ``T3_DEBUG=0`` to run with DEBUG off.
     """
     return _parse_env_bool_default_on(os.environ.get("T3_DEBUG", ""))
 
@@ -80,8 +81,9 @@ MIDDLEWARE = [
     "django.middleware.common.CommonMiddleware",
     "django.middleware.csrf.CsrfViewMiddleware",
     "django.contrib.auth.middleware.AuthenticationMiddleware",
-    # Local-only: auto-login the admin dashboard as the superuser when DEBUG is
-    # on, so the single-user 127.0.0.1 admin needs no password. Inert off-DEBUG.
+    # Auto-login the single-operator admin as the superuser — gated on the
+    # loopback source + the ``admin_autologin_enabled`` setting (never DEBUG),
+    # so a non-loopback request is never auto-logged-in.
     "teatree.core.middleware.LocalAdminAutoLoginMiddleware",
     "django.contrib.messages.middleware.MessageMiddleware",
     "django.middleware.clickjacking.XFrameOptionsMiddleware",

@@ -34,6 +34,7 @@ LEAF_MODULE_ALLOWLIST: frozenset[str] = frozenset(
     {
         "teatree._overlay_api",
         "teatree.urls",
+        "teatree.wsgi",
     }
 )
 

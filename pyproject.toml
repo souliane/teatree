@@ -43,6 +43,11 @@ dependencies = [
   "django-tasks>=0.9",
   "django-tasks-db>=0.12",
   "django-typer>=3.3",
+  # ``t3 admin`` serves ``teatree.wsgi:application`` under gunicorn (a production
+  # WSGI server, not Django's dev ``runserver``) — a RUNTIME command path, so it
+  # must be in the installed tool env, same class as the ``coverage`` / ``pyyaml``
+  # runtime-dep declarations above.
+  "gunicorn>=23",
   "httpx>=0.27",
   "mcp>=1.27",
   # ``teatree.core.evidence.test_plan_validation`` opens evidence PNGs with Pillow to

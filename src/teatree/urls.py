@@ -1,10 +1,18 @@
-from django.conf import settings
 from django.contrib import admin
-from django.urls import include, path
+from django.contrib.staticfiles.views import serve as serve_static
+from django.urls import include, path, re_path
 
 urlpatterns = [
     path("", include("teatree.core.urls", namespace="teatree")),
+    # Mounted unconditionally — the admin is the operator's observability window
+    # and must not depend on DEBUG. It stays protected by Django auth (+ the
+    # deploy's loopback bind + SSH tunnel); auto-login is loopback + flag gated
+    # in ``teatree.core.middleware``.
+    path("admin/", admin.site.urls),
+    # Serve the admin's own static assets from the finders under a production
+    # WSGI server (gunicorn) with DEBUG off — Django's ``runserver`` did this via
+    # the dev static handler, which gunicorn does not wrap. ``insecure=True`` is
+    # Django's sanctioned finder-serve for a single-operator loopback tool that
+    # has no separate static server in front of it.
+    re_path(r"^static/(?P<path>.*)$", serve_static, {"insecure": True}),
 ]
-
-if settings.DEBUG:
-    urlpatterns.append(path("admin/", admin.site.urls))

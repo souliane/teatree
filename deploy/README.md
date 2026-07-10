@@ -28,7 +28,7 @@ The stack is three services from one image (`deploy/Dockerfile`), selected by
 | --- | --- | --- | --- |
 | `teatree-init` | one-shot prep | `no` | clone + editable install + `t3 setup` + DB config; exits 0 |
 | `teatree-worker` | `t3 worker` | `unless-stopped` | the loop cadence owner; `DEBUG` off |
-| `teatree-admin` | `t3 admin` | `unless-stopped` | Django admin on `127.0.0.1:8000`; `DEBUG` on (admin only) |
+| `teatree-admin` | `t3 admin` | `unless-stopped` | Django admin under gunicorn on the box loopback `127.0.0.1:8000` (host networking); `DEBUG` off |
 
 `worker` and `admin` wait for `init` to complete, so the editable install on the
 shared clone happens exactly once. All three share named volumes, so the admin and
@@ -132,20 +132,25 @@ verify the fingerprint out of band).
 
 ## Access & networking
 
-- **Admin (Django):** the admin binds to the box loopback only. Reach it through an
-  SSH tunnel — no port is exposed publicly:
+- **Admin (Django under gunicorn):** the admin binds to the box loopback only (host
+  networking, `DEBUG` off). Reach it through an SSH tunnel — no port is exposed
+  publicly:
 
   ```bash
   ssh -L 8000:localhost:8000 -p <ssh-port> <ssh-user>@<box-host>
   # then open http://localhost:8000/admin
   ```
 
-  There is **no admin login prompt**: while DEBUG is on (the admin service), the
-  auto-login middleware authenticates the first superuser on every `/admin/`
-  request, so the **SSH tunnel to the loopback — not an admin password — is the
-  security boundary**. `T3_ADMIN_USER` / `T3_ADMIN_PASSWORD` still seed that
-  superuser row deterministically (they only matter as a password in a DEBUG-off
-  context).
+  There is **no admin login prompt**: the auto-login middleware authenticates the
+  first superuser on a `/admin/` request, but only when BOTH the
+  `admin_autologin_enabled` setting is on (the init role seeds it `true`) AND the
+  request originates from loopback. The box binds the admin to its real loopback,
+  so the SSH-tunnelled request arrives as `127.0.0.1` and clears the loopback
+  check — the **SSH tunnel to the loopback, not an admin password, is the security
+  boundary**. A non-loopback request is never auto-logged-in, even with the flag
+  on, so exposing the port off-loopback cannot open the admin. `T3_ADMIN_USER` /
+  `T3_ADMIN_PASSWORD` still seed that superuser row deterministically (they matter
+  as a password only when auto-login does not apply).
 
 - **No Tailscale.** SSH is the only inbound port. This works with a corporate VPN
   up — the tunnel rides your normal SSH access.
@@ -165,9 +170,10 @@ verify the fingerprint out of band).
 
 - **Headless orchestration is still maturing** — expect to babysit early runs via
   the admin dashboard and `docker compose logs` (and Slack once you wire it up).
-- **The admin is a Django dev server** behind a loopback + SSH tunnel. Never expose
-  it publicly; `DEBUG` is on for the admin service only (the worker runs with
-  `DEBUG` off to avoid `connection.queries` growth in a long-running process).
+- **The admin runs under gunicorn** (a production WSGI server) behind a loopback +
+  SSH tunnel — never expose it publicly. Both long-running services (worker AND
+  admin) run with `DEBUG` off to avoid `connection.queries` growth; `/admin/`
+  mounts independent of `DEBUG`, so nothing here relies on it.
 - **The OAuth token shares your weekly Claude quota and does not auto-refresh** —
   rotate `CLAUDE_CODE_OAUTH_TOKEN` manually and re-run the workflow when it expires.
 - **teatree-only:** this deployment never clones or references any customer or

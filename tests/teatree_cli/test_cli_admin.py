@@ -79,15 +79,24 @@ class AdminServerLaunchTestCase(TestCase):
 
 
 class AdminServerCommandTestCase(TestCase):
-    def test_run_server_uses_current_interpreter_not_bare_python(self) -> None:
-        # A bare "python" resolves via PATH to whatever shim is first (e.g. a
-        # pyenv python with no teatree) → "No module named teatree". The
-        # subprocess must use the interpreter running this CLI.
+    def test_run_server_execs_gunicorn_against_wsgi_app(self) -> None:
+        # A production WSGI server (gunicorn) against teatree's WSGI app, not
+        # Django's dev runserver. sys.executable -m gunicorn pins the tool-venv
+        # interpreter that has teatree + gunicorn (a bare "gunicorn" shim could
+        # resolve to a different env with no teatree).
         with patch("teatree.utils.run.run_streamed") as run_streamed:
             _run_server("127.0.0.1", 8000)
         cmd = run_streamed.call_args.args[0]
         assert cmd[0] == sys.executable
-        assert cmd[1:] == ["-m", "teatree", "runserver", "127.0.0.1:8000"]
+        assert cmd[1:4] == ["-m", "gunicorn", "teatree.wsgi:application"]
+        assert "--bind" in cmd
+        assert cmd[cmd.index("--bind") + 1] == "127.0.0.1:8000"
+
+    def test_run_server_binds_host_and_port_overrides(self) -> None:
+        with patch("teatree.utils.run.run_streamed") as run_streamed:
+            _run_server("192.168.1.5", 9001)
+        cmd = run_streamed.call_args.args[0]
+        assert cmd[cmd.index("--bind") + 1] == "192.168.1.5:9001"
 
 
 class AdminBrowserTestCase(TestCase):
