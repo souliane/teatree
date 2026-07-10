@@ -108,6 +108,9 @@ again next cadence.
 
 ```bash
 # Read one issue in full (body, comments, labels, state) before judging it.
+# Prefer the MCP tool (structured JSON, no text parsing):
+#   mcp__teatree__github_issue(issue_url) + mcp__teatree__github_issue_comments(issue_url)
+#   (gitlab_* for GitLab). CLI fallback below when the MCP server isn't connected.
 gh issue view <N> --repo <owner>/<repo> --json title,body,comments,labels,state
 
 # List the candidate set (open issues), oldest first.

@@ -68,22 +68,27 @@ Acting on a different ticket than the one requested — or smearing one ticket's
 
 #### Tooling Rules
 
-- **CLI over MCP (do this — never the reverse).** Fetch the issue body with the forge CLI as the **first** action. Reach for an MCP service only for a source that has no CLI (e.g. Notion, Slack). Do **not** open an MCP issue-fetch when `glab`/`gh` can read the same issue.
+- **MCP forge tools first for the issue fetch.** Fetch the issue body + discussion with the forge MCP tools as the **first** action — they return structured JSON, no text parsing:
 
-  The one command to run for the URL the user pasted — copy-paste, fill the placeholders, no narration:
+  ```text
+  # GitHub: mcp__teatree__github_issue(issue_url) + mcp__teatree__github_issue_comments(issue_url)
+  # GitLab: mcp__teatree__gitlab_issue(issue_url) + mcp__teatree__gitlab_issue_comments(issue_url)
+  ```
+
+  Fall back to the forge CLI only when the MCP server isn't connected (or when you need a capability the tool doesn't cover yet — full comment pagination on very long threads, see **Pagination** below):
 
   ```bash
-  # GitLab issue (gitlab.com/<group>/<repo>/-/issues/<iid>) — body + every discussion in one pass
+  # CLI fallback — GitLab issue (gitlab.com/<group>/<repo>/-/issues/<iid>): body + every discussion in one pass
   glab issue view <iid> --repo <group>/<repo> --comments
 
-  # GitHub issue (github.com/<owner>/<repo>/issues/<n>) — body + all comments
+  # CLI fallback — GitHub issue (github.com/<owner>/<repo>/issues/<n>): body + all comments
   gh issue view <n> --repo <owner>/<repo> --comments
 
-  # Notion / Slack / other CLI-less source only
+  # Notion / Slack / other source with no forge MCP tool
   t3 tool notion-download <signed-url>
   ```
 
-  Then traverse the linked graph (sub-pages, related MRs, threads) per the table above. `glab issue view ... --comments` / `gh issue view ... --comments` is the canonical intake fetch — not an MCP call.
+  Then traverse the linked graph (sub-pages, related MRs, threads) per the table above. The `mcp__teatree__<forge>_issue` / `<forge>_issue_comments` pair is the canonical intake fetch; the `glab`/`gh issue view` commands are its fallback.
 - **Image safety** — before reading any downloaded image, validate it with `file <path>`. Only raster (PNG/JPEG/GIF/WebP) are safe to read. Non-raster (SVG/XML/HTML) or empty/corrupt files will poison the conversation context with unrecoverable "Could not process image" errors.
 - **Pagination** — `glab api .../notes` returns one page (typically 20). Use `?per_page=100` or `--paginate` and de-duplicate.
 - **Inaccessible sources** — if a link points to a source you cannot reach (e.g., partner Jira behind SSO), STOP and report it. Do not silently proceed with a partial picture.

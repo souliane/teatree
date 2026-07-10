@@ -66,7 +66,7 @@ The workflow below is platform-neutral. Platform-specific recipes (CLI commands,
 
 ### 1. Detect Username
 
-Parse the authenticated username from the issue tracker CLI (e.g., `glab auth status`, `gh api user`). Extract the username field.
+Prefer the `mcp__teatree__github_current_user` / `mcp__teatree__gitlab_current_user` MCP tool (the forge group registered for the active overlay) — it returns the authenticated handle directly, no text parsing. Fall back to the tracker CLI (`glab auth status`, `gh api user`) when the MCP server isn't connected, extracting the username field.
 
 ### 2. Fetch "Not Started" Issues
 

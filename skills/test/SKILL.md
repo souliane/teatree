@@ -158,7 +158,7 @@ Analyze PR changes and produce a manual test plan. Use when the user says "test 
 
 ### 1. Gather Context
 
-- Read PR description via the issue tracker CLI (e.g., `glab mr view`, `gh pr view`)
+- Read the PR/MR state and description via the `mcp__teatree__github_pr_get` / `mcp__teatree__gitlab_pr_get` MCP tool (structured JSON; fall back to the issue tracker CLI — `glab mr view`, `gh pr view` — when the MCP server isn't connected)
 - Read the diff (`git diff main...HEAD` or via the CLI)
 - Read any linked ticket/specs for intended behavior
 
