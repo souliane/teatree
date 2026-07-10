@@ -182,13 +182,13 @@ class GitLabCodeHost:  # noqa: PLR0904 — method count reflects the CodeHostBac
         return self._client.list_open_issues_for_assignee(assignee)
 
     def list_prs(self, *, repo: str, state: str = "", author: str = "") -> list[RawAPIDict]:
-        return _pr_reads.list_prs(self._client, self._resolve_project(repo), state=state, author=author)
+        return _pr_reads.list_project_prs(self._client, self._resolve_project(repo), state=state, author=author)
 
     def get_pr_diff(self, *, repo: str, pr_iid: int) -> list[RawAPIDict]:
-        return _pr_reads.get_pr_diff(self._client, self._resolve_project(repo), pr_iid=pr_iid)
+        return _pr_reads.project_pr_diff(self._client, self._resolve_project(repo), pr_iid=pr_iid)
 
     def list_pr_commits(self, *, repo: str, pr_iid: int) -> list[RawAPIDict]:
-        return _pr_reads.list_pr_commits(self._client, self._resolve_project(repo), pr_iid=pr_iid)
+        return _pr_reads.list_project_pr_commits(self._client, self._resolve_project(repo), pr_iid=pr_iid)
 
     def get_repo(self, *, repo: str) -> RawAPIDict:
         return _pr_reads.repo_metadata(self._resolve_project(repo), repo=repo)

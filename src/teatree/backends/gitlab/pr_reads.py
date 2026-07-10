@@ -24,7 +24,7 @@ def state_filter(state: str) -> str:
     return "opened" if state == "open" else state
 
 
-def list_prs(client: GitLabAPI, project: ProjectInfo | None, *, state: str, author: str) -> list[RawAPIDict]:
+def list_project_prs(client: GitLabAPI, project: ProjectInfo | None, *, state: str, author: str) -> list[RawAPIDict]:
     if project is None:
         return []
     params = ["per_page=100"]
@@ -35,13 +35,13 @@ def list_prs(client: GitLabAPI, project: ProjectInfo | None, *, state: str, auth
     return client.get_json_paginated(f"projects/{project.project_id}/merge_requests?{'&'.join(params)}")
 
 
-def get_pr_diff(client: GitLabAPI, project: ProjectInfo | None, *, pr_iid: int) -> list[RawAPIDict]:
+def project_pr_diff(client: GitLabAPI, project: ProjectInfo | None, *, pr_iid: int) -> list[RawAPIDict]:
     if project is None:
         return []
     return client.get_json_paginated(f"projects/{project.project_id}/merge_requests/{pr_iid}/diffs?per_page=100")
 
 
-def list_pr_commits(client: GitLabAPI, project: ProjectInfo | None, *, pr_iid: int) -> list[RawAPIDict]:
+def list_project_pr_commits(client: GitLabAPI, project: ProjectInfo | None, *, pr_iid: int) -> list[RawAPIDict]:
     if project is None:
         return []
     return client.get_json_paginated(f"projects/{project.project_id}/merge_requests/{pr_iid}/commits?per_page=100")
