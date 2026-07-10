@@ -138,7 +138,9 @@ def create_or_defer_pr(repo_path: str, branch_name: str) -> EnsurePrResult:
     owning_ticket = _ticket_for_branch(branch_name)
     if owning_ticket is not None:
         try:
-            check_pr_budget(owning_ticket, repo_slug)
+            # Stage 3: `host` is the repo's resolved code host, so the budget
+            # check sees a sibling fleet instance's live forge PR too.
+            check_pr_budget(owning_ticket, repo_slug, host=host)
         except PrBudgetExceededError as exc:
             return EnsurePrResult(branch=branch_name, error=str(exc))
         debt_error = evaluate_debt_delta(owning_ticket, repo_path)

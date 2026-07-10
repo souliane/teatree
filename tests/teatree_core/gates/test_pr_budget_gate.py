@@ -11,9 +11,11 @@ TestResolvePerOverlay: the limit flows through the real ``get_effective_settings
 per overlay (overlay A limited, overlay B unlimited).
 """
 
+import httpx
 import pytest
 from django.test import TestCase
 
+from teatree.core.gates.pr_budget_forge import reset_forge_pr_budget_cache
 from teatree.core.gates.pr_budget_gate import (
     PrBudgetExceededError,
     check_pr_budget,
@@ -22,9 +24,32 @@ from teatree.core.gates.pr_budget_gate import (
     resolve_pr_budget,
 )
 from teatree.core.models import ConfigSetting, PullRequest, Ticket
+from teatree.utils.run import CommandFailedError
 
 _REPO_A = "souliane/teatree"
 _REPO_B = "souliane/other"
+
+
+def _gh_pr(*, repo: str, number: int, body: str) -> dict:
+    return {"html_url": f"https://github.com/{repo}/pull/{number}", "number": number, "body": body}
+
+
+class _FakeHost:
+    """Stub ``CodeHostBackend`` returning a fixed open-PR list for the forge backstop."""
+
+    def __init__(self, prs: list[dict], *, user: str = "fleet-bot", error: Exception | None = None) -> None:
+        self._prs = prs
+        self._user = user
+        self._error = error
+
+    def current_user(self) -> str:
+        return self._user
+
+    def list_my_prs(self, *, author: str, updated_after: str | None = None) -> list[dict]:
+        del author, updated_after
+        if self._error is not None:
+            raise self._error
+        return list(self._prs)
 
 
 def _pr(ticket: Ticket, *, repo: str, iid: str, state: str = PullRequest.State.OPEN) -> PullRequest:
@@ -151,6 +176,105 @@ class TestOpenPrUrlsForRepo(TestCase):
         )
         _pr(ticket, repo=_REPO_A, iid="1")  # same url as feat/x
         assert open_pr_urls_for_repo(ticket, _REPO_A) == {url, f"https://github.com/{_REPO_A}/pull/2"}
+
+
+class TestForgeAuthoritativeBackstop(TestCase):
+    """Fleet-safety Stage 3: a sibling instance's forge PR counts against the budget.
+
+    Uses a stubbed code host; ``setUp`` resets the forge memo so a cached result
+    never bleeds across cases.
+    """
+
+    def setUp(self) -> None:
+        reset_forge_pr_budget_cache()
+
+    def _ticket(self, number: int = 123, *, repo: str = _REPO_A) -> Ticket:
+        return Ticket.objects.create(
+            overlay="t3-teatree",
+            state=Ticket.State.IN_REVIEW,
+            issue_url=f"https://github.com/{repo}/issues/{number}",
+        )
+
+    def test_blocks_when_forge_shows_a_pr_the_local_db_does_not(self) -> None:
+        # (a) RED before the forge backstop: local DB has NO PR rows for the ticket,
+        # but the forge reports a sibling instance's open PR footer-linked to it.
+        ticket = self._ticket(123)
+        host = _FakeHost([_gh_pr(repo=_REPO_A, number=501, body="feat: x\n\nCloses #123")])
+        with pytest.raises(PrBudgetExceededError) as excinfo:
+            check_pr_budget(ticket, _REPO_A, limit=1, host=host)
+        assert "https://github.com/souliane/teatree/pull/501" in str(excinfo.value)
+
+    def test_fails_open_and_allows_on_a_forge_error(self) -> None:
+        # (b) A forge outage must not block shipping — degrade to local-only (empty).
+        ticket = self._ticket(123)
+        host = _FakeHost([], error=CommandFailedError(["gh", "api"], 1, "", "502 Bad Gateway"))
+        check_pr_budget(ticket, _REPO_A, limit=1, host=host)  # no raise
+
+    def test_fails_open_and_allows_on_a_gitlab_httpx_error(self) -> None:
+        # Regression: the GitLab backend raises httpx.HTTPError, which is neither
+        # OSError nor ValueError. A narrow catch would let it propagate and
+        # hard-block every ship — the fail-CLOSED inversion this backstop prevents.
+        ticket = self._ticket(123)
+        host = _FakeHost([], error=httpx.ReadTimeout("read timed out"))
+        check_pr_budget(ticket, _REPO_A, limit=1, host=host)  # no raise -> ship allowed
+
+    def test_does_not_double_count_a_pr_present_in_both_local_db_and_forge(self) -> None:
+        # (c) The same PR in the local DB and on the forge is ONE, not two: at
+        # limit 2 the single PR is allowed. A DIFFERENT forge PR would make two.
+        ticket = self._ticket(123)
+        url = f"https://github.com/{_REPO_A}/pull/501"
+        PullRequest.objects.create(ticket=ticket, url=url, repo=_REPO_A, iid="501", overlay=ticket.overlay)
+        host = _FakeHost([_gh_pr(repo=_REPO_A, number=501, body="Closes #123")])
+        check_pr_budget(ticket, _REPO_A, limit=2, host=host)  # deduped -> count 1 < 2
+
+    def test_local_and_a_distinct_forge_pr_together_reach_the_budget(self) -> None:
+        # Anti-vacuity companion to (c): a DISTINCT forge PR is not deduped away.
+        ticket = self._ticket(123)
+        PullRequest.objects.create(
+            ticket=ticket,
+            url=f"https://github.com/{_REPO_A}/pull/500",
+            repo=_REPO_A,
+            iid="500",
+            overlay=ticket.overlay,
+        )
+        host = _FakeHost([_gh_pr(repo=_REPO_A, number=501, body="Closes #123")])
+        with pytest.raises(PrBudgetExceededError):
+            check_pr_budget(ticket, _REPO_A, limit=2, host=host)  # {500, 501} -> 2 >= 2
+
+    def test_respects_the_limit_setting(self) -> None:
+        # (d) One forge PR: allowed at limit 2, refused at limit 1.
+        ticket = self._ticket(123)
+        host = _FakeHost([_gh_pr(repo=_REPO_A, number=501, body="Closes #123")])
+        check_pr_budget(ticket, _REPO_A, limit=2, host=host)  # count 1 < 2 -> allowed
+        with pytest.raises(PrBudgetExceededError):
+            check_pr_budget(ticket, _REPO_A, limit=1, host=host)
+
+    def test_forge_pr_in_another_repo_does_not_block(self) -> None:
+        # (e) Repo-scoping: a footer-linked forge PR living in another repo is
+        # dropped, so the budget for _REPO_A stays clear.
+        ticket = self._ticket(123)
+        host = _FakeHost([_gh_pr(repo=_REPO_B, number=7, body="Closes #123")])
+        check_pr_budget(ticket, _REPO_A, limit=1, host=host)  # other-repo PR ignored
+
+    def test_forge_pr_in_the_matching_repo_does_block(self) -> None:
+        # Anti-vacuity companion to (e): the same PR in the matching repo blocks.
+        ticket = self._ticket(123)
+        host = _FakeHost([_gh_pr(repo=_REPO_A, number=7, body="Closes #123")])
+        with pytest.raises(PrBudgetExceededError):
+            check_pr_budget(ticket, _REPO_A, limit=1, host=host)
+
+    def test_inert_at_zero_limit_never_calls_the_forge(self) -> None:
+        ticket = self._ticket(123)
+        never = "forge must not be consulted at the inert default"
+
+        class _Boom:
+            def current_user(self) -> str:
+                raise AssertionError(never)
+
+            def list_my_prs(self, *, author: str, updated_after: str | None = None) -> list[dict]:
+                raise AssertionError(never)
+
+        check_pr_budget(ticket, _REPO_A, limit=0, host=_Boom())  # no raise, no forge call
 
 
 class TestResolvePerOverlay(TestCase):

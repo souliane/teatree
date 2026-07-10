@@ -17,26 +17,16 @@ Three sources, cheapest first:
     under its ticket instead of orphaning detached at the tail.
 """
 
-import re
 from collections.abc import Iterable, Mapping
 from typing import TYPE_CHECKING, Any
 
 from teatree.loop.dispatch_tables import DispatchAction
+from teatree.utils.close_keywords import parse_closes_ticket
 
 if TYPE_CHECKING:
     from teatree.core.models import Ticket
 
 type Payload = Mapping[str, Any]
-
-# Matches ``Closes #123`` / ``Fixes: #456`` / ``Resolves #789`` (and the
-# plural/past-tense variants the platforms recognise — ``closed``, ``fixed``,
-# ``resolved``). Broader than ``sanitize_close_keywords`` in ship.py because
-# the parser must accept anything GitHub/GitLab auto-link, not just the
-# subset we emit. Anchored at a word boundary so ``preCloses#`` doesn't match.
-_CLOSE_KEYWORD_RE = re.compile(
-    r"\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)\b[\s:]*#(\d+)",
-    re.IGNORECASE,
-)
 
 
 def _description_from_payload(payload: Payload) -> str:
@@ -47,15 +37,6 @@ def _description_from_payload(payload: Payload) -> str:
             if isinstance(value, str):
                 return value
     return ""
-
-
-def _parse_closes_ticket(description: str) -> str:
-    """Return the first ``#N`` mentioned after a Closes/Fixes/Resolves keyword.
-
-    Returns an empty string if no close-keyword is found.
-    """
-    match = _CLOSE_KEYWORD_RE.search(description)
-    return match.group(1) if match else ""
 
 
 def _mr_url_payloads(actions: Iterable[DispatchAction]) -> dict[str, Payload]:
@@ -205,7 +186,7 @@ def build_ticket_index(actions: Iterable[DispatchAction]) -> dict[str, str]:
     for url, payload in payloads.items():
         if url in index:
             continue
-        ticket_number = _parse_closes_ticket(_description_from_payload(payload))
+        ticket_number = parse_closes_ticket(_description_from_payload(payload))
         if ticket_number:
             index[url] = ticket_number
     unresolved = [url for url in payloads if url not in index]

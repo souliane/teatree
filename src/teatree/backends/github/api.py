@@ -17,16 +17,23 @@ from teatree.utils.run import CompletedProcess, run_allowed_to_fail, run_checked
 
 _ISSUE_URL_RE = re.compile(r"^/(?P<owner>[^/]+)/(?P<repo>[^/]+)/issues/(?P<number>\d+)/?$")
 
+# Bound a read-only forge search so a network stall degrades (raises TimeoutExpired
+# → the caller's fail-open) instead of wedging the ship indefinitely. Generous
+# enough not to false-trip a fully-paginated fetch; the GitLab client already
+# bounds each request at 10s.
+_FORGE_READ_TIMEOUT_SECONDS = 60.0
 
-def _run_gh(*args: str, token: str = "") -> CompletedProcess[str]:
+
+def _run_gh(*args: str, token: str = "", timeout: float | None = None) -> CompletedProcess[str]:
     """Run a ``gh`` CLI command and return the result.
 
     Auth via ``GH_TOKEN`` env, never ``--header``: only ``gh api`` accepts
     ``--header``; injecting it into ``gh pr create`` fails with
-    ``unknown flag --header``.
+    ``unknown flag --header``. *timeout* (seconds) bounds the subprocess; the
+    default ``None`` leaves every existing caller unbounded as before.
     """
     env = {**os.environ, "GH_TOKEN": token} if token else None
-    return run_checked(list(args), env=env)
+    return run_checked(list(args), env=env, timeout=timeout)
 
 
 def gh_ambient_auth_available() -> bool:
@@ -109,6 +116,7 @@ def _gh_api_search_paginated(endpoint: str, *, token: str = "") -> list[RawAPIDi
         "--header",
         "Accept: application/vnd.github+json",
         token=token,
+        timeout=_FORGE_READ_TIMEOUT_SECONDS,
     )
     pages = json.loads(result.stdout)
     if not isinstance(pages, list):
