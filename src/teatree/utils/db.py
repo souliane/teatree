@@ -84,9 +84,17 @@ def db_restore(db_name: str, dump_path: str) -> None:
 
 
 def db_exists(db_name: str, *, user: str = "", host: str = "", env: dict[str, str] | None = None) -> bool:
+    """Return whether *db_name* is present, having actually reached the server.
+
+    A psql that could not connect (fail-closed credential, container-only
+    network) is not evidence the database is absent — ``expected_codes=(0,)``
+    makes ``run_allowed_to_fail`` raise ``CommandFailedError`` on any non-zero
+    exit, so a caller surfaces the real reason instead of a false "does not
+    exist" (souliane/teatree#3094). Only a clean listing yields a bool.
+    """
     result = run_allowed_to_fail(
         ["psql", "-h", host or pg_host(), "-U", user or pg_user(), "-lqt"],
         env=env if env is not None else pg_env(),
-        expected_codes=None,
+        expected_codes=(0,),
     )
     return any(line.split("|")[0].strip() == db_name for line in result.stdout.splitlines() if line)

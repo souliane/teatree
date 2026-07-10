@@ -141,6 +141,35 @@ def test_db_helpers_cover_env_exists_and_psql_fallback(monkeypatch: pytest.Monke
     assert commands[3][0] == "psql"
 
 
+def test_db_exists_raises_when_psql_cannot_connect(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A psql that could not connect is NOT evidence the database is absent (souliane/teatree#3094).
+
+    The host-side probe fails closed (missing credential, container-only
+    network) and psql exits non-zero with empty stdout. The old code accepted
+    any exit code and read the empty listing as "database does not exist" — a
+    false negative that made ``worktree status`` claim a live DB was missing.
+    The truthful contract raises so the caller surfaces the real reason.
+    """
+
+    def fake_run(
+        args: list[str],
+        *,
+        env: dict[str, str] | None = None,
+        capture_output: bool = False,
+        text: bool = False,
+        check: bool = False,
+        **_kwargs: object,
+    ) -> CompletedProcess[str]:
+        if args[0] == "psql" and "-lqt" in args:
+            return CompletedProcess(args, 2, "", "psql: error: connection to server failed")
+        return CompletedProcess(args, 0, "", "")
+
+    monkeypatch.setattr(utils_run_mod.subprocess, "run", fake_run)
+
+    with pytest.raises(utils_run_mod.CommandFailedError):
+        db.db_exists("wt_live")
+
+
 def test_db_restore_raises_when_restore_commands_fail(monkeypatch: pytest.MonkeyPatch) -> None:
     def fake_run(
         args: list[str],
