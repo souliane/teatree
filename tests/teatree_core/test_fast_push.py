@@ -5,12 +5,15 @@ forge CLI (network) is faked. The secret used in fixtures is assembled at
 runtime so this test file never contains a literal matchable token.
 """
 
+import json
 from dataclasses import dataclass, field
 from pathlib import Path
+from subprocess import CompletedProcess
+from unittest.mock import patch
 
 import pytest
 
-from teatree.core.fast_push import LEAK_GATES, FastPusher, FastPushOutcome
+from teatree.core.fast_push import LEAK_GATES, FastPusher, FastPushOutcome, GhForge, GlabForge, forge_for_repo
 from teatree.utils.run import run_checked
 
 
@@ -194,3 +197,61 @@ class TestNonLeakGatesSkipped:
         assert outcome.committed
         assert outcome.pushed
         assert not sentinel.exists()
+
+
+class TestForgeResolution:
+    def test_unknown_remote_skips_pr_but_pushes(self, repo: Path, leak_env: None) -> None:
+        (repo / "feature.py").write_text("x = 1\n")
+
+        outcome = FastPusher(repo=repo, message="feat: clean change").run()
+
+        assert outcome.ok
+        assert outcome.pushed
+        assert outcome.pr_action == "skipped"
+        assert outcome.pr_url == ""
+
+    def test_github_remote_resolves_gh(self, repo: Path) -> None:
+        run_checked(["git", "remote", "set-url", "origin", "git@github.com:acme/widgets.git"], cwd=repo)
+        assert isinstance(forge_for_repo(repo), GhForge)
+
+    def test_gitlab_remote_resolves_glab(self, repo: Path) -> None:
+        run_checked(["git", "remote", "set-url", "origin", "https://gitlab.com/acme/widgets.git"], cwd=repo)
+        assert isinstance(forge_for_repo(repo), GlabForge)
+
+    def test_no_remote_resolves_none(self, tmp_path: Path) -> None:
+        bare = tmp_path / "no-remote"
+        run_checked(["git", "init", "-b", "main", str(bare)])
+        assert forge_for_repo(bare) is None
+
+
+class TestForgeCliCommands:
+    def _completed(self, stdout: str, returncode: int = 0) -> CompletedProcess[str]:
+        return CompletedProcess(args=["stub"], returncode=returncode, stdout=stdout, stderr="")
+
+    def test_gh_find_create_update(self, tmp_path: Path) -> None:
+        forge = GhForge(tmp_path)
+        with patch("teatree.core.fast_push.run_allowed_to_fail", return_value=self._completed("https://x/pr/4\n")):
+            assert forge.find_pr_url(branch="b") == "https://x/pr/4"
+        with patch("teatree.core.fast_push.run_allowed_to_fail", return_value=self._completed("", returncode=1)):
+            assert forge.find_pr_url(branch="b") == ""
+        with patch("teatree.core.fast_push.run_checked", return_value=self._completed("https://x/pr/5\n")) as run:
+            assert forge.create_pr(branch="b", title="t", body="d") == "https://x/pr/5"
+            forge.update_pr(url="https://x/pr/5", body="d2")
+        created_cmd, updated_cmd = run.call_args_list[0].args[0], run.call_args_list[1].args[0]
+        assert created_cmd[:3] == ["gh", "pr", "create"]
+        assert "--assignee" not in created_cmd
+        assert updated_cmd[:3] == ["gh", "pr", "edit"]
+
+    def test_glab_find_create_update(self, tmp_path: Path) -> None:
+        forge = GlabForge(tmp_path)
+        listing = json.dumps([{"web_url": "https://gl/mr/7"}])
+        with patch("teatree.core.fast_push.run_allowed_to_fail", return_value=self._completed(listing)):
+            assert forge.find_pr_url(branch="b") == "https://gl/mr/7"
+        with patch("teatree.core.fast_push.run_allowed_to_fail", return_value=self._completed("not-json")):
+            assert forge.find_pr_url(branch="b") == ""
+        with patch(
+            "teatree.core.fast_push.run_checked", return_value=self._completed("created https://gl/mr/8\n")
+        ) as run:
+            assert forge.create_pr(branch="b", title="t", body="d") == "https://gl/mr/8"
+            forge.update_pr(url="https://gl/mr/8", body="d2")
+        assert run.call_args_list[1].args[0][:4] == ["glab", "mr", "update", "8"]
