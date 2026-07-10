@@ -48,10 +48,12 @@ services:
 
   # Django admin (gunicorn), DEBUG off like the worker — /admin/ mounts
   # unconditionally now, so the admin no longer needs DEBUG (and inherits the
-  # same connection.queries-leak fix). Bound to the BOX loopback via host
-  # networking so the auto-login middleware sees a genuine 127.0.0.1 client: a
-  # published bridge port NATs the source to the docker gateway, which would
-  # fail the loopback check. Reach it via an SSH tunnel.
+  # same connection.queries-leak fix). Host networking binds it to the BOX
+  # loopback (127.0.0.1:8000): the SSH tunnel is the security boundary, and the
+  # middleware sees a genuine 127.0.0.1 client (a published bridge port would NAT
+  # the source to the docker gateway). With a loopback-only bind the middleware's
+  # loopback check is defense-in-depth against a bind misconfig, not the primary
+  # gate. Host port 8000 must be free on the box. Reach it via an SSH tunnel.
   teatree-admin:
     <<: *teatree-common
     environment:

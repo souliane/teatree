@@ -150,7 +150,11 @@ verify the fingerprint out of band).
   boundary**. A non-loopback request is never auto-logged-in, even with the flag
   on, so exposing the port off-loopback cannot open the admin. `T3_ADMIN_USER` /
   `T3_ADMIN_PASSWORD` still seed that superuser row deterministically (they matter
-  as a password only when auto-login does not apply).
+  as a password only when auto-login does not apply). Because the boundary is
+  *loopback identity*, any same-host process — or a same-host reverse proxy — that
+  reaches `127.0.0.1:8000` is trusted as superuser, so keep the box's local access
+  as tight as its SSH access and never place a same-host reverse proxy in front of
+  the admin.
 
 - **No Tailscale.** SSH is the only inbound port. This works with a corporate VPN
   up — the tunnel rides your normal SSH access.
@@ -170,10 +174,12 @@ verify the fingerprint out of band).
 
 - **Headless orchestration is still maturing** — expect to babysit early runs via
   the admin dashboard and `docker compose logs` (and Slack once you wire it up).
-- **The admin runs under gunicorn** (a production WSGI server) behind a loopback +
-  SSH tunnel — never expose it publicly. Both long-running services (worker AND
-  admin) run with `DEBUG` off to avoid `connection.queries` growth; `/admin/`
-  mounts independent of `DEBUG`, so nothing here relies on it.
+- **The admin runs under gunicorn** (a production WSGI server) bound to the box
+  loopback behind an SSH tunnel — never expose it publicly, and never place a
+  same-host reverse proxy in front of it: the auto-login trust model treats any
+  local `127.0.0.1` client (a proxy included) as superuser. Both long-running
+  services (worker AND admin) run with `DEBUG` off to avoid `connection.queries`
+  growth; `/admin/` mounts independent of `DEBUG`, so nothing here relies on it.
 - **The OAuth token shares your weekly Claude quota and does not auto-refresh** —
   rotate `CLAUDE_CODE_OAUTH_TOKEN` manually and re-run the workflow when it expires.
 - **teatree-only:** this deployment never clones or references any customer or

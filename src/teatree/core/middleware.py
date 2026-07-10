@@ -2,7 +2,6 @@
 
 from typing import TYPE_CHECKING
 
-from django.conf import settings
 from django.contrib.auth import get_user_model, login
 
 from teatree.config import get_effective_settings
@@ -27,7 +26,7 @@ class LocalAdminAutoLoginMiddleware:
     BOTH hold:
 
     * the ``admin_autologin_enabled`` setting is on (DB-home, default on), and
-    * the request originates from loopback (``127.0.0.1`` / ``::1`` / ``INTERNAL_IPS``).
+    * the request originates from loopback (``127.0.0.1`` / ``::1``).
 
     The loopback check is the hard security boundary — auto-login NEVER fires for
     a non-loopback request, even with the flag on — so a non-loopback deployment
@@ -55,11 +54,15 @@ class LocalAdminAutoLoginMiddleware:
 
 
 def _request_is_loopback(request: "HttpRequest") -> bool:
-    """Whether the request's client address is a loopback / internal address.
+    """Whether the request's client address is a loopback address.
 
-    A published bridge port NATs the source to the docker gateway, so the deploy
-    binds the admin to a real loopback interface (host networking) to keep this a
-    genuine ``127.0.0.1`` behind the SSH tunnel.
+    Reads ``REMOTE_ADDR`` (the real peer address), never a forwarded header — a
+    ``X-Forwarded-For: 127.0.0.1`` from a non-loopback client cannot spoof it.
+    The hardcoded loopback set IS the boundary; it is deliberately NOT widened by
+    ``settings.INTERNAL_IPS``, so this superuser-auth gate stays decoupled from a
+    debug-toolbar knob (a non-loopback IP added there for debugging could never
+    widen who is auto-logged-in). A published bridge port NATs the source to the
+    docker gateway, so the deploy binds the admin to a real loopback interface
+    (host networking) to keep this a genuine ``127.0.0.1`` behind the SSH tunnel.
     """
-    remote_addr = request.META.get("REMOTE_ADDR", "")
-    return remote_addr in _LOOPBACK_IPS or remote_addr in set(settings.INTERNAL_IPS)
+    return request.META.get("REMOTE_ADDR", "") in _LOOPBACK_IPS
