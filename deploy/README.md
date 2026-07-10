@@ -44,6 +44,32 @@ the worker read the **same** `db.sqlite3` (WAL — safe concurrent reads):
 
 Re-running the workflow is **idempotent** — it converges the same stack.
 
+## Fleet role split — which loops run where
+
+teatree runs as a small fleet: the operator's laptop plus this headless box.
+Some autonomous loops are **fleet-scoped** — they must run on exactly **one**
+instance or they double-act. The box provisions **no Slack credential** (see
+[Access & networking](#access--networking)), so the Slack-facing loops would be
+both broken here and duplicates of the laptop's. The split:
+
+| Instance | Runs | Does not run |
+| --- | --- | --- |
+| **Laptop** | `inbox` (Slack drain), `review` (colleague PR review → Slack), `directive_loop` (asks the human via Slack) | `tickets` — the operator disables it by hand |
+| **Box** (this deploy) | `tickets` (issue scanning/dispatch) + all machine-local loops | `inbox`, `review`, `directive_loop` |
+
+The box enforces its side in `deploy/entrypoint.sh` (init role): after seeding
+config it calls `t3 loop disable <name>` — the single DB-backed per-loop control
+plane (`Loop.enabled` AND `LoopsConfig.is_enabled`) — for each fleet-scoped loop.
+The disable is idempotent, so re-running the deploy converges.
+
+`TEATREE_DISABLED_LOOPS` (comma-separated) overrides the set the box disables. It
+defaults to `inbox,review,directive_loop` when unset, so a fresh deploy is safe
+with no configuration; an **empty** value disables nothing (every loop runs
+here). Set it in the box env file (`teatree.env`) to change the set. Because the
+deploy workflow rewrites `teatree.env` from repository secrets on every run, a
+persistent override belongs in that workflow's env-file writer (add a
+`TEATREE_DISABLED_LOOPS` line beside the others), not a hand-edit on the box.
+
 ## One-time bootstrap (on the box)
 
 Do this once as an admin on the box.
