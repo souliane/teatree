@@ -67,6 +67,8 @@ def _resolve_export_scan_terms() -> tuple[str, ...]:
     ``cold_reader``, so a shared export scans the operator's configured customer/
     brand terms without any file. An unconfigured store yields no terms (empty).
     """
+    # Deferred (PLC0415): importing `teatree.config` at module scope eagerly
+    # loads its heavy package __init__; keep this module's import light.
     from teatree.config import cold_reader  # noqa: PLC0415
 
     terms: list[str] = []

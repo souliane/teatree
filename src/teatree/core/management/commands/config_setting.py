@@ -31,20 +31,24 @@ from typing import Annotated, Any
 import typer
 from django_typer.management import TyperCommand, command
 
-from teatree.config import FEATURE_FLAGS, OVERLAY_OVERRIDABLE_SETTINGS, get_effective_settings
+from teatree.config import COLD_HOOK_SETTINGS, FEATURE_FLAGS, OVERLAY_OVERRIDABLE_SETTINGS, get_effective_settings
 from teatree.config.feature_flags import flag_trailer, render_flags_audit
 from teatree.config.registries import COLD_SETTINGS, REGISTRY_SETTINGS
 from teatree.core.config_migration import export_db_to_toml
 from teatree.core.models import ConfigSetting
 
-# Every key ``config_setting set/get`` accepts: the ``UserSettings`` DB partition,
-# the injected registries (``overlays`` / ``e2e_repos``), and the cold-read keys
-# (codename lists, ``[agent]`` spawn tables, tunables). Their union is the single
-# allowlist so an admin cannot stash a row no reader would consult.
+# Every key ``config_setting`` knows: the ``UserSettings`` DB partition, the
+# injected registries (``overlays`` / ``e2e_repos``), the cold-read keys (codename
+# lists, ``[agent]`` spawn tables, tunables), and the pre-Django cold-hook gate
+# flags / budgets (``COLD_HOOK_SETTINGS``, e.g. ``out_of_band_merge_gate_enabled``).
+# Their union is the SINGLE known-key set shared by get/list/set/clear: every key
+# ``list`` can display is one ``get`` resolves and ``set``/``clear`` accept, and an
+# admin still cannot stash a row no reader would consult.
 _ALLOWED_SETTINGS: dict[str, Callable[[Any], Any]] = {
     **OVERLAY_OVERRIDABLE_SETTINGS,
     **REGISTRY_SETTINGS,
     **COLD_SETTINGS,
+    **{key: setting.parse for key, setting in COLD_HOOK_SETTINGS.items()},
 }
 
 _OverlayOption = Annotated[
@@ -78,10 +82,11 @@ class Command(TyperCommand):
     ) -> None:
         """Upsert the DB override row for *key* (in *overlay*'s scope or global) to *value*.
 
-        Refuses a key in none of ``OVERLAY_OVERRIDABLE_SETTINGS`` /
-        ``REGISTRY_SETTINGS`` / ``COLD_SETTINGS``, a *value* that is not valid JSON,
-        and a *value* that JSON-parses but is invalid for the setting's type,
-        leaving the store untouched on any error.
+        Refuses a key outside the unified known-key set
+        (``OVERLAY_OVERRIDABLE_SETTINGS`` / ``REGISTRY_SETTINGS`` / ``COLD_SETTINGS``
+        / ``COLD_HOOK_SETTINGS``), a *value* that is not valid JSON, and a *value*
+        that JSON-parses but is invalid for the setting's type, leaving the store
+        untouched on any error.
 
         ``--overlay <name>`` scopes the row to one overlay (the per-overlay
         override); omitted, it writes the global scope.
@@ -167,10 +172,12 @@ class Command(TyperCommand):
         """Print the resolved value for *key* and name its source (DB vs env/default).
 
         When a ``ConfigSetting`` row exists in the requested scope it is reported as
-        the ``db`` source; otherwise the value falls through to the env/default layer
-        and is reported as the ``env/default`` source. ``--overlay <name>`` reads that
-        overlay's scope. Refuses an unknown key so a typo is loud, not a silent
-        answer for a non-setting.
+        the ``db`` source; otherwise the value falls through to the code layer: a
+        cold-hook gate key (``COLD_HOOK_SETTINGS``) reports its in-code
+        ``ColdHookSetting`` default, every other key its ``UserSettings``
+        env/default value. ``--overlay <name>`` reads that overlay's scope. Refuses
+        an unknown key — a typo is loud, not a silent answer for a non-setting — but
+        accepts every key ``list`` can display (the unified known-key set).
         """
         if key not in _ALLOWED_SETTINGS:
             self.stderr.write(f"  refusing: {key!r} is not a known config setting")
@@ -178,6 +185,10 @@ class Command(TyperCommand):
         stored = ConfigSetting.objects.get_effective(key, scope=overlay)
         if stored is not None:
             self.stdout.write(f"  {key} = {stored!r}  [source: db, {_scope_label(overlay)}]{_flag_suffix(key)}")
+            return
+        cold_hook = COLD_HOOK_SETTINGS.get(key)
+        if cold_hook is not None:
+            self.stdout.write(f"  {key} = {cold_hook.default!r}  [source: code default]{_flag_suffix(key)}")
             return
         fallback = getattr(get_effective_settings(overlay or None), key, None)
         self.stdout.write(f"  {key} = {fallback!r}  [source: env/default]{_flag_suffix(key)}")
