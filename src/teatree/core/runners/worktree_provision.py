@@ -12,7 +12,7 @@ from teatree.core.overlay_loader import get_overlay_for_worktree
 from teatree.core.provision.provision_timebox import alert_provision_user, run_timeboxed_db_import
 from teatree.core.provision.step_runner import ProvisionReport, StepResult, run_provision_steps, run_step
 from teatree.core.runners.base import RunnerBase, RunnerResult
-from teatree.core.worktree.worktree_env import CACHE_FILENAME, worktree_pg_connection, write_env_cache
+from teatree.core.worktree.worktree_env import CACHE_DIRNAME, CACHE_FILENAME, worktree_pg_connection, write_env_cache
 
 logger = logging.getLogger(__name__)
 
@@ -97,7 +97,7 @@ def _setup_worktree_dir(wt_path: str, worktree: Worktree, overlay: OverlayBase) 
     """
     if not wt_path or not Path(wt_path).is_dir():
         return None
-    core_lines = [f"dotenv {CACHE_FILENAME}"]
+    core_lines = [f"dotenv ../{CACHE_DIRNAME}/{CACHE_FILENAME}"]
     _append_envrc_lines(wt_path, core_lines + overlay.provisioning.envrc_lines(worktree))
     result = run_step("direnv-allow", ["direnv", "allow", wt_path], check=False)
     if not result.success:

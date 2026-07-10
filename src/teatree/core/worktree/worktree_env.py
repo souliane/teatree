@@ -13,7 +13,6 @@ truth.
 
 import os
 import platform
-import shutil
 import stat
 from dataclasses import dataclass
 from pathlib import Path
@@ -191,18 +190,19 @@ def render_env_cache(worktree: Worktree, *, overlay: "OverlayBase | None" = None
 
 
 def write_env_cache(worktree: Worktree, *, overlay: "OverlayBase | None" = None) -> EnvCacheSpec | None:
-    """Write the env cache and copy it into the repo worktree.
+    """Write the env cache to the out-of-repo ``.t3-cache/`` home.
 
     Idempotent.  Writes the file ``chmod 444``.  Callers that modify the
     DB should call this afterwards to refresh the cache.
 
-    The in-worktree copy at ``<wt_path>/.t3-env.cache`` is a real file,
-    not a symlink: when the worktree is bind-mounted into a Docker
-    container, a symlink pointing at the host-absolute cache path
-    dangles inside the container (errno 22 on stat). A real-file copy
-    survives any mount layout. Drift detection still compares the
-    canonical file under ``.t3-cache/`` against a fresh DB render, so
-    the worktree-local copy is just a consumer-facing convenience.
+    The single copy lives at ``<ticket_dir>/.t3-cache/.t3-env.cache`` — a
+    sibling of every repo working tree, never inside one (souliane/teatree#3097,
+    same principle as #3096). A generated file inside a repo tree surfaces as
+    untracked where that repo's ignore file does not list it, and a sibling repo
+    can end up committing another repo's generated cache. Consumers read it from
+    the sibling: the worktree's ``.envrc`` sources ``../.t3-cache/.t3-env.cache``
+    and ``_find_env_cache`` walks up to the same path. Any stale in-worktree copy
+    from a pre-#3097 provision is removed here.
     """
     spec = render_env_cache(worktree, overlay=overlay)
     if spec is None:
@@ -212,16 +212,14 @@ def write_env_cache(worktree: Worktree, *, overlay: "OverlayBase | None" = None)
     wt_path = Path(extra["worktree_path"])
 
     spec.path.parent.mkdir(parents=True, exist_ok=True)
-    # Remove read-only bit before overwrite, then re-chmod 444.
     if spec.path.exists():
         spec.path.chmod(stat.S_IWUSR | stat.S_IRUSR)
     spec.path.write_text(spec.content, encoding="utf-8")
     spec.path.chmod(stat.S_IRUSR | stat.S_IRGRP | stat.S_IROTH)  # 0o444
 
-    repo_copy = wt_path / CACHE_FILENAME
-    if repo_copy.is_symlink() or repo_copy.exists():
-        repo_copy.unlink()
-    shutil.copy2(spec.path, repo_copy)
+    stale_repo_copy = wt_path / CACHE_FILENAME
+    if stale_repo_copy.is_symlink() or stale_repo_copy.exists():
+        stale_repo_copy.unlink()
 
     return spec
 

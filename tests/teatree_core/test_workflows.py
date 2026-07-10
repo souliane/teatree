@@ -239,14 +239,10 @@ class TestLifecycleProvision(TestCase):
         assert "WT_VARIANT=testclient" in env_content
         assert f"WT_DB_NAME=wt_{wt_backend.ticket_id}_testclient" in env_content
         assert "DJANGO_SETTINGS_MODULE=" in env_content
-        # Per-repo copies are regular files, not symlinks (#1313) — a
-        # host-absolute symlink would dangle inside a bind-mounted container.
-        backend_copy = ticket_dir / "backend" / ".t3-env.cache"
-        frontend_copy = ticket_dir / "frontend" / ".t3-env.cache"
-        assert backend_copy.is_file()
-        assert not backend_copy.is_symlink()
-        assert frontend_copy.is_file()
-        assert not frontend_copy.is_symlink()
+        # No copy lands inside any repo working tree (#3097) — the single
+        # cache is the out-of-repo .t3-cache/ sibling.
+        assert not (ticket_dir / "backend" / ".t3-env.cache").exists()
+        assert not (ticket_dir / "frontend" / ".t3-env.cache").exists()
 
     @override_settings(**WORKFLOW_SETTINGS)
     def test_start_transitions_to_services_up(self) -> None:

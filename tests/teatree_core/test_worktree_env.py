@@ -275,13 +275,9 @@ class TestWriteEnvCache(TestCase):
             mode = stat.S_IMODE(spec.path.stat().st_mode)
             assert mode == 0o444
 
-            # Real file in repo — not a symlink (#1313). A symlink would dangle
-            # inside a bind-mounted container because the target is a host-only
-            # absolute path.
-            repo_copy = wt_path / CACHE_FILENAME
-            assert not repo_copy.is_symlink()
-            assert repo_copy.is_file()
-            assert repo_copy.read_text(encoding="utf-8") == spec.path.read_text(encoding="utf-8")
+            # No copy inside the repo working tree (#3097) — the cache is the
+            # sole out-of-repo file under ``.t3-cache/``.
+            assert not (wt_path / CACHE_FILENAME).exists()
 
     def test_shared_postgres_adds_host(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -328,48 +324,43 @@ class TestWriteEnvCache(TestCase):
             assert "MYAPP_BASE_IMAGE=myapp-local:base" in spec.content
 
 
-class TestRepoCopyNotSymlink(TestCase):
-    """Regression for #1313 — the in-worktree copy must be a real file.
+class TestNoRepoWorkingTreeCopy(TestCase):
+    """Regression for #3097 — the cache must not be copied into a repo tree.
 
-    A symlink at ``<wt_path>/.t3-env.cache`` pointing at the host-absolute
-    cache path dangles inside a bind-mounted container, breaking any
-    in-container reader of the env file (pipenv, dotenv, plain ``stat``)
-    with errno 22.
+    A generated file inside a repo working tree surfaces as untracked in any
+    sibling repo whose ignore file does not list it, and an agent staging
+    everything can commit it onto a merge request. The single copy lives in
+    the out-of-repo ``.t3-cache/`` sibling of the worktree (the #3096
+    principle); consumers read it from there.
     """
 
-    def test_repo_copy_is_regular_file(self) -> None:
+    def test_cache_not_written_inside_repo_working_tree(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             wt, wt_path = _make_worktree(tmp, ticket_name="t-r1", ticket_url="https://ex.com/r1", db_name="wt_r1")
             with patch.object(overlay_loader_mod, "_discover_overlays", return_value=_COMMAND):
                 spec = write_env_cache(wt)
             assert spec is not None
-            repo_copy = wt_path / CACHE_FILENAME
-            assert not repo_copy.is_symlink()
-            assert repo_copy.is_file()
+            assert not (wt_path / CACHE_FILENAME).exists()
+            assert list(wt_path.iterdir()) == []
 
-    def test_repo_copy_content_equals_source(self) -> None:
+    def test_canonical_cache_lives_outside_the_worktree(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             wt, wt_path = _make_worktree(tmp, ticket_name="t-r2", ticket_url="https://ex.com/r2", db_name="wt_r2")
             with patch.object(overlay_loader_mod, "_discover_overlays", return_value=_COMMAND):
                 spec = write_env_cache(wt)
             assert spec is not None
-            repo_copy = wt_path / CACHE_FILENAME
-            assert repo_copy.read_text(encoding="utf-8") == spec.path.read_text(encoding="utf-8")
+            assert wt_path not in spec.path.parents
+            assert spec.path == wt_path.parent / CACHE_DIRNAME / CACHE_FILENAME
+            assert spec.path.is_file()
 
-    def test_repo_copy_survives_source_deletion(self) -> None:
-        """A real file is independent of the source — symlinks would dangle."""
+    def test_stale_in_worktree_copy_is_removed_on_regenerate(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             wt, wt_path = _make_worktree(tmp, ticket_name="t-r3", ticket_url="https://ex.com/r3", db_name="wt_r3")
+            stale = wt_path / CACHE_FILENAME
+            stale.write_text("leftover from a pre-#3097 provision\n", encoding="utf-8")
             with patch.object(overlay_loader_mod, "_discover_overlays", return_value=_COMMAND):
-                spec = write_env_cache(wt)
-            assert spec is not None
-            repo_copy = wt_path / CACHE_FILENAME
-            expected = spec.path.read_text(encoding="utf-8")
-            spec.path.chmod(stat.S_IWUSR | stat.S_IRUSR)
-            spec.path.unlink()
-            assert repo_copy.is_file()
-            assert not repo_copy.is_symlink()
-            assert repo_copy.read_text(encoding="utf-8") == expected
+                write_env_cache(wt)
+            assert not stale.exists()
 
 
 class TestDetectDrift(TestCase):

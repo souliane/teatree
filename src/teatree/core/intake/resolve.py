@@ -2,8 +2,9 @@
 
 Resolution order:
 
-1. Walk up from CWD looking for the env cache copy → parse
-    ``TICKET_DIR`` → match against ``Worktree.extra["worktree_path"]``
+1. Walk up from CWD to the worktree's out-of-repo ``.t3-cache/`` sibling
+    holding the env cache → parse ``TICKET_DIR`` → match against
+    ``Worktree.extra["worktree_path"]``
 2. Match CWD directly against ``Worktree.extra["worktree_path"]``
 3. Detect git worktree from filesystem and auto-register in DB
 
@@ -21,7 +22,7 @@ from django.core.exceptions import ImproperlyConfigured
 from teatree.core.intake.ticket_kind_classification import classify_ticket_kind
 from teatree.core.models import Ticket, Worktree
 from teatree.core.overlay_loader import get_all_overlays, get_overlay_for_repo
-from teatree.core.worktree.worktree_env import CACHE_FILENAME
+from teatree.core.worktree.worktree_env import CACHE_DIRNAME, CACHE_FILENAME
 from teatree.core.worktree.worktree_paths import _candidate_paths
 from teatree.utils import git
 
@@ -85,14 +86,15 @@ def _parse_env_file(path: Path) -> dict[str, str]:
 def _find_env_cache(cwd: str) -> Path | None:
     """Walk up from *cwd* looking for the env cache.
 
-    The in-worktree env cache is a regular file copy (since #1316) of the
-    canonical cache under ``.t3-cache/``; ``is_file()`` returns True for
-    that copy and False for missing entries, so a worktree whose copy was
-    never generated is naturally skipped.
+    The env cache lives at ``<ticket_dir>/.t3-cache/.t3-env.cache`` — a
+    sibling of the repo working tree, never inside it (souliane/teatree#3097).
+    Walking up from a directory inside the worktree reaches ``ticket_dir``
+    and finds its ``.t3-cache/.t3-env.cache``; ``is_file()`` is False for a
+    worktree whose cache was never generated, so it is naturally skipped.
     """
     cwd_path = Path(cwd)
     for parent in [cwd_path, *cwd_path.parents]:
-        candidate = parent / CACHE_FILENAME
+        candidate = parent / CACHE_DIRNAME / CACHE_FILENAME
         if candidate.is_file():
             return candidate
     return None
@@ -461,8 +463,8 @@ def resolve_worktree(path: str = "", ticket_hint: Ticket | None = None) -> Workt
     """
     cwd = str(Path(path).resolve()) if path else _get_user_cwd()
 
-    # 1. Walk up from CWD to find the env cache (a regular file copy of
-    #    the canonical file in .t3-cache/, since #1316).
+    # 1. Walk up from CWD to the .t3-cache/ sibling holding the env cache
+    #    (out-of-repo, never copied into a repo tree, since #3097).
     envfile = _find_env_cache(cwd)
     if envfile is not None:
         env = _parse_env_file(envfile)

@@ -72,24 +72,31 @@ class TestParseEnvFile:
         assert result == {"URL": "http://host?a=b"}
 
 
+def _write_cache(ticket_dir: Path) -> Path:
+    cache = ticket_dir / ".t3-cache" / ".t3-env.cache"
+    cache.parent.mkdir(parents=True, exist_ok=True)
+    cache.write_text("TICKET_DIR=/some/path\n", encoding="utf-8")
+    return cache
+
+
 class TestFindEnvCache:
-    def test_found_in_cwd(self, tmp_path: Path) -> None:
-        envfile = tmp_path / ".t3-env.cache"
-        envfile.write_text("TICKET_DIR=/some/path\n", encoding="utf-8")
+    def test_found_in_worktree_sibling_from_cwd(self, tmp_path: Path) -> None:
+        cache = _write_cache(tmp_path)
+        worktree = tmp_path / "backend"
+        worktree.mkdir()
 
-        result = _find_env_cache(str(tmp_path))
+        result = _find_env_cache(str(worktree))
 
-        assert result == envfile
+        assert result == cache
 
-    def test_found_in_parent(self, tmp_path: Path) -> None:
-        envfile = tmp_path / ".t3-env.cache"
-        envfile.write_text("TICKET_DIR=/some/path\n", encoding="utf-8")
-        child = tmp_path / "sub" / "deep"
+    def test_found_walking_up_from_subdir(self, tmp_path: Path) -> None:
+        cache = _write_cache(tmp_path)
+        child = tmp_path / "backend" / "sub" / "deep"
         child.mkdir(parents=True)
 
         result = _find_env_cache(str(child))
 
-        assert result == envfile
+        assert result == cache
 
     def test_not_found(self, tmp_path: Path) -> None:
         child = tmp_path / "a" / "b"
@@ -100,14 +107,14 @@ class TestFindEnvCache:
         assert result is None
 
     def test_broken_symlink_is_ignored(self, tmp_path: Path) -> None:
-        """Broken symlinks are not returned.
+        """A broken symlink at the canonical path is not returned.
 
-        Under a Docker mount that does not include the ticket dir, the
-        worktree's ``.t3-env.cache`` symlink stays present but its target
-        disappears; returning it would crash downstream ``read_text``.
+        ``is_file()`` is False for a dangling link, so a downstream
+        ``read_text`` can never be handed a broken target.
         """
-        link = tmp_path / ".t3-env.cache"
-        link.symlink_to(tmp_path / "does-not-exist" / ".t3-env.cache")
+        cache_dir = tmp_path / ".t3-cache"
+        cache_dir.mkdir()
+        (cache_dir / ".t3-env.cache").symlink_to(tmp_path / "does-not-exist" / ".t3-env.cache")
 
         result = _find_env_cache(str(tmp_path))
 
@@ -180,7 +187,8 @@ class TestResolveWorktree(TestCase):
             extra={"worktree_path": str(self._tmp_path / "ticket-dir")},
         )
 
-        envfile = self._tmp_path / ".t3-env.cache"
+        envfile = self._tmp_path / ".t3-cache" / ".t3-env.cache"
+        envfile.parent.mkdir(parents=True, exist_ok=True)
         envfile.write_text(f"TICKET_DIR={self._tmp_path / 'ticket-dir'}\n", encoding="utf-8")
         self._monkeypatch.setenv("T3_ORIG_CWD", str(self._tmp_path))
 
@@ -257,7 +265,8 @@ class TestResolveWorktree(TestCase):
 
     def test_env_file_without_ticket_dir(self) -> None:
         """When .t3-env.cache exists but has no TICKET_DIR, fall through to CWD match."""
-        envfile = self._tmp_path / ".t3-env.cache"
+        envfile = self._tmp_path / ".t3-cache" / ".t3-env.cache"
+        envfile.parent.mkdir(parents=True, exist_ok=True)
         envfile.write_text("SOME_OTHER_KEY=value\n", encoding="utf-8")
         self._monkeypatch.setenv("T3_ORIG_CWD", str(self._tmp_path))
 
@@ -306,7 +315,8 @@ class TestResolveWorktreeRejectsMainClone(TestCase):
         # main clone (the stale/mis-recorded condition the guard catches).
         cwd = self._tmp_path / "elsewhere"
         cwd.mkdir()
-        envfile = cwd / ".t3-env.cache"
+        envfile = cwd / ".t3-cache" / ".t3-env.cache"
+        envfile.parent.mkdir(parents=True, exist_ok=True)
         envfile.write_text(f"TICKET_DIR={main_clone}\n", encoding="utf-8")
         self._monkeypatch.setenv("T3_ORIG_CWD", str(cwd))
 
@@ -953,14 +963,15 @@ class TestRefreshReusedRowRefusesPathSteal(TestCase):
         assert row.extra["keep"] == "me"
 
 
-class TestResolveModuleDocstringMatchesCopyShape:
-    """Guard against re-introducing the pre-#1316 "symlink" wording.
+class TestResolveModuleDocstringMatchesCacheLocation:
+    """Guard the env-cache resolution docs against a stale mental model.
 
-    The in-worktree env cache is a regular file copy (since #1316), not a
-    symlink. The module-level docstring, the ``_find_env_cache`` docstring,
-    and the inline comment in ``resolve_worktree`` must describe it that
-    way — otherwise readers chasing a Docker bind-mount failure will be
-    led back to the pre-fix mental model.
+    The env cache is the out-of-repo ``.t3-cache/`` sibling of the worktree,
+    never copied into a repo tree (#3097) and never a symlink. The module
+    docstring, the ``_find_env_cache`` docstring, and the inline comment in
+    ``resolve_worktree`` must describe it that way — otherwise a reader
+    chasing an untracked-file or bind-mount failure is led back to the
+    pre-fix mental model.
 
     Anti-vacuous: revert any of these sites to the word "symlink" and the
     relevant assertion goes red.
@@ -973,30 +984,29 @@ class TestResolveModuleDocstringMatchesCopyShape:
         docstring = resolve_module.__doc__ or ""
         assert "symlink" not in docstring.lower(), (
             "module docstring still describes the env cache as a symlink; "
-            "since #1316 the in-worktree cache is a regular file copy"
+            "since #3097 it is the out-of-repo .t3-cache/ sibling"
         )
         assert "env cache" in docstring, (
             "module docstring must still mention the env cache as the first resolution anchor"
         )
 
-    def test_find_env_cache_docstring_describes_copy_not_symlink(self) -> None:
+    def test_find_env_cache_docstring_does_not_mention_symlink(self) -> None:
         docstring = _find_env_cache.__doc__ or ""
-        assert "worktree symlinks" not in docstring, (
-            "_find_env_cache docstring still claims the in-worktree cache "
-            "is a symlink; since #1316 it is a regular file copy"
+        assert "symlink" not in docstring.lower(), (
+            "_find_env_cache docstring still describes the env cache as a "
+            "symlink; since #3097 it is the out-of-repo .t3-cache/ sibling"
         )
 
     def test_resolve_worktree_step1_comment_does_not_mention_symlink(self) -> None:
         source = self._resolve_source()
-        # Locate the step-1 walk-up block inside resolve_worktree.
-        marker = "# 1. Walk up from CWD to find the env cache"
+        marker = "# 1. Walk up from CWD to the .t3-cache/ sibling"
         assert marker in source, "step-1 walk-up comment moved or was removed"
         start = source.index(marker)
         block = source[start : start + 200]
         assert "symlink" not in block.lower(), (
             f"step-1 inline comment in resolve_worktree still mentions "
-            f"'symlink'; since #1316 the in-worktree env cache is a "
-            f"regular file copy. Offending block:\n{block}"
+            f"'symlink'; since #3097 the env cache is the out-of-repo "
+            f".t3-cache/ sibling. Offending block:\n{block}"
         )
 
 
