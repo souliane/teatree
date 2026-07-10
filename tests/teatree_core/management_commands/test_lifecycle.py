@@ -165,7 +165,7 @@ class TestLifecycleSetup(TestCase):
             # db_name keys on the unique Ticket pk, not the derived ticket_number.
             assert worktree.db_name == f"wt_{worktree.ticket_id}_acmebank"
 
-            cache_file = tmp_path / ".t3-cache" / ".t3-env.cache"
+            cache_file = tmp_path / ".t3-cache" / wt_dir.name / ".t3-env.cache"
             cache_body = cache_file.read_text(encoding="utf-8")
             assert "WT_VARIANT=acmebank" in cache_body
             assert f"WT_DB_NAME=wt_{worktree.ticket_id}_acmebank" in cache_body
@@ -461,9 +461,9 @@ class TestLifecycleSetup(TestCase):
             tmp_path = Path(tmp)
             wt_dir = tmp_path / "backend"
             wt_dir.mkdir()
-            # Create env cache in parent (ticket dir)
-            cache_dir = tmp_path / ".t3-cache"
-            cache_dir.mkdir()
+            # Env cache lives out-of-repo under the ticket dir, per repo.
+            cache_dir = tmp_path / ".t3-cache" / wt_dir.name
+            cache_dir.mkdir(parents=True)
             (cache_dir / ".t3-env.cache").write_text("WT_DB_NAME=test\n")
 
             ticket = Ticket.objects.create(overlay="test", issue_url="https://example.com/issues/115")
@@ -938,8 +938,8 @@ class TestLifecycleDiagnose(TestCase):
             wt_dir.mkdir()
             # .git file marks this as a worktree (not a main clone)
             (wt_dir / ".git").write_text("gitdir: /tmp/.git/worktrees/backend")
-            cache_dir = tmp_path / ".t3-cache"
-            cache_dir.mkdir()
+            cache_dir = tmp_path / ".t3-cache" / wt_dir.name
+            cache_dir.mkdir(parents=True)
             (cache_dir / ".t3-env.cache").write_text("WT_DB_NAME=wt_120\n")
 
             ticket = Ticket.objects.create(overlay="test", issue_url="https://example.com/issues/120")

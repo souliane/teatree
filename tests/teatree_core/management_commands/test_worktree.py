@@ -103,8 +103,8 @@ class TestStatusEnforcesProvisionPostConditions(TestCase):
     def _provisioned_worktree(self, root: Path) -> tuple[Worktree, Path]:
         wt_dir = root / "repo"
         wt_dir.mkdir()
-        cache = root / CACHE_DIRNAME / CACHE_FILENAME
-        cache.parent.mkdir()
+        cache = root / CACHE_DIRNAME / wt_dir.name / CACHE_FILENAME
+        cache.parent.mkdir(parents=True)
         cache.write_text("WT_DB_NAME=x\n", encoding="utf-8")
         worktree = Worktree.objects.create(
             ticket=self.ticket,

@@ -72,8 +72,8 @@ class TestParseEnvFile:
         assert result == {"URL": "http://host?a=b"}
 
 
-def _write_cache(ticket_dir: Path) -> Path:
-    cache = ticket_dir / ".t3-cache" / ".t3-env.cache"
+def _write_cache(ticket_dir: Path, repo: str = "backend") -> Path:
+    cache = ticket_dir / ".t3-cache" / repo / ".t3-env.cache"
     cache.parent.mkdir(parents=True, exist_ok=True)
     cache.write_text("TICKET_DIR=/some/path\n", encoding="utf-8")
     return cache
@@ -81,7 +81,7 @@ def _write_cache(ticket_dir: Path) -> Path:
 
 class TestFindEnvCache:
     def test_found_in_worktree_sibling_from_cwd(self, tmp_path: Path) -> None:
-        cache = _write_cache(tmp_path)
+        cache = _write_cache(tmp_path, "backend")
         worktree = tmp_path / "backend"
         worktree.mkdir()
 
@@ -90,13 +90,23 @@ class TestFindEnvCache:
         assert result == cache
 
     def test_found_walking_up_from_subdir(self, tmp_path: Path) -> None:
-        cache = _write_cache(tmp_path)
+        cache = _write_cache(tmp_path, "backend")
         child = tmp_path / "backend" / "sub" / "deep"
         child.mkdir(parents=True)
 
         result = _find_env_cache(str(child))
 
         assert result == cache
+
+    def test_sibling_repo_cache_is_not_returned(self, tmp_path: Path) -> None:
+        """From inside one repo, the sibling repo's cache is never returned."""
+        _write_cache(tmp_path, "frontend")
+        backend = tmp_path / "backend"
+        backend.mkdir()
+
+        result = _find_env_cache(str(backend))
+
+        assert result is None
 
     def test_not_found(self, tmp_path: Path) -> None:
         child = tmp_path / "a" / "b"
@@ -112,11 +122,13 @@ class TestFindEnvCache:
         ``is_file()`` is False for a dangling link, so a downstream
         ``read_text`` can never be handed a broken target.
         """
-        cache_dir = tmp_path / ".t3-cache"
-        cache_dir.mkdir()
+        cache_dir = tmp_path / ".t3-cache" / "backend"
+        cache_dir.mkdir(parents=True)
         (cache_dir / ".t3-env.cache").symlink_to(tmp_path / "does-not-exist" / ".t3-env.cache")
+        worktree = tmp_path / "backend"
+        worktree.mkdir()
 
-        result = _find_env_cache(str(tmp_path))
+        result = _find_env_cache(str(worktree))
 
         assert result is None
 
@@ -179,18 +191,19 @@ class TestResolveWorktree(TestCase):
         self._tmp_path = tmp_path
 
     def test_from_env_worktree_file(self) -> None:
+        wt_dir = self._tmp_path / "backend"
         ticket = Ticket.objects.create()
         wt = Worktree.objects.create(
             ticket=ticket,
             repo_path="backend",
             branch="feature",
-            extra={"worktree_path": str(self._tmp_path / "ticket-dir")},
+            extra={"worktree_path": str(wt_dir)},
         )
 
-        envfile = self._tmp_path / ".t3-cache" / ".t3-env.cache"
+        envfile = self._tmp_path / ".t3-cache" / "backend" / ".t3-env.cache"
         envfile.parent.mkdir(parents=True, exist_ok=True)
-        envfile.write_text(f"TICKET_DIR={self._tmp_path / 'ticket-dir'}\n", encoding="utf-8")
-        self._monkeypatch.setenv("T3_ORIG_CWD", str(self._tmp_path))
+        envfile.write_text(f"TICKET_DIR={wt_dir}\n", encoding="utf-8")
+        self._monkeypatch.setenv("T3_ORIG_CWD", str(wt_dir))
 
         result = resolve_worktree()
 
@@ -265,10 +278,11 @@ class TestResolveWorktree(TestCase):
 
     def test_env_file_without_ticket_dir(self) -> None:
         """When .t3-env.cache exists but has no TICKET_DIR, fall through to CWD match."""
-        envfile = self._tmp_path / ".t3-cache" / ".t3-env.cache"
+        cwd = self._tmp_path / "backend"
+        envfile = self._tmp_path / ".t3-cache" / "backend" / ".t3-env.cache"
         envfile.parent.mkdir(parents=True, exist_ok=True)
         envfile.write_text("SOME_OTHER_KEY=value\n", encoding="utf-8")
-        self._monkeypatch.setenv("T3_ORIG_CWD", str(self._tmp_path))
+        self._monkeypatch.setenv("T3_ORIG_CWD", str(cwd))
 
         with pytest.raises(WorktreeNotFoundError):
             resolve_worktree()
@@ -315,7 +329,7 @@ class TestResolveWorktreeRejectsMainClone(TestCase):
         # main clone (the stale/mis-recorded condition the guard catches).
         cwd = self._tmp_path / "elsewhere"
         cwd.mkdir()
-        envfile = cwd / ".t3-cache" / ".t3-env.cache"
+        envfile = cwd.parent / ".t3-cache" / cwd.name / ".t3-env.cache"
         envfile.parent.mkdir(parents=True, exist_ok=True)
         envfile.write_text(f"TICKET_DIR={main_clone}\n", encoding="utf-8")
         self._monkeypatch.setenv("T3_ORIG_CWD", str(cwd))

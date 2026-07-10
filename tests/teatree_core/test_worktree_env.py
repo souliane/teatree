@@ -16,6 +16,7 @@ from teatree.core.worktree.worktree_env import (
     CACHE_DIRNAME,
     CACHE_FILENAME,
     detect_drift,
+    env_cache_path,
     load_overrides,
     render_env_cache,
     set_override,
@@ -265,7 +266,9 @@ class TestWriteEnvCache(TestCase):
 
             assert spec is not None
             assert spec.path.name == CACHE_FILENAME
-            assert spec.path.parent.name == CACHE_DIRNAME
+            # Per repo, under the out-of-repo .t3-cache/ sibling.
+            assert spec.path.parent.name == wt_path.name
+            assert spec.path.parent.parent.name == CACHE_DIRNAME
             content = spec.path.read_text(encoding="utf-8")
             assert "# GENERATED" in content
             assert "WT_VARIANT=acme" in content
@@ -350,7 +353,7 @@ class TestNoRepoWorkingTreeCopy(TestCase):
                 spec = write_env_cache(wt)
             assert spec is not None
             assert wt_path not in spec.path.parents
-            assert spec.path == wt_path.parent / CACHE_DIRNAME / CACHE_FILENAME
+            assert spec.path == wt_path.parent / CACHE_DIRNAME / wt_path.name / CACHE_FILENAME
             assert spec.path.is_file()
 
     def test_stale_in_worktree_copy_is_removed_on_regenerate(self) -> None:
@@ -361,6 +364,76 @@ class TestNoRepoWorkingTreeCopy(TestCase):
             with patch.object(overlay_loader_mod, "_discover_overlays", return_value=_COMMAND):
                 write_env_cache(wt)
             assert not stale.exists()
+
+
+def _make_sibling_worktree(ticket: Ticket, ticket_dir: Path, repo: str, db_name: str) -> tuple[Worktree, Path]:
+    wt_path = ticket_dir / repo
+    wt_path.mkdir()
+    wt = Worktree.objects.create(
+        overlay="test",
+        ticket=ticket,
+        repo_path=repo,
+        branch="feature",
+        db_name=db_name,
+        extra={"worktree_path": str(wt_path)},
+    )
+    return wt, wt_path
+
+
+class TestPerRepoEnvCache(TestCase):
+    """Sibling repos of one ticket each get their own env cache (#3097 follow-up).
+
+    #3097 moved the cache out of every repo working tree, but derived its
+    path from ``ticket_dir`` alone — identical for every repo sharing the
+    ticket dir (the standard multi-repo layout ``ticket_dir/backend``,
+    ``ticket_dir/frontend``). The second repo's write then clobbered the
+    first, so the non-last-writer's direnv/shell sourced the wrong repo's
+    ``COMPOSE_PROJECT_NAME``. The cache must be per repo AND out of every
+    repo tree.
+
+    RED before the fix: both repos resolve to one shared path, so the
+    backend cache carries the frontend's ``COMPOSE_PROJECT_NAME``.
+    """
+
+    def test_sibling_repos_get_distinct_cache_paths(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            ticket_dir = Path(tmp) / "ac-42-ticket"
+            ticket_dir.mkdir()
+            ticket = Ticket.objects.create(overlay="test", issue_url="https://ex.com/42")
+            backend, backend_path = _make_sibling_worktree(ticket, ticket_dir, "backend", "wt_be")
+            frontend, frontend_path = _make_sibling_worktree(ticket, ticket_dir, "frontend", "wt_fe")
+
+            be_cache = env_cache_path(backend)
+            fe_cache = env_cache_path(frontend)
+
+            assert be_cache != fe_cache
+            # Out of every repo working tree (the #3097 guarantee).
+            assert backend_path not in be_cache.parents
+            assert frontend_path not in fe_cache.parents
+            # Both under the one shared out-of-repo .t3-cache/ sibling.
+            assert be_cache.parents[1] == ticket_dir / CACHE_DIRNAME
+            assert fe_cache.parents[1] == ticket_dir / CACHE_DIRNAME
+
+    def test_each_repo_cache_holds_its_own_compose_project(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            ticket_dir = Path(tmp) / "ac-42-ticket"
+            ticket_dir.mkdir()
+            ticket = Ticket.objects.create(overlay="test", issue_url="https://ex.com/42")
+            backend, _ = _make_sibling_worktree(ticket, ticket_dir, "backend", "wt_be")
+            frontend, _ = _make_sibling_worktree(ticket, ticket_dir, "frontend", "wt_fe")
+
+            with patch.object(overlay_loader_mod, "_discover_overlays", return_value=_COMMAND):
+                write_env_cache(backend)
+                # Provisioning the sibling second must NOT clobber the first.
+                write_env_cache(frontend)
+
+            be_content = env_cache_path(backend).read_text(encoding="utf-8")
+            fe_content = env_cache_path(frontend).read_text(encoding="utf-8")
+
+            assert f"COMPOSE_PROJECT_NAME=backend-wt{ticket.pk}" in be_content
+            assert f"COMPOSE_PROJECT_NAME=frontend-wt{ticket.pk}" in fe_content
+            # The last writer never leaks its project into the sibling's cache.
+            assert f"COMPOSE_PROJECT_NAME=frontend-wt{ticket.pk}" not in be_content
 
 
 class TestDetectDrift(TestCase):

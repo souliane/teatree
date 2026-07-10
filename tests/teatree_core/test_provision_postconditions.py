@@ -39,8 +39,8 @@ def _provisioned_layout(root: Path) -> tuple[Path, Path]:
     """Return ``(wt_dir, env_cache)`` for a well-formed provisioned worktree."""
     wt_dir = root / "repo"
     wt_dir.mkdir()
-    cache = root / CACHE_DIRNAME / CACHE_FILENAME
-    cache.parent.mkdir()
+    cache = root / CACHE_DIRNAME / wt_dir.name / CACHE_FILENAME
+    cache.parent.mkdir(parents=True)
     cache.write_text("WT_DB_NAME=x\n", encoding="utf-8")
     return wt_dir, cache
 

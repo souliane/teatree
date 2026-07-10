@@ -194,8 +194,8 @@ class TestEnvMigrateSecrets(TestCase):
             ticket_dir.mkdir()
             wt_path = ticket_dir / "backend"
             wt_path.mkdir()
-            cache_dir = ticket_dir / CACHE_DIRNAME
-            cache_dir.mkdir()
+            cache_dir = ticket_dir / CACHE_DIRNAME / wt_path.name
+            cache_dir.mkdir(parents=True)
             cache_file = cache_dir / CACHE_FILENAME
             cache_file.write_text("FOO=bar\nPOSTGRES_PASSWORD=top-secret\n", encoding="utf-8")
 
@@ -237,8 +237,8 @@ class TestEnvMigrateSecrets(TestCase):
             ticket_dir.mkdir()
             wt_path = ticket_dir / "backend"
             wt_path.mkdir()
-            cache_dir = ticket_dir / CACHE_DIRNAME
-            cache_dir.mkdir()
+            cache_dir = ticket_dir / CACHE_DIRNAME / wt_path.name
+            cache_dir.mkdir(parents=True)
             cache_file = cache_dir / CACHE_FILENAME
             cache_file.write_text(
                 "FOO=bar\nPOSTGRES_PASSWORD_PASS_KEY=teatree/wt/7/postgres\n",
@@ -273,8 +273,8 @@ class TestEnvMigrateSecrets(TestCase):
             ticket_dir.mkdir()
             wt_path = ticket_dir / "backend"
             wt_path.mkdir()
-            cache_dir = ticket_dir / CACHE_DIRNAME
-            cache_dir.mkdir()
+            cache_dir = ticket_dir / CACHE_DIRNAME / wt_path.name
+            cache_dir.mkdir(parents=True)
             cache_file = cache_dir / CACHE_FILENAME
             cache_file.write_text("POSTGRES_PASSWORD=needs-migration\n", encoding="utf-8")
 

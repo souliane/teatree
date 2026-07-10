@@ -84,17 +84,20 @@ def _parse_env_file(path: Path) -> dict[str, str]:
 
 
 def _find_env_cache(cwd: str) -> Path | None:
-    """Walk up from *cwd* looking for the env cache.
+    """Walk up from *cwd* looking for the repo's env cache.
 
-    The env cache lives at ``<ticket_dir>/.t3-cache/.t3-env.cache`` — a
-    sibling of the repo working tree, never inside it (souliane/teatree#3097).
-    Walking up from a directory inside the worktree reaches ``ticket_dir``
-    and finds its ``.t3-cache/.t3-env.cache``; ``is_file()`` is False for a
+    The env cache lives at ``<ticket_dir>/.t3-cache/<repo>/.t3-env.cache`` —
+    under the out-of-repo ``.t3-cache/`` sibling of the repo working tree,
+    keyed per repo so sibling repos of one ticket do not share one file
+    (souliane/teatree#3097). Each walked directory is treated as a candidate
+    repo worktree dir: its cache is ``<parent>/.t3-cache/<dir-name>/.t3-env.cache``.
+    Walking up from inside a repo reaches the repo dir and finds its own cache;
+    a sibling repo's cache is never returned. ``is_file()`` is False for a
     worktree whose cache was never generated, so it is naturally skipped.
     """
     cwd_path = Path(cwd)
     for parent in [cwd_path, *cwd_path.parents]:
-        candidate = parent / CACHE_DIRNAME / CACHE_FILENAME
+        candidate = parent.parent / CACHE_DIRNAME / parent.name / CACHE_FILENAME
         if candidate.is_file():
             return candidate
     return None

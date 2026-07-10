@@ -1,6 +1,6 @@
-"""Generate the per-ticket env cache.
+"""Generate the per-repo env cache.
 
-The cache file lives at ``<ticket_dir>/.t3-cache/.t3-env.cache`` and is
+The cache file lives at ``<ticket_dir>/.t3-cache/<repo>/.t3-env.cache`` and is
 regenerated on every ``t3 <overlay> worktree start``.  It is **not** the source of
 truth — the DB is.  The file is ``chmod 444`` to discourage manual edits,
 and its header calls out that edits are pointless.
@@ -76,8 +76,20 @@ def compose_project(worktree: Worktree) -> str:
     return f"{worktree.repo_path}-wt{ticket.pk}" if ticket else worktree.repo_path
 
 
+def _cache_path_for(wt_path: Path) -> Path:
+    """Per-repo env-cache path ``<ticket_dir>/.t3-cache/<repo>/.t3-env.cache``.
+
+    Out of every repo working tree (the #3097 guarantee), yet keyed on the
+    repo's own worktree dir name so sibling repos of one ticket
+    (``ticket_dir/backend``, ``ticket_dir/frontend``) do not collapse onto a
+    single ``ticket_dir/.t3-cache/.t3-env.cache`` where the last writer wins
+    and hands the other repo the wrong ``COMPOSE_PROJECT_NAME``.
+    """
+    return wt_path.parent / CACHE_DIRNAME / wt_path.name / CACHE_FILENAME
+
+
 def env_cache_path(worktree: Worktree) -> Path | None:
-    """Return the canonical env-cache path ``<ticket_dir>/.t3-cache/.t3-env.cache``.
+    """Return the canonical env-cache path ``<ticket_dir>/.t3-cache/<repo>/.t3-env.cache``.
 
     ``None`` when the worktree has not been materialised on disk yet (no
     ``worktree_path``), so a caller checking the cache's presence can tell
@@ -89,7 +101,7 @@ def env_cache_path(worktree: Worktree) -> Path | None:
     wt_path = worktree.worktree_path
     if not wt_path:
         return None
-    return Path(wt_path).parent / CACHE_DIRNAME / CACHE_FILENAME
+    return _cache_path_for(Path(wt_path))
 
 
 def _docker_host_address() -> str:
@@ -160,7 +172,7 @@ def render_env_cache(worktree: Worktree, *, overlay: "OverlayBase | None" = None
     wt_path_str = extra.get("worktree_path")
     if not wt_path_str:
         return None
-    ticket_dir = Path(wt_path_str).parent
+    wt_path = Path(wt_path_str)
 
     if overlay is None:
         overlay = get_overlay_for_worktree(worktree)
@@ -185,7 +197,7 @@ def render_env_cache(worktree: Worktree, *, overlay: "OverlayBase | None" = None
     ordered_keys = tuple(k for k in pairs if k not in secret_keys)
     body = "\n".join(f"{k}={pairs[k]}" for k in ordered_keys) + "\n"
 
-    cache_path = ticket_dir / CACHE_DIRNAME / CACHE_FILENAME
+    cache_path = _cache_path_for(wt_path)
     return EnvCacheSpec(path=cache_path, keys=ordered_keys, content=_HEADER + body)
 
 
@@ -195,13 +207,16 @@ def write_env_cache(worktree: Worktree, *, overlay: "OverlayBase | None" = None)
     Idempotent.  Writes the file ``chmod 444``.  Callers that modify the
     DB should call this afterwards to refresh the cache.
 
-    The single copy lives at ``<ticket_dir>/.t3-cache/.t3-env.cache`` — a
-    sibling of every repo working tree, never inside one (souliane/teatree#3097,
-    same principle as #3096). A generated file inside a repo tree surfaces as
-    untracked where that repo's ignore file does not list it, and a sibling repo
-    can end up committing another repo's generated cache. Consumers read it from
-    the sibling: the worktree's ``.envrc`` sources ``../.t3-cache/.t3-env.cache``
-    and ``_find_env_cache`` walks up to the same path. Any stale in-worktree copy
+    The copy lives at ``<ticket_dir>/.t3-cache/<repo>/.t3-env.cache`` — under
+    the out-of-repo ``.t3-cache/`` sibling of every repo working tree, never
+    inside one (souliane/teatree#3097, same principle as #3096). It is keyed on
+    the repo's own worktree dir name so sibling repos of one ticket do not
+    collapse onto a single file where the last writer wins. A generated file
+    inside a repo tree surfaces as untracked where that repo's ignore file does
+    not list it, and a sibling repo can end up committing another repo's
+    generated cache. Consumers read it from the sibling: the worktree's
+    ``.envrc`` sources ``../.t3-cache/<repo>/.t3-env.cache`` and
+    ``_find_env_cache`` walks up to the same path. Any stale in-worktree copy
     from a pre-#3097 provision is removed here.
     """
     spec = render_env_cache(worktree, overlay=overlay)

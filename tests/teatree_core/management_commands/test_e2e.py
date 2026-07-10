@@ -534,9 +534,10 @@ class TestE2eExternal(TestCase):
             tmp_path = Path(tmp)
             wt_dir = tmp_path / "worktree"
             wt_dir.mkdir()
-            # The env cache lives out-of-repo in the ticket dir's .t3-cache/
-            # sibling, never inside the repo working tree (souliane/teatree#3097).
-            cache_dir = wt_dir.parent / ".t3-cache"
+            # The env cache lives out-of-repo under the ticket dir's .t3-cache/
+            # sibling, per repo, never inside the repo working tree
+            # (souliane/teatree#3097).
+            cache_dir = wt_dir.parent / ".t3-cache" / wt_dir.name
             cache_dir.mkdir(parents=True, exist_ok=True)
             (cache_dir / ".t3-env.cache").write_text(f"WT_VARIANT=acme\nTICKET_DIR={tmp_path}\n", encoding="utf-8")
             private_dir = tmp_path / "private"
@@ -702,10 +703,10 @@ class TestE2eExternal(TestCase):
             backend_wt_dir = tmp_path / "backend-worktree"
             backend_wt_dir.mkdir()
             # The env cache lives in the linked backend ticket's out-of-repo
-            # .t3-cache/ sibling, never inside the repo working tree
+            # .t3-cache/ sibling, per repo, never inside the repo working tree
             # (souliane/teatree#3097) — overlay extras (CUSTOMER, app
             # credentials) are sourced from there.
-            cache_dir = backend_wt_dir.parent / ".t3-cache"
+            cache_dir = backend_wt_dir.parent / ".t3-cache" / backend_wt_dir.name
             cache_dir.mkdir(parents=True, exist_ok=True)
             (cache_dir / ".t3-env.cache").write_text(
                 f"WT_VARIANT=tenant-child\nTICKET_DIR={backend_wt_dir.parent}\n",
@@ -803,9 +804,10 @@ class TestE2eExternal(TestCase):
             tmp_path = Path(tmp)
             backend_wt_dir = tmp_path / "backend-worktree"
             backend_wt_dir.mkdir()
-            # The env cache lives out-of-repo in the ticket dir's .t3-cache/
-            # sibling, never inside the repo working tree (souliane/teatree#3097).
-            cache_dir = backend_wt_dir.parent / ".t3-cache"
+            # The env cache lives out-of-repo under the ticket dir's .t3-cache/
+            # sibling, per repo, never inside the repo working tree
+            # (souliane/teatree#3097).
+            cache_dir = backend_wt_dir.parent / ".t3-cache" / backend_wt_dir.name
             cache_dir.mkdir(parents=True, exist_ok=True)
             (cache_dir / ".t3-env.cache").write_text(
                 f"WT_VARIANT=acme\nTICKET_DIR={backend_wt_dir.parent}\n",
