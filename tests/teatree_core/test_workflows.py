@@ -233,20 +233,24 @@ class TestLifecycleProvision(TestCase):
         assert wt_backend.extra.get("provisioned_by_overlay") is True
         assert wt_frontend.extra.get("provisioned_by_overlay") is True
 
-        envfile = ticket_dir / ".t3-cache" / ".t3-env.cache"
-        assert envfile.is_file(), "env cache should be generated during setup"
-        env_content = envfile.read_text()
-        assert "WT_VARIANT=testclient" in env_content
-        assert f"WT_DB_NAME=wt_{wt_backend.ticket_id}_testclient" in env_content
-        assert "DJANGO_SETTINGS_MODULE=" in env_content
-        # Per-repo copies are regular files, not symlinks (#1313) — a
-        # host-absolute symlink would dangle inside a bind-mounted container.
-        backend_copy = ticket_dir / "backend" / ".t3-env.cache"
-        frontend_copy = ticket_dir / "frontend" / ".t3-env.cache"
-        assert backend_copy.is_file()
-        assert not backend_copy.is_symlink()
-        assert frontend_copy.is_file()
-        assert not frontend_copy.is_symlink()
+        # Each repo gets its OWN cache under the out-of-repo .t3-cache/ sibling
+        # (#3097 follow-up) — provisioning the frontend second must not clobber
+        # the backend's cache.
+        backend_cache = ticket_dir / ".t3-cache" / "backend" / ".t3-env.cache"
+        frontend_cache = ticket_dir / ".t3-cache" / "frontend" / ".t3-env.cache"
+        assert backend_cache.is_file(), "backend env cache should be generated during setup"
+        assert frontend_cache.is_file(), "frontend env cache should be generated during setup"
+        backend_content = backend_cache.read_text()
+        assert "WT_VARIANT=testclient" in backend_content
+        assert f"WT_DB_NAME=wt_{wt_backend.ticket_id}_testclient" in backend_content
+        assert "DJANGO_SETTINGS_MODULE=" in backend_content
+        # Each repo's cache carries its OWN compose project, not the sibling's.
+        assert f"COMPOSE_PROJECT_NAME=backend-wt{wt_backend.ticket_id}" in backend_content
+        assert f"COMPOSE_PROJECT_NAME=frontend-wt{wt_frontend.ticket_id}" in frontend_cache.read_text()
+        # No copy lands inside any repo working tree (#3097) — the caches are
+        # the out-of-repo .t3-cache/ siblings.
+        assert not (ticket_dir / "backend" / ".t3-env.cache").exists()
+        assert not (ticket_dir / "frontend" / ".t3-env.cache").exists()
 
     @override_settings(**WORKFLOW_SETTINGS)
     def test_start_transitions_to_services_up(self) -> None:

@@ -133,7 +133,8 @@ class TestProvisionRunnerEnvCacheOnMultiOverlayHost(_MultiOverlayEnvTest):
             wt = self._worktree(tmp, overlay=OVERLAY_B)
             result = WorktreeProvisionRunner(wt).run()
             assert result.ok, result.detail
-            spec_path = Path(wt.worktree_path).parent / ".t3-cache" / ".t3-env.cache"
+            wt_dir = Path(wt.worktree_path)
+            spec_path = wt_dir.parent / ".t3-cache" / wt_dir.name / ".t3-env.cache"
             assert spec_path.is_file()
             assert f"MARKER={OVERLAY_B}" in spec_path.read_text(encoding="utf-8")
 

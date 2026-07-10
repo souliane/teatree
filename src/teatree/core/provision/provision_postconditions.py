@@ -5,7 +5,7 @@ state promises — the env cache, the application database, each provision step'
 own resource — have since been deleted out from under it. The aggregate probe
 here is the truth test ``worktree status`` evaluates: a ``provisioned`` worktree
 is *really* provisioned only if every one of these post-conditions still holds.
-Deleting ``.t3-cache/.t3-env.cache`` or the worktree DB flips one to FAIL, so
+Deleting ``.t3-cache/<repo>/.t3-env.cache`` or the worktree DB flips one to FAIL, so
 ``worktree status`` refuses green with a non-zero exit.
 
 The probes reuse :class:`teatree.core.worktree.readiness.Probe` — a check_fn returning a
