@@ -525,6 +525,20 @@
       "subcommands": []
     },
     {
+      "help": "Enable or disable a single DB-configured autonomous loop by name (the per-instance fleet seam).",
+      "name": "loops_toggle",
+      "subcommands": [
+        {
+          "help": "Set ``Loop.enabled = True`` for *name* on this instance (idempotent)",
+          "name": "enable"
+        },
+        {
+          "help": "Set ``Loop.enabled = False`` for *name* on this instance (idempotent)",
+          "name": "disable"
+        }
+      ]
+    },
+    {
       "help": "``t3 <overlay> memory`` group root.",
       "name": "memory",
       "subcommands": [

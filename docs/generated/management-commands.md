@@ -272,6 +272,15 @@ List DB-configured autonomous loops (read-only; #1796).
 
 Run ONE enabled, due DB Loop by name (--loop) — the per-loop primitive each native Claude `/loop` fires.
 
+## `loops_toggle`
+
+Enable or disable a single DB-configured autonomous loop by name (the per-instance fleet seam).
+
+| Subcommand | Description |
+| --- | --- |
+| `enable` | Set ``Loop.enabled = True`` for *name* on this instance (idempotent) |
+| `disable` | Set ``Loop.enabled = False`` for *name* on this instance (idempotent) |
+
 ## `memory`
 
 ``t3 <overlay> memory`` group root.

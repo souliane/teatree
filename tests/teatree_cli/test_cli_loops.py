@@ -49,3 +49,27 @@ class TestLoopsTick:
         # tick (#2650) — there is no fleet-wide tick to loop over.
         result = runner.invoke(loops_app, ["run", "--once"])
         assert result.exit_code != 0
+
+
+class TestLoopsToggle:
+    def test_enable_delegates_with_the_loop_name(self) -> None:
+        with patch("django.setup"), patch("django.core.management.call_command") as call:
+            result = runner.invoke(loops_app, ["enable", "tickets"])
+        assert result.exit_code == 0, result.stdout
+        call.assert_called_once_with("loops_toggle", "enable", "tickets")
+
+    def test_disable_delegates_with_the_loop_name(self) -> None:
+        with patch("django.setup"), patch("django.core.management.call_command") as call:
+            result = runner.invoke(loops_app, ["disable", "tickets"])
+        assert result.exit_code == 0, result.stdout
+        call.assert_called_once_with("loops_toggle", "disable", "tickets")
+
+    def test_enable_passes_json_flag(self) -> None:
+        with patch("django.setup"), patch("django.core.management.call_command") as call:
+            runner.invoke(loops_app, ["enable", "tickets", "--json"])
+        call.assert_called_once_with("loops_toggle", "enable", "tickets", json_output=True)
+
+    def test_unknown_name_exit_code_propagates_from_management_command(self) -> None:
+        with patch("django.setup"), patch("django.core.management.call_command", side_effect=SystemExit(2)):
+            result = runner.invoke(loops_app, ["disable", "no-such-loop"])
+        assert result.exit_code == 2

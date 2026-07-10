@@ -4084,10 +4084,14 @@ Usage: t3 loops [OPTIONS] COMMAND [ARGS]...
 │ --help          Show this message and exit.                                  │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ╭─ Commands ───────────────────────────────────────────────────────────────────╮
-│ list  List DB-configured autonomous loops: name, enabled, delay, last run,   │
-│       next due.                                                              │
-│ tick  Run ONE enabled, due loop by name — the per-loop primitive each native │
-│       Claude ``/loop`` fires (#2650).                                        │
+│ list     List DB-configured autonomous loops: name, enabled, delay, last     │
+│          run, next due.                                                      │
+│ tick     Run ONE enabled, due loop by name — the per-loop primitive each     │
+│          native Claude ``/loop`` fires (#2650).                              │
+│ enable   Enable a single loop on THIS instance (set ``Loop.enabled = True``) │
+│          — the per-instance fleet seam.                                      │
+│ disable  Disable a single loop on THIS instance (set ``Loop.enabled =        │
+│          False``) — the per-instance fleet seam.                             │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -4131,6 +4135,40 @@ Usage: t3 loops tick [OPTIONS]
 │                        all).                                                 │
 │ --json                 Emit the tick report as JSON.                         │
 │ --help                 Show this message and exit.                           │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+#### `t3 loops enable`
+
+```
+Usage: t3 loops enable [OPTIONS] NAME
+
+ Enable a single loop on THIS instance (set ``Loop.enabled = True``) — the
+ per-instance fleet seam.
+
+╭─ Arguments ──────────────────────────────────────────────────────────────────╮
+│ *    name      TEXT  Loop name (see `t3 loops list`). [required]             │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --json          Emit JSON.                                                   │
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+#### `t3 loops disable`
+
+```
+Usage: t3 loops disable [OPTIONS] NAME
+
+ Disable a single loop on THIS instance (set ``Loop.enabled = False``) — the
+ per-instance fleet seam.
+
+╭─ Arguments ──────────────────────────────────────────────────────────────────╮
+│ *    name      TEXT  Loop name (see `t3 loops list`). [required]             │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --json          Emit JSON.                                                   │
+│ --help          Show this message and exit.                                  │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
