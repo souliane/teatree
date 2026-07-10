@@ -1,6 +1,8 @@
 # Grandfathered raw gh/glab/sentry-cli calls in skills -- the skill-cli-ratchet ledger.
 # Each line is `<skill file>::<command signature>` for a raw 3rd-party-CLI call the skills still
 # make (a documented CLI fallback lane, a bootstrap exception, or a call site with no MCP tool yet).
+# MCP-not-connected fallbacks -- e.g. `gh issue list` / `gh pr list` when the MCP server is down --
+# are intentional documented fallback lanes: ledgered here rather than migrated.
 # The gate is RED on any LIVE raw call NOT listed here (a NEW shell-out, named) and RED on any listed
 # key that no longer occurs (forced banking -- remove it once migrated). Per-item, set-union mergeable.
 # Regenerate the exact live set with: python -m teatree.quality.skill_cli_ratchet --update-baseline
@@ -47,16 +49,23 @@ skills/platforms/references/gitlab.md::glab mr view
 skills/platforms/references/gitlab.md::glab prints first
 skills/review/SKILL.md::gh issue view
 skills/review/SKILL.md::gh pr diff
+skills/review/SKILL.md::gh pr list
 skills/review/SKILL.md::gh pr view
 skills/review/SKILL.md::glab api
 skills/review/SKILL.md::glab issue view
 skills/review/SKILL.md::glab mr diff
+skills/review/SKILL.md::glab mr list
 skills/review/SKILL.md::glab mr view
 skills/rules/SKILL.md::gh api
 skills/rules/SKILL.md::gh issue create
 skills/rules/SKILL.md::gh issue view
+skills/rules/SKILL.md::gh pr create
 skills/rules/SKILL.md::gh pr view
 skills/rules/SKILL.md::gh repo view
+skills/rules/SKILL.md::gh run watch
+skills/rules/SKILL.md::glab api
+skills/rules/SKILL.md::glab ci status
+skills/rules/SKILL.md::glab issue view
 skills/rules/SKILL.md::glab mr view
 skills/scanning-news/SKILL.md::gh issue create
 skills/scanning-news/SKILL.md::gh issue list
@@ -64,9 +73,16 @@ skills/setup/SKILL.md::gh auth status
 skills/setup/SKILL.md::glab auth status
 skills/setup/references/recommended-automode-authorizations.md::gh pr merge
 skills/ship/SKILL.md::gh issue list
+skills/ship/SKILL.md::gh pr create
 skills/ship/SKILL.md::gh pr list
+skills/ship/SKILL.md::gh pr view
+skills/ship/SKILL.md::glab issue create
 skills/ship/SKILL.md::glab issue list
 skills/ship/SKILL.md::glab mr
+skills/ship/SKILL.md::glab mr create
+skills/ship/SKILL.md::glab mr list
+skills/ship/SKILL.md::glab mr update
+skills/ship/SKILL.md::glab mr view
 skills/sweeping-prs/SKILL.md::gh pr view
 skills/sweeping-prs/SKILL.md::glab mr view
 skills/sweeping-tickets/SKILL.md::gh issue close
@@ -79,9 +95,14 @@ skills/test/SKILL.md::glab mr view
 skills/ticket/SKILL.md::gh issue list
 skills/ticket/SKILL.md::gh issue view
 skills/ticket/SKILL.md::gh pr list
+skills/ticket/SKILL.md::glab api
 skills/ticket/SKILL.md::glab issue view
 skills/ticket/SKILL.md::glab mr list
+skills/wip/SKILL.md::gh issue list
+skills/wip/SKILL.md::glab issue list
+skills/workspace/SKILL.md::gh pr list
 skills/workspace/references/troubleshooting.md::gh api
 skills/workspace/references/troubleshooting.md::gh api name
 skills/workspace/references/troubleshooting.md::gh pr create
+skills/workspace/references/troubleshooting.md::gh pr list
 skills/workspace/references/troubleshooting.md::gh pr merge

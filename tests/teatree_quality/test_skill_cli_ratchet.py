@@ -112,22 +112,49 @@ class TestProhibitionAndPragma:
         _plant_skill(tmp_path, "probe/SKILL.md", body)
         assert build_report(root=tmp_path, config=RatchetConfig(grandfathered=frozenset())).raw_calls == ()
 
-    def test_prohibition_marker_on_nearby_line_excludes(self, tmp_path: Path) -> None:
-        body = "```bash\n# never do this\ngh issue create --title x\n```\n"
-        _plant_skill(tmp_path, "probe/SKILL.md", body)
-        assert build_report(root=tmp_path, config=RatchetConfig(grandfathered=frozenset())).raw_calls == ()
-
     def test_allow_pragma_line_is_excluded(self, tmp_path: Path) -> None:
         body = f"    gh run watch  <!-- {ALLOW_PRAGMA}: ratified long-running exception -->\n"
         _plant_skill(tmp_path, "probe/SKILL.md", "```bash\n" + body + "```\n")
         assert build_report(root=tmp_path, config=RatchetConfig(grandfathered=frozenset())).raw_calls == ()
 
-    @pytest.mark.parametrize("marker", ["forbidden", "never", "mechanically refused", "do not", "instead of"])
+    @pytest.mark.parametrize(
+        "marker",
+        [
+            "forbidden",
+            "mechanically refused",
+            "out of scope",
+            "not authorized",
+            "never run",
+            "never use",
+            "not via",
+            "raw `gh",
+            "do not call",
+            "must not run",
+        ],
+    )
     def test_markers_classify_as_prohibition(self, marker: str) -> None:
-        assert is_prohibition([f"the {marker} rule", "gh pr merge 5"], 1)
+        assert is_prohibition(f"the rule: {marker} `gh pr merge` here")
 
     def test_absent_marker_is_not_prohibition(self) -> None:
-        assert not is_prohibition(["fetch the PR state", "gh pr view 5"], 1)
+        assert not is_prohibition("fetch the PR state with `gh pr view 5`")
+
+    def test_ubiquitous_prose_word_is_not_a_marker(self) -> None:
+        assert not is_prohibition("Never pull fresh tickets; fall back to `gh issue list` when down.")
+
+
+class TestGenuineProhibitionStillIgnored:
+    @pytest.mark.parametrize(
+        "line",
+        [
+            "Never run raw `gh pr merge` here — the keystone owns the merge.\n",
+            "The merge commands are out of scope: `gh pr merge` / `glab mr merge`.\n",
+            "Never use `glab auth token` — it outputs help text, not the token.\n",
+            "record it — never raw `glab mr approve` / `gh pr review`.\n",
+            "Set a reviewer through review-request, not via `glab mr update --reviewer`.\n",
+        ],
+    )
+    def test_prohibition_line_yields_no_raw_call(self, line: str) -> None:
+        assert raw_calls_in(line, "skills/x.md") == []
 
 
 class TestCodeContext:
@@ -168,6 +195,23 @@ class TestSignatures:
     def test_bare_command_yields_no_signature(self) -> None:
         assert signatures_in_fragment("gh") == []
 
+    def test_gh_cli_prose_is_not_a_signature(self) -> None:
+        assert signatures_in_fragment("the gh CLI isn't available here") == []
+
+    def test_gh_cli_prose_does_not_shadow_a_real_call_on_the_line(self) -> None:
+        assert signatures_in_fragment("the gh CLI: run gh pr view <N>") == ["gh pr view"]
+
+    @pytest.mark.parametrize(
+        ("fragment", "expected"),
+        [
+            ("/usr/bin/gh pr list --state all", ["gh pr list"]),
+            ("./gh pr view <N>", ["gh pr view"]),
+            ("command gh issue view <N>", ["gh issue view"]),
+        ],
+    )
+    def test_path_and_prefix_forms_extract_signature(self, fragment: str, expected: list[str]) -> None:
+        assert signatures_in_fragment(fragment) == expected
+
 
 class TestLedgerConfig:
     def test_baseline_file_resolves_relative_to_pyproject(self, tmp_path: Path) -> None:
@@ -179,7 +223,6 @@ class TestLedgerConfig:
     def test_missing_baseline_file_yields_empty_config(self, tmp_path: Path) -> None:
         config = load_config(tmp_path / "pyproject.toml")
         assert config.grandfathered == frozenset()
-        assert config.mode == "warn"
 
     def test_ledger_round_trips_ignoring_comments_and_blanks(self, tmp_path: Path) -> None:
         ledger = tmp_path / "ledger.txt"
@@ -274,3 +317,48 @@ class TestReportShape:
         _plant_skill(tmp_path, "probe/SKILL.md", "```bash\ngh pr view 1\ngh pr view 2\n```\n")
         report = build_report(root=tmp_path, config=RatchetConfig(grandfathered=frozenset()))
         assert [c.key for c in report.unknown_calls] == ["skills/probe/SKILL.md::gh pr view"]
+
+
+class TestNearbyLineMarkerDoesNotSuppress:
+    """A real call stays DETECTED when a ubiquitous prohibition word is nearby.
+
+    The old ±2-line window swallowed real call sites that merely sat near common
+    prose words (`never`, `don't`, `do not`, `instead of`).
+    """
+
+    @pytest.mark.parametrize("marker", ["never", "don't", "do not", "instead of", "not available"])
+    def test_real_call_with_marker_on_prior_line_is_detected(self, marker: str) -> None:
+        body = f"```bash\n# {marker} pull fresh tickets\ngh pr list --state open\n```\n"
+        assert [c.signature for c in raw_calls_in(body, "skills/x.md")] == ["gh pr list"]
+
+    @pytest.mark.parametrize("marker", ["never", "don't", "do not", "instead of"])
+    def test_real_call_with_marker_on_following_line_is_detected(self, marker: str) -> None:
+        body = f"```bash\ngh pr list --state open\n# {marker} do that\n```\n"
+        assert [c.signature for c in raw_calls_in(body, "skills/x.md")] == ["gh pr list"]
+
+    def test_fallback_call_beside_unrelated_never_clause_same_line_is_detected(self) -> None:
+        line = "fall back to `gh issue list` when the MCP server is down. Never pull fresh tickets.\n"
+        assert [c.signature for c in raw_calls_in(line, "skills/wip/SKILL.md")] == ["gh issue list"]
+
+    def test_recipe_call_with_never_merge_on_following_line_is_detected(self) -> None:
+        body = "search `gh pr list --search x` or git log.\nOr mark it a never-merge dev override.\n"
+        assert "gh pr list" in [c.signature for c in raw_calls_in(body, "skills/workspace/SKILL.md")]
+
+
+class TestPathAndPrefixProbesDetected:
+    @pytest.mark.parametrize(
+        "body",
+        [
+            "Run `gh pr list --state open`.\n",
+            "```bash\ngh pr list --state open\n```\n",
+            "```bash\nx=$(gh pr list --state open)\n```\n",
+            '```python\nBash(command="gh pr list --state open")\n```\n',
+            "```bash\ncat <<EOF\ngh pr list --state open\nEOF\n```\n",
+            "```bash\ngh pr list \\\n  --state open\n```\n",
+            "```bash\ncommand gh pr list --state open\n```\n",
+            "```bash\n/usr/bin/gh pr list --state open\n```\n",
+            "```bash\n./gh pr list --state open\n```\n",
+        ],
+    )
+    def test_probe_form_is_detected(self, body: str) -> None:
+        assert "gh pr list" in [c.signature for c in raw_calls_in(body, "skills/x.md")]

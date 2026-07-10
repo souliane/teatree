@@ -15,10 +15,15 @@ set-union, so two disjoint skill PRs never collide.
 What is NOT a raw call (excluded from the ledger, so a reviewer never has to
 touch it):
 
-- Prohibition examples: lines whose surrounding context forbids the command
-("never", "FORBIDDEN", "mechanically refused", "raw ``gh pr merge``"). Rewriting
-these to call the MCP would invert their meaning, so they are not migration
-targets and must never be ledgered — a new prohibition example lands freely.
+- Prohibition examples: a line on which a prohibition-specific marker
+(``FORBIDDEN``, ``mechanically refused``, ``never run``, ``raw ``gh``, ``not via``…)
+governs the command TOKEN — the marker and the command sit on the SAME line.
+Rewriting these to call the MCP would invert their meaning, so they are not
+migration targets and must never be ledgered — a new prohibition example lands
+freely. The marker must occur on the command's own line: a ubiquitous word
+(``never``, ``don't``, ``instead of``) two lines away does NOT suppress a real
+call, and generic phrasings that pervade unrelated prose are deliberately not
+markers — only phrasing that actually governs a command counts.
 - Per-line allow pragma: a line carrying ``mcp-ratchet: allow`` (the escape
 hatch for a ratified CLI exception the classifier can't infer).
 
@@ -43,29 +48,37 @@ ALLOW_PRAGMA = "mcp-ratchet: allow"
 _SKILLS_DIR = "skills"
 _COMMANDS: frozenset[str] = frozenset({"gh", "glab", "sentry-cli"})
 _MAX_SUBCOMMANDS = 2
-_PROHIBITION_WINDOW = 2
 
+# A marker suppresses ONLY when it shares the command token's line (no window):
+# every entry is phrasing that governs a command, not a ubiquitous prose word.
+# ``never `` (never immediately before a backticked command) is the "do X, never
+# Y" forbidden-command-list idiom; bare ``never``/``don't``/``do not``/``instead
+# of``/``not available`` are deliberately absent — they pervade unrelated prose.
 _PROHIBITION_MARKERS: tuple[str, ...] = (
     "forbidden",
-    "never",
-    "not raw",
-    "mechanically",
-    "refused",
-    "prohibited",
-    "do not",
-    "don't",
-    "instead of",
+    "mechanically refused",
+    "mechanically blocked",
     "out of scope",
-    "not valid",
-    "rejects",
-    "is blocked",
-    "are blocked",
-    "unavailable",
-    "isn't available",
-    "not available",
+    "not authorized",
+    "raw `gh",
+    "raw `glab",
+    "never `",
+    "never use",
+    "never call",
+    "never run",
+    "never raw",
+    "never directly",
+    "never assign",
+    "never reach for",
+    "never by querying",
+    "not via",
+    "do not call",
+    "must not run",
 )
 
-_COMMAND_RE = re.compile(r"(?<![\w./-])(gh|glab|sentry-cli)(?![\w-])")
+# ``gh``/``glab``/``sentry-cli`` as a whole token, optionally reached through a
+# path (``/usr/bin/gh``, ``./gh``) or a prefix word (``command gh``).
+_COMMAND_RE = re.compile(r"(?<![\w-])(gh|glab|sentry-cli)(?![\w-])")
 _BARE_WORD_RE = re.compile(r"^[a-z][a-z0-9-]*$")
 _INLINE_CODE_RE = re.compile(r"`([^`]+)`")
 _FENCE_RE = re.compile(r"^\s*```")
@@ -95,8 +108,11 @@ class RawCall:
 
 
 def _signature(command: str, rest: str) -> str | None:
+    head = rest.split()
+    if head and head[0].strip(_STRIP_CHARS).lower() == "cli":
+        return None  # "the gh CLI" — a prose reference to the tool, not an invocation
     words: list[str] = []
-    for raw in rest.split()[:_SKIP_AHEAD]:
+    for raw in head[:_SKIP_AHEAD]:
         token = raw.strip(_STRIP_CHARS)
         if not token or token.startswith("-") or "/" in token or "<" in token or "$" in token:
             continue
@@ -126,11 +142,9 @@ def signatures_in_fragment(fragment: str) -> list[str]:
     return found
 
 
-def is_prohibition(lines: list[str], idx: int) -> bool:
-    lo = max(0, idx - _PROHIBITION_WINDOW)
-    hi = min(len(lines), idx + _PROHIBITION_WINDOW + 1)
-    window = " ".join(lines[lo:hi]).lower()
-    return any(marker in window for marker in _PROHIBITION_MARKERS)
+def is_prohibition(line: str) -> bool:
+    lowered = line.lower()
+    return any(marker in lowered for marker in _PROHIBITION_MARKERS)
 
 
 def raw_calls_in(source: str, path: str) -> list[RawCall]:
@@ -147,7 +161,7 @@ def raw_calls_in(source: str, path: str) -> list[RawCall]:
             continue
         fragments = code_fragments(line, in_fence=in_fence)
         signatures = [sig for fragment in fragments for sig in signatures_in_fragment(fragment)]
-        if not signatures or is_prohibition(lines, idx):
+        if not signatures or is_prohibition(line):
             continue
         calls.extend(RawCall(path=path, signature=sig, line_no=idx + 1, text=line.strip()) for sig in signatures)
     return calls
@@ -217,6 +231,8 @@ class Ledger:
         "# Grandfathered raw gh/glab/sentry-cli calls in skills -- the skill-cli-ratchet ledger.\n"
         "# Each line is `<skill file>::<command signature>` for a raw 3rd-party-CLI call the skills still\n"
         "# make (a documented CLI fallback lane, a bootstrap exception, or a call site with no MCP tool yet).\n"
+        "# MCP-not-connected fallbacks -- e.g. `gh issue list` / `gh pr list` when the MCP server is down --\n"
+        "# are intentional documented fallback lanes: ledgered here rather than migrated.\n"
         "# The gate is RED on any LIVE raw call NOT listed here (a NEW shell-out, named) and RED on any listed\n"
         "# key that no longer occurs (forced banking -- remove it once migrated). Per-item, set-union mergeable.\n"
         "# Regenerate the exact live set with: python -m teatree.quality.skill_cli_ratchet --update-baseline\n"
@@ -246,16 +262,13 @@ class Ledger:
 class RatchetConfig:
     __test__: ClassVar[bool] = False
 
-    mode: str = "warn"
     grandfathered: frozenset[str] = frozenset()
 
 
 def load_config(pyproject: Path) -> RatchetConfig:
-    raw = _read_table(pyproject)
-    mode = str(raw["mode"]) if "mode" in raw else "warn"
     ledger = Ledger.path_for(pyproject)
     grandfathered = Ledger.load(ledger) if ledger is not None else frozenset()
-    return RatchetConfig(mode=mode, grandfathered=grandfathered)
+    return RatchetConfig(grandfathered=grandfathered)
 
 
 def _read_table(pyproject: Path) -> Mapping[str, Any]:
