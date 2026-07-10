@@ -3080,7 +3080,7 @@ ui = [
 requires-dist = [
     { name = "asgiref", specifier = ">=3.8" },
     { name = "browser-cookie3", marker = "extra == 'notion'", specifier = ">=0.20" },
-    { name = "claude-agent-sdk", specifier = ">=0.2.94" },
+    { name = "claude-agent-sdk", specifier = "==0.2.94" },
     { name = "coverage", specifier = ">=7" },
     { name = "croniter", specifier = ">=6.2.2" },
     { name = "django", specifier = ">=5.2,<6.1" },
