@@ -188,6 +188,40 @@ class TestShippedIsNotDone(_ReaperFixture):
         assert self.wt_path.exists()
 
 
+class TestOpenPrRefusesSquashMergedDone(_ReaperFixture):
+    """A branch whose content matches origin/main but whose PR is still OPEN is NOT done (#3093).
+
+    The squash-merged content heuristic (patch-id ``git cherry``) matches whenever a
+    branch's current tip is content-equivalent to ``origin/main`` — including a branch
+    whose PR is still OPEN and merely resembles the default branch. Reporting such a
+    worktree ``done (squash-merged)`` is a false-done a sweep can act on to wipe live
+    work. An open PR on the forge is positive proof the work is unfinished, so ``done``
+    must be refused before the content heuristic is trusted.
+    """
+
+    def _land_branch_content_on_main(self) -> None:
+        _run_git("merge", "-q", "--squash", self.slug, cwd=self.repo_main)
+        _run_git("commit", "-q", "-m", "squash: ship the feature (#2761)", cwd=self.repo_main)
+        _run_git("push", "-q", "origin", "main", cwd=self.repo_main)
+        _run_git("fetch", "-q", "origin", cwd=self.repo_main)
+
+    def test_open_pr_refuses_squash_merged_done(self) -> None:
+        self._land_branch_content_on_main()  # tip is now patch-id present on origin/main
+        worktree = self._make_worktree(Ticket.State.STARTED)  # FSM not terminal → squash path decides
+
+        # Sanity: with no open-PR signal the content heuristic DOES classify it done.
+        assert worktree_is_done(worktree).source == "squash-merged"
+
+        # The forge reports an OPEN PR for the branch → done must be refused.
+        with patch("teatree.core.worktree.branch_classification.probe_host_cli", return_value="7"):
+            signal = worktree_is_done(worktree)
+            outcome = self._reap(worktree)
+
+        assert signal.done is False, signal.source
+        assert outcome.action == "kept", outcome.label
+        assert self.wt_path.exists(), "a worktree backing an OPEN PR must never be wiped"
+
+
 class Test706GuardKeepsGenuinelyAheadOnDoneTicket(_ReaperFixture):
     """Even on a MERGED ticket, genuinely-ahead unpushed work is KEPT (#706 / CORRECTION 1)."""
 
