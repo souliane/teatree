@@ -5,7 +5,7 @@
 #            exits 0. worker/admin depend on its successful completion, so the
 #            editable-install-on-the-shared-clone happens exactly once.
 #   worker — runs `t3 worker` (the loop cadence owner), DEBUG off.
-#   admin  — runs `t3 admin` (Django admin dev server) on the box loopback.
+#   admin  — runs `t3 admin` (Django admin under gunicorn, DEBUG off) on the box loopback.
 set -euo pipefail
 
 ROLE="${TEATREE_ROLE:?TEATREE_ROLE must be one of: init, worker, admin}"
@@ -117,6 +117,9 @@ init)
     seed_setting provision_max_concurrency 1
     seed_setting provision_ram_ceiling_percent 75
     seed_setting max_concurrent_local_stacks 1
+    # The admin binds the box loopback (host networking), so auto-login fires for
+    # the SSH-tunnelled 127.0.0.1 request — no admin password behind the tunnel.
+    seed_setting admin_autologin_enabled true
     disable_fleet_scoped_loops
     echo "teatree-init: complete"
     ;;
@@ -124,7 +127,9 @@ worker)
     exec t3 worker
     ;;
 admin)
-    exec t3 admin --host 0.0.0.0 --port 8000 --no-browser
+    # Bind the box loopback (the service uses host networking) so the SSH-tunnel
+    # request arrives as 127.0.0.1 and clears the middleware's loopback check.
+    exec t3 admin --host 127.0.0.1 --port 8000 --no-browser
     ;;
 *)
     echo "entrypoint: unknown TEATREE_ROLE '$ROLE' (expected init|worker|admin)" >&2

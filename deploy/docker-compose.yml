@@ -46,18 +46,22 @@ services:
     mem_limit: 5g
     cpus: "3.0"
 
-  # Django admin dev server, published on the BOX loopback only (reach it via an
-  # SSH tunnel). DEBUG on (default) — required to mount /admin/.
+  # Django admin (gunicorn), DEBUG off like the worker — /admin/ mounts
+  # unconditionally now, so the admin no longer needs DEBUG (and inherits the
+  # same connection.queries-leak fix). Bound to the BOX loopback via host
+  # networking so the auto-login middleware sees a genuine 127.0.0.1 client: a
+  # published bridge port NATs the source to the docker gateway, which would
+  # fail the loopback check. Reach it via an SSH tunnel.
   teatree-admin:
     <<: *teatree-common
     environment:
       TEATREE_ROLE: admin
+      T3_DEBUG: "0"
     depends_on:
       teatree-init:
         condition: service_completed_successfully
     restart: unless-stopped
-    ports:
-      - "127.0.0.1:8000:8000"
+    network_mode: host
     mem_limit: 512m
     cpus: "0.5"
 

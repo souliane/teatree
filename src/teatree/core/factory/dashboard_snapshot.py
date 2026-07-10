@@ -18,7 +18,7 @@ identically. A fixed superuser and an empty log table give a stable greeting and
 
 This module doubles as its own URLconf (``urlpatterns`` mounts the dedicated site),
 so the render routes through it via ``override_settings(ROOT_URLCONF=__name__)``
-without depending on the project's ``DEBUG``-gated ``/admin/`` route.
+on its own dedicated ``AdminSite``, independent of the project's ``/admin/`` route.
 
 See: souliane/teatree#12
 """

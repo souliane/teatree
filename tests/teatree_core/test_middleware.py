@@ -1,47 +1,62 @@
-"""Tests for the local admin auto-login middleware."""
+"""Tests for the loopback admin auto-login middleware."""
 
 from unittest.mock import patch
 
 from django.contrib.auth import get_user_model
 from django.contrib.auth.models import AnonymousUser
-from django.test import RequestFactory, TestCase, override_settings
+from django.test import RequestFactory, TestCase
 
 from teatree.core.middleware import LocalAdminAutoLoginMiddleware
+from teatree.core.models import ConfigSetting
+
+_LOOPBACK = "127.0.0.1"
+_NON_LOOPBACK = "10.0.0.7"
 
 
 class LocalAdminAutoLoginTestCase(TestCase):
-    def _run(self, path: str, *, debug: bool, user=None):
-        request = RequestFactory().get(path)
+    def _run(self, path: str = "/admin/", *, remote_addr: str = _LOOPBACK, user=None):
+        request = RequestFactory().get(path, REMOTE_ADDR=remote_addr)
         request.user = user if user is not None else AnonymousUser()
         middleware = LocalAdminAutoLoginMiddleware(lambda _req: "ok")
-        with override_settings(DEBUG=debug), patch("teatree.core.middleware.login") as login_mock:
+        with patch("teatree.core.middleware.login") as login_mock:
             result = middleware(request)
         assert result == "ok"
         return login_mock
 
-    def test_logs_in_superuser_on_admin_path_in_debug(self) -> None:
+    def test_logs_in_superuser_on_loopback_admin_when_flag_on(self) -> None:
         superuser = get_user_model().objects.create_superuser("admin", password="x")
-        login_mock = self._run("/admin/", debug=True)
+        login_mock = self._run()
         login_mock.assert_called_once()
         assert login_mock.call_args.args[1] == superuser
 
-    def test_inert_when_debug_off(self) -> None:
-        # The DEBUG gate is the only thing standing between local convenience
-        # and an open admin off-local — this fails RED if the gate is removed.
+    def test_logs_in_for_ipv6_loopback(self) -> None:
         get_user_model().objects.create_superuser("admin", password="x")
-        login_mock = self._run("/admin/", debug=False)
+        self._run(remote_addr="::1").assert_called_once()
+
+    def test_not_logged_in_for_non_loopback_even_with_flag_on(self) -> None:
+        # SECURITY: the flag is on (default), but a non-loopback client must
+        # NEVER be auto-logged-in — the loopback check is the hard boundary that
+        # keeps an off-loopback admin port from silently opening the dashboard.
+        get_user_model().objects.create_superuser("admin", password="x")
+        login_mock = self._run(remote_addr=_NON_LOOPBACK)
+        login_mock.assert_not_called()
+
+    def test_not_logged_in_when_flag_off(self) -> None:
+        # The flag is the deliberate off-switch for the loopback convenience —
+        # this fails RED if the flag gate is dropped and always-on auto-login
+        # returns.
+        get_user_model().objects.create_superuser("admin", password="x")
+        ConfigSetting.objects.set_value("admin_autologin_enabled", value=False)
+        login_mock = self._run()
         login_mock.assert_not_called()
 
     def test_ignores_non_admin_paths(self) -> None:
         get_user_model().objects.create_superuser("admin", password="x")
-        login_mock = self._run("/", debug=True)
-        login_mock.assert_not_called()
+        self._run("/").assert_not_called()
 
     def test_skips_when_already_authenticated(self) -> None:
         superuser = get_user_model().objects.create_superuser("admin", password="x")
-        login_mock = self._run("/admin/", debug=True, user=superuser)
-        login_mock.assert_not_called()
+        self._run(user=superuser).assert_not_called()
 
     def test_noop_when_no_superuser_exists(self) -> None:
-        login_mock = self._run("/admin/", debug=True)
-        login_mock.assert_not_called()
+        self._run().assert_not_called()

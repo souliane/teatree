@@ -206,6 +206,7 @@ OVERLAY_OVERRIDABLE_SETTINGS: dict[str, Callable[[Any], Any]] = {
     "boost_concurrency": _parse_strict_int,
     # #1775 newly-DB-home (formerly file-only): these now resolve from the DB store.
     "agent_signature": _parse_strict_bool,
+    "admin_autologin_enabled": _parse_strict_bool,
     "claude_chrome": _parse_strict_bool,
     "repo_mode": _parse_strict_str,
     "ban_close_trailers_on_namespaces": _parse_str_list,
@@ -614,6 +615,15 @@ class UserSettings:
     # claude.ai account or extension pairing and covers navigation, interaction,
     # and inspection. Turn ON only to opt a host back into the Chrome extension.
     claude_chrome: bool = False
+    # Whether the loopback admin dashboard auto-logs-in the first superuser
+    # (`teatree.core.middleware.LocalAdminAutoLoginMiddleware`). Default ON so
+    # `t3 admin` and the deploy's loopback admin need no password on their own
+    # single-operator tool. This flag alone never opens the admin: the
+    # middleware ALSO requires the request to originate from loopback
+    # (`127.0.0.1` / `::1` / `INTERNAL_IPS`), so a non-loopback deployment is
+    # ineffective even with the flag on — auto-login can never fire off-loopback.
+    # DB-home, per-overlay overridable; set false to force Django's auth wall.
+    admin_autologin_enabled: bool = True
     # Whether teatree should append an agent identity (`Co-Authored-By`,
     # "Sent using …", "Generated with …") to artifacts published on the
     # user's behalf — git commits, PR descriptions and comments, Slack

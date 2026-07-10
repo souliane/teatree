@@ -1,9 +1,11 @@
-"""Tests for teatree.settings and teatree.__main__."""
+"""Tests for teatree.settings, teatree.urls, teatree.wsgi and teatree.__main__."""
 
 import importlib
 from unittest.mock import patch
 
+from django.contrib.staticfiles.views import serve as serve_static
 from django.test import override_settings
+from django.urls import resolve, reverse
 
 from teatree.settings import _debug_enabled
 
@@ -60,7 +62,7 @@ def test_discover_overlay_apps_skips_entry_points_without_django_app():
 
 
 def test_debug_defaults_on_and_env_disables_it(monkeypatch):
-    """DEBUG is on by default (admin needs it) but T3_DEBUG=0 turns it off (worker)."""
+    """DEBUG is on by default (local-dev convenience) but T3_DEBUG=0 turns it off."""
     monkeypatch.delenv("T3_DEBUG", raising=False)
     assert _debug_enabled() is True
 
@@ -77,15 +79,28 @@ def test_debug_defaults_on_and_env_disables_it(monkeypatch):
     assert _debug_enabled() is True
 
 
-def test_urls_module_loads_with_admin_disabled():
-    """teatree.urls executes without errors when DEBUG is False."""
+def test_admin_is_mounted_regardless_of_debug():
+    """/admin/ mounts unconditionally — no longer gated on DEBUG (the deploy footgun)."""
     with override_settings(DEBUG=False):
-        mod = importlib.reload(importlib.import_module("teatree.urls"))
-        assert len(mod.urlpatterns) == 1
-
-
-def test_urls_module_loads_with_admin_enabled():
-    """teatree.urls registers admin under DEBUG=True."""
+        assert reverse("admin:index") == "/admin/"
     with override_settings(DEBUG=True):
-        mod = importlib.reload(importlib.import_module("teatree.urls"))
-        assert len(mod.urlpatterns) == 2
+        assert reverse("admin:index") == "/admin/"
+
+
+def test_static_is_served_off_debug():
+    """Admin static assets resolve to the finder-serve view even with DEBUG off.
+
+    gunicorn does not wrap the app with runserver's dev static handler, so the
+    urlconf serves static itself (`insecure=True`) — otherwise the admin renders
+    unstyled under the production WSGI server.
+    """
+    with override_settings(DEBUG=False):
+        match = resolve("/static/admin/css/base.css")
+    assert match.func is serve_static
+    assert match.kwargs.get("insecure") is True
+
+
+def test_wsgi_application_is_a_callable():
+    """teatree.wsgi exposes a WSGI `application` callable for gunicorn."""
+    mod = importlib.import_module("teatree.wsgi")
+    assert callable(mod.application)

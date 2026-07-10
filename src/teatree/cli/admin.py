@@ -3,13 +3,15 @@
 Teatree IS the Django project, so the admin binds to the canonical teatree
 database (the same SQLite file every other ``t3`` command reads) — no overlay
 or per-worktree DB context. ``core/admin.py`` registers the Ticket / Worktree /
-Session / Task / TaskAttempt / PullRequest models, and ``urls.py`` wires
-``/admin/`` whenever ``settings.DEBUG`` is on (it is, for local use).
+Session / Task / TaskAttempt / PullRequest models, and ``urls.py`` mounts
+``/admin/`` unconditionally (independent of ``DEBUG``).
 
 The command makes the admin immediately usable from a cold checkout: it applies
 migrations, ensures a superuser exists (creating one non-interactively from
 ``T3_ADMIN_USER`` / ``T3_ADMIN_PASSWORD`` when absent), opens the browser at
-``/admin/``, then runs ``runserver`` in the foreground until interrupted.
+``/admin/``, then serves ``teatree.wsgi:application`` under gunicorn (a
+production WSGI server, not Django's dev ``runserver``) in the foreground until
+interrupted. It is DEBUG-agnostic — nothing here reads or sets ``DEBUG``.
 """
 
 import threading
@@ -25,6 +27,13 @@ _DEFAULT_PORT = 8000
 _DEFAULT_ADMIN_USER = "admin"
 _GENERATED_PASSWORD_BYTES = 12
 _BROWSER_OPEN_DELAY_SECONDS = 1.5
+# One threaded worker, not N processes: the single-operator admin is I/O-light
+# and the deploy caps it at 512 MB, where a second full-Django process risks OOM.
+# Threads give concurrency (parallel asset requests, WAL concurrent reads) within
+# one process's memory footprint.
+_GUNICORN_WORKERS = 1
+_GUNICORN_THREADS = 4
+_GUNICORN_TIMEOUT_SECONDS = 120
 
 
 @dataclass(frozen=True, slots=True)
@@ -110,11 +119,26 @@ def _run_server(host: str, port: int) -> None:
 
     from teatree.utils.run import CommandFailedError, run_streamed  # noqa: PLC0415
 
-    # Use the interpreter running this CLI, not a bare "python" — a bare name
-    # resolves via PATH to whatever shim is first (e.g. a pyenv python with no
-    # teatree installed), so the runserver subprocess dies with "No module
-    # named teatree". sys.executable is the tool-venv python that has teatree.
-    cmd = [sys.executable, "-m", "teatree", "runserver", f"{host}:{port}"]
+    # gunicorn (a production WSGI server) against teatree's WSGI app — not
+    # Django's dev ``runserver``, which is single-threaded, unfit for a
+    # long-running process, and DEBUG-coupled. ``sys.executable -m gunicorn``
+    # pins the tool-venv interpreter that has teatree + gunicorn on its path (a
+    # bare ``gunicorn`` shim could resolve to a different environment with no
+    # teatree, the same failure mode the old runserver invocation guarded).
+    cmd = [
+        sys.executable,
+        "-m",
+        "gunicorn",
+        "teatree.wsgi:application",
+        "--bind",
+        f"{host}:{port}",
+        "--workers",
+        str(_GUNICORN_WORKERS),
+        "--threads",
+        str(_GUNICORN_THREADS),
+        "--timeout",
+        str(_GUNICORN_TIMEOUT_SECONDS),
+    ]
     try:
         run_streamed(cmd)
     except KeyboardInterrupt:
