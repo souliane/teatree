@@ -188,6 +188,48 @@ class TestForgeWriteScrub(TestCase):
 
         assert fake.calls[0][0] == "create_issue"
 
+    def test_banned_term_in_a_label_to_a_public_repo_is_refused_before_the_backend(self) -> None:
+        # A label is agent-controllable free text bound for a PUBLIC forge, and
+        # GitHub auto-creates a non-existent label — so a customer codename in a
+        # label must be leak-scrubbed exactly like the body: refused before the
+        # backend, nothing reaches create_issue.
+        fake = _FakeForge()
+        with (
+            _forge_env(fake, public=True),
+            patch("teatree.core.gates.privacy_gate._overlay_privacy_rules", return_value=(["Contoso"], [])),
+            pytest.raises(Exception, match="privacy gate refused"),
+        ):
+            _call(
+                "github_issue_create",
+                {
+                    "repo": "souliane/teatree",
+                    "title": "ship it",
+                    "body": "roll out the generic feature",
+                    "labels": ["Contoso-migration"],
+                },
+            )
+
+        assert fake.calls == []
+
+    def test_clean_labels_to_a_public_repo_are_forwarded(self) -> None:
+        fake = _FakeForge()
+        with (
+            _forge_env(fake, public=True),
+            patch("teatree.core.gates.privacy_gate._overlay_privacy_rules", return_value=(["Contoso"], [])),
+        ):
+            _call(
+                "github_issue_create",
+                {
+                    "repo": "souliane/teatree",
+                    "title": "ship it",
+                    "body": "roll out the generic feature",
+                    "labels": ["bug", "enhancement"],
+                },
+            )
+
+        assert fake.calls[0][0] == "create_issue"
+        assert fake.calls[0][1]["labels"] == ["bug", "enhancement"]
+
 
 class TestForgeWriteFailClosed(TestCase):
     def test_undeclared_service_registers_no_write_tools(self) -> None:

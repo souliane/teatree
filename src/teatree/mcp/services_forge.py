@@ -139,7 +139,14 @@ def _register_issue_writes(server: FastMCP, service: Service, prefix: str) -> No
             action = f"{prefix}_issue_create"
             clean_title = _scrub_forge_body(service, repo=repo, text=title, action=action, target=repo)
             clean_body = _scrub_forge_body(service, repo=repo, text=body, action=action, target=repo)
-            return dict(client.create_issue(repo=repo, title=clean_title, body=clean_body, labels=labels))
+            # A label reaches the public forge too (GitHub auto-creates a missing one),
+            # so it rides the same leak scrub — a banned term in a label refuses the create.
+            clean_labels = (
+                [_scrub_forge_body(service, repo=repo, text=label, action=action, target=repo) for label in labels]
+                if labels
+                else labels
+            )
+            return dict(client.create_issue(repo=repo, title=clean_title, body=clean_body, labels=clean_labels))
 
         return await sync_to_async(_create, thread_sensitive=True)()
 
@@ -249,7 +256,7 @@ def _instructions(prefix: str) -> str:
         f"- {prefix}_issue(issue_url) / {prefix}_issue_comments(issue_url): one issue and its comments.\n"
         f"- {prefix}_issue_search(repo, query): open issues in *repo* matching *query* (dup-check).\n"
         f"- {prefix}_issue_list_assigned(assignee): open issues assigned to *assignee*.\n"
-        f"- {prefix}_issue_create(repo, title, body, labels): open an issue. Body + title are "
+        f"- {prefix}_issue_create(repo, title, body, labels): open an issue. Body, title + labels are "
         f"leak-scrubbed (a customer codename bound for a public forge is REFUSED) and #117-audited.\n"
         f"- {prefix}_issue_comment(issue_url, body): comment on an issue (same leak scrub + audit).\n"
         f"- {prefix}_issue_close(issue_url, comment): close an issue, optional audit comment first.\n"
