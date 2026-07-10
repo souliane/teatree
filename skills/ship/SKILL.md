@@ -56,8 +56,10 @@ When a commit or MR/PR needs an issue/ticket reference and you have none in hand
    ```bash
    git log -S '<the buggy line/symbol>' --oneline       # find the introducing commit
    git show <introducing-sha> --format='%s%n%b' | grep -iE '#[0-9]+'  # its linked issue
-   gh issue list --search '<keywords>' --state all       # GitHub
-   glab issue list --search '<keywords>'                 # GitLab
+   # Search the tracker via the MCP tool (structured JSON, no text parsing):
+   #   mcp__teatree__github_issue_search(repo, query='<keywords>')  /  mcp__teatree__gitlab_issue_search(...)
+   gh issue list --search '<keywords>' --state all       # CLI fallback (GitHub)
+   glab issue list --search '<keywords>'                 # CLI fallback (GitLab)
    ```
 
    If you find it, **use that reference** — it is the canonical one. Do not open a new issue that duplicates an existing one.

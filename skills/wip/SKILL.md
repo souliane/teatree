@@ -52,7 +52,7 @@ The classification each wave is **agent judgment in prose** (the bucketing below
 
 ## `boost` — sustained pool refill, session TODO list FIRST
 
-A sustained **pool-refill** drive that keeps `boost_concurrency = N` workers live — when a worker exits below `N`, the next tick admits the shortfall — and **starts from the session TODO list**: the harness task list for THIS session (`/t3:todos` / `TaskList`). `boost` completes the work already on the session's plate **before** it touches the forge. **Only once the session TODO list is complete** does it go on to classify and dispatch every open, assigned forge ticket (`gh issue list` / `glab issue list`). Never pull fresh forge tickets while session TODO items are still open — finish the plate first.
+A sustained **pool-refill** drive that keeps `boost_concurrency = N` workers live — when a worker exits below `N`, the next tick admits the shortfall — and **starts from the session TODO list**: the harness task list for THIS session (`/t3:todos` / `TaskList`). `boost` completes the work already on the session's plate **before** it touches the forge. **Only once the session TODO list is complete** does it go on to classify and dispatch every open, assigned forge ticket — pull that list with the `mcp__teatree__github_issue_list_assigned` / `mcp__teatree__gitlab_issue_list_assigned` MCP tool (structured JSON, no text parsing; fall back to `gh issue list` / `glab issue list` when the MCP server isn't connected). Never pull fresh forge tickets while session TODO items are still open — finish the plate first.
 
 ### Classify before dispatching
 

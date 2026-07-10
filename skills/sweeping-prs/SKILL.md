@@ -145,13 +145,13 @@ After push, watch the pipeline. On red, delegate to the existing fix-push-monito
 
 ### Step 7.5 — Re-read live merge state (before every merge, non-negotiable)
 
-A sweep often runs while the user is *also* merging PRs by hand. Before you act on any PR — and especially before Step 8 — **re-read that PR's live merge state and skip it if it is already merged.** Do — never assume the discovery snapshot is still current:
+A sweep often runs while the user is *also* merging PRs by hand. Before you act on any PR — and especially before Step 8 — **re-read that PR's live merge state and skip it if it is already merged.** Do — never assume the discovery snapshot is still current. Prefer the `mcp__teatree__github_pr_get` / `mcp__teatree__gitlab_pr_get` MCP tool — it returns the live `{open_state, merge_state, draft, author, approvals}` for one PR as structured JSON, no text parsing; fall back to the forge CLI only when the MCP server isn't connected:
 
 ```bash
-# GitHub: re-read live state for THIS PR right before acting on it
+# CLI fallback (MCP server not connected) — GitHub: re-read live state for THIS PR
 gh pr view <pr-number> --repo <org/repo> --json state,mergedAt,mergeStateStatus,reviewDecision
 
-# GitLab: same live re-read
+# CLI fallback — GitLab: same live re-read
 glab mr view <iid> --repo <org/repo> --output json   # inspect "state" / "merged_at"
 ```
 

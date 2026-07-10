@@ -409,6 +409,19 @@ tolerance = 0.05
 mode = "block"
 baseline_file = "tests/test_path_mirror_grandfathered.txt"
 
+# Forward-guard: skills route forge/monitoring reach through the teatree MCP
+# tools, not raw ``gh`` / ``glab`` / ``sentry-cli`` shell-outs (#35, umbrella
+# #3076) — read by ``src/teatree/quality/skill_cli_ratchet.py``. The verdict is
+# a ratchet over the per-item ``baseline_file`` ledger (the grandfathered
+# raw-call surface: the documented CLI fallback lane, bootstrap exceptions, and
+# call sites with no MCP tool yet). A run is RED only when a NEW raw call appears
+# or a ledgered key no longer occurs, so a skill regressing to a shell-out fails
+# CI while the documented floor never does. Prohibition examples ("never ``gh pr
+# merge``") and ``mcp-ratchet: allow`` lines are excluded. Regenerate the exact
+# live set with ``python -m teatree.quality.skill_cli_ratchet --update-baseline``.
+[tool.teatree.skill_cli_ratchet]
+baseline_file = "tests/skill_cli_ratchet_grandfathered.txt"
+
 # Scoped (NARROW) mutation testing — read by ``t3 mutation run`` (see
 # ``src/teatree/quality/mutation.py``). Mutation testing is expensive and
 # OpenClaw (a 1.4M-LOC AI-native codebase) uses none, so teatree applies it

@@ -40,7 +40,9 @@ gh --repo souliane/teatree issue create --title "<title>" --body "<body>" --labe
 uv run python manage.py shell -c "from teatree.core.models import PendingArticleSuggestion as P; r=P.objects.get(pk=<id>); r.approve(issue_url='<issue URL>')"
 uv run python manage.py shell -c "from teatree.core.models import PendingArticleSuggestion as P; P.objects.get(pk=<id>).reject()"
 
-# Dedupe check
+# Dedupe check — prefer the MCP tool (structured JSON, no text parsing);
+# CLI fallback shown below when the MCP server isn't connected.
+#   mcp__teatree__github_issue_search(repo="souliane/teatree", query="label:from-news-scan in:body <article URL>")
 gh --repo souliane/teatree issue list --label from-news-scan --state all --search "<article URL>"
 
 # Slack DM to the user (teatree bot, self-DM → bot token).
