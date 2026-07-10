@@ -227,7 +227,7 @@
     },
     {
       "bom-ref": "requirements-L52",
-      "description": "requirements line 52: django==6.0.6",
+      "description": "requirements line 52: django==6.0.7",
       "externalReferences": [
         {
           "comment": "implicit dist url",
@@ -236,9 +236,9 @@
         }
       ],
       "name": "django",
-      "purl": "pkg:pypi/django@6.0.6",
+      "purl": "pkg:pypi/django@6.0.7",
       "type": "library",
-      "version": "6.0.6"
+      "version": "6.0.7"
     },
     {
       "bom-ref": "requirements-L62",
