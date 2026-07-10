@@ -14,8 +14,8 @@ _NON_LOOPBACK = "10.0.0.7"
 
 
 class LocalAdminAutoLoginTestCase(TestCase):
-    def _run(self, path: str = "/admin/", *, remote_addr: str = _LOOPBACK, user=None):
-        request = RequestFactory().get(path, REMOTE_ADDR=remote_addr)
+    def _run(self, path: str = "/admin/", *, remote_addr: str = _LOOPBACK, user=None, **extra: str):
+        request = RequestFactory().get(path, REMOTE_ADDR=remote_addr, **extra)
         request.user = user if user is not None else AnonymousUser()
         middleware = LocalAdminAutoLoginMiddleware(lambda _req: "ok")
         with patch("teatree.core.middleware.login") as login_mock:
@@ -39,6 +39,15 @@ class LocalAdminAutoLoginTestCase(TestCase):
         # keeps an off-loopback admin port from silently opening the dashboard.
         get_user_model().objects.create_superuser("admin", password="x")
         login_mock = self._run(remote_addr=_NON_LOOPBACK)
+        login_mock.assert_not_called()
+
+    def test_forwarded_header_cannot_spoof_loopback(self) -> None:
+        # SECURITY: the check reads REMOTE_ADDR, never a forwarded header. A
+        # non-loopback client sending `X-Forwarded-For: 127.0.0.1` must NOT be
+        # auto-logged-in — locks the property against a future regression that
+        # starts trusting forwarded headers.
+        get_user_model().objects.create_superuser("admin", password="x")
+        login_mock = self._run(remote_addr=_NON_LOOPBACK, HTTP_X_FORWARDED_FOR=_LOOPBACK)
         login_mock.assert_not_called()
 
     def test_not_logged_in_when_flag_off(self) -> None:
