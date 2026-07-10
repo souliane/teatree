@@ -309,6 +309,37 @@ def _branch_pr_is_merged(repo: str, branch: str) -> bool:
     return bool(found)
 
 
+def _branch_has_open_pr(repo: str, branch: str) -> bool:
+    """Whether the forge reports an OPEN PR/MR whose source branch is ``branch`` (#3093).
+
+    The squash-merged content heuristic (:func:`is_squash_merged`) matches whenever a
+    branch's current tip is patch-id-equivalent to ``origin/<default>`` — which is also
+    true for a still-OPEN PR whose branch merely resembles the default branch. Classifying
+    such a worktree ``done (squash-merged)`` is a false-done signal a sweep can act on to
+    wipe live work. An open PR is the forge's positive proof the work is unfinished, so the
+    reaper consults this before trusting the content heuristic.
+
+    **Fail-safe to False.** Returns ``True`` only on a positive open-PR signal; every
+    uncertain outcome (no open PR, CLI absent, probe/JSON failure) returns ``False``. It
+    only ever ADDS a keep — a genuinely squash-merged branch with no open PR is still
+    reaped, and the content-based :func:`analyze_worktree_changes` remains the fail-closed
+    data-loss guard when the forge cannot answer.
+    """
+    found = probe_host_cli(
+        ["gh", "pr", "list", "--head", branch, "--state", "open", "--json", "number", "--limit", "1"],
+        repo,
+        lambda data: str(data[0]["number"]),
+    )
+    if found:
+        return True
+    found = probe_host_cli(
+        ["glab", "mr", "list", "--source-branch", branch, "--state", "opened", "--output", "json", "-P", "1"],
+        repo,
+        lambda data: str(data[0]["iid"]),
+    )
+    return bool(found)
+
+
 def _branch_tree_matches_squash(repo: str, branch: str) -> bool:
     """Return ``True`` when the PR's merge commit has the same tree as the branch tip.
 

@@ -44,6 +44,7 @@ from teatree.core.cleanup.cleanup_orphan_ref import classify_orphan_ref
 from teatree.core.cleanup.cleanup_ownership import is_excluded_by_ownership
 from teatree.core.models import Ticket, Worktree
 from teatree.core.worktree.branch_classification import (
+    _branch_has_open_pr,
     _branch_tree_matches_squash,
     branch_redundancy,
     content_equivalence_blockers,
@@ -154,7 +155,16 @@ def worktree_is_done(worktree: Worktree) -> DoneSignal:
 
 
 def _branch_squash_merged(worktree: Worktree) -> bool:
-    """Whether the forge reports ``worktree``'s branch squash-merged. Fail-safe to False."""
+    """Whether ``worktree``'s branch is provably squash-merged AND has no open PR. Fail-safe to False.
+
+    The content heuristic (:func:`is_squash_merged`) matches any branch whose tip is
+    patch-id-equivalent to ``origin/<default>`` — including a still-OPEN PR that merely
+    resembles the default branch. An open PR is the forge's positive proof the work is
+    unfinished, so it vetoes the squash-merged done signal (#3093): a worktree backing an
+    open PR is never reported done, so a sweep can never wipe its live work. The FSM
+    terminal-state path in :func:`worktree_is_done` is unaffected — only this content
+    heuristic is gated.
+    """
     workspace = clone_root()
     repo = resolve_clone_path(workspace, worktree)
     if repo is None or not repo.is_dir():
@@ -162,6 +172,8 @@ def _branch_squash_merged(worktree: Worktree) -> bool:
     try:
         default = git.default_branch(str(repo))
     except (RuntimeError, CommandFailedError):
+        return False
+    if _branch_has_open_pr(str(repo), worktree.branch):
         return False
     return is_squash_merged(str(repo), worktree.branch, default)
 
