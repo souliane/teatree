@@ -253,6 +253,8 @@ Three kinds of file get confused for one another — classify before deciding wh
 
 The **run provenance** is DB-home, not in the tree — never re-derive it from files. `Ticket.extra['e2e_recipe']` records the run's sha and env; the rubric score lives on the `Rubric` model and the posted-note URL on `E2eMandatoryRun.posted_url`.
 
+A **private** test repo that legitimately tracks its manifest (the artifacts are the deliverable there) must commit only the *authored* half — never the per-run commit SHAs / `missing_on_dev`, which churn the file on every push (#3092). `t3 <overlay> e2e tracked-manifest --manifest <path>` prints that authored half (the top-level `dev`/`local` provenance blocks removed) so two runs produce a byte-identical tracked file. Keep the full manifest out-of-repo for `post-test-plan`; commit the stripped output.
+
 A loose `seed-*.py` under `artifacts/` is a smell: fixture logic escaped the spec. Fold it into the spec's fixture and delete the script, or the next run silently depends on a human having executed it by hand.
 
 ## Test-Plan Authoring

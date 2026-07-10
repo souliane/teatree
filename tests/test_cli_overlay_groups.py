@@ -77,6 +77,13 @@ def test_e2e_group_exposes_retract_evidence() -> None:
     assert "retract-evidence" in _e2e_subcommands()
 
 
+def test_e2e_group_exposes_tracked_manifest() -> None:
+    # #3092: ``tracked-manifest`` prints the authored half of a manifest so a
+    # private test repo can commit a byte-stable file; without a DJANGO_GROUPS
+    # bridge entry it would be unreachable from the installed CLI.
+    assert "tracked-manifest" in _e2e_subcommands()
+
+
 def test_e2e_subcommands_map_to_real_command_methods() -> None:
     for name in _e2e_subcommands():
         assert hasattr(E2eCommand, name.replace("-", "_")), name
