@@ -8,6 +8,7 @@ single-use consume, scope of queryset, audit row).
 import pytest
 
 from teatree.core.models.deferred_question import DeferredQuestion, DeferredQuestionAudit, DeferredQuestionError
+from teatree.instance_id import instance_id
 
 # ast-grep-ignore: ac-django-no-pytest-django-db
 pytestmark = pytest.mark.django_db
@@ -100,6 +101,33 @@ class TestDeferredQuestionAuditRow:
         assert audit.resolver_id == "souliane"
         assert audit.action == "answered"
         assert audit.answer_text == "yes"
+
+
+class TestStableNotifyRef:
+    """Outward-notification idempotency keys derive from a stable identity, never the local pk.
+
+    Fleet-safety Stage 1: two teatree instances keep independent SQLite, so a
+    key built from a local autoincrement pk shifts between them. The resurface /
+    mirror drains key their ``BotPing`` idempotency on ``stable_notify_ref``.
+    """
+
+    def test_key_is_stable_across_two_instances_with_different_local_pks(self) -> None:
+        # Model the same logical question captured under two instances: identical
+        # harness tool_use_id, but the local DBs assign different autoincrement
+        # pks. A pk-derived key would differ between them (double-post / false
+        # dedup); the stable ref must be identical.
+        first = DeferredQuestion.record("Approve the merge?", tool_use_id="toolu_shared")
+        second = DeferredQuestion.record("Approve the merge?", tool_use_id="toolu_shared")
+
+        assert first.pk != second.pk
+        assert first.stable_notify_ref == second.stable_notify_ref
+        assert first.stable_notify_ref == "toolu_shared"
+
+    def test_falls_back_to_instance_qualified_pk_never_bare_pk(self) -> None:
+        row = DeferredQuestion.record("No harness id here")
+        assert row.tool_use_id == ""
+        assert row.stable_notify_ref == f"{instance_id()}:{row.pk}"
+        assert row.stable_notify_ref != str(row.pk)
 
 
 class TestStrRepr:

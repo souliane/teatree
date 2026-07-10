@@ -69,8 +69,10 @@ def drain_deferred_questions(*, user_id: str = "", overlay: str = "") -> tuple[i
     path, no duplicated egress logic.
 
     Idempotent per question (the ``BotPing`` ledger dedupes the per-question
-    ``resurface-deferred-question-<pk>`` key), so re-running on a later tick or
-    after a manual ``resurface`` never double-posts. Fails open: a delivery
+    ``resurface-deferred-question:<stable-ref>`` key — the row's
+    :attr:`~teatree.core.models.deferred_question.DeferredQuestion.stable_notify_ref`,
+    never its local pk), so re-running on a later tick or after a manual
+    ``resurface`` never double-posts. Fails open: a delivery
     failure for one question is recorded on its ``BotPing`` row by
     :func:`notify_user` and never aborts the drain or raises. Returns
     ``(delivered, total)``.
@@ -86,7 +88,7 @@ def drain_deferred_questions(*, user_id: str = "", overlay: str = "") -> tuple[i
             if notify_user(
                 _resurface_text(row),
                 kind=NotifyKind.QUESTION,
-                idempotency_key=f"resurface-deferred-question-{row.pk}",
+                idempotency_key=f"resurface-deferred-question:{row.stable_notify_ref}",
                 user_id=user_id or None,
             ):
                 delivered += 1
@@ -103,8 +105,10 @@ def drain_unmirrored_deferred_questions(*, user_id: str = "", overlay: str = "")
     ``drain_undelivered_notifies``): the SDK lane and the orphaned
     ``task_repair._escalate_stall`` rows record a pending question with no
     ``slack_ts`` and nobody posts it. This drain posts each via
-    :func:`notify_user` (idempotent under the ``mirror-deferred-question-<pk>``
-    key) and, on a confirmed send, reads the delivered ``BotPing`` coordinates
+    :func:`notify_user` (idempotent under the
+    ``mirror-deferred-question:<stable-ref>`` key — the row's
+    :attr:`~teatree.core.models.deferred_question.DeferredQuestion.stable_notify_ref`,
+    never its local pk) and, on a confirmed send, reads the delivered ``BotPing`` coordinates
     back and stamps ``slack_ts``/``slack_channel`` so the reply scanner can later
     bind a reply (verify-by-re-read). A row that does not deliver (no backend
     resolved in this context) is left un-mirrored — the durable row IS the
@@ -118,7 +122,7 @@ def drain_unmirrored_deferred_questions(*, user_id: str = "", overlay: str = "")
     mirrored = 0
     try:
         for row in rows:
-            key = f"mirror-deferred-question-{row.pk}"
+            key = f"mirror-deferred-question:{row.stable_notify_ref}"
             if not notify_user(
                 _resurface_text(row),
                 kind=NotifyKind.QUESTION,

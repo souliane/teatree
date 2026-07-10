@@ -176,12 +176,14 @@ class DoctorService:
     def show_info() -> None:
         """Display t3 entry point, teatree/overlay sources, and editable status."""
         from teatree.config import discover_active_overlay, discover_overlays  # noqa: PLC0415
+        from teatree.instance_id import instance_id  # noqa: PLC0415 — deferred: keep CLI module load light
 
         t3_bin = shutil.which("t3") or "not found on PATH"
         teatree_editable, _teatree_url = IntrospectionHelpers.editable_info("teatree")
         editable_label = " (editable)" if teatree_editable else ""
         typer.echo(f"t3 entry point:   {t3_bin}{editable_label}")
         typer.echo(f"Python:           {sys.executable}")
+        typer.echo(f"Instance ID:      {instance_id()}")
         typer.echo()
 
         IntrospectionHelpers.print_package_info("teatree", "teatree")

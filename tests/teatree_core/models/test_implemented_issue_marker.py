@@ -10,6 +10,7 @@ dedup record.
 from django.test import TestCase
 
 from teatree.core.models import ImplementedIssueMarker
+from teatree.instance_id import instance_id
 from tests.factories import ImplementedIssueMarkerFactory, TicketFactory
 
 
@@ -41,6 +42,20 @@ class TestClaim(TestCase):
 
     def test_no_op_on_missing_url(self) -> None:
         assert ImplementedIssueMarker.objects.claim("", "acme") is None
+
+    def test_stamps_the_claiming_instance_id(self) -> None:
+        row = ImplementedIssueMarker.objects.claim("https://github.com/o/r/issues/7", "acme")
+        assert row is not None
+        assert row.claimed_by_instance == instance_id()
+
+    def test_explicit_instance_overrides_the_default(self) -> None:
+        row = ImplementedIssueMarker.objects.claim(
+            "https://github.com/o/r/issues/8",
+            "acme",
+            claimed_by_instance="other-box",
+        )
+        assert row is not None
+        assert row.claimed_by_instance == "other-box"
 
 
 class TestInFlightCount(TestCase):

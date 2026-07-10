@@ -113,7 +113,7 @@ class TestHeadlessQuestionLoop:
         assert question.slack_channel == _CHANNEL
         assert question.slack_ts == _QUESTION_TS
         assert BotPing.objects.filter(
-            idempotency_key=f"mirror-deferred-question-{question.pk}",
+            idempotency_key=f"mirror-deferred-question:{question.stable_notify_ref}",
             status=BotPing.Status.SENT,
         ).exists()
 

@@ -39,7 +39,7 @@ class TestDrainUnmirroredDeferredQuestions(TestCase):
         assert question.slack_channel == "D-USER"
         assert question.slack_ts == "1700000000.000000"
         assert BotPing.objects.filter(
-            idempotency_key=f"mirror-deferred-question-{question.pk}",
+            idempotency_key=f"mirror-deferred-question:{question.stable_notify_ref}",
             status=BotPing.Status.SENT,
         ).exists()
 
