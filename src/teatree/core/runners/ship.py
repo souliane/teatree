@@ -317,7 +317,10 @@ class ShipExecutor(RunnerBase):
         expected_slug = git.remote_slug(repo=spec.repo)
         if expected_slug:
             try:
-                check_pr_budget(ticket, expected_slug)
+                # Stage 3: pass the resolved `host` so THE chokepoint the
+                # autonomous loop's task-driven ship converges on also sees a
+                # sibling fleet instance's live forge PR (fails open on error).
+                check_pr_budget(ticket, expected_slug, host=host)
             except PrBudgetExceededError as exc:
                 return RunnerResult(ok=False, detail=str(exc))
         debt_error = evaluate_debt_delta(ticket, repo_path)

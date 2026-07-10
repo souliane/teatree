@@ -13,6 +13,8 @@ seams keep resolving against ``pr``'s namespace).
 from typing import TypedDict, cast
 
 from teatree import visual_qa
+from teatree.core.backend_factory import code_host_for_repo_from_overlay
+from teatree.core.backend_protocols import BackendResolutionError, CodeHostBackend
 from teatree.core.gates.debt_delta_gate import evaluate_debt_delta
 from teatree.core.gates.e2e_mandatory_gate import E2EMandatoryGateError, check_e2e_mandatory, resolve_gate_inputs
 from teatree.core.gates.pr_budget_gate import PrBudgetExceededError, check_pr_budget
@@ -342,10 +344,23 @@ def run_pr_budget_gate(ticket: Ticket, worktree: Worktree) -> PrBudgetGateFailur
     if not slug:
         return None
     try:
-        check_pr_budget(ticket, slug)
+        check_pr_budget(ticket, slug, host=_resolve_host_for_repo(repo_path))
     except PrBudgetExceededError as exc:
         return PrBudgetGateFailure(allowed=False, error=str(exc))
     return None
+
+
+def _resolve_host_for_repo(repo_path: str) -> CodeHostBackend | None:
+    """The repo's code host for the Stage 3 forge backstop, or ``None`` (fail open).
+
+    A missing/mismatched credential surfaces the budget check to the local-only
+    path rather than blocking the ship — same fail-open posture the forge query
+    itself takes on a transport error.
+    """
+    try:
+        return code_host_for_repo_from_overlay(repo_path)
+    except BackendResolutionError:
+        return None
 
 
 class DebtDeltaGateFailure(TypedDict):

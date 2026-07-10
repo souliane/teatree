@@ -26,8 +26,8 @@ from typing import cast
 from urllib.parse import urlparse
 
 from teatree.core.backend_protocols import CodeHostBackend
-from teatree.loop.pr_ticket_index import _parse_closes_ticket
 from teatree.types import RawAPIDict
+from teatree.utils.close_keywords import parse_closes_ticket
 from teatree.utils.url_slug import pr_ref_from_url, slug_from_issue_or_pr_url
 
 logger = logging.getLogger(__name__)
@@ -133,7 +133,7 @@ def existing_work_for_issue(
         body = _pr_body(raw)
         if issue_url and issue_url in body:
             return ReadbackHit("open_pr_body_ref", pr_url)
-        if _parse_closes_ticket(body) == ticket_number:
+        if parse_closes_ticket(body) == ticket_number:
             return ReadbackHit("open_pr_closes_ref", pr_url)
     return None
 

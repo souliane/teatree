@@ -22,11 +22,28 @@ which can lag a just-opened PR by a tick. The count therefore UNIONS the FK rows
 with ``ticket.extra["pr_url_by_branch"]`` (written synchronously by the ship
 executor), so a second ``pr create`` fired before reconciliation still sees the
 first PR.
+
+Fleet-safety Stage 3: even the synchronous local index only sees PRs THIS fleet
+instance opened. A SIBLING instance's PR stays invisible until its own reconciler
+imports it a tick later — the window in which two instances each open a PR for one
+ticket. When a caller supplies the repo's code host, ``check_pr_budget`` adds a
+live forge read (:mod:`pr_budget_forge`) as the authoritative third source, unioned
+with the local set (deduped by URL). It fails OPEN — a forge outage degrades to the
+local-only count so shipping is never wholesale-blocked.
 """
 
+import logging
+from typing import TYPE_CHECKING
+
 from teatree.config import get_effective_settings
+from teatree.core.gates.pr_budget_forge import cached_forge_open_pr_urls_for_ticket
 from teatree.core.models import PullRequest, Ticket
 from teatree.utils.url_slug import pr_ref_from_url
+
+if TYPE_CHECKING:
+    from teatree.core.backend_protocols import CodeHostBackend
+
+logger = logging.getLogger(__name__)
 
 
 class PrBudgetExceededError(RuntimeError):
@@ -73,7 +90,13 @@ def count_open_prs_for_repo(ticket: Ticket, repo_slug: str) -> int:
     return len(open_pr_urls_for_repo(ticket, repo_slug))
 
 
-def check_pr_budget(ticket: Ticket, repo_slug: str, *, limit: int | None = None) -> None:
+def check_pr_budget(
+    ticket: Ticket,
+    repo_slug: str,
+    *,
+    limit: int | None = None,
+    host: "CodeHostBackend | None" = None,
+) -> None:
     """Refuse the impending PR when ``(ticket, repo_slug)`` is at its open-PR budget.
 
     Inert at the neutral default: a non-positive *limit* returns immediately, so
@@ -82,11 +105,28 @@ def check_pr_budget(ticket: Ticket, repo_slug: str, *, limit: int | None = None)
     raise :class:`PrBudgetExceededError` naming the offending PR URLs and the
     operator escape. *limit* defaults to the effective per-overlay setting;
     passing it explicitly is the test seam.
+
+    When *host* is supplied (the repo's code host), a live forge read is unioned
+    with the local set as the authoritative third source so a sibling fleet
+    instance's just-opened PR is counted before the local reconciler imports it
+    (fleet-safety Stage 3). Deduped by URL, so a PR the local DB already counts is
+    never double-counted. Fails OPEN: a forge error degrades to the local-only
+    count, keeping shipping unblocked.
     """
     effective_limit = resolve_pr_budget(ticket.overlay or None) if limit is None else limit
     if effective_limit <= 0:
         return
     urls = open_pr_urls_for_repo(ticket, repo_slug)
+    if host is not None:
+        forge_urls = cached_forge_open_pr_urls_for_ticket(ticket, repo_slug, host=host)
+        if forge_urls is None:
+            logger.info(
+                "PR-budget forge backstop unavailable for ticket %s in %r; using local-only count",
+                ticket.ticket_number or ticket.pk,
+                repo_slug,
+            )
+        else:
+            urls |= forge_urls
     if len(urls) < effective_limit:
         return
     overlay = ticket.overlay or "<overlay>"

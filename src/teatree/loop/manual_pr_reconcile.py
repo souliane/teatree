@@ -30,7 +30,8 @@ from typing import TYPE_CHECKING, Any
 
 from django.utils import timezone
 
-from teatree.loop.pr_ticket_index import _description_from_payload, _parse_closes_ticket, resolve_author_ticket
+from teatree.loop.pr_ticket_index import _description_from_payload, resolve_author_ticket
+from teatree.utils.close_keywords import parse_closes_ticket
 from teatree.utils.url_slug import pr_ref_from_url
 
 if TYPE_CHECKING:
@@ -99,7 +100,7 @@ def _resolve_ticket(pr: _ScannedPr) -> "Ticket | None":
     """
     from teatree.core.models import Ticket  # noqa: PLC0415
 
-    number = _parse_closes_ticket(pr.description)
+    number = parse_closes_ticket(pr.description)
     if number and pr.slug:
         with suppress(Ticket.DoesNotExist):
             return Ticket.objects.resolve(f"{pr.slug}#{number}")

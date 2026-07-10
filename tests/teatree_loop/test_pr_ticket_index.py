@@ -5,36 +5,7 @@ from django.test import TestCase
 from teatree.core.models.pull_request import PullRequest
 from teatree.core.models.ticket import Ticket
 from teatree.loop.dispatch import DispatchAction
-from teatree.loop.pr_ticket_index import _parse_closes_ticket, build_ticket_index, resolve_author_ticket
-
-
-class TestParseClosesTicket:
-    def test_matches_closes_hash_n(self) -> None:
-        assert _parse_closes_ticket("Closes #855") == "855"
-
-    def test_matches_fixes_hash_n(self) -> None:
-        assert _parse_closes_ticket("Fixes #856 — broken thing") == "856"
-
-    def test_matches_resolves_hash_n(self) -> None:
-        assert _parse_closes_ticket("This MR resolves #99") == "99"
-
-    def test_matches_case_insensitive(self) -> None:
-        assert _parse_closes_ticket("CLOSES #1") == "1"
-
-    def test_matches_with_colon(self) -> None:
-        assert _parse_closes_ticket("Closes: #42") == "42"
-
-    def test_returns_empty_when_no_keyword(self) -> None:
-        assert _parse_closes_ticket("Related to #99") == ""
-
-    def test_returns_empty_when_no_hash(self) -> None:
-        assert _parse_closes_ticket("Closes nothing in particular") == ""
-
-    def test_returns_first_match_only(self) -> None:
-        assert _parse_closes_ticket("Closes #1\nFixes #2") == "1"
-
-    def test_returns_empty_on_empty_description(self) -> None:
-        assert _parse_closes_ticket("") == ""
+from teatree.loop.pr_ticket_index import build_ticket_index, resolve_author_ticket
 
 
 class TestBuildTicketIndexFromFooter:
