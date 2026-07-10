@@ -62,7 +62,7 @@ class NonAssignableHost:
         self.created_specs: list[PullRequestSpec] = []
 
     def current_user(self) -> str:
-        return "adrien-oper"
+        return "pullonly-bot"
 
     def is_assignable(self, *, repo: str, login: str) -> bool:
         return False

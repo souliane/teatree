@@ -28,7 +28,7 @@ class TestResolvePrAssignee:
         assert resolve_pr_assignee(host, repo="souliane/teatree") == "souliane"
 
     def test_drops_non_assignable_login(self) -> None:
-        host = StubHost(login="adrien-oper", assignable=False)
+        host = StubHost(login="pullonly-bot", assignable=False)
 
         assert resolve_pr_assignee(host, repo="souliane/teatree") == ""
 
