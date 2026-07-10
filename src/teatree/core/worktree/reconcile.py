@@ -295,7 +295,13 @@ def _reconcile_overlay_dependent_stores(drift: Drift, wt: Worktree) -> None:
 
     if wt.db_name and wt.state != Worktree.State.CREATED:
         user, host, env = worktree_pg_connection(wt)
-        if not db_exists(wt.db_name, user=user, host=host, env=env or None):
+        try:
+            db_present = db_exists(wt.db_name, user=user, host=host, env=env or None)
+        except (CommandFailedError, FileNotFoundError):
+            # A probe that could not reach the server is not evidence the DB is
+            # gone — never report a live DB as missing drift (#3094).
+            db_present = True
+        if not db_present:
             drift.missing_dbs.append(MissingDB(worktree_pk=wt.pk, db_name=wt.db_name))
 
     if wt.state == Worktree.State.CREATED:

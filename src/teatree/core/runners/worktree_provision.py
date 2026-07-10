@@ -216,6 +216,7 @@ class WorktreeProvisionRunner(RunnerBase):
 
     def _run_db_import(self) -> bool:
         from teatree.utils.db import db_exists  # noqa: PLC0415
+        from teatree.utils.run import CommandFailedError  # noqa: PLC0415 — paired with the local db_exists import above
 
         worktree = self.worktree
         overlay = self.overlay
@@ -230,7 +231,10 @@ class WorktreeProvisionRunner(RunnerBase):
                 if db_exists(worktree.db_name, user=user, host=host, env=env or None):
                     logger.info("DB exists: %s — skipping import", worktree.db_name)
                     return True
-            except FileNotFoundError:
+            except (FileNotFoundError, CommandFailedError):
+                # Existence is unknown (psql binary missing, or the server was
+                # unreachable) — fall through to the import attempt, which fails
+                # loud on its own if the server is genuinely down (#3094).
                 pass
 
         env = {**os.environ, **overlay.provisioning.env_extra(worktree)}
