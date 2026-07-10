@@ -59,13 +59,35 @@ seed_setting() {
 # one DB-backed per-loop control plane. `t3 loop disable` is idempotent, so a
 # re-deploy converges. TEATREE_DISABLED_LOOPS (comma-separated, from teatree.env)
 # overrides the default; an empty value runs every loop here.
+#
+# `t3 loop disable` exits 0 even on an unregistered name (it only flips a real
+# Loop row), so a typo would silently disable nothing and leave the real loop
+# running — a double-run against the laptop. Validate the WHOLE list against the
+# registered mini-loops first, so a bad value fails before anything is disabled.
 disable_fleet_scoped_loops() {
     local raw="${TEATREE_DISABLED_LOOPS-inbox,review,directive_loop}"
-    local loops loop
-    IFS=',' read -ra loops <<<"$raw"
-    for loop in ${loops[@]+"${loops[@]}"}; do
-        loop="${loop//[[:space:]]/}"
-        [ -n "$loop" ] || continue
+    local field loop registered
+    local fields=() requested=()
+    IFS=',' read -ra fields <<<"$raw"
+    for field in ${fields[@]+"${fields[@]}"}; do
+        field="${field//[[:space:]]/}"
+        [ -n "$field" ] && requested+=("$field")
+    done
+    [ ${#requested[@]} -gt 0 ] || return 0
+
+    if ! registered="$(t3 loop list --json | jq -r '.mini_loops[].name')" || [ -z "$registered" ]; then
+        echo "entrypoint: could not read the registered loops ('t3 loop list --json' failed or was empty) - confirm 't3 teatree db migrate' seeded the loops above and re-run Deploy" >&2
+        exit 1
+    fi
+
+    for loop in "${requested[@]}"; do
+        if ! grep -qxF "$loop" <<<"$registered"; then
+            echo "entrypoint: TEATREE_DISABLED_LOOPS names an unknown loop '${loop}' - valid loops are: $(tr '\n' ' ' <<<"$registered")- fix the value in teatree.env and re-run Deploy" >&2
+            exit 1
+        fi
+    done
+
+    for loop in "${requested[@]}"; do
         if ! t3 loop disable "$loop"; then
             echo "entrypoint: 't3 loop disable ${loop}' FAILED - the DB-backed loop control plane is unreachable; confirm 't3 teatree db migrate' succeeded above and re-run Deploy" >&2
             exit 1
