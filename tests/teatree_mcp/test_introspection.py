@@ -5,8 +5,25 @@ from pathlib import Path
 from django.core.management import call_command
 from django.test import TestCase
 
-from teatree.core.models import ConfigSetting
+from teatree.core.models import ConfigSetting, DeferredQuestion
 from teatree.mcp import introspection
+from teatree.mcp.introspection import question_list
+
+
+class TestQuestionList(TestCase):
+    def test_returns_only_pending_questions_newest_first(self) -> None:
+        older = DeferredQuestion.record("First?")
+        newer = DeferredQuestion.record("Second?")
+        answered = DeferredQuestion.record("Done?")
+        answered.answered_at = answered.created_at
+        answered.save(update_fields=["answered_at"])
+
+        rows = question_list()
+
+        ids = [row["id"] for row in rows]
+        assert answered.pk not in ids
+        assert ids.index(newer.pk) < ids.index(older.pk)
+        assert next(row for row in rows if row["id"] == older.pk)["question"] == "First?"
 
 
 class TestConfigSettingGet(TestCase):

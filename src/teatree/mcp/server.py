@@ -81,6 +81,8 @@ _INSTRUCTIONS = (
     "- pr_for_ticket(ticket): the pull requests recorded for a ticket.\n"
     "- task_list(overlay, status, phase, ticket): the autonomous loop's task "
     "queue — the mirror of `t3 <overlay> tasks list`.\n"
+    "- question_list(limit): the pending DeferredQuestion backlog awaiting the "
+    "user's answer (pairs with the question_answer write tool).\n"
     "- loop_stats(overlay): task-status counts plus the dead-letter total.\n"
     "- incoming_event_recent(source, unprocessed_only): recent inbound platform "
     "events.\n"
@@ -264,6 +266,16 @@ async def _task_list(
     )
 
 
+async def _question_list(*, limit: int = 50) -> list[dict[str, Any]]:
+    """Pending DeferredQuestion rows — the backlog awaiting the user's answer.
+
+    The read counterpart to the ``question_answer`` write tool. Returns each
+    pending question's id, text, raw options, originating session, and Slack
+    ``ts`` / ``channel`` (when mirrored), newest first.
+    """
+    return await sync_to_async(introspection.question_list, thread_sensitive=True)(limit=limit)
+
+
 async def _config_setting_get(key: str, *, overlay: str | None = None) -> dict[str, Any]:
     """A config setting's effective value, its source (db vs file/env), and scope.
 
@@ -321,6 +333,7 @@ def build_server() -> FastMCP:
     server.add_tool(_worktree_status, name="worktree_status", annotations=_READ_ONLY)
     server.add_tool(_pr_for_ticket, name="pr_for_ticket", annotations=_READ_ONLY)
     server.add_tool(_task_list, name="task_list", annotations=_READ_ONLY)
+    server.add_tool(_question_list, name="question_list", annotations=_READ_ONLY)
     server.add_tool(_loop_stats, name="loop_stats", annotations=_READ_ONLY)
     server.add_tool(_config_setting_get, name="config_setting_get", annotations=_READ_ONLY)
     server.add_tool(_gate_status, name="gate_status", annotations=_READ_ONLY)

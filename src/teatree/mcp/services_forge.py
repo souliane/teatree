@@ -33,6 +33,23 @@ def _forge_client(service: Service) -> CodeHostBackend:
     raise RuntimeError(msg)
 
 
+def _pr_snapshot(service: Service, *, repo: str, pr_iid: int, pr_url: str) -> dict[str, Any]:
+    client = _forge_client(service)
+    merge_state = client.fetch_pr_merge_state(slug=repo, pr_id=pr_iid)
+    approvals = client.get_mr_approvals(repo=repo, pr_iid=pr_iid)
+    return {
+        "open_state": client.get_pr_open_state(pr_url=pr_url).value,
+        "state": merge_state.state,
+        "merged": merge_state.is_merged,
+        "merge_commit_oid": merge_state.merge_commit_oid,
+        "draft": client.fetch_pr_is_draft(slug=repo, pr_id=pr_iid),
+        "author": client.get_pr_author(pr_url=pr_url),
+        "approvals_left": approvals["approvals_left"],
+        "approved_by": approvals["approved_by"],
+        "unresolved_resolvable": approvals["unresolved_resolvable"],
+    }
+
+
 def _register(server: FastMCP, service: Service, prefix: str) -> None:
     async def current_user() -> str:
         return await sync_to_async(lambda: _forge_client(service).current_user(), thread_sensitive=True)()
@@ -74,6 +91,35 @@ def _register(server: FastMCP, service: Service, prefix: str) -> None:
     server.add_tool(pr_comments, name=f"{prefix}_pr_comments", annotations=_READ_ONLY)
     server.add_tool(issue, name=f"{prefix}_issue", annotations=_READ_ONLY)
     server.add_tool(issue_comments, name=f"{prefix}_issue_comments", annotations=_READ_ONLY)
+    _register_search_reads(server, service, prefix)
+
+
+def _register_search_reads(server: FastMCP, service: Service, prefix: str) -> None:
+    async def issue_search(repo: str, query: str) -> list[dict[str, Any]]:
+        return await sync_to_async(
+            lambda: _forge_client(service).search_open_issues(repo=repo, query=query), thread_sensitive=True
+        )()
+
+    async def issue_list_assigned(assignee: str) -> list[dict[str, Any]]:
+        return await sync_to_async(
+            lambda: _forge_client(service).list_assigned_issues(assignee=assignee), thread_sensitive=True
+        )()
+
+    async def my_merged_prs(author: str, *, updated_after: str = "") -> list[dict[str, Any]]:
+        return await sync_to_async(
+            lambda: _forge_client(service).list_my_merged_prs(author=author, updated_after=updated_after or None),
+            thread_sensitive=True,
+        )()
+
+    async def pr_get(repo: str, pr_iid: int, pr_url: str) -> dict[str, Any]:
+        return await sync_to_async(
+            lambda: _pr_snapshot(service, repo=repo, pr_iid=pr_iid, pr_url=pr_url), thread_sensitive=True
+        )()
+
+    server.add_tool(issue_search, name=f"{prefix}_issue_search", annotations=_READ_ONLY)
+    server.add_tool(issue_list_assigned, name=f"{prefix}_issue_list_assigned", annotations=_READ_ONLY)
+    server.add_tool(my_merged_prs, name=f"{prefix}_my_merged_prs", annotations=_READ_ONLY)
+    server.add_tool(pr_get, name=f"{prefix}_pr_get", annotations=_READ_ONLY)
 
 
 def _instructions(prefix: str) -> str:
@@ -82,7 +128,12 @@ def _instructions(prefix: str) -> str:
         f"- {prefix}_my_prs(author, updated_after): open PRs/MRs authored by *author*.\n"
         f"- {prefix}_review_requested(reviewer, updated_after): PRs/MRs awaiting *reviewer*.\n"
         f"- {prefix}_pr_author(pr_url) / {prefix}_pr_comments(repo, pr_iid): one PR's author / comments.\n"
-        f"- {prefix}_issue(issue_url) / {prefix}_issue_comments(issue_url): one issue and its comments."
+        f"- {prefix}_pr_get(repo, pr_iid, pr_url): one PR's open/merge/draft state, author, and "
+        f"approval snapshot in a single read.\n"
+        f"- {prefix}_my_merged_prs(author, updated_after): merged PRs/MRs authored by *author* (sweeps).\n"
+        f"- {prefix}_issue(issue_url) / {prefix}_issue_comments(issue_url): one issue and its comments.\n"
+        f"- {prefix}_issue_search(repo, query): open issues in *repo* matching *query* (dup-check).\n"
+        f"- {prefix}_issue_list_assigned(assignee): open issues assigned to *assignee*."
     )
 
 
