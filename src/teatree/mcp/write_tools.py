@@ -32,6 +32,7 @@ from teatree.config.cold_hook_settings import COLD_HOOK_SETTINGS
 from teatree.config.feature_flags import is_feature_flag
 from teatree.config.registries import COLD_SETTINGS, REGISTRY_KEYS
 from teatree.core.models import Task
+from teatree.core.notify import NotifyKind, notify_user
 from teatree.mcp.review_seam import review_post_seam
 
 _WRITE = ToolAnnotations(readOnlyHint=False, destructiveHint=False)
@@ -75,8 +76,10 @@ TOOL_SEAMS: dict[str, str] = {
     "ticket_visit_phase": "call_command('lifecycle', 'visit-phase', …) — phase gates",
     "record_e2e_run": "call_command('lifecycle', 'record-e2e-run', …) — e2e attestation",
     "config_setting_set": "call_command('config_setting', 'set', …) + gate-key refuse list",
+    "task_create": "call_command('tasks', 'create', …) — dispatch-quote gate wiring",
     "task_complete": "teatree.core.models.Task.complete",
     "task_fail": "teatree.core.models.Task.fail",
+    "notify_user": "teatree.core.notify.notify_user — send-proxy + BotPing audit + own-DM carve-out",
     "question_answer": "call_command('questions', 'answer', …)",
     "worktree_teardown": "call_command('workspace', 'teardown', …) — liveness/dirty guards",
     "review_post_draft_note": "teatree.mcp.review_seam (ReviewService.post_draft_note)",
@@ -98,8 +101,15 @@ INSTRUCTIONS = (
     "REFUSES safety-gate keys (*_gate_enabled, require_*, feature flags, "
     "cold-hook wires, registry rows, and the cold-read leak-scrub lists / "
     "fail-open switch / agent-routing tables) — those stay human/CLI-only.\n"
+    "- task_create(ticket, phase, reason, kind, interactive): enqueue the "
+    "next-phase task for a ticket through the `tasks create` seam (same "
+    "dispatch-quote gate wiring). A bad ticket / missing phase reports the "
+    "command's own message as a structured error.\n"
     "- task_complete(task_id, result_artifact_path) / task_fail(task_id): loop "
     "task bookkeeping (complete advances the ticket FSM).\n"
+    "- notify_user(text, kind, idempotency_key): send a bot→user DM through the "
+    "audited notify egress (send-proxy + BotPing idempotency + own-DM "
+    "never-lockout carve-out). Pass a stable idempotency_key to dedupe retries.\n"
     "- question_answer(question_id, text, resolver): answer a pending "
     "DeferredQuestion (single-use, audited).\n"
     "- worktree_teardown(path, force): tear down the ticket workspace *path* "
@@ -219,6 +229,50 @@ async def _config_setting_set(key: str, value: str, *, overlay: str = "") -> dic
     return await sync_to_async(_set, thread_sensitive=True)()
 
 
+async def _task_create(
+    ticket: int,
+    *,
+    phase: str = "",
+    reason: str = "",
+    kind: str = "",
+    interactive: bool = False,
+) -> dict[str, Any]:
+    """Enqueue the next-phase task for a ticket — the MCP mirror of ``tasks create``.
+
+    Wraps ``t3 <overlay> tasks create <ticket> --phase … --reason …`` so the
+    dispatch-quote gate wiring keeps its semantics. A missing/blank phase, empty
+    reason, or unknown ticket surfaces the command's own message as a structured
+    error (``_run_command`` converts the command's ``SystemExit`` so the tool
+    call is never killed).
+    """
+    return await sync_to_async(
+        lambda: {
+            "ok": True,
+            **cast(
+                "dict[str, Any]",
+                _run_command("tasks", "create", ticket, phase=phase, reason=reason, kind=kind, interactive=interactive),
+            ),
+        },
+        thread_sensitive=True,
+    )()
+
+
+async def _notify_user(text: str, *, kind: str = "info", idempotency_key: str) -> dict[str, Any]:
+    """Send a bot→user DM through the audited notify egress.
+
+    Wraps :func:`teatree.core.notify.notify_user` — the single notification
+    egress with the send-proxy, the BotPing idempotency ledger, and the own-DM
+    never-lockout carve-out. Pass a stable ``idempotency_key`` so a retry under
+    the same key is a no-op rather than a duplicate DM. Returns ``sent=false``
+    when the feature is disabled or no messaging backend / user id is configured.
+    """
+    sent = await sync_to_async(
+        lambda: notify_user(text, kind=NotifyKind(kind), idempotency_key=idempotency_key),
+        thread_sensitive=True,
+    )()
+    return {"ok": bool(sent), "sent": bool(sent), "idempotency_key": idempotency_key}
+
+
 async def _task_complete(task_id: int, *, result_artifact_path: str = "") -> dict[str, Any]:
     """Complete a loop task — records the phase visit and advances the ticket FSM."""
 
@@ -304,8 +358,10 @@ def register(server: FastMCP) -> None:
     server.add_tool(_ticket_visit_phase, name="ticket_visit_phase", annotations=_WRITE)
     server.add_tool(_record_e2e_run, name="record_e2e_run", annotations=_WRITE)
     server.add_tool(_config_setting_set, name="config_setting_set", annotations=_WRITE)
+    server.add_tool(_task_create, name="task_create", annotations=_WRITE)
     server.add_tool(_task_complete, name="task_complete", annotations=_WRITE)
     server.add_tool(_task_fail, name="task_fail", annotations=_DESTRUCTIVE)
+    server.add_tool(_notify_user, name="notify_user", annotations=_WRITE)
     server.add_tool(_question_answer, name="question_answer", annotations=_WRITE)
     server.add_tool(_worktree_teardown, name="worktree_teardown", annotations=_DESTRUCTIVE)
     server.add_tool(_review_post_draft_note, name="review_post_draft_note", annotations=_WRITE)

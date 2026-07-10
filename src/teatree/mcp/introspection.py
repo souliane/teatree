@@ -12,11 +12,38 @@ from typing import Any
 
 from teatree.config import COLD_HOOK_SETTINGS, OVERLAY_OVERRIDABLE_SETTINGS, cold_reader, get_effective_settings
 from teatree.config.registries import REGISTRY_SETTINGS
-from teatree.core.models import ConfigSetting
+from teatree.core.models import ConfigSetting, DeferredQuestion
 from teatree.mcp import command_catalogue
 from teatree.mcp.search import _capped
 
 _DEFAULT_COMMAND_LIMIT = 20
+_DEFAULT_QUESTION_LIMIT = 50
+
+
+def question_list(*, limit: int = _DEFAULT_QUESTION_LIMIT) -> list[dict[str, Any]]:
+    """Pending ``DeferredQuestion`` rows — the backlog awaiting the user's answer.
+
+    The read counterpart to the ``question_answer`` write tool: delegates to
+    ``DeferredQuestion.pending`` (the same not-yet-answered/dismissed set the
+    Stop-hook nag and the deferred-question poster read), newest first. Each row
+    carries the question text, the raw ``options`` string, the originating
+    ``session_id``, and the Slack ``ts`` / ``channel`` when the question was
+    mirrored to Slack.
+    """
+    rows = DeferredQuestion.pending().order_by("-created_at", "-pk")[: _capped(limit, _DEFAULT_QUESTION_LIMIT)]
+    return [
+        {
+            "id": row.pk,
+            "question": row.question,
+            "options": row.options_json,
+            "session_id": row.session_id,
+            "created_at": row.created_at.isoformat(),
+            "slack_ts": row.slack_ts,
+            "slack_channel": row.slack_channel,
+        }
+        for row in rows
+    ]
+
 
 # The review/merge-governing settings agents most need to read before deciding
 # whether a merge is theirs to make — the review gate proper plus the review-phase

@@ -21,6 +21,10 @@ _GITHUB_TOOLS = {
     "github_pr_comments",
     "github_issue",
     "github_issue_comments",
+    "github_issue_search",
+    "github_issue_list_assigned",
+    "github_my_merged_prs",
+    "github_pr_get",
 }
 _GITLAB_TOOLS = {n.replace("github_", "gitlab_") for n in _GITHUB_TOOLS}
 _SLACK_TOOLS = {"slack_mentions", "slack_channel_history", "slack_thread_replies", "slack_permalink"}
