@@ -13,10 +13,12 @@ import teatree.backends.github.projects as github_projects_mod
 import teatree.utils.run as utils_run_mod
 from teatree.backends.github import GitHubCodeHost, ProjectItem, fetch_project_items, issue_repo_short
 from teatree.backends.github.api import (
+    _FORGE_READ_TIMEOUT_SECONDS,
     _gh_api_get,
     _gh_api_get_paginated,
     _gh_api_patch,
     _gh_api_post,
+    _gh_api_search_paginated,
     _run_gh,
     gh_ambient_auth_available,
 )
@@ -168,6 +170,48 @@ class TestGhApiGetPaginated:
             mock_run.return_value = MagicMock(stdout=json.dumps([[{"id": 1}], {"oops": True}]))
             result = _gh_api_get_paginated("repos/o/r/issues/5/comments")
         assert result == [{"id": 1}]
+
+
+class TestGhApiSearchPaginated:
+    def test_flattens_items_across_pages(self) -> None:
+        pages = [{"items": [{"number": 1}, {"number": 2}]}, {"items": [{"number": 3}]}]
+        with patch.object(github_api_mod, "_run_gh") as mock_run:
+            mock_run.return_value = MagicMock(stdout=json.dumps(pages))
+            result = _gh_api_search_paginated("search/issues?q=is:pr")
+        assert result == [{"number": 1}, {"number": 2}, {"number": 3}]
+
+    def test_bounds_the_read_with_a_timeout(self) -> None:
+        # A stalled forge must degrade (TimeoutExpired -> caller fail-open), not
+        # hang the ship indefinitely — the GitHub search read carries a bound.
+        with patch.object(github_api_mod, "_run_gh") as mock_run:
+            mock_run.return_value = MagicMock(stdout="[]")
+            _gh_api_search_paginated("search/issues?q=is:pr")
+        assert mock_run.call_args.kwargs["timeout"] == _FORGE_READ_TIMEOUT_SECONDS
+
+    def test_non_list_payload_returns_empty(self) -> None:
+        with patch.object(github_api_mod, "_run_gh") as mock_run:
+            mock_run.return_value = MagicMock(stdout='{"message": "Not Found"}')
+            assert _gh_api_search_paginated("search/issues?q=is:pr") == []
+
+    def test_skips_non_dict_pages_and_missing_items(self) -> None:
+        pages = ["oops", {"total_count": 0}, {"items": [{"number": 5}]}]
+        with patch.object(github_api_mod, "_run_gh") as mock_run:
+            mock_run.return_value = MagicMock(stdout=json.dumps(pages))
+            assert _gh_api_search_paginated("search/issues?q=is:pr") == [{"number": 5}]
+
+
+class TestRunGhTimeout:
+    def test_threads_timeout_into_subprocess(self) -> None:
+        with patch.object(utils_run_mod.subprocess, "run") as mock_run:
+            mock_run.return_value = subprocess.CompletedProcess([], 0, "", "")
+            _run_gh("gh", "api", "x", timeout=12.5)
+        assert mock_run.call_args.kwargs["timeout"] == pytest.approx(12.5)
+
+    def test_default_leaves_the_subprocess_unbounded(self) -> None:
+        with patch.object(utils_run_mod.subprocess, "run") as mock_run:
+            mock_run.return_value = subprocess.CompletedProcess([], 0, "", "")
+            _run_gh("gh", "version")
+        assert mock_run.call_args.kwargs["timeout"] is None
 
 
 class TestGhApiPost:

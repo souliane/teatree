@@ -7,6 +7,7 @@ dropped (repo-scoping + ticket attribution); a forge transport error degrades to
 seams to one ``list_my_prs`` call.
 """
 
+import httpx
 from django.test import TestCase
 
 from teatree.core.gates.pr_budget_forge import (
@@ -101,6 +102,14 @@ class TestForgeOpenPrUrlsForTicket(_ForgeBudgetTestCase):
     def test_forge_error_fails_open(self) -> None:
         ticket = self._ticket(123)
         host = _FakeHost([], error=_forge_error())
+
+        assert forge_open_pr_urls_for_ticket(ticket, _REPO, host=host) is None
+
+    def test_httpx_error_fails_open(self) -> None:
+        # The GitLab backend raises httpx.HTTPError (not OSError/ValueError); the
+        # fail-open must cover it, else a GitLab overlay hard-blocks every ship.
+        ticket = self._ticket(123)
+        host = _FakeHost([], error=httpx.ConnectTimeout("connect timed out"))
 
         assert forge_open_pr_urls_for_ticket(ticket, _REPO, host=host) is None
 

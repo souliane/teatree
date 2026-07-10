@@ -11,6 +11,7 @@ TestResolvePerOverlay: the limit flows through the real ``get_effective_settings
 per overlay (overlay A limited, overlay B unlimited).
 """
 
+import httpx
 import pytest
 from django.test import TestCase
 
@@ -208,6 +209,14 @@ class TestForgeAuthoritativeBackstop(TestCase):
         ticket = self._ticket(123)
         host = _FakeHost([], error=CommandFailedError(["gh", "api"], 1, "", "502 Bad Gateway"))
         check_pr_budget(ticket, _REPO_A, limit=1, host=host)  # no raise
+
+    def test_fails_open_and_allows_on_a_gitlab_httpx_error(self) -> None:
+        # Regression: the GitLab backend raises httpx.HTTPError, which is neither
+        # OSError nor ValueError. A narrow catch would let it propagate and
+        # hard-block every ship — the fail-CLOSED inversion this backstop prevents.
+        ticket = self._ticket(123)
+        host = _FakeHost([], error=httpx.ReadTimeout("read timed out"))
+        check_pr_budget(ticket, _REPO_A, limit=1, host=host)  # no raise -> ship allowed
 
     def test_does_not_double_count_a_pr_present_in_both_local_db_and_forge(self) -> None:
         # (c) The same PR in the local DB and on the forge is ONE, not two: at

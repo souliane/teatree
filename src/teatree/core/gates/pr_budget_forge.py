@@ -30,7 +30,6 @@ from typing import TYPE_CHECKING
 from teatree.config import get_effective_settings
 from teatree.core.models import Ticket
 from teatree.utils.close_keywords import parse_closes_ticket
-from teatree.utils.run import CommandFailedError
 from teatree.utils.url_slug import PrRef, pr_ref_from_url
 
 if TYPE_CHECKING:
@@ -38,12 +37,6 @@ if TYPE_CHECKING:
     from teatree.types import RawAPIDict
 
 logger = logging.getLogger(__name__)
-
-# A forge transport failure — non-zero ``gh``/``glab`` (network, auth,
-# rate-limit), a subprocess spawn error, or a malformed JSON payload
-# (``json.JSONDecodeError`` is a ``ValueError``). Any of these degrades the
-# authoritative check to the local-only budget rather than blocking the ship.
-_FORGE_ERRORS = (CommandFailedError, OSError, ValueError)
 
 # The two ship seams (the pre-push fail-fast gate and the create chokepoint)
 # fire seconds apart in one flow. Memoising the forge read for this window
@@ -69,8 +62,15 @@ def forge_open_pr_urls_for_ticket(
     ``<slug>#<n>`` close-keyword join the tick reconciler uses.
 
     Returns :data:`None` — the fail-OPEN signal — when the forge cannot be
-    queried (no *host*, no resolvable identity, or a network/auth/rate-limit
-    error), so the caller degrades to the local-only budget.
+    queried (no *host*, no resolvable identity, or ANY forge error), so the
+    caller degrades to the local-only budget. The catch is deliberately broad:
+    the two backends fail with unrelated exception families — subprocess
+    ``CommandFailedError``/``OSError`` (GitHub ``gh``), ``httpx.HTTPError``
+    (GitLab), a malformed-JSON ``ValueError``, or a ``TimeoutExpired`` on a
+    stalled read — and this gate's contract is to never hard-block a ship on a
+    forge problem. A narrow tuple silently fail-CLOSED for GitLab (its
+    ``httpx.HTTPError`` is neither ``OSError`` nor ``ValueError``), wedging every
+    ship on a forge hiccup — the exact inversion this backstop exists to prevent.
     """
     if host is None:
         return None
@@ -79,7 +79,7 @@ def forge_open_pr_urls_for_ticket(
         if not authors:
             return None
         return _collect_ticket_pr_urls(ticket, repo_slug, host, authors)
-    except _FORGE_ERRORS:
+    except Exception:
         logger.warning(
             "forge PR-budget backstop skipped for ticket %s in %r — forge query failed; "
             "degrading to the local-only budget",
