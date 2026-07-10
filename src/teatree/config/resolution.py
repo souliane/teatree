@@ -270,11 +270,31 @@ def _db_overlay_overrides(overlay_name: str = "") -> dict[str, Any]:
 # resolves to the renamed field. The canonical key always wins when both rows
 # exist (the alias only fills a gap). ``todo_sweep_*`` → ``task_sweep_*`` (#129):
 # the loop unit reconciles teatree Task rows, not the harness TODO list, so the
-# settings follow the scanner's name.
+# settings follow the scanner's name. ``speed`` → ``wip`` (#2951/#3109): the old
+# ``Speed`` enum's value set was identical to ``Wip`` (slow/medium/full/boost,
+# aliases low/normal/high), so a plain key alias restores the stored value with
+# no remapping.
 _LEGACY_SETTING_ALIASES: dict[str, str] = {
     "todo_sweep_disabled": "task_sweep_disabled",
     "todo_sweep_recheck_interval_hours": "task_sweep_recheck_interval_hours",
+    "speed": "wip",
 }
+
+
+# Every key that has ever been a DB-home settings field name and was RENAMED (not
+# removed-dead — a removed field intentionally resolves to nothing and is pinned by
+# ``tests/config/test_removed_dead_settings.py``). This is the explicitly-maintained
+# history the guard in ``tests/config/test_legacy_setting_aliases.py`` reads: because
+# no record of the dataclass's past field names exists in code, retiring a key must
+# be a deliberate edit here, and the guard then forces its ``_LEGACY_SETTING_ALIASES``
+# entry so a stored row under the old key can never be silently dropped.
+_RETIRED_SETTING_KEYS: frozenset[str] = frozenset(
+    {
+        "todo_sweep_disabled",
+        "todo_sweep_recheck_interval_hours",
+        "speed",
+    }
+)
 
 
 def _coerce_db_rows(rows: dict[str, Any]) -> dict[str, Any]:
