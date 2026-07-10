@@ -70,6 +70,14 @@ class TestExistingWorkForIssue:
     def test_no_ticket_number_returns_none(self) -> None:
         assert existing_work_for_issue(issue_url=ISSUE, ticket_number="", open_prs=[]) is None
 
+    def test_unparseable_issue_url_fails_open_not_closed(self) -> None:
+        # An issue URL with no parseable repo slug cannot be scoped to a repo, so a
+        # foreign-repo PR whose branch matches the ticket number must NOT skip the
+        # issue (that would strand it). Fail open — the caller claims.
+        unparsable = "https://internal.example/tracker/42"
+        prs = [_github_pr(url="https://github.com/souliane/other/pull/9", head="42-feature")]
+        assert existing_work_for_issue(issue_url=unparsable, ticket_number="42", open_prs=prs) is None
+
     def test_matches_gitlab_source_branch(self) -> None:
         prs = [_gitlab_mr(url="https://gitlab.com/acme/app/-/merge_requests/9", source_branch="42-feature")]
         hit = existing_work_for_issue(issue_url=GITLAB_ISSUE, ticket_number="42", open_prs=prs)

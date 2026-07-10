@@ -8,7 +8,7 @@ instances and the same work gets double-claimed.
 
 This module gives the installation a stable identity: a UUID persisted once in
 the machine data dir, read identically by the main clone and every worktree
-checkout on the machine (:func:`teatree.paths.machine_data_dir` deliberately
+checkout on the machine (:func:`teatree.instance_id.machine_data_dir` deliberately
 resolves to the non-isolated dir). The id is stamped into claim/lease metadata
 so a claim can name its owner, and it is the identity Stage 2's GitHub claim
 refs will fence on. It is not a network identity — a persisted UUID4 is
@@ -81,7 +81,7 @@ def read_or_create_instance_id(data_dir: Path) -> str:
 def instance_id() -> str:
     """The stable id for this teatree installation.
 
-    Resolves the machine data dir at call time (:func:`teatree.paths.machine_data_dir`),
+    Resolves the machine data dir at call time (:func:`teatree.instance_id.machine_data_dir`),
     so every process on the machine — main clone or worktree — reads the same
     persisted file. The read is a few bytes; correctness (respecting the live
     ``HOME``/``XDG_DATA_HOME``) beats caching a frozen path.
