@@ -214,7 +214,7 @@ t3 <overlay> pr create
 # 3. After merge + deploy — run E2E against the dev environment and post the test plan
 #    (the deployed-env run is the completing half of "done", not a nice-to-have):
 t3 <overlay> e2e run <work-item> --target dev
-t3 <overlay> e2e post-test-plan --manifest artifacts/<TICKET>/manifest.json
+t3 <overlay> e2e post-test-plan --manifest "$T3_E2E_ARTIFACTS_DIR/<TICKET>/manifest.json"
 ```
 
 Do step 1 — never push a UI-visible ticket with no recorded E2E artifact. Then do step 3 — a deployed-env (`dev`) E2E run plus a posted test plan is what closes the loop on a UI-visible ticket; merging without it leaves "done" half-proven.
@@ -237,11 +237,11 @@ Sometimes a **separate test repo** reduces friction — no conflicts with the QA
 
 - Set the `T3_PRIVATE_TESTS` environment variable to the path of your private test repo.
 - Structure tests by app and feature: `tests/<app>/<feature-area>/<test-file>`
-- Artifacts land in `artifacts/<TICKET>/<env>/` here too. Tracking them in git is a choice only a **private** test repo may make (there, the artifacts are the deliverable). It is never permitted in a product/customer repo — see the rule below.
+- Artifacts land under the out-of-repo root here too: `$T3_E2E_ARTIFACTS_DIR/<TICKET>/<env>/`. Copying them into the test repo and tracking them in git is a choice only a **private** test repo may make (there, the artifacts are the deliverable). It is never permitted in a product/customer repo — see the rule below.
 
 ### Artifacts Are Never Committed to a Product Repo (Non-Negotiable)
 
-An artifact is a **recording of a run** — screenshots, videos, traces. It is reproducible from the spec plus a provisioned stack, and once `post-test-plan` uploads it, the ticket note holds the durable copy. Committing artifacts to a product/customer repo puts binaries in a source tree, bloats every clone, and makes reviewers page through a video diff. **Gitignore `artifacts/*/local/` and `artifacts/*/dev/` in every product repo.** The evidence lives on the ticket, not in the branch.
+An artifact is a **recording of a run** — screenshots, videos, traces. It is reproducible from the spec plus a provisioned stack, and once `post-test-plan` uploads it, the ticket note holds the durable copy. Committing artifacts to a product/customer repo puts binaries in a source tree, bloats every clone, and makes reviewers page through a video diff. The artifacts root lives **outside every working tree** (§ "Artifact directory layout"), so a correctly-pathed run never touches the repo; keep `artifacts/` gitignored in product repos anyway as a backstop against a stray hard-coded path. The evidence lives on the ticket, not in the branch.
 
 Three kinds of file get confused for one another — classify before deciding where each belongs:
 
@@ -249,7 +249,7 @@ Three kinds of file get confused for one another — classify before deciding wh
 |---|---|---|
 | **Artifact** — *records* a run | `step1.png`, `run.webm` | Never committed to a product repo; uploaded to the ticket note by `post-test-plan`. |
 | **Fixture** — *produces* state | flag/message seed, API seed | The spec's own `beforeAll` / fixture, in the specs tree. Never a loose script under `artifacts/`. |
-| **Manifest** — *authored intent* | `manifest.json` (workflow names, human `steps`, claim→capture mapping) | Source, not output: hand-written, not deterministically regenerable. It stays git-tracked at `artifacts/<TICKET>/manifest.json` (the gitignore covers only the per-env subdirs, not the ticket root). |
+| **Manifest** — *authored intent* | `manifest.json` (workflow names, human `steps`, claim→capture mapping) | Hand-written, but it is an artifact too: it lives beside the captures it maps, at `$T3_E2E_ARTIFACTS_DIR/<TICKET>/manifest.json` — outside every working tree, never committed to a product repo. Once posted, the note's hidden state blob holds the durable copy. |
 
 The **run provenance** is DB-home, not in the tree — never re-derive it from files. `Ticket.extra['e2e_recipe']` records the run's sha and env; the rubric score lives on the `Rubric` model and the posted-note URL on `E2eMandatoryRun.posted_url`.
 
@@ -278,7 +278,7 @@ The deterministic primitive for this rule is `teatree.core.evidence.doc_evidence
 There is ONE canonical command for posting a test plan — do not hand-craft a GitLab/GitHub note, do not paste screenshots into a comment by hand, and do not explore for an alternative path:
 
 ```bash
-t3 <overlay> e2e post-test-plan --manifest artifacts/<TICKET>/manifest.json
+t3 <overlay> e2e post-test-plan --manifest "$T3_E2E_ARTIFACTS_DIR/<TICKET>/manifest.json"
 ```
 
 The manifest is the single input. Build it once, then run that command — re-running is always safe (each run merges its env over the prior note state, § "Post Testing Evidence on the Ticket").
@@ -309,8 +309,8 @@ pass insert -m e2e/e2etest-password          # re-inject the credential, then ru
       "workflow": "<plain-language workflow name>",
       "steps": ["Open the app", "Click the Login button", "Expect the dashboard"],
       "dev":   {"video": null, "images": []},
-      "local": {"video": "artifacts/<TICKET>/local/run.webm",
-                "images": ["artifacts/<TICKET>/local/step1.png"]}
+      "local": {"video": "local/run.webm",
+                "images": ["local/step1.png"]}
     }
   ]
 }
@@ -364,33 +364,33 @@ Flags (all keyword-only):
     {"workflow": "<test name>",
      "steps": ["Open the app", "Click the Login button", "Expect the dashboard"],
      "dev":   {"video": null, "images": []},
-     "local": {"video": "artifacts/8521/local/run.webm",
-               "images": ["artifacts/8521/local/step1.png", "artifacts/8521/local/step2.png"]}}
+     "local": {"video": "local/run.webm",
+               "images": ["local/step1.png", "local/step2.png"]}}
   ]
 }
 ```
 
 - One object per workflow; each carries its `dev` and `local` captures. A side's captures may be empty (e.g. dev before deploy) → that column shows `—`.
 - `steps` (optional, workflow-level — shared across dev/local) is the written test plan: the numbered "how to test / where to click" list rendered above that workflow's table. Omit it and the block is omitted. It persists across re-runs — a later steps-less run keeps the recorded steps.
-- `images` and the optional `video` are file paths under the **per-env artifact directory** (see the layout rule below) — just paste what Playwright captured there.
+- `images` and the optional `video` are file paths **relative to the manifest's own directory** — the manifest sits at `$T3_E2E_ARTIFACTS_DIR/<TICKET>/manifest.json`, so a capture in the per-env directory (see the layout rule below) is referenced as `<env>/<file>`. Just paste what Playwright captured there.
 - `dev.missing_on_dev` lists the MRs whose commits are not yet deployed — the note renders them as an expected gap so a dev column of `—` reads as normal, not a failure.
 
 ### Artifact directory layout (Non-Negotiable)
 
-E2E artifacts live in a **dedicated directory per environment**: `artifacts/<TICKET>/<env>/<file>`, with `env ∈ {dev, local}`. Capture every screenshot and recording for a given env under that env's directory — never mix a dev and a local capture in one folder, and never dump artifacts at the ticket root. Examples:
+E2E artifacts live in a **dedicated directory per environment**, **outside every repo working tree**. The overlay exports the resolved root — the per-ticket workspace's `.t3-cache/artifacts` — as `T3_E2E_ARTIFACTS_DIR`; honour it rather than hard-coding a path. A capture for `env ∈ {dev, local}` lives at `$T3_E2E_ARTIFACTS_DIR/<TICKET>/<env>/<file>`. Writing captures to a **worktree-root** `artifacts/` puts binaries inside a product repo — the exact mistake the rule above forbids. Capture every screenshot and recording for a given env under that env's directory — never mix a dev and a local capture in one folder, and never dump artifacts at the ticket root. Examples:
 
 ```
-artifacts/8521/local/run.webm
-artifacts/8521/local/step1.png
-artifacts/8521/dev/run.webm
-artifacts/8521/dev/step1.png
+$T3_E2E_ARTIFACTS_DIR/8521/local/run.webm
+$T3_E2E_ARTIFACTS_DIR/8521/local/step1.png
+$T3_E2E_ARTIFACTS_DIR/8521/dev/run.webm
+$T3_E2E_ARTIFACTS_DIR/8521/dev/step1.png
 ```
 
-This makes wrap-up and manifest assembly trivial — a side's captures are exactly the files under `artifacts/<TICKET>/<env>/`, so building the manifest's `dev`/`local` blocks is a directory listing, and a re-run for the other env never collides with the first. `t3 <overlay> e2e post-test-plan` resolves manifest paths relative to the worktree root, so reference them as `artifacts/<TICKET>/<env>/<file>`.
+This makes wrap-up and manifest assembly trivial — a side's captures are exactly the files under `$T3_E2E_ARTIFACTS_DIR/<TICKET>/<env>/`, so building the manifest's `dev`/`local` blocks is a directory listing, and a re-run for the other env never collides with the first. `t3 <overlay> e2e post-test-plan` resolves relative artifact paths against the **manifest's own directory**, so keep the manifest beside its captures at `$T3_E2E_ARTIFACTS_DIR/<TICKET>/manifest.json` and reference them as `<env>/<file>`.
 
 ### Rules
 
-- **Paste whatever Playwright captured** — all screenshots for each test, plus its one video (omit the video when there is none) — from that env's `artifacts/<TICKET>/<env>/` directory.
+- **Paste whatever Playwright captured** — all screenshots for each test, plus its one video (omit the video when there is none) — from that env's `$T3_E2E_ARTIFACTS_DIR/<TICKET>/<env>/` directory.
 - **Always include a `steps` test plan per workflow.** Give each workflow a numbered "how to test / where to click" list so a human can reproduce it manually — this is a standard part of every teatree test-plan note, not optional. Write it in plain manual-testing language.
 - **One note per ticket, all environments.** The Dev|Local table accumulates: local now, dev added after deploy, same note.
 - Write the workflow names and title in plain language; evidence must read as manual testing — no mentions of automation, E2E, Playwright, or scripts.
@@ -436,7 +436,7 @@ When an E2E test shows missing UI elements (empty form, blank section, component
 ```ts
 await expect(page.locator('[data-test=expected-element]')).toBeVisible();
 await page.waitForLoadState('networkidle');
-await page.screenshot({ path: 'artifacts/...' });
+await page.screenshot({ path: `${process.env.T3_E2E_ARTIFACTS_DIR}/<TICKET>/<env>/step1.png` });
 ```
 
 **Red-box the asserted element in DEV captures (evidence, not decoration).** A screenshot posted as evidence must make the asserted element obvious, not leave a reviewer hunting a full page for it. Before the capture, draw a saturated-red box around the element under assertion (a bright `outline`/`border` injected via `element.evaluate(...)`, or a Playwright highlight) so the captured PNG carries an unmissable marker on exactly the field/control the test verifies. This is the same red-box marker the post-test-plan evidence gate looks for in DEV captures — a deployed-env screenshot whose asserted element isn't visibly boxed reads as a generic page shot, not proof the specific behaviour rendered.
@@ -446,7 +446,7 @@ const el = page.getByLabel('Default purchase costs');
 await expect(el).toBeVisible();
 await el.evaluate((n) => { n.style.outline = '4px solid #ff0000'; n.style.outlineOffset = '2px'; });
 await el.scrollIntoViewIfNeeded();
-await page.screenshot({ path: 'artifacts/<TICKET>/dev/step1.png' });
+await page.screenshot({ path: `${process.env.T3_E2E_ARTIFACTS_DIR}/<TICKET>/dev/step1.png` });
 ```
 
 Capture the red-boxed shot only after the settle (visible + network idle) above — a red box around a not-yet-rendered element is no more evidence than a blank page.
@@ -480,7 +480,7 @@ The deterministic check is `teatree.core.evidence.video_evidence` (mirroring `te
 
 ```bash
 # Verify one recording (exits non-zero on excessive blank/static pre-roll):
-uv run python scripts/analyze_video.py artifacts/<TICKET>/local/run.webm --verify
+uv run python scripts/analyze_video.py "$T3_E2E_ARTIFACTS_DIR/<TICKET>/local/run.webm" --verify
 ```
 
 This check is **machine-enforced by `post-test-plan`**: `t3 <overlay> e2e post-test-plan` runs `check_video_evidence` over every manifest `video` alongside the image gates and **refuses the post** (naming the dead-lead seconds) when a recording opens with excessive pre-roll — so a dead-lead video can never reach the ticket. When ffmpeg is absent the check skips cleanly (it never blocks a post merely because the host lacks ffmpeg); `--skip-validation` is the user-authorised bypass (the agent never sets it itself). The final-frame clarity is the author's discipline — capture so the recording holds the asserted end-state, then `--verify` the head.
