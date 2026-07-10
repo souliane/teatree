@@ -17,6 +17,7 @@ from teatree.core.provision.variant import Variant
 from teatree.core.worktree.health import HealthCheck
 from teatree.core.worktree.health import default_health_checks as _default_health_checks
 from teatree.types import (
+    DEFAULT_MR_TITLE_REGEX,
     BaseImageConfig,
     DbImportStrategy,
     ProvisionStep,
@@ -196,6 +197,21 @@ class OverlayConfig(BaseModel):
     required_third_party_services: frozenset[Service] = Field(default_factory=frozenset)
     sentry_org: str = ""
     sentry_url: str = "https://sentry.io"
+    # #36 settings promoted to an overlay code default: genuinely-constant, public
+    # skill / regex values whose code default now lives on the overlay, still
+    # DB-overridable. ``get_effective_settings`` reads each as
+    # env -> DB(overlay) -> DB(global) -> THIS overlay code default ->
+    # ``UserSettings`` dataclass default (see ``config.overlay_code_defaults``).
+    # Defaults MIRROR the ``UserSettings`` dataclass defaults so a bare overlay is
+    # a no-op; the public overlay promotes ``review_skill`` via its
+    # ``overlay_settings.py`` (``REVIEW_SKILL``).
+    review_skill: str = ""
+    architectural_review_skill: str = "ac-reviewing-codebase"
+    scanning_news_skill: str = "scanning-news"
+    eval_local_skill: str = "eval"
+    backlog_sweep_skill: str = "sweeping-tickets"
+    dogfood_smoke_skill: str = "dogfood-smoke"
+    mr_title_regex: str = DEFAULT_MR_TITLE_REGEX
 
     def __init__(self, settings_module: str = "", overlay_name: str = "", **data: object) -> None:
         super().__init__(**data)

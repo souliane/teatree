@@ -72,6 +72,16 @@ MAX_CONCURRENT_AUTO_STARTS: int = 3
 # declares it here (or via the ``overlays`` DB registry row override).
 REQUIRED_THIRD_PARTY_SERVICES: list[str] = ["github", "slack"]
 
+# ── Review ──────────────────────────────────────────────────────────
+
+# #36: the per-ticket deep-review skill, promoted from a DB row to this public
+# overlay code default (the value is already the public ``architectural_review_skill``
+# default). The #1539 reviewing-phase evidence gate resolves ``review_skill``
+# through env -> DB(overlay) -> DB(global) -> THIS code default -> the "" dataclass
+# default, so a ``ConfigSetting`` row still overrides it and the DB stays the home
+# for any per-machine change.
+REVIEW_SKILL: str = "ac-reviewing-codebase"
+
 # ── Companion skills ────────────────────────────────────────────────
 
 # Skills loaded alongside the active lifecycle skill for every task in this

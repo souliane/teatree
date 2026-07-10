@@ -16,6 +16,7 @@ from urllib.parse import urlparse
 from django.core.exceptions import ImproperlyConfigured
 
 from teatree.core.overlay_url import get_overlay_for_url
+from teatree.core.overlays.overlay_code_defaults_provider import build_and_register as _register_overlay_code_defaults
 from teatree.utils.url_slug import slug_from_issue_or_pr_url
 
 if TYPE_CHECKING:
@@ -620,3 +621,11 @@ def reset_overlay_cache() -> None:
 
     _discover_overlays.cache_clear()
     sys.modules.pop("teatree.contrib.t3_teatree.overlay", None)
+
+
+# Register the overlay-code-default provider (#36) at import time, injecting this
+# module's ``get_overlay`` — mirrors ``teatree.cli`` registering the command-catalogue
+# provider. The seam needs ``get_overlay`` to do anything, so registering here makes
+# the provider live exactly when it can be useful; before this module is imported the
+# seam fails safe to the dataclass default.
+_register_overlay_code_defaults(get_overlay)
