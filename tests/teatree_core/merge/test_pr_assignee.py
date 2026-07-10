@@ -3,7 +3,7 @@
 from dataclasses import dataclass
 from unittest.mock import patch
 
-from teatree.core.pr_assignee import resolve_pr_assignee
+from teatree.core.merge.pr_assignee import resolve_pr_assignee
 
 
 @dataclass
