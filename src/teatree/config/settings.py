@@ -1186,16 +1186,21 @@ class UserSettings:
     issue_implementer_max_concurrent: int = 1
     # Internal dispatch-rate floor (hours) between auto-implement pickups.
     issue_implementer_cadence_hours: int = 1
-    # Fleet-safety Stage 2 kill-switch (default OFF). When ON, the claim path
-    # (``ImplementedIssueMarker.claim``) acquires a GitHub claim ref
-    # (``teatree.core.fleet_claim``) as the cross-instance MUTEX before granting a
-    # local marker — the marker becomes a CACHE of the ref, not the authority —
-    # and the ship fence re-verifies ``is_held_by_me`` before the outward PR
-    # write. When OFF the behaviour is byte-for-byte today's local-only
-    # get_or_create. If the ref infra is unreachable while ON the claim fails SAFE
-    # (does not claim, logs loudly); turning the switch OFF restores today's
-    # behaviour. DB-home (#1775), per-overlay overridable; ``T3_FLEET_CLAIM_ENABLED``
-    # env wins over both.
+    # Fleet-safety Stage 2 kill-switch (default OFF). When ON, the cross-instance
+    # MUTEX (``teatree.core.fleet_claim`` — a GitHub claim ref as a server-side CAS)
+    # governs the whole in-flight lifecycle: the issue-implementer dispatch WINS the
+    # ref before granting a marker (the marker is a CACHE, not the authority); a
+    # per-tick HEARTBEAT sweep re-affirms every in-flight claim so it can never
+    # expire and be stolen mid-dispatch (a stolen claim ABANDONS the marker so the
+    # work aborts); and every outward write is FENCED fail-closed against
+    # ``is_held_by_me`` — the sync pre-ship gate, the async ``execute_ship`` (before
+    # BOTH the branch push and the PR-open), and the orphan-branch PR-create.
+    # (The §17.4 merge keystone fence is a scoped follow-up.) When OFF the behaviour
+    # is byte-for-byte today's local-only get_or_create. If the ref infra is
+    # unreachable while ON the claim/fence fails SAFE (does not claim / does not
+    # push under an unconfirmable claim, logs loudly); turning the switch OFF
+    # restores today's behaviour. DB-home (#1775), per-overlay overridable;
+    # ``T3_FLEET_CLAIM_ENABLED`` env wins over both.
     fleet_claim_enabled: bool = False
     # #1796 / agent-teams Track-A PR#1: opt-in, default-OFF arm for the
     # dispatch loop's ``orchestrate_phase`` claim. The phase is wired dormant

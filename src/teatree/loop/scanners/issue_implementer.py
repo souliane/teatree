@@ -98,8 +98,17 @@ class IssueImplementerScanner:
     identities: tuple[str, ...] = field(default_factory=tuple)
     name: str = "issue_implementer"
     readback_enabled: bool = True
+    #: When False (budget full, or no label) this tick only HEARTBEATS in-flight
+    #: fleet claims and claims no new issue — the heartbeat must run even at full
+    #: budget or an in-flight claim would expire mid-dispatch (fleet-safety Stage 2).
+    can_claim: bool = True
 
     def scan(self) -> list[ScanSignal]:
+        # Stage 2 B1: keep every in-flight claim un-stealable, on EVERY tick,
+        # regardless of budget/label (self-gates to a no-op when the switch is off).
+        fleet_claim_wire.heartbeat_inflight_claims(self.overlay_name)
+        if not self.can_claim:
+            return []
         if not self.label:
             return []
         assignees = self._resolve_identities()

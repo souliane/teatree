@@ -31,3 +31,10 @@ def init_client(client_dir: Path, bare: Path) -> Path:
 
 def ref_sha(bare: Path, ref: str) -> str:
     return git(bare, "for-each-ref", "--format=%(objectname)", ref).strip()
+
+
+def init_with_origin(path: Path, origin_url: str) -> Path:
+    """A git repo with ``origin`` set to *origin_url* (unreachable is fine — only its slug is read)."""
+    _run("init", "-q", str(path))
+    git(path, "remote", "add", "origin", origin_url)
+    return path

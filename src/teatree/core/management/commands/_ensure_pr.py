@@ -94,6 +94,45 @@ def _branch_own_commit_message(repo_path: str, branch_name: str) -> tuple[str, s
     return git.first_commit_message(repo=repo_path, range_spec=f"origin/{default}..{branch_name}")
 
 
+def _owning_ticket_pre_create_gate(
+    owning_ticket: "Ticket | None",
+    repo_slug: str,
+    repo_path: str,
+    branch_name: str,
+    host: CodeHostBackend,
+) -> EnsurePrResult | None:
+    """Refuse the orphan-branch PR-create when the owning ticket's gates say so.
+
+    The per-(repo, ticket) open-PR budget (north-star PR-2), the net-new tech-debt
+    check (north-star PR-3), and the fleet-safety Stage 2 fence (B3 — the create is
+    an outward write, so refuse it when the claim was stolen or is unconfirmable).
+    All inert at their neutral/DARK/kill-switch-off defaults; a genuinely orphan
+    branch (no owning ticket) has no scope, so every check is skipped.
+    """
+    if owning_ticket is None:
+        return None
+    try:
+        # Stage 3: `host` is the repo's resolved code host, so the budget
+        # check sees a sibling fleet instance's live forge PR too.
+        check_pr_budget(owning_ticket, repo_slug, host=host)
+    except PrBudgetExceededError as exc:
+        return EnsurePrResult(branch=branch_name, error=str(exc))
+    debt_error = evaluate_debt_delta(owning_ticket, repo_path)
+    if debt_error is not None:
+        return EnsurePrResult(branch=branch_name, error=debt_error)
+    from teatree.core import fleet_claim_wire  # noqa: PLC0415 — leaf import kept out of app-load cycle
+
+    if fleet_claim_wire.ticket_claim_is_lost(owning_ticket, repo_path):
+        return EnsurePrResult(
+            branch=branch_name,
+            error=(
+                f"fleet claim for {owning_ticket.issue_url or branch_name} is no longer held by this instance "
+                f"— refusing to open a PR (stolen by another instance, or the ref infra is unreachable)"
+            ),
+        )
+    return None
+
+
 def create_or_defer_pr(repo_path: str, branch_name: str) -> EnsurePrResult:
     """Build the PR spec from the branch's own commit and create it, or defer (#792).
 
@@ -136,16 +175,9 @@ def create_or_defer_pr(repo_path: str, branch_name: str) -> EnsurePrResult:
     # debt. Both inert at their DARK/neutral defaults; a genuinely orphan branch (no
     # owning ticket) has no budget/plan scope, so the checks are skipped.
     owning_ticket = _ticket_for_branch(branch_name)
-    if owning_ticket is not None:
-        try:
-            # Stage 3: `host` is the repo's resolved code host, so the budget
-            # check sees a sibling fleet instance's live forge PR too.
-            check_pr_budget(owning_ticket, repo_slug, host=host)
-        except PrBudgetExceededError as exc:
-            return EnsurePrResult(branch=branch_name, error=str(exc))
-        debt_error = evaluate_debt_delta(owning_ticket, repo_path)
-        if debt_error is not None:
-            return EnsurePrResult(branch=branch_name, error=debt_error)
+    gate_error = _owning_ticket_pre_create_gate(owning_ticket, repo_slug, repo_path, branch_name, host)
+    if gate_error is not None:
+        return gate_error
 
     try:
         raw = host.create_pr(

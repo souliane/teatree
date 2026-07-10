@@ -29,6 +29,11 @@ work it guards by construction. The module is deliberately Django-free — it us
 only :mod:`teatree.utils.run` (the sanctioned subprocess boundary),
 :func:`teatree.instance_id.instance_id`, and the stdlib — so a claim race can be
 exercised by real subprocesses without booting Django.
+
+Known, deferred: each ``acquire``/``heartbeat``/``steal`` writes one throwaway
+loose commit object (empty tree, nonce message) into the pushing repo's object DB.
+Over a long-lived clone these accumulate; a periodic ``git gc`` / ``git prune`` on
+the claim repo reclaims them. Pruning is not wired here — it is a follow-up.
 """
 
 import contextlib
@@ -42,7 +47,7 @@ from typing import TypedDict, cast
 
 from teatree.instance_id import instance_id
 from teatree.utils.git_run import git_env_without_overrides
-from teatree.utils.run import CompletedProcess, run_allowed_to_fail, run_checked
+from teatree.utils.run import CommandFailedError, CompletedProcess, run_allowed_to_fail, run_checked
 
 _REF_PREFIX = "refs/teatree/claims"
 _PROBE_PREFIX = "refs/teatree/_probe"
@@ -61,10 +66,12 @@ class ClaimMeta(TypedDict):
 
 
 #: A claim not re-affirmed by a ``heartbeat`` within this window is considered
-#: abandoned — a surviving instance may ``steal_if_expired`` it. Long enough that
-#: a live holder's per-tick heartbeat never lapses; short enough that a crashed
-#: holder does not wedge the work item for long.
-DEFAULT_TTL_SECONDS = 3600.0
+#: abandoned — a surviving instance may ``steal_if_expired`` it. Sized well ABOVE
+#: the heartbeat cadence: the in-flight heartbeat sweep runs on the issue-implementer
+#: tick (default 1h), so at 4h a live claim is re-affirmed about 4 times per TTL and
+#: can never lapse mid-dispatch; a genuinely crashed holder is reclaimable ~4h after
+#: its last heartbeat. (``teatree.core.fleet_claim_wire.heartbeat_inflight_claims`` drives the beat.)
+DEFAULT_TTL_SECONDS = 14400.0
 
 # The commit that carries the claim metadata is authored under a fixed, repo-
 # independent identity so ``commit-tree`` never depends on the local repo's
@@ -262,12 +269,10 @@ def _meta(work_key: str, inst: str, claimed_at: float, ttl_seconds: float) -> Cl
     }
 
 
-def _git(repo: str, args: tuple[str, ...] | list[str], *, allow_fail: bool = False) -> CompletedProcess[str]:
-    cmd = ["git", "-C", repo, *args]
-    env = git_env_without_overrides()
-    if allow_fail:
-        return run_allowed_to_fail(cmd, expected_codes=None, env=env)
-    return run_checked(cmd, env=env)
+def _git(repo: str, args: tuple[str, ...] | list[str]) -> CompletedProcess[str]:
+    # Every remote/read op tolerates a non-zero exit (the caller inspects the
+    # returncode); the local claim-commit writes use run_checked directly.
+    return run_allowed_to_fail(["git", "-C", repo, *args], expected_codes=None, env=git_env_without_overrides())
 
 
 def _empty_tree(repo: str) -> str:
@@ -275,27 +280,39 @@ def _empty_tree(repo: str) -> str:
 
 
 def _write_claim_commit(repo: str, meta: ClaimMeta) -> str:
+    # LOCAL object-DB writes (mktree + commit-tree). Per the module contract any
+    # inability to build a claim commit surfaces as FleetClaimUnavailableError
+    # (never a bare CommandFailedError), so the wire's fail-safe catch handles a
+    # corrupt local repo uniformly with the remote-unreachable case.
     message = json.dumps(meta, sort_keys=True)
-    args = (*_CLAIM_IDENTITY, "commit-tree", _empty_tree(repo), "-m", message)
-    return _git(repo, args).stdout.strip()
+    try:
+        args = ["git", "-C", repo, *_CLAIM_IDENTITY, "commit-tree", _empty_tree(repo), "-m", message]
+        return run_checked(args, env=git_env_without_overrides()).stdout.strip()
+    except CommandFailedError as exc:
+        msg = f"cannot write the claim commit in {repo} (local git failure)"
+        raise FleetClaimUnavailableError(msg) from exc
 
 
 def _try_create(repo: str, remote: str, sha: str, ref: str) -> bool:
-    return _git(repo, ["push", remote, f"{sha}:{ref}"], allow_fail=True).returncode == 0
+    # Assumes each claim commit is unique (the nonce in _meta): so an existing ref
+    # is never a fast-forward of this fresh commit, and a plain push succeeds ONLY
+    # as a create — an idempotent "already there" success (two claimants, one sha)
+    # cannot occur.
+    return _git(repo, ["push", remote, f"{sha}:{ref}"]).returncode == 0
 
 
 def _cas(repo: str, remote: str, ref: str, *, old_sha: str, new_sha: str) -> bool:
     args = ["push", f"--force-with-lease={ref}:{old_sha}", remote, f"{new_sha}:{ref}"]
-    return _git(repo, args, allow_fail=True).returncode == 0
+    return _git(repo, args).returncode == 0
 
 
 def _cas_delete(repo: str, remote: str, ref: str, *, old_sha: str) -> bool:
     args = ["push", f"--force-with-lease={ref}:{old_sha}", remote, f":{ref}"]
-    return _git(repo, args, allow_fail=True).returncode == 0
+    return _git(repo, args).returncode == 0
 
 
 def _ls_remote_sha(repo: str, remote: str, ref: str) -> str:
-    result = _git(repo, ["ls-remote", remote, ref], allow_fail=True)
+    result = _git(repo, ["ls-remote", remote, ref])
     if result.returncode != 0:
         msg = f"ls-remote {ref} failed (remote unreachable): {result.stderr.strip()}"
         raise FleetClaimUnavailableError(msg)
@@ -313,14 +330,14 @@ def _fetch_claim(repo: str, remote: str, ref: str) -> tuple[str, ClaimMeta | Non
     if not _ls_remote_sha(repo, remote, ref):
         return None
     probe = f"{_PROBE_PREFIX}/{uuid.uuid4().hex}"
-    if _git(repo, ["fetch", "--quiet", remote, f"+{ref}:{probe}"], allow_fail=True).returncode != 0:
+    if _git(repo, ["fetch", "--quiet", remote, f"+{ref}:{probe}"]).returncode != 0:
         msg = f"fetch {ref} failed (remote unreachable)"
         raise FleetClaimUnavailableError(msg)
     try:
-        tip = _git(repo, ["rev-parse", probe], allow_fail=True).stdout.strip()
-        body = _git(repo, ["log", "-1", "--format=%B", probe], allow_fail=True).stdout
+        tip = _git(repo, ["rev-parse", probe]).stdout.strip()
+        body = _git(repo, ["log", "-1", "--format=%B", probe]).stdout
     finally:
-        _git(repo, ["update-ref", "-d", probe], allow_fail=True)
+        _git(repo, ["update-ref", "-d", probe])
     return tip, _parse_meta(body)
 
 

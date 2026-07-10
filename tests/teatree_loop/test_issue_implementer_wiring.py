@@ -85,6 +85,37 @@ class IssueImplementerGateTests(TestCase):
         ):
             assert _issue_implementer_scanner_for(_backend()) is None
 
+    def test_fleet_on_at_full_budget_builds_a_heartbeat_only_scanner(self) -> None:
+        # Fleet-safety Stage 2: at full budget the scanner is STILL emitted when the
+        # kill-switch is on (so the per-tick heartbeat runs), but claims nothing new.
+        ImplementedIssueMarkerFactory(overlay="acme")  # budget full
+        with (
+            patch(
+                _PATCH_TARGET,
+                return_value=_settings(
+                    issue_implementer_enabled=True,
+                    issue_implementer_label="auto-implement",
+                    issue_implementer_max_concurrent=1,
+                ),
+            ),
+            patch("teatree.core.fleet_claim_wire.fleet_claim_enabled", return_value=True),
+        ):
+            scanner = _issue_implementer_scanner_for(_backend())
+        assert isinstance(scanner, IssueImplementerScanner)
+        assert scanner.can_claim is False
+
+    def test_fleet_on_with_budget_can_claim(self) -> None:
+        with (
+            patch(
+                _PATCH_TARGET,
+                return_value=_settings(issue_implementer_enabled=True, issue_implementer_label="auto-implement"),
+            ),
+            patch("teatree.core.fleet_claim_wire.fleet_claim_enabled", return_value=True),
+        ):
+            scanner = _issue_implementer_scanner_for(_backend())
+        assert isinstance(scanner, IssueImplementerScanner)
+        assert scanner.can_claim is True
+
     def test_abandoned_marker_does_not_consume_budget(self) -> None:
         ImplementedIssueMarkerFactory(overlay="acme", abandoned=True)
         with patch(

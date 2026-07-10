@@ -21,7 +21,7 @@ from teatree.core.gates.pr_budget_gate import PrBudgetExceededError, check_pr_bu
 from teatree.core.management.commands._ship.exec import ShippingGateFailure
 from teatree.core.management.commands._ship.fsm import reconcile_fsm_for_ship
 from teatree.core.modelkit.phases import normalize_phase
-from teatree.core.models import ImplementedIssueMarker, Session, Ticket, Worktree
+from teatree.core.models import Session, Ticket, Worktree
 from teatree.core.models.types import TicketExtra, VisualQASummary
 from teatree.core.overlay_loader import get_overlay
 from teatree.core.runners.ship import resolve_ship_worktree
@@ -419,20 +419,15 @@ def run_fleet_claim_fence_gate(ticket: Ticket, worktree: Worktree) -> FleetClaim
     """
     from teatree.core import fleet_claim_wire  # noqa: PLC0415 — leaf import kept out of app-load cycle
 
-    if not fleet_claim_wire.fleet_claim_enabled(ticket.overlay):
-        return None
-    marker = ImplementedIssueMarker.objects.filter(ticket=ticket).exclude(claim_ref_sha="").order_by("-id").first()
-    if marker is None:
-        return None
     repo_path = (worktree.worktree_path or worktree.repo_path) if worktree else "."
-    if fleet_claim_wire.issue_claim_still_held(marker.issue_url, marker.claim_ref_sha, repo_path):
+    if not fleet_claim_wire.ticket_claim_is_lost(ticket, repo_path):
         return None
     return FleetClaimFenceFailure(
         allowed=False,
         error=(
-            f"Refusing to ship {marker.issue_url}: the fleet claim ref is no longer held by this instance "
-            f"(claimed sha {marker.claim_ref_sha[:12]} — stolen by another instance, or the ref infra is "
-            f"unreachable so ownership cannot be confirmed). Another instance is doing this work. "
-            f"Disable the kill-switch (`config_setting set fleet_claim_enabled false`) to restore local-only claims."
+            "Refusing to ship: the fleet claim ref is no longer held by this instance "
+            "(stolen by another instance, or the ref infra is unreachable so ownership cannot be confirmed). "
+            "Another instance is doing this work. Disable the kill-switch "
+            "(`config_setting set fleet_claim_enabled false`) to restore local-only claims."
         ),
     )

@@ -13,7 +13,7 @@ from django.test import TestCase
 
 from teatree.core import fleet_claim, fleet_claim_wire
 
-from ._git_origin import init_bare, init_client
+from ._git_origin import init_bare, init_client, init_with_origin
 
 _KEY = "https://github.com/souliane/teatree/issues/99"
 
@@ -95,6 +95,14 @@ class TestErrorPaths:
         with pytest.raises(fleet_claim.FleetClaimUnavailableError):
             fleet_claim.acquire(_KEY, repo=str(client), remote="origin")
 
+    def test_acquire_raises_on_local_git_failure(self, tmp_path) -> None:
+        # N4: a repo where even the LOCAL mktree/commit-tree cannot run surfaces as
+        # FleetClaimUnavailableError (the module contract), never a bare CommandFailedError.
+        not_a_repo = tmp_path / "plain"
+        not_a_repo.mkdir()
+        with pytest.raises(fleet_claim.FleetClaimUnavailableError):
+            fleet_claim.acquire(_KEY, repo=str(not_a_repo), remote="origin")
+
     def test_acquire_raises_when_push_denied_but_ref_absent(self, tmp_path) -> None:
         # ls-remote succeeds (ref absent) yet the create push is refused — a
         # read-only / permission-denied remote. Fail safe: raise, never a silent
@@ -124,10 +132,10 @@ class TestErrorPaths:
         fleet_claim.acquire(_KEY, repo=str(client), remote="origin", ttl_seconds=10.0, now=1000.0)
         real_git = fleet_claim._git
 
-        def fail_fetch(repo, args, **kw):
+        def fail_fetch(repo, args):
             if args and args[0] == "fetch":
-                return real_git(repo, ["ls-remote", "does-not-exist"], allow_fail=True)  # non-zero
-            return real_git(repo, args, **kw)
+                return real_git(repo, ["ls-remote", "does-not-exist"])  # non-zero exit
+            return real_git(repo, args)
 
         monkeypatch.setattr(fleet_claim, "_git", fail_fetch)
         with pytest.raises(fleet_claim.FleetClaimUnavailableError):
@@ -180,9 +188,15 @@ class TestWireResolvers:
     def test_repo_name_none_when_no_marker(self) -> None:
         assert fleet_claim_wire.repo_name_from_issue_url("https://example.com/nothing-here") == ""
 
-    def test_resolve_falls_back_to_t3_repo_env(self, tmp_path, monkeypatch) -> None:
-        repo = tmp_path / "teatree"
-        (repo / ".git").mkdir(parents=True)
+    def test_owner_repo_from_github_and_gitlab(self) -> None:
+        assert fleet_claim_wire.owner_repo_from_issue_url(_KEY) == "souliane/teatree"
+        assert (
+            fleet_claim_wire.owner_repo_from_issue_url("https://gitlab.com/grp/sub/proj/-/issues/7") == "grp/sub/proj"
+        )
+        assert fleet_claim_wire.owner_repo_from_issue_url("https://example.com/nothing") == ""
+
+    def test_resolve_falls_back_to_t3_repo_env_when_origin_matches(self, tmp_path, monkeypatch) -> None:
+        repo = init_with_origin(tmp_path / "teatree", "https://github.com/souliane/teatree.git")
         monkeypatch.setattr(fleet_claim_wire, "find_clone_path", lambda *_: None)
         monkeypatch.setenv("T3_REPO", str(repo))
         assert fleet_claim_wire.resolve_claim_repo(_KEY) == str(repo)
@@ -201,9 +215,23 @@ class TestWireResolvers:
         monkeypatch.delenv("T3_REPO", raising=False)
         assert fleet_claim_wire.resolve_claim_repo(_KEY) == ""  # suppressed -> fail safe
 
-    def test_resolve_uses_clone_path_when_found(self, tmp_path, monkeypatch) -> None:
-        monkeypatch.setattr(fleet_claim_wire, "find_clone_path", lambda *_: tmp_path / "found")
-        assert fleet_claim_wire.resolve_claim_repo(_KEY) == str(tmp_path / "found")
+    def test_resolve_uses_clone_when_origin_hosts_the_issue(self, tmp_path, monkeypatch) -> None:
+        clone = init_with_origin(tmp_path / "found", "git@github.com:souliane/teatree.git")
+        monkeypatch.setattr(fleet_claim_wire, "find_clone_path", lambda *_: clone)
+        assert fleet_claim_wire.resolve_claim_repo(_KEY) == str(clone)
+
+    def test_resolve_rejects_a_clone_whose_origin_hosts_a_different_repo(self, tmp_path, monkeypatch) -> None:
+        # N1: a NAME-only match can resolve a clone whose origin points at the WRONG
+        # forge repo; pushing the claim there would split the mutex across remotes.
+        clone = init_with_origin(tmp_path / "found", "https://github.com/someone-else/teatree.git")
+        monkeypatch.setattr(fleet_claim_wire, "find_clone_path", lambda *_: clone)
+        assert fleet_claim_wire.resolve_claim_repo(_KEY) == ""  # origin mismatch -> fail safe
+
+    def test_resolve_rejects_a_clone_with_no_origin(self, tmp_path, monkeypatch) -> None:
+        clone = tmp_path / "no-origin"
+        init_bare(clone)  # a bare repo has no origin remote
+        monkeypatch.setattr(fleet_claim_wire, "find_clone_path", lambda *_: clone)
+        assert fleet_claim_wire.resolve_claim_repo(_KEY) == ""
 
 
 class TestWireFailSafe:

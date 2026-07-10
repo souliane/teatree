@@ -18,11 +18,17 @@ import contextlib
 import logging
 import os
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from teatree.config import get_effective_settings
 from teatree.config.loader import clone_root
 from teatree.core import fleet_claim
 from teatree.core.worktree.clone_paths import find_clone_path
+from teatree.instance_id import instance_id
+from teatree.utils import git
+
+if TYPE_CHECKING:
+    from teatree.core.models import ImplementedIssueMarker, Ticket
 
 logger = logging.getLogger(__name__)
 
@@ -42,13 +48,18 @@ def repo_name_from_issue_url(issue_url: str) -> str:
     return ""
 
 
-def resolve_claim_repo(issue_url: str) -> str:
-    """The local clone to push claim refs from — the one whose ``origin`` hosts the issue.
+def owner_repo_from_issue_url(issue_url: str) -> str:
+    """The ``owner/repo`` (or ``group/sub/repo``) slug from a forge issue/PR URL."""
+    path = issue_url.split("://", 1)[-1]
+    for marker in _ISSUE_URL_MARKERS:
+        if marker in path:
+            base = path.split(marker, 1)[0].rstrip("/")
+            host_and_slug = base.split("/", 1)
+            return host_and_slug[1] if len(host_and_slug) > 1 else ""
+    return ""
 
-    Resolved from the issue URL's repo name under the clone root, falling back to
-    the teatree main clone (``T3_REPO``). ``""`` when neither resolves, which the
-    caller treats as fail-safe (do not claim).
-    """
+
+def _resolve_clone(issue_url: str) -> str:
     name = repo_name_from_issue_url(issue_url)
     if name:
         with contextlib.suppress(Exception):
@@ -57,6 +68,38 @@ def resolve_claim_repo(issue_url: str) -> str:
                 return str(found)
     repo = os.environ.get("T3_REPO", "").strip()
     return repo if repo and (Path(repo) / ".git").exists() else ""
+
+
+def _origin_hosts_issue(repo: str, expected_slug: str) -> bool:
+    """Whether *repo*'s ``origin`` remote slug equals *expected_slug* (case-insensitive)."""
+    with contextlib.suppress(Exception):
+        return git.remote_slug(repo=repo).casefold() == expected_slug.casefold()
+    return False
+
+
+def resolve_claim_repo(issue_url: str) -> str:
+    """The local clone to push claim refs from — one whose ``origin`` HOSTS the issue.
+
+    A NAME-only match (or the ``T3_REPO`` fallback) can resolve a clone whose
+    ``origin`` points at a DIFFERENT forge repo than the issue lives on; pushing the
+    claim there would split the mutex across remotes and let two instances both
+    claim the same issue. So the resolved clone's ``origin`` slug MUST match the
+    issue URL's ``owner/repo`` — on a mismatch, an unparsable slug, or an absent
+    origin, return ``""`` and fail SAFE (do not claim) rather than push to the wrong
+    remote.
+    """
+    candidate = _resolve_clone(issue_url)
+    if not candidate:
+        return ""
+    expected = owner_repo_from_issue_url(issue_url)
+    if not expected or not _origin_hosts_issue(candidate, expected):
+        logger.warning(
+            "fleet_claim: resolved clone %s does not host %s (origin mismatch) — failing safe (not claiming)",
+            candidate,
+            expected or issue_url,
+        )
+        return ""
+    return candidate
 
 
 def acquire_issue_claim(issue_url: str) -> fleet_claim.Claim | None:
@@ -104,3 +147,84 @@ def issue_claim_still_held(issue_url: str, sha: str, repo: str) -> bool:
             exc_info=True,
         )
         return False
+
+
+def ticket_claim_is_lost(ticket: "Ticket", repo: str) -> bool:
+    """The outward-write fence shared by the ship gate, ``execute_ship`` and ``ensure-pr``.
+
+    ``True`` (= ABORT the write) iff the kill-switch is ON for the ticket's overlay,
+    the ticket carries a fleet claim (an issue-implementer marker with a fencing
+    sha), and the claim ref no longer confirms this instance holds it — stolen, or
+    the ref infra is unreachable so ownership cannot be confirmed (fail CLOSED).
+    ``False`` when the switch is off, no claim exists, or we still hold it — so a
+    non-fleet ship is never affected.
+    """
+    if not fleet_claim_enabled(ticket.overlay):
+        return False
+    from teatree.core.models import ImplementedIssueMarker  # noqa: PLC0415 — leaf import kept out of module load
+
+    marker = ImplementedIssueMarker.objects.filter(ticket=ticket).exclude(claim_ref_sha="").order_by("-id").first()
+    if marker is None:
+        return False
+    return not issue_claim_still_held(marker.issue_url, marker.claim_ref_sha, repo)
+
+
+def heartbeat_inflight_claims(overlay: str) -> None:
+    """Keep every in-flight fleet claim for *overlay* un-stealable (Stage 2, B1).
+
+    The heartbeat sweep. Runs on the issue-implementer tick — a cadence comfortably
+    shorter than the TTL — so a live claim is re-affirmed long before it could
+    expire and be stolen while its dispatch runs. Per non-abandoned marker carrying
+    a fencing sha: re-point the claim ref (CAS against our own sha) and PERSIST the
+    refreshed sha. A ``ClaimLost`` means another instance stole it while our dispatch
+    stalled — abandon the marker so the in-flight work aborts rather than push under
+    a lost claim. An unreachable forge is transient: leave the marker and retry next
+    tick (the TTL is the backstop).
+    """
+    if not fleet_claim_enabled(overlay):
+        return
+    from teatree.core.models import ImplementedIssueMarker  # noqa: PLC0415 — leaf import kept out of module load
+
+    live = (
+        ImplementedIssueMarker.objects.filter(overlay=overlay)
+        .exclude(claim_ref_sha="")
+        .exclude(state=ImplementedIssueMarker.State.ABANDONED)
+    )
+    for marker in live:
+        _heartbeat_one(marker)
+
+
+def _heartbeat_one(marker: "ImplementedIssueMarker") -> None:
+    from teatree.core.models import ImplementedIssueMarker  # noqa: PLC0415 — leaf import kept out of module load
+
+    repo = resolve_claim_repo(marker.issue_url)
+    if not repo:
+        return
+    claim = fleet_claim.Claim(
+        work_key=marker.issue_url,
+        ref=fleet_claim.claim_ref(marker.issue_url),
+        sha=marker.claim_ref_sha,
+        instance_id=instance_id(),
+        claimed_at=0.0,
+        ttl_seconds=fleet_claim.DEFAULT_TTL_SECONDS,
+    )
+    try:
+        result = fleet_claim.heartbeat(claim, repo=repo)
+    except fleet_claim.FleetClaimUnavailableError:
+        logger.warning(
+            "fleet_claim heartbeat: ref infra unreachable for %s — leaving claim, retrying next tick",
+            marker.issue_url,
+            exc_info=True,
+        )
+        return
+    if isinstance(result, fleet_claim.ClaimLost):
+        logger.warning(
+            "fleet_claim for %s was STOLEN (ref now %s) — abandoning in-flight work",
+            marker.issue_url,
+            result.observed_sha or "<deleted>",
+        )
+        marker.state = ImplementedIssueMarker.State.ABANDONED
+        marker.save(update_fields=["state"])
+        return
+    marker.claim_ref_sha = result.sha
+    marker.save(update_fields=["claim_ref_sha"])
