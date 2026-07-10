@@ -189,10 +189,23 @@ exactly the tiers its home allows:
 * **DB-home field** (every field not in the carve-out): `T3_*` env var (wired one-offs
   in `ENV_SETTING_OVERRIDES`: `T3_MODE`, `T3_WIP`, `T3_ON_BEHALF_POST_MODE`,
   `T3_MISSING_ISSUE_POLICY`, `T3_REVIEW_SKILL`), then the **DB store** — an
-  **overlay-scoped** `ConfigSetting` row, then a **global** row — then the
-  `UserSettings` dataclass default. Its `[teatree]` / `[overlays.<name>]` TOML
-  value is **ignored on read** (left over from a pre-partition config, it is
-  migrated into the store with `t3 <overlay> config_setting import`).
+  **overlay-scoped** `ConfigSetting` row, then a **global** row — then, for a key
+  **promoted to an overlay code default** (#36, `config.overlay_code_defaults`),
+  the active overlay's `OverlayConfig` value, then the `UserSettings` dataclass
+  default. Its `[teatree]` / `[overlays.<name>]` TOML value is **ignored on read**
+  (left over from a pre-partition config, it is migrated into the store with
+  `t3 <overlay> config_setting import`).
+* **Overlay-code-default tier** (#36): a genuinely-constant, non-secret setting
+  (e.g. `review_skill`, the `*_skill` scanner names, `mr_title_regex`) may live as
+  a Python default on the active overlay's `OverlayConfig` (fed by its
+  `overlay_settings.py`), still DB-overridable. That default sits **below every DB
+  / env override** (a `ConfigSetting` row still wins) and **above the dataclass
+  default** (with no row the overlay code default wins). It is a DEFAULT, never a
+  hard pin — it never defeats the autonomy collapse. The tier is an inverted seam
+  (`teatree.core` registers a provider on `config.overlay_code_defaults` at
+  overlay-load time, mirroring `command_catalogue`); with no provider registered
+  it is a strict no-op and resolution falls straight through to the dataclass
+  default.
 * **TOML-home field** (the carve-out): `T3_*` env var, then the active overlay's
   `[overlays.<name>]` override, then the global `[teatree]` value, then the
   dataclass default. A `ConfigSetting` row for it is **ignored on read** (and

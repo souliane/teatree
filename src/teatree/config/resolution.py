@@ -25,6 +25,7 @@ import teatree.config as _facade
 from teatree.config.discovery import _active_overlay_entry
 from teatree.config.enums import Autonomy, Mode, OnBehalfPostMode
 from teatree.config.homes import SETTING_HOMES, SettingHome
+from teatree.config.overlay_code_defaults import overlay_code_defaults
 from teatree.config.settings import ENV_SETTING_OVERRIDES, OVERLAY_OVERRIDABLE_SETTINGS, OverlayEntry, UserSettings
 from teatree.config_mr_reminder import mr_reminder_from_table
 from teatree.config_speak import speak_from_subtable
@@ -47,11 +48,17 @@ def get_effective_settings(overlay_name: str | None = None) -> UserSettings:
     so resolution per field depends on that home (first match wins):
 
     *   DB-home field — ``T3_*`` env var, then the ``ConfigSetting`` store
-        (overlay-scope row, then global-scope row), then the dataclass default:
+        (overlay-scope row, then global-scope row), then — for a key promoted to
+        an overlay code default (#36, ``overlay_code_defaults``) — the active
+        overlay's ``OverlayConfig`` value, then the dataclass default:
 
-            env -> DB(overlay scope) -> DB(global scope) -> default.
+            env -> DB(overlay scope) -> DB(global scope) -> overlay code default -> default.
 
-        Its ``[teatree]`` / ``[overlays.<name>]`` TOML value is NOT read.
+        Its ``[teatree]`` / ``[overlays.<name>]`` TOML value is NOT read. The
+        overlay-code-default tier is a DEFAULT (never a hard pin), so it sits
+        below every DB / env override and above the dataclass default; a key with
+        no promoted code default skips it and resolves to the dataclass default as
+        before.
     *   TOML-home field — ``T3_*`` env var, then the active overlay's
         ``[overlays.<name>]`` override, then the global ``[teatree]`` value, then
         the dataclass default:
@@ -123,6 +130,11 @@ def get_effective_settings(overlay_name: str | None = None) -> UserSettings:
     overlay_rows = _load_overlay_rows(resolved_overlay)
     global_db = _coerce_db_rows(global_rows)
     overlay_db = _coerce_db_rows(overlay_rows)
+    # The overlay-code-default tier (#36): promoted constants the active overlay
+    # supplies, layered BELOW every DB / env override (a row overrides) and ABOVE
+    # the dataclass default (with no row the code default wins). It is never a
+    # hard pin — it is a default, so it must not defeat the autonomy collapse.
+    code_defaults = overlay_code_defaults(resolved_overlay)
     hard_pinned = set(overrides) | set(overlay_db)
     overrides.update(global_db)
     overrides.update(overlay_db)
@@ -130,7 +142,8 @@ def get_effective_settings(overlay_name: str | None = None) -> UserSettings:
         env_overrides = _env_setting_overrides()
         overrides.update(env_overrides)
         hard_pinned |= set(env_overrides)
-    settings = base if not overrides else replace(base, **overrides)
+    layered = {**code_defaults, **overrides}
+    settings = base if not layered else replace(base, **layered)
     settings = _apply_structured_db_settings(settings, global_rows, overlay_rows, base.speak)
     return _apply_autonomy(
         settings,
