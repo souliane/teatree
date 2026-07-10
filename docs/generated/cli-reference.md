@@ -6663,6 +6663,8 @@ Usage: t3 teatree e2e [OPTIONS] COMMAND [ARGS]...
 │ project           Run E2E tests from the project's own test directory.       │
 │ post-test-plan    Post/update the ticket's single test-plan note             │
 │                   (side-by-side Dev|Local test plan) from a manifest.        │
+│ tracked-manifest  Print a manifest's authored half (run provenance stripped) │
+│                   for a private test repo to commit.                         │
 │ retract-evidence  Withdraw the ticket's single test-plan note.               │
 │ post-evidence     [Deprecated] Alias for post-test-plan (renamed; kept one   │
 │                   release for back-compat).                                  │
@@ -6887,6 +6889,20 @@ Usage: t3 teatree e2e post-test-plan [OPTIONS]
 │                                                    no-allow-no-video]        │
 │ --help                                             Show this message and     │
 │                                                    exit.                     │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 teatree e2e tracked-manifest`
+
+```
+Usage: t3 teatree e2e tracked-manifest [OPTIONS]
+
+ Print a manifest's authored half (run provenance stripped) for a private test
+ repo to commit.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --manifest        TEXT                                                       │
+│ --help                  Show this message and exit.                          │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
