@@ -68,12 +68,8 @@ def _last_json_object(text: str) -> dict[str, Any] | None:
         line = raw.strip()
         if not (line.startswith("{") and line.endswith("}")):
             continue
-        try:
-            parsed = json.loads(line)
-        except json.JSONDecodeError:
-            continue
-        if isinstance(parsed, dict):
-            return parsed
+        with contextlib.suppress(json.JSONDecodeError):
+            return cast("dict[str, Any]", json.loads(line))
     return None
 
 

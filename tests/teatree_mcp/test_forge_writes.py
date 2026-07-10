@@ -13,6 +13,7 @@ forwarding, the per-service registration, and the banned-term refusal.
 import asyncio
 from collections.abc import Iterator
 from contextlib import contextmanager
+from types import SimpleNamespace
 from typing import Any
 from unittest.mock import patch
 
@@ -128,6 +129,32 @@ class TestForgeIssueWriteTools(TestCase):
             _call("gitlab_issue_create", {"repo": "acme/widgets", "title": "bug", "body": "it breaks"})
 
         assert fake.calls[0][0] == "create_issue"
+
+    def test_issue_close_without_a_comment_skips_the_scrub(self) -> None:
+        fake = _FakeForge()
+        with _forge_env(fake):
+            _call("github_issue_close", {"issue_url": "https://github.com/acme/widgets/issues/7"})
+
+        assert fake.calls[0] == (
+            "close_issue",
+            {"issue_url": "https://github.com/acme/widgets/issues/7", "comment": ""},
+        )
+
+
+class TestForgeWriteSendProxyRefusal(TestCase):
+    def test_send_proxy_refusal_stops_the_write(self) -> None:
+        # The leak scan passes (private target), but the #117 send-proxy refuses
+        # the destination (enforce mode) ⇒ the write never reaches the backend.
+        fake = _FakeForge()
+        refused = SimpleNamespace(allowed=False, reason="send-proxy refused the destination", payload="")
+        with (
+            _forge_env(fake),
+            patch("teatree.mcp.services_forge.route_send", return_value=refused),
+            pytest.raises(Exception, match="send-proxy refused"),
+        ):
+            _call("github_issue_create", {"repo": "acme/widgets", "title": "t", "body": "b"})
+
+        assert fake.calls == []
 
 
 class TestForgeWriteScrub(TestCase):

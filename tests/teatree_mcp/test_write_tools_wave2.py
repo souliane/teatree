@@ -10,9 +10,11 @@ gates fire identically over MCP.
 """
 
 import json
+import sys
 from typing import Any
 from unittest.mock import patch
 
+import pytest
 from asgiref.sync import async_to_sync
 from django.test import TestCase
 
@@ -20,6 +22,7 @@ from teatree.backends.types import Service
 from teatree.core.gates.review_request_guard import GuardTarget
 from teatree.core.overlay import OverlayConfig
 from teatree.mcp import build_server
+from teatree.mcp.write_tools import _last_json_object, _run_emitting_command
 
 
 def _payloads(result: Any) -> list[Any]:
@@ -100,6 +103,29 @@ class TestReviewRequestPostTool(TestCase):
 
         assert result["action"] == "refused"
         assert result["reason"] == "on_behalf_not_approved"
+
+
+class TestJsonEmittingCommandHelpers(TestCase):
+    def test_last_json_object_skips_noise_and_returns_the_last_object(self) -> None:
+        # Reversed scan hits, in order: an invalid-JSON braces line (suppressed),
+        # an unclosed-brace line (not a braces pair), a prose line, then the real
+        # verdict object.
+        text = '{"action": "post"}\ntrailing prose\n{unclosed\n{bad json}'
+        assert _last_json_object(text) == {"action": "post"}
+
+    def test_last_json_object_returns_none_without_a_json_object(self) -> None:
+        assert _last_json_object("just prose\nmore prose") is None
+
+    def test_run_emitting_command_surfaces_stderr_when_no_json(self) -> None:
+        def _boom(_command: str, *_args: object, **_kwargs: object) -> None:
+            sys.stderr.write("boom: bad input")
+            raise SystemExit(2)
+
+        with (
+            patch("teatree.mcp.write_tools.call_command", side_effect=_boom),
+            pytest.raises(RuntimeError, match="boom: bad input"),
+        ):
+            _run_emitting_command("review_request_post", "--mr-url", "x")
 
 
 class TestSlackReactTool(TestCase):
