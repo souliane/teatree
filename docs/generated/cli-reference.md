@@ -9054,10 +9054,11 @@ Usage: t3 teatree config_setting set [OPTIONS] KEY VALUE
  Upsert the DB override row for *key* (in *overlay*'s scope or global) to
  *value*.
 
- Refuses a key in none of ``OVERLAY_OVERRIDABLE_SETTINGS`` /
- ``REGISTRY_SETTINGS`` / ``COLD_SETTINGS``, a *value* that is not valid JSON,
- and a *value* that JSON-parses but is invalid for the setting's type,
- leaving the store untouched on any error.
+ Refuses a key outside the unified known-key set
+ (``OVERLAY_OVERRIDABLE_SETTINGS`` / ``REGISTRY_SETTINGS`` / ``COLD_SETTINGS``
+ / ``COLD_HOOK_SETTINGS``), a *value* that is not valid JSON, and a *value*
+ that JSON-parses but is invalid for the setting's type, leaving the store
+ untouched on any error.
 
  ``--overlay <name>`` scopes the row to one overlay (the per-overlay
  override); omitted, it writes the global scope.
@@ -9088,10 +9089,12 @@ Usage: t3 teatree config_setting get [OPTIONS] KEY
  Print the resolved value for *key* and name its source (DB vs env/default).
 
  When a ``ConfigSetting`` row exists in the requested scope it is reported as
- the ``db`` source; otherwise the value falls through to the env/default layer
- and is reported as the ``env/default`` source. ``--overlay <name>`` reads that
- overlay's scope. Refuses an unknown key so a typo is loud, not a silent
- answer for a non-setting.
+ the ``db`` source; otherwise the value falls through to the code layer: a
+ cold-hook gate key (``COLD_HOOK_SETTINGS``) reports its in-code
+ ``ColdHookSetting`` default, every other key its ``UserSettings``
+ env/default value. ``--overlay <name>`` reads that overlay's scope. Refuses
+ an unknown key — a typo is loud, not a silent answer for a non-setting — but
+ accepts every key ``list`` can display (the unified known-key set).
 
 ╭─ Arguments ──────────────────────────────────────────────────────────────────╮
 │ *    key      TEXT  UserSettings field name to read (must be overridable).   │

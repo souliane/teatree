@@ -189,6 +189,49 @@ class TestConfigSettingGet(TestCase):
             call_command("config_setting", "get", "not_a_real_setting", stderr=StringIO())
 
 
+class TestConfigSettingColdHookGateKey(TestCase):
+    """A cold-hook gate key round-trips through get/list/set/clear.
+
+    ``COLD_HOOK_SETTINGS`` keys (e.g. ``out_of_band_merge_gate_enabled``) that
+    ``list`` shows are also settable/gettable/clearable — the unified known-key set.
+    """
+
+    def test_get_of_a_gate_key_reports_db_value(self) -> None:
+        ConfigSetting.objects.set_value("out_of_band_merge_gate_enabled", value=False)
+        out = StringIO()
+        call_command("config_setting", "get", "out_of_band_merge_gate_enabled", stdout=out)
+        rendered = out.getvalue().lower()
+        assert "false" in rendered
+        assert "db" in rendered
+
+    def test_get_of_a_gate_key_reports_code_default_when_no_row(self) -> None:
+        # No DB row: the resolved value is the in-code ColdHookSetting default
+        # (out_of_band_merge_gate_enabled defaults to True), reported as a
+        # code/default source — not a refusal.
+        assert ConfigSetting.objects.filter(key="out_of_band_merge_gate_enabled").exists() is False
+        out = StringIO()
+        call_command("config_setting", "get", "out_of_band_merge_gate_enabled", stdout=out)
+        rendered = out.getvalue().lower()
+        assert "true" in rendered
+        assert "default" in rendered
+
+    def test_set_of_a_gate_key_is_accepted_and_round_trips(self) -> None:
+        call_command("config_setting", "set", "out_of_band_merge_gate_enabled", "false")
+        assert ConfigSetting.objects.get_effective("out_of_band_merge_gate_enabled") is False
+
+    def test_set_of_a_gate_key_rejects_a_quoted_bool_string(self) -> None:
+        # The cold-hook parser is strict (mirrors the cold reader): a quoted
+        # "false" is not a bool and must be refused at write time.
+        with pytest.raises(SystemExit):
+            call_command("config_setting", "set", "out_of_band_merge_gate_enabled", '"false"')
+        assert ConfigSetting.objects.filter(key="out_of_band_merge_gate_enabled").exists() is False
+
+    def test_clear_of_a_gate_key_removes_the_row(self) -> None:
+        ConfigSetting.objects.set_value("out_of_band_merge_gate_enabled", value=False)
+        call_command("config_setting", "clear", "out_of_band_merge_gate_enabled")
+        assert ConfigSetting.objects.get_effective("out_of_band_merge_gate_enabled") is None
+
+
 class TestConfigSettingFlagTrailer(TestCase):
     """Set/get of a feature-flag key carries a governance trailer, a setting does not."""
 

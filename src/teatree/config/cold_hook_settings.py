@@ -34,10 +34,12 @@ class ColdHookSetting:
 
 # Disjoint from ``OVERLAY_OVERRIDABLE_SETTINGS`` and from every ``UserSettings``
 # field. These keys are read cold from the canonical config DB (via ``cold_reader``)
-# by the pre-Django hook leaves; ``config_setting set`` refuses them (they are not in
-# the overridable registry). A fitness test enumerates the live cold-read sites and
-# asserts every one is registered here, so a new hook gate flag added without an
-# entry turns the suite red.
+# by the pre-Django hook leaves; ``config_setting`` get/set/clear now handle them as
+# part of the unified known-key set (each is folded into ``_ALLOWED_SETTINGS`` by its
+# parser), resolving to this ``ColdHookSetting`` in-code default when no DB row exists.
+# They stay GLOBAL-scope only — never per-overlay overridable. A fitness test enumerates
+# the live cold-read sites and asserts every one is registered here, so a new hook gate
+# flag added without an entry turns the suite red.
 COLD_HOOK_SETTINGS: dict[str, ColdHookSetting] = {
     # ``teatree_bool_setting`` gate kill-switches the hook leaves read cold.
     "memory_recall_enabled": ColdHookSetting(_parse_strict_bool, default=True),

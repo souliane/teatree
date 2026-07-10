@@ -310,6 +310,8 @@ def load_schedule(db_path: Path | None = None) -> Schedule:
     Absence (no row, no DB) resolves to an empty :class:`Schedule` — the
     conservative ``present`` default.
     """
+    # Deferred (PLC0415): importing `teatree.config` at module scope eagerly
+    # loads its heavy package __init__; keep this module's import light.
     from teatree.config import cold_reader  # noqa: PLC0415
 
     return Schedule.from_table(cold_reader.read_setting("availability_schedule", db_path=db_path))
