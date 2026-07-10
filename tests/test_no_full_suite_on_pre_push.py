@@ -7,30 +7,28 @@ the push. These tests pin that no push-stage hook in .pre-commit-config.yaml
 invokes an UNSCOPED pytest run -- neither directly nor via a referenced script.
 
 A PATH-SCOPED push gate is allowed and pinned as such: the ``ci-critical-parity``
-hook runs ``dev/push-gate.sh`` (#122), which runs ``tests/quality`` + the
-never-lockout contract (marker-scoped ``-m "not push_heavy"``) and the incremental
-push gate (``t3 tool push-gate --run`` -- the scoped doctest + scoped ast-grep
-regression scan, FULL on any uncertainty). None of these can drag in the
+hook runs ``dev/push-gate.sh`` (#122), which runs the never-lockout contract and the
+incremental push gate (``t3 tool push-gate --run`` -- the scoped doctest + scoped
+ast-grep regression scan, FULL on any uncertainty). Neither can drag in the
 wall-clock/concurrency suites the invariant forbids. ``TestCiCriticalParityHook``
-guards that the gate stays scoped and cannot silently widen to the full suite.
+guards that the gate stays scoped, keeps the never-lockout contract, and cannot
+silently widen back to the full suite.
 
-The three whole-tree subprocess CLASSES that dominated the push wall-clock -- the
-~63s jscpd scan (``TestScanCoverage``), the mutmut kill-proof run
-(``TestMutmutKillsTheMutant``), and the >300s ast-grep whole-tree scan
-(``TestBlockingSetIsGreen``, relocated by #122) -- carry a ``push_heavy`` marker and
-are DESELECTED at push (``-m "not push_heavy"``). The marker is CLASS-scoped, not
-module-scoped, so the fast/deterministic siblings (``TestConfigPin``,
-``TestManualMutantKilled``, ``TestManifestSchema``) stay SELECTED at push for quick
-feedback on a config / manual-mutant / manifest regression. The heavy checks are
-RELOCATED to CI, not dropped: CI's ``test-shard`` lane runs the whole suite with NO
-marker filter, so all still gate on every PR. ``TestPushHeavyRelocatedToCI`` pins
-that relocation -- heavy excluded at push, cheap still selected, everything present
-in CI.
+The broad ``tests/quality`` directory is CI-only: even with ``push_heavy`` deselected
+its ~666 subprocess-spawning tests ran ~420s locally (``-n auto``), dwarfing the
+gate's whole point (a fast early signal) and hitting the push-hook wall-clock cap.
+CI's ``test-shard`` lane runs it whole-tree on every PR, so relocating it off the
+push path loses zero coverage. ``TestPushHeavyRelocatedToCI`` still pins that the
+three heaviest CLASSES -- the ~63s jscpd scan (``TestScanCoverage``), the mutmut
+kill-proof run (``TestMutmutKillsTheMutant``), and the >300s ast-grep whole-tree scan
+(``TestBlockingSetIsGreen``) -- carry the ``push_heavy`` marker (deselected from the
+fast inner-loop lane ``dev/ci-parity-fast.sh``) while the cheap siblings do not, and
+that CI's shard lane runs ALL of them with no marker filter.
 
 The "no full suite on push" invariant is STRICTLY MORE satisfied by #122 (the push
-runs fewer whole-tree checks), never weakened: no must-block test is inverted, and
-the safety net moves from "whole-tree at push" to "scoped-at-push + whole-tree-at-CI
-+ the CI selection-audit".
+runs strictly fewer tests), never weakened: no must-block test is inverted, and the
+safety net moves from "whole-tree at push" to "never-lockout + scoped-gate at push,
+whole-tree at CI, plus the CI selection-audit".
 """
 
 import ast
@@ -121,18 +119,19 @@ class TestNoFullSuiteOnPrePush:
 class TestCiCriticalParityHook:
     """Pin the ``ci-critical-parity`` push hook stays PATH-SCOPED and complete (#122).
 
-    The hook now runs ``dev/push-gate.sh``, which closes the local/CI divergence
-    (scoped quality + never-lockout classes + the incremental doctest/ast-grep push
-    gate) at push time WITHOUT the full suite -- so it must (a) exist on the push
-    stage pointing at the script, (b) keep the script path-scoped (no bare pytest),
-    (c) keep the load-bearing targets in the SCRIPT (``tests/quality``, the
-    never-lockout contract, and the doctest+ast-grep engine via ``t3 tool
-    push-gate``), and (d) DESELECT the ``push_heavy`` whole-tree checks. A future
-    edit can neither widen it to the full suite nor silently drop the coverage.
+    The hook runs ``dev/push-gate.sh``, which keeps a fast early signal at push time
+    WITHOUT the full suite -- so it must (a) exist on the push stage pointing at the
+    script, (b) keep the script path-scoped (no bare pytest), (c) keep the
+    load-bearing targets in the SCRIPT (the never-lockout contract and the
+    doctest+ast-grep engine via ``t3 tool push-gate``), and (d) keep the ~420s
+    ``tests/quality`` dir OFF the push path (CI-only, covered whole-tree by the
+    ``test (3.13)`` shard). A future edit can neither widen it to the full suite nor
+    silently drop the never-lockout / incremental-gate coverage.
 
     This is a documented RE-SPEC of the old inline-entry contract, not a weakening:
     the "no full suite on push" invariant (``TestNoFullSuiteOnPrePush``) is strictly
-    MORE satisfied, and no must-block assertion is inverted.
+    MORE satisfied (the push runs strictly fewer tests), and no must-block assertion
+    is inverted -- the ``tests/quality`` coverage is RELOCATED to CI, not dropped.
     """
 
     def _hook(self) -> dict:
@@ -159,15 +158,24 @@ class TestCiCriticalParityHook:
 
     def test_script_keeps_its_load_bearing_targets(self) -> None:
         body = self._script_body()
-        for token in ("tests/quality", "tests/test_gate_never_lockout_contract.py", "t3 tool push-gate"):
+        for token in ("tests/test_gate_never_lockout_contract.py", "t3 tool push-gate"):
             assert token in body, f"dev/push-gate.sh dropped `{token}` -- it must not narrow its coverage."
 
-    def test_script_deselects_push_heavy(self) -> None:
-        # The whole-tree jscpd + mutmut + ast-grep checks must be OFF the push gate;
-        # the marker deselection keeps those scans out of every push.
-        assert "not push_heavy" in self._script_body(), (
-            "dev/push-gate.sh must deselect the `push_heavy` whole-tree checks "
-            '(`-m "not push_heavy"`) so the jscpd/mutmut/ast-grep scans do not gate a push.'
+    def test_script_does_not_run_the_heavy_quality_dir(self) -> None:
+        # #122: the broad `tests/quality` dir is CI-only (its ~666 subprocess tests
+        # ran ~420s locally even with `push_heavy` deselected, hitting the push-hook
+        # wall-clock cap). Relocating it to CI's `test (3.13)` shard loses no coverage
+        # and makes this gate an actually-fast early signal. Pin it OFF the push path
+        # so the 420s dir can never silently return -- strictly stronger than the old
+        # `-m "not push_heavy"` deselection this replaces. A comment may NAME the dir
+        # to explain why it is CI-only, so only executable (non-comment) lines are checked.
+        run_lines = [
+            line for line in self._script_body().splitlines() if line.strip() and not line.lstrip().startswith("#")
+        ]
+        offenders = [line for line in run_lines if "tests/quality" in line]
+        assert not offenders, (
+            "dev/push-gate.sh must NOT run the `tests/quality` directory -- it is CI-only "
+            f"(covered whole-tree by the `test (3.13)` shard); running it at push blows the wall-clock cap: {offenders}"
         )
 
 
@@ -196,15 +204,17 @@ def _has_module_push_heavy(source: str) -> bool:
 
 
 class TestPushHeavyRelocatedToCI:
-    """The heavy CLASSES are OFF the push gate; the cheap ones stay ON; CI runs all.
+    """The heavy CLASSES are OFF the fast local lanes; the cheap ones stay ON; CI runs all.
 
-    The invariant is relocation, not deletion: nothing that gated before the
-    push-hook slim-down is ungated after -- the jscpd + mutmut checks simply move
-    from push-time to CI-time. The marker is CLASS-scoped so the fast siblings keep
-    gating at push. This class pins every half of that contract: the marker is
-    registered (``--strict-markers``), the heavy classes carry it, the cheap
-    classes (and the module) do NOT, the push hook deselects it, and CI's shard
-    lane does NOT.
+    The invariant is relocation, not deletion: nothing that gated before is ungated
+    after -- the jscpd + mutmut + whole-tree ast-grep checks run in CI's ``test-shard``
+    lane on every PR. Since #122 the push gate no longer runs ``tests/quality`` at
+    all; the ``push_heavy`` marker now scopes the fast inner-loop lane
+    (``dev/ci-parity-fast.sh`` runs ``tests/quality -m "not push_heavy"``), CLASS-scoped
+    so the cheap/deterministic siblings still run there. This class pins every half of
+    that contract: the marker is registered (``--strict-markers``), the heavy classes
+    carry it, the cheap classes (and the module) do NOT, and CI's shard lane does NOT
+    filter it.
     """
 
     def test_push_heavy_marker_is_registered(self) -> None:
@@ -226,19 +236,19 @@ class TestPushHeavyRelocatedToCI:
                     "`@pytest.mark.push_heavy` so the push hook deselects it."
                 )
 
-    def test_cheap_classes_stay_push_selected(self) -> None:
+    def test_cheap_classes_stay_fast_lane_selected(self) -> None:
         for path, classes in _HEAVY_CHECKS.items():
             source = path.read_text()
             assert not _has_module_push_heavy(source), (
                 f"{path.name} must NOT carry a module-level `push_heavy` pytestmark -- that would "
-                "lift the fast config-pin / manual-mutant checks off the push gate too."
+                "lift the fast config-pin / manual-mutant checks off the inner-loop lane too."
             )
             decorators = _class_decorators(source)
             for cls in classes["cheap"]:
                 assert cls in decorators, f"{path.name}::{cls} not found -- update _HEAVY_CHECKS."
                 assert "pytest.mark.push_heavy" not in decorators[cls], (
-                    f"{path.name}::{cls} is fast + deterministic and must stay SELECTED at push -- "
-                    "it must not carry the `push_heavy` marker."
+                    f"{path.name}::{cls} is fast + deterministic and must stay SELECTED in the fast "
+                    "inner-loop lane -- it must not carry the `push_heavy` marker."
                 )
 
     def test_ci_shard_lane_does_not_deselect_push_heavy(self) -> None:

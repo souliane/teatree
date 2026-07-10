@@ -45,7 +45,8 @@ workflow, never a push hook — the 93% whole-tree coverage floor is a whole-tre
 property no diff-scoped push subset can prove, and the full suite must never gate
 a push (`tests/test_no_full_suite_on_pre_push.py`). Use `bash dev/ci-parity-fast.sh`
 for the fast inner loop while iterating. The push-stage `ci-critical-parity` hook
-runs `dev/push-gate.sh` — the scoped quality/never-lockout classes plus the
-incremental push gate (scoped doctest + ast-grep, FULL on any uncertainty, behind
-the default-FALSE `incremental_push_gate` flag; the CI whole-tree backstop is
-untouched).
+runs `dev/push-gate.sh` — the never-lockout safety contract plus the incremental
+push gate (scoped doctest + ast-grep, FULL on any uncertainty, behind the
+default-TRUE `incremental_push_gate` flag — ON scopes the diff, OFF is the pre-#122
+whole-tree run; the CI whole-tree backstop is untouched). The broad `tests/quality`
+dir is CI-only (it ran ~420s locally — the `test (3.13)` shard covers it whole-tree).

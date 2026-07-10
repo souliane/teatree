@@ -1144,12 +1144,13 @@ class UserSettings:
     # the hook; the reader resolves it through `get_effective_settings`, so a DB
     # `config_setting set` actuates it exactly like the sibling gates.
     gate_relaxation_gate_enabled: bool = True
-    # #122 Safety-biased incremental push gate. DARK feature flag: OFF (default) =>
-    # `dev/push-gate.sh` runs whole-tree both sweeps (== today, zero push change);
-    # ON => scoped to the diff with FULL on every uncertainty. The CI whole-tree
-    # backstop is never removed regardless. Per-overlay overridable; flipped true
-    # only after the CI `selection-audit` shows a clean soak window.
-    incremental_push_gate: bool = False
+    # #122 Safety-biased incremental push gate. SETTLING feature flag: ON (default)
+    # => `dev/push-gate.sh` scopes the diff (doctest + ast-grep), FULL on every
+    # uncertainty; OFF => whole-tree both sweeps (the pre-#122 behaviour). The
+    # default flipped to ON after the CI `selection-audit` soak showed the scoped
+    # selection never missed a whole-tree finding. The flag survives as a per-overlay
+    # escape hatch; the CI whole-tree backstop is never removed regardless.
+    incremental_push_gate: bool = True
     # chrome-devtools-mcp is teatree's DEFAULT browser tool (navigation,
     # interaction, and network / console / DOM inspection over CDP — no claude.ai
     # account or extension pairing). When true, `t3 mcp browser-diagnosis` emits

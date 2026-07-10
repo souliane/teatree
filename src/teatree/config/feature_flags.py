@@ -67,12 +67,12 @@ class FeatureFlag:
 
 
 # ``outer_loop_enabled`` is the canonical DARK flag (the OFF switch the T4
-# autoresearch outer loop ships behind). The live registry is currently all-``DARK``
-# (PR-28 graduated the sole ``SETTLING`` flag ``loop_runner_enabled`` out — it became
-# a durable operational kill-switch, not a dying flag), so the stage-discrimination
-# machinery (:func:`dark_flags`, :func:`render_flags_audit`) is proven non-vacuously
-# over a MIXED FIXTURE in the conformance suite rather than over the live set's
-# accidental composition.
+# autoresearch outer loop ships behind). The live registry is mostly ``DARK`` plus
+# one ``SETTLING`` flag (``incremental_push_gate``, graduated by #122 once its CI
+# selection-audit soak came clean); ``REMOVE`` is not represented live, so the
+# stage-discrimination machinery (:func:`dark_flags`, :func:`render_flags_audit`) is
+# proven non-vacuously over a MIXED FIXTURE in the conformance suite rather than over
+# the live set's accidental composition.
 FEATURE_FLAGS: dict[str, FeatureFlag] = {
     "outer_loop_enabled": FeatureFlag(
         field="outer_loop_enabled",
@@ -148,11 +148,12 @@ FEATURE_FLAGS: dict[str, FeatureFlag] = {
     ),
     "incremental_push_gate": FeatureFlag(
         field="incremental_push_gate",
-        stage=FlagStage.DARK,
+        stage=FlagStage.SETTLING,
         tracking_issue="souliane/teatree#122",
         summary=(
             "Safety-biased incremental push gate: scopes the push doctest + ast-grep sweeps to the diff "
-            "(FULL on any uncertainty). Ships dark — OFF is whole-tree (== today); the CI whole-tree "
+            "(FULL on any uncertainty). Default ON after the CI selection-audit soak came clean; survives "
+            "as a per-overlay escape hatch. OFF is whole-tree (the pre-#122 behaviour); the CI whole-tree "
             "backstop is untouched regardless."
         ),
     ),

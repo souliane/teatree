@@ -69,11 +69,14 @@ class TestPlanModes:
 
 
 class TestResolveFlag:
-    def test_defaults_to_false(self) -> None:
-        # Real resolution under the test Django settings — the flag defaults FALSE.
-        assert _resolve_flag() is False
+    def test_defaults_to_true(self) -> None:
+        # Real resolution under the test Django settings — the flag defaults TRUE
+        # (#122 graduated it DARK → SETTLING once the selection-audit soak came clean).
+        assert _resolve_flag() is True
 
     def test_fails_safe_to_false_when_bootstrap_raises(self) -> None:
+        # The default is ON, but a bootstrap failure must still resolve to OFF ⇒
+        # whole-tree FULL — the fail-safe is unchanged by the default flip.
         with patch("teatree.cli.push_gate_tools.ensure_django", side_effect=RuntimeError("boom")):
             assert _resolve_flag() is False
 

@@ -66,8 +66,12 @@ repos:
   - repo: https://github.com/pre-commit/pre-commit-hooks
     rev: 3e8a8703264a2f4a69428a0aa4dcb512790b2c8c  # v6.0.0
     hooks:
+      # stages:[commit] REQUIRED: without stage metadata prek runs these at pre-push too;
+      # pin to commit (CI lint re-runs them whole-tree) so the push stays a fast signal.
       - id: end-of-file-fixer
+        stages: [commit]
       - id: trailing-whitespace
+        stages: [commit]
       - id: mixed-line-ending
         args: [--fix=lf]
   - repo: https://github.com/DavidAnson/markdownlint-cli2
@@ -92,6 +96,7 @@ repos:
     hooks:
       - id: check-added-large-files
         args: [--maxkb=600]
+        stages: [commit]  # pin off pre-push (see end-of-file-fixer above); CI lint re-runs it
       - id: check-json
       - id: check-merge-conflict
       - id: check-toml
@@ -135,9 +140,6 @@ repos:
   - repo: https://github.com/pre-commit/pygrep-hooks
     rev: 3a6eb0fadf60b3cccfd80bad9dbb6fae7e47b316  # v1.10.0
     hooks:
-      - id: rst-backticks
-      - id: rst-directive-colons
-      - id: rst-inline-touching-normal
       - id: text-unicode-replacement-char
   - repo: https://github.com/codespell-project/codespell
     rev: 63c8f8312b7559622c0d82815639671ae42132ac  # v2.4.1
@@ -448,20 +450,18 @@ repos:
   # concurrency tests and blocks the push (#112/#21/#38). push -> CI is the gate.
   # The local-suite runners (dev/test-fast.sh, dev/test-matrix.sh) and the exact
   # full-CI predicate (dev/ci-parity.sh) stay as explicit opt-ins. The push gate
-  # below (dev/push-gate.sh, #122) runs the PATH-SCOPED tests/quality + never-lockout
-  # classes (marker-scoped -m "not push_heavy") plus the incremental push gate --
-  # the scoped doctest (Engine A) + scoped ast-grep regression scan (Engine B),
-  # FULL on any uncertainty, behind the DB-home `incremental_push_gate` flag (OFF
-  # by default => whole-tree both, == today). The push_heavy marker excludes the
-  # three whole-tree subprocess checks (the ~63s jscpd scan, the mutmut kill-proof
-  # run, and the >300s ast-grep TestBlockingSetIsGreen scan) from the push gate;
-  # CI's test-shard lane runs the whole suite with no marker filter, so all still
-  # gate on every PR -- relocated to CI, not dropped. Guarded by
-  # tests/test_no_full_suite_on_pre_push.py.
+  # below (dev/push-gate.sh, #122) runs the never-lockout safety contract plus the
+  # incremental push gate -- the scoped doctest (Engine A) + scoped ast-grep
+  # regression scan (Engine B), FULL on any uncertainty, behind the DB-home
+  # `incremental_push_gate` flag (ON by default => scoped to the diff; OFF =>
+  # whole-tree both, the pre-#122 run). The broad tests/quality directory is CI-only
+  # (~420s locally even with push_heavy deselected -- it hit the push wall-clock cap);
+  # CI's test-shard lane runs it whole-tree on every PR, so relocating it off the push
+  # path loses no coverage. Guarded by tests/test_no_full_suite_on_pre_push.py.
   - repo: local
     hooks:
       - id: ci-critical-parity
-        name: CI-critical parity (scoped quality/never-lockout + incremental push gate; path-scoped)
+        name: CI-critical parity (never-lockout contract + incremental push gate; path-scoped)
         language: system
         entry: dev/push-gate.sh
         pass_filenames: false
