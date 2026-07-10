@@ -13,7 +13,7 @@ from typing import cast
 from urllib.parse import urlparse
 
 from teatree.types import RawAPIDict
-from teatree.utils.run import CompletedProcess, run_allowed_to_fail, run_checked
+from teatree.utils.run import CommandFailedError, CompletedProcess, run_allowed_to_fail, run_checked
 
 _ISSUE_URL_RE = re.compile(r"^/(?P<owner>[^/]+)/(?P<repo>[^/]+)/issues/(?P<number>\d+)/?$")
 
@@ -49,6 +49,33 @@ def gh_ambient_auth_available() -> bool:
     except FileNotFoundError:
         return False
     return result.returncode == 0
+
+
+def gh_can_push(repo_slug: str, *, token: str = "") -> bool | None:
+    """Whether the identity behind *token* (ambient ``gh`` when empty) has push access to *repo_slug*.
+
+    Reads ``repos/{slug}`` ``.permissions.push`` for the authenticated identity:
+    ``True`` / ``False`` on a definite answer, ``None`` when it cannot be
+    determined — no slug, ``gh`` absent, a network/auth error, an unreadable repo
+    (404), or an unparsable payload. :func:`teatree.backends.loader.get_code_host_for_repo`
+    reads ``None`` as "keep the configured token": a collaborator override must
+    be CERTAIN, so a transient probe failure never switches the PR-authoring
+    identity. This is the seam that keeps ``gh pr create``'s ``createPullRequest``
+    from running under a non-collaborator token when the logged-in ``gh`` account
+    is the collaborator (the "must be a collaborator" abort).
+    """
+    if not repo_slug:
+        return None
+    try:
+        result = _run_gh("gh", "api", f"repos/{repo_slug}", "--jq", ".permissions.push", token=token)
+    except (CommandFailedError, FileNotFoundError):
+        return None
+    answer = result.stdout.strip().lower()
+    if answer == "true":
+        return True
+    if answer == "false":
+        return False
+    return None
 
 
 def _gh_api_get(endpoint: str, *, token: str = "") -> object:

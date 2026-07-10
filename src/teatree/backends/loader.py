@@ -11,7 +11,7 @@ from functools import lru_cache
 from typing import TYPE_CHECKING, Literal
 
 from teatree.backends.github import GitHubCodeHost
-from teatree.backends.github.api import gh_ambient_auth_available
+from teatree.backends.github.api import gh_ambient_auth_available, gh_can_push
 from teatree.backends.gitlab import GitLabCodeHost
 from teatree.backends.gitlab.api import GitLabAPI
 from teatree.backends.gitlab.ci import GitLabCIService
@@ -25,7 +25,7 @@ from teatree.core.backend_protocols import (
     PrOpenState,
 )
 from teatree.core.send_proxy import read_posting_credential
-from teatree.utils import git
+from teatree.utils import git, git_remote
 from teatree.utils.forge import forge_from_remote
 
 if TYPE_CHECKING:
@@ -168,27 +168,75 @@ def get_code_host_for_repo(overlay: "OverlayBase", repo_path: str) -> CodeHostBa
     is not necessarily unauthenticated — ``_run_gh`` already inherits the
     ambient environment (and thus ``gh``'s own logged-in account) whenever
     no token is passed. So when the forge is GitHub and no token is
-    configured, this checks :func:`gh_ambient_auth_available` and, if it
-    passes, builds a ``GitHubCodeHost(token="")`` that relies on that
-    fallback rather than raising. GitLab has no equivalent: its REST
-    transport (``GitLabHTTPClient``) returns early on an empty token with
-    no ``glab`` call at all, so it keeps raising here.
+    configured, :func:`_github_host_for_repo` checks
+    :func:`gh_ambient_auth_available` and, if it passes, builds a
+    ``GitHubCodeHost(token="")`` that relies on that fallback rather than
+    raising. It ALSO prefers that logged-in account over a configured token
+    that provably cannot push to this repo — the non-collaborator ``gh pr
+    create`` → "must be a collaborator (createPullRequest)" abort. GitLab has
+    no equivalent: its REST transport (``GitLabHTTPClient``) returns early on
+    an empty token with no ``glab`` call at all, so it keeps raising here.
     """
     remote = git.remote_url(repo=repo_path)
     forge = forge_from_remote(remote) if remote else ""
     if not forge:
         return get_code_host(overlay)
+    if forge == "github":
+        return _github_host_for_repo(overlay, remote)
     backend = _host_backend(overlay, forge)
     if backend is not None:
         return backend
-    if forge == "github" and gh_ambient_auth_available():
-        return GitHubCodeHost(token="")
     msg = (
         f"repo origin resolves to the {forge} forge ({remote!r}) but the active "
         f"overlay has no {forge} credentials configured — cannot open a PR. "
         f"Configure a {forge} token for this overlay."
     )
     raise BackendResolutionError(msg)
+
+
+def _github_host_for_repo(overlay: "OverlayBase", remote: str) -> CodeHostBackend:
+    """Return the GitHub code host for *remote*'s repo, preferring the collaborator identity.
+
+    The configured GitHub token authors the PR unless it PROVABLY cannot push to
+    this repo while the ambient ``gh`` CLI account can — a bot/PAT configured for
+    other repos that is not a collaborator here, whose ``createPullRequest`` fails
+    "must be a collaborator". In that one case the logged-in ``gh`` account (the
+    collaborator) authors the PR. Falls back to the ambient account when no token
+    is configured (the #2946 carve-out), and raises when neither a token nor an
+    ambient ``gh`` login is available.
+    """
+    token = overlay.config.get_github_token()
+    slug = git_remote.slug_from_remote(remote)
+    if token and not _configured_token_blocked_but_ambient_can(slug, token=token):
+        return GitHubCodeHost(token=token)
+    if gh_ambient_auth_available():
+        return GitHubCodeHost(token="")
+    if token:
+        return GitHubCodeHost(token=token)
+    msg = (
+        f"repo origin resolves to the github forge ({remote!r}) but the active "
+        "overlay has no github credentials configured and no ambient gh login — "
+        "cannot open a PR. Configure a github token for this overlay."
+    )
+    raise BackendResolutionError(msg)
+
+
+def _configured_token_blocked_but_ambient_can(slug: str, *, token: str) -> bool:
+    """Whether *token* PROVABLY cannot push to *slug* while the ambient gh account can.
+
+    The single condition that overrides a configured token with the ambient
+    collaborator account. Both probes must be DEFINITE: the configured token
+    must return a definite ``push == false`` and the ambient account a definite
+    ``push == true``. Any uncertainty (no slug, ambient login absent, a
+    :func:`gh_can_push` ``None`` from a transient/parse error) leaves the
+    configured token in place — the PR-authoring identity never silently
+    switches on a flaky probe. The ambient probes run only after the configured
+    token is proven push-blocked, so a working token costs one ``repos/{slug}``
+    read and never touches the ambient account.
+    """
+    if not slug or gh_can_push(slug, token=token) is not False:
+        return False
+    return gh_ambient_auth_available() and gh_can_push(slug, token="") is True
 
 
 def get_messaging(overlay: "OverlayBase") -> MessagingBackend:
