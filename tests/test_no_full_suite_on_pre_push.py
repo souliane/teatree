@@ -32,9 +32,12 @@ whole-tree at CI, plus the CI selection-audit".
 """
 
 import ast
-import re
-from pathlib import Path
+import shlex
+import time
+import tomllib
+from pathlib import Path, PurePosixPath
 
+import pytest
 import yaml
 
 _REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -63,10 +66,103 @@ _HEAVY_CHECKS = {
     },
 }
 
-# A pytest invocation with no path/marker scoping -- the full-suite signature.
-# Matches "pytest", "uv run pytest", "uv run -p 3.13 pytest" not followed by a
-# path/marker argument on the same logical command.
-_BARE_PYTEST = re.compile(r"\bpytest\b(?!\s+\S*(?:\.py|::|-k\b|-m\b|tests/|src/))")
+
+def _testpaths_roots() -> tuple[str, ...]:
+    # Deriving the forbidden root from `testpaths` means a directory rename moves
+    # the root with it, instead of silently un-guarding the old name.
+    ini = tomllib.loads(_PYPROJECT.read_text())["tool"]["pytest"]["ini_options"]
+    return tuple(ini["testpaths"])
+
+
+_TESTPATHS_ROOTS = _testpaths_roots()
+
+# pytest/xdist options that consume the NEXT token as their value, so the value is
+# never mistaken for a positional path (and a marker/keyword-only run with no path
+# is correctly seen as collecting the whole `testpaths` tree).
+_VALUE_OPTIONS = frozenset(
+    {
+        "-k",
+        "-m",
+        "-p",
+        "-c",
+        "-o",
+        "-n",
+        "-W",
+        "-r",
+        "--ignore",
+        "--ignore-glob",
+        "--deselect",
+        "--maxfail",
+        "--rootdir",
+        "--durations",
+        "--dist",
+        "--tx",
+    }
+)
+
+# Shell tokens that end one command and begin the next.
+_COMMAND_SEPARATORS = frozenset({"&&", "||", ";", "|", "&"})
+
+
+def _split_on_separators(tokens: list[str]) -> list[list[str]]:
+    segments: list[list[str]] = [[]]
+    for tok in tokens:
+        if tok in _COMMAND_SEPARATORS:
+            segments.append([])
+        else:
+            segments[-1].append(tok)
+    return segments
+
+
+def _pytest_argvs(text: str) -> list[list[str]]:
+    """The argv (tokens AFTER `pytest`) of every pytest invocation in `text`.
+
+    Tokenised per line (via shlex, so quotes collapse and `#` comments drop) so a
+    command boundary never lets one invocation absorb the next line's args; the
+    first `pytest` token in a command segment is the runner. Linear in input size
+    -- no backtracking regex, so a pathological argument cannot wedge the hook.
+    """
+    argvs: list[list[str]] = []
+    for line in text.splitlines():
+        try:
+            tokens = shlex.split(line, comments=True)
+        except ValueError:
+            tokens = line.split()
+        argvs.extend(seg[seg.index("pytest") + 1 :] for seg in _split_on_separators(tokens) if "pytest" in seg)
+    return argvs
+
+
+def _positional_args(argv: list[str]) -> list[str]:
+    positionals: list[str] = []
+    consume_value = False
+    for tok in argv:
+        if consume_value:
+            consume_value = False
+            continue
+        if tok.startswith("-"):
+            consume_value = "=" not in tok and tok in _VALUE_OPTIONS
+            continue
+        positionals.append(tok)
+    return positionals
+
+
+def _is_testpaths_root(arg: str) -> bool:
+    candidate = PurePosixPath(arg)
+    return any(candidate == PurePosixPath(root) for root in _TESTPATHS_ROOTS)
+
+
+def _runs_full_suite(command_text: str) -> bool:
+    """Whether `command_text` runs pytest across the whole `testpaths` tree.
+
+    True for a bare `pytest` (no positional path) or one whose positional path
+    normalises to a `testpaths` root (`tests`, `tests/`, `./tests/`, quoted); a
+    genuinely-scoped sub-path (`tests/quality`, `tests/foo.py::T`) returns False.
+    """
+    for argv in _pytest_argvs(command_text):
+        positionals = _positional_args(argv)
+        if not positionals or any(_is_testpaths_root(p) for p in positionals):
+            return True
+    return False
 
 
 def _push_hooks() -> list[dict]:
@@ -91,10 +187,19 @@ class TestNoFullSuiteOnPrePush:
     def test_no_push_hook_runs_unscoped_pytest_directly(self) -> None:
         # A SCOPED pytest (path/marker after `pytest`) is allowed; only a BARE,
         # unscoped `pytest` (the full-suite signature) is forbidden on the push path.
-        offenders = [h for h in _push_hooks() if _BARE_PYTEST.search(h.get("entry") or "")]
+        offenders = [h for h in _push_hooks() if _runs_full_suite(h.get("entry") or "")]
         assert not offenders, (
             "pre-push hook(s) invoke an UNSCOPED pytest -- the full suite belongs in "
             f"CI, not the local push path: {[h.get('id') for h in offenders]}"
+        )
+
+    def test_widened_script_running_testpaths_root_is_rejected(self) -> None:
+        # The regression: `pyproject` sets testpaths=["tests"], so `uv run pytest
+        # tests/` IS the full suite. A push-gate script widened to that must be
+        # REJECTED by the guard -- a trailing slash must not exempt it.
+        widened = '#!/usr/bin/env bash\nset -euo pipefail\necho "=== running the suite ==="\nuv run pytest tests/\n'
+        assert _runs_full_suite(widened), (
+            "guard is blind to `pytest tests/` -- that IS the whole suite (testpaths=['tests'])"
         )
 
     def test_no_push_hook_script_runs_full_suite(self) -> None:
@@ -108,12 +213,75 @@ class TestNoFullSuiteOnPrePush:
             candidate = _REPO_ROOT / entry[0]
             if candidate.is_file():
                 body = candidate.read_text()
-                if _BARE_PYTEST.search(body):
+                if _runs_full_suite(body):
                     offenders.append(f"{hook.get('id')} -> {entry[0]}")
         assert not offenders, (
             "pre-push hook script(s) run an unscoped pytest suite -- push -> CI "
             f"is the gate, not the local suite: {offenders}"
         )
+
+
+class TestFullSuiteMatcher:
+    """`_runs_full_suite` rejects whole-`testpaths` runs, allows scoped ones.
+
+    The bug this file guards against is a trailing slash (`pytest tests/`)
+    sneaking the full suite past the gate.
+    """
+
+    @pytest.mark.parametrize(
+        "invocation",
+        [
+            "pytest",
+            "pytest tests",
+            "pytest tests/",
+            "pytest ./tests/",
+            'pytest "tests/"',
+            "pytest 'tests/'",
+            "uv run pytest tests/",
+            "python -m pytest tests",
+            "uv run pytest tests//",
+            'pytest -m "not push_heavy"',
+        ],
+    )
+    def test_whole_suite_invocations_are_rejected(self, invocation: str) -> None:
+        assert _runs_full_suite(invocation), f"{invocation!r} runs the whole suite but was not caught"
+
+    @pytest.mark.parametrize(
+        "invocation",
+        [
+            "pytest tests/quality",
+            "pytest tests/test_gate_never_lockout_contract.py",
+            "pytest tests/test_gate_never_lockout_contract.py::TestGate::test_x",
+            'pytest tests/quality -m "not push_heavy"',
+            'uv run pytest tests/quality tests/test_gate_never_lockout_contract.py -m "not push_heavy" -q',
+            "pytest src/",
+            "bash dev/push-gate.sh",
+            "uv run t3 tool push-gate --run",
+        ],
+    )
+    def test_scoped_invocations_are_allowed(self, invocation: str) -> None:
+        assert not _runs_full_suite(invocation), f"{invocation!r} is genuinely scoped and must be allowed"
+
+    def test_commented_invocation_is_not_an_invocation(self) -> None:
+        # A `#`-commented mention documents the forbidden shape; it is not a run.
+        assert not _runs_full_suite("# never do `uv run pytest tests/` on the push path")
+        # ... but an inline comment must not mask a real run earlier on the line.
+        assert _runs_full_suite("uv run pytest tests/  # early full-suite signal")
+
+    def test_forbidden_root_is_derived_from_testpaths(self) -> None:
+        # No hardcoded copy of "tests": the root tracks pyproject, so a rename
+        # cannot leave the guard pinned to a stale directory name.
+        declared = tomllib.loads(_PYPROJECT.read_text())["tool"]["pytest"]["ini_options"]["testpaths"]
+        assert tuple(declared) == _TESTPATHS_ROOTS
+        assert _TESTPATHS_ROOTS, "testpaths must be non-empty or the guard has no root to forbid"
+
+    def test_matcher_is_redos_bounded(self) -> None:
+        # This runs inside a git hook: a pathological argument must not wedge it.
+        # The old backtracking lookahead was the exact ReDoS shape this pins shut.
+        pathological = "pytest " + "tests/" * 10_000
+        start = time.perf_counter()
+        _runs_full_suite(pathological)
+        assert time.perf_counter() - start < 0.5, "matcher is not linear -- possible ReDoS regression"
 
 
 class TestCiCriticalParityHook:
@@ -151,7 +319,7 @@ class TestCiCriticalParityHook:
         )
 
     def test_script_is_not_a_bare_full_suite(self) -> None:
-        assert not _BARE_PYTEST.search(self._script_body()), (
+        assert not _runs_full_suite(self._script_body()), (
             "dev/push-gate.sh widened to an unscoped pytest -- it must stay path-scoped so the "
             "no-full-suite-on-push invariant holds."
         )
