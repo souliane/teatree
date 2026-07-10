@@ -69,6 +69,8 @@ def load_timeouts(overlay: "OverlayBase | None" = None) -> TimeoutConfig:
             merged.update(overlay_timeouts)
 
     # Tier 1: User settings (the DB-home ``timeouts`` setting)
+    # Deferred (PLC0415): importing `teatree.config` at module scope eagerly
+    # loads its heavy package __init__; keep this module's import light.
     from teatree.config import cold_reader  # noqa: PLC0415
 
     user_timeouts = cold_reader.mapping_setting("timeouts")
