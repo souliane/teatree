@@ -72,6 +72,7 @@ graph TD
     teatree.core.models --> teatree.core.managers
     teatree.core.models --> teatree.core.models.errors
     teatree.core.models --> teatree.core.repair_loop
+    teatree.core.models --> teatree.instance_id
     teatree.core.models --> teatree.verification
     teatree.mcp --> teatree.core.models
     teatree.agents --> teatree.types
@@ -132,6 +133,7 @@ graph TD
     teatree.cli --> teatree.skill_support
     teatree.cli --> teatree.claude_sessions
     teatree.cli --> teatree.overlay_init
+    teatree.cli --> teatree.instance_id
     teatree.cli --> teatree.loop
     teatree.cli --> teatree.utils
     teatree.cli --> teatree.self_update
@@ -345,6 +347,7 @@ graph TD
     teatree.loop.statusline_palette
     teatree.loop.loop_cadences
     teatree.loop.url_specificity
+    teatree.instance_id
     teatree.slack_mrkdwn
     teatree.memory_audit
 ```

@@ -26,6 +26,9 @@ class ImplementedIssueMarkerManager(models.Manager["ImplementedIssueMarker"]):
     def claim(self, issue_url: str, overlay: str = "", **kw: object) -> "ImplementedIssueMarker | None":
         if not issue_url:
             return None
+        from teatree.instance_id import instance_id  # noqa: PLC0415 — leaf import kept out of module load
+
+        kw.setdefault("claimed_by_instance", instance_id())
         row, created = self.get_or_create(issue_url=issue_url, overlay=overlay, defaults=kw)
         return row if created else None
 
@@ -51,6 +54,10 @@ class ImplementedIssueMarker(models.Model):
     )
     dispatched_at = models.DateTimeField(default=timezone.now)
     head_sha = models.CharField(max_length=64, blank=True, default="")
+    #: The fleet ``instance_id`` that claimed this issue. The row is per-instance,
+    #: so this names the owner for cross-instance reconciliation and is what
+    #: Stage 2's GitHub claim refs will fence on.
+    claimed_by_instance = models.CharField(max_length=64, blank=True, default="")
 
     objects: ClassVar[ImplementedIssueMarkerManager] = ImplementedIssueMarkerManager()
 

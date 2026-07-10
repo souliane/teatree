@@ -110,6 +110,24 @@ class DeferredQuestion(models.Model):
     def is_pending(self) -> bool:
         return self.answered_at is None and self.dismissed_at is None
 
+    @property
+    def stable_notify_ref(self) -> str:
+        """Stable discriminator for outward-notification idempotency keys.
+
+        Prefers the harness-assigned ``tool_use_id`` — stable across restarts
+        and independent of this DB's autoincrement — so a key built from it does
+        not shift when the local pk does. Only when the harness supplied no
+        ``tool_use_id`` does it fall back to the pk, qualified by the fleet
+        ``instance_id`` (:mod:`teatree.instance_id`) so two instances'
+        independently-numbered rows can never collide into a false-dedup on a
+        shared operator DM surface. Never the bare local pk.
+        """
+        if self.tool_use_id:
+            return self.tool_use_id
+        from teatree.instance_id import instance_id  # noqa: PLC0415 — leaf import kept out of module load
+
+        return f"{instance_id()}:{self.pk}"
+
     @classmethod
     # ast-grep-ignore: ac-django-no-complexity-suppressions
     def record(  # noqa: PLR0913 — guarded factory: each kwarg is a documented column, kwargs-only.

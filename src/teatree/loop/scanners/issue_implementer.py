@@ -22,6 +22,7 @@ from typing import cast
 from teatree.core.backend_protocols import CodeHostBackend
 from teatree.core.models import NEEDS_TRIAGE_LABEL, ImplementedIssueMarker
 from teatree.loop.scanners.base import ScanSignal
+from teatree.loop.scanners.forge_readback import existing_work_for_issue, fetch_open_prs, issue_number
 from teatree.types import RawAPIDict
 
 logger = logging.getLogger(__name__)
@@ -82,6 +83,12 @@ class IssueImplementerScanner:
     ``identities`` opts the scanner into a multi-alias union query (matching
     :class:`AssignedIssuesScanner`); empty falls back to
     ``host.current_user()``.
+
+    ``readback_enabled`` (default on) runs the pre-dispatch forge read-back
+    (:func:`~teatree.loop.scanners.forge_readback.existing_work_for_issue`)
+    before each claim: an issue whose ``<ticket_number>-*`` branch or a
+    referencing PR already exists on the forge is skipped, closing most of the
+    cross-instance double-claim window that the local claim ledger cannot see.
     """
 
     host: CodeHostBackend
@@ -89,6 +96,7 @@ class IssueImplementerScanner:
     overlay_name: str = ""
     identities: tuple[str, ...] = field(default_factory=tuple)
     name: str = "issue_implementer"
+    readback_enabled: bool = True
 
     def scan(self) -> list[ScanSignal]:
         if not self.label:
@@ -96,19 +104,22 @@ class IssueImplementerScanner:
         assignees = self._resolve_identities()
         if not assignees:
             return []
+        candidates = self._candidate_issues(assignees)
+        if not candidates:
+            return []
+        open_prs = fetch_open_prs(self.host, authors=assignees) if self.readback_enabled else []
         signals: list[ScanSignal] = []
-        for issue in self._collect_unique_issues(assignees):
-            url = _issue_url(issue) or "<unknown>"
+        for issue in candidates:
+            url = _issue_url(issue)
             try:
-                if not _issue_is_open(issue):
-                    continue
-                labels = _issue_labels(issue)
-                if self.label not in labels:
-                    continue
-                if NEEDS_TRIAGE_LABEL in labels:
-                    continue
-                url = _issue_url(issue)
-                if not url:
+                hit = existing_work_for_issue(issue_url=url, ticket_number=issue_number(url), open_prs=open_prs)
+                if hit is not None:
+                    logger.info(
+                        "IssueImplementerScanner read-back skip %s: %s (%s)",
+                        url,
+                        hit.reason,
+                        hit.evidence_url,
+                    )
                     continue
                 marker = ImplementedIssueMarker.objects.claim(url, overlay=self.overlay_name)
                 if marker is None:
@@ -128,6 +139,24 @@ class IssueImplementerScanner:
                 logger.exception("IssueImplementerScanner failed on issue %s", url)
                 continue
         return signals
+
+    def _candidate_issues(self, assignees: tuple[str, ...]) -> list[RawAPIDict]:
+        """Open, URL-bearing issues carrying ``label`` but NOT :data:`NEEDS_TRIAGE_LABEL`.
+
+        The claimable set, resolved before the per-issue read-back + claim loop
+        so the forge open-PR fetch only fires when there is real work to guard.
+        """
+        candidates: list[RawAPIDict] = []
+        for issue in self._collect_unique_issues(assignees):
+            if not _issue_is_open(issue):
+                continue
+            labels = _issue_labels(issue)
+            if self.label not in labels or NEEDS_TRIAGE_LABEL in labels:
+                continue
+            if not _issue_url(issue):
+                continue
+            candidates.append(issue)
+        return candidates
 
     def _resolve_identities(self) -> tuple[str, ...]:
         if self.identities:
