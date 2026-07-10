@@ -477,7 +477,7 @@ def _issue_implementer_scanner_for(backend: OverlayBackends) -> IssueImplementer
     kill-switch OFF the emission stays byte-for-byte the pre-Stage-2 behaviour
     (no scanner unless we can actually claim).
     """
-    from teatree.core import fleet_claim_wire  # noqa: PLC0415 — leaf import kept out of module load
+    from teatree.core.fleet import wire  # noqa: PLC0415 — leaf import kept out of module load
 
     settings = _effective_settings_for_overlay(backend.name)
     if not settings.issue_implementer_enabled:
@@ -495,7 +495,7 @@ def _issue_implementer_scanner_for(backend: OverlayBackends) -> IssueImplementer
         ImplementedIssueMarker.objects.in_flight_count(backend.name) < settings.issue_implementer_max_concurrent
     )
     can_claim = bool(settings.issue_implementer_label) and has_budget
-    if not can_claim and not fleet_claim_wire.fleet_claim_enabled(backend.name):
+    if not can_claim and not wire.fleet_claim_enabled(backend.name):
         return None
     return IssueImplementerScanner(
         host=code_host,

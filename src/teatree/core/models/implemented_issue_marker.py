@@ -38,7 +38,7 @@ class ImplementedIssueMarkerManager(models.Manager["ImplementedIssueMarker"]):
         """Record the marker as a CACHE of a won fleet claim ref (Stage 2).
 
         Called by the issue-implementer dispatch AFTER the cross-instance mutex
-        (``teatree.core.fleet_claim``) granted the ref, so exactly-once was already
+        (``teatree.core.fleet.claim``) granted the ref, so exactly-once was already
         enforced by the server. Unlike :meth:`claim` (which returns ``None`` on a
         pre-existing row), this always returns a usable marker stamped with the
         fencing sha the ship gate re-verifies — the ref is the authority, the row

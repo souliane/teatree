@@ -11,7 +11,8 @@ from typing import cast
 import pytest
 from django.test import TestCase
 
-from teatree.core import fleet_claim, fleet_claim_wire
+from teatree.core.fleet import claim as fleet_claim
+from teatree.core.fleet import wire as fleet_claim_wire
 
 from ._git_origin import init_bare, init_client, init_with_origin
 

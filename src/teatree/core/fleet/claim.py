@@ -70,7 +70,7 @@ class ClaimMeta(TypedDict):
 #: the heartbeat cadence: the in-flight heartbeat sweep runs on the issue-implementer
 #: tick (default 1h), so at 4h a live claim is re-affirmed about 4 times per TTL and
 #: can never lapse mid-dispatch; a genuinely crashed holder is reclaimable ~4h after
-#: its last heartbeat. (``teatree.core.fleet_claim_wire.heartbeat_inflight_claims`` drives the beat.)
+#: its last heartbeat. (``teatree.core.fleet.wire.heartbeat_inflight_claims`` drives the beat.)
 DEFAULT_TTL_SECONDS = 14400.0
 
 # The commit that carries the claim metadata is authored under a fixed, repo-

@@ -19,8 +19,8 @@ import logging
 from dataclasses import dataclass, field
 from typing import cast
 
-from teatree.core import fleet_claim_wire
 from teatree.core.backend_protocols import CodeHostBackend
+from teatree.core.fleet import wire
 from teatree.core.models import NEEDS_TRIAGE_LABEL, ImplementedIssueMarker
 from teatree.loop.scanners.base import ScanSignal
 from teatree.loop.scanners.forge_readback import existing_work_for_issue, fetch_open_prs, issue_number
@@ -106,7 +106,7 @@ class IssueImplementerScanner:
     def scan(self) -> list[ScanSignal]:
         # Stage 2 B1: keep every in-flight claim un-stealable, on EVERY tick,
         # regardless of budget/label (self-gates to a no-op when the switch is off).
-        fleet_claim_wire.heartbeat_inflight_claims(self.overlay_name)
+        wire.heartbeat_inflight_claims(self.overlay_name)
         if not self.can_claim:
             return []
         if not self.label:
@@ -160,9 +160,9 @@ class IssueImplementerScanner:
         is recorded as a CACHE of the ref, stamped with the fencing sha the ship
         gate re-verifies.
         """
-        if not fleet_claim_wire.fleet_claim_enabled(self.overlay_name):
+        if not wire.fleet_claim_enabled(self.overlay_name):
             return ImplementedIssueMarker.objects.claim(url, overlay=self.overlay_name)
-        claim = fleet_claim_wire.acquire_issue_claim(url)
+        claim = wire.acquire_issue_claim(url)
         if claim is None:
             return None
         return ImplementedIssueMarker.objects.cache_from_fleet_claim(

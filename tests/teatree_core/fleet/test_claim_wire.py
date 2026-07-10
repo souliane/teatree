@@ -18,7 +18,8 @@ from unittest.mock import patch
 
 from django.test import TestCase
 
-from teatree.core import fleet_claim, fleet_claim_wire
+from teatree.core.fleet import claim as fleet_claim
+from teatree.core.fleet import wire as fleet_claim_wire
 from teatree.core.management.commands._ship.gates import run_fleet_claim_fence_gate
 from teatree.core.models import ImplementedIssueMarker, Ticket, Worktree
 from teatree.loop.scanners.issue_implementer import IssueImplementerScanner
@@ -216,7 +217,7 @@ class TestHeartbeatSweep(TestCase):
         with (
             patch.object(fleet_claim_wire, "fleet_claim_enabled", return_value=True),
             patch.object(fleet_claim_wire, "resolve_claim_repo", lambda _: str(holder)),
-            patch("teatree.core.fleet_claim.time.time", return_value=1090.0),
+            patch("teatree.core.fleet.claim.time.time", return_value=1090.0),
         ):
             fleet_claim_wire.heartbeat_inflight_claims("acme")
         # The heartbeat re-affirmed the claim at t=1090 with the full (4h) TTL, so a

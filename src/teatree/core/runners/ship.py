@@ -305,9 +305,9 @@ class ShipExecutor(RunnerBase):
         or the ticket carries no fleet claim; a lost/unconfirmable claim fails CLOSED
         (another instance is doing this work — a rare self-heartbeat race just retries).
         """
-        from teatree.core import fleet_claim_wire  # noqa: PLC0415 — leaf import kept out of app-load cycle
+        from teatree.core.fleet import wire  # noqa: PLC0415 — leaf import kept out of app-load cycle
 
-        if fleet_claim_wire.ticket_claim_is_lost(self.ticket, repo_path):
+        if wire.ticket_claim_is_lost(self.ticket, repo_path):
             ref = self.ticket.ticket_number or self.ticket.pk
             return RunnerResult(
                 ok=False,

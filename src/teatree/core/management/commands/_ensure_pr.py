@@ -120,9 +120,9 @@ def _owning_ticket_pre_create_gate(
     debt_error = evaluate_debt_delta(owning_ticket, repo_path)
     if debt_error is not None:
         return EnsurePrResult(branch=branch_name, error=debt_error)
-    from teatree.core import fleet_claim_wire  # noqa: PLC0415 — leaf import kept out of app-load cycle
+    from teatree.core.fleet import wire  # noqa: PLC0415 — leaf import kept out of app-load cycle
 
-    if fleet_claim_wire.ticket_claim_is_lost(owning_ticket, repo_path):
+    if wire.ticket_claim_is_lost(owning_ticket, repo_path):
         return EnsurePrResult(
             branch=branch_name,
             error=(

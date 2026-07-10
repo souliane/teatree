@@ -1,7 +1,7 @@
 """Real-process CAS proof for the cross-instance claim mutex (fleet-safety Stage 2).
 
 N real OS processes — each its own git clone, modelling a distinct fleet
-instance — race :mod:`teatree.core.fleet_claim` against a **local bare git repo
+instance — race :mod:`teatree.core.fleet.claim` against a **local bare git repo
 used as origin**. A ``file://`` push exercises the SAME receive-pack ref
 transaction (and therefore the same server-side compare-and-swap) as a GitHub
 push, so no network is needed and the guarantee under test is the production
@@ -34,7 +34,7 @@ from pathlib import Path
 
 import pytest
 
-from teatree.core import fleet_claim
+from teatree.core.fleet import claim as fleet_claim
 
 _CTX = multiprocessing.get_context("fork")
 _WORK_KEY = "https://github.com/souliane/teatree/issues/4242"
@@ -56,7 +56,7 @@ def _init_client(client_dir: Path, bare: Path) -> None:
     No ``user.*`` config is set — ``fleet_claim`` authors its claim commits under
     a fixed identity, so a client needs only the ``origin`` remote.
     """
-    _git("init", "-q", str(client_dir))
+    _git("init", "-b", "main", "-q", str(client_dir))
     _git("-C", str(client_dir), "remote", "add", "origin", f"file://{bare}")
 
 

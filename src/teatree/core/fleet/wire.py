@@ -1,6 +1,6 @@
-"""Django-aware wiring for the :mod:`teatree.core.fleet_claim` mutex.
+"""Django-aware wiring for the :mod:`teatree.core.fleet.claim` mutex.
 
-:mod:`teatree.core.fleet_claim` is deliberately Django-free (a repo path in, a
+:mod:`teatree.core.fleet.claim` is deliberately Django-free (a repo path in, a
 git CAS out). This thin layer supplies the two things the claim + ship-fence call
 sites need from the Django world and nowhere else:
 
@@ -10,7 +10,7 @@ sites need from the Django world and nowhere else:
     do NOT confirm the fence, logging loudly. Turning the switch OFF restores
     today's local-only behaviour.
 
-Keeping this here (not in ``fleet_claim``) preserves the module's Django-free
+Keeping this here (not in ``claim``) preserves that module's Django-free
 property so the concurrency proof can run in bare subprocesses.
 """
 
@@ -22,7 +22,7 @@ from typing import TYPE_CHECKING
 
 from teatree.config import get_effective_settings
 from teatree.config.loader import clone_root
-from teatree.core import fleet_claim
+from teatree.core.fleet import claim
 from teatree.core.worktree.clone_paths import find_clone_path
 from teatree.instance_id import instance_id
 from teatree.utils import git
@@ -102,7 +102,7 @@ def resolve_claim_repo(issue_url: str) -> str:
     return candidate
 
 
-def acquire_issue_claim(issue_url: str) -> fleet_claim.Claim | None:
+def acquire_issue_claim(issue_url: str) -> claim.Claim | None:
     """Win the cross-instance mutex for *issue_url*, or ``None`` (fail-safe).
 
     The mutex key is the ``issue_url`` alone — the work item is global on the
@@ -110,7 +110,7 @@ def acquire_issue_claim(issue_url: str) -> fleet_claim.Claim | None:
     local overlay drives them. ``None`` covers three cases the caller handles
     identically (do not claim): a live rival holds it, no local clone resolved, or
     the ref infra is unreachable (logged loudly). A ref held by a *dead* holder
-    (past TTL) is reclaimed via :func:`fleet_claim.steal_if_expired` so a crashed
+    (past TTL) is reclaimed via :func:`claim.steal_if_expired` so a crashed
     instance never wedges the work item forever.
     """
     repo = resolve_claim_repo(issue_url)
@@ -118,11 +118,11 @@ def acquire_issue_claim(issue_url: str) -> fleet_claim.Claim | None:
         logger.warning("fleet_claim ON but no local clone resolves for %s — failing safe (not claiming)", issue_url)
         return None
     try:
-        claim = fleet_claim.acquire(issue_url, repo=repo)
-        if claim is not None:
-            return claim
-        return fleet_claim.steal_if_expired(issue_url, repo=repo)
-    except fleet_claim.FleetClaimUnavailableError:
+        acquired = claim.acquire(issue_url, repo=repo)
+        if acquired is not None:
+            return acquired
+        return claim.steal_if_expired(issue_url, repo=repo)
+    except claim.FleetClaimUnavailableError:
         logger.warning(
             "fleet_claim ref infra unreachable for %s — failing safe (not claiming)", issue_url, exc_info=True
         )
@@ -139,8 +139,8 @@ def issue_claim_still_held(issue_url: str, sha: str, repo: str) -> bool:
     if not sha or not repo:
         return False
     try:
-        return fleet_claim.is_held_by_me(issue_url, fleet_claim.Claim.from_token(issue_url, sha), repo=repo)
-    except fleet_claim.FleetClaimUnavailableError:
+        return claim.is_held_by_me(issue_url, claim.Claim.from_token(issue_url, sha), repo=repo)
+    except claim.FleetClaimUnavailableError:
         logger.warning(
             "fleet_claim fence: ref infra unreachable for %s — failing safe (treating as not held)",
             issue_url,
@@ -200,24 +200,24 @@ def _heartbeat_one(marker: "ImplementedIssueMarker") -> None:
     repo = resolve_claim_repo(marker.issue_url)
     if not repo:
         return
-    claim = fleet_claim.Claim(
+    held = claim.Claim(
         work_key=marker.issue_url,
-        ref=fleet_claim.claim_ref(marker.issue_url),
+        ref=claim.claim_ref(marker.issue_url),
         sha=marker.claim_ref_sha,
         instance_id=instance_id(),
         claimed_at=0.0,
-        ttl_seconds=fleet_claim.DEFAULT_TTL_SECONDS,
+        ttl_seconds=claim.DEFAULT_TTL_SECONDS,
     )
     try:
-        result = fleet_claim.heartbeat(claim, repo=repo)
-    except fleet_claim.FleetClaimUnavailableError:
+        result = claim.heartbeat(held, repo=repo)
+    except claim.FleetClaimUnavailableError:
         logger.warning(
             "fleet_claim heartbeat: ref infra unreachable for %s — leaving claim, retrying next tick",
             marker.issue_url,
             exc_info=True,
         )
         return
-    if isinstance(result, fleet_claim.ClaimLost):
+    if isinstance(result, claim.ClaimLost):
         logger.warning(
             "fleet_claim for %s was STOLEN (ref now %s) — abandoning in-flight work",
             marker.issue_url,

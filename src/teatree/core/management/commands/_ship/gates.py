@@ -417,10 +417,10 @@ def run_fleet_claim_fence_gate(ticket: Ticket, worktree: Worktree) -> FleetClaim
     is exactly the double-claim the mutex prevents. A ticket with no fleet-claim,
     or the kill-switch OFF, is a no-op.
     """
-    from teatree.core import fleet_claim_wire  # noqa: PLC0415 — leaf import kept out of app-load cycle
+    from teatree.core.fleet import wire  # noqa: PLC0415 — leaf import kept out of app-load cycle
 
     repo_path = (worktree.worktree_path or worktree.repo_path) if worktree else "."
-    if not fleet_claim_wire.ticket_claim_is_lost(ticket, repo_path):
+    if not wire.ticket_claim_is_lost(ticket, repo_path):
         return None
     return FleetClaimFenceFailure(
         allowed=False,

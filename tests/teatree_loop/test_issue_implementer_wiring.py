@@ -98,7 +98,7 @@ class IssueImplementerGateTests(TestCase):
                     issue_implementer_max_concurrent=1,
                 ),
             ),
-            patch("teatree.core.fleet_claim_wire.fleet_claim_enabled", return_value=True),
+            patch("teatree.core.fleet.wire.fleet_claim_enabled", return_value=True),
         ):
             scanner = _issue_implementer_scanner_for(_backend())
         assert isinstance(scanner, IssueImplementerScanner)
@@ -110,7 +110,7 @@ class IssueImplementerGateTests(TestCase):
                 _PATCH_TARGET,
                 return_value=_settings(issue_implementer_enabled=True, issue_implementer_label="auto-implement"),
             ),
-            patch("teatree.core.fleet_claim_wire.fleet_claim_enabled", return_value=True),
+            patch("teatree.core.fleet.wire.fleet_claim_enabled", return_value=True),
         ):
             scanner = _issue_implementer_scanner_for(_backend())
         assert isinstance(scanner, IssueImplementerScanner)
