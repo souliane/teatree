@@ -26,6 +26,7 @@ from teatree.core.gates.open_questions_gate import warn_if_open_questions_missin
 from teatree.core.gates.pr_budget_gate import PrBudgetExceededError, check_pr_budget
 from teatree.core.merge.pr_create_verify import verify_pr_exists
 from teatree.core.overlay_loader import get_overlay
+from teatree.core.pr_assignee import resolve_pr_assignee
 from teatree.core.runners.ship import overlay_pr_labels, sanitize_close_keywords, should_close_ticket
 from teatree.utils import git, git_remote
 from teatree.utils.run import CommandFailedError
@@ -128,7 +129,7 @@ def create_or_defer_pr(repo_path: str, branch_name: str) -> EnsurePrResult:
 
     remote = git.remote_url(repo=repo_path)
     repo_slug = git_remote.slug_from_remote(remote)
-    assignee = host.current_user() or git.config_value(key="user.name")
+    assignee = resolve_pr_assignee(host, repo=repo_slug)
 
     # North-star PR-2/PR-3: refuse before opening when the ticket is already at its
     # per-repo open-PR budget, or when the branch introduces unwaived net-new tech

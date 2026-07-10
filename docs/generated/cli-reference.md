@@ -26,6 +26,8 @@ Usage: t3 [OPTIONS] COMMAND [ARGS]...
 │                 unless local = all).                                         │
 │ speak-dm        Attach spoken audio to a user DM per  (no-op unless          │
 │                 slack/local on).                                             │
+│ fast-push       Stage, commit, push, and create-or-update the PR in one      │
+│                 leak-gated step.                                             │
 │ ui              Browse and run every t3 command in an interactive terminal   │
 │                 UI.                                                          │
 │ admin           Run the Django admin for the teatree project on a local dev  │
@@ -255,6 +257,29 @@ Usage: t3 speak-dm [OPTIONS]
 │    --overlay          TEXT  Set T3_OVERLAY_NAME for the call (per-overlay    │
 │                             Slack creds).                                    │
 │    --help                   Show this message and exit.                      │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+### `t3 fast-push`
+
+```
+Usage: t3 fast-push [OPTIONS]
+
+ Stage, commit, push, and create-or-update the PR in one leak-gated step.
+
+ Runs ONLY the leak gates (banned-terms, secret-scan, overlay-leak) —
+ in-process, fail-closed — and skips every other hook/gate. Any leak
+ finding refuses the push and prints the offending path/term.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --message    -m      TEXT  Commit message (auto-generated when omitted).     │
+│ --remaining          TEXT  Unfinished work, recorded as a REMAINING: PR-body │
+│                            section.                                          │
+│ --repo               TEXT  Repository to push (defaults to the current       │
+│                            directory).                                       │
+│                            [default: .]                                      │
+│ --json                     Emit the outcome as JSON.                         │
+│ --help                     Show this message and exit.                       │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 

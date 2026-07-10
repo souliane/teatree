@@ -13,6 +13,7 @@ from teatree.core.gates.pr_budget_gate import PrBudgetExceededError, check_pr_bu
 from teatree.core.intake.close_trailer_scanner import apply_publish_gate
 from teatree.core.merge.pr_create_verify import verify_pr_exists
 from teatree.core.overlay_loader import get_overlay
+from teatree.core.pr_assignee import resolve_pr_assignee
 from teatree.core.review.mr_metadata import ensure_standard_body
 from teatree.core.runners.base import RunnerBase, RunnerResult
 from teatree.core.worktree.branch_currency import sha_conflicts_with_target
@@ -474,7 +475,7 @@ class ShipExecutor(RunnerBase):
         )
         warn_if_open_questions_missing(description)
         warn_if_precheck_incomplete(description)
-        assignee = host.current_user() or git.config_value(key="user.name")
+        assignee = resolve_pr_assignee(host, repo=repo_path)
         return PullRequestSpec(
             repo=repo_path,
             branch=branch,
