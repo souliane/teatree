@@ -15,8 +15,8 @@ from urllib.parse import urlparse
 
 from django.core.exceptions import ImproperlyConfigured
 
-from teatree.core.overlay_code_defaults_provider import build_and_register as _register_overlay_code_defaults
 from teatree.core.overlay_url import get_overlay_for_url
+from teatree.core.overlays.overlay_code_defaults_provider import build_and_register as _register_overlay_code_defaults
 from teatree.utils.url_slug import slug_from_issue_or_pr_url
 
 if TYPE_CHECKING:

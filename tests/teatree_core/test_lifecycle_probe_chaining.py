@@ -16,6 +16,7 @@ from django.test import TestCase, override_settings
 
 import teatree.core.management.commands.workspace as workspace_mod
 import teatree.core.management.commands.worktree as worktree_mod
+from teatree.config.settings import UserSettings
 from teatree.core.models import Ticket, Worktree
 from teatree.core.runners.base import RunnerResult
 from teatree.core.worktree.readiness import Probe, ProbeResult
@@ -73,7 +74,7 @@ class TestWorktreeStartChainsProbes(TestCase):
             mock_runner.run.return_value = RunnerResult(ok=True, detail="started")
 
             mock_config = MagicMock()
-            mock_config.user.workspace_dir = Path(tmp)
+            mock_config.user = UserSettings(workspace_dir=Path(tmp))
 
             with (
                 patch.object(worktree_mod, "resolve_worktree", return_value=wt),
@@ -100,7 +101,7 @@ class TestWorktreeStartChainsProbes(TestCase):
             mock_runner.run.return_value = RunnerResult(ok=True, detail="started")
 
             mock_config = MagicMock()
-            mock_config.user.workspace_dir = Path(tmp)
+            mock_config.user = UserSettings(workspace_dir=Path(tmp))
 
             with (
                 patch.object(worktree_mod, "resolve_worktree", return_value=wt),
@@ -126,7 +127,7 @@ class TestWorktreeStartChainsProbes(TestCase):
             mock_runner.run.return_value = RunnerResult(ok=True, detail="started")
 
             mock_config = MagicMock()
-            mock_config.user.workspace_dir = Path(tmp)
+            mock_config.user = UserSettings(workspace_dir=Path(tmp))
 
             with (
                 patch.object(worktree_mod, "resolve_worktree", return_value=wt),

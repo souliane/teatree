@@ -18,7 +18,7 @@ from teatree.config.overlay_code_defaults import (
     register_overlay_code_default_provider,
 )
 from teatree.core.overlay import OverlayConfig
-from teatree.core.overlay_code_defaults_provider import build_and_register
+from teatree.core.overlays.overlay_code_defaults_provider import build_and_register
 
 
 def test_registered_provider_reads_promoted_keys_off_the_config() -> None:
