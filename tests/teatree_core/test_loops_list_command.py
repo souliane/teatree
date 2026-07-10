@@ -13,7 +13,7 @@ import django.test
 from django.core.management import call_command
 from django.utils import timezone
 
-from teatree.core.models import Loop, Prompt
+from teatree.core.models import Loop, LoopState, Prompt
 
 
 def _prompt(name: str = "demo-prompt") -> Prompt:
@@ -124,6 +124,39 @@ class TestLoopsListJson(django.test.TestCase):
         payload = json.loads(_run("--json"))
         demo = next(e for e in payload["loops"] if e["name"] == "demo-json-cf")
         assert demo["colleague_facing"] is True
+
+
+@django.test.override_settings(USE_TZ=True)
+class TestLoopsListReflectsPauseHold(django.test.TestCase):
+    """#3117 bonus: a ``LoopState`` pause/disable hold is visible in the state column.
+
+    ``t3 loop pause`` holds a loop via ``LoopState`` WITHOUT flipping
+    ``Loop.enabled``, so the row alone still read ``enabled`` — a pause was
+    invisible in ``t3 loops list``. The state column now folds in the hold so a
+    pause is confirmable at a glance.
+    """
+
+    def test_paused_loop_renders_paused_not_enabled(self) -> None:
+        Loop.objects.create(name="demo-held", delay_seconds=60, prompt=_prompt(), enabled=True)
+        LoopState.objects.pause("demo-held")
+        line = next(ln for ln in _run().splitlines() if ln.strip().startswith("demo-held"))
+        assert "paused" in line
+        assert "enabled" not in line
+        assert "next —" in line
+
+    def test_state_disabled_hold_renders_disabled(self) -> None:
+        Loop.objects.create(name="demo-killed", delay_seconds=60, prompt=_prompt(), enabled=True)
+        LoopState.objects.disable("demo-killed")
+        line = next(ln for ln in _run().splitlines() if ln.strip().startswith("demo-killed"))
+        assert "disabled" in line
+
+    def test_json_carries_effective_status(self) -> None:
+        Loop.objects.create(name="demo-held-json", delay_seconds=60, prompt=_prompt(), enabled=True)
+        LoopState.objects.pause("demo-held-json")
+        demo = next(e for e in json.loads(_run("--json"))["loops"] if e["name"] == "demo-held-json")
+        assert demo["status"] == "paused"
+        # ``enabled`` keeps its row-flag meaning for backward compatibility.
+        assert demo["enabled"] is True
 
 
 @django.test.override_settings(USE_TZ=True)
