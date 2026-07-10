@@ -1162,3 +1162,67 @@ class TestGitHubCommentOutboundClaim:
             # The publish succeeded — the swallow happens inside _record_github_note_claim.
             result = host.post_pr_comment(repo="org/repo", pr_iid=1, body="hi")
         assert result == {"id": 5}
+
+
+class TestGitHubWave2Reads:
+    """Wave-2 forge READ methods — pr list/diff/commits + repo metadata."""
+
+    def test_list_prs_builds_repo_state_author_search(self) -> None:
+        with patch.object(github_mod, "_gh_api_search_paginated", return_value=[{"number": 5}]) as mock_search:
+            result = GitHubCodeHost(token="tok").list_prs(repo="org/repo", state="open", author="alice")
+        assert result == [{"number": 5}]
+        mock_search.assert_called_once_with(
+            "search/issues?q=repo%3Aorg%2Frepo+is%3Apr+is%3Aopen+author%3Aalice&per_page=100",
+            token="tok",
+        )
+
+    def test_list_prs_omits_empty_state_and_author(self) -> None:
+        with patch.object(github_mod, "_gh_api_search_paginated", return_value=[]) as mock_search:
+            GitHubCodeHost().list_prs(repo="org/repo")
+        mock_search.assert_called_once_with(
+            "search/issues?q=repo%3Aorg%2Frepo+is%3Apr&per_page=100",
+            token="",
+        )
+
+    def test_get_pr_diff_returns_changed_files(self) -> None:
+        files = [{"filename": "a.py", "additions": 3, "patch": "@@"}]
+        with patch.object(github_mod, "_gh_api_get_paginated", return_value=files) as mock_get:
+            result = GitHubCodeHost(token="tok").get_pr_diff(repo="org/repo", pr_iid=42)
+        assert result == files
+        mock_get.assert_called_once_with("repos/org/repo/pulls/42/files?per_page=100", token="tok")
+
+    def test_get_pr_diff_unknown_pr_returns_empty(self) -> None:
+        with patch.object(
+            github_mod, "_gh_api_get_paginated", side_effect=utils_run_mod.CommandFailedError(["gh"], 1, "", "404")
+        ):
+            assert GitHubCodeHost().get_pr_diff(repo="org/repo", pr_iid=99) == []
+
+    def test_list_pr_commits_returns_commits(self) -> None:
+        commits = [{"sha": "abc", "commit": {"message": "fix"}}]
+        with patch.object(github_mod, "_gh_api_get_paginated", return_value=commits) as mock_get:
+            result = GitHubCodeHost().list_pr_commits(repo="org/repo", pr_iid=7)
+        assert result == commits
+        mock_get.assert_called_once_with("repos/org/repo/pulls/7/commits?per_page=100", token="")
+
+    def test_list_pr_commits_unknown_pr_returns_empty(self) -> None:
+        with patch.object(
+            github_mod, "_gh_api_get_paginated", side_effect=utils_run_mod.CommandFailedError(["gh"], 1, "", "404")
+        ):
+            assert GitHubCodeHost().list_pr_commits(repo="org/repo", pr_iid=99) == []
+
+    def test_get_repo_returns_metadata(self) -> None:
+        payload = {"default_branch": "main", "full_name": "org/repo"}
+        with patch.object(github_mod, "_gh_api_get", return_value=payload) as mock_get:
+            result = GitHubCodeHost(token="tok").get_repo(repo="org/repo")
+        assert result == payload
+        mock_get.assert_called_once_with("repos/org/repo", token="tok")
+
+    def test_get_repo_unknown_repo_returns_structured_error(self) -> None:
+        with patch.object(
+            github_mod, "_gh_api_get", side_effect=utils_run_mod.CommandFailedError(["gh"], 1, "", "404")
+        ):
+            assert GitHubCodeHost().get_repo(repo="org/missing") == {"error": "Could not resolve repo: org/missing"}
+
+    def test_get_repo_non_dict_payload_is_structured_error(self) -> None:
+        with patch.object(github_mod, "_gh_api_get", return_value=["unexpected"]):
+            assert GitHubCodeHost().get_repo(repo="org/repo") == {"error": "Repo not found: org/repo"}

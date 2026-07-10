@@ -67,6 +67,22 @@ class _FakeCodeHost:
         _ = reviewer
         return []
 
+    def list_prs(self, *, repo: str, state: str = "", author: str = "") -> list[dict[str, object]]:
+        _ = (repo, state, author)
+        return []
+
+    def get_pr_diff(self, *, repo: str, pr_iid: int) -> list[dict[str, object]]:
+        _ = (repo, pr_iid)
+        return []
+
+    def list_pr_commits(self, *, repo: str, pr_iid: int) -> list[dict[str, object]]:
+        _ = (repo, pr_iid)
+        return []
+
+    def get_repo(self, *, repo: str) -> dict[str, object]:
+        _ = repo
+        return {}
+
     def get_review_state(self, *, pr_url: str, reviewer: str) -> ReviewState:
         _ = (pr_url, reviewer)
         return ReviewState.NONE

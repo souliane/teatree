@@ -60,6 +60,24 @@ class _FakeForge:
         self.calls.append(("get_mr_approvals", {"repo": repo, "pr_iid": pr_iid}))
         return ApprovalState(approvals_left=1, approved_by=["reviewer"], unresolved_resolvable=2)
 
+    def list_prs(self, *, repo: str, state: str = "", author: str = "") -> list[dict[str, Any]]:
+        self.calls.append(("list_prs", {"repo": repo, "state": state, "author": author}))
+        return [{"number": 5, "title": "open pr"}]
+
+    def get_pr_diff(self, *, repo: str, pr_iid: int) -> list[dict[str, Any]]:
+        self.calls.append(("get_pr_diff", {"repo": repo, "pr_iid": pr_iid}))
+        return [{"path": "a.py", "additions": 3, "deletions": 1}]
+
+    def list_pr_commits(self, *, repo: str, pr_iid: int) -> list[dict[str, Any]]:
+        self.calls.append(("list_pr_commits", {"repo": repo, "pr_iid": pr_iid}))
+        return [{"sha": "abc123", "message": "fix things"}]
+
+    def get_repo(self, *, repo: str) -> dict[str, Any]:
+        self.calls.append(("get_repo", {"repo": repo}))
+        if repo == "acme/missing":
+            return {"error": f"Could not resolve project: {repo}"}
+        return {"default_branch": "main", "path_with_namespace": repo}
+
 
 def _call(tool: str, args: dict[str, Any], fake: _FakeForge) -> Any:
     with (
@@ -113,3 +131,47 @@ class TestForgeReadTools(TestCase):
         assert result["approvals_left"] == 1
         assert result["approved_by"] == ["reviewer"]
         assert result["unresolved_resolvable"] == 2
+
+    def test_pr_list_forwards_repo_state_and_author(self) -> None:
+        fake = _FakeForge()
+        result = _call(
+            "github_pr_list",
+            {"repo": "acme/widgets", "state": "open", "author": "octocat"},
+            fake,
+        )
+
+        assert result == [{"number": 5, "title": "open pr"}]
+        assert fake.calls[0] == ("list_prs", {"repo": "acme/widgets", "state": "open", "author": "octocat"})
+
+    def test_pr_list_defaults_state_and_author_to_empty(self) -> None:
+        fake = _FakeForge()
+        _call("github_pr_list", {"repo": "acme/widgets"}, fake)
+
+        assert fake.calls[0] == ("list_prs", {"repo": "acme/widgets", "state": "", "author": ""})
+
+    def test_pr_diff_forwards_repo_and_pr(self) -> None:
+        fake = _FakeForge()
+        result = _call("github_pr_diff", {"repo": "acme/widgets", "pr_iid": 42}, fake)
+
+        assert result == [{"path": "a.py", "additions": 3, "deletions": 1}]
+        assert fake.calls[0] == ("get_pr_diff", {"repo": "acme/widgets", "pr_iid": 42})
+
+    def test_pr_commits_forwards_repo_and_pr(self) -> None:
+        fake = _FakeForge()
+        result = _call("github_pr_commits", {"repo": "acme/widgets", "pr_iid": 42}, fake)
+
+        assert result == [{"sha": "abc123", "message": "fix things"}]
+        assert fake.calls[0] == ("list_pr_commits", {"repo": "acme/widgets", "pr_iid": 42})
+
+    def test_repo_get_returns_metadata(self) -> None:
+        fake = _FakeForge()
+        result = _call("github_repo_get", {"repo": "acme/widgets"}, fake)
+
+        assert result == {"default_branch": "main", "path_with_namespace": "acme/widgets"}
+        assert fake.calls[0] == ("get_repo", {"repo": "acme/widgets"})
+
+    def test_repo_get_unknown_repo_returns_structured_error(self) -> None:
+        fake = _FakeForge()
+        result = _call("github_repo_get", {"repo": "acme/missing"}, fake)
+
+        assert result == {"error": "Could not resolve project: acme/missing"}

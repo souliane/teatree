@@ -92,6 +92,33 @@ def _register(server: FastMCP, service: Service, prefix: str) -> None:
     server.add_tool(issue, name=f"{prefix}_issue", annotations=_READ_ONLY)
     server.add_tool(issue_comments, name=f"{prefix}_issue_comments", annotations=_READ_ONLY)
     _register_search_reads(server, service, prefix)
+    _register_pr_reads(server, service, prefix)
+
+
+def _register_pr_reads(server: FastMCP, service: Service, prefix: str) -> None:
+    async def pr_list(repo: str, *, state: str = "", author: str = "") -> list[dict[str, Any]]:
+        return await sync_to_async(
+            lambda: _forge_client(service).list_prs(repo=repo, state=state, author=author),
+            thread_sensitive=True,
+        )()
+
+    async def pr_diff(repo: str, pr_iid: int) -> list[dict[str, Any]]:
+        return await sync_to_async(
+            lambda: _forge_client(service).get_pr_diff(repo=repo, pr_iid=pr_iid), thread_sensitive=True
+        )()
+
+    async def pr_commits(repo: str, pr_iid: int) -> list[dict[str, Any]]:
+        return await sync_to_async(
+            lambda: _forge_client(service).list_pr_commits(repo=repo, pr_iid=pr_iid), thread_sensitive=True
+        )()
+
+    async def repo_get(repo: str) -> dict[str, Any]:
+        return await sync_to_async(lambda: _forge_client(service).get_repo(repo=repo), thread_sensitive=True)()
+
+    server.add_tool(pr_list, name=f"{prefix}_pr_list", annotations=_READ_ONLY)
+    server.add_tool(pr_diff, name=f"{prefix}_pr_diff", annotations=_READ_ONLY)
+    server.add_tool(pr_commits, name=f"{prefix}_pr_commits", annotations=_READ_ONLY)
+    server.add_tool(repo_get, name=f"{prefix}_repo_get", annotations=_READ_ONLY)
 
 
 def _register_search_reads(server: FastMCP, service: Service, prefix: str) -> None:
@@ -131,6 +158,11 @@ def _instructions(prefix: str) -> str:
         f"- {prefix}_pr_get(repo, pr_iid, pr_url): one PR's open/merge/draft state, author, and "
         f"approval snapshot in a single read.\n"
         f"- {prefix}_my_merged_prs(author, updated_after): merged PRs/MRs authored by *author* (sweeps).\n"
+        f"- {prefix}_pr_list(repo, state, author): PRs/MRs on *repo*, filtered by state "
+        f"(open/closed/merged) and author.\n"
+        f"- {prefix}_pr_diff(repo, pr_iid): the PR's changed files with per-file diffs.\n"
+        f"- {prefix}_pr_commits(repo, pr_iid): the commits on the PR.\n"
+        f"- {prefix}_repo_get(repo): *repo* metadata (default branch, path, id).\n"
         f"- {prefix}_issue(issue_url) / {prefix}_issue_comments(issue_url): one issue and its comments.\n"
         f"- {prefix}_issue_search(repo, query): open issues in *repo* matching *query* (dup-check).\n"
         f"- {prefix}_issue_list_assigned(assignee): open issues assigned to *assignee*."
