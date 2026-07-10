@@ -160,8 +160,8 @@ Usage: t3 loop [OPTIONS] COMMAND [ARGS]...
 │                kill-switch.                                                  │
 │ enable         Enable a disabled mini-loop — return it to the ENABLED state  │
 │                (alias of resume).                                            │
-│ loop-state     Read a mini-loop's durable state, read-only (ENABLED when     │
-│                never touched; no mutation).                                  │
+│ loop-state     Read a known mini-loop's durable state, read-only (ENABLED    │
+│                when never touched; refuses an unknown name).                 │
 │ self-improve   Self-improving monitor — scheduled smell detection with a     │
 │                tiered action ladder. Runs as its own dedicated `/loop` slot  │
 │                on a separate `loop-self-improve` LoopLease so a long         │
