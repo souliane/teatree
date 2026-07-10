@@ -53,6 +53,26 @@ seed_setting() {
     fi
 }
 
+# Fleet role split: this instance must not run the loops another fleet member
+# owns. The box provisions no Slack credential (see README), so the Slack-facing
+# loops — broken here AND duplicates of the laptop's — are disabled through the
+# one DB-backed per-loop control plane. `t3 loop disable` is idempotent, so a
+# re-deploy converges. TEATREE_DISABLED_LOOPS (comma-separated, from teatree.env)
+# overrides the default; an empty value runs every loop here.
+disable_fleet_scoped_loops() {
+    local raw="${TEATREE_DISABLED_LOOPS-inbox,review,directive_loop}"
+    local loops loop
+    IFS=',' read -ra loops <<<"$raw"
+    for loop in ${loops[@]+"${loops[@]}"}; do
+        loop="${loop//[[:space:]]/}"
+        [ -n "$loop" ] || continue
+        if ! t3 loop disable "$loop"; then
+            echo "entrypoint: 't3 loop disable ${loop}' FAILED - the DB-backed loop control plane is unreachable; confirm 't3 teatree db migrate' succeeded above and re-run Deploy" >&2
+            exit 1
+        fi
+    done
+}
+
 ensure_clone() {
     if [ -e "$CLONE_DIR/.git" ]; then
         return 0
@@ -75,6 +95,7 @@ init)
     seed_setting provision_max_concurrency 1
     seed_setting provision_ram_ceiling_percent 75
     seed_setting max_concurrent_local_stacks 1
+    disable_fleet_scoped_loops
     echo "teatree-init: complete"
     ;;
 worker)
