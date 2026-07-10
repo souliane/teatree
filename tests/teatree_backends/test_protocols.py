@@ -51,6 +51,10 @@ class _FakeCodeHost:
     def current_user(self) -> str:
         return ""
 
+    def is_assignable(self, *, repo: str, login: str) -> bool:
+        _ = repo, login
+        return True
+
     def list_my_prs(self, *, author: str) -> list[dict[str, object]]:
         _ = author
         return []

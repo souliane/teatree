@@ -158,6 +158,11 @@ class GitLabCodeHost:  # noqa: PLR0904 — method count reflects the CodeHostBac
         """Return the authenticated GitLab username."""
         return self._client.current_username()
 
+    def is_assignable(self, *, repo: str, login: str) -> bool:  # noqa: PLR6301 — CodeHostBackend Protocol surface.
+        """GitLab's MR create tolerates a non-member assignee, so no probe (#3100)."""
+        del repo, login
+        return True
+
     def list_my_prs(self, *, author: str, updated_after: str | None = None) -> list[RawAPIDict]:
         return self._client.list_all_open_mrs(author, updated_after=updated_after)
 

@@ -32,7 +32,11 @@ _CORE_DIR = Path(__file__).resolve().parents[2] / "src" / "teatree" / "core"
 # 66: +send_proxy.py (#117) — the single outbound chokepoint, a flat sibling of the
 # other send leaves it routes (notify.py, reply_transport.py, on_behalf_egress.py,
 # backend_factory.py); a genuine new root concern, not a member of any subpackage.
-PINNED_FLAT_CORE_MODULES = 66
+# 67: +fast_push.py (directive #8) — the leak-gated fast delivery lane; a whole
+# ship-flow alternative (stage → in-process leak gates → commit/push → PR upsert),
+# owned by no existing subpackage (merge/ is the keystone transition, runners/ is
+# the RunnerBase fleet).
+PINNED_FLAT_CORE_MODULES = 67
 
 
 def _flat_core_modules() -> list[str]:

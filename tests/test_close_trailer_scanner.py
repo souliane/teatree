@@ -202,6 +202,9 @@ class TestShipExecutorIntegration:
             def current_user(self) -> str:
                 return "tester"
 
+            def is_assignable(self, *, repo: str, login: str) -> bool:
+                return True
+
             def create_pr(self, spec: PullRequestSpec) -> dict[str, str]:
                 captured["spec"] = spec
                 return {"web_url": "https://example.com/pr/1"}
@@ -248,6 +251,9 @@ class TestShipExecutorIntegration:
         class FakeHost:
             def current_user(self) -> str:
                 return "tester"
+
+            def is_assignable(self, *, repo: str, login: str) -> bool:
+                return True
 
             def create_pr(self, spec: PullRequestSpec) -> dict[str, str]:
                 return {"web_url": "https://example.com/pr/2"}

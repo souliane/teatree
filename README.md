@@ -369,6 +369,7 @@ t3 cost                         # cycle-to-date SDK-equivalent spend + effective
 t3 capabilities --json          # machine-readable registry of which t3 commands emit JSON and their exit-code contract (a front-end drives teatree from this)
 t3 speak                        # read text aloud on local speakers per [teatree.speak] (no-op unless local = all)
 t3 recover                      # find/recover work stranded by a network-outage death (dry-run by default)
+t3 fast-push [-m msg] [--remaining txt]  # leak-gated escape hatch for session hand-offs: stage → in-process leak gates (banned-terms, secret-scan, overlay-leak, public-repo author-identity; fail-closed) → commit → push → create-or-update the PR; skips every non-leak gate; any finding refuses the push
 t3 mutation run                 # scoped mutation testing — mutate only the high-value safety modules a diff touches
 t3 ui                           # browse and run the whole command tree in a terminal UI (needs `uv sync --group ui`)
 t3 admin                        # run the Django admin for the teatree project on a local dev server

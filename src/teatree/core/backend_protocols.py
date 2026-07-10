@@ -187,6 +187,8 @@ class CodeHostBackend(Protocol):
 
     def current_user(self) -> str: ...  # pragma: no branch
 
+    def is_assignable(self, *, repo: str, login: str) -> bool: ...  # pragma: no branch
+
     def list_my_prs(
         self,
         *,

@@ -110,6 +110,23 @@ class GitHubCodeHost:  # noqa: PLR0904 — method count reflects the CodeHostBac
         user = cast("_GitHubUser", data)
         return user.get("login", "")
 
+    def is_assignable(self, *, repo: str, login: str) -> bool:
+        """Whether *login* can be assigned on *repo* (#3100).
+
+        ``GET /repos/{slug}/assignees/{login}`` answers 204 for an
+        assignable login and 404 otherwise; any probe failure (network,
+        auth, no slug) reads as not-assignable so PR creation degrades to
+        an unassigned PR instead of failing at ``gh --assignee``.
+        """
+        slug = git.remote_slug(repo=repo)
+        if not slug or not login:
+            return False
+        try:
+            _run_gh("gh", "api", f"repos/{slug}/assignees/{login}", "--silent", token=self._token)
+        except CommandFailedError:
+            return False
+        return True
+
     def list_my_prs(self, *, author: str, updated_after: str | None = None) -> list[RawAPIDict]:
         terms = [f"is:pr is:open author:{author}"]
         if updated_after:

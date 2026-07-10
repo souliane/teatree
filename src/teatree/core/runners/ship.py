@@ -11,6 +11,7 @@ from teatree.core.gates.debt_delta_gate import evaluate_debt_delta
 from teatree.core.gates.open_questions_gate import warn_if_open_questions_missing
 from teatree.core.gates.pr_budget_gate import PrBudgetExceededError, check_pr_budget
 from teatree.core.intake.close_trailer_scanner import apply_publish_gate
+from teatree.core.merge.pr_assignee import resolve_pr_assignee
 from teatree.core.merge.pr_create_verify import verify_pr_exists
 from teatree.core.overlay_loader import get_overlay
 from teatree.core.review.mr_metadata import ensure_standard_body
@@ -474,7 +475,7 @@ class ShipExecutor(RunnerBase):
         )
         warn_if_open_questions_missing(description)
         warn_if_precheck_incomplete(description)
-        assignee = host.current_user() or git.config_value(key="user.name")
+        assignee = resolve_pr_assignee(host, repo=repo_path)
         return PullRequestSpec(
             repo=repo_path,
             branch=branch,
