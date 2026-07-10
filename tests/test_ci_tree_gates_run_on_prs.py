@@ -72,12 +72,25 @@ class TestPrSideRunIsSecretOptional:
             "the PR step threads the brand secret so same-repo PRs get full brand coverage"
         )
 
-    def test_banned_terms_pr_step_has_fork_safe_brand_fallback(self) -> None:
-        # A fork PR cannot read $TEATREE_BANNED_BRANDS; without a fallback the
-        # loader refuses a genuinely-unset list (exit 2). The PR step points the
-        # brand list at an explicit-empty config so the always-on terminology
-        # pass still runs pre-merge.
-        env = _pr_step_env("banned-terms-tree")
-        assert "T3_BANNED_TERMS_CONFIG" in env, (
-            "the banned-terms PR step needs an explicit-empty brand fallback for fork PRs"
+    def test_banned_terms_pr_step_has_explicit_allow_unset_fork_fallback(self) -> None:
+        # A fork PR cannot read $TEATREE_BANNED_BRANDS; the loader would refuse a
+        # genuinely-unset list (exit 2). The PR step opts in EXPLICITLY via
+        # --allow-unset so the always-on terminology pass runs pre-merge — the
+        # fail-closed-by-default flag that replaced the dead T3_BANNED_TERMS_CONFIG
+        # file fallback (no code ever consumed it).
+        pr = _run_where("banned-terms-tree", lambda c: "== 'pull_request'" in c)
+        assert "--allow-unset" in pr, "the PR step must opt in to the terminology-only pass via --allow-unset"
+        assert "T3_BANNED_TERMS_CONFIG" not in _pr_step_env("banned-terms-tree"), (
+            "the dead T3_BANNED_TERMS_CONFIG file fallback must be gone"
         )
+
+    def test_tree_gates_thread_the_consolidated_registry_secret(self) -> None:
+        # Dual-env transition: the banned-terms-tree job threads the consolidated
+        # TEATREE_TERM_REGISTRY secret alongside the legacy brand secret on every
+        # step, so the registry activates on cutover with no CI edit.
+        for keep in (lambda c: "== 'pull_request'" in c, lambda c: "!= 'pull_request'" in c):
+            env: dict[str, object] = {}
+            for step in _steps("banned-terms-tree"):
+                if keep(str(step.get("if", ""))):
+                    env.update(step.get("env", {}))
+            assert "TEATREE_TERM_REGISTRY" in env, "each tree-scan step must thread the consolidated registry secret"

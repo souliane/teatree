@@ -23,6 +23,7 @@ is sufficient):
 SECRET_SETTINGS: frozenset[str] = frozenset(
     {
         "banned_brands",
+        "banned_term_registry",
         "banned_terms",
         "banned_terms_allowlist",
         "github_token_pass_key",

@@ -80,10 +80,10 @@ SCANNER_UNAVAILABLE_MARKER: str = "<banned-terms-scanner-unavailable>"
 # hangs blocks the user, so the budget is deliberately tight.
 _SCAN_TIMEOUT_S = 10
 
-# DB-home term/allowlist keys and the ``T3_BANNED_TERMS`` env override that WINS
-# over the DB (mirroring ``banned_terms_cli``).
+# DB-home term key and the ``T3_BANNED_TERMS`` env override that WINS over the DB
+# (mirroring ``banned_terms_cli``). The allowlist carve-out is read via
+# ``banned_term_registry.allowlist_terms`` (dual-read).
 _TERMS_KEY = "banned_terms"
-_ALLOWLIST_KEY = "banned_terms_allowlist"
 _TERMS_ENV = "T3_BANNED_TERMS"
 
 
@@ -320,12 +320,15 @@ def _load_allowlist(config_path: Path | None) -> tuple[str, ...]:
     shell scanner already blanks allow-listed identifier runs when flagging a
     line, so this is only used to keep the REPORTED term in sync — a line flagged
     for a genuine customer codename next to a company identifier must attribute
-    the codename, never the carved-out org slug. Reads the canonical
-    ``ConfigSetting`` store via :mod:`teatree.config.cold_reader`; *config_path*
-    overrides the DB path. Empty (default) is a no-op.
+    the codename, never the carved-out org slug. Dual-read: the consolidated
+    ``banned_term_registry`` ``allow`` class when present, else the legacy
+    ``banned_terms_allowlist`` row. Reads the canonical ``ConfigSetting`` store
+    via :mod:`teatree.config.cold_reader`; *config_path* overrides the DB path.
+    Empty (default) is a no-op.
     """
-    raw = cold_reader.list_setting(_ALLOWLIST_KEY, default=[], db_path=config_path)
-    return tuple(str(e).strip() for e in raw if str(e).strip())
+    from teatree.hooks.banned_term_registry import allowlist_terms  # noqa: PLC0415  dual-read cycle
+
+    return allowlist_terms(config_path)
 
 
 def _matched_term(report: str, allowlist: tuple[str, ...] = ()) -> str | None:

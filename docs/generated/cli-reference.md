@@ -470,7 +470,9 @@ Usage: t3 banned-terms [OPTIONS] COMMAND [ARGS]...
 │ --help          Show this message and exit.                                  │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ╭─ Commands ───────────────────────────────────────────────────────────────────╮
-│ scan-tree  Scan every git-tracked file for committed banned terms.           │
+│ scan-tree         Scan every git-tracked file for committed banned terms.    │
+│ migrate-registry  Produce the consolidated ``banned_term_registry`` from the │
+│                   three legacy sources.                                      │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -481,8 +483,9 @@ Usage: t3 banned-terms scan-tree [OPTIONS]
 
  Scan every git-tracked file for committed banned terms.
 
- The brand list is DB-home: ``$TEATREE_BANNED_BRANDS`` (a CI secret) or the
- canonical ``banned_brands`` ``ConfigSetting`` row.
+ The brand list is DB-home: ``$TEATREE_BANNED_BRANDS`` (a CI secret), the
+ consolidated ``banned_term_registry``, or the canonical ``banned_brands``
+ ``ConfigSetting`` row.
 
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --repo-root             PATH  Repository root to scan (defaults to the       │
@@ -494,7 +497,37 @@ Usage: t3 banned-terms scan-tree [OPTIONS]
 │                               --require-brands additionally rejects the      │
 │                               deliberate empty list. CI passes it; local dev │
 │                               omits it.                                      │
+│ --allow-unset                 EXPLICIT opt-in: treat a genuinely-unset brand │
+│                               list as INERT (run the always-on terminology   │
+│                               pass only, exit 0) instead of failing loud     │
+│                               (exit 2). Fail-closed BY DEFAULT — the fork-PR │
+│                               CI step passes it (a fork cannot read the      │
+│                               brand secret); push/schedule omit it so a      │
+│                               missing secret stays a LOUD refusal on main.   │
+│                               Replaces the dead T3_BANNED_TERMS_CONFIG file  │
+│                               fallback.                                      │
 │ --help                        Show this message and exit.                    │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+#### `t3 banned-terms migrate-registry`
+
+```
+Usage: t3 banned-terms migrate-registry [OPTIONS]
+
+ Produce the consolidated ``banned_term_registry`` from the three legacy
+ sources.
+
+ Reads the current ``banned_terms`` + ``banned_brands`` + allowlist, class-tags
+ them (``banned_brands`` → ``leak``, ``banned_terms`` → ``prose_collider``,
+ the allowlist → ``allow``), and SELF-VERIFIES the result reproduces every
+ effective term the old config yields. On success it prints the JSON registry
+ value to set at cutover (``t3 <overlay> config_setting set
+ banned_term_registry '<json>'``, PR 2 — this command never writes it). If the
+ migration would drop or change ANY term it FAILS LOUD (exit 2) with the diff.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                  │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
