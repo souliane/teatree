@@ -217,7 +217,11 @@ class TestE2eExternalCommand(TestCase):
 
             worktree_dir = tmp_path / "workspace" / "backend"
             worktree_dir.mkdir(parents=True)
-            envfile = worktree_dir / ".t3-env.cache"
+            # The env cache lives out-of-repo in the ticket dir's .t3-cache/
+            # sibling, never inside the repo working tree (souliane/teatree#3097).
+            cache_dir = worktree_dir.parent / ".t3-cache"
+            cache_dir.mkdir(parents=True, exist_ok=True)
+            envfile = cache_dir / ".t3-env.cache"
             envfile.write_text("WT_VARIANT=acme\n", encoding="utf-8")
 
             ticket = Ticket.objects.create(overlay="test", issue_url="https://example.com/issues/80", variant="acme")
