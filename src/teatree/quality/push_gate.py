@@ -31,7 +31,7 @@ from teatree.utils.run import run_allowed_to_fail
 # byte-identical to the pre-#122 hook's ``--doctest-modules src/teatree``.
 WHOLE_TREE_DOCTEST = Path("src/teatree")
 
-_FLAG_OFF_REASON = "incremental_push_gate is OFF — whole-tree doctest + whole-tree ast-grep (default-safe, == today)"
+_FLAG_OFF_REASON = "incremental_push_gate is OFF — whole-tree doctest + whole-tree ast-grep (the pre-#122 behaviour)"
 
 # pytest's EXIT_NOTESTSCOLLECTED. A doctest target with no ``>>>`` example collects
 # nothing and pytest exits 5 — teatree is near-zero-comments, so most modules have

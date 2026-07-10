@@ -10,10 +10,10 @@ not a real ``bool``-or-``StrEnum`` ``UserSettings`` field registered in
 ON value — the Goodhart guard that keeps the outer loop's OFF switch un-flippable
 without a code-reviewed stage demotion.
 
-The live registry is seeded with several real flags. It is currently all-``DARK``
-(PR-28 graduated the sole ``SETTLING`` flag ``loop_runner_enabled`` out into a
-durable kill-switch), so the stage-discrimination invariants are proven
-non-vacuously over a MIXED FIXTURE rather than the live set's accidental composition.
+The live registry is seeded with several real flags — mostly ``DARK`` plus one
+``SETTLING`` (``incremental_push_gate``, graduated by #122). ``REMOVE`` is not
+represented live, so the stage-discrimination invariants are proven non-vacuously
+over a MIXED FIXTURE rather than the live set's accidental composition.
 """
 
 import dataclasses
@@ -52,14 +52,14 @@ class TestRegistrySeededNonVacuously:
         assert len(FEATURE_FLAGS) >= 3
 
     def test_stage_machinery_spans_every_stage_over_a_fixture(self) -> None:
-        # The live registry is single-stage (all DARK) after PR-28's graduation, so the
-        # multi-stage guard bites on a MIXED FIXTURE — proving the stage type exercises
-        # every stage without pinning the live set's accidental composition.
+        # The live registry spans DARK + SETTLING but not REMOVE, so the multi-stage
+        # guard bites on a MIXED FIXTURE — proving the stage type exercises every stage
+        # without pinning the live set's accidental composition.
         stages = {flag.stage for flag in _mixed_stage_fixture().values()}
         assert stages == set(FlagStage)
 
     def test_canonical_seed_flag_present(self) -> None:
-        # The canonical DARK flag plus a retro-classified one — loop_runner_enabled was
+        # The canonical DARK flags plus a retro-classified one — loop_runner_enabled was
         # graduated OUT by PR-28 (durable kill-switch, no longer a dying flag).
         assert {"outer_loop_enabled", "teams_enabled"} <= set(FEATURE_FLAGS)
         assert "loop_runner_enabled" not in FEATURE_FLAGS

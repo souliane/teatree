@@ -24,9 +24,9 @@ from teatree.utils.django_bootstrap import ensure_django
 def _resolve_flag() -> bool:
     """Resolve ``incremental_push_gate``, failing SAFE to OFF (⇒ whole-tree FULL).
 
-    Any failure to bootstrap Django or read the store resolves the flag to its
-    default OFF, so an unconfigured environment runs the whole-tree sweeps — never
-    a scoped run it could not authorize.
+    The flag defaults ON, but any failure to bootstrap Django or read the store
+    resolves it to OFF (fail-safe), so a broken/unconfigured environment runs the
+    whole-tree sweeps — never a scoped run it could not authorize.
     """
     try:
         ensure_django()
@@ -61,10 +61,10 @@ def push_gate_command(
 ) -> None:
     """Plan (or ``--run``) the incremental push gate: scoped doctest + ast-grep, FULL-fallback.
 
-    Default-safe: the ``incremental_push_gate`` flag is OFF ⇒ whole-tree both sweeps
-    (== today). ON ⇒ scoped to the diff, with FULL as the classifier's default
-    branch (every uncertainty runs the whole sweep). The CI whole-tree backstop is
-    untouched regardless of the flag.
+    The ``incremental_push_gate`` flag defaults ON ⇒ scoped to the diff, with FULL as
+    the classifier's default branch (every uncertainty runs the whole sweep). OFF ⇒
+    whole-tree both sweeps (the pre-#122 behaviour). A read failure fails safe to
+    whole-tree FULL, and the CI whole-tree backstop is untouched regardless of the flag.
     """
     enabled = _resolve_flag()
     cwd = Path.cwd()

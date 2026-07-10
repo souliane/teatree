@@ -157,7 +157,7 @@ class TestR7Unclassifiable:
 
 class TestFlagGatingAndExecutor:
     def test_flag_off_is_always_full_whole_tree(self) -> None:
-        # OFF ⇒ whole-tree doctest + whole-tree ast-grep (== today): zero push change.
+        # OFF ⇒ whole-tree doctest + whole-tree ast-grep (the pre-#122 run, the escape hatch).
         plan = plan_push_gate(_changed(("M", "src/teatree/core/session.py")), enabled=False)
         assert plan.is_full
         assert plan.doctest_targets == (WHOLE_TREE_DOCTEST,)

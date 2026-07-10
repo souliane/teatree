@@ -2989,11 +2989,13 @@ Usage: t3 tool push-gate [OPTIONS]
  Plan (or ``--run``) the incremental push gate: scoped doctest + ast-grep,
  FULL-fallback.
 
- Default-safe: the ``incremental_push_gate`` flag is OFF ⇒ whole-tree both
- sweeps
- (== today). ON ⇒ scoped to the diff, with FULL as the classifier's default
- branch (every uncertainty runs the whole sweep). The CI whole-tree backstop is
- untouched regardless of the flag.
+ The ``incremental_push_gate`` flag defaults ON ⇒ scoped to the diff, with FULL
+ as
+ the classifier's default branch (every uncertainty runs the whole sweep). OFF
+ ⇒
+ whole-tree both sweeps (the pre-#122 behaviour). A read failure fails safe to
+ whole-tree FULL, and the CI whole-tree backstop is untouched regardless of the
+ flag.
 
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --base            TEXT  Merge-base ref for the changed set.                  │
