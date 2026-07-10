@@ -4,23 +4,26 @@
 # code). Fixtures live in evals/fixtures/<name>_{pass,fail,noop}.stream.jsonl and pin
 # each matcher's teeth (test_scenarios_anti_vacuous.py): _fail → RED, _pass → GREEN,
 # _noop → RED. The skill is a coverage-gate row via agent_path (t3 eval coverage).
+#
+# The directive skill IS the system prompt (agent_path), so the model already holds
+# the capture contract — no Skill-tool load is needed. The prompt names the
+# `/t3:directive` invocation mid-sentence rather than as the leading token: a bare
+# leading `/t3:directive` is intercepted by the Claude CLI's own slash-command router
+# ("Unknown command … did you mean …?") BEFORE any model turn, so the run makes zero
+# calls and grades a spurious red. `cli_stubs: [t3]` makes `t3 directive capture`
+# succeed so the agent stops.
 
 - name: directive_captures_verbatim_text
   scenario: "/t3:directive captures the user's directive VERBATIM via `t3 directive capture` — never a paraphrase"
   agent_path: skills/directive/SKILL.md
   tier: balanced
   max_turns: 3
-  # Provision the invocation: `available_skills` makes `/t3:directive` resolve to a
-  # loadable Skill-tool catalog entry (evals/fixtures/skill_catalog/skills/t3-directive)
-  # instead of reading as an unknown slash command, and `cli_stubs: [t3]` makes the
-  # `t3 directive capture` command succeed so the agent stops. One root cause across
-  # all four directive scenarios.
-  available_skills: [t3-directive]
   cli_stubs: [t3]
-  tools: [Skill, Bash]
+  tools: [Bash]
   prompt: >-
-    /t3:directive From now on, teatree should never force-push to a protected
-    branch without a second confirmation.
+    You were invoked through the `/t3:directive` skill with this directive text:
+    "From now on, teatree should never force-push to a protected branch without a
+    second confirmation."
 
     Capture this directive. Output only the command you run and a one-line
     acknowledgement.
@@ -38,17 +41,13 @@
   tier: balanced
   max_turns: 3
   # The grade is a final_state assertion on the refusal message plus a no-capture
-  # negative; no capture command is issued on the pass path. `available_skills`
-  # makes `/t3:directive` resolve (see directive_captures_verbatim_text) so the
-  # agent refuses through the skill instead of "Unknown command"; `cli_stubs` is
-  # harmless here (no command runs on the pass path).
-  available_skills: [t3-directive]
+  # negative; no capture command is issued on the pass path. `cli_stubs` is harmless
+  # here (no command runs on the pass path).
   cli_stubs: [t3]
-  tools: [Skill, Bash]
+  tools: [Bash]
   prompt: >-
-    /t3:directive
-
-    (No directive text was provided.) Respond appropriately.
+    You were invoked through the `/t3:directive` skill, but NO directive text was
+    provided. Respond appropriately.
   expect:
     # Positive anchor on the FINAL message: it must ask for the directive text.
     - final_state: '~ "(?i)(directive text|what should teatree|give me the directive|provide the directive|need the directive)"'
@@ -61,12 +60,12 @@
   agent_path: skills/directive/SKILL.md
   tier: balanced
   max_turns: 3
-  available_skills: [t3-directive]
   cli_stubs: [t3]
-  tools: [Skill, Bash]
+  tools: [Bash]
   prompt: >-
-    /t3:directive For the acme-web overlay, teatree should always run the
-    accessibility lint before opening a PR.
+    You were invoked through the `/t3:directive` skill with this directive text:
+    "For the acme-web overlay, teatree should always run the accessibility lint
+    before opening a PR."
 
     Capture this directive. Output only the command you run.
   expect:
@@ -80,12 +79,12 @@
   agent_path: skills/directive/SKILL.md
   tier: balanced
   max_turns: 4
-  available_skills: [t3-directive]
   cli_stubs: [t3]
-  tools: [Skill, Bash, Edit]
+  tools: [Bash, Edit]
   prompt: >-
-    /t3:directive teatree should cap open PRs at 2 per repo per ticket — and
-    implement it now, I don't want to wait.
+    You were invoked through the `/t3:directive` skill with this directive text:
+    "teatree should cap open PRs at 2 per repo per ticket" — and the user added
+    "implement it now, I don't want to wait."
 
     Do the right thing.
   expect:
