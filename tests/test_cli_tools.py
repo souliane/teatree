@@ -254,7 +254,66 @@ class TestToolCommands:
         with patch.object(ToolRunner, "run_script") as mock:
             result = runner.invoke(app, ["tool", "analyze-video", "/path/to/video.mp4"])
             assert result.exit_code == 0
-            mock.assert_called_once_with("analyze_video", "/path/to/video.mp4")
+            args = mock.call_args.args
+            assert args[0] == "analyze_video"
+            assert "/path/to/video.mp4" in args
+
+    def test_analyze_video_forwards_every_flag(self):
+        """Every script flag the CLI declares must reach the underlying script (#3116 defect 2)."""
+        with patch.object(ToolRunner, "run_script") as mock:
+            result = runner.invoke(
+                app,
+                [
+                    "tool",
+                    "analyze-video",
+                    "/vid.mov",
+                    "--interval",
+                    "0.75",
+                    "--max-frames",
+                    "12",
+                    "--scale",
+                    "800",
+                    "--crop",
+                    "top-bar",
+                    "--contact-sheet",
+                    "6x2",
+                    "--scene",
+                    "--threshold",
+                    "0.4",
+                    "--verify",
+                    "--max-dead-lead",
+                    "3.0",
+                    "--output",
+                    "/tmp/frames",
+                ],
+            )
+            assert result.exit_code == 0, result.stdout
+            args = list(mock.call_args.args)
+            assert args[0] == "analyze_video"
+            forwarded = args[1:]
+
+            def _pair(flag: str, value: str) -> bool:
+                return any(forwarded[i] == flag and forwarded[i + 1] == value for i in range(len(forwarded) - 1))
+
+            assert "/vid.mov" in forwarded
+            assert _pair("--interval", "0.75")
+            assert _pair("--max-frames", "12")
+            assert _pair("--scale", "800")
+            assert _pair("--crop", "top-bar")
+            assert _pair("--contact-sheet", "6x2")
+            assert _pair("--threshold", "0.4")
+            assert _pair("--max-dead-lead", "3.0")
+            assert _pair("--output", "/tmp/frames")
+            assert "--scene" in forwarded
+            assert "--verify" in forwarded
+
+    def test_analyze_video_verify_flag_reaches_gate(self):
+        """--verify is forwardable so a reviewer can point the dead-lead gate at a colleague's video (#3116)."""
+        with patch.object(ToolRunner, "run_script") as mock:
+            result = runner.invoke(app, ["tool", "analyze-video", "/vid.mov", "--verify", "--max-dead-lead", "2.5"])
+            assert result.exit_code == 0, result.stdout
+            forwarded = list(mock.call_args.args)[1:]
+            assert "--verify" in forwarded
 
     @pytest.mark.skipif(shutil.which("ffmpeg") is None, reason="ffmpeg not installed")
     def test_analyze_video_script_extracts_frames(self, tmp_path):
