@@ -109,14 +109,23 @@ def existing_work_for_issue(
     branch equal to ``<ticket_number>`` or prefixed ``<ticket_number>-`` (the
     deterministic worktree branch), the issue URL cited in the PR body, or a
     ``Closes #<ticket_number>`` keyword in the body. ``None`` means clean.
+
+    Fails OPEN when the issue's own repo slug is unparsable (a synthetic or
+    non-standard issue URL): without a slug to scope by, a ``<ticket_number>-*``
+    branch or a ``Closes #<ticket_number>`` in a FOREIGN repo would match and
+    strand the issue on a spurious skip. Consistent with the module's fail-open
+    design (a forge error also degrades to "claim anyway"), the read-back yields
+    no match and the caller claims.
     """
     if not ticket_number:
         return None
     issue_slug = slug_from_issue_or_pr_url(urlparse(issue_url).path)
+    if not issue_slug:
+        return None
     branch_prefix = f"{ticket_number}-"
     for raw in open_prs:
         pr_url = _pr_url(raw)
-        if issue_slug and not _same_repo(pr_url, issue_slug):
+        if not _same_repo(pr_url, issue_slug):
             continue
         head = _pr_head_branch(raw)
         if head == ticket_number or head.startswith(branch_prefix):
