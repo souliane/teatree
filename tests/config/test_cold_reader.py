@@ -71,6 +71,17 @@ class TestReadSettingFailsOpen:
         conn.close()
         assert cold_reader.read_setting("mode", db_path=db) is None
 
+    def test_non_text_value_returns_none(self, tmp_path: Path) -> None:
+        # sqlite is dynamically typed: an int can land in the TEXT value column.
+        # A non-str/bytes raw value is not decodable JSON → fail open to None.
+        db = tmp_path / "db.sqlite3"
+        conn = sqlite3.connect(db)
+        conn.execute("CREATE TABLE teatree_config_setting (id INTEGER PRIMARY KEY, scope TEXT, key TEXT, value)")
+        conn.execute("INSERT INTO teatree_config_setting (scope, key, value) VALUES ('', 'num', 42)")
+        conn.commit()
+        conn.close()
+        assert cold_reader.read_setting("num", db_path=db) is None
+
     def test_unopenable_path_returns_none(self, tmp_path: Path) -> None:
         # A directory exists() but cannot be opened as a RO sqlite DB → fail open.
         a_dir = tmp_path / "a_dir"
@@ -148,6 +159,12 @@ class TestTypedWrappers:
         assert cold_reader.list_setting("items", default=[], db_path=db) == ["a", "b"]
         assert cold_reader.list_setting("nested", default=["d"], db_path=db) == ["d"]
         assert cold_reader.list_setting("absent", default=["d"], db_path=db) == ["d"]
+
+    def test_mapping_setting_strict(self, db: Path) -> None:
+        assert cold_reader.mapping_setting("nested", db_path=db) == {"x": [1, 2], "y": {"z": 3}}
+        # A non-dict stored value (a str) → empty dict, not the raw value.
+        assert cold_reader.mapping_setting("label", db_path=db) == {}
+        assert cold_reader.mapping_setting("absent", db_path=db) == {}
 
     def test_wrappers_fail_open_on_missing_db(self, tmp_path: Path) -> None:
         missing = tmp_path / "nope.sqlite3"

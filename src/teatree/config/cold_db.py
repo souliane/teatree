@@ -69,6 +69,30 @@ def _open_readonly(db: Path, parameters: str) -> sqlite3.Connection:
 
 
 _QUERY_ERROR: object = object()
+_RETRY_QUIESCENT_WAL: object = object()
+
+
+def _read_once(db: Path, uri_parameters: str, query: str, parameters_bindings: tuple[object, ...]) -> object:
+    """One read-only attempt through the `uri_parameters` open mode.
+
+    Returns the fetched row (a tuple), `None` on a clean no-match, the
+    `_QUERY_ERROR` sentinel on any sqlite error, or `_RETRY_QUIESCENT_WAL` when a
+    read hit the quiescent-WAL `SQLITE_CANTOPEN` (the caller retries `immutable=1`).
+    """
+    try:
+        conn = _open_readonly(db, uri_parameters)
+    except sqlite3.Error:
+        return _QUERY_ERROR
+    try:
+        return conn.execute(query, parameters_bindings).fetchone()
+    except sqlite3.OperationalError as exc:
+        if exc.sqlite_errorcode == sqlite3.SQLITE_CANTOPEN:
+            return _RETRY_QUIESCENT_WAL
+        return _QUERY_ERROR
+    except sqlite3.Error:
+        return _QUERY_ERROR
+    finally:
+        conn.close()
 
 
 def _execute_readonly(db: Path, query: str, parameters_bindings: tuple[object, ...]) -> object:
@@ -95,22 +119,10 @@ def _execute_readonly(db: Path, query: str, parameters_bindings: tuple[object, .
     lock bypass. Shared by `fetch_one`, `loop_status`, and `row_exists` so every
     cold read runs through one WAL-aware sqlite path.
     """
-    for uri_parameters in ("mode=ro", "immutable=1"):
-        try:
-            conn = _open_readonly(db, uri_parameters)
-        except sqlite3.Error:
-            return _QUERY_ERROR
-        try:
-            return conn.execute(query, parameters_bindings).fetchone()
-        except sqlite3.OperationalError as exc:
-            if uri_parameters == "mode=ro" and exc.sqlite_errorcode == sqlite3.SQLITE_CANTOPEN:
-                continue  # quiescent WAL: no sidecars → retry with immutable=1
-            return _QUERY_ERROR
-        except sqlite3.Error:
-            return _QUERY_ERROR
-        finally:
-            conn.close()
-    return _QUERY_ERROR
+    result = _read_once(db, "mode=ro", query, parameters_bindings)
+    if result is _RETRY_QUIESCENT_WAL:
+        result = _read_once(db, "immutable=1", query, parameters_bindings)
+    return _QUERY_ERROR if result is _RETRY_QUIESCENT_WAL else result
 
 
 def fetch_one(db: Path, query: str, parameters_bindings: tuple[object, ...]) -> tuple[object, ...] | None:
