@@ -10,6 +10,7 @@ state, not just an echo of the request.
 import json
 from io import StringIO
 
+import pytest
 from django.core.management import call_command
 from django.test import TestCase
 
@@ -31,6 +32,12 @@ def _loop(name: str, *, enabled: bool) -> Loop:
 
 
 class TestLoopStateCommand(TestCase):
+    def setUp(self) -> None:
+        # Real loop rows: every verb now validates the name against the Loop table (#3117).
+        _loop("review", enabled=True)
+        _loop("ship", enabled=True)
+        _loop("tickets", enabled=True)
+
     def test_pause_sets_paused_status(self) -> None:
         _run("pause", "review")
         assert LoopState.objects.status_of("review") is LoopStatus.PAUSED
@@ -66,9 +73,10 @@ class TestLoopStateCommand(TestCase):
         assert payload["status"] == "disabled"
 
     def test_status_subcommand_reports_enabled_for_untouched_loop(self) -> None:
-        out = _run("status", "never-touched", "--json")
+        # A known loop with no LoopState row resolves to the ENABLED default.
+        out = _run("status", "tickets", "--json")
         payload = json.loads(out)
-        assert payload["name"] == "never-touched"
+        assert payload["name"] == "tickets"
         assert payload["status"] == "enabled"
 
 
@@ -80,6 +88,9 @@ class TestStatusSubcommandIsAReadNotAMutation(TestCase):
     pause/enable that had just changed the loop. The read now prints a
     status-shaped line, and never writes a ``LoopState`` row.
     """
+
+    def setUp(self) -> None:
+        _loop("review", enabled=True)
 
     def test_status_leaves_an_enabled_loop_enabled_and_writes_no_row(self) -> None:
         _run("status", "review")
@@ -139,9 +150,51 @@ class TestLoopStateSetsLoopRowEnabled(TestCase):
         _run("resume", "audit")
         assert Loop.objects.get(name="audit").enabled is True
 
-    def test_enable_disable_are_no_ops_for_a_name_with_no_loop_row(self) -> None:
-        # A control-plane verb on an unknown loop name still writes LoopState
-        # (the existing absent-row → ENABLED contract) and does not crash.
-        _run("disable", "no-such-loop")
-        assert LoopState.objects.status_of("no-such-loop") is LoopStatus.DISABLED
-        assert not Loop.objects.filter(name="no-such-loop").exists()
+
+class TestUnknownLoopNameRefused(TestCase):
+    """#3117: every verb refuses a name with no matching ``Loop`` row before touching ``LoopState``.
+
+    ``pause``/``resume``/``disable``/``enable``/``status`` on an unknown name used
+    to write (or, for ``status``, silently resolve to) a ``LoopState`` row for a
+    loop that does not exist — so a typo in a pause command reported success and
+    paused nothing. Each verb now exits non-zero, names the unknown loop, points
+    at ``t3 loops list``, and writes NO ``LoopState`` row.
+    """
+
+    _BOGUS = "totally_bogus_loop_xyz"
+
+    def _refuse(self, *args: str) -> str:
+        out = StringIO()
+        with pytest.raises(SystemExit) as caught:
+            call_command("loop_state", *args, self._BOGUS, stdout=out)
+        assert caught.value.code == 2
+        return out.getvalue()
+
+    def test_pause_unknown_name_refused_no_row(self) -> None:
+        out = self._refuse("pause")
+        assert self._BOGUS in out
+        assert "t3 loops list" in out
+        assert not LoopState.objects.filter(name=self._BOGUS).exists()
+
+    def test_resume_unknown_name_refused_no_row(self) -> None:
+        self._refuse("resume")
+        assert not LoopState.objects.filter(name=self._BOGUS).exists()
+
+    def test_disable_unknown_name_refused_no_row(self) -> None:
+        self._refuse("disable")
+        assert not LoopState.objects.filter(name=self._BOGUS).exists()
+
+    def test_enable_unknown_name_refused_no_row(self) -> None:
+        self._refuse("enable")
+        assert not LoopState.objects.filter(name=self._BOGUS).exists()
+
+    def test_status_unknown_name_refused_never_prints_enabled(self) -> None:
+        out = self._refuse("status")
+        assert "ENABLED" not in out.upper()
+        assert not LoopState.objects.filter(name=self._BOGUS).exists()
+
+    def test_known_loop_still_pauses(self) -> None:
+        # No-regression: a real loop still pauses.
+        _loop("dispatch", enabled=True)
+        _run("pause", "dispatch")
+        assert LoopState.objects.status_of("dispatch") is LoopStatus.PAUSED

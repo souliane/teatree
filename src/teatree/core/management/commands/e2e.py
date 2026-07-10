@@ -12,6 +12,7 @@ from teatree.core.intake.resolve import resolve_worktree
 from teatree.core.management.commands import _e2e_discovery as _disc
 from teatree.core.management.commands import _e2e_runners as _runners
 from teatree.core.management.commands._test_plan import post as _test_plan_post
+from teatree.core.management.commands._test_plan import tracked as _tracked_manifest
 from teatree.core.models import Ticket, Worktree
 from teatree.core.overlay_loader import get_overlay
 from teatree.core.worktree.worktree_env import compose_project
@@ -521,6 +522,13 @@ class Command(TyperCommand):
             body_file=body_file,
             template=template,
             allow_no_video=allow_no_video,
+        )
+
+    @command(name="tracked-manifest")
+    def tracked_manifest(self, *, manifest: str = "") -> str:
+        """Print a manifest's authored half (run provenance stripped) for a private test repo to commit."""
+        return _tracked_manifest.run_tracked_manifest(
+            manifest=manifest, write_out=self.stdout.write, write_err=self.stderr.write
         )
 
     @command(name="retract-evidence")

@@ -2500,7 +2500,8 @@ Usage: t3 tool [OPTIONS] COMMAND [ARGS]...
 │                      overlay's rules.                                        │
 │ repo-mode            Report whether the repo is solo (fix proactively) or    │
 │                      collaborative (flag, don't fix).                        │
-│ analyze-video        Decompose video into frames for AI analysis.            │
+│ analyze-video        Decompose a video into frames for AI analysis, or       │
+│                      verify its quality.                                     │
 │ bump-deps            Bump pyproject.toml dependencies from uv.lock.          │
 │ sonar-check          Run local SonarQube analysis via Docker.                │
 │ claude-handover      Show Claude handover telemetry and runtime              │
@@ -2640,12 +2641,23 @@ Usage: t3 tool repo-mode [OPTIONS] [REPO]
 #### `t3 tool analyze-video`
 
 ```
-Usage: t3 tool analyze-video [OPTIONS] VIDEO_PATH
+Usage: t3 tool analyze-video [OPTIONS] SOURCE
 
- Decompose video into frames for AI analysis.
+ Decompose a video into frames for AI analysis, or verify its quality.
+
+ ``source`` plus every flag passes straight through to
+ ``scripts/analyze_video.py``, which owns the flag definitions (#3116):
+ ``--interval N`` (0 derives from duration to span the whole video),
+ ``--max-frames N``, ``--scale W`` (default 1280px, 0 = native),
+ ``--crop top-bar|W:H:X:Y``, ``--contact-sheet ROWSxCOLS``,
+ ``--verify [--max-dead-lead S]`` (deterministic dead-lead gate, now
+ reachable to point at another author's video), ``--scene``,
+ ``--threshold T``, ``--output DIR``.
 
 ╭─ Arguments ──────────────────────────────────────────────────────────────────╮
-│ *    video_path      TEXT  Path to video file [required]                     │
+│ *    source      TEXT  Video file path or URL (GitLab/GitHub upload URLs are │
+│                        fetched authenticated)                                │
+│                        [required]                                            │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --help          Show this message and exit.                                  │
@@ -3424,8 +3436,8 @@ Usage: t3 loop [OPTIONS] COMMAND [ARGS]...
 │                kill-switch.                                                  │
 │ enable         Enable a disabled mini-loop — return it to the ENABLED state  │
 │                (alias of resume).                                            │
-│ loop-state     Read a mini-loop's durable state, read-only (ENABLED when     │
-│                never touched; no mutation).                                  │
+│ loop-state     Read a known mini-loop's durable state, read-only (ENABLED    │
+│                when never touched; refuses an unknown name).                 │
 │ self-improve   Self-improving monitor — scheduled smell detection with a     │
 │                tiered action ladder. Runs as its own dedicated `/loop` slot  │
 │                on a separate `loop-self-improve` LoopLease so a long         │
@@ -3760,8 +3772,8 @@ Usage: t3 loop enable [OPTIONS] NAME
 ```
 Usage: t3 loop loop-state [OPTIONS] NAME
 
- Read a mini-loop's durable state, read-only (ENABLED when never touched; no
- mutation).
+ Read a known mini-loop's durable state, read-only (ENABLED when never touched;
+ refuses an unknown name).
 
 ╭─ Arguments ──────────────────────────────────────────────────────────────────╮
 │ *    name      TEXT  Mini-loop name. [required]                              │
@@ -6663,6 +6675,8 @@ Usage: t3 teatree e2e [OPTIONS] COMMAND [ARGS]...
 │ project           Run E2E tests from the project's own test directory.       │
 │ post-test-plan    Post/update the ticket's single test-plan note             │
 │                   (side-by-side Dev|Local test plan) from a manifest.        │
+│ tracked-manifest  Print a manifest's authored half (run provenance stripped) │
+│                   for a private test repo to commit.                         │
 │ retract-evidence  Withdraw the ticket's single test-plan note.               │
 │ post-evidence     [Deprecated] Alias for post-test-plan (renamed; kept one   │
 │                   release for back-compat).                                  │
@@ -6887,6 +6901,20 @@ Usage: t3 teatree e2e post-test-plan [OPTIONS]
 │                                                    no-allow-no-video]        │
 │ --help                                             Show this message and     │
 │                                                    exit.                     │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 teatree e2e tracked-manifest`
+
+```
+Usage: t3 teatree e2e tracked-manifest [OPTIONS]
+
+ Print a manifest's authored half (run provenance stripped) for a private test
+ repo to commit.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --manifest        TEXT                                                       │
+│ --help                  Show this message and exit.                          │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 

@@ -1,10 +1,13 @@
 """``manage.py loops_list`` — list DB-configured autonomous loops (#1796).
 
 Backs the read-only ``t3 loops list``. Reads :class:`teatree.core.models.Loop`
-rows and prints each loop's name, enabled state, cadence (interval or daily
-schedule), last run, next-due, and a ``[colleague-facing]`` tag (#2904) when the
-row is gated off during any availability-deferring mode. ORM access lives in a
-management command (the project's "anything touching the ORM is a management
+rows and prints each loop's name, effective admitted state, cadence (interval or
+daily schedule), last run, next-due, and a ``[colleague-facing]`` tag (#2904)
+when the row is gated off during any availability-deferring mode. The state
+column folds a :class:`teatree.core.models.LoopState` pause/disable hold into the
+row's ``enabled`` flag (#3117) — ``t3 loop pause`` holds a loop WITHOUT flipping
+``Loop.enabled``, so a pause is now confirmable at a glance. ORM access lives in
+a management command (the project's "anything touching the ORM is a management
 command" rule).
 
 Strictly read-only: ORM reads only — it never ticks, marks a run, or mutates a
@@ -19,11 +22,25 @@ import typer
 from django.utils import timezone
 from django_typer.management import TyperCommand
 
-from teatree.core.models import Loop
+from teatree.core.models import Loop, LoopState, LoopStatus
 
 _NEVER = "—"
 _SECONDS_PER_MINUTE = 60
 _SECONDS_PER_HOUR = 3600
+
+
+def _effective_state(loop: Loop, status: LoopStatus) -> str:
+    """The admitted state, folding a ``LoopState`` hold into the row's ``enabled`` flag.
+
+    ``t3 loop pause`` holds a loop via ``LoopState`` WITHOUT flipping
+    ``Loop.enabled``, so the row alone still reads ``enabled`` — this surfaces the
+    hold so a pause is confirmable at a glance (#3117).
+    """
+    if not loop.enabled or status is LoopStatus.DISABLED:
+        return "disabled"
+    if status is LoopStatus.PAUSED:
+        return "paused"
+    return "enabled"
 
 
 def _human_duration(seconds: float | None) -> str:
@@ -39,8 +56,9 @@ def _human_duration(seconds: float | None) -> str:
     return f"{hours}h{remainder // _SECONDS_PER_MINUTE:02d}m"
 
 
-def _next_label(loop: Loop, now: dt.datetime) -> str:
-    if not loop.enabled:
+def _next_label(loop: Loop, status: LoopStatus, now: dt.datetime) -> str:
+    # A held loop (paused/disabled) won't tick — its next-fire is meaningless.
+    if not loop.enabled or status is not LoopStatus.ENABLED:
         return _NEVER
     if loop.is_due(now):
         return "due"
@@ -50,10 +68,11 @@ def _next_label(loop: Loop, now: dt.datetime) -> str:
     return f"in {_human_duration((next_at - now).total_seconds())}"
 
 
-def _line(loop: Loop, now: dt.datetime) -> str:
-    enabled = "enabled" if loop.enabled else "disabled"
+def _line(loop: Loop, status: LoopStatus, now: dt.datetime) -> str:
+    state = _effective_state(loop, status)
     last = _human_duration(loop.seconds_since_run(now))
-    line = f"  {loop.name:<22} {enabled:<8} {loop.cadence_label:<13} last {last:<10} next {_next_label(loop, now)}"
+    nxt = _next_label(loop, status, now)
+    line = f"  {loop.name:<22} {state:<8} {loop.cadence_label:<13} last {last:<10} next {nxt}"
     if loop.colleague_facing:
         line += "  [colleague-facing]"
     return line
@@ -70,11 +89,12 @@ def _description_line(loop: Loop) -> str | None:
     return f"      {loop.description}"
 
 
-def _payload(loop: Loop, now: dt.datetime) -> dict[str, Any]:
+def _payload(loop: Loop, status: LoopStatus, now: dt.datetime) -> dict[str, Any]:
     next_at = loop.next_run_at()
     return {
         "name": loop.name,
         "enabled": loop.enabled,
+        "status": _effective_state(loop, status),
         "description": loop.description,
         "delay_seconds": loop.delay_seconds,
         "daily_at": loop.daily_at.strftime("%H:%M") if loop.daily_at else "",
@@ -96,12 +116,15 @@ class Command(TyperCommand):
     ) -> None:
         now = timezone.now()
         loops = list(Loop.objects.all())
+        # One read of the LoopState control plane; an absent name → ENABLED default.
+        held = {row.name: LoopStatus(row.status) for row in LoopState.objects.all()}
         if json_output:
-            self.stdout.write(json.dumps({"loops": [_payload(loop, now) for loop in loops]}, indent=2))
+            payload = [_payload(loop, held.get(loop.name, LoopStatus.ENABLED), now) for loop in loops]
+            self.stdout.write(json.dumps({"loops": payload}, indent=2))
             return
         self.stdout.write("loops:")
         for loop in loops:
-            self.stdout.write(_line(loop, now))
+            self.stdout.write(_line(loop, held.get(loop.name, LoopStatus.ENABLED), now))
             description_line = _description_line(loop)
             if description_line is not None:
                 self.stdout.write(description_line)

@@ -211,6 +211,10 @@
           "name": "post-test-plan"
         },
         {
+          "help": "Print a manifest's authored half (run provenance stripped) for a private test repo to commit",
+          "name": "tracked-manifest"
+        },
+        {
           "help": "Withdraw the ticket's single test-plan note",
           "name": "retract-evidence"
         },
