@@ -158,12 +158,23 @@ def ticket_claim_is_lost(ticket: "Ticket", repo: str) -> bool:
     the ref infra is unreachable so ownership cannot be confirmed (fail CLOSED).
     ``False`` when the switch is off, no claim exists, or we still hold it — so a
     non-fleet ship is never affected.
+
+    The marker is resolved by its own natural key ``(issue_url, overlay)`` — the key
+    ``ImplementedIssueMarkerManager.cache_from_fleet_claim`` populates on the dispatch
+    path. The marker's ``ticket`` FK is never set in production, so keying the fence
+    on ``ticket`` would find nothing and leave the fence a permanent no-op.
     """
     if not fleet_claim_enabled(ticket.overlay):
         return False
+    if not ticket.issue_url:
+        return False
     from teatree.core.models import ImplementedIssueMarker  # noqa: PLC0415 — leaf import kept out of module load
 
-    marker = ImplementedIssueMarker.objects.filter(ticket=ticket).exclude(claim_ref_sha="").order_by("-id").first()
+    marker = (
+        ImplementedIssueMarker.objects.filter(issue_url=ticket.issue_url, overlay=ticket.overlay)
+        .exclude(claim_ref_sha="")
+        .first()
+    )
     if marker is None:
         return False
     return not issue_claim_still_held(marker.issue_url, marker.claim_ref_sha, repo)

@@ -144,11 +144,16 @@ class TestShipFenceGate(TestCase):
         holder = init_client(tmp / "holder", bare)
         claim = fleet_claim.acquire(_ISSUE, repo=str(holder), remote="origin")
         assert claim is not None
-        ticket = Ticket.objects.create(overlay="acme", state=Ticket.State.REVIEWED)
+        ticket = Ticket.objects.create(overlay="acme", issue_url=_ISSUE, state=Ticket.State.REVIEWED)
         worktree = Worktree.objects.create(
             ticket=ticket, overlay="acme", repo_path=str(holder), branch="feat", extra={"worktree_path": str(holder)}
         )
-        ImplementedIssueMarker.objects.create(issue_url=_ISSUE, overlay="acme", ticket=ticket, claim_ref_sha=claim.sha)
+        # Build the marker through the REAL production path — the manager NEVER sets
+        # the ticket FK, so the fence must resolve it by the marker's (issue_url,
+        # overlay) natural key, exactly as it will in production.
+        ImplementedIssueMarker.objects.cache_from_fleet_claim(
+            _ISSUE, "acme", claim_ref_sha=claim.sha, claimed_by_instance=claim.instance_id
+        )
         return ticket, worktree, claim.sha, bare
 
     def test_off_switch_is_a_no_op(self) -> None:
@@ -176,9 +181,19 @@ class TestShipFenceGate(TestCase):
         assert failure["allowed"] is False
         assert "no longer held by this instance" in failure["error"]
 
-    def test_ticket_without_fleet_claim_is_a_no_op(self) -> None:
+    def test_ticket_with_issue_url_but_no_marker_is_a_no_op(self) -> None:
         tmp = self._tmp()
         init_bare(tmp / "origin.git")
+        ticket = Ticket.objects.create(overlay="acme", issue_url=_ISSUE, state=Ticket.State.REVIEWED)
+        worktree = Worktree.objects.create(
+            ticket=ticket, overlay="acme", repo_path=str(tmp), branch="feat", extra={"worktree_path": str(tmp)}
+        )
+        with patch.object(fleet_claim_wire, "fleet_claim_enabled", return_value=True):
+            assert run_fleet_claim_fence_gate(ticket, worktree) is None
+
+    def test_ticket_without_issue_url_is_a_no_op(self) -> None:
+        # A ticket with no issue_url cannot carry a fleet claim to fence — short-circuit.
+        tmp = self._tmp()
         ticket = Ticket.objects.create(overlay="acme", state=Ticket.State.REVIEWED)
         worktree = Worktree.objects.create(
             ticket=ticket, overlay="acme", repo_path=str(tmp), branch="feat", extra={"worktree_path": str(tmp)}
@@ -188,8 +203,10 @@ class TestShipFenceGate(TestCase):
 
     def test_fence_fails_closed_when_ref_infra_unreachable(self) -> None:
         tmp = self._tmp()
-        ticket = Ticket.objects.create(overlay="acme", state=Ticket.State.REVIEWED)
-        ImplementedIssueMarker.objects.create(issue_url=_ISSUE, overlay="acme", ticket=ticket, claim_ref_sha="a" * 40)
+        ticket = Ticket.objects.create(overlay="acme", issue_url=_ISSUE, state=Ticket.State.REVIEWED)
+        ImplementedIssueMarker.objects.cache_from_fleet_claim(
+            _ISSUE, "acme", claim_ref_sha="a" * 40, claimed_by_instance="box-holder"
+        )
         broken = init_client(tmp / "broken", tmp / "absent.git")  # origin absent -> ls-remote raises
         with patch.object(fleet_claim_wire, "fleet_claim_enabled", return_value=True):
             assert fleet_claim_wire.ticket_claim_is_lost(ticket, str(broken)) is True
@@ -287,8 +304,10 @@ class TestExecuteShipFence(TestCase):
         thief = init_client(tmp / "thief", bare)
         claim = fleet_claim.acquire(_ISSUE, repo=str(holder), remote="origin")
         assert claim is not None
-        ticket = Ticket.objects.create(overlay="acme", state=Ticket.State.SHIPPED)
-        ImplementedIssueMarker.objects.create(issue_url=_ISSUE, overlay="acme", ticket=ticket, claim_ref_sha=claim.sha)
+        ticket = Ticket.objects.create(overlay="acme", issue_url=_ISSUE, state=Ticket.State.SHIPPED)
+        ImplementedIssueMarker.objects.cache_from_fleet_claim(
+            _ISSUE, "acme", claim_ref_sha=claim.sha, claimed_by_instance=claim.instance_id
+        )
         assert fleet_claim.steal_if_expired(_ISSUE, repo=str(thief), remote="origin", now=1e12) is not None
 
         from teatree.core.runners.ship import ShipExecutor  # noqa: PLC0415 — test-local
@@ -315,8 +334,10 @@ class TestExecuteShipFence(TestCase):
         thief = init_client(tmp / "thief", bare)
         claim = fleet_claim.acquire(_ISSUE, repo=str(holder), remote="origin")
         assert claim is not None
-        ticket = Ticket.objects.create(overlay="acme", state=Ticket.State.SHIPPED)
-        ImplementedIssueMarker.objects.create(issue_url=_ISSUE, overlay="acme", ticket=ticket, claim_ref_sha=claim.sha)
+        ticket = Ticket.objects.create(overlay="acme", issue_url=_ISSUE, state=Ticket.State.SHIPPED)
+        ImplementedIssueMarker.objects.cache_from_fleet_claim(
+            _ISSUE, "acme", claim_ref_sha=claim.sha, claimed_by_instance=claim.instance_id
+        )
 
         from teatree.core.runners.ship import ShipExecutor  # noqa: PLC0415 — test-local
 
@@ -347,7 +368,9 @@ class TestEnsurePrFence(TestCase):
         claim = fleet_claim.acquire(_ISSUE, repo=str(holder), remote="origin")
         assert claim is not None
         ticket = Ticket.objects.create(overlay="acme", issue_url=_ISSUE, state=Ticket.State.REVIEWED)
-        ImplementedIssueMarker.objects.create(issue_url=_ISSUE, overlay="acme", ticket=ticket, claim_ref_sha=claim.sha)
+        ImplementedIssueMarker.objects.cache_from_fleet_claim(
+            _ISSUE, "acme", claim_ref_sha=claim.sha, claimed_by_instance=claim.instance_id
+        )
         assert fleet_claim.steal_if_expired(_ISSUE, repo=str(thief), remote="origin", now=1e12) is not None
 
         from teatree.core.management.commands._ensure_pr import (  # noqa: PLC0415 — test-local
