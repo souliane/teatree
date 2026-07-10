@@ -1189,3 +1189,98 @@ def test_repo_for_issue_url_returns_the_issues_own_project_slug() -> None:
     assert host.repo_for_issue_url("https://gitlab.com/org/repo/-/work_items/42") == "org/repo"
     # A non-issue URL yields "" (the caller then resolves nothing / fails loud).
     assert host.repo_for_issue_url("https://gitlab.com/org/repo/-/merge_requests/7") == ""
+
+
+def test_list_prs_builds_state_and_author_filters() -> None:
+    client = MagicMock(spec=GitLabAPI)
+    client.resolve_project.return_value = _project()
+    client.get_json_paginated.return_value = [{"iid": 5}]
+    host = GitLabCodeHost(client=client)
+
+    result = host.list_prs(repo="org/repo", state="open", author="alice")
+
+    assert result == [{"iid": 5}]
+    client.get_json_paginated.assert_called_once_with(
+        "projects/42/merge_requests?per_page=100&state=opened&author_username=alice"
+    )
+
+
+def test_list_prs_passes_native_state_verbatim() -> None:
+    client = MagicMock(spec=GitLabAPI)
+    client.resolve_project.return_value = _project()
+    client.get_json_paginated.return_value = []
+    GitLabCodeHost(client=client).list_prs(repo="org/repo", state="merged")
+
+    client.get_json_paginated.assert_called_once_with("projects/42/merge_requests?per_page=100&state=merged")
+
+
+def test_list_prs_omits_empty_filters() -> None:
+    client = MagicMock(spec=GitLabAPI)
+    client.resolve_project.return_value = _project()
+    client.get_json_paginated.return_value = []
+    GitLabCodeHost(client=client).list_prs(repo="org/repo")
+
+    client.get_json_paginated.assert_called_once_with("projects/42/merge_requests?per_page=100")
+
+
+def test_list_prs_unresolvable_project_returns_empty() -> None:
+    client = MagicMock(spec=GitLabAPI)
+    client.resolve_project.return_value = None
+    assert GitLabCodeHost(client=client).list_prs(repo="org/repo") == []
+
+
+def test_get_pr_diff_returns_per_file_diffs() -> None:
+    client = MagicMock(spec=GitLabAPI)
+    client.resolve_project.return_value = _project()
+    client.get_json_paginated.return_value = [{"new_path": "a.py", "diff": "@@"}]
+    host = GitLabCodeHost(client=client)
+
+    result = host.get_pr_diff(repo="org/repo", pr_iid=7)
+
+    assert result == [{"new_path": "a.py", "diff": "@@"}]
+    client.get_json_paginated.assert_called_once_with("projects/42/merge_requests/7/diffs?per_page=100")
+
+
+def test_get_pr_diff_unresolvable_project_returns_empty() -> None:
+    client = MagicMock(spec=GitLabAPI)
+    client.resolve_project.return_value = None
+    assert GitLabCodeHost(client=client).get_pr_diff(repo="org/repo", pr_iid=7) == []
+
+
+def test_list_pr_commits_returns_commits() -> None:
+    client = MagicMock(spec=GitLabAPI)
+    client.resolve_project.return_value = _project()
+    client.get_json_paginated.return_value = [{"id": "abc", "message": "fix"}]
+    host = GitLabCodeHost(client=client)
+
+    result = host.list_pr_commits(repo="org/repo", pr_iid=7)
+
+    assert result == [{"id": "abc", "message": "fix"}]
+    client.get_json_paginated.assert_called_once_with("projects/42/merge_requests/7/commits?per_page=100")
+
+
+def test_list_pr_commits_unresolvable_project_returns_empty() -> None:
+    client = MagicMock(spec=GitLabAPI)
+    client.resolve_project.return_value = None
+    assert GitLabCodeHost(client=client).list_pr_commits(repo="org/repo", pr_iid=7) == []
+
+
+def test_get_repo_returns_project_metadata() -> None:
+    client = MagicMock(spec=GitLabAPI)
+    client.resolve_project.return_value = _project()
+    result = GitLabCodeHost(client=client).get_repo(repo="org/repo")
+
+    assert result == {
+        "id": 42,
+        "path_with_namespace": "org/repo",
+        "short_name": "repo",
+        "default_branch": "main",
+    }
+
+
+def test_get_repo_unresolvable_project_returns_structured_error() -> None:
+    client = MagicMock(spec=GitLabAPI)
+    client.resolve_project.return_value = None
+    assert GitLabCodeHost(client=client).get_repo(repo="org/missing") == {
+        "error": "Could not resolve project: org/missing"
+    }

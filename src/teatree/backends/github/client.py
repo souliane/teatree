@@ -153,6 +153,52 @@ class GitHubCodeHost:  # noqa: PLR0904 — method count reflects the CodeHostBac
         query = quote_plus(" ".join(terms))
         return _gh_api_search_paginated(f"search/issues?q={query}&per_page=100", token=self._token)
 
+    def list_prs(self, *, repo: str, state: str = "", author: str = "") -> list[RawAPIDict]:
+        """Return PRs on ``owner/repo`` filtered by *state* and *author*.
+
+        *state* is GitHub's search qualifier (``open`` / ``closed`` / ``merged``);
+        an empty *state* lists every state. Uses the issue-search API so an
+        ``author`` filter is a first-class qualifier (the ``pulls`` list endpoint
+        cannot filter by author).
+        """
+        terms = [f"repo:{repo} is:pr"]
+        if state:
+            terms.append(f"is:{state}")
+        if author:
+            terms.append(f"author:{author}")
+        query = quote_plus(" ".join(terms))
+        return _gh_api_search_paginated(f"search/issues?q={query}&per_page=100", token=self._token)
+
+    def get_pr_diff(self, *, repo: str, pr_iid: int) -> list[RawAPIDict]:
+        """Return the PR's changed files (path + per-file additions/deletions/patch).
+
+        Returns ``[]`` when the PR/repo cannot be read — an unknown PR degrades to
+        a caught empty result rather than crashing the caller.
+        """
+        try:
+            return _gh_api_get_paginated(f"repos/{repo}/pulls/{pr_iid}/files?per_page=100", token=self._token)
+        except CommandFailedError:
+            return []
+
+    def list_pr_commits(self, *, repo: str, pr_iid: int) -> list[RawAPIDict]:
+        """Return the commits on the PR; ``[]`` when the PR/repo cannot be read."""
+        try:
+            return _gh_api_get_paginated(f"repos/{repo}/pulls/{pr_iid}/commits?per_page=100", token=self._token)
+        except CommandFailedError:
+            return []
+
+    def get_repo(self, *, repo: str) -> RawAPIDict:
+        """Return ``owner/repo`` metadata (default branch, visibility, …).
+
+        Returns ``{"error": ...}`` when the repo cannot be resolved so an unknown
+        repo yields a caught structured error, never an uncaught transport failure.
+        """
+        try:
+            data = _gh_api_get(f"repos/{repo}", token=self._token)
+        except CommandFailedError:
+            return {"error": f"Could not resolve repo: {repo}"}
+        return cast("RawAPIDict", data) if isinstance(data, dict) else {"error": f"Repo not found: {repo}"}
+
     def post_pr_comment(self, *, repo: str, pr_iid: int, body: str) -> RawAPIDict:
         data = _gh_api_post(
             f"repos/{repo}/issues/{pr_iid}/comments",

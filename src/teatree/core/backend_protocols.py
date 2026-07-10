@@ -210,6 +210,20 @@ class CodeHostBackend(Protocol):
         updated_after: str | None = None,
     ) -> list[RawAPIDict]: ...  # pragma: no branch
 
+    def list_prs(
+        self,
+        *,
+        repo: str,
+        state: str = "",
+        author: str = "",
+    ) -> list[RawAPIDict]: ...  # pragma: no branch
+
+    def get_pr_diff(self, *, repo: str, pr_iid: int) -> list[RawAPIDict]: ...  # pragma: no branch
+
+    def list_pr_commits(self, *, repo: str, pr_iid: int) -> list[RawAPIDict]: ...  # pragma: no branch
+
+    def get_repo(self, *, repo: str) -> RawAPIDict: ...  # pragma: no branch
+
     def get_review_state(self, *, pr_url: str, reviewer: str) -> ReviewState: ...  # pragma: no branch
 
     def get_pr_open_state(self, *, pr_url: str) -> PrOpenState: ...  # pragma: no branch

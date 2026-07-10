@@ -9,6 +9,7 @@ from teatree.backends import forge_merge_rpc as _forge_merge
 from teatree.backends.errors import IssueNotFoundError
 from teatree.backends.gitlab import api as _gitlab_api
 from teatree.backends.gitlab import issue_notes as _issue_notes
+from teatree.backends.gitlab import pr_reads as _pr_reads
 from teatree.backends.gitlab import subissues as _subissues
 from teatree.backends.gitlab import uploads as _uploads
 from teatree.backends.gitlab.api import GitLabAPI, ProjectInfo
@@ -179,6 +180,18 @@ class GitLabCodeHost:  # noqa: PLR0904 — method count reflects the CodeHostBac
 
     def list_assigned_issues(self, *, assignee: str) -> list[RawAPIDict]:
         return self._client.list_open_issues_for_assignee(assignee)
+
+    def list_prs(self, *, repo: str, state: str = "", author: str = "") -> list[RawAPIDict]:
+        return _pr_reads.list_project_prs(self._client, self._resolve_project(repo), state=state, author=author)
+
+    def get_pr_diff(self, *, repo: str, pr_iid: int) -> list[RawAPIDict]:
+        return _pr_reads.project_pr_diff(self._client, self._resolve_project(repo), pr_iid=pr_iid)
+
+    def list_pr_commits(self, *, repo: str, pr_iid: int) -> list[RawAPIDict]:
+        return _pr_reads.list_project_pr_commits(self._client, self._resolve_project(repo), pr_iid=pr_iid)
+
+    def get_repo(self, *, repo: str) -> RawAPIDict:
+        return _pr_reads.repo_metadata(self._resolve_project(repo), repo=repo)
 
     def create_issue(
         self,
