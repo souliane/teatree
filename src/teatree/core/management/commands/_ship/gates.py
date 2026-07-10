@@ -21,7 +21,7 @@ from teatree.core.gates.pr_budget_gate import PrBudgetExceededError, check_pr_bu
 from teatree.core.management.commands._ship.exec import ShippingGateFailure
 from teatree.core.management.commands._ship.fsm import reconcile_fsm_for_ship
 from teatree.core.modelkit.phases import normalize_phase
-from teatree.core.models import Session, Ticket, Worktree
+from teatree.core.models import ImplementedIssueMarker, Session, Ticket, Worktree
 from teatree.core.models.types import TicketExtra, VisualQASummary
 from teatree.core.overlay_loader import get_overlay
 from teatree.core.runners.ship import resolve_ship_worktree
@@ -390,3 +390,49 @@ def run_debt_delta_gate(ticket: Ticket, worktree: Worktree) -> DebtDeltaGateFail
     if error is not None:
         return DebtDeltaGateFailure(allowed=False, error=error)
     return None
+
+
+class FleetClaimFenceFailure(TypedDict):
+    """Pre-ship fleet-claim fence refusal (fleet-safety Stage 2).
+
+    Returned when ``fleet_claim_enabled`` is on, the ship's ticket carries a
+    fleet-claim (an issue-implementer marker with a fencing sha), and the claim
+    ref no longer points at that sha — the claim was stolen by another instance,
+    or the ref infra is unreachable so ownership cannot be confirmed. Either way
+    pushing under a lost claim is the double-work the mutex exists to prevent, so
+    the ship is refused. Inert (never returned) at the default-OFF kill-switch.
+    """
+
+    allowed: bool
+    error: str
+
+
+def run_fleet_claim_fence_gate(ticket: Ticket, worktree: Worktree) -> FleetClaimFenceFailure | None:
+    """Refuse to open the PR for a claimed work item this instance no longer holds.
+
+    The fence: when the kill-switch is on and the ticket was claimed through the
+    Stage 2 mutex, re-read ``refs/teatree/claims/<slug>`` and confirm it still
+    points at the fencing sha this instance recorded. A mismatch (stolen) or an
+    unreachable ref (cannot confirm) blocks the ship — pushing under a lost claim
+    is exactly the double-claim the mutex prevents. A ticket with no fleet-claim,
+    or the kill-switch OFF, is a no-op.
+    """
+    from teatree.core import fleet_claim_wire  # noqa: PLC0415 — leaf import kept out of app-load cycle
+
+    if not fleet_claim_wire.fleet_claim_enabled(ticket.overlay):
+        return None
+    marker = ImplementedIssueMarker.objects.filter(ticket=ticket).exclude(claim_ref_sha="").order_by("-id").first()
+    if marker is None:
+        return None
+    repo_path = (worktree.worktree_path or worktree.repo_path) if worktree else "."
+    if fleet_claim_wire.issue_claim_still_held(marker.issue_url, marker.claim_ref_sha, repo_path):
+        return None
+    return FleetClaimFenceFailure(
+        allowed=False,
+        error=(
+            f"Refusing to ship {marker.issue_url}: the fleet claim ref is no longer held by this instance "
+            f"(claimed sha {marker.claim_ref_sha[:12]} — stolen by another instance, or the ref infra is "
+            f"unreachable so ownership cannot be confirmed). Another instance is doing this work. "
+            f"Disable the kill-switch (`config_setting set fleet_claim_enabled false`) to restore local-only claims."
+        ),
+    )

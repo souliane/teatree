@@ -39,6 +39,7 @@ from teatree.core.management.commands._ship.gates import (
     BranchCurrencyFailure,
     DebtDeltaGateFailure,
     E2EMandatoryGateFailure,
+    FleetClaimFenceFailure,
     NoCommitsAheadError,
     PrBudgetGateFailure,
     VisualQAGateFailure,
@@ -48,6 +49,7 @@ from teatree.core.management.commands._ship.gates import check_shipping_gate as 
 from teatree.core.management.commands._ship.gates import run_branch_currency_gate as _run_branch_currency_gate
 from teatree.core.management.commands._ship.gates import run_debt_delta_gate as _run_debt_delta_gate
 from teatree.core.management.commands._ship.gates import run_e2e_mandatory_gate as _run_e2e_mandatory_gate
+from teatree.core.management.commands._ship.gates import run_fleet_claim_fence_gate as _run_fleet_claim_fence_gate
 from teatree.core.management.commands._ship.gates import run_pr_budget_gate as _run_pr_budget_gate
 from teatree.core.management.commands._ship.gates import run_visual_qa_gate as _run_visual_qa_gate
 from teatree.core.modelkit.phases import normalize_phase
@@ -145,6 +147,7 @@ def _run_ship_gates(
     | VisualQAGateFailure
     | BranchCurrencyFailure
     | E2EMandatoryGateFailure
+    | FleetClaimFenceFailure
     | PrBudgetGateFailure
     | DebtDeltaGateFailure
     | PrValidationError
@@ -156,9 +159,10 @@ def _run_ship_gates(
     return-count gate and the gate sequence is independently testable.
     The cheap state/text prechecks (:func:`_run_precheck_ship_gates` —
     branch-currency, shipping, PR-budget, debt-delta) run FIRST as one
-    fail-fast block, then the overlay close-keyword gates, then the
-    expensive diff-rendering gates (visual-QA, mandatory-E2E) so all of
-    them see the post-branch-currency tree.
+    fail-fast block, then the fleet-claim fence (fleet-safety Stage 2,
+    inert unless the kill-switch is on), then the overlay close-keyword
+    gates, then the expensive diff-rendering gates (visual-QA, mandatory-E2E)
+    so all of them see the post-branch-currency tree.
 
     ``title`` is the explicit ``--title`` override: it has not yet been
     persisted to ``extra['pr_title_override']`` (that happens at ship time,
@@ -169,6 +173,12 @@ def _run_ship_gates(
     precheck_error = _run_precheck_ship_gates(ticket, worktree)
     if precheck_error is not None:
         return precheck_error
+    # Fleet-safety Stage 2: refuse to open a PR for a claimed work item this
+    # instance no longer holds (stolen claim, or ref infra unreachable). Inert
+    # unless ``fleet_claim_enabled`` is on and the ticket carries a fleet-claim.
+    fence_error = _run_fleet_claim_fence_gate(ticket, worktree)
+    if fence_error is not None:
+        return fence_error
     # Overlay-scoped (#1012): no-op unless the overlay forbids auto-close
     # trailers; raises SystemExit with the offending line otherwise.
     run_close_keyword_gate(ticket, worktree)
@@ -259,6 +269,7 @@ class Command(TyperCommand):
         | VisualQAGateFailure
         | BranchCurrencyFailure
         | E2EMandatoryGateFailure
+        | FleetClaimFenceFailure
         | PrBudgetGateFailure
         | ShippingGateFailure
         | WorktreeMissingError
