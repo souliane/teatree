@@ -469,9 +469,21 @@ def _issue_implementer_scanner_for(backend: OverlayBackends) -> IssueImplementer
     issue is ever claimed). That fails closed by design, but an operator who
     flipped the master gate without setting a label sees nothing dispatch and
     no reason why — so we emit one WARNING naming the missing label (#1554).
+
+    Fleet-safety Stage 2: when ``fleet_claim_enabled`` is on the scanner is
+    emitted even at a full budget (or an empty label) — with ``can_claim=False``
+    it claims nothing new but STILL runs the per-tick heartbeat sweep, so an
+    in-flight claim can never expire and be stolen mid-dispatch. With the
+    kill-switch OFF the emission stays byte-for-byte the pre-Stage-2 behaviour
+    (no scanner unless we can actually claim).
     """
+    from teatree.core.fleet import wire  # noqa: PLC0415 — leaf import kept out of module load
+
     settings = _effective_settings_for_overlay(backend.name)
     if not settings.issue_implementer_enabled:
+        return None
+    code_host = backend.host
+    if code_host is None:
         return None
     if not settings.issue_implementer_label:
         logger.warning(
@@ -479,17 +491,18 @@ def _issue_implementer_scanner_for(backend: OverlayBackends) -> IssueImplementer
             "nothing will be dispatched until a label is set",
             backend.name,
         )
-        return None
-    code_host = backend.host
-    if code_host is None:
-        return None
-    if ImplementedIssueMarker.objects.in_flight_count(backend.name) >= settings.issue_implementer_max_concurrent:
+    has_budget = (
+        ImplementedIssueMarker.objects.in_flight_count(backend.name) < settings.issue_implementer_max_concurrent
+    )
+    can_claim = bool(settings.issue_implementer_label) and has_budget
+    if not can_claim and not wire.fleet_claim_enabled(backend.name):
         return None
     return IssueImplementerScanner(
         host=code_host,
         label=settings.issue_implementer_label,
         overlay_name=backend.name,
         identities=backend.identities,
+        can_claim=can_claim,
     )
 
 

@@ -258,19 +258,65 @@ class ShipExecutor(RunnerBase):
                 ok=False, detail=f"branch {branch!r} is already merged into base — refusing duplicate PR"
             )
 
-        # #940 defense-in-depth: re-check branch currency before
-        # pushing. The `pr create` gate already auto-merged the target,
-        # but ``execute_ship`` may run in an async worker after a
-        # window where ``origin/<target>`` advanced again. Abort with a
-        # durable backlog entry only when the branch now *conflicts*
-        # with target — a behind-but-mergeable branch pushes fine.
+        return self._push_and_open(ticket, extra, host, repo_path, branch)
+
+    def _push_and_open(
+        self,
+        ticket: "Ticket",
+        extra: "TicketExtra",
+        host: "CodeHostBackend",
+        repo_path: str,
+        branch: str,
+    ) -> RunnerResult:
+        """Branch-currency re-check, then the two fenced outward writes (push, PR-open).
+
+        Split out of ``run`` so each half stays within the return-count gate. The
+        fleet-claim fence (:meth:`_fleet_claim_lost`) is re-verified immediately
+        before EACH outward write — the push and the create are distinct writes and
+        the claim can be lost in between.
+        """
+        # #940 defense-in-depth: re-check branch currency before pushing. The
+        # `pr create` gate already auto-merged the target, but ``execute_ship``
+        # may run in an async worker after a window where ``origin/<target>``
+        # advanced again. Abort only when the branch now *conflicts* with target.
         currency_error = self._check_branch_currency(ticket, extra, repo_path, branch)
         if currency_error is not None:
             return RunnerResult(ok=False, detail=currency_error)
 
+        fence = self._fleet_claim_lost(repo_path)
+        if fence is not None:
+            return fence
+
         git.push(repo=repo_path, remote="origin", branch=branch)
+        # Re-fence immediately after the push, before ANY PR-open work — the push and
+        # the create are two distinct outward writes and the claim can be lost between.
+        fence = self._fleet_claim_lost(repo_path)
+        if fence is not None:
+            return fence
         spec = self._build_pr_spec(ticket, host, repo_path, branch, extra)
         return self._open_pr_and_record(ticket, extra, host, spec, repo_path)
+
+    def _fleet_claim_lost(self, repo_path: str) -> "RunnerResult | None":
+        """Refuse the outward write when this instance no longer holds the fleet claim.
+
+        Re-verified immediately before BOTH the branch push and the PR-open (the two
+        outward writes ``execute_ship`` makes), because the claim can be stolen in
+        the async gap after the sync pre-ship gate. Inert when the kill-switch is off
+        or the ticket carries no fleet claim; a lost/unconfirmable claim fails CLOSED
+        (another instance is doing this work — a rare self-heartbeat race just retries).
+        """
+        from teatree.core.fleet import wire  # noqa: PLC0415 — leaf import kept out of app-load cycle
+
+        if wire.ticket_claim_is_lost(self.ticket, repo_path):
+            ref = self.ticket.ticket_number or self.ticket.pk
+            return RunnerResult(
+                ok=False,
+                detail=(
+                    f"fleet claim for ticket {ref} is no longer held by this instance — aborting ship "
+                    f"(stolen by another instance, or the ref infra is unreachable so ownership is unconfirmable)"
+                ),
+            )
+        return None
 
     @staticmethod
     def _resolve_host(repo_path: str) -> "CodeHostBackend | RunnerResult":

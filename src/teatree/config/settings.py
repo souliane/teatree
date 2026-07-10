@@ -183,6 +183,7 @@ OVERLAY_OVERRIDABLE_SETTINGS: dict[str, Callable[[Any], Any]] = {
     "issue_implementer_label": _parse_strict_str,
     "issue_implementer_max_concurrent": _parse_strict_int,
     "issue_implementer_cadence_hours": _parse_strict_int,
+    "fleet_claim_enabled": _parse_strict_bool,
     "auto_disposition_enabled": _parse_strict_bool,
     "limit_autorecovery_enabled": _parse_strict_bool,
     "outer_loop_enabled": _parse_strict_bool,
@@ -319,6 +320,7 @@ ENV_SETTING_OVERRIDES: dict[str, tuple[str, Callable[[str], Any]]] = {
     "T3_ON_BEHALF_AUTO_ACTIONS": ("on_behalf_auto_actions", _parse_env_str_list),
     "T3_REVIEW_SKILL": ("review_skill", str),
     "T3_ISSUE_IMPLEMENTER_ENABLED": ("issue_implementer_enabled", _parse_env_bool),
+    "T3_FLEET_CLAIM_ENABLED": ("fleet_claim_enabled", _parse_env_bool),
     "T3_LOOP_AUTO_UPDATE": ("auto_update_reinstall", _parse_env_bool),
     "T3_ORCHESTRATE_CLAIM_ENABLED": ("orchestrate_claim_enabled", _parse_env_bool),
     "T3_FACTORY_SCORE_ENABLED": ("factory_score_enabled", _parse_env_bool),
@@ -1194,6 +1196,22 @@ class UserSettings:
     issue_implementer_max_concurrent: int = 1
     # Internal dispatch-rate floor (hours) between auto-implement pickups.
     issue_implementer_cadence_hours: int = 1
+    # Fleet-safety Stage 2 kill-switch (default OFF). When ON, the cross-instance
+    # MUTEX (``teatree.core.fleet.claim`` — a GitHub claim ref as a server-side CAS)
+    # governs the whole in-flight lifecycle: the issue-implementer dispatch WINS the
+    # ref before granting a marker (the marker is a CACHE, not the authority); a
+    # per-tick HEARTBEAT sweep re-affirms every in-flight claim so it can never
+    # expire and be stolen mid-dispatch (a stolen claim ABANDONS the marker so the
+    # work aborts); and every outward write is FENCED fail-closed against
+    # ``is_held_by_me`` — the sync pre-ship gate, the async ``execute_ship`` (before
+    # BOTH the branch push and the PR-open), and the orphan-branch PR-create.
+    # (The §17.4 merge keystone fence is a scoped follow-up.) When OFF the behaviour
+    # is byte-for-byte today's local-only get_or_create. If the ref infra is
+    # unreachable while ON the claim/fence fails SAFE (does not claim / does not
+    # push under an unconfirmable claim, logs loudly); turning the switch OFF
+    # restores today's behaviour. DB-home (#1775), per-overlay overridable;
+    # ``T3_FLEET_CLAIM_ENABLED`` env wins over both.
+    fleet_claim_enabled: bool = False
     # #1796 / agent-teams Track-A PR#1: opt-in, default-OFF arm for the
     # dispatch loop's ``orchestrate_phase`` claim. The phase is wired dormant
     # (``claim=False``) in ``run_tick`` — it computes the deterministic fan-out

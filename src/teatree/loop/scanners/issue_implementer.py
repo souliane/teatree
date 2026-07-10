@@ -20,6 +20,7 @@ from dataclasses import dataclass, field
 from typing import cast
 
 from teatree.core.backend_protocols import CodeHostBackend
+from teatree.core.fleet import wire
 from teatree.core.models import NEEDS_TRIAGE_LABEL, ImplementedIssueMarker
 from teatree.loop.scanners.base import ScanSignal
 from teatree.loop.scanners.forge_readback import existing_work_for_issue, fetch_open_prs, issue_number
@@ -97,8 +98,17 @@ class IssueImplementerScanner:
     identities: tuple[str, ...] = field(default_factory=tuple)
     name: str = "issue_implementer"
     readback_enabled: bool = True
+    #: When False (budget full, or no label) this tick only HEARTBEATS in-flight
+    #: fleet claims and claims no new issue — the heartbeat must run even at full
+    #: budget or an in-flight claim would expire mid-dispatch (fleet-safety Stage 2).
+    can_claim: bool = True
 
     def scan(self) -> list[ScanSignal]:
+        # Stage 2 B1: keep every in-flight claim un-stealable, on EVERY tick,
+        # regardless of budget/label (self-gates to a no-op when the switch is off).
+        wire.heartbeat_inflight_claims(self.overlay_name)
+        if not self.can_claim:
+            return []
         if not self.label:
             return []
         assignees = self._resolve_identities()
@@ -121,7 +131,7 @@ class IssueImplementerScanner:
                         hit.evidence_url,
                     )
                     continue
-                marker = ImplementedIssueMarker.objects.claim(url, overlay=self.overlay_name)
+                marker = self._claim(url)
                 if marker is None:
                     continue
                 signals.append(
@@ -139,6 +149,25 @@ class IssueImplementerScanner:
                 logger.exception("IssueImplementerScanner failed on issue %s", url)
                 continue
         return signals
+
+    def _claim(self, url: str) -> ImplementedIssueMarker | None:
+        """Claim *url*, cross-instance mutex first when the kill-switch is on.
+
+        Kill-switch OFF (default): today's local ``get_or_create`` claim.
+        ON: win the GitHub claim ref FIRST (fleet-safety Stage 2). ``None`` there —
+        a live rival holds it, or the ref infra is unreachable and the acquire
+        failed safe — skips this issue (do not dispatch). On a win the local marker
+        is recorded as a CACHE of the ref, stamped with the fencing sha the ship
+        gate re-verifies.
+        """
+        if not wire.fleet_claim_enabled(self.overlay_name):
+            return ImplementedIssueMarker.objects.claim(url, overlay=self.overlay_name)
+        claim = wire.acquire_issue_claim(url)
+        if claim is None:
+            return None
+        return ImplementedIssueMarker.objects.cache_from_fleet_claim(
+            url, self.overlay_name, claim_ref_sha=claim.sha, claimed_by_instance=claim.instance_id
+        )
 
     def _candidate_issues(self, assignees: tuple[str, ...]) -> list[RawAPIDict]:
         """Open, URL-bearing issues carrying ``label`` but NOT :data:`NEEDS_TRIAGE_LABEL`.

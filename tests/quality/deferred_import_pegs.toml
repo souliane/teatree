@@ -14,6 +14,15 @@
 "src/teatree/core/checking.py" = 2
 "src/teatree/core/cleanup/cleanup.py" = 1
 "src/teatree/core/cost.py" = 1
+# Fleet-safety Stage 2 mutex (teatree.core.fleet.claim / .wire). The Django-aware
+# wire layer defers `from teatree.core.models import ImplementedIssueMarker` in its
+# three claim-lifecycle functions (ticket_claim_is_lost / heartbeat_inflight_claims
+# / _heartbeat_one) to keep the sibling claim module Django-free and the wire out
+# of the app-load cycle; the fence call sites below each defer `from
+# teatree.core.fleet import wire` for the same reason (leaf import kept out of the
+# app-load cycle). Nesting the two modules under core/fleet/ does not change these
+# runtime edges, so the deferrals stay and are pegged here.
+"src/teatree/core/fleet/wire.py" = 3
 "src/teatree/core/gates/dod_gate.py" = 3
 "src/teatree/core/gates/e2e_mandatory_gate.py" = 3
 "src/teatree/core/gates/fix_dod_gate.py" = 1
@@ -27,10 +36,10 @@
 "src/teatree/core/headless_dispatch.py" = 1
 "src/teatree/core/management/commands/_clear_preflight.py" = 1
 "src/teatree/core/management/commands/_e2e_discovery.py" = 1
-"src/teatree/core/management/commands/_ensure_pr.py" = 1
+"src/teatree/core/management/commands/_ensure_pr.py" = 2
 "src/teatree/core/management/commands/_rubric_commands.py" = 1
 "src/teatree/core/management/commands/_ship/exec.py" = 1
-"src/teatree/core/management/commands/_ship/gates.py" = 1
+"src/teatree/core/management/commands/_ship/gates.py" = 2
 "src/teatree/core/management/commands/checking.py" = 3
 "src/teatree/core/management/commands/cost.py" = 2
 "src/teatree/core/management/commands/db.py" = 1
@@ -75,6 +84,9 @@
 "src/teatree/core/overlay_url.py" = 1
 "src/teatree/core/reference_linkifier.py" = 4
 "src/teatree/core/reply_transport.py" = 1
+# fleet-safety Stage 2: execute_ship re-verifies the fleet-claim fence immediately
+# before BOTH outward writes via a deferred `from teatree.core.fleet import wire`.
+"src/teatree/core/runners/ship.py" = 1
 "src/teatree/core/safe_kill.py" = 1
 "src/teatree/core/intake/scope_cache.py" = 1
 "src/teatree/core/send_proxy.py" = 3
