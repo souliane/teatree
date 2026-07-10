@@ -57,6 +57,9 @@ from classifier_relax_gate import (
 )
 from completion_claim_gate import handle_completion_claim_gate
 from config_overwrite_guard import handle_block_config_overwrite
+from coverage_gate import coverage_gate_repo_dir as _coverage_gate_repo_dir
+from coverage_gate import diff_coverage_argv as _diff_coverage_argv
+from coverage_gate import diff_coverage_finding as _diff_coverage_finding
 from cron_tracking import cron_cadence_seconds as _cron_cadence_seconds  # noqa: F401
 from cron_tracking import derive_loop_name as _derive_loop_name  # noqa: F401
 from cron_tracking import handle_track_cron_jobs
@@ -2548,44 +2551,6 @@ def _is_merge_class_mutation(data: dict) -> bool:
     return False
 
 
-def _diff_coverage_argv() -> list[str] | None:
-    t3_bin = shutil.which("t3")
-    if t3_bin:
-        return [t3_bin, "tool", "diff-coverage", "--json"]
-    return None
-
-
-def _diff_coverage_finding(stdout: str) -> str | None:
-    """Return a deny reason iff *stdout* is a report JSON with ``passes`` false.
-
-    The fail-open discriminator (#122). ``t3 tool diff-coverage --json``
-    emits exactly ``{"passes": ..., "uncovered": [...],
-    "unreferenced_symbols": [...]}`` on a successful measurement. A crash
-    (e.g. the dev-only ``coverage`` module missing from the installed
-    ``t3`` env) produces a traceback on stderr and no parseable JSON on
-    stdout — so anything that is not a well-formed report with
-    ``passes is False`` is "not a finding" and the caller fails open.
-
-    Returns the human-readable finding summary when there IS a genuine
-    finding, else ``None`` (clean, crashed, or unparsable).
-    """
-    try:
-        report = json.loads(stdout)
-    except (json.JSONDecodeError, ValueError):
-        return None
-    if not isinstance(report, dict) or report.get("passes") is not False:
-        return None
-    rows = [
-        f"  uncovered new lines in {entry.get('path')}: {entry.get('lines')}"
-        for entry in (report.get("uncovered") or [])
-        if isinstance(entry, dict)
-    ]
-    symbols = report.get("unreferenced_symbols") or []
-    if symbols:
-        rows.append(f"  new production symbols not referenced by any changed test: {sorted(symbols)}")
-    return "\n".join(rows)
-
-
 def handle_block_uncovered_diff(data: dict) -> bool:
     """Refuse a PR un-draft / non-draft create whose diff fails Gate 12.
 
@@ -2608,7 +2573,14 @@ def handle_block_uncovered_diff(data: dict) -> bool:
     if not _is_merge_class_mutation(data):
         return False
 
-    argv = _diff_coverage_argv()
+    # Measure the worktree the GATED command targets — its own leading ``cd``,
+    # else the harness cwd — NOT the cold hook's inherited session cwd. A
+    # cross-worktree ship (``cd <other-worktree> && gh pr create``) otherwise
+    # measured the session cwd's diff and flagged uncovered lines from an
+    # unrelated worktree.
+    command = data.get("tool_input", {}).get("command", "")
+    repo_dir = _coverage_gate_repo_dir(command, data.get("cwd"))
+    argv = _diff_coverage_argv(repo_dir)
     if argv is None:
         return False
 
@@ -2619,6 +2591,7 @@ def handle_block_uncovered_diff(data: dict) -> bool:
             text=True,
             check=False,
             timeout=30,
+            cwd=str(repo_dir) if repo_dir is not None else None,
         )
     except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
         return False
