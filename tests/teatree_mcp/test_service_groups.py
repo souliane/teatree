@@ -29,9 +29,19 @@ _GITHUB_TOOLS = {
     "github_pr_diff",
     "github_pr_commits",
     "github_repo_get",
+    "github_issue_create",
+    "github_issue_comment",
+    "github_issue_close",
+    "github_issue_update",
 }
 _GITLAB_TOOLS = {n.replace("github_", "gitlab_") for n in _GITHUB_TOOLS}
-_SLACK_TOOLS = {"slack_mentions", "slack_channel_history", "slack_thread_replies", "slack_permalink"}
+_SLACK_TOOLS = {
+    "slack_mentions",
+    "slack_channel_history",
+    "slack_thread_replies",
+    "slack_permalink",
+    "slack_react",
+}
 _NOTION_TOOLS = {"notion_page_status"}
 _SENTRY_TOOLS = {"sentry_top_issues", "sentry_issue_get", "sentry_issue_events", "sentry_projects"}
 

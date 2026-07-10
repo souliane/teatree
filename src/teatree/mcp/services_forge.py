@@ -1,4 +1,4 @@
-"""Forge (github/gitlab) read-only MCP tool groups (#3076).
+"""Forge (github/gitlab) MCP tool groups — reads + gated issue writes (#3076).
 
 Both forges satisfy the same :class:`~teatree.core.backend_protocols.CodeHostBackend`,
 so one parametrized registrar serves both — the group is selected by the
@@ -7,6 +7,16 @@ through :func:`teatree.core.backend_factory.code_host_from_overlay` (a core
 seam), never a direct ``teatree.backends.github`` / ``gitlab`` import, so the
 transport-boundary fitness test holds and every forge gate the factory wires
 stays intact.
+
+The wave-2 issue writes (``<forge>_issue_create/comment/close/update``) route
+every outbound body through the SAME gated core seams the ``t3`` CLI uses,
+BEFORE the backend call: the public-repo leak gate
+(:func:`teatree.core.gates.privacy_gate.scan_outbound_text` — refuses a customer
+codename bound for a public forge) then the #117 send-proxy chokepoint
+(:func:`teatree.core.send_proxy.route_send` — per-overlay allowlist + redaction +
+one ``SendAudit`` row). A leaking or non-allowlisted write never reaches the
+forge. The whole group registers only when its ``Service`` is declared, so an
+undeclared forge exposes no write tool (fail-closed).
 """
 
 from typing import Any
@@ -18,9 +28,35 @@ from mcp.types import ToolAnnotations
 from teatree.backends.types import Service
 from teatree.core.backend_factory import code_host_from_overlay
 from teatree.core.backend_protocols import CodeHostBackend
+from teatree.core.gates.privacy_gate import format_refusal, scan_outbound_text
 from teatree.core.overlay_loader import get_all_overlays
+from teatree.core.send_proxy import SendChannel, SendRequest, route_send
 
 _READ_ONLY = ToolAnnotations(readOnlyHint=True)
+_WRITE = ToolAnnotations(readOnlyHint=False, destructiveHint=False)
+_DESTRUCTIVE = ToolAnnotations(readOnlyHint=False, destructiveHint=True)
+
+
+def _scrub_forge_body(service: Service, *, repo: str, text: str, action: str, target: str) -> str:
+    """Return the body to post after the leak scrub + #117 send-proxy, or refuse.
+
+    The public-repo leak gate (#1295) refuses when *text* carries a customer
+    codename bound for a public forge; the send-proxy then audits the send,
+    applies the per-overlay allowlist, and redacts on ``enforce``. Raises
+    ``RuntimeError`` on either refusal so a leaking or non-allowlisted write is
+    stopped before the backend call. An empty body is a no-op pass-through.
+    """
+    if not text:
+        return text
+    scan = scan_outbound_text(text=text, target_repo=repo, forge=service.value)
+    if scan.refused:
+        raise RuntimeError(format_refusal(scan))
+    verdict = route_send(
+        SendRequest(channel=SendChannel(service.value), destination=repo, payload=text, action=action, target=target),
+    )
+    if not verdict.allowed:
+        raise RuntimeError(verdict.reason or f"send-proxy refused posting to {repo}")
+    return verdict.payload
 
 
 def _forge_client(service: Service) -> CodeHostBackend:
@@ -93,6 +129,53 @@ def _register(server: FastMCP, service: Service, prefix: str) -> None:
     server.add_tool(issue_comments, name=f"{prefix}_issue_comments", annotations=_READ_ONLY)
     _register_search_reads(server, service, prefix)
     _register_pr_reads(server, service, prefix)
+    _register_issue_writes(server, service, prefix)
+
+
+def _register_issue_writes(server: FastMCP, service: Service, prefix: str) -> None:
+    async def issue_create(repo: str, title: str, body: str, *, labels: list[str] | None = None) -> dict[str, Any]:
+        def _create() -> dict[str, Any]:
+            client = _forge_client(service)
+            action = f"{prefix}_issue_create"
+            clean_title = _scrub_forge_body(service, repo=repo, text=title, action=action, target=repo)
+            clean_body = _scrub_forge_body(service, repo=repo, text=body, action=action, target=repo)
+            return dict(client.create_issue(repo=repo, title=clean_title, body=clean_body, labels=labels))
+
+        return await sync_to_async(_create, thread_sensitive=True)()
+
+    async def issue_comment(issue_url: str, body: str) -> dict[str, Any]:
+        def _comment() -> dict[str, Any]:
+            client = _forge_client(service)
+            repo = client.repo_for_issue_url(issue_url)
+            clean = _scrub_forge_body(service, repo=repo, text=body, action=f"{prefix}_issue_comment", target=issue_url)
+            return dict(client.post_issue_comment(issue_url=issue_url, body=clean))
+
+        return await sync_to_async(_comment, thread_sensitive=True)()
+
+    async def issue_close(issue_url: str, *, comment: str = "") -> dict[str, Any]:
+        def _close() -> dict[str, Any]:
+            client = _forge_client(service)
+            repo = client.repo_for_issue_url(issue_url)
+            clean = _scrub_forge_body(
+                service, repo=repo, text=comment, action=f"{prefix}_issue_close", target=issue_url
+            )
+            return dict(client.close_issue(issue_url=issue_url, comment=clean))
+
+        return await sync_to_async(_close, thread_sensitive=True)()
+
+    async def issue_update(issue_url: str, body: str) -> dict[str, Any]:
+        def _update() -> dict[str, Any]:
+            client = _forge_client(service)
+            repo = client.repo_for_issue_url(issue_url)
+            clean = _scrub_forge_body(service, repo=repo, text=body, action=f"{prefix}_issue_update", target=issue_url)
+            return dict(client.update_issue(issue_url=issue_url, body=clean))
+
+        return await sync_to_async(_update, thread_sensitive=True)()
+
+    server.add_tool(issue_create, name=f"{prefix}_issue_create", annotations=_WRITE)
+    server.add_tool(issue_comment, name=f"{prefix}_issue_comment", annotations=_WRITE)
+    server.add_tool(issue_close, name=f"{prefix}_issue_close", annotations=_DESTRUCTIVE)
+    server.add_tool(issue_update, name=f"{prefix}_issue_update", annotations=_WRITE)
 
 
 def _register_pr_reads(server: FastMCP, service: Service, prefix: str) -> None:
@@ -165,7 +248,12 @@ def _instructions(prefix: str) -> str:
         f"- {prefix}_repo_get(repo): *repo* metadata (default branch, path, id).\n"
         f"- {prefix}_issue(issue_url) / {prefix}_issue_comments(issue_url): one issue and its comments.\n"
         f"- {prefix}_issue_search(repo, query): open issues in *repo* matching *query* (dup-check).\n"
-        f"- {prefix}_issue_list_assigned(assignee): open issues assigned to *assignee*."
+        f"- {prefix}_issue_list_assigned(assignee): open issues assigned to *assignee*.\n"
+        f"- {prefix}_issue_create(repo, title, body, labels): open an issue. Body + title are "
+        f"leak-scrubbed (a customer codename bound for a public forge is REFUSED) and #117-audited.\n"
+        f"- {prefix}_issue_comment(issue_url, body): comment on an issue (same leak scrub + audit).\n"
+        f"- {prefix}_issue_close(issue_url, comment): close an issue, optional audit comment first.\n"
+        f"- {prefix}_issue_update(issue_url, body): replace an issue's body in place (same scrub + audit)."
     )
 
 

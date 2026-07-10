@@ -18,7 +18,9 @@ approvals) are deliberately NOT exposed as tools — exposing them would let the
 agent self-approve (maker≠checker).
 """
 
+import contextlib
 import io
+import json
 from fnmatch import fnmatch
 from typing import Any, cast
 
@@ -35,6 +37,7 @@ from teatree.core.models import Task
 from teatree.core.notify import NotifyKind, notify_user
 from teatree.mcp.review_seam import review_post_seam
 
+_READ_ONLY = ToolAnnotations(readOnlyHint=True)
 _WRITE = ToolAnnotations(readOnlyHint=False, destructiveHint=False)
 _DESTRUCTIVE = ToolAnnotations(readOnlyHint=False, destructiveHint=True)
 
@@ -57,6 +60,47 @@ def _run_command(command: str, *args: object, **kwargs: object) -> object:
             code = getattr(exc, "exit_code", 1)
         message = err.getvalue().strip() or f"command failed (exit {code})"
         raise RuntimeError(message) from exc
+
+
+def _last_json_object(text: str) -> dict[str, Any] | None:
+    """The last stdout line that parses as a JSON object, or ``None``."""
+    for raw in reversed(text.strip().splitlines()):
+        line = raw.strip()
+        if not (line.startswith("{") and line.endswith("}")):
+            continue
+        try:
+            parsed = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(parsed, dict):
+            return parsed
+    return None
+
+
+def _run_emitting_command(command: str, *args: object, **kwargs: object) -> dict[str, Any]:
+    """Run a command that reports its verdict via one JSON line + ``SystemExit``.
+
+    ``review_request_post`` prints a single machine-legible JSON dict
+    (``action`` ∈ post/draft/suppress/refused) to stdout and terminates via
+    ``SystemExit`` (0 for post/draft/suppress, 2 for refused). Capture stdout and
+    return the parsed verdict — the ``action`` field carries the outcome, so the
+    exit code is not needed. Surface stderr as a structured ``RuntimeError`` when
+    the command emitted no JSON (so a FastMCP tool call is never crashed by the
+    ``SystemExit`` primitive the CLI uses).
+    """
+    out = io.StringIO()
+    err = io.StringIO()
+    with (
+        contextlib.redirect_stdout(out),
+        contextlib.redirect_stderr(err),
+        contextlib.suppress(SystemExit, typer.Exit),
+    ):
+        call_command(command, *args, **kwargs)
+    payload = _last_json_object(out.getvalue())
+    if payload is not None:
+        return payload
+    message = err.getvalue().strip() or out.getvalue().strip() or f"{command} produced no machine-readable output"
+    raise RuntimeError(message)
 
 
 # Safety-gate keys an MCP caller may never flip: cold-hook gate wires, feature
@@ -84,6 +128,16 @@ TOOL_SEAMS: dict[str, str] = {
     "worktree_teardown": "call_command('workspace', 'teardown', …) — liveness/dirty guards",
     "review_post_draft_note": "teatree.mcp.review_seam (ReviewService.post_draft_note)",
     "review_post_comment": "teatree.mcp.review_seam (ReviewService.post_comment; live gated #1207)",
+    "review_request_post": "call_command('review_request_post') — #1094 dedup + #960 on-behalf + review-state",
+    "slack_react": "OnBehalfSlackEgress.react — #117 send-proxy + on-behalf gate + notify receipt",
+    "github_issue_create": "code_host_from_overlay().create_issue via the leak scrub + #117 send-proxy",
+    "github_issue_comment": "code_host_from_overlay().post_issue_comment via the leak scrub + #117 send-proxy",
+    "github_issue_close": "code_host_from_overlay().close_issue via the leak scrub + #117 send-proxy",
+    "github_issue_update": "code_host_from_overlay().update_issue via the leak scrub + #117 send-proxy",
+    "gitlab_issue_create": "code_host_from_overlay().create_issue via the leak scrub + #117 send-proxy",
+    "gitlab_issue_comment": "code_host_from_overlay().post_issue_comment via the leak scrub + #117 send-proxy",
+    "gitlab_issue_close": "code_host_from_overlay().close_issue via the public-repo leak scrub + send-proxy",
+    "gitlab_issue_update": "code_host_from_overlay().update_issue via the public-repo leak scrub + send-proxy",
 }
 
 INSTRUCTIONS = (
@@ -118,7 +172,13 @@ INSTRUCTIONS = (
     "draft note — always safe, gate-exempt by design.\n"
     "- review_post_comment(repo, mr, note, live): MR-level, DRAFT by default; "
     "live=true requires the recorded LivePostApproval + on-behalf verdict, same "
-    "as the CLI."
+    "as the CLI.\n"
+    "- review_request_check(mr_url): race-safe pre-post dedup PEEK (takes no "
+    "claim). Returns action=post|suppress; ABORT the post on suppress.\n"
+    "- review_request_post(mr_url, approver, title, ticket_id, head_sha): post a "
+    "review request through the #1094 dedup + #960 on-behalf + review-state gate "
+    "chain. Returns action=post|draft|suppress|refused; refused names the missing "
+    "recorded approval / attestation."
 )
 
 
@@ -352,6 +412,54 @@ async def _review_post_comment(repo: str, mr: int, note: str, *, live: bool = Fa
     return {"message": message, "code": code}
 
 
+async def _review_request_check(mr_url: str) -> dict[str, Any]:
+    """Peek POST-or-SUPPRESS for a review-request without taking a claim (#1084).
+
+    Wraps ``t3 review-request check``: reads the live review channel with the
+    same token the post would use so a duplicate (agent re-post or a manual
+    out-of-band post) is detected. Decision-only — takes NO durable claim, so it
+    can never wedge a later real post. The caller MUST abort on ``suppress``.
+    """
+    return await sync_to_async(
+        lambda: cast("dict[str, Any]", _run_command("review_request_check", "--mr-url", mr_url)),
+        thread_sensitive=True,
+    )()
+
+
+async def _review_request_post(
+    mr_url: str,
+    approver: str,
+    *,
+    title: str = "",
+    ticket_id: str = "",
+    head_sha: str = "",
+) -> dict[str, Any]:
+    """Post a review request through the #1094 dedup + #960 on-behalf + review-state gates.
+
+    Wraps ``t3 review-request post``: the anti-vacuity + reviewed-state gates run
+    first, then the live-channel dedup claim, then the #960 on-behalf approval
+    (no recorded, unconsumed, exactly-scoped approval ⇒ ``refused`` with the
+    ``t3 review approve-on-behalf`` remediation and the orphan claim rolled back),
+    then the post. Returns the command's machine-legible verdict.
+    """
+    return await sync_to_async(
+        lambda: _run_emitting_command(
+            "review_request_post",
+            "--mr-url",
+            mr_url,
+            "--approver",
+            approver,
+            "--title",
+            title,
+            "--ticket-id",
+            ticket_id,
+            "--head-sha",
+            head_sha,
+        ),
+        thread_sensitive=True,
+    )()
+
+
 def register(server: FastMCP) -> None:
     server.add_tool(_pr_create, name="pr_create", annotations=_WRITE)
     server.add_tool(_pr_merge, name="pr_merge", annotations=_DESTRUCTIVE)
@@ -366,3 +474,5 @@ def register(server: FastMCP) -> None:
     server.add_tool(_worktree_teardown, name="worktree_teardown", annotations=_DESTRUCTIVE)
     server.add_tool(_review_post_draft_note, name="review_post_draft_note", annotations=_WRITE)
     server.add_tool(_review_post_comment, name="review_post_comment", annotations=_WRITE)
+    server.add_tool(_review_request_check, name="review_request_check", annotations=_READ_ONLY)
+    server.add_tool(_review_request_post, name="review_request_post", annotations=_WRITE)

@@ -37,6 +37,7 @@ _READ_TOOLS = {
     "config_setting_get",
     "gate_status",
     "command_search",
+    "review_request_check",
 }
 
 # The teatree-own write tools are always registered (they are not service-gated).
@@ -54,6 +55,7 @@ _WRITE_TOOLS = {
     "worktree_teardown",
     "review_post_draft_note",
     "review_post_comment",
+    "review_request_post",
 }
 
 _EXPECTED_TOOLS = _READ_TOOLS | _WRITE_TOOLS

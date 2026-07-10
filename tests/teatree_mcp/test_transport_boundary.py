@@ -18,11 +18,24 @@ which gated seam it wraps.
 import ast
 import asyncio
 from pathlib import Path
+from unittest.mock import patch
 
 import teatree.mcp
+from teatree.backends.types import Service
+from teatree.core.overlay import OverlayConfig
 from teatree.mcp import build_server, write_tools
 
 _MCP_DIR = Path(teatree.mcp.__file__).parent
+
+
+class _AllForgeOverlay:
+    """Declares every forge + slack service so all conditional write tools register."""
+
+    def __init__(self) -> None:
+        self.config = OverlayConfig(
+            required_third_party_services=frozenset({Service.GITHUB, Service.GITLAB, Service.SLACK}),
+        )
+
 
 _FORBIDDEN_IMPORT_PREFIXES = (
     "teatree.backends.github",
@@ -59,16 +72,21 @@ class TestNoTransportImports:
 
 
 class TestSeamAllowlistCoverage:
+    # Built against a server that declares github + gitlab + slack, so every
+    # conditionally-registered per-service write tool (the forge issue writes,
+    # slack_react) is present — otherwise a forge write tool would look "stale"
+    # in an env that happens not to declare its forge.
     def test_every_write_tool_declares_its_seam(self) -> None:
-        tools = asyncio.run(build_server().list_tools())
+        with patch("teatree.mcp.server.get_all_overlays", return_value={"a": _AllForgeOverlay()}):
+            tools = asyncio.run(build_server().list_tools())
         write_tool_names = {tool.name for tool in tools if not (tool.annotations and tool.annotations.readOnlyHint)}
 
         undeclared = write_tool_names - set(write_tools.TOOL_SEAMS)
         assert not undeclared, f"write tools without a declared seam: {sorted(undeclared)}"
 
     def test_seam_map_carries_no_stale_entries(self) -> None:
-        tools = asyncio.run(build_server().list_tools())
-        registered = {tool.name for tool in tools}
+        with patch("teatree.mcp.server.get_all_overlays", return_value={"a": _AllForgeOverlay()}):
+            registered = {tool.name for tool in asyncio.run(build_server().list_tools())}
 
         stale = set(write_tools.TOOL_SEAMS) - registered
         assert not stale, f"TOOL_SEAMS names unregistered tools: {sorted(stale)}"
