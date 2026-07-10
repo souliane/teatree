@@ -172,6 +172,51 @@ class TestCleanPush:
         assert any("default branch" in f.detail for f in outcome.findings)
         assert not outcome.committed
 
+    def test_refuses_when_default_branch_unresolvable(self, repo: Path, leak_env: None) -> None:
+        (repo / "feature.py").write_text("x = 1\n")
+
+        with patch("teatree.core.fast_push.git.default_branch", side_effect=RuntimeError("boom")):
+            outcome = run_fast_push(repo, FakeForge())
+
+        assert not outcome.ok
+        assert any(f.gate == "branch-guard" and "fail closed" in f.detail for f in outcome.findings)
+        assert not outcome.committed
+        assert not outcome.pushed
+
+
+class TestAuthorIdentityGate:
+    def test_refuses_non_noreply_identity_on_public_repo(self, repo: Path, leak_env: None) -> None:
+        run_checked(["git", "config", "user.email", "dev@example.com"], cwd=repo)
+        (repo / "feature.py").write_text("x = 1\n")
+
+        with patch("teatree.core.fast_push._public_github_slug", return_value="souliane/teatree"):
+            outcome = run_fast_push(repo, FakeForge(), message="feat: clean change")
+
+        assert not outcome.ok
+        assert any(f.gate == "author-identity" for f in outcome.findings)
+        assert any("example.com" in f.detail for f in outcome.findings)
+        assert not outcome.committed
+        assert not outcome.pushed
+
+    def test_allows_noreply_identity_on_public_repo(self, repo: Path, leak_env: None) -> None:
+        (repo / "feature.py").write_text("x = 1\n")
+
+        with patch("teatree.core.fast_push._public_github_slug", return_value="souliane/teatree"):
+            outcome = run_fast_push(repo, FakeForge(), message="feat: clean change")
+
+        assert outcome.ok
+        assert outcome.pushed
+
+    def test_inert_when_not_public_github(self, repo: Path, leak_env: None) -> None:
+        run_checked(["git", "config", "user.email", "dev@example.com"], cwd=repo)
+        (repo / "feature.py").write_text("x = 1\n")
+
+        with patch("teatree.core.fast_push._public_github_slug", return_value=None):
+            outcome = run_fast_push(repo, FakeForge(), message="feat: clean change")
+
+        assert outcome.ok
+        assert not any(f.gate == "author-identity" for f in outcome.findings)
+
 
 class TestNonLeakGatesSkipped:
     def test_executes_exactly_the_leak_gate_set(self, repo: Path, leak_env: None) -> None:
@@ -180,7 +225,7 @@ class TestNonLeakGatesSkipped:
         outcome = run_fast_push(repo, FakeForge(), message="feat: clean change")
 
         assert outcome.executed_gates == LEAK_GATES
-        assert outcome.executed_gates == ("banned-terms", "secret-scan", "overlay-leak")
+        assert outcome.executed_gates == ("banned-terms", "secret-scan", "overlay-leak", "author-identity")
 
     def test_bypasses_repo_hook_chain(self, repo: Path, leak_env: None) -> None:
         hooks = repo / ".git" / "hooks"

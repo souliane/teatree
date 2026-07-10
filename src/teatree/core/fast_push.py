@@ -2,16 +2,23 @@
 
 The escape hatch for session hand-offs and token exhaustion: everything the
 hook chain runs is skipped EXCEPT the leak gates, which are re-enforced
-in-process here — banned terms, the privacy/secret scan, and the
-overlay-leak terms + opaque-ID pass all consult the same canonical matchers
-and sources as the hook chain (``term_match``, ``resolve_banned_terms``,
-``scripts/privacy_scan.py``, ``overlay_leak_terms``), so bypassing the
-hooks never bypasses leak protection. Any finding is a hard refusal:
-nothing is committed, nothing is pushed.
+in-process here so bypassing the hooks never bypasses leak protection. The
+four gates mirror the hook chain's four leak checks, consulting the SAME
+canonical matchers and sources — banned terms (``term_match`` /
+``resolve_banned_terms``); the privacy/secret scan (``scripts/privacy_scan.py``);
+overlay-leak terms + opaque IDs (``overlay_leak_terms`` / ``find_opaque_ids``);
+and the public-repo commit-author identity gate (#730). Author/committer email
+is commit metadata a diff never shows, so that fourth gate refuses a non-noreply
+identity on a PUBLIC GitHub remote exactly as the ``refuse-public-push-with-leak``
+pre-push hook does.
+
+Any finding is a hard refusal: nothing is committed, nothing is pushed.
 """
 
 import json
 import os
+import re
+import shutil
 import sys
 import tempfile
 from dataclasses import dataclass, field
@@ -23,14 +30,21 @@ from teatree.hooks.banned_terms_cli import resolve_banned_terms, staged_added_li
 from teatree.hooks.banned_terms_tree_scan import BannedTermsUnsetError
 from teatree.hooks.opaque_id import find_opaque_ids
 from teatree.hooks.term_match import matched_term
-from teatree.utils import git
-from teatree.utils.run import CommandFailedError, run_allowed_to_fail, run_checked
+from teatree.utils import git, git_remote
+from teatree.utils.run import run_allowed_to_fail, run_checked
 
-LEAK_GATES: Final[tuple[str, str, str]] = ("banned-terms", "secret-scan", "overlay-leak")
+LEAK_GATES: Final[tuple[str, str, str, str]] = (
+    "banned-terms",
+    "secret-scan",
+    "overlay-leak",
+    "author-identity",
+)
 
 _PRIVACY_FINDINGS_EXIT_CODE = 3
 _MESSAGE_PATH = "<commit-message>"
 _OVERLAY_TERMS_ENV = "TEATREE_OVERLAY_LEAK_TERMS"
+_NOREPLY_RE = re.compile(r"^([0-9]+\+)?[A-Za-z0-9-]+@users\.noreply\.github\.com$")
+_DEFAULT_BRANCH_NAMES: Final[frozenset[str]] = frozenset({"main", "master", "development", "release"})
 
 
 @dataclass(frozen=True, slots=True)
@@ -115,10 +129,7 @@ class GlabForge:
 
 
 def forge_for_repo(repo: Path) -> ForgeClient | None:
-    try:
-        remote = git.remote_url(repo=str(repo))
-    except CommandFailedError:
-        return None
+    remote = git.remote_url(repo=str(repo))
     if "github" in remote:
         return GhForge(repo)
     if "gitlab" in remote:
@@ -126,8 +137,62 @@ def forge_for_repo(repo: Path) -> ForgeClient | None:
     return None
 
 
+def _public_github_slug(repo: Path) -> str | None:
+    """Return the ``owner/repo`` slug when origin is a CONFIRMED-public GitHub remote.
+
+    Mirrors ``refuse-public-push-with-leak.sh``: the identity gate enforces
+    only on a public GitHub repo, and fails OPEN (``None``) for a non-GitHub
+    remote, an unparsable slug, a missing ``gh``, or any visibility other than
+    ``PUBLIC`` (private/internal/unknown) — a private-repo real email is not a
+    leak, and blocking every push on a ``gh``-less machine is the over-deny the
+    hook deliberately avoids.
+    """
+    remote = git.remote_url(repo=str(repo))
+    if "github" not in remote:
+        return None
+    slug = git_remote.slug_from_remote(remote)
+    if "/" not in slug or shutil.which("gh") is None:
+        return None
+    result = run_allowed_to_fail(
+        ["gh", "repo", "view", slug, "--json", "visibility", "--jq", ".visibility"],
+        expected_codes=None,
+        cwd=repo,
+    )
+    if result.returncode != 0:
+        return None
+    return slug if result.stdout.strip().upper() == "PUBLIC" else None
+
+
+def _push_identities(repo: Path) -> list[str]:
+    """Author + committer emails that WILL reach the remote on the next push.
+
+    The pending commit's identity (``GIT_AUTHOR_EMAIL`` / ``GIT_COMMITTER_EMAIL``
+    override, else ``user.email``) plus every already-committed-but-unpushed
+    commit on the branch (``origin/<default>..HEAD``). Reading the pending
+    identity from config keeps the gate PRE-commit, so a bad identity refuses
+    before anything is committed.
+    """
+    config_email = git.config_value(repo=str(repo), key="user.email")
+    idents = {
+        os.environ.get("GIT_AUTHOR_EMAIL", "") or config_email,
+        os.environ.get("GIT_COMMITTER_EMAIL", "") or config_email,
+    }
+    try:
+        default = git.default_branch(repo=str(repo))
+    except (RuntimeError, ValueError):
+        default = "main"
+    result = run_allowed_to_fail(
+        ["git", "log", "--format=%ae%n%ce", f"origin/{default}..HEAD"],
+        expected_codes=None,
+        cwd=repo,
+    )
+    if result.returncode == 0:
+        idents.update(line for line in result.stdout.splitlines() if line)
+    return sorted(email for email in idents if email)
+
+
 class LeakGateScan:
-    """The three leak gates, run in-process over the staged diff + commit message."""
+    """The four leak gates, run in-process over the staged diff, message, and commit identity."""
 
     def __init__(self, repo: Path, staged_files: list[str], message_text: str) -> None:
         self._repo = repo
@@ -140,6 +205,21 @@ class LeakGateScan:
             *self._banned_terms(lines_by_path),
             *self._secret_scan(),
             *self._overlay_leak(lines_by_path),
+            *self._author_identity(),
+        ]
+
+    def _author_identity(self) -> list[LeakFinding]:
+        slug = _public_github_slug(self._repo)
+        if slug is None:
+            return []
+        return [
+            LeakFinding(
+                gate="author-identity",
+                path="<commit-identity>",
+                detail=f"non-noreply commit identity '{email}' would leak to public repo {slug}",
+            )
+            for email in _push_identities(self._repo)
+            if not _NOREPLY_RE.match(email)
         ]
 
     def _added_lines_by_path(self) -> dict[str, list[str]]:
@@ -262,13 +342,9 @@ class FastPusher:
 
     def run(self) -> FastPushOutcome:
         branch = git.current_branch(repo=str(self._repo))
-        if branch == self._default_branch():
-            detail = f"refusing to fast-push on the default branch '{branch}' — create a feature branch first"
-            return FastPushOutcome(
-                ok=False,
-                branch=branch,
-                findings=[LeakFinding(gate="branch-guard", path="", detail=detail)],
-            )
+        guard = self._branch_guard_finding(branch)
+        if guard is not None:
+            return FastPushOutcome(ok=False, branch=branch, findings=[guard])
         run_checked(["git", "add", "-A"], cwd=self._repo)
         staged = run_checked(
             ["git", "diff", "--cached", "--name-only", "--diff-filter=ACMR"],
@@ -288,10 +364,29 @@ class FastPusher:
         self._upsert_pr(outcome)
         return outcome
 
+    def _branch_guard_finding(self, branch: str) -> LeakFinding | None:
+        """Refuse a push onto (or that cannot be proven to be OFF) the default branch.
+
+        Fails CLOSED: an unresolvable default branch refuses rather than
+        letting ``--no-verify`` slip a checkpoint onto ``main`` — the
+        opposite of a fail-open guard.
+        """
+        if branch in _DEFAULT_BRANCH_NAMES:
+            detail = f"refusing to fast-push on the default branch '{branch}' — create a feature branch first"
+            return LeakFinding(gate="branch-guard", path="", detail=detail)
+        default = self._default_branch()
+        if not default:
+            detail = "refusing to fast-push: could not resolve the default branch (fail closed)"
+            return LeakFinding(gate="branch-guard", path="", detail=detail)
+        if branch == default:
+            detail = f"refusing to fast-push on the default branch '{branch}' — create a feature branch first"
+            return LeakFinding(gate="branch-guard", path="", detail=detail)
+        return None
+
     def _default_branch(self) -> str:
         try:
             return git.default_branch(repo=str(self._repo))
-        except (CommandFailedError, RuntimeError):
+        except (RuntimeError, ValueError):
             return ""
 
     def _commit(self, message: str) -> None:
