@@ -188,12 +188,28 @@ def repo_mode(
     typer.echo(mode.value)
 
 
-@tool_app.command("analyze-video")
+@tool_app.command(
+    "analyze-video",
+    context_settings={"allow_extra_args": True, "ignore_unknown_options": True},
+)
 def analyze_video(
-    video_path: str = typer.Argument(..., help="Path to video file"),
+    ctx: typer.Context,
+    source: str = typer.Argument(
+        ..., help="Video file path or URL (GitLab/GitHub upload URLs are fetched authenticated)"
+    ),
 ) -> None:
-    """Decompose video into frames for AI analysis."""
-    ToolRunner.run_script("analyze_video", video_path)
+    """Decompose a video into frames for AI analysis, or verify its quality.
+
+    ``source`` plus every flag passes straight through to
+    ``scripts/analyze_video.py``, which owns the flag definitions (#3116):
+    ``--interval N`` (0 derives from duration to span the whole video),
+    ``--max-frames N``, ``--scale W`` (default 1280px, 0 = native),
+    ``--crop top-bar|W:H:X:Y``, ``--contact-sheet ROWSxCOLS``,
+    ``--verify [--max-dead-lead S]`` (deterministic dead-lead gate, now
+    reachable to point at another author's video), ``--scene``,
+    ``--threshold T``, ``--output DIR``.
+    """
+    ToolRunner.run_script("analyze_video", source, *ctx.args)
 
 
 @tool_app.command("bump-deps")

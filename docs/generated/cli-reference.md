@@ -2500,7 +2500,8 @@ Usage: t3 tool [OPTIONS] COMMAND [ARGS]...
 │                      overlay's rules.                                        │
 │ repo-mode            Report whether the repo is solo (fix proactively) or    │
 │                      collaborative (flag, don't fix).                        │
-│ analyze-video        Decompose video into frames for AI analysis.            │
+│ analyze-video        Decompose a video into frames for AI analysis, or       │
+│                      verify its quality.                                     │
 │ bump-deps            Bump pyproject.toml dependencies from uv.lock.          │
 │ sonar-check          Run local SonarQube analysis via Docker.                │
 │ claude-handover      Show Claude handover telemetry and runtime              │
@@ -2640,12 +2641,23 @@ Usage: t3 tool repo-mode [OPTIONS] [REPO]
 #### `t3 tool analyze-video`
 
 ```
-Usage: t3 tool analyze-video [OPTIONS] VIDEO_PATH
+Usage: t3 tool analyze-video [OPTIONS] SOURCE
 
- Decompose video into frames for AI analysis.
+ Decompose a video into frames for AI analysis, or verify its quality.
+
+ ``source`` plus every flag passes straight through to
+ ``scripts/analyze_video.py``, which owns the flag definitions (#3116):
+ ``--interval N`` (0 derives from duration to span the whole video),
+ ``--max-frames N``, ``--scale W`` (default 1280px, 0 = native),
+ ``--crop top-bar|W:H:X:Y``, ``--contact-sheet ROWSxCOLS``,
+ ``--verify [--max-dead-lead S]`` (deterministic dead-lead gate, now
+ reachable to point at another author's video), ``--scene``,
+ ``--threshold T``, ``--output DIR``.
 
 ╭─ Arguments ──────────────────────────────────────────────────────────────────╮
-│ *    video_path      TEXT  Path to video file [required]                     │
+│ *    source      TEXT  Video file path or URL (GitLab/GitHub upload URLs are │
+│                        fetched authenticated)                                │
+│                        [required]                                            │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --help          Show this message and exit.                                  │
