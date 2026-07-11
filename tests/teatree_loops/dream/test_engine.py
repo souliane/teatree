@@ -20,6 +20,7 @@ from teatree.loops.dream.engine import (
     DreamRunResult,
     TranscriptMember,
     WeightedSnippet,
+    WriteOutcome,
     build_extract,
     enumerate_members,
     run_consolidation,
@@ -71,6 +72,42 @@ class RunConsolidationSeamTestCase(TestCase):
         assert len(seen) == 1
         assert isinstance(seen[0], ConsolidationExtract)
 
+    def test_result_carries_the_extract_and_distilled_count(self) -> None:
+        # D1c: the result carries the bounded extract it built (so the command can
+        # reuse it for the compliance/automatable-ask phases) and the honest
+        # snippets_distilled count.
+        with tempfile.TemporaryDirectory() as tmp:
+            member = _write_member(Path(tmp))
+            with patch.object(engine, "enumerate_members", return_value=[member]):
+                result = run_consolidation(overlay="", since=None, dry_run=False, distiller=_no_clusters)
+        assert result.extract is not None
+        assert result.snippets_distilled == len(result.extract.snippets)
+        assert result.snippets_distilled >= 1
+        assert result.clusters_rejected == 0
+
+    def test_result_counts_ungrounded_clusters_rejected(self) -> None:
+        # D1c: an ungrounded distiller cluster is rejected by the ledger guard and the
+        # count flows through to the result (surfaced in the command summary).
+        def _ungrounded(extract: ConsolidationExtract) -> list[DistilledCluster]:
+            snippet = extract.snippets[0]
+            return [
+                DistilledCluster(
+                    cluster_key="x",
+                    rule="an ungrounded rule",
+                    source_files=[str(snippet.path)],
+                    is_binding=False,
+                    verified_citation="a quote absent from every cited snippet",
+                    durable_destination="",
+                )
+            ]
+
+        with tempfile.TemporaryDirectory() as tmp:
+            member = _write_member(Path(tmp))
+            with patch.object(engine, "enumerate_members", return_value=[member]):
+                result = run_consolidation(overlay="", since=None, dry_run=False, distiller=_ungrounded)
+        assert result.clusters_recorded == 0
+        assert result.clusters_rejected == 1
+
 
 _CITATION = "pushed without running the gate, CI went red"
 
@@ -106,8 +143,8 @@ class WriteClustersTestCase(TestCase):
 
     def test_writes_one_row_per_valid_cluster(self) -> None:
         member = _write_member(self.tmp)
-        written = write_clusters([_cluster_for(member)], _extract_of(member), dry_run=False)
-        assert written == 1
+        outcome = write_clusters([_cluster_for(member)], _extract_of(member), dry_run=False)
+        assert outcome == WriteOutcome(written=1, rejected=0)
         row = ConsolidatedMemory.objects.get(cluster_key="k1")
         assert row.rule == "Run the gate before pushing."
         assert row.source_files == [str(member.path)]
@@ -151,8 +188,8 @@ class WriteClustersTestCase(TestCase):
             verified_citation=_CITATION,
             durable_destination="",
         )
-        written = write_clusters([bad], _extract_of(member), dry_run=False)
-        assert written == 0
+        outcome = write_clusters([bad], _extract_of(member), dry_run=False)
+        assert outcome == WriteOutcome(written=0, rejected=1)
         assert not ConsolidatedMemory.objects.filter(cluster_key="bad").exists()
 
     def test_rejects_cluster_citing_unknown_path(self) -> None:
@@ -165,8 +202,8 @@ class WriteClustersTestCase(TestCase):
             verified_citation=_CITATION,
             durable_destination="",
         )
-        written = write_clusters([bad], _extract_of(member), dry_run=False)
-        assert written == 0
+        outcome = write_clusters([bad], _extract_of(member), dry_run=False)
+        assert outcome == WriteOutcome(written=0, rejected=1)
         assert not ConsolidatedMemory.objects.filter(cluster_key="bad").exists()
 
     def test_rejects_cluster_with_blank_citation(self) -> None:
@@ -179,8 +216,8 @@ class WriteClustersTestCase(TestCase):
             verified_citation="   ",
             durable_destination="",
         )
-        written = write_clusters([bad], _extract_of(member), dry_run=False)
-        assert written == 0
+        outcome = write_clusters([bad], _extract_of(member), dry_run=False)
+        assert outcome == WriteOutcome(written=0, rejected=1)
         assert not ConsolidatedMemory.objects.filter(cluster_key="bad").exists()
 
     def test_rejects_real_path_with_invented_quote(self) -> None:
@@ -193,8 +230,8 @@ class WriteClustersTestCase(TestCase):
             verified_citation="a mistake that never appears in the snippet text",
             durable_destination="",
         )
-        written = write_clusters([bad], _extract_of(member), dry_run=False)
-        assert written == 0
+        outcome = write_clusters([bad], _extract_of(member), dry_run=False)
+        assert outcome == WriteOutcome(written=0, rejected=1)
         assert not ConsolidatedMemory.objects.filter(cluster_key="bad").exists()
 
     def test_accepts_citation_with_differing_whitespace(self) -> None:
@@ -207,14 +244,33 @@ class WriteClustersTestCase(TestCase):
             verified_citation=f"  {_CITATION}  ",
             durable_destination="",
         )
-        written = write_clusters([spaced], _extract_of(member), dry_run=False)
-        assert written == 1
+        outcome = write_clusters([spaced], _extract_of(member), dry_run=False)
+        assert outcome == WriteOutcome(written=1, rejected=0)
 
     def test_dry_run_writes_nothing(self) -> None:
         member = _write_member(self.tmp)
-        written = write_clusters([_cluster_for(member)], _extract_of(member), dry_run=True)
-        assert written == 1
+        outcome = write_clusters([_cluster_for(member)], _extract_of(member), dry_run=True)
+        assert outcome == WriteOutcome(written=1, rejected=0)
         assert ConsolidatedMemory.objects.count() == 0
+
+    def test_write_outcome_counts_and_warns_on_rejected_cluster(self) -> None:
+        # D1c: a grounded cluster is written; an ungrounded one is counted as rejected
+        # AND logged at WARNING (silently dropped before), so an ungrounded distiller
+        # batch is surfaced rather than swallowed.
+        member = _write_member(self.tmp)
+        good = _cluster_for(member)
+        bad = DistilledCluster(
+            cluster_key="bad",
+            rule="an invented rule with no grounding",
+            source_files=[str(member.path)],
+            is_binding=False,
+            verified_citation="a quote that never appears in the snippet text at all",
+            durable_destination="",
+        )
+        with self.assertLogs("teatree.loops.dream.engine", level="WARNING") as logs:
+            outcome = write_clusters([good, bad], _extract_of(member), dry_run=False)
+        assert outcome == WriteOutcome(written=1, rejected=1)
+        assert any("ungrounded cluster" in line for line in logs.output)
 
     def test_max_member_weight_is_the_cited_snippet_weight(self) -> None:
         member = _write_member(self.tmp)
@@ -449,6 +505,29 @@ class BuildExtractTestCase(TestCase):
         extract = build_extract([*flood, *transcripts])
         kept_transcripts = {str(s.path) for s in extract.snippets if s.kind != "memory"}
         assert len(kept_transcripts) == 5
+
+    def test_memory_floor_survives_task_output_flood(self) -> None:
+        # RED before D1a/D1b: a task_output that merely QUOTES "BINDING" scored the
+        # full BINDING floor (100) and — with no memory floor — flooded the whole
+        # ceiling, starving the curated memory out of the prompt entirely (the pass
+        # then distilled 0 real clusters). The memory floor + kind-aware weighting
+        # guarantee the durable doctrine survives a night of large task outputs.
+        memory = self._member("feedback_rule.md", "a durable feedback lesson about pushing the gate")
+        flood = [self._member(f"task_{i}.output", "BINDING: " + ("x" * 8_000), kind="task_output") for i in range(20)]
+        extract = build_extract([*flood, memory])
+        kept_memories = {str(s.path) for s in extract.snippets if s.kind == "memory"}
+        assert str(memory.path) in kept_memories
+
+    def test_binding_quoting_transcript_does_not_outrank_memory(self) -> None:
+        # RED before D1a: a transcript that only QUOTES a BINDING rule scored the full
+        # BINDING floor (100) and OUTRANKED the feedback memory (90) that actually owns
+        # the rule. Kind-aware weighting reserves the BINDING/feedback floors for curated
+        # memory, so a quoting transcript can never tie or outrank the memory.
+        memory = self._member("feedback_rule.md", "a durable feedback lesson", kind="memory")
+        transcript = self._member("task_quote.output", "BINDING: never push to a red branch", kind="task_output")
+        extract = build_extract([transcript, memory])
+        weights = {s.kind: s.weight for s in extract.snippets}
+        assert weights["memory"] >= weights["task_output"]
 
 
 class CorrectionProseProducesGroundedClusterTestCase(TestCase):

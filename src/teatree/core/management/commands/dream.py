@@ -34,6 +34,7 @@ from teatree.core.overlay_loader import get_all_overlays
 
 if TYPE_CHECKING:
     from teatree.core.backend_protocols import CodeHostBackend
+    from teatree.loops.dream.engine import ConsolidationExtract
     from teatree.loops.dream.phase_runner import MemoryPhaseRunner
 
 
@@ -206,10 +207,15 @@ class Command(TyperCommand):
             if result.empty_batches
             else ""
         )
+        distilled = f"; distilled {result.snippets_distilled} snippet(s)" if result.snippets_distilled else ""
+        rejected = (
+            f"; WARN {result.clusters_rejected} ungrounded cluster(s) rejected" if result.clusters_rejected else ""
+        )
         if dry_run:
             self.stdout.write(
                 f"DRY   dream pass — {result.clusters_recorded} cluster(s) would be recorded "
-                f"from {result.members_replayed} member(s){evals}{empty}; no rows or marker written.",
+                f"from {result.members_replayed} member(s){distilled}{evals}{empty}{rejected}; "
+                "no rows or marker written.",
             )
             return False
 
@@ -236,11 +242,15 @@ class Command(TyperCommand):
         )
         # Phase 3c (#2663) runs BEFORE the gates so gate (g) reads the just-persisted
         # compliance records (a recurrence remediated with a memory FAILS the pass).
-        compliance = self._run_compliance_phase(since=since, dry_run=dry_run, force_all_phases=mode.force_all_phases)
+        # Measurement is the root KPI — it runs on EVERY pass (default ON) and reuses the
+        # extract the engine already built; escalation is the --full-gated other half.
+        compliance = self._run_compliance_measurement(
+            extract=result.extract, dry_run=dry_run, force_all_phases=mode.force_all_phases
+        )
         # Phase 3d (#2663) — the "improve-with-new-stuff" sibling: promote recurring
         # automatable user asks to a fix-and-merge under the same standing umbrella.
         automation_asks = self._run_automation_asks_phase(
-            since=since, dry_run=dry_run, force_all_phases=mode.force_all_phases
+            extract=result.extract, dry_run=dry_run, force_all_phases=mode.force_all_phases
         )
         memory_phases, gates_passed, gates_summary = self._run_memory_phases_and_gates(
             clusters_recorded=result.clusters_recorded, dry_run=dry_run
@@ -254,7 +264,8 @@ class Command(TyperCommand):
             DreamRunMarker.objects.mark_attempted(now)
             self.stdout.write(
                 f"WARN  dream pass — {result.clusters_recorded} cluster(s) recorded "
-                f"from {result.members_replayed} member(s){evals}{empty}{promoted}{compliance}{automation_asks}"
+                f"from {result.members_replayed} member(s){distilled}{evals}{empty}{rejected}"
+                f"{promoted}{compliance}{automation_asks}"
                 f"{memory_phases}{memory_promote}{gates_summary}; acceptance gate(s) FAILED — marker NOT stamped "
                 f"succeeded.",
             )
@@ -263,57 +274,77 @@ class Command(TyperCommand):
         DreamRunMarker.objects.mark_succeeded(now)
         self.stdout.write(
             f"OK    dream pass — {result.clusters_recorded} cluster(s) recorded "
-            f"from {result.members_replayed} member(s){evals}{empty}{promoted}{compliance}{automation_asks}"
+            f"from {result.members_replayed} member(s){distilled}{evals}{empty}{rejected}"
+            f"{promoted}{compliance}{automation_asks}"
             f"{memory_phases}{memory_promote}{gates_summary}.",
         )
         return True
 
-    def _run_compliance_phase(self, *, since: "dt.datetime | None", dry_run: bool, force_all_phases: bool) -> str:
-        """Phase 3c — the instruction-compliance accountant (#2663; never raises).
+    def _run_compliance_measurement(
+        self, *, extract: "ConsolidationExtract | None", dry_run: bool, force_all_phases: bool
+    ) -> str:
+        """Phase 3c — MEASURE compliance every pass, ESCALATE only under --full+toggle (never raises).
 
-        Runs only when the default-OFF ``compliance`` toggle is on (env / toml) AND
-        the ``--full`` pipeline is requested — it FILES enforcement tickets, mirroring
-        the Pass-2 memory-promotion posture. The detect → persist → escalate work
-        lives in :func:`teatree.loops.dream.compliance.run_compliance_phase`; this
-        wires the gating + the resolved backlog host and fault-isolates the phase.
+        Measurement is the root KPI: it runs on EVERY pass when the default-ON
+        ``compliance_measure`` toggle admits it, reusing the extract the engine already
+        built (no re-enumeration) and PERSISTING a snapshot (never files). Escalation —
+        the default-OFF ticket-filing half — runs only when ``--full`` AND the
+        ``compliance_escalate`` toggle both admit it, driving each recurrence onto the
+        standing umbrella. The work lives in
+        :func:`teatree.loops.dream.compliance.run_compliance_measurement` /
+        ``run_compliance_escalation``; this wires the gating + resolved host and
+        fault-isolates the phase.
         """
-        from teatree.loops.dream.loop import compliance_enabled  # noqa: PLC0415
-
-        if not force_all_phases or not compliance_enabled():
+        if extract is None:
             return ""
         try:
             from teatree.loops.dream import compliance  # noqa: PLC0415
+            from teatree.loops.dream.loop import (  # noqa: PLC0415 — deferred: breaks the loop->command import cycle
+                compliance_escalate_enabled,
+                compliance_measure_enabled,
+            )
 
-            host, _repo = self._teatree_backlog_host()
-            return compliance.run_compliance_phase(since=since, dry_run=dry_run, host=host)
+            if not compliance_measure_enabled():
+                return ""
+            measurement = compliance.run_compliance_measurement(extract=extract, dry_run=dry_run)
+            summary = measurement.summary
+            if force_all_phases and compliance_escalate_enabled():
+                host, _repo = self._teatree_backlog_host()
+                summary += compliance.run_compliance_escalation(
+                    snapshot=measurement.snapshot, findings=measurement.findings, host=host, dry_run=dry_run
+                )
         except Exception as exc:  # noqa: BLE001
             return f"; WARN compliance phase raised: {type(exc).__name__}: {exc}"
+        return summary
 
-    def _run_automation_asks_phase(self, *, since: "dt.datetime | None", dry_run: bool, force_all_phases: bool) -> str:
+    def _run_automation_asks_phase(
+        self, *, extract: "ConsolidationExtract | None", dry_run: bool, force_all_phases: bool
+    ) -> str:
         """Phase 3d — promote recurring automatable user asks to a fix-and-merge (#2663; never raises).
 
         The "improve-with-new-stuff" sibling of the compliance accountant. Gated by an
         OR (``if not force_all_phases and not automation_asks_enabled()``): it runs when
         the ``--full`` pipeline is requested OR the default-OFF ``automation_asks`` toggle
         is on (env / toml). ``--full`` alone therefore triggers it — UNLIKE the compliance
-        phase's AND-gate, which additionally requires its own toggle even under ``--full``.
-        It PROMOTES fixes (a checkbox + scheduled coding task under the standing umbrella).
-        The detect → classify → promote work lives in
-        :func:`teatree.loops.dream.automation_ask.run_automation_asks_phase`; this rebuilds
-        the same bounded extract the engine distils (for the grounding guard), wires the
+        escalation's AND-gate, which additionally requires its own toggle even under
+        ``--full``. It PROMOTES fixes (a checkbox + scheduled coding task under the standing
+        umbrella). The detect → classify → promote work lives in
+        :func:`teatree.loops.dream.automation_ask.run_automation_asks_phase`; this reuses
+        the bounded extract the engine already built (for the grounding guard), wires the
         resolved backlog host, and fault-isolates the phase.
         """
         from teatree.loops.dream.loop import automation_asks_enabled  # noqa: PLC0415
 
         if not force_all_phases and not automation_asks_enabled():
             return ""
+        if extract is None:
+            return ""
         try:
-            from teatree.loops.dream import automation_ask, engine  # noqa: PLC0415
+            from teatree.loops.dream import automation_ask  # noqa: PLC0415 — deferred: phase-only import
 
             host, _repo = self._teatree_backlog_host()
             if host is None:
                 return "; WARN automatable-ask promotion skipped — no teatree code host resolved"
-            extract = engine.build_extract(engine.enumerate_members(since=since))
             umbrella = self._automation_umbrella_url()
             return automation_ask.run_automation_asks_phase(extract, host, umbrella_url=umbrella, dry_run=dry_run)
         except Exception as exc:  # noqa: BLE001
