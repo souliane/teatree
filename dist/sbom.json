@@ -1169,6 +1169,21 @@
       "purl": "pkg:pypi/uvicorn@0.49.0",
       "type": "library",
       "version": "0.49.0"
+    },
+    {
+      "bom-ref": "requirements-L237",
+      "description": "requirements line 237: whitenoise==6.12.0",
+      "externalReferences": [
+        {
+          "comment": "implicit dist url",
+          "type": "distribution",
+          "url": "https://pypi.org/simple/whitenoise/"
+        }
+      ],
+      "name": "whitenoise",
+      "purl": "pkg:pypi/whitenoise@6.12.0",
+      "type": "library",
+      "version": "6.12.0"
     }
   ],
   "dependencies": [
@@ -1321,6 +1336,9 @@
     },
     {
       "ref": "requirements-L235"
+    },
+    {
+      "ref": "requirements-L237"
     },
     {
       "ref": "requirements-L24"
