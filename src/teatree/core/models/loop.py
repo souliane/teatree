@@ -224,12 +224,24 @@ class Loop(models.Model):
         return self._as_local(self.last_run_at).date() < now_local.date()
 
     def _next_daily(self, now: dt.datetime) -> dt.datetime:
-        """The next wall-clock occurrence of ``daily_at`` (today if still ahead)."""
+        """The next wall-clock occurrence of ``daily_at`` (today if still ahead).
+
+        Each candidate slot is built as ``date + daily_at`` via
+        :func:`django.utils.timezone.make_aware`, not by mutating *now*:
+        ``now_local.replace(hour=…)`` would carry *now*'s UTC offset (and DST
+        ``fold``) onto the target wall-clock even when it lands on the other
+        side of a DST transition, and rolling to "tomorrow" with a 24h
+        ``timedelta`` would drift by the transition hour. Resolving the offset
+        from the active zone at the target instant keeps a non-UTC ``TIME_ZONE``
+        correct across spring-forward / fall-back (with ``TIME_ZONE="UTC"``, the
+        project default, there is no transition and the result is unchanged).
+        """
         now_local = self._as_local(now)
-        today_at = now_local.replace(hour=self.daily_at.hour, minute=self.daily_at.minute, second=0, microsecond=0)
-        if now_local.time() < self.daily_at:
-            return today_at
-        return today_at + dt.timedelta(days=1)
+        day = now_local.date() if now_local.time() < self.daily_at else now_local.date() + dt.timedelta(days=1)
+        naive_slot = dt.datetime.combine(day, self.daily_at)
+        if timezone.is_aware(now_local):
+            return timezone.make_aware(naive_slot, timezone.get_current_timezone())
+        return naive_slot
 
     @staticmethod
     def _as_local(when: dt.datetime) -> dt.datetime:

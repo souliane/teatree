@@ -6,9 +6,8 @@ module-level ``MINI_LOOP: MiniLoop`` constant in its ``loop`` submodule.
 and returns the constants sorted alphabetically by name.
 
 Only true subpackages are considered (``sub.ispkg``), so the top-level helper
-modules (``base``, ``registry``, ``config``, ``master``, ``run``, …) are skipped
-already; the named-exclusion set is a belt-and-suspenders guard for the few that
-share the package namespace.
+modules (``base``, ``registry``, ``config``, ``run``, …) — plain ``.py`` files,
+not packages — are skipped by that check alone.
 """
 
 import importlib
@@ -20,17 +19,11 @@ from teatree.loops.base import MiniLoop
 
 logger = logging.getLogger(__name__)
 
-_HELPER_MODULES: frozenset[str] = frozenset(
-    {"base", "registry", "config"},
-)
-
 
 def iter_loops() -> tuple[MiniLoop, ...]:
     """Walk ``teatree.loops`` subpackages and collect each ``MINI_LOOP``."""
     found: list[MiniLoop] = []
     for sub in pkgutil.iter_modules(_loops_pkg.__path__):
-        if sub.name in _HELPER_MODULES:
-            continue
         if not sub.ispkg:
             continue
         try:

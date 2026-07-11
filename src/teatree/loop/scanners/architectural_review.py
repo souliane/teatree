@@ -46,6 +46,7 @@ Design notes
     (e.g. the GitLab approvals scanner). The ticket carries no FSM state.
 """
 
+import datetime as dt
 import logging
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, cast
@@ -55,7 +56,7 @@ from django.db import transaction
 from django.db.models import Count, Max, Q
 from django.utils import timezone
 
-from teatree.loop.scanners.base import ScanSignal
+from teatree.loop.scanners.base import ScanSignal, hours_since
 
 if TYPE_CHECKING:
     from teatree.core.models import Session as _Session
@@ -138,7 +139,7 @@ class ArchitecturalReviewScanner:
             status__in=_IN_FLIGHT_TASK_STATES,
         ).exists()
 
-    def _last_review_completed_at(self) -> object:
+    def _last_review_completed_at(self) -> dt.datetime | None:
         """Return the most recent review task's Session.started_at, or None.
 
         Returns ``None`` when no prior review task has been recorded for
@@ -154,7 +155,7 @@ class ArchitecturalReviewScanner:
         ).aggregate(ts=Max("session__started_at"))
         return aggregate["ts"]
 
-    def _evaluate_triggers(self, *, now: object, last_review_at: object) -> str | None:
+    def _evaluate_triggers(self, *, now: dt.datetime, last_review_at: dt.datetime | None) -> str | None:
         """Return the trigger name (``cadence`` / ``after_merge_count``) or None.
 
         Cadence wins over merge-count when both fire — the cadence is the
@@ -164,19 +165,14 @@ class ArchitecturalReviewScanner:
         """
         if last_review_at is None:
             return "bootstrap"
-        # ``now`` and ``last_review_at`` are ``datetime``s in practice;
-        # typed as ``object`` here to stay decoupled from ``Max()``'s
-        # return shape on the type checker. The subtraction is what
-        # matters, not the static type.
-        elapsed_hours = (now - last_review_at).total_seconds() / 3600.0  # type: ignore[operator]
-        if elapsed_hours >= self.cadence_hours:
+        if hours_since(last_review_at, now=now) >= self.cadence_hours:
             return "cadence"
         merges_since = self._count_merges_since(last_review_at)
         if merges_since >= self.after_merge_count:
             return "after_merge_count"
         return None
 
-    def _count_merges_since(self, last_review_at: object) -> int:
+    def _count_merges_since(self, last_review_at: dt.datetime) -> int:
         """Count tickets in this overlay whose latest merge transition is after *last_review_at*.
 
         We look at :class:`TicketTransition` rather than ``Ticket.state``
