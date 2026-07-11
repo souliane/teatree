@@ -95,13 +95,13 @@ class TestPerOverlayBotRouting:
         }
         pass_lookup = {"ref-bot": "xoxb-toml", "ref-app": "xapp-toml"}
 
-        from teatree.backends.backend_provider import SlackBackendProvider  # noqa: PLC0415
+        from teatree.backends.backend_provider import ConcreteBackendProvider  # noqa: PLC0415
 
         # A real provider keeps ``build_slack_messaging`` live (so the TOML
         # overlay builds a real ``SlackBotBackend``); only the entry-point
         # credential resolution is neutralised — the synthetic ``py-overlay``
         # has no live backends.
-        provider = SlackBackendProvider()
+        provider = ConcreteBackendProvider()
 
         # Justified scaffolding (#1066 nit 2): synthetic entry-point + TOML
         # overlays injected via patched ``get_all_overlays`` /

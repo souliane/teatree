@@ -8,9 +8,9 @@ from teatree.core import backend_registry
 class TestBackendProviderRegistry:
     def test_backends_ready_registers_the_real_provider(self) -> None:
         """``BackendsConfig.ready()`` ran at django.setup() — the real provider resolves."""
-        from teatree.backends.backend_provider import SlackBackendProvider  # noqa: PLC0415
+        from teatree.backends.backend_provider import ConcreteBackendProvider  # noqa: PLC0415
 
-        assert isinstance(backend_registry.get_backend_provider(), SlackBackendProvider)
+        assert isinstance(backend_registry.get_backend_provider(), ConcreteBackendProvider)
 
     def test_unconfigured_provider_builds_nothing(self) -> None:
         """Fail-SAFE: with no provider registered, builds degrade to None/empty (no crash)."""
