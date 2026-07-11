@@ -23,6 +23,7 @@ from teatree.core.merge import MergePreconditionError, resolve_pr_repo_slug
 from teatree.core.models import ClearIssuanceError, ClearRequest, MergeClear, ReviewVerdict, Ticket
 from teatree.core.models.errors import InvalidTransitionError
 from teatree.core.models.external_delivery import refresh_external_delivery_if_active
+from teatree.core.send_proxy import forge_from_url, route_forge_write
 
 
 class CompletionResult(TypedDict, total=False):
@@ -418,23 +419,20 @@ class Command(
         text = Path(body_file).read_text(encoding="utf-8") if body_file else body
         if not text:
             return {"error": "No comment body: pass --body or --body-file"}
-
+        # The shared forge-write seam (public-repo leak gate + #117 send-proxy) — same seam the MCP tools use.
+        forge = forge_from_url(issue_url)
+        text = route_forge_write(forge=forge, repo=issue_url, text=text, action="ticket_comment", target=issue_url)
         for overlay in get_all_overlays().values():
             host = get_code_host_for_url(overlay, issue_url)
             if host is None:
                 continue
             raw = host.post_issue_comment(issue_url=issue_url, body=text)
-            error = raw.get("error") if isinstance(raw, dict) else None
-            if error:
-                self.stdout.write(f"  failed: {error}")
-                return {"error": str(error)}
+            if isinstance(raw, dict) and raw.get("error"):
+                self.stdout.write(f"  failed: {raw['error']}")
+                return {"error": str(raw["error"])}
             comment_id = raw.get("id") if isinstance(raw, dict) else None
             self.stdout.write(f"  commented on {issue_url}")
-            return {
-                "issue_url": issue_url,
-                "comment_id": comment_id if isinstance(comment_id, int) else 0,
-            }
-
+            return {"issue_url": issue_url, "comment_id": comment_id if isinstance(comment_id, int) else 0}
         return {"error": f"No code host could be resolved for {issue_url}"}
 
     @command(name="create-sub")

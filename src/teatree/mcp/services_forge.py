@@ -9,14 +9,14 @@ transport-boundary fitness test holds and every forge gate the factory wires
 stays intact.
 
 The wave-2 issue writes (``<forge>_issue_create/comment/close/update``) route
-every outbound body through the SAME gated core seams the ``t3`` CLI uses,
-BEFORE the backend call: the public-repo leak gate
-(:func:`teatree.core.gates.privacy_gate.scan_outbound_text` — refuses a customer
-codename bound for a public forge) then the #117 send-proxy chokepoint
-(:func:`teatree.core.send_proxy.route_send` — per-overlay allowlist + redaction +
-one ``SendAudit`` row). A leaking or non-allowlisted write never reaches the
-forge. The whole group registers only when its ``Service`` is declared, so an
-undeclared forge exposes no write tool (fail-closed).
+every outbound body through the SHARED core forge-write seam
+(:func:`teatree.core.send_proxy.route_forge_write`) BEFORE the backend call — the
+SAME seam the dream loop and the ``t3`` CLI writers use, so the public-repo leak
+gate (refuses a customer codename bound for a public forge) and the #117
+send-proxy chokepoint (per-overlay allowlist + redaction + one ``SendAudit`` row)
+fire identically on every surface. A leaking or non-allowlisted write never
+reaches the forge. The whole group registers only when its ``Service`` is
+declared, so an undeclared forge exposes no write tool (fail-closed).
 """
 
 from typing import Any
@@ -28,8 +28,7 @@ from mcp.types import ToolAnnotations
 from teatree.backends.types import Service
 from teatree.core.backend_factory import code_host_from_overlay
 from teatree.core.backend_protocols import CodeHostBackend
-from teatree.core.gates.privacy_gate import format_refusal, scan_outbound_text
-from teatree.core.send_proxy import SendChannel, SendRequest, route_send
+from teatree.core.send_proxy import route_forge_write
 from teatree.mcp.service_resolver import resolve_declaring_overlay_client
 
 _READ_ONLY = ToolAnnotations(readOnlyHint=True)
@@ -38,25 +37,17 @@ _DESTRUCTIVE = ToolAnnotations(readOnlyHint=False, destructiveHint=True)
 
 
 def _scrub_forge_body(service: Service, *, repo: str, text: str, action: str, target: str) -> str:
-    """Return the body to post after the leak scrub + #117 send-proxy, or refuse.
+    """Return the body to post after the shared forge-write seam, or refuse.
 
-    The public-repo leak gate (#1295) refuses when *text* carries a customer
-    codename bound for a public forge; the send-proxy then audits the send,
-    applies the per-overlay allowlist, and redacts on ``enforce``. Raises
-    ``RuntimeError`` on either refusal so a leaking or non-allowlisted write is
-    stopped before the backend call. An empty body is a no-op pass-through.
+    Thin MCP adapter over :func:`teatree.core.send_proxy.route_forge_write` — the
+    core seam that runs the public-repo leak gate + the #117 send-proxy for EVERY
+    forge write (MCP, dream loop, ``t3`` CLI). Kept here only to map the MCP
+    layer's :class:`~teatree.backends.types.Service` to the seam's forge id; it
+    raises :class:`~teatree.core.send_proxy.OutboundLeakError` /
+    :class:`~teatree.core.send_proxy.SendBlockedError` (both ``RuntimeError``) so a
+    leaking or non-allowlisted write is stopped before the backend call.
     """
-    if not text:
-        return text
-    scan = scan_outbound_text(text=text, target_repo=repo, forge=service.value)
-    if scan.refused:
-        raise RuntimeError(format_refusal(scan))
-    verdict = route_send(
-        SendRequest(channel=SendChannel(service.value), destination=repo, payload=text, action=action, target=target),
-    )
-    if not verdict.allowed:
-        raise RuntimeError(verdict.reason or f"send-proxy refused posting to {repo}")
-    return verdict.payload
+    return route_forge_write(forge=service.value, repo=repo, text=text, action=action, target=target)
 
 
 def _forge_client(service: Service) -> CodeHostBackend:
