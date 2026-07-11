@@ -157,7 +157,7 @@ def _slack_message_for_pr(slug: str, pr_id: int) -> tuple[str, str, str] | None:
 
         for post in ReviewRequestPost.objects.exclude(slack_thread_ts="").iterator():
             ref = pr_ref_from_url(post.mr_url)
-            if ref is not None and ref.slug == slug and ref.number == pr_id and post.slack_channel_id:
+            if ref is not None and ref.slug == slug and ref.pr_id == pr_id and post.slack_channel_id:
                 return post.slack_channel_id, post.slack_thread_ts, post.mr_url
     except Exception:  # noqa: BLE001 — ledger read must never crash the caller.
         return None

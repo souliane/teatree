@@ -25,7 +25,8 @@ import dataclasses
 import pytest
 from django.test import TestCase
 
-from teatree.config import OVERLAY_OVERRIDABLE_SETTINGS, UserSettings, Wip, get_effective_settings
+from teatree.config import OVERLAY_OVERRIDABLE_SETTINGS, Autonomy, UserSettings, Wip, get_effective_settings
+from teatree.config import resolution as _resolution
 from teatree.config.resolution import _LEGACY_SETTING_ALIASES, _RETIRED_SETTING_KEYS
 from teatree.core.models import ConfigSetting
 
@@ -52,6 +53,46 @@ class RetiredSpeedRowResolvesToWip(TestCase):
         ConfigSetting.objects.set_value("speed", "boost")
         ConfigSetting.objects.set_value("wip", "slow")
         assert get_effective_settings().wip is Wip.SLOW
+
+
+class AliasFoldedGatePinSurvivesAutonomyCollapse(TestCase):
+    """A global approval-gate row stored under a RETIRED alias still pins the gate (config §3d #1).
+
+    ``get_effective_settings`` folds a legacy-alias row's VALUE onto its current
+    field via ``_coerce_db_rows`` — but the autonomy-collapse pin set must be keyed
+    off those FOLDED field names, not the raw row keys. On the buggy code the pin
+    set was ``set(global_rows)`` (raw keys), so an approval gate stored under a
+    renamed key resolved its value while its pin vanished: the ``full``/``notify``
+    collapse then overrode the operator's explicitly-stored gate. This is the
+    RED-at-HEAD proof; the fix keys the pin set off ``global_db`` (folded names).
+    """
+
+    @pytest.fixture(autouse=True)
+    def _config(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        for env in ("T3_OVERLAY_NAME", "T3_MODE", "T3_WIP"):
+            monkeypatch.delenv(env, raising=False)
+        # Simulate a future rename of an approval gate: the row is stored under the
+        # old key and folded onto the current field on read.
+        monkeypatch.setattr(
+            _resolution,
+            "_LEGACY_SETTING_ALIASES",
+            {**_LEGACY_SETTING_ALIASES, "legacy_merge_gate": "require_human_approval_to_merge"},
+        )
+
+    def test_aliased_global_gate_row_survives_full_autonomy(self) -> None:
+        # Operator explicitly kept the merge gate ON, but under the OLD key name;
+        # the full-autonomy collapse must NOT relax it back to False.
+        ConfigSetting.objects.set_value("autonomy", "full")
+        ConfigSetting.objects.set_value("legacy_merge_gate", value=True)
+        settings = get_effective_settings()
+        assert settings.autonomy is Autonomy.FULL
+        assert settings.require_human_approval_to_merge is True
+
+    def test_canonical_row_under_new_key_also_pins(self) -> None:
+        # The non-aliased control: a row under the current key pins identically.
+        ConfigSetting.objects.set_value("autonomy", "full")
+        ConfigSetting.objects.set_value("require_human_approval_to_merge", value=True)
+        assert get_effective_settings().require_human_approval_to_merge is True
 
 
 class RetiredSettingKeysStayReachable(TestCase):

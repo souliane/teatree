@@ -2,7 +2,7 @@
 
 ``load_config`` (builds ``TeaTreeConfig`` from the DB), the default Django LOGGING
 dict, ``load_e2e_repos``, and the ``clone_root`` / ``worktree_root`` /
-``worktrees_dir`` / ``check_for_updates`` resolvers. Split out of the package
+``check_for_updates`` resolvers. Split out of the package
 facade for the RUF067 init-is-re-exports-only rule; re-exported from
 ``teatree.config`` so every ``teatree.config.<name>`` path stays valid. The
 per-setting resolvers live in ``resolution`` and are reached through the package
@@ -26,7 +26,7 @@ from pathlib import Path
 
 import teatree.config as _facade
 from teatree.config.settings import E2ERepo, TeaTreeConfig, UserSettings
-from teatree.paths import DATA_DIR, get_data_dir
+from teatree.paths import get_data_dir
 from teatree.update_check import run_update_check
 
 _logger = logging.getLogger("teatree.config")
@@ -232,33 +232,6 @@ def worktree_root() -> Path:
     if stored is not None:
         return Path(str(stored)).expanduser()
     return _default_worktree_root(overlay_name)
-
-
-def worktrees_dir() -> Path:
-    """Canonical worktrees directory (where ticket worktrees are created).
-
-    DB-home: resolves env/Django override first, then the ``ConfigSetting`` store
-    (overlay scope then global, stored as a path string), then the dataclass
-    default — the path-string accessor pattern ``workspace_dir`` /
-    ``worktree_root()`` use. Django-side (it reads ``django.conf.settings``), so it
-    reads the store directly, no ``cold_reader`` needed.
-    """
-    from django.conf import settings  # noqa: PLC0415
-
-    from teatree.config.resolution import (  # noqa: PLC0415
-        _db_global_overrides,
-        _db_overlay_overrides,
-        _resolved_overlay_name,
-    )
-
-    if hasattr(settings, "T3_WORKTREES_DIR"):
-        return Path(settings.T3_WORKTREES_DIR)
-    stored = _db_overlay_overrides(_resolved_overlay_name(None)).get("worktrees_dir")
-    if stored is None:
-        stored = _db_global_overrides().get("worktrees_dir")
-    if stored is not None:
-        return Path(str(stored)).expanduser()
-    return DATA_DIR / "worktrees"
 
 
 def check_for_updates(*, force: bool = False) -> str | None:

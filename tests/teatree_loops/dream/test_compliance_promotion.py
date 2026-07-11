@@ -89,8 +89,8 @@ class WriteClustersRecurrenceGuardTestCase(TestCase):
     def test_recurring_memory_cluster_lands_as_core_gap_not_memory(self) -> None:
         _record_recurrence()
         cluster = _memory_only_cluster()
-        written = write_clusters([cluster], _extract_for(cluster), dry_run=False)
-        assert written == 1
+        outcome = write_clusters([cluster], _extract_for(cluster), dry_run=False)
+        assert outcome.written == 1
         row = ConsolidatedMemory.objects.get(cluster_key="ckey-1")
         # Persisted with a teatree-core destination — so Pass-2 triage tickets it as
         # a core gap instead of re-promoting another memory.

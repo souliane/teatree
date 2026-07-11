@@ -20,7 +20,7 @@ Keystone artifact (pure, no network)
     merge path is never over-blocked.
 
 Forge fallback (live, fail-closed — the never-wedge escape)
-    A live ``fetch_pr_merge_state`` probe over the ticket's ``PullRequest`` rows
+    A live ``CodeHostQuery.pr_merge_state`` probe over the ticket's ``PullRequest`` rows
     that confirms a PR is ``MERGED``. This covers the genuinely-merged PR whose
     keystone MergeAudit row is absent (a manual / out-of-band merge), so a real
     merge is never falsely wedged. An unreachable or erroring probe is
@@ -44,10 +44,11 @@ from typing import TYPE_CHECKING
 from urllib.parse import urlparse
 
 from teatree.config import get_effective_settings
-from teatree.core.merge.ci_rollup import fetch_pr_merge_state
+from teatree.core.merge.ci_rollup import CodeHostQuery
 from teatree.core.modelkit.gate_registry import register_gate
 from teatree.core.models import MergeAudit, PullRequest
 from teatree.core.models.errors import InvalidTransitionError
+from teatree.utils.pr_ref import PrRef
 
 if TYPE_CHECKING:
     from teatree.core.models.ticket import Ticket
@@ -96,7 +97,8 @@ def forge_confirms_merged(ticket: "Ticket") -> bool:
         if not slug or not raw_id.isdigit():
             continue
         try:
-            state = fetch_pr_merge_state(slug, int(raw_id), host_kind=_pr_host_kind(pr))
+            query = CodeHostQuery.for_ref(PrRef(slug=slug, pr_id=int(raw_id), host_kind=_pr_host_kind(pr)))
+            state = query.pr_merge_state()
         except Exception:  # noqa: BLE001 — any probe failure is inconclusive; fail CLOSED (no evidence).
             logger.warning(
                 "merge_evidence gate: forge merge-state probe failed for %s#%s; treating as NOT merged (fail-closed).",

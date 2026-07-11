@@ -20,7 +20,7 @@ from pathlib import Path
 from typing import Any
 
 from teatree.config import FEATURE_FLAGS, get_effective_settings
-from teatree.config_mr_reminder import MrReminderConfig
+from teatree.config.mr_reminder import MrReminderConfig
 from teatree.paths import CANONICAL_DB, DATA_DIR, DATA_DIR_AUTO_ISOLATED
 from teatree.types import SpeakConfig
 from teatree.utils.django_bootstrap import ensure_django

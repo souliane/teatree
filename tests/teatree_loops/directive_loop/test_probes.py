@@ -23,11 +23,21 @@ def _pr(ticket: Ticket, iid: str) -> None:
 
 
 class TestPrBudgetViolations(TestCase):
-    def test_no_limit_set_is_always_clean(self) -> None:
+    def test_no_explicit_limit_uses_the_shipped_default_of_one(self) -> None:
+        # D9: the shipped default is 1, so two open PRs with no explicit override breach it.
         ticket = Ticket.objects.create(issue_url="https://e.com/1", role=Ticket.Role.AUTHOR, overlay=_SCOPE)
         _pr(ticket, "1")
         _pr(ticket, "2")
-        assert pr_budget_violations(_SCOPE, _SINCE) is None  # neutral default 0 = unlimited
+        finding = pr_budget_violations(_SCOPE, _SINCE)
+        assert finding is not None
+        assert "limit 1" in finding
+
+    def test_explicit_zero_is_the_unlimited_opt_out(self) -> None:
+        ConfigSetting.objects.set_value("max_open_prs_per_repo_per_ticket", 0, scope=_SCOPE)
+        ticket = Ticket.objects.create(issue_url="https://e.com/1b", role=Ticket.Role.AUTHOR, overlay=_SCOPE)
+        _pr(ticket, "1")
+        _pr(ticket, "2")
+        assert pr_budget_violations(_SCOPE, _SINCE) is None
 
     def test_within_the_limit_is_clean(self) -> None:
         ConfigSetting.objects.set_value("max_open_prs_per_repo_per_ticket", 1, scope=_SCOPE)

@@ -32,10 +32,10 @@ testable without an LLM and without a live forge. The filing gate mirrors
 withholding) so an escalation ticket can never leak a banned term.
 """
 
+import logging
 import re
 from collections.abc import Sequence
 from dataclasses import dataclass, field, replace
-from datetime import datetime
 from pathlib import Path
 
 from teatree.core.backend_protocols import CodeHostBackend
@@ -43,6 +43,8 @@ from teatree.core.models import InstructionComplianceRecord, InstructionComplian
 from teatree.loops.dream.engine import ConsolidationExtract, DistilledCluster, WeightedSnippet
 from teatree.loops.dream.promote_memory import _CORE_DESTINATION_PREFIXES, UMBRELLA_ISSUE_URL
 from teatree.loops.dream.transcript_extract import looks_like_user_correction
+
+logger = logging.getLogger(__name__)
 
 #: Where a reclassified recurring MEMORY_ONLY cluster is sent instead of a memory
 #: file — a teatree-core path, so Pass-2 triage reads it as a core gap and drives an
@@ -130,6 +132,22 @@ class EscalationOutcome:
     ticket_url: str = ""
     withheld: bool = False
     reason: str = ""
+
+
+@dataclass(frozen=True, slots=True)
+class ComplianceMeasurement:
+    """One MEASUREMENT pass's result: the (maybe-persisted) snapshot + its findings.
+
+    ``snapshot`` is the persisted :class:`InstructionComplianceSnapshot`, or ``None``
+    when the pass observed 0 instructions (nothing to measure) or ran ``dry_run``.
+    ``findings`` are carried forward so a subsequent ESCALATION pass (``--full`` +
+    toggle) can act on the recurrences without recomputing. ``summary`` is the
+    dream-command clause (empty when there were no violations to report).
+    """
+
+    snapshot: InstructionComplianceSnapshot | None
+    findings: tuple[ComplianceFinding, ...]
+    summary: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -355,37 +373,67 @@ def escalate_recurrences(
     return outcomes
 
 
-def run_compliance_phase(
+def run_compliance_measurement(
     *,
-    since: datetime | None,
+    extract: ConsolidationExtract,
     dry_run: bool,
-    host: CodeHostBackend | None,
-) -> str:
-    """Detect → persist → escalate one pass's instruction-compliance failures.
+    overlay: str = "",
+) -> ComplianceMeasurement:
+    """MEASURE one pass's instruction compliance — persist a snapshot, never file (#2663).
 
-    Builds the same bounded extract the engine distils, detects failures, persists
-    one snapshot + audit rows, and (unless *dry_run*) drives each recurrence to a
-    fix-and-merge under the standing umbrella via *host* (a checkbox + a scheduled
-    gate/eval coding task). Returns the dream-command summary clause. A None *host*
-    (no resolved backlog code host) reports a skip rather than raising. The phase
-    enable/gating decision is the caller's; this runs the work.
+    The root-KPI measurement runs on EVERY dream pass (default ON): it detects
+    failures over the already-built *extract* the engine distils and PERSISTS one
+    snapshot + audit rows so ``t3 dream compliance show`` and gate (g) can read the
+    trend. It does NOT escalate — that is the separate ``--full``-gated
+    :func:`run_compliance_escalation`. A pass that observed 0 instructions (an empty
+    or memory-less extract) has nothing to measure, so it records NOTHING and returns
+    a ``None`` snapshot with a WARNING. Under *dry_run* the tally is computed but no
+    row is persisted. Returns a :class:`ComplianceMeasurement` carrying the snapshot,
+    the findings (for a downstream escalation pass), and the summary clause.
     """
-    from teatree.loops.dream import engine  # noqa: PLC0415
-
-    extract = engine.build_extract(engine.enumerate_members(since=since))
     summary = build_compliance_snapshot(extract)
-    snapshot = persist_compliance_pass(summary.findings, instructions_observed=summary.instructions_observed)
-    filed = 0
-    if not dry_run:
-        if host is None:
-            return "; WARN compliance escalation skipped — no teatree code host resolved"
-        outcomes = escalate_recurrences(summary.findings, host, snapshot=snapshot, dry_run=dry_run)
-        filed = sum(1 for o in outcomes if o.filed)
-    if not summary.findings:
-        return ""
-    return (
-        f"; compliance {summary.violations} violation(s)/{summary.recurrences_count} recurrence(s), escalated {filed}"
+    if summary.instructions_observed == 0:
+        logger.warning("dream compliance measurement observed 0 instructions this pass — recording no snapshot.")
+        return ComplianceMeasurement(snapshot=None, findings=summary.findings, summary="")
+    snapshot = (
+        None
+        if dry_run
+        else persist_compliance_pass(
+            summary.findings, instructions_observed=summary.instructions_observed, overlay=overlay
+        )
     )
+    clause = (
+        f"; compliance {summary.violations} violation(s)/{summary.recurrences_count} recurrence(s)"
+        if summary.violations
+        else ""
+    )
+    return ComplianceMeasurement(snapshot=snapshot, findings=summary.findings, summary=clause)
+
+
+def run_compliance_escalation(
+    *,
+    snapshot: InstructionComplianceSnapshot | None,
+    findings: Sequence[ComplianceFinding],
+    host: CodeHostBackend | None,
+    dry_run: bool,
+) -> str:
+    """ESCALATE each recurrence to a fix-and-merge under the standing umbrella (#2663).
+
+    The default-OFF, ``--full``-gated other half of phase 3c: only recurrences (a
+    memory-backed rule violated AGAIN) escalate, each riding one deduped umbrella
+    checkbox + scheduled gate/eval coding task via *host* — never another memory.
+    A ``None`` *host* (no resolved backlog code host) reports a skip rather than
+    raising. Under *dry_run* nothing is filed. When *snapshot* is supplied, the
+    matching audit row is stamped escalated. Returns the dream-command summary clause.
+    """
+    recurrences = sum(1 for f in findings if f.is_recurrence)
+    if not recurrences:
+        return ""
+    if host is None:
+        return "; WARN compliance escalation skipped — no teatree code host resolved"
+    outcomes = escalate_recurrences(findings, host, snapshot=snapshot, dry_run=dry_run)
+    filed = sum(1 for o in outcomes if o.filed)
+    return f"; escalated {filed}/{recurrences} compliance recurrence(s)"
 
 
 def render_compliance_show() -> list[str]:
@@ -397,7 +445,7 @@ def render_compliance_show() -> list[str]:
     """
     snapshot = InstructionComplianceSnapshot.objects.latest_for()
     if snapshot is None:
-        return ["No compliance snapshot recorded yet — run `t3 dream run --full` with compliance enabled."]
+        return ["No compliance snapshot recorded yet — run `t3 dream run` (measurement is on by default)."]
     headline = (
         f"Instruction-compliance — rate {snapshot.compliance_rate:.2f} "
         f"({snapshot.violations} violation(s), {snapshot.recurrences_count} recurrence(s)) "
@@ -456,6 +504,7 @@ def _escalation_title(finding: ComplianceFinding) -> str:
 
 __all__ = [
     "ComplianceFinding",
+    "ComplianceMeasurement",
     "ComplianceSnapshotResult",
     "EscalationOutcome",
     "build_compliance_snapshot",
@@ -464,5 +513,6 @@ __all__ = [
     "persist_compliance_pass",
     "reclassify_recurring_memory_clusters",
     "render_compliance_show",
-    "run_compliance_phase",
+    "run_compliance_escalation",
+    "run_compliance_measurement",
 ]

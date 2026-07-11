@@ -5,32 +5,29 @@ Stage A (0 tokens): return teatree's already-rendered statusline content
 transformed for Slack mrkdwn. No LLM, no dashboard table — the user
 expects to see only the entries that appear in the statusline (#1121).
 
-Stage B (only if A yields nothing): exactly ONE in-process
-:func:`claude_agent_sdk.query` turn on the haiku model, with the tiny
-:data:`_HAIKU_SYSTEM_PROMPT` as the whole system prompt and a <1 KB compact
+Stage B (only if A yields nothing): exactly ONE clean-room, cheap-tier turn
+through the shared one-shot seam
+(:func:`teatree.agents.one_shot.run_one_shot`) with the tiny
+:data:`_CHEAP_SYSTEM_PROMPT` as the whole system prompt and a <1 KB compact
 state digest (the same statusline content), NO skills / tools / loop
-context. It runs the model in-process via the same Agent SDK the eval
-``api`` backend uses, authenticated by the subscription
-(``CLAUDE_CODE_OAUTH_TOKEN``) — it never shells ``claude -p`` and never
-bills an API key; it spends subscription-covered model time for one
-stateless turn. It is hard-gated by ``T3_SLACK_ANSWER_TOKEN_BUDGET``
-(reusing the self-improve :func:`precheck_budget`). If the model decides it
-must read code / investigate, it replies with the exact
-:data:`NEEDS_WORK_SENTINEL` token and the caller delegates to a sub-agent
-instead.
+context. The seam resolves the ``cheap`` tier to a concrete model id and
+routes the turn through the active harness (``claude_sdk`` or
+``pydantic_ai``/OrcaRouter), so the answer follows a swapped tier-model DB
+row and works off-Claude — never a hardcoded model id. It is hard-gated by
+``T3_SLACK_ANSWER_TOKEN_BUDGET`` (reusing the self-improve
+:func:`precheck_budget`). If the model decides it must read code /
+investigate, it replies with the exact :data:`NEEDS_WORK_SENTINEL` token and
+the caller delegates to a sub-agent instead.
 
 Returning ``None`` means "could not cheaply answer, and did not even try
 the model" (budget gate closed) — the cycle then falls through to the
 NEEDS_WORK delegation path.
 """
 
-import asyncio
 import os
-import shutil
 from typing import TYPE_CHECKING
 
-from claude_agent_sdk import AssistantMessage, ClaudeAgentOptions, TextBlock, query
-
+from teatree.agents.one_shot import OneShotSpec, run_one_shot
 from teatree.loop.self_improve.budget import precheck_budget
 from teatree.loop.slack_answer.classifier import strip_urls
 from teatree.loop.statusline import statusline_for_slack
@@ -62,13 +59,13 @@ _DASHBOARD_TOKENS: tuple[str, ...] = (
     "statusline",
 )
 
-_HAIKU_SYSTEM_PROMPT = (
+_CHEAP_SYSTEM_PROMPT = (
     "Answer this one Slack question from the compact state below in "
     "≤3 sentences. If you must read code or investigate to answer, "
     f"reply with exactly {NEEDS_WORK_SENTINEL} and nothing else."
 )
 
-_HAIKU_TIMEOUT_SECONDS = 60.0
+_CHEAP_TURN_TIMEOUT_SECONDS = 60.0
 
 
 def _token_budget_remaining() -> int | None:
@@ -103,57 +100,27 @@ def _compact_state_digest() -> str:
     return digest[:1024]
 
 
-_HAIKU_MODEL = "haiku"
+def _run_cheap_turn(question: str, digest: str) -> str:
+    """One bounded, clean-room, cheap-tier turn via the shared one-shot seam; returns its text.
 
-
-def _haiku_options() -> ClaudeAgentOptions:
-    """Clean-room options for the single haiku turn: no tools, one turn, no bias.
-
-    Mirrors the eval ``api`` runner's virgin configuration in miniature:
-    ``setting_sources=[]`` (the developer's personal context never biases the
-    answer), an empty tool allowlist, and a single ``max_turns`` so the model
-    answers from the supplied digest alone and cannot run a tool / read code.
+    No skills, no tools, no loop context — a single stateless turn resolved to
+    the ``cheap`` tier and routed through the active harness
+    (:func:`teatree.agents.one_shot.run_one_shot`). A missing ``claude`` child,
+    any backend/credential error, or a timeout yields ``None`` from the seam,
+    which collapses to the NEEDS_WORK sentinel so the caller falls through to
+    delegation rather than posting a broken answer.
     """
-    return ClaudeAgentOptions(
-        model=_HAIKU_MODEL,
-        system_prompt=_HAIKU_SYSTEM_PROMPT,
-        setting_sources=[],
-        tools=[],
-        max_turns=1,
-    )
-
-
-def _run_haiku(question: str, digest: str) -> str:
-    """One bounded in-process haiku turn via the Agent SDK; returns its text.
-
-    No skills, no tools, no loop context — a single stateless turn run through
-    :func:`claude_agent_sdk.query` (the SDK spawns the ``claude`` CLI child,
-    authenticated by the subscription's ``CLAUDE_CODE_OAUTH_TOKEN``; it never
-    shells ``claude -p`` and never bills an API key). A missing ``claude`` child,
-    any SDK error, or a timeout yields the NEEDS_WORK sentinel so the caller falls
-    through to delegation rather than posting a broken answer.
-    """
-    if shutil.which("claude") is None:
-        return NEEDS_WORK_SENTINEL
     prompt = f"Question: {question}\n\nCompact teatree state:\n{digest}"
-    try:
-        text = asyncio.run(_query_first_text(prompt))
-    except (OSError, TimeoutError, RuntimeError):
-        return NEEDS_WORK_SENTINEL
-    return text.strip() or NEEDS_WORK_SENTINEL
-
-
-async def _query_first_text(prompt: str) -> str:
-    """Drive one bounded haiku turn and return the concatenated assistant text."""
-    parts: list[str] = []
-
-    async def _drive() -> None:
-        async for message in query(prompt=prompt, options=_haiku_options()):
-            if isinstance(message, AssistantMessage):
-                parts.extend(block.text for block in message.content if isinstance(block, TextBlock))
-
-    await asyncio.wait_for(_drive(), timeout=_HAIKU_TIMEOUT_SECONDS)
-    return "".join(parts)
+    answer = run_one_shot(
+        prompt,
+        OneShotSpec(
+            system_prompt=_CHEAP_SYSTEM_PROMPT,
+            tier="cheap",
+            max_turns=1,
+            timeout_seconds=_CHEAP_TURN_TIMEOUT_SECONDS,
+        ),
+    )
+    return answer or NEEDS_WORK_SENTINEL
 
 
 def build_simple_answer(row: "PendingChatInjection") -> str | None:
@@ -171,7 +138,7 @@ def build_simple_answer(row: "PendingChatInjection") -> str | None:
     if not verdict.ok:
         return None
 
-    return _run_haiku(row.text, _compact_state_digest())
+    return _run_cheap_turn(row.text, _compact_state_digest())
 
 
 __all__ = ["NEEDS_WORK_SENTINEL", "build_simple_answer"]

@@ -5,7 +5,7 @@ keeps the reference DB and its snapshot warm out-of-band, so a ticket
 provision either fails outright or pays the slow restore+migrate path itself.
 This scanner runs on its own mini-loop cadence, checking every overlay-
 declared :class:`~teatree.utils.django_db.DjangoDbImportConfig` for staleness
-(:func:`teatree.utils.django_db_snapshot_warmer.snapshot_is_stale`) and
+(:func:`teatree.utils.django_db.snapshot_warmer.snapshot_is_stale`) and
 emitting one signal per stale config. No separate cadence marker is needed:
 the DSLR snapshot's OWN embedded date is the "last refreshed" timestamp, so
 once refreshed today the scan naturally finds it fresh and stops emitting.
@@ -21,7 +21,7 @@ from dataclasses import dataclass, field
 
 from teatree.loop.scanners.base import ScanSignal
 from teatree.utils.django_db import DjangoDbImportConfig
-from teatree.utils.django_db_snapshot_warmer import snapshot_is_stale
+from teatree.utils.django_db.snapshot_warmer import snapshot_is_stale
 
 logger = logging.getLogger(__name__)
 

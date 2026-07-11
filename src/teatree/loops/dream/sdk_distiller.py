@@ -5,10 +5,14 @@ This is the only place the dream pass touches an LLM. :func:`sdk_distill` is the
 engine — and every phase around it — runs with no LLM. The concern split out of
 :mod:`teatree.loops.dream.engine` (#2723) is the LLM call + defensive JSON parse.
 
-:func:`_run_distiller_turn` makes ONE bounded headless ``claude-agent-sdk`` turn (the
-headless-runner invocation shape: ``claude_code`` preset, ``bypassPermissions``, a
-wall-clock watchdog) and raises when ``claude`` is unavailable or the turn fails, so a
+:func:`_run_distiller_turn` makes ONE bounded headless ``claude-agent-sdk`` turn (via
+the :func:`_distill_options` factory: a PLAIN-STRING system prompt — model-agnostic, not
+the ``claude_code`` preset, so an off-Claude tier resolves cleanly — ``bypassPermissions``,
+a wall-clock watchdog) and raises when ``claude`` is unavailable or the turn fails, so a
 failure propagates and the pass is marked attempted-not-succeeded — never a fake success.
+The model is resolved through :func:`teatree.agents.model_tiering.resolve_tier` on the
+``cheap`` tier — one place, one DB-overridable knob (``agent_tier_models``) — rather than
+a hardcoded id, so the aux distiller call follows the same tiering as every other agent.
 The watchdog (:func:`asyncio.timeout`) bounds the WHOLE turn — the ``claude`` connect, the
 query, AND the response drain — so a stuck subprocess connect can never hang the dream pass
 forever (the prior watchdog wrapped only the response drain, leaving connect/query
@@ -30,10 +34,14 @@ import hashlib
 import json
 import re
 from collections.abc import Mapping, Sequence
-from typing import cast
+from typing import TYPE_CHECKING, cast
 
+from teatree.agents.model_tiering import resolve_tier
 from teatree.loops.dream.engine import ConsolidationExtract, DistilledCluster, DistillEmptyReason, DistillResult
 from teatree.loops.dream.json_scan import first_object_bearing_array
+
+if TYPE_CHECKING:
+    from claude_agent_sdk import ClaudeAgentOptions
 
 _DISTILL_SYSTEM_PROMPT = (
     "You consolidate an agent's recent feedback and lessons into durable rules. "
@@ -59,7 +67,6 @@ _DISTILL_PROMPT_TEMPLATE = (
 )
 
 _DISTILL_WATCHDOG_SECONDS = 5 * 60
-_DISTILL_MODEL = "claude-haiku-4-5"
 #: ``cluster_key`` is NO LONGER required from the LLM — it is derived deterministically
 #: from the member set (#2723), matching the ``ConsolidatedMemory`` docstring's "sha256
 #: over the normalized member identities". A reworded slug for the same root cause used
@@ -133,19 +140,35 @@ def _run_distiller_turn(extract: ConsolidationExtract) -> str:
     return asyncio.run(_collect_turn(prompt))
 
 
-async def _collect_turn(prompt: str) -> str:
-    import asyncio  # noqa: PLC0415
+def _distill_options() -> "ClaudeAgentOptions":
+    """Build the bounded, no-tool SDK options for one distiller turn.
 
-    from claude_agent_sdk import AssistantMessage, ClaudeAgentOptions, ClaudeSDKClient, TextBlock  # noqa: PLC0415
-    from claude_agent_sdk.types import SystemPromptPreset  # noqa: PLC0415
+    A PLAIN-STRING system prompt (not the ``claude_code`` preset) keeps the turn
+    model-agnostic so an off-Claude ``cheap`` tier resolves cleanly; the model is
+    :func:`resolve_tier`-driven (``agent_tier_models`` DB-overridable) rather than a
+    hardcoded id, so this aux call follows the same tiering as every other agent.
+    """
+    from claude_agent_sdk import ClaudeAgentOptions  # noqa: PLC0415 — deferred: optional heavy SDK dep
 
-    options = ClaudeAgentOptions(
-        system_prompt=SystemPromptPreset(type="preset", preset="claude_code", append=_DISTILL_SYSTEM_PROMPT),
-        model=_DISTILL_MODEL,
+    return ClaudeAgentOptions(
+        system_prompt=_DISTILL_SYSTEM_PROMPT,
+        model=resolve_tier("cheap"),
         permission_mode="bypassPermissions",
         max_turns=1,
         allowed_tools=[],
     )
+
+
+async def _collect_turn(prompt: str) -> str:
+    import asyncio  # noqa: PLC0415
+
+    from claude_agent_sdk import (  # noqa: PLC0415 — deferred: optional heavy SDK dep, imported only at turn time
+        AssistantMessage,
+        ClaudeSDKClient,
+        TextBlock,
+    )
+
+    options = _distill_options()
     parts: list[str] = []
     # Bound the ENTIRE turn — connect (``__aenter__`` spawns the ``claude``
     # subprocess), query, AND the response drain — under one watchdog. Wrapping

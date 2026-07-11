@@ -6110,7 +6110,7 @@ def _current_turn_assistant_text(transcript_path: str) -> str:
 def _speak_settings() -> tuple[str, bool]:
     """Read the global ``speak`` DB row → ``(local, slack)`` (#2060, DB-home).
 
-    The hook-side mirror of :func:`teatree.config_speak.resolve_speak`. ``speak`` is
+    The hook-side mirror of :func:`teatree.config.speak.resolve_speak`. ``speak`` is
     DB-home (#1775): the Stop hook cannot cheaply boot the Django config, so it reads
     the same ``ConfigSetting`` store via the Django-free :mod:`teatree.config.cold_reader`
     — a stored JSON dict ``{"local": ..., "slack": ...}``, else the defaults

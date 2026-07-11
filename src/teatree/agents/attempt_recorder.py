@@ -281,7 +281,7 @@ def _resolve_review_target(task: Task) -> "_ReviewTarget | None":
     ref = pr_ref_from_url(pr.url)
     if ref is None:
         return None
-    return _ReviewTarget(slug=ref.slug, pr_id=ref.number, head_sha="", ticket=ticket)
+    return _ReviewTarget(slug=ref.slug, pr_id=ref.pr_id, head_sha="", ticket=ticket)
 
 
 def _advance_open_review_loop(recorded: ReviewVerdict) -> None:

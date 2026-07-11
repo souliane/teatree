@@ -48,7 +48,7 @@ import logging
 from dataclasses import dataclass
 from typing import Protocol, runtime_checkable
 
-from teatree.core.merge import fetch_required_context_names
+from teatree.core.merge import CodeHostQuery
 from teatree.core.models.merge_clear import MergeClear
 from teatree.loop.scanners import pr_sweep_substrate as substrate
 from teatree.loop.scanners.base import ScannerError, ScanSignal
@@ -73,6 +73,7 @@ from teatree.loop.scanners.pr_sweep_types import (
     MergeAttempt,
     PrSummary,
 )
+from teatree.utils.pr_ref import PrRef
 
 __all__ = [
     "GH_CONFLICT_MERGEABLE",
@@ -350,13 +351,13 @@ class PrSweepScanner:
 
         The core green/pending/failed verdict routes through the SAME
         :func:`classify_required_rollup` the §17.4.3 keystone uses, scoped to the
-        SAME required set (:func:`fetch_required_context_names`) — so the sweep and
-        the keystone can never re-diverge (#12). Shared by the CLEAR path and the
-        solo-overlay bypass so the two gates cannot drift apart.
+        SAME required set (:meth:`CodeHostQuery.required_context_names`) — so the
+        sweep and the keystone can never re-diverge (#12). Shared by the CLEAR path
+        and the solo-overlay bypass so the two gates cannot drift apart.
         """
         return classify_sweep_ci(
             list(pr.rollup),
-            fetch_required_context_names(pr.slug, pr.number),
+            CodeHostQuery.for_ref(PrRef(slug=pr.slug, pr_id=pr.number)).required_context_names(),
             main_uv_audit_red=lambda: self._main_uv_audit_red(slug=pr.slug),
         )
 

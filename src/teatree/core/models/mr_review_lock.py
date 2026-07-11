@@ -141,7 +141,7 @@ class MRReviewLock(models.Model):
         if ref is None:
             msg = f"acquire_by_url: {mr_url!r} is not a recognised PR/MR web URL"
             raise ValueError(msg)
-        return cls.acquire(slug=ref.slug, pr_id=ref.number, holder=holder, mr_url=mr_url, ttl=ttl)
+        return cls.acquire(slug=ref.slug, pr_id=ref.pr_id, holder=holder, mr_url=mr_url, ttl=ttl)
 
     @classmethod
     def mark_verdict_pending(cls, *, slug: str, pr_id: int) -> bool:

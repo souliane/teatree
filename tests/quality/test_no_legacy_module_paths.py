@@ -272,7 +272,7 @@ class TestFacadeImportSmoke:
             "execute_bound_merge",
             "assert_merge_preconditions",
             "resolve_pr_repo_slug",
-            "fetch_pr_merge_state",
+            "CodeHostQuery",
             "MergePreconditionError",
             "MergeHeadMovedError",
         ):

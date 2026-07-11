@@ -1,6 +1,6 @@
 """GitHub required-checks rollup classification (BLUEPRINT §17.4.3 step 3).
 
-``fetch_required_checks_status`` re-verifies the live required-checks at merge
+``CodeHostQuery.required_checks_status`` re-verifies the live required-checks at merge
 time. The authoritative required set is the repo's branch-protection
 ``required_status_checks`` contexts — NOT the whole ``statusCheckRollup`` (which
 reports every check on the head, required or not). A check NOT in the required
@@ -23,13 +23,9 @@ from unittest.mock import patch
 
 from teatree.backends.forge_merge_rpc import GhMergeRpc
 from teatree.core.backend_protocols import rollup_query_failed
-from teatree.core.merge import classify_required_rollup, failing_required_names, fetch_required_checks_status
-from teatree.core.merge.ci_rollup import (
-    _check_name,
-    _dedupe_newest_per_name,
-    _required_contexts_verdict,
-    fetch_required_context_names,
-)
+from teatree.core.merge import CodeHostQuery, classify_required_rollup, failing_required_names
+from teatree.core.merge.ci_rollup import _check_name, _dedupe_newest_per_name, _required_contexts_verdict
+from teatree.utils.pr_ref import PrRef
 
 _SLUG = "souliane/teatree"
 _PR_ID = 2580
@@ -87,7 +83,7 @@ def _verdict(
 ) -> str:
     stub = _gh_stub(rollup, required=required, protection_rc=protection_rc, protection_body=protection_body)
     with patch("teatree.backends.forge_merge_rpc.gh_runner", return_value=stub):
-        return fetch_required_checks_status(_SLUG, _PR_ID, host_kind="github")
+        return CodeHostQuery.for_ref(PrRef(slug=_SLUG, pr_id=_PR_ID)).required_checks_status()
 
 
 def _check_run(
@@ -353,7 +349,7 @@ class TestDedupeHelperEdgeCases:
     """Defensive branches of ``_dedupe_newest_per_name`` reached directly.
 
     The backend pre-filters non-dicts out of the rollup, so these shapes do
-    not reach the helper through the public ``fetch_required_checks_status``
+    not reach the helper through the public ``CodeHostQuery.required_checks_status``
     path — but the helper is defensive in its own right, so its guards are
     exercised here.
     """
@@ -473,7 +469,7 @@ class TestSharedClassifierHelpers:
 
     def test_fetch_required_context_names_returns_set(self) -> None:
         with patch("teatree.backends.forge_merge_rpc.gh_runner", return_value=_gh_stub([], required=["lint", "sbom"])):
-            assert fetch_required_context_names(_SLUG, _PR_ID, host_kind="github") == {"lint", "sbom"}
+            assert CodeHostQuery.for_ref(PrRef(slug=_SLUG, pr_id=_PR_ID)).required_context_names() == {"lint", "sbom"}
 
     def test_fetch_required_context_names_none_on_fetch_failure(self) -> None:
         # Fail CLOSED: an indeterminate required set is signalled as None.
@@ -481,14 +477,14 @@ class TestSharedClassifierHelpers:
             "teatree.backends.forge_merge_rpc.gh_runner",
             return_value=_gh_stub([], protection_rc=1, protection_body="HTTP 403: Forbidden"),
         ):
-            assert fetch_required_context_names(_SLUG, _PR_ID, host_kind="github") is None
+            assert CodeHostQuery.for_ref(PrRef(slug=_SLUG, pr_id=_PR_ID)).required_context_names() is None
 
     def test_fetch_required_context_names_empty_on_no_gate(self) -> None:
         with patch(
             "teatree.backends.forge_merge_rpc.gh_runner",
             return_value=_gh_stub([], protection_rc=1, protection_body="HTTP 404: Branch not protected"),
         ):
-            assert fetch_required_context_names(_SLUG, _PR_ID, host_kind="github") == set()
+            assert CodeHostQuery.for_ref(PrRef(slug=_SLUG, pr_id=_PR_ID)).required_context_names() == set()
 
 
 class TestRequiredStatusCheckContextsTransport:

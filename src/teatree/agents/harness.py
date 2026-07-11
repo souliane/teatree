@@ -55,13 +55,9 @@ from pydantic_ai.usage import UsageLimits
 from teatree.agents.lane_b.compaction import compact_history
 from teatree.agents.lane_b.config import LaneBToolConfig
 from teatree.agents.lane_b.toolsets import build_lane_b_toolsets
-from teatree.agents.model_tiering import (
-    HARNESS_EFFORT_SCALE,
-    assert_model_allowed_on_regulated_path,
-    resolve_phase_harness,
-    resolve_pydantic_ai_model,
-)
+from teatree.agents.model_tiering import HARNESS_EFFORT_SCALE, resolve_phase_harness, resolve_pydantic_ai_model
 from teatree.agents.pydantic_ai_resume import rehydrate_thread_for_resume
+from teatree.agents.regulated_path import assert_model_allowed_on_regulated_path
 from teatree.config import AgentHarness, get_effective_settings
 from teatree.llm.credentials import OrcaRouterCredential, resolve_orca_router_provider_config
 
@@ -429,7 +425,7 @@ class PydanticAiHarness:
     :class:`~pydantic_ai.models.function.FunctionModel` doubles, with no network
     and no :class:`~teatree.llm.credentials.CredentialError` risk. A resolved
     model name is checked against the regulated-path allowlist policy
-    (:func:`~teatree.agents.model_tiering.assert_model_allowed_on_regulated_path`, #2887)
+    (:func:`~teatree.agents.regulated_path.assert_model_allowed_on_regulated_path`, #2887)
     before it reaches the provider — a no-op unless the lane sets
     ``enforce_regulated_path``.
 

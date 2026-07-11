@@ -1,8 +1,8 @@
 """Directory resolution, data/logging helpers and e2e-repo config.
 
-Covers ``worktree_root``/``worktrees_dir`` (env/Django override then the DB tier
-then the default), ``clone_root``, ``get_data_dir``, ``default_logging``,
-``_extract_settings_module`` and ``load_e2e_repos`` (DB-home ``e2e_repos`` registry).
+Covers ``worktree_root`` (env/Django override then the DB tier then the default),
+``clone_root``, ``get_data_dir``, ``default_logging``, ``_extract_settings_module``
+and ``load_e2e_repos`` (DB-home ``e2e_repos`` registry).
 
 Integration-first per the Test-Writing Doctrine: a real on-disk ``manage.py`` and a
 real cold-path sqlite (``config_db``) under ``tmp_path``.
@@ -20,9 +20,7 @@ from teatree.config import (
     get_data_dir,
     load_e2e_repos,
     worktree_root,
-    worktrees_dir,
 )
-from teatree.paths import DATA_DIR
 
 from ._shared import _seed_config_db
 
@@ -65,22 +63,6 @@ class TestCloneRoot:
         if hasattr(settings, "T3_WORKSPACE_DIR"):
             del settings.T3_WORKSPACE_DIR
         assert clone_root() == Path.home() / "workspace"
-
-
-class TestWorktreesDir:
-    def test_returns_path_from_django_settings(self, tmp_path: Path, settings) -> None:
-        custom = tmp_path / "custom-wt"
-        settings.T3_WORKTREES_DIR = str(custom)
-        result = worktrees_dir()
-        assert result == custom
-
-    def test_falls_back_to_default(self, settings) -> None:
-        # With no env/Django override and no DB row the default ``DATA_DIR/worktrees``
-        # stands. The DB tier is covered in test_worktrees_dir_db.py.
-        if hasattr(settings, "T3_WORKTREES_DIR"):
-            del settings.T3_WORKTREES_DIR
-
-        assert worktrees_dir() == DATA_DIR / "worktrees"
 
 
 def test_get_data_dir_creates_directory(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

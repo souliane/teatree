@@ -15,7 +15,7 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from collections.abc import Callable
 
-    from teatree.core.management.commands._test_plan.render import TestPlanState
+    from teatree.core.management.commands._test_plan.state import TestPlanState
 
 
 def render_browser_click_first(

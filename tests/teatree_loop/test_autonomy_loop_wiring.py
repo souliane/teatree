@@ -169,8 +169,8 @@ class TestPrSweepSoloOverlayGate(TestCase):
         """An explicit ``require_human_approval_to_merge = true`` survives the collapse.
 
         ``full`` autonomy would collapse the merge gate to ``false``, but a
-        hard-pinned per-overlay value wins (``_global_pinned_fields`` /
-        ``_apply_autonomy``). The single-author bypass still arms
+        hard-pinned per-overlay value wins (``_apply_autonomy``'s
+        ``hard_pinned`` set). The single-author bypass still arms
         (``solo_overlay``) yet the cold-review auto-dispatch must NOT — the
         human stays in the merge loop, so the agent must not auto-dispatch its
         own review. This is the case that catches a future collapse-precedence

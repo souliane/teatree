@@ -28,7 +28,6 @@ pytestmark = pytest.mark.django_db
 _REVIEWED = "a" * 40
 _MOVED = "b" * 40
 _URL = "https://github.com/souliane/teatree/pull/1680"
-_REVIEW_MOD = "teatree.core.management.commands.review"
 
 
 def _record(**overrides: object) -> dict[str, object]:
@@ -48,8 +47,8 @@ def _record(**overrides: object) -> dict[str, object]:
 
 def _status(*, head: str, checks: str = "green") -> dict[str, object]:
     with (
-        patch(f"{_REVIEW_MOD}.fetch_live_head_sha", return_value=head),
-        patch(f"{_REVIEW_MOD}.fetch_required_checks_status", return_value=checks),
+        patch("teatree.core.merge.ci_rollup.CodeHostQuery.live_head_sha", return_value=head),
+        patch("teatree.core.merge.ci_rollup.CodeHostQuery.required_checks_status", return_value=checks),
     ):
         return cast("dict[str, object]", call_command("review", "status", _URL))
 

@@ -1,13 +1,15 @@
-"""``pr_ref_from_url`` — parse a PR/MR web URL into (slug, number, host_kind).
+"""``pr_ref_from_url`` — parse a PR/MR web URL into the canonical ``PrRef``.
 
 Pure parsing logic feeding ``review status``: a GitHub ``/pull/<n>`` and a
-GitLab ``/-/merge_requests/<iid>`` URL must both yield the repo slug, the PR
-number, and the forge transport switch ``fetch_live_head_sha`` dispatches on.
+GitLab ``/-/merge_requests/<iid>`` URL must both yield the canonical
+:class:`teatree.utils.pr_ref.PrRef` (slug, ``pr_id``, host_kind) — the same forge
+transport switch the merge-execution ``CodeHostQuery`` dispatches on.
 """
 
 import pytest
 
-from teatree.utils.url_slug import PrRef, pr_ref_from_url
+from teatree.utils.pr_ref import PrRef
+from teatree.utils.url_slug import pr_ref_from_url
 
 
 @pytest.mark.parametrize(
@@ -15,19 +17,19 @@ from teatree.utils.url_slug import PrRef, pr_ref_from_url
     [
         (
             "https://github.com/souliane/teatree/pull/1680",
-            PrRef(slug="souliane/teatree", number=1680, host_kind="github"),
+            PrRef(slug="souliane/teatree", pr_id=1680, host_kind="github"),
         ),
         (
             "https://github.com/souliane/teatree/pull/1680/",
-            PrRef(slug="souliane/teatree", number=1680, host_kind="github"),
+            PrRef(slug="souliane/teatree", pr_id=1680, host_kind="github"),
         ),
         (
             "https://gitlab.com/group/sub/project/-/merge_requests/42",
-            PrRef(slug="group/sub/project", number=42, host_kind="gitlab"),
+            PrRef(slug="group/sub/project", pr_id=42, host_kind="gitlab"),
         ),
         (
             "https://gitlab.example.com/team/api/-/merge_requests/7",
-            PrRef(slug="team/api", number=7, host_kind="gitlab"),
+            PrRef(slug="team/api", pr_id=7, host_kind="gitlab"),
         ),
     ],
 )

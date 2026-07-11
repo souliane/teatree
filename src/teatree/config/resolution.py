@@ -25,10 +25,10 @@ import teatree.config as _facade
 from teatree.config.discovery import _active_overlay_entry
 from teatree.config.enums import Autonomy, Mode, OnBehalfPostMode
 from teatree.config.homes import SETTING_HOMES, SettingHome
+from teatree.config.mr_reminder import mr_reminder_from_table
 from teatree.config.overlay_code_defaults import overlay_code_defaults
 from teatree.config.settings import ENV_SETTING_OVERRIDES, OVERLAY_OVERRIDABLE_SETTINGS, OverlayEntry, UserSettings
-from teatree.config_mr_reminder import mr_reminder_from_table
-from teatree.config_speak import speak_from_subtable
+from teatree.config.speak import speak_from_subtable
 from teatree.types import SpeakConfig
 
 _logger = logging.getLogger("teatree.config")
@@ -145,10 +145,17 @@ def get_effective_settings(overlay_name: str | None = None) -> UserSettings:
     layered = {**code_defaults, **overrides}
     settings = base if not layered else replace(base, **layered)
     settings = _apply_structured_db_settings(settings, global_rows, overlay_rows, base.speak)
+    # ``global_pinned`` MUST be the FOLDED field names (``global_db``), not the raw
+    # row keys (``global_rows``): a global row stored under a retired alias
+    # (``_LEGACY_SETTING_ALIASES``) resolves its VALUE onto the current field via
+    # ``_coerce_db_rows``, so its pin must be recorded under that same current field
+    # name. Keying the pin set off the raw row keys would let a renamed approval-gate
+    # field's value resolve while its pin silently vanished — the autonomy collapse
+    # would then override an explicitly-stored gate (config §3d #1).
     return _apply_autonomy(
         settings,
         hard_pinned=hard_pinned,
-        global_pinned=set(global_rows),
+        global_pinned=set(global_db),
     )
 
 
@@ -473,26 +480,6 @@ def _drop_db_home_overlay_keys(overrides: dict[str, Any], overlay_name: str) -> 
             scope,
         )
     return kept
-
-
-def _global_pinned_fields() -> set[str]:
-    """Names of settings the user explicitly pinned at the GLOBAL scope (#1775).
-
-    A *global* explicit value is a deliberate per-gate opinion for the three
-    approval gates and still wins over the autonomy collapse — except for
-    ``mode``: a global ``mode`` is a workspace-wide default, not a statement
-    about an autonomous overlay, so it must NOT defeat the autonomy ``mode =
-    auto`` pin (a common ``mode = "interactive"`` global would otherwise leave a
-    ``full``/``notify`` overlay half-autonomous — gates relaxed but the merge
-    path still gated on ``mode == AUTO``). ``_apply_autonomy`` only checks
-    ``hard_pinned`` for ``mode``, so a global ``mode`` here is harmless. A
-    *per-overlay*/env ``mode`` arrives via the override layer (``hard_pinned``)
-    and DOES win.
-
-    Every setting is DB-home, so a *global* pin is a GLOBAL-scope (``scope=""``)
-    ``ConfigSetting`` row, read here via :func:`_load_global_rows`.
-    """
-    return set(_load_global_rows())
 
 
 def _apply_autonomy(settings: UserSettings, *, hard_pinned: set[str], global_pinned: set[str]) -> UserSettings:

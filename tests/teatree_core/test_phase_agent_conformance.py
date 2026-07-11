@@ -286,10 +286,10 @@ class TestFanoutRegistryConformance(TestCase):
 
 
 class TestCorePhasesImportIsolation(TestCase):
-    """``core.phases`` keeps NO runtime import of ``config_agent`` (teatree#2229).
+    """``core.phases`` keeps NO runtime import of ``config.agent_spawn`` (teatree#2229).
 
     The fan-out resolver takes a resolved ``AgentConfig`` as a parameter so the
-    domain ``core`` layer never imports UP into the platform ``config_agent``
+    domain ``core`` layer never imports UP into the platform ``config.agent_spawn``
     module at runtime — the ``AgentConfig`` annotation is ``TYPE_CHECKING``-only.
     tach's layered config would actually permit a domain->platform edge, so this
     deterministic guard (not tach) is what upholds the decoupling the module's
@@ -297,19 +297,18 @@ class TestCorePhasesImportIsolation(TestCase):
     """
 
     def test_core_phases_has_no_runtime_config_agent_import(self) -> None:
+        target = "teatree.config.agent_spawn"
         spec = importlib.util.find_spec("teatree.core.modelkit.phases")
         assert spec is not None
         assert spec.origin is not None
         tree = ast.parse(Path(spec.origin).read_text(encoding="utf-8"))
         offenders: list[int] = []
         for stmt in tree.body:
-            if isinstance(stmt, ast.ImportFrom) and (stmt.module or "").startswith("teatree.config_agent"):
+            if isinstance(stmt, ast.ImportFrom) and (stmt.module or "").startswith(target):
                 offenders.append(stmt.lineno)
             if isinstance(stmt, ast.Import):
-                offenders.extend(
-                    s.lineno for s in [stmt] for alias in stmt.names if alias.name.startswith("teatree.config_agent")
-                )
+                offenders.extend(s.lineno for s in [stmt] for alias in stmt.names if alias.name.startswith(target))
         assert offenders == [], (
-            f"core.phases must not import teatree.config_agent at runtime "
+            f"core.phases must not import {target} at runtime "
             f"(domain must not depend on platform here); top-level import lines: {offenders}"
         )

@@ -23,6 +23,7 @@ from teatree.config.enums import (
     TeamsDisplay,
     Wip,
 )
+from teatree.config.mr_reminder import MrReminderConfig, parse_mr_reminder_setting
 from teatree.config.setting_parsers import (
     _default_handover_mirror_path,
     _parse_env_bool,
@@ -39,9 +40,7 @@ from teatree.config.setting_parsers import (
     _parse_strict_str,
     _parse_user_identity_aliases,
 )
-from teatree.config_mr_reminder import MrReminderConfig, parse_mr_reminder_setting
-from teatree.config_speak import parse_speak_setting
-from teatree.paths import DATA_DIR
+from teatree.config.speak import parse_speak_setting
 from teatree.types import DEFAULT_MR_TITLE_REGEX, SlackVoiceClassifierMode, SpeakConfig
 
 
@@ -203,6 +202,12 @@ OVERLAY_OVERRIDABLE_SETTINGS: dict[str, Callable[[Any], Any]] = {
     "factory_score_enabled": _parse_strict_bool,
     "approved_recipe_sha": _parse_strict_str,
     "auto_disposition_max_closes_per_tick": _parse_strict_int,
+    # Directive #2 DB-backup scanner knobs. Cadence / retention use the fail-SAFE
+    # coercer (a non-positive or mistyped value degrades to the default), so the
+    # "keep a week of backups" bound cannot be configured away to 0.
+    "db_backup_disabled": _parse_strict_bool,
+    "db_backup_cadence_hours": _parse_overridable_positive_int(24),
+    "db_backup_retention_days": _parse_overridable_positive_int(7),
     "orchestrate_claim_enabled": _parse_strict_bool,
     "boost_concurrency": _parse_strict_int,
     # #1775 newly-DB-home (formerly file-only): these now resolve from the DB store.
@@ -227,14 +232,13 @@ OVERLAY_OVERRIDABLE_SETTINGS: dict[str, Callable[[Any], Any]] = {
     # runs pre-Django but now reads the DB via ``cold_reader`` (Django-free), so a
     # stored ``check_updates=false`` IS honoured. DB-home, seeded by ``t3 setup``.
     "check_updates": _parse_strict_bool,
-    # DB-home cutover: ``worktrees_dir`` / ``timezone`` were tagged
-    # "needed to open the DB", but Django ``settings.py`` hardcodes ``TIME_ZONE =
-    # "UTC"`` and configures ``DATABASES`` without reading either — so neither is a
-    # bootstrap dep. ``worktrees_dir`` resolves via ``loader.worktrees_dir()`` off
-    # the DB store (Django-side, like ``workspace_dir`` / ``worktree_root()``);
-    # stored as a path STRING. ``timezone`` has no live reader (DB-home for
-    # partition consistency).
-    "worktrees_dir": _parse_strict_str,
+    # DB-home cutover: ``timezone`` was tagged "needed to open the DB", but Django
+    # ``settings.py`` hardcodes ``TIME_ZONE = "UTC"`` and configures ``DATABASES``
+    # without reading it — so it is not a bootstrap dep. It has no live reader
+    # (DB-home for partition consistency). (The former sibling ``worktrees_dir``
+    # was removed — it duplicated ``worktree_root()``'s "where worktrees are
+    # created" role with a divergent default; see ``tests/config/
+    # test_removed_dead_settings.py``.)
     "timezone": _parse_strict_str,
     # DB-home cutover: the last two per-overlay-TOML-overridable carve-out
     # fields move to DB-home (per-overlay via a ``ConfigSetting`` overlay-scope row).
@@ -364,7 +368,6 @@ class OverlayEntry:
 @dataclass
 class UserSettings:
     workspace_dir: Path = field(default_factory=lambda: Path.home() / "workspace")
-    worktrees_dir: Path = field(default_factory=lambda: DATA_DIR / "worktrees")
     privacy: str = ""
     check_updates: bool = True
     # #256 Default-OFF teatree engagement. When false (the default) a fresh
@@ -553,13 +556,14 @@ class UserSettings:
     # Per-(repo, ticket) open-PR budget: the max number of concurrently-open
     # (not-merged) PRs a single ticket may have in one repo. Enforced at the
     # core PR-creation seam by ``pr_budget_gate`` before a PR is opened. The
-    # neutral default ``0`` means unlimited, so core ships INERT (no behaviour
-    # change) until an overlay opts in; set ``1`` to enforce "at most one open
-    # PR per repo per ticket" for that overlay. Constraint-as-data: the scope
-    # is a per-overlay ``ConfigSetting`` row, never a branch in core code, so a
-    # second overlay wanting a different value needs no code change. DB-home
-    # (#1775); per-overlay overridable.
-    max_open_prs_per_repo_per_ticket: int = 0
+    # shipped default is ``1`` — "at most one open PR per repo per ticket" — so
+    # the one-ticket-one-PR discipline holds out of the box (a stray second PR
+    # for the same ticket in the same repo is a recurring cleanup cost, D9). Set
+    # ``0`` to restore the unlimited opt-out. Constraint-as-data: the scope is a
+    # per-overlay ``ConfigSetting`` row, never a branch in core code, so an
+    # overlay wanting a different value needs no code change. DB-home (#1775);
+    # per-overlay overridable.
+    max_open_prs_per_repo_per_ticket: int = 1
     # Training-wheel for the `t3:answerer` capability (#670, resolving
     # #654 Open Question #3): when true, the agent drafts a reply to an
     # inbound question, DMs the user for approval, and posts only on
@@ -1289,6 +1293,20 @@ class UserSettings:
     # Upper bound on close-candidate signals emitted per tick — keeps an
     # auto-close pass bounded and reviewable.
     auto_disposition_max_closes_per_tick: int = 5
+    # Directive #2 — the periodic DB-backup scanner's config surface (the knobs
+    # ship ahead of the Unit-18 scanner that reads them, so a later PR wires the
+    # loop behind a governed, tested config seam rather than adding knobs and
+    # behaviour in one risky change). ``db_backup_disabled`` is the escape-hatch
+    # kill-switch (default OFF = the scanner runs once wired); ``db_backup_cadence_hours``
+    # is the min interval between backup passes; ``db_backup_retention_days`` is how
+    # long a backup artifact is kept before the pass prunes it. A non-positive
+    # cadence / retention FAILS SAFE to the default at read time (see the registry
+    # parsers) so the "keep at least a week of backups" bound cannot be mistyped
+    # away to 0 (which would prune every backup immediately). All three are
+    # DB-home, per-overlay overridable.
+    db_backup_disabled: bool = False
+    db_backup_cadence_hours: int = 24
+    db_backup_retention_days: int = 7
     # Directive #3 — the OFF switch for idle usage-window auto-recovery, and a DARK
     # ``FEATURE_FLAGS`` entry. When OFF (the default) a Claude usage-window limit
     # (~5h session / 7-day weekly) is recorded as a terminal FAILED attempt EXACTLY as

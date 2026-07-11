@@ -8,10 +8,10 @@ from subprocess import CompletedProcess
 
 import pytest
 
-from teatree.utils import django_db_dslr as dslr_mod
 from teatree.utils import run as run_mod
+from teatree.utils.django_db import dslr as dslr_mod
 from teatree.utils.django_db import prune_dslr_snapshots
-from teatree.utils.django_db_dslr import parse_dslr_snapshots as _parse_dslr_snapshots
+from teatree.utils.django_db.dslr import parse_dslr_snapshots as _parse_dslr_snapshots
 
 
 class TestParseDslrSnapshots:

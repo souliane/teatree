@@ -15,7 +15,7 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from teatree.core.management.commands._test_plan.render import TestPlanValidationError
+from teatree.core.management.commands._test_plan.state import TestPlanValidationError
 
 if TYPE_CHECKING:
     from teatree.types import RawAPIDict

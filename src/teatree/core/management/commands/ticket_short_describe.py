@@ -9,27 +9,27 @@ backfills every ticket with a non-blank ``extra["issue_title"]`` and a
 blank ``short_description`` (useful for a one-shot CLI sweep after
 rollout, before the loop has scanned each ticket).
 
-The actual LLM call is intentionally minimal — a single in-process
-``claude_agent_sdk.query`` turn through the shared clean-room SDK builder
-(the same :func:`teatree.eval.api_runner.build_sdk_options` the eval
-runner and judge use), on a cheap model with no tools. No ``claude -p``
-subprocess — the SDK is the one runner post the #2204 cutover. When
-``claude`` is unavailable (missing binary, sandboxed environment) or the
-turn fails, the command degrades to a truncation fallback so the field
-is still populated (the truncation preserves at least the first ~40
-chars of the cached title — much better than leaving the row blank
-forever).
+The actual LLM call is intentionally minimal — a single clean-room turn
+through the shared one-shot seam
+(:func:`teatree.agents.one_shot.run_one_shot`), which resolves the
+``cheap`` tier to a concrete model id and routes the turn through the
+active harness (``claude_sdk`` or ``pydantic_ai``/OrcaRouter), so the
+summary follows a swapped tier-model DB row and works off-Claude — never a
+hardcoded model id, and no ``teatree.eval`` import on the production path.
+When the model is unavailable (missing binary, absent credential, sandboxed
+environment) or the turn fails, the seam returns ``None`` and the command
+degrades to a truncation fallback so the field is still populated (the
+truncation preserves at least the first ~40 chars of the cached title —
+much better than leaving the row blank forever).
 """
 
-import asyncio
-import shutil
-from pathlib import Path
 from typing import Annotated
 
 import typer
-from claude_agent_sdk import AssistantMessage, ClaudeAgentOptions, TextBlock, query
 from django.core.management.base import BaseCommand
 from django_typer.management import TyperCommand, command
+
+from teatree.agents.one_shot import OneShotSpec, run_one_shot
 
 _PROMPT_TEMPLATE = (
     "Summarize this ticket in <=40 chars, terminal-friendly, no leading verb, no period.\n\n"
@@ -38,10 +38,6 @@ _PROMPT_TEMPLATE = (
 )
 
 _SYSTEM_PROMPT = "You write terse terminal-friendly ticket summaries. Reply with the summary line only."
-
-#: A cheap model is plenty for a ≤40-char summary — pin haiku so the
-#: one-shot describe never inherits the user's expensive default.
-_DESCRIBE_MODEL = "claude-haiku-4-5"
 
 _FALLBACK_LEN = 40
 _WATCHDOG_SECONDS = 30
@@ -69,63 +65,35 @@ def _generate_short_description(title: str) -> str:
     title = title.strip()
     if not title:
         return ""
-    summary = _claude_summarize(title)
+    summary = _summarize(title)
     if not summary:
         return _truncation_fallback(title)
     return summary[:80]
 
 
-def _claude_summarize(title: str) -> str:
-    """Summarize *title* via one in-process SDK turn, or empty on any failure.
+def _summarize(title: str) -> str:
+    """Summarize *title* via one clean-room, cheap-tier turn, or empty on any failure.
 
-    Drives :func:`claude_agent_sdk.query` once through the shared clean-room
-    builder (``setting_sources=[]``, no tools, a cheap model, a 1-turn cap)
-    so the developer's personal context never biases the summary. ``claude``
-    absence is the same provisioning gate the SDK eval runner uses — the SDK
-    spawns the CLI child, so ``shutil.which`` short-circuits when it is
-    missing. Any failure (no binary, timeout, SDK error) returns ``""`` so
-    the caller degrades to the truncation fallback.
+    Routes a single clean-room turn through the shared one-shot seam
+    (:func:`teatree.agents.one_shot.run_one_shot`): the ``cheap`` tier resolved
+    to a concrete model id and driven through the active harness, so the summary
+    follows a swapped tier-model DB row and works off-Claude. The seam returns
+    ``None`` on ANY failure (no binary, absent credential, timeout, backend
+    error), which maps to ``""`` here so the caller degrades to the truncation
+    fallback. The model's reply is one line; take the LAST non-blank line and
+    strip surrounding quotes.
     """
-    if shutil.which("claude") is None:
-        return ""
     prompt = _PROMPT_TEMPLATE.format(title=title)
-    try:
-        text = asyncio.run(_describe(prompt))
-    except Exception:  # noqa: BLE001 — a summary failure must never break the backfill
+    answer = run_one_shot(
+        prompt,
+        OneShotSpec(system_prompt=_SYSTEM_PROMPT, tier="cheap", max_turns=1, timeout_seconds=_WATCHDOG_SECONDS),
+    )
+    if not answer:
         return ""
-    line = text.strip().splitlines()
-    if not line:
+    lines = answer.splitlines()
+    if not lines:
         return ""
-    return line[-1].strip().strip('"').strip("'")
-
-
-async def _describe(prompt: str) -> str:
-    """One clean-room SDK turn for *prompt*; returns the final text, watchdog-bounded."""
-    from teatree.eval.api_runner import CleanRoomConfig, build_sdk_options  # noqa: PLC0415
-    from teatree.eval.isolation import isolated_claude_env  # noqa: PLC0415
-
-    with isolated_claude_env() as (env, cwd):
-        options = build_sdk_options(
-            CleanRoomConfig(
-                system_prompt=_SYSTEM_PROMPT,
-                workspace=Path(cwd),
-                cwd=cwd,
-                env=env,
-                allowed_tools=(),
-                model=_DESCRIBE_MODEL,
-                max_turns=1,
-            )
-        )
-        return await asyncio.wait_for(_collect_text(prompt, options), timeout=_WATCHDOG_SECONDS)
-
-
-async def _collect_text(prompt: str, options: ClaudeAgentOptions) -> str:
-    """Stream the query, returning the concatenated assistant text blocks."""
-    parts: list[str] = []
-    async for message in query(prompt=prompt, options=options):
-        if isinstance(message, AssistantMessage):
-            parts.extend(block.text for block in message.content if isinstance(block, TextBlock))
-    return "\n".join(parts)
+    return lines[-1].strip().strip('"').strip("'")
 
 
 def _describe_one(ticket_id: int, *, stdout_write) -> None:  # noqa: ANN001

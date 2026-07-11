@@ -1,4 +1,14 @@
-"""The declarative guarded-chokepoint registry — walk the DSL (PR-07)."""
+"""The declarative guarded-chokepoint registry — walk the DSL (PR-07).
+
+``TestRegistryExecutionParity`` closes the §3b #1 gap: the registry used to be
+descriptive-only and could silently diverge from the executed chain (a live
+CI-verdict / not-draft step ran with NO ``GateSpec``). The AST parity test now
+pins, both directions, that the registered ``merge_keystone`` gate callables are
+EXACTLY the gate-shaped calls the keystone actually invokes.
+"""
+
+import ast
+import inspect
 
 import pytest
 
@@ -10,6 +20,7 @@ from teatree.core.factory.chokepoint_registry import (
     get_chokepoint,
     register_chokepoint,
 )
+from teatree.core.merge import execution
 from teatree.core.merge.execution import merge_ticket_pr
 from teatree.core.merge.sha_bind import verify_sha_bound
 
@@ -23,8 +34,34 @@ _EXPECTED_MERGE_GATES = frozenset(
         "rubric_satisfied",
         "review_verdict",
         "no_active_review_lock",
+        "merge_quality",
+        "not_draft",
+        "ci_verdict",
     },
 )
+
+# The keystone orchestrator entry points are gate-shaped calls that are NOT
+# themselves gates (they RUN the gate chain); exclude them from the parity set.
+_ORCHESTRATOR_ENTRIES = frozenset({"assert_merge_preconditions"})
+
+
+def _gate_shaped_calls_in_execution() -> set[str]:
+    """Every ``assert_*`` / ``_assert_*`` / ``verify_*`` call leaf-name in ``execution``."""
+    tree = ast.parse(inspect.getsource(execution))
+    calls: set[str] = set()
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        func = node.func
+        name = func.id if isinstance(func, ast.Name) else func.attr if isinstance(func, ast.Attribute) else ""
+        if name and (name.startswith(("assert_", "_assert_", "verify_"))):
+            calls.add(name)
+    return calls - _ORCHESTRATOR_ENTRIES
+
+
+def _registered_gate_leaves() -> set[str]:
+    """The leaf callable name of every registered ``merge_keystone`` gate."""
+    return {gate.callable_path.rpartition(".")[2] for gate in get_chokepoint(_MERGE_KEYSTONE).required_gates}
 
 
 class TestMergeKeystoneEntry:
@@ -59,6 +96,31 @@ class TestWalkTheDsl:
         resolved = list(keystone.resolve_gates())
         assert len(resolved) == len(keystone.required_gates)
         assert all(callable(fn) for fn in resolved)
+
+
+class TestRegistryExecutionParity:
+    """Registry gate names ⟺ the gate-shaped calls the keystone actually invokes (§3b #1)."""
+
+    def test_every_registered_gate_is_actually_invoked(self) -> None:
+        # Forward: registry ⊆ executed. RED before the fix — merge_quality /
+        # not_draft / ci_verdict ran inline with no dedicated gate callable, so
+        # ``assert_not_draft`` / ``assert_ci_not_failed`` were never called.
+        registered = _registered_gate_leaves()
+        invoked = _gate_shaped_calls_in_execution()
+        assert registered <= invoked, f"registered but never invoked: {sorted(registered - invoked)}"
+
+    def test_every_invoked_gate_is_registered(self) -> None:
+        # Reverse: any gate-shaped call added to the keystone must be registered,
+        # or this pins the drift (a gate added/removed in execution.py now fails).
+        registered = _registered_gate_leaves()
+        invoked = _gate_shaped_calls_in_execution()
+        assert invoked <= registered, f"invoked but unregistered: {sorted(invoked - registered)}"
+
+    def test_new_floor_gates_resolve_to_the_execution_callables(self) -> None:
+        keystone = get_chokepoint(_MERGE_KEYSTONE)
+        by_name = {gate.name: gate for gate in keystone.required_gates}
+        assert by_name["not_draft"].resolve() is execution.assert_not_draft
+        assert by_name["ci_verdict"].resolve() is execution.assert_ci_not_failed
 
 
 class TestResolutionFailsLoud:

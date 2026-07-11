@@ -93,7 +93,7 @@ def _effective_speak() -> SpeakConfig:
     global scope — a machine-level "am I in a meeting" needs no per-overlay tier.
     """
     from teatree.config import cold_reader  # noqa: PLC0415 — Django-free read, safe on the speak daemon threads
-    from teatree.config_speak import speak_from_subtable  # noqa: PLC0415 — builds SpeakConfig from the cold dict
+    from teatree.config.speak import speak_from_subtable  # noqa: PLC0415 — builds SpeakConfig from the cold dict
 
     raw = cold_reader.read_setting("speak")
     return speak_from_subtable(cast("dict[str, Any]", raw)) if isinstance(raw, dict) else SpeakConfig()

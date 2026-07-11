@@ -34,7 +34,7 @@ shipped per-tier effort.
 
 :data:`_INHERIT_SENTINELS` lives here (foundation) rather than in
 :mod:`teatree.agents.model_tiering` (domain) so a model value can be normalised
-to ``None`` at this boundary without ``config_agent`` importing UP into
+to ``None`` at this boundary without ``config.agent_spawn`` importing UP into
 ``agents``; ``model_tiering`` re-imports the set so the two layers share one
 definition of "this value means inherit the default".
 """
@@ -42,6 +42,7 @@ definition of "this value means inherit the default".
 from dataclasses import dataclass, field
 
 from teatree.config import cold_reader
+from teatree.config.agent_enums import AgentHarness
 
 # Model values that explicitly opt out of a floor / pin — normalised to ``None``
 # (inherit the default model, emit no ``--model`` flag). Shared with
@@ -119,6 +120,17 @@ class AgentConfig:
         an absent key or a sentinel value falls back to ``"opus"`` (a concrete
         model id, never the inherit sentinel — the escalation must route to a
         real model).
+    *   ``phase_harness`` — per-FSM-phase harness override, keyed by canonical
+        phase (e.g. ``"reviewing"``). Each value is an :class:`AgentHarness`
+        (flip the pin) or ``None`` (an explicit unpin — the phase drops back to
+        the configured ``agent_harness``). Merged OVER
+        :data:`teatree.agents.model_tiering.PHASE_HARNESS` (the verification-phase
+        ``claude_sdk`` pin) by :func:`~teatree.agents.model_tiering.resolve_phase_harness`,
+        so an EMPTY map is byte-identical to the shipped pin — a full swap of the
+        verification checker onto ``pydantic_ai`` becomes one ``agent_phase_harness``
+        DB row instead of a code edit (§3a #3). Mirrors ``tier_models`` tolerance:
+        a non-dict value, a non-string entry, or a value that names no
+        :class:`AgentHarness` yields no override for that entry.
     *   ``phase_fanout`` — per-``(role, phase)`` fan-out opt-in (teatree#2229),
         keyed canonical ``"role:phase"`` (e.g. ``"reviewer:reviewing"``). A
         ``bool`` value enables the registry default ``fanout_n`` (``True``) or
@@ -138,6 +150,7 @@ class AgentConfig:
     tier_models: dict[str, str] = field(default_factory=dict)
     pydantic_ai_tier_models: dict[str, str] = field(default_factory=dict)
     tier_effort: dict[str, str] = field(default_factory=dict)
+    phase_harness: dict[str, AgentHarness | None] = field(default_factory=dict)
 
 
 def _phase_fanout_from(raw: object) -> dict[str, bool | int]:
@@ -159,6 +172,38 @@ def _phase_fanout_from(raw: object) -> dict[str, bool | int]:
     for pair, opt_in in raw.items():
         if isinstance(opt_in, bool | int):
             resolved[str(pair)] = opt_in
+    return resolved
+
+
+def _phase_harness_from(raw: object) -> dict[str, AgentHarness | None]:
+    """Normalise the ``agent_phase_harness`` value into a ``phase → harness|unpin`` map.
+
+    Each value is either the name of an :class:`AgentHarness` (``claude_sdk`` /
+    ``pydantic_ai`` — the phase is PINNED to that transport) or an inherit
+    sentinel (``""`` / ``default`` / ``inherit`` — the phase is explicitly
+    UNPINNED, dropping back to the configured ``agent_harness`` even when the
+    shipped :data:`teatree.agents.model_tiering.PHASE_HARNESS` default would pin
+    it). The unpin case is kept as an explicit ``None`` entry (distinct from an
+    absent key) so :func:`~teatree.agents.model_tiering.resolve_phase_harness`
+    can tell "override to no-pin" apart from "no override at all".
+
+    A non-dict value, a non-string entry, or a value naming no known harness is
+    tolerated and skipped (mirrors :func:`_tier_models_from`), so a malformed
+    override never poisons the shipped pin.
+    """
+    if not isinstance(raw, dict):
+        return {}
+    resolved: dict[str, AgentHarness | None] = {}
+    for phase, value in raw.items():
+        if not isinstance(value, str):
+            continue
+        if value.strip().lower() in _INHERIT_SENTINELS:
+            resolved[str(phase)] = None
+            continue
+        try:
+            resolved[str(phase)] = AgentHarness.parse(value)
+        except ValueError:
+            continue
     return resolved
 
 
@@ -264,4 +309,5 @@ def resolve_agent_config() -> AgentConfig:
             cold_reader.read_setting("agent_pydantic_ai_tier_models")
         ),
         tier_effort=_tier_effort_from(cold_reader.read_setting("agent_tier_effort")),
+        phase_harness=_phase_harness_from(cold_reader.read_setting("agent_phase_harness")),
     )

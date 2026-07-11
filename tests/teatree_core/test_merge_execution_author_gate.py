@@ -18,7 +18,7 @@ from unittest.mock import patch
 import pytest
 from django.test import TestCase
 
-from teatree.core.merge import authorization, execution
+from teatree.core.merge import execution
 from teatree.core.merge.authorization import assert_public_repo_author_trusted
 from teatree.core.merge.errors import MergePreconditionError
 from teatree.core.merge.execution import merge_ticket_pr
@@ -157,7 +157,7 @@ class TestAuthorGateUnit(TestCase):
 
     def test_assert_public_repo_author_trusted_raises_on_untrusted(self) -> None:
         with (
-            patch.object(authorization, "fetch_pr_author", return_value="evilhacker"),
+            patch("teatree.core.merge.ci_rollup.CodeHostQuery.pr_author", return_value="evilhacker"),
             patch.object(author_trust, "repo_is_internal", return_value=False),
             pytest.raises(MergePreconditionError, match="PUBLIC repo"),
         ):
@@ -165,7 +165,7 @@ class TestAuthorGateUnit(TestCase):
 
     def test_assert_public_repo_author_trusted_passes_on_trusted(self) -> None:
         with (
-            patch.object(authorization, "fetch_pr_author", return_value="souliane"),
+            patch("teatree.core.merge.ci_rollup.CodeHostQuery.pr_author", return_value="souliane"),
             patch.object(author_trust, "repo_is_internal", return_value=False),
         ):
             assert_public_repo_author_trusted(slug="souliane/teatree", pr_id=1)

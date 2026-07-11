@@ -20,8 +20,14 @@ from django.core.management.base import CommandError
 from django.test import TestCase
 from django.utils import timezone
 
-from teatree.core.models import ConsolidatedMemory, DreamRunMarker, Loop, LoopLease
-from teatree.loops.dream.engine import ConsolidationExtract, DistilledCluster, DreamRunResult, TranscriptMember
+from teatree.core.models import ConsolidatedMemory, DreamRunMarker, InstructionComplianceSnapshot, Loop, LoopLease
+from teatree.loops.dream.engine import (
+    ConsolidationExtract,
+    DistilledCluster,
+    DreamRunResult,
+    TranscriptMember,
+    WeightedSnippet,
+)
 from teatree.loops.dream.loop import DREAM_LEASE_NAME, DREAM_LEASE_SECONDS, DREAM_LOOP_NAME
 
 
@@ -61,7 +67,18 @@ if TYPE_CHECKING:
 
 
 def _ok_result(*, dry_run: bool = False) -> DreamRunResult:
-    return DreamRunResult(clusters_recorded=1, members_replayed=3, dry_run=dry_run)
+    # A real (memory-only, no violation) extract so the compliance-measurement phase
+    # — which now runs on EVERY pass and reuses ``result.extract`` — has something to
+    # measure. No correction turn ⇒ 0 violations ⇒ an empty compliance summary clause.
+    snippet = WeightedSnippet(path=Path("/memory/feedback_x.md"), kind="memory", weight=90, text="a durable lesson")
+    extract = ConsolidationExtract(snippets=(snippet,), truncated=False)
+    return DreamRunResult(
+        clusters_recorded=1,
+        members_replayed=3,
+        dry_run=dry_run,
+        snippets_distilled=len(extract.snippets),
+        extract=extract,
+    )
 
 
 class DreamRunStampsMarkerTestCase(TestCase):
@@ -1009,7 +1026,7 @@ class DreamAutomationAsksWiringTestCase(_DreamTickEnabledMixin, TestCase):
             "T3_DREAM_CROSS_LINK": "0",
             "T3_DREAM_REINDEX": "0",
             "T3_DREAM_MEMORY_PROMOTE": "0",
-            "T3_DREAM_COMPLIANCE": "0",
+            "T3_DREAM_COMPLIANCE_MEASURE": "0",
             **env,
         }
         with (
@@ -1085,6 +1102,126 @@ class DreamAutomationAsksWiringTestCase(_DreamTickEnabledMixin, TestCase):
         ):
             call_command("dream", "run", "--full", stdout=StringIO())
         phase_fn.assert_called_once()
+
+
+_COMPLIANCE_MEMORY_BODY = (
+    "name: feedback_askuserquestion_overuse\n"
+    "The AskUserQuestion gate must not fire for routine obstacles — make a reasonable guess and keep working.\n"
+)
+_COMPLIANCE_VIOLATION_TURN = (
+    '{"type": "user", "content": "I told you again — stop firing AskUserQuestion '
+    'for routine obstacles, you do not follow instructions!!"}'
+)
+
+
+def _compliance_result(*, dry_run: bool = False) -> DreamRunResult:
+    """A pass result whose extract carries a memory-backed rule violated again (a recurrence)."""
+    extract = ConsolidationExtract(
+        snippets=(
+            WeightedSnippet(
+                path=Path("/memory/feedback_askuserquestion_overuse.md"),
+                kind="memory",
+                weight=90,
+                text=_COMPLIANCE_MEMORY_BODY,
+            ),
+            WeightedSnippet(
+                path=Path("/sessions/session-a.jsonl"), kind="main", weight=80, text=_COMPLIANCE_VIOLATION_TURN
+            ),
+        ),
+        truncated=False,
+    )
+    return DreamRunResult(
+        clusters_recorded=1, members_replayed=5, dry_run=dry_run, snippets_distilled=2, extract=extract
+    )
+
+
+class DreamComplianceMeasurementWiringTestCase(_DreamTickEnabledMixin, TestCase):
+    """Phase 3c measurement runs on EVERY pass (default ON); escalation is --full + toggle gated (#2663)."""
+
+    def test_measurement_runs_on_a_plain_run_and_records_a_snapshot(self) -> None:
+        # RED before the measure/escalate split: compliance was wired ONLY under
+        # --full + the (default-OFF) compliance toggle, so a plain pass recorded NO
+        # snapshot — the root KPI went unmeasured. Measurement now runs on every pass.
+        with (
+            patch("teatree.loops.dream.engine.run_consolidation", return_value=_compliance_result()),
+            patch("teatree.memory_audit.discover_memory_dirs", return_value=[]),
+            patch.dict("os.environ", {"T3_DREAM_PROPOSE_EVALS": "0"}, clear=False),
+        ):
+            call_command("dream", "run", stdout=StringIO())
+        assert InstructionComplianceSnapshot.objects.count() == 1
+
+    def test_tick_also_measures_compliance(self) -> None:
+        with (
+            patch("teatree.loops.dream.engine.run_consolidation", return_value=_compliance_result()),
+            patch("teatree.memory_audit.discover_memory_dirs", return_value=[]),
+            patch.dict("os.environ", {"T3_DREAM_PROPOSE_EVALS": "0"}, clear=False),
+        ):
+            call_command("dream", "tick", stdout=StringIO())
+        assert InstructionComplianceSnapshot.objects.count() == 1
+
+    def test_measurement_disabled_by_kill_switch_records_nothing(self) -> None:
+        with (
+            patch("teatree.loops.dream.engine.run_consolidation", return_value=_compliance_result()),
+            patch("teatree.memory_audit.discover_memory_dirs", return_value=[]),
+            patch.dict("os.environ", {"T3_DREAM_PROPOSE_EVALS": "0", "T3_DREAM_COMPLIANCE_MEASURE": "0"}, clear=False),
+        ):
+            call_command("dream", "run", stdout=StringIO())
+        assert InstructionComplianceSnapshot.objects.count() == 0
+
+    def _run_full(self, *, escalate: str):
+        esc_patch = patch("teatree.loops.dream.compliance.run_compliance_escalation", return_value="")
+        with (
+            patch("teatree.loops.dream.engine.run_consolidation", return_value=_compliance_result()),
+            patch("teatree.loops.dream.promote.promote_proposals_file", return_value=[]),
+            patch("teatree.memory_audit.discover_memory_dirs", return_value=[]),
+            patch("teatree.loops.dream.promote_memory.file_core_gap_tickets", return_value=[]),
+            patch("teatree.loops.dream.umbrella_ledger.reconcile_merged_gaps", return_value=[]),
+            patch("teatree.loops.dream.llm_eval_proposer.stage_proposals_file", return_value=[]),
+            patch("teatree.loops.dream.automation_ask.run_automation_asks_phase", return_value=""),
+            esc_patch as esc,
+            patch(
+                "teatree.core.management.commands.dream.Command._teatree_backlog_host",
+                return_value=(object(), "souliane/teatree"),
+            ),
+            patch.dict(
+                "os.environ",
+                {
+                    "T3_DREAM_MEMORY_PROMOTE": "0",
+                    "T3_DREAM_DERIVE_EVALS": "0",
+                    "T3_DREAM_AUTOMATION_ASKS": "0",
+                    "T3_DREAM_COMPLIANCE_ESCALATE": escalate,
+                },
+                clear=False,
+            ),
+        ):
+            call_command("dream", "run", "--full", stdout=StringIO())
+        return esc
+
+    def test_escalation_runs_under_full_and_toggle_on(self) -> None:
+        esc = self._run_full(escalate="1")
+        esc.assert_called_once()
+
+    def test_escalation_skipped_under_full_when_toggle_off(self) -> None:
+        # Green pin: escalation stays gated on --full AND its own default-OFF toggle,
+        # so --full alone (toggle off) measures but never files.
+        esc = self._run_full(escalate="0")
+        esc.assert_not_called()
+
+    def test_run_without_full_never_escalates_even_with_toggle_on(self) -> None:
+        # The AND-gate: the toggle alone (no --full) measures but does not escalate.
+        esc_patch = patch("teatree.loops.dream.compliance.run_compliance_escalation", return_value="")
+        with (
+            patch("teatree.loops.dream.engine.run_consolidation", return_value=_compliance_result()),
+            patch("teatree.memory_audit.discover_memory_dirs", return_value=[]),
+            esc_patch as esc,
+            patch.dict(
+                "os.environ",
+                {"T3_DREAM_PROPOSE_EVALS": "0", "T3_DREAM_COMPLIANCE_ESCALATE": "1"},
+                clear=False,
+            ),
+        ):
+            call_command("dream", "run", stdout=StringIO())
+        esc.assert_not_called()
 
 
 class DreamFullFlagTestCase(TestCase):

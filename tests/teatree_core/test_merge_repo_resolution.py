@@ -4,7 +4,7 @@
 not a GitHub ``owner/repo``. Before #871 every ``gh`` call in
 ``merge.execution`` passed ``clear.slug`` as ``--repo``, so a production
 CLEAR issued via ``t3 teatree ticket clear 866 statusline-stale-wakeup …``
-made ``gh pr view 866 --repo statusline-stale-wakeup`` fail, ``fetch_live_head_sha``
+made ``gh pr view 866 --repo statusline-stale-wakeup`` fail, ``CodeHostQuery.live_head_sha``
 return ``""``, and §17.4.3 step 2 raise the opaque "could not resolve the
 live head SHA". The sanctioned path could issue a CLEAR but never complete
 a merge.

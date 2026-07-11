@@ -8,11 +8,12 @@ The result type :class:`MergePrecheck` and the guard functions
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
-from teatree.core.merge.ci_rollup import fetch_pr_author
+from teatree.core.merge.ci_rollup import CodeHostQuery
 from teatree.core.merge.errors import MergePreconditionError
 from teatree.core.models.mr_review_lock import MRReviewLock
 from teatree.core.models.review_verdict import HeadVerdictState, ReviewVerdict
 from teatree.core.review.author_trust import classify_author
+from teatree.utils.pr_ref import PrRef
 
 if TYPE_CHECKING:
     from teatree.core.models import MergeClear
@@ -56,51 +57,40 @@ class PresentedApprovals:
     expedite: str = ""
 
 
-def _assert_clear_authorized(
-    *,
-    clear: object,
-    executing_loop_identity: str,
-    slug: str,
-    pr_id: int,
-    approvals: PresentedApprovals | None = None,
-) -> "MergeClear":
-    """The §17.4.3 identity/substrate authorization guards (steps 1 + 5).
+def _assert_clear_actionable(clear: object, *, slug: str, pr_id: int) -> "MergeClear":
+    """Step 1: a real, fully-populated, unconsumed :class:`MergeClear` row exists.
 
-    Split out of :func:`assert_merge_preconditions` so the orchestration
-    there reads as the ordered §17.4.3 sequence (authorize → SHA →
-    reconcile → draft → checks) rather than one deeply-branching block.
-    Raises :class:`MergePreconditionError` on the first failed guard;
-    returns the narrowed :class:`MergeClear` on success. ``approvals`` defaults
-    to none presented (a loop-driven merge presents neither key).
+    Narrows the duck-typed *clear* to a :class:`MergeClear` — the ONE runtime
+    boundary check the deeper guards then rely on (they take the narrowed type).
+    Raises :class:`MergePreconditionError` when no actionable CLEAR backs the PR.
     """
     from teatree.core.models import MergeClear  # noqa: PLC0415
-    from teatree.core.models.merge_clear import is_non_reviewer_role  # noqa: PLC0415
-
-    approvals = approvals or PresentedApprovals()
 
     if not isinstance(clear, MergeClear):
         msg = f"no MergeClear row for {slug}#{pr_id} — refusing to merge (§17.4.3 step 1)"
         raise MergePreconditionError(msg)
-
-    # 1. CLEAR exists, all fields populated, unconsumed.
     if not clear.is_actionable():
         msg = (
             f"MergeClear for {slug}#{pr_id} is not actionable (missing fields or already "
             f"consumed) — treated as absent (§17.4.2/§17.4.3 step 1)"
         )
         raise MergePreconditionError(msg)
+    return clear
 
-    # The recorded reviewer verdict must be merge-safe. ``MergeClear.issue()``
-    # rejects a FAILED verdict at issue time and a PENDING one without a bound
-    # expedite waiver, but a row written directly via ``.objects.create()``
-    # (fixture / migration / non-factory ORM path) could smuggle either past it.
-    # Re-check here so the live-CI re-check below can never stamp green over the
-    # reviewer's recorded HOLD when CI self-flips green — the green-over-HOLD class
-    # (§17.8 clause 3: the checker's recorded verdict is authoritative, mirroring
-    # the ``is_non_reviewer_role`` issue/merge double-guard above). FAILED is
-    # refused unconditionally; PENDING is accepted ONLY when the row carries a
-    # valid bound expedite waiver re-presented at merge time (the raw-ORM-smuggle
-    # double-guard, mirroring ``expedite_pending_waived_by`` at the live-check step).
+
+def _assert_verdict_not_smuggled(clear: "MergeClear", *, slug: str, pr_id: int, expedite: str) -> None:
+    """The recorded reviewer verdict must be merge-safe (the raw-ORM-smuggle double-guard).
+
+    ``MergeClear.issue()`` rejects a FAILED verdict at issue time and a PENDING
+    one without a bound expedite waiver, but a row written directly via
+    ``.objects.create()`` (fixture / migration / non-factory ORM path) could
+    smuggle either past it. Re-check here so the live-CI re-check downstream can
+    never stamp green over the reviewer's recorded HOLD when CI self-flips green —
+    the green-over-HOLD class (§17.8 clause 3: the checker's recorded verdict is
+    authoritative). FAILED is refused unconditionally; PENDING is accepted ONLY
+    when the row carries a valid bound expedite waiver re-presented at merge time
+    (mirroring ``expedite_pending_waived_by`` at the live-check step).
+    """
     if clear.gh_verify_result == clear.VerifyResult.FAILED:
         msg = (
             f"MergeClear for {slug}#{pr_id} records gh_verify_result=failed — a FAILED required "
@@ -108,7 +98,7 @@ def _assert_clear_authorized(
             f"a merge regardless of the live CI rollup (§17.4.2 / §17.8 clause 3)"
         )
         raise MergePreconditionError(msg)
-    if clear.gh_verify_result != clear.VerifyResult.GREEN and not clear.expedite_pending_waived_by(approvals.expedite):
+    if clear.gh_verify_result != clear.VerifyResult.GREEN and not clear.expedite_pending_waived_by(expedite):
         msg = (
             f"MergeClear for {slug}#{pr_id} records gh_verify_result "
             f"({clear.gh_verify_result!r}), not green — the reviewer recorded a HOLD at the reviewed "
@@ -119,9 +109,21 @@ def _assert_clear_authorized(
         )
         raise MergePreconditionError(msg)
 
-    # Independent cold-review CLEAR: the reviewer identity must be distinct
-    # from the executing loop (§17.8 clause 3 — the loop cannot rubber-stamp
-    # its own CLEAR).
+
+def _assert_reviewer_independent(clear: "MergeClear", *, executing_loop_identity: str) -> None:
+    """The reviewer identity must be an independent cold reviewer (§17.8 clause 3).
+
+    Two guards: the reviewer must not BE the executing loop (the loop cannot
+    rubber-stamp its own CLEAR), and the reviewer must not be a maker/coding-
+    agent/loop non-reviewer role. ``MergeClear.issue()`` rejects the latter at
+    issue time via the same shared ``is_non_reviewer_role`` helper, but a row
+    written directly via ``.objects.create()`` (fixture, migration, or the pk-load
+    path in ``ticket.py``) would otherwise smuggle a self-attesting maker through
+    the equality check, so the issue-time and merge-time gates re-check identically
+    and cannot drift apart (codex #1282 finding 1 / #1283).
+    """
+    from teatree.core.models.merge_clear import is_non_reviewer_role  # noqa: PLC0415
+
     if clear.reviewer_identity.strip() == executing_loop_identity.strip():
         msg = (
             f"MergeClear reviewer_identity ({clear.reviewer_identity!r}) equals the "
@@ -129,16 +131,6 @@ def _assert_clear_authorized(
             f"cold reviewer, not self-issued (§17.8 clause 3)"
         )
         raise MergePreconditionError(msg)
-
-    # The factory ``MergeClear.issue()`` rejects a maker/coding-agent/loop
-    # reviewer_identity at issue time (§17.8 clause 3 — the same shared
-    # ``is_non_reviewer_role`` helper), but a row written directly via
-    # ``.objects.create()`` (fixture, migration, or any non-factory ORM
-    # path — e.g. ``ticket.py`` loads the row by pk without re-validation)
-    # would otherwise smuggle a self-attesting maker through the equality
-    # check above. Re-check the same role classification here so the
-    # issue-time and merge-time gates cannot drift apart (codex #1282
-    # finding 1 / #1283).
     if is_non_reviewer_role(clear.reviewer_identity):
         msg = (
             f"MergeClear reviewer_identity ({clear.reviewer_identity!r}) is a "
@@ -147,11 +139,26 @@ def _assert_clear_authorized(
         )
         raise MergePreconditionError(msg)
 
-    # The human-substrate escape is substrate-only. Presenting it against a
-    # non-substrate CLEAR is refused outright so the path can never be used to
-    # short-circuit independent loop review of a logic/docs PR (the loop is
-    # the reviewer-of-record for those — invariant 8 / §17.4.1).
-    presented = approvals.human.strip()
+
+def _assert_substrate_authorized(clear: "MergeClear", *, slug: str, pr_id: int, human: str) -> None:
+    """Step 5: substrate is held for the owner unless a per-PR human sign-off unlocks it.
+
+    Two guards. First: the human-substrate escape is substrate-only — presenting
+    ``--human-authorized`` against a non-substrate CLEAR is refused outright so it
+    can never short-circuit independent loop review of a logic/docs PR (invariant 8
+    / §17.4.1). Second: a substrate-class PR is draft-locked and requires a recorded
+    PER-PR human sign-off (invariant 4 / §17.4.3 step 5). Substrate is NEVER covered
+    by the overlay's standing grant — not even at ``autonomy = full``: the owner's
+    directive is that substrate (merge keystone, architecture spec, governance doc)
+    PINGS-and-HOLDS. ``_overlay_grants_standing_substrate_signoff`` returns ``False``
+    for any substrate clear, so the ONLY unlock is a per-CLEAR ``human_authorizer``
+    matching the value re-presented at merge time. When unsatisfied the held clear
+    raises below, which the loop edge routes to the substrate-hold Slack ping; the
+    AGENT still executes the authorized merge through this same SHA-bound, audited
+    transition. The quality/safety floor is untouched; non-substrate changes
+    self-merge unchanged.
+    """
+    presented = human.strip()
     if presented and not clear.is_substrate():
         msg = (
             f"--human-authorized presented for non-substrate MergeClear "
@@ -161,21 +168,6 @@ def _assert_clear_authorized(
         )
         raise MergePreconditionError(msg)
 
-    # 5. blast_class respected — substrate-class PRs are draft-locked and require
-    #    a recorded PER-PR human sign-off (invariant 4 / §17.4.3 step 5). Substrate
-    #    is NEVER covered by the overlay's standing grant — not even at
-    #    ``autonomy = full``: the owner's directive is that substrate (merge
-    #    keystone, architecture spec, governance doc) PINGS-and-HOLDS so they
-    #    authorize every such merge. ``_overlay_grants_standing_substrate_signoff``
-    #    therefore returns ``False`` for any substrate clear (the explicit gate
-    #    that the standing grant excludes substrate), so the ONLY thing that unlocks
-    #    a substrate merge here is a per-CLEAR ``human_authorizer`` matching the
-    #    value re-presented at merge time. When unsatisfied the held clear raises
-    #    below, which the loop edge routes to the substrate-hold Slack ping. The
-    #    AGENT still executes the authorized merge through this same SHA-bound,
-    #    audited transition (invariant 8). The quality/safety floor (independent
-    #    cold-review, reviewed-SHA bind, CI-green, not-draft, never-lockout, privacy
-    #    scan) is untouched. NON-substrate changes self-merge unchanged.
     if (
         clear.is_substrate()
         and not clear.human_merge_authorized_by(presented)
@@ -199,7 +191,32 @@ def _assert_clear_authorized(
         )
         raise MergePreconditionError(msg)
 
-    return clear
+
+def _assert_clear_authorized(
+    *,
+    clear: object,
+    executing_loop_identity: str,
+    slug: str,
+    pr_id: int,
+    approvals: PresentedApprovals | None = None,
+) -> "MergeClear":
+    """The §17.4.3 identity/substrate authorization guards (steps 1 + 5), in order.
+
+    Split out of :func:`assert_merge_preconditions` so the orchestration there
+    reads as the ordered §17.4.3 sequence (authorize → SHA → reconcile → draft →
+    checks). This function is itself the ordered composition of the four guard
+    facets — actionable → verdict-not-smuggled → reviewer-independent →
+    substrate-authorized — each raising :class:`MergePreconditionError` on the
+    first failure, so the refusal ORDER is the visible sequence below. Returns the
+    narrowed :class:`MergeClear` on success. ``approvals`` defaults to none
+    presented (a loop-driven merge presents neither key).
+    """
+    approvals = approvals or PresentedApprovals()
+    narrowed = _assert_clear_actionable(clear, slug=slug, pr_id=pr_id)
+    _assert_verdict_not_smuggled(narrowed, slug=slug, pr_id=pr_id, expedite=approvals.expedite)
+    _assert_reviewer_independent(narrowed, executing_loop_identity=executing_loop_identity)
+    _assert_substrate_authorized(narrowed, slug=slug, pr_id=pr_id, human=approvals.human)
+    return narrowed
 
 
 def _resolve_clear_overlay_name(clear: "MergeClear", *, resolved_slug: str = "") -> str:
@@ -417,7 +434,7 @@ def assert_public_repo_author_trusted(*, slug: str, pr_id: int, host_kind: str =
     PUBLIC repo -> the author must be a trusted identity; an untrusted, unknown,
     empty, or unfetchable author is refused (fail-closed).
     """
-    author = fetch_pr_author(slug, pr_id, host_kind=host_kind)
+    author = CodeHostQuery.for_ref(PrRef(slug=slug, pr_id=pr_id, host_kind=host_kind)).pr_author()
     classification = classify_author(slug, author, host_kind=host_kind)
     if classification.internal_repo or classification.trusted:
         return

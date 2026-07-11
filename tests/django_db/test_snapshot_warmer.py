@@ -12,9 +12,10 @@ from pathlib import Path
 
 import pytest
 
-from teatree.utils import django_db_dslr as dslr_mod
-from teatree.utils.django_db import DjangoDbImporter, _MigrateResult
-from teatree.utils.django_db_snapshot_warmer import refresh_reference_snapshot, snapshot_age_days, snapshot_is_stale
+from teatree.utils.django_db import DjangoDbImporter
+from teatree.utils.django_db import dslr as dslr_mod
+from teatree.utils.django_db.migrate import _MigrateResult
+from teatree.utils.django_db.snapshot_warmer import refresh_reference_snapshot, snapshot_age_days, snapshot_is_stale
 
 from ._shared import _make_cfg
 
@@ -80,7 +81,7 @@ class TestRefreshReferenceSnapshot:
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         monkeypatch.setattr(dslr_mod, "find_dslr_cmd", lambda *_a, **_k: ["/usr/bin/dslr"])
-        monkeypatch.setattr("teatree.utils.django_db_snapshot_warmer._ensure_ref_db", lambda *_a, **_k: None)
+        monkeypatch.setattr("teatree.utils.django_db.snapshot_warmer._ensure_ref_db", lambda *_a, **_k: None)
         monkeypatch.setattr(DjangoDbImporter, "_resolve_dslr_snapshots", lambda self: ["20260101_development-acme"])
         monkeypatch.setattr(dslr_mod, "restore_ref_from_dslr", lambda *_a, **_k: (True, False, ""))
         monkeypatch.setattr(DjangoDbImporter, "_migrate_reference_db", lambda self: _MigrateResult.APPLIED)
@@ -93,7 +94,7 @@ class TestRefreshReferenceSnapshot:
 
     def test_no_new_snapshot_when_already_migrated(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setattr(dslr_mod, "find_dslr_cmd", lambda *_a, **_k: ["/usr/bin/dslr"])
-        monkeypatch.setattr("teatree.utils.django_db_snapshot_warmer._ensure_ref_db", lambda *_a, **_k: None)
+        monkeypatch.setattr("teatree.utils.django_db.snapshot_warmer._ensure_ref_db", lambda *_a, **_k: None)
         monkeypatch.setattr(DjangoDbImporter, "_resolve_dslr_snapshots", lambda self: ["20260101_development-acme"])
         monkeypatch.setattr(dslr_mod, "restore_ref_from_dslr", lambda *_a, **_k: (True, False, ""))
         monkeypatch.setattr(DjangoDbImporter, "_migrate_reference_db", lambda self: _MigrateResult.ALREADY_MIGRATED)
@@ -106,7 +107,7 @@ class TestRefreshReferenceSnapshot:
 
     def test_restore_failure_returns_false(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setattr(dslr_mod, "find_dslr_cmd", lambda *_a, **_k: ["/usr/bin/dslr"])
-        monkeypatch.setattr("teatree.utils.django_db_snapshot_warmer._ensure_ref_db", lambda *_a, **_k: None)
+        monkeypatch.setattr("teatree.utils.django_db.snapshot_warmer._ensure_ref_db", lambda *_a, **_k: None)
         monkeypatch.setattr(DjangoDbImporter, "_resolve_dslr_snapshots", lambda self: ["20260101_development-acme"])
         monkeypatch.setattr(dslr_mod, "restore_ref_from_dslr", lambda *_a, **_k: (False, False, "boom"))
         cfg = _make_cfg(tmp_path)
@@ -115,7 +116,7 @@ class TestRefreshReferenceSnapshot:
 
     def test_migrate_failure_returns_false(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setattr(dslr_mod, "find_dslr_cmd", lambda *_a, **_k: ["/usr/bin/dslr"])
-        monkeypatch.setattr("teatree.utils.django_db_snapshot_warmer._ensure_ref_db", lambda *_a, **_k: None)
+        monkeypatch.setattr("teatree.utils.django_db.snapshot_warmer._ensure_ref_db", lambda *_a, **_k: None)
         monkeypatch.setattr(DjangoDbImporter, "_resolve_dslr_snapshots", lambda self: [])
         monkeypatch.setattr(DjangoDbImporter, "_migrate_reference_db", lambda self: _MigrateResult.FAILED)
         cfg = _make_cfg(tmp_path)
@@ -125,7 +126,7 @@ class TestRefreshReferenceSnapshot:
     def test_no_existing_snapshot_still_migrates(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         """No prior snapshot at all — migrate from a freshly-created empty ref DB."""
         monkeypatch.setattr(dslr_mod, "find_dslr_cmd", lambda *_a, **_k: ["/usr/bin/dslr"])
-        monkeypatch.setattr("teatree.utils.django_db_snapshot_warmer._ensure_ref_db", lambda *_a, **_k: None)
+        monkeypatch.setattr("teatree.utils.django_db.snapshot_warmer._ensure_ref_db", lambda *_a, **_k: None)
         monkeypatch.setattr(DjangoDbImporter, "_resolve_dslr_snapshots", lambda self: [])
         monkeypatch.setattr(DjangoDbImporter, "_migrate_reference_db", lambda self: _MigrateResult.APPLIED)
         snapshotted: list[bool] = []

@@ -14,8 +14,8 @@ head SHA, and reports against the *latest* recorded verdict — ``safe-to-approv
 required-checks rollup is green), ``stale`` (a verdict exists but the head moved
 off the reviewed tree, so a re-review is needed), or ``no recorded verdict``.
 
-Forge calls (``fetch_live_head_sha`` / ``fetch_required_checks_status``) are the
-only external boundary; the rest is a DB read.
+Forge calls (``CodeHostQuery.live_head_sha`` / ``CodeHostQuery.required_checks_status``)
+are the only external boundary; the rest is a DB read.
 """
 
 import json
@@ -25,7 +25,7 @@ import typer
 from django_typer.management import TyperCommand, command, initialize
 
 from teatree.core.gates.schema_guard import SelfDbMigrationError, require_current_schema
-from teatree.core.merge import fetch_live_head_sha, fetch_required_checks_status
+from teatree.core.merge import CodeHostQuery
 from teatree.core.merge.conflict_only import rebind_clearance_after_conflict_only_merge
 from teatree.core.models import (
     Finding,
@@ -354,43 +354,44 @@ class Command(TyperCommand):
             self.stderr.write(f"  could not parse a PR/MR URL from {mr_url!r}")
             raise SystemExit(1)
 
-        recorded = ReviewVerdict.objects.latest_for_pr(ref.slug, ref.number)
+        recorded = ReviewVerdict.objects.latest_for_pr(ref.slug, ref.pr_id)
         if recorded is None:
-            self.stdout.write(f"  no recorded verdict for {ref.slug}#{ref.number} — run a cold review first")
-            return {"state": "no_verdict", "slug": ref.slug, "pr_id": ref.number}
+            self.stdout.write(f"  no recorded verdict for {ref.slug}#{ref.pr_id} — run a cold review first")
+            return {"state": "no_verdict", "slug": ref.slug, "pr_id": ref.pr_id}
 
-        current_head = fetch_live_head_sha(ref.slug, ref.number, host_kind=ref.host_kind)
+        query = CodeHostQuery.for_ref(ref)
+        current_head = query.live_head_sha()
         if recorded.is_stale_at(current_head):
             self.stdout.write(
                 f"  stale: verdict reviewed {recorded.reviewed_sha[:8]} but head moved to "
-                f"{(current_head[:8] or '<unknown>')} — re-review needed ({ref.slug}#{ref.number})"
+                f"{(current_head[:8] or '<unknown>')} — re-review needed ({ref.slug}#{ref.pr_id})"
             )
             return {
                 "state": "stale",
                 "slug": ref.slug,
-                "pr_id": ref.number,
+                "pr_id": ref.pr_id,
                 "verdict": recorded.verdict,
                 "reviewed_sha": recorded.reviewed_sha,
                 "current_head_sha": current_head,
             }
 
-        live_checks = fetch_required_checks_status(ref.slug, ref.number, host_kind=ref.host_kind)
+        live_checks = query.required_checks_status()
         if recorded.is_safe_to_approve_at(current_head, live_checks_status=live_checks):
             self.stdout.write(
                 f"  safe-to-approve: {recorded.verdict} at {recorded.reviewed_sha[:8]}, checks green "
-                f"({ref.slug}#{ref.number}, reviewer={recorded.reviewer_identity})"
+                f"({ref.slug}#{ref.pr_id}, reviewer={recorded.reviewer_identity})"
             )
             state = "safe_to_approve"
         else:
             reason = "verdict is HOLD" if not recorded.is_merge_safe() else f"live checks {live_checks!r}"
             self.stdout.write(
-                f"  not safe-to-approve at {recorded.reviewed_sha[:8]}: {reason} ({ref.slug}#{ref.number})"
+                f"  not safe-to-approve at {recorded.reviewed_sha[:8]}: {reason} ({ref.slug}#{ref.pr_id})"
             )
             state = "not_safe"
         return {
             "state": state,
             "slug": ref.slug,
-            "pr_id": ref.number,
+            "pr_id": ref.pr_id,
             "verdict": recorded.verdict,
             "reviewed_sha": recorded.reviewed_sha,
             "current_head_sha": current_head,
@@ -430,25 +431,25 @@ class Command(TyperCommand):
             self.stderr.write(f"  could not parse a PR/MR URL from {mr_url!r}")
             raise SystemExit(1)
 
-        lock = MRReviewLock.acquire(slug=ref.slug, pr_id=ref.number, holder=holder, mr_url=mr_url)
+        lock = MRReviewLock.acquire(slug=ref.slug, pr_id=ref.pr_id, holder=holder, mr_url=mr_url)
         if lock is not None:
-            self.stdout.write(f"  acquired: {ref.slug}#{ref.number} now held by {holder!r} — dispatch the reviewer")
+            self.stdout.write(f"  acquired: {ref.slug}#{ref.pr_id} now held by {holder!r} — dispatch the reviewer")
             return {
                 "acquired": True,
                 "slug": ref.slug,
-                "pr_id": ref.number,
+                "pr_id": ref.pr_id,
                 "state": lock.state,
                 "holder": lock.holder,
             }
 
-        held = MRReviewLock.objects.filter(slug=ref.slug, pr_id=ref.number).first()
+        held = MRReviewLock.objects.filter(slug=ref.slug, pr_id=ref.pr_id).first()
         held_state = held.state if held is not None else ""
         held_by = held.holder if held is not None else ""
         self.stdout.write(
-            f"  not acquired: {ref.slug}#{ref.number} is already {held_state!r} held by {held_by!r} — "
+            f"  not acquired: {ref.slug}#{ref.pr_id} is already {held_state!r} held by {held_by!r} — "
             f"skip the dispatch, a review is in flight"
         )
-        return {"acquired": False, "slug": ref.slug, "pr_id": ref.number, "state": held_state, "holder": held_by}
+        return {"acquired": False, "slug": ref.slug, "pr_id": ref.pr_id, "state": held_state, "holder": held_by}
 
     @command(name="lock-status")
     def lock_status(self, mr_url: str) -> LockStatusResult:
@@ -458,17 +459,17 @@ class Command(TyperCommand):
             self.stderr.write(f"  could not parse a PR/MR URL from {mr_url!r}")
             raise SystemExit(1)
 
-        lock = MRReviewLock.objects.filter(slug=ref.slug, pr_id=ref.number).first()
+        lock = MRReviewLock.objects.filter(slug=ref.slug, pr_id=ref.pr_id).first()
         if lock is None:
-            self.stdout.write(f"  no lock recorded for {ref.slug}#{ref.number} — idle")
-            return {"slug": ref.slug, "pr_id": ref.number, "locked": False, "state": "idle", "holder": ""}
+            self.stdout.write(f"  no lock recorded for {ref.slug}#{ref.pr_id} — idle")
+            return {"slug": ref.slug, "pr_id": ref.pr_id, "locked": False, "state": "idle", "holder": ""}
 
         self.stdout.write(
-            f"  {ref.slug}#{ref.number}: state={lock.state!r} holder={lock.holder!r} locked={lock.is_locked()}"
+            f"  {ref.slug}#{ref.pr_id}: state={lock.state!r} holder={lock.holder!r} locked={lock.is_locked()}"
         )
         return {
             "slug": ref.slug,
-            "pr_id": ref.number,
+            "pr_id": ref.pr_id,
             "locked": lock.is_locked(),
             "state": lock.state,
             "holder": lock.holder,

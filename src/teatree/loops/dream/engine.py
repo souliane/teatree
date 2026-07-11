@@ -70,6 +70,7 @@ failing gate marks the pass attempted-not-succeeded (staleness keeps firing), so
 lossy / delete-only / no-op consolidation is caught rather than stamped success.
 """
 
+import logging
 import os
 import stat
 from collections.abc import Sequence
@@ -84,22 +85,35 @@ from teatree.loops.dream.transcript_extract import high_signal_lines, looks_like
 if TYPE_CHECKING:
     from teatree.loops.dream.eval_proposer import EvalProposalRequest
 
+logger = logging.getLogger(__name__)
+
 _DEFAULT_LOOKBACK_HOURS = 48
 
-#: Weight floors per member, highest signal first. A memory file whose name
-#: marks it a user-correction (``feedback_*``) or whose body carries BINDING
-#: doctrine outranks a retro finding, which outranks a cold review, then a
-#: deny-streak, then anything else — so the bounded extract keeps the
-#: highest-signal members when it truncates.
+#: Weight floors per member, highest signal first. The ladder is KIND-AWARE
+#: (:func:`_member_weight`): the ``BINDING`` / ``feedback_`` doctrine floors are
+#: reserved for CURATED MEMORY files, so a transcript that merely QUOTES a BINDING
+#: rule can never outrank the memory that owns it. A fresh user-correction turn in a
+#: transcript carries its own high floor (``_WEIGHT_CORRECTION``, just under feedback)
+#: — the day's highest-signal drift. Retro / cold-review / deny-streak markers rank
+#: below, then anything else — so the bounded extract keeps the highest-signal
+#: members when it truncates.
 _WEIGHT_BINDING = 100
 _WEIGHT_FEEDBACK = 90
+_WEIGHT_CORRECTION = 80
 _WEIGHT_RETRO = 70
 _WEIGHT_COLD_REVIEW = 50
 _WEIGHT_DENY_STREAK = 40
 _WEIGHT_OTHER = 10
 
-#: Per-member text cap; combines with the extract ceiling to bound the prompt.
+#: Per-memory text cap; combines with the extract ceiling to bound the prompt. A
+#: curated memory file is dense doctrine, so a tight cap keeps any single memory
+#: from crowding the prompt.
 _PER_SNIPPET_CHARS = 4000
+
+#: Per-transcript-session text cap on the high-signal lines kept from ONE session,
+#: so a single flooding session (a giant task output) can never dominate the extract
+#: at the expense of the rest of the corpus.
+_PER_SESSION_CHARS = 8_000
 
 
 @dataclass(frozen=True, slots=True)
@@ -122,9 +136,16 @@ class ConsolidationExtract:
 
     CHAR_CEILING: ClassVar[int] = 60_000
 
+    #: A guaranteed slice of the ceiling reserved for CURATED MEMORY members, filled
+    #: FIRST so a flood of recent transcript members (a night of large task outputs)
+    #: can never starve the durable doctrine out of the prompt. Complements
+    #: :data:`TRANSCRIPT_FLOOR`: the two floors protect the prompt from EITHER side
+    #: flooding the other, and the remainder is filled highest-weight-first.
+    MEMORY_FLOOR: ClassVar[int] = 16_000
+
     #: A guaranteed slice of the ceiling reserved for recent transcript members,
-    #: filled FIRST so high-weight curated-memory re-reads can never starve fresh
-    #: drift out of the prompt. The remainder is filled highest-weight-first.
+    #: filled after the memory floor so high-weight curated-memory re-reads can never
+    #: starve fresh drift out of the prompt. The remainder is filled highest-weight-first.
     TRANSCRIPT_FLOOR: ClassVar[int] = 24_000
 
     snippets: tuple[WeightedSnippet, ...]
@@ -185,12 +206,36 @@ class Distiller(Protocol):
 
 
 @dataclass(frozen=True, slots=True)
+class WriteOutcome:
+    """The ledger-write tally for one pass: rows written vs ungrounded rows rejected.
+
+    ``rejected`` counts clusters the reject guard dropped (empty / unknown-source /
+    invented-quote citations) — the hallucinated-rule shapes the ledger must never
+    persist. Each rejection is logged at WARNING by :func:`write_clusters`, so a
+    silently-ungrounded distiller batch is surfaced, never swallowed.
+    """
+
+    written: int
+    rejected: int
+
+
+@dataclass(frozen=True, slots=True)
 class DreamRunResult:
     clusters_recorded: int
     members_replayed: int
     dry_run: bool
     evals_proposed: int = 0
     empty_batches: int = 0
+    #: How many snippets the bounded extract actually fed the distiller — the honest
+    #: "distilled N snippet(s)" metric (0 clusters from many snippets is a real signal,
+    #: not a healthy quiet night).
+    snippets_distilled: int = 0
+    #: How many candidate clusters the ledger-write reject guard dropped as ungrounded.
+    clusters_rejected: int = 0
+    #: The bounded extract this pass built, so the command can reuse it for the
+    #: compliance-measurement and automatable-ask phases instead of re-enumerating +
+    #: re-reading every member a second time. ``None`` only on a pass that built none.
+    extract: "ConsolidationExtract | None" = None
 
 
 def default_projects_dir() -> Path:
@@ -263,12 +308,29 @@ def enumerate_members(
 
 
 def _member_weight(member: TranscriptMember, text: str) -> int:
+    """Rank a member by KIND-AWARE signal so a transcript never impersonates doctrine.
+
+    The ``BINDING`` / ``feedback_`` doctrine floors are reserved for CURATED MEMORY
+    members: a session/task transcript that merely QUOTES a BINDING rule is drift
+    ABOUT the rule, not the rule itself, so it must not tie or outrank the memory that
+    owns it. A transcript's own high floor is a fresh USER-CORRECTION turn
+    (``_WEIGHT_CORRECTION``) — the day's richest drift. Retro / cold-review /
+    deny-streak markers apply to either kind; everything else is baseline.
+    """
     name = member.path.name.lower()
     body = text.lower()
-    if "binding" in body:
-        return _WEIGHT_BINDING
-    if name.startswith("feedback_"):
-        return _WEIGHT_FEEDBACK
+    if member.kind == "memory":
+        if "binding" in body:
+            return _WEIGHT_BINDING
+        if name.startswith("feedback_"):
+            return _WEIGHT_FEEDBACK
+    elif _has_user_correction(text):
+        return _WEIGHT_CORRECTION
+    return _shared_marker_weight(name, body)
+
+
+def _shared_marker_weight(name: str, body: str) -> int:
+    """The kind-agnostic tail of the weight ladder shared by memory and transcript members."""
     if "retro" in name or "retro finding" in body:
         return _WEIGHT_RETRO
     if "cold review" in body or "cold-review" in name:
@@ -278,6 +340,15 @@ def _member_weight(member: TranscriptMember, text: str) -> int:
     return _WEIGHT_OTHER
 
 
+def _has_user_correction(text: str) -> bool:
+    """True when any line of *text* reads like a raw user-correction turn.
+
+    Reuses :func:`looks_like_user_correction` (the keyword-blind ground-truth signal)
+    per line so a transcript carrying a fresh correction earns the correction floor.
+    """
+    return any(looks_like_user_correction(line) for line in text.splitlines())
+
+
 def _read_member_text(member: TranscriptMember) -> str:
     try:
         raw = member.path.read_text(errors="replace")
@@ -285,7 +356,7 @@ def _read_member_text(member: TranscriptMember) -> str:
         return ""
     if member.kind == "memory" or member.path.suffix == ".md":
         return raw[:_PER_SNIPPET_CHARS]
-    return high_signal_lines(raw)[:_PER_SNIPPET_CHARS]
+    return high_signal_lines(raw)[:_PER_SESSION_CHARS]
 
 
 def _is_transcript(snippet: WeightedSnippet) -> bool:
@@ -297,11 +368,14 @@ def build_extract(members: Sequence[TranscriptMember]) -> ConsolidationExtract:
 
     Each member is read once; transcript members keep only high-signal lines
     (gate BLOCKs, user-corrections, retro markers) so raw chatter never reaches
-    the LLM. A guaranteed ``TRANSCRIPT_FLOOR`` slice of the ceiling is filled
-    FIRST from recent transcript members (highest-weight first among them) so a
-    flood of high-weight curated-memory re-reads can never starve fresh drift out
-    of the prompt; the remaining budget is then filled highest-weight-first over
-    everything not already kept. ``truncated`` flips when a member is clipped or
+    the LLM. TWO guaranteed floors protect the prompt from either side flooding the
+    other: a ``MEMORY_FLOOR`` slice is filled FIRST from curated-memory members so a
+    night of large task outputs can never starve durable doctrine out of the prompt,
+    then a ``TRANSCRIPT_FLOOR`` slice is filled from recent transcript members so a
+    flood of high-weight memory re-reads can never starve fresh drift. The remaining
+    budget is then filled highest-weight-first over everything not already kept.
+    Snippets are ordered by a WEIGHT-ONLY stable sort, so equal-weight members keep
+    their input (recency) order. ``truncated`` flips when a member is clipped or
     dropped for lack of budget.
     """
     weighted: list[WeightedSnippet] = []
@@ -312,18 +386,21 @@ def build_extract(members: Sequence[TranscriptMember]) -> ConsolidationExtract:
         weighted.append(
             WeightedSnippet(path=member.path, kind=member.kind, weight=_member_weight(member, text), text=text),
         )
-    weighted.sort(key=lambda s: (s.weight, str(s.path)), reverse=True)
+    weighted.sort(key=lambda s: s.weight, reverse=True)
 
     kept: list[WeightedSnippet] = []
     seen: set[int] = set()
     used = 0
-    truncated = False
 
+    memories = [s for s in weighted if not _is_transcript(s)]
     transcripts = [s for s in weighted if _is_transcript(s)]
-    used, truncated = _fill(transcripts, kept, seen, used, ceiling=ConsolidationExtract.TRANSCRIPT_FLOOR)
+    used, mem_truncated = _fill(memories, kept, seen, used, ceiling=ConsolidationExtract.MEMORY_FLOOR)
+    used, transcript_truncated = _fill(
+        transcripts, kept, seen, used, ceiling=ConsolidationExtract.MEMORY_FLOOR + ConsolidationExtract.TRANSCRIPT_FLOOR
+    )
     used, rest_truncated = _fill(weighted, kept, seen, used, ceiling=ConsolidationExtract.CHAR_CEILING)
 
-    return ConsolidationExtract(snippets=tuple(kept), truncated=truncated or rest_truncated)
+    return ConsolidationExtract(snippets=tuple(kept), truncated=mem_truncated or transcript_truncated or rest_truncated)
 
 
 def _fill(
@@ -362,14 +439,15 @@ def write_clusters(
     *,
     dry_run: bool,
     overlay: str = "",
-) -> int:
+) -> WriteOutcome:
     """Idempotently record valid clusters into the ConsolidatedMemory ledger.
 
-    A cluster is rejected (counted as skipped, never written) when its
+    A cluster is rejected (counted, LOGGED at WARNING, never written) when its
     ``source_files`` is empty, cites a path not present in *extract*, or its
     ``verified_citation`` does not appear (whitespace-normalized substring) in a
     cited snippet's text — these are the hallucinated-rule shapes the ledger must
-    never persist, including a real-path-but-invented-quote citation. A valid
+    never persist, including a real-path-but-invented-quote citation. Each rejection
+    is logged so an ungrounded distiller batch is surfaced, not swallowed. A valid
     cluster is upserted by ``cluster_key`` through the manager factory, so a
     re-run that re-clusters the same members updates the row in place instead of
     duplicating it. A BINDING row's ``rule`` is never destructively overwritten.
@@ -379,8 +457,8 @@ def write_clusters(
     rule forbids re-promoting another memory for a recurrence, so it is sent to a
     teatree-core destination and Pass-2 triage tickets it as a core gap instead.
 
-    Returns the count of clusters that passed the reject guard. Under *dry_run*
-    the count is computed but nothing is written.
+    Returns a :class:`WriteOutcome` tallying rows written vs rejected. Under *dry_run*
+    the tally is computed but nothing is written.
     """
     from teatree.loops.dream.compliance import reclassify_recurring_memory_clusters  # noqa: PLC0415
 
@@ -388,13 +466,21 @@ def write_clusters(
     snippet_texts = {str(snippet.path): normalize_ws(snippet.text) for snippet in extract.snippets}
     snippet_weights = {str(snippet.path): snippet.weight for snippet in extract.snippets}
     written = 0
+    rejected = 0
     for cluster in clusters:
         if not cluster_is_grounded(cluster, snippet_texts):
+            rejected += 1
+            logger.warning(
+                "dream ledger REJECTED an ungrounded cluster (rule=%r, source_files=%s): "
+                "its verified_citation is not present in a cited snippet — not recording it.",
+                cluster.rule[:120],
+                cluster.source_files,
+            )
             continue
         written += 1
         if not dry_run:
             _upsert(cluster, max_member_weight=_cited_max_weight(cluster, snippet_weights), overlay=overlay)
-    return written
+    return WriteOutcome(written=written, rejected=rejected)
 
 
 def normalize_ws(text: str) -> str:
@@ -474,7 +560,7 @@ def run_consolidation(
     distill = distiller or sdk_distill
     outcome = distill_in_batches(extract, distiller=distill)
     clusters = outcome.clusters
-    written = write_clusters(clusters, extract, dry_run=dry_run, overlay=overlay)
+    write_outcome = write_clusters(clusters, extract, dry_run=dry_run, overlay=overlay)
     proposed = 0
     if eval_proposals is not None:
         from teatree.loops.dream import eval_proposer  # noqa: PLC0415
@@ -482,11 +568,14 @@ def run_consolidation(
         proposals = eval_proposer.propose_evals(clusters, extract, proposer=eval_proposals.proposer)
         proposed = eval_proposer.write_eval_proposals(proposals, dry_run=dry_run, out_path=eval_proposals.out_path)
     return DreamRunResult(
-        clusters_recorded=written,
+        clusters_recorded=write_outcome.written,
         members_replayed=len(members),
         dry_run=dry_run,
         evals_proposed=proposed,
         empty_batches=outcome.empty_batches,
+        snippets_distilled=len(extract.snippets),
+        clusters_rejected=write_outcome.rejected,
+        extract=extract,
     )
 
 
@@ -499,6 +588,7 @@ __all__ = [
     "DreamRunResult",
     "TranscriptMember",
     "WeightedSnippet",
+    "WriteOutcome",
     "build_extract",
     "cluster_is_grounded",
     "default_projects_dir",

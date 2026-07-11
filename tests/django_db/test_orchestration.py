@@ -8,8 +8,8 @@ from pathlib import Path
 
 import pytest
 
-from teatree.utils import django_db_dslr as dslr_mod
 from teatree.utils.django_db import DjangoDbImportConfig, DjangoDbImporter, django_db_import
+from teatree.utils.django_db import dslr as dslr_mod
 
 from ._shared import _make_cfg
 

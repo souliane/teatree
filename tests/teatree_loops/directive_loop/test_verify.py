@@ -113,9 +113,11 @@ class TestVerifyAndDecide(TestCase):
 
 class TestRealReaders(TestCase):
     def test_activation_reader_reads_back_through_the_resolver(self) -> None:
-        directive = _verifying(kind="activation_only", acceptance_tests=[])
-        assert verify._activation_live(directive) is False  # not yet written
-        ConfigSetting.objects.set_value(_KEY, 1, scope=_SCOPE)
+        # Use an activation target distinct from the shipped default (1) so the reader's
+        # unwritten -> not-live -> live transition stays observable and anti-vacuous.
+        directive = _verifying(kind="activation_only", acceptance_tests=[], activation_value=2)
+        assert verify._activation_live(directive) is False  # not yet written (default 1 != 2)
+        ConfigSetting.objects.set_value(_KEY, 2, scope=_SCOPE)
         assert verify._activation_live(directive) is True
 
     def test_acceptance_reader_empty_nodes_is_green_without_running(self) -> None:

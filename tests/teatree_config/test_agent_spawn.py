@@ -14,7 +14,8 @@ from pathlib import Path
 
 import pytest
 
-from teatree.config_agent import EFFORT_SCALE, AgentConfig, parse_effort, resolve_agent_config
+from teatree.config import AgentHarness
+from teatree.config.agent_spawn import EFFORT_SCALE, AgentConfig, parse_effort, resolve_agent_config
 
 
 def _seed(db_path: Path, key: str, value: object, scope: str = "") -> None:
@@ -355,6 +356,61 @@ class TestPhaseFanoutParse:
 
     def test_default_config_has_empty_phase_fanout(self) -> None:
         assert AgentConfig().phase_fanout == {}
+
+
+class TestPhaseHarnessParse:
+    """``agent_phase_harness`` override parsing — the per-phase harness pin (§3a #3)."""
+
+    def test_default_config_has_empty_phase_harness(self) -> None:
+        assert AgentConfig().phase_harness == {}
+
+    def test_named_harnesses_parsed_to_enum(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        db = tmp_path / "db.sqlite3"
+        _seed(db, "agent_phase_harness", {"reviewing": "pydantic_ai", "coding": "claude_sdk"})
+        _point_at(monkeypatch, db)
+        assert resolve_agent_config().phase_harness == {
+            "reviewing": AgentHarness.PYDANTIC_AI,
+            "coding": AgentHarness.CLAUDE_SDK,
+        }
+
+    @pytest.mark.parametrize("sentinel", ["", "default", "inherit"])
+    def test_inherit_sentinel_is_an_explicit_unpin(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, sentinel: str
+    ) -> None:
+        # A sentinel keeps the KEY (an explicit None) so the resolver can tell
+        # "override to no-pin" apart from "no override at all".
+        db = tmp_path / "db.sqlite3"
+        _seed(db, "agent_phase_harness", {"reviewing": sentinel})
+        _point_at(monkeypatch, db)
+        resolved = resolve_agent_config().phase_harness
+        assert resolved == {"reviewing": None}
+        assert "reviewing" in resolved
+
+    def test_case_and_whitespace_insensitive(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        db = tmp_path / "db.sqlite3"
+        _seed(db, "agent_phase_harness", {"testing": "  Pydantic_AI  "})
+        _point_at(monkeypatch, db)
+        assert resolve_agent_config().phase_harness == {"testing": AgentHarness.PYDANTIC_AI}
+
+    def test_malformed_and_non_string_values_skipped(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        db = tmp_path / "db.sqlite3"
+        _seed(db, "agent_phase_harness", {"reviewing": "pydantic_ai", "coding": "gpt-sdk", "testing": 5})
+        _point_at(monkeypatch, db)
+        # A value naming no known harness ("gpt-sdk") and a non-string (5) are
+        # tolerated and dropped; only the valid pin survives.
+        assert resolve_agent_config().phase_harness == {"reviewing": AgentHarness.PYDANTIC_AI}
+
+    def test_non_dict_falls_back_to_empty(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        db = tmp_path / "db.sqlite3"
+        _seed(db, "agent_phase_harness", "oops")
+        _point_at(monkeypatch, db)
+        assert resolve_agent_config().phase_harness == {}
+
+    def test_absent_phase_harness_is_empty(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        db = tmp_path / "db.sqlite3"
+        _seed(db, "agent_session_model", "haiku")
+        _point_at(monkeypatch, db)
+        assert resolve_agent_config().phase_harness == {}
 
 
 class TestMalformedAndMissing:

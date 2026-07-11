@@ -23,11 +23,6 @@ graph TD
     teatree.config --> teatree.types
     teatree.config --> teatree.utils
     teatree.config --> teatree.update_check
-    teatree.config --> teatree.config_speak
-    teatree.config --> teatree.config_mr_reminder
-    teatree.config_speak --> teatree.types
-    teatree.config_agent --> teatree.config
-    teatree.config_mr_reminder --> teatree.types
     teatree.update_check --> teatree.paths
     teatree.update_check --> teatree.utils
     teatree.utils --> teatree.paths
@@ -83,7 +78,6 @@ graph TD
     teatree.agents --> teatree.skill_support
     teatree.agents --> teatree.utils
     teatree.agents --> teatree.config
-    teatree.agents --> teatree.config_agent
     teatree.backends --> teatree.types
     teatree.backends --> teatree.utils
     teatree.backends --> teatree.core
@@ -123,7 +117,6 @@ graph TD
     teatree.cli --> teatree.paths
     teatree.cli --> teatree.project
     teatree.cli --> teatree.config
-    teatree.cli --> teatree.config_agent
     teatree.cli --> teatree.core
     teatree.cli --> teatree.agents
     teatree.cli --> teatree.backends
@@ -292,11 +285,13 @@ graph TD
     teatree.loop.rendering --> teatree.loop.rendering_items
     teatree.loop.rendering --> teatree.loop.rendering_permalinks
     teatree.loop.rendering --> teatree.loop.rendering_zones
+    teatree.loop.slack_answer --> teatree.agents
     teatree.loop.slack_answer --> teatree.backends.slack
     teatree.loop.slack_answer --> teatree.core
     teatree.loop.slack_answer --> teatree.core.models
     teatree.loop.slack_answer --> teatree.loop.self_improve
     teatree.loop.slack_answer --> teatree.loop.statusline
+    teatree.loops --> teatree.agents
     teatree.loops --> teatree.config
     teatree.loops --> teatree.core
     teatree.loops --> teatree.loop
