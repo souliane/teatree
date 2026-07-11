@@ -81,7 +81,7 @@ def _scanned_prs(signals: "list[ScanSignal]") -> list[_ScannedPr]:
         prs.append(
             _ScannedPr(
                 url=url,
-                iid=iid if isinstance(iid, int) and iid > 0 else (ref.number if ref else 0),
+                iid=iid if isinstance(iid, int) and iid > 0 else (ref.pr_id if ref else 0),
                 slug=ref.slug if ref else "",
                 description=_description_from_payload(payload),
                 merged=_is_merged(raw_dict),

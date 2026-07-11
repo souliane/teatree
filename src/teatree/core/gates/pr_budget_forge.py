@@ -30,7 +30,8 @@ from typing import TYPE_CHECKING
 from teatree.config import get_effective_settings
 from teatree.core.models import Ticket
 from teatree.utils.close_keywords import parse_closes_ticket
-from teatree.utils.url_slug import PrRef, pr_ref_from_url
+from teatree.utils.pr_ref import PrRef
+from teatree.utils.url_slug import pr_ref_from_url
 
 if TYPE_CHECKING:
     from teatree.core.backend_protocols import CodeHostBackend

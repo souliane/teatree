@@ -7,7 +7,7 @@ keystone-side only). Both now route the core green/pending/failed verdict throug
 :func:`teatree.core.merge.classify_required_rollup`.
 
 This feeds a fixture matrix through BOTH surfaces — the keystone's live
-``fetch_required_checks_status`` (real ``gh`` classification, subprocess stubbed)
+``CodeHostQuery.required_checks_status`` (real ``gh`` classification, subprocess stubbed)
 AND the sweep's ``_ci_gate`` — and asserts each agrees with the shared function,
 so a future edit that reintroduces a divergent sweep classifier fails here. Only
 the unstoppable ``gh`` subprocess and the required-set lookup are stubbed; the
@@ -24,10 +24,11 @@ from unittest.mock import patch
 
 import pytest
 
-from teatree.core.merge import classify_required_rollup, fetch_required_checks_status
+from teatree.core.merge import CodeHostQuery, classify_required_rollup
 from teatree.loop.scanners.pr_sweep import PrSummary, PrSweepScanner
 from teatree.loop.scanners.pr_sweep_adapters import NullMergeNotifier
 from teatree.types import RawAPIDict
+from teatree.utils.pr_ref import PrRef
 
 # No DB access — pure classification through stubbed forge I/O on both surfaces.
 
@@ -100,7 +101,7 @@ def _gh_stub(rollup: list[RawAPIDict], required: set[str]) -> Callable[[list[str
 
 def _keystone_verdict(rollup: list[RawAPIDict], required: set[str]) -> str:
     with patch("teatree.backends.forge_merge_rpc.gh_runner", return_value=_gh_stub(rollup, required)):
-        return fetch_required_checks_status(_SLUG, _PR, host_kind="github")
+        return CodeHostQuery.for_ref(PrRef(slug=_SLUG, pr_id=_PR)).required_checks_status()
 
 
 def _sweep_verdict(rollup: list[RawAPIDict], required: set[str]) -> str:
@@ -113,7 +114,7 @@ def _sweep_verdict(rollup: list[RawAPIDict], required: set[str]) -> str:
         has_changes_requested=False,
         rollup=tuple(rollup),
     )
-    with patch("teatree.loop.scanners.pr_sweep.fetch_required_context_names", return_value=required):
+    with patch("teatree.core.merge.ci_rollup.CodeHostQuery.required_context_names", return_value=required):
         skip_reason, fallback, _failing = scanner._ci_gate(pr)
     if skip_reason is None and not fallback:
         return "green"

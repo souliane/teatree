@@ -10,11 +10,13 @@ that keeps the intra-package DAG acyclic under ``forbid_circular_dependencies``.
 """
 
 import logging
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, TypedDict, cast
 
 from teatree.core.backend_protocols import PrMergeState, rollup_query_failed
 from teatree.core.backend_registry import get_backend_provider
 from teatree.core.models import MergeClear
+from teatree.utils.pr_ref import PrRef
 
 if TYPE_CHECKING:
     from teatree.core.backend_protocols import CodeHostBackend
@@ -42,64 +44,131 @@ def _code_host_for(host_kind: str) -> "CodeHostBackend":
     return provider.build_github_host(token="")
 
 
-def fetch_live_head_sha(slug: str, pr_id: int, *, host_kind: str = "github") -> str:
-    """The PR/MR's current head SHA from the forge (never a branch ref) — §17.4.3 step 2.
+@dataclass(frozen=True, slots=True)
+class CodeHostQuery:
+    """Every §17.4.3 live-forge read for ONE PR/MR, bound to a resolved backend.
 
-    Delegates to the registry-resolved :class:`CodeHostBackend`
-    (:func:`_code_host_for`); the gh/glab argv lives in the backend.
+    Holds the :class:`PrRef` (slug + pr_id + host_kind) and the registry-resolved
+    :class:`CodeHostBackend` so a caller that makes several reads about the same
+    PR — the keystone re-checks the head SHA, draft state, and required checks in
+    one pass — resolves the transport ONCE instead of re-calling
+    :func:`_code_host_for` per read. Build with :meth:`for_ref`; the classifier
+    functions (:func:`classify_required_rollup`, :func:`failing_required_names`)
+    stay module-level because they are pure over already-fetched rollup data.
     """
-    return _code_host_for(host_kind).fetch_live_head_sha(slug=slug, pr_id=pr_id)
+
+    ref: PrRef
+    backend: "CodeHostBackend"
+
+    @classmethod
+    def for_ref(cls, ref: PrRef) -> "CodeHostQuery":
+        """Bind a query for *ref*, resolving the merge-transport backend once."""
+        return cls(ref=ref, backend=_code_host_for(ref.host_kind))
+
+    def rebound_to(self, slug: str) -> "CodeHostQuery":
+        """A sibling query for the same PR number on a different repo *slug*.
+
+        Reuses the already-resolved backend (same ``host_kind``) — the #1335
+        cross-repo probe re-reads ``pulls/<N>`` on each candidate repo without
+        re-resolving the transport per candidate.
+        """
+        rebound = PrRef(slug=slug, pr_id=self.ref.pr_id, host_kind=self.ref.host_kind)
+        return CodeHostQuery(ref=rebound, backend=self.backend)
+
+    def live_head_sha(self) -> str:
+        """The PR/MR's current head SHA from the forge (never a branch ref) — §17.4.3 step 2."""
+        return self.backend.fetch_live_head_sha(slug=self.ref.slug, pr_id=self.ref.pr_id)
+
+    def pr_merge_state(self) -> PrMergeState:
+        """Whether the PR/MR is already merged, and at which commit — §928 reconciliation.
+
+        A lost post-hook (process kill / DB lock / rollback between
+        :func:`execute_bound_merge` and :func:`record_merge_and_advance`) leaves
+        the PR merged on the forge while the CLEAR is still unconsumed and the FSM
+        has not advanced. The retry must detect "already merged by us" and run the
+        post hook idempotently rather than re-issuing the irreversible merge (which
+        both forges refuse — GitHub 405, GitLab 405 / 406 — a permanent brick) or
+        failing the SHA precondition forever. The backend returns an empty state on
+        any forge error so the caller falls through to the normal (fail-closed)
+        precondition path, and normalises both forges' state to the uppercase
+        ``"MERGED"`` ``PrMergeState.is_merged`` reads.
+        """
+        return self.backend.fetch_pr_merge_state(slug=self.ref.slug, pr_id=self.ref.pr_id)
+
+    def pr_is_draft(self) -> bool:
+        """Whether the PR/MR is in draft state — §17.4.3 step 4.
+
+        GitLab reads ``draft``/``work_in_progress`` and GitHub ``isDraft`` inside
+        the backend.
+        """
+        return self.backend.fetch_pr_is_draft(slug=self.ref.slug, pr_id=self.ref.pr_id)
+
+    def pr_author(self) -> str:
+        """The PR/MR author handle — the §17.4.3 author-gate input (#1773).
+
+        GitHub reads ``author.login`` and GitLab ``.author.username`` inside the
+        backend. Returns ``""`` on any forge error so the keystone's author gate
+        fails closed.
+        """
+        return self.backend.fetch_pr_author(slug=self.ref.slug, pr_id=self.ref.pr_id)
+
+    def pr_changed_paths(self) -> list[str]:
+        """The PR/MR's changed file paths — feeds the path-based substrate detector.
+
+        GitHub reads ``gh pr view --json files``; GitLab the MR ``diffs`` API. A
+        forge error degrades to an empty list — the path detector is an ADD-ON to
+        the recorded ``blast_class`` label (it can only widen substrate, never
+        narrow it), so a missing diff never weakens the existing label-based gate.
+        """
+        return self.backend.fetch_pr_changed_paths(slug=self.ref.slug, pr_id=self.ref.pr_id)
+
+    def required_context_names(self) -> set[str] | None:
+        """Live branch-protection required context names for the PR/MR base (the sweep's source).
+
+        ``None`` when the required set is indeterminate (fail CLOSED); an EMPTY set
+        when the base branch has no required-status-check gate (no gate → green).
+        The same required set :meth:`required_checks_status` scopes its keystone
+        verdict to, so ``pr_sweep`` reads the identical set instead of hardcoding
+        ``test (3.13)`` (#12).
+        """
+        return _required_context_names(self.backend, slug=self.ref.slug, pr_id=self.ref.pr_id)
+
+    def required_checks_status(self) -> str:
+        """Live required-checks verdict for the PR/MR head — §17.4.3 step 3.
+
+        Evaluated against the forge's live state at merge time (the authoritative
+        set), NOT the ``gh_verify_result`` snapshot saved on the CLEAR. Returns
+        ``"green"`` only when every branch-protection-REQUIRED context concluded
+        successfully; ``"pending"`` while a required context is still running or has
+        not reported; otherwise ``"failed"``.
+
+        The backend returns the RAW rollup (GitHub ``statusCheckRollup`` entries,
+        GitLab pipeline entries); core does the verdict classification here so the
+        §17.4.3 ``green``/``pending``/``failed`` semantics stay in one place. A
+        rollup query failure surfaces as the :data:`ROLLUP_QUERY_FAILED` sentinel →
+        ``failed``.
+
+        **GitHub — the required set is branch protection, not the whole rollup.**
+        Only a check whose name is in the branch-protection ``required_status_checks``
+        contexts can block the merge; a non-required check NEVER blocks. If the
+        required set cannot be fetched the merge fails CLOSED (``failed``). An empty
+        required set means no gate → ``green``. The rollup is first deduped to the
+        newest check-run per ``(typename, name)`` so a stale/cancelled FAILURE
+        superseded by a newer SUCCESS for the same name does not false-block.
+
+        **GitLab** gates on the head pipeline's overall status (which aggregates the
+        required jobs server-side); it needs the head SHA to pick the right
+        (non-merge-train) pipeline, fetched via :meth:`live_head_sha`.
+        """
+        rollup = self.backend.fetch_required_checks_rollup(slug=self.ref.slug, pr_id=self.ref.pr_id)
+        if rollup_query_failed(rollup):
+            return "failed"
+        if self.ref.host_kind == "gitlab":
+            return _gitlab_pipeline_verdict(self.backend, rollup, slug=self.ref.slug, pr_id=self.ref.pr_id)
+        return _github_required_checks_verdict(self.backend, rollup, slug=self.ref.slug, pr_id=self.ref.pr_id)
 
 
-def fetch_pr_merge_state(slug: str, pr_id: int, *, host_kind: str = "github") -> PrMergeState:
-    """Whether the PR/MR is already merged, and at which commit — §928 reconciliation.
-
-    A lost post-hook (process kill / DB lock / rollback between
-    :func:`execute_bound_merge` and :func:`record_merge_and_advance`)
-    leaves the PR merged on the forge while the CLEAR is still unconsumed
-    and the FSM has not advanced. The retry must detect "already merged
-    by us" and run the post hook idempotently rather than re-issuing the
-    irreversible merge (which both forges refuse — GitHub 405, GitLab 405
-    / 406 — a permanent brick) or failing the SHA precondition forever.
-    Returns an empty state on any forge error so the caller falls through to
-    the normal (fail-closed) precondition path. The backend normalises both
-    forges' state to the uppercase ``"MERGED"`` ``PrMergeState.is_merged`` reads.
-    """
-    return _code_host_for(host_kind).fetch_pr_merge_state(slug=slug, pr_id=pr_id)
-
-
-def fetch_pr_is_draft(slug: str, pr_id: int, *, host_kind: str = "github") -> bool:
-    """Whether the PR/MR is in draft state — §17.4.3 step 4.
-
-    Delegates to the registry-resolved :class:`CodeHostBackend`; GitLab reads
-    ``draft``/``work_in_progress`` and GitHub ``isDraft`` inside the backend.
-    """
-    return _code_host_for(host_kind).fetch_pr_is_draft(slug=slug, pr_id=pr_id)
-
-
-def fetch_pr_author(slug: str, pr_id: int, *, host_kind: str = "github") -> str:
-    """The PR/MR author handle — the §17.4.3 author-gate input (#1773).
-
-    Delegates to the registry-resolved :class:`CodeHostBackend`; GitHub reads
-    ``author.login`` and GitLab ``.author.username`` inside the backend. Returns
-    ``""`` on any forge error so the keystone's author gate fails closed.
-    """
-    return _code_host_for(host_kind).fetch_pr_author(slug=slug, pr_id=pr_id)
-
-
-def fetch_pr_changed_paths(slug: str, pr_id: int, *, host_kind: str = "github") -> list[str]:
-    """The PR/MR's changed file paths — feeds the path-based substrate detector.
-
-    Delegates to the registry-resolved :class:`CodeHostBackend` (GitHub reads
-    ``gh pr view --json files``; GitLab the MR ``diffs`` API). A forge error
-    degrades to an empty list — the path detector is an ADD-ON to the recorded
-    ``blast_class`` label (it can only widen substrate, never narrow it), so a
-    missing diff never weakens the existing label-based gate.
-    """
-    return _code_host_for(host_kind).fetch_pr_changed_paths(slug=slug, pr_id=pr_id)
-
-
-def attach_touched_paths(clear: object, *, slug: str, pr_id: int, host_kind: str) -> None:
+def attach_touched_paths(clear: object, query: CodeHostQuery) -> None:
     """Populate ``clear.touched_paths`` from the forge's live changed-file list.
 
     Best-effort: a non-``MergeClear`` *clear* (the gate handles that refusal) or a
@@ -110,9 +179,13 @@ def attach_touched_paths(clear: object, *, slug: str, pr_id: int, host_kind: str
     if not isinstance(clear, MergeClear):
         return
     try:
-        paths = fetch_pr_changed_paths(slug, pr_id, host_kind=host_kind)
+        paths = query.pr_changed_paths()
     except Exception:  # noqa: BLE001 — a diff-fetch failure must never wedge the merge gate.
-        logger.debug("ci_rollup: changed-paths fetch failed for %s#%s — substrate label stands", slug, pr_id)
+        logger.debug(
+            "ci_rollup: changed-paths fetch failed for %s#%s — substrate label stands",
+            query.ref.slug,
+            query.ref.pr_id,
+        )
         return
     clear.touched_paths = tuple(paths)
 
@@ -266,8 +339,8 @@ def classify_required_rollup(rollup: "list[RawAPIDict]", required_names: set[str
     the #2583/#2580 incident). An empty *required_names* means the base branch has
     no required-status-check gate → nothing to satisfy → ``green``.
 
-    Both consumers — :func:`fetch_required_checks_status` (the keystone merge gate)
-    and ``pr_sweep`` ``_ci_gate`` (the sweep pre-merge filter) — classify through
+    Both consumers — :meth:`CodeHostQuery.required_checks_status` (the keystone
+    merge gate) and ``pr_sweep`` ``_ci_gate`` (the sweep pre-merge filter) — classify through
     this one function so the two can never re-diverge (the #12 sibling-classifier
     bug: the sweep hardcoded ``test (3.13)`` and blocked on non-required checks).
     """
@@ -302,59 +375,6 @@ def _required_context_names(backend: "CodeHostBackend", *, slug: str, pr_id: int
     if rollup_query_failed(required):
         return None
     return {str(entry["context"]) for entry in required if isinstance(entry, dict) and entry.get("context")}
-
-
-def fetch_required_context_names(slug: str, pr_id: int, *, host_kind: str = "github") -> set[str] | None:
-    """Live branch-protection required context names for the PR/MR base (the sweep's source).
-
-    ``None`` when the required set is indeterminate (fail CLOSED); an EMPTY set
-    when the base branch has no required-status-check gate (no gate → green). The
-    same required set :func:`fetch_required_checks_status` scopes its keystone
-    verdict to, exposed as a module-level function so ``pr_sweep`` reads the
-    identical set instead of hardcoding ``test (3.13)`` (#12).
-    """
-    return _required_context_names(_code_host_for(host_kind), slug=slug, pr_id=pr_id)
-
-
-def fetch_required_checks_status(slug: str, pr_id: int, *, host_kind: str = "github") -> str:
-    """Live required-checks verdict for the PR/MR head — §17.4.3 step 3.
-
-    Evaluated against the forge's live state at merge time (the authoritative
-    set), NOT the ``gh_verify_result`` snapshot saved on the CLEAR. Returns
-    ``"green"`` only when every branch-protection-REQUIRED context concluded
-    successfully; ``"pending"`` while a required context is still running or has
-    not reported; otherwise ``"failed"``.
-
-    The backend returns the RAW rollup (GitHub ``statusCheckRollup`` entries,
-    GitLab pipeline entries); core does the verdict classification here so the
-    §17.4.3 ``green``/``pending``/``failed`` semantics stay in one place. A rollup
-    query failure surfaces as the :data:`ROLLUP_QUERY_FAILED` sentinel → ``failed``.
-
-    **GitHub — the required set is branch protection, not the whole rollup.** The
-    ``statusCheckRollup`` reports EVERY check on the head commit, required or not
-    (``eval``, advisory lanes, …). The authoritative required set is the repo's
-    branch-protection ``required_status_checks`` contexts, fetched via
-    :meth:`fetch_required_status_check_contexts`. Only a check whose name is in
-    that set can block the merge; a non-required check NEVER blocks regardless of
-    its conclusion (failed/pending/skipped). If the required set cannot be fetched
-    the merge fails CLOSED (``failed``) — an indeterminate required set never
-    falls open. An empty required set (the base branch has no required-status-
-    check protection) means no gate → ``green``. The rollup is first deduped to
-    the newest check-run per ``(typename, name)`` so a stale/cancelled FAILURE
-    superseded by a newer SUCCESS for the same name does not false-block — parity
-    with the forge's own branch protection, which keys newest-per-context.
-
-    **GitLab** gates on the head pipeline's overall status (which aggregates the
-    required jobs server-side); it needs the head SHA to pick the right
-    (non-merge-train) pipeline, fetched via :func:`fetch_live_head_sha`.
-    """
-    backend = _code_host_for(host_kind)
-    rollup = backend.fetch_required_checks_rollup(slug=slug, pr_id=pr_id)
-    if rollup_query_failed(rollup):
-        return "failed"
-    if host_kind == "gitlab":
-        return _gitlab_pipeline_verdict(backend, rollup, slug=slug, pr_id=pr_id)
-    return _github_required_checks_verdict(backend, rollup, slug=slug, pr_id=pr_id)
 
 
 def _gitlab_pipeline_verdict(

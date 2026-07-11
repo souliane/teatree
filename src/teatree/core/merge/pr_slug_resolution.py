@@ -10,11 +10,12 @@ import logging
 from urllib.parse import urlparse
 
 from teatree.config import discover_overlays
-from teatree.core.merge.ci_rollup import fetch_live_head_sha
+from teatree.core.merge.ci_rollup import CodeHostQuery
 from teatree.core.merge.errors import MergePreconditionError
 from teatree.core.overlay_loader import get_all_overlays
 from teatree.project import find_project_root
 from teatree.utils import git, git_remote
+from teatree.utils.pr_ref import PrRef
 from teatree.utils.url_slug import slug_from_issue_or_pr_url
 
 logger = logging.getLogger(__name__)
@@ -347,7 +348,8 @@ def _reconcile_slug_against_reviewed_sha(
     """
     if not reviewed_sha:
         return initial_slug
-    initial_live = fetch_live_head_sha(initial_slug, pr_id, host_kind=host_kind)
+    query = CodeHostQuery.for_ref(PrRef(slug=initial_slug, pr_id=pr_id, host_kind=host_kind))
+    initial_live = query.live_head_sha()
     if initial_live == reviewed_sha:
         return initial_slug
     # An empty ``initial_live`` is itself a #1335 signal, NOT merely a transient
@@ -363,10 +365,9 @@ def _reconcile_slug_against_reviewed_sha(
     # set so the candidates list in the error message reflects what was probed.
     other_candidates = [c for c in candidates if c != initial_slug]
     matches = _probe_candidate_repos(
-        pr_id=pr_id,
+        query=query,
         reviewed_sha=reviewed_sha,
         candidates=other_candidates,
-        host_kind=host_kind,
     )
     if len(matches) > 1:
         # #2338: a same-SHA multi-match is an ambiguity the merge gate must
@@ -410,10 +411,9 @@ def _reconcile_slug_against_reviewed_sha(
 
 def _probe_candidate_repos(
     *,
-    pr_id: int,
+    query: CodeHostQuery,
     reviewed_sha: str,
     candidates: list[str],
-    host_kind: str,
 ) -> list[str]:
     """Every candidate ``owner/repo`` whose PR <pr_id> head == *reviewed_sha* (#2338).
 
@@ -427,10 +427,12 @@ def _probe_candidate_repos(
     was probed first would merge an unverified twin. The list lets the caller
     raise instead, naming every ambiguous repo.
 
+    Reuses *query*'s already-resolved backend (:meth:`CodeHostQuery.rebound_to`),
+    re-reading ``pulls/<N>`` per candidate slug without re-resolving the transport.
     The per-candidate swallow-failures contract is preserved: a probe error
-    surfaces as an empty head from :func:`fetch_live_head_sha`, which never
+    surfaces as an empty head from :meth:`CodeHostQuery.live_head_sha`, which never
     equals *reviewed_sha*, so a failing candidate is simply absent from the
     matches — never counted, never raising on its own. Returns ``[]`` when no
     candidate matches (a real force-push or a truly stale CLEAR).
     """
-    return [slug for slug in candidates if fetch_live_head_sha(slug, pr_id, host_kind=host_kind) == reviewed_sha]
+    return [slug for slug in candidates if query.rebound_to(slug).live_head_sha() == reviewed_sha]

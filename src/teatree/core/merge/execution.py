@@ -34,14 +34,7 @@ from teatree.core.merge.authorization import (
     assert_public_repo_author_trusted,
     assert_review_verdict_gate,
 )
-from teatree.core.merge.ci_rollup import (
-    _code_host_for,
-    attach_touched_paths,
-    fetch_live_head_sha,
-    fetch_pr_is_draft,
-    fetch_pr_merge_state,
-    fetch_required_checks_status,
-)
+from teatree.core.merge.ci_rollup import CodeHostQuery, attach_touched_paths
 from teatree.core.merge.errors import MergePreconditionError, MergeReplayError, MergeTransientError
 from teatree.core.merge.head_guard import restore_caller_branch
 from teatree.core.merge.merge_response import _raise_bound_merge_failure
@@ -52,6 +45,7 @@ from teatree.core.merge.pr_slug_resolution import (
 )
 from teatree.core.merge.sha_bind import verify_sha_bound
 from teatree.project import find_project_root
+from teatree.utils.pr_ref import PrRef
 
 if TYPE_CHECKING:
     from teatree.core.models import MergeClear
@@ -73,10 +67,8 @@ class MergeOutcome:
 
 def _reconcile_if_already_merged(
     *,
-    slug: str,
-    pr_id: int,
+    query: CodeHostQuery,
     live_sha: str,
-    host_kind: str = "github",
 ) -> "MergePrecheck | None":
     """§928 reconciliation — the recovery path for a lost post-merge hook.
 
@@ -95,22 +87,19 @@ def _reconcile_if_already_merged(
     no guarantee. Returns ``None`` when the PR is not (yet) merged so the
     caller proceeds with the normal fresh-merge path.
     """
-    merge_state = fetch_pr_merge_state(slug, pr_id, host_kind=host_kind)
+    merge_state = query.pr_merge_state()
     if not merge_state.is_merged:
         return None
     return MergePrecheck(verified_sha=live_sha, already_merged_sha=merge_state.merge_commit_oid or live_sha)
 
 
-# ast-grep-ignore: ac-django-no-complexity-suppressions
-def assert_merge_preconditions(  # noqa: PLR0913 — §17.4.3 gate entry-point; each kwarg is a documented step input.
+def assert_merge_preconditions(
     *,
     clear: object,
     executing_loop_identity: str,
-    slug: str,
-    pr_id: int,
+    ref: PrRef,
     human_authorized: str = "",
     expedite_authorized: str = "",
-    host_kind: str = "github",
 ) -> MergePrecheck:
     """Run the §17.4.3 loop validation in order; return the :class:`MergePrecheck`.
 
@@ -137,13 +126,16 @@ def assert_merge_preconditions(  # noqa: PLR0913 — §17.4.3 gate entry-point; 
     quality/safety floor (independent cold-review, reviewed-SHA bind, CI-green,
     not-draft, never-lockout, privacy scan) is untouched.
     """
+    query = CodeHostQuery.for_ref(ref)
+    slug, pr_id = ref.slug, ref.pr_id
+
     # Attach the live diff paths so the substrate authorization guard can detect
     # a mislabeled substrate diff (path-based classifier — invariant 4). A forge
     # error degrades to no paths: the path detector only WIDENS substrate over the
     # recorded ``blast_class``, never narrows it, so a missing diff never weakens
     # the label-based gate. Set BEFORE the authorize call so the substrate branch
     # reads it.
-    attach_touched_paths(clear, slug=slug, pr_id=pr_id, host_kind=host_kind)
+    attach_touched_paths(clear, query)
 
     authorized_clear = _assert_clear_authorized(
         clear=clear,
@@ -154,7 +146,7 @@ def assert_merge_preconditions(  # noqa: PLR0913 — §17.4.3 gate entry-point; 
     )
 
     # 2. SHA still matches — re-fetch the live head; it must equal reviewed_sha.
-    live_sha = fetch_live_head_sha(slug, pr_id, host_kind=host_kind)
+    live_sha = query.live_head_sha()
     if not live_sha:
         msg = f"could not resolve the live head SHA for {slug}#{pr_id} (§17.4.3 step 2)"
         raise MergePreconditionError(msg)
@@ -179,17 +171,12 @@ def assert_merge_preconditions(  # noqa: PLR0913 — §17.4.3 gate entry-point; 
     # independent verifier at the head, or the merge is refused (see _assert_rubric_satisfied).
     _assert_rubric_satisfied(authorized_clear, live_sha)
 
-    reconcile = _reconcile_if_already_merged(
-        slug=slug,
-        pr_id=pr_id,
-        live_sha=live_sha,
-        host_kind=host_kind,
-    )
+    reconcile = _reconcile_if_already_merged(query=query, live_sha=live_sha)
     if reconcile is not None:
         return reconcile
 
     # 4. Not draft.
-    if fetch_pr_is_draft(slug, pr_id, host_kind=host_kind):
+    if query.pr_is_draft():
         msg = f"{slug}#{pr_id} is in draft state — refusing to merge (§17.4.3 step 4)"
         raise MergePreconditionError(msg)
 
@@ -202,7 +189,7 @@ def assert_merge_preconditions(  # noqa: PLR0913 — §17.4.3 gate entry-point; 
     #               valid human-authorized waiver re-presented as ``expedite_authorized``
     #               AND still bound to the reviewed tree (``expedite_pending_waived_by``).
     #   * green   — proceeds unchanged.
-    checks = fetch_required_checks_status(slug, pr_id, host_kind=host_kind)
+    checks = query.required_checks_status()
     if checks == "failed":
         msg = (
             f"live required-checks for {slug}#{pr_id} are {checks!r}, not green — refusing to "
@@ -225,12 +212,41 @@ def assert_merge_preconditions(  # noqa: PLR0913 — §17.4.3 gate entry-point; 
     return MergePrecheck(verified_sha=live_sha)
 
 
+def assert_not_draft(query: CodeHostQuery) -> None:
+    """§17.4.3 step 4 floor: refuse the bound merge when the PR/MR is in draft state.
+
+    The last-line not-draft gate at the merge chokepoint — re-reads the forge's
+    LIVE draft flag so an open→draft flip in the TOCTOU window between a caller's
+    snapshot and the irreversible PUT is refused here. A registered
+    ``merge_keystone`` gate (:mod:`teatree.core.factory.chokepoint_registry`).
+    """
+    if query.pr_is_draft():
+        msg = f"{query.ref.slug}#{query.ref.pr_id} is in draft state — refusing bound merge (§17.4.3 step 4)"
+        raise MergePreconditionError(msg)
+
+
+def assert_ci_not_failed(query: CodeHostQuery) -> None:
+    """§17.4.3 step 3 floor: refuse the bound merge on a live FAILED required-checks verdict.
+
+    The last-line CI-verdict gate at the merge chokepoint — re-reads the forge's
+    LIVE rollup so a green→red flip in the TOCTOU window is refused here. A FAILED
+    required check is a verdict expedite can NEVER waive, so it is refused
+    unconditionally (the pending-waiver lives only in
+    :func:`assert_merge_preconditions`, which the keystone runs first). A registered
+    ``merge_keystone`` gate (:mod:`teatree.core.factory.chokepoint_registry`).
+    """
+    if query.required_checks_status() == "failed":
+        msg = (
+            f"live required-checks for {query.ref.slug}#{query.ref.pr_id} are failed — refusing bound merge "
+            f"(§17.4.3 step 3; a FAILED required check is a verdict expedite can never waive)"
+        )
+        raise MergePreconditionError(msg)
+
+
 def execute_bound_merge(
     *,
-    slug: str,
-    pr_id: int,
+    ref: PrRef,
     expected_head_oid: str,
-    host_kind: str = "github",
 ) -> str:
     """Squash-merge bound to ``expected_head_oid`` — fail closed on head drift.
 
@@ -267,6 +283,8 @@ def execute_bound_merge(
     expedite plumbing at this chokepoint; the pending-waiver lives only in
     ``assert_merge_preconditions``, which the keystone runs first).
     """
+    query = CodeHostQuery.for_ref(ref)
+    slug, pr_id = ref.slug, ref.pr_id
     assert_review_verdict_gate(slug=slug, pr_id=pr_id, head_sha=expected_head_oid)
     assert_no_active_review_lock(slug=slug, pr_id=pr_id)
     # north-star PR-4: merely-green-but-not-well-engineered does not merge. A
@@ -280,33 +298,16 @@ def execute_bound_merge(
     from teatree.core.gates import merge_quality_gate  # noqa: PLC0415 avoids a core.merge/core.gates cycle
 
     merge_quality_gate.assert_merge_quality_verdict(slug=slug, pr_id=pr_id, head_sha=expected_head_oid)
-    if fetch_pr_is_draft(slug, pr_id, host_kind=host_kind):
-        msg = f"{slug}#{pr_id} is in draft state — refusing bound merge (§17.4.3 step 4)"
-        raise MergePreconditionError(msg)
-    if fetch_required_checks_status(slug, pr_id, host_kind=host_kind) == "failed":
-        msg = (
-            f"live required-checks for {slug}#{pr_id} are failed — refusing bound merge "
-            f"(§17.4.3 step 3; a FAILED required check is a verdict expedite can never waive)"
-        )
-        raise MergePreconditionError(msg)
+    assert_not_draft(query)
+    assert_ci_not_failed(query)
     for attempt in range(MERGE_TRANSIENT_ATTEMPTS):
         if attempt > 0:
-            landed = _already_merged_at(
-                slug=slug,
-                pr_id=pr_id,
-                expected_head_oid=expected_head_oid,
-                host_kind=host_kind,
-            )
+            landed = _already_merged_at(query=query, expected_head_oid=expected_head_oid)
             if landed:
                 return landed
             time.sleep(MERGE_TRANSIENT_BASE_DELAY * (2 ** (attempt - 1)))
         try:
-            return _attempt_bound_merge(
-                slug=slug,
-                pr_id=pr_id,
-                expected_head_oid=expected_head_oid,
-                host_kind=host_kind,
-            )
+            return _attempt_bound_merge(query=query, expected_head_oid=expected_head_oid)
         except MergeTransientError as exc:
             if attempt == MERGE_TRANSIENT_ATTEMPTS - 1:
                 raise
@@ -322,7 +323,7 @@ def execute_bound_merge(
     raise MergeTransientError(msg)  # pragma: no cover — the final attempt re-raises before the loop can fall through
 
 
-def _already_merged_at(*, slug: str, pr_id: int, expected_head_oid: str, host_kind: str) -> str:
+def _already_merged_at(*, query: CodeHostQuery, expected_head_oid: str) -> str:
     """The existing merge commit when the PR/MR is ALREADY merged at ``expected_head_oid``.
 
     A transient response may mask a merge that actually LANDED on the forge
@@ -332,13 +333,13 @@ def _already_merged_at(*, slug: str, pr_id: int, expected_head_oid: str, host_ki
     idempotent post hook rather than re-issuing a merge the forge would now
     405. Returns ``""`` when the PR/MR is not (yet) merged.
     """
-    merge_state = fetch_pr_merge_state(slug, pr_id, host_kind=host_kind)
+    merge_state = query.pr_merge_state()
     if not merge_state.is_merged:
         return ""
     return merge_state.merge_commit_oid or expected_head_oid
 
 
-def _attempt_bound_merge(*, slug: str, pr_id: int, expected_head_oid: str, host_kind: str) -> str:
+def _attempt_bound_merge(*, query: CodeHostQuery, expected_head_oid: str) -> str:
     """One bound-merge attempt; raises :class:`MergeTransientError` on a retryable response.
 
     The backend's :meth:`CodeHostBackend.merge_pr_squash_bound` runs the
@@ -347,7 +348,8 @@ def _attempt_bound_merge(*, slug: str, pr_id: int, expected_head_oid: str, host_
     the forge-specific f-string here, so the byte-for-byte error parity the
     keystone tests pin is unchanged while the transport lives in the backend.
     """
-    result = _code_host_for(host_kind).merge_pr_squash_bound(
+    slug, pr_id = query.ref.slug, query.ref.pr_id
+    result = query.backend.merge_pr_squash_bound(
         slug=slug,
         pr_id=pr_id,
         expected_head_oid=expected_head_oid,
@@ -358,7 +360,7 @@ def _attempt_bound_merge(*, slug: str, pr_id: int, expected_head_oid: str, host_
             slug=slug,
             pr_id=pr_id,
             expected_head_oid=expected_head_oid,
-            host_kind=host_kind,
+            host_kind=query.ref.host_kind,
         )
     return result.merged_sha or expected_head_oid
 
@@ -558,15 +560,14 @@ def _merge_ticket_pr_inner(
         reviewed_sha=str(getattr(clear, "reviewed_sha", "") or ""),
         host_kind=host_kind,
     )
+    ref = PrRef(slug=slug, pr_id=pr_id, host_kind=host_kind)
     assert_public_repo_author_trusted(slug=slug, pr_id=pr_id, host_kind=host_kind)
     precheck = assert_merge_preconditions(
         clear=clear,
         executing_loop_identity=executing_loop_identity,
-        slug=slug,
-        pr_id=pr_id,
+        ref=ref,
         human_authorized=human_authorized,
         expedite_authorized=expedite_authorized,
-        host_kind=host_kind,
     )
     if precheck.needs_reconcile:
         # §928: a prior attempt's irreversible merge already landed; only
@@ -579,14 +580,9 @@ def _merge_ticket_pr_inner(
         merged_sha = precheck.already_merged_sha
         reconciled = True
     else:
-        merged_sha = execute_bound_merge(
-            slug=slug,
-            pr_id=pr_id,
-            expected_head_oid=precheck.verified_sha,
-            host_kind=host_kind,
-        )
+        merged_sha = execute_bound_merge(ref=ref, expected_head_oid=precheck.verified_sha)
         reconciled = False
-    checks = fetch_required_checks_status(slug, pr_id, host_kind=host_kind)
+    checks = CodeHostQuery.for_ref(ref).required_checks_status()
     state = record_merge_and_advance(
         clear=clear,
         merged_sha=merged_sha,
