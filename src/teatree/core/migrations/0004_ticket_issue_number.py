@@ -1,5 +1,10 @@
 from django.db import migrations, models
 
+# ``derive_issue_number`` is imported (rather than inlined as frozen history) on
+# purpose: it is the stable pure trailing-digits helper ``Ticket.save`` also
+# calls, so reusing it keeps the backfill and the live column-write byte-for-byte
+# in agreement — an inlined copy could silently drift. It performs no DB access
+# and reads no evolving schema, so the migration stays self-contained.
 from teatree.core.models.ticket_number import derive_issue_number
 
 
