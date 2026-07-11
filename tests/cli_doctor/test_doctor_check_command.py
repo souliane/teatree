@@ -12,7 +12,7 @@ from unittest.mock import patch
 import pytest
 from typer.testing import CliRunner
 
-import teatree.cli.doctor as teatree_cli_doctor
+import teatree.cli.doctor.app as teatree_cli_doctor
 import teatree.cli.update as teatree_cli_update
 import teatree.core.overlay_loader as teatree_overlay_loader
 import teatree.paths as teatree_paths

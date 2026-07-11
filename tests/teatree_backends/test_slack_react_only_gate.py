@@ -26,7 +26,7 @@ from typer.testing import CliRunner
 from teatree.backends.slack import reactions as slack_reactions
 from teatree.backends.slack.bot import SlackBotBackend
 from teatree.backends.slack.react_errors import SingleEmojiBodyRefusedError, SlackReactionError, is_single_emoji_body
-from teatree.cli.slack_listen import slack_app
+from teatree.cli.slack.listen import slack_app
 from teatree.core.models import ConfigSetting
 from teatree.types import RawAPIDict
 
@@ -140,7 +140,7 @@ class TestReactCommandSurfaceMissingScope:
     def test_missing_scope_exits_1_with_error_code(self) -> None:
         ConfigSetting.objects.set_value("slack_user_id", _USER_ID)
         ConfigSetting.objects.set_value("on_behalf_post_mode", "immediate")
-        with patch("teatree.cli.slack_listen.messaging_from_overlay", lambda _o=None: _MissingScopeFake()):
+        with patch("teatree.cli.slack.listen.messaging_from_overlay", lambda _o=None: _MissingScopeFake()):
             result = runner.invoke(slack_app, ["react", _DM_CHANNEL, "1.0", "eyes"])
 
         assert result.exit_code == 1, result.stdout

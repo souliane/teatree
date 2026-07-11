@@ -26,7 +26,6 @@ import shutil
 
 import typer
 
-from teatree.cli.tools import tool_app
 from teatree.utils.run import run_streamed
 
 # prek's ``--hook-stage`` flag expects the canonical stage name. The config's
@@ -38,7 +37,6 @@ def _prek_available() -> bool:
     return shutil.which("prek") is not None
 
 
-@tool_app.command("verify-gates")
 def verify_gates() -> None:
     """Run the FULL CI-equivalent local gate set (commit AND push stages).
 
@@ -74,3 +72,8 @@ def verify_gates() -> None:
         typer.echo(f"verify-gates: FAILED stage(s): {', '.join(failed)}", err=True)
         raise typer.Exit(code=1)
     typer.echo("verify-gates: all gate stages green (commit + push).", err=True)
+
+
+def register(app: typer.Typer) -> None:
+    """Register this module's ``t3 tool`` command(s) onto *app* (called from ``cli/__init__``)."""
+    app.command("verify-gates")(verify_gates)

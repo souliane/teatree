@@ -23,7 +23,7 @@ With no recorded app id and no ``--update``, the original create-from-manifest
 walkthrough runs and records the new app id for next time.
 
 Manifest-building and Slack API helpers live in
-:mod:`teatree.cli.slack_manifest`; this module re-exports them so existing
+:mod:`teatree.cli.slack.manifest`; this module re-exports them so existing
 callers are unaffected.
 """
 
@@ -36,8 +36,8 @@ from typing import NoReturn
 import typer
 
 from teatree.backends.slack.bot import SlackBotBackend
-from teatree.cli.slack_app_resolve import read_overlay_field, write_overlay_fields
-from teatree.cli.slack_manifest import (
+from teatree.cli.slack.app_resolve import read_overlay_field, write_overlay_fields
+from teatree.cli.slack.manifest import (
     _BOT_ONLY_SCOPES,
     _CONFIG_REFRESH_REF,
     _CONFIG_TOKEN_REF,
@@ -55,12 +55,12 @@ from teatree.cli.slack_manifest import (
     rotate_config_token,
     update_manifest,
 )
-from teatree.cli.slack_token_store import SlackTokenWriteError, app_token_slot, bot_token_slot, store_slack_token
+from teatree.cli.slack.token_store import SlackTokenWriteError, app_token_slot, bot_token_slot, store_slack_token
 from teatree.config import discover_overlays
 from teatree.utils.django_bootstrap import ensure_django
 from teatree.utils.secrets import read_pass, write_pass
 
-# Re-exported so existing ``from teatree.cli.slack_setup import …`` callers
+# Re-exported so existing ``from teatree.cli.slack.setup import …`` callers
 # keep working without touching their imports.
 __all__ = [
     "_BOT_ONLY_SCOPES",
@@ -394,7 +394,7 @@ def slack_bot_setup(
     if not reset:
         recorded_app_id = read_overlay_field(overlay, "slack_app_id")
         if recorded_app_id or update:
-            from teatree.cli.slack_app_resolve import resolve_overlay_app_id  # noqa: PLC0415
+            from teatree.cli.slack.app_resolve import resolve_overlay_app_id  # noqa: PLC0415 — avoids a slack cycle
 
             app_id = resolve_overlay_app_id(overlay, token_ref=token_ref) or _prompt_app_id()
             try:

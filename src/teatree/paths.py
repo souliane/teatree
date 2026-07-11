@@ -70,7 +70,7 @@ def resolve_main_clone(repo_root: Path) -> Path | None:
     resolves back to the main clone the pointer names. Returns ``None`` when
     ``.git`` is neither, or the pointer cannot be parsed back to a ``.git``
     dir. The single source of truth mirrored by ``cli/setup.py`` and
-    ``cli/_doctor_plugin_repair.py`` (#1507).
+    ``cli/doctor/plugin_repair.py`` (#1507).
     """
     git = repo_root / ".git"
     if git.is_dir():

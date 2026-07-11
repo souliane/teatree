@@ -9,18 +9,18 @@ one idempotent pass (#1686):
 
 1. Resolve the app id from config, else derive it from the bot token, else
 prompt — persisting it so the derivation runs once
-(:mod:`teatree.cli.slack_app_resolve`).
+(:mod:`teatree.cli.slack.app_resolve`).
 2. Push the desired manifest (all bot + user scopes, including
 ``reactions:write``) via Slack's ``apps.manifest.update`` using the app-config
 token in ``pass``.
 3. Print the exact OAuth (re)install URL — the single irreducible human step —
 and open it in the browser.
 4. Join the bot to its review-broadcast channels
-(:mod:`teatree.cli.slack_channel_provisioning`) so its first post / reaction
+(:mod:`teatree.cli.slack.channel_provisioning`) so its first post / reaction
 there does not fail ``not_in_channel`` (the canary).
-5. Provision the bot's IM channel (:mod:`teatree.cli.slack_dm_provisioning`).
+5. Provision the bot's IM channel (:mod:`teatree.cli.slack.dm_provisioning`).
 6. Capture / verify the shared xoxp user token
-(:mod:`teatree.cli.slack_user_token_setup`) so ``reactions:write`` is granted.
+(:mod:`teatree.cli.slack.user_token_setup`) so ``reactions:write`` is granted.
 
 The browser OAuth-consent click is the only step that cannot be automated; the
 command prints its exact URL and opens it.
@@ -34,10 +34,10 @@ from dataclasses import dataclass, field
 import httpx
 import typer
 
-from teatree.cli.slack_app_resolve import read_overlay_registry, resolve_overlay_app_id
-from teatree.cli.slack_channel_provisioning import ChannelJoinResult, join_review_channels, render_join_result
-from teatree.cli.slack_dm_provisioning import ProvisionResult, provision_overlay_dm_channel
-from teatree.cli.slack_setup import (
+from teatree.cli.slack.app_resolve import read_overlay_registry, resolve_overlay_app_id
+from teatree.cli.slack.channel_provisioning import ChannelJoinResult, join_review_channels, render_join_result
+from teatree.cli.slack.dm_provisioning import ProvisionResult, provision_overlay_dm_channel
+from teatree.cli.slack.setup import (
     _APP_ID_RE,
     _CONFIG_TOKEN_REF,
     SlackManifestError,
@@ -48,7 +48,7 @@ from teatree.cli.slack_setup import (
     manifests_equivalent,
     update_manifest,
 )
-from teatree.cli.slack_user_token_setup import REQUIRED_USER_SCOPES
+from teatree.cli.slack.user_token_setup import REQUIRED_USER_SCOPES
 from teatree.config import discover_overlays
 from teatree.core.overlay_loader import get_overlay
 from teatree.utils.django_bootstrap import ensure_django
@@ -77,7 +77,7 @@ def _resolve_app_id(*, overlay: str, echo: Callable[[str], None]) -> str:
     if not _APP_ID_RE.match(value):
         echo("ERROR Invalid Slack app id format.")
         raise typer.Exit(code=1)
-    from teatree.cli.slack_app_resolve import write_overlay_fields  # noqa: PLC0415
+    from teatree.cli.slack.app_resolve import write_overlay_fields  # noqa: PLC0415 — avoids a slack-package cycle
 
     write_overlay_fields(overlay, {"slack_app_id": value})
     return value
@@ -131,7 +131,7 @@ def _provision_channels(
     overlay: str,
     echo: Callable[[str], None],
 ) -> list[ChannelJoinResult]:
-    from teatree.cli.slack_app_resolve import read_overlay_field  # noqa: PLC0415
+    from teatree.cli.slack.app_resolve import read_overlay_field  # noqa: PLC0415 — avoids a slack-package cycle
 
     channels = _broadcast_channels(overlay)
     if not channels:
@@ -206,7 +206,7 @@ def _slack_overlays() -> list[str]:
 
 def _verify_user_token(echo: Callable[[str], None]) -> None:
     """Report whether the shared xoxp token already carries every required scope."""
-    from teatree.cli.slack_user_token_setup import (  # noqa: PLC0415
+    from teatree.cli.slack.user_token_setup import (  # noqa: PLC0415 — avoids a slack-package cycle
         USER_TOKEN_PASS_KEY,
         TokenScopeError,
         fetch_token_scopes,

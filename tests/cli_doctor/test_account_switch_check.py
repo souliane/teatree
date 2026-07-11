@@ -2,7 +2,7 @@
 
 from unittest.mock import patch
 
-from teatree.cli._doctor_checks import _check_account_switch
+from teatree.cli.doctor.checks import _check_account_switch
 from teatree.core.account_switch import AccountSwitchOutcome, ConnectorProbeResult
 
 

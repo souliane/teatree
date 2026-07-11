@@ -29,12 +29,12 @@ from pathlib import Path
 
 import typer
 
-from teatree.cli.loop_claim_next import claim_next_command
-from teatree.cli.loop_drain_queue import drain_queue_app
-from teatree.cli.loop_list import list_command
-from teatree.cli.loop_owner import register as register_loop_owner
-from teatree.cli.loop_slack_answer import slack_answer_app
-from teatree.cli.loop_state import register as register_loop_state
+from teatree.cli.loop.claim_next import claim_next_command
+from teatree.cli.loop.drain_queue import drain_queue_app
+from teatree.cli.loop.listing import list_command
+from teatree.cli.loop.owner import register as register_loop_owner
+from teatree.cli.loop.slack_answer import slack_answer_app
+from teatree.cli.loop.state import register as register_loop_state
 from teatree.config import cadence_seconds
 from teatree.loop.loop_cadences import reactive_slot
 from teatree.loop.statusline import default_path
@@ -359,17 +359,17 @@ loop_app.add_typer(self_improve_app, name="self-improve")
 register_loop_owner(loop_app)
 
 # The reactive Slack-answer subapp (#1014) is assembled in
-# ``teatree.cli.loop_slack_answer`` (imported at module top) so this file stays
+# ``teatree.cli.loop.slack_answer`` (imported at module top) so this file stays
 # under the module-health public-function cap.
 loop_app.add_typer(slack_answer_app, name="slack-answer")
 
 # The reactive DB-queue drain subapp is assembled in
-# ``teatree.cli.loop_drain_queue`` (imported at module top), same module-health
+# ``teatree.cli.loop.drain_queue`` (imported at module top), same module-health
 # split; its own dedicated `/loop` replaces the retired won-tick piggyback drain.
 loop_app.add_typer(drain_queue_app, name="drain-queue")
 
 # #1107 Prong C — the canonical atomic-claim CLI command lives in
-# ``teatree.cli.loop_claim_next`` (split for the same module-health
+# ``teatree.cli.loop.claim_next`` (split for the same module-health
 # reason). Registered as a flat ``t3 loop claim-next``.
 loop_app.command("claim-next")(claim_next_command)
 
@@ -379,5 +379,5 @@ loop_app.command("list")(list_command)
 
 # #1913 — the DB-backed per-loop control plane: flat ``t3 loop
 # pause/resume/disable/enable <name>`` + ``t3 loop loop-state <name>``. Split
-# off (same module-health reason) into ``teatree.cli.loop_state``.
+# off (same module-health reason) into ``teatree.cli.loop.state``.
 register_loop_state(loop_app)

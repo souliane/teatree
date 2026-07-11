@@ -13,10 +13,7 @@ from pathlib import Path
 
 import typer
 
-from teatree.cli.tools import tool_app
 
-
-@tool_app.command("validate-skill-refs")
 def validate_skill_refs_cmd(
     *,
     supplementary_config: Path | None = typer.Option(
@@ -64,3 +61,8 @@ def validate_skill_refs_cmd(
         raise typer.Exit(code=1)
     if not json_output:
         typer.echo("PASS — all skill references resolve.")
+
+
+def register(app: typer.Typer) -> None:
+    """Register this module's ``t3 tool`` command(s) onto *app* (called from ``cli/__init__``)."""
+    app.command("validate-skill-refs")(validate_skill_refs_cmd)

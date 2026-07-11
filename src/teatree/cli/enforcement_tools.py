@@ -17,10 +17,9 @@ from pathlib import Path
 
 import typer
 
-from teatree.cli.tools import ToolRunner, tool_app
+from teatree.cli.tools import ToolRunner
 
 
-@tool_app.command("ai-sig-scan")
 def ai_sig_scan(
     path: str = typer.Argument("-", help="File or '-' for stdin (PR body / commit message)"),
 ) -> None:
@@ -55,7 +54,6 @@ def _coverage_is_stale(coverage_file: Path, repo: Path) -> bool:
         return False
 
 
-@tool_app.command("diff-coverage")
 def diff_coverage(
     *,
     repo: Path = typer.Option(Path.cwd, "--repo", help="Repo root (default: cwd)"),
@@ -107,7 +105,6 @@ def diff_coverage(
         raise typer.Exit(code=1)
 
 
-@tool_app.command("gate-relaxation")
 def gate_relaxation(
     *,
     repo: Path = typer.Option(Path.cwd, "--repo", help="Repo root (default: cwd)"),
@@ -157,3 +154,10 @@ def gate_relaxation(
         typer.echo("PASS" if not blocking else f"BLOCKED: {len(blocking)} relaxation finding(s)")
     if blocking:
         raise typer.Exit(code=1)
+
+
+def register(app: typer.Typer) -> None:
+    """Register this module's ``t3 tool`` command(s) onto *app* (called from ``cli/__init__``)."""
+    app.command("ai-sig-scan")(ai_sig_scan)
+    app.command("diff-coverage")(diff_coverage)
+    app.command("gate-relaxation")(gate_relaxation)

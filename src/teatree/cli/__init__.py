@@ -31,33 +31,17 @@ import teatree.cli.speak_dm as _speak_dm
 import teatree.cli.tokens as _tokens
 import teatree.cli.ui as _ui
 from teatree.cli import (
-    affected_tests_tools as _affected_tests_tools,  # noqa: F401  (side-effect: registers affected-tests onto tool_app)
+    affected_tests_tools,
+    comment_density_tools,
+    enforcement_tools,
+    figma_tools,
+    push_gate_tools,
+    skill_ref_tools,
+    test_path_mirror_tools,
+    test_shape_tools,
+    triage_tools,
+    verify_gates,
 )
-from teatree.cli import (
-    comment_density_tools as _comment_density_tools,  # noqa: F401  (side-effect: registers comment-density onto tool_app)
-)
-from teatree.cli import (
-    enforcement_tools as _enforcement_tools,  # noqa: F401  (side-effect: registers §17.6 gate commands onto tool_app)
-)
-from teatree.cli import (
-    figma_tools as _figma_tools,  # noqa: F401  (side-effect: registers figma-* commands onto tool_app)
-)
-from teatree.cli import (
-    push_gate_tools as _push_gate_tools,  # noqa: F401  (side-effect: registers push-gate onto tool_app)
-)
-from teatree.cli import (
-    skill_ref_tools as _skill_ref_tools,  # noqa: F401  (side-effect: registers validate-skill-refs onto tool_app)
-)
-from teatree.cli import (
-    test_path_mirror_tools as _test_path_mirror_tools,  # noqa: F401  (side-effect: registers test-path-mirror onto tool_app)
-)
-from teatree.cli import (
-    test_shape_tools as _test_shape_tools,  # noqa: F401  (side-effect: registers test-shape onto tool_app)
-)
-from teatree.cli import (
-    triage_tools as _triage_tools,  # noqa: F401  (side-effect: registers triage commands onto tool_app)
-)
-from teatree.cli import verify_gates as _verify_gates  # noqa: F401  (side-effect: registers verify-gates onto tool_app)
 from teatree.cli.assess import assess_app
 from teatree.cli.banned_terms import banned_terms_app
 from teatree.cli.ci import ci_app
@@ -81,12 +65,10 @@ from teatree.cli.overlay import OverlayAppBuilder
 from teatree.cli.overlay_dev import overlay_dev_app
 from teatree.cli.prompts import prompts_app
 from teatree.cli.recover import recover_app
-from teatree.cli.review import (
-    mcp_seam as _review_mcp_seam,  # noqa: F401  (side-effect: registers the MCP review-post seam #3076)
-)
+from teatree.cli.review import mcp_seam as _review_mcp_seam
 from teatree.cli.review import review_app, review_request_app
 from teatree.cli.setup import setup_app
-from teatree.cli.slack_listen import slack_app
+from teatree.cli.slack.listen import slack_app
 from teatree.cli.task_alias import task_app
 from teatree.cli.teams import teams_app
 from teatree.cli.tools import tool_app
@@ -97,6 +79,30 @@ from teatree.mcp.command_catalogue import CommandRecord, register_command_catalo
 logger = logging.getLogger(__name__)
 
 __all__ = ["app", "main"]
+
+# ── Standalone-tool registration (explicit; #3g-3) ────────────────────
+# Each ``*_tools`` module exposes ``register(tool_app)`` and adds its
+# ``t3 tool <cmd>`` commands. Replaces the former register-by-import-side-effect
+# (a per-module F401-suppressed import) — the list is now the visible, ordered
+# source of truth, and the help-output order is this iteration order.
+_TOOL_MODULES = (
+    affected_tests_tools,
+    comment_density_tools,
+    enforcement_tools,
+    figma_tools,
+    push_gate_tools,
+    skill_ref_tools,
+    test_path_mirror_tools,
+    test_shape_tools,
+    triage_tools,
+    verify_gates,
+)
+for _tool_module in _TOOL_MODULES:
+    _tool_module.register(tool_app)
+
+# The gated review-post seam the MCP write tools consume (#3076) — explicit
+# provider injection, mirroring the two ``register_*_provider`` calls below.
+_review_mcp_seam.register()
 
 app = typer.Typer(name="t3", no_args_is_help=True, add_completion=False)
 
@@ -267,32 +273,44 @@ def register_overlay_commands(allowlist: set[str] | None = None) -> None:
         app.add_typer(overlay_app, name=short_name)
 
 
+def _assemble_teatree_app() -> typer.Typer:
+    """Register the ``teatree`` overlay group onto the root app and return it.
+
+    Both inverted #550 lanes below need the ``t3 teatree …`` leaves present on the
+    assembled app before they introspect it. The registration is idempotent
+    (``register_overlay_commands`` skips an already-registered group), so the two
+    callers share this one bootstrap instead of each open-coding the allowlisted
+    ``register_overlay_commands`` call.
+    """
+    register_overlay_commands(allowlist={"t3-teatree"})
+    return app
+
+
 def _build_skill_command_registry() -> tuple[set[str], set[str]]:
     """The live ``(valid_paths, group_paths)`` for the #550 Tier-1 lane.
 
-    Registers the ``teatree`` overlay's command group so the ``t3 teatree …``
-    invocations skill docs cite resolve, then introspects the assembled root app.
-    Lives here (the root CLI module) because the lane's dependency is inverted —
+    Assembles the ``teatree`` overlay group so the ``t3 teatree …`` invocations
+    skill docs cite resolve, then introspects the assembled root app. Lives here
+    (the root CLI module) because the lane's dependency is inverted —
     ``teatree.cli.eval`` cannot import ``teatree.cli`` (cycle), so the parent
     injects this builder via ``register_command_registry_provider``.
     """
     from teatree.cli.command_tree import command_groups, command_paths  # noqa: PLC0415
 
-    register_overlay_commands(allowlist={"t3-teatree"})
-    return command_paths(app), command_groups(app)
+    teatree_app = _assemble_teatree_app()
+    return command_paths(teatree_app), command_groups(teatree_app)
 
 
 def _build_command_catalogue() -> list[CommandRecord]:
     """The live command catalogue for the MCP ``command_search`` tool.
 
-    Registers the ``teatree`` overlay's command group (so ``t3 teatree …`` leaves
-    are discoverable), then projects the assembled root app to one record per
-    leaf. Inverted for the same reason as the #550 registry — ``teatree.mcp``
+    Assembles the ``teatree`` overlay group (so ``t3 teatree …`` leaves are
+    discoverable), then projects the assembled root app to one record per leaf.
+    Inverted for the same reason as the #550 registry — ``teatree.mcp``
     (integration) cannot import ``teatree.cli`` (interface), so the parent injects
     this builder via ``register_command_catalogue_provider``.
     """
-    register_overlay_commands(allowlist={"t3-teatree"})
-    return command_catalogue(app)
+    return command_catalogue(_assemble_teatree_app())
 
 
 register_command_registry_provider(_build_skill_command_registry)
@@ -302,46 +320,63 @@ register_command_catalogue_provider(_build_command_catalogue)
 # ── Entry point ──────────────────────────────────────────────────────
 
 
-def _ensure_editable_if_contributing() -> None:
-    """Auto-fix teatree and overlay to editable when contribute=true.
+def _contribute_enabled() -> bool:
+    """Cheap Django-free read of the ``contribute`` toggle (fail-safe to False).
 
-    When ``contribute`` is set to true in the DB config store, both
-    teatree and the active overlay should be editable so local changes take
-    effect immediately.  ``uv sync`` reinstalls from git, undoing this.
-    This check runs on every CLI invocation and re-installs if needed.
+    This runs on EVERY ``t3`` invocation as the gate for
+    :func:`_ensure_editable_if_contributing`, so it uses the single-key cold
+    reader — the same pre-Django path :func:`~teatree.config.check_for_updates`
+    takes — rather than the full :func:`~teatree.config.get_effective_settings`
+    resolution (overlay discovery, TOML layering, autonomy collapse) just to
+    answer one bool. A missing store / unconfigured DB resolves to ``False``
+    (skip auto-editable); ``t3 doctor`` still fixes editability by hand.
     """
+    from teatree.config import cold_reader  # noqa: PLC0415 — pre-Django read off the module-load path
+
+    return cold_reader.bool_setting("contribute", default=False)
+
+
+def _reinstall_editable_if_needed() -> None:
+    """Re-editable teatree + every overlay whose distribution is not editable.
+
+    The ``packages_distributions()`` map is resolved ONCE (it is invariant across
+    overlays) instead of per iteration.
+    """
+    if not IntrospectionHelpers.editable_info("teatree")[0]:
+        repo = DoctorService.find_teatree_repo()
+        if repo:
+            DoctorService.make_editable("teatree", repo)
+
+    from importlib.metadata import packages_distributions  # noqa: PLC0415
+
+    from teatree.core.overlay_loader import get_all_overlays  # noqa: PLC0415
+
+    dist_map = packages_distributions()
+    for overlay_inst in get_all_overlays().values():
+        top_package = type(overlay_inst).__module__.split(".", maxsplit=1)[0]
+        dist_names = dist_map.get(top_package, [top_package])
+        overlay_dist = dist_names[0] if dist_names else top_package
+        if IntrospectionHelpers.editable_info(overlay_dist)[0]:
+            continue
+        overlay_repo = DoctorService.find_overlay_repo(overlay_dist)
+        if overlay_repo:
+            DoctorService.make_editable(overlay_dist, overlay_repo)
+
+
+def _ensure_editable_if_contributing() -> None:
+    """Auto-fix teatree and overlay to editable when ``contribute=true``.
+
+    When ``contribute`` is set in the DB config store, both teatree and the active
+    overlay should be editable so local changes take effect immediately (``uv
+    sync`` reinstalls from git, undoing this). The cheap :func:`_contribute_enabled`
+    gate short-circuits before any editability/dist work, and its config read is
+    OUTSIDE the swallow — only the best-effort re-install is caught, so a genuine
+    config-resolution bug surfaces instead of being silently swallowed.
+    """
+    if not _contribute_enabled():
+        return
     try:
-        from teatree.config import get_effective_settings  # noqa: PLC0415
-
-        # ``contribute`` is DB-home (#1775); resolved via the effective-settings
-        # tier. This runs before django.setup(), so the DB read fails safe to the
-        # conservative default (False = skip auto-editable) when the DB is not yet
-        # available — the user can still run ``t3 doctor`` to fix editability.
-        if not get_effective_settings().contribute:
-            return
-
-        if not IntrospectionHelpers.editable_info("teatree")[0]:
-            repo = DoctorService.find_teatree_repo()
-            if repo:
-                DoctorService.make_editable("teatree", repo)
-
-        from teatree.core.overlay_loader import get_all_overlays  # noqa: PLC0415
-
-        for overlay_inst in get_all_overlays().values():
-            overlay_module = type(overlay_inst).__module__
-            top_package = overlay_module.split(".", maxsplit=1)[0]
-            from importlib.metadata import packages_distributions  # noqa: PLC0415
-
-            dist_map = packages_distributions()
-            dist_names = dist_map.get(top_package, [top_package])
-            overlay_dist = dist_names[0] if dist_names else top_package
-
-            is_editable, _ = IntrospectionHelpers.editable_info(overlay_dist)
-            if is_editable:
-                continue
-            overlay_repo = DoctorService.find_overlay_repo(overlay_dist)
-            if overlay_repo:
-                DoctorService.make_editable(overlay_dist, overlay_repo)
+        _reinstall_editable_if_needed()
     except Exception:
         logger.debug("editable check skipped", exc_info=True)
 

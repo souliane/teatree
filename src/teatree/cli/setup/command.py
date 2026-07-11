@@ -22,10 +22,10 @@ from teatree.cli.setup.plugin_registrar import PluginRegistrar
 from teatree.cli.setup.skill_linker import CORE_EXCLUDED_SKILLS, SkillLinker
 from teatree.cli.setup.statusline_installer import StatuslineInstall, install_statusline
 from teatree.cli.setup.tool_installer import ToolInstaller
-from teatree.cli.slack_dm_provisioning import provision_all_overlay_dm_channels
-from teatree.cli.slack_provision import slack_provision
-from teatree.cli.slack_setup import slack_bot_setup
-from teatree.cli.slack_user_token_setup import slack_user_token_setup
+from teatree.cli.slack.dm_provisioning import provision_all_overlay_dm_channels
+from teatree.cli.slack.provision import slack_provision
+from teatree.cli.slack.setup import slack_bot_setup
+from teatree.cli.slack.user_token_setup import slack_user_token_setup
 from teatree.self_update import ensure_self_db_migrated, seed_default_loops
 from teatree.utils.django_bootstrap import ensure_django
 

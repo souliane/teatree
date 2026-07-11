@@ -49,8 +49,48 @@ def _build_cli_reference_from_command(click_app: click.Command, *, base_name: st
         f"Generated from `{base_name}` command tree.",
         "",
     ]
-    _walk(click_app, [base_name], lines, depth=0, parent_ctx=None)
+    for parts, cmd, ctx in _iter_command_tree(click_app, base_name=base_name):
+        help_text = _get_help_text(cmd, ctx)
+        name = " ".join(parts)
+        heading = "#" * min(len(parts) + 1, 6)
+        lines.extend([f"{heading} `{name}`", "", "```", help_text, "```", ""])
     return "\n".join(lines) + "\n"
+
+
+def _iter_command_tree(
+    root: click.Command, *, base_name: str = "t3"
+) -> Iterator[tuple[list[str], click.Command, click.Context]]:
+    """Pre-order walk of *root*'s command tree, resolving overlay proxies.
+
+    Yields ``(parts, cmd, ctx)`` for every node — the root, each group, and each
+    leaf — in the depth-first order the markdown reference and the #550 registry
+    both need. *cmd* is the proxy-resolved click command (an overlay proxy is
+    swapped for its real TyperCommand leaf) and *ctx* is its context, its
+    ``info_name`` chain set so ``--help`` renders under the right ``t3 <sub> …``
+    program name. The four public projections — :func:`command_paths`,
+    :func:`command_groups`, :func:`command_catalogue`, and the markdown walker —
+    each filter or shape this one traversal rather than re-implementing it.
+    """
+    real = _resolve_proxy_leaf(root)
+    if real is not None:
+        root = real
+    yield from _iter_resolved_subtree(root, [base_name], parent_ctx=None)
+
+
+def _iter_resolved_subtree(
+    cmd: click.Command, parts: list[str], parent_ctx: click.Context | None
+) -> Iterator[tuple[list[str], click.Command, click.Context]]:
+    ctx = click.Context(cmd, info_name=parts[-1], parent=parent_ctx)
+    yield parts, cmd, ctx
+    if isinstance(cmd, click.Group):
+        for sub_name in cmd.list_commands(ctx):
+            sub_cmd = cmd.get_command(ctx, sub_name)
+            if sub_cmd is None:
+                continue
+            real = _resolve_proxy_leaf(sub_cmd)
+            if real is not None:
+                sub_cmd = real
+            yield from _iter_resolved_subtree(sub_cmd, [*parts, sub_name], parent_ctx=ctx)
 
 
 @contextlib.contextmanager
@@ -168,7 +208,7 @@ def _resolve_command_path(
 
     Returns the command plus its context chain (each ``info_name`` set) so help
     renders under the right ``t3 <sub> …`` program name. Mirrors the traversal in
-    :func:`_walk`, resolving overlay proxies to their real leaf at each hop.
+    :func:`_iter_command_tree`, resolving overlay proxies to their real leaf at each hop.
     """
     path = " ".join([base_name, *parts])
     cmd = _resolve_proxy_leaf(click_app) or click_app
@@ -215,22 +255,7 @@ def command_paths(app: typer.Typer, *, base_name: str = "t3") -> set[str]:
     every group node too (a bare ``t3 loop`` is a valid no-args-is-help
     invocation), mirroring the markdown walker's traversal.
     """
-    paths: set[str] = set()
-
-    def _collect(cmd: click.Command, parts: list[str], parent_ctx: click.Context | None) -> None:
-        real = _resolve_proxy_leaf(cmd)
-        if real is not None:
-            cmd = real
-        ctx = click.Context(cmd, info_name=parts[-1], parent=parent_ctx)
-        paths.add(" ".join(parts))
-        if isinstance(cmd, click.Group):
-            for sub_name in cmd.list_commands(ctx):
-                sub_cmd = cmd.get_command(ctx, sub_name)
-                if sub_cmd is not None:
-                    _collect(sub_cmd, [*parts, sub_name], parent_ctx=ctx)
-
-    _collect(get_command(app), [base_name], parent_ctx=None)
-    return paths
+    return {" ".join(parts) for parts, _cmd, _ctx in _iter_command_tree(get_command(app), base_name=base_name)}
 
 
 def _emits_json(cmd: click.Command) -> bool:
@@ -258,29 +283,15 @@ def command_catalogue(app: typer.Typer, *, base_name: str = "t3") -> list[Comman
     the CLI-side of the inverted ``command_search`` dependency: ``teatree.cli``
     builds it from its own assembled app and registers it into the mcp seam.
     """
-    records: list[CommandRecord] = []
-
-    def _collect(cmd: click.Command, parts: list[str], parent_ctx: click.Context | None) -> None:
-        real = _resolve_proxy_leaf(cmd)
-        if real is not None:
-            cmd = real
-        ctx = click.Context(cmd, info_name=parts[-1], parent=parent_ctx)
-        if isinstance(cmd, click.Group):
-            for sub_name in cmd.list_commands(ctx):
-                sub_cmd = cmd.get_command(ctx, sub_name)
-                if sub_cmd is not None:
-                    _collect(sub_cmd, [*parts, sub_name], parent_ctx=ctx)
-            return
-        records.append(
-            CommandRecord(
-                path=" ".join(parts),
-                summary=cmd.get_short_help_str(limit=200),
-                emits_json=_emits_json(cmd),
-            ),
+    return [
+        CommandRecord(
+            path=" ".join(parts),
+            summary=cmd.get_short_help_str(limit=200),
+            emits_json=_emits_json(cmd),
         )
-
-    _collect(get_command(app), [base_name], parent_ctx=None)
-    return records
+        for parts, cmd, _ctx in _iter_command_tree(get_command(app), base_name=base_name)
+        if not isinstance(cmd, click.Group)
+    ]
 
 
 def command_groups(app: typer.Typer, *, base_name: str = "t3") -> set[str]:
@@ -293,22 +304,11 @@ def command_groups(app: typer.Typer, *, base_name: str = "t3") -> set[str]:
     ``t3 loop tickk`` (drift) — ``loop`` is a group, ``tickk`` is not its
     child, so it must fail.
     """
-    groups: set[str] = set()
-
-    def _collect(cmd: click.Command, parts: list[str], parent_ctx: click.Context | None) -> None:
-        real = _resolve_proxy_leaf(cmd)
-        if real is not None:
-            cmd = real
-        ctx = click.Context(cmd, info_name=parts[-1], parent=parent_ctx)
-        if isinstance(cmd, click.Group):
-            groups.add(" ".join(parts))
-            for sub_name in cmd.list_commands(ctx):
-                sub_cmd = cmd.get_command(ctx, sub_name)
-                if sub_cmd is not None:
-                    _collect(sub_cmd, [*parts, sub_name], parent_ctx=ctx)
-
-    _collect(get_command(app), [base_name], parent_ctx=None)
-    return groups
+    return {
+        " ".join(parts)
+        for parts, cmd, _ctx in _iter_command_tree(get_command(app), base_name=base_name)
+        if isinstance(cmd, click.Group)
+    }
 
 
 def _get_help_text(cmd: click.Command, ctx: click.Context) -> str:
@@ -346,28 +346,3 @@ def _resolve_proxy_leaf(cmd: click.Command) -> click.Command | None:
         return real_root
     real_ctx = click.Context(real_root, info_name=group_name)
     return real_root.get_command(real_ctx, sub_name)
-
-
-def _walk(
-    cmd: click.Command,
-    parts: list[str],
-    lines: list[str],
-    depth: int,
-    parent_ctx: click.Context | None,
-) -> None:
-    real = _resolve_proxy_leaf(cmd)
-    if real is not None:
-        cmd = real
-
-    ctx = click.Context(cmd, info_name=parts[-1], parent=parent_ctx)
-    help_text = _get_help_text(cmd, ctx)
-
-    name = " ".join(parts)
-    heading = "#" * min(depth + 2, 6)
-    lines.extend([f"{heading} `{name}`", "", "```", help_text, "```", ""])
-
-    if isinstance(cmd, click.Group):
-        for sub_name in cmd.list_commands(ctx):
-            sub_cmd = cmd.get_command(ctx, sub_name)
-            if sub_cmd is not None:
-                _walk(sub_cmd, [*parts, sub_name], lines, depth + 1, parent_ctx=ctx)

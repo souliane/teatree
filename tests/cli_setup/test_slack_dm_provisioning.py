@@ -1,4 +1,4 @@
-"""Tests for ``teatree.cli.slack_dm_provisioning`` — first-run IM provisioning (#1342).
+"""Tests for ``teatree.cli.slack.dm_provisioning`` — first-run IM provisioning (#1342).
 
 The per-overlay bot needs an IM channel id cached in the DB ``overlays`` registry
 so that DMs route through the overlay's own bot rather than silently falling
@@ -13,22 +13,22 @@ import pytest
 from django.test import TestCase
 
 from teatree.backends.slack.bot import SlackBotBackend
-from teatree.cli import slack_dm_provisioning
-from teatree.cli.slack_dm_provisioning import ProvisionResult, provision_overlay_dm_channel, resolve_user_slack_id
+from teatree.cli.slack import dm_provisioning
+from teatree.cli.slack.dm_provisioning import ProvisionResult, provision_overlay_dm_channel, resolve_user_slack_id
 from teatree.core.models import ConfigSetting
 
 
 class TestResolveUserSlackId:
     def test_returns_pass_value_when_available(self) -> None:
-        with patch("teatree.cli.slack_dm_provisioning.read_pass", return_value="U_FROM_PASS"):
+        with patch("teatree.cli.slack.dm_provisioning.read_pass", return_value="U_FROM_PASS"):
             assert resolve_user_slack_id(bot_token="xoxb-tok") == "U_FROM_PASS"
 
     def test_falls_back_to_auth_test_when_pass_empty(self) -> None:
         backend = MagicMock(spec=SlackBotBackend)
         backend.auth_test.return_value = {"ok": True, "user_id": "U_FROM_AUTH"}
         with (
-            patch("teatree.cli.slack_dm_provisioning.read_pass", return_value=""),
-            patch("teatree.cli.slack_dm_provisioning.SlackBotBackend", return_value=backend),
+            patch("teatree.cli.slack.dm_provisioning.read_pass", return_value=""),
+            patch("teatree.cli.slack.dm_provisioning.SlackBotBackend", return_value=backend),
         ):
             assert resolve_user_slack_id(bot_token="xoxb-tok") == "U_FROM_AUTH"
 
@@ -36,8 +36,8 @@ class TestResolveUserSlackId:
         backend = MagicMock(spec=SlackBotBackend)
         backend.auth_test.return_value = {"ok": False, "error": "invalid_auth"}
         with (
-            patch("teatree.cli.slack_dm_provisioning.read_pass", return_value=""),
-            patch("teatree.cli.slack_dm_provisioning.SlackBotBackend", return_value=backend),
+            patch("teatree.cli.slack.dm_provisioning.read_pass", return_value=""),
+            patch("teatree.cli.slack.dm_provisioning.SlackBotBackend", return_value=backend),
         ):
             assert resolve_user_slack_id(bot_token="xoxb-tok") == ""
 
@@ -78,10 +78,10 @@ class TestProvisionOverlayDmChannel(TestCase):
 
         with (
             patch(
-                "teatree.cli.slack_dm_provisioning.read_pass",
+                "teatree.cli.slack.dm_provisioning.read_pass",
                 side_effect=lambda key: "xoxb-tok" if key.endswith("-bot") else "",
             ),
-            patch("teatree.cli.slack_dm_provisioning.SlackBotBackend", return_value=backend),
+            patch("teatree.cli.slack.dm_provisioning.SlackBotBackend", return_value=backend),
         ):
             result = provision_overlay_dm_channel(overlay_name="teatree")
 
@@ -106,10 +106,10 @@ class TestProvisionOverlayDmChannel(TestCase):
 
         with (
             patch(
-                "teatree.cli.slack_dm_provisioning.read_pass",
+                "teatree.cli.slack.dm_provisioning.read_pass",
                 side_effect=lambda key: "xoxb-tok" if key.endswith("-bot") else "",
             ),
-            patch("teatree.cli.slack_dm_provisioning.SlackBotBackend", return_value=backend),
+            patch("teatree.cli.slack.dm_provisioning.SlackBotBackend", return_value=backend),
         ):
             result = provision_overlay_dm_channel(overlay_name="teatree")
 
@@ -126,7 +126,7 @@ class TestProvisionOverlayDmChannel(TestCase):
             }
         )
 
-        with patch("teatree.cli.slack_dm_provisioning.read_pass", return_value=""):
+        with patch("teatree.cli.slack.dm_provisioning.read_pass", return_value=""):
             result = provision_overlay_dm_channel(overlay_name="teatree")
 
         assert result.status == ProvisionResult.SKIPPED_NO_BOT_TOKEN
@@ -141,13 +141,13 @@ class TestProvisionOverlayDmChannel(TestCase):
         def fake_read_pass(key: str) -> str:
             if key.endswith("-bot"):
                 return "xoxb-tok"
-            if key == slack_dm_provisioning.SLACK_USER_ID_PASS_KEY:
+            if key == dm_provisioning.SLACK_USER_ID_PASS_KEY:
                 return "U_FROM_PASS"
             return ""
 
         with (
-            patch("teatree.cli.slack_dm_provisioning.read_pass", side_effect=fake_read_pass),
-            patch("teatree.cli.slack_dm_provisioning.SlackBotBackend", return_value=backend),
+            patch("teatree.cli.slack.dm_provisioning.read_pass", side_effect=fake_read_pass),
+            patch("teatree.cli.slack.dm_provisioning.SlackBotBackend", return_value=backend),
         ):
             result = provision_overlay_dm_channel(overlay_name="teatree")
 
@@ -160,10 +160,10 @@ class TestPersistedChannelKey:
     """The cached channel id MUST live under the overlay's ``slack_dm_channel_id`` field."""
 
     def test_canonical_channel_key_name(self) -> None:
-        assert slack_dm_provisioning.SLACK_DM_CHANNEL_KEY == "slack_dm_channel_id"
+        assert dm_provisioning.SLACK_DM_CHANNEL_KEY == "slack_dm_channel_id"
 
     def test_canonical_pass_user_id_key(self) -> None:
-        assert slack_dm_provisioning.SLACK_USER_ID_PASS_KEY == "slack/user-id"
+        assert dm_provisioning.SLACK_USER_ID_PASS_KEY == "slack/user-id"
 
 
 class TestSlackBackendUsesCachedChannel:
@@ -279,10 +279,10 @@ class TestProvisionAllOverlayDmChannels(TestCase):
             return ""
 
         with (
-            patch("teatree.cli.slack_dm_provisioning.read_pass", side_effect=fake_read_pass),
-            patch("teatree.cli.slack_dm_provisioning.SlackBotBackend", return_value=backend),
+            patch("teatree.cli.slack.dm_provisioning.read_pass", side_effect=fake_read_pass),
+            patch("teatree.cli.slack.dm_provisioning.SlackBotBackend", return_value=backend),
         ):
-            results = slack_dm_provisioning.provision_all_overlay_dm_channels(echo=echo_lines.append)
+            results = dm_provisioning.provision_all_overlay_dm_channels(echo=echo_lines.append)
 
         statuses = {r.overlay_name: r.status for r in results}
         assert statuses == {

@@ -2,7 +2,7 @@
 
 Thin Typer wrappers delegating to the ``standing_goal`` Django management command
 (anything touching the ORM is a management command). Delegation shape mirrors
-:mod:`teatree.cli.loop_owner`: map the management command's ``SystemExit`` to a
+:mod:`teatree.cli.loop.owner`: map the management command's ``SystemExit`` to a
 ``typer.Exit`` so the process exit code is preserved.
 """
 

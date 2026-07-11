@@ -304,7 +304,7 @@ def _check_teatree_mcp_registration() -> bool:
     operation, not a misconfiguration worth reddening the whole doctor run
     over. Crash-proof: any error also degrades to a WARN.
     """
-    from teatree.cli._doctor_plugin_repair import _resolve_main_clone  # noqa: PLC0415
+    from teatree.cli.doctor.plugin_repair import _resolve_main_clone  # noqa: PLC0415 — avoids a doctor-package cycle
     from teatree.core.mcp_registration import TEATREE_MCP_SERVER_NAME, verify_teatree_mcp_registration  # noqa: PLC0415
 
     try:
@@ -499,7 +499,7 @@ def _check_slack_socket_mode() -> bool:
     any error degrades to a WARN so a doctor run never aborts on this check.
     """
     try:
-        from teatree.cli.slack_socket_doctor import check_slack_socket_mode  # noqa: PLC0415
+        from teatree.cli.slack.socket_doctor import check_slack_socket_mode  # noqa: PLC0415 — only when probe runs
 
         outcome = check_slack_socket_mode()
     except Exception as exc:  # noqa: BLE001 — doctor check must never crash the run

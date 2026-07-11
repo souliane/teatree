@@ -2,7 +2,7 @@
 
 from unittest.mock import patch
 
-from teatree.cli._doctor_checks import _check_mcp_connectivity
+from teatree.cli.doctor.checks import _check_mcp_connectivity
 from teatree.core.mcp_connectivity import McpConnectivityOutcome
 
 

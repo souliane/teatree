@@ -11,7 +11,7 @@ from teatree.backends.slack.socket_mode import (
     open_app_connection,
     probe_app_connections,
 )
-from teatree.cli.slack_manifest import build_manifest
+from teatree.cli.slack.manifest import build_manifest
 
 
 class TestManifestSocketGaps:

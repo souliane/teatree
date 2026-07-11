@@ -16,7 +16,6 @@ from typing import Any
 
 import typer
 
-from teatree.cli.tools import tool_app
 from teatree.quality.affected_tests import Selection, build_selection
 
 
@@ -36,7 +35,6 @@ def _selection_as_dict(selection: Selection) -> dict[str, Any]:
     }
 
 
-@tool_app.command("affected-tests")
 def affected_tests_command(
     base: str = typer.Option("origin/main", "--base", help="Merge-base ref for the changed set."),
     *,
@@ -73,3 +71,8 @@ def affected_tests_command(
     typer.echo(f"reason: {selection.reason}")
     for warning in selection.warnings:
         typer.echo(f"warning: {warning}")
+
+
+def register(app: typer.Typer) -> None:
+    """Register this module's ``t3 tool`` command(s) onto *app* (called from ``cli/__init__``)."""
+    app.command("affected-tests")(affected_tests_command)

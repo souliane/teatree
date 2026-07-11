@@ -18,7 +18,7 @@ from pathlib import Path
 
 import pytest
 
-from teatree.cli._doctor_checks import _check_dangling_editable_pth
+from teatree.cli.doctor.checks import _check_dangling_editable_pth
 from teatree.utils import editable_pth
 
 

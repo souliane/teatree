@@ -15,7 +15,7 @@ The resolution order is, for a given overlay:
 A newly-derived id is persisted back to the overlay's registry entry so step 2
 runs at most once per overlay. Registry reads/writes go through
 ``ConfigSetting.objects`` — a read-modify-write against the single ``overlays``
-row (the same DB-home shape :mod:`teatree.cli.slack_dm_provisioning` uses).
+row (the same DB-home shape :mod:`teatree.cli.slack.dm_provisioning` uses).
 """
 
 import httpx
