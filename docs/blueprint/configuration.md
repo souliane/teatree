@@ -131,9 +131,10 @@ the carve-out is **EMPTY** — every `UserSettings` field is DB-home. The two ho
 disjoint (a fitness function asserts it) — a setting is never read from both tiers. A
 DB-home field resolves from `ConfigSetting` (global + overlay rows) + env only.
 (config-unify moved `check_updates` — its pre-Django reader
-`check_for_updates` now reads the DB via the Django-free `cold_reader` — `worktrees_dir`
-/ `timezone` — the Django settings module hardcodes `TIME_ZONE` and configures
-`DATABASES` without reading either, so neither was a bootstrap dep — the two former
+`check_for_updates` now reads the DB via the Django-free `cold_reader` — `timezone`
+— the Django settings module hardcodes `TIME_ZONE` and configures
+`DATABASES` without reading it, so it was not a bootstrap dep (its former sibling
+`worktrees_dir` was removed as a redundant duplicate of `worktree_root()`) — the two former
 per-overlay-TOML-overridable fields `orchestrator_bash_gate_enabled` / `privacy` —
 per-overlay override now lives in a `ConfigSetting` overlay-scope row — `handover_mirror_path`
 — its pre-Django SessionStart reader reads the DB via `cold_reader`, which fails open to

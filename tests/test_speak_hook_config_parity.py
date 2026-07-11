@@ -15,7 +15,7 @@ from pathlib import Path
 import pytest
 
 import hooks.scripts.hook_router as router
-from teatree.config_speak import resolve_speak, speak_from_subtable
+from teatree.config.speak import resolve_speak, speak_from_subtable
 from teatree.types import SpeakConfig
 
 _CORPUS: list[dict[str, object] | None] = [

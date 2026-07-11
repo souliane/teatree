@@ -13,9 +13,9 @@ leaves an orphan remote branch.
 Constraint-as-data: ``max_open_prs_per_repo_per_ticket`` is read through
 ``get_effective_settings`` so its scope is a per-overlay ``ConfigSetting`` row —
 a second overlay wanting a different value needs no code change (the N=2 litmus).
-Neutral default = inert: the default ``0`` means unlimited, so core ships with
-zero behaviour change until an overlay sets the knob (the empty-table doctrine);
-``1`` gives at most one open PR per repo per ticket.
+Shipped default = ``1`` (D9): at most one open PR per repo per ticket, so the
+one-ticket-one-PR discipline holds out of the box. ``0`` is the explicit
+unlimited opt-out for an overlay that wants no budget.
 
 Exactness caveat: ``PullRequest`` rows are upserted by the manual-PR reconciler,
 which can lag a just-opened PR by a tick. The count therefore UNIONS the FK rows
@@ -55,7 +55,8 @@ def resolve_pr_budget(overlay: str | None) -> int:
 
     Reads through ``get_effective_settings`` so the value layers ``T3_*`` env,
     the per-overlay ``ConfigSetting`` row, the global row, then the dataclass
-    default in order. ``0`` (the neutral default) means unlimited.
+    default in order. The shipped default is ``1`` (D9); ``0`` is the explicit
+    unlimited opt-out.
     """
     return int(get_effective_settings(overlay).max_open_prs_per_repo_per_ticket)
 

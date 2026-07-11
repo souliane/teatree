@@ -7,32 +7,30 @@ the module-health LOC cap. ``settings`` imports these to build
 ``OVERLAY_OVERRIDABLE_SETTINGS`` / ``ENV_SETTING_OVERRIDES`` and the
 ``UserSettings`` defaults, so every ``from teatree.config.settings import
 _parse_*`` and ``from teatree.config import _parse_*`` path stays valid.
+
+The strict scalar/list coercion rules themselves live in the Django-free
+:mod:`teatree.config.value_coercion` module, shared with the pre-Django
+``cold_reader`` (config §3d #5); the ``_parse_*`` wrappers here are the
+registry-facing entry points (write-time validation + DB-tier read coercion),
+binding the hot-path ``accept_numeric_str=True`` policy.
 """
 
 import os
 from collections.abc import Callable
 from pathlib import Path
 
+from teatree.config import value_coercion
 from teatree.config.enums import TeamsDisplay
 
 
 def _parse_str_list(raw: object) -> list[str]:
     """Coerce a list-typed overridable setting to ``list[str]``, strictly.
 
-    A real list (TOML/JSON array) coerces each element to ``str``; ANY non-list
-    scalar — a bool, an int, a bare string — RAISES ``TypeError`` rather than
-    silently degrading to ``[]`` (#258). The old defaulting behaviour
-    (``return [] if not a list``) let ``config_setting set excluded_skills true``
-    pass write-time validation and persist the raw ``True``: a corrupt override
-    masked as an empty list with no signal. The strict parser is the single
-    coercer for every list-typed overridable setting, so the write path
-    (validation) and the read path (DB-tier coercion) reject a scalar
-    identically.
+    The single coercer for every list-typed overridable setting, so the write
+    path (validation) and the read path (DB-tier coercion) reject a non-list
+    scalar identically (#258). See :func:`value_coercion.strict_str_list`.
     """
-    if not isinstance(raw, list):
-        msg = f"Invalid list value {raw!r}; expected a JSON/TOML array, not a scalar"
-        raise TypeError(msg)
-    return [str(s) for s in raw]
+    return value_coercion.strict_str_list(raw)
 
 
 _DEFAULT_DISK_CACHE_ALLOWLIST = ("~/.cache/pre-commit", "~/.cache/puppeteer", "~/.cache/codex-runtimes")
@@ -120,49 +118,23 @@ def _parse_env_teams_display(raw: str) -> TeamsDisplay:
 def _parse_strict_bool(raw: object) -> bool:
     """Coerce a TOML/JSON value for a bool-typed overridable setting, strictly.
 
-    TOML ``true``/``false`` and JSON ``true``/``false`` both decode to a real
-    Python ``bool``, so the only accepted inputs are :data:`True` / :data:`False`
-    (``isinstance(x, bool)`` — which excludes ``1``/``0`` since those are ``int``).
-
-    Anything else — a quoted ``"false"`` (a ``str``), a number, a list — raises
-    ``ValueError`` rather than truthy-coercing via ``bool(...)``. The naive
-    ``bool`` coercer the bool registry entries used to point at made
-    ``bool("false") == True`` (#258): a JSON/string ``"false"`` for an opt-in
-    safety setting (e.g. ``allow_destructive_disk``) silently ENABLED it. This
-    strict parser is the single coercer for every bool-typed overridable
-    setting, so both the write path (``config_setting set`` validates through the
-    registry) and the read path (``_db_setting_overrides`` coerces through it)
-    reject the ambiguous value identically.
+    The single coercer for every bool-typed overridable setting: a quoted
+    ``"false"`` / a number / a list raises rather than truthy-coercing via
+    ``bool(...)`` (``bool("false") == True``, #258). See
+    :func:`value_coercion.strict_bool`.
     """
-    if isinstance(raw, bool):
-        return raw
-    msg = f"Invalid bool value {raw!r}; expected a JSON/TOML boolean (true/false), not a quoted string or number"
-    raise ValueError(msg)
+    return value_coercion.strict_bool(raw)
 
 
 def _parse_strict_int(raw: object) -> int:
     """Coerce a TOML/JSON value for an int-typed overridable setting, strictly.
 
-    Accepts a real ``int`` (TOML/JSON integer) and a numeric ``str`` (the read
-    tier may store ``"5"``). REJECTS a ``bool`` — ``bool`` is a subclass of
-    ``int``, so the old bare ``int`` parser made ``int(True) == 1`` and silently
-    accepted a JSON ``true`` for an int-typed setting (#258), persisting the raw
-    ``True``. Also rejects a ``float`` and any other non-int-coercible type
-    rather than truncating (a TOML ``5.0`` for an int setting is a type error,
-    raising ``TypeError``).
-    The ``isinstance(raw, bool)`` guard runs BEFORE the ``int`` coercion so the
-    bool short-circuits to a raise. Single coercer for every int-typed
-    overridable setting, applied identically on the write and read paths.
+    Accepts a real ``int`` and a numeric ``str`` (the hot read tier may store
+    ``"5"`` — ``accept_numeric_str=True``); REJECTS a ``bool`` (``int(True) ==
+    1``, #258) and a ``float`` rather than truncating. See
+    :func:`value_coercion.strict_int`.
     """
-    if isinstance(raw, bool):
-        msg = f"Invalid int value {raw!r}; a boolean is not an integer setting value"
-        raise TypeError(msg)
-    if isinstance(raw, int):
-        return raw
-    if isinstance(raw, str):
-        return int(raw.strip())
-    msg = f"Invalid int value {raw!r}; expected a JSON/TOML integer"
-    raise TypeError(msg)
+    return value_coercion.strict_int(raw, accept_numeric_str=True)
 
 
 def _parse_overridable_positive_int(default: int) -> Callable[[object], int]:
@@ -195,36 +167,20 @@ def _parse_strict_float(raw: object) -> float:
     """Coerce a TOML/JSON value for a float-typed overridable setting, strictly.
 
     Accepts a real ``float``, an ``int`` (a TOML ``25`` for a float setting is
-    legitimate), and a numeric ``str``. REJECTS a ``bool`` — ``float(True) ==
-    1.0`` would otherwise silently accept a JSON ``true`` for a float setting,
-    the same coercion-instead-of-reject class as the int parser (#258). The
-    ``isinstance(raw, bool)`` guard runs BEFORE the ``int``/``float`` checks.
-    Single coercer for every float-typed overridable setting, applied
-    identically on the write and read paths.
+    legitimate), and a numeric ``str``; REJECTS a ``bool`` (``float(True) ==
+    1.0``, #258). See :func:`value_coercion.strict_float`.
     """
-    if isinstance(raw, bool):
-        msg = f"Invalid float value {raw!r}; a boolean is not a float setting value"
-        raise TypeError(msg)
-    if isinstance(raw, int | float):
-        return float(raw)
-    if isinstance(raw, str):
-        return float(raw.strip())
-    msg = f"Invalid float value {raw!r}; expected a JSON/TOML number"
-    raise TypeError(msg)
+    return value_coercion.strict_float(raw)
 
 
 def _parse_strict_str(raw: object) -> str:
     """Coerce a TOML/JSON value for a str-typed overridable setting, strictly.
 
     Accepts only a real ``str``; REJECTS a ``bool``/``int``/``float``/``list``
-    rather than stringifying it via ``str(...)`` (#258, which the bare ``str``
-    parser silently did: ``str(True) == "True"``). The single coercer for every
-    str-typed overridable setting, applied identically on read and write.
+    rather than stringifying it via ``str(...)`` (``str(True) == "True"``, #258).
+    See :func:`value_coercion.strict_str`.
     """
-    if not isinstance(raw, str):
-        msg = f"Invalid str value {raw!r}; expected a JSON/TOML string"
-        raise TypeError(msg)
-    return raw
+    return value_coercion.strict_str(raw)
 
 
 def _parse_handover_mirror_path(raw: object) -> Path:

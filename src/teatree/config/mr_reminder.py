@@ -1,14 +1,14 @@
-"""Resolution of the ``[mr_reminder]`` config table (TODO-276).
+"""Resolution of the ``mr_reminder`` config table (TODO-276).
 
-Split out of :mod:`teatree.config` (a god-module), mirroring the
-:mod:`teatree.config_speak` cohesion split: the schema — an ordered
-``channels`` slug→channel map plus a ``default_channel`` fallback — is a
-cohesive concern with a single dependency (:mod:`teatree.types`).
+The schema — an ordered ``channels`` slug→channel map plus a ``default_channel``
+fallback — is a cohesive concern with a single dependency (:mod:`teatree.types`),
+so it lives in its own module under the ``teatree.config`` package (PR-29's "no
+stray top-level ``config_*`` modules"), mirroring :mod:`teatree.config.speak`.
 
-This module holds the *data* only. The repo-slug → channel routing
-policy and the cross-repo message assembly live in
-:mod:`teatree.core.review.mr_reminder` (the domain layer that may reach the
-host-stripped namespace matcher), keeping config a pure data layer.
+This module holds the *data* only. The repo-slug → channel routing policy and
+the cross-repo message assembly live in :mod:`teatree.core.review.mr_reminder`
+(the domain layer that may reach the host-stripped namespace matcher), keeping
+config a pure data layer.
 """
 
 from dataclasses import dataclass
@@ -41,13 +41,13 @@ class MrReminderConfig:
 
 
 def mr_reminder_from_table(table: dict[str, Any]) -> MrReminderConfig:
-    """Build a :class:`MrReminderConfig` from a ``[mr_reminder]`` table.
+    """Build a :class:`MrReminderConfig` from an ``mr_reminder`` table.
 
-    ``[mr_reminder.channels]`` is a slug→channel sub-table; insertion
-    order is preserved so a longest-match tie-break in the router is
-    deterministic. ``default_channel`` is an optional scalar. Non-string
-    keys/values and a non-dict ``channels`` degrade to empty rather than
-    raising, keeping the loader robust to a malformed override.
+    ``channels`` is a slug→channel sub-table; insertion order is preserved so a
+    longest-match tie-break in the router is deterministic. ``default_channel``
+    is an optional scalar. Non-string keys/values and a non-dict ``channels``
+    degrade to empty rather than raising, keeping the loader robust to a
+    malformed override.
     """
     raw_channels = table.get("channels")
     channels: tuple[tuple[str, str], ...] = ()
@@ -65,10 +65,10 @@ def mr_reminder_from_table(table: dict[str, Any]) -> MrReminderConfig:
 
 
 def resolve_mr_reminder(raw: dict[str, Any]) -> MrReminderConfig:
-    """Resolve the effective :class:`MrReminderConfig` from the raw toml root.
+    """Resolve the effective :class:`MrReminderConfig` from the raw config root.
 
-    Reads the top-level ``[mr_reminder]`` table, else returns defaults
-    (no channels, no fallback → the reminder is inert until configured).
+    Reads the top-level ``mr_reminder`` table, else returns defaults (no
+    channels, no fallback → the reminder is inert until configured).
     """
     table = raw.get("mr_reminder")
     if isinstance(table, dict):

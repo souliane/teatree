@@ -19,6 +19,8 @@ from pathlib import Path
 import pytest
 from django.test import TestCase
 
+import teatree.config as config_facade
+import teatree.config.loader as loader_mod
 from teatree.config import OVERLAY_OVERRIDABLE_SETTINGS, OnBehalfPostMode, UserSettings, get_effective_settings
 from teatree.core.models import ConfigSetting
 from teatree.on_behalf_gate import OnBehalfVerdict, resolve_on_behalf_verdict
@@ -88,6 +90,40 @@ class TestAskBeforePostOnBehalfRemoved:
             "Retired derived field `.ask_before_post_on_behalf` is still read in src/ — "
             "use resolve_on_behalf_verdict / on_behalf_post_mode instead:\n" + "\n".join(offenders)
         )
+
+
+class TestWorktreesDirRemoved:
+    """``worktrees_dir`` was removed as a redundant duplicate of ``worktree_root()``.
+
+    The two resolvers shared the "where ticket worktrees are created" role with
+    divergent defaults (``DATA_DIR/worktrees`` vs ``~/workspace/t3-workspaces/<overlay>``)
+    and identical docstrings, so a reader could not tell which one actually created
+    worktrees (config §3d #4). ``worktree_root()`` is the single canonical resolver
+    now; the field, its parser entry, and the ``loader.worktrees_dir()`` accessor are gone.
+    """
+
+    def test_worktrees_dir_is_not_a_user_settings_field(self) -> None:
+        assert "worktrees_dir" not in _field_names()
+
+    def test_worktrees_dir_not_in_overlay_overridable_registry(self) -> None:
+        assert "worktrees_dir" not in OVERLAY_OVERRIDABLE_SETTINGS
+
+    def test_loader_worktrees_dir_accessor_is_gone(self) -> None:
+        assert not hasattr(loader_mod, "worktrees_dir")
+        assert not hasattr(config_facade, "worktrees_dir")
+
+
+class TestStoredWorktreesDirResolvesToNothing(TestCase):
+    """A stored ``worktrees_dir`` row supplies no value — the key is off the registry."""
+
+    @pytest.fixture(autouse=True)
+    def _config(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.delenv("T3_OVERLAY_NAME", raising=False)
+
+    def test_stored_row_is_ignored_no_attribute_reappears(self) -> None:
+        ConfigSetting.objects.set_value("worktrees_dir", "/srv/wt")
+        settings = get_effective_settings()
+        assert not hasattr(settings, "worktrees_dir")
 
 
 class TestOnBehalfGatingStillResolves(TestCase):
