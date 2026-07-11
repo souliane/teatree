@@ -27,7 +27,7 @@ _patch_overlay = patch("teatree.core.cleanup.cleanup.get_overlay_for_worktree")
 # The origin/main hygiene gate is now authorized by the CONTENT gate (#2609),
 # not subject-match — so a test that drives the gate patches
 # ``content_equivalence_blockers``, the helper every destructive caller funnels
-# through, rather than the cheap ``classify_branch_commits`` recognizer.
+# through, rather than the cheap ``prefilter_branch_commits_by_subject`` recognizer.
 _patch_content = patch("teatree.core.cleanup.cleanup.content_equivalence_blockers")
 # Pin the #2205 merged-evidence override to False so tests that set
 # ``commits_absent_from_all_remotes`` to a non-empty list still hit the

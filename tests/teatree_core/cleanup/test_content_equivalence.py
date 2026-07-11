@@ -1,6 +1,6 @@
 """Content-equivalence authorization for the destructive clean-all paths (#2609).
 
-``classify_branch_commits`` buckets a branch's commits ``squash_merged`` purely
+``prefilter_branch_commits_by_subject`` buckets a branch's commits ``squash_merged`` purely
 by canonicalized-SUBJECT membership in the last N upstream subjects, with NO
 content/patch-id check. Subject-matching is fine to *recognize* a forge-squash-
 merged candidate (a squash creates a new SHA), but it is unsafe to *authorize*
@@ -28,7 +28,7 @@ from django.test import TestCase
 
 from teatree.core.cleanup.cleanup import CleanupResult, cleanup_worktree
 from teatree.core.models import Ticket, Worktree
-from teatree.core.worktree.branch_classification import branch_content_upstream, content_equivalence_blockers
+from teatree.core.worktree.branch_classification import content_equivalence_blockers
 from tests.teatree_core.cleanup._shared import _GIT, _clean_env, _run_git
 
 
@@ -108,7 +108,6 @@ class TestContentEquivalenceHelper(TestCase):
 
         assert blockers, "subject-colliding genuine commit must be a content-equivalence blocker"
         assert genuine_sha in blockers
-        assert branch_content_upstream(str(self.clone), "main", "origin/main") is False
 
     def test_genuinely_upstreamed_branch_has_no_blockers(self) -> None:
         """A commit whose patch already landed upstream (real squash-merge) is proven upstream."""
@@ -121,7 +120,6 @@ class TestContentEquivalenceHelper(TestCase):
         blockers = content_equivalence_blockers(str(self.clone), "main", "origin/main")
 
         assert blockers == [], "a patch-equivalent (squash-merged) commit must not block"
-        assert branch_content_upstream(str(self.clone), "main", "origin/main") is True
 
     def test_merge_commit_in_range_is_a_blocker(self) -> None:
         """A merge commit (no single patch-id) conservatively blocks — it may carry unique content."""
@@ -137,7 +135,6 @@ class TestContentEquivalenceHelper(TestCase):
         blockers = content_equivalence_blockers(str(self.clone), "main", "origin/main")
 
         assert blockers, "a merge commit in the unique range must conservatively block"
-        assert branch_content_upstream(str(self.clone), "main", "origin/main") is False
 
     def test_fails_closed_on_git_error(self) -> None:
         """An inconclusive content check (unresolvable target) REFUSES — never an empty pass."""
@@ -145,14 +142,13 @@ class TestContentEquivalenceHelper(TestCase):
 
         assert blockers, "an inconclusive git probe must report a blocker, not an empty pass"
         assert any("inconclusive" in b for b in blockers)
-        assert branch_content_upstream(str(self.clone), "main", "origin/does-not-exist") is False
 
 
 class TestCleanAllRefusesSubjectCollision(TestCase):
     """The clean-all force-DELETE path must REQUIRE content-equivalence (#2609).
 
     The data-loss scenario: a branch with a GENUINE un-upstreamed commit whose
-    subject collides with an upstream subject. ``classify_branch_commits`` drains
+    subject collides with an upstream subject. ``prefilter_branch_commits_by_subject`` drains
     it into ``squash_merged`` so ``genuinely_ahead`` is empty, and the branch is
     PUSHED to its own remote ref (so the #706 ``_raise_if_unpushed`` guard
     passes). Before this fix ``_raise_if_genuinely_ahead`` returned early on the

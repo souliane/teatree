@@ -308,7 +308,9 @@ def _reconcile_overlay_dependent_stores(drift: Drift, wt: Worktree) -> None:
         drift.orphan_containers.extend(OrphanContainer(name=n) for n in _find_docker_containers(compose_project(wt)))
 
 
-def _collect_stale_worktree_dirs(drift: Drift, worktrees: list[Worktree], ticket: Ticket, workspace: Path) -> None:
+def _collect_stale_worktree_dirs(
+    drift: Drift, worktrees: list[Worktree], ticket: Ticket, clone_workspace: Path
+) -> None:
     """Append :class:`StaleWorktreeDir` findings for unclaimed git worktrees."""
     stored_paths: list[str] = [
         str(wt.extra["worktree_path"]) for wt in worktrees if (wt.extra or {}).get("worktree_path")
@@ -318,7 +320,7 @@ def _collect_stale_worktree_dirs(drift: Drift, worktrees: list[Worktree], ticket
     # ``-`` (or the string ends), never a substring of a longer number.
     ticket_anchor = re.compile(rf"(?:^|[/-]){re.escape(ticket.ticket_number)}(?:[-/]|$)")
     for wt in worktrees:
-        repo_main = resolve_clone_path(workspace, wt) or workspace / wt.repo_path
+        repo_main = resolve_clone_path(clone_workspace, wt) or clone_workspace / wt.repo_path
         for path_str in _find_worktree_paths_on_disk(repo_main):
             if paths_match(path_str, repo_main):
                 continue
@@ -385,7 +387,9 @@ def _default_target_ref(repo: Path) -> str:
         return _FALLBACK_TARGET
 
 
-def _done_but_unmerged_for_ticket(ticket: Ticket, worktrees: list[Worktree], workspace: Path) -> DoneButUnmerged | None:
+def _done_but_unmerged_for_ticket(
+    ticket: Ticket, worktrees: list[Worktree], clone_workspace: Path
+) -> DoneButUnmerged | None:
     """DoneButUnmerged when a done-claiming ticket has no merge evidence and its branch is not upstream.
 
     Requires a probeable branch to prove the negative: a done-claiming ticket with
@@ -400,7 +404,7 @@ def _done_but_unmerged_for_ticket(ticket: Ticket, worktrees: list[Worktree], wor
         return None
     verdicts: list[tuple[str, RedundancyVerdict]] = []
     for wt in worktrees:
-        repo = resolve_clone_path(workspace, wt)
+        repo = resolve_clone_path(clone_workspace, wt)
         if repo is None or not repo.is_dir():
             continue
         verdict = branch_redundancy(str(repo), wt.branch, _default_target_ref(repo))
@@ -439,8 +443,13 @@ def _duplicate_scope_for_ticket(
     return DuplicateScope(issue_number=issue_number, paths=[own, *foreign])
 
 
-def _collect_work_state_drift(drift: Drift, ticket: Ticket, worktrees: list[Worktree], workspace: Path) -> None:
+def _collect_work_state_drift(drift: Drift, ticket: Ticket, worktrees: list[Worktree], clone_workspace: Path) -> None:
     """Append the three work-tracking-truth findings (SELFCATCH-1) for one ticket.
+
+    Two distinct workspace roots are threaded here and must not be conflated:
+    ``clone_workspace`` (:func:`clone_root`) locates the bare clones the
+    done-but-unmerged probe reads, while the duplicate-scope finder walks the
+    :func:`worktree_root` tree where the checked-out worktrees live.
 
     Read-only: every finder SURFACES drift and never mutates — auto-push and
     auto-delete stay gated behind the destructive commands.
@@ -449,7 +458,7 @@ def _collect_work_state_drift(drift: Drift, ticket: Ticket, worktrees: list[Work
         finding = _unpushed_work_for_worktree(wt)
         if finding is not None:
             drift.unpushed_work.append(finding)
-    done = _done_but_unmerged_for_ticket(ticket, worktrees, workspace)
+    done = _done_but_unmerged_for_ticket(ticket, worktrees, clone_workspace)
     if done is not None:
         drift.done_but_unmerged.append(done)
     dup = _duplicate_scope_for_ticket(ticket, worktrees, worktree_root())
@@ -460,13 +469,13 @@ def _collect_work_state_drift(drift: Drift, ticket: Ticket, worktrees: list[Work
 def reconcile_ticket(ticket: Ticket) -> Drift:
     """Walk every state store and return a typed ``Drift`` for *ticket*."""
     drift = Drift(ticket_pk=ticket.pk)
-    workspace = clone_root()
+    clone_workspace = clone_root()
     worktrees = list(Worktree.objects.filter(ticket=ticket))
 
     for wt in worktrees:
         _reconcile_worktree_row(drift, wt)
-    _collect_stale_worktree_dirs(drift, worktrees, ticket, workspace)
-    _collect_work_state_drift(drift, ticket, worktrees, workspace)
+    _collect_stale_worktree_dirs(drift, worktrees, ticket, clone_workspace)
+    _collect_work_state_drift(drift, ticket, worktrees, clone_workspace)
     return drift
 
 

@@ -57,18 +57,27 @@ class BranchCommit:
 
 
 @dataclass(frozen=True)
-class BranchClassification:
-    """Structured view of a branch's unsynced commits, split by disposition.
+class SubjectPrefilterResult:
+    """A subject-only pre-filter of a branch's unsynced commits — NEVER authorizes a destroy.
+
+    The bucketing is by canonicalized SUBJECT membership alone, with no
+    content/patch-id/tree check, so it can only *recognize* a likely
+    squash-merged candidate cheaply — it must never be the sole gate on a
+    destructive action. :func:`content_equivalence_blockers` is the authoritative
+    content gate every destructive caller passes instead.
 
     ``squash_merged`` — subject matches a commit on the target branch, so the
-    content is already integrated (typical squash-merge case, including the
-    ``relax:`` → ``feat:`` prefix rewrite).
+    content is *probably* already integrated (typical squash-merge case,
+    including the ``relax:`` → ``feat:`` prefix rewrite). A subject collision with
+    an unrelated upstream commit lands a genuine commit here — hence pre-filter
+    only.
 
     ``merge_commits`` — commits with multiple parents (Merge branch 'main' into
-    feature). They carry no net content of their own and are safe to discard.
+    feature). They carry no net content of their own and are usually safe to
+    discard, but an evil-merge can, so the content gate still has final say.
 
-    ``genuinely_ahead`` — everything else. The branch has work that does not
-    appear on the target, so removing it would lose content.
+    ``genuinely_ahead`` — everything else. The branch has work whose subject does
+    not appear on the target.
     """
 
     squash_merged: list[BranchCommit] = field(default_factory=list)
@@ -123,8 +132,14 @@ def _canonicalize_subject(subject: str) -> str:
     return stripped.lower()
 
 
-def classify_branch_commits(repo: str, branch: str, target: str = "origin/main") -> BranchClassification:
-    """Split the branch's unsynced commits into squash-merged / merge / genuinely-ahead buckets.
+def prefilter_branch_commits_by_subject(repo: str, branch: str, target: str = "origin/main") -> SubjectPrefilterResult:
+    """Subject-only PRE-FILTER of the branch's unsynced commits — NEVER authorizes a destroy.
+
+    Buckets into squash-merged / merge / genuinely-ahead by canonicalized SUBJECT
+    alone. This is a cheap recognizer, NOT an authorizer: a genuine un-upstreamed
+    commit whose subject collides with an already-upstreamed subject slips into
+    ``squash_merged``, so no destructive caller may act on this result without the
+    authoritative :func:`content_equivalence_blockers` content gate confirming it.
 
     Runs two git log invocations: one to list branch commits not on any remote
     (same as :func:`git.unsynced_commits`), one to fetch subjects on ``target``
@@ -139,7 +154,7 @@ def classify_branch_commits(repo: str, branch: str, target: str = "origin/main")
         repo=repo,
         args=["log", branch, "--not", target, "--format=%H%x00%P%x00%s"],
     )
-    classification = BranchClassification()
+    classification = SubjectPrefilterResult()
     if not raw.strip():
         return classification
 
@@ -169,8 +184,8 @@ def content_equivalence_blockers(repo: str, branch: str, target: str = "origin/m
     """Return the commit(s) on ``branch`` NOT provably content-equivalent to ``target``.
 
     The AUTHORITATIVE content gate every destructive caller must pass before
-    destroying ``branch`` (#2609). :func:`classify_branch_commits` buckets by
-    canonicalized SUBJECT alone — fine to *recognize* a forge-squash-merged
+    destroying ``branch`` (#2609). :func:`prefilter_branch_commits_by_subject`
+    buckets by canonicalized SUBJECT alone — fine to *recognize* a forge-squash-merged
     candidate, but unsafe to *authorize* a destroy: a genuine un-upstreamed
     commit whose subject collides with an already-upstreamed subject (a routine
     ``docs: update skills``), an amended commit that added content after the
@@ -205,17 +220,6 @@ def content_equivalence_blockers(repo: str, branch: str, target: str = "origin/m
         return [*blockers, "(git rev-list --merges failed — merge check inconclusive)"]
     blockers.extend(sha.strip() for sha in merges.splitlines() if sha.strip())
     return blockers
-
-
-def branch_content_upstream(repo: str, branch: str, target: str = "origin/main") -> bool:
-    """Whether every commit on ``branch`` is provably content-equivalent to ``target``.
-
-    The boolean view of :func:`content_equivalence_blockers`: ``True`` only when
-    the content gate found NO blocker, so destroying ``branch`` loses nothing.
-    ``False`` on any blocker AND on any inconclusive git error (the helper fails
-    closed) — destruction requires positive proof.
-    """
-    return not content_equivalence_blockers(repo, branch, target)
 
 
 def _pr_merge_commit_sha(repo: str, branch: str) -> str:

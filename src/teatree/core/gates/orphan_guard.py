@@ -22,8 +22,12 @@ from dataclasses import dataclass
 from enum import StrEnum
 
 from teatree.config import clone_root
-from teatree.core.cleanup.cleanup import _branch_tree_matches_squash, classify_branch_commits, probe_host_cli
 from teatree.core.models import Worktree
+from teatree.core.worktree.branch_classification import (
+    _branch_tree_matches_squash,
+    prefilter_branch_commits_by_subject,
+    probe_host_cli,
+)
 from teatree.core.worktree.clone_paths import resolve_clone_path
 from teatree.utils import git
 from teatree.utils.run import CommandFailedError
@@ -83,8 +87,8 @@ def _origin_default_branch_target(repo: str) -> str:
     """Resolve ``origin/<default-branch>`` for the repo, defaulting to ``origin/main``.
 
     A repo whose default branch is ``master`` (or any non-``main`` name) was
-    misclassified as SYNCED because :func:`classify_branch_commits` defaulted
-    to ``origin/main``. Resolving the actual default via ``git symbolic-ref
+    misclassified as SYNCED because :func:`prefilter_branch_commits_by_subject`
+    defaulted to ``origin/main``. Resolving the actual default via ``git symbolic-ref
     refs/remotes/origin/HEAD`` makes the comparison authoritative.
     """
     try:
@@ -96,7 +100,7 @@ def _origin_default_branch_target(repo: str) -> str:
 def classify_branch(repo: str, branch: str) -> BranchReport:
     """Classify ``branch`` in ``repo`` as synced, open PR, or orphan (unpushed / pushed)."""
     target = _origin_default_branch_target(repo)
-    classification = classify_branch_commits(repo, branch, target=target)
+    classification = prefilter_branch_commits_by_subject(repo, branch, target=target)
     ahead = len(classification.genuinely_ahead)
 
     if ahead == 0:

@@ -32,7 +32,7 @@ from teatree.cli.update import (
     _reinstall_and_resetup,
     update_repo,
 )
-from teatree.core.worktree.branch_classification import branch_content_upstream, content_equivalence_blockers
+from teatree.core.worktree.branch_classification import content_equivalence_blockers
 
 
 def _git(cwd: Path, *args: str) -> str:
@@ -979,7 +979,6 @@ class TestContentGateFailsSafe:
         blockers = content_equivalence_blockers(str(clone), "main", "origin/does-not-exist")
         assert blockers, "an inconclusive content probe must report a blocker, not an empty pass"
         assert "inconclusive" in blockers[0]
-        assert branch_content_upstream(str(clone), "main", "origin/does-not-exist") is False
 
 
 class TestRunCallback:
