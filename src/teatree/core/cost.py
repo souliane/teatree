@@ -252,6 +252,9 @@ ET_MODEL_MULTIPLIER: dict[str, float] = {
 # login state resolved (see ``teatree.agents.headless._resolve_dispatch_lane``).
 UNATTRIBUTED_LANE = "unattributed"
 
+# The phase bucket for a usage whose phase was never captured (#3157 E2d).
+UNATTRIBUTED_PHASE = "unattributed"
+
 
 @dataclass(frozen=True, slots=True)
 class AttemptUsage:
@@ -267,11 +270,27 @@ class AttemptUsage:
     # authenticated through, or ``""`` when the dispatch carried no explicit
     # Layer-2 pin (see ``TaskAttempt.Lane`` / ``UNATTRIBUTED_LANE``).
     lane: str = ""
+    # #3157 E5: whether ``reported_cost_usd`` is a price-table ESTIMATE rather than a
+    # real reported (CLI/SDK/router) figure. Threaded from ``TaskAttempt.cost_is_estimated``
+    # so ``t3 cost`` can flag estimated spend distinctly from vetted billed cost.
+    estimated: bool = False
+    # #3157 E2d: the normalized phase this attempt ran, so the cache-hit ratio can be
+    # split per phase. ``""`` when the phase was not captured (bucketed as unattributed).
+    phase: str = ""
 
     @property
     def effective_tokens(self) -> float:
         """GitHub's ET formula for this usage (souliane/teatree#657)."""
         return compute_effective_tokens(self)
+
+    @property
+    def cacheable_input_tokens(self) -> int:
+        """Every input token that was cacheable — served from cache, freshly written, or uncached.
+
+        The denominator of the cache-hit ratio (#3157 E2d): cache reads + cache writes +
+        uncached input. Zero when nothing was captured, so the ratio degrades to 0.0.
+        """
+        return self.cache_read_tokens + self.cache_write_tokens + self.input_tokens
 
 
 def compute_effective_tokens(usage: AttemptUsage) -> float:
@@ -314,6 +333,27 @@ def attempt_cost_usd(usage: AttemptUsage, *, overrides: Mapping[str, ModelPrice]
     return price_table_cost_usd(usage, overrides=overrides)
 
 
+class _CacheAccumulator:
+    """Accumulates cache reads vs cacheable input per key, to a hit-ratio map (#3157 E2d).
+
+    The cache-hit ratio is ``cache_read / (cache_read + cache_write + input)`` — the fraction
+    of cacheable input served from cache. Aggregated across a key's attempts (not averaged
+    per attempt) so a few large cached prefixes are weighted correctly; a key with no
+    cacheable input at all is omitted rather than reported as a misleading 0%.
+    """
+
+    def __init__(self) -> None:
+        self._reads: dict[str, int] = {}
+        self._cacheable: dict[str, int] = {}
+
+    def add(self, key: str, usage: "AttemptUsage") -> None:
+        self._reads[key] = self._reads.get(key, 0) + usage.cache_read_tokens
+        self._cacheable[key] = self._cacheable.get(key, 0) + usage.cacheable_input_tokens
+
+    def ratios(self) -> dict[str, float]:
+        return {key: self._reads[key] / cacheable for key, cacheable in self._cacheable.items() if cacheable > 0}
+
+
 @dataclass(frozen=True, slots=True)
 class CostBreakdown:
     """Cycle-to-date SDK-equivalent spend, totalled and split per tier and per Layer-2 lane."""
@@ -327,6 +367,13 @@ class CostBreakdown:
     effective_tokens_total: float = 0.0
     per_lane_usd: dict[str, float] = field(default_factory=dict)
     per_lane_effective_tokens: dict[str, float] = field(default_factory=dict)
+    # #3157 E5: how much of ``total_usd`` is a price-table ESTIMATE (vs a real reported
+    # figure), so ``t3 cost`` flags a factory's estimated spend distinctly.
+    estimated_usd: float = 0.0
+    # #3157 E2d: the cache-hit ratio (cache reads / cacheable input tokens) split per
+    # Layer-2 lane and per phase, so a broken cache (a lane/phase stuck at 0%) is visible.
+    per_lane_cache_hit_ratio: dict[str, float] = field(default_factory=dict)
+    per_phase_cache_hit_ratio: dict[str, float] = field(default_factory=dict)
 
     @classmethod
     def from_usages(cls, usages: Iterable[AttemptUsage]) -> "CostBreakdown":
@@ -336,7 +383,10 @@ class CostBreakdown:
         per_tier: dict[str, float] = {}
         per_lane_usd: dict[str, float] = {}
         per_lane_et: dict[str, float] = {}
+        lane_cache = _CacheAccumulator()
+        phase_cache = _CacheAccumulator()
         total = 0.0
+        estimated = 0.0
         et_total = 0.0
         count = 0
         for usage in usages:
@@ -347,7 +397,10 @@ class CostBreakdown:
             per_tier[tier] = per_tier.get(tier, 0.0) + cost
             per_lane_usd[lane] = per_lane_usd.get(lane, 0.0) + cost
             per_lane_et[lane] = per_lane_et.get(lane, 0.0) + et
+            lane_cache.add(lane, usage)
+            phase_cache.add(usage.phase or UNATTRIBUTED_PHASE, usage)
             total += cost
+            estimated += cost if usage.estimated else 0.0
             et_total += et
             count += 1
         return cls(
@@ -357,6 +410,9 @@ class CostBreakdown:
             effective_tokens_total=et_total,
             per_lane_usd=per_lane_usd,
             per_lane_effective_tokens=per_lane_et,
+            estimated_usd=estimated,
+            per_lane_cache_hit_ratio=lane_cache.ratios(),
+            per_phase_cache_hit_ratio=phase_cache.ratios(),
         )
 
 
@@ -484,11 +540,21 @@ class CostReport:
                     else ""
                 )
                 lines.append(f"    {tier}: ${amount:,.2f}{annotation}")
+        if self.breakdown.estimated_usd:
+            est = self.breakdown.estimated_usd
+            est_pct = (est / spent * 100) if spent else 0.0
+            lines.append(f"  estimated (price-table, not reported): ${est:,.2f} ({est_pct:.0f}% of spend)")
         if self.breakdown.per_lane_usd:
             lines.append("  per lane:")
             for lane, amount in sorted(self.breakdown.per_lane_usd.items(), key=lambda kv: -kv[1]):
                 et = self.breakdown.per_lane_effective_tokens.get(lane, 0.0)
-                lines.append(f"    {lane}: ${amount:,.2f} (ET {et:,.0f})")
+                hit = self.breakdown.per_lane_cache_hit_ratio.get(lane)
+                cache = f", cache-hit {hit * 100:.0f}%" if hit is not None else ""
+                lines.append(f"    {lane}: ${amount:,.2f} (ET {et:,.0f}{cache})")
+        if self.breakdown.per_phase_cache_hit_ratio:
+            lines.append("  cache-hit per phase:")
+            for phase, ratio in sorted(self.breakdown.per_phase_cache_hit_ratio.items(), key=lambda kv: -kv[1]):
+                lines.append(f"    {phase}: {ratio * 100:.0f}%")
         return lines
 
 

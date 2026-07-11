@@ -1,8 +1,9 @@
 """teatree.loops.worker — the singleton executor pool + supervisor (#1796).
 
 Pure supervision/lifecycle logic with injected collaborators — no real threads, DB,
-or clock. Verifies startup reconciliation, the pinned executor split (2 ``loops`` /
-2 ``default``), and that a kill-switch flip-off OR a stop signal tears the pool down.
+or clock. Verifies startup reconciliation, the executor split (2 ``loops`` + a
+host-scaled ``default`` pool floored at 2), and that a kill-switch flip-off OR a
+stop signal tears the pool down.
 """
 
 import contextlib
@@ -17,7 +18,15 @@ from django_tasks_db.models import DBTaskResult
 
 from teatree.core.tasks import refresh_followup_snapshot
 from teatree.loops import timer_chains
-from teatree.loops.worker import EXECUTOR_QUEUES, LoopWorker, WorkerSeams
+from teatree.loops import worker as worker_mod
+from teatree.loops.worker import (
+    DEFAULT_QUEUE_FLOOR,
+    LOOPS_EXECUTOR_COUNT,
+    LoopWorker,
+    WorkerSeams,
+    build_executor_queues,
+    default_queue_executor_count,
+)
 from teatree.utils.run import spawn_session_leader
 from teatree.utils.singleton import pid_alive
 
@@ -82,15 +91,32 @@ def test_reconciles_seeds_and_expires_before_starting_executors() -> None:
     # blind-fires the instant the worker starts (the default-ON flip's load-jam class).
     assert order[:3] == ["reconcile", "seed", "expire"]
     assert order[3] == "spawn"
-    assert order.count("spawn") == len(EXECUTOR_QUEUES)
+    assert order.count("spawn") == len(build_executor_queues())
 
 
-def test_pins_two_loops_and_two_default_executors() -> None:
+def test_default_queue_scales_with_host_cores(monkeypatch: pytest.MonkeyPatch) -> None:
+    # 4 default executors on a host whose shared PR-01 ceiling is 4 (an 8-core box).
+    monkeypatch.setattr(worker_mod, "default_provision_concurrency", lambda: 4)
+    assert default_queue_executor_count() == 4
+    queues = build_executor_queues()
+    assert queues.count("loops") == LOOPS_EXECUTOR_COUNT == 2
+    assert queues.count("default") == 4
+
+
+def test_default_queue_floored_at_two_on_a_small_host(monkeypatch: pytest.MonkeyPatch) -> None:
+    # A 1-2 core box floors at the prior hardcoded minimum, never below.
+    monkeypatch.setattr(worker_mod, "default_provision_concurrency", lambda: 1)
+    assert default_queue_executor_count() == DEFAULT_QUEUE_FLOOR == 2
+
+
+def test_pins_two_loops_and_host_scaled_default_executors(monkeypatch: pytest.MonkeyPatch) -> None:
+    # Patch BEFORE _make_worker so the WorkerSeams default_factory reads the host size.
+    monkeypatch.setattr(worker_mod, "default_provision_concurrency", lambda: 3)
     worker, built, _ = _make_worker(enabled=lambda: False, sleep=lambda _s: None)
     worker.run()
     queues = [executor.queue for executor in built]
     assert queues.count("loops") == 2
-    assert queues.count("default") == 2
+    assert queues.count("default") == 3
 
 
 def test_kill_switch_flip_off_stops_and_joins_all_executors() -> None:

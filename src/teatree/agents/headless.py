@@ -33,17 +33,11 @@ from django.utils import timezone
 
 from teatree.agents._headless_env import _overlay_scope, _provider_child_env
 from teatree.agents._headless_options import _build_options
-from teatree.agents.harness import (
-    ClaudeSdkHarness,
-    Harness,
-    HarnessSession,
-    PydanticAiHarness,
-    pydantic_ai_thread,
-    resolve_harness,
-)
+from teatree.agents.harness import Harness, HarnessSession, pydantic_ai_thread, resolve_harness
+from teatree.agents.harness_registry import UnknownHarnessError
 from teatree.agents.headless_budget import TicketBudget
 from teatree.agents.headless_usage import _attempt_usage
-from teatree.agents.pydantic_ai_resume import maybe_persist_on_park, persist_parked_thread
+from teatree.agents.pydantic_ai_resume import maybe_persist_on_park
 from teatree.agents.reader_profile import is_reader_phase, reader_child_env, reader_env_hermetic
 from teatree.agents.result_schema import RESULT_JSON_SCHEMA
 from teatree.agents.skill_bundle import resolve_skill_bundle
@@ -283,18 +277,19 @@ def run_headless(
 
 
 def _restore_unconsumed_resume_thread(harness: Harness) -> None:
-    """Re-persist a pydantic_ai resume thread popped but never actually driven.
+    """Re-persist a resume thread popped but never actually driven (souliane/teatree#2916).
 
-    ``resolve_harness`` pops a resumed pydantic_ai task's parked thread as a
-    side effect of BUILDING the harness — before ``harness.open()`` ever
-    runs, the only point OrcaRouter's credential resolves. When ``open()``
-    then fails, the popped thread would otherwise be silently and
-    irrecoverably lost even though the run never happened
-    (souliane/teatree#2916). A no-op for every other harness, and for a fresh
-    (non-resumed) pydantic_ai dispatch.
+    ``resolve_harness`` pops a resumed task's parked thread as a side effect of BUILDING the
+    harness — before ``harness.open()`` ever runs, the only point the credential resolves.
+    When ``open()`` then fails, the popped thread would otherwise be silently and irrecoverably
+    lost even though the run never happened. Polymorphic (#3157 E1): the harness's own restore
+    hook does the re-persist, so the driver never ``isinstance``-branches on the backend class.
+    A no-op for every harness with no client-side resume thread (and a 3rd-party one without
+    the hook).
     """
-    if isinstance(harness, PydanticAiHarness) and harness.resume_source is not None and harness.history:
-        persist_parked_thread(harness.resume_source, harness.history)
+    restore = getattr(harness, "restore_unconsumed_resume_thread", None)
+    if callable(restore):
+        restore()
 
 
 def _resolve_backend_or_failure(task: Task, *, phase: str = "") -> Harness | TaskAttempt:
@@ -312,7 +307,7 @@ def _resolve_backend_or_failure(task: Task, *, phase: str = "") -> Harness | Tas
     """
     try:
         return resolve_harness(task, phase=phase or None)
-    except NotImplementedError as exc:
+    except (NotImplementedError, UnknownHarnessError) as exc:
         return _record_failure(task, error=str(exc))
 
 
@@ -356,7 +351,7 @@ def _resolve_child_env_or_failure(
     provider base is built from (which would re-introduce every secret over the
     ``os.environ`` scrub). This is the suspenders to :func:`reader_env_hermetic`'s belt.
     """
-    if not isinstance(harness, ClaudeSdkHarness):
+    if not getattr(harness, "spawns_cli_child", False):
         return None
     # The SDK spawns the ``claude`` CLI child; keep the same provisioning gate
     # the ``claude -p`` runner used.
@@ -423,7 +418,7 @@ def _resolve_dispatch_lane(harness: Harness, provider: AgentHarnessProvider | No
     own login state resolves, which is unobservable here, so it stays
     unattributed (``""``) rather than guessing.
     """
-    if isinstance(harness, PydanticAiHarness):
+    if getattr(harness, "metered_lane", False):
         return TaskAttempt.Lane.METERED
     if provider is None:
         return ""

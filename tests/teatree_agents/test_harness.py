@@ -27,11 +27,11 @@ from pydantic_ai.models.test import TestModel
 
 import teatree.agents.harness as harness_mod
 import teatree.agents.headless as headless_mod
+import teatree.agents.pydantic_ai_config as pyconfig_mod
 from teatree.agents.harness import (
     ClaudeSdkHarness,
     Harness,
     HarnessSession,
-    OrcaLaneConfig,
     PydanticAiHarness,
     PydanticAiHarnessSession,
     _extract_system_prompt,
@@ -40,6 +40,14 @@ from teatree.agents.harness import (
     resolve_harness,
 )
 from teatree.agents.headless import LoopWatchdog, TaskUsage, _build_options, _drive_with_heartbeat, run_headless
+from teatree.agents.pydantic_ai_config import (
+    LANE_BULK,
+    LANE_EVAL,
+    LANE_FACTORY,
+    OrcaLaneConfig,
+    PydanticAiModelConfig,
+    build_orca_provider,
+)
 from teatree.config import get_effective_settings
 from teatree.core.models import ConfigSetting, Session, Task, TaskAttempt, Ticket
 from teatree.llm.credentials import CredentialError, OrcaRouterProviderConfig
@@ -683,18 +691,18 @@ class TestBuildOrcaProvider(TestCase):
         monkeypatch.setenv("ORCA_ROUTER_API_KEY", "sk-orca-test")
 
     def test_factory_lane_rides_the_x_lane_header(self) -> None:
-        provider = harness_mod._build_orca_provider(lane=harness_mod.LANE_FACTORY)
+        provider = build_orca_provider(lane=LANE_FACTORY)
         assert provider.client.default_headers["x-lane"] == "factory"
         assert str(provider.client.base_url).rstrip("/") == "https://api.orcarouter.ai/v1"
 
     def test_eval_lane_rides_the_x_lane_header(self) -> None:
-        provider = harness_mod._build_orca_provider(lane=harness_mod.LANE_EVAL)
+        provider = build_orca_provider(lane=LANE_EVAL)
         assert provider.client.default_headers["x-lane"] == "eval"
 
     def test_bulk_lane_rides_the_x_lane_header(self) -> None:
         # A secondary overlay's cheap bulk-leg lane: a router DSL rule keys on
         # ``headers["x-lane"] == "bulk"``.
-        provider = harness_mod._build_orca_provider(lane=harness_mod.LANE_BULK)
+        provider = build_orca_provider(lane=LANE_BULK)
         assert provider.client.default_headers["x-lane"] == "bulk"
 
     def _capture_pass_path(self, pass_path: str | None) -> str:
@@ -704,8 +712,8 @@ class TestBuildOrcaProvider(TestCase):
             captured["path"] = credential._effective_spec().pass_path
             return OrcaRouterProviderConfig(api_key="sk", base_url="https://api.orcarouter.ai/v1")
 
-        with patch.object(harness_mod, "resolve_orca_router_provider_config", _spy):
-            harness_mod._build_orca_provider(lane=harness_mod.LANE_FACTORY, pass_path=pass_path)
+        with patch.object(pyconfig_mod, "resolve_orca_router_provider_config", _spy):
+            build_orca_provider(lane=LANE_FACTORY, pass_path=pass_path)
         return captured["path"]
 
     def test_configured_pass_path_is_injected_into_the_credential(self) -> None:
@@ -745,7 +753,9 @@ class TestPydanticAiStepCap(TestCase):
         assert harness._orca.request_limit == 3
 
     def test_open_threads_the_request_limit_into_the_session(self) -> None:
-        harness = PydanticAiHarness(model=TestModel(), orca=OrcaLaneConfig(request_limit=4))
+        harness = PydanticAiHarness(
+            model=TestModel(), config=PydanticAiModelConfig(orca=OrcaLaneConfig(request_limit=4))
+        )
 
         async def drive() -> int | None:
             async with harness.open(ClaudeAgentOptions()) as session:
@@ -804,7 +814,9 @@ class TestOrcaRouterLaneAndRouterNameCallSite(TestCase):
     def test_router_name_config_threads_into_the_resolved_model(self) -> None:
         # The secondary-router selection: an overlay pointing at its own named router
         # resolves the handle, driven by config — not hardcoded to teatree-factory.
-        harness = PydanticAiHarness(orca=OrcaLaneConfig(router_name="orcarouter/secondary-factory"))
+        harness = PydanticAiHarness(
+            config=PydanticAiModelConfig(orca=OrcaLaneConfig(router_name="orcarouter/secondary-factory"))
+        )
         model = harness._resolve_model(ClaudeAgentOptions(model="claude-opus-4-8"))
         assert model.model_name == "orcarouter/secondary-factory"
 
@@ -832,7 +844,9 @@ class TestOrcaRouterLaneAndRouterNameCallSite(TestCase):
         # (a): with OrcaRouter configured, one call binds base_url + key + router
         # handle + x-lane for the right lane — a whole binding, not a half-swap.
         harness = PydanticAiHarness(
-            orca=OrcaLaneConfig(lane=harness_mod.LANE_BULK, router_name="orcarouter/secondary-factory")
+            config=PydanticAiModelConfig(
+                orca=OrcaLaneConfig(lane=LANE_BULK, router_name="orcarouter/secondary-factory")
+            )
         )
         model = harness._resolve_model(ClaudeAgentOptions(model="claude-opus-4-8"))
         assert model.model_name == "orcarouter/secondary-factory"
@@ -868,7 +882,7 @@ class TestOrcaRouterInertByDefault(TestCase):
     def test_building_the_default_harness_makes_no_orca_credential_call(self) -> None:
         # Selecting the default backend must not itself resolve an OrcaRouter
         # credential/base-url — proves the DARK feature stays inert with no key set.
-        with patch.object(harness_mod, "resolve_orca_router_provider_config") as spy:
+        with patch.object(pyconfig_mod, "resolve_orca_router_provider_config") as spy:
             harness = resolve_harness(phase="coding")
         assert isinstance(harness, ClaudeSdkHarness)
         spy.assert_not_called()
@@ -891,7 +905,7 @@ class TestOrcaInertByDefault(TestCase):
                 assert isinstance(resolve_harness(phase=phase), ClaudeSdkHarness)
 
     def test_orca_credential_is_never_resolved_on_the_default_path(self) -> None:
-        with patch.object(harness_mod, "resolve_orca_router_provider_config") as resolve_orca:
+        with patch.object(pyconfig_mod, "resolve_orca_router_provider_config") as resolve_orca:
             harness = resolve_harness(phase="coding")
             assert isinstance(harness, ClaudeSdkHarness)
         resolve_orca.assert_not_called()

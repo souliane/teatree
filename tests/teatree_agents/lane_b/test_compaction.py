@@ -1,3 +1,4 @@
+import pytest
 from pydantic_ai.messages import (
     ModelMessage,
     ModelRequest,
@@ -9,7 +10,8 @@ from pydantic_ai.messages import (
     UserPromptPart,
 )
 
-from teatree.agents.lane_b.compaction import compact_history
+from teatree.agents.lane_b import compaction as compaction_mod
+from teatree.agents.lane_b.compaction import DEFAULT_KEEP_RECENT, CompactionPolicy, compact_history
 
 
 def _msgs(n: int) -> list:
@@ -122,3 +124,45 @@ class TestToolPairingPreserved:
         compacted = compact_history(history, keep_recent=len(history) - 5)
 
         assert _orphaned_return_ids(compacted) == []
+
+
+class TestCompactionPolicy:
+    """The context-compaction policy object replacing the hardcoded trim (#3157 E2c)."""
+
+    def test_default_policy_is_byte_identical_to_the_bare_keep_recent(self) -> None:
+        history = _msgs(DEFAULT_KEEP_RECENT + 10)
+        via_policy = compact_history(history, policy=CompactionPolicy())
+        via_default = compact_history(history)
+        assert via_policy == via_default
+
+    def test_policy_keep_recent_supersedes_the_bare_argument(self) -> None:
+        history = _msgs(20)
+        compacted = compact_history(history, keep_recent=15, policy=CompactionPolicy(keep_recent=4))
+        # keep_recent=4 wins → head + last 4 = 5 messages (no orphan trims here).
+        assert len(compacted) == 5
+
+    def test_pin_head_false_drops_the_first_message(self) -> None:
+        history = _msgs(20)
+        compacted = compact_history(history, policy=CompactionPolicy(keep_recent=4, pin_head=False))
+        assert history[0] not in compacted
+        assert len(compacted) == 4
+
+    def test_for_phase_reads_the_db_override(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(
+            compaction_mod.cold_reader,
+            "read_setting",
+            lambda key: {"coding": 12} if key == "agent_compaction_keep_recent" else None,
+        )
+        assert CompactionPolicy.for_phase("coding").keep_recent == 12
+        # A phase with no override, and an absent phase, both fall back to the default.
+        assert CompactionPolicy.for_phase("reviewing").keep_recent == DEFAULT_KEEP_RECENT
+        assert CompactionPolicy.for_phase(None).keep_recent == DEFAULT_KEEP_RECENT
+
+    def test_for_phase_ignores_a_non_integer_override(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(
+            compaction_mod.cold_reader,
+            "read_setting",
+            lambda key: {"coding": "lots", "testing": 0, "shipping": True},
+        )
+        for phase in ("coding", "testing", "shipping"):
+            assert CompactionPolicy.for_phase(phase).keep_recent == DEFAULT_KEEP_RECENT

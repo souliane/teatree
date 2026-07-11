@@ -36,8 +36,10 @@ from pydantic_ai.providers.openai import OpenAIProvider
 from pydantic_ai.settings import ModelSettings
 from pydantic_ai.toolsets import FunctionToolset
 
-from teatree.agents.harness import LANE_EVAL, OrcaLaneConfig, PydanticAiHarnessSession, resolve_effort
+from teatree.agents.harness import resolve_effort
 from teatree.agents.model_tiering import resolve_pydantic_ai_model
+from teatree.agents.pydantic_ai_config import LANE_EVAL, OrcaLaneConfig
+from teatree.agents.pydantic_ai_session import PydanticAiHarnessSession
 from teatree.agents.regulated_path import assert_model_allowed_on_regulated_path
 from teatree.config import get_effective_settings
 from teatree.eval.api_runner import load_agent_definition, resolve_watchdog_seconds

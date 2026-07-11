@@ -103,7 +103,10 @@ class AgentHarness(StrEnum):
 
         Mirrors :meth:`Mode.parse`: the conservative default
         (:attr:`CLAUDE_SDK`) is applied by the caller when the setting is
-        absent, so a typo never silently switches the transport.
+        absent, so a typo never silently switches the transport. This is the
+        strict BUILT-IN parser (a member of this two-value enum); the OPEN
+        ``agent_harness`` setting is parsed by :func:`parse_harness_name`, which
+        also admits an overlay-registered harness name.
         """
         normalised = value.strip().lower()
         try:
@@ -112,6 +115,31 @@ class AgentHarness(StrEnum):
             valid = ", ".join(m.value for m in cls)
             msg = f"Invalid agent_harness {value!r}; valid values: {valid}"
             raise ValueError(msg) from exc
+
+
+def parse_harness_name(value: str) -> str:
+    """Parse the OPEN ``agent_harness`` setting to a harness registry key (#3157 E1).
+
+    The backend set is no longer closed to the two :class:`AgentHarness` members: an
+    overlay registers a third transport under the ``teatree.harnesses`` entry-point group
+    (:mod:`teatree.agents.harness_registry`), so this setting must admit any registered
+    name, not only the built-in enum. A BUILT-IN name resolves to its :class:`AgentHarness`
+    member (a ``StrEnum``, so byte-identical to before for every existing consumer); an
+    overlay name returns the plain normalised string. The config layer cannot import the
+    agents-layer registry (that would be a backwards dependency edge), so an unregistered
+    overlay name is NOT rejected here — it surfaces as a LOUD
+    :class:`~teatree.agents.harness_registry.UnknownHarnessError` at dispatch resolution
+    rather than a silent wrong transport. An empty value is still rejected here so a blank
+    row never resolves to a nameless backend.
+    """
+    normalised = value.strip().lower()
+    if not normalised:
+        msg = "Invalid agent_harness: must be a non-empty harness name"
+        raise ValueError(msg)
+    try:
+        return AgentHarness(normalised)
+    except ValueError:
+        return normalised
 
 
 class AgentHarnessProvider(StrEnum):
@@ -128,6 +156,7 @@ class AgentHarnessProvider(StrEnum):
     | ``claude_sdk``                | ``subscription_oauth``    | ``AnthropicSubscriptionCredential``     |
     | ``claude_sdk``                | ``api_key``               | ``AnthropicApiKeyCredential``           |
     | ``pydantic_ai``               | ``orca_router_byok``      | ``OrcaRouterCredential``                |
+    | ``pydantic_ai``               | ``anthropic_api``         | ``AnthropicApiKeyCredential``           |
 
     A Vertex AI Layer-2 provider under ``pydantic_ai`` is reserved but not yet
     implemented (see ``OrcaRouterCredential``'s docstring), so it carries no enum
@@ -143,12 +172,15 @@ class AgentHarnessProvider(StrEnum):
         Valid only under ``agent_harness=claude_sdk``.
     *   :attr:`ORCA_ROUTER_BYOK` — OrcaRouter's BYOK metered key
         (:class:`~teatree.llm.credentials.OrcaRouterCredential`).
-        Valid only under ``agent_harness=pydantic_ai`` — it is the ONLY Layer-2
-        provider a ``pydantic_ai`` run has today, so
-        :class:`~teatree.agents.harness.PydanticAiHarness` does not yet branch on
-        this setting (there is nothing else to pick); it ships wired for the
-        constraint table and a future Vertex binding, not yet as an active
-        branch.
+        Valid only under ``agent_harness=pydantic_ai`` — the OpenAI-compatible
+        router binding, where prompt-cache semantics are opaque.
+    *   :attr:`ANTHROPIC_API` — the metered Anthropic API key
+        (:class:`~teatree.llm.credentials.AnthropicApiKeyCredential`), driving the
+        NATIVE Anthropic Messages-API binding on the ``pydantic_ai`` lane
+        ([#3157](https://github.com/souliane/teatree/issues/3157) E1b): a direct
+        ``pydantic_ai`` Anthropic model instead of the OpenAI-compatible router
+        client, so real ``cache_control`` breakpoints are reachable. Valid only
+        under ``agent_harness=pydantic_ai``.
 
     ``agent_harness_provider`` is a DB-home setting: opt in via ``t3 <overlay>
     config_setting set agent_harness_provider api_key`` (per-overlay overridable
@@ -160,6 +192,7 @@ class AgentHarnessProvider(StrEnum):
     SUBSCRIPTION_OAUTH = "subscription_oauth"
     API_KEY = "api_key"
     ORCA_ROUTER_BYOK = "orca_router_byok"
+    ANTHROPIC_API = "anthropic_api"
 
     @classmethod
     def parse(cls, value: str) -> "AgentHarnessProvider":
@@ -185,7 +218,7 @@ class AgentHarnessProvider(StrEnum):
 
 _VALID_PROVIDERS_BY_HARNESS: dict[AgentHarness, frozenset[AgentHarnessProvider]] = {
     AgentHarness.CLAUDE_SDK: frozenset({AgentHarnessProvider.SUBSCRIPTION_OAUTH, AgentHarnessProvider.API_KEY}),
-    AgentHarness.PYDANTIC_AI: frozenset({AgentHarnessProvider.ORCA_ROUTER_BYOK}),
+    AgentHarness.PYDANTIC_AI: frozenset({AgentHarnessProvider.ORCA_ROUTER_BYOK, AgentHarnessProvider.ANTHROPIC_API}),
 }
 
 

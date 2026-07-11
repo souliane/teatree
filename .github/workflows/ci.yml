@@ -516,6 +516,14 @@ jobs:
       # combiner can prove the shards partition the suite exactly once
       # (`--group shard` installs pytest-split; PYTHONPATH=/app makes the
       # `-p scripts.ci.shard_stats_plugin` import resolve at plugin-load time).
+      # `--splitting-algorithm least_duration` bin-packs the recorded durations
+      # tighter than the default chunk split (#3160). `leak_sentinel_plugin` runs
+      # WARN-ONLY here so a process-global env/cwd polluter is NAMED suite-wide
+      # (across the four shards) without ever failing the required context —
+      # the #3160 rollout mode. On the daily `schedule` only, `--store-durations
+      # --clean-durations` records THIS shard's fresh, tests-that-ran durations
+      # (each group's clean slice) for the `refresh-durations` merge job below;
+      # PR/push runs never pay the store write.
       - name: Test shard ${{ matrix.group }}/4 (coverage, no floor — partial data)
         run: >
           docker run --rm
@@ -528,8 +536,11 @@ jobs:
           -o cache_dir=/tmp/.pytest_cache
           --doctest-modules --cov --cov-branch --cov-report= --cov-fail-under=0
           --splits 4 --group ${{ matrix.group }} --durations-path dev/.test_durations
+          --splitting-algorithm least_duration
           -p scripts.ci.shard_stats_plugin
           --shard-stats-out=/app/shard-stats.${{ matrix.group }}.json
+          -p scripts.ci.leak_sentinel_plugin --leak-sentinel=warn
+          ${{ github.event_name == 'schedule' && '--store-durations --clean-durations' || '' }}
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7
         if: always()
         with:
@@ -537,6 +548,77 @@ jobs:
           path: |
             coverage.shard${{ matrix.group }}
             shard-stats.${{ matrix.group }}.json
+      # Scheduled run only: the fresh durations this shard just recorded, so the
+      # `refresh-durations` job can merge the four groups into one balanced file.
+      - name: Upload this shard's recorded durations (scheduled refresh source)
+        if: github.event_name == 'schedule'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7
+        with:
+          name: durations-shard-${{ matrix.group }}
+          path: dev/.test_durations
+
+  # MAINTENANCE (scheduled only): keep `dev/.test_durations` from rotting (#3160).
+  # The four shards on the daily cron each recorded their group's fresh, clean
+  # durations (`--store-durations --clean-durations` above, including the
+  # previously-unrecorded `tests/quality` + doctest items). This job unions them
+  # back into one complete file and, ONLY when the drift gate fires (test set
+  # changed, or aggregate per-test time moved past the threshold — never on pure
+  # jitter), opens/updates a single dated refresh PR a human reviews and merges.
+  # Never gates a PR; a merge failure or empty diff is a no-op.
+  refresh-durations:
+    needs: test-shard
+    if: github.event_name == 'schedule' && needs.test-shard.result == 'success'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
+        with:
+          fetch-depth: 0
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8.0.1
+        with:
+          pattern: durations-shard-*
+          path: /tmp/durations-shards
+      - uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78  # v7
+        with:
+          enable-cache: true
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405  # v6
+        with:
+          python-version: "3.13"
+      - name: Merge shard durations and decide whether to refresh
+        id: merge
+        run: >
+          uv run -p 3.13 python scripts/ci/durations_refresh.py
+          dev/.test_durations
+          /tmp/durations-shards/durations-shard-1/.test_durations
+          /tmp/durations-shards/durations-shard-2/.test_durations
+          /tmp/durations-shards/durations-shard-3/.test_durations
+          /tmp/durations-shards/durations-shard-4/.test_durations
+      - name: Open or update the durations-refresh PR
+        if: steps.merge.outputs.refresh == 'true' && !cancelled()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          if git diff --quiet dev/.test_durations; then
+            echo "No net change to dev/.test_durations — nothing to open."
+            exit 0
+          fi
+          BRANCH="chore/refresh-test-durations-$(date +%Y-%m-%d)"
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git checkout -B "$BRANCH"
+          git add dev/.test_durations
+          git commit -m "chore(ci): refresh dev/.test_durations from the shard lane (#3160)"
+          git push --force-with-lease origin "$BRANCH"
+          if ! gh pr view "$BRANCH" --json number -q .number 2>/dev/null; then
+            gh pr create \
+              --title "chore(ci): refresh test shard durations" \
+              --body "Automated refresh of \`dev/.test_durations\`, recorded from the CI shard lane on the daily scheduled run (with \`--doctest-modules\`, so \`tests/quality\` and doctest items are now measured). Rebalances the pytest-split shards; the combiner's exact-partition assertion and 93% floor are unchanged. Review and merge when green." \
+              --base main \
+              --label "ci"
+          fi
 
   # GATE (heavy lane): the COMBINER. Its job key + matrix produce the EXACT
   # required `test (3.13)` check context (unchanged from the old monolithic job).
@@ -683,7 +765,12 @@ jobs:
     # SEEDS: 7 is the recorded reproducer (it red'd 27 ``tests/teatree_loop/``
     # tests on the pre-fix code); the others widen the order coverage. ``-n0`` is
     # serial so a single in-process collection order is exercised end to end
-    # (xdist would isolate the polluter from the victim across workers).
+    # (xdist would isolate the polluter from the victim across workers). The four
+    # seeds are MATRIXED (was a serial ~11-min for-loop) so each runs as its own
+    # ~2.5-min parallel job — the failure-wave latency when shuffle is the slowest
+    # lane drops accordingly (#3160). `leak_sentinel_plugin` runs WARN-ONLY so a
+    # process-global env/cwd polluter is NAMED (not just its downstream victim)
+    # without failing the lane during the #3160 rollout week.
     #
     # Heavy lane: PR-only AND skipped on a provably pure-docs diff
     # (preflight ``run_heavy_python=false``); any non-pure-docs PR runs it.
@@ -698,6 +785,7 @@ jobs:
       fail-fast: false
       matrix:
         python-version: ["3.13"]
+        seed: [7, 1, 13, 100]
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
       - uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78  # v7
@@ -707,15 +795,12 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
       - run: uv sync --group shuffle
-      - name: Run the order-fragile loop subset under shuffled collection
-        run: |
-          set -euo pipefail
-          for seed in 7 1 13 100; do
-            echo "::group::pytest-randomly seed=$seed"
-            uv run -p ${{ matrix.python-version }} pytest -n0 -q -p randomly \
-              --randomly-seed="$seed" tests/teatree_loop/
-            echo "::endgroup::"
-          done
+      - name: Run the order-fragile loop subset under shuffled collection (seed ${{ matrix.seed }})
+        run: >
+          uv run -p ${{ matrix.python-version }} pytest -n0 -q -p randomly
+          --randomly-seed=${{ matrix.seed }}
+          -p scripts.ci.leak_sentinel_plugin --leak-sentinel=warn
+          tests/teatree_loop/
 
   # ── 6. Architecture / quality fitness gates ────────────────────────────────
 

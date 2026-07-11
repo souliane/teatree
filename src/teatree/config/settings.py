@@ -12,7 +12,13 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from teatree.config.agent_enums import AgentHarness, AgentHarnessProvider, AgentRuntime, EvalCredential
+from teatree.config.agent_enums import (
+    AgentHarness,
+    AgentHarnessProvider,
+    AgentRuntime,
+    EvalCredential,
+    parse_harness_name,
+)
 from teatree.config.enums import (
     Autonomy,
     CriticGateMode,
@@ -73,7 +79,7 @@ OVERLAY_OVERRIDABLE_SETTINGS: dict[str, Callable[[Any], Any]] = {
     "autonomy": Autonomy.parse,
     "wip": Wip.parse,
     "agent_runtime": AgentRuntime.parse,
-    "agent_harness": AgentHarness.parse,
+    "agent_harness": parse_harness_name,
     "agent_harness_provider": AgentHarnessProvider.parse,
     "enforce_regulated_path": _parse_strict_bool,
     "regulated_path_model_allowlist": _parse_str_list,
@@ -313,7 +319,7 @@ ENV_SETTING_OVERRIDES: dict[str, tuple[str, Callable[[str], Any]]] = {
     "T3_MODE": ("mode", Mode.parse),
     "T3_WIP": ("wip", Wip.parse),
     "T3_AGENT_RUNTIME": ("agent_runtime", AgentRuntime.parse),
-    "T3_AGENT_HARNESS": ("agent_harness", AgentHarness.parse),
+    "T3_AGENT_HARNESS": ("agent_harness", parse_harness_name),
     "T3_AGENT_HARNESS_PROVIDER": ("agent_harness_provider", AgentHarnessProvider.parse),
     "T3_ENFORCE_REGULATED_PATH": ("enforce_regulated_path", _parse_env_bool),
     "T3_ORCA_ROUTER_LANE": ("orca_router_lane", str),
@@ -401,9 +407,13 @@ class UserSettings:
     # this picks the transport that opens the agent session behind the
     # ``teatree.agents.harness.Harness`` protocol. ``claude_sdk`` (default, today's
     # behaviour) is the ``claude-agent-sdk`` backend; ``pydantic_ai`` (#2885) is the
-    # OrcaRouter-BYOK, OpenAI-compatible backend. Per-overlay overridable;
-    # ``T3_AGENT_HARNESS`` env wins.
-    agent_harness: AgentHarness = AgentHarness.CLAUDE_SDK
+    # OrcaRouter-BYOK, OpenAI-compatible backend. The backend set is OPEN (#3157 E1):
+    # this is a registry KEY, not a closed enum — an overlay registers a third
+    # transport under the ``teatree.harnesses`` entry-point group and selects it here
+    # by name (an unregistered name fails LOUD at dispatch, not at config parse). The
+    # built-in ``AgentHarness`` values remain the two shipped keys. Per-overlay
+    # overridable; ``T3_AGENT_HARNESS`` env wins.
+    agent_harness: str = AgentHarness.CLAUDE_SDK
     # Layer 2 of the two-layer harness config model (#2887): the provider/
     # credential a headless run authenticates with, CONSTRAINED by Layer 1
     # (``AgentHarnessProvider.valid_for(agent_harness)`` — see the enum

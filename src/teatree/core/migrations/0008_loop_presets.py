@@ -6,7 +6,7 @@ from django.db import migrations, models
 
 class Migration(migrations.Migration):
     dependencies = [
-        ("core", "0005_taskattempt_outcome"),
+        ("core", "0007_taskattempt_cost_is_estimated"),
     ]
 
     operations = [

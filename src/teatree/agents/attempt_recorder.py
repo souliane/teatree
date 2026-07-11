@@ -70,6 +70,10 @@ class AttemptUsage:
     # souliane/teatree#657: the Layer-2 lane (``TaskAttempt.Lane``) this
     # attempt's credential authenticated through, or ``""`` when unattributed.
     lane: str = ""
+    # #3157 E5: whether ``cost_usd`` is a price-table ESTIMATE (True) rather than a real
+    # reported (CLI/SDK/metered-router) figure. Default True so a recorder path that does
+    # not compute a reported cost is flagged conservatively as an estimate.
+    cost_is_estimated: bool = True
 
 
 class ResultEnvelopeError(ValueError):
@@ -167,6 +171,7 @@ def record_result_envelope(
         cost_usd=usage.cost_usd,
         num_turns=usage.num_turns,
         lane=usage.lane,
+        cost_is_estimated=usage.cost_is_estimated,
     )
     task.complete(result_artifact_path="")
     return attempt
