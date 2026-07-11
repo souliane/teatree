@@ -55,12 +55,15 @@ def build_live_validator() -> LiveValidator:
     This is the OPT-IN path — ``t3 dream run --full`` supplies it; the nightly
     ``tick`` does NOT (it withholds, so nothing auto-lands without a metered check).
     """
-    from teatree.eval.api_runner import ApiInProcessRunner  # noqa: PLC0415
+    from teatree.eval.api_runner import (  # noqa: PLC0415 — lazy: the eval harness is imported only on the opt-in metered path, keeping the dream loop's import chain free of the SDK runner otherwise.
+        ApiInProcessRunner,
+        ApiRunnerParams,
+    )
     from teatree.eval.pass_at_k import run_pass_at_k  # noqa: PLC0415
     from teatree.eval.report import evaluate as evaluate_run  # noqa: PLC0415
 
     def _validate(spec: EvalSpec, *, trials: int, require: str) -> bool:
-        runner = ApiInProcessRunner(require_executed=True)
+        runner = ApiInProcessRunner(ApiRunnerParams(require_executed=True))
         return run_pass_at_k(spec, lambda s: evaluate_run(s, runner.run(s)), k=trials, require=require).ok
 
     return _validate

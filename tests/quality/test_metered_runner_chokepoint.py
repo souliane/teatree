@@ -101,8 +101,8 @@ class TestMeteredRunnerChokepoint:
     def test_predicate_catches_a_bare_construction(self, tmp_path: Path) -> None:
         bait = tmp_path / "bait.py"
         bait.write_text(
-            "from teatree.eval.api_runner import ApiInProcessRunner\n"
-            "runner = ApiInProcessRunner(max_turns_override=None)\n",
+            "from teatree.eval.api_runner import ApiInProcessRunner, ApiRunnerParams\n"
+            "runner = ApiInProcessRunner(ApiRunnerParams(require_executed=True))\n",
             encoding="utf-8",
         )
         assert _constructs_runner(bait)
@@ -110,8 +110,8 @@ class TestMeteredRunnerChokepoint:
     def test_predicate_ignores_make_runner_routing(self, tmp_path: Path) -> None:
         clean = tmp_path / "clean.py"
         clean.write_text(
-            "from teatree.eval.backends import API_BACKEND, make_runner\n"
-            "runner = make_runner(API_BACKEND, max_turns_override=None)\n",
+            "from teatree.eval.backends import API_BACKEND, ApiRunnerParams, make_runner\n"
+            "runner = make_runner(API_BACKEND, ApiRunnerParams(require_executed=True))\n",
             encoding="utf-8",
         )
         assert not _constructs_runner(clean)
