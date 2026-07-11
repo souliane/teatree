@@ -1,0 +1,42 @@
+{% extends "dash/base.html" %}
+{% block title %}Board{% endblock %}
+{% block content %}
+  <form class="dash-filters" method="get" action="{% url 'dash:board' %}">
+    <input type="text" name="text" value="{{ filters.text }}" placeholder="search #/description">
+    <input type="text" name="overlay" value="{{ filters.overlay }}" placeholder="overlay">
+    <select name="role">
+      <option value="">any role</option>
+      <option value="author" {% if filters.role == "author" %}selected{% endif %}>author</option>
+      <option value="reviewer" {% if filters.role == "reviewer" %}selected{% endif %}>reviewer</option>
+    </select>
+    <select name="kind">
+      <option value="">any kind</option>
+      <option value="feature" {% if filters.kind == "feature" %}selected{% endif %}>feature</option>
+      <option value="fix" {% if filters.kind == "fix" %}selected{% endif %}>fix</option>
+    </select>
+    <label><input type="checkbox" name="ignored" value="1" {% if filters.include_ignored %}checked{% endif %}> ignored</label>
+    <button class="dash-btn" type="submit">filter</button>
+  </form>
+
+  <div id="board"
+    hx-get="{% url 'dash:board_columns' %}?text={{ filters.text }}&overlay={{ filters.overlay }}&role={{ filters.role }}&kind={{ filters.kind }}{% if filters.include_ignored %}&ignored=1{% endif %}"
+    hx-trigger="every 4s"
+    hx-swap="innerHTML">
+    {% include "dash/partials/_columns.html" %}
+  </div>
+
+  <div id="drawer"></div>
+{% endblock %}
+{% block extra_js %}
+  {% load static %}
+  <script src="{% static 'dash/js/mermaid-11.min.js' %}"></script>
+  <script>
+    mermaid.initialize({ startOnLoad: false, theme: "dark" });
+    // Re-render the lifecycle diagram each time the drawer swaps in fresh markup.
+    document.body.addEventListener("htmx:afterSwap", function (evt) {
+      if (evt.target.id === "drawer") {
+        mermaid.run({ nodes: evt.target.querySelectorAll(".mermaid") });
+      }
+    });
+  </script>
+{% endblock %}

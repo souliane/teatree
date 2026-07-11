@@ -1,6 +1,7 @@
 SECRET_KEY = "teatree-tests"
 USE_TZ = True
 ROOT_URLCONF = "teatree.urls"
+STATIC_URL = "/static/"
 
 DATABASES = {
     "default": {
@@ -22,6 +23,7 @@ INSTALLED_APPS = [
     "teatree.core",
     "teatree.agents",
     "teatree.backends",
+    "teatree.dash",
     "teatree.contrib.t3_teatree",
 ]
 

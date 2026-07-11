@@ -1,0 +1,159 @@
+
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>TeaTree · Board</title>
+  <link rel="stylesheet" href="/static/dash/css/dash.css">
+  <script src="/static/dash/js/htmx-2.0.4.min.js" defer></script>
+</head>
+<body hx-headers='{"X-CSRFToken": "CSRF"}'>
+  <header class="dash-header">
+    <span class="dash-brand">TeaTree</span>
+    <nav class="dash-nav">
+
+        <a href="/dash/board/" class="active">Board</a>
+
+        <a href="/dash/health/" class="">Health</a>
+
+        <a href="/dash/loops/" class="">Loops</a>
+
+    </nav>
+  </header>
+  <main class="dash-main">
+
+  <form class="dash-filters" method="get" action="/dash/board/">
+    <input type="text" name="text" value="" placeholder="search #/description">
+    <input type="text" name="overlay" value="" placeholder="overlay">
+    <select name="role">
+      <option value="">any role</option>
+      <option value="author" >author</option>
+      <option value="reviewer" >reviewer</option>
+    </select>
+    <select name="kind">
+      <option value="">any kind</option>
+      <option value="feature" >feature</option>
+      <option value="fix" >fix</option>
+    </select>
+    <label><input type="checkbox" name="ignored" value="1" > ignored</label>
+    <button class="dash-btn" type="submit">filter</button>
+  </form>
+
+  <div id="board"
+    hx-get="/dash/board/columns/?text=&overlay=&role=&kind="
+    hx-trigger="every 4s"
+    hx-swap="innerHTML">
+    <div class="kanban-groups">
+
+    <section class="kanban-group">
+      <h2>Backlog</h2>
+      <div class="kanban-columns">
+
+          <div class="kanban-column" data-state="not_started">
+            <h3><span>Not started</span><span class="count">0</span></h3>
+
+          </div>
+
+          <div class="kanban-column" data-state="scoped">
+            <h3><span>Scoped</span><span class="count">0</span></h3>
+
+          </div>
+
+      </div>
+    </section>
+
+    <section class="kanban-group">
+      <h2>Building</h2>
+      <div class="kanban-columns">
+
+          <div class="kanban-column" data-state="started">
+            <h3><span>Started</span><span class="count">0</span></h3>
+
+          </div>
+
+          <div class="kanban-column" data-state="planned">
+            <h3><span>Planned</span><span class="count">0</span></h3>
+
+          </div>
+
+          <div class="kanban-column" data-state="coded">
+            <h3><span>Coded</span><span class="count">0</span></h3>
+
+          </div>
+
+          <div class="kanban-column" data-state="tested">
+            <h3><span>Tested</span><span class="count">0</span></h3>
+
+          </div>
+
+      </div>
+    </section>
+
+    <section class="kanban-group">
+      <h2>Reviewing</h2>
+      <div class="kanban-columns">
+
+          <div class="kanban-column" data-state="reviewed">
+            <h3><span>Reviewed</span><span class="count">0</span></h3>
+
+          </div>
+
+          <div class="kanban-column" data-state="shipped">
+            <h3><span>Shipped</span><span class="count">0</span></h3>
+
+          </div>
+
+          <div class="kanban-column" data-state="in_review">
+            <h3><span>In review</span><span class="count">0</span></h3>
+
+          </div>
+
+      </div>
+    </section>
+
+    <section class="kanban-group">
+      <h2>Landed</h2>
+      <div class="kanban-columns">
+
+          <div class="kanban-column" data-state="merged">
+            <h3><span>Merged</span><span class="count">0</span></h3>
+
+          </div>
+
+          <div class="kanban-column" data-state="retrospected">
+            <h3><span>Retrospected</span><span class="count">0</span></h3>
+
+          </div>
+
+          <div class="kanban-column" data-state="delivered">
+            <h3><span>Delivered</span><span class="count">0</span></h3>
+
+          </div>
+
+      </div>
+    </section>
+
+
+</div>
+
+  </div>
+
+  <div id="drawer"></div>
+
+  </main>
+
+
+  <script src="/static/dash/js/mermaid-11.min.js"></script>
+  <script>
+    mermaid.initialize({ startOnLoad: false, theme: "dark" });
+    // Re-render the lifecycle diagram each time the drawer swaps in fresh markup.
+    document.body.addEventListener("htmx:afterSwap", function (evt) {
+      if (evt.target.id === "drawer") {
+        mermaid.run({ nodes: evt.target.querySelectorAll(".mermaid") });
+      }
+    });
+  </script>
+
+</body>
+</html>

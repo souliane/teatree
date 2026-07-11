@@ -1,8 +1,24 @@
+import socket
+
 from teatree.utils.run import run_allowed_to_fail
 
 # Duplicated from teatree.core.models.types to avoid circular import
 # through Django model registration.
 type Ports = dict[str, int]
+
+
+def find_free_port(host: str = "127.0.0.1") -> int:
+    """Ask the OS for a free ephemeral port on *host* and return it.
+
+    Binds to port 0 (the kernel picks a free port), reads the assigned port, then
+    releases the socket. There is an inherent race between release and re-bind, so
+    the caller must bind promptly — used by the ttyd web-terminal launcher, which
+    spawns ``ttyd --port <n>`` immediately.
+    """
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+        sock.bind((host, 0))
+        return sock.getsockname()[1]
+
 
 # Container-internal ports (fixed). Host ports are auto-mapped by Docker
 # Compose when the override declares ``ports: ["<container_port>"]`` with

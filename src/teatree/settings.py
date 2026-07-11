@@ -72,6 +72,7 @@ INSTALLED_APPS = [
     "teatree.core",
     "teatree.agents",
     "teatree.backends",
+    "teatree.dash",
     *_discover_overlay_apps(),
 ]
 

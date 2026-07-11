@@ -1,0 +1,96 @@
+{% if health.mode.gate_fail_open %}
+  <div class="banner-red">danger_gate_fail_open is ON — every over-deny gate is relaxed. A fail-open factory is never healthy.</div>
+{% endif %}
+
+<section class="band">
+  <h2>Verdict</h2>
+  <p class="verdict {{ health.verdict.status }}">{{ health.verdict.status }}</p>
+  {% if health.verdict.open_issues %}
+    <table class="dash">
+      <thead><tr><th>severity</th><th>summary</th><th>evidence</th></tr></thead>
+      <tbody>
+        {% for issue in health.verdict.open_issues %}
+          <tr>
+            <td>{{ issue.severity }}</td>
+            <td>{{ issue.summary }}</td>
+            <td>{% if issue.evidence_url %}<a href="{{ issue.evidence_url }}" target="_blank" rel="noopener">link</a>{% endif %}</td>
+          </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  {% else %}
+    <p class="card-dwell">No open issues.</p>
+  {% endif %}
+</section>
+
+<section class="band">
+  <h2>Loops</h2>
+  {% if health.loops.worker_dead %}<div class="banner-red">Worker appears dead — every infra slot is unclaimed.</div>{% endif %}
+  <table class="dash">
+    <thead><tr><th>loop</th><th>enabled</th><th>held</th><th>cadence (s)</th><th>next due</th></tr></thead>
+    <tbody>
+      {% for slot in health.loops.report.infra_slots %}
+        <tr>
+          <td>{{ slot.name }}</td>
+          <td>{{ slot.enabled|yesno:"yes,no" }}</td>
+          <td class="{% if slot.held %}held{% endif %}">{{ slot.held|yesno:"held,–" }}</td>
+          <td>{{ slot.cadence_seconds }}</td>
+          <td>{{ slot.next_fire_at|default:"–" }}</td>
+        </tr>
+      {% endfor %}
+      {% for loop in health.loops.report.mini_loops %}
+        <tr>
+          <td>{{ loop.name }}</td>
+          <td>{{ loop.enabled|yesno:"yes,no" }}</td>
+          <td class="{% if loop.held %}held{% endif %}">{{ loop.held|yesno:"held,–" }}</td>
+          <td>{{ loop.cadence_seconds }}</td>
+          <td>{{ loop.next_fire_at|default:"–" }}</td>
+        </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</section>
+
+<section class="band">
+  <h2>Capacity</h2>
+  {% with cap=health.capacity %}
+    <p>Queue depth — headless {{ cap.queue.headless }} · interactive {{ cap.queue.interactive }}</p>
+    {% if cap.spend %}
+      <p>Spend — {{ cap.spend.chip }} (${{ cap.spend.cycle_to_date_usd }} of ${{ cap.spend.credit_usd }}, projected ${{ cap.spend.projected_month_end_usd }})</p>
+    {% endif %}
+    {% if cap.parked_lanes %}
+      <h3>Parked lanes</h3>
+      <table class="dash">
+        <thead><tr><th>lane</th><th>cause</th><th>resets at</th></tr></thead>
+        <tbody>
+          {% for lane in cap.parked_lanes %}
+            <tr><td>{{ lane.lane|default:"ambient" }}</td><td>{{ lane.cause }}</td><td>{{ lane.resets_at|default:"—" }}</td></tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    {% endif %}
+    {% if cap.accounts %}
+      <h3>Account utilization</h3>
+      <table class="dash">
+        <thead><tr><th>account</th><th>5h</th><th>7d</th><th>exhausted</th><th>reset</th></tr></thead>
+        <tbody>
+          {% for acct in cap.accounts %}
+            <tr class="{% if acct.is_exhausted %}stalled{% endif %}">
+              <td>{{ acct.pass_path }}</td>
+              <td>{{ acct.utilization_5h }}</td>
+              <td>{{ acct.utilization_7d }}</td>
+              <td>{{ acct.is_exhausted|yesno:"yes,no" }}</td>
+              <td>{{ acct.earliest_reset|default:"—" }}</td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    {% endif %}
+  {% endwith %}
+</section>
+
+<section class="band">
+  <h2>Mode</h2>
+  <p>Availability — <strong>{{ health.mode.mode }}</strong> (decided by {{ health.mode.source }})</p>
+  <p>danger_gate_fail_open — <strong class="{% if health.mode.gate_fail_open %}eff-no{% else %}eff-yes{% endif %}">{{ health.mode.gate_fail_open|yesno:"ON,off" }}</strong></p>
+</section>

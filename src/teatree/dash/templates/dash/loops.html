@@ -1,0 +1,41 @@
+{% extends "dash/base.html" %}
+{% block title %}Loops{% endblock %}
+{% block content %}
+  <section class="band">
+    <h2>Availability</h2>
+    <p>Current — <strong>{{ control.availability_mode }}</strong> (decided by {{ control.availability_source }})</p>
+    <form method="post" action="{% url 'dash:availability' %}" style="display:inline">
+      {% csrf_token %}
+      <button class="dash-btn" name="mode" value="present">present</button>
+      <button class="dash-btn" name="mode" value="away">away</button>
+      <button class="dash-btn" name="mode" value="autonomous_away">autonomous-away</button>
+      <button class="dash-btn" name="mode" value="auto">auto</button>
+    </form>
+  </section>
+
+  <section class="band">
+    <h2>Master fail-open switch</h2>
+    <p>danger_gate_fail_open — <strong class="{% if control.gate_fail_open %}eff-no{% else %}eff-yes{% endif %}">{{ control.gate_fail_open|yesno:"ON,off" }}</strong></p>
+    {% if control.gate_fail_open %}
+      <form method="post" action="{% url 'dash:gate_toggle' %}">
+        {% csrf_token %}
+        <button class="dash-btn" name="enable" value="0">turn OFF (restore gates)</button>
+      </form>
+    {% else %}
+      <form method="post" action="{% url 'dash:gate_toggle' %}">
+        {% csrf_token %}
+        <input type="hidden" name="enable" value="1">
+        <input type="text" name="confirm" placeholder="type &quot;{{ gate_confirm_phrase }}&quot; to confirm">
+        <button class="dash-btn" type="submit">turn ON (relax all over-deny gates)</button>
+      </form>
+    {% endif %}
+    <p class="card-dwell">Global kill-switch loop_runner_enabled — <strong>{{ control.runner_enabled|yesno:"ON,off" }}</strong> (read-only; flip via <code>t3 worker</code>).</p>
+  </section>
+
+  <div id="loops-table"
+    hx-get="{% url 'dash:loops_table' %}"
+    hx-trigger="every 5s"
+    hx-swap="innerHTML">
+    {% include "dash/partials/_loops_table.html" %}
+  </div>
+{% endblock %}
