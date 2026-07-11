@@ -20,11 +20,13 @@ from claude_agent_sdk import AssistantMessage, ResultMessage, TextBlock, ToolUse
 from claude_agent_sdk.types import HookEventMessage
 
 from teatree.eval.api_runner import (
+    _DEFAULT_CONFLICTING_VARS,
     CLAUDE_RESOLVE_MAX_ATTEMPTS,
     DEFAULT_WATCHDOG_SECONDS,
     MAX_BUDGET_USD,
     WATCHDOG_SECONDS,
     ApiInProcessRunner,
+    ApiRunnerParams,
     BudgetExceededError,
     ClaudeCliMissingError,
     CleanRoomConfig,
@@ -184,7 +186,7 @@ class TestApiInProcessRunnerSkip:
             patch("teatree.eval.api_runner.shutil.which", return_value=None),
             pytest.raises(ClaudeCliMissingError),
         ):
-            ApiInProcessRunner(require_executed=True).run(spec)
+            ApiInProcessRunner(ApiRunnerParams(require_executed=True)).run(spec)
 
 
 class TestApiInProcessRunnerCapture:
@@ -194,7 +196,7 @@ class TestApiInProcessRunnerCapture:
             patch("teatree.eval.api_runner.shutil.which", return_value="/usr/local/bin/claude"),
             patch("teatree.eval.api_runner.query", query),
         ):
-            run = ApiInProcessRunner(**kwargs).run(spec)
+            run = ApiInProcessRunner(ApiRunnerParams(**kwargs)).run(spec)
         return run, captured
 
     def test_captures_tool_calls_text_terminal_cost(self, tmp_path: Path) -> None:
@@ -394,7 +396,7 @@ class TestApiInProcessRunnerCapture:
             patch("teatree.eval.api_runner.WATCHDOG_SECONDS", 12.5),
             patch("teatree.eval.api_runner.asyncio.wait_for", _spy),
         ):
-            ApiInProcessRunner(workspace=tmp_path).run(spec)
+            ApiInProcessRunner(ApiRunnerParams(workspace=tmp_path)).run(spec)
         return captured.get("timeout")
 
     def test_per_scenario_watchdog_overrides_the_lane_default(self, tmp_path: Path) -> None:
@@ -459,7 +461,7 @@ class TestApiInProcessRunnerCapture:
             patch("teatree.eval.api_runner.query", _slow_query),
             patch("teatree.eval.api_runner.WATCHDOG_SECONDS", 0.01),
         ):
-            run = ApiInProcessRunner(workspace=tmp_path).run(spec)
+            run = ApiInProcessRunner(ApiRunnerParams(workspace=tmp_path)).run(spec)
         assert run.terminal_reason == "timeout"
         assert run.is_error is True
 
@@ -503,7 +505,7 @@ class TestApiInProcessRunnerAgentDefinition:
             patch("teatree.eval.api_runner.shutil.which", return_value="/usr/local/bin/claude"),
             patch("teatree.eval.api_runner.query", query),
         ):
-            ApiInProcessRunner(**kwargs).run(spec)
+            ApiInProcessRunner(ApiRunnerParams(**kwargs)).run(spec)
         return captured
 
     def test_raises_when_agent_definition_missing(self, tmp_path: Path) -> None:
@@ -519,7 +521,7 @@ class TestApiInProcessRunnerAgentDefinition:
             patch("teatree.eval.api_runner.shutil.which", return_value="/usr/local/bin/claude"),
             pytest.raises(FileNotFoundError),
         ):
-            ApiInProcessRunner(workspace=tmp_path).run(spec)
+            ApiInProcessRunner(ApiRunnerParams(workspace=tmp_path)).run(spec)
 
     def test_raises_when_agent_definition_empty(self, tmp_path: Path) -> None:
         agent = tmp_path / "empty.md"
@@ -536,7 +538,7 @@ class TestApiInProcessRunnerAgentDefinition:
             patch("teatree.eval.api_runner.shutil.which", return_value="/usr/local/bin/claude"),
             pytest.raises(ValueError, match="empty"),
         ):
-            ApiInProcessRunner(workspace=tmp_path).run(spec)
+            ApiInProcessRunner(ApiRunnerParams(workspace=tmp_path)).run(spec)
 
     def test_agent_sections_send_only_named_section_as_system_prompt(self, tmp_path: Path) -> None:
         agent = tmp_path / "rules.md"
@@ -621,7 +623,7 @@ class TestApiInProcessRunnerMessageMapping:
             patch("teatree.eval.api_runner.shutil.which", return_value="/usr/local/bin/claude"),
             patch("teatree.eval.api_runner.query", query),
         ):
-            run = ApiInProcessRunner(workspace=tmp_path).run(spec)
+            run = ApiInProcessRunner(ApiRunnerParams(workspace=tmp_path)).run(spec)
         # The thinking block is dropped, the tool_use is captured, the system message ignored.
         assert [c.name for c in run.tool_calls] == ["Bash"]
         assert run.text_blocks == ()
@@ -647,7 +649,7 @@ class TestApiInProcessRunnerMessageMapping:
             patch("teatree.eval.api_runner.shutil.which", return_value="/usr/local/bin/claude"),
             patch("teatree.eval.api_runner.query", query),
         ):
-            ApiInProcessRunner(workspace=tmp_path).run(spec)
+            ApiInProcessRunner(ApiRunnerParams(workspace=tmp_path)).run(spec)
         assert captured["system_prompt_text"].strip()
 
     def test_relative_agent_path_not_found_raises(self, tmp_path: Path, monkeypatch) -> None:
@@ -666,7 +668,7 @@ class TestApiInProcessRunnerMessageMapping:
             patch("teatree.eval.api_runner.shutil.which", return_value="/usr/local/bin/claude"),
             pytest.raises(FileNotFoundError),
         ):
-            ApiInProcessRunner(workspace=tmp_path).run(spec)
+            ApiInProcessRunner(ApiRunnerParams(workspace=tmp_path)).run(spec)
 
 
 def _config(tmp_path: Path, *, max_budget_usd: float) -> CleanRoomConfig:
@@ -771,7 +773,7 @@ class TestBuildSdkOptionsSkillCatalog:
             patch("teatree.eval.api_runner.shutil.which", return_value="/usr/local/bin/claude"),
             patch("teatree.eval.api_runner.query", query),
         ):
-            ApiInProcessRunner(workspace=tmp_path).run(spec)
+            ApiInProcessRunner(ApiRunnerParams(workspace=tmp_path)).run(spec)
         assert captured["options"].skills == ["t3-widget", "widget-le"]
         assert len(captured["options"].plugins) == 1
 
@@ -782,7 +784,7 @@ class TestBuildSdkOptionsSkillCatalog:
             patch("teatree.eval.api_runner.shutil.which", return_value="/usr/local/bin/claude"),
             patch("teatree.eval.api_runner.query", query),
         ):
-            ApiInProcessRunner(workspace=tmp_path).run(spec)
+            ApiInProcessRunner(ApiRunnerParams(workspace=tmp_path)).run(spec)
         assert captured["options"].skills is None
         assert captured["options"].plugins == []
 
@@ -828,7 +830,7 @@ class TestCalibratedCaps:
             patch("teatree.eval.api_runner.shutil.which", return_value="/usr/local/bin/claude"),
             patch("teatree.eval.api_runner.query", query),
         ):
-            ApiInProcessRunner(workspace=tmp_path).run(spec)
+            ApiInProcessRunner(ApiRunnerParams(workspace=tmp_path)).run(spec)
         assert captured["options"].max_turns == DEFAULT_MAX_TURNS
 
     def test_clean_room_below_floor_turn_budget_is_lifted_to_the_floor(self, tmp_path: Path) -> None:
@@ -843,7 +845,7 @@ class TestCalibratedCaps:
             patch("teatree.eval.api_runner.shutil.which", return_value="/usr/local/bin/claude"),
             patch("teatree.eval.api_runner.query", query),
         ):
-            ApiInProcessRunner(workspace=tmp_path).run(spec)
+            ApiInProcessRunner(ApiRunnerParams(workspace=tmp_path)).run(spec)
         assert captured["options"].max_turns == CLEAN_ROOM_MIN_TURNS
 
     def test_under_load_below_floor_turn_budget_is_kept_unchanged(self, tmp_path: Path) -> None:
@@ -855,7 +857,7 @@ class TestCalibratedCaps:
             patch("teatree.eval.api_runner.shutil.which", return_value="/usr/local/bin/claude"),
             patch("teatree.eval.api_runner.query", query),
         ):
-            ApiInProcessRunner(workspace=tmp_path).run(spec)
+            ApiInProcessRunner(ApiRunnerParams(workspace=tmp_path)).run(spec)
         assert captured["options"].max_turns == 3
 
     def test_explicit_override_wins_over_the_clean_room_floor(self, tmp_path: Path) -> None:
@@ -867,7 +869,7 @@ class TestCalibratedCaps:
             patch("teatree.eval.api_runner.shutil.which", return_value="/usr/local/bin/claude"),
             patch("teatree.eval.api_runner.query", query),
         ):
-            ApiInProcessRunner(workspace=tmp_path, max_turns_override=2).run(spec)
+            ApiInProcessRunner(ApiRunnerParams(workspace=tmp_path, max_turns_override=2)).run(spec)
         assert captured["options"].max_turns == 2
 
 
@@ -928,7 +930,7 @@ class TestApiInProcessRunnerBudgetExceeded:
             patch("teatree.eval.api_runner.shutil.which", return_value="/usr/local/bin/claude"),
             patch("teatree.eval.api_runner.query", query),
         ):
-            return ApiInProcessRunner(workspace=spec.source_path.parent, **kwargs).run(spec)
+            return ApiInProcessRunner(ApiRunnerParams(workspace=spec.source_path.parent, **kwargs)).run(spec)
 
     def test_budget_exceeded_is_a_recorded_run_not_a_crash(self, tmp_path: Path) -> None:
         spec = _spec(tmp_path)
@@ -996,7 +998,7 @@ class TestApiInProcessRunnerCreditExhausted:
             patch("teatree.eval.api_runner.shutil.which", return_value="/usr/local/bin/claude"),
             patch("teatree.eval.api_runner.query", query),
         ):
-            return ApiInProcessRunner(workspace=spec.source_path.parent).run(spec)
+            return ApiInProcessRunner(ApiRunnerParams(workspace=spec.source_path.parent)).run(spec)
 
     def test_credit_balance_too_low_raises_credit_exhausted_not_generic(self, tmp_path: Path) -> None:
         # The billed ANTHROPIC_API_KEY at $0 surfaces HTTP 400 "credit balance is
@@ -1149,7 +1151,7 @@ class TestLargeSystemPromptDoesNotBlowArgMax:
             patch("teatree.eval.api_runner.shutil.which", return_value="/usr/local/bin/claude"),
             patch("teatree.eval.api_runner.query", query),
         ):
-            run = ApiInProcessRunner(workspace=tmp_path).run(spec)
+            run = ApiInProcessRunner(ApiRunnerParams(workspace=tmp_path)).run(spec)
         assert run.terminal_reason == "success"
         assert run.is_error is False
         assert _HUGE_SYSTEM_PROMPT in captured["system_prompt_text"]
@@ -1170,7 +1172,7 @@ class TestSuccessResultIsNotAnError:
             patch("teatree.eval.api_runner.shutil.which", return_value="/usr/local/bin/claude"),
             patch("teatree.eval.api_runner.query", query),
         ):
-            return ApiInProcessRunner(workspace=spec.source_path.parent, **kwargs).run(spec)
+            return ApiInProcessRunner(ApiRunnerParams(workspace=spec.source_path.parent, **kwargs)).run(spec)
 
     def test_is_success_result_error_recognizes_the_marker(self) -> None:
         assert is_success_result_error("Claude Code returned an error result: success") is True
@@ -1233,7 +1235,7 @@ class TestApiInProcessRunnerMaxTurnsCapturesTrajectory:
             patch("teatree.eval.api_runner.shutil.which", return_value="/usr/local/bin/claude"),
             patch("teatree.eval.api_runner.query", query),
         ):
-            return ApiInProcessRunner(workspace=spec.source_path.parent, **kwargs).run(spec)
+            return ApiInProcessRunner(ApiRunnerParams(workspace=spec.source_path.parent, **kwargs)).run(spec)
 
     def test_max_turns_cap_keeps_the_tool_call_emitted_before_the_cap(self, tmp_path: Path) -> None:
         # The agent DID the expected tool call before turn 3, then hit the cap.
@@ -1700,7 +1702,7 @@ class TestDisallowedToolsFlowToOptions:
             patch("teatree.eval.api_runner.shutil.which", return_value="/usr/local/bin/claude"),
             patch("teatree.eval.api_runner.query", query),
         ):
-            ApiInProcessRunner(workspace=spec.source_path.parent, **kwargs).run(spec)
+            ApiInProcessRunner(ApiRunnerParams(workspace=spec.source_path.parent, **kwargs)).run(spec)
         return captured
 
     def test_build_sdk_options_forwards_disallowed_tools(self, tmp_path: Path) -> None:
@@ -1926,7 +1928,7 @@ class TestDelegationScenarioGetsEmptyDenylist:
             patch("teatree.eval.api_runner.shutil.which", return_value="/usr/local/bin/claude"),
             patch("teatree.eval.api_runner.query", query),
         ):
-            ApiInProcessRunner(workspace=spec.source_path.parent).run(spec)
+            ApiInProcessRunner(ApiRunnerParams(workspace=spec.source_path.parent)).run(spec)
         options = captured["options"]
         assert "Agent" in options.tools
         assert list(options.disallowed_tools) == []
@@ -1951,7 +1953,7 @@ class TestDelegationAgentsProvisioning:
             patch("teatree.eval.api_runner.shutil.which", return_value="/usr/local/bin/claude"),
             patch("teatree.eval.api_runner.query", query),
         ):
-            ApiInProcessRunner(workspace=spec.source_path.parent, **kwargs).run(spec)
+            ApiInProcessRunner(ApiRunnerParams(workspace=spec.source_path.parent, **kwargs)).run(spec)
         return captured
 
     def test_spawn_tool_constant_is_agent(self) -> None:
@@ -2051,7 +2053,7 @@ class TestSpawningScenarioRunsAgainstEphemeralCheckout:
             patch("teatree.eval.api_runner.shutil.which", return_value="/usr/local/bin/claude"),
             patch("teatree.eval.api_runner.query", query),
         ):
-            ApiInProcessRunner(workspace=spec.source_path.parent, **kwargs).run(spec)
+            ApiInProcessRunner(ApiRunnerParams(workspace=spec.source_path.parent, **kwargs)).run(spec)
         return captured
 
     def _spawning_spec(self, spec_dir: Path) -> EvalSpec:
@@ -2213,7 +2215,7 @@ class TestRunnerRetriesTransientMissingClaude:
             patch("teatree.eval.api_runner.time.sleep", lambda _s: None),
             pytest.raises(ClaudeCliMissingError),
         ):
-            ApiInProcessRunner(require_executed=True).run(spec)
+            ApiInProcessRunner(ApiRunnerParams(require_executed=True)).run(spec)
 
 
 def _clean_room_config(
@@ -2310,3 +2312,40 @@ class TestProductionHooksRun:
         options = captured["options"]
         assert options.env["XDG_DATA_HOME"].startswith(options.cwd)
         assert options.env["T3_LOOP_REGISTRY_DIR"].startswith(options.cwd)
+
+
+class TestApiRunnerParams:
+    """The single :class:`ApiRunnerParams` object carries every runner-construction knob."""
+
+    def test_bare_construction_uses_the_param_defaults(self) -> None:
+        # ``ApiInProcessRunner()`` (the CI/production shape) grants no workspace, the
+        # cheap-lane budget floor, and the direct-caller conflicting-var default.
+        runner = ApiInProcessRunner()
+        assert runner._workspace is None
+        assert runner._max_turns_override is None
+        assert runner._require_executed is False
+        assert runner._max_budget_usd == pytest.approx(float(MAX_BUDGET_USD))
+        assert runner._effort is None
+        assert runner._conflicting_vars == _DEFAULT_CONFLICTING_VARS
+
+    def test_every_field_threads_from_the_params_object_to_the_runner(self, tmp_path: Path) -> None:
+        params = ApiRunnerParams(
+            workspace=tmp_path,
+            max_turns_override=7,
+            require_executed=True,
+            max_budget_usd=3.5,
+            effort="high",
+            conflicting_vars=("FOO", "BAR"),
+        )
+        runner = ApiInProcessRunner(params)
+        assert runner._workspace == tmp_path
+        assert runner._max_turns_override == 7
+        assert runner._require_executed is True
+        assert runner._max_budget_usd == pytest.approx(3.5)
+        assert runner._effort == "high"
+        assert runner._conflicting_vars == ("FOO", "BAR")
+
+    def test_params_object_is_frozen(self) -> None:
+        params = ApiRunnerParams()
+        with pytest.raises(dataclasses.FrozenInstanceError):
+            params.max_turns_override = 3  # type: ignore[misc]

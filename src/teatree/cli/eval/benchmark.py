@@ -20,7 +20,7 @@ from teatree.cli.eval.docker import DockerUnavailableError, run_eval_in_docker
 from teatree.cli.eval.metered_routing import should_route_to_docker, warn_local_metered
 from teatree.cli.eval.multi_trial import collect_matrix_rows, parse_model_tags
 from teatree.cli.eval.run_modes import RunGuards, persist_matrix_run
-from teatree.eval.backends import API_BACKEND, make_runner
+from teatree.eval.backends import API_BACKEND, ApiRunnerParams, make_runner
 from teatree.eval.benchmark import render_benchmark_json, render_benchmark_text, summarize_benchmark
 from teatree.eval.discovery import discover_specs
 from teatree.eval.models import EvalSpec
@@ -113,7 +113,8 @@ def benchmark(  # noqa: PLR0913, PLR0917 — typer command: each param maps 1:1 
     tags = parse_model_tags(models)
     specs = _select_specs(scenarios)
     runner = make_runner(
-        API_BACKEND, max_turns_override=max_turns, require_executed=True, max_budget_usd=max_budget_usd
+        API_BACKEND,
+        ApiRunnerParams(max_turns_override=max_turns, require_executed=True, max_budget_usd=max_budget_usd),
     )
     rows = collect_matrix_rows(specs, tags, runner=runner, trials=trials, require="any")
     RunGuards.executed(executed=sum(1 for row in rows if not row.skipped), collected=len(rows), required=True)

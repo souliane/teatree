@@ -28,7 +28,7 @@ import pytest
 from claude_agent_sdk import ResultMessage
 from django.test import TestCase
 
-from teatree.eval.api_runner import ApiInProcessRunner
+from teatree.eval.api_runner import ApiInProcessRunner, ApiRunnerParams
 from teatree.eval.isolation import isolated_claude_env
 from teatree.eval.judge import ClaudeJudge
 from teatree.eval.models import EvalRun, EvalSpec, EvalToolCall, JudgeSpec, Matcher
@@ -170,7 +170,7 @@ class TestRunnerIsolation:
             patch("teatree.eval.api_runner.shutil.which", return_value="/usr/local/bin/claude"),
             patch("teatree.eval.api_runner.query", query),
         ):
-            ApiInProcessRunner(workspace=tmp_path).run(spec)
+            ApiInProcessRunner(ApiRunnerParams(workspace=tmp_path)).run(spec)
         return captured
 
     def test_options_carry_empty_setting_sources(self, tmp_path: Path) -> None:
@@ -284,7 +284,7 @@ class TestCanaryNeverReachesChild:
             patch("teatree.eval.api_runner.shutil.which", return_value="/usr/local/bin/claude"),
             patch("teatree.eval.api_runner.query", query),
         ):
-            ApiInProcessRunner(workspace=project).run(spec)
+            ApiInProcessRunner(ApiRunnerParams(workspace=project)).run(spec)
 
         options = captured["options"]
         assert options.setting_sources == []
@@ -326,6 +326,6 @@ class TestCanaryNeverReachesChild:
             max_turns=1,
             tools=(),
         )
-        result = ApiInProcessRunner(workspace=project).run(spec)
+        result = ApiInProcessRunner(ApiRunnerParams(workspace=project)).run(spec)
         assert CANARY not in result.raw_stdout
         assert CANARY not in result.raw_stderr

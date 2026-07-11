@@ -39,9 +39,7 @@ import dataclasses
 from pathlib import Path
 from typing import Protocol
 
-from claude_agent_sdk.types import EffortLevel
-
-from teatree.eval.api_runner import MAX_BUDGET_USD, ApiInProcessRunner
+from teatree.eval.api_runner import ApiInProcessRunner, ApiRunnerParams
 from teatree.eval.model_resolution import resolve_eval_model
 from teatree.eval.models import EvalRun, EvalSpec
 from teatree.eval.subagent_transcript import is_subagent_transcript, subagent_run
@@ -63,17 +61,19 @@ class UnknownBackendError(ValueError):
     """Raised for a ``--backend`` value outside :data:`KNOWN_BACKENDS`."""
 
 
-# ast-grep-ignore: ac-django-no-complexity-suppressions
-def make_runner(  # noqa: PLR0913 — each kwarg threads one runner-construction knob (turns / budget / effort / require / transcript-dir) from the `t3 eval run` CLI; the list IS the backend contract.
+def make_runner(
     backend: str,
+    params: ApiRunnerParams | None = None,
     *,
-    max_turns_override: int | None = None,
     transcript_dir: Path | None = None,
-    require_executed: bool = False,
-    max_budget_usd: float = float(MAX_BUDGET_USD),
-    effort: EffortLevel | None = None,
 ) -> EvalRunner:
     """Build the eval runner for *backend*.
+
+    *params* carries the api-lane construction knobs (turns / budget / effort /
+    require) the ``t3 eval run`` CLI threads; the api branch overrides its
+    ``conflicting_vars`` with the SELECTED eval credential's strip set before
+    building the runner. The transcript lane uses only *transcript_dir*; the
+    ``pydantic_ai`` lane reads *params*' ``max_turns_override`` / ``effort``.
 
     ``"api"`` → the in-process Agent-SDK runner that RUNS the model fresh, on the
     credential the ``eval_credential`` knob selects (default subscription OAuth,
@@ -106,6 +106,7 @@ def make_runner(  # noqa: PLR0913 — each kwarg threads one runner-construction
     at a representative effort, not the model's default); the transcript runner
     ignores it.
     """
+    params = params or ApiRunnerParams()
     if backend == API_BACKEND:
         # Resolve the SELECTED eval credential (the ``eval_credential`` knob — default
         # subscription OAuth, reversing #2707) and export it, so the isolated child
@@ -121,13 +122,7 @@ def make_runner(  # noqa: PLR0913 — each kwarg threads one runner-construction
 
         credential = resolve_eval_credential()
         credential.export()
-        return ApiInProcessRunner(
-            max_turns_override=max_turns_override,
-            require_executed=require_executed,
-            max_budget_usd=max_budget_usd,
-            effort=effort,
-            conflicting_vars=credential.spec.conflicting_vars,
-        )
+        return ApiInProcessRunner(dataclasses.replace(params, conflicting_vars=credential.spec.conflicting_vars))
     if backend == TRANSCRIPT_BACKEND:
         return TranscriptRunner(transcript_dir=transcript_dir or Path.cwd())
     if backend == PYDANTIC_AI_BACKEND:
@@ -140,7 +135,7 @@ def make_runner(  # noqa: PLR0913 — each kwarg threads one runner-construction
             build_pydantic_ai_eval_runner,
         )
 
-        return build_pydantic_ai_eval_runner(max_turns_override=max_turns_override, effort=effort)
+        return build_pydantic_ai_eval_runner(max_turns_override=params.max_turns_override, effort=params.effort)
     msg = f"unknown eval backend {backend!r}; expected one of {', '.join(KNOWN_BACKENDS)}"
     raise UnknownBackendError(msg)
 

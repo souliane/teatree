@@ -19,7 +19,7 @@ from pathlib import Path
 import pytest
 
 from teatree.core.on_behalf_gate_recorded import format_on_behalf_block_message
-from teatree.eval.api_runner import ApiInProcessRunner
+from teatree.eval.api_runner import ApiInProcessRunner, ApiRunnerParams
 from teatree.eval.cli_stub_fixture import (
     KNOWN_CLI_STUBS,
     ON_BEHALF_ASK_BLOCK_TEXT,
@@ -203,7 +203,7 @@ def _spec(tmp_path: Path, *, cli_stubs: tuple[str, ...] = (), fixture: str = "")
 
 class TestResolveEvalTargetWiresPath:
     def test_stub_dir_prepended_to_env_path_when_declared(self, tmp_path: Path) -> None:
-        runner = ApiInProcessRunner(workspace=tmp_path)
+        runner = ApiInProcessRunner(ApiRunnerParams(workspace=tmp_path))
         spec = _spec(tmp_path, cli_stubs=("t3",))
         with runner._resolve_eval_target(spec) as (_workspace, _cwd, env):
             first = env["PATH"].split(os.pathsep)[0]
@@ -211,7 +211,7 @@ class TestResolveEvalTargetWiresPath:
             assert os.access(Path(first) / "t3", os.X_OK)
 
     def test_path_untouched_when_no_cli_stubs(self, tmp_path: Path) -> None:
-        runner = ApiInProcessRunner(workspace=tmp_path)
+        runner = ApiInProcessRunner(ApiRunnerParams(workspace=tmp_path))
         spec = _spec(tmp_path)
         base_path = os.environ.get("PATH", "")
         with runner._resolve_eval_target(spec) as (_workspace, _cwd, env):
@@ -219,7 +219,7 @@ class TestResolveEvalTargetWiresPath:
 
     def test_composes_with_git_repo_fixture(self, tmp_path: Path) -> None:
         # cli_stubs is a SEPARATE lever from `fixture`; a scenario may declare both.
-        runner = ApiInProcessRunner(workspace=tmp_path)
+        runner = ApiInProcessRunner(ApiRunnerParams(workspace=tmp_path))
         spec = _spec(tmp_path, cli_stubs=("t3",), fixture="git_repo")
         with runner._resolve_eval_target(spec) as (workspace, cwd, env):
             assert (workspace / ".git").is_dir()  # the git_repo fixture provisioned

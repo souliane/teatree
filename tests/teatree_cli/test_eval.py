@@ -16,6 +16,7 @@ from teatree.cli.eval.corpus import CorpusGradeRow
 from teatree.cli.eval.docker import DockerUnavailableError
 from teatree.cli.eval.run_modes import RunGuards, with_model
 from teatree.cli.eval.verdict import LaneResult
+from teatree.eval.api_runner import ApiRunnerParams
 from teatree.eval.coverage import CoverageReport, SkillCoverage
 from teatree.eval.model_resolution import resolve_eval_model
 from teatree.eval.models import EvalRun, EvalSpec, EvalToolCall, Matcher
@@ -438,11 +439,9 @@ class TestTranscriptReplay:
         captured: dict[str, object] = {}
 
         class _StubRunner:
-            def __init__(
-                self, *, max_turns_override: int | None = None, require_executed: bool = False, **_: object
-            ) -> None:
-                captured["max_turns_override"] = max_turns_override
-                captured["require_executed"] = require_executed
+            def __init__(self, params: ApiRunnerParams) -> None:
+                captured["max_turns_override"] = params.max_turns_override
+                captured["require_executed"] = params.require_executed
 
             def run(self, spec: EvalSpec) -> EvalRun:
                 return _run(spec.name, tool_calls=_PASSING_CALL)
@@ -462,8 +461,8 @@ class TestTranscriptReplay:
         captured: dict[str, object] = {}
 
         class _StubRunner:
-            def __init__(self, *, max_turns_override: int | None = None, **_: object) -> None:
-                captured["max_turns_override"] = max_turns_override
+            def __init__(self, params: ApiRunnerParams) -> None:
+                captured["max_turns_override"] = params.max_turns_override
 
             def run(self, spec: EvalSpec) -> EvalRun:
                 return _run(spec.name, tool_calls=_PASSING_CALL)
@@ -483,8 +482,8 @@ class TestTranscriptReplay:
         captured: dict[str, object] = {}
 
         class _StubRunner:
-            def __init__(self, *, max_turns_override: int | None = None, **_: object) -> None:
-                captured["max_turns_override"] = max_turns_override
+            def __init__(self, params: ApiRunnerParams) -> None:
+                captured["max_turns_override"] = params.max_turns_override
 
             def run(self, spec: EvalSpec) -> EvalRun:
                 return _run(spec.name, tool_calls=_PASSING_CALL)
@@ -504,10 +503,8 @@ class TestTranscriptReplay:
         captured: dict[str, object] = {}
 
         class _StubRunner:
-            def __init__(
-                self, *, max_turns_override: int | None = None, require_executed: bool = False, **_: object
-            ) -> None:
-                captured["require_executed"] = require_executed
+            def __init__(self, params: ApiRunnerParams) -> None:
+                captured["require_executed"] = params.require_executed
 
             def run(self, spec: EvalSpec) -> EvalRun:
                 return _run(spec.name, tool_calls=_PASSING_CALL, cost_usd=0.05)
@@ -1402,8 +1399,8 @@ class _BudgetCapturingRunner:
 
     last_max_budget_usd: float | None = None
 
-    def __init__(self, *_: object, max_budget_usd: float, **__: object) -> None:
-        type(self).last_max_budget_usd = max_budget_usd
+    def __init__(self, params: ApiRunnerParams) -> None:
+        type(self).last_max_budget_usd = params.max_budget_usd
 
     def run(self, spec: EvalSpec) -> EvalRun:
         return _run(spec.name, tool_calls=_PASSING_CALL, cost_usd=0.20)
@@ -1414,8 +1411,8 @@ class _EffortCapturingRunner:
 
     last_effort: object = "unset"
 
-    def __init__(self, *_: object, effort: object = None, **__: object) -> None:
-        type(self).last_effort = effort
+    def __init__(self, params: ApiRunnerParams) -> None:
+        type(self).last_effort = params.effort
 
     def run(self, spec: EvalSpec) -> EvalRun:
         return _run(spec.name, tool_calls=_PASSING_CALL, cost_usd=0.20)

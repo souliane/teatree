@@ -1,7 +1,7 @@
 """Lane-level ``--effort`` threads into the metered runner the gating lanes build (#2192).
 
 The single-trial path threads the resolved ``--effort`` / ``METERED_DEFAULT_EFFORT``
-into ``make_runner(... effort=...)``; the always-metered pass@k (``--trials k>1``,
+into ``make_runner(..., ApiRunnerParams(effort=...))``; the always-metered pass@k (``--trials k>1``,
 the CI gate) and model-matrix lanes must do the SAME. They now build through that
 same ``make_runner`` chokepoint (so API-key resolution can never be bypassed),
 and so must pass the lane effort, or the calibration never reaches the metered gate.
@@ -11,12 +11,12 @@ lane effort is the default for scenarios that declare none.
 
 from collections.abc import Iterator
 from pathlib import Path
-from typing import Any
 from unittest.mock import patch
 
 import pytest
 
 from teatree.cli.eval.multi_trial import run_model_matrix_lane, run_pass_at_k_lane
+from teatree.eval.api_runner import ApiRunnerParams
 from teatree.eval.models import EvalRun, EvalSpec
 from teatree.llm.credentials import AnthropicSubscriptionCredential
 
@@ -38,8 +38,8 @@ class _RecordingRunner:
 
     last_effort: str | None = None
 
-    def __init__(self, **kwargs: Any) -> None:
-        type(self).last_effort = kwargs.get("effort")
+    def __init__(self, params: ApiRunnerParams | None = None) -> None:
+        type(self).last_effort = None if params is None else params.effort
 
     def run(self, spec: EvalSpec) -> EvalRun:
         return EvalRun(
