@@ -1,8 +1,10 @@
 """The long-lived ``t3 worker`` — the singleton executor pool for the timer chains (#1796).
 
-One process runs K=4 programmatic ``django_tasks_db`` :class:`Worker` executor
-threads — 2 pinned to the ``loops`` queue, 2 to ``default`` — so a heavy headless
-``default`` job can never starve a reactive loop timer, and vice-versa. A
+One process runs programmatic ``django_tasks_db`` :class:`Worker` executor threads —
+2 pinned to the ``loops`` queue and a host-scaled ``default`` pool (floored at 2,
+:func:`default_queue_executor_count`) — so a heavy headless ``default`` job can never
+starve a reactive loop timer, and a deep backlog of independent headless work still
+drains in parallel on a bigger box instead of one-or-two-at-a-time. A
 supervisor thread re-reads the ``loop_runner_enabled`` kill-switch every ~5 s and
 stops every executor on a flip-off or a SIGTERM/SIGINT, joining and — after the join
 timeout — SIGKILLing any in-flight tick process group the join left orphaned, then
@@ -20,21 +22,43 @@ import os
 import threading
 import time
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Protocol
 
 from teatree.loop.queue_drain import expire_stale_default_jobs
 from teatree.loops.timer_chains import _loop_runner_enabled, kill_live_tick_process_groups
 from teatree.loops.timer_reconciler import ensure_loop_timers, ensure_maintenance_chains
+from teatree.utils.ram_probe import default_provision_concurrency
 
 if TYPE_CHECKING:
     from django_tasks_db.management.commands.db_worker import Worker
 
 logger = logging.getLogger(__name__)
 
-#: The executor pool: 2 threads pinned to ``loops`` (reactive timers), 2 to
-#: ``default`` (FSM/headless work), so neither lane starves the other.
-EXECUTOR_QUEUES: tuple[str, ...] = ("loops", "loops", "default", "default")
+#: Reactive-timer executors pinned to the ``loops`` queue — fixed at 2 so a heavy
+#: headless ``default`` job can never starve a loop timer.
+LOOPS_EXECUTOR_COUNT = 2
+#: The prior hardcoded ``default``-queue width; now the FLOOR so a small box keeps
+#: the old minimum while a bigger box scales up.
+DEFAULT_QUEUE_FLOOR = 2
+
+
+def default_queue_executor_count() -> int:
+    """Host-scaled width of the ``default`` (FSM/headless) executor pool, floored at 2.
+
+    A deep backlog of independent PRs drained through a fixed 2 threads reviews and
+    merges one-or-two-at-a-time regardless of host size. Scaling with the shared
+    PR-01 resource ceiling (:func:`default_provision_concurrency` — half the logical
+    cores) lets an idle multi-core box run more phase work in parallel; the floor
+    preserves the prior minimum on a 1-2 core box.
+    """
+    return max(DEFAULT_QUEUE_FLOOR, default_provision_concurrency())
+
+
+def build_executor_queues() -> tuple[str, ...]:
+    """The executor pool: 2 ``loops`` threads + a host-scaled ``default`` pool."""
+    return ("loops",) * LOOPS_EXECUTOR_COUNT + ("default",) * default_queue_executor_count()
+
 
 #: The supervisor re-reads the kill-switch on this cadence — a flip-off stops
 #: further dispatch within ~this many seconds.
@@ -102,7 +126,7 @@ class WorkerSeams:
     kill_ticks: Callable[[], object] = kill_live_tick_process_groups
     sleep: Callable[[float], None] = time.sleep
     poll_seconds: float = SUPERVISOR_POLL_SECONDS
-    executor_queues: tuple[str, ...] = EXECUTOR_QUEUES
+    executor_queues: tuple[str, ...] = field(default_factory=build_executor_queues)
 
 
 class LoopWorker:
