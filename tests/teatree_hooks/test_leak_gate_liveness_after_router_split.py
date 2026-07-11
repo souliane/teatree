@@ -29,7 +29,7 @@ import hooks.scripts.hook_router as router
 from hooks.scripts.hook_router import handle_banned_terms_pretool
 from teatree.hooks import _repo_visibility
 
-_HOOK_ROUTER = Path(__file__).resolve().parent.parent / "hooks" / "scripts" / "hook_router.py"
+_HOOK_ROUTER = Path(__file__).resolve().parents[2] / "hooks" / "scripts" / "hook_router.py"
 
 # The classic AWS example access key — a well-known FAKE credential that matches
 # the ``AKIA[A-Z0-9]{16}`` secret pattern without being a real secret.

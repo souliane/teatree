@@ -125,7 +125,7 @@ class TestInternalGuards:
 
     def test_run_skips_when_bootstrap_fails(self, monkeypatch: pytest.MonkeyPatch) -> None:
         calls: list[object] = []
-        monkeypatch.setattr("django_bootstrap.bootstrap_teatree_django", lambda: False)
+        monkeypatch.setattr("hooks.scripts.django_bootstrap.bootstrap_teatree_django", lambda: False)
         monkeypatch.setattr("teatree.core.stop_snapshot.prepare_stop", lambda *a, **k: calls.append(a))
         slot._run_prepare_stop("s1", {"cwd": "/x"})
         assert calls == []  # bootstrap failed → prepare_stop never reached
