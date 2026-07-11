@@ -172,9 +172,9 @@ def _mini_entries() -> tuple[LoopStatusEntry, ...]:
     """Live mini-loop status from the DB ``Loop`` table (#2513 cutover).
 
     The cutover SOT: each enabled/disabled state, cadence, last-run anchor, and
-    next-due instant comes from the ``Loop`` row (was the retired ``LoopsConfig``
-    + code-cadence ledger). One read here re-points BOTH the statusline and
-    ``t3 loop list`` since both consume :func:`build_report`.
+    next-due instant comes from the ``Loop`` row — the single cadence ledger,
+    replacing the retired code-cadence path. One read here re-points BOTH the
+    statusline and ``t3 loop list`` since both consume :func:`build_report`.
 
     ``held`` is read from the ``LoopState`` control tier the loop tick gates on
     (``loop_enabled`` = ``Loop.enabled`` AND not :func:`loop_held_in_db`), so a

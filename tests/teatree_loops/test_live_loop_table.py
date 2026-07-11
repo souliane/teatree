@@ -3,8 +3,8 @@
 After the cutover the live loop-status snapshot — the SINGLE source both the
 statusline (`schedule.mini_loop_schedules`) and `t3 loop list` (`loop_list`) read —
 derives its mini-loop rows from the ``Loop`` table (enabled / cadence / last_run /
-next-due), NOT from the deleted code-cadence path (``LoopsConfig`` + a cadence-marker
-ledger). So a Loop row's enabled flag, its delay/daily cadence, and its
+next-due), NOT from the deleted code-cadence path (a cadence-marker ledger). So a
+Loop row's enabled flag, its delay/daily cadence, and its
 ``last_run_at`` drive the rendered status.
 """
 
