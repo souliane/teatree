@@ -48,11 +48,11 @@ class SuperuserResult:
 
 def admin(
     *,
-    host: str = typer.Option(_DEFAULT_HOST, "--host", help="Host interface for the admin dev server."),
-    port: int = typer.Option(_DEFAULT_PORT, "--port", help="Port for the admin dev server."),
+    host: str = typer.Option(_DEFAULT_HOST, "--host", help="Host interface for the admin gunicorn server."),
+    port: int = typer.Option(_DEFAULT_PORT, "--port", help="Port for the admin gunicorn server."),
     no_browser: bool = typer.Option(False, "--no-browser", help="Do not open the browser at /admin/."),
 ) -> None:
-    """Run the Django admin for the teatree project on a local dev server."""
+    """Run the Django admin for the teatree project under a local gunicorn server."""
     ensure_django()
 
     _ensure_migrated()

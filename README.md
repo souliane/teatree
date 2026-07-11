@@ -372,8 +372,8 @@ t3 recover                      # find/recover work stranded by a network-outage
 t3 fast-push [-m msg] [--remaining txt]  # leak-gated escape hatch for session hand-offs: stage → in-process leak gates (banned-terms, secret-scan, overlay-leak, public-repo author-identity; fail-closed) → commit → push → create-or-update the PR; skips every non-leak gate; any finding refuses the push
 t3 mutation run                 # scoped mutation testing — mutate only the high-value safety modules a diff touches
 t3 ui                           # browse and run the whole command tree in a terminal UI (needs `uv sync --group ui`)
-t3 admin                        # run the Django admin for the teatree project on a local dev server
-t3 mcp serve                    # serve teatree's structured search (tickets, worktrees, tasks, loop stats, incoming events) as a read-only MCP server over stdio
+t3 admin                        # run the Django admin for the teatree project under a local gunicorn server (WSGI, not runserver)
+t3 mcp serve                    # serve teatree's structured search (tickets, worktrees, tasks, loop stats, incoming events) + gate-preserving writes as an MCP server over stdio
                                  # registered automatically via the plugin-bundled .mcp.json (surfaces as mcp__teatree__* tools) — `t3 setup`/`t3 doctor check` verify it
 t3 dream run [--since <iso>] [--dry-run]  # run one memory-consolidation pass NOW (ignores cadence)
 t3 dream tick                   # cadence-gated cron entry point (~04:00 schedule, decoupled from live loop)
@@ -393,13 +393,16 @@ the full `t3` command tree (core plus every installed overlay). It is in the
 optional `ui` dependency group — install it with `uv sync --group ui` before the
 first run.
 
-`t3 admin` runs the Django admin for the teatree project on a local dev server
-(`http://127.0.0.1:8000/admin/` by default). It applies migrations, ensures a
-superuser exists — creating one non-interactively when absent and printing its
-generated password (override via `T3_ADMIN_USER` / `T3_ADMIN_PASSWORD`) — and
-opens the browser at `/admin/` (`--no-browser` to skip; `--host` / `--port` to
-override). The admin binds to the same teatree database every other `t3` command
-reads, so no overlay context is needed.
+`t3 admin` runs the Django admin for the teatree project under a local gunicorn
+server (`teatree.wsgi:application`, a production WSGI server — not Django's dev
+`runserver`; `http://127.0.0.1:8000/admin/` by default). It applies migrations,
+collects static into `STATIC_ROOT` (so WhiteNoise serves the admin and dashboard
+assets with DEBUG off), ensures a superuser exists — creating one
+non-interactively when absent and printing its generated password (override via
+`T3_ADMIN_USER` / `T3_ADMIN_PASSWORD`) — and opens the browser at `/admin/`
+(`--no-browser` to skip; `--host` / `--port` to override). The admin binds to the
+same teatree database every other `t3` command reads, so no overlay context is
+needed.
 
 ### 2. Loop & Statusline
 
