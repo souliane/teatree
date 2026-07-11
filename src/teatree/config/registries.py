@@ -56,6 +56,10 @@ COLD_SETTINGS: dict[str, Callable[[Any], Any]] = {
     "banned_terms": _parse_str_list,
     "banned_terms_allowlist": _parse_str_list,
     "banned_brands": _parse_str_list,
+    # The consolidated class-tagged registry (`leak`/`prose_collider`/`tone`/`allow`
+    # → term lists) the three lists above collapse into. A JSON table, so it is
+    # validated by the registry-dict parser, not the str-list one.
+    "banned_term_registry": _parse_registry_dict,
     "internal_publish_namespaces": _parse_str_list,
     "private_repos": _parse_str_list,
     "overlay_leak_terms": _parse_str_list,

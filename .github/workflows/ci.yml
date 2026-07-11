@@ -162,7 +162,12 @@ jobs:
       - uses: j178/prek-action@e98a699c41eb69ab013a45817a0406469a748f8d  # v2
         env:
           SKIP: pytest,uv-audit,cyclonedx-sbom
+          # Dual-env during the banned-term-registry transition: the legacy
+          # T3_BANNED_TERMS secret stays authoritative; the consolidated
+          # TEATREE_TERM_REGISTRY is read only once the operator populates it at
+          # cutover (empty until then ⇒ no behaviour change).
           T3_BANNED_TERMS: ${{ secrets.TEATREE_BANNED_TERMS }}
+          TEATREE_TERM_REGISTRY: ${{ secrets.TEATREE_TERM_REGISTRY }}
       # Migration-graph linearity gate. Two PRs branching a migration off
       # the same parent each pass locally and pass their own CI, then merge
       # into a forked graph with multiple leaf nodes that ``migrate`` refuses
@@ -837,13 +842,23 @@ jobs:
         if: github.event_name != 'pull_request'
         env:
           TEATREE_BANNED_BRANDS: ${{ secrets.TEATREE_BANNED_BRANDS }}
+          # Dual-env during the banned-term-registry transition: the legacy brand
+          # secret stays authoritative; the consolidated registry is read only
+          # once the operator populates it at cutover (empty until then).
+          TEATREE_TERM_REGISTRY: ${{ secrets.TEATREE_TERM_REGISTRY }}
         run: uv run t3 banned-terms scan-tree --repo-root . --require-brands
       - name: Full-tree banned-brand + terminology scan (PR — brands optional)
         if: github.event_name == 'pull_request'
         env:
           TEATREE_BANNED_BRANDS: ${{ secrets.TEATREE_BANNED_BRANDS }}
-          T3_BANNED_TERMS_CONFIG: dev/ci/pr-empty-brands.toml
-        run: uv run t3 banned-terms scan-tree --repo-root .
+          TEATREE_TERM_REGISTRY: ${{ secrets.TEATREE_TERM_REGISTRY }}
+        # A fork PR cannot read $TEATREE_BANNED_BRANDS, so the brand list is
+        # genuinely unset. --allow-unset is the EXPLICIT, fail-closed-by-default
+        # opt-in that runs the always-on terminology pass instead of the exit-2
+        # refusal. It replaces the dead T3_BANNED_TERMS_CONFIG file fallback
+        # (which no code ever consumed). Same-repo PRs read the secret and get
+        # the full brand backstop; push/schedule keep --require-brands.
+        run: uv run t3 banned-terms scan-tree --repo-root . --allow-unset
 
   # GATE (push + schedule + PR): full-tree overlay-leak scan. The pre-commit
   # `no-overlay-leak` hook only sees STAGED files; an overlay-scoped name or a

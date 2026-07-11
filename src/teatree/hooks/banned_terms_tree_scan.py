@@ -135,18 +135,25 @@ def load_brand_terms(db_path: Path | None = None) -> tuple[str, ...]:
 
     ``$TEATREE_BANNED_BRANDS`` (comma-separated) takes precedence so CI feeds
     the list from a secret; a set env var short-circuits before any raise.
-    Otherwise reads the DB-home ``banned_brands`` row via the Django-free
-    :mod:`teatree.config.cold_reader` (*db_path* overrides the DB path, else the
-    canonical DB / ``T3_CONFIG_DB``). An explicit ``banned_brands = []`` is the
-    operator's deliberate no-brands choice and returns an empty tuple. A
-    genuinely-unset list — no env, a missing ``banned_brands`` row, or a
-    wrong-typed value — raises :class:`BannedTermsUnsetError`: an unset list is
-    too dangerous to scan as empty because a load bug would look identical to a
-    deliberate no-brands choice.
+    Otherwise the consolidated ``banned_term_registry`` (its ``leak`` class, the
+    tree gate's terms) when it is present (dual-read); else the DB-home
+    ``banned_brands`` row via the Django-free :mod:`teatree.config.cold_reader`
+    (*db_path* overrides the DB path, else the canonical DB / ``T3_CONFIG_DB``).
+    An explicit ``banned_brands = []`` is the operator's deliberate no-brands
+    choice and returns an empty tuple. A genuinely-unset list — no env, no
+    registry, a missing ``banned_brands`` row, or a wrong-typed value — raises
+    :class:`BannedTermsUnsetError`: an unset list is too dangerous to scan as
+    empty because a load bug would look identical to a deliberate no-brands
+    choice.
     """
     env = os.environ.get(_BRANDS_ENV, "")
     if env.strip():
         return tuple(t.strip() for t in env.split(",") if t.strip())
+    from teatree.hooks.banned_term_registry import registry_terms_for_gate  # noqa: PLC0415  dual-read cycle
+
+    registry_terms = registry_terms_for_gate("tree", db_path=db_path)
+    if registry_terms is not None:
+        return registry_terms
     brands = cold_reader.read_setting(_BRANDS_KEY, db_path=db_path)
     if not isinstance(brands, list):
         raise BannedTermsUnsetError.for_key(_BRANDS_KEY, _BRANDS_ENV)

@@ -8,12 +8,13 @@ provide: a committed banned term never appears in a post-landing diff. CI
 runs this on push-to-main and on a schedule.
 """
 
+import json
 from pathlib import Path
 
 import typer
 from rich.console import Console
 
-from teatree.core.banned_terms_tree import BannedTermsUnsetError, scan_committed_tree
+from teatree.core.banned_terms_tree import BannedTermsUnsetError, migrate_registry, scan_committed_tree
 
 banned_terms_app = typer.Typer(no_args_is_help=True, help="Banned-terms backstop scans.")
 _console = Console()
@@ -48,15 +49,25 @@ def scan_tree(
         "regardless of this flag; --require-brands additionally rejects the deliberate "
         "empty list. CI passes it; local dev omits it.",
     ),
+    allow_unset: bool = typer.Option(
+        False,
+        "--allow-unset",
+        help="EXPLICIT opt-in: treat a genuinely-unset brand list as INERT (run the "
+        "always-on terminology pass only, exit 0) instead of failing loud (exit 2). "
+        "Fail-closed BY DEFAULT — the fork-PR CI step passes it (a fork cannot read "
+        "the brand secret); push/schedule omit it so a missing secret stays a LOUD "
+        "refusal on main. Replaces the dead T3_BANNED_TERMS_CONFIG file fallback.",
+    ),
 ) -> None:
     """Scan every git-tracked file for committed banned terms.
 
-    The brand list is DB-home: ``$TEATREE_BANNED_BRANDS`` (a CI secret) or the
-    canonical ``banned_brands`` ``ConfigSetting`` row.
+    The brand list is DB-home: ``$TEATREE_BANNED_BRANDS`` (a CI secret), the
+    consolidated ``banned_term_registry``, or the canonical ``banned_brands``
+    ``ConfigSetting`` row.
     """
     root = repo_root if repo_root is not None else Path.cwd()
     try:
-        result = scan_committed_tree(root)
+        result = scan_committed_tree(root, allow_unset=allow_unset)
     except BannedTermsUnsetError as exc:
         # A genuinely-unset brand list (no config, no env, a missing key) is
         # refused LOUD (exit 2) — never a silent inert scan that hides a load
@@ -96,3 +107,37 @@ def scan_tree(
         "(the diff-only gate cannot see it — it is not in any new diff)."
     )
     raise typer.Exit(_FINDINGS_EXIT_CODE)
+
+
+@banned_terms_app.command(name="migrate-registry")
+def migrate_registry_command() -> None:
+    """Produce the consolidated ``banned_term_registry`` from the three legacy sources.
+
+    Reads the current ``banned_terms`` + ``banned_brands`` + allowlist, class-tags
+    them (``banned_brands`` → ``leak``, ``banned_terms`` → ``prose_collider``,
+    the allowlist → ``allow``), and SELF-VERIFIES the result reproduces every
+    effective term the old config yields. On success it prints the JSON registry
+    value to set at cutover (``t3 <overlay> config_setting set
+    banned_term_registry '<json>'``, PR 2 — this command never writes it). If the
+    migration would drop or change ANY term it FAILS LOUD (exit 2) with the diff.
+    """
+    result = migrate_registry()
+    verification = result.verification
+    if not verification.ok:
+        _console.print(
+            "[red]migrate-registry: MIGRATION IS LOSSY — refusing.[/] "
+            "The registry would not reproduce the old term set:"
+        )
+        for line in verification.failure_reason().splitlines():
+            _console.print(f"  {line}")
+        raise typer.Exit(_MISCONFIGURED_EXIT_CODE)
+
+    counts = ", ".join(f"{term_class}={len(terms)}" for term_class, terms in result.registry.items())
+    _console.print(f"[green]migrate-registry: lossless — the registry reproduces every effective term ({counts}).[/]")
+    # Plain, un-styled JSON so the operator can copy it verbatim into config_setting.
+    typer.echo(json.dumps(result.registry, indent=2, sort_keys=True))
+    _console.print(
+        "\nSet it at cutover (PR 2): "
+        "[cyan]t3 <overlay> config_setting set banned_term_registry '<the JSON above>'[/], "
+        "then remove the T3_BANNED_TERMS / TEATREE_BANNED_BRANDS secrets."
+    )

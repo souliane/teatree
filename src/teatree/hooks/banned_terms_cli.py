@@ -59,11 +59,9 @@ from teatree.utils.run import CommandFailedError, TimeoutExpired, run_allowed_to
 # the commit, so the budget is deliberately tight.
 _GIT_DIFF_TIMEOUT_S = 10
 
-# The REQUIRED term-list key (an unset value fails loud) vs the OPTIONAL
-# allow-list key (an unset value defaults to empty). See ``resolve_banned_terms``
-# / ``_load_allowlist`` for the split.
+# The REQUIRED term-list key: an unset value fails loud (the optional allowlist
+# carve-out is read via ``banned_term_registry.allowlist_terms``, empty when unset).
 _TERMS_KEY = "banned_terms"
-_ALLOWLIST_KEY = "banned_terms_allowlist"
 
 # The env override (comma-separated) that WINS over the DB — the
 # secret-from-CI-secret path where the DB row is not populated.
@@ -94,13 +92,16 @@ def resolve_banned_terms(
 
     The single source-resolution every banned-terms scanner shares, so they
     cannot diverge on WHERE the term list comes from. Resolution order:
-    ``T3_BANNED_TERMS`` env override → DB-home ``banned_terms`` row.
+    ``T3_BANNED_TERMS`` env override → the consolidated ``banned_term_registry``
+    (its diff-gate classes) → the legacy DB-home ``banned_terms`` row.
 
     A non-empty *env_value* (or the ``T3_BANNED_TERMS`` process env) wins,
-    comma-split. Else the ``banned_terms`` DB list, which RAISES
-    :class:`BannedTermsUnsetError` when the row is genuinely unset — the
-    fail-closed signal that an unreadable source must never silently degrade to
-    an empty ban list. An explicit ``banned_terms = []`` is a deliberate no-op
+    comma-split — the CI-secret path stays authoritative through the registry
+    transition. Else the consolidated registry when it is present (dual-read,
+    ``banned_term_registry``); else the ``banned_terms`` DB list, which RAISES
+    :class:`BannedTermsUnsetError` when BOTH the registry and the row are unset —
+    the fail-closed signal that an unreadable source must never silently degrade
+    to an empty ban list. An explicit ``banned_terms = []`` is a deliberate no-op
     and returns ``()``.
 
     *config_path* is accepted for the legacy pre-DB caller (``scripts/privacy_scan``)
@@ -111,6 +112,11 @@ def resolve_banned_terms(
     env = env_value if env_value.strip() else os.environ.get(_TERMS_ENV, "")
     if env.strip():
         return tuple(t.strip() for t in env.split(",") if t.strip())
+    from teatree.hooks.banned_term_registry import registry_terms_for_gate  # noqa: PLC0415  dual-read cycle
+
+    registry_terms = registry_terms_for_gate("diff", db_path=db_path)
+    if registry_terms is not None:
+        return registry_terms
     terms = _db_array(_TERMS_KEY, db_path)
     if terms is None:
         raise BannedTermsUnsetError.for_key(_TERMS_KEY, _TERMS_ENV)
@@ -127,10 +133,13 @@ def _load_allowlist(db_path: Path | None = None) -> tuple[str, ...]:
     shorter banned term (a bare org slug) can no longer surface inside a longer
     company-owned identifier. Unlike ``banned_terms`` the allow-list is OPTIONAL:
     an absent row defaults to empty (preserving the prior behaviour), never a
-    raise. Reads the canonical ``ConfigSetting`` store via
-    :mod:`teatree.config.cold_reader`.
+    raise. Dual-read: the consolidated ``banned_term_registry`` ``allow`` class
+    when present, else the legacy ``banned_terms_allowlist`` row. Reads the
+    canonical ``ConfigSetting`` store via :mod:`teatree.config.cold_reader`.
     """
-    return _db_array(_ALLOWLIST_KEY, db_path) or ()
+    from teatree.hooks.banned_term_registry import allowlist_terms  # noqa: PLC0415  dual-read cycle
+
+    return allowlist_terms(db_path)
 
 
 def staged_added_lines(repo: Path, file: str) -> list[str] | None:
