@@ -202,7 +202,8 @@ def expire_stale_jobs() -> dict[str, int]:
 
 
 def ensure_maintenance_chains() -> None:
-    """Seed the reconcile + prune + stale-job-expiry + usage-window-recovery chain heads if absent."""
+    """Seed the reconcile + prune + stale-job-expiry + usage-window-recovery + preset chains if absent."""
+    from teatree.loops.preset_transitions import ensure_preset_transitions_chain  # noqa: PLC0415 — cycle-safe
     from teatree.loops.usage_window_recovery import ensure_usage_window_recovery_chain  # noqa: PLC0415 — cycle-safe
 
     now = timezone.now()
@@ -215,3 +216,6 @@ def ensure_maintenance_chains() -> None:
     # Directive #3: the self-rescheduling usage-window re-arm chain. Its body is inert while
     # ``limit_autorecovery_enabled`` is OFF, so seeding it unconditionally is dark-safe.
     ensure_usage_window_recovery_chain()
+    # #3159: the preset-transition side-effect chain (override reap, availability pin,
+    # one Slack line per switch). Inert with no active preset — a cheap keepalive.
+    ensure_preset_transitions_chain()

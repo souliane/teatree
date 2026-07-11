@@ -159,6 +159,44 @@ class TestLoopsListReflectsPauseHold(django.test.TestCase):
         assert demo["enabled"] is True
 
 
+@django.test.override_settings(USE_TZ=True, TIME_ZONE="UTC")
+class TestLoopsListPresetEffectiveColumn(django.test.TestCase):
+    """#3159: a preset-masked loop reads ``masked (…)`` instead of silently vanishing."""
+
+    def _activate(self, preset_name: str, entries: dict[str, bool]) -> None:
+        from teatree.core.models import (  # noqa: PLC0415 — deferred import (cycle-safe / pre-app-registry)
+            LoopPreset,
+            LoopPresetOverride,
+        )
+
+        LoopPreset.objects.create(name=preset_name, entries=entries)
+        LoopPresetOverride.objects.set_override(preset_name)
+
+    def test_masked_off_loop_is_annotated(self) -> None:
+        Loop.objects.create(name="demo-mask", delay_seconds=60, prompt=_prompt(), enabled=True)
+        self._activate("heads-down", {"demo-mask": False})
+        line = next(ln for ln in _run().splitlines() if ln.strip().startswith("demo-mask"))
+        assert "masked" in line
+
+    def test_forced_on_loop_is_annotated(self) -> None:
+        Loop.objects.create(name="demo-forced", delay_seconds=60, prompt=_prompt(), enabled=False)
+        self._activate("engaged", {"demo-forced": True})
+        line = next(ln for ln in _run().splitlines() if ln.strip().startswith("demo-forced"))
+        assert "forced-on" in line
+
+    def test_json_carries_effective_layer(self) -> None:
+        Loop.objects.create(name="demo-json-mask", delay_seconds=60, prompt=_prompt(), enabled=True)
+        self._activate("heads-down", {"demo-json-mask": False})
+        demo = next(e for e in json.loads(_run("--json"))["loops"] if e["name"] == "demo-json-mask")
+        assert demo["effective_layer"] == "override"
+        assert demo["effective_admitted"] is False
+
+    def test_no_preset_leaves_base_layer(self) -> None:
+        Loop.objects.create(name="demo-base", delay_seconds=60, prompt=_prompt(), enabled=True)
+        demo = next(e for e in json.loads(_run("--json"))["loops"] if e["name"] == "demo-base")
+        assert demo["effective_layer"] == "base"
+
+
 @django.test.override_settings(USE_TZ=True)
 class TestLoopsListReadOnly(django.test.TestCase):
     def test_no_rows_created_or_mutated(self) -> None:

@@ -28,6 +28,7 @@ from teatree.cli.doctor.checks import (
     _check_editable_sanity,
     _check_entrypoint_is_primary_clone,
     _check_legacy_overlay_alias,
+    _check_loop_presets,
     _check_mcp_connectivity,
     _check_single_db,
     _check_singletons,
@@ -77,6 +78,7 @@ __all__ = (
     "_check_editable_sanity",
     "_check_entrypoint_is_primary_clone",
     "_check_legacy_overlay_alias",
+    "_check_loop_presets",
     "_check_mcp_connectivity",
     "_check_single_db",
     "_check_singletons",
@@ -570,6 +572,13 @@ def check() -> bool:
     # PR-28: warn when the loop worker is enabled but no worker holds the flock —
     # the default-ON loops are silently dead until `t3 worker ensure` spawns one.
     ok = _check_worker_running() and ok
+
+    # #3159: warn on a dangling loop-preset reference (deleted preset / loop /
+    # schedule). Surfacing-only (never gates the exit code), like the sibling
+    # ORM-reading advisories below: the by-name references fail OPEN at read time
+    # (resolve to base config), so a dangling target is a WARN to fix, not a hard
+    # doctor failure. Reads the ORM, so it runs post-ensure_django.
+    _check_loop_presets()
 
     # Pre-investigation stale-clone hard-fail gate (#948). Surfaces at
     # session start so a bug-investigation sub-agent cannot start root-

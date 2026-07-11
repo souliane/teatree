@@ -88,6 +88,11 @@ COLD_SETTINGS: dict[str, Callable[[Any], Any]] = {
     "timeouts": _parse_registry_dict,
     "loops": _parse_registry_dict,
     "danger_gate_fail_open": _parse_strict_bool,
+    # Loop preset + schedule layer (#3159): the active weekly-schedule selector and
+    # the default-off low-power auto-engage flag + its re-pointable target preset.
+    "active_loop_schedule": _parse_strict_str,
+    "low_power_auto_engage": _parse_strict_bool,
+    "low_power_preset_name": _parse_strict_str,
 }
 
 COLD_SETTING_KEYS: tuple[str, ...] = tuple(COLD_SETTINGS)

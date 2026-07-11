@@ -23,6 +23,7 @@ from django.utils import timezone
 from django_typer.management import TyperCommand
 
 from teatree.core.models import Loop, LoopState, LoopStatus
+from teatree.loops.preset_status import LoopVerdict, effective_verdicts
 
 _NEVER = "—"
 _SECONDS_PER_MINUTE = 60
@@ -68,14 +69,26 @@ def _next_label(loop: Loop, status: LoopStatus, now: dt.datetime) -> str:
     return f"in {_human_duration((next_at - now).total_seconds())}"
 
 
-def _line(loop: Loop, status: LoopStatus, now: dt.datetime) -> str:
+def _preset_note(verdict: LoopVerdict | None) -> str:
+    """The masked/forced note when a preset (not base/hold) decides the loop, else ``""``.
+
+    A masked-off loop reads ``masked (preset heads-down)`` instead of silently
+    vanishing; a preset that forces a base-disabled loop on reads ``forced-on``.
+    """
+    if verdict is None or verdict.layer in {"base", "hold"}:
+        return ""
+    tag = "masked" if not verdict.admitted else "forced-on"
+    return f"  {tag} ({verdict.detail})"
+
+
+def _line(loop: Loop, status: LoopStatus, now: dt.datetime, verdict: LoopVerdict | None) -> str:
     state = _effective_state(loop, status)
     last = _human_duration(loop.seconds_since_run(now))
     nxt = _next_label(loop, status, now)
     line = f"  {loop.name:<22} {state:<8} {loop.cadence_label:<13} last {last:<10} next {nxt}"
     if loop.colleague_facing:
         line += "  [colleague-facing]"
-    return line
+    return line + _preset_note(verdict)
 
 
 def _description_line(loop: Loop) -> str | None:
@@ -89,7 +102,7 @@ def _description_line(loop: Loop) -> str | None:
     return f"      {loop.description}"
 
 
-def _payload(loop: Loop, status: LoopStatus, now: dt.datetime) -> dict[str, Any]:
+def _payload(loop: Loop, status: LoopStatus, now: dt.datetime, verdict: LoopVerdict | None) -> dict[str, Any]:
     next_at = loop.next_run_at()
     return {
         "name": loop.name,
@@ -103,6 +116,8 @@ def _payload(loop: Loop, status: LoopStatus, now: dt.datetime) -> dict[str, Any]
         "next_run_at": next_at.isoformat() if next_at else "",
         "due": loop.is_due(now),
         "colleague_facing": loop.colleague_facing,
+        "effective_admitted": verdict.admitted if verdict is not None else None,
+        "effective_layer": verdict.layer if verdict is not None else "base",
     }
 
 
@@ -118,13 +133,17 @@ class Command(TyperCommand):
         loops = list(Loop.objects.all())
         # One read of the LoopState control plane; an absent name → ENABLED default.
         held = {row.name: LoopStatus(row.status) for row in LoopState.objects.all()}
+        # One read of the preset mask (L3/L2): the per-loop effective verdict + layer.
+        verdicts = {verdict.name: verdict for verdict in effective_verdicts(now)}
         if json_output:
-            payload = [_payload(loop, held.get(loop.name, LoopStatus.ENABLED), now) for loop in loops]
+            payload = [
+                _payload(loop, held.get(loop.name, LoopStatus.ENABLED), now, verdicts.get(loop.name)) for loop in loops
+            ]
             self.stdout.write(json.dumps({"loops": payload}, indent=2))
             return
         self.stdout.write("loops:")
         for loop in loops:
-            self.stdout.write(_line(loop, held.get(loop.name, LoopStatus.ENABLED), now))
+            self.stdout.write(_line(loop, held.get(loop.name, LoopStatus.ENABLED), now, verdicts.get(loop.name)))
             description_line = _description_line(loop)
             if description_line is not None:
                 self.stdout.write(description_line)

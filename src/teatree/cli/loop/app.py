@@ -33,6 +33,8 @@ from teatree.cli.loop.claim_next import claim_next_command
 from teatree.cli.loop.drain_queue import drain_queue_app
 from teatree.cli.loop.listing import list_command
 from teatree.cli.loop.owner import register as register_loop_owner
+from teatree.cli.loop.preset import register as register_loop_preset
+from teatree.cli.loop.schedule import register as register_loop_schedule
 from teatree.cli.loop.slack_answer import slack_answer_app
 from teatree.cli.loop.state import register as register_loop_state
 from teatree.config import cadence_seconds
@@ -381,3 +383,9 @@ loop_app.command("list")(list_command)
 # pause/resume/disable/enable <name>`` + ``t3 loop loop-state <name>``. Split
 # off (same module-health reason) into ``teatree.cli.loop.state``.
 register_loop_state(loop_app)
+
+# #3159 — the preset + weekly-schedule layer: ``t3 loop preset …`` and
+# ``t3 loop schedule …`` (each a nested subgroup delegating to a management
+# command), split into ``teatree.cli.loop.preset`` / ``…schedule``.
+register_loop_preset(loop_app)
+register_loop_schedule(loop_app)

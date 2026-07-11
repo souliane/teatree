@@ -510,6 +510,11 @@ depends_on = ["teatree.types", "teatree.core.models", "teatree.loop.loop_state_d
 [[modules]]
 path = "teatree.loop.loop_state_db"
 layer = "domain"
+depends_on = ["teatree.core.models", "teatree.loop.preset_resolution"]
+
+[[modules]]
+path = "teatree.loop.preset_resolution"
+layer = "domain"
 depends_on = ["teatree.core.models"]
 
 [[modules]]
@@ -655,6 +660,7 @@ depends_on = [
   "teatree.core",
   "teatree.loop",
   "teatree.loop.loop_state_db",
+  "teatree.loop.preset_resolution",
   "teatree.messaging",
   "teatree.utils"
 ]

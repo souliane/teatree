@@ -57,10 +57,14 @@ from teatree.core.backend_factory import code_host_from_overlay, iter_overlay_ba
 from teatree.core.loop_lease_manager import PER_LOOP_TICK_MUTEX_PREFIX, per_loop_owner_slot
 from teatree.core.models import LoopLease
 from teatree.loop.loop_cadences import loop_owner_ttl_seconds
+from teatree.loop.preset_resolution import active_overlay_scope
+from teatree.loop.statusline import set_preset_segment_reader
+from teatree.loops.preset_status import statusline_chunk
 
 if TYPE_CHECKING:
     from collections.abc import Callable
 
+    from teatree.core.backend_factory import OverlayBackends
     from teatree.loop.job_identity import _ScannerJob
     from teatree.loop.tick import TickReport, TickRequest
     from teatree.loops.base import BuildJobsContext
@@ -83,6 +87,25 @@ def _scanner_context(request: "TickRequest") -> "BuildJobsContext":
         "notion_client": request.notion_client,
         "ready_labels": request.ready_labels,
     }
+
+
+def _focus_scoped_backends() -> list["OverlayBackends"]:
+    """Full-fleet overlay backends, restricted to a focus preset's ``overlay_scope`` (#3159 item 7).
+
+    A ``focus:<overlay>`` preset carries an ``overlay_scope`` allowlist so a tick
+    scans only that backend. Fail-open at every step: no active preset (or an empty
+    scope) scans the whole fleet, and a scope that matches no overlay also falls
+    back to the whole fleet rather than scanning nothing.
+    """
+    backends = iter_overlay_backends()
+    try:
+        scope = set(active_overlay_scope())
+    except Exception:  # noqa: BLE001 — the preset layer must never blank the scan set
+        return backends
+    if not scope:
+        return backends
+    filtered = [backend for backend in backends if backend.name in scope]
+    return filtered or backends
 
 
 def _scoped_jobs_builder(only: str) -> "Callable[[TickRequest, dt.datetime], list[_ScannerJob]]":
@@ -172,7 +195,7 @@ class Command(TyperCommand):
 
         if overlay:
             return TickRequest(host=code_host_from_overlay(), messaging=messaging_from_overlay())
-        return TickRequest(backends=iter_overlay_backends())
+        return TickRequest(backends=_focus_scoped_backends())
 
     def _emit_report(self, report: "TickReport", *, json_output: bool) -> None:
         if json_output:
@@ -289,15 +312,17 @@ class Command(TyperCommand):
         from teatree.loops.schedule import mini_loop_schedules  # noqa: PLC0415
 
         # The statusline dedicated loop line shows every enabled loop with its own
-        # next-tick countdown (#1400); install the live DB-backed reader so this
-        # per-loop tick's render keeps the full loop line, then reset after the
-        # tick so the process-global seam never leaks.
+        # next-tick countdown (#1400) plus the active-preset segment (#3159); install
+        # the live DB-backed readers so this per-loop tick's render keeps the full
+        # loop line, then reset after the tick so the process-global seams never leak.
         set_mini_loop_schedules_reader(mini_loop_schedules)
+        set_preset_segment_reader(statusline_chunk)
         try:
             request = self._build_request(overlay)
             report = run_tick(request, statusline_path=statusline_file, jobs_builder=_scoped_jobs_builder(loop))
         finally:
             set_mini_loop_schedules_reader(None)
+            set_preset_segment_reader(None)
             LoopLease.objects.release(tick_mutex, owner=owner)
 
         self._emit_report(report, json_output=json_output)

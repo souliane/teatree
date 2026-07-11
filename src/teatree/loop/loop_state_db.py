@@ -30,17 +30,29 @@ leaf may import it downward.
 
 import logging
 
+from teatree.loop.preset_resolution import resolve_preset_state
+
 logger = logging.getLogger(__name__)
 
 
-def loop_state_admits(*, configured_enabled: bool, held: bool) -> bool:
-    """The combined enable verdict: a loop runs iff it is CONFIGURED-enabled AND not runtime-HELD.
+def loop_state_admits(*, configured_enabled: bool, held: bool, preset_state: bool | None = None) -> bool:
+    """The combined enable verdict: NOT runtime-HELD, then the preset mask over base config.
+
+    Resolution: a durable ``LoopState`` hold (``held``) always wins (the L4
+    emergency brake). Otherwise the read-time preset mask decides — ``preset_state``
+    is the L3/L2 opinion from :func:`teatree.loop.preset_resolution.resolve_preset_state`
+    (``True`` forces on, ``False`` forces off), and ``None`` means "no preset opinion",
+    falling through to L1 ``configured_enabled`` (``Loop.enabled``).
+
+    **Empty-table no-op:** the neutral ``preset_state=None`` default makes this
+    ``not held and configured_enabled`` — byte-for-byte the pre-#3159 two-plane
+    verdict — so an install with no presets resolves every loop exactly as today.
 
     The single predicate both :func:`loop_enabled` (single-lookup) and the live
-    loop-table tick apply, so the two planes are combined identically everywhere
-    and can never drift into a tier-subset verdict.
+    loop-table tick apply, so the layers are combined identically everywhere and
+    can never drift into a tier-subset verdict.
     """
-    return configured_enabled and not held
+    return not held and (preset_state if preset_state is not None else configured_enabled)
 
 
 def loop_held_in_db(name: str) -> bool:
@@ -61,7 +73,7 @@ def loop_held_in_db(name: str) -> bool:
     false-quiet class the fleet-safety work exists to surface.
     """
     try:
-        from teatree.core.models import LoopState  # noqa: PLC0415
+        from teatree.core.models import LoopState  # noqa: PLC0415 — deferred import (cycle-safe / pre-app-registry)
 
         return not LoopState.objects.is_runnable(name)
     except Exception:
@@ -98,6 +110,9 @@ def loop_enabled(name: str) -> bool:
     bulk-loaded rows, so no site drifts into a tier-subset.
 
     A missing row or ``enabled=False`` is a real, deterministic disable (``False``).
+    The read-time preset mask (L3 override / L2 schedule slot) resolves through the
+    SAME predicate, so the off-live-tick daily gates and the connector preflight
+    honour a preset without a code change at each call site.
     FAIL SAFE: a genuine read error (DB unavailable, Django not configured) resolves
     to ``True`` so a hiccup never silently disables a loop — symmetric with
     :func:`loop_held_in_db`.
@@ -111,7 +126,9 @@ def loop_enabled(name: str) -> bool:
         return True
     if row is None:
         return False
-    return loop_state_admits(configured_enabled=row.enabled, held=loop_held_in_db(name))
+    return loop_state_admits(
+        configured_enabled=row.enabled, held=loop_held_in_db(name), preset_state=resolve_preset_state(name)
+    )
 
 
 __all__ = ["held_loop_names", "loop_enabled", "loop_held_in_db", "loop_state_admits"]
