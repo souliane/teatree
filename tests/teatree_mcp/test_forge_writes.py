@@ -149,7 +149,7 @@ class TestForgeWriteSendProxyRefusal(TestCase):
         refused = SimpleNamespace(allowed=False, reason="send-proxy refused the destination", payload="")
         with (
             _forge_env(fake),
-            patch("teatree.mcp.services_forge.route_send", return_value=refused),
+            patch("teatree.core.send_proxy.route_send", return_value=refused),
             pytest.raises(Exception, match="send-proxy refused"),
         ):
             _call("github_issue_create", {"repo": "acme/widgets", "title": "t", "body": "b"})

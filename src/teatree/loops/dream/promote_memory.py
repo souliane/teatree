@@ -38,6 +38,7 @@ from teatree.core.backend_protocols import CodeHostBackend
 from teatree.core.models import ConsolidatedMemory
 from teatree.core.models.implemented_issue_marker import NEEDS_TRIAGE_LABEL
 from teatree.core.review.review_findings import find_bare_references, neutralize_bare_references
+from teatree.core.send_proxy import OutboundBlockedError, route_forge_write
 from teatree.hooks import banned_terms_scanner
 from teatree.types import RawAPIDict
 
@@ -78,17 +79,29 @@ class MemoryDisposition(Enum):
 MemoryClassifier = Callable[[ConsolidatedMemory], MemoryDisposition]
 
 
+def points_at_core_fix(destination: str) -> bool:
+    """Whether *destination* names a teatree-core fix path (skills / src / scripts / BLUEPRINT / …).
+
+    The single classifier behind Pass-2 triage (:func:`triage_disposition`) and the
+    compliance recurrence redirect
+    (:func:`teatree.loops.dream.compliance._is_memory_only`): a home under teatree's
+    own code/skills is a core-generic gap to fix in code; any other home — or no
+    home — is user-specific and stays a memory.
+    """
+    home = destination.strip().lower()
+    return bool(home) and home.startswith(_CORE_DESTINATION_PREFIXES)
+
+
 def triage_disposition(row: ConsolidatedMemory) -> MemoryDisposition:
     """Classify a consolidated rule as user-specific or a core-generic teatree gap.
 
-    Reads the ``durable_destination`` hint the distiller already computed: a home
-    under teatree's own skills/source/scripts/BLUEPRINT is core-generic doctrine to
-    fix in code; any other home — or no home — is user-specific and stays a memory.
-    Conservative on the empty case: an unclassifiable row is kept as memory, never
-    auto-ticketed.
+    Reads the ``durable_destination`` hint the distiller already computed via the
+    shared :func:`points_at_core_fix` classifier: a home under teatree's own
+    skills/source/scripts/BLUEPRINT is core-generic doctrine to fix in code; any
+    other home — or no home — is user-specific and stays a memory. Conservative on
+    the empty case: an unclassifiable row is kept as memory, never auto-ticketed.
     """
-    destination = row.durable_destination.strip().lower()
-    if destination and destination.startswith(_CORE_DESTINATION_PREFIXES):
+    if points_at_core_fix(row.durable_destination):
         return MemoryDisposition.CORE_GAP
     return MemoryDisposition.USER_SPECIFIC
 
@@ -225,6 +238,15 @@ def _file_one_reconciliation(host: CodeHostBackend, conflict: "BindingConflict",
     if reason:
         return TicketOutcome(cluster_key=key, filed=False, withheld=True, reason=reason)
 
+    # Route through the shared forge-write seam (public-repo leak gate + #117
+    # send-proxy audit), the same path the MCP tools use — so this dream-loop
+    # write is no longer unscrubbed. A leak/blocked verdict withholds the issue.
+    try:
+        title = route_forge_write(forge="", repo=repo, text=title, action="dream_reconcile", target=repo)
+        body = route_forge_write(forge="", repo=repo, text=body, action="dream_reconcile", target=repo)
+    except OutboundBlockedError as exc:
+        return TicketOutcome(cluster_key=key, filed=False, withheld=True, reason=str(exc))
+
     raw = host.create_issue(repo=repo, title=title, body=body, labels=[_GAP_MARKER, NEEDS_TRIAGE_LABEL])
     return TicketOutcome(cluster_key=key, filed=True, ticket_url=_issue_url(raw), reason="filed new issue")
 
@@ -301,6 +323,7 @@ __all__ = [
     "TicketOutcome",
     "file_binding_reconciliation_tickets",
     "file_core_gap_tickets",
+    "points_at_core_fix",
     "retire_resolved_memories",
     "triage_disposition",
 ]
