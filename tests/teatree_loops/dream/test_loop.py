@@ -33,6 +33,8 @@ from teatree.loops.dream.loop import (
     DREAM_PASS_BUDGET_SECONDS,
     MINI_LOOP,
     automation_asks_enabled,
+    compliance_escalate_enabled,
+    compliance_measure_enabled,
     cross_link_enabled,
     decay_enabled,
     derive_evals_enabled,
@@ -261,6 +263,74 @@ class AutomationAsksToggleTestCase(TestCase):
         with patch.dict("os.environ", {"T3_CONFIG_DB": str(self.db)}):
             os.environ.pop("T3_DREAM_AUTOMATION_ASKS", None)
             assert automation_asks_enabled() is False
+
+
+class ComplianceMeasureToggleTestCase(TestCase):
+    """Compliance MEASUREMENT (the root KPI) runs every pass — default ON (#2663)."""
+
+    def setUp(self) -> None:
+        self.db = Path(self.enterContext(tempfile.TemporaryDirectory())) / "config.sqlite3"
+
+    def test_default_is_on_with_no_env_no_db(self) -> None:
+        with patch.dict("os.environ", {}, clear=False):
+            os.environ.pop("T3_DREAM_COMPLIANCE_MEASURE", None)
+            assert compliance_measure_enabled() is True
+
+    def test_falsy_env_disables(self) -> None:
+        for value in ("0", "false", "no", "off"):
+            with patch.dict("os.environ", {"T3_DREAM_COMPLIANCE_MEASURE": value}):
+                assert compliance_measure_enabled() is False, value
+
+    def test_db_false_disables_when_env_absent(self) -> None:
+        _seed_dream(self.db, compliance_measure=False)
+        with patch.dict("os.environ", {"T3_CONFIG_DB": str(self.db)}):
+            os.environ.pop("T3_DREAM_COMPLIANCE_MEASURE", None)
+            assert compliance_measure_enabled() is False
+
+    def test_env_truthy_wins_over_db_false(self) -> None:
+        _seed_dream(self.db, compliance_measure=False)
+        with patch.dict("os.environ", {"T3_CONFIG_DB": str(self.db), "T3_DREAM_COMPLIANCE_MEASURE": "1"}):
+            assert compliance_measure_enabled() is True
+
+    def test_corrupt_config_falls_back_to_default_on_never_raises(self) -> None:
+        _seed_setting(self.db, "loops", "{not valid json")
+        with patch.dict("os.environ", {"T3_CONFIG_DB": str(self.db)}):
+            os.environ.pop("T3_DREAM_COMPLIANCE_MEASURE", None)
+            assert compliance_measure_enabled() is True
+
+
+class ComplianceEscalateToggleTestCase(TestCase):
+    """Compliance ESCALATION files enforcement tickets, so it is default OFF (#2663)."""
+
+    def setUp(self) -> None:
+        self.db = Path(self.enterContext(tempfile.TemporaryDirectory())) / "config.sqlite3"
+
+    def test_default_is_off_with_no_env_no_db(self) -> None:
+        with patch.dict("os.environ", {}, clear=False):
+            os.environ.pop("T3_DREAM_COMPLIANCE_ESCALATE", None)
+            assert compliance_escalate_enabled() is False
+
+    def test_truthy_env_enables(self) -> None:
+        for value in ("1", "true", "yes", "on"):
+            with patch.dict("os.environ", {"T3_DREAM_COMPLIANCE_ESCALATE": value}):
+                assert compliance_escalate_enabled() is True, value
+
+    def test_db_true_enables_when_env_absent(self) -> None:
+        _seed_dream(self.db, compliance_escalate=True)
+        with patch.dict("os.environ", {"T3_CONFIG_DB": str(self.db)}):
+            os.environ.pop("T3_DREAM_COMPLIANCE_ESCALATE", None)
+            assert compliance_escalate_enabled() is True
+
+    def test_env_falsy_wins_over_db_true(self) -> None:
+        _seed_dream(self.db, compliance_escalate=True)
+        with patch.dict("os.environ", {"T3_CONFIG_DB": str(self.db), "T3_DREAM_COMPLIANCE_ESCALATE": "0"}):
+            assert compliance_escalate_enabled() is False
+
+    def test_corrupt_config_falls_back_to_default_off_never_raises(self) -> None:
+        _seed_setting(self.db, "loops", "{not valid json")
+        with patch.dict("os.environ", {"T3_CONFIG_DB": str(self.db)}):
+            os.environ.pop("T3_DREAM_COMPLIANCE_ESCALATE", None)
+            assert compliance_escalate_enabled() is False
 
 
 class DeriveEvalsToggleTestCase(TestCase):

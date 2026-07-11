@@ -14,13 +14,15 @@ import pytest
 from django.test import TestCase
 
 from teatree.core.backend_protocols import CodeHostBackend
-from teatree.core.models import InstructionComplianceRecord, RemediationKind, RuleSource
+from teatree.core.models import InstructionComplianceRecord, InstructionComplianceSnapshot, RemediationKind, RuleSource
 from teatree.loops.dream.compliance import (
     ComplianceFinding,
     build_compliance_snapshot,
     detect_compliance_failures,
     escalate_recurrences,
     persist_compliance_pass,
+    run_compliance_escalation,
+    run_compliance_measurement,
 )
 from teatree.loops.dream.engine import ConsolidationExtract, WeightedSnippet
 
@@ -198,6 +200,82 @@ class PersistCompliancePassTestCase(TestCase):
         assert row.remediation == RemediationKind.ESCALATION
         # The escalation is now the standing umbrella (the recurrence rides it + a coding task).
         assert row.escalation_url == UMBRELLA
+
+
+class RunComplianceMeasurementTestCase(TestCase):
+    """Measurement runs on EVERY pass (default ON): it persists a snapshot, never files."""
+
+    def _violation_extract(self) -> ConsolidationExtract:
+        return _extract(
+            _memory_snippet("feedback_askuserquestion_overuse.md", _MEMORY_BODY),
+            _transcript_snippet("session-a.jsonl", _VIOLATION_TURN),
+        )
+
+    def test_measurement_persists_a_snapshot_and_carries_findings(self) -> None:
+        measurement = run_compliance_measurement(extract=self._violation_extract(), dry_run=False)
+        assert measurement.snapshot is not None
+        assert InstructionComplianceSnapshot.objects.count() == 1
+        assert any(f.is_recurrence for f in measurement.findings)
+        assert "compliance 1 violation(s)" in measurement.summary
+
+    def test_dry_run_measurement_persists_no_rows(self) -> None:
+        # RED before the split: the old run_compliance_phase persisted the snapshot
+        # UNCONDITIONALLY (only escalation honoured dry_run), so a --dry-run preview
+        # wrote real rows. Measurement must record nothing under dry_run.
+        measurement = run_compliance_measurement(extract=self._violation_extract(), dry_run=True)
+        assert measurement.snapshot is None
+        assert InstructionComplianceSnapshot.objects.count() == 0
+        assert InstructionComplianceRecord.objects.count() == 0
+        # The findings are still surfaced so a downstream escalation could act on them.
+        assert any(f.is_recurrence for f in measurement.findings)
+
+    def test_zero_instructions_records_nothing_and_warns(self) -> None:
+        with self.assertLogs("teatree.loops.dream.compliance", level="WARNING") as logs:
+            measurement = run_compliance_measurement(extract=_extract(), dry_run=False)
+        assert measurement.snapshot is None
+        assert measurement.summary == ""
+        assert InstructionComplianceSnapshot.objects.count() == 0
+        assert any("0 instructions" in line for line in logs.output)
+
+
+class RunComplianceEscalationTestCase(TestCase):
+    """Escalation is the default-OFF, --full-gated half: it files recurrences, never a memory."""
+
+    def _recurrence(self) -> ComplianceFinding:
+        return ComplianceFinding(
+            rule_source=RuleSource.MEMORY,
+            rule_identity="feedback_askuserquestion_overuse",
+            evidence="AskUserQuestion fired again despite the memory",
+            is_recurrence=True,
+        )
+
+    def test_recurrence_is_escalated_via_the_host(self) -> None:
+        host = _fake_host()
+        summary = run_compliance_escalation(snapshot=None, findings=[self._recurrence()], host=host, dry_run=False)
+        assert summary == "; escalated 1/1 compliance recurrence(s)"
+        host.update_issue.assert_called_once()
+
+    def test_no_host_is_a_skip_warning_not_a_raise(self) -> None:
+        summary = run_compliance_escalation(snapshot=None, findings=[self._recurrence()], host=None, dry_run=False)
+        assert "no teatree code host resolved" in summary
+
+    def test_dry_run_files_nothing(self) -> None:
+        host = _fake_host()
+        summary = run_compliance_escalation(snapshot=None, findings=[self._recurrence()], host=host, dry_run=True)
+        assert summary == "; escalated 0/1 compliance recurrence(s)"
+        host.update_issue.assert_not_called()
+
+    def test_no_recurrence_returns_empty_clause(self) -> None:
+        first_occurrence = ComplianceFinding(
+            rule_source=RuleSource.IN_SESSION,
+            rule_identity="rename-public-api",
+            evidence="renamed the API again",
+            is_recurrence=False,
+        )
+        host = _fake_host()
+        summary = run_compliance_escalation(snapshot=None, findings=[first_occurrence], host=host, dry_run=False)
+        assert summary == ""
+        host.update_issue.assert_not_called()
 
 
 class BuildComplianceSnapshotTestCase(TestCase):

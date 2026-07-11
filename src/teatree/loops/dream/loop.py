@@ -143,22 +143,35 @@ def derive_evals_enabled() -> bool:
     return _dream_phase_default_off(_DERIVE_EVALS[0])
 
 
-#: Phase 3c — the instruction-compliance accountant (#2663) — FILES enforcement
-#: tickets for recurrences, so it is default OFF and ``--full``-gated, mirroring the
-#: Pass-2 memory-promotion posture. Opt in with ``T3_DREAM_COMPLIANCE=1`` /
-#: the DB ``loops.dream compliance = true`` key; absent, the dream pass never escalates or
-#: persists a compliance snapshot (no behaviour change).
-_COMPLIANCE = ("compliance", "T3_DREAM_COMPLIANCE")
+#: Phase 3c is SPLIT into two independently-gated halves (#2663). MEASUREMENT — the
+#: root-KPI accountant — only PERSISTS a compliance snapshot (never files), so it is
+#: default ON and runs on EVERY pass: the root KPI must actually be measured. Two-layer
+#: kill-switch (env then DB ``loops.dream compliance_measure``), default ON, so a single
+#: falsy env / DB key turns measurement off.
+_COMPLIANCE_MEASURE = ("compliance_measure", "T3_DREAM_COMPLIANCE_MEASURE")
 
 
-def compliance_enabled() -> bool:
-    """Whether phase-3c instruction-compliance accounting runs (default OFF, #2663)."""
-    raw_env = os.environ.get(_COMPLIANCE[1], "").strip().lower()
+def compliance_measure_enabled() -> bool:
+    """Whether phase-3c compliance MEASUREMENT runs (default ON, #2663)."""
+    return _phase_enabled(*_COMPLIANCE_MEASURE)
+
+
+#: ESCALATION — the other half — FILES enforcement tickets for recurrences, so it is
+#: default OFF and additionally ``--full``-gated (the call site ANDs this toggle with
+#: ``force_all_phases``), mirroring the Pass-2 memory-promotion posture. Opt in with
+#: ``T3_DREAM_COMPLIANCE_ESCALATE=1`` / the DB ``loops.dream compliance_escalate = true``
+#: key; absent, the dream pass measures but never escalates (no ticket-filing).
+_COMPLIANCE_ESCALATE = ("compliance_escalate", "T3_DREAM_COMPLIANCE_ESCALATE")
+
+
+def compliance_escalate_enabled() -> bool:
+    """Whether phase-3c compliance ESCALATION runs (default OFF, #2663)."""
+    raw_env = os.environ.get(_COMPLIANCE_ESCALATE[1], "").strip().lower()
     if raw_env in _TRUTHY:
         return True
     if raw_env in _FALSY:
         return False
-    return _dream_phase_default_off(_COMPLIANCE[0])
+    return _dream_phase_default_off(_COMPLIANCE_ESCALATE[0])
 
 
 #: Phase 3d — the automatable-ask promoter (#2663), the "improve-with-new-stuff"

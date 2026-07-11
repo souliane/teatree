@@ -14,11 +14,16 @@ reply-parsing tests, never a metered call.
 """
 
 from collections.abc import Mapping
+from typing import TYPE_CHECKING
 
+from teatree.agents.model_tiering import resolve_tier
 from teatree.eval.models import MATCHER_KINDS, MATCHER_OPERATORS
 from teatree.loops.dream._teeth_check import ToolCallShape
 from teatree.loops.dream.json_scan import first_content_bearing_object
 from teatree.loops.dream.llm_eval_proposer import SynthesizedSpec
+
+if TYPE_CHECKING:
+    from claude_agent_sdk import ClaudeAgentOptions
 
 _SYNTH_SYSTEM_PROMPT = (
     "You design ONE under_load behavioural eval that pins a drift rule. From the "
@@ -84,18 +89,18 @@ _SYNTH_PROMPT_TEMPLATE = (
 )
 
 _SYNTH_WATCHDOG_SECONDS = 5 * 60
-_SYNTH_MODEL = "claude-haiku-4-5"
 _REQUIRED_SYNTH_KEYS = ("scenario_name", "context_preamble", "prompt", "expect", "fail_tool_call", "pass_tool_call")
 
 
 def sdk_spec_synthesizer(candidate: Mapping[str, object], transcript_slice: str) -> SynthesizedSpec:
     """The real synthesizer: one bounded headless SDK turn → a scenario, parsed defensively.
 
-    Mirrors :func:`teatree.loops.dream.sdk_distiller.sdk_distiller`'s invocation shape (the
-    ``claude_code`` preset, ``bypassPermissions``, a wall-clock watchdog) for a single
-    no-tool turn that transforms the candidate + slice into one scenario JSON object.
-    Raises on an unavailable ``claude`` or a malformed reply, so the caller DROPS the
-    candidate (never a staged unproven spec) rather than reporting a fake success.
+    Mirrors :func:`teatree.loops.dream.sdk_distiller.sdk_distiller`'s invocation shape (a
+    plain-string system prompt, ``bypassPermissions``, a whole-turn ``asyncio.timeout``
+    watchdog) for a single no-tool turn that transforms the candidate + slice into one
+    scenario JSON object. Raises on an unavailable ``claude`` or a malformed reply, so the
+    caller DROPS the candidate (never a staged unproven spec) rather than reporting a fake
+    success.
     """
     import asyncio  # noqa: PLC0415
     import shutil  # noqa: PLC0415
@@ -113,27 +118,44 @@ def sdk_spec_synthesizer(candidate: Mapping[str, object], transcript_slice: str)
     return _parse_synthesized(raw, candidate)
 
 
-async def _collect_synth_turn(prompt: str) -> str:
-    import asyncio  # noqa: PLC0415
+def _synth_options() -> "ClaudeAgentOptions":
+    """Build the bounded, no-tool SDK options for one synthesizer turn.
 
-    from claude_agent_sdk import AssistantMessage, ClaudeAgentOptions, ClaudeSDKClient, TextBlock  # noqa: PLC0415
-    from claude_agent_sdk.types import SystemPromptPreset  # noqa: PLC0415
+    Mirrors :func:`teatree.loops.dream.sdk_distiller._distill_options`: a PLAIN-STRING
+    system prompt (not the ``claude_code`` preset) keeps the turn model-agnostic, and
+    the model is :func:`resolve_tier`-driven on the ``cheap`` tier (``agent_tier_models``
+    DB-overridable) rather than a hardcoded id.
+    """
+    from claude_agent_sdk import ClaudeAgentOptions  # noqa: PLC0415 — deferred: optional heavy SDK dep
 
-    options = ClaudeAgentOptions(
-        system_prompt=SystemPromptPreset(type="preset", preset="claude_code", append=_SYNTH_SYSTEM_PROMPT),
-        model=_SYNTH_MODEL,
+    return ClaudeAgentOptions(
+        system_prompt=_SYNTH_SYSTEM_PROMPT,
+        model=resolve_tier("cheap"),
         permission_mode="bypassPermissions",
         max_turns=1,
         allowed_tools=[],
     )
+
+
+async def _collect_synth_turn(prompt: str) -> str:
+    import asyncio  # noqa: PLC0415
+
+    from claude_agent_sdk import (  # noqa: PLC0415 — deferred: optional heavy SDK dep, imported only at turn time
+        AssistantMessage,
+        ClaudeSDKClient,
+        TextBlock,
+    )
+
+    options = _synth_options()
     parts: list[str] = []
-    async with ClaudeSDKClient(options=options) as client:
+    # Bound the ENTIRE turn — connect (``__aenter__`` spawns the ``claude`` subprocess),
+    # query, AND the response drain — under one ``asyncio.timeout`` watchdog. Wrapping
+    # only the drain (the prior shape) left connect/query unbounded, so a stalled
+    # ``claude`` spawn hung the derivation forever; ``asyncio.timeout`` raises
+    # ``TimeoutError`` on expiry and the ``async with`` tears the subprocess down on unwind.
+    async with asyncio.timeout(_SYNTH_WATCHDOG_SECONDS), ClaudeSDKClient(options=options) as client:
         await client.query(prompt)
-
-        async def _drain() -> list[object]:
-            return [message async for message in client.receive_response()]
-
-        for message in await asyncio.wait_for(_drain(), timeout=_SYNTH_WATCHDOG_SECONDS):
+        async for message in client.receive_response():
             if isinstance(message, AssistantMessage):
                 parts.extend(block.text for block in message.content if isinstance(block, TextBlock))
     return "\n".join(parts)

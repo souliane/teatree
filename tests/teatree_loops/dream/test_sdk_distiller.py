@@ -1,6 +1,8 @@
 """Tests for the real LLM distiller seam — extract → clusters, no live LLM (#2723)."""
 
 import json
+import sqlite3
+import tempfile
 import threading
 from pathlib import Path
 from typing import Self
@@ -10,10 +12,21 @@ import claude_agent_sdk
 import pytest
 from django.test import SimpleTestCase
 
+from teatree.agents.model_tiering import resolve_tier
 from teatree.loops.dream import sdk_distiller
 from teatree.loops.dream.engine import ConsolidationExtract, DistillEmptyReason, WeightedSnippet
 from teatree.loops.dream.sdk_distiller import deterministic_cluster_key
 from tests.teatree_agents._sdk_fake import FakeHarnessSession, assistant_text
+
+
+def _seed_config_setting(db_path: Path, key: str, raw_value: str) -> None:
+    conn = sqlite3.connect(str(db_path))
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS teatree_config_setting (id INTEGER PRIMARY KEY, scope TEXT, key TEXT, value TEXT)"
+    )
+    conn.execute("INSERT INTO teatree_config_setting (scope, key, value) VALUES ('', ?, ?)", (key, raw_value))
+    conn.commit()
+    conn.close()
 
 
 def _extract_with_one_snippet() -> ConsolidationExtract:
@@ -258,6 +271,31 @@ class SdkDistillerParseTestCase(SimpleTestCase):
             clusters = sdk_distiller.sdk_distiller(empty)
         turn.assert_not_called()
         assert clusters == []
+
+
+class DistillOptionsTierResolutionTestCase(SimpleTestCase):
+    """The distiller turn is tier-resolved with a plain-string prompt, not a hardcoded id (§3a #1)."""
+
+    def test_model_defaults_to_the_cheap_tier(self) -> None:
+        options = sdk_distiller._distill_options()
+        assert options.model == resolve_tier("cheap")
+
+    def test_model_follows_the_cheap_tier_db_override(self) -> None:
+        # RED before the fix: the model was the hardcoded ``_DISTILL_MODEL``, so an
+        # ``agent_tier_models`` DB override for the cheap tier was silently ignored and
+        # the aux distiller call could never follow an off-Claude tier.
+        db = Path(self.enterContext(tempfile.TemporaryDirectory())) / "config.sqlite3"
+        _seed_config_setting(db, "agent_tier_models", json.dumps({"cheap": "orcarouter/custom-cheap"}))
+        with patch.dict("os.environ", {"T3_CONFIG_DB": str(db)}):
+            options = sdk_distiller._distill_options()
+        assert options.model == "orcarouter/custom-cheap"
+
+    def test_system_prompt_is_a_plain_string(self) -> None:
+        # A plain-string system prompt (not the ``claude_code`` preset) keeps the turn
+        # model-agnostic so an off-Claude tier resolves cleanly.
+        options = sdk_distiller._distill_options()
+        assert isinstance(options.system_prompt, str)
+        assert "consolidate" in options.system_prompt.lower()
 
 
 class SdkDistillReasonTestCase(SimpleTestCase):
