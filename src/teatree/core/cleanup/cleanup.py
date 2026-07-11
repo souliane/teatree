@@ -1,11 +1,11 @@
 """Shared worktree cleanup logic used by sync (auto-clean on merge) and workspace commands.
 
 The squash-merge-aware classification this module relies on lives in
-:mod:`teatree.core.worktree.branch_classification`; the data-loss guards and the
-worktree-teardown orchestration live here. The names re-exported below keep the
-import surface (``from teatree.core.cleanup.cleanup import classify_branch_commits``,
-``cleanup_mod._branch_pr_is_merged``) stable for the management commands and the
-sync backends that funnel through this seam.
+:mod:`teatree.core.worktree.branch_classification` — the single home of both the
+subject pre-filter and the authoritative content gate. This module imports only
+the helpers its own data-loss guards call; every other consumer imports the
+classifier from ``branch_classification`` directly (no back-compat re-export shim).
+The data-loss guards and the worktree-teardown orchestration live here.
 """
 
 import logging
@@ -26,14 +26,9 @@ from teatree.core.models import Worktree
 from teatree.core.overlay_loader import get_overlay_for_worktree
 from teatree.core.worktree._overlay_teardown import reap_external_resources, run_overlay_cleanup_steps
 from teatree.core.worktree.branch_classification import (
-    BranchClassification,
-    BranchCommit,
     _branch_pr_is_merged,
     _branch_tree_matches_squash,
-    _pr_merge_commit_sha,
-    classify_branch_commits,
     content_equivalence_blockers,
-    probe_host_cli,
 )
 from teatree.core.worktree.clone_paths import resolve_clone_path
 from teatree.core.worktree.worktree_env import compose_project, worktree_pg_connection
@@ -44,16 +39,9 @@ from teatree.utils.postgres_secret import remove_postgres_pass_entry
 from teatree.utils.run import CommandFailedError
 
 __all__ = [
-    "BranchClassification",
-    "BranchCommit",
     "CleanupResult",
     "WorktreeBusyError",
-    "_branch_pr_is_merged",
-    "_branch_tree_matches_squash",
-    "_pr_merge_commit_sha",
-    "classify_branch_commits",
     "cleanup_worktree",
-    "probe_host_cli",
 ]
 
 logger = logging.getLogger(__name__)
@@ -168,8 +156,8 @@ def _raise_if_genuinely_ahead(repo_main: str, worktree: Worktree, target: _Effec
     via the worktree-dir probe).
 
     **Content-equivalence authorizes the destroy, not subject-match (#2609).**
-    :func:`classify_branch_commits` is a cheap SUBJECT recognizer — it cannot
-    authorize a force-delete, because a genuine un-upstreamed commit whose subject
+    :func:`prefilter_branch_commits_by_subject` is a cheap SUBJECT recognizer — it
+    cannot authorize a force-delete, because a genuine un-upstreamed commit whose subject
     collides with an already-upstreamed subject (a routine ``docs: update skills``)
     drains into ``squash_merged`` and would falsely empty ``genuinely_ahead``. The
     AUTHORITATIVE gate is :func:`content_equivalence_blockers` (``git cherry``

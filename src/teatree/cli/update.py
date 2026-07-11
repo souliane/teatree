@@ -17,8 +17,8 @@ For teatree core (``$T3_REPO``) and every registered overlay repo, this:
     because the clone's local commits already landed *squash-merged* upstream
     (the recurring overlay brick — ``[ahead N, behind M]`` with N already-upstream
     duplicates), the clone SELF-HEALS. The subject classifier
-    (``core.branch_classification.classify_branch_commits``) is only a cheap
-    PRE-FILTER — it must NOT authorize the destructive reset (it matches by
+    (``core.branch_classification.prefilter_branch_commits_by_subject``) is only a
+    cheap PRE-FILTER — it must NOT authorize the destructive reset (it matches by
     canonicalized subject alone, with no content check). Before any
     ``git reset --hard origin/<default>`` an AUTHORITATIVE content gate runs:
     the reset proceeds ONLY when ``git cherry origin/<default> HEAD`` reports

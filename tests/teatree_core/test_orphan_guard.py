@@ -4,20 +4,20 @@ from unittest.mock import MagicMock, patch
 import pytest
 from django.test import TestCase
 
-from teatree.core.cleanup.cleanup import BranchClassification, BranchCommit
 from teatree.core.gates.orphan_guard import BranchReport, BranchStatus, classify_branch, find_orphans_in_workspace
 from teatree.core.models import Ticket, Worktree
+from teatree.core.worktree.branch_classification import BranchCommit, SubjectPrefilterResult
 from teatree.utils.run import CommandFailedError
 from tests.teatree_core.cleanup._shared import _run_git
 
-_patch_classify = patch("teatree.core.gates.orphan_guard.classify_branch_commits")
+_patch_classify = patch("teatree.core.gates.orphan_guard.prefilter_branch_commits_by_subject")
 _patch_tree_match = patch("teatree.core.gates.orphan_guard._branch_tree_matches_squash")
 _patch_open_pr = patch("teatree.core.gates.orphan_guard.find_open_pr")
 _patch_git = patch("teatree.core.gates.orphan_guard.git")
 
 
-def _classification(ahead: list[BranchCommit] | None = None) -> BranchClassification:
-    return BranchClassification(genuinely_ahead=ahead or [])
+def _classification(ahead: list[BranchCommit] | None = None) -> SubjectPrefilterResult:
+    return SubjectPrefilterResult(genuinely_ahead=ahead or [])
 
 
 def _commit(sha: str = "abc", subject: str = "feat: x") -> BranchCommit:
@@ -234,7 +234,7 @@ class TestFindOrphansInWorkspace(TestCase):
 class TestClassifyBranchRespectsRepoDefaultBranch:
     """Real-git integration: ``classify_branch`` must use the repo's actual default branch.
 
-    ``classify_branch_commits`` defaults to ``target="origin/main"``; on a repo
+    ``prefilter_branch_commits_by_subject`` defaults to ``target="origin/main"``; on a repo
     whose default branch is ``master`` (or anything else), one-commit-ahead-of-
     master was misclassified as SYNCED because the comparison was against the
     non-existent ``origin/main``.

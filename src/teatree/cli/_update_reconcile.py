@@ -7,8 +7,8 @@ N, behind M]`` and ``--ff-only`` aborts. :func:`reconcile_squash_merged`
 self-heals it — but only when the unique commits are provably already upstream.
 
 The subject classifier
-(:func:`teatree.core.worktree.branch_classification.classify_branch_commits`) is only a
-cheap PRE-FILTER: it buckets ``squash_merged`` by canonicalized-subject
+(:func:`teatree.core.worktree.branch_classification.prefilter_branch_commits_by_subject`)
+is only a cheap PRE-FILTER: it buckets ``squash_merged`` by canonicalized-subject
 membership alone, with no content/patch-id/tree check, so a genuine commit can
 slip past it (subject collision, amended content, evil-merge). The destructive
 ``git reset --hard`` is authorized by the AUTHORITATIVE *content* gate instead —
@@ -29,7 +29,10 @@ from typing import TYPE_CHECKING
 
 import typer
 
-from teatree.core.worktree.branch_classification import classify_branch_commits, content_equivalence_blockers
+from teatree.core.worktree.branch_classification import (
+    content_equivalence_blockers,
+    prefilter_branch_commits_by_subject,
+)
 
 if TYPE_CHECKING:
     from teatree.cli.update import RepoUpdate
@@ -73,8 +76,8 @@ def reconcile_squash_merged(name: str, repo: Path, old_sha: str, pull_stderr: st
     SKIPPED earlier), so a reconcile here always acts on the default branch.
 
     Data-loss-free by construction. The subject classifier
-    (:func:`classify_branch_commits`) is only a cheap PRE-FILTER — it must NOT
-    authorize the destructive ``git reset --hard``, because it buckets by
+    (:func:`prefilter_branch_commits_by_subject`) is only a cheap PRE-FILTER — it
+    must NOT authorize the destructive ``git reset --hard``, because it buckets by
     canonicalized-subject membership alone with NO content/patch-id/tree check: a
     genuine un-upstreamed commit whose subject collides with an unrelated upstream
     subject (vector B), an amended commit that added content after the original
@@ -103,7 +106,7 @@ def reconcile_squash_merged(name: str, repo: Path, old_sha: str, pull_stderr: st
     default_branch = _default_branch(repo)
     target = f"origin/{default_branch}" if default_branch else "origin/main"
     branch = _current_branch(repo)
-    classification = classify_branch_commits(str(repo), branch, target=target)
+    classification = prefilter_branch_commits_by_subject(str(repo), branch, target=target)
 
     if classification.genuinely_ahead:
         return _refuse_reconcile(
