@@ -62,7 +62,10 @@
 "src/teatree/core/management/commands/speak.py" = 1
 "src/teatree/core/management/commands/standing_goal.py" = 3
 "src/teatree/core/management/commands/tasks.py" = 2
-"src/teatree/core/management/commands/ticket.py" = 5
+# 4: the sweep subcommands split out to _sweep_commands.py in the ticket
+# god-module split, taking one deferred teatree.core import with them; the four
+# left here (DodE2EOverride, E2EBypassApproval, two get_all_overlays) are real.
+"src/teatree/core/management/commands/ticket.py" = 4
 "src/teatree/core/management/commands/ticket_short_describe.py" = 2
 "src/teatree/core/management/commands/worktree.py" = 1
 "src/teatree/core/managers.py" = 2
