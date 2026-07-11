@@ -25,6 +25,7 @@ from teatree.core.factory.operational_health import (
 )
 from teatree.core.models import Session, Task, Ticket
 from teatree.core.models.known_issue import KnownIssue
+from teatree.utils.throttled_log import reset_throttle
 
 # ast-grep-ignore: ac-django-no-pytest-django-db
 pytestmark = pytest.mark.django_db
@@ -192,3 +193,23 @@ class TestOverlaySignalCollector:
         ):
             signals = _overlay_health_signals()
         assert [s.fingerprint for s in signals] == ["ov:x"]
+
+    def test_broken_overlay_surfaces_a_warning_not_a_silent_debug(self, caplog: pytest.LogCaptureFixture) -> None:
+        # 3e#3: a persistently-failing overlay health read must redden into the log
+        # (throttled warning), not be swallowed at debug where the chip silently
+        # blanks on a real recurring fault.
+        reset_throttle()
+
+        class _Broken:
+            def get_health_signals(self) -> list[HealthSignal]:
+                raise RuntimeError(_OVERLAY_ON_FIRE)
+
+        logger_name = "teatree.core.factory.operational_health"
+        with (
+            patch("teatree.core.factory.operational_health.get_all_overlays", return_value={"broken": _Broken()}),
+            caplog.at_level("DEBUG", logger=logger_name),
+        ):
+            _overlay_health_signals()
+        warnings = [r for r in caplog.records if r.name == logger_name and r.levelname == "WARNING"]
+        assert warnings, "expected a throttled WARNING for the broken overlay health read"
+        assert "broken" in warnings[0].getMessage()

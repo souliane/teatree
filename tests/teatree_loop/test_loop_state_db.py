@@ -80,3 +80,44 @@ class TestLoopHeldFailsSafeButWarns(django.test.TestCase):
         ):
             loop_held_in_db("review")
         assert any("review" in line for line in logs.output)
+
+
+class TestLoopHeldInDbResolvesDbTier(django.test.TestCase):
+    """``loop_held_in_db`` is the ``LoopState`` arm of the tick gate (#1913).
+
+    An empty table holds no loop (the default); a ``PAUSED`` / ``DISABLED`` row
+    holds it — including the core ``dispatch`` loop (the restart-surviving 'pause
+    everything', 2026-06-03 incident); ``resume`` / ``enable`` clears the hold.
+    """
+
+    def test_empty_table_holds_no_loop(self) -> None:
+        assert loop_held_in_db("review") is False
+
+    def test_empty_table_holds_not_the_dispatch_loop(self) -> None:
+        assert loop_held_in_db("dispatch") is False
+
+    def test_pause_holds_a_loop(self) -> None:
+        LoopState.objects.pause("review")
+        assert loop_held_in_db("review") is True
+
+    def test_disable_holds_a_loop(self) -> None:
+        LoopState.objects.disable("review")
+        assert loop_held_in_db("review") is True
+
+    def test_pause_holds_the_dispatch_loop(self) -> None:
+        LoopState.objects.pause("dispatch")
+        assert loop_held_in_db("dispatch") is True
+
+    def test_disable_holds_the_dispatch_loop(self) -> None:
+        LoopState.objects.disable("dispatch")
+        assert loop_held_in_db("dispatch") is True
+
+    def test_resume_clears_the_hold(self) -> None:
+        LoopState.objects.pause("review")
+        LoopState.objects.resume("review")
+        assert loop_held_in_db("review") is False
+
+    def test_resume_clears_the_hold_on_the_dispatch_loop(self) -> None:
+        LoopState.objects.pause("dispatch")
+        LoopState.objects.resume("dispatch")
+        assert loop_held_in_db("dispatch") is False

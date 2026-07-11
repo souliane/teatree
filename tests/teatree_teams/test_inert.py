@@ -29,7 +29,7 @@ _LIVE_PATH_PACKAGES = (
 _LIVE_PATH_MODULES = (
     "core/managers.py",
     "core/loop_lease_manager.py",
-    "cli/loop.py",
+    "cli/loop/app.py",
 )
 # The ONE sanctioned live-path consumer (#1838 PR#7b): the idle-pane reaper
 # scanner the pane-reaper mini-loop dispatches. It may import teams; nothing else

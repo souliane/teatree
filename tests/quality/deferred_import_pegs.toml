@@ -73,9 +73,13 @@
 "src/teatree/core/models/auto_review_dispatch.py" = 3
 "src/teatree/core/models/review_loop.py" = 3
 "src/teatree/core/models/task.py" = 7
+# artifacts() defers `from teatree.core.models.ticket_artifacts import
+# collect_ticket_artifacts` (a real import cycle: ticket_artifacts imports the
+# ticket models back). The method — and its deferral — moved here from
+# ticket_status.py in the introspection/status facet split; the peg moved with it.
+"src/teatree/core/models/ticket_introspection.py" = 1
 "src/teatree/core/models/ticket_phase_sessions.py" = 1
 "src/teatree/core/models/ticket_scheduling.py" = 7
-"src/teatree/core/models/ticket_status.py" = 1
 "src/teatree/core/notify.py" = 4
 "src/teatree/core/on_behalf_egress.py" = 2
 "src/teatree/core/on_behalf_gate_recorded.py" = 6
@@ -94,7 +98,7 @@
 "src/teatree/core/send_proxy.py" = 3
 "src/teatree/core/signals.py" = 6
 "src/teatree/core/speak.py" = 2
-"src/teatree/core/provision/step_runner.py" = 4
+"src/teatree/core/provision/step_runner.py" = 1
 "src/teatree/core/tasks.py" = 5
 "src/teatree/core/views/_rate_limit.py" = 1
 # #8 M7 revival: the waiting-lane covering-CLEAR match reads the shared SIG-1

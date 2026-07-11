@@ -164,6 +164,11 @@ def _ticket_by_number(number: str, *, overlay: str | None = None) -> Ticket | No
     arbitrary ``.first()`` that would cross-attach the worktree to the wrong
     ticket.
     """
+    if not number:
+        # A blank hint is not a ticket number: an empty ``issue_number`` filter
+        # would fan out to EVERY pk-fallback ticket (blank ``issue_number``) and
+        # then fail loud as a false collision, so refuse it up front.
+        return None
     real = Ticket.objects.exclude(issue_url="").exclude(issue_url__startswith="auto:")
     matches = list(real.filter(issue_number=number))
     if number.isdigit():
@@ -480,8 +485,11 @@ def resolve_worktree(path: str = "", ticket_hint: Ticket | None = None) -> Workt
         ticket_dir = env.get("TICKET_DIR", "")
         if ticket_dir:
             wt = match_worktree_by_path(ticket_dir)
-            if wt is not None:  # pragma: no branch
+            if wt is not None:
                 return _finalize_matched(wt, cwd, ticket_hint)
+            # A stale env cache can name a TICKET_DIR whose worktree row is gone
+            # (removed / never registered); fall through to the CWD-direct and
+            # git-auto-register paths rather than treating the cache as truth.
 
     # 2. Match CWD directly against stored worktree paths
     wt = match_worktree_by_path(cwd)

@@ -48,6 +48,7 @@ from teatree.core.on_behalf_gate_recorded import (
     require_on_behalf_approval,
 )
 from teatree.core.on_behalf_post_receipt import notify_user_on_behalf_post
+from teatree.core.send_proxy import forge_from_url, route_forge_write
 from teatree.types import RawAPIDict
 
 # Re-exports so callers/tests import the test-plan surface from one module.
@@ -307,28 +308,16 @@ def post_body_file_comment(
     new comment or an update of the ticket's existing test-plan note (matched
     via the ticket marker). No artifact upload or manifest processing occurs.
     """
-    blocked = on_behalf_block_message(issue_url, _ON_BEHALF_ACTION)
-    if blocked:
+    if on_behalf_block_message(issue_url, _ON_BEHALF_ACTION):
         raise OnBehalfPostBlockedError(issue_url, _ON_BEHALF_ACTION)
     check_blocked_body_from_config(body, issue_url)
+    # The shared forge-write seam (public-repo leak gate + #117 send-proxy) — same seam the MCP tools use.
+    body = route_forge_write(
+        forge=forge_from_url(issue_url), repo=issue_url, text=body, action=_ON_BEHALF_ACTION, target=issue_url
+    )
     existing = find_existing_note(host.list_issue_comments(issue_url=issue_url), ticket_id=ticket_id)
     match_id = existing.comment_id if existing else None
-    if match_id is not None:
-        result = require_on_behalf_approval(
-            target=issue_url,
-            action=_ON_BEHALF_ACTION,
-            publish=lambda: host.update_issue_comment(issue_url=issue_url, comment_id=match_id, body=body),
-        )
-        action = "updated"
-        comment_id = match_id
-    else:
-        result = require_on_behalf_approval(
-            target=issue_url,
-            action=_ON_BEHALF_ACTION,
-            publish=lambda: host.post_issue_comment(issue_url=issue_url, body=body),
-        )
-        action = "created"
-        comment_id = _comment_id(result)
+    result, action, comment_id = _create_or_update_note(host, issue_url=issue_url, match_id=match_id, body=body)
 
     notify_user_on_behalf_post(
         target=issue_url,
@@ -430,6 +419,30 @@ def _normalize_mrs(raw_mrs: list[str]) -> list[str]:
     return refs
 
 
+def _create_or_update_note(
+    host: CodeHostBackend, *, issue_url: str, match_id: int | None, body: str
+) -> tuple[RawAPIDict, str, int]:
+    """Create a new note or update the existing one through the on-behalf gate.
+
+    Returns ``(publish_result, action, comment_id)`` — ``action`` is ``"updated"``
+    when *match_id* names an existing note, else ``"created"``. Shared by the
+    body-file and manifest posters so the create/update publish path has one home.
+    """
+    if match_id is not None:
+        result = require_on_behalf_approval(
+            target=issue_url,
+            action=_ON_BEHALF_ACTION,
+            publish=lambda: host.update_issue_comment(issue_url=issue_url, comment_id=match_id, body=body),
+        )
+        return result, "updated", match_id
+    result = require_on_behalf_approval(
+        target=issue_url,
+        action=_ON_BEHALF_ACTION,
+        publish=lambda: host.post_issue_comment(issue_url=issue_url, body=body),
+    )
+    return result, "created", _comment_id(result)
+
+
 def _comment_id(result: RawAPIDict) -> int:
     """Extract the integer comment id from a host create response."""
     raw = result.get("id")
@@ -509,8 +522,7 @@ def post_test_plan_comment(host: CodeHostBackend, post: TestPlanPost) -> PostTes
     upload-target == note-project by construction, regardless of how many repos
     the manifest references.
     """
-    blocked = on_behalf_block_message(post.issue_url, _ON_BEHALF_ACTION)
-    if blocked:
+    if on_behalf_block_message(post.issue_url, _ON_BEHALF_ACTION):
         raise OnBehalfPostBlockedError(post.issue_url, _ON_BEHALF_ACTION)
 
     upload_repo = host.repo_for_issue_url(post.issue_url)
@@ -524,24 +536,17 @@ def post_test_plan_comment(host: CodeHostBackend, post: TestPlanPost) -> PostTes
     state = merge_state(prior, manifest=post.manifest, title=post.title, embeds=embeds)
     state["ticket"] = post.ticket_id
     body = render_body(state)
+    # The shared forge-write seam (public-repo leak gate + #117 send-proxy) — same seam the MCP tools use.
+    body = route_forge_write(
+        forge=forge_from_url(post.issue_url),
+        repo=upload_repo,
+        text=body,
+        action=_ON_BEHALF_ACTION,
+        target=post.issue_url,
+    )
     envs = [env for env, side in (("dev", post.manifest.dev), ("local", post.manifest.local)) if side.present]
     match_id = existing.comment_id if existing else None
-    if match_id is not None:
-        result = require_on_behalf_approval(
-            target=post.issue_url,
-            action=_ON_BEHALF_ACTION,
-            publish=lambda: host.update_issue_comment(issue_url=post.issue_url, comment_id=match_id, body=body),
-        )
-        action = "updated"
-        comment_id = match_id
-    else:
-        result = require_on_behalf_approval(
-            target=post.issue_url,
-            action=_ON_BEHALF_ACTION,
-            publish=lambda: host.post_issue_comment(issue_url=post.issue_url, body=body),
-        )
-        action = "created"
-        comment_id = _comment_id(result)
+    result, action, comment_id = _create_or_update_note(host, issue_url=post.issue_url, match_id=match_id, body=body)
 
     notify_user_on_behalf_post(
         target=post.issue_url,

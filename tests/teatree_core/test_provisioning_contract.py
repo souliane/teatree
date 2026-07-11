@@ -30,7 +30,7 @@ from django_fsm import TransitionNotAllowed
 from teatree.core.management.commands.e2e import _build_e2e_env
 from teatree.core.models import Ticket, Worktree
 from teatree.core.overlay import OverlayE2E, OverlayRuntime, ProvisionStep, RunCommands
-from teatree.core.provision.step_runner import StepResult
+from teatree.core.provision.provision_report import StepResult
 from teatree.core.runners.service_launch import ServiceLauncher
 from teatree.core.runners.worktree_provision import WorktreeProvisionRunner
 from teatree.core.runners.worktree_start import WorktreeStartRunner

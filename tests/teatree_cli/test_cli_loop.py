@@ -16,8 +16,8 @@ import pytest
 from typer.testing import CliRunner
 
 from teatree.cli.loop import _self_improve_cadence_for_loop_slot, loop_app
-from teatree.cli.loop_drain_queue import _drain_cadence_for_loop_slot
-from teatree.cli.loop_slack_answer import _slack_answer_cadence_for_loop_slot
+from teatree.cli.loop.drain_queue import _drain_cadence_for_loop_slot
+from teatree.cli.loop.slack_answer import _slack_answer_cadence_for_loop_slot
 
 runner = CliRunner()
 
@@ -111,7 +111,7 @@ class TestPendingSpawnCommandDelegation:
 
 class TestStatusCommand:
     def test_returns_one_when_no_statusline_file_yet(self, tmp_path: Path) -> None:
-        with patch("teatree.cli.loop.default_path", return_value=tmp_path / "missing.txt"):
+        with patch("teatree.cli.loop.app.default_path", return_value=tmp_path / "missing.txt"):
             result = runner.invoke(loop_app, ["status"])
 
         assert result.exit_code == 1
@@ -120,7 +120,7 @@ class TestStatusCommand:
     def test_emits_file_contents_when_present(self, tmp_path: Path) -> None:
         statusline_file = tmp_path / "sl.txt"
         statusline_file.write_text("running 0.0.1\n→ check 1\n", encoding="utf-8")
-        with patch("teatree.cli.loop.default_path", return_value=statusline_file):
+        with patch("teatree.cli.loop.app.default_path", return_value=statusline_file):
             result = runner.invoke(loop_app, ["status"])
 
         assert result.exit_code == 0
@@ -137,7 +137,7 @@ class TestStatusCommand:
 
     def test_prepends_stale_banner_for_frozen_render(self, tmp_path: Path) -> None:
         statusline_file = self._statusline_with_meta(tmp_path, rendered_at=time.time() - 6 * 3600)
-        with patch("teatree.cli.loop.default_path", return_value=statusline_file):
+        with patch("teatree.cli.loop.app.default_path", return_value=statusline_file):
             result = runner.invoke(loop_app, ["status"])
 
         assert result.exit_code == 0
@@ -147,7 +147,7 @@ class TestStatusCommand:
 
     def test_no_banner_for_fresh_render(self, tmp_path: Path) -> None:
         statusline_file = self._statusline_with_meta(tmp_path, rendered_at=time.time() - 30)
-        with patch("teatree.cli.loop.default_path", return_value=statusline_file):
+        with patch("teatree.cli.loop.app.default_path", return_value=statusline_file):
             result = runner.invoke(loop_app, ["status"])
 
         assert result.exit_code == 0
@@ -177,8 +177,8 @@ class TestStartCommand:
     def test_missing_claude_binary_exits_with_guidance(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.delenv("CLAUDECODE", raising=False)
         with (
-            patch("teatree.cli.loop._stdin_is_terminal", return_value=True),
-            patch("teatree.cli.loop.shutil.which", return_value=None),
+            patch("teatree.cli.loop.app._stdin_is_terminal", return_value=True),
+            patch("teatree.cli.loop.app.shutil.which", return_value=None),
         ):
             result = runner.invoke(loop_app, ["start"])
 
@@ -189,9 +189,9 @@ class TestStartCommand:
     def test_spawns_claude_without_a_fat_slot(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.delenv("CLAUDECODE", raising=False)
         with (
-            patch("teatree.cli.loop._stdin_is_terminal", return_value=True),
-            patch("teatree.cli.loop.shutil.which", return_value="/usr/bin/claude"),
-            patch("teatree.cli.loop.os.execv") as execv_mock,
+            patch("teatree.cli.loop.app._stdin_is_terminal", return_value=True),
+            patch("teatree.cli.loop.app.shutil.which", return_value="/usr/bin/claude"),
+            patch("teatree.cli.loop.app.os.execv") as execv_mock,
         ):
             runner.invoke(loop_app, ["start"])
 
@@ -229,9 +229,9 @@ class TestStartCommandSessionPins:
         monkeypatch.delenv("CLAUDECODE", raising=False)
         monkeypatch.setenv("T3_LOOP_CADENCE", "600")
         with (
-            patch("teatree.cli.loop._stdin_is_terminal", return_value=True),
-            patch("teatree.cli.loop.shutil.which", return_value="/usr/bin/claude"),
-            patch("teatree.cli.loop.os.execv") as execv_mock,
+            patch("teatree.cli.loop.app._stdin_is_terminal", return_value=True),
+            patch("teatree.cli.loop.app.shutil.which", return_value="/usr/bin/claude"),
+            patch("teatree.cli.loop.app.os.execv") as execv_mock,
         ):
             runner.invoke(loop_app, ["start"])
         return list(execv_mock.call_args.args[1])

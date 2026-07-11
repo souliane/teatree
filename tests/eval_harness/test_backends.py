@@ -7,7 +7,7 @@ from unittest.mock import patch
 
 import pytest
 
-from teatree.eval.api_runner import MAX_BUDGET_USD, ApiInProcessRunner
+from teatree.eval.api_runner import MAX_BUDGET_USD, ApiInProcessRunner, ApiRunnerParams
 from teatree.eval.backends import API_BACKEND, TRANSCRIPT_BACKEND, TranscriptRunner, UnknownBackendError, make_runner
 from teatree.eval.models import EvalSpec, Matcher
 from teatree.llm.credentials import AnthropicSubscriptionCredential
@@ -62,7 +62,7 @@ class TestMakeRunner:
 
     def test_api_backend_threads_the_budget_override(self) -> None:
         with patch.dict(os.environ, {OAUTH_ENV: "oauth-test"}, clear=False):
-            runner = make_runner(API_BACKEND, max_budget_usd=2.0)
+            runner = make_runner(API_BACKEND, ApiRunnerParams(max_budget_usd=2.0))
         assert isinstance(runner, ApiInProcessRunner)
         assert runner._max_budget_usd == pytest.approx(2.0)
 

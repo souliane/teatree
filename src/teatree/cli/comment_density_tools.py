@@ -30,7 +30,6 @@ from pathlib import Path
 
 import typer
 
-from teatree.cli.tools import tool_app
 from teatree.hooks.privacy_diff_comment_density import CommentDensityFinding, report_diff
 from teatree.utils.run import run_allowed_to_fail
 
@@ -75,7 +74,6 @@ def _render_findings(findings: list[CommentDensityFinding]) -> str:
     )
 
 
-@tool_app.command("comment-density")
 def comment_density(
     *,
     diff_file: Path | None = typer.Option(
@@ -119,3 +117,8 @@ def comment_density(
         typer.echo(_render_findings(findings), err=True)
     else:
         typer.echo("comment-density: no findings (added comments stay near zero).")
+
+
+def register(app: typer.Typer) -> None:
+    """Register this module's ``t3 tool`` command(s) onto *app* (called from ``cli/__init__``)."""
+    app.command("comment-density")(comment_density)

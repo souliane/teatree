@@ -2,7 +2,7 @@
 
 import dataclasses
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from teatree.pricing import CACHE_READ_MULTIPLIER, CACHE_WRITE_MULTIPLIER
 
@@ -81,7 +81,7 @@ class Matcher:
     negative order-agnostic, so every existing matcher is byte-identical.
     """
 
-    kind: str
+    kind: Literal["positive", "negative"]
     tool: str
     arg_path: str
     operator: str

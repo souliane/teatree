@@ -125,7 +125,7 @@ class TestMasterHonoursLoopState(django.test.TestCase):
     The #2513 cutover left ``build_loop_table_jobs`` gating only on
     ``Loop.enabled AND is_due`` — it ignored the durable ``LoopState`` control
     tier (``t3 loop pause`` / ``disable``, #1913). These pin that the master now
-    reaches the SAME verdict ``LoopsConfig.is_enabled`` does: a ``Loop`` row that
+    reaches the SAME unified verdict (``loop_state_admits``): a ``Loop`` row that
     is ``enabled`` and ``is_due`` is STILL skipped (and not cadence-bumped) when
     a LoopState hold applies — and that the removed ``T3_LOOPS_DISABLED`` env var
     is now INERT (the master never reads it).
@@ -413,8 +413,8 @@ class TestLoopStateBulkLoadedOncePerTick(django.test.TestCase):
     """The tick reads ``LoopState`` ONCE (bulk), never once-per-loop (holistic 3c#3).
 
     The pre-fix ``_loop_admitted`` resolved the durable hold per loop via
-    ``LoopsConfig.is_enabled`` → ``loop_held_in_db`` → one ``teatree_loop_state``
-    SELECT for every registered loop (an N+1 on every tick while the ``Loop`` rows
+    ``loop_held_in_db`` → one ``teatree_loop_state`` SELECT for every registered
+    loop (an N+1 on every tick while the ``Loop`` rows
     were already bulk-loaded). The verdict now consumes a single bulk read.
     """
 

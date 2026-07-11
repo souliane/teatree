@@ -28,6 +28,7 @@ from teatree.cli.eval.run_modes import DEFAULT_COST_REGRESSION_TOLERANCE, RunGua
 from teatree.eval.backends import (
     API_BACKEND,
     TRANSCRIPT_BACKEND,
+    ApiRunnerParams,
     EvalRunner,
     TranscriptRunner,
     UnknownBackendError,
@@ -61,7 +62,7 @@ def make_escalation_runner(*, max_budget_usd: float, effort: EffortLevel | None)
     the transcript backend cannot produce a new trial. Held apart so the
     single-trial test harness can stub the escalation runner without a live model.
     """
-    return make_runner(API_BACKEND, max_budget_usd=max_budget_usd, effort=effort)
+    return make_runner(API_BACKEND, ApiRunnerParams(max_budget_usd=max_budget_usd, effort=effort))
 
 
 # ast-grep-ignore: ac-django-no-complexity-suppressions
@@ -99,11 +100,13 @@ def run_single_trial(  # noqa: PLR0913 — each kwarg threads one resolved `eval
     try:
         runner = make_runner(
             backend,
-            max_turns_override=max_turns,
+            ApiRunnerParams(
+                max_turns_override=max_turns,
+                require_executed=require_executed,
+                max_budget_usd=max_budget_usd,
+                effort=effort,
+            ),
             transcript_dir=transcript_dir,
-            require_executed=require_executed,
-            max_budget_usd=max_budget_usd,
-            effort=effort,
         )
     except UnknownBackendError as exc:
         typer.echo(str(exc), err=True)

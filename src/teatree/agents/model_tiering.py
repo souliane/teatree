@@ -212,7 +212,7 @@ def known_model_vocabulary() -> frozenset[str]:
     carrying a ``/``) and an operator's OWN ``agent_tier_models`` values are
     explicit pins the caller trusts separately, so they are NOT enumerated here —
     this is only the shipped vocabulary a bare pin is checked against before the
-    doctor flags it as a likely typo (:func:`teatree.cli._doctor_checks._check_agent_session_pins`).
+    doctor flags it as a likely typo (:func:`teatree.cli.doctor.checks._check_agent_session_pins`).
     """
     tokens = {*TIER_MODELS, *TIER_MODELS.values(), *PYDANTIC_AI_TIER_MODELS.values(), *FAMILY_TO_TIER, *PRICE_TABLE}
     return frozenset(token.lower() for token in tokens if token)

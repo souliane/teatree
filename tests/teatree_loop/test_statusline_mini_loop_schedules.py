@@ -15,14 +15,12 @@ their own rows.
 """
 
 import datetime as dt
-from pathlib import Path
 
 import django.test
 from django.utils import timezone
 
 from teatree.core.models import Loop, LoopState, Prompt
 from teatree.loop.statusline import mini_loops_anchor, set_mini_loop_schedules_reader
-from teatree.loops.config import LoopsConfig
 from teatree.loops.schedule import mini_loop_schedules
 
 
@@ -141,10 +139,3 @@ class TestMiniLoopCadenceMatchesMasterGate(django.test.TestCase):
         chunks = mini_loops_anchor()
         assert row.is_due(now) is True
         assert chunks == ["ship due"], chunks
-
-
-def test_config_loader_degrades_to_defaults_on_missing_db(tmp_path: Path) -> None:
-    """Sanity guard: the config loader degrades to defaults on a missing DB."""
-    cfg = LoopsConfig.load(db_path=tmp_path / "absent.sqlite3")
-    assert cfg.default_cadence == 300
-    assert cfg.parallel is True

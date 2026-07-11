@@ -37,6 +37,7 @@ from teatree.core.models import ConsolidatedMemory
 from teatree.core.models.task import Task
 from teatree.core.models.ticket import Ticket
 from teatree.core.review.review_findings import find_bare_references, neutralize_bare_references
+from teatree.core.send_proxy import OutboundBlockedError, forge_from_url, route_forge_write
 from teatree.hooks import banned_terms_scanner
 
 logger = logging.getLogger(__name__)
@@ -110,6 +111,29 @@ def _line_index(lines: list[str], gap_key: str) -> int:
     return -1
 
 
+def _scrubbed_update(host: CodeHostBackend, *, umbrella_url: str, body: str) -> bool:
+    """Route an umbrella body through the shared forge-write seam, then write it.
+
+    The public-repo leak gate + the #117 send-proxy audit fire BEFORE the backend
+    call — the same seam the MCP tools and the dream memory-gap filer use, so the
+    umbrella's ``update_issue`` writes are no longer unscrubbed. A leak/blocked
+    verdict SKIPs the write (returns ``False``) rather than crashing the dream
+    pass, mirroring :func:`_read_body`'s never-crash contract.
+    """
+    try:
+        clean = route_forge_write(
+            forge=forge_from_url(umbrella_url),
+            repo=umbrella_url,
+            text=body,
+            action="dream_umbrella_update",
+            target=umbrella_url,
+        )
+    except OutboundBlockedError:
+        return False
+    host.update_issue(issue_url=umbrella_url, body=clean)
+    return True
+
+
 def _read_body(host: CodeHostBackend, umbrella_url: str) -> str | None:
     """Re-read the umbrella body; ``None`` on an unreadable forge state (never raises)."""
     try:
@@ -138,8 +162,7 @@ def upsert_gap_checkbox(
     if _line_index(lines, gap_key) != -1:
         return False
     lines.append(render_checkbox_line(gap_key=gap_key, title=title, checked=False, ticket_url=ticket_url))
-    host.update_issue(issue_url=umbrella_url, body="\n".join(lines) + "\n")
-    return True
+    return _scrubbed_update(host, umbrella_url=umbrella_url, body="\n".join(lines) + "\n")
 
 
 def check_gap_checkbox(host: CodeHostBackend, *, umbrella_url: str, gap_key: str) -> bool:
@@ -160,8 +183,7 @@ def check_gap_checkbox(host: CodeHostBackend, *, umbrella_url: str, gap_key: str
     if flipped == lines[index]:
         return False
     lines[index] = flipped
-    host.update_issue(issue_url=umbrella_url, body="\n".join(lines) + "\n")
-    return True
+    return _scrubbed_update(host, umbrella_url=umbrella_url, body="\n".join(lines) + "\n")
 
 
 def _gap_issue_url(umbrella_url: str, gap_key: str) -> str:

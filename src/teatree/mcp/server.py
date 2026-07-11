@@ -29,6 +29,7 @@ from mcp.types import ToolAnnotations
 
 from teatree.backends.types import Service
 from teatree.config import get_effective_settings
+from teatree.core.factory.factory_signals import FactorySignalsReportDict
 from teatree.core.overlay_loader import get_all_overlays
 from teatree.mcp import (
     introspection,
@@ -191,7 +192,7 @@ async def _loop_stats(*, overlay: str | None = None) -> dict[str, Any]:
     return await sync_to_async(search.loop_stats, thread_sensitive=True)(overlay=overlay)
 
 
-async def _factory_signals(*, overlay: str | None = None, window_days: int = 28) -> dict[str, Any]:
+async def _factory_signals(*, overlay: str | None = None, window_days: int = 28) -> FactorySignalsReportDict:
     """Derived-on-read factory quality/velocity signals over the trailing window.
 
     Returns the five signals (first-try-green, defect-escape, review-catch,
@@ -372,9 +373,6 @@ _READ_TOOLS: tuple[_ReadTool, ...] = (
     ),
 )
 
-# Registered ONLY when factory_score_enabled is on — its instruction line is
-# appended conditionally too, so the instructions never advertise an unregistered
-# tool (the same fail-closed contract the per-service groups honour).
 _FACTORY_SCORE_TOOL = _ReadTool(
     "factory_score",
     _factory_score,
@@ -391,9 +389,11 @@ def build_server() -> FastMCP:
     configured (the ``t3 mcp serve`` entry point calls ``ensure_django`` first).
     """
     declared = _required_services()
-    # T4-PR-2 — the recipe-weighted score is a DARK feature-flagged surface,
-    # registered ONLY when factory_score_enabled is on, so the outer loop has no
-    # MCP metric-to-beat until enablement is a deliberate act.
+    # T4-PR-2 — the recipe-weighted score is a DARK feature-flagged surface: both
+    # its tool registration and its instruction line are appended ONLY when
+    # factory_score_enabled is on (the same fail-closed contract the per-service
+    # groups honour — the instructions never advertise an unregistered tool), so
+    # the outer loop has no MCP metric-to-beat until enablement is a deliberate act.
     score_on = get_effective_settings().factory_score_enabled
     read_tools = (*_READ_TOOLS, _FACTORY_SCORE_TOOL) if score_on else _READ_TOOLS
 

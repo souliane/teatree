@@ -92,13 +92,6 @@ _RESOLUTION_MARKERS = frozenset(
 # it gains a real reader or a conscious allowlist entry.
 FIELDS_WITHOUT_SRC_READER: frozenset[str] = frozenset(
     {
-        # Directive #2 — the DB-backup scanner's config surface ships AHEAD of the
-        # Unit-18 scanner that reads it (a governed, tested config seam lands
-        # first; the loop reader lands in a later PR). Drop each entry when its
-        # scanner wires the reader.
-        "db_backup_cadence_hours",
-        "db_backup_disabled",
-        "db_backup_retention_days",
         "e2e_confidence_threshold",
         "issue_implementer_cadence_hours",
         "privacy",

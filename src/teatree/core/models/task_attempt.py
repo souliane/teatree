@@ -64,6 +64,23 @@ class TaskAttempt(models.Model):
         SUBSCRIPTION = "subscription", "Subscription"
         METERED = "metered", "Metered"
 
+    class Outcome(models.TextChoices):
+        """The terminal classification of a finished attempt (souliane/teatree#16).
+
+        The explicit discriminator that replaces inferring success/failure from an
+        overloaded ``exit_code`` + ``error``: an envelope refusal is recorded with
+        ``exit_code=0`` AND a non-empty ``error``, so any reader keying on
+        ``exit_code`` alone counts a refusal as a clean success. ``outcome`` is
+        stamped on every :meth:`save` from the current fields, so a consumer (the
+        S5 repair-burn signal) reads a first-class terminal state instead of
+        re-deriving it. Blank (``""``) is an attempt still in flight — no
+        ``exit_code`` recorded yet — and is neither a success nor a failure.
+        """
+
+        SUCCESS = "success", "Success"
+        REFUSAL = "refusal", "Refusal"
+        CRASH = "crash", "Crash"
+
     task = models.ForeignKey(Task, on_delete=models.CASCADE, related_name="attempts")
     started_at = models.DateTimeField(auto_now_add=True)
     ended_at = models.DateTimeField(null=True, blank=True)
@@ -92,6 +109,10 @@ class TaskAttempt(models.Model):
     # (its ``error``), normalized so transient noise does not defeat the
     # identical-failure check. Empty for a clean (non-failing) attempt.
     error_fingerprint = models.CharField(max_length=64, blank=True, default="")
+    # #16: the explicit success/refusal/crash discriminator, stamped from
+    # exit_code + error on every save (see _classify_outcome). Blank while the
+    # attempt is still in flight (no exit_code yet).
+    outcome = models.CharField(max_length=16, choices=Outcome.choices, blank=True, default="")
 
     objects = TaskAttemptQuerySet.as_manager()
 
@@ -104,7 +125,24 @@ class TaskAttempt(models.Model):
     def save(self, *args: object, **kwargs: object) -> None:
         if self._state.adding:
             self._stamp_repair_loop_fields()
+        self.outcome = self._classify_outcome()
         super().save(*args, **kwargs)  # type: ignore[arg-type]
+
+    def _classify_outcome(self) -> str:
+        """Derive the terminal outcome from ``exit_code`` + ``error`` (#16).
+
+        The single classification rule every reader shares: a genuine success is
+        ``exit_code == 0`` with NO error; an envelope refusal is ``exit_code == 0``
+        WITH an error; any non-zero exit is a crash. A ``None`` exit_code is an
+        attempt still in flight — left blank, classified as neither. Recomputed on
+        every save (not just insert) because the terminal fields are typically
+        written when the attempt completes, after the in-flight row was inserted.
+        """
+        if self.exit_code is None:
+            return ""
+        if self.exit_code == 0:
+            return self.Outcome.REFUSAL if self.error else self.Outcome.SUCCESS
+        return self.Outcome.CRASH
 
     @property
     def effective_tokens(self) -> float | None:

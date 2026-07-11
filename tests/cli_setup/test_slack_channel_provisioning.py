@@ -1,9 +1,9 @@
-"""Tests for ``teatree.cli.slack_channel_provisioning`` — bot review-channel join (#1686)."""
+"""Tests for ``teatree.cli.slack.channel_provisioning`` — bot review-channel join (#1686)."""
 
 from unittest.mock import MagicMock
 
 from teatree.backends.slack.bot import SlackBotBackend
-from teatree.cli.slack_channel_provisioning import JoinStatus, join_channel, join_review_channels, render_join_result
+from teatree.cli.slack.channel_provisioning import JoinStatus, join_channel, join_review_channels, render_join_result
 
 
 def _backend(join_body: dict) -> MagicMock:

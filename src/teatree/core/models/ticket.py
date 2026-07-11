@@ -8,6 +8,7 @@ from teatree.core.managers import TicketManager
 from teatree.core.modelkit.gate_registry import get_gate
 from teatree.core.modelkit.review_state import ReviewState
 from teatree.core.models.ticket_evidence import TicketEvidenceModel
+from teatree.core.models.ticket_introspection import TicketIntrospectionModel
 from teatree.core.models.ticket_ledger import retire_phase_ledger
 from teatree.core.models.ticket_number import derive_issue_number
 from teatree.core.models.ticket_overlay import TicketOverlayModel
@@ -32,13 +33,15 @@ if TYPE_CHECKING:
 # behaviour while every method stays reachable as ``ticket.foo()``, so the large
 # consumer-facing API and the FSM state graph are preserved with zero call-site
 # churn. The concrete class owns the fields, the state graph, and ``save``.
+# ``models.Model`` is not re-listed as a base: every facet already derives from it
+# via ``TicketFacet``, so it is redundant here.
 class Ticket(
     TicketOverlayModel,
     TicketPhaseSessionModel,
     TicketSchedulingModel,
     TicketEvidenceModel,
     TicketStatusModel,
-    models.Model,
+    TicketIntrospectionModel,
 ):
     class State(models.TextChoices):
         NOT_STARTED = "not_started", "Not started"

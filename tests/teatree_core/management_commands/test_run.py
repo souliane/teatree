@@ -524,21 +524,10 @@ class TestDiscoverFrontendPort:
             assert e2e_disc_mod.discover_frontend_port(MagicMock()) is None
 
 
-class TestRunHealthChecks(TestCase):
-    @_patch_overlays(FULL_OVERLAY)
-    @override_settings(**SETTINGS)
-    def test_failed_health_check_reports_failure(self) -> None:
-        pytest.skip(
-            "_run_health_checks command helper removed in worktree FSM refactor — "
-            "health checks now run inside WorktreeVerifyRunner; needs rewrite as "
-            "integration test against call_command('worktree', 'verify', ...)",
-        )
-
-    @_patch_overlays(FULL_OVERLAY)
-    @override_settings(**SETTINGS)
-    def test_health_check_exception_reports_error(self) -> None:
-        pytest.skip(
-            "_run_health_checks command helper removed in worktree FSM refactor — "
-            "health checks now run inside WorktreeVerifyRunner; needs rewrite as "
-            "integration test against call_command('worktree', 'verify', ...)",
-        )
+# NOTE: the former ``TestRunHealthChecks`` (``test_failed_health_check_reports_failure``
+# and ``test_health_check_exception_reports_error``) was removed — the
+# ``_run_health_checks`` run-command helper is gone; health checks now run inside
+# ``WorktreeVerifyRunner``, whose failing-check and raising-check paths are covered
+# by ``tests/teatree_core/test_worktree_verify_runner.py`` (``test_failing_check_reported``,
+# ``test_exception_in_check_caught``). Those belong to the ``worktree verify`` surface,
+# not the ``run`` command this file mirrors, so no rewrite lands here.

@@ -18,6 +18,7 @@ from teatree.loop.job_identity import _CANONICAL_CORE_OVERLAY, Domain, _ScannerJ
 from teatree.loop.scanners import (
     AssignedIssuesScanner,
     BacklogSweepScanner,
+    DbBackupScanner,
     EvalLocalScanner,
     IdleStackReaperScanner,
     LocalStackQueueDrainerScanner,
@@ -230,6 +231,26 @@ def _snapshot_warmer_scanner() -> SnapshotWarmerScanner | None:
     return SnapshotWarmerScanner(configs=configs, max_age_days=settings.snapshot_warmer_max_age_days)
 
 
+def _db_backup_scanner() -> DbBackupScanner | None:
+    """Build the global control-DB backup scanner from teatree-core config (directive #2).
+
+    Returns ``None`` when ``db_backup_disabled = true`` (the escape-hatch
+    kill-switch). The cadence + retention are teatree-platform config (the
+    ``[teatree]`` table, per-overlay overridable): a non-positive cadence /
+    retention already fails SAFE to the default at read time (the registry
+    parsers), so "keep at least a week of backups" cannot be mistyped away to 0.
+    The backup targets teatree's OWN control DB (resolved from the live Django
+    connection), so — unlike the snapshot warmer — it carries no overlay anchor.
+    """
+    settings = load_config().user
+    if settings.db_backup_disabled:
+        return None
+    return DbBackupScanner(
+        retention_days=settings.db_backup_retention_days,
+        cadence_hours=settings.db_backup_cadence_hours,
+    )
+
+
 def _local_stack_queue_drainer_scanner() -> LocalStackQueueDrainerScanner | None:
     """Build the global acquisition-queue drainer scanner from config (#2190, #44).
 
@@ -400,6 +421,9 @@ def build_default_jobs(
             # souliane/teatree#2949 snapshot warmer — keeps every overlay-
             # declared reference DB's DSLR snapshot current out-of-band.
             _snapshot_warmer_scanner(),
+            # Directive #2 daily control-DB backup — cadence-gated snapshot +
+            # keep-last-N-days retention of teatree's OWN control DB.
+            _db_backup_scanner(),
         )
         if s
     )

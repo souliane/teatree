@@ -46,7 +46,7 @@ def _spec(name: str = "s", model: str = "claude-opus-4-8") -> EvalSpec:
 class _StubRunner:
     """Records that it was built; grades every scenario as a metered pass."""
 
-    def __init__(self, **_: Any) -> None:
+    def __init__(self, *_: Any, **__: Any) -> None:
         pass
 
     def run(self, spec: EvalSpec) -> EvalRun:

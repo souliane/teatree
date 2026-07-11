@@ -16,6 +16,7 @@ from teatree.core.overlay_loader import get_all_overlays
 from teatree.project import find_project_root
 from teatree.utils import git, git_remote
 from teatree.utils.pr_ref import PrRef
+from teatree.utils.throttled_log import warn_throttled
 from teatree.utils.url_slug import slug_from_issue_or_pr_url
 
 logger = logging.getLogger(__name__)
@@ -228,7 +229,11 @@ def _overlay_package_repo_slugs() -> list[str]:
     """
     try:
         entries = discover_overlays()
-    except Exception:  # noqa: BLE001 — overlay discovery is best-effort here
+    except Exception:  # noqa: BLE001 — best-effort: never block the recovery probe on a registry read
+        # A persistently-failing overlay discovery is a real registry fault, not
+        # an expected miss — surface it (throttled) instead of silently blanking
+        # the candidate set on every S1/S4 compute and merge probe.
+        warn_throttled(logger, "slug-probe-discover", "overlay discovery failed during merge probe", exc_info=True)
         return []
     slugs: list[str] = []
     for entry in entries:
@@ -237,7 +242,7 @@ def _overlay_package_repo_slugs() -> list[str]:
             continue
         try:
             slug = git.remote_slug(repo=str(path))
-        except Exception:  # noqa: BLE001 — a missing remote must not block the probe
+        except Exception:  # noqa: BLE001 — a missing remote is an expected miss; must not block the probe
             slug = ""
         if slug:
             slugs.append(slug)
@@ -256,7 +261,11 @@ def _overlay_working_repo_slugs() -> list[str]:
     """
     try:
         overlays = get_all_overlays()
-    except Exception:  # noqa: BLE001 — overlay instantiation is best-effort here
+    except Exception:  # noqa: BLE001 — best-effort: never block the recovery probe on a registry read
+        # A persistently-failing overlay load is a real registry fault, not an
+        # expected miss — surface it (throttled) rather than silently blanking the
+        # working-repo candidate set.
+        warn_throttled(logger, "slug-probe-overlays", "overlay load failed during merge probe", exc_info=True)
         return []
     slugs: list[str] = []
     for name, overlay in overlays.items():

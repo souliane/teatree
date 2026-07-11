@@ -30,6 +30,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Final, cast
 
 from teatree.core.models import NEEDS_TRIAGE_LABEL
+from teatree.core.send_proxy import OutboundBlockedError, forge_from_url, route_forge_write
 from teatree.hooks import banned_terms_scanner
 from teatree.paths import get_data_dir
 from teatree.types import RawAPIDict
@@ -467,7 +468,24 @@ def file_class_c_issue(
             withheld_reason=f"contains bare reference(s): {', '.join(leaked)}",
         )
 
-    raw = host.create_issue(repo=context.repo, title=title, body=body, labels=context.labels())
+    # The SAME shared forge-write seam the MCP tools use: the public-repo leak
+    # gate + the #117 send-proxy audit fire before the backend call, so this
+    # internal filer is no longer laxer than the MCP surface. A leak/blocked
+    # verdict withholds the issue rather than crashing the retro command.
+    forge = forge_from_url(context.pr_url)
+    try:
+        clean_title = route_forge_write(
+            forge=forge, repo=context.repo, text=title, action="retro_review_finding", target=context.pr_url
+        )
+        clean_body = route_forge_write(
+            forge=forge, repo=context.repo, text=body, action="retro_review_finding", target=context.pr_url
+        )
+    except OutboundBlockedError as exc:
+        return FiledIssue(
+            fingerprint=finding.fingerprint, url="", already_filed=False, withheld=True, withheld_reason=str(exc)
+        )
+
+    raw = host.create_issue(repo=context.repo, title=clean_title, body=clean_body, labels=context.labels())
     return FiledIssue(fingerprint=finding.fingerprint, url=_issue_url(raw), already_filed=False)
 
 

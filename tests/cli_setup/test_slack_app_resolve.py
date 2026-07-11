@@ -1,4 +1,4 @@
-"""Tests for ``teatree.cli.slack_app_resolve`` — shared app-id resolution (#1686).
+"""Tests for ``teatree.cli.slack.app_resolve`` — shared app-id resolution (#1686).
 
 The overlay registry is DB-home: reads/writes go through ``ConfigSetting`` and the
 single ``overlays`` row (``{name: {fields}}``), so the config-touching classes are
@@ -10,7 +10,7 @@ from unittest.mock import patch
 import httpx
 from django.test import TestCase
 
-from teatree.cli.slack_app_resolve import (
+from teatree.cli.slack.app_resolve import (
     derive_app_id_from_token,
     persist_overlay_field,
     read_overlay_field,
@@ -83,7 +83,7 @@ class TestDeriveAppIdFromToken:
         assert derive_app_id_from_token("") == ""
 
     def test_derives_from_auth_and_bots_info(self) -> None:
-        with patch("teatree.cli.slack_app_resolve.httpx.post") as post:
+        with patch("teatree.cli.slack.app_resolve.httpx.post") as post:
             post.side_effect = [
                 _resp({"ok": True, "bot_id": "B1"}),
                 _resp({"ok": True, "bot": {"app_id": "A_DERIVED"}}),
@@ -91,19 +91,19 @@ class TestDeriveAppIdFromToken:
             assert derive_app_id_from_token("xoxb-tok") == "A_DERIVED"
 
     def test_returns_empty_when_auth_not_ok(self) -> None:
-        with patch("teatree.cli.slack_app_resolve.httpx.post", return_value=_resp({"ok": False})):
+        with patch("teatree.cli.slack.app_resolve.httpx.post", return_value=_resp({"ok": False})):
             assert derive_app_id_from_token("xoxb-tok") == ""
 
     def test_returns_empty_when_no_bot_id(self) -> None:
-        with patch("teatree.cli.slack_app_resolve.httpx.post", return_value=_resp({"ok": True})):
+        with patch("teatree.cli.slack.app_resolve.httpx.post", return_value=_resp({"ok": True})):
             assert derive_app_id_from_token("xoxb-tok") == ""
 
     def test_returns_empty_on_http_error(self) -> None:
-        with patch("teatree.cli.slack_app_resolve.httpx.post", side_effect=httpx.HTTPError("net down")):
+        with patch("teatree.cli.slack.app_resolve.httpx.post", side_effect=httpx.HTTPError("net down")):
             assert derive_app_id_from_token("xoxb-tok") == ""
 
     def test_returns_empty_when_bots_info_not_ok(self) -> None:
-        with patch("teatree.cli.slack_app_resolve.httpx.post") as post:
+        with patch("teatree.cli.slack.app_resolve.httpx.post") as post:
             post.side_effect = [_resp({"ok": True, "bot_id": "B1"}), _resp({"ok": False})]
             assert derive_app_id_from_token("xoxb-tok") == ""
 
@@ -111,15 +111,15 @@ class TestDeriveAppIdFromToken:
 class TestResolveOverlayAppId(TestCase):
     def test_registry_value_wins(self) -> None:
         _seed({"t3": {"slack_app_id": "A_CFG"}})
-        with patch("teatree.cli.slack_app_resolve.derive_app_id_from_token") as derive:
+        with patch("teatree.cli.slack.app_resolve.derive_app_id_from_token") as derive:
             assert resolve_overlay_app_id("t3") == "A_CFG"
             derive.assert_not_called()
 
     def test_derives_and_persists_when_registry_empty(self) -> None:
         _seed({"t3": {"slack_token_ref": "teatree/t3/slack"}})
         with (
-            patch("teatree.cli.slack_app_resolve.read_pass", return_value="xoxb-tok"),
-            patch("teatree.cli.slack_app_resolve.derive_app_id_from_token", return_value="A_DERIVED"),
+            patch("teatree.cli.slack.app_resolve.read_pass", return_value="xoxb-tok"),
+            patch("teatree.cli.slack.app_resolve.derive_app_id_from_token", return_value="A_DERIVED"),
         ):
             assert resolve_overlay_app_id("t3") == "A_DERIVED"
         assert _registry()["t3"]["slack_app_id"] == "A_DERIVED"
@@ -131,8 +131,8 @@ class TestResolveOverlayAppId(TestCase):
     def test_uses_explicit_token_ref(self) -> None:
         _seed({"t3": {}})
         with (
-            patch("teatree.cli.slack_app_resolve.read_pass", return_value="xoxb-tok") as read,
-            patch("teatree.cli.slack_app_resolve.derive_app_id_from_token", return_value="A_X"),
+            patch("teatree.cli.slack.app_resolve.read_pass", return_value="xoxb-tok") as read,
+            patch("teatree.cli.slack.app_resolve.derive_app_id_from_token", return_value="A_X"),
         ):
             assert resolve_overlay_app_id("t3", token_ref="teatree/explicit/slack") == "A_X"
             read.assert_called_once_with("teatree/explicit/slack-bot")

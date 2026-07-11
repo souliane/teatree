@@ -25,7 +25,7 @@ from teatree.cli.eval.run_modes import (
     with_model,
 )
 from teatree.eval.api_runner import MAX_BUDGET_USD
-from teatree.eval.backends import API_BACKEND, EvalRunner, make_runner
+from teatree.eval.backends import API_BACKEND, ApiRunnerParams, EvalRunner, make_runner
 from teatree.eval.matrix import MatrixRow, render_matrix_html, render_matrix_json, render_matrix_text
 from teatree.eval.model_variant import ModelVariantError, parse_model_variants
 from teatree.eval.models import EvalSpec
@@ -123,10 +123,12 @@ def run_pass_at_k_lane(  # noqa: PLR0913 — each kwarg threads one `eval run` C
     )
     runner = make_runner(
         API_BACKEND,
-        max_turns_override=max_turns,
-        require_executed=require_executed,
-        max_budget_usd=max_budget_usd,
-        effort=effort,
+        ApiRunnerParams(
+            max_turns_override=max_turns,
+            require_executed=require_executed,
+            max_budget_usd=max_budget_usd,
+            effort=effort,
+        ),
     )
 
     def _trial(spec: EvalSpec) -> ScenarioResult:
@@ -246,10 +248,12 @@ def run_model_matrix_lane(  # noqa: PLR0913 — each kwarg threads one `eval run
     )
     runner = make_runner(
         API_BACKEND,
-        max_turns_override=max_turns,
-        require_executed=require_executed,
-        max_budget_usd=max_budget_usd,
-        effort=effort,
+        ApiRunnerParams(
+            max_turns_override=max_turns,
+            require_executed=require_executed,
+            max_budget_usd=max_budget_usd,
+            effort=effort,
+        ),
     )
     rows = collect_matrix_rows(specs, model_list, runner=runner, trials=trials, require=require, grader=grader)
     if output_format == "json":

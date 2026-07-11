@@ -199,6 +199,15 @@ _DEFAULT_LOOPS = (
         False,
     ),
     (
+        "db_backup",
+        86400,
+        None,
+        None,
+        "Backs up teatree's own control DB daily and prunes past the keep-last-N-days retention (directive #2); the scanner enforces db_backup_cadence_hours, gated by db_backup_disabled.",
+        False,
+        True,
+    ),
+    (
         "backlog_sweep",
         86400,
         None,
@@ -282,6 +291,15 @@ def _seed_default_loops(apps, schema_editor):
 
 
 class Migration(migrations.Migration):
+    # Self-contained fresh initial: a hand-authored squash of the old 0001..0043
+    # chain, NOT ``squashmigrations`` output, so it deliberately carries no
+    # ``replaces``. A brand-new DB applies it directly; live/old-chain installs are
+    # reconciled by the #3140 fleet-safety migration path (proven by
+    # ``tests/teatree_core/test_migration_squash_existing_db.py``) plus idempotent
+    # runtime seeding (``loops/seed.py`` get_or_create), not a ``replaces``
+    # fake-apply. The seed values above are INLINED (frozen history — no import of
+    # the evolving ``teatree.loops.seed``) and pinned by
+    # ``tests/teatree_core/test_initial_migration_seed.py``.
     initial = True
 
     dependencies = []

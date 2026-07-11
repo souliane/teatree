@@ -5,10 +5,30 @@ from pathlib import Path
 from claude_agent_sdk import AssistantMessage, ResultMessage, TextBlock, ThinkingBlock, ToolResultBlock, ToolUseBlock
 from claude_agent_sdk.types import HookEventMessage
 
+from teatree.eval import message_mapping
 from teatree.eval.message_mapping import _block_to_dict, eval_run_from_messages
 from teatree.eval.models import EvalSpec, Matcher
 from teatree.eval.report import evaluate
-from teatree.eval.transcript import extract_terminal_reason, extract_text_blocks, extract_tool_calls, parse_stream_json
+from teatree.eval.transcript import (
+    StreamJsonEvent,
+    extract_terminal_reason,
+    extract_text_blocks,
+    extract_tool_calls,
+    parse_stream_json,
+)
+
+
+def test_module_docstring_names_the_live_from_obj_seam() -> None:
+    """The docstring's fold-to-events cross-ref must name the classmethod that exists.
+
+    The typed lane folds each event dict straight into ``StreamJsonEvent`` via its
+    ``from_obj`` classmethod; an earlier draft named a free ``event_from_obj`` function that
+    never existed, so the ``:meth:`` role dangled. Guard the reference against regrowth.
+    """
+    doc = message_mapping.__doc__ or ""
+    assert "StreamJsonEvent.from_obj" in doc
+    assert "event_from_obj" not in doc
+    assert callable(StreamJsonEvent.from_obj)
 
 
 def _spec() -> EvalSpec:

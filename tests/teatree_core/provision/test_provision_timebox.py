@@ -19,6 +19,7 @@ from django.test import TestCase, override_settings
 from teatree.core.provision.provision_timebox import (
     DEFAULT_FAST_STEP_TIMEOUT_SECONDS,
     DEFAULT_STEP_TIMEOUT_SECONDS,
+    ProgressAlert,
     detect_migration_conflict,
     resolve_step_timeout_seconds,
     run_timeboxed_callable,
@@ -134,8 +135,7 @@ class TestRunTimeboxedStep(TestCase):
             "restore",
             ["pg_restore"],
             timeout=300,
-            heartbeat_interval=0.05,
-            heartbeat=beats.append,
+            progress=ProgressAlert(interval=0.05, heartbeat=beats.append),
         )
         assert beats, "expected at least one heartbeat while the op ran"
         assert any("restore" in b for b in beats)
@@ -168,7 +168,7 @@ class TestRunTimeboxedCallable(TestCase):
     def test_overrun_aborts_and_names_step(self, mock_notify: MagicMock) -> None:
         release = threading.Event()
         result = run_timeboxed_callable(
-            "sync-dependencies", lambda: release.wait(timeout=3), timeout=0.1, heartbeat_interval=0.05
+            "sync-dependencies", lambda: release.wait(timeout=3), timeout=0.1, progress=ProgressAlert(interval=0.05)
         )
         release.set()
         assert result.success is False
@@ -201,7 +201,10 @@ class TestRunTimeboxedCallable(TestCase):
             time.sleep(0.2)
 
         run_timeboxed_callable(
-            "sync-dependencies", slow_then_finish, timeout=5, heartbeat_interval=0.05, heartbeat=beats.append
+            "sync-dependencies",
+            slow_then_finish,
+            timeout=5,
+            progress=ProgressAlert(interval=0.05, heartbeat=beats.append),
         )
         assert beats, "expected at least one heartbeat while the callable ran"
         assert any("sync-dependencies" in b for b in beats)
@@ -227,7 +230,9 @@ class TestRunTimeboxedDbImport(TestCase):
     @patch("teatree.core.provision.provision_timebox.notify_user")
     def test_overrun_returns_false_with_actionable_alert(self, mock_notify: MagicMock) -> None:
         release = threading.Event()
-        result = run_timeboxed_db_import(lambda: release.wait(timeout=3) or True, timeout=0.1, heartbeat_interval=0.05)
+        result = run_timeboxed_db_import(
+            lambda: release.wait(timeout=3) or True, timeout=0.1, progress=ProgressAlert(interval=0.05)
+        )
         release.set()
         assert result is False
         assert mock_notify.called

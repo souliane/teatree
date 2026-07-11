@@ -17,7 +17,6 @@ path is additionally covered by ``tests/conformance/test_signals_scope_parity.py
 """
 
 import json
-import os
 
 import pytest
 import typer
@@ -26,6 +25,7 @@ from django.test import TestCase
 from typer.testing import CliRunner
 
 from teatree.cli.overlay import OverlayAppBuilder
+from teatree.utils.env import patched_environ
 
 runner = CliRunner()
 
@@ -42,16 +42,9 @@ def _in_process_managepy_core(*args: str, overlay_name: str = "") -> None:
     django-typer prints the ``handle`` return to the ``CliRunner``-captured
     stdout, the same document a front-end would parse.
     """
-    prior = os.environ.get("T3_OVERLAY_NAME")
-    if overlay_name:
-        os.environ["T3_OVERLAY_NAME"] = overlay_name
-    try:
+    overrides = {"T3_OVERLAY_NAME": overlay_name} if overlay_name else {}
+    with patched_environ(overrides):
         call_command(*args)
-    finally:
-        if prior is None:
-            os.environ.pop("T3_OVERLAY_NAME", None)
-        else:
-            os.environ["T3_OVERLAY_NAME"] = prior
 
 
 @pytest.fixture(autouse=True)

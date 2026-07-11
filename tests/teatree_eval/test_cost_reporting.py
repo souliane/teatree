@@ -12,7 +12,7 @@ from unittest.mock import patch
 import pytest
 from claude_agent_sdk import ResultMessage
 
-from teatree.eval.api_runner import ApiInProcessRunner
+from teatree.eval.api_runner import ApiInProcessRunner, ApiRunnerParams
 from teatree.eval.models import EvalRun, EvalSpec
 from teatree.eval.report import ScenarioResult, render_json, render_text
 from teatree.eval.transcript import StreamJsonEvent, extract_cost_usd
@@ -151,7 +151,7 @@ class TestRunnerCostCapture:
             patch("teatree.eval.api_runner.shutil.which", return_value="/usr/bin/claude"),
             patch("teatree.eval.api_runner.query", _query),
         ):
-            return ApiInProcessRunner(workspace=tmp_path).run(spec)
+            return ApiInProcessRunner(ApiRunnerParams(workspace=tmp_path)).run(spec)
 
     def test_cost_captured_from_result_event(self, tmp_path: Path) -> None:
         run = self._run_with_cost(tmp_path, 0.01)

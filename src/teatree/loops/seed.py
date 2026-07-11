@@ -211,6 +211,13 @@ DEFAULT_LOOPS: tuple[LoopSeedSpec, ...] = (
         "Runs the local behavioral eval suite; the scanner enforces its own weekly cadence (checked daily).",
     ),
     LoopSeedSpec(
+        "db_backup",
+        86400,
+        "Backs up teatree's own control DB daily and prunes past the keep-last-N-days retention "
+        "(directive #2); the scanner enforces db_backup_cadence_hours, gated by db_backup_disabled.",
+        default_enabled=True,
+    ),
+    LoopSeedSpec(
         "backlog_sweep",
         86400,
         "Sweeps the backlog daily to propose closing stale issues; default-off (destructive-capable) "

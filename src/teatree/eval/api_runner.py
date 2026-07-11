@@ -420,38 +420,47 @@ def load_agent_definition(agent_path: str, agent_sections: tuple[str, ...] = ())
     return text
 
 
+@dataclasses.dataclass(frozen=True, slots=True)
+class ApiRunnerParams:
+    """The construction knobs for :class:`ApiInProcessRunner`, grouped into one object.
+
+    Six knobs threaded one runner-construction concern each. Grouping them here
+    keeps the constructor a single parameter (so ``ApiInProcessRunner`` no longer
+    trips the too-many-arguments bar) and gives ``make_runner`` one value to build
+    and thread from the ``t3 eval run`` CLI.
+    """
+
+    #: ``None`` (the CI/production path, where ``make_runner`` passes no workspace
+    #: and the eval CLI's cwd is the teatree repo root) means "grant only the
+    #: neutral isolated temp dir" — NEVER the repo root, which would expose
+    #: ``evals/scenarios/*.yaml`` (the matcher/answer text) to the agent under
+    #: test. A test passes an explicit throwaway workspace to grant.
+    workspace: Path | None = None
+    max_turns_override: int | None = None
+    require_executed: bool = False
+    max_budget_usd: float = float(MAX_BUDGET_USD)
+    #: Lane-level representative reasoning effort. Applied when a scenario declares
+    #: no ``model@effort`` of its own (a declared effort wins).
+    effort: EffortLevel | None = None
+    #: The SELECTED eval credential's conflicting vars — the credential the
+    #: isolated child must NOT fall back to (the metered API key strips the OAuth
+    #: token; the subscription OAuth strips the API key). ``make_runner`` passes the
+    #: resolved eval credential's ``spec.conflicting_vars``; the default preserves
+    #: the pre-#2707-reversal metered strip for direct callers.
+    conflicting_vars: tuple[str, ...] = _DEFAULT_CONFLICTING_VARS
+
+
 class ApiInProcessRunner:
     """Run an :class:`EvalSpec` via the in-process Agent SDK and capture tool calls."""
 
-    # ast-grep-ignore: ac-django-no-complexity-suppressions
-    def __init__(  # noqa: PLR0913 — each kwarg is one runner-construction knob (workspace / turns / require / budget / effort / credential-conflicts); the list mirrors ``make_runner``'s contract.
-        self,
-        *,
-        workspace: Path | None = None,
-        max_turns_override: int | None = None,
-        require_executed: bool = False,
-        max_budget_usd: float = float(MAX_BUDGET_USD),
-        effort: EffortLevel | None = None,
-        conflicting_vars: tuple[str, ...] = _DEFAULT_CONFLICTING_VARS,
-    ) -> None:
-        # ``None`` (the CI/production path, where make_runner passes no workspace and
-        # the eval CLI's cwd is the teatree repo root) means "grant only the neutral
-        # isolated temp dir" — NEVER the repo root, which would expose
-        # evals/scenarios/*.yaml (the matcher/answer text) to the agent under test.
-        # A test passes an explicit throwaway workspace to grant.
-        self._workspace = workspace
-        self._max_turns_override = max_turns_override
-        self._require_executed = require_executed
-        self._max_budget_usd = max_budget_usd
-        #: Lane-level representative reasoning effort. Applied when a scenario
-        #: declares no ``model@effort`` of its own (a declared effort wins).
-        self._effort = effort
-        #: The SELECTED eval credential's conflicting vars — the credential the
-        #: isolated child must NOT fall back to (the metered API key strips the
-        #: OAuth token; the subscription OAuth strips the API key). ``make_runner``
-        #: passes the resolved eval credential's ``spec.conflicting_vars``; the
-        #: default preserves the pre-#2707-reversal metered strip for direct callers.
-        self._conflicting_vars = conflicting_vars
+    def __init__(self, params: ApiRunnerParams | None = None) -> None:
+        params = params or ApiRunnerParams()
+        self._workspace = params.workspace
+        self._max_turns_override = params.max_turns_override
+        self._require_executed = params.require_executed
+        self._max_budget_usd = params.max_budget_usd
+        self._effort = params.effort
+        self._conflicting_vars = params.conflicting_vars
 
     def _resolve_max_turns(self, spec: EvalSpec) -> int:
         """Override wins; else a clean-room budget is floored to :data:`CLEAN_ROOM_MIN_TURNS`."""

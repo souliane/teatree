@@ -19,6 +19,7 @@ import teatree.cli as cli_mod
 import teatree.cli.agent as cli_agent_mod
 import teatree.cli.review.request as cli_review_request_mod
 import teatree.config as config_mod
+import teatree.config.cold_reader as cold_reader_mod
 import teatree.core.intake.resolve as resolve_mod
 import teatree.core.overlay_loader as overlay_loader_mod
 import teatree.utils.run as utils_run_mod
@@ -802,17 +803,31 @@ class TestUpdateNoticeDoesNotPolluteJsonStdout:
 
 
 class TestEnsureEditableIfContributing:
-    # ``contribute`` is DB-home (#1775): ``_ensure_editable_if_contributing``
-    # resolves it via ``get_effective_settings()``, so the patch targets that
-    # tier (not ``load_config``, whose ``.user.contribute`` is now ignored).
+    # ``contribute`` is DB-home (#1775) and read on EVERY invocation, so the gate
+    # uses the single-key Django-free cold reader (``cold_reader.bool_setting``),
+    # NOT the full ``get_effective_settings`` resolution — the patch targets that.
     def test_skips_when_contribute_false(self) -> None:
-        with patch.object(config_mod, "get_effective_settings", return_value=MagicMock(contribute=False)):
+        with (
+            patch.object(cold_reader_mod, "bool_setting", return_value=False),
+            patch.object(IntrospectionHelpers, "editable_info") as mock_info,
+        ):
             _ensure_editable_if_contributing()
-        # Should return early without calling editable_info
+        mock_info.assert_not_called()
+
+    def test_gate_uses_cheap_cold_read_not_full_settings(self) -> None:
+        # The cheap gate must NOT pay the full get_effective_settings resolution
+        # (overlay discovery / TOML layering / autonomy collapse) on every call.
+        with (
+            patch.object(cold_reader_mod, "bool_setting", return_value=False) as mock_cold,
+            patch.object(config_mod, "get_effective_settings") as mock_full,
+        ):
+            _ensure_editable_if_contributing()
+        mock_cold.assert_called_once_with("contribute", default=False)
+        mock_full.assert_not_called()
 
     def test_makes_teatree_editable(self) -> None:
         with (
-            patch.object(config_mod, "get_effective_settings", return_value=MagicMock(contribute=True)),
+            patch.object(cold_reader_mod, "bool_setting", return_value=True),
             patch.object(IntrospectionHelpers, "editable_info", return_value=(False, "")),
             patch.object(DoctorService, "find_teatree_repo", return_value=Path("/fake/teatree")),
             patch.object(DoctorService, "make_editable") as mock_make,
@@ -823,7 +838,7 @@ class TestEnsureEditableIfContributing:
 
     def test_skips_teatree_when_already_editable(self) -> None:
         with (
-            patch.object(config_mod, "get_effective_settings", return_value=MagicMock(contribute=True)),
+            patch.object(cold_reader_mod, "bool_setting", return_value=True),
             patch.object(IntrospectionHelpers, "editable_info", return_value=(True, "/fake")),
             patch.object(DoctorService, "find_teatree_repo") as mock_find,
             patch.object(overlay_loader_mod, "get_all_overlays", return_value={}),
@@ -836,7 +851,7 @@ class TestEnsureEditableIfContributing:
         type(mock_overlay).__module__ = "myoverlay.overlay"
 
         with (
-            patch.object(config_mod, "get_effective_settings", return_value=MagicMock(contribute=True)),
+            patch.object(cold_reader_mod, "bool_setting", return_value=True),
             patch.object(
                 IntrospectionHelpers,
                 "editable_info",
@@ -850,8 +865,30 @@ class TestEnsureEditableIfContributing:
             _ensure_editable_if_contributing()
         mock_make.assert_called_once_with("myoverlay-dist", Path("/fake/overlay"))
 
-    def test_suppresses_exceptions(self) -> None:
-        with patch.object(config_mod, "get_effective_settings", side_effect=RuntimeError("boom")):
+    def test_packages_distributions_resolved_once_across_overlays(self) -> None:
+        # The dist map is invariant across overlays — it must be resolved ONCE,
+        # not once per overlay (the #3g-4 hoist out of the loop).
+        overlays = {}
+        for name in ("a", "b", "c"):
+            ov = MagicMock()
+            type(ov).__module__ = f"pkg_{name}.overlay"
+            overlays[name] = ov
+        with (
+            patch.object(cold_reader_mod, "bool_setting", return_value=True),
+            patch.object(IntrospectionHelpers, "editable_info", return_value=(True, "/editable")),
+            patch.object(overlay_loader_mod, "get_all_overlays", return_value=overlays),
+            patch("importlib.metadata.packages_distributions", return_value={}) as mock_dists,
+        ):
+            _ensure_editable_if_contributing()
+        mock_dists.assert_called_once()
+
+    def test_suppresses_repair_exceptions(self) -> None:
+        # A best-effort re-install failure must never break the CLI, but the
+        # swallow is scoped to the repair — the config gate read is outside it.
+        with (
+            patch.object(cold_reader_mod, "bool_setting", return_value=True),
+            patch.object(IntrospectionHelpers, "editable_info", side_effect=RuntimeError("boom")),
+        ):
             _ensure_editable_if_contributing()  # should not raise
 
 

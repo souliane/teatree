@@ -11,7 +11,7 @@ import subprocess
 from pathlib import Path
 from unittest.mock import patch
 
-import teatree.cli.doctor as teatree_cli_doctor
+import teatree.cli.doctor.app as teatree_cli_doctor
 from teatree.cli.doctor import DoctorService
 
 

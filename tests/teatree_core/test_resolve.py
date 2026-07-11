@@ -209,6 +209,29 @@ class TestResolveWorktree(TestCase):
 
         assert result.pk == wt.pk
 
+    def test_stale_env_ticket_dir_falls_through_to_cwd_match(self) -> None:
+        # 3e#3 nit (dropped `# pragma: no branch`): a stale env cache can name a
+        # TICKET_DIR whose worktree row is gone. That miss must fall through to the
+        # CWD-direct match (step 2), not treat the cache as truth or crash.
+        cwd_dir = self._tmp_path / "backend"
+        ticket = Ticket.objects.create()
+        wt = Worktree.objects.create(
+            ticket=ticket,
+            repo_path="backend",
+            branch="feature",
+            extra={"worktree_path": str(cwd_dir)},
+        )
+
+        envfile = self._tmp_path / ".t3-cache" / "backend" / ".t3-env.cache"
+        envfile.parent.mkdir(parents=True, exist_ok=True)
+        # TICKET_DIR points at a path with NO matching Worktree row.
+        envfile.write_text(f"TICKET_DIR={self._tmp_path / 'removed-worktree'}\n", encoding="utf-8")
+        self._monkeypatch.setenv("T3_ORIG_CWD", str(cwd_dir))
+
+        result = resolve_worktree()
+
+        assert result.pk == wt.pk
+
     def test_from_cwd_path(self) -> None:
         ticket = Ticket.objects.create()
         wt_path = str(self._tmp_path / "workspace" / "ac-backend-42")
@@ -930,6 +953,15 @@ class TestTicketByNumberFailsLoudOnCollision(TestCase):
 
         with pytest.raises(TicketIdentityCollisionError):
             _ticket_owning_branch("5-fix-the-thing")
+
+    def test_blank_number_returns_none_never_fans_out_to_pk_fallback_rows(self) -> None:
+        # A blank hint's empty ``issue_number`` filter would otherwise match EVERY
+        # pk-fallback ticket (issue_url with no trailing number → blank
+        # ``issue_number``) and then fail loud as a false collision.
+        Ticket.objects.create(issue_url="https://a.example.com/x/notes")
+        Ticket.objects.create(issue_url="https://b.example.com/y/wiki")
+
+        assert _ticket_by_number("") is None
 
 
 class TestRefreshReusedRowRefusesPathSteal(TestCase):

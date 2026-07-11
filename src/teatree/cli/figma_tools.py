@@ -17,7 +17,6 @@ from pathlib import Path
 import typer
 
 from teatree.backends.figma import FigmaClient, build_side_by_side_comparison
-from teatree.cli.tools import tool_app
 from teatree.utils.secrets import read_pass
 
 _TOKEN_PASS_KEY = "figma/pat"  # noqa: S105 — pass key name, not a secret
@@ -35,7 +34,6 @@ def _client() -> FigmaClient:
     return FigmaClient(token=token)
 
 
-@tool_app.command("figma-screenshot")
 def figma_screenshot(
     file_key: str = typer.Argument(..., help="Figma file key (from the file URL)."),
     node_id: str = typer.Argument(..., help="Node/frame ID to render (e.g. `12:34`)."),
@@ -47,7 +45,6 @@ def figma_screenshot(
     typer.echo(f"Saved: {result} ({result.stat().st_size:,} bytes)")
 
 
-@tool_app.command("figma-frames")
 def figma_frames(
     file_key: str = typer.Argument(..., help="Figma file key."),
     node_id: str = typer.Argument(..., help="Parent node ID to list children of."),
@@ -61,7 +58,6 @@ def figma_frames(
         typer.echo(f"{frame.node_id}  {frame.node_type:<12}  {frame.name}")
 
 
-@tool_app.command("figma-comments")
 def figma_comments(
     file_key: str = typer.Argument(..., help="Figma file key."),
     node_id: str = typer.Option("", "--node-id", help="Restrict to comments anchored on this node."),
@@ -72,7 +68,6 @@ def figma_comments(
     typer.echo(json.dumps(comments, indent=2))
 
 
-@tool_app.command("figma-components")
 def figma_components(
     file_key: str = typer.Argument(..., help="Figma file key."),
 ) -> None:
@@ -81,7 +76,6 @@ def figma_components(
     typer.echo(json.dumps(dataclasses.asdict(metadata), indent=2))
 
 
-@tool_app.command("figma-compare")
 def figma_compare(
     design_image: Path = typer.Argument(..., help="Figma mockup PNG (e.g. from `figma-screenshot`)."),
     actual_screenshot: Path = typer.Argument(..., help="Playwright screenshot PNG to compare against."),
@@ -90,3 +84,12 @@ def figma_compare(
     """Combine a Figma mockup and a Playwright screenshot side by side for MR evidence."""
     result = build_side_by_side_comparison(design_image, actual_screenshot, dest)
     typer.echo(f"Saved: {result} ({result.stat().st_size:,} bytes)")
+
+
+def register(app: typer.Typer) -> None:
+    """Register this module's ``t3 tool`` command(s) onto *app* (called from ``cli/__init__``)."""
+    app.command("figma-screenshot")(figma_screenshot)
+    app.command("figma-frames")(figma_frames)
+    app.command("figma-comments")(figma_comments)
+    app.command("figma-components")(figma_components)
+    app.command("figma-compare")(figma_compare)

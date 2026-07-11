@@ -48,6 +48,7 @@ from django.db import DatabaseError, transaction
 
 from teatree.config import get_effective_settings
 from teatree.config.enums import SendProxyMode
+from teatree.core.gates.privacy_gate import PrivacyGateResult, format_refusal, scan_outbound_text
 from teatree.core.overlay_loader import get_overlay
 from teatree.core.session_identity import current_session_id
 from teatree.utils import secrets
@@ -340,7 +341,16 @@ def _audit_verdict(verdict: SendVerdict) -> "SendAudit.Verdict":
     return SendAudit.Verdict.WARNED
 
 
-class SendBlockedError(RuntimeError):
+class OutboundBlockedError(RuntimeError):
+    """Base for a refused outbound artifact — the leak gate OR the send-proxy said no.
+
+    Lets a forge writer catch both refusal kinds
+    (:class:`OutboundLeakError`, :class:`SendBlockedError`) with one ``except`` when
+    it degrades a blocked write to a withhold/skip instead of propagating.
+    """
+
+
+class SendBlockedError(OutboundBlockedError):
     """An ``enforce``-mode send was refused — the destination is not allowlisted.
 
     Raised by a chokepoint that opts to hard-fail on a blocked verdict (the
@@ -354,14 +364,92 @@ class SendBlockedError(RuntimeError):
         self.verdict = verdict
 
 
+class OutboundLeakError(OutboundBlockedError):
+    """The public-repo leak gate refused a forge body (a customer codename → public forge).
+
+    Raised by :func:`route_forge_write` when
+    :func:`teatree.core.gates.privacy_gate.scan_outbound_text` finds a match on a
+    public target — the same refusal the MCP ``<forge>_issue_*`` tools already
+    surfaced, now shared by every forge writer.
+    """
+
+    def __init__(self, result: PrivacyGateResult) -> None:
+        super().__init__(format_refusal(result))
+        self.result = result
+
+
+def channel_for_forge(forge: str) -> SendChannel:
+    """Map a forge id (``"github"`` / ``"gitlab"``) to its :class:`SendChannel`, else OTHER."""
+    try:
+        return SendChannel(forge)
+    except ValueError:
+        return SendChannel.OTHER
+
+
+def forge_from_url(url: str) -> str:
+    """Best-effort forge id for a forge URL — ``"github"`` / ``"gitlab"`` / ``""``.
+
+    Lets a writer that only holds an issue/PR URL name the forge for
+    :func:`route_forge_write` without a backend round-trip. An unrecognised host
+    yields ``""`` — the seam then routes the audit through
+    :attr:`SendChannel.OTHER` and the leak gate fails CLOSED (scans), so an
+    unknown host is the SAFE (over-scanned) direction, never a skipped scan.
+    """
+    lowered = url.lower()
+    if "github.com" in lowered:
+        return SendChannel.GITHUB.value
+    if "gitlab.com" in lowered:
+        return SendChannel.GITLAB.value
+    return ""
+
+
+def route_forge_write(*, forge: str, repo: str, text: str, action: str, target: str) -> str:
+    """Screen one outbound forge body through the leak gate + #117 send-proxy, or refuse.
+
+    THE core seam every forge issue/comment write routes its outbound text
+    through — the MCP ``<forge>_issue_*`` tools, the dream loop's umbrella /
+    memory-gap filers, the review-findings enforcement filer, and the ``t3``
+    ticket / test-plan CLIs — so the public-repo leak gate AND the #117
+    audit/allowlist/redaction fire IDENTICALLY on every surface, not only on the
+    MCP layer (the finding: internal loop/CLI writers ran no scrub, so the dream
+    loop filed distilled-memory issues on a public repo unscrubbed).
+
+    The public-repo leak gate (:func:`~teatree.core.gates.privacy_gate.scan_outbound_text`)
+    refuses when *text* carries a customer codename bound for a public forge; the
+    send-proxy (:func:`route_send`) then audits the send, applies the per-overlay
+    allowlist, and redacts on ``enforce``. Returns the body to post (redacted in
+    ``enforce`` mode). Raises :class:`OutboundLeakError` on a leak or
+    :class:`SendBlockedError` on a non-allowlisted destination — both
+    :class:`OutboundBlockedError` — so a leaking or blocked write is stopped
+    before the backend call. An empty body is a no-op pass-through (no scan, no
+    audit).
+    """
+    if not text:
+        return text
+    scan = scan_outbound_text(text=text, target_repo=repo, forge=forge)
+    if scan.refused:
+        raise OutboundLeakError(scan)
+    verdict = route_send(
+        SendRequest(channel=channel_for_forge(forge), destination=repo, payload=text, action=action, target=target),
+    )
+    if not verdict.allowed:
+        raise SendBlockedError(verdict)
+    return verdict.payload
+
+
 __all__ = [
     "REDACTION_PLACEHOLDER",
+    "OutboundBlockedError",
+    "OutboundLeakError",
     "SendBlockedError",
     "SendChannel",
     "SendRequest",
     "SendVerdict",
+    "channel_for_forge",
     "destination_allowed",
+    "forge_from_url",
     "read_posting_credential",
     "redact_payload",
+    "route_forge_write",
     "route_send",
 ]

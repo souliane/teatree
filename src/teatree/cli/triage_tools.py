@@ -12,11 +12,9 @@ Importing this module has the side effect of registering the commands;
 
 import typer
 
-from teatree.cli.tools import tool_app
 from teatree.triage import DuplicateFinder, LabelSuggester
 
 
-@tool_app.command("label-issues")
 def label_issues(
     repo: str = typer.Argument(..., help="Repository in owner/name form (e.g. souliane/teatree)"),
     *,
@@ -39,7 +37,6 @@ def label_issues(
         typer.echo(f"\n{len(suggestions)} issue(s) to label. Re-run with --apply to apply.")
 
 
-@tool_app.command("find-duplicates")
 def find_duplicates(
     repo: str = typer.Argument(..., help="Repository in owner/name form (e.g. souliane/teatree)"),
     *,
@@ -65,7 +62,6 @@ def find_duplicates(
     typer.echo(f"\n{len(matches)} potential duplicate pair(s).")
 
 
-@tool_app.command("triage-issues")
 def triage_issues(
     repo: str = typer.Argument(..., help="Repository in owner/name form (e.g. souliane/teatree)"),
     *,
@@ -100,3 +96,10 @@ def triage_issues(
             typer.echo(f"  #{s.issue_number}  {s.issue_title}  ({s.days_inactive}d inactive)")
     else:
         typer.echo(f"No stale issues (unlabeled, inactive >{stale_days}d).")
+
+
+def register(app: typer.Typer) -> None:
+    """Register this module's ``t3 tool`` command(s) onto *app* (called from ``cli/__init__``)."""
+    app.command("label-issues")(label_issues)
+    app.command("find-duplicates")(find_duplicates)
+    app.command("triage-issues")(triage_issues)

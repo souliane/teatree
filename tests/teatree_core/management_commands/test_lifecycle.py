@@ -9,13 +9,11 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 from django.core.management import call_command
-from django.core.management.base import OutputWrapper
 from django.test import TestCase, override_settings
 from django.utils.module_loading import import_string
 
 import teatree.core.management.commands.worktree as worktree_mod
 import teatree.core.overlay_loader as overlay_loader_mod
-import teatree.core.skill_cache as startup_mod
 import teatree.utils.db as db_mod
 import teatree.utils.run as utils_run_mod
 from teatree.core.models import Session, Ticket, Worktree
@@ -269,33 +267,10 @@ class TestLifecycleSetup(TestCase):
             wt.refresh_from_db()
             assert sorted((wt.extra or {}).get("pre_run_log", [])) == ["backend", "build-frontend", "frontend"]
 
-    @_patch_overlays(FULL_OVERLAY)
-    @override_settings(**SETTINGS)
-    def test_writes_skill_metadata_cache(self) -> None:
-        """Setup writes the overlay skill metadata to DATA_DIR/skill-metadata.json."""
-        pytest.skip(
-            "skill-metadata cache is now written on Django startup, "
-            "not during worktree provision — needs rewrite to assert startup behavior",
-        )
-        with tempfile.TemporaryDirectory() as tmp:
-            tmp_path = Path(tmp)
-
-            wt_dir = tmp_path / "backend"
-            wt_dir.mkdir()
-            ticket = Ticket.objects.create(overlay="test", issue_url="https://example.com/issues/63")
-            Worktree.objects.create(
-                overlay="test",
-                ticket=ticket,
-                repo_path="/tmp/backend",
-                branch="feature",
-                extra={"worktree_path": str(wt_dir)},
-            )
-
-            with patch.object(startup_mod, "DATA_DIR", tmp_path):
-                call_command("worktree", "provision", path=str(wt_dir))
-
-            cache_file = tmp_path / "skill-metadata.json"
-            assert cache_file.exists()
+    # NOTE: the former ``test_writes_skill_metadata_cache`` was removed — worktree
+    # provision no longer writes the skill-metadata cache (it is written by
+    # ``t3 config write-skill-cache`` / the loop tick). Its replacement lives in
+    # ``tests/teatree_core/test_skill_cache.py::TestWriteSkillMetadataCache``.
 
     @_patch_overlays(FULL_OVERLAY)
     @override_settings(**SETTINGS)
@@ -448,53 +423,11 @@ class TestLifecycleSetup(TestCase):
                 mock_sp.run.return_value = MagicMock(returncode=0)
                 call_command("worktree", "provision", path=str(wt_path))
 
-    @override_settings(**SETTINGS)
-    def test_prints_diagnostic_summary(self) -> None:
-        """_print_diagnostics outputs a structured checklist with [OK]/[FAIL] markers."""
-        pytest.skip(
-            "_print_diagnostics removed in worktree FSM refactor — "
-            "diagnostics moved to the t3 worktree diagnose subcommand; needs rewrite",
-        )
-        from teatree.core.provision.step_runner import ProvisionReport, StepResult  # noqa: PLC0415
-
-        with tempfile.TemporaryDirectory() as tmp:
-            tmp_path = Path(tmp)
-            wt_dir = tmp_path / "backend"
-            wt_dir.mkdir()
-            # Env cache lives out-of-repo under the ticket dir, per repo.
-            cache_dir = tmp_path / ".t3-cache" / wt_dir.name
-            cache_dir.mkdir(parents=True)
-            (cache_dir / ".t3-env.cache").write_text("WT_DB_NAME=test\n")
-
-            ticket = Ticket.objects.create(overlay="test", issue_url="https://example.com/issues/115")
-            wt = Worktree.objects.create(
-                overlay="test",
-                ticket=ticket,
-                repo_path="backend",
-                branch="feature-115",
-                extra={"worktree_path": str(wt_dir)},
-                db_name="wt_115",
-            )
-
-            report = ProvisionReport(
-                steps=[
-                    StepResult(name="migrations", success=True, duration=1.0),
-                    StepResult(name="docker-up", success=False, duration=0.5, error="exit 1"),
-                ],
-            )
-
-            buf = StringIO()
-            cmd = worktree_mod.Command()
-            cmd.stdout = OutputWrapper(buf)
-            cmd._print_diagnostics(wt, report)
-
-            output = buf.getvalue()
-            assert "[OK] worktree dir" in output
-            assert "[OK] .t3-env.cache" in output
-            assert "[OK] DB name" in output
-            assert "[OK] migrations" in output
-            assert "[FAIL] docker-up" in output
-            assert "4/5 checks passed" in output
+    # NOTE: the former ``test_prints_diagnostic_summary`` was removed — the
+    # ``Command._print_diagnostics`` helper is gone; the structured health
+    # checklist is now the ``t3 worktree diagnose`` subcommand, covered
+    # end-to-end by ``TestLifecycleDiagnose`` (below) and at the render layer by
+    # ``tests/teatree_core/management_commands/test_worktree.py::test_render_diagnose_writes_checklist``.
 
 
 class TestLifecycleSetupHelpers(TestCase):
@@ -1200,39 +1133,46 @@ class TestLifecycleVisitPhase(TestCase):
         assert "reviewing" in session.visited_phases
 
 
-# ── Repo discovery in worktree provision ──────────────────────────────
+# ── Provision scope: no sibling-repo auto-discovery ───────────────────
+#
+# The worktree FSM refactor removed the old ``_register_new_repos`` auto-
+# discovery (and the ``_print_diagnostics`` per-ticket bulk walk). The five
+# ``TestLifecycleRepoDiscovery`` skips and the three ``_register_*`` skips that
+# lived here all pinned that removed behaviour; they are replaced by the single
+# live guard below. Bulk per-ticket provisioning is now ``t3 workspace`` —
+# covered by ``test_workspace.py::test_creates_ticket_and_worktrees``.
 
 
-class TestLifecycleRepoDiscovery(TestCase):
+class TestLifecycleProvisionScope(TestCase):
+    """``worktree provision`` is single-worktree scoped — it never scans the ticket dir."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        mock_sp = MagicMock()
+        mock_sp.run.return_value = MagicMock(returncode=0, stdout="", stderr="")
+        mock_sp.TimeoutExpired = subprocess.TimeoutExpired
+        mock_sp.CompletedProcess = subprocess.CompletedProcess
+        self.enterContext(patch.object(utils_run_mod, "subprocess", mock_sp))
+
     @_patch_overlays(FULL_OVERLAY)
     @override_settings(**SETTINGS)
-    def test_discovers_new_repo_in_ticket_dir(self) -> None:
-        """A git worktree added manually to the ticket dir gets auto-registered."""
-        pytest.skip(
-            "Auto-discovery of sibling repos removed in worktree FSM refactor — "
-            "the per-worktree command no longer scans the ticket dir",
-        )
+    def test_provision_does_not_auto_register_sibling_repos(self) -> None:
+        """Provisioning one worktree leaves a git-worktree-shaped sibling unregistered.
 
-    @_patch_overlays(FULL_OVERLAY)
-    @override_settings(**SETTINGS)
-    def test_skips_main_clones(self) -> None:
-        """Directories with .git as a directory (main clones) are not registered."""
-        pytest.skip(
-            "Auto-discovery of sibling repos removed in worktree FSM refactor — "
-            "the per-worktree command no longer scans the ticket dir",
-        )
+        Locks the removal of the old ticket-dir auto-discovery: turns RED if the
+        per-worktree command ever regrows sibling-repo scanning.
+        """
         with tempfile.TemporaryDirectory() as tmp:
-            tmp_path = Path(tmp)
+            ticket_dir = Path(tmp)
 
-            ticket_dir = tmp_path / "ticket-456"
-            ticket_dir.mkdir()
+            backend = ticket_dir / "backend"
+            backend.mkdir()
 
-            existing = ticket_dir / "backend"
-            existing.mkdir()
-
-            main_clone = ticket_dir / "main-repo"
-            main_clone.mkdir()
-            (main_clone / ".git").mkdir()  # directory, not file = main clone
+            # A sibling git-worktree-shaped dir the removed auto-discovery WOULD
+            # have registered — real on disk so the assertion is non-vacuous.
+            sibling = ticket_dir / "frontend"
+            sibling.mkdir()
+            (sibling / ".git").write_text("gitdir: /some/path/.git/worktrees/frontend", encoding="utf-8")
 
             ticket = Ticket.objects.create(overlay="test", issue_url="https://example.com/issues/96")
             Worktree.objects.create(
@@ -1240,135 +1180,13 @@ class TestLifecycleRepoDiscovery(TestCase):
                 ticket=ticket,
                 repo_path="backend",
                 branch="feature",
-                extra={"worktree_path": str(existing)},
-            )
-
-            with patch.object(utils_run_mod.subprocess, "run"):
-                call_command("worktree", "provision", path=str(existing))
-
-            assert ticket.worktrees.count() == 1
-
-    @_patch_overlays(FULL_OVERLAY)
-    @override_settings(**SETTINGS)
-    def test_skips_non_git_directories(self) -> None:
-        """Non-git subdirectories (logs, etc.) are not registered."""
-        pytest.skip(
-            "Auto-discovery of sibling repos removed in worktree FSM refactor — "
-            "the per-worktree command no longer scans the ticket dir",
-        )
-        with tempfile.TemporaryDirectory() as tmp:
-            tmp_path = Path(tmp)
-
-            ticket_dir = tmp_path / "ticket-789"
-            ticket_dir.mkdir()
-
-            existing = ticket_dir / "backend"
-            existing.mkdir()
-
-            (ticket_dir / "logs").mkdir()
-            (ticket_dir / "notes.txt").touch()
-
-            ticket = Ticket.objects.create(overlay="test", issue_url="https://example.com/issues/97")
-            Worktree.objects.create(
-                overlay="test",
-                ticket=ticket,
-                repo_path="backend",
-                branch="feature",
-                extra={"worktree_path": str(existing)},
-            )
-
-            with patch.object(utils_run_mod.subprocess, "run"):
-                call_command("worktree", "provision", path=str(existing))
-
-            assert ticket.worktrees.count() == 1
-
-    @_patch_overlays(FULL_OVERLAY)
-    @override_settings(**SETTINGS)
-    def test_idempotent_does_not_duplicate(self) -> None:
-        """Running setup twice doesn't create duplicate Worktree records."""
-        pytest.skip(
-            "Auto-discovery of sibling repos removed in worktree FSM refactor — "
-            "the per-worktree command no longer scans the ticket dir",
-        )
-        with tempfile.TemporaryDirectory() as tmp:
-            tmp_path = Path(tmp)
-
-            ticket_dir = tmp_path / "ticket-idem"
-            ticket_dir.mkdir()
-
-            existing = ticket_dir / "backend"
-            existing.mkdir()
-
-            new_repo = ticket_dir / "frontend"
-            new_repo.mkdir()
-            (new_repo / ".git").write_text("gitdir: /some/path")
-
-            ticket = Ticket.objects.create(overlay="test", issue_url="https://example.com/issues/98")
-            Worktree.objects.create(
-                overlay="test",
-                ticket=ticket,
-                repo_path="backend",
-                branch="feature",
-                extra={"worktree_path": str(existing)},
-            )
-
-            with patch.object(utils_run_mod.subprocess, "run"):
-                call_command("worktree", "provision", path=str(existing))
-                call_command("worktree", "provision", path=str(existing))
-
-            assert ticket.worktrees.count() == 2
-
-    @_patch_overlays(FULL_OVERLAY)
-    @override_settings(**SETTINGS)
-    def test_provisions_all_ticket_worktrees(self) -> None:
-        """Setup provisions all worktrees for the ticket, not just the resolved one."""
-        pytest.skip(
-            "Bulk per-ticket provisioning moved to t3 workspace provision — "
-            "needs rewrite as call_command('workspace', 'provision', ...) test",
-        )
-        with tempfile.TemporaryDirectory() as tmp:
-            tmp_path = Path(tmp)
-
-            ticket_dir = tmp_path / "ticket-all"
-            ticket_dir.mkdir()
-
-            backend = ticket_dir / "backend"
-            backend.mkdir()
-            frontend = ticket_dir / "frontend"
-            frontend.mkdir()
-
-            ticket = Ticket.objects.create(overlay="test", issue_url="https://example.com/issues/99")
-            Worktree.objects.create(
-                overlay="test",
-                ticket=ticket,
-                repo_path="backend",
-                branch="feature",
                 extra={"worktree_path": str(backend)},
             )
-            Worktree.objects.create(
-                overlay="test",
-                ticket=ticket,
-                repo_path="frontend",
-                branch="feature",
-                extra={"worktree_path": str(frontend)},
-            )
 
-            with patch.object(utils_run_mod.subprocess, "run"):
-                call_command("worktree", "provision", path=str(backend))
+            call_command("worktree", "provision", path=str(backend))
 
-            # Both worktrees should be provisioned
-            for wt in ticket.worktrees.all():
-                wt.refresh_from_db()
-                assert wt.state == Worktree.State.PROVISIONED
-
-    def test_register_skips_when_no_ticket(self) -> None:
-        """_register_new_repos returns early when worktree has no ticket."""
-        pytest.skip("_register_new_repos removed in worktree FSM refactor — needs rewrite")
-
-    def test_register_skips_when_no_worktree_path(self) -> None:
-        """_register_new_repos returns early when extra has no worktree_path."""
-        pytest.skip("_register_new_repos removed in worktree FSM refactor — needs rewrite")
-
-    def test_register_skips_when_ticket_dir_missing(self) -> None:
-        """_register_new_repos returns early when ticket directory doesn't exist."""
-        pytest.skip("_register_new_repos removed in worktree FSM refactor — needs rewrite")
+            # Setup is valid: the sibling really is a git-worktree marker on disk…
+            assert (sibling / ".git").is_file()
+            # …yet provision stayed scoped to the single worktree it was pointed at.
+            assert ticket.worktrees.count() == 1
+            assert not ticket.worktrees.filter(repo_path="frontend").exists()
