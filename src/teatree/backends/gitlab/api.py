@@ -68,10 +68,19 @@ class GitLabHTTPClient:
         self._project_cache: dict[str, ProjectInfo] = {}
         self._response_cache: dict[str, tuple[float, object]] = {}
 
-    def _get_cached(self, cache_key: str, ttl: int) -> object | None:
+    def _get_cached[T](self, cache_key: str, ttl: int) -> T | None:
+        """Return the fresh cached value for *cache_key*, or ``None`` when missing/stale.
+
+        The cache is heterogeneous (each ``get_*`` method stores its own return
+        shape under a prefixed key), so the stored value is ``object``. The
+        caller binds ``T`` at the call site by annotating the receiving local —
+        every writer/reader pair for a given key agrees on the shape — which
+        confines the unavoidable dynamic hop to this one ``cast`` instead of a
+        per-call-site suppression at each of the seven cache-hit returns.
+        """
         entry = self._response_cache.get(cache_key)
         if entry is not None and (time.monotonic() - entry[0]) < ttl:
-            return entry[1]
+            return cast("T", entry[1])
         return None
 
     def _set_cached(self, cache_key: str, value: object) -> None:
@@ -237,9 +246,9 @@ class GitLabAPI(GitLabHTTPClient):
     def get_work_item_status(self, project_path: str, iid: int) -> str | None:
         """Fetch the Status widget value for a GitLab work item via GraphQL."""
         cache_key = f"work_item_status:{project_path}:{iid}"
-        cached = self._get_cached(cache_key, _TTL_WORK_ITEM)
+        cached: str | None = self._get_cached(cache_key, _TTL_WORK_ITEM)
         if cached is not None:
-            return cached  # type: ignore[return-value]
+            return cached
         data = self.graphql(WORK_ITEM_STATUS_QUERY, {"projectPath": project_path, "iid": str(iid)})
         result = status_from_work_item_payload(data)
         self._set_cached(cache_key, result)
@@ -386,9 +395,9 @@ class GitLabAPI(GitLabHTTPClient):
     def get_mr_pipeline(self, project_id: int, mr_iid: int) -> dict[str, str | None]:
         """Return the latest pipeline status and URL for an MR."""
         cache_key = f"pipeline:{project_id}:{mr_iid}"
-        cached = self._get_cached(cache_key, _TTL_PIPELINE)
+        cached: dict[str, str | None] | None = self._get_cached(cache_key, _TTL_PIPELINE)
         if cached is not None:
-            return cached  # type: ignore[return-value]
+            return cached
         data = self.get_json(f"projects/{project_id}/merge_requests/{mr_iid}/pipelines?per_page=1")
         if isinstance(data, list) and data:
             pipeline = data[0]
@@ -404,9 +413,9 @@ class GitLabAPI(GitLabHTTPClient):
     def get_mr_approvals(self, project_id: int, mr_iid: int) -> dict[str, object]:
         """Return approval count, required count, and approver names for an MR."""
         cache_key = f"approvals:{project_id}:{mr_iid}"
-        cached = self._get_cached(cache_key, _TTL_APPROVALS)
+        cached: RawMR | None = self._get_cached(cache_key, _TTL_APPROVALS)
         if cached is not None:
-            return cached  # type: ignore[return-value]
+            return cached
         data = self.get_json(f"projects/{project_id}/merge_requests/{mr_iid}/approvals")
         if isinstance(data, dict):
             approved_by = data.get("approved_by", [])
@@ -438,9 +447,9 @@ class GitLabAPI(GitLabHTTPClient):
     def get_issue(self, project_id: int, issue_iid: int) -> dict[str, object] | None:
         """Fetch a single issue by project ID and IID."""
         cache_key = f"issue:{project_id}:{issue_iid}"
-        cached = self._get_cached(cache_key, _TTL_ISSUE)
+        cached: RawMR | None = self._get_cached(cache_key, _TTL_ISSUE)
         if cached is not None:
-            return cached  # type: ignore[return-value]
+            return cached
         data = self.get_json(f"projects/{project_id}/issues/{issue_iid}")
         result = data if isinstance(data, dict) else None
         self._set_cached(cache_key, result)
@@ -449,9 +458,9 @@ class GitLabAPI(GitLabHTTPClient):
     def get_mr_discussions(self, project_id: int, mr_iid: int) -> list[dict[str, object]]:
         """Fetch all discussion threads for a merge request."""
         cache_key = f"discussions:{project_id}:{mr_iid}"
-        cached = self._get_cached(cache_key, _TTL_DISCUSSIONS)
+        cached: list[RawMR] | None = self._get_cached(cache_key, _TTL_DISCUSSIONS)
         if cached is not None:
-            return cached  # type: ignore[return-value]
+            return cached
         result = self.get_json_paginated(f"projects/{project_id}/merge_requests/{mr_iid}/discussions?per_page=100")
         self._set_cached(cache_key, result)
         return result
@@ -459,9 +468,9 @@ class GitLabAPI(GitLabHTTPClient):
     def get_draft_notes_count(self, project_id: int, mr_iid: int) -> int:
         """Return the number of unpublished draft notes on a merge request."""
         cache_key = f"draft_notes:{project_id}:{mr_iid}"
-        cached = self._get_cached(cache_key, _TTL_DISCUSSIONS)
+        cached: int | None = self._get_cached(cache_key, _TTL_DISCUSSIONS)
         if cached is not None:
-            return cached  # type: ignore[return-value]
+            return cached
         data = self.get_json(f"projects/{project_id}/merge_requests/{mr_iid}/draft_notes?per_page=100")
         count = len(data) if isinstance(data, list) else 0
         self._set_cached(cache_key, count)
@@ -535,9 +544,9 @@ class GitLabAPI(GitLabHTTPClient):
 
     def current_username(self) -> str:
         cache_key = "username"
-        cached = self._get_cached(cache_key, _TTL_USERNAME)
+        cached: str | None = self._get_cached(cache_key, _TTL_USERNAME)
         if cached is not None:
-            return cached  # type: ignore[return-value]
+            return cached
         data = self.get_json("user")
         result = str(data.get("username", "")) if isinstance(data, dict) else ""
         self._set_cached(cache_key, result)

@@ -14,6 +14,7 @@ import json
 import os
 import shutil
 from collections.abc import Callable
+from typing import cast
 
 from teatree.core.backend_protocols import ROLLUP_QUERY_FAILED, ForgeMergeResult, PrMergeState
 from teatree.types import RawAPIDict
@@ -209,45 +210,43 @@ class GlabMergeRpc:
     def __init__(self, run: Runner) -> None:
         self._run = run
 
-    def fetch_live_head_sha(self, *, slug: str, pr_id: int) -> str:
+    def _fetch_mr(self, *, slug: str, pr_id: int) -> RawAPIDict | None:
+        """Fetch and JSON-parse the ``merge_requests/{id}`` object; ``None`` on any error.
+
+        The head-SHA, merge-state, draft-flag, and author reads all pull the
+        same MR object; this centralises the ``glab api`` call plus the
+        ``json.loads`` / dict-shape guard so each reader is just its field
+        extraction. ``None`` covers a non-zero rc, an empty body, a JSON parse
+        failure, or a non-object payload.
+        """
         rc, out, _ = self._run(["api", f"projects/{glab_project_path(slug)}/merge_requests/{pr_id}"])
         if rc != 0 or not out.strip():
-            return ""
+            return None
         try:
             data = json.loads(out)
         except json.JSONDecodeError:
-            return ""
-        if not isinstance(data, dict):
-            return ""
-        return str(data.get("sha") or "")
+            return None
+        return data if isinstance(data, dict) else None
+
+    def fetch_live_head_sha(self, *, slug: str, pr_id: int) -> str:
+        mr = self._fetch_mr(slug=slug, pr_id=pr_id)
+        return str(mr.get("sha") or "") if mr is not None else ""
 
     def fetch_pr_merge_state(self, *, slug: str, pr_id: int) -> PrMergeState:
-        rc, out, _ = self._run(["api", f"projects/{glab_project_path(slug)}/merge_requests/{pr_id}"])
-        if rc != 0 or not out.strip():
+        mr = self._fetch_mr(slug=slug, pr_id=pr_id)
+        if mr is None:
             return PrMergeState(state="", merge_commit_oid="")
-        try:
-            data = json.loads(out)
-        except json.JSONDecodeError:
-            return PrMergeState(state="", merge_commit_oid="")
-        if not isinstance(data, dict):
-            return PrMergeState(state="", merge_commit_oid="")
-        state = str(data.get("state") or "").upper()  # "merged" → "MERGED" (parity with GitHub)
-        oid = str(data.get("merge_commit_sha") or data.get("squash_commit_sha") or "")
+        state = str(mr.get("state") or "").upper()  # "merged" → "MERGED" (parity with GitHub)
+        oid = str(mr.get("merge_commit_sha") or mr.get("squash_commit_sha") or "")
         return PrMergeState(state=state, merge_commit_oid=oid)
 
     def fetch_pr_is_draft(self, *, slug: str, pr_id: int) -> bool:
-        rc, out, _ = self._run(["api", f"projects/{glab_project_path(slug)}/merge_requests/{pr_id}"])
-        if rc != 0 or not out.strip():
-            return False
-        try:
-            data = json.loads(out)
-        except json.JSONDecodeError:
-            return False
-        if not isinstance(data, dict):
+        mr = self._fetch_mr(slug=slug, pr_id=pr_id)
+        if mr is None:
             return False
         # ``draft`` is canonical on modern GitLab; ``work_in_progress`` is the legacy
         # field kept for compatibility — accept either.
-        return bool(data.get("draft") or data.get("work_in_progress"))
+        return bool(mr.get("draft") or mr.get("work_in_progress"))
 
     def fetch_pr_author(self, *, slug: str, pr_id: int) -> str:
         """The MR author ``username`` — the §17.4.3 author-gate input (#1773).
@@ -256,17 +255,13 @@ class GlabMergeRpc:
         keystone (an author that cannot be proved trusted does not auto-merge
         on a public repo).
         """
-        rc, out, _ = self._run(["api", f"projects/{glab_project_path(slug)}/merge_requests/{pr_id}"])
-        if rc != 0 or not out.strip():
+        mr = self._fetch_mr(slug=slug, pr_id=pr_id)
+        if mr is None:
             return ""
-        try:
-            data = json.loads(out)
-        except json.JSONDecodeError:
+        author = mr.get("author")
+        if not isinstance(author, dict):
             return ""
-        if not isinstance(data, dict):
-            return ""
-        author = data.get("author")
-        return str(author.get("username") or "") if isinstance(author, dict) else ""
+        return str(cast("RawAPIDict", author).get("username") or "")
 
     def fetch_required_checks_rollup(self, *, slug: str, pr_id: int) -> list[RawAPIDict]:
         rc, out, _ = self._run(["api", f"projects/{glab_project_path(slug)}/merge_requests/{pr_id}/pipelines"])

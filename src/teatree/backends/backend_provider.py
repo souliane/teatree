@@ -31,7 +31,7 @@ if TYPE_CHECKING:
     from teatree.types import SyncBackend
 
 
-class SlackBackendProvider:
+class ConcreteBackendProvider:
     def get_code_host(self, overlay: "OverlayBase") -> "CodeHostBackend | None":  # noqa: PLR6301
         return loader.get_code_host(overlay)
 
@@ -98,4 +98,4 @@ class SlackBackendProvider:
 
 
 def install_backend_provider() -> None:
-    register_backend_provider(SlackBackendProvider())
+    register_backend_provider(ConcreteBackendProvider())

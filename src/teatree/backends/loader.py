@@ -258,17 +258,14 @@ def get_messaging(overlay: "OverlayBase") -> MessagingBackend:
     choice = overlay.config.messaging_backend or "noop"
     if choice == "slack":
         token_ref = overlay.config.slack_token_ref
-        user_token_ref = getattr(overlay.config, "user_token_ref", "")
         return SlackBotBackend(
             bot_token=read_posting_credential(f"{token_ref}-bot") if token_ref else overlay.config.get_slack_token(),
             app_token=read_posting_credential(f"{token_ref}-app") if token_ref else "",
-            user_token=read_posting_credential(user_token_ref),
+            user_token=read_posting_credential(overlay.config.user_token_ref),
             user_id=overlay.config.slack_user_id,
             # Setup-time provisioned IM channel id (#1342) — see
-            # ``OverlayConfig.slack_dm_channel_id``. ``getattr`` keeps older
-            # third-party overlay subclasses (that pre-date the field)
-            # working without an explicit default.
-            dm_channel_id=getattr(overlay.config, "slack_dm_channel_id", ""),
+            # ``OverlayConfig.slack_dm_channel_id``.
+            dm_channel_id=overlay.config.slack_dm_channel_id,
             degrade_bad_user_token=True,
         )
     if choice == "noop":
@@ -277,7 +274,12 @@ def get_messaging(overlay: "OverlayBase") -> MessagingBackend:
     raise ValueError(msg)
 
 
-@lru_cache(maxsize=1)
+# Bounded so multiple overlays (each keyed on its own token/url) coexist —
+# ``maxsize=1`` evicted the previous overlay's service on every alternating
+# resolve, rebuilding the GitLabAPI client each time. Realistic setups run a
+# handful of overlays, so a small ceiling avoids the thrash without unbounded
+# growth on token rotation.
+@lru_cache(maxsize=8)
 def get_ci_service(
     *,
     gitlab_token: str = "",

@@ -250,6 +250,22 @@ def test_reset_backend_caches_clears_ci() -> None:
     assert get_ci_service() is None
 
 
+def test_get_ci_service_cache_survives_a_second_overlay() -> None:
+    """Two overlays' CI services coexist in the cache — no maxsize=1 thrash.
+
+    A user running two overlays (each with its own GitLab token/url) resolves a
+    CI service per overlay. With ``maxsize=1`` the second overlay evicted the
+    first, so re-resolving the first rebuilt it on every alternating call. The
+    cache must hold both: re-resolving the first overlay after the second is a
+    hit (same instance), not a rebuild.
+    """
+    reset_backend_caches()
+    first = get_ci_service(gitlab_token="tok-a", gitlab_url="https://a.example/api/v4")
+    get_ci_service(gitlab_token="tok-b", gitlab_url="https://b.example/api/v4")
+    first_again = get_ci_service(gitlab_token="tok-a", gitlab_url="https://a.example/api/v4")
+    assert first is first_again
+
+
 def test_get_code_host_for_url_returns_github_for_github_url() -> None:
     overlay = _build_overlay()
     _stub_token(overlay, github="gh-tok", gitlab="gl-tok")
