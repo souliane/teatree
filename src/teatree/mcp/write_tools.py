@@ -8,9 +8,12 @@ on-behalf verdict, banned-terms / leak guards, close-trailer scrub) fires
 identically on both surfaces. Command-shaped writes go through
 ``django.core.management.call_command`` — the literal CLI code path — and the
 review posts go through the :mod:`teatree.mcp.review_seam` registration seam.
-``TOOL_SEAMS`` names each tool's seam; the transport-boundary fitness test
-(``tests/teatree_mcp/test_transport_boundary.py``) pins both the mapping's
-coverage and the no-transport-import rule.
+
+The single :data:`_TOOLS` descriptor table is the one source that
+:data:`TOOL_SEAMS`, :data:`INSTRUCTIONS`, and :func:`register` all derive from —
+adding a tool is one table edit, not four parallel-list edits. The
+transport-boundary fitness test (``tests/teatree_mcp/test_transport_boundary.py``)
+pins both the seam-map coverage and the no-transport-import rule.
 
 Gate-satisfier commands (``review approve-on-behalf``, ``review
 approve-live-post``, ``ticket e2e-bypass``, ``recipe approve``, DB-refresh
@@ -21,6 +24,8 @@ agent self-approve (maker≠checker).
 import contextlib
 import io
 import json
+from collections.abc import Awaitable, Callable
+from dataclasses import dataclass
 from fnmatch import fnmatch
 from typing import Any, cast
 
@@ -109,73 +114,6 @@ def _run_emitting_command(command: str, *args: object, **kwargs: object) -> dict
 # would neuter a live guard; those stay a human/CLI act — a TIGHTENING over the
 # Bash ``t3 <overlay> config_setting set`` path, per the no-unilateral-gate-flip rule.
 _REFUSED_KEY_GLOBS = ("*_gate_enabled", "require_*")
-
-TOOL_SEAMS: dict[str, str] = {
-    "pr_create": "call_command('pr', 'create', …, sync=True) — full ship-gate chain",
-    "pr_merge": "call_command('ticket', 'merge', <clear_id>) — sanctioned keystone merge",
-    "ticket_visit_phase": "call_command('lifecycle', 'visit-phase', …) — phase gates",
-    "record_e2e_run": "call_command('lifecycle', 'record-e2e-run', …) — e2e attestation",
-    "config_setting_set": "call_command('config_setting', 'set', …) + gate-key refuse list",
-    "task_create": "call_command('tasks', 'create', …) — dispatch-quote gate wiring",
-    "task_complete": "teatree.core.models.Task.complete",
-    "task_fail": "teatree.core.models.Task.fail",
-    "notify_user": "teatree.core.notify.notify_user — send-proxy + BotPing audit + own-DM carve-out",
-    "question_answer": "call_command('questions', 'answer', …)",
-    "worktree_teardown": "call_command('workspace', 'teardown', …) — liveness/dirty guards",
-    "review_post_draft_note": "teatree.mcp.review_seam (ReviewService.post_draft_note)",
-    "review_post_comment": "teatree.mcp.review_seam (ReviewService.post_comment; live gated #1207)",
-    "review_request_post": "call_command('review_request_post') — #1094 dedup + #960 on-behalf + review-state",
-    "slack_react": "OnBehalfSlackEgress.react — #117 send-proxy + on-behalf gate + notify receipt",
-    "github_issue_create": "code_host_from_overlay().create_issue via the leak scrub + #117 send-proxy",
-    "github_issue_comment": "code_host_from_overlay().post_issue_comment via the leak scrub + #117 send-proxy",
-    "github_issue_close": "code_host_from_overlay().close_issue via the leak scrub + #117 send-proxy",
-    "github_issue_update": "code_host_from_overlay().update_issue via the leak scrub + #117 send-proxy",
-    "gitlab_issue_create": "code_host_from_overlay().create_issue via the leak scrub + #117 send-proxy",
-    "gitlab_issue_comment": "code_host_from_overlay().post_issue_comment via the leak scrub + #117 send-proxy",
-    "gitlab_issue_close": "code_host_from_overlay().close_issue via the public-repo leak scrub + send-proxy",
-    "gitlab_issue_update": "code_host_from_overlay().update_issue via the public-repo leak scrub + send-proxy",
-}
-
-INSTRUCTIONS = (
-    "- pr_create(ticket, title): create the ticket's PR through the full "
-    "ship-gate chain (shipping-phase FSM, visual QA, title validator, budget/debt "
-    "gates). Errors report the exact failing gate.\n"
-    "- pr_merge(clear_id): execute a sanctioned keystone merge for an ISSUED "
-    "MergeClear — sha-bound, CI-rollup-checked, maker≠checker enforced. There is "
-    "no raw-merge tool; issuing the CLEAR stays on the CLI.\n"
-    "- ticket_visit_phase(ticket, phase, agent_id): record a lifecycle phase "
-    "visit (same phase gates as `t3 <overlay> lifecycle visit-phase`).\n"
-    "- record_e2e_run(ticket, spec, result, head_sha, posted_url): record the "
-    "mandatory-E2E attestation (posted evidence URL required to clear the gate).\n"
-    "- config_setting_set(key, value, overlay): set a plain config setting; "
-    "REFUSES safety-gate keys (*_gate_enabled, require_*, feature flags, "
-    "cold-hook wires, registry rows, and the cold-read leak-scrub lists / "
-    "fail-open switch / agent-routing tables) — those stay human/CLI-only.\n"
-    "- task_create(ticket, phase, reason, kind, interactive): enqueue the "
-    "next-phase task for a ticket through the `tasks create` seam (same "
-    "dispatch-quote gate wiring). A bad ticket / missing phase reports the "
-    "command's own message as a structured error.\n"
-    "- task_complete(task_id, result_artifact_path) / task_fail(task_id): loop "
-    "task bookkeeping (complete advances the ticket FSM).\n"
-    "- notify_user(text, kind, idempotency_key): send a bot→user DM through the "
-    "audited notify egress (send-proxy + BotPing idempotency + own-DM "
-    "never-lockout carve-out). Pass a stable idempotency_key to dedupe retries.\n"
-    "- question_answer(question_id, text, resolver): answer a pending "
-    "DeferredQuestion (single-use, audited).\n"
-    "- worktree_teardown(path, force): tear down the ticket workspace *path* "
-    "resolves to (every worktree in it; refuses live or dirty trees unless forced).\n"
-    "- review_post_draft_note(repo, mr, note): colleague-INVISIBLE MR-level "
-    "draft note — always safe, gate-exempt by design.\n"
-    "- review_post_comment(repo, mr, note, live): MR-level, DRAFT by default; "
-    "live=true requires the recorded LivePostApproval + on-behalf verdict, same "
-    "as the CLI.\n"
-    "- review_request_check(mr_url): race-safe pre-post dedup PEEK (takes no "
-    "claim). Returns action=post|suppress; ABORT the post on suppress.\n"
-    "- review_request_post(mr_url, approver, title, ticket_id, head_sha): post a "
-    "review request through the #1094 dedup + #960 on-behalf + review-state gate "
-    "chain. Returns action=post|draft|suppress|refused; refused names the missing "
-    "recorded approval / attestation."
-)
 
 
 def refuse_reason(key: str) -> str:
@@ -456,19 +394,178 @@ async def _review_request_post(
     )()
 
 
+@dataclass(frozen=True)
+class _WriteTool:
+    """One teatree-own MCP write tool: name, async handler, hint, gated seam, prose.
+
+    The single source that :data:`TOOL_SEAMS` (own portion), :data:`INSTRUCTIONS`,
+    and :func:`register` all derive from — one edit adds a tool everywhere. ``seam``
+    is the gated seam the handler wraps (blank for the read-only ``review_request_check``
+    peek, which takes no write path).
+    """
+
+    name: str
+    handler: Callable[..., Awaitable[Any]]
+    annotations: ToolAnnotations
+    seam: str
+    instruction: str
+
+
+_TOOLS: tuple[_WriteTool, ...] = (
+    _WriteTool(
+        "pr_create",
+        _pr_create,
+        _WRITE,
+        "call_command('pr', 'create', …, sync=True) — full ship-gate chain",
+        "- pr_create(ticket, title): create the ticket's PR through the full "
+        "ship-gate chain (shipping-phase FSM, visual QA, title validator, budget/debt "
+        "gates). Errors report the exact failing gate.",
+    ),
+    _WriteTool(
+        "pr_merge",
+        _pr_merge,
+        _DESTRUCTIVE,
+        "call_command('ticket', 'merge', <clear_id>) — sanctioned keystone merge",
+        "- pr_merge(clear_id): execute a sanctioned keystone merge for an ISSUED "
+        "MergeClear — sha-bound, CI-rollup-checked, maker≠checker enforced. There is "
+        "no raw-merge tool; issuing the CLEAR stays on the CLI.",
+    ),
+    _WriteTool(
+        "ticket_visit_phase",
+        _ticket_visit_phase,
+        _WRITE,
+        "call_command('lifecycle', 'visit-phase', …) — phase gates",
+        "- ticket_visit_phase(ticket, phase, agent_id): record a lifecycle phase "
+        "visit (same phase gates as `t3 <overlay> lifecycle visit-phase`).",
+    ),
+    _WriteTool(
+        "record_e2e_run",
+        _record_e2e_run,
+        _WRITE,
+        "call_command('lifecycle', 'record-e2e-run', …) — e2e attestation",
+        "- record_e2e_run(ticket, spec, result, head_sha, posted_url): record the "
+        "mandatory-E2E attestation (posted evidence URL required to clear the gate).",
+    ),
+    _WriteTool(
+        "config_setting_set",
+        _config_setting_set,
+        _WRITE,
+        "call_command('config_setting', 'set', …) + gate-key refuse list",
+        "- config_setting_set(key, value, overlay): set a plain config setting; "
+        "REFUSES safety-gate keys (*_gate_enabled, require_*, feature flags, "
+        "cold-hook wires, registry rows, and the cold-read leak-scrub lists / "
+        "fail-open switch / agent-routing tables) — those stay human/CLI-only.",
+    ),
+    _WriteTool(
+        "task_create",
+        _task_create,
+        _WRITE,
+        "call_command('tasks', 'create', …) — dispatch-quote gate wiring",
+        "- task_create(ticket, phase, reason, kind, interactive): enqueue the "
+        "next-phase task for a ticket through the `tasks create` seam (same "
+        "dispatch-quote gate wiring). A bad ticket / missing phase reports the "
+        "command's own message as a structured error.",
+    ),
+    _WriteTool(
+        "task_complete",
+        _task_complete,
+        _WRITE,
+        "teatree.core.models.Task.complete",
+        "- task_complete(task_id, result_artifact_path): complete a loop task — "
+        "records the phase visit and advances the ticket FSM.",
+    ),
+    _WriteTool(
+        "task_fail",
+        _task_fail,
+        _DESTRUCTIVE,
+        "teatree.core.models.Task.fail",
+        "- task_fail(task_id): fail a loop task — clears the claim without advancing the ticket FSM.",
+    ),
+    _WriteTool(
+        "notify_user",
+        _notify_user,
+        _WRITE,
+        "teatree.core.notify.notify_user — send-proxy + BotPing audit + own-DM carve-out",
+        "- notify_user(text, kind, idempotency_key): send a bot→user DM through the "
+        "audited notify egress (send-proxy + BotPing idempotency + own-DM "
+        "never-lockout carve-out). Pass a stable idempotency_key to dedupe retries.",
+    ),
+    _WriteTool(
+        "question_answer",
+        _question_answer,
+        _WRITE,
+        "call_command('questions', 'answer', …)",
+        "- question_answer(question_id, text, resolver): answer a pending DeferredQuestion (single-use, audited).",
+    ),
+    _WriteTool(
+        "worktree_teardown",
+        _worktree_teardown,
+        _DESTRUCTIVE,
+        "call_command('workspace', 'teardown', …) — liveness/dirty guards",
+        "- worktree_teardown(path, force): tear down the ticket workspace *path* "
+        "resolves to (every worktree in it; refuses live or dirty trees unless forced).",
+    ),
+    _WriteTool(
+        "review_post_draft_note",
+        _review_post_draft_note,
+        _WRITE,
+        "teatree.mcp.review_seam (ReviewService.post_draft_note)",
+        "- review_post_draft_note(repo, mr, note): colleague-INVISIBLE MR-level "
+        "draft note — always safe, gate-exempt by design.",
+    ),
+    _WriteTool(
+        "review_post_comment",
+        _review_post_comment,
+        _WRITE,
+        "teatree.mcp.review_seam (ReviewService.post_comment; live gated #1207)",
+        "- review_post_comment(repo, mr, note, live): MR-level, DRAFT by default; "
+        "live=true requires the recorded LivePostApproval + on-behalf verdict, same "
+        "as the CLI.",
+    ),
+    _WriteTool(
+        "review_request_check",
+        _review_request_check,
+        _READ_ONLY,
+        "",
+        "- review_request_check(mr_url): race-safe pre-post dedup PEEK (takes no "
+        "claim). Returns action=post|suppress; ABORT the post on suppress.",
+    ),
+    _WriteTool(
+        "review_request_post",
+        _review_request_post,
+        _WRITE,
+        "call_command('review_request_post') — #1094 dedup + #960 on-behalf + review-state",
+        "- review_request_post(mr_url, approver, title, ticket_id, head_sha): post a "
+        "review request through the #1094 dedup + #960 on-behalf + review-state gate "
+        "chain. Returns action=post|draft|suppress|refused; refused names the missing "
+        "recorded approval / attestation.",
+    ),
+)
+
+# The forge/slack write tools live in the sibling service modules (registered
+# conditionally on their `Service` declaration), but their seams are declared here
+# so the transport-boundary fitness test pins EVERY write tool's seam in one map.
+_CROSS_MODULE_SEAMS: dict[str, str] = {
+    "slack_react": "OnBehalfSlackEgress.react — #117 send-proxy + on-behalf gate + notify receipt",
+    "github_issue_create": "code_host_from_overlay().create_issue via the leak scrub + #117 send-proxy",
+    "github_issue_comment": "code_host_from_overlay().post_issue_comment via the leak scrub + #117 send-proxy",
+    "github_issue_close": "code_host_from_overlay().close_issue via the leak scrub + #117 send-proxy",
+    "github_issue_update": "code_host_from_overlay().update_issue via the leak scrub + #117 send-proxy",
+    "gitlab_issue_create": "code_host_from_overlay().create_issue via the leak scrub + #117 send-proxy",
+    "gitlab_issue_comment": "code_host_from_overlay().post_issue_comment via the leak scrub + #117 send-proxy",
+    "gitlab_issue_close": "code_host_from_overlay().close_issue via the public-repo leak scrub + send-proxy",
+    "gitlab_issue_update": "code_host_from_overlay().update_issue via the public-repo leak scrub + send-proxy",
+}
+
+TOOL_SEAMS: dict[str, str] = {tool.name: tool.seam for tool in _TOOLS if tool.seam} | _CROSS_MODULE_SEAMS
+
+INSTRUCTIONS = "\n".join(tool.instruction for tool in _TOOLS)
+
+
 def register(server: FastMCP) -> None:
-    server.add_tool(_pr_create, name="pr_create", annotations=_WRITE)
-    server.add_tool(_pr_merge, name="pr_merge", annotations=_DESTRUCTIVE)
-    server.add_tool(_ticket_visit_phase, name="ticket_visit_phase", annotations=_WRITE)
-    server.add_tool(_record_e2e_run, name="record_e2e_run", annotations=_WRITE)
-    server.add_tool(_config_setting_set, name="config_setting_set", annotations=_WRITE)
-    server.add_tool(_task_create, name="task_create", annotations=_WRITE)
-    server.add_tool(_task_complete, name="task_complete", annotations=_WRITE)
-    server.add_tool(_task_fail, name="task_fail", annotations=_DESTRUCTIVE)
-    server.add_tool(_notify_user, name="notify_user", annotations=_WRITE)
-    server.add_tool(_question_answer, name="question_answer", annotations=_WRITE)
-    server.add_tool(_worktree_teardown, name="worktree_teardown", annotations=_DESTRUCTIVE)
-    server.add_tool(_review_post_draft_note, name="review_post_draft_note", annotations=_WRITE)
-    server.add_tool(_review_post_comment, name="review_post_comment", annotations=_WRITE)
-    server.add_tool(_review_request_check, name="review_request_check", annotations=_READ_ONLY)
-    server.add_tool(_review_request_post, name="review_request_post", annotations=_WRITE)
+    # Teatree-own write tools register UNCONDITIONALLY (unlike the fail-closed
+    # per-service groups): each wraps a `t3` CLI seam that is itself gate-guarded
+    # and no-ops safely when its backend is absent, so a service declaration is
+    # not their fail-closed lever — the wrapped seam is.
+    for tool in _TOOLS:
+        server.add_tool(tool.handler, name=tool.name, annotations=tool.annotations)

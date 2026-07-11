@@ -3,12 +3,14 @@
 Two structural invariants of the MCP-serves-overlay-services architecture:
 
 No transport imports — an MCP handler never touches a forge/messaging transport
-directly. No module under ``teatree.mcp`` may import the concrete backends
-(``github`` / ``gitlab`` / ``slack`` / ``msteams`` / ``figma``), the merge RPC
-transport, or ``subprocess``. Writes reach transports only through core seams
-(``call_command``, the review seam), which own the gates. tach's layer model
-cannot pin this (lower layers are implicitly importable), so this AST walk is
-the enforcement.
+directly. No module under ``teatree.mcp`` may import a concrete backend
+(``github`` / ``gitlab`` / ``slack`` / ``msteams`` / ``figma`` / ``sentry`` /
+``notion``), the merge RPC transport, ``subprocess``, or a raw HTTP/SDK client
+(``httpx`` / ``requests`` / ``slack_sdk`` / ``urllib.request``) the concrete
+backends name. Writes reach transports only through core seams (``call_command``,
+the review seam, the ``backend_factory`` client builders), which own the gates.
+tach's layer model cannot pin this (lower layers are implicitly importable), so
+this recursive AST walk is the enforcement.
 
 Seam-allowlist coverage — every registered non-read-only tool must name its seam
 in ``write_tools.TOOL_SEAMS``, so a new write tool cannot land without declaring
@@ -43,8 +45,14 @@ _FORBIDDEN_IMPORT_PREFIXES = (
     "teatree.backends.slack",
     "teatree.backends.msteams",
     "teatree.backends.figma",
+    "teatree.backends.sentry",
+    "teatree.backends.notion",
     "teatree.backends.forge_merge_rpc",
     "subprocess",
+    "httpx",
+    "requests",
+    "slack_sdk",
+    "urllib.request",
 )
 
 
@@ -62,8 +70,8 @@ def _imported_modules(path: Path) -> set[str]:
 class TestNoTransportImports:
     def test_mcp_modules_never_import_a_transport(self) -> None:
         offenders = [
-            f"{path.name}: {module}"
-            for path in sorted(_MCP_DIR.glob("*.py"))
+            f"{path.relative_to(_MCP_DIR)}: {module}"
+            for path in sorted(_MCP_DIR.rglob("*.py"))
             for module in sorted(_imported_modules(path))
             if module.startswith(_FORBIDDEN_IMPORT_PREFIXES)
         ]

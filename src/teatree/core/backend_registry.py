@@ -64,6 +64,23 @@ class NotionPageClient(Protocol):
     ) -> "RawAPIDict": ...  # pragma: no branch
 
 
+class SentryReadClient(Protocol):
+    """Core-owned view of the read-only Sentry client the backends app builds.
+
+    The MCP sentry tool group reads issues/events/projects without importing the
+    concrete ``teatree.backends.sentry`` client — the same core → backends
+    inversion as :class:`NotionPageClient` and the forge/messaging builders.
+    """
+
+    def get_top_issues(self, *, project: str, limit: int = 10) -> "list[RawAPIDict]": ...  # pragma: no branch
+
+    def get_issue(self, issue_id: str) -> "RawAPIDict": ...  # pragma: no branch
+
+    def get_issue_events(self, issue_id: str, *, limit: int = 10) -> "list[RawAPIDict]": ...  # pragma: no branch
+
+    def list_projects(self) -> "list[RawAPIDict]": ...  # pragma: no branch
+
+
 class BackendProvider(Protocol):
     def get_code_host(self, overlay: "OverlayBase") -> "CodeHostBackend | None": ...  # pragma: no branch
 
@@ -96,6 +113,10 @@ class BackendProvider(Protocol):
     def build_sync_backends(self) -> "list[SyncBackend]": ...  # pragma: no branch
 
     def build_notion_client(self, *, token: str) -> "NotionPageClient | None": ...  # pragma: no branch
+
+    def build_sentry_client(
+        self, *, token: str, org: str, base_url: str
+    ) -> "SentryReadClient | None": ...  # pragma: no branch
 
     def read_recent_review_matches(self, spec: ReviewSearchSpec) -> ReviewHistoryReadLike: ...  # pragma: no branch
 
@@ -145,6 +166,9 @@ class _UnconfiguredProvider:
         return []
 
     def build_notion_client(self, *, token: str) -> "NotionPageClient | None":  # noqa: ARG002, PLR6301
+        return None
+
+    def build_sentry_client(self, *, token: str, org: str, base_url: str) -> "SentryReadClient | None":  # noqa: ARG002, PLR6301 — fail-safe protocol stub; args unused, returns None with no backends app
         return None
 
     def read_recent_review_matches(self, spec: ReviewSearchSpec) -> ReviewHistoryReadLike:  # noqa: ARG002, PLR6301

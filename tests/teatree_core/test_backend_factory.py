@@ -14,6 +14,7 @@ from teatree.backends.github import GitHubCodeHost
 from teatree.backends.gitlab import GitLabCodeHost
 from teatree.backends.gitlab.ci import GitLabCIService
 from teatree.backends.notion import NotionClient
+from teatree.backends.sentry import SentryClient
 from teatree.backends.slack.bot import SlackBotBackend
 from teatree.core import backend_factory
 from teatree.core.backend_factory import (
@@ -23,6 +24,7 @@ from teatree.core.backend_factory import (
     messaging_from_overlay,
     notion_client_from_overlay,
     reset_backend_caches,
+    sentry_client_from_overlay,
 )
 from teatree.core.backend_protocols import BackendResolutionError
 from teatree.core.overlay import OverlayBase, OverlayConfig
@@ -143,6 +145,35 @@ def test_notion_client_from_overlay_returns_none_when_overlay_not_configured() -
 def test_notion_client_from_overlay_builds_client_when_token_present() -> None:
     with _patch_overlay(_NotionOverlay):
         assert isinstance(notion_client_from_overlay(), NotionClient)
+
+
+class _SentryOverlay(OverlayBase):
+    config = OverlayConfig(sentry_org="acme", sentry_url="https://sentry.example.com")
+
+    def get_repos(self):
+        return []
+
+    def get_provision_steps(self, worktree):
+        return []
+
+
+def test_sentry_client_from_overlay_returns_none_when_no_org() -> None:
+    with _patch_overlay(_NoTokenOverlay):
+        assert sentry_client_from_overlay() is None
+
+
+def test_sentry_client_from_overlay_returns_none_when_overlay_not_configured() -> None:
+    with patch.object(overlay_loader_mod, "_discover_overlays", return_value={}):
+        assert sentry_client_from_overlay() is None
+
+
+def test_sentry_client_from_overlay_builds_client_through_provider_when_org_present() -> None:
+    with _patch_overlay(_SentryOverlay):
+        client = sentry_client_from_overlay()
+
+    assert isinstance(client, SentryClient)
+    assert client.org == "acme"
+    assert client.base_url == "https://sentry.example.com"
 
 
 def test_messaging_from_overlay_delegates_to_loader() -> None:

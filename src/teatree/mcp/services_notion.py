@@ -14,7 +14,7 @@ from mcp.types import ToolAnnotations
 from teatree.backends.types import Service
 from teatree.core.backend_factory import notion_client_from_overlay
 from teatree.core.backend_registry import NotionPageClient
-from teatree.core.overlay_loader import get_all_overlays
+from teatree.mcp.service_resolver import resolve_declaring_overlay_client
 
 _READ_ONLY = ToolAnnotations(readOnlyHint=True)
 
@@ -22,13 +22,7 @@ INSTRUCTIONS = "- notion_page_status(page_id, property_name): one Notion page's 
 
 
 def _client() -> NotionPageClient:
-    for name, overlay in get_all_overlays().items():
-        if Service.NOTION in overlay.config.required_third_party_services:
-            client = notion_client_from_overlay(name)
-            if client is not None:
-                return client
-    msg = "No registered overlay declares a configured Notion client"
-    raise RuntimeError(msg)
+    return resolve_declaring_overlay_client(Service.NOTION, notion_client_from_overlay, description="Notion client")
 
 
 async def _notion_page_status(page_id: str, *, property_name: str = "Status") -> str | None:

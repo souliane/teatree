@@ -22,7 +22,7 @@ from teatree.backends.types import Service
 from teatree.core.backend_factory import messaging_from_overlay
 from teatree.core.backend_protocols import MessagingBackend
 from teatree.core.on_behalf_egress import OnBehalfPostBlockedError, OnBehalfSlackEgress
-from teatree.core.overlay_loader import get_all_overlays
+from teatree.mcp.service_resolver import resolve_declaring_overlay_client
 
 _READ_ONLY = ToolAnnotations(readOnlyHint=True)
 _WRITE = ToolAnnotations(readOnlyHint=False, destructiveHint=False)
@@ -39,13 +39,9 @@ INSTRUCTIONS = (
 
 
 def _client() -> MessagingBackend:
-    for name, overlay in get_all_overlays().items():
-        if Service.SLACK in overlay.config.required_third_party_services:
-            messaging = messaging_from_overlay(name)
-            if messaging is not None:
-                return messaging
-    msg = "No registered overlay declares a configured Slack messaging backend"
-    raise RuntimeError(msg)
+    return resolve_declaring_overlay_client(
+        Service.SLACK, messaging_from_overlay, description="Slack messaging backend"
+    )
 
 
 async def _slack_mentions(*, since: str = "") -> list[dict[str, Any]]:

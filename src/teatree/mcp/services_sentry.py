@@ -2,20 +2,25 @@
 
 Registered by :func:`teatree.mcp.server.build_server` only when a registered
 overlay declares ``Service.SENTRY`` in ``required_third_party_services``. The
-client reuses :class:`teatree.backends.sentry.SentryClient` verbatim; the org
-and token come from the first declaring overlay with a configured
-``sentry_org`` (token via the ``sentry_token_pass_key`` secret registration).
+client is built through :func:`teatree.core.backend_factory.sentry_client_from_overlay`
+(a core seam), never a direct ``teatree.backends.sentry`` import, so the
+transport-boundary fitness test holds. Org and token come from the first
+declaring overlay with a configured ``sentry_org`` (token via the
+``sentry_token_pass_key`` secret registration).
 """
 
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from asgiref.sync import sync_to_async
 from mcp.server.fastmcp import FastMCP
 from mcp.types import ToolAnnotations
 
-from teatree.backends.sentry import SentryClient
 from teatree.backends.types import Service
-from teatree.core.overlay_loader import get_all_overlays
+from teatree.core.backend_factory import sentry_client_from_overlay
+from teatree.mcp.service_resolver import resolve_declaring_overlay_client
+
+if TYPE_CHECKING:
+    from teatree.core.backend_registry import SentryReadClient
 
 _READ_ONLY = ToolAnnotations(readOnlyHint=True)
 
@@ -28,17 +33,12 @@ INSTRUCTIONS = (
 )
 
 
-def _client() -> SentryClient:
-    for overlay in get_all_overlays().values():
-        config = overlay.config
-        if Service.SENTRY in config.required_third_party_services and config.sentry_org:
-            return SentryClient(
-                token=config.get_sentry_token(),
-                org=config.sentry_org,
-                base_url=config.sentry_url,
-            )
-    msg = "No registered overlay declares a configured Sentry org (sentry_org + sentry_token_pass_key)"
-    raise RuntimeError(msg)
+def _client() -> "SentryReadClient":
+    return resolve_declaring_overlay_client(
+        Service.SENTRY,
+        sentry_client_from_overlay,
+        description="Sentry org (sentry_org + sentry_token_pass_key)",
+    )
 
 
 async def _sentry_top_issues(project: str, *, limit: int = 10) -> list[dict[str, Any]]:

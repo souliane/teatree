@@ -16,7 +16,7 @@ from teatree.core.backend_protocols import BackendResolutionError, CIService, Co
 from teatree.core.backend_registry import get_backend_provider
 
 if TYPE_CHECKING:
-    from teatree.core.backend_registry import NotionPageClient
+    from teatree.core.backend_registry import NotionPageClient, SentryReadClient
 from teatree.core.overlay import OverlayBase
 from teatree.core.overlay_loader import get_all_overlays, get_overlay
 from teatree.paths import find_overlay_db
@@ -188,6 +188,31 @@ def notion_client_from_overlay(overlay_name: str | None = None) -> "NotionPageCl
     if not token:
         return None
     return get_backend_provider().build_notion_client(token=token)
+
+
+def sentry_client_from_overlay(overlay_name: str | None = None) -> "SentryReadClient | None":
+    """Build a read-only Sentry client from the active overlay's config.
+
+    Returns ``None`` when the overlay declares no ``sentry_org`` (the
+    default-safe posture — the sentry MCP group's resolver then moves to the next
+    declaring overlay or fails loud). Mirrors :func:`notion_client_from_overlay`:
+    resolved through the registered provider so ``core`` never imports the
+    concrete ``teatree.backends.sentry`` client. Uncached — the client holds no
+    live connection.
+    """
+    key = _active_overlay_name(overlay_name)
+    try:
+        overlay = get_overlay(key or None)
+    except ImproperlyConfigured:
+        return None
+    config = overlay.config
+    if not config.sentry_org:
+        return None
+    return get_backend_provider().build_sentry_client(
+        token=config.get_sentry_token(),
+        org=config.sentry_org,
+        base_url=config.sentry_url,
+    )
 
 
 def _messaging_from_toml_overlay(overlay_name: str) -> MessagingBackend | None:
@@ -489,4 +514,5 @@ __all__ = [
     "messaging_from_overlay",
     "notion_client_from_overlay",
     "reset_backend_caches",
+    "sentry_client_from_overlay",
 ]

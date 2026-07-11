@@ -90,6 +90,18 @@ class TestToolRegistration(TestCase):
 
         assert {"overlay", "state", "kind", "role", "text", "in_flight", "limit"} <= properties
 
+    def test_instructions_name_every_read_tool_the_table_registers(self) -> None:
+        # The descriptor table is the single source for both registration and the
+        # instruction prose: a read tool added to the table without an instruction
+        # (or vice versa) must fail here.
+        with patch("teatree.mcp.server.get_all_overlays", return_value={"a": _ServiceOverlay()}):
+            server = build_server()
+        instructions = server.instructions or ""
+        registered = {tool.name for tool in asyncio.run(server.list_tools())}
+
+        for name in _READ_TOOLS & registered:
+            assert f"- {name}(" in instructions, f"read tool {name} registered but not named in instructions"
+
 
 class TestCallToolThroughServer(TestCase):
     def test_ticket_search_returns_real_rows(self) -> None:
@@ -237,6 +249,17 @@ class TestFactoryScoreFlagGating(TestCase):
         call_command("config_setting", "set", "factory_score_enabled", "true")
         names = {tool.name for tool in asyncio.run(build_server().list_tools())}
         assert "factory_score" in names
+
+    def test_instructions_do_not_advertise_factory_score_when_flag_off(self) -> None:
+        # The instructions must never name a tool that is not registered — the
+        # same fail-closed contract the per-service groups honour.
+        instructions = build_server().instructions or ""
+        assert "factory_score" not in instructions
+
+    def test_instructions_advertise_factory_score_when_flag_on(self) -> None:
+        call_command("config_setting", "set", "factory_score_enabled", "true")
+        instructions = build_server().instructions or ""
+        assert "factory_score(" in instructions
 
     def test_factory_score_returns_a_score_payload_when_on(self) -> None:
         call_command("config_setting", "set", "factory_score_enabled", "true")

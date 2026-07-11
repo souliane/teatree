@@ -1,17 +1,26 @@
-"""FastMCP server wiring for teatree's read-only structured search.
+"""FastMCP server wiring for teatree's structured search + gate-preserving writes.
 
 :func:`build_server` assembles a fresh :class:`~mcp.server.fastmcp.FastMCP`
-instance and registers one tool per query in :mod:`teatree.mcp.search`. The
-registered tools are thin ``async`` wrappers: FastMCP invokes a tool inside its
-running event loop, so each wrapper crosses into Django's synchronous ORM through
-``sync_to_async`` (the framework-standard async-safe boundary) and returns the
-already-serialized JSON the search function produced.
+instance and registers the read tools (structured search over the internal
+model) plus the gate-preserving write tools. The registered tools are thin
+``async`` wrappers: FastMCP invokes a tool inside its running event loop, so each
+wrapper crosses into Django's synchronous ORM through ``sync_to_async`` (the
+framework-standard async-safe boundary) and returns the already-serialized JSON
+the underlying function produced.
 
-The server exposes read-only tools only. Mutations stay on the FSM-guarded
-``t3`` CLI so the orchestrator-decides / loop-executes topology is preserved.
+The surface is NOT read-only. Alongside the read tools it exposes gate-preserving
+write tools (:mod:`teatree.mcp.write_tools` — ``pr_create``, ``pr_merge``,
+``notify_user``, ``config_setting_set`` … and the per-service forge/slack writes):
+each write handler calls the exact seam the corresponding ``t3`` CLI command
+calls, so every gate (shipping-phase FSM, sanctioned-merge keystone, on-behalf
+verdict, leak scrub / send-proxy) fires identically on both surfaces — the
+orchestrator-decides / loop-executes topology is preserved through the seams, not
+by withholding writes. The read tools carry ``readOnlyHint``; the write tools
+name their gated seam in :data:`teatree.mcp.write_tools.TOOL_SEAMS`.
 """
 
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
+from dataclasses import dataclass
 from typing import Any
 
 from asgiref.sync import sync_to_async
@@ -61,39 +70,28 @@ def _required_services() -> frozenset[Service]:
     return frozenset().union(*(o.config.required_third_party_services for o in overlays.values()))
 
 
-_INSTRUCTIONS = (
-    "Read-only structured search over teatree's internal model. Prefer these "
-    "tools over shelling out to `t3 ... list` and parsing text. All tools are "
-    "read-only; mutations go through the `t3` CLI.\n"
+_PREAMBLE = (
+    "Structured search + gate-preserving writes over teatree's internal model. "
+    "Prefer these tools over shelling out to `t3 ... list` and parsing text. The "
+    "read tools below are read-only; the write tools each wrap the exact seam the "
+    "`t3` CLI calls, so every FSM / merge / on-behalf / leak gate fires identically "
+    "(see the write-tool section at the end).\n"
     "\n"
-    "Tools:\n"
-    "- command_search(query): which `t3` CLI leaf command to run for a task — "
-    "path, help summary, and whether it emits --json. Use this FIRST when unsure "
-    "which command exists.\n"
-    "- ticket_get(ticket): one ticket's full detail (by pk / issue number / URL) "
-    "incl. its visited-phase ledger.\n"
-    "- ticket_list(overlay, state, kind, role, in_flight): enumerate tickets by "
-    "lifecycle state — the mirror of `t3 <overlay> ticket list`.\n"
-    "- ticket_search(text, overlay, state, kind, role, in_flight): free-text "
-    "ticket search across url / description / context.\n"
-    "- worktree_status(ticket, overlay, active_only): a ticket's or an overlay's "
-    "worktrees with FSM state, branch, db, staleness.\n"
-    "- pr_for_ticket(ticket): the pull requests recorded for a ticket.\n"
-    "- task_list(overlay, status, phase, ticket): the autonomous loop's task "
-    "queue — the mirror of `t3 <overlay> tasks list`.\n"
-    "- question_list(limit): the pending DeferredQuestion backlog awaiting the "
-    "user's answer (pairs with the question_answer write tool).\n"
-    "- loop_stats(overlay): task-status counts plus the dead-letter total.\n"
-    "- incoming_event_recent(source, unprocessed_only): recent inbound platform "
-    "events.\n"
-    "- config_setting_get(key, overlay): a config setting's effective value, its "
-    "source (db vs file/env), and scope.\n"
-    "- gate_status(overlay): the review-gate and raw-merge gate state.\n"
-    "- factory_signals(overlay, window_days): the five factory quality/velocity "
-    "signals with fail-loud statuses and the verdict.\n"
-    "- factory_score(overlay, window_days): the recipe-weighted factory score "
-    "(registered only when factory_score_enabled is on)."
+    "Read tools:\n"
 )
+
+
+@dataclass(frozen=True)
+class _ReadTool:
+    """One read-only MCP tool: its name, async handler, and instruction line.
+
+    The single source the base instructions and the registration loop both read,
+    so a read tool's name/handler/prose can never drift across the two.
+    """
+
+    name: str
+    handler: Callable[..., Awaitable[Any]]
+    instruction: str
 
 
 # ast-grep-ignore: ac-django-no-complexity-suppressions
@@ -307,44 +305,117 @@ async def _command_search(query: str, *, limit: int = 20) -> list[dict[str, Any]
     return await sync_to_async(introspection.command_search, thread_sensitive=True)(query=query, limit=limit)
 
 
+# The always-registered read tools, in one table the base instructions and the
+# registration loop both derive from (no INSTRUCTIONS/add_tool drift).
+_READ_TOOLS: tuple[_ReadTool, ...] = (
+    _ReadTool(
+        "command_search",
+        _command_search,
+        "- command_search(query): which `t3` CLI leaf command to run for a task — "
+        "path, help summary, and whether it emits --json. Use this FIRST when unsure "
+        "which command exists.",
+    ),
+    _ReadTool(
+        "ticket_get",
+        _ticket_get,
+        "- ticket_get(ticket): one ticket's full detail (by pk / issue number / URL) incl. its visited-phase ledger.",
+    ),
+    _ReadTool(
+        "ticket_list",
+        _ticket_list,
+        "- ticket_list(overlay, state, kind, role, in_flight): enumerate tickets by "
+        "lifecycle state — the mirror of `t3 <overlay> ticket list`.",
+    ),
+    _ReadTool(
+        "ticket_search",
+        _ticket_search,
+        "- ticket_search(text, overlay, state, kind, role, in_flight): free-text "
+        "ticket search across url / description / context.",
+    ),
+    _ReadTool(
+        "worktree_status",
+        _worktree_status,
+        "- worktree_status(ticket, overlay, active_only): a ticket's or an overlay's "
+        "worktrees with FSM state, branch, db, staleness.",
+    ),
+    _ReadTool("pr_for_ticket", _pr_for_ticket, "- pr_for_ticket(ticket): the pull requests recorded for a ticket."),
+    _ReadTool(
+        "task_list",
+        _task_list,
+        "- task_list(overlay, status, phase, ticket): the autonomous loop's task "
+        "queue — the mirror of `t3 <overlay> tasks list`.",
+    ),
+    _ReadTool(
+        "question_list",
+        _question_list,
+        "- question_list(limit): the pending DeferredQuestion backlog awaiting the "
+        "user's answer (pairs with the question_answer write tool).",
+    ),
+    _ReadTool("loop_stats", _loop_stats, "- loop_stats(overlay): task-status counts plus the dead-letter total."),
+    _ReadTool(
+        "incoming_event_recent",
+        _incoming_event_recent,
+        "- incoming_event_recent(source, unprocessed_only): recent inbound platform events.",
+    ),
+    _ReadTool(
+        "config_setting_get",
+        _config_setting_get,
+        "- config_setting_get(key, overlay): a config setting's effective value, its "
+        "source (db vs file/env), and scope.",
+    ),
+    _ReadTool("gate_status", _gate_status, "- gate_status(overlay): the review-gate and raw-merge gate state."),
+    _ReadTool(
+        "factory_signals",
+        _factory_signals,
+        "- factory_signals(overlay, window_days): the five factory quality/velocity "
+        "signals with fail-loud statuses and the verdict.",
+    ),
+)
+
+# Registered ONLY when factory_score_enabled is on — its instruction line is
+# appended conditionally too, so the instructions never advertise an unregistered
+# tool (the same fail-closed contract the per-service groups honour).
+_FACTORY_SCORE_TOOL = _ReadTool(
+    "factory_score",
+    _factory_score,
+    "- factory_score(overlay, window_days): the recipe-weighted factory score "
+    "(registered only when factory_score_enabled is on).",
+)
+
+
 def build_server() -> FastMCP:
-    """Assemble a fresh stdio MCP server with the read-only search tools registered.
+    """Assemble a fresh stdio MCP server with the read + gate-preserving write tools.
 
     Returns a new instance on every call (no import-time global) so tests can
     build and introspect a server in isolation. Django must already be
     configured (the ``t3 mcp serve`` entry point calls ``ensure_django`` first).
     """
     declared = _required_services()
+    # T4-PR-2 — the recipe-weighted score is a DARK feature-flagged surface,
+    # registered ONLY when factory_score_enabled is on, so the outer loop has no
+    # MCP metric-to-beat until enablement is a deliberate act.
+    score_on = get_effective_settings().factory_score_enabled
+    read_tools = (*_READ_TOOLS, _FACTORY_SCORE_TOOL) if score_on else _READ_TOOLS
+
     instructions = (
-        _INSTRUCTIONS
+        _PREAMBLE
+        + "\n".join(tool.instruction for tool in read_tools)
         + "".join(
             f"\n\nDeclared-service tools ({service}):\n{group_instructions}"
             for service, (_, group_instructions) in sorted(_SERVICE_GROUPS.items())
             if service in declared
         )
+        # The teatree-own write tools register UNCONDITIONALLY (unlike the
+        # fail-closed per-service groups): each wraps a `t3` CLI seam that is
+        # itself gate-guarded and no-ops safely when its backend is absent
+        # (notify_user returns sent=false with no messaging backend), so a
+        # service declaration is not their fail-closed lever — their seam is.
         + "\n\nTeatree write tools (gate-preserved — each wraps the seam the `t3` CLI calls):\n"
         + write_tools.INSTRUCTIONS
     )
     server: FastMCP = FastMCP("teatree", instructions=instructions)
-    server.add_tool(_command_search, name="command_search", annotations=_READ_ONLY)
-    server.add_tool(_ticket_search, name="ticket_search", annotations=_READ_ONLY)
-    server.add_tool(_ticket_list, name="ticket_list", annotations=_READ_ONLY)
-    server.add_tool(_ticket_get, name="ticket_get", annotations=_READ_ONLY)
-    server.add_tool(_worktree_status, name="worktree_status", annotations=_READ_ONLY)
-    server.add_tool(_pr_for_ticket, name="pr_for_ticket", annotations=_READ_ONLY)
-    server.add_tool(_task_list, name="task_list", annotations=_READ_ONLY)
-    server.add_tool(_question_list, name="question_list", annotations=_READ_ONLY)
-    server.add_tool(_loop_stats, name="loop_stats", annotations=_READ_ONLY)
-    server.add_tool(_config_setting_get, name="config_setting_get", annotations=_READ_ONLY)
-    server.add_tool(_gate_status, name="gate_status", annotations=_READ_ONLY)
-    server.add_tool(_factory_signals, name="factory_signals", annotations=_READ_ONLY)
-    server.add_tool(_incoming_event_recent, name="incoming_event_recent", annotations=_READ_ONLY)
-    # T4-PR-2 — the recipe-weighted score is a DARK feature-flagged surface: it is
-    # registered ONLY when factory_score_enabled is on, so the outer loop has no MCP
-    # metric-to-beat until enablement is a deliberate act (the shipped OFF state
-    # exposes no factory_score tool at all).
-    if get_effective_settings().factory_score_enabled:
-        server.add_tool(_factory_score, name="factory_score", annotations=_READ_ONLY)
+    for tool in read_tools:
+        server.add_tool(tool.handler, name=tool.name, annotations=_READ_ONLY)
     for service, (register_group, _) in sorted(_SERVICE_GROUPS.items()):
         if service in declared:
             register_group(server)
