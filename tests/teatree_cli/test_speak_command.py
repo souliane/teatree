@@ -1,3 +1,4 @@
+# test-path: cross-cutting
 """``t3 speak`` management command — the detached Stop-hook worker (#1791).
 
 Bootstraps Django, then calls :func:`teatree.core.speak.speak` with
@@ -12,6 +13,8 @@ import os
 from unittest.mock import patch
 
 from django.core.management import call_command
+
+from teatree.utils.env import patched_environ
 
 
 class TestSpeakCommand:
@@ -35,31 +38,30 @@ class TestSpeakCommand:
             _ = block
             seen["overlay"] = os.environ.get("T3_OVERLAY_NAME", "")
 
-        os.environ.pop("T3_OVERLAY_NAME", None)
-        with patch("teatree.core.speak.speak", side_effect=capture):
-            call_command("speak", "hi", overlay="teatree")
-        assert seen["overlay"] == "teatree"
-        assert "T3_OVERLAY_NAME" not in os.environ
+        with patched_environ({}, remove=("T3_OVERLAY_NAME",)):
+            with patch("teatree.core.speak.speak", side_effect=capture):
+                call_command("speak", "hi", overlay="teatree")
+            assert seen["overlay"] == "teatree"
+            assert "T3_OVERLAY_NAME" not in os.environ
 
-    def test_overlay_restores_prior_env_value(self, monkeypatch: object) -> None:
+    def test_overlay_restores_prior_env_value(self) -> None:
         seen: dict[str, str] = {}
 
         def capture(_text: str, *, block: bool) -> None:
             _ = block
             seen["overlay"] = os.environ.get("T3_OVERLAY_NAME", "")
 
-        os.environ["T3_OVERLAY_NAME"] = "original"
-        try:
+        with patched_environ({"T3_OVERLAY_NAME": "original"}):
             with patch("teatree.core.speak.speak", side_effect=capture):
                 call_command("speak", "hi", overlay="teatree")
             assert seen["overlay"] == "teatree"
+            # The command's own overlay-env context manager must restore the
+            # prior value it found — "original", not the "teatree" it set.
             assert os.environ["T3_OVERLAY_NAME"] == "original"
-        finally:
-            os.environ.pop("T3_OVERLAY_NAME", None)
 
     def test_no_overlay_leaves_env_untouched(self) -> None:
-        os.environ.pop("T3_OVERLAY_NAME", None)
-        with patch("teatree.core.speak.speak") as speak:
-            call_command("speak", "hi")
-        speak.assert_called_once_with("hi", block=True)
-        assert "T3_OVERLAY_NAME" not in os.environ
+        with patched_environ({}, remove=("T3_OVERLAY_NAME",)):
+            with patch("teatree.core.speak.speak") as speak:
+                call_command("speak", "hi")
+            speak.assert_called_once_with("hi", block=True)
+            assert "T3_OVERLAY_NAME" not in os.environ
