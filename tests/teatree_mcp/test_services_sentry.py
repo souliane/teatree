@@ -1,7 +1,9 @@
 """Tests for the Sentry read-only MCP tool group (the service-declaration pilot).
 
 The client is resolved from the first registered overlay declaring
-``Service.SENTRY`` with a configured org; the HTTP transport is the only mock.
+``Service.SENTRY`` with a configured org through the
+``sentry_client_from_overlay`` core seam (no direct ``teatree.backends.sentry``
+import in ``teatree.mcp``); the HTTP transport is the only mock.
 """
 
 import asyncio
@@ -26,16 +28,22 @@ class _SentryOverlay:
 
 class TestSentryClientResolution(TestCase):
     def test_resolves_client_from_declaring_overlay(self) -> None:
-        with patch("teatree.mcp.services_sentry.get_all_overlays", return_value={"a": _SentryOverlay()}):
+        built = MagicMock(org="acme", base_url="https://sentry.io")
+        with (
+            patch("teatree.mcp.service_resolver.get_all_overlays", return_value={"a": _SentryOverlay()}),
+            patch("teatree.mcp.services_sentry.sentry_client_from_overlay", return_value=built) as build,
+        ):
             client = services_sentry._client()
 
-        assert client.org == "acme"
-        assert client.base_url == "https://sentry.io"
+        assert client is built
+        build.assert_called_once_with("a")
 
     def test_no_configured_declarer_fails_loud(self) -> None:
-        overlays = {"a": _SentryOverlay(org="")}
+        # The overlay declares Sentry, but its factory build yields no client
+        # (no sentry_org) — the resolver falls through to the loud refusal.
         with (
-            patch("teatree.mcp.services_sentry.get_all_overlays", return_value=overlays),
+            patch("teatree.mcp.service_resolver.get_all_overlays", return_value={"a": _SentryOverlay(org="")}),
+            patch("teatree.mcp.services_sentry.sentry_client_from_overlay", return_value=None),
             pytest.raises(RuntimeError, match="Sentry org"),
         ):
             services_sentry._client()

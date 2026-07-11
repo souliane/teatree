@@ -29,8 +29,8 @@ from teatree.backends.types import Service
 from teatree.core.backend_factory import code_host_from_overlay
 from teatree.core.backend_protocols import CodeHostBackend
 from teatree.core.gates.privacy_gate import format_refusal, scan_outbound_text
-from teatree.core.overlay_loader import get_all_overlays
 from teatree.core.send_proxy import SendChannel, SendRequest, route_send
+from teatree.mcp.service_resolver import resolve_declaring_overlay_client
 
 _READ_ONLY = ToolAnnotations(readOnlyHint=True)
 _WRITE = ToolAnnotations(readOnlyHint=False, destructiveHint=False)
@@ -60,13 +60,7 @@ def _scrub_forge_body(service: Service, *, repo: str, text: str, action: str, ta
 
 
 def _forge_client(service: Service) -> CodeHostBackend:
-    for name, overlay in get_all_overlays().items():
-        if service in overlay.config.required_third_party_services:
-            host = code_host_from_overlay(name)
-            if host is not None:
-                return host
-    msg = f"No registered overlay declares a configured {service.value} code host"
-    raise RuntimeError(msg)
+    return resolve_declaring_overlay_client(service, code_host_from_overlay, description=f"{service.value} code host")
 
 
 def _pr_snapshot(service: Service, *, repo: str, pr_iid: int, pr_url: str) -> dict[str, Any]:
