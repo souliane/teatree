@@ -2,7 +2,7 @@
 
 Handles discovery, restore, pruning, and environment setup for DSLR
 (Django Lightweight Snapshot Restore) snapshots used by the DB import
-engine in ``django_db.py``.
+engine in the sibling ``importer`` module.
 """
 
 import os
@@ -12,6 +12,7 @@ import sys
 from datetime import UTC, datetime
 
 from teatree.utils import bad_artifacts
+from teatree.utils.django_db.helpers import _local_db_url
 from teatree.utils.run import run_allowed_to_fail
 
 
@@ -34,9 +35,7 @@ def find_dslr_cmd(tool_name: str, _main_repo_path: str = "") -> list[str]:
 
 
 def dslr_env(ref_db: str) -> dict[str, str]:
-    from teatree.utils.django_db import _local_db_url as local_db_url  # noqa: PLC0415
-
-    url = local_db_url(ref_db)
+    url = _local_db_url(ref_db)
     return {**os.environ, "DATABASE_URL": url, "DSLR_DB_URL": url}
 
 

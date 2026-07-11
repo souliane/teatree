@@ -9,15 +9,16 @@ from subprocess import CompletedProcess
 
 import pytest
 
-from teatree.utils import django_db_dslr as dslr_mod
 from teatree.utils import run as run_mod
-from teatree.utils.django_db import _ensure_ref_db, _local_db_url, _pg_args, _terminate_connections, validate_dump
-from teatree.utils.django_db_dslr import dslr_env as _dslr_env
-from teatree.utils.django_db_dslr import dslr_snap_name as _dslr_snap_name
-from teatree.utils.django_db_dslr import extract_failing_migration as _extract_failing_migration
-from teatree.utils.django_db_dslr import find_dslr_cmd as _find_dslr_cmd
-from teatree.utils.django_db_dslr import find_dslr_snapshots as _find_dslr_snapshots
-from teatree.utils.django_db_dslr import restore_ref_from_dslr as _restore_ref_from_dslr
+from teatree.utils.django_db import dslr as dslr_mod
+from teatree.utils.django_db import validate_dump
+from teatree.utils.django_db.dslr import dslr_env as _dslr_env
+from teatree.utils.django_db.dslr import dslr_snap_name as _dslr_snap_name
+from teatree.utils.django_db.dslr import extract_failing_migration as _extract_failing_migration
+from teatree.utils.django_db.dslr import find_dslr_cmd as _find_dslr_cmd
+from teatree.utils.django_db.dslr import find_dslr_snapshots as _find_dslr_snapshots
+from teatree.utils.django_db.dslr import restore_ref_from_dslr as _restore_ref_from_dslr
+from teatree.utils.django_db.helpers import _ensure_ref_db, _local_db_url, _pg_args, _terminate_connections
 
 from ._shared import _fail_run, _make_importer, _ok_run
 
@@ -45,7 +46,7 @@ class TestExtractInconsistentHistory:
     """
 
     def test_parses_applied_and_dependency(self) -> None:
-        from teatree.utils.django_db_reconcile import extract_inconsistent_history  # noqa: PLC0415
+        from teatree.utils.django_db.reconcile import extract_inconsistent_history  # noqa: PLC0415
 
         combined = (
             "django.db.migrations.exceptions.InconsistentMigrationHistory: "
@@ -59,7 +60,7 @@ class TestExtractInconsistentHistory:
         )
 
     def test_returns_none_on_unrelated_error(self) -> None:
-        from teatree.utils.django_db_reconcile import extract_inconsistent_history  # noqa: PLC0415
+        from teatree.utils.django_db.reconcile import extract_inconsistent_history  # noqa: PLC0415
 
         assert extract_inconsistent_history("relation foo already exists") is None
         assert extract_inconsistent_history("Applying myapp.0001_initial...\n") is None

@@ -31,7 +31,7 @@ class TestRefreshSnapshotHandler:
     def test_successful_refresh_logs_info(self, tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
         cfg = _cfg(tmp_path)
         with (
-            patch("teatree.utils.django_db_snapshot_warmer.refresh_reference_snapshot", return_value=True),
+            patch("teatree.utils.django_db.snapshot_warmer.refresh_reference_snapshot", return_value=True),
             caplog.at_level(logging.INFO),
         ):
             refresh_snapshot({"config": cfg})
@@ -40,7 +40,7 @@ class TestRefreshSnapshotHandler:
     def test_failed_refresh_logs_warning(self, tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
         cfg = _cfg(tmp_path)
         with (
-            patch("teatree.utils.django_db_snapshot_warmer.refresh_reference_snapshot", return_value=False),
+            patch("teatree.utils.django_db.snapshot_warmer.refresh_reference_snapshot", return_value=False),
             caplog.at_level(logging.WARNING),
         ):
             refresh_snapshot({"config": cfg})
@@ -49,7 +49,7 @@ class TestRefreshSnapshotHandler:
     def test_exception_is_swallowed(self, tmp_path: Path) -> None:
         cfg = _cfg(tmp_path)
         with patch(
-            "teatree.utils.django_db_snapshot_warmer.refresh_reference_snapshot", side_effect=RuntimeError("boom")
+            "teatree.utils.django_db.snapshot_warmer.refresh_reference_snapshot", side_effect=RuntimeError("boom")
         ):
             refresh_snapshot({"config": cfg})  # must not raise
 

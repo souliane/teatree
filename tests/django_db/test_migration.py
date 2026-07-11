@@ -10,7 +10,7 @@ from subprocess import CompletedProcess
 import pytest
 
 from teatree.utils import run as run_mod
-from teatree.utils.django_db import _MigrateResult
+from teatree.utils.django_db.migrate import _MigrateResult
 
 from ._shared import _make_importer, _ok_run
 
@@ -240,7 +240,7 @@ class TestMigrateRunnerSelection:
         assert cmd[:5] == ["uv", "--directory", str(tmp_path), "run", "python"], cmd
 
     def test_unreadable_uv_lock_treated_as_pipenv(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-        from teatree.utils.django_db import _is_pipenv_repo  # noqa: PLC0415
+        from teatree.utils.django_db.runner import _is_pipenv_repo  # noqa: PLC0415
 
         (tmp_path / "Pipfile").write_text("[packages]\ndjango = '*'\n", encoding="utf-8")
         (tmp_path / "uv.lock").write_text("[[package]]\n", encoding="utf-8")
@@ -374,7 +374,7 @@ class TestMigrateRenumberReconcile:
     )
 
     def test_reconciles_renumber_then_migrate_succeeds(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-        from teatree.utils.django_db_reconcile import RECONCILE_OK  # noqa: PLC0415
+        from teatree.utils.django_db.reconcile import RECONCILE_OK  # noqa: PLC0415
 
         (tmp_path / "manage.py").write_text("", encoding="utf-8")
         calls: list[list[str]] = []
@@ -405,7 +405,7 @@ class TestMigrateRenumberReconcile:
         assert calls[1][-3:-1] == ["shell", "-c"], calls[1]
 
     def test_passes_dependency_to_reconcile_script(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-        from teatree.utils.django_db_reconcile import RECONCILE_OK  # noqa: PLC0415
+        from teatree.utils.django_db.reconcile import RECONCILE_OK  # noqa: PLC0415
 
         (tmp_path / "manage.py").write_text("", encoding="utf-8")
         captured_envs: list[dict[str, str]] = []
@@ -428,7 +428,7 @@ class TestMigrateRenumberReconcile:
         assert reconcile_env["T3_RECONCILE_DEP_NAME"] == "0257_move_participant_authorization_data"
 
     def test_does_not_reconcile_genuine_divergence(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-        from teatree.utils.django_db_reconcile import RECONCILE_SKIP  # noqa: PLC0415
+        from teatree.utils.django_db.reconcile import RECONCILE_SKIP  # noqa: PLC0415
 
         (tmp_path / "manage.py").write_text("", encoding="utf-8")
         calls: list[list[str]] = []

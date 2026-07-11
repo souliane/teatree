@@ -2,7 +2,7 @@
 
 The ONLY sanctioned site that emits the manage.py interpreter prefix
 (``uv --directory <repo> run python`` / ``pipenv run python``) is
-``runner_prefix`` in ``teatree.utils.django_db``. That one helper owns the
+``runner_prefix`` in ``teatree.utils.django_db.runner``. That one helper owns the
 pipenv-vs-uv dependency-manager detection (#1973); every other call site must
 route through it.
 
@@ -25,8 +25,9 @@ import pytest
 _SRC_ROOT = Path(__file__).resolve().parents[2] / "src" / "teatree"
 
 # The sole module allowed to construct the manage.py interpreter prefix: the
-# manager-aware runner-prefix helper (#1973).
-_ALLOWED_MODULES = frozenset({"teatree.utils.django_db"})
+# manager-aware runner-prefix helper (#1973), now the ``runner`` submodule of
+# the ``teatree.utils.django_db`` package.
+_ALLOWED_MODULES = frozenset({"teatree.utils.django_db.runner"})
 
 _MANAGER_TOKENS = frozenset({"uv", "pipenv"})
 _INTERPRETER_TOKENS = frozenset({"python", "manage.py"})

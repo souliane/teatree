@@ -1,6 +1,6 @@
 """Real-Django integration test for the renumber-reconcile script.
 
-souliane/teatree#1038: ``django_db_reconcile.RECONCILE_SCRIPT`` runs inside the
+souliane/teatree#1038: ``teatree.utils.django_db.reconcile.RECONCILE_SCRIPT`` runs inside the
 target repo's interpreter to rename a snapshot's stale ``django_migrations``
 record (the old number a master renumber left behind) so Django's
 ``check_consistent_history`` passes. The mocked-subprocess tests in
@@ -20,7 +20,7 @@ import sys
 import textwrap
 from pathlib import Path
 
-from teatree.utils.django_db_reconcile import RECONCILE_OK, RECONCILE_SCRIPT, RECONCILE_SKIP
+from teatree.utils.django_db.reconcile import RECONCILE_OK, RECONCILE_SCRIPT, RECONCILE_SKIP
 
 
 def _write_project(

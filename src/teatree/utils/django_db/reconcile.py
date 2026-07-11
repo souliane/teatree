@@ -4,7 +4,8 @@ A DSLR snapshot DB carrying an OLD migration numbering fails Django's
 ``check_consistent_history`` BEFORE any forward migrate runs once master has
 RENUMBERED migrations — a migration inserted earlier bumps later numbers, so a
 record the snapshot wrote under the old number now looks "applied before its
-dependency". The import engine in ``django_db.py`` delegates the recovery here.
+dependency". The import engine in the sibling ``importer`` module delegates
+the recovery here.
 
 This module owns the whole reconcile concern, separated from the import engine
 so neither file grows past its module-health budget:
