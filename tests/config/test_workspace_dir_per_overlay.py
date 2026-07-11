@@ -23,6 +23,7 @@ from django.test import TestCase
 
 from teatree.config import worktree_root
 from teatree.core.models import ConfigSetting
+from teatree.utils.env import patched_environ
 
 
 class _WorktreeRootCase(TestCase):
@@ -36,11 +37,16 @@ class _WorktreeRootCase(TestCase):
         self.home = sandbox / "home"
         self.home.mkdir(parents=True)
         self.addCleanup(lambda: shutil.rmtree(sandbox, ignore_errors=True))
-        self.enterContext(patch.dict(os.environ))
         self.enterContext(patch.object(Path, "home", return_value=self.home))
-        os.environ["HOME"] = str(self.home)
-        os.environ.pop("T3_WORKSPACE_DIR", None)
-        os.environ["T3_OVERLAY_NAME"] = "myoverlay"
+        # Scope every touched env key to the test via the shared ``patched_environ``
+        # seam: sandbox HOME, pin the overlay, and drop the back-compat override so
+        # each test starts from the DB/default path — all restored on teardown.
+        self.enterContext(
+            patched_environ(
+                {"HOME": str(self.home), "T3_OVERLAY_NAME": "myoverlay"},
+                remove=("T3_WORKSPACE_DIR",),
+            )
+        )
 
 
 class TestDefault(_WorktreeRootCase):
