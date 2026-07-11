@@ -129,6 +129,25 @@ def _reset_webhook_rate_limiter() -> Iterator[None]:
 
 
 @pytest.fixture(autouse=True)
+def _restore_django_settings_module() -> Iterator[None]:
+    """Revert any ``DJANGO_SETTINGS_MODULE`` an in-process CLI test set process-globally.
+
+    A test that invokes a ``t3`` typer command in-process (``ensure_django()``) sets
+    ``DJANGO_SETTINGS_MODULE`` in ``os.environ`` and never restores it, leaking a value
+    a LATER test's subprocess then inherits — the order-dependent shard/shuffle class the
+    #3160 leak sentinel catches. Restore-only (snapshot-and-put-back, never touching the
+    value at setup) so a well-behaved test is unaffected and only the leak is reverted.
+    """
+    absent = object()
+    before: object = os.environ.get("DJANGO_SETTINGS_MODULE", absent)
+    yield
+    if before is absent:
+        os.environ.pop("DJANGO_SETTINGS_MODULE", None)
+    else:
+        os.environ["DJANGO_SETTINGS_MODULE"] = before  # type: ignore[assignment]
+
+
+@pytest.fixture(autouse=True)
 def _isolate_scope_cache() -> Iterator[None]:
     """Reset the process-singleton token-scope cache with a no-op banner sink (PR-19).
 
