@@ -1,6 +1,6 @@
 """Slack app-manifest helpers — build, compare, and call the Slack manifest API.
 
-Extracted from :mod:`teatree.cli.slack_setup` to keep that module under the
+Extracted from :mod:`teatree.cli.slack.setup` to keep that module under the
 LOC ceiling.  All public symbols remain importable from ``slack_setup`` via
 explicit re-export for backward compatibility.
 """
@@ -135,7 +135,7 @@ def manifest_install_url(manifest: SlackManifest) -> str:
     """Return the Slack ``api.slack.com/apps`` URL pre-filled with *manifest*.
 
     Slack may ignore the ``manifest_json`` query parameter depending on
-    the workspace auth state. :func:`~teatree.cli.slack_setup.slack_bot_setup`
+    the workspace auth state. :func:`~teatree.cli.slack.setup.slack_bot_setup`
     prints the manifest JSON as a fallback so the user can always paste it
     manually.
     """

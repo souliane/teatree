@@ -26,7 +26,6 @@ from pathlib import Path
 
 import typer
 
-from teatree.cli.tools import tool_app
 from teatree.quality.test_shape import (
     Mode,
     TestShapeReport,
@@ -113,7 +112,6 @@ def _update_baseline(pyproject: Path, root: Path, *, allow_regression: bool) -> 
     )
 
 
-@tool_app.command("test-shape")
 def run_test_shape(
     root: Path = typer.Option(None, "--root", help="Repo root to analyse (default: cwd)"),
     *,
@@ -156,3 +154,8 @@ def run_test_shape(
 
     if report.should_block:
         raise typer.Exit(code=1)
+
+
+def register(app: typer.Typer) -> None:
+    """Register this module's ``t3 tool`` command(s) onto *app* (called from ``cli/__init__``)."""
+    app.command("test-shape")(run_test_shape)

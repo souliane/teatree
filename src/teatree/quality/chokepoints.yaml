@@ -65,7 +65,7 @@
     - teatree.loop.scanners.review_nag
     - teatree.loop.scanners.incoming_events
     - teatree.loop.self_improve.actions
-    - teatree.cli.slack_setup
+    - teatree.cli.slack.setup
     - teatree.core.management.commands.review_request_post
   refs:
     - souliane/teatree#128

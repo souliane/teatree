@@ -19,7 +19,7 @@ from pathlib import Path
 
 import typer
 
-from teatree.cli._doctor_checks import (
+from teatree.cli.doctor.checks import (
     _check_account_switch,
     _check_agent_session_pins,
     _check_connector_manifest,
@@ -38,7 +38,7 @@ from teatree.cli._doctor_checks import (
     _check_teatree_mcp_registration,
     _check_worker_running,
 )
-from teatree.cli._doctor_plugin_repair import (
+from teatree.cli.doctor.plugin_repair import (
     _do_ensure_plugin_registered,
     _ensure_plugin_registered,
     _read_json_safe,
@@ -47,7 +47,7 @@ from teatree.cli._doctor_plugin_repair import (
     _repair_marketplace_json,
     _resolve_main_clone,
 )
-from teatree.cli.doctor_statusline import check_statusline
+from teatree.cli.doctor.statusline import check_statusline
 from teatree.cli.recommended_authorizations import authorizations, report_missing_authorizations
 from teatree.utils.django_bootstrap import ensure_django
 from teatree.utils.run import run_allowed_to_fail

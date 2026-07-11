@@ -35,12 +35,12 @@ PROXY = SRC / "core" / "send_proxy.py"
 #: the proxy is a send-path leak the gate refuses.
 _CREDENTIAL_MANAGEMENT_ALLOWLIST = frozenset(
     {
-        "cli/slack_listen.py",
-        "cli/slack_setup.py",
-        "cli/slack_app_resolve.py",
-        "cli/slack_dm_provisioning.py",
-        "cli/slack_provision.py",
-        "cli/slack_user_token_setup.py",
+        "cli/slack/listen.py",
+        "cli/slack/setup.py",
+        "cli/slack/app_resolve.py",
+        "cli/slack/dm_provisioning.py",
+        "cli/slack/provision.py",
+        "cli/slack/user_token_setup.py",
     },
 )
 

@@ -12,8 +12,8 @@ import httpx
 import pytest
 
 from teatree.backends.slack.socket_mode import AppTokenProbe, ManifestSocketGaps
-from teatree.cli.slack_manifest import _CONFIG_TOKEN_REF, SlackManifestError, build_manifest
-from teatree.cli.slack_socket_doctor import Level, _fixed_message, _no_config_token_message, check_slack_socket_mode
+from teatree.cli.slack.manifest import _CONFIG_TOKEN_REF, SlackManifestError, build_manifest
+from teatree.cli.slack.socket_doctor import Level, _fixed_message, _no_config_token_message, check_slack_socket_mode
 from teatree.core.models import ConfigSetting
 
 _APP_SLOT = "teatree/t3/slack-app"
@@ -47,8 +47,8 @@ class TestAppTokenValidation:
         _seed_t3()
         mapping = {_CONFIG_TOKEN_REF: "cfg", _BOT_SLOT: "xoxb-b"}
         with (
-            patch("teatree.cli.slack_socket_doctor.read_pass", side_effect=_pass(mapping)),
-            patch("teatree.cli.slack_socket_doctor._export_with_rotation", return_value=_CURRENT_MANIFEST),
+            patch("teatree.cli.slack.socket_doctor.read_pass", side_effect=_pass(mapping)),
+            patch("teatree.cli.slack.socket_doctor._export_with_rotation", return_value=_CURRENT_MANIFEST),
         ):
             outcome = check_slack_socket_mode()
         actions = [f for f in outcome.findings if f.level is Level.ACTION]
@@ -61,8 +61,8 @@ class TestAppTokenValidation:
         _seed_t3()
         mapping = {_CONFIG_TOKEN_REF: "cfg", _APP_SLOT: "xoxb-wrong-slot"}
         with (
-            patch("teatree.cli.slack_socket_doctor.read_pass", side_effect=_pass(mapping)),
-            patch("teatree.cli.slack_socket_doctor._export_with_rotation", return_value=_CURRENT_MANIFEST),
+            patch("teatree.cli.slack.socket_doctor.read_pass", side_effect=_pass(mapping)),
+            patch("teatree.cli.slack.socket_doctor._export_with_rotation", return_value=_CURRENT_MANIFEST),
         ):
             outcome = check_slack_socket_mode()
         assert any(f.level is Level.FAIL and "xapp-" in f.message for f in outcome.findings)
@@ -72,12 +72,12 @@ class TestAppTokenValidation:
         _seed_t3()
         mapping = {_CONFIG_TOKEN_REF: "cfg", _APP_SLOT: "xapp-a"}
         with (
-            patch("teatree.cli.slack_socket_doctor.read_pass", side_effect=_pass(mapping)),
+            patch("teatree.cli.slack.socket_doctor.read_pass", side_effect=_pass(mapping)),
             patch(
-                "teatree.cli.slack_socket_doctor.probe_app_connections",
+                "teatree.cli.slack.socket_doctor.probe_app_connections",
                 return_value=AppTokenProbe(ok=False, missing_scope=True, error="missing_scope"),
             ),
-            patch("teatree.cli.slack_socket_doctor._export_with_rotation", return_value=_CURRENT_MANIFEST),
+            patch("teatree.cli.slack.socket_doctor._export_with_rotation", return_value=_CURRENT_MANIFEST),
         ):
             outcome = check_slack_socket_mode()
         assert any(f.level is Level.FAIL and "connections:write" in f.message for f in outcome.findings)
@@ -86,9 +86,9 @@ class TestAppTokenValidation:
         _seed_t3()
         mapping = {_CONFIG_TOKEN_REF: "cfg", _APP_SLOT: "xapp-a"}
         with (
-            patch("teatree.cli.slack_socket_doctor.read_pass", side_effect=_pass(mapping)),
-            patch("teatree.cli.slack_socket_doctor.probe_app_connections", return_value=AppTokenProbe.valid()),
-            patch("teatree.cli.slack_socket_doctor._export_with_rotation", return_value=_CURRENT_MANIFEST),
+            patch("teatree.cli.slack.socket_doctor.read_pass", side_effect=_pass(mapping)),
+            patch("teatree.cli.slack.socket_doctor.probe_app_connections", return_value=AppTokenProbe.valid()),
+            patch("teatree.cli.slack.socket_doctor._export_with_rotation", return_value=_CURRENT_MANIFEST),
         ):
             outcome = check_slack_socket_mode()
         assert outcome.ok
@@ -105,10 +105,10 @@ class TestManifestAutoFix:
         stale["settings"]["event_subscriptions"]["bot_events"] = ["app_mention", "message.im"]
         mapping = {_CONFIG_TOKEN_REF: "cfg", _APP_SLOT: "xapp-a", _BOT_SLOT: "xoxb-b"}
         with (
-            patch("teatree.cli.slack_socket_doctor.read_pass", side_effect=_pass(mapping)),
-            patch("teatree.cli.slack_socket_doctor.probe_app_connections", return_value=AppTokenProbe.valid()),
-            patch("teatree.cli.slack_socket_doctor._export_with_rotation", return_value=stale),
-            patch("teatree.cli.slack_socket_doctor.update_manifest", return_value={"permissions_updated": True}) as upd,
+            patch("teatree.cli.slack.socket_doctor.read_pass", side_effect=_pass(mapping)),
+            patch("teatree.cli.slack.socket_doctor.probe_app_connections", return_value=AppTokenProbe.valid()),
+            patch("teatree.cli.slack.socket_doctor._export_with_rotation", return_value=stale),
+            patch("teatree.cli.slack.socket_doctor.update_manifest", return_value={"permissions_updated": True}) as upd,
         ):
             outcome = check_slack_socket_mode()
         upd.assert_called_once()
@@ -121,10 +121,10 @@ class TestManifestAutoFix:
         stale["settings"]["socket_mode_enabled"] = False
         mapping = {_APP_SLOT: "xapp-a"}  # no app-config token
         with (
-            patch("teatree.cli.slack_socket_doctor.read_pass", side_effect=_pass(mapping)),
-            patch("teatree.cli.slack_socket_doctor.probe_app_connections", return_value=AppTokenProbe.valid()),
-            patch("teatree.cli.slack_socket_doctor._export_with_rotation", return_value=stale),
-            patch("teatree.cli.slack_socket_doctor.update_manifest") as upd,
+            patch("teatree.cli.slack.socket_doctor.read_pass", side_effect=_pass(mapping)),
+            patch("teatree.cli.slack.socket_doctor.probe_app_connections", return_value=AppTokenProbe.valid()),
+            patch("teatree.cli.slack.socket_doctor._export_with_rotation", return_value=stale),
+            patch("teatree.cli.slack.socket_doctor.update_manifest") as upd,
         ):
             outcome = check_slack_socket_mode()
         upd.assert_not_called()
@@ -134,10 +134,10 @@ class TestManifestAutoFix:
         _seed_t3()
         mapping = {_CONFIG_TOKEN_REF: "cfg", _APP_SLOT: "xapp-a"}
         with (
-            patch("teatree.cli.slack_socket_doctor.read_pass", side_effect=_pass(mapping)),
-            patch("teatree.cli.slack_socket_doctor.probe_app_connections", return_value=AppTokenProbe.valid()),
-            patch("teatree.cli.slack_socket_doctor._export_with_rotation", return_value=_CURRENT_MANIFEST),
-            patch("teatree.cli.slack_socket_doctor.update_manifest") as upd,
+            patch("teatree.cli.slack.socket_doctor.read_pass", side_effect=_pass(mapping)),
+            patch("teatree.cli.slack.socket_doctor.probe_app_connections", return_value=AppTokenProbe.valid()),
+            patch("teatree.cli.slack.socket_doctor._export_with_rotation", return_value=_CURRENT_MANIFEST),
+            patch("teatree.cli.slack.socket_doctor.update_manifest") as upd,
         ):
             outcome = check_slack_socket_mode()
         upd.assert_not_called()
@@ -160,10 +160,10 @@ class TestOverlaySelection:
         )
         mapping = {_CONFIG_TOKEN_REF: "cfg", _APP_SLOT: "xapp-a", "teatree/two/slack-app": "xapp-b"}
         with (
-            patch("teatree.cli.slack_socket_doctor.read_pass", side_effect=_pass(mapping)),
-            patch("teatree.cli.slack_socket_doctor.probe_app_connections", return_value=AppTokenProbe.valid()),
+            patch("teatree.cli.slack.socket_doctor.read_pass", side_effect=_pass(mapping)),
+            patch("teatree.cli.slack.socket_doctor.probe_app_connections", return_value=AppTokenProbe.valid()),
             patch(
-                "teatree.cli.slack_socket_doctor._export_with_rotation",
+                "teatree.cli.slack.socket_doctor._export_with_rotation",
                 side_effect=[RuntimeError("boom"), build_manifest(overlay_name="two")],
             ),
         ):
@@ -181,7 +181,7 @@ class TestDegradedPaths:
 
     def test_no_token_ref_and_no_app_id_warn(self) -> None:
         self._seed_missing_fields()
-        with patch("teatree.cli.slack_socket_doctor.read_pass", side_effect=_pass({})):
+        with patch("teatree.cli.slack.socket_doctor.read_pass", side_effect=_pass({})):
             outcome = check_slack_socket_mode()
         assert any(f.level is Level.WARN and "slack_token_ref" in f.message for f in outcome.findings)
         assert any(f.level is Level.WARN and "slack_app_id" in f.message for f in outcome.findings)
@@ -191,9 +191,9 @@ class TestDegradedPaths:
         _seed_t3()
         mapping = {_CONFIG_TOKEN_REF: "cfg", _APP_SLOT: "xapp-a"}
         with (
-            patch("teatree.cli.slack_socket_doctor.read_pass", side_effect=_pass(mapping)),
-            patch("teatree.cli.slack_socket_doctor.probe_app_connections", side_effect=httpx.ConnectError("down")),
-            patch("teatree.cli.slack_socket_doctor._export_with_rotation", return_value=_CURRENT_MANIFEST),
+            patch("teatree.cli.slack.socket_doctor.read_pass", side_effect=_pass(mapping)),
+            patch("teatree.cli.slack.socket_doctor.probe_app_connections", side_effect=httpx.ConnectError("down")),
+            patch("teatree.cli.slack.socket_doctor._export_with_rotation", return_value=_CURRENT_MANIFEST),
         ):
             outcome = check_slack_socket_mode()
         assert any(f.level is Level.WARN and "could not reach Slack" in f.message for f in outcome.findings)
@@ -202,12 +202,12 @@ class TestDegradedPaths:
         _seed_t3()
         mapping = {_CONFIG_TOKEN_REF: "cfg", _APP_SLOT: "xapp-a"}
         with (
-            patch("teatree.cli.slack_socket_doctor.read_pass", side_effect=_pass(mapping)),
+            patch("teatree.cli.slack.socket_doctor.read_pass", side_effect=_pass(mapping)),
             patch(
-                "teatree.cli.slack_socket_doctor.probe_app_connections",
+                "teatree.cli.slack.socket_doctor.probe_app_connections",
                 return_value=AppTokenProbe(ok=False, missing_scope=False, error="invalid_auth"),
             ),
-            patch("teatree.cli.slack_socket_doctor._export_with_rotation", return_value=_CURRENT_MANIFEST),
+            patch("teatree.cli.slack.socket_doctor._export_with_rotation", return_value=_CURRENT_MANIFEST),
         ):
             outcome = check_slack_socket_mode()
         assert any(f.level is Level.WARN and "invalid_auth" in f.message for f in outcome.findings)
@@ -216,10 +216,10 @@ class TestDegradedPaths:
         _seed_t3()
         mapping = {_CONFIG_TOKEN_REF: "cfg", _APP_SLOT: "xapp-a"}
         with (
-            patch("teatree.cli.slack_socket_doctor.read_pass", side_effect=_pass(mapping)),
-            patch("teatree.cli.slack_socket_doctor.probe_app_connections", return_value=AppTokenProbe.valid()),
+            patch("teatree.cli.slack.socket_doctor.read_pass", side_effect=_pass(mapping)),
+            patch("teatree.cli.slack.socket_doctor.probe_app_connections", return_value=AppTokenProbe.valid()),
             patch(
-                "teatree.cli.slack_socket_doctor._export_with_rotation",
+                "teatree.cli.slack.socket_doctor._export_with_rotation",
                 side_effect=SlackManifestError("invalid_auth"),
             ),
         ):
@@ -232,10 +232,10 @@ class TestDegradedPaths:
         stale["settings"]["event_subscriptions"]["bot_events"] = ["app_mention", "message.im"]
         mapping = {_CONFIG_TOKEN_REF: "cfg", _APP_SLOT: "xapp-a"}
         with (
-            patch("teatree.cli.slack_socket_doctor.read_pass", side_effect=_pass(mapping)),
-            patch("teatree.cli.slack_socket_doctor.probe_app_connections", return_value=AppTokenProbe.valid()),
-            patch("teatree.cli.slack_socket_doctor._export_with_rotation", return_value=stale),
-            patch("teatree.cli.slack_socket_doctor.update_manifest", side_effect=SlackManifestError("boom")),
+            patch("teatree.cli.slack.socket_doctor.read_pass", side_effect=_pass(mapping)),
+            patch("teatree.cli.slack.socket_doctor.probe_app_connections", return_value=AppTokenProbe.valid()),
+            patch("teatree.cli.slack.socket_doctor._export_with_rotation", return_value=stale),
+            patch("teatree.cli.slack.socket_doctor.update_manifest", side_effect=SlackManifestError("boom")),
         ):
             outcome = check_slack_socket_mode()
         assert any(f.level is Level.WARN and "manifest update failed" in f.message for f in outcome.findings)

@@ -15,7 +15,6 @@ from pathlib import Path
 
 import typer
 
-from teatree.cli.tools import tool_app
 from teatree.config import get_effective_settings
 from teatree.quality.push_gate import PushGatePlan, resolve_plan, run_push_gate
 from teatree.utils.django_bootstrap import ensure_django
@@ -51,7 +50,6 @@ def _plan_as_dict(plan: PushGatePlan) -> dict:
     }
 
 
-@tool_app.command("push-gate")
 def push_gate_command(
     base: str = typer.Option("origin/main", "--base", help="Merge-base ref for the changed set."),
     *,
@@ -88,3 +86,8 @@ def push_gate_command(
 
     typer.echo(plan.report())
     typer.echo(f"reason: {plan.reason}")
+
+
+def register(app: typer.Typer) -> None:
+    """Register this module's ``t3 tool`` command(s) onto *app* (called from ``cli/__init__``)."""
+    app.command("push-gate")(push_gate_command)

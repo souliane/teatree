@@ -24,7 +24,6 @@ from pathlib import Path
 
 import typer
 
-from teatree.cli.tools import tool_app
 from teatree.quality.test_path_mirror import Ledger, MirrorReport, build_report, find_violations, load_config
 
 
@@ -107,7 +106,6 @@ def _update_baseline(pyproject: Path, root: Path, *, allow_regression: bool) -> 
     typer.echo(f"Ledger {direction}: {len(live)} grandfathered path(s).")
 
 
-@tool_app.command("test-path-mirror")
 def run_test_path_mirror(
     root: Path = typer.Option(None, "--root", help="Repo root to analyse (default: cwd)"),
     *,
@@ -146,3 +144,8 @@ def run_test_path_mirror(
 
     if report.failed:
         raise typer.Exit(code=1)
+
+
+def register(app: typer.Typer) -> None:
+    """Register this module's ``t3 tool`` command(s) onto *app* (called from ``cli/__init__``)."""
+    app.command("test-path-mirror")(run_test_path_mirror)

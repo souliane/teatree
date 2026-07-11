@@ -32,8 +32,8 @@ from teatree.backends.slack.socket_mode import (
     probe_app_connections,
 )
 from teatree.backends.slack.token_validation import APP_TOKEN_RE
-from teatree.cli.slack_app_resolve import read_overlay_field, resolve_overlay_app_id
-from teatree.cli.slack_manifest import (
+from teatree.cli.slack.app_resolve import read_overlay_field, resolve_overlay_app_id
+from teatree.cli.slack.manifest import (
     _CONFIG_TOKEN_REF,
     SlackManifestError,
     app_install_url,
@@ -42,8 +42,8 @@ from teatree.cli.slack_manifest import (
     build_manifest,
     update_manifest,
 )
-from teatree.cli.slack_provision import _export_with_rotation, _slack_overlays
-from teatree.cli.slack_token_store import app_token_slot
+from teatree.cli.slack.provision import _export_with_rotation, _slack_overlays
+from teatree.cli.slack.token_store import app_token_slot
 from teatree.utils.secrets import read_pass
 
 

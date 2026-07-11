@@ -5,7 +5,7 @@ import json
 from contextlib import redirect_stdout
 from pathlib import Path
 
-from teatree.cli.doctor_statusline import check_statusline
+from teatree.cli.doctor.statusline import check_statusline
 
 
 def _run(settings: Path) -> tuple[bool, str]:
@@ -83,7 +83,7 @@ class TestPluginSettingsHasNoStatusline:
     """PR-17 constraint: the plugin (root) settings.json must NOT carry a statusLine."""
 
     def test_root_settings_json_has_no_statusline(self) -> None:
-        repo_root = Path(__file__).resolve().parents[2]
+        repo_root = Path(__file__).resolve().parents[3]
         settings = repo_root / "settings.json"
         assert settings.is_file()
         data = json.loads(settings.read_text(encoding="utf-8"))

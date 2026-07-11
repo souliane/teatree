@@ -13,7 +13,7 @@ from unittest.mock import patch
 
 import teatree
 import teatree.paths as paths_mod
-from teatree.cli._doctor_checks import _check_entrypoint_is_primary_clone
+from teatree.cli.doctor.checks import _check_entrypoint_is_primary_clone
 
 
 def _run() -> tuple[bool, str]:

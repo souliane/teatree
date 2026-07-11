@@ -34,9 +34,9 @@ import typer
 # the exact regex — drift between the two would let a token shape pass
 # capture but fail at construction, or vice versa.
 from teatree.backends.slack.token_validation import USER_TOKEN_RE as _USER_TOKEN_RE
-from teatree.cli.slack_app_resolve import derive_app_id_from_token, read_overlay_registry
-from teatree.cli.slack_setup import _USER_SCOPES
-from teatree.cli.slack_token_store import BOT_TOKEN_SLOT, USER_TOKEN_SLOT, SlackTokenWriteError, store_slack_token
+from teatree.cli.slack.app_resolve import derive_app_id_from_token, read_overlay_registry
+from teatree.cli.slack.setup import _USER_SCOPES
+from teatree.cli.slack.token_store import BOT_TOKEN_SLOT, USER_TOKEN_SLOT, SlackTokenWriteError, store_slack_token
 from teatree.utils.django_bootstrap import ensure_django
 from teatree.utils.secrets import read_pass
 
@@ -168,7 +168,7 @@ def _resolve_overlay_app_id() -> str:
 
     The shared xoxp token is overlay-agnostic, so any overlay's app id is a
     valid OAuth-page target. Per-overlay derivation lives in
-    :func:`teatree.cli.slack_app_resolve.resolve_overlay_app_id`.
+    :func:`teatree.cli.slack.app_resolve.resolve_overlay_app_id`.
     """
     for block in read_overlay_registry().values():
         app_id = block.get("slack_app_id") if isinstance(block, dict) else None
@@ -201,7 +201,7 @@ def _detect_and_backup_xoxb_mis_install(*, echo: Callable[[str], None]) -> None:
 
 
 # Source of truth for the derive-from-token chain is
-# ``teatree.cli.slack_app_resolve`` so ``slack-bot``, ``slack-provision`` and
+# ``teatree.cli.slack.app_resolve`` so ``slack-bot``, ``slack-provision`` and
 # this command share one implementation (#1686). Re-exported under the local
 # name for backward-compat with callers and tests that import it from here.
 _derive_app_id_from_bot = derive_app_id_from_token

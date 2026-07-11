@@ -2,7 +2,7 @@
 
 Split out of ``teatree.cli.loop`` so that file stays under the
 module-health public-function cap (the same split rationale as
-``cli/loop_slack_answer.py``). This is a thin wrapper that mirrors the
+``cli/loop/slack_answer.py``). This is a thin wrapper that mirrors the
 ``pending-spawn``/``spawn-claim`` wrappers in ``cli/loop.py``: bootstrap
 Django, then delegate to the ``loop_dispatch claim-next`` mgmt command
 (the #786 WS1 atomic claim ``Task.objects.claim_next_pending``).
