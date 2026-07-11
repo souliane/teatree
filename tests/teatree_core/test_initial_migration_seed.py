@@ -57,7 +57,7 @@ class TestInlinedSeedMatchesCanonicalSeed:
     def test_inlined_arch_review_body_matches_the_canonical_body(self) -> None:
         assert _migration._ARCH_REVIEW_PROMPT_BODY == ARCH_REVIEW_PROMPT_BODY
 
-    def test_sound_default_on_set_is_the_eight_local_read_only_loops(self) -> None:
+    def test_sound_default_on_set_is_the_nine_local_read_only_loops(self) -> None:
         assert {
             "inbox",
             "dispatch",
@@ -67,6 +67,7 @@ class TestInlinedSeedMatchesCanonicalSeed:
             "local_stack_queue",
             "resource_pressure",
             "pane_reaper",
+            "db_backup",
         } == _SOUND_ON
 
 
