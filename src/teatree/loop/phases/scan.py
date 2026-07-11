@@ -54,7 +54,7 @@ def scan_phase(
                     outcome.errors[job_label] = error
             except TimeoutError:
                 outcome.errors[label] = f"scanner timed out after {per_job_timeout}s"
-            except Exception as exc:  # noqa: BLE001
+            except Exception as exc:  # noqa: BLE001 — a scanner failure is recorded per-label, never aborts the scan phase
                 outcome.errors[label] = f"{type(exc).__name__}: {exc}"
     finally:
         # cancel_futures=True drops queued-but-unstarted futures; already-running

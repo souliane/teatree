@@ -133,7 +133,7 @@ if disk is None:
 # Guard 5: the dependency's own content must be re-derivable from disk.
 try:
     _ = tuple(OperationWriter(op, indentation=0).serialize()[0] for op in disk.operations)
-except Exception as exc:  # noqa: BLE001
+except Exception as exc:  # noqa: BLE001 — an unreadable dependency skips the reconcile cleanly
     print(SKIP + " dependency-unreadable %r" % (exc,))
     raise SystemExit(0)
 

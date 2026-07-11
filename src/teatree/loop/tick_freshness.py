@@ -83,7 +83,7 @@ def _canonical_overlay_names() -> dict[str, str]:
     try:
         from teatree.config import _match_canonical_ep, load_config  # noqa: PLC0415
         from teatree.core.overlay_loader import get_all_overlays  # noqa: PLC0415
-    except Exception:  # noqa: BLE001
+    except Exception:  # noqa: BLE001 — a config-read failure degrades to no overlays
         return {}
     canonical = set(get_all_overlays().keys())
     overlays_cfg = load_config().raw.get("overlays") or {}

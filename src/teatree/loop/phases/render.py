@@ -141,7 +141,7 @@ def _orchestrate_claim_enabled() -> bool:
     """
     try:
         return get_effective_settings().orchestrate_claim_enabled
-    except Exception:  # noqa: BLE001
+    except Exception:  # noqa: BLE001 — rendering is best-effort; a settings-read failure degrades to disabled
         return False
 
 
@@ -162,7 +162,7 @@ def _identity_aliases_for_request(request: "TickRequest") -> tuple[tuple[str, ..
     try:
         for backend in request.backends or []:
             groups.extend(_identity_groups_for_overlay(backend))
-    except Exception:  # noqa: BLE001
+    except Exception:  # noqa: BLE001 — rendering is best-effort; a failure degrades to no groups
         return ()
     return tuple(groups)
 
@@ -180,11 +180,11 @@ def _populate_live_loops_in_anchors(zones: StatuslineZones, *, colorize: bool | 
     """
     try:
         from teatree.loop.statusline import colorize_enabled, live_loops_anchor  # noqa: PLC0415
-    except Exception:  # noqa: BLE001
+    except Exception:  # noqa: BLE001 — the statusline import is best-effort; a failure degrades to no anchor
         return
     try:
         zones.anchors.extend(live_loops_anchor(colorize=colorize_enabled(colorize=colorize)))
-    except Exception:  # noqa: BLE001
+    except Exception:  # noqa: BLE001 — rendering is best-effort; a failure degrades to no anchor
         return
 
 
@@ -203,7 +203,7 @@ def _write_open_prs_cache(signals: "list[ScanSignal]", *, target: Path | None) -
         from teatree.loop.statusline import default_path  # noqa: PLC0415
 
         write_open_prs_cache(open_prs_from_signals(signals), statusline_path=target or default_path())
-    except Exception:  # noqa: BLE001
+    except Exception:  # noqa: BLE001 — the open-PRs cache write is best-effort; a failure degrades to no-op
         return
 
 
@@ -218,7 +218,7 @@ def _reconcile_manual_prs(signals: "list[ScanSignal]") -> None:
     """
     try:
         reconcile_manual_prs(signals)
-    except Exception:  # noqa: BLE001
+    except Exception:  # noqa: BLE001 — the manual-PR reconcile is best-effort; a failure degrades to no-op
         return
 
 
@@ -237,7 +237,7 @@ def _populate_open_prs_in_anchors(zones: StatuslineZones, *, target: Path | None
         zones.anchors.extend(
             open_prs_anchor(target=target or default_path(), colorize=colorize_enabled(colorize=colorize))
         )
-    except Exception:  # noqa: BLE001
+    except Exception:  # noqa: BLE001 — rendering is best-effort; a failure degrades to no anchor
         return
 
 
@@ -261,7 +261,7 @@ def _populate_loop_owner_anchor(zones: StatuslineZones) -> None:
 
         status = LoopLease.objects.ownership_status(T3_MASTER_SLOT)
         zone, line = loop_owner_anchor(status, current_session_id())
-    except Exception:  # noqa: BLE001
+    except Exception:  # noqa: BLE001 — rendering is best-effort; a failure degrades to no anchor
         return
     if line:
         getattr(zones, zone).append(line)

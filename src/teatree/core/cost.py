@@ -16,7 +16,7 @@ fallback so historical rows whose cost was never captured still get an estimate.
 
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, time, timedelta
 
 from teatree.config import cold_reader
 from teatree.pricing import CACHE_READ_MULTIPLIER, CACHE_WRITE_MULTIPLIER
@@ -409,8 +409,6 @@ def _next_cycle_start(cycle_start_date: date) -> date:
 
 def cycle_start_datetime(today: date, *, anchor_day: int | None = None) -> datetime:
     """Aware ``datetime`` at midnight of the cycle start (for DB filtering)."""
-    from datetime import time  # noqa: PLC0415
-
     from django.utils import timezone  # noqa: PLC0415
 
     start_date = cycle_start(today, anchor_day=anchor_day)

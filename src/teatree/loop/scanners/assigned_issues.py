@@ -101,7 +101,7 @@ class AssignedIssuesScanner:
 
         try:
             tracked, in_flight = self._tracked_urls_and_in_flight()
-        except Exception:  # noqa: BLE001
+        except Exception:  # noqa: BLE001 — an in-flight-count failure degrades to zero, never breaks the scan
             tracked, in_flight = frozenset[str](), 0
         budget = max(0, self.max_concurrent - in_flight) if self.auto_start else -1
 

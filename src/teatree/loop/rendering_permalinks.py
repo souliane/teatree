@@ -70,7 +70,7 @@ def build_review_post_permalinks(actions: Iterable[DispatchAction]) -> dict[str,
 
         model = apps.get_model("core", "ReviewRequestPost")
         pr_model = apps.get_model("core", "PullRequest")
-    except Exception:  # noqa: BLE001
+    except Exception:  # noqa: BLE001 — a permalink-build failure degrades to no mapping
         return {}
     result: dict[str, str] = {}
     try:
@@ -86,7 +86,7 @@ def build_review_post_permalinks(actions: Iterable[DispatchAction]) -> dict[str,
             permalink = _slack_permalink(row.slack_channel_id, row.slack_thread_ts)
             if permalink:
                 result[row.mr_url] = permalink
-    except Exception:  # noqa: BLE001
+    except Exception:  # noqa: BLE001 — a permalink-build failure degrades to no mapping
         return {}
     return result
 

@@ -273,7 +273,7 @@ def _validate_since(since: str) -> None:
 def _overlay_code_host(overlay: object) -> str:
     try:
         return overlay.config.code_host or ""  # type: ignore[union-attr]
-    except Exception:  # noqa: BLE001
+    except Exception:  # noqa: BLE001 — best-effort render; a failure degrades to empty
         return ""
 
 
@@ -281,5 +281,5 @@ def _overlay_repos(overlay: object) -> list[str]:
     try:
         repos = list(overlay.metadata.get_followup_repos()) + list(overlay.get_repos())  # type: ignore[union-attr]
         return [r for r in repos if isinstance(r, str) and r]
-    except Exception:  # noqa: BLE001
+    except Exception:  # noqa: BLE001 — best-effort; a failure degrades to no rows
         return []

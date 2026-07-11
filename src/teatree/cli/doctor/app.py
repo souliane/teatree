@@ -502,8 +502,6 @@ class IntrospectionHelpers:
     @staticmethod
     def editable_info(dist_name: str) -> tuple[bool, str]:
         """Return (is_editable, source_url) for a distribution."""
-        import json  # noqa: PLC0415
-
         try:
             dist = distribution(dist_name)
         except PackageNotFoundError:

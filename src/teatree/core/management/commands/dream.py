@@ -195,7 +195,7 @@ class Command(TyperCommand):
         request = EvalProposalRequest() if propose_evals else None
         try:
             result = engine.run_consolidation(overlay="", since=since, dry_run=dry_run, eval_proposals=request)
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:  # noqa: BLE001 — a dream pass failure is marked attempted + reported, never crashes the command
             if not dry_run:
                 DreamRunMarker.objects.mark_attempted(now)
             self.stdout.write(f"FAIL  dream pass raised: {type(exc).__name__}: {exc}")
@@ -313,7 +313,7 @@ class Command(TyperCommand):
                 summary += compliance.run_compliance_escalation(
                     snapshot=measurement.snapshot, findings=measurement.findings, host=host, dry_run=dry_run
                 )
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:  # noqa: BLE001 — a compliance-phase failure degrades to a WARN clause, never aborts the dream
             return f"; WARN compliance phase raised: {type(exc).__name__}: {exc}"
         return summary
 
@@ -347,7 +347,7 @@ class Command(TyperCommand):
                 return "; WARN automatable-ask promotion skipped — no teatree code host resolved"
             umbrella = self._automation_umbrella_url()
             return automation_ask.run_automation_asks_phase(extract, host, umbrella_url=umbrella, dry_run=dry_run)
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:  # noqa: BLE001 — an automatable-ask-phase failure degrades to a WARN clause
             return f"; WARN automatable-ask phase raised: {type(exc).__name__}: {exc}"
 
     @staticmethod
@@ -383,7 +383,7 @@ class Command(TyperCommand):
             outcomes = promote.promote_proposals_file(
                 _default_proposals_path(), dry_run=dry_run, live_gate=promote.LiveGate(validator=validator)
             )
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:  # noqa: BLE001 — an eval-promotion failure degrades to a WARN clause
             return f"; WARN eval promotion raised: {type(exc).__name__}: {exc}"
         promoted = sum(1 for o in outcomes if o.promoted)
         withheld = len(outcomes) - promoted
@@ -409,7 +409,7 @@ class Command(TyperCommand):
             from teatree.loops.dream.eval_proposer import _default_proposals_path  # noqa: PLC0415
 
             outcomes = llm_eval_proposer.stage_proposals_file(_default_proposals_path(), dry_run=dry_run)
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:  # noqa: BLE001 — an eval-derivation failure degrades to a WARN clause
             return f"; WARN eval derivation raised: {type(exc).__name__}: {exc}"
         if not outcomes:
             return ""
@@ -441,7 +441,7 @@ class Command(TyperCommand):
             umbrella = promote_memory.UMBRELLA_ISSUE_URL
             promoted = promote_memory.file_core_gap_tickets(host, umbrella_url=umbrella, dry_run=dry_run)
             reconciled = [] if dry_run else umbrella_ledger.reconcile_merged_gaps(host, umbrella_url=umbrella)
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:  # noqa: BLE001 — a memory-promotion failure degrades to a WARN clause
             return f"; WARN memory promotion raised: {type(exc).__name__}: {exc}"
         new_fixes = sum(1 for o in promoted if o.filed)
         if not promoted and not reconciled:

@@ -82,7 +82,7 @@ def _check_dangling_editable_pth() -> bool:
 
     try:
         dangling = detect_dangling_editable()
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:  # noqa: BLE001 — an inspection failure warns and passes, never blocks doctor
         typer.echo(f"WARN  Could not inspect the teatree editable .pth: {exc}")
         return True
     if not dangling.is_dangling:

@@ -544,7 +544,7 @@ class Command(
                     continue
                 try:
                     issue_data = host.get_issue(ticket.issue_url)
-                except Exception:  # noqa: BLE001
+                except Exception:  # noqa: BLE001 — an issue-fetch failure skips the ticket, never aborts the sweep
                     logger.warning("Failed to fetch issue for ticket %s (%s)", ticket.pk, ticket.issue_url)
                     continue
                 if not isinstance(issue_data, dict) or "error" in issue_data:

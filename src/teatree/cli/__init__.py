@@ -139,7 +139,7 @@ def _maybe_show_update_notice() -> None:
         message = check_for_updates()
         if message:
             typer.echo(f"[update] {message}", err=True)
-    except Exception:  # noqa: BLE001, S110
+    except Exception:  # noqa: BLE001, S110 — the update banner is best-effort; a failure is silently skipped
         pass
 
 

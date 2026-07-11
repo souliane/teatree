@@ -75,7 +75,7 @@ def _admit_budget_exhausted() -> bool:
     """
     try:
         budget = read_admit_budget(statusline_path=default_path(), cadence_seconds=cadence_seconds())
-    except Exception:  # noqa: BLE001
+    except Exception:  # noqa: BLE001 — a budget-read failure degrades to no-budget
         return False
     if budget is None:
         return False
@@ -192,7 +192,7 @@ def _resolve_skill_bundle(task: Task) -> list[str]:
             overlay_skill_metadata=overlay_skill_metadata,
             worktree_path=dispatch_worktree_path(task.ticket),
         )
-    except Exception:  # noqa: BLE001
+    except Exception:  # noqa: BLE001 — a failure degrades to no candidates
         return []
 
 
@@ -369,7 +369,7 @@ class Command(TyperCommand):
             raise SystemExit(1) from None
         try:
             task.claim(claimed_by=claimed_by)
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:  # noqa: BLE001 — a claim failure surfaces as a clean SystemExit, never a traceback
             self.stderr.write(f"Cannot claim task {task_id}: {exc}")
             raise SystemExit(1) from None
         self.stdout.write(f"Claimed task {task_id} for {claimed_by}.")

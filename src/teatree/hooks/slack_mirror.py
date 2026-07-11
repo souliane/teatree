@@ -75,7 +75,7 @@ def slack_config_from_toml() -> tuple[str, str] | None:
 
     try:
         overlays = load_config().raw.get("overlays") or {}
-    except Exception:  # noqa: BLE001
+    except Exception:  # noqa: BLE001 — config read is best-effort; a failure degrades to no mirror
         return None
     for overlay_cfg in overlays.values():
         if not isinstance(overlay_cfg, dict):
@@ -154,7 +154,7 @@ def slack_open_dm(poster: Poster, bot_token: str, user_id: str) -> str:
     """
     try:
         resp = poster("conversations.open", token=bot_token, json={"users": user_id}, idempotent=True)
-    except Exception:  # noqa: BLE001
+    except Exception:  # noqa: BLE001 — a Slack API failure degrades to no channel id
         return ""
     return _str_field(_sub_mapping(resp, "channel"), "id")
 
@@ -175,7 +175,7 @@ def slack_post_message(poster: Poster, channel: str, text: str, *, bot_token: st
         body["thread_ts"] = thread_ts
     try:
         resp = poster("chat.postMessage", token=bot_token, json=body, idempotent=False)
-    except Exception:  # noqa: BLE001
+    except Exception:  # noqa: BLE001 — a Slack API failure degrades to empty
         return ""
     if resp.get("ok") is not True:
         return ""

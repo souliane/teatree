@@ -185,7 +185,7 @@ def run_callable_step(name: str, fn: Callable[[], object]) -> StepResult:
                 )
             return StepResult(name=name, success=True, duration=duration, stdout=stdout, stderr=stderr)
         return StepResult(name=name, success=True, duration=duration)
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:  # noqa: BLE001 — a step's failure is captured + logged, never aborts the runner
         duration = time.monotonic() - start
         error = str(exc)[:500]
         logger.warning("Step %r raised: %s", name, error)

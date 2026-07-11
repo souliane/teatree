@@ -44,7 +44,7 @@ def _refresh_loop_owner_statusline() -> None:
         from teatree.loop.phases.render import rerender_statusline  # noqa: PLC0415
 
         rerender_statusline()
-    except Exception:  # noqa: BLE001
+    except Exception:  # noqa: BLE001 — best-effort side-effect; a failure degrades to no-op
         return
 
 

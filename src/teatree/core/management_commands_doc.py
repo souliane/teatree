@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import TypedDict
 
 import click
-from django.core.management import load_command_class
+from django.core.management import get_commands, load_command_class
 from typer.main import get_command
 
 
@@ -44,8 +44,6 @@ def build_management_commands_doc_payload() -> ManagementCommandsDocPayload:
     Returns a stable, deterministic payload (sorted by name) so the generated
     JSON is diff-friendly and idempotent across runs.
     """
-    from django.core.management import get_commands  # noqa: PLC0415
-
     all_cmds = get_commands()
     core_names = sorted(name for name, app in all_cmds.items() if app == _APP_LABEL and name not in _EXCLUDED)
 
@@ -62,7 +60,7 @@ def _introspect_command(name: str) -> CommandEntry | None:
     """Load and introspect a single management command, returning None on failure."""
     try:
         klass = load_command_class(_APP_LABEL, name)
-    except Exception:  # noqa: BLE001
+    except Exception:  # noqa: BLE001 — a non-importable command is skipped in the doc build
         return None
 
     typer_app = getattr(klass, "typer_app", None)
@@ -72,7 +70,7 @@ def _introspect_command(name: str) -> CommandEntry | None:
 
     try:
         click_app = get_command(typer_app)
-    except Exception:  # noqa: BLE001
+    except Exception:  # noqa: BLE001 — a command whose Typer app can't be built degrades to a name-only entry
         return {"name": name, "help": getattr(klass, "help", "") or "", "subcommands": []}
 
     help_text = (click_app.help or "").strip()
