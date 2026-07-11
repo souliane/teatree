@@ -1,7 +1,7 @@
 """``manage.py db_backup`` — snapshot the control DB + prune keep-last-N-days retention (directive #2).
 
 The manual/CLI entry point onto the shared backup engine
-(:mod:`teatree.core.db_backup`) — the SAME engine the ``db_backup`` mini-loop's
+(:mod:`teatree.utils.django_db.backup`) — the SAME engine the ``db_backup`` mini-loop's
 mechanical handler drives, so a hand-run backup and the daily loop can never
 diverge. ``--retention-days`` defaults to the configured ``db_backup_retention_days``
 (``[teatree]`` config, per-overlay overridable); pass it to override for a one-off
@@ -15,7 +15,7 @@ import typer
 from django_typer.management import TyperCommand
 
 from teatree.config import get_effective_settings
-from teatree.core.db_backup import run_backup
+from teatree.utils.django_db.backup import run_backup
 
 
 class Command(TyperCommand):

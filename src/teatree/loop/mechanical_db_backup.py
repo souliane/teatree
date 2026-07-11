@@ -2,7 +2,7 @@
 
 The scanner (:mod:`teatree.loop.scanners.db_backup`) only FLAGS that a backup is
 due; this module runs the actual snapshot + retention prune via the shared engine
-(:mod:`teatree.core.db_backup`), mirroring the detect/execute split every other
+(:mod:`teatree.utils.django_db.backup`), mirroring the detect/execute split every other
 mechanical scanner uses (``refresh_snapshot``, ``free_resources``). Best-effort:
 any failure logs and is swallowed so a bad backup pass never aborts the loop tick.
 """
@@ -26,7 +26,7 @@ def run_db_backup(payload: ActionPayload) -> None:
     backup_dir_raw = payload.get("backup_dir")
     backup_dir = Path(backup_dir_raw) if isinstance(backup_dir_raw, str) and backup_dir_raw else None
     try:
-        from teatree.core.db_backup import run_backup  # noqa: PLC0415 deferred: DB-reaching engine
+        from teatree.utils.django_db.backup import run_backup  # noqa: PLC0415 deferred: DB-reaching engine
 
         result = run_backup(
             retention_days=retention_days if isinstance(retention_days, int) and retention_days > 0 else 7,

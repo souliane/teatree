@@ -8,7 +8,7 @@ from unittest.mock import patch
 import pytest
 from django.db import connection
 
-from teatree.core import db_backup
+from teatree.utils.django_db import backup
 
 
 def _make_db(path: Path, *, rows: list[str]) -> None:
@@ -39,13 +39,13 @@ def _touch_artifact(backup_dir: Path, stamp: datetime) -> Path:
 
 class TestArtifactTimestamp:
     def test_parses_embedded_utc_timestamp(self) -> None:
-        parsed = db_backup.artifact_timestamp("db-20260115-093000.sqlite3")
+        parsed = backup.artifact_timestamp("db-20260115-093000.sqlite3")
         assert parsed == datetime(2026, 1, 15, 9, 30, 0, tzinfo=UTC)
 
     def test_rejects_foreign_filename(self) -> None:
-        assert db_backup.artifact_timestamp("db.sqlite3") is None
-        assert db_backup.artifact_timestamp("notes.txt") is None
-        assert db_backup.artifact_timestamp("db-2026.sqlite3") is None
+        assert backup.artifact_timestamp("db.sqlite3") is None
+        assert backup.artifact_timestamp("notes.txt") is None
+        assert backup.artifact_timestamp("db-2026.sqlite3") is None
 
 
 class TestCreateBackup:
@@ -54,7 +54,7 @@ class TestCreateBackup:
         _make_db(source, rows=["alpha", "beta"])
         now = datetime(2026, 1, 15, 9, 30, 0, tzinfo=UTC)
 
-        dest = db_backup.create_backup(source=source, backup_dir=tmp_path / "backups", now=now)
+        dest = backup.create_backup(source=source, backup_dir=tmp_path / "backups", now=now)
 
         assert dest.name == "db-20260115-093000.sqlite3"
         assert dest.is_file()
@@ -64,7 +64,7 @@ class TestCreateBackup:
         source = tmp_path / "db.sqlite3"
         _make_db(source, rows=["x"])
         backups = tmp_path / "backups"
-        db_backup.create_backup(source=source, backup_dir=backups, now=datetime.now(tz=UTC))
+        backup.create_backup(source=source, backup_dir=backups, now=datetime.now(tz=UTC))
         assert not list(backups.glob(".*.partial"))
 
 
@@ -73,25 +73,25 @@ class TestExistingBackupsAndCadence:
         _touch_artifact(tmp_path, datetime(2026, 1, 10, 0, 0, 0, tzinfo=UTC))
         newest = datetime(2026, 1, 12, 6, 0, 0, tzinfo=UTC)
         _touch_artifact(tmp_path, newest)
-        assert db_backup.newest_backup_at(tmp_path) == newest
+        assert backup.newest_backup_at(tmp_path) == newest
 
     def test_newest_backup_at_none_when_empty(self, tmp_path: Path) -> None:
-        assert db_backup.newest_backup_at(tmp_path) is None
+        assert backup.newest_backup_at(tmp_path) is None
 
     def test_hours_since_last_backup(self, tmp_path: Path) -> None:
         stamp = datetime(2026, 1, 12, 0, 0, 0, tzinfo=UTC)
         _touch_artifact(tmp_path, stamp)
         now = stamp + timedelta(hours=30)
-        assert db_backup.hours_since_last_backup(tmp_path, now=now) == pytest.approx(30.0)
+        assert backup.hours_since_last_backup(tmp_path, now=now) == pytest.approx(30.0)
 
     def test_hours_since_last_backup_none_when_empty(self, tmp_path: Path) -> None:
-        assert db_backup.hours_since_last_backup(tmp_path, now=datetime.now(tz=UTC)) is None
+        assert backup.hours_since_last_backup(tmp_path, now=datetime.now(tz=UTC)) is None
 
     def test_existing_backups_ignores_foreign_files(self, tmp_path: Path) -> None:
         _touch_artifact(tmp_path, datetime(2026, 1, 12, 0, 0, 0, tzinfo=UTC))
         (tmp_path / "db.sqlite3").write_bytes(b"live")
         (tmp_path / "README.txt").write_text("hi")
-        assert [p.name for p in db_backup.existing_backups(tmp_path)] == ["db-20260112-000000.sqlite3"]
+        assert [p.name for p in backup.existing_backups(tmp_path)] == ["db-20260112-000000.sqlite3"]
 
 
 class TestPruneExpired:
@@ -100,7 +100,7 @@ class TestPruneExpired:
         old = _touch_artifact(tmp_path, now - timedelta(days=10))
         recent = _touch_artifact(tmp_path, now - timedelta(days=2))
 
-        pruned = db_backup.prune_expired(backup_dir=tmp_path, retention_days=7, now=now)
+        pruned = backup.prune_expired(backup_dir=tmp_path, retention_days=7, now=now)
 
         assert pruned == [old]
         assert not old.exists()
@@ -112,7 +112,7 @@ class TestPruneExpired:
         live = tmp_path / "db.sqlite3"
         live.write_bytes(b"live")
 
-        db_backup.prune_expired(backup_dir=tmp_path, retention_days=7, now=now)
+        backup.prune_expired(backup_dir=tmp_path, retention_days=7, now=now)
 
         assert live.exists()
 
@@ -125,7 +125,7 @@ class TestRunBackup:
         now = datetime(2026, 1, 20, 0, 0, 0, tzinfo=UTC)
         expired = _touch_artifact(backups, now - timedelta(days=30))
 
-        result = db_backup.run_backup(retention_days=7, backup_dir=backups, source=source, now=now)
+        result = backup.run_backup(retention_days=7, backup_dir=backups, source=source, now=now)
 
         assert result.created is not None
         assert result.created.is_file()
@@ -139,8 +139,8 @@ class TestRunBackup:
         now = datetime(2026, 1, 20, 0, 0, 0, tzinfo=UTC)
         expired = _touch_artifact(backups, now - timedelta(days=30))
 
-        with patch.object(db_backup, "resolve_source_db", return_value=None):
-            result = db_backup.run_backup(retention_days=7, backup_dir=backups, now=now)
+        with patch.object(backup, "resolve_source_db", return_value=None):
+            result = backup.run_backup(retention_days=7, backup_dir=backups, now=now)
 
         assert result.created is None
         assert result.skipped_reason is not None
@@ -151,10 +151,10 @@ class TestRunBackup:
 class TestResolveSourceDb:
     def test_returns_none_for_in_memory_db(self) -> None:
         with patch.dict(connection.settings_dict, {"NAME": ":memory:"}):
-            assert db_backup.resolve_source_db() is None
+            assert backup.resolve_source_db() is None
 
     def test_returns_path_for_existing_file_db(self, tmp_path: Path) -> None:
         live = tmp_path / "db.sqlite3"
         live.write_bytes(b"live")
         with patch.dict(connection.settings_dict, {"NAME": str(live)}):
-            assert db_backup.resolve_source_db() == live
+            assert backup.resolve_source_db() == live

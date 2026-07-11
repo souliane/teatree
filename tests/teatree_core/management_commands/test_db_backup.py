@@ -29,8 +29,8 @@ class TestDbBackupCommand:
         source = _make_source(tmp_path)
         backups = tmp_path / "backups"
         with (
-            patch("teatree.core.db_backup.resolve_source_db", return_value=source),
-            patch("teatree.core.db_backup.default_backup_dir", return_value=backups),
+            patch("teatree.utils.django_db.backup.resolve_source_db", return_value=source),
+            patch("teatree.utils.django_db.backup.default_backup_dir", return_value=backups),
         ):
             call_command("db_backup")
         assert list(backups.glob("db-*.sqlite3"))
@@ -45,8 +45,8 @@ class TestDbBackupCommand:
         expired = backups / f"db-{(datetime.now(tz=UTC) - timedelta(days=5)).strftime('%Y%m%d-%H%M%S')}.sqlite3"
         expired.write_bytes(b"stub")
         with (
-            patch("teatree.core.db_backup.resolve_source_db", return_value=source),
-            patch("teatree.core.db_backup.default_backup_dir", return_value=backups),
+            patch("teatree.utils.django_db.backup.resolve_source_db", return_value=source),
+            patch("teatree.utils.django_db.backup.default_backup_dir", return_value=backups),
         ):
             call_command("db_backup", "--retention-days", "1")
         assert not expired.exists()
