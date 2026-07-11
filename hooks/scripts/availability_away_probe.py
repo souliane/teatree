@@ -47,7 +47,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 
-from managed_repo import teatree_src_on_path
+from hooks.scripts.managed_repo import teatree_src_on_path
 
 _AWAY_READ_TIMEOUT = 5
 

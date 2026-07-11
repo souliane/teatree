@@ -55,7 +55,7 @@ def _completion_claim_gate_enabled() -> bool:
     kill-switch (``t3 <overlay> gate completion-claim disable``). Reuses the
     shared bare-boolean reader so only a bare TOML ``false`` disables it.
     """
-    from hook_router import _teatree_bool_setting  # noqa: PLC0415, PLC2701
+    from hooks.scripts.hook_router import _teatree_bool_setting  # noqa: PLC0415 deferred back-import
 
     return _teatree_bool_setting("completion_claim_gate_enabled", default=True)
 
@@ -107,7 +107,7 @@ def _gate_is_out_of_scope(data: dict) -> bool:
     and the kill-switch being off. Folding them here keeps the main handler's
     return count within the lint budget without a suppression.
     """
-    from hook_router import _session_drives_loop  # noqa: PLC0415, PLC2701
+    from hooks.scripts.hook_router import _session_drives_loop  # noqa: PLC0415 deferred back-import
 
     if data.get("stop_hook_active"):
         return True
@@ -117,8 +117,7 @@ def _gate_is_out_of_scope(data: dict) -> bool:
 
 
 def _run_completion_claim_gate(data: dict) -> bool | None:
-    from hook_router import _last_assistant_turn  # noqa: PLC0415, PLC2701
-
+    from hooks.scripts.hook_router import _last_assistant_turn  # noqa: PLC0415 deferred back-import
     from teatree.hooks import completion_claim_scanner  # noqa: PLC0415
 
     if _gate_is_out_of_scope(data):

@@ -37,7 +37,7 @@ import sys
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from managed_repo import (
+from hooks.scripts.managed_repo import (
     default_branch,
     file_is_inside_worktree,
     is_agent_state_path,
@@ -66,7 +66,7 @@ def _gate_enabled() -> bool:
     Fails OPEN to enabled on a missing/broken config; an explicit ``false``
     (``[teatree] main_clone_guard_gate_enabled = false``) is the kill-switch.
     """
-    from hook_router import _teatree_bool_setting  # noqa: PLC0415, PLC2701
+    from hooks.scripts.hook_router import _teatree_bool_setting  # noqa: PLC0415 deferred back-import
 
     return _teatree_bool_setting("main_clone_guard_gate_enabled", default=True)
 
@@ -198,7 +198,7 @@ def _git_finding(core, data: dict) -> "MainCloneFinding | None":  # noqa: ANN001
     ambient cwd, so a ``-C <main-clone>`` redirection cannot bypass the gate and
     a ``-C <worktree>`` redirection from a clone cwd is not falsely denied.
     """
-    from hook_router import _resolve_cwd_repo  # noqa: PLC0415, PLC2701
+    from hooks.scripts.hook_router import _resolve_cwd_repo  # noqa: PLC0415 deferred back-import
 
     command = data.get("tool_input", {}).get("command", "")
     if not isinstance(command, str) or not command:
@@ -241,7 +241,7 @@ def handle_block_main_clone_mutation(data: dict) -> bool:
     <default>, worktree add/remove/prune/list. Fail-open on every resolution
     failure; the deny routes through ``_fail_open_or_deny`` (never-lockout).
     """
-    from hook_router import _fail_open_or_deny  # noqa: PLC0415, PLC2701
+    from hooks.scripts.hook_router import _fail_open_or_deny  # noqa: PLC0415 deferred back-import
 
     if _gate_should_skip(data):
         return False

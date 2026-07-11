@@ -41,8 +41,7 @@ from pathlib import Path
 
 
 def emit_banned_term_deny(tool_name: str, command: str, payload: str, term: str, cwd_repo: Path | None) -> bool:
-    from hook_router import emit_pretooluse_deny  # noqa: PLC0415
-
+    from hooks.scripts.hook_router import emit_pretooluse_deny  # noqa: PLC0415 deferred back-import
     from teatree.hooks import banned_terms_scanner, own_repo_url_carve_out, publish_surface  # noqa: PLC0415
 
     if publish_surface.carve_out_applies(tool_name, command, payload, cwd_repo):

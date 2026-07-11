@@ -46,9 +46,9 @@ orchestrator_investigation_gate_enabled = false``.
 import re
 import sys
 
-from django_bootstrap import bootstrap_teatree_django
-from orchestration_boundary_signals import PYTEST_VERB_FINDER, call_is_from_subagent
-from teatree_settings import teatree_bool_setting
+from hooks.scripts.django_bootstrap import bootstrap_teatree_django
+from hooks.scripts.orchestration_boundary_signals import PYTEST_VERB_FINDER, call_is_from_subagent
+from hooks.scripts.teatree_settings import teatree_bool_setting
 
 # Alias both identities so the handler the router registers and a test patching a
 # helper here operate on ONE module object.

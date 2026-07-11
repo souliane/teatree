@@ -174,10 +174,25 @@ def _reexport_sibling_sources(tree: ast.Module, handler_names: set[str]) -> list
             continue
         if not any(alias.name in handler_names for alias in node.names):
             continue
-        sibling = scripts_dir / f"{node.module}.py"
-        if sibling.is_file():
+        sibling = _sibling_module_file(node.module, scripts_dir)
+        if sibling is not None and sibling.is_file():
             sources.append(ast.parse(sibling.read_text(encoding="utf-8")))
     return sources
+
+
+def _sibling_module_file(module: str, scripts_dir: Path) -> Path | None:
+    """Resolve a router import's module string to its ``hooks/scripts`` source file.
+
+    Handles the canonical absolute ``hooks.scripts.<name>`` /
+    ``hooks.scripts.handlers.<name>`` package paths (and the bare ``<name>`` a
+    subprocess-run router still yields), mapping the dotted tail under
+    ``hooks.scripts`` onto the on-disk file. Returns ``None`` for a non-sibling
+    import so an unrelated ``from teatree.x import y`` is skipped.
+    """
+    if module.startswith("hooks.") and not module.startswith("hooks.scripts."):
+        return None
+    tail = module.removeprefix("hooks.scripts.")
+    return scripts_dir.joinpath(*tail.split(".")).with_suffix(".py")
 
 
 def _call_graph_functions(tree: ast.Module) -> dict[str, ast.FunctionDef]:

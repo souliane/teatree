@@ -32,7 +32,7 @@ helper stays in the router and is back-imported lazily inside the handler body.
 
 import sys
 
-from managed_repo import teatree_src_on_path as _teatree_src_on_path
+from hooks.scripts.managed_repo import teatree_src_on_path as _teatree_src_on_path
 
 # Alias the bare and ``hooks.scripts.`` identities so the handler the router
 # re-exports and a test patching a helper here operate on ONE module object.
@@ -59,7 +59,7 @@ def handle_block_raw_pid_kill(data: dict) -> bool:
     import/internal error — a gate bug must never wedge the agent. The handler
     bootstraps ``sys.path`` to import ``teatree`` from the sibling ``src/`` (#1314).
     """
-    from hook_router import _fail_open_or_deny  # noqa: PLC0415, PLC2701
+    from hooks.scripts.hook_router import _fail_open_or_deny  # noqa: PLC0415 deferred back-import
 
     if data.get("tool_name") != "Bash":
         return False

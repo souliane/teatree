@@ -30,7 +30,7 @@ import tempfile
 from datetime import UTC, datetime
 from pathlib import Path
 
-from managed_repo import teatree_src_on_path
+from hooks.scripts.managed_repo import teatree_src_on_path
 
 # Mirrors ``teatree.core.availability.presence_path`` (``DATA_DIR / <name>``) and
 # ``pending_chat_injection`` / ``deferred_question`` ``Meta.db_table``.

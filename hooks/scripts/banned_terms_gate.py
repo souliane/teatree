@@ -29,9 +29,9 @@ import contextlib
 import sys
 from pathlib import Path
 
-from banned_terms_deny import emit_banned_term_deny
-from banned_terms_marker import resolve_marker as _resolve_banned_terms_marker
-from teatree_settings import teatree_bool_setting as _teatree_bool_setting
+from hooks.scripts.banned_terms_deny import emit_banned_term_deny
+from hooks.scripts.banned_terms_marker import resolve_marker as _resolve_banned_terms_marker
+from hooks.scripts.teatree_settings import teatree_bool_setting as _teatree_bool_setting
 
 # Alias the bare and ``hooks.scripts.`` identities so the handler the router
 # registers and a test patching a helper here operate on ONE module object.
@@ -108,7 +108,7 @@ def _banned_term_marker_blocks(term: str, command: str, cwd_repo: "Path | None")
     fail-closed marker the verdict is either a downgrade-to-warn (write the stderr
     line, return ``False``) or a hard-block (``emit_pretooluse_deny``).
     """
-    from hook_router import emit_pretooluse_deny  # noqa: PLC0415
+    from hooks.scripts.hook_router import emit_pretooluse_deny  # noqa: PLC0415 deferred back-import
 
     verdict = _resolve_banned_terms_marker(term, command, cwd_repo)
     if not verdict.is_marker:
@@ -123,8 +123,7 @@ def _run_banned_terms_pretool(data: dict) -> bool:
     """Banned-terms inner body — assumes ``teatree`` is already importable."""
     from typing import cast  # noqa: PLC0415
 
-    from hook_router import _resolve_cwd_repo, emit_pretooluse_deny  # noqa: PLC0415, PLC2701
-
+    from hooks.scripts.hook_router import _resolve_cwd_repo, emit_pretooluse_deny  # noqa: PLC0415 deferred back-import
     from teatree.hooks import banned_terms_scanner, public_visibility, publish_surface  # noqa: PLC0415
 
     tool_name = data.get("tool_name", "")

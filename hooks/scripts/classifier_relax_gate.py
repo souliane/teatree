@@ -54,8 +54,8 @@ import re
 import sys
 from pathlib import Path
 
-from pretooluse_verdict import Verdict, emit_pretooluse_allow
-from question_gates import read_transcript_entries as _read_transcript_entries
+from hooks.scripts.pretooluse_verdict import Verdict, emit_pretooluse_allow
+from hooks.scripts.question_gates import read_transcript_entries as _read_transcript_entries
 
 # Alias the bare and ``hooks.scripts.`` identities so the handler the router
 # re-exports and a test patching a helper here operate on ONE module object.
@@ -136,7 +136,7 @@ def _ask_question_has_relax_option(block: dict) -> bool:
 
 def _user_entry_affirms_relax(entry: dict) -> bool:
     """True when a user transcript ``entry`` affirmatively selects the relax option."""
-    from hook_router import _entry_content  # noqa: PLC0415, PLC2701 — cold-hook lazy back-import
+    from hooks.scripts.hook_router import _entry_content  # noqa: PLC0415 deferred back-import
 
     texts = [str(b.get("text", "")) for b in _entry_content(entry) if isinstance(b, dict) and b.get("type") == "text"]
     return bool(_CLASSIFIER_RELAX_AFFIRMATIVE.search(" ".join(texts).strip()))
@@ -151,7 +151,7 @@ def _denied_settings_write_ids(entries: list, start: int) -> set[str]:
     survives a denied attempt (a false-block, or any deny) so a corrected retry is
     still allowed (#3/#4). Fail-safe: an unparsable block is skipped.
     """
-    from hook_router import _entry_content  # noqa: PLC0415, PLC2701 — cold-hook lazy back-import
+    from hooks.scripts.hook_router import _entry_content  # noqa: PLC0415 deferred back-import
 
     denied: set[str] = set()
     for k in range(start, len(entries)):
@@ -172,7 +172,7 @@ def _consent_unconsumed(entries: list, start: int) -> bool:
     survives a denied attempt, #3/#4). Any other settings write since the approval
     is a completed write that spends it (a replay of consumed consent).
     """
-    from hook_router import _entry_content  # noqa: PLC0415, PLC2701 — cold-hook lazy back-import
+    from hooks.scripts.hook_router import _entry_content  # noqa: PLC0415 deferred back-import
 
     denied_ids = _denied_settings_write_ids(entries, start)
     for k in range(start, len(entries)):
@@ -194,7 +194,7 @@ def _has_sanctioned_relax_approval(transcript_path: str) -> bool:
     does NOT consume the consent — the approval survives a denied attempt. Fail-safe
     to "no allow" on any missing/unmatched condition.
     """
-    from hook_router import _entry_content, _entry_role  # noqa: PLC0415, PLC2701 — cold-hook lazy back-imports
+    from hooks.scripts.hook_router import _entry_content, _entry_role  # noqa: PLC0415 deferred back-import
 
     entries = _read_transcript_entries(transcript_path)
     for idx in range(len(entries) - 1, -1, -1):
@@ -358,7 +358,7 @@ def handle_allow_classifier_relax_settings_write(data: dict) -> bool | Verdict |
         return None
     schema_error = validate_relax_write(data.get("tool_name"), tool_input)
     if schema_error is not None:
-        from hook_router import _fail_open_or_deny  # noqa: PLC0415, PLC2701 — cold-hook lazy back-import
+        from hooks.scripts.hook_router import _fail_open_or_deny  # noqa: PLC0415 deferred back-import
 
         return _fail_open_or_deny(
             data,

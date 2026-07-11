@@ -28,22 +28,16 @@ import json
 import os
 import sqlite3
 import subprocess
-import sys
 import time
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 
+import hooks.scripts.availability_away_probe as away_probe
 import hooks.scripts.hook_router as router
+import hooks.scripts.loop_state_self_pump_gate as gate
 from hooks.scripts.hook_router import _OWNER_LOOP, _write_loop_registry, handle_loop_self_pump
-
-# ``hook_router`` puts its own dir on ``sys.path`` and binds the lever functions
-# via bare ``from <sibling> import …`` — SEPARATE module instances from
-# ``hooks.scripts.<sibling>`` (the dual identity in ``hooks/CLAUDE.md``). Read the
-# instances the router actually calls.
-gate = sys.modules["loop_state_self_pump_gate"]
-away_probe = sys.modules["availability_away_probe"]
 
 
 @pytest.fixture(autouse=True)

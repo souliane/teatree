@@ -73,7 +73,11 @@ def is_raw_review_write(command: str) -> bool:
     the router (shared with ``_effective_method_is_write`` and the
     out-of-band-merge gate) and are back-imported lazily — one definition each.
     """
-    from hook_router import _GLAB_GH_API_RE, _REVIEW_POST_BODY_FLAG_RE, _REVIEW_POST_METHOD_RE  # noqa: PLC0415, PLC2701
+    from hooks.scripts.hook_router import (  # noqa: PLC0415 deferred back-import
+        _GLAB_GH_API_RE,
+        _REVIEW_POST_BODY_FLAG_RE,
+        _REVIEW_POST_METHOD_RE,
+    )
 
     if not _GLAB_GH_API_RE.search(command):
         return False
@@ -104,7 +108,7 @@ def handle_block_raw_review_post(data: dict) -> bool:
     (back-imported lazily; the ``_write_pretooluse_deny`` writer + circuit breaker
     stay in the router).
     """
-    from hook_router import emit_pretooluse_deny  # noqa: PLC0415
+    from hooks.scripts.hook_router import emit_pretooluse_deny  # noqa: PLC0415 deferred back-import
 
     if data.get("tool_name") != "Bash":
         return False

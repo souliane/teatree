@@ -1,4 +1,4 @@
-"""The deny-circuit-breaker sibling: dual identity, re-export reachability, cold import.
+"""The deny-circuit-breaker sibling: single canonical identity, re-export reachability, cold import.
 
 The repeated-denial circuit breaker was extracted whole out of ``hook_router``
 into ``hooks/scripts/deny_circuit_breaker.py`` (the #2384 Wave-2 router split,
@@ -9,9 +9,9 @@ chain unchanged.
 
 The contract:
 
-* the sibling registers BOTH its bare ``deny_circuit_breaker`` and dotted
-    ``hooks.scripts.deny_circuit_breaker`` identities as ONE module object, so a
-    test patching a helper here and the breaker the router invokes are the same;
+* the sibling has a SINGLE canonical package identity ``hooks.scripts.deny_circuit_breaker``
+    (no bare-name alias after the package-relative refactor), so a test patching a
+    helper here and the breaker the router invokes are the same object;
 * the router re-exports the breaker entry points under their original underscore
     names, so ``_apply_deny_circuit_breaker`` / ``_reset_deny_streak`` /
     ``_deny_circuit_breaker_threshold`` / ``_deny_circuit_breaker_enabled`` /
@@ -33,10 +33,12 @@ import hooks.scripts.hook_router as router
 _SCRIPTS_DIR = Path(router.__file__).resolve().parent
 
 
-class TestDualIdentity:
-    def test_bare_and_dotted_names_are_one_module(self) -> None:
-        assert sys.modules["deny_circuit_breaker"] is sys.modules["hooks.scripts.deny_circuit_breaker"]
-        assert sys.modules["deny_circuit_breaker"] is dcb
+class TestCanonicalIdentity:
+    def test_module_has_one_canonical_package_identity(self) -> None:
+        # The package-relative refactor gives the sibling a SINGLE canonical
+        # identity (``hooks.scripts.deny_circuit_breaker``) — the old bare-name alias is gone —
+        # so the module a test patches is the one the router imports.
+        assert sys.modules["hooks.scripts.deny_circuit_breaker"] is dcb
 
 
 class TestRouterReExportReachable:
