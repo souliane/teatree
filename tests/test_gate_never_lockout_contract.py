@@ -174,10 +174,41 @@ def _reexport_sibling_sources(tree: ast.Module, handler_names: set[str]) -> list
             continue
         if not any(alias.name in handler_names for alias in node.names):
             continue
-        sibling = scripts_dir / f"{node.module}.py"
-        if sibling.is_file():
-            sources.append(ast.parse(sibling.read_text(encoding="utf-8")))
+        sources.extend(
+            ast.parse(path.read_text(encoding="utf-8"))
+            for path in _module_source_paths(node.module, handler_names, scripts_dir)
+        )
     return sources
+
+
+def _module_source_paths(module: str, handler_names: set[str], scripts_dir: Path) -> list[Path]:
+    """Resolve a router import's module string to the ``hooks/scripts`` source file(s).
+
+    Handles the canonical absolute ``hooks.scripts.<name>`` /
+    ``hooks.scripts.handlers.<name>`` module paths (and the bare ``<name>`` a
+    subprocess-run router still yields). When the tail resolves to a PACKAGE
+    (``<name>/__init__.py`` — the consolidated ``banned_terms`` package), the
+    handler is DEFINED in a submodule and merely re-exported by ``__init__``, so
+    the ``__init__``'s ``from hooks.scripts.<name>.<sub> import <handler>`` is
+    followed recursively to the defining submodule. Returns ``[]`` for a
+    non-sibling import so an unrelated ``from teatree.x import y`` is skipped.
+    """
+    if module.startswith("hooks.") and not module.startswith("hooks.scripts."):
+        return []
+    tail = module.removeprefix("hooks.scripts.")
+    base = scripts_dir.joinpath(*tail.split("."))
+    module_file = base.with_suffix(".py")
+    if module_file.is_file():
+        return [module_file]
+    init = base / "__init__.py"
+    if not init.is_file():
+        return []
+    paths = [init]
+    init_tree = ast.parse(init.read_text(encoding="utf-8"))
+    for node in ast.walk(init_tree):
+        if isinstance(node, ast.ImportFrom) and node.module and any(a.name in handler_names for a in node.names):
+            paths.extend(_module_source_paths(node.module, handler_names, scripts_dir))
+    return paths
 
 
 def _call_graph_functions(tree: ast.Module) -> dict[str, ast.FunctionDef]:

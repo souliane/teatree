@@ -33,6 +33,9 @@ site/
 *.min.js
 *.min.css
 *.map
+# Vendored dashboard JS (htmx, mermaid) is load-bearing at runtime — the templates
+# load it via {% static %}, so it MUST be tracked despite the *.min.js ignore above.
+!src/teatree/dash/static/dash/js/*.min.js
 
 
 # Local plugin marketplace self-reference (created by t3 setup)

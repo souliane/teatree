@@ -166,10 +166,10 @@ class TestCrashProof(_GateTest):
         assert decision == {}
 
     def test_unbootstrappable_django_allows(self) -> None:
-        # ``_run`` lazily does ``from django_bootstrap import bootstrap_teatree_django``
-        # (the bare sibling on the hook sys.path) — patch that exact module object.
+        # ``_run`` lazily does ``from hooks.scripts.django_bootstrap import
+        # bootstrap_teatree_django`` (the canonical package module) — patch it there.
         StandingGoal.objects.set_goal("evals-green", "false")
-        with patch.object(sys.modules["django_bootstrap"], "bootstrap_teatree_django", lambda: False):
+        with patch.object(sys.modules["hooks.scripts.django_bootstrap"], "bootstrap_teatree_django", lambda: False):
             result, decision = self._run()
         assert result is None
         assert decision == {}

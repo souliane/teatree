@@ -22,7 +22,7 @@ def engage(session_id: str) -> None:
     """
     if not session_id:
         return
-    from hook_router import _ensure_state_dir, _state_file  # noqa: PLC0415, PLC2701
+    from hooks.scripts.hook_router import _ensure_state_dir, _state_file  # noqa: PLC0415 deferred back-import
 
     _ensure_state_dir()
     _state_file(session_id, "teatree-active").touch()

@@ -1,0 +1,25 @@
+{% load static %}
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>TeaTree · {% block title %}Dashboard{% endblock %}</title>
+  <link rel="stylesheet" href="{% static 'dash/css/dash.css' %}">
+  <script src="{% static 'dash/js/htmx-2.0.4.min.js' %}" defer></script>
+</head>
+<body hx-headers='{"X-CSRFToken": "{{ csrf_token }}"}'>
+  <header class="dash-header">
+    <span class="dash-brand">TeaTree</span>
+    <nav class="dash-nav">
+      {% for name, label in nav_items %}
+        <a href="{% url name %}" class="{% if name == nav_active %}active{% endif %}">{{ label }}</a>
+      {% endfor %}
+    </nav>
+  </header>
+  <main class="dash-main">
+    {% block content %}{% endblock %}
+  </main>
+  {% block extra_js %}{% endblock %}
+</body>
+</html>

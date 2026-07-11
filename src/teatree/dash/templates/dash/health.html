@@ -1,0 +1,25 @@
+{% extends "dash/base.html" %}
+{% block title %}Health{% endblock %}
+{% block content %}
+  <div id="health-bands"
+    hx-get="{% url 'dash:health_bands' %}"
+    hx-trigger="every 5s"
+    hx-swap="innerHTML">
+    {% include "dash/partials/_health_bands.html" %}
+  </div>
+
+  <section class="band">
+    <h2>Debug commands</h2>
+    <form method="post" action="{% url 'dash:command_run' %}" hx-post="{% url 'dash:command_run' %}" hx-target="#command-result" hx-swap="innerHTML">
+      {% csrf_token %}
+      {% for spec in command_buttons %}
+        {% if spec.needs_loop %}
+          <span><input type="text" name="loop" placeholder="loop name"><button class="dash-btn" name="command" value="{{ spec.key }}">{{ spec.label }}</button></span>
+        {% else %}
+          <button class="dash-btn" name="command" value="{{ spec.key }}">{{ spec.label }}</button>
+        {% endif %}
+      {% endfor %}
+    </form>
+    <div id="command-result"></div>
+  </section>
+{% endblock %}

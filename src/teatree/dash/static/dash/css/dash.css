@@ -1,0 +1,105 @@
+:root {
+  --bg: #12141a;
+  --panel: #1b1e27;
+  --panel-2: #232734;
+  --ink: #e6e9ef;
+  --muted: #8b93a7;
+  --line: #2c3140;
+  --green: #3fb950;
+  --yellow: #d29922;
+  --red: #f85149;
+  --accent: #58a6ff;
+}
+* { box-sizing: border-box; }
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--ink);
+  font: 14px/1.5 -apple-system, Segoe UI, Roboto, sans-serif;
+}
+.dash-header {
+  display: flex;
+  align-items: center;
+  gap: 1.5rem;
+  padding: 0.6rem 1rem;
+  background: var(--panel);
+  border-bottom: 1px solid var(--line);
+}
+.dash-brand { font-weight: 700; letter-spacing: 0.02em; }
+.dash-nav a {
+  color: var(--muted);
+  text-decoration: none;
+  margin-right: 1rem;
+  padding-bottom: 0.2rem;
+}
+.dash-nav a.active { color: var(--ink); border-bottom: 2px solid var(--accent); }
+.dash-main { padding: 1rem; }
+
+.dash-filters { margin-bottom: 0.8rem; display: flex; gap: 0.5rem; flex-wrap: wrap; }
+.dash-filters input, .dash-filters select, .dash-btn {
+  background: var(--panel-2);
+  color: var(--ink);
+  border: 1px solid var(--line);
+  border-radius: 5px;
+  padding: 0.3rem 0.55rem;
+}
+.dash-btn { cursor: pointer; }
+.dash-btn:hover { border-color: var(--accent); }
+
+.kanban-groups { display: flex; gap: 1rem; align-items: flex-start; overflow-x: auto; }
+.kanban-group { min-width: 0; }
+.kanban-group > h2 { font-size: 0.8rem; text-transform: uppercase; color: var(--muted); margin: 0 0 0.4rem; }
+.kanban-columns { display: flex; gap: 0.6rem; }
+.kanban-column { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; width: 220px; padding: 0.5rem; }
+.kanban-column > h3 { margin: 0 0 0.5rem; font-size: 0.8rem; display: flex; justify-content: space-between; }
+.kanban-column .count { color: var(--muted); }
+
+.card {
+  background: var(--panel-2);
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  padding: 0.5rem;
+  margin-bottom: 0.5rem;
+  cursor: pointer;
+}
+.card:hover { border-color: var(--accent); }
+.card-top { display: flex; align-items: center; gap: 0.35rem; }
+.card-num { font-weight: 600; }
+.card-desc { color: var(--ink); margin: 0.25rem 0; }
+.chip {
+  display: inline-block;
+  font-size: 0.7rem;
+  padding: 0.05rem 0.4rem;
+  border-radius: 999px;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  color: var(--muted);
+  margin-right: 0.2rem;
+}
+.chip.role { color: var(--accent); }
+.chip.expedited { color: var(--yellow); border-color: var(--yellow); }
+.chip.warn { color: var(--red); border-color: var(--red); }
+.dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; }
+.dot.active { background: var(--green); }
+.card-error { color: var(--red); font-size: 0.75rem; margin-top: 0.25rem; word-break: break-word; }
+.card-dwell { color: var(--muted); font-size: 0.72rem; }
+
+.band { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 0.8rem; margin-bottom: 0.8rem; }
+.band h2 { margin: 0 0 0.6rem; font-size: 0.95rem; }
+.verdict { font-weight: 700; text-transform: uppercase; }
+.verdict.green { color: var(--green); }
+.verdict.yellow { color: var(--yellow); }
+.verdict.red { color: var(--red); }
+.banner-red { background: rgba(248, 81, 73, 0.15); border: 1px solid var(--red); color: var(--red); padding: 0.5rem 0.8rem; border-radius: 8px; margin-bottom: 0.8rem; font-weight: 600; }
+
+table.dash { width: 100%; border-collapse: collapse; font-size: 0.85rem; }
+table.dash th, table.dash td { text-align: left; padding: 0.3rem 0.5rem; border-bottom: 1px solid var(--line); }
+table.dash th { color: var(--muted); font-weight: 600; }
+.stalled { color: var(--red); }
+.held { color: var(--yellow); }
+.eff-yes { color: var(--green); }
+.eff-no { color: var(--red); }
+
+pre.output { background: #0d1017; border: 1px solid var(--line); border-radius: 6px; padding: 0.6rem; overflow: auto; max-height: 24rem; white-space: pre-wrap; }
+.mermaid { background: var(--panel-2); border-radius: 6px; padding: 0.5rem; }
+.drawer { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 1rem; }

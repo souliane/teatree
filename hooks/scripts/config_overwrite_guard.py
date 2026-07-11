@@ -50,7 +50,7 @@ def _config_overwrite_gate_enabled() -> bool:
     (``[teatree] config_overwrite_gate_enabled = false``, flipped by
     ``t3 <overlay> gate config-overwrite disable``) is the one-line kill-switch.
     """
-    from hook_router import _teatree_bool_setting  # noqa: PLC0415, PLC2701
+    from hooks.scripts.hook_router import _teatree_bool_setting  # noqa: PLC0415 deferred back-import
 
     return _teatree_bool_setting("config_overwrite_gate_enabled", default=True)
 
@@ -91,8 +91,8 @@ def _read_paths_this_session(session_id: str) -> set[str]:
     matches a Write/restore of the same file expressed as a symlink, a
     relative path, or the symlink's resolved target.
     """
-    from hook_router import STATE_DIR  # noqa: PLC0415
-    from state_files import read_lines  # noqa: PLC0415
+    from hooks.scripts.hook_router import STATE_DIR  # noqa: PLC0415 deferred back-import
+    from hooks.scripts.state_files import read_lines  # noqa: PLC0415 deferred cold-hook import
 
     reads_file = STATE_DIR / f"{session_id}.reads"
     paths: set[str] = set()
@@ -211,7 +211,7 @@ def handle_block_config_overwrite(data: dict) -> bool:
     ``False`` (allow) otherwise. Fail-open on every resolution failure so the
     gate never wedges a session; the deny routes through ``_fail_open_or_deny``.
     """
-    from hook_router import _fail_open_or_deny  # noqa: PLC0415, PLC2701
+    from hooks.scripts.hook_router import _fail_open_or_deny  # noqa: PLC0415 deferred back-import
 
     if _gate_should_skip(data):
         return False

@@ -18,7 +18,7 @@ import dataclasses
 import sys
 from typing import Any, cast
 
-from managed_repo import teatree_src_on_path
+from hooks.scripts.managed_repo import teatree_src_on_path
 
 # Alias both identities so a bare ``from self_dm_destinations import ...`` (the
 # live hook, whose dir is on sys.path) and ``hooks.scripts.self_dm_destinations``

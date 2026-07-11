@@ -72,11 +72,16 @@ INSTALLED_APPS = [
     "teatree.core",
     "teatree.agents",
     "teatree.backends",
+    "teatree.dash",
     *_discover_overlay_apps(),
 ]
 
 MIDDLEWARE = [
     "django.middleware.security.SecurityMiddleware",
+    # Serve STATIC_ROOT from WSGI so /static/ works under gunicorn with DEBUG off
+    # (Django's staticfiles app serves nothing without runserver). Placed directly
+    # after SecurityMiddleware per WhiteNoise's documented ordering.
+    "whitenoise.middleware.WhiteNoiseMiddleware",
     "django.contrib.sessions.middleware.SessionMiddleware",
     "django.middleware.common.CommonMiddleware",
     "django.middleware.csrf.CsrfViewMiddleware",
@@ -153,6 +158,10 @@ TIME_ZONE = "UTC"
 USE_I18N = True
 USE_TZ = True
 STATIC_URL = "static/"
+# collectstatic target — WhiteNoise serves the collected tree from here under
+# gunicorn (DEBUG off). Kept beside the canonical DB so a headless deploy writes
+# to the same operator-owned data dir it already provisions.
+STATIC_ROOT = str(_DATA_DIR / "staticfiles")
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 
 LOGGING = default_logging("teatree")

@@ -32,105 +32,131 @@ from typing import TYPE_CHECKING, Any
 if TYPE_CHECKING:
     from types import ModuleType
 
-# Put this script's own dir on sys.path so the bare sibling-module imports
-# resolve whether the router runs as a script (the live hook) or is imported
-# as ``hooks.scripts.hook_router`` in a subprocess test.
-if str(Path(__file__).resolve().parent) not in sys.path:
-    sys.path.insert(0, str(Path(__file__).resolve().parent))
-# Alias the bare ``hook_router`` name to this module object so a sibling's
-# ``from hook_router import STATE_DIR`` and a test's ``import
-# hooks.scripts.hook_router`` resolve the SAME globals (a test patching
-# ``STATE_DIR`` must reach what the sibling reads). Unconditional, so it holds
-# regardless of whether the parent dir was already on ``sys.path``.
-if "hook_router" not in sys.modules:
-    sys.modules["hook_router"] = sys.modules[__name__]
+# When run as a script (the live hook: ``python3 .../hooks/scripts/hook_router.py``)
+# the plugin root — the directory that CONTAINS ``hooks/`` — is not on ``sys.path``,
+# so the absolute ``hooks.scripts.*`` package imports below would not resolve. Add
+# it once, so the SAME canonical import paths work whether the router runs as a
+# script or is imported as ``hooks.scripts.hook_router`` (tests). This replaces the
+# former dual-mode hack (scripts-dir-on-path + a ``sys.modules['hook_router']``
+# alias): a single package root means one canonical module object per name, so a
+# test patching ``hooks.scripts.hook_router.STATE_DIR`` reaches exactly what a
+# handler reads — no alias needed.
+if str(Path(__file__).resolve().parents[2]) not in sys.path:
+    sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+# When run as a script the module loads under ``__main__``; register it under its
+# canonical package name too, so a handler's ``from hooks.scripts.hook_router
+# import <live-global>`` resolves to THIS running instance (whose ``main`` stamps
+# the per-call ``_CURRENT_DATA``) rather than a fresh re-import with empty state.
+# The shared mutable per-call state is extracted to ``hooks.scripts.hook_context``
+# (never ``__main__``); this line only bridges the router's own remaining globals.
+if __name__ == "__main__":
+    sys.modules.setdefault("hooks.scripts.hook_router", sys.modules[__name__])
 
-from availability_away_probe import resolved_away_mode as resolved_away_mode_stdlib
-from availability_away_probe import resolved_defers_questions as _resolved_defers_questions
-from banned_terms_gate import handle_banned_terms_pretool
-from classifier_relax_gate import (
-    _SETTINGS_JSON_PATH,  # noqa: F401, PLC2701 — re-export for test access
-    _ask_question_has_relax_option,  # noqa: F401, PLC2701 — re-export for test access
-    _block_is_settings_write,  # noqa: F401, PLC2701 — re-export for test access
-    _settings_json_target,  # noqa: F401, PLC2701 — re-export for test access
+from hooks.scripts.availability_away_probe import resolved_away_mode as resolved_away_mode_stdlib
+from hooks.scripts.availability_away_probe import resolved_defers_questions as _resolved_defers_questions
+from hooks.scripts.banned_terms import handle_banned_terms_pretool
+from hooks.scripts.classifier_relax_gate import (
+    _SETTINGS_JSON_PATH,  # noqa: F401 — re-export for test access
+    _ask_question_has_relax_option,  # noqa: F401 — re-export for test access
+    _block_is_settings_write,  # noqa: F401 — re-export for test access
+    _settings_json_target,  # noqa: F401 — re-export for test access
     handle_allow_classifier_relax_settings_write,
 )
-from completion_claim_gate import handle_completion_claim_gate
-from config_overwrite_guard import handle_block_config_overwrite
-from coverage_gate import coverage_gate_repo_dir as _coverage_gate_repo_dir
-from coverage_gate import diff_coverage_argv as _diff_coverage_argv
-from coverage_gate import diff_coverage_finding as _diff_coverage_finding
-from cron_tracking import cron_cadence_seconds as _cron_cadence_seconds  # noqa: F401
-from cron_tracking import derive_loop_name as _derive_loop_name  # noqa: F401
-from cron_tracking import handle_track_cron_jobs
-from deny_circuit_breaker import apply_deny_circuit_breaker as _apply_deny_circuit_breaker
-from deny_circuit_breaker import deny_circuit_breaker_enabled as _deny_circuit_breaker_enabled  # noqa: F401
-from deny_circuit_breaker import deny_circuit_breaker_threshold as _deny_circuit_breaker_threshold  # noqa: F401
-from deny_circuit_breaker import deny_is_ux_gate as _deny_is_ux_gate  # noqa: F401
-from deny_circuit_breaker import reset_deny_streak as _reset_deny_streak
-from direct_command_guard import BLOCKED_COMMANDS as _BLOCKED_COMMANDS  # noqa: F401
-from direct_command_guard import deny_match as _deny_match  # noqa: F401
-from direct_command_guard import handle_block_direct_commands
-from django_bootstrap import bootstrap_teatree_django
-from engagement import engage
-from gate_result import GateOutcome, classify_validator_run
-from loop_owner_db import db_lease_consult_disabled as _db_lease_consult_disabled
-from loop_owner_db import db_owner_is_current_session as _db_owner_is_current_session
-from loop_registrations import emit_loop_registrations, is_bare_loop_tick_prompt
-from loop_state_self_pump_gate import db_loop_state_suppresses_self_pump
-from main_clone_guard import handle_block_main_clone_mutation
-from managed_repo import file_is_inside_worktree as _file_is_inside_worktree
-from managed_repo import is_agent_state_path as _is_agent_state_path
-from managed_repo import load_protected_branches as _load_protected_branches
-from managed_repo import overlay_managed_repo_signals as _overlay_managed_repo_signals
-from managed_repo import repo_root_is_teatree_managed as _repo_root_is_teatree_managed
-from managed_repo import resolve_branch_and_root as _resolve_branch_and_root
-from managed_repo import teatree_src_on_path as _teatree_src_on_path
-from mcp_slack_write_guard import handle_block_mcp_slack_write
-from mcp_slack_write_guard import is_slack_mcp_tool as _is_slack_mcp_tool
-from memory_recall import handle_recall_cold_memory
-from mr_cli_fields import extract_cli_mr_fields, extract_mr_target_repo, merge_target_is_managed
-from no_self_reviewer_assign import handle_block_self_reviewer_assign
-from orchestration_boundary_signals import PYTEST_VERB_FINDER as _PYTEST_VERB_FINDER
-from orchestration_boundary_signals import PYTEST_VERB_RE as _PYTEST_VERB_RE
-from orchestration_boundary_signals import call_is_from_subagent as _call_is_from_subagent
-from orchestrator_investigation_gate import handle_enforce_orchestrator_investigation_boundary
-from plan_edit_gate import skip_plan_gate_token
-from question_gates import (
+from hooks.scripts.completion_claim_gate import handle_completion_claim_gate
+from hooks.scripts.config_overwrite_guard import handle_block_config_overwrite
+from hooks.scripts.coverage_gate import coverage_gate_repo_dir as _coverage_gate_repo_dir
+from hooks.scripts.coverage_gate import diff_coverage_argv as _diff_coverage_argv
+from hooks.scripts.coverage_gate import diff_coverage_finding as _diff_coverage_finding
+from hooks.scripts.cron_tracking import (
+    cron_cadence_seconds as _cron_cadence_seconds,  # noqa: F401 re-export for test access
+)
+from hooks.scripts.cron_tracking import derive_loop_name as _derive_loop_name  # noqa: F401 re-export for test access
+from hooks.scripts.cron_tracking import handle_track_cron_jobs
+from hooks.scripts.deny_circuit_breaker import apply_deny_circuit_breaker as _apply_deny_circuit_breaker
+from hooks.scripts.deny_circuit_breaker import (
+    deny_circuit_breaker_enabled as _deny_circuit_breaker_enabled,  # noqa: F401 re-export for test access
+)
+from hooks.scripts.deny_circuit_breaker import (
+    deny_circuit_breaker_threshold as _deny_circuit_breaker_threshold,  # noqa: F401 re-export for test access
+)
+from hooks.scripts.deny_circuit_breaker import (
+    deny_is_ux_gate as _deny_is_ux_gate,  # noqa: F401 re-export for test access
+)
+from hooks.scripts.deny_circuit_breaker import reset_deny_streak as _reset_deny_streak
+from hooks.scripts.direct_command_guard import (
+    BLOCKED_COMMANDS as _BLOCKED_COMMANDS,  # noqa: F401 re-export for test access
+)
+from hooks.scripts.direct_command_guard import deny_match as _deny_match  # noqa: F401 re-export for test access
+from hooks.scripts.direct_command_guard import handle_block_direct_commands
+from hooks.scripts.django_bootstrap import bootstrap_teatree_django
+from hooks.scripts.engagement import engage
+from hooks.scripts.gate_result import GateOutcome, classify_validator_run
+from hooks.scripts.handlers.classifier_denial import (
+    handle_classifier_deny_stop_gate,
+    handle_clear_classifier_deny_marker,
+    handle_track_classifier_denial,
+)
+from hooks.scripts.loop_owner_db import db_lease_consult_disabled as _db_lease_consult_disabled
+from hooks.scripts.loop_owner_db import db_owner_is_current_session as _db_owner_is_current_session
+from hooks.scripts.loop_registrations import emit_loop_registrations, is_bare_loop_tick_prompt
+from hooks.scripts.loop_state_self_pump_gate import db_loop_state_suppresses_self_pump
+from hooks.scripts.main_clone_guard import handle_block_main_clone_mutation
+from hooks.scripts.managed_repo import file_is_inside_worktree as _file_is_inside_worktree
+from hooks.scripts.managed_repo import is_agent_state_path as _is_agent_state_path
+from hooks.scripts.managed_repo import load_protected_branches as _load_protected_branches
+from hooks.scripts.managed_repo import overlay_managed_repo_signals as _overlay_managed_repo_signals
+from hooks.scripts.managed_repo import repo_root_is_teatree_managed as _repo_root_is_teatree_managed
+from hooks.scripts.managed_repo import resolve_branch_and_root as _resolve_branch_and_root
+from hooks.scripts.managed_repo import teatree_src_on_path as _teatree_src_on_path
+from hooks.scripts.mcp_slack_write_guard import handle_block_mcp_slack_write
+from hooks.scripts.mcp_slack_write_guard import is_slack_mcp_tool as _is_slack_mcp_tool
+from hooks.scripts.memory_recall import handle_recall_cold_memory
+from hooks.scripts.mr_cli_fields import extract_cli_mr_fields, extract_mr_target_repo, merge_target_is_managed
+from hooks.scripts.no_self_reviewer_assign import handle_block_self_reviewer_assign
+from hooks.scripts.orchestration_boundary_signals import PYTEST_VERB_FINDER as _PYTEST_VERB_FINDER
+from hooks.scripts.orchestration_boundary_signals import PYTEST_VERB_RE as _PYTEST_VERB_RE
+from hooks.scripts.orchestration_boundary_signals import call_is_from_subagent as _call_is_from_subagent
+from hooks.scripts.orchestrator_investigation_gate import handle_enforce_orchestrator_investigation_boundary
+from hooks.scripts.plan_edit_gate import skip_plan_gate_token
+from hooks.scripts.question_gates import (
     FENCED_CODE_RE,
     STRUCTURED_QUESTION_BLOCK,
     handle_warn_batched_questions,
     is_user_directed_question,
     preceding_user_rejected_question_and_asked_clarify,
 )
-from question_gates import last_assistant_turn as _last_assistant_turn
-from question_gates import read_transcript_entries as _read_transcript_entries
-from quote_verdict import QuoteVerdict
-from quote_verdict import resolve_high_verdict as _resolve_quote_verdict
-from raw_pid_kill_guard import handle_block_raw_pid_kill
-from raw_review_post_guard import REVIEW_POST_ENDPOINT_RE as _REVIEW_POST_ENDPOINT_RE  # noqa: F401
-from raw_review_post_guard import handle_block_raw_review_post
-from raw_review_post_guard import is_raw_review_write as _is_raw_review_write  # noqa: F401
-from secret_file_print_guard import handle_block_secret_file_print
-from self_dm_destinations import SelfDmDestinations as _SelfDmDestinations
-from self_dm_destinations import read_self_dm_destinations as _read_self_dm_destinations
-from skill_suggestion_render import render_skill_suggestion_message
-from slack_mirror_wiring import build_dm_audio_enricher
-from slack_mirror_wiring import slack_http_poster as _slack_http_poster
-from standing_goal_stop_gate import handle_standing_goal_stop
-from state_files import append_line, read_lines
-from stop_snapshot_slot import handle_stop_snapshot_slot
-from stop_snapshot_slot import open_prs_for_repo as _open_prs_for_repo
-from stop_snapshot_slot import run_prepare_stop_best_effort as _run_prepare_stop_best_effort
-from subagent_no_commit import handle_subagent_stop_no_commit
-from subagent_skill_gate import is_file_safe, unreferenced_demand_reason
-from teatree_settings import autoload_enabled as _autoload_enabled
-from teatree_settings import teatree_bool_setting as _teatree_bool_setting
-from teatree_settings import teatree_bool_setting_loud as _teatree_bool_setting_loud
-from teatree_settings import teatree_int_setting as _teatree_int_setting
-from turn_inspect import current_turn_tool_commands
-from unknown_repo_push_gate import handle_block_unknown_repo_push
-from ups_fastpath import has_pending_chat_work, has_pending_question_work, record_presence
+from hooks.scripts.question_gates import last_assistant_turn as _last_assistant_turn
+from hooks.scripts.question_gates import read_transcript_entries as _read_transcript_entries
+from hooks.scripts.quote_verdict import QuoteVerdict
+from hooks.scripts.quote_verdict import resolve_high_verdict as _resolve_quote_verdict
+from hooks.scripts.raw_pid_kill_guard import handle_block_raw_pid_kill
+from hooks.scripts.raw_review_post_guard import (
+    REVIEW_POST_ENDPOINT_RE as _REVIEW_POST_ENDPOINT_RE,  # noqa: F401 re-export for test access
+)
+from hooks.scripts.raw_review_post_guard import handle_block_raw_review_post
+from hooks.scripts.raw_review_post_guard import (
+    is_raw_review_write as _is_raw_review_write,  # noqa: F401 re-export for test access
+)
+from hooks.scripts.secret_file_print_guard import handle_block_secret_file_print
+from hooks.scripts.self_dm_destinations import SelfDmDestinations as _SelfDmDestinations
+from hooks.scripts.self_dm_destinations import read_self_dm_destinations as _read_self_dm_destinations
+from hooks.scripts.skill_suggestion_render import render_skill_suggestion_message
+from hooks.scripts.slack_mirror_wiring import build_dm_audio_enricher
+from hooks.scripts.slack_mirror_wiring import slack_http_poster as _slack_http_poster
+from hooks.scripts.standing_goal_stop_gate import handle_standing_goal_stop
+from hooks.scripts.state_files import append_line, read_lines
+from hooks.scripts.stop_snapshot_slot import handle_stop_snapshot_slot
+from hooks.scripts.stop_snapshot_slot import open_prs_for_repo as _open_prs_for_repo
+from hooks.scripts.stop_snapshot_slot import run_prepare_stop_best_effort as _run_prepare_stop_best_effort
+from hooks.scripts.subagent_no_commit import handle_subagent_stop_no_commit
+from hooks.scripts.subagent_skill_gate import is_file_safe, unreferenced_demand_reason
+from hooks.scripts.teatree_settings import autoload_enabled as _autoload_enabled
+from hooks.scripts.teatree_settings import teatree_bool_setting as _teatree_bool_setting
+from hooks.scripts.teatree_settings import teatree_bool_setting_loud as _teatree_bool_setting_loud
+from hooks.scripts.teatree_settings import teatree_int_setting as _teatree_int_setting
+from hooks.scripts.turn_inspect import current_turn_tool_commands
+from hooks.scripts.unknown_repo_push_gate import handle_block_unknown_repo_push
+from hooks.scripts.ups_fastpath import has_pending_chat_work, has_pending_question_work, record_presence
 
 STATE_DIR = Path(
     os.environ.get(
@@ -6303,176 +6329,6 @@ def _consideration_gate(data: dict) -> bool | None:
     # preempts the loop self-pump (which would override our soft-block
     # with a continuation directive).
     return True
-
-
-# ── Classifier-denial STOP gate (#1247) ─────────────────────────────
-#
-# When the auto-mode classifier denies a tool call the agent must STOP
-# and explain (action / reason / minimum-unblock) per the binding
-# "Classifier Denial Protocol" in skills/rules/SKILL.md.  Prose-only
-# enforcement has slipped repeatedly — the gate makes it deterministic:
-#
-# 1. PostToolUse scans every tool_response for the canonical denial
-#    preamble — the exact phrase the harness emits on classifier
-#    deny (see ``_CLASSIFIER_DENIAL_PREAMBLE`` below).  On a match it
-#    writes a per-session marker carrying the action fingerprint
-#    (tool name + short input excerpt).
-# 2. Stop reads the marker.  If present it emits a top-level
-#    ``systemMessage`` reminding the agent to STOP and explain.
-#    Returns True to break the Stop chain so the message survives.
-# 3. The next UserPromptSubmit clears the marker — the fresh user
-#    turn carries the explicit per-call authorisation (or a redirect),
-#    so the gate auto-disarms.
-#
-# Fail-safe-to-empty: handler returns silently on malformed input or
-# missing fields — the hook must NEVER crash the harness.
-
-_CLASSIFIER_DENIAL_PREAMBLE = "denied by the Claude Code auto mode classifier"
-_CLASSIFIER_DENY_MARKER_SUFFIX = "classifier-deny"
-_CLASSIFIER_DENY_ACTION_EXCERPT_MAX = 120
-
-
-_DENIAL_RESPONSE_STRING_KEYS = ("error", "content", "stderr", "stdout", "message", "output", "reason")
-
-
-def _tool_response_strings(tool_response: object) -> list[str]:
-    """Return every string value reachable from ``tool_response`` (shallow).
-
-    The classifier denial can land in ``error``, ``content``, ``stderr``,
-    ``message``, ``output``, or as a bare string.  We scan a fixed set of
-    likely keys rather than recursing — keeps the detector cheap and
-    predictable.  Fail-safe-to-empty on unexpected shapes.
-    """
-    from typing import cast  # noqa: PLC0415
-
-    if isinstance(tool_response, str):
-        return [tool_response]
-    if not isinstance(tool_response, dict):
-        return []
-    response = cast("dict[str, object]", tool_response)
-    out: list[str] = []
-    for key in _DENIAL_RESPONSE_STRING_KEYS:
-        value = response.get(key)
-        if isinstance(value, str):
-            out.append(value)
-    return out
-
-
-def _format_action_excerpt(tool_name: str, tool_input: object) -> str:
-    """Build a short ``<tool_name>: <input>`` excerpt naming the denied action.
-
-    Truncates to ``_CLASSIFIER_DENY_ACTION_EXCERPT_MAX`` characters so the
-    Stop gate's systemMessage stays one line.  Tries the common
-    descriptive keys (``command``, ``file_path``, ``prompt``) before
-    falling back to the repr of the full input.
-    """
-    from typing import cast  # noqa: PLC0415
-
-    name = tool_name if isinstance(tool_name, str) else "tool"
-    excerpt = name
-    if isinstance(tool_input, dict):
-        input_dict = cast("dict[str, object]", tool_input)
-        excerpt = f"{name}: {input_dict!r}"
-        for key in ("command", "file_path", "prompt", "url", "channel"):
-            value = input_dict.get(key)
-            if isinstance(value, str) and value:
-                excerpt = f"{name}: {value}"
-                break
-    if len(excerpt) > _CLASSIFIER_DENY_ACTION_EXCERPT_MAX:
-        excerpt = excerpt[: _CLASSIFIER_DENY_ACTION_EXCERPT_MAX - 1] + "…"
-    return excerpt
-
-
-def handle_track_classifier_denial(data: dict) -> None:
-    """PostToolUse: persist a marker when the classifier denies a tool call.
-
-    Scans the ``tool_response`` payload for the canonical denial preamble
-    and writes ``<session_id>.classifier-deny`` carrying enough context
-    for the Stop gate to name what was denied.  Returns silently on any
-    missing/malformed field — fail-safe-to-empty per the spec.
-    """
-    if not isinstance(data, dict):
-        return
-    session_id = data.get("session_id", "")
-    if not isinstance(session_id, str) or not session_id:
-        return
-    tool_response = data.get("tool_response")
-    if tool_response is None:
-        return
-    strings = _tool_response_strings(tool_response)
-    if not any(_CLASSIFIER_DENIAL_PREAMBLE in s for s in strings):
-        return
-    tool_name = data.get("tool_name", "")
-    tool_input = data.get("tool_input")
-    excerpt = _format_action_excerpt(tool_name, tool_input)
-    payload = {
-        "tool_name": tool_name if isinstance(tool_name, str) else "",
-        "action": excerpt,
-    }
-    try:
-        _ensure_state_dir()
-        marker = _state_file(session_id, _CLASSIFIER_DENY_MARKER_SUFFIX)
-        marker.write_text(json.dumps(payload), encoding="utf-8")
-    except OSError:
-        # Fail-safe: a write failure must not crash the harness.
-        return
-
-
-def handle_classifier_deny_stop_gate(data: dict) -> bool | None:
-    """Stop: emit STOP-and-explain ``systemMessage`` if a denial is pending.
-
-    Returns ``True`` to break the Stop chain (mirrors the consideration
-    gate pattern) when the marker exists.  Otherwise returns ``None``
-    so the rest of the Stop chain runs unchanged.
-    """
-    if not isinstance(data, dict):
-        return None
-    session_id = data.get("session_id", "")
-    if not isinstance(session_id, str) or not session_id:
-        return None
-    marker = _state_file(session_id, _CLASSIFIER_DENY_MARKER_SUFFIX)
-    if not marker.is_file():
-        return None
-    try:
-        payload = json.loads(marker.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return None
-    if not isinstance(payload, dict):
-        return None
-    action = payload.get("action") or payload.get("tool_name") or "the denied tool call"
-    body = (
-        f"Classifier denied {action}. STOP and explain: action / reason / "
-        'minimum-unblock — per the binding "Classifier Denial Protocol" '
-        "(skills/rules/SKILL.md). Do not retry with a different argument "
-        "shape, decompose the command, or switch tools. Ask the user via "
-        'AskUserQuestion with two options: "Allow it (relax classifier)" '
-        'or "Keep the denial (do it differently)".'
-    )
-    # Stop schema reserves ``hookSpecificOutput.additionalContext`` for
-    # other events — emit the top-level ``systemMessage`` (schema-valid;
-    # non-decision; visible to the agent) so the nag survives.
-    json.dump({"systemMessage": body}, sys.stdout)
-    return True
-
-
-def handle_clear_classifier_deny_marker(data: dict) -> None:
-    """UserPromptSubmit: clear the classifier-deny marker for this session.
-
-    The next user turn re-arms the gate — the user either grants the
-    per-call authorisation explicitly (which the agent now relays) or
-    redirects to a different approach.  Either way the previous denial
-    is no longer the active blocker.
-    """
-    if not isinstance(data, dict):
-        return
-    session_id = data.get("session_id", "")
-    if not isinstance(session_id, str) or not session_id:
-        return
-    marker = _state_file(session_id, _CLASSIFIER_DENY_MARKER_SUFFIX)
-    try:
-        marker.unlink(missing_ok=True)
-    except OSError:
-        return
 
 
 # ── Router ──────────────────────────────────────────────────────────

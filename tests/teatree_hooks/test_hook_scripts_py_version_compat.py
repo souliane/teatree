@@ -213,12 +213,11 @@ class TestInterpreterPinIsLoadBearing:
         )
 
     def test_banned_terms_gate_sibling_cold_imports(self) -> None:
-        # The extracted PreToolUse banned-terms publish gate (#2384 Wave-2 PR2)
-        # must cold-import under a bare interpreter — its module-top
-        # teatree_settings / banned_terms_deny / banned_terms_marker sibling
-        # imports and dual-identity alias resolve with hooks/scripts on sys.path
-        # and no Django, the way the live PreToolUse hook subprocess loads it.
-        result = _import_under(sys.executable, "banned_terms_gate")
+        # The consolidated PreToolUse banned-terms publish gate (U17) must
+        # cold-import under a bare interpreter — its module-top teatree_settings
+        # / banned_terms.deny / banned_terms.marker package imports resolve with
+        # no Django, the way the live PreToolUse hook subprocess loads it.
+        result = _import_under(sys.executable, "hooks.scripts.banned_terms.gate")
         assert result.returncode == 0, (
-            f"banned_terms_gate should cold-import under {sys.executable}: {result.stderr.strip()}"
+            f"banned_terms.gate should cold-import under {sys.executable}: {result.stderr.strip()}"
         )

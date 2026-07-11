@@ -1,0 +1,31 @@
+<section class="band">
+  <h2>Loops</h2>
+  <table class="dash">
+    <thead>
+      <tr><th>loop</th><th>cadence</th><th>effective</th><th>deciding layer</th><th>status</th><th>actions</th></tr>
+    </thead>
+    <tbody>
+      {% for loop in control.loops %}
+        <tr>
+          <td title="{{ loop.description }}">{{ loop.name }}</td>
+          <td>{{ loop.cadence_label }}</td>
+          <td class="{% if loop.effective %}eff-yes{% else %}eff-no{% endif %}">{{ loop.effective|yesno:"running,held" }}</td>
+          <td>{{ loop.deciding_layer }}</td>
+          <td>{{ loop.status }}</td>
+          <td>
+            <form method="post" action="{% url 'dash:loop_action' %}" style="display:inline">
+              {% csrf_token %}
+              <input type="hidden" name="name" value="{{ loop.name }}">
+              <button class="dash-btn" name="action" value="pause">pause</button>
+              <button class="dash-btn" name="action" value="resume">resume</button>
+              <button class="dash-btn" name="action" value="disable">disable</button>
+              <button class="dash-btn" name="action" value="enable">enable</button>
+            </form>
+          </td>
+        </tr>
+      {% empty %}
+        <tr><td colspan="6" class="card-dwell">No loops configured.</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</section>

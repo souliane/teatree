@@ -97,6 +97,9 @@ repos:
       - id: check-added-large-files
         args: [--maxkb=600]
         stages: [commit]  # pin off pre-push (see end-of-file-fixer above); CI lint re-runs it
+        # Vendored dashboard JS (mermaid is ~3 MB minified) is load-bearing at
+        # runtime — the templates load it via {% static %}, so it must be tracked.
+        exclude: ^src/teatree/dash/static/dash/js/.*\.min\.js$
       - id: check-json
       - id: check-merge-conflict
       - id: check-toml

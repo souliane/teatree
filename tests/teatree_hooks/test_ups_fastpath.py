@@ -12,15 +12,13 @@ against actual sqlite.
 
 import json
 import sqlite3
-import sys
 from pathlib import Path
 
 import pytest
 
-import hooks.scripts.hook_router  # noqa: F401 — puts hooks/scripts on sys.path and imports the bare siblings
+import hooks.scripts.hook_router as router
+import hooks.scripts.ups_fastpath as ups
 from teatree.core import availability
-
-ups = sys.modules["ups_fastpath"]
 
 
 def _config_db(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *, questions: bool = True, chat: bool = True) -> Path:
@@ -136,29 +134,28 @@ class TestHandlersSkipDjangoBootWhenIdle:
 
     def test_inject_questions_skips_boot_when_no_work(self, monkeypatch: pytest.MonkeyPatch) -> None:
         boots = _arm_boot_spy(monkeypatch, has_work=("has_pending_question_work", False), boot_returns=True)
-        sys.modules["hook_router"].handle_inject_pending_questions({"session_id": "s1"})
+        router.handle_inject_pending_questions({"session_id": "s1"})
         assert boots == []  # returned BEFORE django.setup()
 
     def test_inject_questions_boots_when_work_present(self, monkeypatch: pytest.MonkeyPatch) -> None:
         # boot returns False so the handler stops right after — the boot itself is the proof.
         boots = _arm_boot_spy(monkeypatch, has_work=("has_pending_question_work", True), boot_returns=False)
-        sys.modules["hook_router"].handle_inject_pending_questions({"session_id": "s1"})
+        router.handle_inject_pending_questions({"session_id": "s1"})
         assert boots == ["boot"]
 
     def test_inject_chat_skips_boot_when_no_work(self, monkeypatch: pytest.MonkeyPatch) -> None:
         boots = _arm_boot_spy(monkeypatch, has_work=("has_pending_chat_work", False), boot_returns=True)
-        sys.modules["hook_router"].handle_inject_pending_chat({"session_id": "s1"})
+        router.handle_inject_pending_chat({"session_id": "s1"})
         assert boots == []
 
     def test_inject_chat_boots_when_work_present(self, monkeypatch: pytest.MonkeyPatch) -> None:
         boots = _arm_boot_spy(monkeypatch, has_work=("has_pending_chat_work", True), boot_returns=False)
-        sys.modules["hook_router"].handle_inject_pending_chat({"session_id": "s1"})
+        router.handle_inject_pending_chat({"session_id": "s1"})
         assert boots == ["boot"]
 
 
 def _arm_boot_spy(monkeypatch: pytest.MonkeyPatch, *, has_work: tuple[str, bool], boot_returns: bool) -> list[str]:
     """Stub the router's pre-check + record whether ``bootstrap_teatree_django`` fires."""
-    router = sys.modules["hook_router"]
     boots: list[str] = []
     name, verdict = has_work
     monkeypatch.setattr(router, name, lambda: verdict)

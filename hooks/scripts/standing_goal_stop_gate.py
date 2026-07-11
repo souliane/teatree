@@ -53,7 +53,7 @@ _USED_TOKEN_CAP = 50
 
 
 def _gate_enabled() -> bool:
-    from teatree_settings import teatree_bool_setting  # noqa: PLC0415 — deferred import
+    from hooks.scripts.teatree_settings import teatree_bool_setting  # noqa: PLC0415 deferred cold-hook import
 
     return teatree_bool_setting("standing_goal_stop_gate_enabled", default=True)
 
@@ -87,7 +87,7 @@ def _gate_is_out_of_scope(data: dict) -> bool:
     A ``stop_hook_active`` re-fire (avoids a hot loop), an attended (non-loop-driven)
     turn a human reads, and the kill-switch being off each skip the gate.
     """
-    from hook_router import _session_drives_loop  # noqa: PLC0415, PLC2701
+    from hooks.scripts.hook_router import _session_drives_loop  # noqa: PLC0415 deferred back-import
 
     if data.get("stop_hook_active"):
         return True
@@ -97,8 +97,8 @@ def _gate_is_out_of_scope(data: dict) -> bool:
 
 
 def _run(data: dict) -> bool | None:
-    from django_bootstrap import bootstrap_teatree_django  # noqa: PLC0415 — deferred import
-    from hook_router import _last_assistant_turn  # noqa: PLC0415, PLC2701
+    from hooks.scripts.django_bootstrap import bootstrap_teatree_django  # noqa: PLC0415 deferred cold-hook import
+    from hooks.scripts.hook_router import _last_assistant_turn  # noqa: PLC0415 deferred back-import
 
     if _gate_is_out_of_scope(data):
         return None
@@ -221,7 +221,7 @@ def _hold_state(session_id: str) -> dict | None:
     ``None`` (unreadable state) is distinct from ``{}`` (no state yet): the caller
     fail-opens the escape on ``None`` so a broken state dir never wedges a hold.
     """
-    from hook_router import _state_file  # noqa: PLC0415, PLC2701
+    from hooks.scripts.hook_router import _state_file  # noqa: PLC0415 deferred back-import
 
     path = _state_file(session_id, _HOLD_SUFFIX)
     if not path.is_file():
@@ -248,7 +248,7 @@ def _valid_hold(session_id: str, token: str) -> bool:
 
 def _consume_hold(session_id: str, token: str) -> None:
     """Mark *token* used single-use and clear the minted slot; best-effort, never raises."""
-    from hook_router import _ensure_state_dir, _state_file  # noqa: PLC0415, PLC2701
+    from hooks.scripts.hook_router import _ensure_state_dir, _state_file  # noqa: PLC0415 deferred back-import
 
     try:
         _ensure_state_dir()
@@ -268,7 +268,7 @@ def _mint_hold(session_id: str) -> str:
     stop), so a broken state dir never denies the agent an escape.
     """
     token = secrets.token_hex(4)
-    from hook_router import _ensure_state_dir, _state_file  # noqa: PLC0415, PLC2701
+    from hooks.scripts.hook_router import _ensure_state_dir, _state_file  # noqa: PLC0415 deferred back-import
 
     try:
         _ensure_state_dir()
@@ -285,7 +285,7 @@ def _mint_hold(session_id: str) -> str:
 
 def _load_check_cache() -> dict:
     """The parsed check-result cache (``{"ts": float, "results": {...}}``); ``{}`` on any error."""
-    from hook_router import _state_file  # noqa: PLC0415, PLC2701
+    from hooks.scripts.hook_router import _state_file  # noqa: PLC0415 deferred back-import
 
     path = _state_file("global", _CHECK_CACHE_SUFFIX)
     if not path.is_file():
@@ -299,7 +299,7 @@ def _load_check_cache() -> dict:
 
 def _save_check_cache(payload: dict) -> None:
     """Persist the check-result cache; best-effort, never raises."""
-    from hook_router import _ensure_state_dir, _state_file  # noqa: PLC0415, PLC2701
+    from hooks.scripts.hook_router import _ensure_state_dir, _state_file  # noqa: PLC0415 deferred back-import
 
     try:
         _ensure_state_dir()

@@ -85,7 +85,7 @@ def _has_escape_token(tool_input: dict) -> bool:
 def _gate_enabled() -> bool:
     """Whether the gate is enabled (default True); a broken config fails OPEN to enabled."""
     try:
-        from hook_router import _teatree_bool_setting  # noqa: PLC0415, PLC2701
+        from hooks.scripts.hook_router import _teatree_bool_setting  # noqa: PLC0415 deferred back-import
 
         return _teatree_bool_setting("mcp_slack_write_gate_enabled", default=True)
     except Exception:  # noqa: BLE001 — a config-read error must never wedge the tool call.
@@ -111,6 +111,6 @@ def handle_block_mcp_slack_write(data: dict) -> bool:
     tool_input = data.get("tool_input", {}) or {}
     if isinstance(tool_input, dict) and _has_escape_token(tool_input):
         return False
-    from hook_router import _fail_open_or_deny  # noqa: PLC0415, PLC2701
+    from hooks.scripts.hook_router import _fail_open_or_deny  # noqa: PLC0415 deferred back-import
 
     return _fail_open_or_deny(data, _DENY_REASON)

@@ -22,7 +22,7 @@ import json
 import time
 from pathlib import Path
 
-from loop_registrations import loop_name_from_prompt
+from hooks.scripts.loop_registrations import loop_name_from_prompt
 
 _LOOP_NAME_MAX = 20
 _CRON_FIELD_COUNT = 5
@@ -43,7 +43,7 @@ def derive_loop_name(prompt: str) -> str:
 
     Surrounding punctuation and backticks are always stripped.
     """
-    from hook_router import _LOOP_PROMPT  # noqa: PLC0415, PLC2701 — router constant, back-imported lazily.
+    from hooks.scripts.hook_router import _LOOP_PROMPT  # noqa: PLC0415 deferred back-import
 
     prompt = prompt.strip()
 
@@ -94,7 +94,7 @@ def save_crons(path: Path, data: dict) -> None:
 
 def handle_track_cron_jobs(data: dict) -> None:
     """Track CronCreate/CronDelete/ScheduleWakeup for statusline display."""
-    from hook_router import _ensure_state_dir, _state_file  # noqa: PLC0415, PLC2701 — router state helpers.
+    from hooks.scripts.hook_router import _ensure_state_dir, _state_file  # noqa: PLC0415 deferred back-import
 
     tool_name = data.get("tool_name", "")
     if tool_name not in {"CronCreate", "CronDelete", "ScheduleWakeup"}:

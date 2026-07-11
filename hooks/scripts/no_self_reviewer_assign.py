@@ -41,7 +41,7 @@ level, so importing it back at top level here would be a cycle.
 import re
 import sys
 
-from mr_cli_fields import strip_quoted_and_heredoc
+from hooks.scripts.mr_cli_fields import strip_quoted_and_heredoc
 
 # Alias the bare and ``hooks.scripts.`` identities so the handler the router
 # registers and a test patching a helper here operate on ONE module object.
@@ -103,7 +103,7 @@ def _gate_enabled() -> bool:
     (``[teatree] no_self_reviewer_assign_gate_enabled = false``) is the
     one-line kill-switch.
     """
-    from hook_router import _teatree_bool_setting  # noqa: PLC0415, PLC2701
+    from hooks.scripts.hook_router import _teatree_bool_setting  # noqa: PLC0415 deferred back-import
 
     return _teatree_bool_setting("no_self_reviewer_assign_gate_enabled", default=True)
 
@@ -186,7 +186,7 @@ def handle_block_self_reviewer_assign(data: dict) -> bool:
     :func:`_fail_open_or_deny` so the self-rescue allowlist + master fail-open
     switch + circuit breaker all apply (never-lockout).
     """
-    from hook_router import _fail_open_or_deny  # noqa: PLC0415, PLC2701
+    from hooks.scripts.hook_router import _fail_open_or_deny  # noqa: PLC0415 deferred back-import
 
     if not _gate_enabled():
         return False

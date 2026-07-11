@@ -320,7 +320,7 @@ def handle_block_direct_commands(data: dict) -> bool:
     (back-imported lazily; the ``_write_pretooluse_deny`` writer + circuit breaker
     stay in the router).
     """
-    from hook_router import emit_pretooluse_deny  # noqa: PLC0415
+    from hooks.scripts.hook_router import emit_pretooluse_deny  # noqa: PLC0415 deferred back-import
 
     if data.get("tool_name") != "Bash":
         return False
