@@ -24,11 +24,11 @@ def _active_overlay_config() -> object | None:
     """
     try:
         from teatree.core.overlay_loader import get_overlay  # noqa: PLC0415
-    except Exception:  # noqa: BLE001
+    except Exception:  # noqa: BLE001 — overlay loader may be unavailable pre-bootstrap; degrade to no overlay
         return None
     try:
         overlay = get_overlay()
-    except Exception:  # noqa: BLE001
+    except Exception:  # noqa: BLE001 — no configured overlay degrades to no config
         return None
     return getattr(overlay, "config", None)
 
@@ -85,7 +85,7 @@ def active_overlay_review_skills() -> list[str]:
         return []
     try:
         skills = getter()
-    except Exception:  # noqa: BLE001
+    except Exception:  # noqa: BLE001 — an unreadable skill list degrades to none
         return []
     if not isinstance(skills, list):
         return []
@@ -108,7 +108,7 @@ def active_overlay_lifecycle_skills(lifecycle: str) -> list[str]:
         return []
     try:
         skills = getter(lifecycle)
-    except Exception:  # noqa: BLE001
+    except Exception:  # noqa: BLE001 — an unreadable skill list degrades to none
         return []
     if not isinstance(skills, list):
         return []

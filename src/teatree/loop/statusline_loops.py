@@ -307,7 +307,7 @@ def _live_lease_chunks(*, colorize: bool = False) -> list[str]:
     """
     try:
         leases = _live_loop_leases()
-    except Exception:  # noqa: BLE001
+    except Exception:  # noqa: BLE001 — rendering is best-effort; a lease-read failure degrades to no rows
         return []
     owned_per_loop = current_session_owned_per_loop_slots()
     drivers = _live_lease_drivers()
@@ -347,7 +347,7 @@ def _lease_recency_color(name: str, acquired_at: datetime | None) -> str:
     """Resolve the recency color for an infra lease from its own cadence."""
     try:
         cadence = _cadence_for_loop(name)
-    except Exception:  # noqa: BLE001
+    except Exception:  # noqa: BLE001 — an unresolvable cadence degrades to the red recency color
         return _ANSI_RED
     seconds_until = _seconds_until(acquired_at + timedelta(seconds=cadence)) if acquired_at is not None else None
     return _loop_recency_color(seconds_until, cadence)
@@ -440,7 +440,7 @@ def _availability_segment() -> str:
         from teatree.core.availability import resolve_mode  # noqa: PLC0415
 
         return availability_segment(resolve_mode())
-    except Exception:  # noqa: BLE001
+    except Exception:  # noqa: BLE001 — rendering is best-effort; a failure degrades to empty
         return ""
 
 
@@ -452,7 +452,7 @@ def _waiting_clause() -> str:
     """
     try:
         count = _waiting_count()
-    except Exception:  # noqa: BLE001
+    except Exception:  # noqa: BLE001 — rendering is best-effort; a failure degrades to empty
         return ""
     if count <= 0:
         return ""
@@ -494,7 +494,7 @@ def _next_tick_minutes(name: str, acquired_at: datetime | None) -> str:
         return ""
     try:
         cadence = _cadence_for_loop(name)
-    except Exception:  # noqa: BLE001
+    except Exception:  # noqa: BLE001 — rendering is best-effort; a failure degrades to empty
         return ""
     return _relative_minutes(acquired_at + timedelta(seconds=cadence))
 
@@ -545,7 +545,7 @@ def _mini_loop_chunks(*, colorize: bool = False) -> list[str]:
     """
     try:
         schedules = _mini_loop_schedules()
-    except Exception:  # noqa: BLE001
+    except Exception:  # noqa: BLE001 — rendering is best-effort; a failure degrades to no chunks
         return []
     return [
         _colorize_chunk(

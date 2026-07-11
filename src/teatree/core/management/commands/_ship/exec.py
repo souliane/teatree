@@ -189,7 +189,7 @@ def _ship_sync(ticket: Ticket, title: str) -> ShipExecuted | ShippingGateFailure
             # advance back too — abort so the shared transaction does
             # not commit a partial SHIPPED.
             _abort_on_ship_failure(result)
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:  # noqa: BLE001 — the atomic block already rolled back; surface the real cause, never an opaque rc=1
         # Atomicity: the surrounding ``transaction.atomic()`` already
         # rolled the ``ship()`` advance back, so the FSM is NOT left in a
         # partial SHIPPED state. Surface the real cause instead of letting

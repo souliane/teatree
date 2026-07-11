@@ -143,7 +143,6 @@ class Command(TyperCommand):
             resolve_environment,
             resolve_run_provenance,
         )
-        from teatree.core.models import Ticket  # noqa: PLC0415
         from teatree.utils import git  # noqa: PLC0415
 
         try:
@@ -169,7 +168,7 @@ class Command(TyperCommand):
         for repo, wt_path in resolution.repo_dirs.items():
             try:
                 per_repo_shas[repo] = git.head_sha(repo=wt_path)
-            except Exception:  # noqa: BLE001
+            except Exception:  # noqa: BLE001 — an unresolvable head SHA degrades to empty, never aborts discovery
                 per_repo_shas[repo] = ""
 
         os.environ["T3_ORIG_CWD"] = next(iter(resolution.repo_dirs.values()))
@@ -436,7 +435,7 @@ class Command(TyperCommand):
         try:
             worktree = resolve_worktree()
             wt_path = (worktree.extra or {}).get("worktree_path", ".") if worktree else "."
-        except Exception:  # noqa: BLE001
+        except Exception:  # noqa: BLE001 — an unresolvable worktree path degrades to cwd
             wt_path = "."
         overlay = get_overlay()
         e2e_config = overlay.metadata.get_e2e_config()

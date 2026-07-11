@@ -126,7 +126,7 @@ def measure_coverage(
     overall_percent: float | None
     try:
         overall_percent = cov.report(file=io.StringIO(), output_format="text")
-    except Exception:  # noqa: BLE001
+    except Exception:  # noqa: BLE001 — an unparsable coverage report degrades to unknown percent
         overall_percent = None
 
     return CoverageReport(

@@ -5,7 +5,7 @@ from django.apps import apps
 from django.db import models, transaction
 from django.db.models import Q
 from django.utils import timezone
-from django_fsm import FSMField
+from django_fsm import FSMField, TransitionNotAllowed
 
 from teatree.core.managers import TaskManager
 from teatree.core.modelkit.phases import SUBAGENT_BY_PHASE, phase_spellings
@@ -290,8 +290,6 @@ class Task(models.Model):
         ``complete()`` keeps its #883 single-atomic coupling for the loop /
         headless callers; this is the deliberate operator-only decoupling.
         """
-        from django_fsm import TransitionNotAllowed  # noqa: PLC0415
-
         from teatree.core.models.errors import QualityGateError  # noqa: PLC0415
 
         with transaction.atomic():

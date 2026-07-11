@@ -207,5 +207,5 @@ def cost_chip_lines() -> list[str]:
             today=today,
         )
         return [report.chip()]
-    except Exception:  # noqa: BLE001
+    except Exception:  # noqa: BLE001 — rendering is best-effort; a failure degrades to no anchors
         return []

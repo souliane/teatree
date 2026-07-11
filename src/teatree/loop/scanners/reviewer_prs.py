@@ -47,7 +47,7 @@ def _ticket_model() -> "TicketModel | None":
         from django.apps import apps  # noqa: PLC0415
 
         return cast("TicketModel", apps.get_model("core", "Ticket"))
-    except Exception:  # noqa: BLE001
+    except Exception:  # noqa: BLE001 — a probe failure must never break the tick; degrade to no signal
         return None
 
 

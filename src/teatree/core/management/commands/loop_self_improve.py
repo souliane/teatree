@@ -68,7 +68,6 @@ def _session_owns_loop(session_id: str | None) -> bool:
     """
     if not session_id:
         return True
-    import json  # noqa: PLC0415
     from pathlib import Path  # noqa: PLC0415
 
     base_env = os.environ.get("T3_LOOP_REGISTRY_DIR")

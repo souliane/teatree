@@ -33,7 +33,7 @@ def _discover_overlay_apps() -> list[str]:
             app_label = getattr(obj, "django_app", None)
             if app_label:
                 apps.append(app_label)
-        except Exception:  # noqa: BLE001, S112
+        except Exception:  # noqa: BLE001, S112 — an app that fails to load is skipped
             continue
     return apps
 

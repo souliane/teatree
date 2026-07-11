@@ -125,7 +125,7 @@ def divergence() -> None:
 
     try:
         git_run(repo=".", args=["fetch", "upstream"])
-    except Exception:  # noqa: BLE001
+    except Exception:  # noqa: BLE001 — a missing upstream remote surfaces as a clean CLI error, never a traceback
         typer.echo("No upstream remote configured. Add one: git remote add upstream <url>")
         raise typer.Exit(code=1) from None
 

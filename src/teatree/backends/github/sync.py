@@ -56,7 +56,7 @@ class GitHubSyncBackend(SyncBackend):
 
         try:
             items = fetch_project_items(owner, project_number, token=token)
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:  # noqa: BLE001 — a project-fetch failure is recorded as a sync error, never crashes the sync
             return SyncResult(errors=[f"GitHub project fetch failed: {exc}"])
 
         status_map = {
@@ -203,7 +203,7 @@ class GitHubSyncBackend(SyncBackend):
     def _sync_reviewer_prs(cls, token: str, result: SyncResult) -> None:
         try:
             reviews = cls._fetch_reviewer_prs(token)
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:  # noqa: BLE001 — a reviewer-PR fetch failure is recorded, never crashes the sync
             result.errors.append(f"GitHub reviewer PR fetch failed: {exc}")
             return
 

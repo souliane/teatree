@@ -272,7 +272,7 @@ def _ticket_model() -> "TicketModel | None":
         from django.apps import apps  # noqa: PLC0415
 
         return cast("TicketModel", apps.get_model("core", "Ticket"))
-    except Exception:  # noqa: BLE001
+    except Exception:  # noqa: BLE001 — a probe failure must never break the tick; degrade to no signal
         return None
 
 
@@ -292,7 +292,7 @@ def _already_emitted_at(url: str, head_sha: str) -> bool:
         return False
     try:
         ticket = ticket_model.objects.filter(issue_url=url).first()
-    except Exception:  # noqa: BLE001
+    except Exception:  # noqa: BLE001 — a lookup failure degrades to not-approved, never breaks the scan
         return False
     if ticket is None:
         return False

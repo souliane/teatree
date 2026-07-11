@@ -16,7 +16,7 @@ runner importing the command.
 
 from collections.abc import Callable
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
 from django.apps import apps
 
@@ -101,7 +101,7 @@ class MemoryPhaseRunner:
                     persist=not dry_run,
                     archive_dir=d / ARCHIVE_DIRNAME,
                 )
-            except Exception as exc:  # noqa: BLE001
+            except Exception as exc:  # noqa: BLE001 — a gate failure degrades to a WARN clause, never aborts the phase
                 clauses.append(f"WARN gates raised: {type(exc).__name__}: {exc}")
                 continue
             all_passed = all_passed and report.passed
@@ -143,8 +143,6 @@ class MemoryPhaseRunner:
     @staticmethod
     def _ledger_schema_count() -> int:
         """Total ConsolidatedMemory rows — the schema/cluster count for gate (c)."""
-        from typing import cast  # noqa: PLC0415
-
         model = cast("type[ConsolidatedMemory]", apps.get_model("core", "ConsolidatedMemory"))
         return model.objects.count()
 
@@ -170,7 +168,7 @@ class MemoryPhaseRunner:
         for d in memory_dirs:
             try:
                 result = decay.decay_memories(d, dry_run=dry_run, policy=budget_policy)
-            except Exception as exc:  # noqa: BLE001
+            except Exception as exc:  # noqa: BLE001 — a decay failure degrades to a WARN clause
                 return f"; WARN decay raised: {type(exc).__name__}: {exc}", archived_by_dir
             archived_by_dir[d] = result.archived
             total += result.archived_count
@@ -187,7 +185,7 @@ class MemoryPhaseRunner:
         """
         try:
             count = runner(memory_dirs, dry_run=dry_run)
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:  # noqa: BLE001 — a phase failure degrades to a WARN clause
             return f"; WARN {label} raised: {type(exc).__name__}: {exc}", 0
         clause = self._phase_clause(label, count)
         return (f"; {clause}" if clause else ""), count
@@ -232,7 +230,7 @@ class MemoryPhaseRunner:
                 result = merge.merge_memories(d, dry_run=dry_run)
                 merged += result.merged_count
                 conflicts.extend(result.binding_conflicts)
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:  # noqa: BLE001 — a merge failure degrades to a WARN clause
             return f"; WARN merge raised: {type(exc).__name__}: {exc}", 0
         reconciled = self._file_binding_reconciliations(conflicts, dry_run=dry_run)
         clause = f"; merged {merged} near-duplicate memory(ies)" if merged else ""
@@ -251,7 +249,7 @@ class MemoryPhaseRunner:
             outcomes = promote_memory.file_binding_reconciliation_tickets(
                 host, repo=repo, conflicts=conflicts, dry_run=dry_run
             )
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:  # noqa: BLE001 — a binding-reconciliation failure degrades to a WARN clause
             return f"; WARN binding reconciliation raised: {type(exc).__name__}: {exc}"
         filed = sum(1 for o in outcomes if o.filed)
         return f"; filed {filed} binding-reconciliation ticket(s)" if filed else ""

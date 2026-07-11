@@ -67,7 +67,7 @@ def _lookup_pr_tickets(urls: Iterable[str]) -> dict[str, str]:
         from django.apps import apps  # noqa: PLC0415
 
         pr_model = apps.get_model("core", "PullRequest")
-    except Exception:  # noqa: BLE001
+    except Exception:  # noqa: BLE001 — an index-build failure degrades to no mapping, never breaks the tick
         return {}
     result: dict[str, str] = {}
     try:
@@ -83,7 +83,7 @@ def _lookup_pr_tickets(urls: Iterable[str]) -> dict[str, str]:
             number = ticket.ticket_number
             if number:
                 result[row.url] = number
-    except Exception:  # noqa: BLE001
+    except Exception:  # noqa: BLE001 — an index-build failure degrades to no mapping
         return {}
     return result
 
@@ -105,7 +105,7 @@ def _lookup_ticket_extra_prs(urls: Iterable[str]) -> dict[str, str]:
         from django.apps import apps  # noqa: PLC0415
 
         ticket_model = apps.get_model("core", "Ticket")
-    except Exception:  # noqa: BLE001
+    except Exception:  # noqa: BLE001 — an index-build failure degrades to no mapping
         return {}
     result: dict[str, str] = {}
     try:
@@ -121,7 +121,7 @@ def _lookup_ticket_extra_prs(urls: Iterable[str]) -> dict[str, str]:
             for pr_url in prs:
                 if isinstance(pr_url, str) and pr_url in url_set and pr_url not in result:
                     result[pr_url] = number
-    except Exception:  # noqa: BLE001
+    except Exception:  # noqa: BLE001 — an index-build failure degrades to no mapping
         return {}
     return result
 
@@ -147,7 +147,7 @@ def resolve_author_ticket(*, slug: str, pr_id: int, pr_url: str) -> "Ticket | No
 
         pr_model = apps.get_model("core", "PullRequest")
         ticket_model = apps.get_model("core", "Ticket")
-    except Exception:  # noqa: BLE001
+    except Exception:  # noqa: BLE001 — a lookup failure degrades to no ticket
         return None
     try:
         row = pr_model.objects.filter(repo=slug, iid=str(pr_id)).select_related("ticket").order_by("-id").first()
@@ -160,7 +160,7 @@ def resolve_author_ticket(*, slug: str, pr_id: int, pr_url: str) -> "Ticket | No
             prs = extra.get("prs") if isinstance(extra, dict) else None
             if isinstance(prs, dict) and pr_url in prs:
                 return ticket
-    except Exception:  # noqa: BLE001
+    except Exception:  # noqa: BLE001 — a lookup failure degrades to no ticket
         return None
     return None
 

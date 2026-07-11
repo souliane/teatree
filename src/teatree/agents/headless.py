@@ -27,7 +27,7 @@ from typing import TYPE_CHECKING
 from claude_agent_sdk import AssistantMessage, ClaudeAgentOptions, RateLimitEvent, ResultMessage, TextBlock
 from claude_agent_sdk.types import RateLimitInfo
 from django.conf import settings
-from django.db import close_old_connections
+from django.db import close_old_connections, connection
 from django.db.models import Sum
 from django.utils import timezone
 
@@ -446,8 +446,6 @@ def _sample_usage_closing_connection(task: Task) -> TaskUsage:
     GC'd (an order-dependent test flake, and a real connection leak in
     production).
     """
-    from django.db import connection  # noqa: PLC0415
-
     try:
         return TaskUsage.for_task(task)
     finally:
@@ -495,7 +493,7 @@ async def _drive_with_heartbeat(
                     await asyncio.sleep(_HEARTBEAT_INTERVAL)
                     try:
                         await asyncio.to_thread(task.renew_lease)
-                    except Exception:  # noqa: BLE001
+                    except Exception:  # noqa: BLE001 — a heartbeat failure is logged, never breaks the watchdog loop
                         logger.warning("Heartbeat failed for task %s", task.pk)
                     reason = watchdog.breach_reason(
                         task,

@@ -57,7 +57,7 @@ class GitLabSyncBackend(SyncBackend):
 
         try:
             raw_prs = host.list_my_prs(author=username, updated_after=last_sync)
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:  # noqa: BLE001 — a PR-fetch failure is recorded as a sync error, never crashes the sync
             return SyncResult(errors=[f"PR fetch failed: {exc}"])
 
         for raw in raw_prs:
@@ -101,7 +101,7 @@ class GitLabSyncBackend(SyncBackend):
         """
         try:
             open_prs = host.list_my_prs(author=username)
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:  # noqa: BLE001 — a conflict-check fetch failure is recorded, never crashes the sync
             result.errors.append(f"Conflict-check PR fetch failed: {exc}")
             return
         collect_conflicted_mrs(open_prs, result)
@@ -110,7 +110,7 @@ class GitLabSyncBackend(SyncBackend):
     def _sync_reviewer_prs(cls, host: GitLabCodeHost, username: str, result: SyncResult) -> None:
         try:
             reviewer_prs = host.list_review_requested_prs(reviewer=username)
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:  # noqa: BLE001 — a reviewer-PR fetch failure is recorded, never crashes the sync
             result.errors.append(f"Reviewer PR fetch failed: {exc}")
             return
 

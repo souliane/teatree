@@ -34,7 +34,7 @@ def owned_per_loop_slots(session_id: str) -> set[str] | None:
             "name", flat=True
         )
         return set(rows)
-    except Exception:  # noqa: BLE001
+    except Exception:  # noqa: BLE001 — best-effort resolution; a failure degrades to none
         return None
 
 

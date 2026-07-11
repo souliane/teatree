@@ -228,21 +228,21 @@ class BacklogSweepScanner:
 def _ticket_model() -> "type[_Ticket] | None":
     try:
         return cast("type[_Ticket]", apps.get_model("core", "Ticket"))
-    except Exception:  # noqa: BLE001
+    except Exception:  # noqa: BLE001 — a probe failure must never break the tick; degrade to no signal
         return None
 
 
 def _task_model() -> "type[_Task] | None":
     try:
         return cast("type[_Task]", apps.get_model("core", "Task"))
-    except Exception:  # noqa: BLE001
+    except Exception:  # noqa: BLE001 — a probe failure must never break the tick; degrade to no signal
         return None
 
 
 def _session_model() -> "type[_Session] | None":
     try:
         return cast("type[_Session]", apps.get_model("core", "Session"))
-    except Exception:  # noqa: BLE001
+    except Exception:  # noqa: BLE001 — a probe failure must never break the tick; degrade to no signal
         return None
 
 

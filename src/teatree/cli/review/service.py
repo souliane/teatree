@@ -105,7 +105,7 @@ class ReviewService:
             from teatree.core.overlay_loader import get_overlay  # noqa: PLC0415
 
             return get_overlay().config.gitlab_url
-        except Exception:  # noqa: BLE001
+        except Exception:  # noqa: BLE001 — an unresolvable GitLab URL degrades to the env/default
             return os.environ.get("GITLAB_URL", "https://gitlab.com/api/v4")
 
     def _post_draft_note_impl(self, repo: str, mr: int, note: str, *, file: str, line: int) -> tuple[str, int]:

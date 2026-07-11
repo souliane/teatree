@@ -476,7 +476,7 @@ def _honesty_escalation_active(session_id: str | None, task_id: int | None) -> b
         from teatree.core.models import HonestyEscalation  # noqa: PLC0415
 
         return HonestyEscalation.is_active(session_id, task_id=task_id)
-    except Exception:  # noqa: BLE001
+    except Exception:  # noqa: BLE001 — best-effort; a failure degrades to disabled
         return False
 
 

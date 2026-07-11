@@ -54,7 +54,7 @@ class Command(TyperCommand):
                 with urllib.request.urlopen(url, timeout=5) as resp:  # noqa: S310 — fixed http://localhost URL built from local ports
                     results[name] = {"url": url, "status": resp.status, "ok": True}
                     self.stdout.write(f"  {name}: {url} → {resp.status}")
-            except Exception as exc:  # noqa: BLE001
+            except Exception as exc:  # noqa: BLE001 — an endpoint probe failure is recorded as a failed check, never aborts the verify loop
                 results[name] = {"url": url, "status": 0, "ok": False, "error": str(exc)}
                 self.stderr.write(f"  {name}: {url} → FAILED ({exc})")
                 all_ok = False

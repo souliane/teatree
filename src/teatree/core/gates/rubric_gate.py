@@ -76,7 +76,7 @@ def _record_shipped_incomplete_escalation(ticket: "Ticket") -> None:
         session = ticket.sessions.exclude(agent_id="").order_by("-started_at").first()  # ty: ignore[unresolved-attribute]
         if session is not None and session.agent_id:
             HonestyEscalation.record(HonestyEscalation.Reason.SHIPPED_INCOMPLETE, session_id=session.agent_id)
-    except Exception:  # noqa: BLE001
+    except Exception:  # noqa: BLE001 — the honesty backstop must never block the already-refusing gate
         return
 
 

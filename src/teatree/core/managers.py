@@ -156,8 +156,6 @@ class WorktreeQuerySet(_OverlayFilterMixin, models.QuerySet):
         no stack, so there is nothing for the reaper to preserve. Returns the
         number of rows stamped.
         """
-        from django.utils import timezone  # noqa: PLC0415
-
         worktree_model = cast("type[Worktree]", apps.get_model("core", "Worktree"))
 
         return self.filter(
@@ -206,8 +204,6 @@ class IncomingEventQuerySet(models.QuerySet):
 
 class ReplyDispatchQuerySet(models.QuerySet):
     def due_for_retry(self, now: datetime | None = None) -> models.QuerySet:
-        from django.utils import timezone  # noqa: PLC0415
-
         reply_dispatch_model = cast("type[ReplyDispatch]", apps.get_model("core", "ReplyDispatch"))
 
         moment = now or timezone.now()

@@ -512,7 +512,7 @@ class Command(TyperCommand):
         try:
             overlay = get_overlay()
             checks["overlay"] = {"status": "ok", "repos": overlay.get_repos()}
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:  # noqa: BLE001 — the diagnostic records any failure as an error status, never crashes diagnose
             checks["overlay"] = {"status": "error", "detail": str(exc)}
 
         try:
@@ -524,7 +524,7 @@ class Command(TyperCommand):
         try:
             count = Worktree.objects.count()
             checks["database"] = {"status": "ok", "worktrees": count}
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:  # noqa: BLE001 — the diagnostic records any failure as an error status, never crashes diagnose
             checks["database"] = {"status": "error", "detail": str(exc)}
 
         hook_config = Path("." if Path(".pre-commit-config.yaml").is_file() else os.environ.get("PWD", "."))
@@ -536,7 +536,7 @@ class Command(TyperCommand):
                 yaml = import_module("yaml")
                 yaml.safe_load(hook_file.read_text(encoding="utf-8"))
                 checks["hooks"] = {"status": "ok"}
-            except Exception as exc:  # noqa: BLE001
+            except Exception as exc:  # noqa: BLE001 — the diagnostic records any failure as an error status, never crashes diagnose
                 checks["hooks"] = {"status": "error", "detail": str(exc)}
         else:
             checks["hooks"] = {"status": "skipped", "detail": "no .pre-commit-config.yaml"}
