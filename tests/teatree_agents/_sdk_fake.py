@@ -29,6 +29,7 @@ from claude_agent_sdk.types import RateLimitInfo, RateLimitStatus, RateLimitType
 
 import teatree.agents.harness as harness_mod
 import teatree.agents.headless as headless_mod
+from teatree.agents.harness_registry import HarnessCapabilities
 from teatree.agents.headless import TaskUsage
 
 
@@ -125,6 +126,8 @@ class FakeHarness:
     Records the options it was opened with so a seam test can assert the driver
     passed the built options straight through to the backend.
     """
+
+    capabilities = HarnessCapabilities()
 
     def __init__(self, messages: list[Any], *, delay: float = 0.0) -> None:
         self._messages = messages

@@ -22,6 +22,7 @@ _CONFIG = str(_REPO_ROOT / "pyproject.toml")
 
 _EXPECTED_CONTRACTS = {
     "Substrate must not import a concrete overlay",
+    "Overlays must not import private agents internals",
     "Mini-loops are mutually independent",
 }
 

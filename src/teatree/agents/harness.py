@@ -28,150 +28,46 @@ given the resuming ``Task``. The transport stays pure/injectable — persistence
 lives in the sibling module, never inside the harness classes themselves.
 """
 
-import asyncio
-import json
-from collections.abc import AsyncIterator, Iterator
-from contextlib import AbstractAsyncContextManager, asynccontextmanager, suppress
-from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, Protocol, cast
+from collections.abc import AsyncIterator
+from contextlib import AbstractAsyncContextManager, asynccontextmanager
+from typing import TYPE_CHECKING, Protocol, cast
 
-from claude_agent_sdk import (
-    AssistantMessage,
-    ClaudeAgentOptions,
-    ClaudeSDKClient,
-    ResultMessage,
-    TextBlock,
-    ToolResultBlock,
-    ToolUseBlock,
-)
-from openai import AsyncOpenAI
+from claude_agent_sdk import ClaudeAgentOptions, ClaudeSDKClient
 from pydantic_ai import Agent
-from pydantic_ai.messages import ModelRequest, ModelResponse, RetryPromptPart, ToolCallPart, ToolReturnPart
 from pydantic_ai.models import Model
 from pydantic_ai.models.openai import OpenAIChatModel, OpenAIChatModelSettings, ReasoningEffort
-from pydantic_ai.providers.openai import OpenAIProvider
-from pydantic_ai.usage import UsageLimits
 
-from teatree.agents.lane_b.compaction import compact_history
+from teatree.agents.context_plan import cache_control_plan
+from teatree.agents.harness_registry import (
+    HarnessBuildContext,
+    HarnessCapabilities,
+    register_harness,
+    resolve_harness_spec,
+)
 from teatree.agents.lane_b.config import LaneBToolConfig
 from teatree.agents.lane_b.toolsets import build_lane_b_toolsets
 from teatree.agents.model_tiering import HARNESS_EFFORT_SCALE, resolve_phase_harness, resolve_pydantic_ai_model
-from teatree.agents.pydantic_ai_resume import rehydrate_thread_for_resume
+from teatree.agents.pydantic_ai_config import (
+    PYDANTIC_AI_NATIVE_CAPABILITIES,
+    PYDANTIC_AI_ROUTER_CAPABILITIES,
+    OrcaLaneConfig,
+    PydanticAiBinding,
+    PydanticAiModelConfig,
+    build_orca_provider,
+    resolve_native_anthropic_model,
+)
+from teatree.agents.pydantic_ai_resume import persist_parked_thread, rehydrate_thread_for_resume
+from teatree.agents.pydantic_ai_session import PydanticAiHarnessSession
 from teatree.agents.regulated_path import assert_model_allowed_on_regulated_path
-from teatree.config import AgentHarness, get_effective_settings
-from teatree.llm.credentials import OrcaRouterCredential, resolve_orca_router_provider_config
+from teatree.config import AgentHarness, AgentHarnessProvider, get_effective_settings
 
-# The OrcaRouter dispatch-lane header (OrcaRouter setup plan §3.4). Rides every
-# ``pydantic_ai`` request as ``x-lane: <factory|eval|bulk>`` so the named router's
-# analytics — and a DSL rule that keys on it (a secondary router's ``headers["x-lane"]
-# == "bulk"`` cheap-bulk rule) — can tell the three call-site lanes apart: the
-# headless factory dispatch (``factory``), the eval CI job (``eval``), and a
-# secondary overlay's cheap bulk legs (``bulk``). The value is the DB-home
-# ``orca_router_lane`` setting, resolved SYNCHRONOUSLY in :func:`resolve_harness`.
-_X_LANE_HEADER = "x-lane"
-LANE_FACTORY = "factory"
-LANE_EVAL = "eval"
-LANE_BULK = "bulk"
-
-
-@dataclass(frozen=True)
-class OrcaLaneConfig:
-    """The OrcaRouter per-dispatch runtime knobs threaded into :class:`PydanticAiHarness`.
-
-    Bundled into one cohesive config object (composition) so the harness
-    constructor stays narrow, and — critically — so ALL of these DB-home settings
-    are resolved SYNCHRONOUSLY by :func:`resolve_harness` before the async
-    ``open`` runs (a ``get_effective_settings`` read from inside the ``asyncio.run``
-    event loop fails safe to defaults under Django's async-unsafe guard).
-
-    *   ``lane`` — the ``x-lane`` header (``factory`` | ``eval`` | ``bulk``, plan §3.4).
-    *   ``request_limit`` — the per-run sequential-request cap (plan §4 #1);
-        ``None``/``<= 0`` leaves the run uncapped.
-    *   ``pass_path`` — the ``orca_router_pass_path`` override (plan §3.6). The
-        credential has NO built-in default, so ``None`` means it resolves only from
-        ``ORCA_ROUTER_API_KEY`` (or fails loud naming ``orca_router_pass_path``).
-    *   ``router_name`` — the per-overlay OrcaRouter router handle
-        (``orca_router_name``, e.g. ``orcarouter/secondary-factory``) the ``teatree-native``
-        model id normalises UP to; ``None`` keeps the ``PYDANTIC_AI_TIER_MODELS``
-        default (``orcarouter/teatree-factory``). The config/overlay-driven
-        ``teatree-factory`` vs secondary-router selection.
-    """
-
-    lane: str = LANE_FACTORY
-    request_limit: int | None = None
-    pass_path: str | None = None
-    router_name: str | None = None
-
-
+CLAUDE_SDK_CAPABILITIES = HarnessCapabilities(
+    hooks=True, mcp=True, cache_control=False, server_resume=True, structured_output=False
+)
 if TYPE_CHECKING:
     from pydantic_ai.messages import ModelMessage
-    from pydantic_ai.result import StreamedRunResult
 
     from teatree.core.models import Task
-
-
-def _tool_blocks_since(messages: "list[ModelMessage]", start: int) -> "Iterator[AssistantMessage]":
-    """Yield the tool call/result blocks a turn produced, in the seam's vocabulary.
-
-    Maps each pydantic_ai ``ToolCallPart`` produced this turn onto a
-    :class:`~claude_agent_sdk.ToolUseBlock` and each ``ToolReturnPart`` /
-    ``RetryPromptPart`` (a gate refusal) onto a
-    :class:`~claude_agent_sdk.ToolResultBlock` (``is_error`` set for a refusal),
-    each carried in its own :class:`~claude_agent_sdk.AssistantMessage`. This is
-    what turns the ``pydantic_ai`` lane from text-in/text-out into a tool-emitting
-    session the driver (:func:`teatree.agents.headless._collect`) sees in the same
-    vocabulary the ``claude_sdk`` lane yields. *start* is the message count of the
-    (compacted) seed history, so only THIS turn's messages are mapped.
-    """
-    for message in messages[start:]:
-        if isinstance(message, ModelResponse):
-            for part in message.parts:
-                if isinstance(part, ToolCallPart):
-                    yield AssistantMessage(
-                        content=[ToolUseBlock(id=part.tool_call_id, name=part.tool_name, input=_as_input(part.args))],
-                        model="",
-                    )
-        elif isinstance(message, ModelRequest):
-            for part in message.parts:
-                if isinstance(part, ToolReturnPart):
-                    yield AssistantMessage(
-                        content=[ToolResultBlock(tool_use_id=part.tool_call_id, content=str(part.content))],
-                        model="",
-                    )
-                elif isinstance(part, RetryPromptPart):
-                    yield AssistantMessage(
-                        content=[
-                            ToolResultBlock(
-                                tool_use_id=part.tool_call_id or "",
-                                content=_retry_text(part),
-                                is_error=True,
-                            )
-                        ],
-                        model="",
-                    )
-
-
-def _as_input(args: object) -> dict[str, Any]:
-    """Coerce a ``ToolCallPart.args`` (dict or JSON string) to a plain dict.
-
-    The return feeds ``ToolUseBlock.input``, whose claude_agent_sdk contract is
-    ``dict[str, Any]`` — a tool's arguments are genuinely arbitrary JSON, so the
-    value type is unavoidably dynamic here.
-    """
-    if isinstance(args, dict):
-        return {str(k): v for k, v in args.items()}
-    if isinstance(args, str):
-        with suppress(json.JSONDecodeError):
-            parsed = json.loads(args)
-            if isinstance(parsed, dict):
-                return {str(k): v for k, v in parsed.items()}
-    return {}
-
-
-def _retry_text(part: RetryPromptPart) -> str:
-    """The refusal text of a ``RetryPromptPart`` (a gate deny), as a plain string."""
-    content = part.content
-    return content if isinstance(content, str) else str(content)
 
 
 class HarnessSession(Protocol):
@@ -190,19 +86,45 @@ class HarnessSession(Protocol):
 
 
 class Harness(Protocol):
-    """Opens a :class:`HarnessSession` for a built set of agent options."""
+    """Opens a :class:`HarnessSession` for a built set of agent options.
+
+    ``capabilities`` (#3157 E1) is the typed flag set the driver and doctors read instead
+    of ``isinstance``-branching on the concrete backend class. The transport-specific
+    dispatch hints (``spawns_cli_child`` / ``metered_lane`` / ``restore_unconsumed_resume_thread``)
+    are read defensively (getattr with defaults) so an overlay backend only has to implement
+    ``open`` + ``capabilities``.
+    """
+
+    capabilities: HarnessCapabilities
 
     def open(self, options: ClaudeAgentOptions) -> AbstractAsyncContextManager[HarnessSession]: ...
 
 
 class ClaudeSdkHarness:
-    """The default backend — the ``claude-agent-sdk`` in-process transport."""
+    """The default backend — the ``claude-agent-sdk`` in-process transport.
+
+    Declares its capabilities and dispatch behaviour as attributes (#3157 E1) so the
+    driver reads them instead of ``isinstance``-branching: it spawns the bundled ``claude``
+    CLI child (so it needs the provider child env), authenticates on the subscription lane
+    (not metered), and resumes server-side via ``--resume``.
+    """
+
+    capabilities: HarnessCapabilities = CLAUDE_SDK_CAPABILITIES
+    #: This backend spawns the bundled ``claude`` CLI child, so dispatch resolves the
+    #: Layer-2 provider child env for it (no other harness needs a CLI child env).
+    spawns_cli_child: bool = True
+    #: The subscription lane's attribution is resolved from the explicit provider pin, not
+    #: fixed by the transport — so this stays ``False`` (see ``_resolve_dispatch_lane``).
+    metered_lane: bool = False
 
     @staticmethod
     @asynccontextmanager
     async def open(options: ClaudeAgentOptions) -> AsyncIterator[HarnessSession]:
         async with ClaudeSDKClient(options=options) as client:
             yield client
+
+    def restore_unconsumed_resume_thread(self) -> None:
+        """No client-side resume thread to restore — server-side ``--resume`` owns it."""
 
 
 def _extract_system_prompt(options: ClaudeAgentOptions) -> str:
@@ -245,173 +167,6 @@ def resolve_effort(options: ClaudeAgentOptions) -> ReasoningEffort | None:
     return cast("ReasoningEffort", effort)
 
 
-class PydanticAiHarnessSession:
-    """The ``pydantic_ai`` in-flight session — the ``HarnessSession`` surface over an ``Agent``.
-
-    Adapts pydantic_ai's streamed output into the SAME ``claude_agent_sdk``
-    message vocabulary every backend yields (module docstring), so the driver
-    never special-cases the transport. ``query``/``receive_response`` are
-    decoupled (one queued prompt consumed per turn) so a multi-turn conversation
-    keeps ``message_history`` across calls, matching ``ClaudeSDKClient``'s
-    contract — proved by :mod:`tests.teatree_agents.test_harness`.
-
-    ``interrupt`` cancels the pydantic_ai ``StreamedRunResult`` (stops token
-    generation, closes the underlying connection, records the interrupted state
-    in message history) AND the local drain task, and sets ``_interrupted`` so
-    ``receive_response`` can tell "I was deliberately interrupted" apart from an
-    UNRELATED external cancellation of the awaiting coroutine itself (e.g.
-    :func:`headless._drive_with_heartbeat`'s ``asyncio.wait_for`` runtime
-    ceiling) — awaiting a genuine ``asyncio.Task`` propagates the awaiter's own
-    cancellation straight into it, so both sources raise the identical
-    ``CancelledError`` at the identical ``await task`` line; only the flag
-    disambiguates them. Swallowing the latter would silently report an empty
-    result instead of the runtime-breach ``stuck_reason`` the watchdog contract
-    requires.
-
-    ``history`` (#2886) SEEDS ``_history`` from a prior conversation — a
-    resumed park carries the rehydrated ``list[ModelMessage]`` in here so the
-    FIRST ``run_stream`` on the resumed session already includes it, matching
-    ``ClaudeSDKClient``'s ``--resume`` continuation contract. The
-    :attr:`history` property exposes the accumulated conversation so a caller
-    (:func:`headless._collect`) can persist it back out on a subsequent park.
-    """
-
-    def __init__(
-        self,
-        agent: Agent[None, str],
-        *,
-        model_name: str,
-        history: "list[ModelMessage] | None" = None,
-        phase: str | None = None,
-        request_limit: int | None = None,
-    ) -> None:
-        self._agent = agent
-        self._model_name = model_name
-        self._history: list[ModelMessage] = list(history) if history else []
-        # Compaction only applies to a phased, tool-bearing dispatch (PR-03). An
-        # un-phased run stays history-identical to #2885 — a resumed thread is
-        # sent verbatim, never trimmed.
-        self._phase = phase
-        # The per-run sequential-request cap (OrcaRouter setup plan §4 guardrail
-        # #1). A positive value becomes ``UsageLimits(request_limit=...)`` on each
-        # ``run_stream`` so a cheap-model maker can't drift on a long tool loop;
-        # ``None``/``<= 0`` leaves the run uncapped (the ``claude_sdk`` behaviour).
-        self._request_limit = request_limit
-        self._pending_prompt: str | None = None
-        self._active_task: asyncio.Task[str] | None = None
-        self._active_stream: StreamedRunResult[None, str] | None = None
-        self._interrupted = False
-
-    @property
-    def history(self) -> "list[ModelMessage]":
-        """The accumulated conversation so far (seed + every completed turn)."""
-        return self._history
-
-    async def query(self, prompt: str) -> None:
-        self._pending_prompt = prompt
-
-    async def receive_response(self) -> AsyncIterator[object]:
-        if self._pending_prompt is None:
-            return
-        prompt, self._pending_prompt = self._pending_prompt, None
-        self._interrupted = False
-        # Compact the conversation the model actually sees (the ``history_processors``
-        # equivalent — trim the stale middle before the turn) ONLY for a phased,
-        # tool-bearing run; a short history is returned unchanged so a normal
-        # phased run is byte-identical. An un-phased run sends its history
-        # verbatim, so a resumed #2885 thread is never trimmed.
-        sent_history = compact_history(self._history) if self._phase else self._history
-        async with self._agent.run_stream(
-            prompt, message_history=sent_history, usage_limits=self._usage_limits()
-        ) as stream:
-            self._active_stream = stream
-            task = asyncio.ensure_future(self._drain(stream))
-            self._active_task = task
-            try:
-                text = await task
-            except asyncio.CancelledError:
-                if self._interrupted:
-                    return
-                task.cancel()
-                with suppress(asyncio.CancelledError):
-                    await task
-                raise
-            finally:
-                self._active_task = None
-                self._active_stream = None
-            all_messages = stream.all_messages()
-            self._history = all_messages
-            run_usage = stream.usage
-        # Surface this turn's tool calls/results in the seam's tool-block
-        # vocabulary BEFORE the final text, so a tool-emitting Lane-B session
-        # looks to the driver exactly like the claude_sdk lane's.
-        for tool_message in _tool_blocks_since(all_messages, len(sent_history)):
-            yield tool_message
-        yield AssistantMessage(content=[TextBlock(text=text)], model=self._model_name)
-        yield ResultMessage(
-            subtype="success",
-            duration_ms=0,
-            duration_api_ms=0,
-            is_error=False,
-            num_turns=1,
-            session_id="",
-            total_cost_usd=None,
-            usage={
-                "input_tokens": run_usage.input_tokens,
-                "output_tokens": run_usage.output_tokens,
-                "cache_read_input_tokens": run_usage.cache_read_tokens,
-                "cache_creation_input_tokens": run_usage.cache_write_tokens,
-            },
-            result=text,
-            model_usage={self._model_name: {}},
-        )
-
-    def _usage_limits(self) -> UsageLimits | None:
-        """The per-run step cap as pydantic_ai ``UsageLimits``, or ``None`` when uncapped.
-
-        A positive :attr:`_request_limit` caps the model-request count per run
-        (OrcaRouter setup plan §4 guardrail #1); ``None``/``<= 0`` returns ``None``
-        so the run is uncapped — the shipped behaviour for a resumed #2885 thread
-        opened with no cap.
-        """
-        if self._request_limit is not None and self._request_limit > 0:
-            return UsageLimits(request_limit=self._request_limit)
-        return None
-
-    @staticmethod
-    async def _drain(stream: "StreamedRunResult[None, str]") -> str:
-        parts = [chunk async for chunk in stream.stream_text(delta=True)]
-        return "".join(parts)
-
-    async def interrupt(self) -> None:
-        if self._active_task is None:
-            return
-        self._interrupted = True
-        if self._active_stream is not None:
-            await self._active_stream.cancel()
-        self._active_task.cancel()
-
-
-def _build_orca_provider(*, lane: str, pass_path: str | None = None) -> OpenAIProvider:
-    """Build the OrcaRouter OpenAI-compatible provider with the ``x-lane`` header (§3.4).
-
-    Resolves the BYOK credential + base_url
-    (:func:`~teatree.llm.credentials.resolve_orca_router_provider_config`).
-    *pass_path* is the DB-home ``orca_router_pass_path`` override (resolved
-    SYNCHRONOUSLY by :func:`resolve_harness`, never here — this runs in the async
-    event loop), so an operator can point teatree at an existing per-account
-    ``pass`` entry with no copy. The credential has NO built-in default, so
-    ``None``/empty means it resolves only from the ``ORCA_ROUTER_API_KEY`` env var
-    (which still wins over ``pass``) and otherwise fails loud. The
-    provider is built from an :class:`~openai.AsyncOpenAI` client carrying a
-    default ``x-lane: <lane>`` header on every request — the only way to inject a
-    default header, since :class:`OpenAIProvider` sets none itself.
-    """
-    config = resolve_orca_router_provider_config(credential=OrcaRouterCredential(pass_path_override=pass_path or None))
-    client = AsyncOpenAI(base_url=config.base_url, api_key=config.api_key, default_headers={_X_LANE_HEADER: lane})
-    return OpenAIProvider(openai_client=client)
-
-
 class PydanticAiHarness:
     """The ``pydantic_ai`` backend — OrcaRouter BYOK, OpenAI-compatible transport.
 
@@ -448,6 +203,12 @@ class PydanticAiHarness:
     the popped entry via :attr:`history` + *resume_source*.
     """
 
+    #: A ``pydantic_ai`` run authenticates on the metered lane (OrcaRouter BYOK or the
+    #: native Anthropic API key) — the transport fixes it, unlike the ``claude_sdk`` lane.
+    metered_lane: bool = True
+    #: No bundled CLI child — the credential resolves in-process inside ``open``.
+    spawns_cli_child: bool = False
+
     def __init__(
         self,
         *,
@@ -455,30 +216,66 @@ class PydanticAiHarness:
         history: "list[ModelMessage] | None" = None,
         resume_source: "Task | None" = None,
         phase: str | None = None,
-        orca: OrcaLaneConfig | None = None,
+        config: PydanticAiModelConfig | None = None,
     ) -> None:
         self._model = model
         self._history = history
         self.resume_source = resume_source
-        # The OrcaRouter per-dispatch runtime knobs (lane, step cap, pass-path
-        # override), resolved SYNCHRONOUSLY by :func:`resolve_harness`. Absent → the
-        # defaults (factory lane, uncapped, built-in pass path).
-        self._orca = orca or OrcaLaneConfig()
         # *phase* opts the dispatch into the Lane-B tool layer (PR-03): a set
         # phase resolves the phase-scoped, gated toolsets (:mod:`teatree.agents.lane_b`).
-        # ``None`` (the default, and every construction that predates the tool
-        # port) keeps a text-in/text-out Agent with no tools — byte-identical to
-        # before, so the existing harness/resume tests are unaffected.
+        # ``None`` (the default) keeps a text-in/text-out Agent with no tools.
         self._phase = phase
+        # The model-construction bundle (OrcaRouter knobs + binding + context plan),
+        # resolved SYNCHRONOUSLY by :func:`resolve_harness`. Absent → the defaults
+        # (router binding, factory lane, uncapped, no cache plan).
+        cfg = config or PydanticAiModelConfig()
+        self._orca = cfg.orca
+        self._binding = cfg.binding
+        self._context_plan = cfg.context_plan
 
     @property
     def history(self) -> "list[ModelMessage] | None":
         """The seed conversation this harness was constructed with, if any."""
         return self._history
 
+    @property
+    def binding(self) -> PydanticAiBinding:
+        """Which model binding this harness constructs (router vs native Anthropic)."""
+        return self._binding
+
+    @property
+    def capabilities(self) -> HarnessCapabilities:
+        """This backend's capabilities — the native Anthropic binding adds ``cache_control``."""
+        if self._binding is PydanticAiBinding.NATIVE_ANTHROPIC:
+            return PYDANTIC_AI_NATIVE_CAPABILITIES
+        return PYDANTIC_AI_ROUTER_CAPABILITIES
+
+    def cache_control_breakpoints(self) -> tuple[object, ...]:
+        """The ``cache_control`` breakpoints the native binding places, from the ContextPlan.
+
+        Empty when no plan was supplied or the binding cannot cache (the router), so the
+        native binding places markers only where the plan declares a byte-stable boundary.
+        """
+        if self._context_plan is None or self._binding is not PydanticAiBinding.NATIVE_ANTHROPIC:
+            return ()
+        return cache_control_plan(self._context_plan)
+
+    def restore_unconsumed_resume_thread(self) -> None:
+        """Re-persist a resume thread popped but never actually driven (#2916).
+
+        ``resolve_harness`` pops a resumed task's parked thread as a side effect of BUILDING
+        this harness — before ``open()`` (the only point the credential resolves) runs. When
+        ``open()`` then fails, the popped thread would be silently lost even though the run
+        never happened; this re-persists it. A no-op for a fresh (non-resumed) dispatch.
+        """
+        if self.resume_source is not None and self._history:
+            persist_parked_thread(self.resume_source, self._history)
+
     def _resolve_model(self, options: ClaudeAgentOptions) -> Model:
         if self._model is not None:
             return self._model
+        if self._binding is PydanticAiBinding.NATIVE_ANTHROPIC:
+            return resolve_native_anthropic_model(options)
         # Normalise the resolved id to what OrcaRouter's catalog actually carries
         # (OrcaRouter setup plan §3.2): ``options.model`` is a teatree-abstract-tier
         # default in Claude DASH-form (``claude-opus-4-8``), which Orca does NOT
@@ -494,7 +291,7 @@ class PydanticAiHarness:
         # normalisation unchanged); an absent pin falls back to the resolved handle.
         assert_model_allowed_on_regulated_path(options.model or model_name)
         return OpenAIChatModel(
-            model_name, provider=_build_orca_provider(lane=self._orca.lane, pass_path=self._orca.pass_path)
+            model_name, provider=build_orca_provider(lane=self._orca.lane, pass_path=self._orca.pass_path)
         )
 
     @asynccontextmanager
@@ -529,63 +326,89 @@ class PydanticAiHarness:
             )
 
 
-def resolve_harness(task: "Task | None" = None, *, phase: str | None = None) -> Harness:
-    """Return the headless transport backend selected by ``agent_harness``.
+def _build_claude_sdk_harness(context: HarnessBuildContext) -> Harness:  # noqa: ARG001 — factory signature
+    """The built-in ``claude_sdk`` factory — a stateless :class:`ClaudeSdkHarness`."""
+    return ClaudeSdkHarness()
 
-    Defaults to :class:`ClaudeSdkHarness` (today's behaviour, byte-identical).
-    The ``pydantic_ai`` value resolves to :class:`PydanticAiHarness`
-    ([#2885](https://github.com/souliane/teatree/issues/2885)) — its OrcaRouter
-    credential resolves LAZILY inside ``open``, so selecting it here never itself
-    requires a live credential.
 
-    *task* (#2886, optional — every pre-existing call site keeps working with
-    none) is the task ABOUT TO DISPATCH. When the resolved backend is
-    ``pydantic_ai`` and *task* is given, the resumable ancestor's persisted
-    thread (:func:`~teatree.agents.pydantic_ai_resume.rehydrate_thread_for_resume`)
-    is rehydrated and threaded into the constructed harness — a DB read only,
-    never a network call, so this never itself requires a live credential
-    either. Absent *task* (or no parked ancestor) opens a fresh conversation.
+def _build_pydantic_ai_harness(context: HarnessBuildContext) -> Harness:
+    """The built-in ``pydantic_ai`` factory ([#2885](https://github.com/souliane/teatree/issues/2885)).
 
-    *phase* (PR-03, souliane/teatree#2512, optional) opts a ``pydantic_ai``
-    dispatch into the Lane-B tool layer — the harness resolves the phase-scoped,
-    gated toolsets. ``None`` (every call site that predates the tool port) keeps
-    the text-only Agent. It is ignored for the ``claude_sdk`` backend, whose
-    per-phase least-privilege lands separately (PR-11).
+    Resolves the OrcaRouter call-site knobs SYNCHRONOUSLY (the ``x-lane`` value, the
+    per-overlay router handle, the per-run step cap, the pass-path override) rather than
+    inside the async ``open`` where a DB read fails safe to defaults, rehydrates any
+    resumable ancestor's parked thread (a DB read only, never a network call — so selecting
+    this backend never itself requires a live credential), and selects the model binding from
+    ``agent_harness_provider``: ``anthropic_api`` → the native Anthropic Messages-API binding
+    (#3157 E1b, real ``cache_control``), else the OrcaRouter OpenAI-compatible binding.
 
-    The rehydration POPS the ancestor's entry (single-use), so the returned
-    harness's ``resume_source`` records which ancestor it came from — a
-    caller that ends up refusing the dispatch before the harness genuinely
-    opens (souliane/teatree#2916) restores it from there.
-
-    The configured ``agent_harness`` is first run through
-    :func:`~teatree.agents.model_tiering.resolve_phase_harness`, which PINS a
-    verification *phase* to ``claude_sdk`` regardless of the setting (OrcaRouter
-    setup plan §4 guardrail #2) — so when a MAKER phase rides a cheap open-source
-    model on ``pydantic_ai``/OrcaRouter, the checker (reviewing / requesting_review /
-    testing) stays on the trusted Claude lane. A verification phase therefore
-    never rehydrates a pydantic_ai resume thread (it isn't one).
+    The rehydration POPS the ancestor's entry (single-use), so the built harness's
+    ``resume_source`` records which ancestor it came from — a caller that refuses the
+    dispatch before ``open`` genuinely runs restores it via
+    :meth:`PydanticAiHarness.restore_unconsumed_resume_thread` (souliane/teatree#2916).
     """
-    settings = get_effective_settings()
-    harness = resolve_phase_harness(settings.agent_harness, phase)
-    if harness is AgentHarness.PYDANTIC_AI:
-        resumed = rehydrate_thread_for_resume(task) if task is not None else None
-        # The OrcaRouter call-site knobs resolve HERE (sync), not inside the async
-        # ``open`` where a DB read fails safe to defaults: the ``x-lane`` value and
-        # the per-overlay router handle (the config-driven ``factory``/``eval``/``bulk``
-        # + ``teatree-factory``/secondary-router selection), plus the per-run step cap
-        # (§4 #1) and the OrcaRouter pass-path override (§3.6).
-        return PydanticAiHarness(
-            history=resumed.history if resumed else None,
-            resume_source=resumed.ancestor if resumed else None,
-            phase=phase,
+    settings = context.settings if context.settings is not None else get_effective_settings()
+    resumed = rehydrate_thread_for_resume(context.task) if context.task is not None else None
+    binding = (
+        PydanticAiBinding.NATIVE_ANTHROPIC
+        if settings.agent_harness_provider is AgentHarnessProvider.ANTHROPIC_API
+        else PydanticAiBinding.ROUTER
+    )
+    return PydanticAiHarness(
+        history=resumed.history if resumed else None,
+        resume_source=resumed.ancestor if resumed else None,
+        phase=context.phase,
+        config=PydanticAiModelConfig(
+            binding=binding,
             orca=OrcaLaneConfig(
                 lane=settings.orca_router_lane,
                 request_limit=settings.pydantic_ai_request_limit,
                 pass_path=settings.orca_router_pass_path or None,
                 router_name=settings.orca_router_name or None,
             ),
-        )
-    return ClaudeSdkHarness()
+        ),
+    )
+
+
+register_harness(
+    AgentHarness.CLAUDE_SDK.value,
+    _build_claude_sdk_harness,
+    capabilities=CLAUDE_SDK_CAPABILITIES,
+    valid_providers=frozenset({AgentHarnessProvider.SUBSCRIPTION_OAUTH.value, AgentHarnessProvider.API_KEY.value}),
+)
+register_harness(
+    AgentHarness.PYDANTIC_AI.value,
+    _build_pydantic_ai_harness,
+    capabilities=PYDANTIC_AI_ROUTER_CAPABILITIES,
+    valid_providers=frozenset({AgentHarnessProvider.ORCA_ROUTER_BYOK.value, AgentHarnessProvider.ANTHROPIC_API.value}),
+)
+
+
+def resolve_harness(task: "Task | None" = None, *, phase: str | None = None) -> Harness:
+    """Return the headless transport backend selected by the OPEN ``agent_harness`` setting.
+
+    Looks the resolved harness NAME up in the registry (#3157 E1) and builds it through the
+    registered factory — the backend set is no longer a closed enum, so an overlay-registered
+    third transport dispatches with ZERO core edits. Defaults to ``claude_sdk``
+    (byte-identical to today). An unregistered name raises
+    :class:`~teatree.agents.harness_registry.UnknownHarnessError` (caught and recorded as a
+    dispatch failure by ``_resolve_backend_or_failure``).
+
+    *task* / *phase* are threaded into the :class:`HarnessBuildContext` the factory reads:
+    the ``pydantic_ai`` factory rehydrates *task*'s resumable ancestor thread and opts *phase*
+    into the Lane-B tool layer; the ``claude_sdk`` factory ignores both.
+
+    The configured ``agent_harness`` is first run through
+    :func:`~teatree.agents.model_tiering.resolve_phase_harness`, which PINS a verification
+    *phase* to ``claude_sdk`` regardless of the setting (OrcaRouter setup plan §4 guardrail
+    #2) — so when a MAKER phase rides a cheap model on ``pydantic_ai``, the checker stays on
+    the trusted Claude lane. A verification phase therefore never rehydrates a pydantic_ai
+    resume thread (its factory is the claude_sdk one).
+    """
+    settings = get_effective_settings()
+    harness_name = resolve_phase_harness(settings.agent_harness, phase)
+    spec = resolve_harness_spec(harness_name)
+    return spec.factory(HarnessBuildContext(task=task, phase=phase, settings=settings))
 
 
 def pydantic_ai_thread(session: HarnessSession) -> "list[ModelMessage] | None":

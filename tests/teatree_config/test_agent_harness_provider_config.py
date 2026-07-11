@@ -109,9 +109,10 @@ class TestAgentHarnessProviderValidFor:
             {AgentHarnessProvider.SUBSCRIPTION_OAUTH, AgentHarnessProvider.API_KEY},
         )
 
-    def test_pydantic_ai_accepts_only_orca_router_byok(self) -> None:
+    def test_pydantic_ai_accepts_the_router_byok_and_native_anthropic_credentials(self) -> None:
+        # #3157 E1b added the native Anthropic Messages-API binding under pydantic_ai.
         assert AgentHarnessProvider.valid_for(AgentHarness.PYDANTIC_AI) == frozenset(
-            {AgentHarnessProvider.ORCA_ROUTER_BYOK},
+            {AgentHarnessProvider.ORCA_ROUTER_BYOK, AgentHarnessProvider.ANTHROPIC_API},
         )
 
     def test_orca_router_byok_is_invalid_under_claude_sdk(self) -> None:

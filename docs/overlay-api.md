@@ -197,3 +197,49 @@ Most of these are defined in `teatree/types.py` (the Django-free shared types mo
 | `RunCommands` | type alias | `dict[str, list[str] \| RunCommand]` |
 | `HealthCheck` | dataclass | `name`, `check`, `description` |
 | `MergeGuard` | dataclass (frozen) | `allowed`, `reason`, `escalate` |
+
+## Ship your own harness (headless factory overlays, #3157)
+
+The headless agent runtime drives an in-process agent session behind the
+`teatree.agents.harness.Harness` protocol (`open(options) -> HarnessSession`). The backend
+set is **open**: an overlay registers a third transport (a direct Anthropic Messages-API
+backend, an enterprise cloud endpoint, a self-hosted model) with **zero core edits** via the
+`teatree.harnesses` entry-point group. All the factory-facing symbols are re-exported from
+`teatree.overlay_sdk` — an overlay never imports the private `teatree.agents._*` internals (an
+import-linter contract forbids it).
+
+```python
+# my_overlay/harness.py
+import contextlib
+from teatree.overlay_sdk import HarnessCapabilities, HarnessSpec, HarnessBuildContext
+
+class MyHarness:
+    capabilities = HarnessCapabilities(
+        hooks=False, mcp=True, cache_control=True, server_resume=False, structured_output=True,
+    )
+    def __init__(self, ctx: HarnessBuildContext) -> None: ...
+    @contextlib.asynccontextmanager
+    async def open(self, options): ...  # yield a HarnessSession
+
+def my_harness_spec() -> HarnessSpec:
+    return HarnessSpec(
+        name="my_harness",
+        factory=lambda ctx: MyHarness(ctx),
+        capabilities=MyHarness.capabilities,
+        valid_providers=frozenset({"anthropic_api"}),
+    )
+```
+
+```toml
+# my_overlay/pyproject.toml
+[project.entry-points."teatree.harnesses"]
+my_harness = "my_overlay.harness:my_harness_spec"
+```
+
+Select it with `t3 <overlay> config_setting set agent_harness my_harness`. The dispatch path
+resolves the backend from the registry and reads its `capabilities` — it never
+`isinstance`-branches on a concrete harness class. A factory overlay also drives the full
+dispatch → attempt → cost cycle through the SDK: `run_headless`, `record_result_envelope` /
+`AttemptUsage`, `headless_cost_breakdown`, plus `ContextPlan` (cache-control breakpoints on
+the direct-API binding), `CompactionPolicy`, `TicketBudget` / `LoopWatchdog`, and
+`build_lane_b_toolsets` — all from `teatree.overlay_sdk`.

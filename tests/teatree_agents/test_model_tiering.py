@@ -606,20 +606,20 @@ class TestResolvePhaseHarness:
     @pytest.mark.parametrize("phase", sorted(VERIFICATION_PHASES))
     def test_a_verification_phase_forces_claude_sdk_even_when_pydantic_ai_configured(self, phase: str) -> None:
         # The MAKER may run a cheap open-source model via pydantic_ai; the checker stays on Claude.
-        assert resolve_phase_harness(AgentHarness.PYDANTIC_AI, phase) is AgentHarness.CLAUDE_SDK
+        assert resolve_phase_harness(AgentHarness.PYDANTIC_AI, phase) == AgentHarness.CLAUDE_SDK
 
     @pytest.mark.parametrize("phase", ["coding", "planning", "debugging", "shipping"])
     def test_a_maker_phase_uses_the_configured_harness(self, phase: str) -> None:
-        assert resolve_phase_harness(AgentHarness.PYDANTIC_AI, phase) is AgentHarness.PYDANTIC_AI
-        assert resolve_phase_harness(AgentHarness.CLAUDE_SDK, phase) is AgentHarness.CLAUDE_SDK
+        assert resolve_phase_harness(AgentHarness.PYDANTIC_AI, phase) == AgentHarness.PYDANTIC_AI
+        assert resolve_phase_harness(AgentHarness.CLAUDE_SDK, phase) == AgentHarness.CLAUDE_SDK
 
     def test_absent_phase_uses_the_configured_harness(self) -> None:
-        assert resolve_phase_harness(AgentHarness.PYDANTIC_AI, None) is AgentHarness.PYDANTIC_AI
+        assert resolve_phase_harness(AgentHarness.PYDANTIC_AI, None) == AgentHarness.PYDANTIC_AI
 
     def test_a_verification_phase_never_overrides_a_claude_sdk_config(self) -> None:
         # The pin only ever forces claude_sdk — it never flips a maker onto pydantic.
         for phase in VERIFICATION_PHASES:
-            assert resolve_phase_harness(AgentHarness.CLAUDE_SDK, phase) is AgentHarness.CLAUDE_SDK
+            assert resolve_phase_harness(AgentHarness.CLAUDE_SDK, phase) == AgentHarness.CLAUDE_SDK
 
 
 class TestResolvePhaseHarnessOverride:
@@ -631,7 +631,7 @@ class TestResolvePhaseHarnessOverride:
         # An unrelated key present, no agent_phase_harness → the shipped default
         # stands: a verification phase still forces claude_sdk.
         _seeded_db(tmp_path, monkeypatch, agent_session_model="haiku")
-        assert resolve_phase_harness(AgentHarness.PYDANTIC_AI, "reviewing") is AgentHarness.CLAUDE_SDK
+        assert resolve_phase_harness(AgentHarness.PYDANTIC_AI, "reviewing") == AgentHarness.CLAUDE_SDK
 
     def test_a_db_row_flips_a_verification_pin_onto_pydantic_ai(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -639,7 +639,7 @@ class TestResolvePhaseHarnessOverride:
         # The whole point: a full swap of the checker onto pydantic_ai is one DB
         # row, not a code edit — reviewing is no longer forced onto claude_sdk.
         _seeded_db(tmp_path, monkeypatch, agent_phase_harness={"reviewing": "pydantic_ai"})
-        assert resolve_phase_harness(AgentHarness.PYDANTIC_AI, "reviewing") is AgentHarness.PYDANTIC_AI
+        assert resolve_phase_harness(AgentHarness.PYDANTIC_AI, "reviewing") == AgentHarness.PYDANTIC_AI
 
     def test_an_unpin_sentinel_drops_a_verification_phase_back_to_configured(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -647,12 +647,12 @@ class TestResolvePhaseHarnessOverride:
         # An explicit "" unpins the phase: it follows the configured harness even
         # though the shipped default would pin it to claude_sdk.
         _seeded_db(tmp_path, monkeypatch, agent_phase_harness={"testing": ""})
-        assert resolve_phase_harness(AgentHarness.PYDANTIC_AI, "testing") is AgentHarness.PYDANTIC_AI
+        assert resolve_phase_harness(AgentHarness.PYDANTIC_AI, "testing") == AgentHarness.PYDANTIC_AI
 
     def test_an_override_can_pin_a_maker_phase(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         # A non-verification phase gains a pin it did not have before.
         _seeded_db(tmp_path, monkeypatch, agent_phase_harness={"coding": "claude_sdk"})
-        assert resolve_phase_harness(AgentHarness.PYDANTIC_AI, "coding") is AgentHarness.CLAUDE_SDK
+        assert resolve_phase_harness(AgentHarness.PYDANTIC_AI, "coding") == AgentHarness.CLAUDE_SDK
 
     def test_a_malformed_override_is_ignored_and_the_default_stands(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -660,4 +660,4 @@ class TestResolvePhaseHarnessOverride:
         # A value naming no known harness is dropped at parse time, so the phase
         # falls back to the shipped verification pin — never a silent bad value.
         _seeded_db(tmp_path, monkeypatch, agent_phase_harness={"reviewing": "gpt-sdk"})
-        assert resolve_phase_harness(AgentHarness.PYDANTIC_AI, "reviewing") is AgentHarness.CLAUDE_SDK
+        assert resolve_phase_harness(AgentHarness.PYDANTIC_AI, "reviewing") == AgentHarness.CLAUDE_SDK

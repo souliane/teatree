@@ -124,7 +124,11 @@ TIER_EFFORT: dict[str, str] = {
 # this same set). ``pydantic_ai`` -> the OpenAI-compatible ``ReasoningEffort`` /
 # ``ThinkingLevel`` vocabulary pydantic_ai exposes (``minimal`` instead of
 # ``claude_sdk``'s absent floor rung, no ``max`` ceiling rung).
-HARNESS_EFFORT_SCALE: dict[AgentHarness, frozenset[str]] = {
+# Keyed by the harness NAME (an ``AgentHarness`` member is a ``StrEnum``, so a plain
+# registry-key string looks the same entry up — #3157 E1's open backend set threads a
+# string harness name here). An overlay-registered third harness has no entry; callers
+# ``.get(name, EFFORT_SCALE)`` so it falls back to the ``claude_sdk`` scale.
+HARNESS_EFFORT_SCALE: dict[str, frozenset[str]] = {
     AgentHarness.CLAUDE_SDK: EFFORT_SCALE,
     AgentHarness.PYDANTIC_AI: frozenset({"minimal", "low", "medium", "high", "xhigh"}),
 }
@@ -171,13 +175,15 @@ VERIFICATION_PHASES: frozenset[str] = frozenset({"reviewing", "requesting_review
 # trusted ``claude_sdk`` lane, so the reliability backstop is a Claude verifier +
 # CI, never the cheap maker model checking its own work. Data-driven so the pinned
 # set is one place, not a branch in :func:`resolve_harness`.
-PHASE_HARNESS: dict[str, AgentHarness] = dict.fromkeys(VERIFICATION_PHASES, AgentHarness.CLAUDE_SDK)
+PHASE_HARNESS: dict[str, str] = dict.fromkeys(VERIFICATION_PHASES, AgentHarness.CLAUDE_SDK.value)
 
 
-def resolve_phase_harness(configured: AgentHarness, phase: str | None) -> AgentHarness:
+def resolve_phase_harness(configured: str, phase: str | None) -> str:
     """The harness a *phase* dispatch actually uses — *configured*, unless the phase is pinned.
 
-    Resolution, first match wins:
+    *configured* and the return are OPEN harness registry KEYS (strings, #3157 E1), not the
+    closed :class:`AgentHarness` enum — a third overlay-registered transport is a legal
+    value. Resolution, first match wins:
 
     1.  An ``agent_phase_harness`` DB override for *phase*
         (:attr:`~teatree.config.agent_spawn.AgentConfig.phase_harness`): a named
@@ -197,7 +203,7 @@ def resolve_phase_harness(configured: AgentHarness, phase: str | None) -> AgentH
     overrides = resolve_agent_config().phase_harness
     if phase in overrides:
         pinned = overrides[phase]
-        return pinned if pinned is not None else configured
+        return pinned.value if pinned is not None else configured
     if phase in PHASE_HARNESS:
         return PHASE_HARNESS[phase]
     return configured
@@ -289,7 +295,7 @@ def _abstract_tier_of(model_name: str | None) -> str:
     return DEFAULT_TIER
 
 
-def resolve_tier_effort(tier: str, *, harness: AgentHarness | None = None) -> str | None:
+def resolve_tier_effort(tier: str, *, harness: AgentHarness | str | None = None) -> str | None:
     """Resolve an abstract *tier* name to its reasoning EFFORT — the effort parallel of :func:`resolve_tier`.
 
     Reads :data:`TIER_EFFORT`, with each entry OVERRIDABLE via the
@@ -309,7 +315,10 @@ def resolve_tier_effort(tier: str, *, harness: AgentHarness | None = None) -> st
     ``claude_sdk``-only ``"max"`` reaching a ``pydantic_ai`` spawn).
     """
     harness = harness if harness is not None else get_effective_settings().agent_harness
-    allowed = HARNESS_EFFORT_SCALE[harness]
+    # An overlay-registered third harness (#3157 E1) has no entry in the built-in
+    # effort-scale map, so fall back to the ``claude_sdk`` scale rather than KeyError —
+    # the resolved value is validated against it and dropped if out of vocabulary.
+    allowed = HARNESS_EFFORT_SCALE.get(harness, EFFORT_SCALE)
     config = resolve_agent_config()
     merged = {**TIER_EFFORT, **config.tier_effort}
     resolved = merged.get(tier)
@@ -404,7 +413,7 @@ def resolve_spawn_model(
     return winner
 
 
-def resolve_spawn_effort(phase: str, *, harness: AgentHarness | None = None) -> str | None:
+def resolve_spawn_effort(phase: str, *, harness: AgentHarness | str | None = None) -> str | None:
     """Resolve the spawn EFFORT for *phase* — phase → tier → effort, the effort parallel of :func:`resolve_spawn_model`.
 
     Mirrors :func:`resolve_phase_model`'s resolution, swapping the model constant

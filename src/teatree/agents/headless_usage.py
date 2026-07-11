@@ -51,6 +51,7 @@ def _attempt_usage(message: ResultMessage | None, *, lane: str = "") -> "Attempt
         return AttemptUsage(lane=lane)
     usage = message.usage if isinstance(message.usage, dict) else {}
     model = _billed_model(message.model_usage)
+    cost_usd, estimated = _resolve_cost_usd(message, usage=usage, model=model)
     return AttemptUsage(
         agent_session_id=message.session_id or "",
         model=model,
@@ -58,9 +59,10 @@ def _attempt_usage(message: ResultMessage | None, *, lane: str = "") -> "Attempt
         output_tokens=_safe_int(usage.get("output_tokens")),
         cache_read_tokens=_safe_int(usage.get("cache_read_input_tokens")),
         cache_write_tokens=_safe_int(usage.get("cache_creation_input_tokens")),
-        cost_usd=_resolve_cost_usd(message, usage=usage, model=model),
+        cost_usd=cost_usd,
         num_turns=message.num_turns,
         lane=lane,
+        cost_is_estimated=estimated,
     )
 
 
@@ -74,23 +76,26 @@ def _billed_model(model_usage: dict[str, Any] | None) -> str:
     return ""
 
 
-def _resolve_cost_usd(message: ResultMessage, *, usage: dict[str, Any], model: str) -> float | None:
-    """Persist the SDK-reported cost when present, else the price-table estimate.
+def _resolve_cost_usd(message: ResultMessage, *, usage: dict[str, Any], model: str) -> tuple[float | None, bool]:
+    """Return ``(cost_usd, is_estimated)`` — the reported figure when present, else the estimate.
 
-    Persisting an estimate at capture time means a row's ``cost_usd`` is never
-    NULL once any token count was captured — the ``t3 cost`` report and the
-    watchdog both read a real number rather than re-deriving it each query.
-    Returns ``None`` only when nothing at all was captured.
+    The reported ``total_cost_usd`` — the CLI/SDK figure, OR the metered router's own
+    reported cost passed through onto the terminal ``ResultMessage`` by
+    :class:`~teatree.agents.harness.PydanticAiHarnessSession` (#3157 E5) — is preferred and
+    flagged NOT estimated (``is_estimated=False``). Only when no reported figure exists does
+    it fall back to the price-table estimate (``is_estimated=True``), so ``t3 cost`` can
+    distinguish a router-lane run's real cost from a price-table guess. Returns
+    ``(None, True)`` when nothing at all was captured.
     """
     reported = _safe_float(message.total_cost_usd)
     if reported is not None:
-        return reported
+        return reported, False
     token_keys = ("input_tokens", "output_tokens", "cache_read_input_tokens", "cache_creation_input_tokens")
     if all(usage.get(key) is None for key in token_keys):
-        return None
+        return None, True
     from teatree.core.cost import AttemptUsage, price_table_cost_usd  # noqa: PLC0415
 
-    return price_table_cost_usd(
+    estimate = price_table_cost_usd(
         AttemptUsage(
             model=model or None,
             reported_cost_usd=None,
@@ -100,3 +105,4 @@ def _resolve_cost_usd(message: ResultMessage, *, usage: dict[str, Any], model: s
             cache_write_tokens=_safe_int(usage.get("cache_creation_input_tokens")) or 0,
         ),
     )
+    return estimate, True
