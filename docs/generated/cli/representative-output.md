@@ -33,8 +33,8 @@ Usage: t3 [OPTIONS] COMMAND [ARGS]...
 │                 leak-gated step.                                             │
 │ ui              Browse and run every t3 command in an interactive terminal   │
 │                 UI.                                                          │
-│ admin           Run the Django admin for the teatree project on a local dev  │
-│                 server.                                                      │
+│ admin           Run the Django admin for the teatree project under a local   │
+│                 gunicorn server.                                             │
 │ info            Installation info (bare) and read-only per-ticket artifact   │
 │                 discovery.                                                   │
 │ config          Configuration and autoloading.                               │
