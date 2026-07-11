@@ -76,7 +76,7 @@ def availability(request: "HttpRequest") -> "HttpResponse":
 
     Routing every switch through ``write_override`` (or ``clear_override`` for
     ``auto``) keeps the away→present deferred-question drain firing, exactly like
-    the ``t3 availability`` CLI.
+    the ``t3 teatree availability`` CLI.
     """
     mode = request.POST.get("mode", "").strip()
     if mode not in AVAILABILITY_ACTIONS:
