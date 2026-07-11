@@ -23,7 +23,16 @@ from teatree.config.discovery import (
     discover_active_overlay,
     discover_overlays,
 )
-from teatree.config.enums import Autonomy, CriticGateMode, MissingIssuePolicy, Mode, OnBehalfPostMode, TeamsDisplay, Wip
+from teatree.config.enums import (
+    Autonomy,
+    CriticGateMode,
+    MissingIssuePolicy,
+    Mode,
+    OnBehalfPostMode,
+    SendProxyMode,
+    TeamsDisplay,
+    Wip,
+)
 from teatree.config.feature_flags import FEATURE_FLAGS, FeatureFlag, FlagStage, dark_flags, is_feature_flag
 from teatree.config.homes import BOOTSTRAP_ENV_ONLY_SETTINGS, DERIVED_FIELDS, SETTING_HOMES, SettingHome
 from teatree.config.loader import (
@@ -33,13 +42,12 @@ from teatree.config.loader import (
     load_config,
     load_e2e_repos,
     worktree_root,
-    worktrees_dir,
 )
+from teatree.config.mr_reminder import MrReminderConfig, mr_reminder_from_table, resolve_mr_reminder
 from teatree.config.registries import COLD_SETTINGS, REGISTRY_SETTINGS
 from teatree.config.resolution import (
     _active_overlay_overrides,
     _apply_autonomy,
-    _global_pinned_fields,
     _overlay_overrides_by_name,
     cadence_seconds,
     get_effective_settings,
@@ -61,8 +69,7 @@ from teatree.config.settings import (
     TeaTreeConfig,
     UserSettings,
 )
-from teatree.config_mr_reminder import MrReminderConfig, mr_reminder_from_table, resolve_mr_reminder
-from teatree.config_speak import resolve_speak, speak_from_subtable
+from teatree.config.speak import resolve_speak, speak_from_subtable
 from teatree.paths import DATA_DIR, get_data_dir
 
 __all__ = [
@@ -92,6 +99,7 @@ __all__ = [
     "MrReminderConfig",
     "OnBehalfPostMode",
     "OverlayEntry",
+    "SendProxyMode",
     "SettingHome",
     "TeaTreeConfig",
     "TeamsDisplay",
@@ -104,7 +112,6 @@ __all__ = [
     "_default_handover_mirror_path",
     "_discover_from_manage_py",
     "_extract_settings_module",
-    "_global_pinned_fields",
     "_match_canonical_ep",
     "_overlay_overrides_by_name",
     "_parse_disk_cache_allowlist",
@@ -130,5 +137,4 @@ __all__ = [
     "resolve_speak",
     "speak_from_subtable",
     "worktree_root",
-    "worktrees_dir",
 ]

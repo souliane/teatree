@@ -3,7 +3,7 @@
 Generalises a personal one-off reminder script into a reusable teatree
 capability: list every open MR/PR the user authors across all repos one
 code-host token can see, route each to a Slack channel by a configured
-repo→channel map (:class:`~teatree.config_mr_reminder.MrReminderConfig`),
+repo→channel map (:class:`~teatree.config.mr_reminder.MrReminderConfig`),
 and assemble one mrkdwn message per channel.
 
 This module is the pure domain core — it builds the per-channel messages
@@ -23,7 +23,7 @@ most-specific pattern wins when several match.
 from dataclasses import dataclass, field
 from urllib.parse import urlparse
 
-from teatree.config_mr_reminder import MrReminderConfig
+from teatree.config.mr_reminder import MrReminderConfig
 from teatree.core.backend_protocols import CodeHostBackend
 from teatree.hooks._repo_visibility import slug_namespace_matches
 from teatree.slack_mrkdwn import normalize_slack_message

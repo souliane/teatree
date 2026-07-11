@@ -1,3 +1,4 @@
+# test-path: cross-cutting
 """``MrReminderConfig`` parsing + DB-home ``mr_reminder`` resolution (TODO-276).
 
 The schema: an ordered ``channels`` slug→channel map and an optional
@@ -12,7 +13,7 @@ import pytest
 from django.test import TestCase
 
 from teatree.config import get_effective_settings
-from teatree.config_mr_reminder import MrReminderConfig, mr_reminder_from_table, resolve_mr_reminder
+from teatree.config.mr_reminder import MrReminderConfig, mr_reminder_from_table, resolve_mr_reminder
 from teatree.core.models import ConfigSetting
 
 

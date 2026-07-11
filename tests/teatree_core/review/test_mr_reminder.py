@@ -10,7 +10,7 @@ nothing else is mocked.
 
 from dataclasses import dataclass, field
 
-from teatree.config_mr_reminder import MrReminderConfig
+from teatree.config.mr_reminder import MrReminderConfig
 from teatree.core.review.mr_reminder import ChannelMessage, MrLine, build_mr_reminder, route_slug
 from teatree.types import RawAPIDict
 

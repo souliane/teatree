@@ -49,7 +49,6 @@ def test_toml_carve_out_is_empty() -> None:
     moved_to_db = (
         "workspace_dir",
         "check_updates",
-        "worktrees_dir",
         "timezone",
         "handover_mirror_path",
         "statusline_chain",
@@ -63,10 +62,10 @@ def test_toml_carve_out_is_empty() -> None:
 
 
 def test_falsely_bootstrap_fields_are_db_home() -> None:
-    # ``worktrees_dir`` / ``timezone`` were tagged "needed to open the DB", but
-    # Django ``settings.py`` hardcodes ``TIME_ZONE = "UTC"`` and configures
-    # ``DATABASES`` without reading either — so both are DB-home, not bootstrap.
-    assert SETTING_HOMES["worktrees_dir"] is SettingHome.DB
+    # ``timezone`` was tagged "needed to open the DB", but Django ``settings.py``
+    # hardcodes ``TIME_ZONE = "UTC"`` and configures ``DATABASES`` without reading
+    # it — so it is DB-home, not bootstrap. (Its former sibling ``worktrees_dir``
+    # was removed as redundant — see ``test_removed_dead_settings.py``.)
     assert SETTING_HOMES["timezone"] is SettingHome.DB
 
 

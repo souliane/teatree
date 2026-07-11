@@ -3,8 +3,9 @@
 A zero-dependency cold path that reads the `ConfigSetting` override store
 (`src/teatree/core/models/config_setting.py`) without booting Django — for the
 bash/statusline path that cannot afford a Django import. It imports only the
-standard library (plus its sibling `cold_db`, the raw sqlite plumbing); in
-particular neither module imports `teatree.paths`, whose module-level
+standard library (plus its siblings `cold_db`, the raw sqlite plumbing, and
+`value_coercion`, the Django-free scalar coercers shared with the hot path); in
+particular none of them import `teatree.paths`, whose module-level
 `resolve_data_dir` would auto-isolate a worktree onto a sibling DB.
 
 The typed `ConfigSetting` value readers (`read_setting` + the `bool`/`int`/`str`/
@@ -24,6 +25,7 @@ from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import cast
 
+from teatree.config import value_coercion
 from teatree.config.cold_db import canonical_config_db, fetch_one, loop_status, row_exists
 
 __all__ = [
@@ -116,22 +118,23 @@ def int_setting(
 ) -> int:
     """The stored value only when it is a real int (not bool) at/above `minimum`, else `default`.
 
-    A `bool` is rejected though it subclasses `int` (mirrors
-    `teatree.config.settings._parse_strict_int`); a value below `minimum`
-    degrades to `default` so the bound it encodes can't be mistyped away.
-
-    Note: unlike the hot-path `settings._parse_strict_int` (which coerces a JSON
-    string `"5"` → 5), this rejects a numeric string and falls back to `default`.
-    That is intentional defense-in-depth, not a divergence to reconcile: the
-    validated write path (`config_setting`) stores canonical JSON ints, so a
-    string-typed numeric is unreachable here.
+    Shares the strict coercion with the hot path via
+    :func:`value_coercion.strict_int` but binds the cold policy
+    `accept_numeric_str=False` — a `bool` (mistyped) and a numeric string `"5"`
+    both degrade to `default` rather than raising into the cold read path. The
+    numeric-string rejection is intentional defense-in-depth: the validated write
+    path (`config_setting`) stores canonical JSON ints, so a string-typed numeric
+    is unreachable here. A value below `minimum` degrades to `default` so the
+    bound it encodes can't be mistyped away.
     """
     value = _read_chain(name, scope_chain, db_path=db_path)
-    if isinstance(value, bool) or not isinstance(value, int):
+    try:
+        coerced = value_coercion.strict_int(value, accept_numeric_str=False)
+    except (TypeError, ValueError):
         return default
-    if minimum is not None and value < minimum:
+    if minimum is not None and coerced < minimum:
         return default
-    return value
+    return coerced
 
 
 def str_setting(

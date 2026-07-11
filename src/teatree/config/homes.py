@@ -7,7 +7,7 @@ reads each field from the store (Django-side via
 ``ConfigSetting.objects.get_effective``, pre-Django via ``cold_reader``). The two
 structured fields ``speak`` / ``mr_reminder`` are stored as JSON-dict rows and
 rebuilt bespoke by the resolver (``resolution._BESPOKE_STRUCTURED_FIELDS``);
-``workspace_dir`` / ``worktrees_dir`` resolve Django-side off the store;
+``workspace_dir`` resolves Django-side off the store;
 ``handover_mirror_path`` / ``statusline_chain`` / ``autoload`` resolve from the
 store on their pre-Django paths via ``cold_reader`` / the ``sqlite3`` CLI.
 

@@ -1,3 +1,4 @@
+# test-path: cross-cutting
 """``LocalPlayback`` / ``SpeakConfig`` parsing + DB-home ``speak`` resolution (#2060).
 
 The schema: a ``speak`` config with a ``local`` enum (``off`` / ``dm`` / ``all``)
@@ -11,7 +12,7 @@ import pytest
 from django.test import TestCase
 
 from teatree.config import get_effective_settings
-from teatree.config_speak import parse_speak_setting, resolve_speak
+from teatree.config.speak import parse_speak_setting, resolve_speak
 from teatree.core.models import ConfigSetting
 from teatree.types import LocalPlayback, SpeakConfig
 

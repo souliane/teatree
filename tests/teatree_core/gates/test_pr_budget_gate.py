@@ -2,13 +2,14 @@
 
 The gate reads ``max_open_prs_per_repo_per_ticket`` as data (constraint-as-data)
 and refuses opening a PR when a ticket already has that many open (not-merged)
-PRs in one repo. Anti-vacuity coverage. TestInertAtDefault: the neutral default
-``0`` never refuses even with open PRs present (RED if the ``limit <= 0`` guard
-goes). TestPerTicketPerRepoScope: at limit 1 a second open PR for the same
+PRs in one repo. Anti-vacuity coverage. TestUnlimitedOptOut: the ``0`` opt-out
+never refuses even with open PRs present (RED if the ``limit <= 0`` guard goes).
+TestPerTicketPerRepoScope: at limit 1 a second open PR for the same
 ``(repo, ticket)`` is refused while the first, a different ticket's PR in the
 same repo, and the same ticket's PR in a different repo are all allowed.
 TestResolvePerOverlay: the limit flows through the real ``get_effective_settings``
-per overlay (overlay A limited, overlay B unlimited).
+per overlay. TestShippedDefault (D9): the shipped default is ``1``, so a second
+open PR is refused out of the box and ``0`` restores the unlimited opt-out.
 """
 
 import httpx
@@ -112,11 +113,11 @@ class TestCountOpenPrsForRepo(TestCase):
         assert count_open_prs_for_repo(ticket, _REPO_A) == 1
 
 
-class TestInertAtDefault(TestCase):
+class TestUnlimitedOptOut(TestCase):
     def test_zero_limit_never_refuses_even_with_open_prs(self) -> None:
-        # Neutral default 0 = unlimited: core ships inert. Two open PRs for the
-        # same (repo, ticket) do NOT trip the gate. Anti-vacuous: without the
-        # ``limit <= 0`` short-circuit, ``count (2) >= 0`` would raise.
+        # ``0`` = the unlimited opt-out: two open PRs for the same (repo, ticket)
+        # do NOT trip the gate. Anti-vacuous: without the ``limit <= 0``
+        # short-circuit, ``count (2) >= 0`` would raise.
         ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.IN_REVIEW)
         _pr(ticket, repo=_REPO_A, iid="1")
         _pr(ticket, repo=_REPO_A, iid="2")
@@ -265,7 +266,7 @@ class TestForgeAuthoritativeBackstop(TestCase):
 
     def test_inert_at_zero_limit_never_calls_the_forge(self) -> None:
         ticket = self._ticket(123)
-        never = "forge must not be consulted at the inert default"
+        never = "forge must not be consulted at the unlimited opt-out"
 
         class _Boom:
             def current_user(self) -> str:
@@ -283,11 +284,39 @@ class TestResolvePerOverlay(TestCase):
         monkeypatch.delenv("T3_OVERLAY_NAME", raising=False)
 
     def test_limit_flows_through_get_effective_settings_per_overlay(self) -> None:
-        # Overlay A opts into a cap of 1; overlay B never set it -> stays 0
-        # (unlimited). The per-overlay ConfigSetting row is the sole source.
-        ConfigSetting.objects.set_value("max_open_prs_per_repo_per_ticket", value=1, scope="overlay-a")
-        assert resolve_pr_budget("overlay-a") == 1
+        # Overlay A pins a cap of 2; overlay B pins the unlimited opt-out (0).
+        # The per-overlay ConfigSetting row is the sole source, distinct from the
+        # shipped default of 1.
+        ConfigSetting.objects.set_value("max_open_prs_per_repo_per_ticket", value=2, scope="overlay-a")
+        ConfigSetting.objects.set_value("max_open_prs_per_repo_per_ticket", value=0, scope="overlay-b")
+        assert resolve_pr_budget("overlay-a") == 2
         assert resolve_pr_budget("overlay-b") == 0
 
-    def test_default_is_zero_when_unset(self) -> None:
-        assert resolve_pr_budget(None) == 0
+    def test_default_is_one_when_unset(self) -> None:
+        # D9: the shipped default is one-open-PR-per-repo-per-ticket, not unlimited.
+        assert resolve_pr_budget(None) == 1
+
+
+class TestShippedDefault(TestCase):
+    """D9: the one-ticket-one-PR discipline holds out of the box (default ``1``)."""
+
+    @pytest.fixture(autouse=True)
+    def _config_path(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.delenv("T3_OVERLAY_NAME", raising=False)
+
+    def test_second_open_pr_is_refused_at_the_resolved_default(self) -> None:
+        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.IN_REVIEW)
+        _pr(ticket, repo=_REPO_A, iid="1")
+        limit = resolve_pr_budget(None)
+        assert limit == 1
+        with pytest.raises(PrBudgetExceededError):
+            check_pr_budget(ticket, _REPO_A, limit=limit)
+
+    def test_zero_row_restores_unlimited(self) -> None:
+        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.IN_REVIEW)
+        _pr(ticket, repo=_REPO_A, iid="1")
+        _pr(ticket, repo=_REPO_A, iid="2")
+        ConfigSetting.objects.set_value("max_open_prs_per_repo_per_ticket", value=0)
+        limit = resolve_pr_budget(None)
+        assert limit == 0
+        check_pr_budget(ticket, _REPO_A, limit=limit)  # unlimited opt-out -> no raise
