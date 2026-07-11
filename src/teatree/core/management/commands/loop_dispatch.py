@@ -123,8 +123,8 @@ def _resolve_fanout_directive(task: Task) -> str:
     """Resolve the fan-out directive for a dispatch, loop-side; empty by default.
 
     The ``[agent]`` config is read here (the local import keeps ``teatree.core``
-    free of a top-level ``teatree.config_agent`` dependency edge — core is the
-    lower layer, same pattern as ``_resolve_model_and_bundle``'s local import).
+    free of a top-level ``teatree.config.agent_spawn`` dependency edge — core is
+    the lower layer, same pattern as ``_resolve_model_and_bundle``'s local import).
     ``resolve_agent_config`` itself fails-to-defaults on a missing/malformed
     file (returning ``AgentConfig()`` with an empty ``phase_fanout``), so a
     config read problem degrades to ``""`` without blocking the dispatch. The
@@ -133,7 +133,7 @@ def _resolve_fanout_directive(task: Task) -> str:
     explicitly out-of-range ``N`` raises ``ValueError`` (fail-loud), surfacing
     the misconfiguration rather than silently dropping it.
     """
-    from teatree.config_agent import resolve_agent_config  # noqa: PLC0415
+    from teatree.config.agent_spawn import resolve_agent_config  # noqa: PLC0415 — deferred: keep core import-light
 
     return resolve_fanout_directive(task.ticket.role, task.phase, resolve_agent_config())
 

@@ -1,6 +1,9 @@
 """Price math, cache multipliers, cycle boundaries, and report rendering."""
 
+import json
+import sqlite3
 from datetime import date
+from pathlib import Path
 
 import pytest
 
@@ -8,6 +11,7 @@ from teatree.core.cost import (
     DEFAULT_MONTHLY_CREDIT_USD,
     ET_MODEL_MULTIPLIER,
     PRICE_TABLE,
+    UNPRICED_TIER,
     AttemptUsage,
     CostBreakdown,
     CostReport,
@@ -21,6 +25,16 @@ from teatree.core.cost import (
     tier_of_model,
     tier_rank,
 )
+
+
+def _seed_config(db_path: Path, key: str, value: object) -> None:
+    conn = sqlite3.connect(str(db_path))
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS teatree_config_setting (id INTEGER PRIMARY KEY, scope TEXT, key TEXT, value TEXT)"
+    )
+    conn.execute("INSERT INTO teatree_config_setting (scope, key, value) VALUES ('', ?, ?)", (key, json.dumps(value)))
+    conn.commit()
+    conn.close()
 
 
 class TestModelPrice:
@@ -59,17 +73,88 @@ class TestTierResolution:
         assert price_for_model("claude-sonnet-5").input_per_mtok == pytest.approx(3.0)
         assert price_for_model("claude-sonnet-5").output_per_mtok == pytest.approx(15.0)
 
-    def test_unknown_and_none_fall_back_to_reasoning_tier(self) -> None:
+    def test_none_falls_back_to_conservative_reasoning_tier(self) -> None:
+        # A ``None`` model inherited the user's own (uncaptured) default — priced
+        # conservatively at the reasoning tier, NOT the unpriced bucket.
         assert tier_of_model(None) == "opus"
-        assert tier_of_model("some-future-model") == "opus"
+
+    def test_present_unknown_id_resolves_to_the_unpriced_bucket(self) -> None:
+        # §3a #2: a PRESENT but unrecognised id (a swapped non-Claude model) no
+        # longer silently masquerades as opus — it buckets honestly as unpriced.
+        assert tier_of_model("some-future-model") == UNPRICED_TIER
+        assert tier_of_model("gpt-9") == UNPRICED_TIER
+        assert tier_of_model("deepseek/deepseek-v4-pro") == UNPRICED_TIER
 
     def test_no_special_cased_fable_tier(self) -> None:
         # #2237 removal: no PRICE_TABLE entry recognises "fable" any more — a
-        # Fable-named model id falls back to the conservative reasoning tier,
-        # same as any other unrecognised id.
+        # Fable-named model id falls into the unpriced bucket, same as any other
+        # unrecognised id (not a Claude tier).
         assert "fable" not in PRICE_TABLE
-        assert tier_of_model("fable") == "opus"
-        assert tier_of_model("claude-fable-5") == "opus"
+        assert tier_of_model("fable") == UNPRICED_TIER
+        assert tier_of_model("claude-fable-5") == UNPRICED_TIER
+
+
+class TestPriceEtParity:
+    """The ET table mirrors the price table 1:1 — the direct index must never KeyError."""
+
+    def test_et_multiplier_key_set_equals_price_table_key_set(self) -> None:
+        # ``compute_effective_tokens`` indexes ET_MODEL_MULTIPLIER by
+        # ``tier_of_model`` (a PRICE_TABLE key). A tier added to one dict but not
+        # the other is a latent KeyError — this pin fails LOUDLY on that drift.
+        assert set(ET_MODEL_MULTIPLIER) == set(PRICE_TABLE)
+
+
+class TestUnpricedBucketAndOverrides:
+    """The unpriced honest fallback + the ``cost_model_prices`` DB override (§3a #2)."""
+
+    def test_unpriced_bucket_bills_at_the_conservative_opus_rate(self) -> None:
+        # An unrecognised id is still billed conservatively (never understated),
+        # but under its own bucket rather than silently as opus.
+        assert price_for_model("some-future-model").input_per_mtok == pytest.approx(5.0)
+        assert price_for_model("some-future-model").output_per_mtok == pytest.approx(25.0)
+        assert PRICE_TABLE[UNPRICED_TIER].input_per_mtok == pytest.approx(5.0)
+
+    def test_unknown_model_buckets_as_unpriced_not_opus(self) -> None:
+        usages = [AttemptUsage("deepseek/deepseek-v4-pro", None, 1_000_000, 0, 0, 0)]
+        breakdown = CostBreakdown.from_usages(usages)
+        # The dollar figure buckets under 'unpriced', NOT folded into 'opus'.
+        assert UNPRICED_TIER in breakdown.per_tier_usd
+        assert "opus" not in breakdown.per_tier_usd
+
+    def test_absent_override_keeps_the_conservative_fallback(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # With no cost_model_prices row, a non-Claude id keeps the conservative
+        # opus-rate fallback (public path — no override applied).
+        monkeypatch.setenv("T3_CONFIG_DB", str(tmp_path / "absent.sqlite3"))
+        assert price_table_cost_usd(AttemptUsage("deepseek/x", None, 1_000_000, 0, 0, 0)) == pytest.approx(5.0)
+
+    def test_cost_model_prices_row_prices_a_swapped_model(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # A configured price for a non-Claude model wins over the conservative
+        # opus fallback: 1M input @ $0.50 + 1M output @ $1.50 = $2.00. Driven
+        # entirely through the public pricing surface (override read internally).
+        db = tmp_path / "config.sqlite3"
+        _seed_config(db, "cost_model_prices", {"deepseek/": {"input": 0.5, "output": 1.5}})
+        monkeypatch.setenv("T3_CONFIG_DB", str(db))
+        usage = AttemptUsage("deepseek/deepseek-v4-pro", None, 1_000_000, 1_000_000, 0, 0)
+        assert price_table_cost_usd(usage) == pytest.approx(2.0)
+        # And the aggregation resolves the override once and applies it.
+        assert CostBreakdown.from_usages([usage]).total_usd == pytest.approx(2.0)
+
+    def test_malformed_override_entry_is_dropped(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        db = tmp_path / "config.sqlite3"
+        _seed_config(
+            db,
+            "cost_model_prices",
+            {"deepseek/": {"input": 0.5, "output": 1.5}, "bad/": {"input": "x"}, "worse/": "nope"},
+        )
+        monkeypatch.setenv("T3_CONFIG_DB", str(db))
+        # The well-formed entry applies; a malformed one never poisons the table —
+        # a "bad/" model falls back to the conservative unpriced (opus) rate.
+        assert price_table_cost_usd(AttemptUsage("deepseek/x", None, 1_000_000, 1_000_000, 0, 0)) == pytest.approx(2.0)
+        assert price_table_cost_usd(AttemptUsage("bad/x", None, 1_000_000, 0, 0, 0)) == pytest.approx(5.0)
 
 
 class TestTierRank:

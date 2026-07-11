@@ -136,3 +136,53 @@ class TestAgentSessionPinsCheck:
         _point_at(monkeypatch, db)
         assert _check_agent_session_pins() is True
         assert capsys.readouterr().out == ""
+
+    def test_abstract_tier_name_does_not_warn(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        # F4: an abstract tier (frontier) is the redesign's canonical vocabulary —
+        # it must not be flagged as a typo just because it isn't a pricing family.
+        db = tmp_path / "config.sqlite3"
+        _seed(db, agent_session_model="frontier", agent_skill_models={"code-review": "cheap"})
+        _point_at(monkeypatch, db)
+        assert _check_agent_session_pins() is True
+        assert capsys.readouterr().out == ""
+
+    def test_provider_prefixed_id_does_not_warn(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        # F4: a deliberate provider-native pin (carries a '/') is a non-Claude
+        # choice, never a typo.
+        db = tmp_path / "config.sqlite3"
+        _seed(
+            db,
+            agent_session_model="orcarouter/teatree-factory",
+            agent_skill_models={"c": "deepseek/deepseek-v4-pro"},
+        )
+        _point_at(monkeypatch, db)
+        assert _check_agent_session_pins() is True
+        assert capsys.readouterr().out == ""
+
+    def test_operator_tier_model_override_value_does_not_warn(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        # F4: a bare id the operator themselves configured as a tier-model
+        # override is intentional — the doctor trusts their own vocabulary.
+        db = tmp_path / "config.sqlite3"
+        _seed(db, agent_tier_models={"frontier": "custom-x"}, agent_session_model="custom-x")
+        _point_at(monkeypatch, db)
+        assert _check_agent_session_pins() is True
+        assert capsys.readouterr().out == ""
+
+    def test_bare_typo_still_warns(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        # The vocabulary-aware check still catches a genuine bare typo — no slash,
+        # no family, not in the shipped vocabulary or an operator override.
+        db = tmp_path / "config.sqlite3"
+        _seed(db, agent_session_model="xyzzy")
+        _point_at(monkeypatch, db)
+        assert _check_agent_session_pins() is True
+        out = capsys.readouterr().out
+        assert "WARN" in out
+        assert "xyzzy" in out

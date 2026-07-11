@@ -1,13 +1,17 @@
 """Per-phase headless model tiering by ABSTRACT TIER (#880, #562 §3).
 
-Every concrete Claude model id in teatree lives in EXACTLY ONE place: the
-:data:`TIER_MODELS` constant below (the ``claude_sdk`` catalog; the
+On the DISPATCH-RESOLUTION path, every concrete Claude model id lives in ONE
+place: the :data:`TIER_MODELS` constant below (the ``claude_sdk`` catalog; the
 ``pydantic_ai``/OrcaRouter harness has its own :data:`PYDANTIC_AI_TIER_MODELS`
-catalog — see the harness-scoped note below). Everything else — production phase
-dispatch, eval scenarios, the benchmark, and the tests — references an abstract
-TIER (``frontier`` / ``balanced`` / ``cheap``), never a concrete model id.
-Adopting a new model is one edit to :data:`TIER_MODELS` (or one
-``agent_tier_models`` DB row), with zero scenario, test, or dispatch edits.
+catalog — see the harness-scoped note below). Production phase dispatch and the
+eval scenarios reference an abstract TIER (``frontier`` / ``balanced`` /
+``cheap``), never a concrete model id, so adopting a new model for a live spawn
+is one edit to :data:`TIER_MODELS` (or one ``agent_tier_models`` DB row), with
+zero scenario or dispatch edits. This is NOT the whole story for a generation
+bump: the eval LANE keeps its own concrete pins (``eval/transcript.py``,
+``eval/loader.py``, ``eval/models.py``, ``eval/api_runner.py``) that a bump also
+touches — see the allowlist in ``tests/quality/test_no_hardcoded_model_ids.py``
+for the full set of legitimate id homes.
 
 The three tiers map to the price points #562 reasons about: ``frontier`` is the
 full-reasoning tier (genuine design work), ``balanced`` the mid tier, ``cheap``
@@ -36,7 +40,7 @@ teatree-native id UP to that router handle for the OrcaRouter harness, while an
 explicit Orca-native pin passes through. The reasoning-EFFORT dial is
 similarly harness-scoped: the two harnesses' supported effort vocabularies are not identical —
 the ``claude-agent-sdk`` CLI's scale tops out at ``max``
-(:data:`teatree.config_agent.EFFORT_SCALE`), while ``pydantic_ai``'s OpenAI-compatible
+(:data:`teatree.config.agent_spawn.EFFORT_SCALE`), while ``pydantic_ai``'s OpenAI-compatible
 ``ReasoningEffort`` tops out at ``xhigh`` (no ``max``) — so :func:`resolve_tier_effort`
 / :func:`resolve_spawn_effort` validate their resolved value against the ACTIVE
 harness's :data:`HARNESS_EFFORT_SCALE` entry and drop an out-of-range value (falling
@@ -60,11 +64,11 @@ power user can still pin a specific model. A sentinel value (empty / ``default``
 configured default applies unchanged.
 """
 
-from collections.abc import Iterable, Sequence
+from collections.abc import Iterable
 
 from teatree.config import AgentHarness, cold_reader, get_effective_settings
-from teatree.config_agent import _INHERIT_SENTINELS, EFFORT_SCALE, resolve_agent_config
-from teatree.core.cost import tier_of_model, tier_rank
+from teatree.config.agent_spawn import _INHERIT_SENTINELS, EFFORT_SCALE, resolve_agent_config
+from teatree.core.cost import FAMILY_TO_TIER, PRICE_TABLE, tier_of_model, tier_rank
 
 # THE SINGLE SOURCE OF TRUTH for concrete model ids. This is the ONLY place a
 # concrete Claude model id appears in teatree's model-resolution code: abstract
@@ -95,16 +99,9 @@ PYDANTIC_AI_TIER_MODELS: dict[str, str] = {
     "cheap": "orcarouter/teatree-factory",
 }
 
-# Reverse of the abstract-tier → Claude-family relationship, for normalising a
-# resolved Claude id back to its abstract tier when picking the ``pydantic_ai``
-# router handle (:func:`resolve_pydantic_ai_model`). The pricing-side sibling is
-# ``teatree.core.cost._FAMILY_TO_TIER``; this copy lives here because
-# ``model_tiering`` OWNS the abstract tiers.
-_CLAUDE_FAMILY_TO_TIER: dict[str, str] = {"opus": "frontier", "sonnet": "balanced", "haiku": "cheap"}
-
 # THE SINGLE SOURCE OF TRUTH for per-tier reasoning EFFORT — the parallel of
 # :data:`TIER_MODELS` for the effort axis. Abstract tier name -> CLI effort level
-# (a member of :data:`teatree.config_agent.EFFORT_SCALE`). Overridable per tier
+# (a member of :data:`teatree.config.agent_spawn.EFFORT_SCALE`). Overridable per tier
 # via ``agent_tier_effort`` (merged OVER this default). Only the reasoning tiers
 # carry an effort: ``cheap`` (Haiku, which rejects the effort/thinking levers) is
 # deliberately ABSENT, so :func:`resolve_tier_effort` returns ``None`` for it and
@@ -121,10 +118,10 @@ TIER_EFFORT: dict[str, str] = {
 # back to the shipped :data:`TIER_EFFORT` default) rather than ever handing a
 # harness an effort string outside its own scale.
 #
-# ``claude_sdk`` -> :data:`teatree.config_agent.EFFORT_SCALE` (the
+# ``claude_sdk`` -> :data:`teatree.config.agent_spawn.EFFORT_SCALE` (the
 # ``claude-agent-sdk`` CLI's own scale, unchanged — the config-time validator in
-# ``config_agent.py`` already gates ``agent_tier_effort`` overrides against this
-# same set). ``pydantic_ai`` -> the OpenAI-compatible ``ReasoningEffort`` /
+# ``config/agent_spawn.py`` already gates ``agent_tier_effort`` overrides against
+# this same set). ``pydantic_ai`` -> the OpenAI-compatible ``ReasoningEffort`` /
 # ``ThinkingLevel`` vocabulary pydantic_ai exposes (``minimal`` instead of
 # ``claude_sdk``'s absent floor rung, no ``max`` ceiling rung).
 HARNESS_EFFORT_SCALE: dict[AgentHarness, frozenset[str]] = {
@@ -180,74 +177,45 @@ PHASE_HARNESS: dict[str, AgentHarness] = dict.fromkeys(VERIFICATION_PHASES, Agen
 def resolve_phase_harness(configured: AgentHarness, phase: str | None) -> AgentHarness:
     """The harness a *phase* dispatch actually uses — *configured*, unless the phase is pinned.
 
-    A phase in :data:`PHASE_HARNESS` (the verification phases) forces its pinned
-    harness (``claude_sdk``) even when the overlay configured ``pydantic_ai`` — so
-    the checker stays on the trusted lane while the maker rides the cheap one. Every
-    other phase (and an absent *phase*) uses *configured* unchanged.
+    Resolution, first match wins:
+
+    1.  An ``agent_phase_harness`` DB override for *phase*
+        (:attr:`~teatree.config.agent_spawn.AgentConfig.phase_harness`): a named
+        harness FLIPS the pin, an explicit unpin (``None``) drops the phase back
+        to *configured* even when the shipped default below would pin it.
+    2.  The shipped :data:`PHASE_HARNESS` default — a verification phase forces
+        ``claude_sdk`` even when the overlay configured ``pydantic_ai`` (so the
+        checker stays on the trusted lane while the maker rides the cheap one).
+    3.  Otherwise (and for an absent *phase*) *configured*, unchanged.
+
+    An EMPTY ``agent_phase_harness`` (the shipped state) is byte-identical to the
+    pre-override behaviour: a full swap of the verification checker onto
+    ``pydantic_ai`` becomes one DB row instead of a code edit (§3a #3).
     """
-    if phase is not None and phase in PHASE_HARNESS:
+    if phase is None:
+        return configured
+    overrides = resolve_agent_config().phase_harness
+    if phase in overrides:
+        pinned = overrides[phase]
+        return pinned if pinned is not None else configured
+    if phase in PHASE_HARNESS:
         return PHASE_HARNESS[phase]
     return configured
 
 
-def is_regulated_path_eligible(model_id: str, allowlist: Sequence[str]) -> bool:
-    """Whether *model_id* is on the regulated-path *allowlist* (case-insensitive substring).
+def known_model_vocabulary() -> frozenset[str]:
+    """The bare (non-provider-prefixed) model/tier tokens the doctor accepts as valid.
 
-    The regulated path carries client/bank data, so the models eligible to run on
-    it are governed by EU data-residency & regulatory compliance (GDPR, data
-    residency, processor jurisdiction) and enumerated in an EXPLICIT
-    operator-configured allowlist
-    (:data:`~teatree.config.UserSettings.regulated_path_model_allowlist`) — a
-    BYOK / residency-controlled set, never inferred from the model in code. A model
-    is eligible only when its id matches an allowlist pattern; an empty allowlist
-    makes nothing eligible (fail-closed for a regulated lane).
+    The abstract tier NAMES (``frontier`` / ``balanced`` / ``cheap``), the shipped
+    concrete tier-model ids of BOTH catalogs, and the price-table family
+    short-names. A provider-prefixed id (``deepseek/…``, ``orcarouter/…`` — any id
+    carrying a ``/``) and an operator's OWN ``agent_tier_models`` values are
+    explicit pins the caller trusts separately, so they are NOT enumerated here —
+    this is only the shipped vocabulary a bare pin is checked against before the
+    doctor flags it as a likely typo (:func:`teatree.cli._doctor_checks._check_agent_session_pins`).
     """
-    lowered = model_id.lower()
-    return any(pattern.lower() in lowered for pattern in allowlist)
-
-
-def assert_model_allowed_on_regulated_path(
-    model_id: str,
-    *,
-    enforce_regulated_path: bool | None = None,
-    allowlist: Sequence[str] | None = None,
-) -> None:
-    """Raise ``ValueError`` when *model_id* is not eligible for a REGULATED lane's path.
-
-    A lane that carries regulated client/bank data (a future regulated / EU-residency lane)
-    restricts inference to a compliance-vetted model set — an EU data-residency &
-    regulatory-compliance requirement (GDPR, data residency, processor jurisdiction),
-    not a model-origin question. The gate is the DB-home ``enforce_regulated_path``
-    (default ``False`` — the teatree factory lane carries no regulated data and runs
-    unrestricted, incl. cheap open-source models); when ``True``, only a model whose
-    id is on the EXPLICIT ``regulated_path_model_allowlist`` (a per-overlay,
-    BYOK / residency-controlled allowlist) may run — everything else is refused as a
-    config-policy violation.
-
-    CLIENT-SIDE ONLY (best-effort): this rejects an ineligible id BEFORE the request,
-    but with the default ``orcarouter/teatree-factory`` router handle the OrcaRouter
-    SERVER-SIDE bandit can still route to a model not on the allowlist. An operator
-    needing a HARD regulated-path restriction must ALSO constrain the OrcaRouter
-    dashboard (Allowed-models glob) or pin explicit model ids.
-
-    *enforce_regulated_path* / *allowlist* are injectable for tests; the defaults
-    read the resolved DB-home settings.
-    """
-    if enforce_regulated_path is None or allowlist is None:
-        settings = get_effective_settings()
-        if enforce_regulated_path is None:
-            enforce_regulated_path = settings.enforce_regulated_path
-        if allowlist is None:
-            allowlist = settings.regulated_path_model_allowlist
-    if enforce_regulated_path and not is_regulated_path_eligible(model_id, allowlist):
-        msg = (
-            f"model {model_id!r} is not eligible for the regulated path "
-            "(enforce_regulated_path is True and the id is not on regulated_path_model_allowlist — "
-            "the EU data-residency / regulatory-compliance allowlist for the regulated lane); "
-            "add the model to regulated_path_model_allowlist for the overlay, or "
-            "`t3 <overlay> config_setting set enforce_regulated_path false --overlay <name>`"
-        )
-        raise ValueError(msg)
+    tokens = {*TIER_MODELS, *TIER_MODELS.values(), *PYDANTIC_AI_TIER_MODELS.values(), *FAMILY_TO_TIER, *PRICE_TABLE}
+    return frozenset(token.lower() for token in tokens if token)
 
 
 def resolve_tier(tier: str) -> str:
@@ -295,7 +263,7 @@ def resolve_pydantic_ai_model(model_name: str | None, *, router_name: str | None
     (:func:`_resolve_pydantic_ai_tier`). An explicit Orca-native pin (ANY
     provider-prefixed id, e.g. an operator ``phase_models`` override to
     ``deepseek/deepseek-v4-pro``) passes through UNCHANGED — the caller then still
-    runs it past :func:`assert_model_allowed_on_regulated_path`.
+    runs it past :func:`teatree.agents.regulated_path.assert_model_allowed_on_regulated_path`.
 
     *router_name* is the per-overlay OrcaRouter router handle (the DB-home
     ``orca_router_name`` setting, e.g. ``orcarouter/secondary-factory``) that selects
@@ -315,7 +283,7 @@ def resolve_pydantic_ai_model(model_name: str | None, *, router_name: str | None
 def _abstract_tier_of(model_name: str | None) -> str:
     """The abstract tier a teatree-native Claude id belongs to, else :data:`DEFAULT_TIER`."""
     lowered = (model_name or "").lower()
-    for family, tier in _CLAUDE_FAMILY_TO_TIER.items():
+    for family, tier in FAMILY_TO_TIER.items():
         if family in lowered:
             return tier
     return DEFAULT_TIER

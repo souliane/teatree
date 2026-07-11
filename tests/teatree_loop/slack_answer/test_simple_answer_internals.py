@@ -1,46 +1,28 @@
 """Coverage for the Stage B / token-budget internals (#1014).
 
-The public ``build_simple_answer`` tests mock ``_run_haiku``; these
-exercise the real helper (the in-process Agent SDK mocked at
-``claude_agent_sdk.query``) plus the token-budget env parsing and the
-Stage-A no-keyword early return.
+The public ``build_simple_answer`` tests mock ``_run_cheap_turn``; these
+exercise the real helper (the shared one-shot seam
+``teatree.agents.one_shot.run_one_shot`` mocked at the module boundary) plus
+the token-budget env parsing and the Stage-A no-keyword early return.
 
-Stage B runs the haiku model in-process via ``claude_agent_sdk.query`` —
-the SAME subscription-authenticated path (``CLAUDE_CODE_OAUTH_TOKEN``) the
-eval ``api`` backend uses. It never shells ``claude -p`` and never bills an
-API key; it spends subscription-covered model time for one stateless turn.
+Stage B runs ONE clean-room, cheap-tier turn through the harness seam — so it
+follows a swapped tier-model DB row and works off-Claude. The seam returns
+``None`` on ANY failure (missing binary, credential problem, timeout, backend
+error), which collapses to the NEEDS_WORK sentinel here. The seam's own
+clean-room-options + failure contract is proved in
+``tests/teatree_agents/test_one_shot.py``.
 """
 
-from collections.abc import AsyncIterator
-from typing import Any
 from unittest.mock import patch
 
 import pytest
-from claude_agent_sdk import AssistantMessage, TextBlock
 
-from teatree.loop.slack_answer import simple_answer
-from teatree.loop.slack_answer.simple_answer import NEEDS_WORK_SENTINEL, _run_haiku, _stage_a, _token_budget_remaining
-
-
-def _assistant(text: str) -> AssistantMessage:
-    return AssistantMessage(content=[TextBlock(text=text)], model="claude-haiku")
-
-
-def _fake_query(text: str) -> Any:
-    """Return a ``query``-shaped async generator yielding one assistant message."""
-
-    async def _gen(*_args: Any, **_kwargs: Any) -> AsyncIterator[Any]:  # noqa: RUF029 — async generator matching the SDK `query` signature; the `yield` makes it async.
-        yield _assistant(text)
-
-    return _gen
-
-
-def _raising_query(exc: BaseException) -> Any:
-    async def _gen(*_args: Any, **_kwargs: Any) -> AsyncIterator[Any]:  # noqa: RUF029 — async generator matching the SDK `query` signature; raises mid-stream.
-        raise exc
-        yield  # pragma: no cover — unreachable, marks this an async generator
-
-    return _gen
+from teatree.loop.slack_answer.simple_answer import (
+    NEEDS_WORK_SENTINEL,
+    _run_cheap_turn,
+    _stage_a,
+    _token_budget_remaining,
+)
 
 
 class TestTokenBudgetEnv:
@@ -63,59 +45,25 @@ class TestStageANoKeyword:
         assert _stage_a("how are you feeling") is None
 
 
-class TestRunHaiku:
-    def test_missing_sdk_returns_sentinel(self) -> None:
-        # No claude CLI child available (the SDK spawns it) → fall through to
-        # delegation, exactly as the old missing-binary path did.
-        with patch("teatree.loop.slack_answer.simple_answer.shutil.which", return_value=None):
-            assert _run_haiku("q", "digest") == NEEDS_WORK_SENTINEL
-
-    def test_query_error_returns_sentinel(self) -> None:
-        with (
-            patch("teatree.loop.slack_answer.simple_answer.shutil.which", return_value="/usr/bin/claude"),
-            patch("teatree.loop.slack_answer.simple_answer.query", _raising_query(RuntimeError("boom"))),
-        ):
-            assert _run_haiku("q", "digest") == NEEDS_WORK_SENTINEL
-
-    def test_timeout_returns_sentinel(self) -> None:
-        with (
-            patch("teatree.loop.slack_answer.simple_answer.shutil.which", return_value="/usr/bin/claude"),
-            patch("teatree.loop.slack_answer.simple_answer.query", _raising_query(TimeoutError())),
-        ):
-            assert _run_haiku("q", "digest") == NEEDS_WORK_SENTINEL
-
-    def test_empty_text_returns_sentinel(self) -> None:
-        with (
-            patch("teatree.loop.slack_answer.simple_answer.shutil.which", return_value="/usr/bin/claude"),
-            patch("teatree.loop.slack_answer.simple_answer.query", _fake_query("   ")),
-        ):
-            assert _run_haiku("q", "digest") == NEEDS_WORK_SENTINEL
+class TestRunCheapTurn:
+    def test_seam_failure_returns_sentinel(self) -> None:
+        # The seam returns None on ANY failure (missing binary, timeout, backend
+        # error) → the caller falls through to delegation, as the old
+        # missing-binary path did.
+        with patch("teatree.loop.slack_answer.simple_answer.run_one_shot", return_value=None):
+            assert _run_cheap_turn("q", "digest") == NEEDS_WORK_SENTINEL
 
     def test_successful_answer_text_returned(self) -> None:
-        with (
-            patch("teatree.loop.slack_answer.simple_answer.shutil.which", return_value="/usr/bin/claude"),
-            patch("teatree.loop.slack_answer.simple_answer.query", _fake_query("Two PRs open.\n")),
-        ):
-            assert _run_haiku("which PRs?", "digest") == "Two PRs open."
+        with patch("teatree.loop.slack_answer.simple_answer.run_one_shot", return_value="Two PRs open.") as one_shot:
+            assert _run_cheap_turn("which PRs?", "digest") == "Two PRs open."
+        # The turn rides the CHEAP tier through the seam (never a hardcoded id).
+        (_prompt, spec), _kwargs = one_shot.call_args
+        assert spec.tier == "cheap"
+        assert spec.max_turns == 1
 
-    def test_options_select_haiku_single_turn_no_tools(self) -> None:
-        captured: dict[str, Any] = {}
-
-        async def _capture(*_args: Any, **kwargs: Any) -> AsyncIterator[Any]:  # noqa: RUF029 — async generator matching the SDK `query` signature; the `yield` makes it async.
-            captured["options"] = kwargs.get("options")
-            yield _assistant("ok")
-
-        with (
-            patch("teatree.loop.slack_answer.simple_answer.shutil.which", return_value="/usr/bin/claude"),
-            patch("teatree.loop.slack_answer.simple_answer.query", _capture),
-        ):
-            assert _run_haiku("which PRs?", "digest") == "ok"
-
-        options = captured["options"]
-        # Haiku model, a single stateless turn, no tools, and the clean-room
-        # isolation the eval runner uses (no personal settings bias the answer).
-        assert "haiku" in options.model
-        assert options.max_turns == 1
-        assert options.tools == []
-        assert options.setting_sources == []
-        assert options.system_prompt == simple_answer._HAIKU_SYSTEM_PROMPT
+    def test_prompt_carries_question_and_digest(self) -> None:
+        with patch("teatree.loop.slack_answer.simple_answer.run_one_shot", return_value="ok") as one_shot:
+            assert _run_cheap_turn("which PRs?", "3 PRs, 1 blocked") == "ok"
+        prompt = one_shot.call_args.args[0]
+        assert "which PRs?" in prompt
+        assert "3 PRs, 1 blocked" in prompt

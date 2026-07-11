@@ -14,7 +14,7 @@ from teatree.agents.skill_injection import (
     _read_skill_contents,
     _read_skill_contents_scoped,
 )
-from teatree.config_agent import resolve_agent_config
+from teatree.config.agent_spawn import resolve_agent_config
 from teatree.core.modelkit.phases import normalize_phase, resolve_fanout_directive
 from teatree.core.models import Task, Ticket
 from teatree.skill_support.loading import FRAMEWORK_SKILL_NAMES
