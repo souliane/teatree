@@ -33,6 +33,20 @@ class LocalAdminAutoLoginTestCase(TestCase):
         get_user_model().objects.create_superuser("admin", password="x")
         self._run(remote_addr="::1").assert_called_once()
 
+    def test_logs_in_superuser_on_loopback_dash_prefix(self) -> None:
+        # #3162: the dashboard at /dash/ rides the same loopback auto-login as
+        # /admin/. Fails RED if the prefix gate narrows back to admin-only.
+        superuser = get_user_model().objects.create_superuser("admin", password="x")
+        login_mock = self._run("/dash/board")
+        login_mock.assert_called_once()
+        assert login_mock.call_args.args[1] == superuser
+
+    def test_dash_not_logged_in_for_non_loopback(self) -> None:
+        # SECURITY: the loopback boundary covers /dash/ exactly as it covers
+        # /admin/ — a non-loopback dashboard request is never auto-logged-in.
+        get_user_model().objects.create_superuser("admin", password="x")
+        self._run("/dash/board", remote_addr=_NON_LOOPBACK).assert_not_called()
+
     def test_not_logged_in_for_non_loopback_even_with_flag_on(self) -> None:
         # SECURITY: the flag is on (default), but a non-loopback client must
         # NEVER be auto-logged-in — the loopback check is the hard boundary that

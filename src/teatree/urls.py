@@ -4,6 +4,10 @@ from django.urls import include, path, re_path
 
 urlpatterns = [
     path("", include("teatree.core.urls", namespace="teatree")),
+    # The first-party admin dashboard (#3162) — ticket-FSM kanban, health, and
+    # loop control. Rides this same gunicorn process on the same loopback port,
+    # behind the same loopback auto-login (its prefix gate covers `/dash/`).
+    path("dash/", include("teatree.dash.urls", namespace="dash")),
     # Mounted unconditionally — the admin is the operator's observability window
     # and must not depend on DEBUG. It stays protected by Django auth (+ the
     # deploy's loopback bind + SSH tunnel); auto-login is loopback + flag gated

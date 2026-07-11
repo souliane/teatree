@@ -12,7 +12,11 @@ if TYPE_CHECKING:
     from django.http import HttpRequest, HttpResponse
 
 _MODEL_BACKEND = "django.contrib.auth.backends.ModelBackend"
-_ADMIN_PREFIX = "/admin/"
+# The operator-observability surfaces the loopback auto-login covers: the Django
+# admin and the `teatree.dash` dashboard (#3162). Both ride the same `t3 admin`
+# gunicorn process behind the same loopback bind + SSH tunnel, so the same
+# auto-login safety boundary applies to both prefixes.
+_AUTOLOGIN_PREFIXES = ("/admin/", "/dash/")
 _LOOPBACK_IPS = frozenset({"127.0.0.1", "::1"})
 
 
@@ -22,8 +26,9 @@ class LocalAdminAutoLoginMiddleware:
     Teatree's admin is a single-operator dashboard reached over a loopback bind
     + SSH tunnel (``cli/admin.py`` and the headless deploy), so a login prompt
     is pure friction — a lost password locks the owner out of their own tool. An
-    unauthenticated ``/admin/`` request is logged in as the first superuser when
-    BOTH hold:
+    unauthenticated request under one of :data:`_AUTOLOGIN_PREFIXES` (``/admin/``
+    or the ``teatree.dash`` dashboard at ``/dash/``, #3162) is logged in as the
+    first superuser when BOTH hold:
 
     * the ``admin_autologin_enabled`` setting is on (DB-home, default on), and
     * the request originates from loopback (``127.0.0.1`` / ``::1``).
@@ -41,9 +46,9 @@ class LocalAdminAutoLoginMiddleware:
 
     def __call__(self, request: "HttpRequest") -> "HttpResponse":
         if (
-            request.path.startswith(_ADMIN_PREFIX)
+            request.path.startswith(_AUTOLOGIN_PREFIXES)
             and not request.user.is_authenticated
-            and _request_is_loopback(request)
+            and request_is_loopback(request)
             and get_effective_settings().admin_autologin_enabled
         ):
             superuser = get_user_model().objects.filter(is_superuser=True).first()
@@ -53,7 +58,7 @@ class LocalAdminAutoLoginMiddleware:
         return self.get_response(request)
 
 
-def _request_is_loopback(request: "HttpRequest") -> bool:
+def request_is_loopback(request: "HttpRequest") -> bool:
     """Whether the request's client address is a loopback address.
 
     Reads ``REMOTE_ADDR`` (the real peer address), never a forwarded header — a

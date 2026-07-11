@@ -242,6 +242,22 @@ depends_on = [
 ]
 
 [[modules]]
+# The first-party admin dashboard (#3162) — an HTTP interface over the existing
+# read-only selectors / health readers / loop-control managers. Reads the domain,
+# never the reverse; adds no second source of truth.
+path = "teatree.dash"
+layer = "interface"
+depends_on = [
+  "teatree.core",
+  "teatree.core.models",
+  "teatree.loops",
+  "teatree.loop.loop_state_db",
+  "teatree.config",
+  "teatree.agents",
+  "teatree.utils"
+]
+
+[[modules]]
 path = "teatree.backends"
 layer = "domain"
 depends_on = [

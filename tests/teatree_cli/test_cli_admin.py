@@ -21,6 +21,7 @@ def _invoke(*args: str):
     with (
         patch("teatree.cli.admin.ensure_django"),
         patch("teatree.cli.admin._ensure_migrated"),
+        patch("teatree.cli.admin._collectstatic"),
         patch("teatree.cli.admin._run_server") as run_server,
         patch("teatree.cli.admin.webbrowser.open") as browser_open,
     ):
@@ -64,6 +65,22 @@ class AdminSuperuserTestCase(TestCase):
         assert "password" not in result.output
         assert get_user_model().objects.filter(is_superuser=True).count() == 1
         assert get_user_model().objects.get(username="existing").check_password("already-set")
+
+
+class AdminCollectStaticTestCase(TestCase):
+    def test_admin_collects_static_before_serving(self) -> None:
+        # BLOCKING #2: under gunicorn with DEBUG off WhiteNoise serves STATIC_ROOT,
+        # which must be populated first — so the admin boot path runs collectstatic.
+        with (
+            patch("teatree.cli.admin.ensure_django"),
+            patch("teatree.cli.admin._ensure_migrated"),
+            patch("teatree.cli.admin._run_server"),
+            patch("teatree.cli.admin.webbrowser.open"),
+            patch("teatree.cli.admin._collectstatic") as collectstatic,
+        ):
+            result = runner.invoke(_app, ["--no-browser"])
+        assert result.exit_code == 0
+        collectstatic.assert_called_once_with()
 
 
 class AdminServerLaunchTestCase(TestCase):
