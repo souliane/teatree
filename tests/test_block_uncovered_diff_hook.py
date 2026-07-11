@@ -17,6 +17,7 @@ turns the block tests red — the anti-vacuity guarantee.
 
 import json
 import subprocess
+from pathlib import Path
 from unittest.mock import patch
 
 import hooks.scripts.hook_router as router
@@ -169,6 +170,75 @@ class TestAllowsCleanCases:
         with patch.object(router.subprocess, "run", side_effect=subprocess.TimeoutExpired("t3", 30)):
             data = {"tool_name": "Bash", "tool_input": {"command": "gh pr ready 42"}}
             assert handle_block_uncovered_diff(data) is False
+
+
+class TestMeasuresTheGatedCommandsWorktree:
+    """Measure the worktree the gated command targets, not the session cwd.
+
+    Anti-vacuity: the gate keys ``t3 tool diff-coverage`` to the worktree the
+    gated command TARGETS (its own leading ``cd``), never the cold hook's
+    inherited session cwd.
+
+    A cross-worktree ship — the session cwd is worktree Y, but the command ships
+    worktree X via ``cd X && gh pr create`` — must run ``t3 tool diff-coverage``
+    against X. Reverting the cwd-resolution fix measures Y and flags X's PR with
+    Y's unrelated uncovered lines (the ``wire.py`` false-flag).
+    """
+
+    def _worktree(self, root: Path, name: str) -> Path:
+        wt = root / name
+        (wt / ".git").mkdir(parents=True)
+        return wt
+
+    def test_measures_the_cd_target_worktree_not_the_session_cwd(self, tmp_path, monkeypatch):
+        x = self._worktree(tmp_path, "worktree-x")  # the PR's worktree (cd target)
+        y = self._worktree(tmp_path, "worktree-y")  # the session cwd (a DIFFERENT worktree)
+        monkeypatch.setattr(router.shutil, "which", lambda _: "/usr/local/bin/t3")
+        captured: dict = {}
+
+        def fake_run(argv, **kwargs):
+            captured["argv"] = argv
+            captured["cwd"] = kwargs.get("cwd")
+            return subprocess.CompletedProcess(args=argv, returncode=1, stdout=_finding_json(), stderr="")
+
+        with patch.object(router.subprocess, "run", side_effect=fake_run):
+            data = {
+                "tool_name": "Bash",
+                "tool_input": {"command": f"cd {x} && gh pr create --title t --body b"},
+                "cwd": str(y),
+            }
+            assert handle_block_uncovered_diff(data) is True
+
+        # The gate measured X (the cd target), never the session cwd Y.
+        assert "--repo" in captured["argv"]
+        repo_arg = captured["argv"][captured["argv"].index("--repo") + 1]
+        assert Path(repo_arg).resolve() == x.resolve()
+        assert Path(captured["cwd"]).resolve() == x.resolve()
+        assert str(y.resolve()) not in captured["argv"]
+
+    def test_falls_back_to_session_cwd_when_command_has_no_leading_cd(self, tmp_path, monkeypatch):
+        y = self._worktree(tmp_path, "session-cwd")
+        monkeypatch.setattr(router.shutil, "which", lambda _: "/usr/local/bin/t3")
+        captured: dict = {}
+
+        def fake_run(argv, **kwargs):
+            captured["argv"] = argv
+            captured["cwd"] = kwargs.get("cwd")
+            clean = json.dumps({"passes": True, "uncovered": [], "unreferenced_symbols": []})
+            return subprocess.CompletedProcess(args=argv, returncode=0, stdout=clean, stderr="")
+
+        with patch.object(router.subprocess, "run", side_effect=fake_run):
+            data = {
+                "tool_name": "Bash",
+                "tool_input": {"command": "gh pr create --title t --body b"},
+                "cwd": str(y),
+            }
+            assert handle_block_uncovered_diff(data) is False
+
+        # No leading cd → the gate measures the session cwd's OWN repo (correct
+        # when the command runs there), never a bare cwd-less run.
+        assert Path(captured["cwd"]).resolve() == y.resolve()
+        assert "--repo" in captured["argv"]
 
 
 class TestRegisteredInPreToolUseChain:

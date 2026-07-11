@@ -293,9 +293,14 @@ class TestGetCodeHostForRepo:
         repo = _git_repo_with_origin(tmp_path / "gl", "git@gitlab.com:group/repo.git")
         assert isinstance(get_code_host_for_repo(overlay, repo), GitLabCodeHost)
 
-    def test_github_hosted_repo_resolves_github_even_when_gitlab_token_set(self, tmp_path: Path) -> None:
+    def test_github_hosted_repo_resolves_github_even_when_gitlab_token_set(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         overlay = _build_overlay()
         _stub_token(overlay, github="gh-tok", gitlab="gl-tok")
+        # The configured GitHub token can push here — keep it (no ambient probe,
+        # hermetic: never shell a real ``gh api``).
+        monkeypatch.setattr("teatree.backends.loader.gh_can_push", lambda _slug, *, token="": True)
         repo = _git_repo_with_origin(tmp_path / "gh", "git@github.com:souliane/teatree.git")
         assert isinstance(get_code_host_for_repo(overlay, repo), GitHubCodeHost)
 
@@ -350,19 +355,67 @@ class TestGetCodeHostForRepoGithubAmbientAuth:
 
         assert isinstance(result, GitHubCodeHost)
 
-    def test_configured_token_path_is_unchanged(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_configured_token_that_can_push_is_used_without_ambient_probe(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         overlay = _build_overlay()
         _stub_token(overlay, github="gh-tok")
-        # Ambient-auth check must never even run when a token is configured.
+        # The configured token CAN push to this repo, so it authors the PR and
+        # the ambient account is never consulted (a working token costs one
+        # ``repos/{slug}`` push probe and nothing more).
+        monkeypatch.setattr("teatree.backends.loader.gh_can_push", lambda _slug, *, token="": True)
         monkeypatch.setattr(
             "teatree.backends.loader.gh_ambient_auth_available",
-            lambda: (_ for _ in ()).throw(AssertionError("should not probe ambient auth when a token is set")),
+            lambda: (_ for _ in ()).throw(AssertionError("ambient must not be probed when the token can push")),
         )
         repo = _git_repo_with_origin(tmp_path / "gh-tok", "git@github.com:souliane/teatree.git")
 
         result = get_code_host_for_repo(overlay, repo)
 
         assert isinstance(result, GitHubCodeHost)
+        assert result._token == "gh-tok"
+
+    def test_non_collaborator_token_falls_back_to_ambient_collaborator(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # The configured token is NOT a collaborator on this repo (its
+        # ``createPullRequest`` fails "must be a collaborator"), but the ambient
+        # ``gh`` CLI account IS. The collaborator identity must author the PR.
+        overlay = _build_overlay()
+        _stub_token(overlay, github="bot-token")
+
+        def fake_can_push(_slug: str, *, token: str = "") -> bool:
+            # Only the ambient (empty-token) identity can push here.
+            return token == ""
+
+        monkeypatch.setattr("teatree.backends.loader.gh_can_push", fake_can_push)
+        monkeypatch.setattr("teatree.backends.loader.gh_ambient_auth_available", lambda: True)
+        repo = _git_repo_with_origin(tmp_path / "gh-collab", "git@github.com:souliane/teatree.git")
+
+        result = get_code_host_for_repo(overlay, repo)
+
+        assert isinstance(result, GitHubCodeHost)
+        # The COLLABORATOR identity (ambient gh account, token="") authors the PR,
+        # NOT the configured non-collaborator token. Reverting the fix returns the
+        # bot token here and re-triggers the "must be a collaborator" abort.
+        assert result._token == ""
+
+    def test_non_collaborator_token_kept_when_ambient_also_cannot_push(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Neither the configured token nor the ambient account can push — never
+        # silently switch identity; keep the configured token so the real error
+        # surfaces rather than guessing an identity that also cannot create.
+        overlay = _build_overlay()
+        _stub_token(overlay, github="bot-token")
+        monkeypatch.setattr("teatree.backends.loader.gh_can_push", lambda _slug, *, token="": False)
+        monkeypatch.setattr("teatree.backends.loader.gh_ambient_auth_available", lambda: True)
+        repo = _git_repo_with_origin(tmp_path / "gh-nopush", "git@github.com:souliane/teatree.git")
+
+        result = get_code_host_for_repo(overlay, repo)
+
+        assert isinstance(result, GitHubCodeHost)
+        assert result._token == "bot-token"
 
     def test_raises_when_no_token_and_ambient_auth_unavailable(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
