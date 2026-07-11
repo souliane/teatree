@@ -35,8 +35,8 @@ from teatree.agents.harness import (
     PydanticAiHarness,
     PydanticAiHarnessSession,
     _extract_system_prompt,
-    _resolve_effort,
     pydantic_ai_thread,
+    resolve_effort,
     resolve_harness,
 )
 from teatree.agents.headless import LoopWatchdog, TaskUsage, _build_options, _drive_with_heartbeat, run_headless
@@ -622,19 +622,26 @@ class TestExtractSystemPrompt:
 
 
 class TestResolveEffort:
+    def test_is_a_public_seam(self) -> None:
+        # The eval pydantic_ai runner reuses this effort-vocabulary guard as a
+        # cross-module seam, so it must be a PUBLIC name — not a private
+        # ``_resolve_effort`` reached through the underscore.
+        assert hasattr(harness_mod, "resolve_effort")
+        assert not hasattr(harness_mod, "_resolve_effort")
+
     def test_valid_shared_effort_passes_through(self) -> None:
         options = ClaudeAgentOptions(effort="xhigh")
-        assert _resolve_effort(options) == "xhigh"
+        assert resolve_effort(options) == "xhigh"
 
     def test_claude_only_max_is_dropped(self) -> None:
         # "max" is on claude_sdk's EFFORT_SCALE but not pydantic_ai's
         # ReasoningEffort vocabulary — the harness must never forward it.
         options = ClaudeAgentOptions(effort="max")
-        assert _resolve_effort(options) is None
+        assert resolve_effort(options) is None
 
     def test_absent_effort_is_none(self) -> None:
         options = ClaudeAgentOptions(effort=None)
-        assert _resolve_effort(options) is None
+        assert resolve_effort(options) is None
 
 
 class TestPydanticAiModelIdNormalization(TestCase):

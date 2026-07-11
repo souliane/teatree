@@ -223,8 +223,12 @@ def _extract_system_prompt(options: ClaudeAgentOptions) -> str:
     return ""
 
 
-def _resolve_effort(options: ClaudeAgentOptions) -> ReasoningEffort | None:
+def resolve_effort(options: ClaudeAgentOptions) -> ReasoningEffort | None:
     """Map ``options.effort`` onto pydantic_ai's ``ReasoningEffort`` vocabulary.
+
+    Public seam: the eval ``pydantic_ai`` runner (:mod:`teatree.eval.pydantic_ai_runner`)
+    reuses this single effort-vocabulary guard so a headless dispatch and an eval run drop
+    the same out-of-vocabulary rungs; it is therefore a supported cross-module name.
 
     ``options.effort`` is already scoped to the ACTIVE harness by
     :func:`teatree.agents.model_tiering.resolve_spawn_effort` (called while
@@ -496,7 +500,7 @@ class PydanticAiHarness:
     @asynccontextmanager
     async def open(self, options: ClaudeAgentOptions) -> AsyncIterator[HarnessSession]:
         model = self._resolve_model(options)
-        effort = _resolve_effort(options)
+        effort = resolve_effort(options)
         model_settings = OpenAIChatModelSettings(openai_reasoning_effort=effort) if effort else None
         # PR-03: a phased dispatch wires the phase-scoped, gated tool/MCP layer
         # onto the Agent (``toolsets=`` + ``tool_timeout=``); an un-phased one

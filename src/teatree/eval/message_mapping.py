@@ -13,8 +13,8 @@ extraction is identical across every runner and the produced ``EvalRun`` is
 byte-identical in shape regardless of which model produced the run.
 
 The events are folded to :class:`~teatree.eval.transcript.StreamJsonEvent` DIRECTLY
-via :func:`~teatree.eval.transcript.event_from_obj` — the typed lane no longer
-serializes each event dict to JSON only to re-parse it back into the same dict. The
+via :meth:`~teatree.eval.transcript.StreamJsonEvent.from_obj` — the typed lane no
+longer serializes each event dict to JSON only to re-parse it back into the same dict. The
 synthesized ``raw_stdout`` (the stream-json text stored on the run for the report)
 is still rendered, but the extractors read the event dicts, not a re-parse of that
 string.

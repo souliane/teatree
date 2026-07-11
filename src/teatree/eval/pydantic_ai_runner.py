@@ -36,7 +36,7 @@ from pydantic_ai.providers.openai import OpenAIProvider
 from pydantic_ai.settings import ModelSettings
 from pydantic_ai.toolsets import FunctionToolset
 
-from teatree.agents.harness import LANE_EVAL, OrcaLaneConfig, PydanticAiHarnessSession, _resolve_effort
+from teatree.agents.harness import LANE_EVAL, OrcaLaneConfig, PydanticAiHarnessSession, resolve_effort
 from teatree.agents.model_tiering import resolve_pydantic_ai_model
 from teatree.agents.regulated_path import assert_model_allowed_on_regulated_path
 from teatree.config import get_effective_settings
@@ -88,11 +88,11 @@ def _system_prompt(spec: EvalSpec) -> str:
 def _model_settings(effort: EffortLevel | None) -> ModelSettings | None:
     """Map a resolved reasoning effort to OpenAI-compatible model settings, or ``None``.
 
-    Reuses the harness's effort-vocabulary guard (:func:`~teatree.agents.harness._resolve_effort`)
+    Reuses the harness's effort-vocabulary guard (:func:`~teatree.agents.harness.resolve_effort`)
     so the ``pydantic_ai`` lane drops an out-of-vocabulary rung (``max``) exactly as
     a headless dispatch does, rather than handing the provider a level it rejects.
     """
-    resolved = _resolve_effort(ClaudeAgentOptions(effort=effort))
+    resolved = resolve_effort(ClaudeAgentOptions(effort=effort))
     if resolved is None:
         return None
     return OpenAIChatModelSettings(openai_reasoning_effort=resolved)
