@@ -58,6 +58,10 @@ Print cycle-to-date SDK-equivalent spend vs the monthly credit.
 | `restore-ci` | Restore the worktree database from the latest CI dump |
 | `reset-passwords` | Reset all user passwords to a known dev value |
 
+## `db_backup`
+
+Back up teatree's control DB and prune past the keep-last-N-days retention (directive #2).
+
 ## `directive`
 
 Capture, drive, and inspect plain-language directives about teatree's own behavior.

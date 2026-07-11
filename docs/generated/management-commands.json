@@ -124,6 +124,11 @@
       ]
     },
     {
+      "help": "Back up teatree's control DB and prune past the keep-last-N-days retention (directive #2).",
+      "name": "db_backup",
+      "subcommands": []
+    },
+    {
       "help": "Capture, drive, and inspect plain-language directives about teatree's own behavior.",
       "name": "directive",
       "subcommands": [

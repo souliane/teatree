@@ -199,6 +199,15 @@ _DEFAULT_LOOPS = (
         False,
     ),
     (
+        "db_backup",
+        86400,
+        None,
+        None,
+        "Backs up teatree's own control DB daily and prunes past the keep-last-N-days retention (directive #2); the scanner enforces db_backup_cadence_hours, gated by db_backup_disabled.",
+        False,
+        True,
+    ),
+    (
         "backlog_sweep",
         86400,
         None,

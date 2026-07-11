@@ -12,6 +12,7 @@ from django_fsm import can_proceed
 
 from teatree.core.review.author_trust import classify_author
 from teatree.loop.dispatch import ActionPayload
+from teatree.loop.mechanical_db_backup import run_db_backup
 from teatree.loop.mechanical_local_stack import drain_stack_queue_item, reap_idle_stack
 from teatree.loop.mechanical_resources import free_resources
 from teatree.loop.mechanical_snapshot_warmer import refresh_snapshot
@@ -367,4 +368,7 @@ HANDLERS: dict[str, Callable[[ActionPayload], None]] = {
     # souliane/teatree#2949 snapshot warmer — restore+migrate+snapshot a
     # stale reference DB out-of-band from any ticket-critical-path provision.
     "refresh_snapshot": refresh_snapshot,
+    # Directive #2 daily control-DB backup — snapshot the live control DB +
+    # prune past the keep-last-N-days retention, off the tick.
+    "run_db_backup": run_db_backup,
 }
