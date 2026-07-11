@@ -1,49 +1,38 @@
 """Pluggable execution backends for the behavioral eval harness.
 
-The eval harness grades an :class:`~teatree.eval.models.EvalRun` regardless of
-HOW the run was produced — the matchers only see captured tool calls and text
-blocks. That makes the *execution* swappable.
+The harness grades an :class:`~teatree.eval.models.EvalRun` regardless of HOW the
+run was produced — the matchers only see captured tool calls and text blocks — so
+the *execution* is swappable behind one ``EvalRunner`` protocol. Three backends:
 
-Two backends, one ``EvalRunner`` protocol. The fresh-run ``api`` backend
-authenticates with the credential the ``eval_credential`` knob selects — the
-subscription ``CLAUDE_CODE_OAUTH_TOKEN`` by DEFAULT (reversing
-[#2707](https://github.com/souliane/teatree/issues/2707)) or, when the knob is set
-to ``metered_api_key``, the metered ``ANTHROPIC_API_KEY``. The credential kind is
-resolved through the single seam ``teatree.credential_config.resolve_eval_credential``
-so flipping the knob switches every eval chokepoint at once (no per-call-site edit).
-The ``transcript`` backend runs no model, so it authenticates nothing.
+*   ``api`` (:class:`~teatree.eval.api_runner.ApiInProcessRunner`) RUNS a Claude
+    model fresh in-process via ``claude-agent-sdk`` (the SDK spawns the ``claude``
+    CLI child), bounded by the ``max_budget_usd`` circuit breaker. The CI Claude
+    lane.
+*   ``transcript`` (:class:`TranscriptRunner`) REUSES an already-recorded Claude
+    Code run — it grades an on-disk transcript a prior subscription-covered turn
+    produced, so it runs no model and costs ``$0`` extra. A standalone ``t3 eval
+    run`` cannot itself drive a subscription turn; the ``/t3:running-evals`` skill
+    dispatches an in-session ``Agent`` sub-agent per scenario and ``t3 eval
+    capture-subagent`` copies its JSONL to the path this backend reads.
+*   ``pydantic_ai`` (:class:`~teatree.eval.pydantic_ai_runner.PydanticAiRunner`)
+    RUNS a **non-Claude** model through the provider-agnostic harness seam
+    (OrcaRouter BYOK) — the model-evolution unblock, so a swapped GPT/open-source
+    model is verifiable by the same scenarios.
 
-The default subscription lane draws no per-token bill but rides the plan's
-depleting 5h/7d usage window — so the CI eval lane MUST be right-sized (a single
-effort tier, a smaller trial count, per-account routing via
-``anthropic_oauth_pass_paths``) or a full fan-out throttles the window mid-run AND
-starves the main loop (same token). The metered lane has no such window (per-token
-cost instead) and stays selectable via the knob.
+Credential: the fresh-run ``api`` backend authenticates with the credential the
+``eval_credential`` knob selects (default subscription ``CLAUDE_CODE_OAUTH_TOKEN``,
+reversing [#2707](https://github.com/souliane/teatree/issues/2707); metered
+``ANTHROPIC_API_KEY`` when the knob is ``metered_api_key``), resolved through the
+single ``teatree.credential_config.resolve_eval_credential`` seam. ``transcript``
+runs no model and authenticates nothing; ``pydantic_ai`` carries its own OrcaRouter
+BYOK credential, resolved lazily inside the harness.
 
-:class:`~teatree.eval.api_runner.ApiInProcessRunner` (``backend="api"``) RUNS the
-model fresh in-process via ``claude-agent-sdk`` (the SDK spawns the ``claude``
-CLI child). The per-invocation ``max_budget_usd`` circuit breaker bounds the spend
-(a hard cost cap on the metered lane; a usage-window guard on the subscription
-lane). This is the automated path the CI eval job uses.
-
-:class:`TranscriptRunner` (``backend="transcript"``) REUSES an already-recorded
-run — it grades an on-disk transcript that a previous subscription-covered turn
-produced, so it costs ``$0`` extra (no model is run). A standalone ``t3 eval
-run`` process has no in-session ``Agent`` tool, so it cannot itself drive a
-subscription-covered model turn (see the note below). Instead the
-``/t3:running-evals`` skill dispatches an in-session ``Agent`` sub-agent per
-scenario; Claude Code writes that sub-agent's trajectory to
-``~/.claude/projects/<slug>/<session>/subagents/agent-<id>.jsonl``, and
-``t3 eval capture-subagent`` copies it to the path this backend reads. The
-backend auto-detects the transcript shape and grades it through the SAME
-extractors the SDK path feeds the grader — so grading is identical.
-
-Why no fully-automatic local backend reusing the subscription in-process:
-spending subscription tokens from a plain Python process requires the process to
-BE an in-session ``Agent`` sub-agent. The captured sub-agent transcript is the
-clean seam — the in-session ``/t3:running-evals`` driver produces it, the harness
-grades it offline. Both capture and grade read on-disk files only, so the
-transcript lane runs no model.
+SDK coupling: the ``api`` lane is genuinely coupled to ``claude-agent-sdk`` (it
+drives the ``claude`` CLI). The GRADER path is NOT — every backend renders its
+run into the shared ``claude_agent_sdk`` message vocabulary that
+:func:`~teatree.eval.message_mapping.eval_run_from_messages` folds into an
+``EvalRun``; that vocabulary is the provider-agnostic intermediate, so the matchers
+and judge stay runtime-neutral and the ``pydantic_ai`` backend proves the seam.
 """
 
 import dataclasses
@@ -60,7 +49,8 @@ from teatree.eval.transcript import extract_terminal_reason, extract_text_blocks
 
 API_BACKEND = "api"
 TRANSCRIPT_BACKEND = "transcript"
-KNOWN_BACKENDS = (API_BACKEND, TRANSCRIPT_BACKEND)
+PYDANTIC_AI_BACKEND = "pydantic_ai"
+KNOWN_BACKENDS = (API_BACKEND, TRANSCRIPT_BACKEND, PYDANTIC_AI_BACKEND)
 
 
 class EvalRunner(Protocol):
@@ -97,6 +87,10 @@ def make_runner(  # noqa: PLR0913 — each kwarg threads one runner-construction
     nothing.
     ``"transcript"`` → the transcript-ingest runner that REUSES an
     already-recorded run; it runs no model, so it resolves no credential.
+    ``"pydantic_ai"`` → the non-Claude runner that RUNS a model through the
+    provider-agnostic harness seam (OrcaRouter BYOK, credential resolved lazily);
+    ``max_turns_override`` and ``effort`` thread through, the Claude-only
+    ``require_executed`` / ``max_budget_usd`` knobs do not apply.
 
     ``require_executed`` only affects the api runner: it arms the hard-error on a
     missing ``claude`` binary so the all-skipped gate cannot be silently disarmed
@@ -136,6 +130,17 @@ def make_runner(  # noqa: PLR0913 — each kwarg threads one runner-construction
         )
     if backend == TRANSCRIPT_BACKEND:
         return TranscriptRunner(transcript_dir=transcript_dir or Path.cwd())
+    if backend == PYDANTIC_AI_BACKEND:
+        # The non-Claude lane. Imported at call time (not module top) to keep the
+        # eval CLI import chain Django-free — the pydantic_ai runner pulls in the
+        # harness + settings, which cannot be read before ``django.setup()`` (the
+        # plain ``import teatree.cli`` path). The OrcaRouter/eval-lane knobs resolve
+        # SYNCHRONOUSLY inside the factory, before the async run.
+        from teatree.eval.pydantic_ai_runner import (  # noqa: PLC0415 — lazy: keeps the eval CLI import chain Django-free until a pydantic_ai run is requested (see the branch comment).
+            build_pydantic_ai_eval_runner,
+        )
+
+        return build_pydantic_ai_eval_runner(max_turns_override=max_turns_override, effort=effort)
     msg = f"unknown eval backend {backend!r}; expected one of {', '.join(KNOWN_BACKENDS)}"
     raise UnknownBackendError(msg)
 

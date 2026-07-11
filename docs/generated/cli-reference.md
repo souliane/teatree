@@ -1482,12 +1482,15 @@ Usage: t3 eval [OPTIONS] COMMAND [ARGS]...
 │ --backend               TEXT     AI-lane backend for the bare-`t3 eval` full │
 │                                  suite: 'transcript' (default — REUSE        │
 │                                  already-recorded in-session transcripts, $0 │
-│                                  extra) or 'api' (RUN the model fresh        │
+│                                  extra), 'api' (RUN the Claude model fresh   │
 │                                  in-process via the Agent SDK, on the        │
 │                                  credential the eval_credential knob selects │
 │                                  — default subscription OAuth (#2707         │
 │                                  reversal), or the metered API key; the      │
-│                                  explicit opt-in).                           │
+│                                  explicit opt-in), or 'pydantic_ai' (RUN a   │
+│                                  non-Claude model through the                │
+│                                  provider-agnostic harness seam, OrcaRouter  │
+│                                  BYOK).                                      │
 │                                  [default: transcript]                       │
 │ --transcript-dir        PATH     Directory of <scenario>.jsonl transcripts   │
 │                                  for the AI lane (default: cwd).             │
@@ -2155,9 +2158,15 @@ Usage: t3 eval run [OPTIONS] [NAME]
 │                                                     metered API key; runs    │
 │                                                     in-container by default  │
 │                                                     or directly on the host  │
-│                                                     with --local). --trials  │
-│                                                     and --models require     │
-│                                                     --backend api.           │
+│                                                     with --local) or         │
+│                                                     'pydantic_ai' (RUN a     │
+│                                                     non-Claude model through │
+│                                                     the provider-agnostic    │
+│                                                     harness seam, OrcaRouter │
+│                                                     BYOK — the               │
+│                                                     model-evolution lane).   │
+│                                                     --trials and --models    │
+│                                                     require --backend api.   │
 │                                                     [default: transcript]    │
 │ --transcript-dir                           PATH     Directory of             │
 │                                                     <scenario>.jsonl         │

@@ -89,6 +89,25 @@ class StreamJsonEvent:
     subtype: str | None
     raw: dict[str, Any]
 
+    @classmethod
+    def from_obj(cls, line_no: int, obj: dict[str, Any]) -> "StreamJsonEvent | None":
+        """Fold one already-parsed event dict into a :class:`StreamJsonEvent`.
+
+        The shared alternative constructor both the on-disk transcript parser
+        (:func:`parse_stream_json`) and the typed-message mapper
+        (:mod:`teatree.eval.message_mapping`) fold through, so a synthesized fresh-run
+        stream and a replayed transcript reach the extractors as the identical event
+        shape — the typed lane skips the JSON string round-trip it used to pay
+        (serialize each event only to re-parse it). Returns ``None`` for a dict with no
+        string ``type``.
+        """
+        event_type = obj.get("type")
+        if not isinstance(event_type, str):
+            return None
+        subtype_value = obj.get("subtype")
+        subtype = subtype_value if isinstance(subtype_value, str) else None
+        return cls(line_no=line_no, type=event_type, subtype=subtype, raw=obj)
+
 
 def parse_stream_json(stdout: str) -> list[StreamJsonEvent]:
     events: list[StreamJsonEvent] = []
@@ -102,12 +121,9 @@ def parse_stream_json(stdout: str) -> list[StreamJsonEvent]:
             continue
         if not isinstance(obj, dict):
             continue
-        event_type = obj.get("type")
-        if not isinstance(event_type, str):
-            continue
-        subtype_value = obj.get("subtype")
-        subtype = subtype_value if isinstance(subtype_value, str) else None
-        events.append(StreamJsonEvent(line_no=line_no, type=event_type, subtype=subtype, raw=obj))
+        event = StreamJsonEvent.from_obj(line_no, obj)
+        if event is not None:
+            events.append(event)
     return events
 
 

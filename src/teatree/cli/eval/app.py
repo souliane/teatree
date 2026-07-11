@@ -192,8 +192,9 @@ def run(  # noqa: PLR0913, PLR0917 — typer command: each param maps 1:1 to a p
             "`t3 eval prepare-transcript`) or 'api' (RUN the model fresh in-process via the "
             "Agent SDK, on the credential the eval_credential knob selects — default "
             "subscription OAuth (#2707 reversal), or the metered API key; runs in-container "
-            "by default or directly on the host with --local). --trials and --models require "
-            "--backend api."
+            "by default or directly on the host with --local) or 'pydantic_ai' (RUN a "
+            "non-Claude model through the provider-agnostic harness seam, OrcaRouter BYOK — "
+            "the model-evolution lane). --trials and --models require --backend api."
         ),
     ),
     transcript_dir: Path | None = typer.Option(
@@ -478,10 +479,11 @@ def default(  # noqa: PLR0913, PLR0917 — typer callback: each param maps 1:1 t
         "--backend",
         help=(
             "AI-lane backend for the bare-`t3 eval` full suite: 'transcript' (default — REUSE "
-            "already-recorded in-session transcripts, $0 extra) or 'api' (RUN the model fresh "
-            "in-process via the Agent SDK, on the credential the eval_credential knob selects — "
-            "default subscription OAuth (#2707 reversal), or the metered API key; the explicit "
-            "opt-in)."
+            "already-recorded in-session transcripts, $0 extra), 'api' (RUN the Claude model "
+            "fresh in-process via the Agent SDK, on the credential the eval_credential knob "
+            "selects — default subscription OAuth (#2707 reversal), or the metered API key; the "
+            "explicit opt-in), or 'pydantic_ai' (RUN a non-Claude model through the "
+            "provider-agnostic harness seam, OrcaRouter BYOK)."
         ),
     ),
     transcript_dir: Path | None = typer.Option(

@@ -2,11 +2,13 @@
 
 from pathlib import Path
 
-from claude_agent_sdk import AssistantMessage, ResultMessage, TextBlock, ToolUseBlock
+from claude_agent_sdk import AssistantMessage, ResultMessage, TextBlock, ThinkingBlock, ToolResultBlock, ToolUseBlock
 from claude_agent_sdk.types import HookEventMessage
 
-from teatree.eval.message_mapping import eval_run_from_messages
+from teatree.eval.message_mapping import _block_to_dict, eval_run_from_messages
 from teatree.eval.models import EvalSpec, Matcher
+from teatree.eval.report import evaluate
+from teatree.eval.transcript import extract_terminal_reason, extract_text_blocks, extract_tool_calls, parse_stream_json
 
 
 def _spec() -> EvalSpec:
@@ -66,3 +68,69 @@ def test_no_hook_messages_yields_empty_gate_events() -> None:
     ]
     run = eval_run_from_messages(_spec(), messages)
     assert run.gate_events == ()
+
+
+class TestBlockRendering:
+    """`_block_to_dict` renders every SDK block to its canonical shape, never `unknown`.
+
+    The pydantic_ai lane surfaces tool results and gate refusals as
+    ``ToolResultBlock`` (harness ``_tool_blocks_since``) and a reasoning model emits
+    ``ThinkingBlock``; the mapper used to collapse both to ``{"type": "unknown"}``.
+    """
+
+    def test_tool_result_block_renders_as_tool_result(self) -> None:
+        rendered = _block_to_dict(ToolResultBlock(tool_use_id="t1", content="ran ok", is_error=False))
+        assert rendered == {"type": "tool_result", "tool_use_id": "t1", "content": "ran ok", "is_error": False}
+
+    def test_thinking_block_renders_as_thinking(self) -> None:
+        rendered = _block_to_dict(ThinkingBlock(thinking="reasoning", signature="sig"))
+        assert rendered == {"type": "thinking", "thinking": "reasoning", "signature": "sig"}
+
+    def test_tool_result_in_the_stream_is_graded_not_dropped_to_unknown(self) -> None:
+        # A run interleaving a tool call, its result, and the final text still grades
+        # the tool call — the tool_result block no longer becomes an opaque `unknown`.
+        messages = [
+            AssistantMessage(content=[ToolUseBlock(id="t1", name="Bash", input={"command": "echo hi"})], model="m"),
+            AssistantMessage(content=[ToolResultBlock(tool_use_id="t1", content="hi", is_error=False)], model="m"),
+            AssistantMessage(content=[TextBlock(text="done")], model="m"),
+            _result(),
+        ]
+        run = eval_run_from_messages(_spec(), messages)
+        assert [c.name for c in run.tool_calls] == ["Bash"]
+        assert '"type": "tool_result"' in run.raw_stdout
+        assert '"type": "unknown"' not in run.raw_stdout
+
+
+def test_direct_fold_matches_a_reparse_of_the_synthesized_stream() -> None:
+    # The mapper folds the event dicts DIRECTLY into StreamJsonEvents (no JSON
+    # string round-trip). This pins that the direct fold is equivalent to re-parsing
+    # the synthesized `raw_stdout` through the transcript extractors, so the two
+    # folding paths can never silently diverge.
+    messages = [
+        AssistantMessage(content=[ToolUseBlock(id="t1", name="Bash", input={"command": "git status"})], model="m"),
+        AssistantMessage(content=[TextBlock(text="all clean")], model="m"),
+        _result(),
+    ]
+    run = eval_run_from_messages(_spec(), messages)
+    reparsed = parse_stream_json(run.raw_stdout)
+    assert [c.name for c in run.tool_calls] == [c.name for c in extract_tool_calls(reparsed)]
+    assert list(run.text_blocks) == extract_text_blocks(reparsed)
+    assert (run.terminal_reason, run.is_error) == extract_terminal_reason(reparsed)
+
+
+def test_no_messages_yields_an_empty_shaped_run() -> None:
+    run = eval_run_from_messages(_spec(), [])
+    assert run.raw_stdout == ""
+    assert run.tool_calls == ()
+    assert run.text_blocks == ()
+
+
+def test_a_captured_run_grades_green() -> None:
+    # End-to-end sanity: a captured tool call satisfying the spec's matcher passes.
+    messages = [
+        AssistantMessage(content=[ToolUseBlock(id="t1", name="Bash", input={"command": "run the tests"})], model="m"),
+        AssistantMessage(content=[TextBlock(text="done")], model="m"),
+        _result(),
+    ]
+    result = evaluate(_spec(), eval_run_from_messages(_spec(), messages))
+    assert result.passed

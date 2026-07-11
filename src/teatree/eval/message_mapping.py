@@ -1,13 +1,23 @@
 """Map the typed Agent-SDK messages onto the shared transcript extraction path.
 
-The in-process SDK runner (:mod:`teatree.eval.api_runner`) yields the SDK's typed
-:class:`~claude_agent_sdk.Message` objects. The grader, however, consumes the
-stream-json event dicts the :mod:`teatree.eval.transcript` extractors parse — the
-SAME path the subscription transcript runner feeds. This module is the single seam
-that renders each typed message to that event dict and folds the parsed events into
-an :class:`~teatree.eval.models.EvalRun`, so tool-call / text / terminal / cost
-extraction is identical across both runners and the produced ``EvalRun`` is
-byte-identical in shape.
+The two fresh-run backends — the ``claude-agent-sdk`` runner
+(:mod:`teatree.eval.api_runner`) and the ``pydantic_ai`` runner
+(:mod:`teatree.eval.pydantic_ai_runner`) — both yield the SAME
+``claude_agent_sdk`` message vocabulary (``AssistantMessage`` / ``ResultMessage`` /
+``HookEventMessage``). That vocabulary is the provider-agnostic seam: this module
+is the single adapter that renders each typed message to the stream-json event dict
+the :mod:`teatree.eval.transcript` extractors already parse — the SAME path the
+on-disk subscription transcript runner feeds — and folds the events into an
+:class:`~teatree.eval.models.EvalRun`. So tool-call / text / terminal / cost
+extraction is identical across every runner and the produced ``EvalRun`` is
+byte-identical in shape regardless of which model produced the run.
+
+The events are folded to :class:`~teatree.eval.transcript.StreamJsonEvent` DIRECTLY
+via :func:`~teatree.eval.transcript.event_from_obj` — the typed lane no longer
+serializes each event dict to JSON only to re-parse it back into the same dict. The
+synthesized ``raw_stdout`` (the stream-json text stored on the run for the report)
+is still rendered, but the extractors read the event dicts, not a re-parse of that
+string.
 
 It is a deliberately separate concern from the runner's lifecycle (provisioning,
 caps, terminal-cap handling): the runner OWNS *when* a trajectory is captured, this
@@ -17,11 +27,21 @@ module owns *how* a captured trajectory becomes a graded ``EvalRun``.
 import json
 from typing import Any
 
-from claude_agent_sdk import AssistantMessage, ContentBlock, Message, ResultMessage, TextBlock, ToolUseBlock
+from claude_agent_sdk import (
+    AssistantMessage,
+    ContentBlock,
+    Message,
+    ResultMessage,
+    TextBlock,
+    ThinkingBlock,
+    ToolResultBlock,
+    ToolUseBlock,
+)
 from claude_agent_sdk.types import HookEventMessage
 
 from teatree.eval.models import EvalRun, EvalSpec
 from teatree.eval.transcript import (
+    StreamJsonEvent,
     extract_billed_model,
     extract_cost_usd,
     extract_gate_events,
@@ -30,7 +50,6 @@ from teatree.eval.transcript import (
     extract_text_blocks,
     extract_tool_calls,
     extract_usage,
-    parse_stream_json,
     requested_model_present,
 )
 
@@ -38,12 +57,14 @@ from teatree.eval.transcript import (
 def eval_run_from_messages(spec: EvalSpec, messages: list[Message]) -> EvalRun:
     """Map the typed SDK messages onto the shared transcript extraction path.
 
-    Each typed message is rendered to the stream-json event dict the
-    :mod:`teatree.eval.transcript` extractors already parse, so tool/text/
-    terminal/cost extraction is identical to the subscription transcript path.
+    Each typed message is rendered to a stream-json event dict and folded DIRECTLY
+    into the :class:`~teatree.eval.transcript.StreamJsonEvent` list the extractors
+    parse, so tool/text/terminal/cost extraction is identical to the on-disk
+    transcript path with no serialize/deserialize round-trip.
     """
-    raw_stdout = _synthesize_stream_json(messages)
-    events = parse_stream_json(raw_stdout)
+    event_dicts = [event for event in map(_message_to_event, messages) if event is not None]
+    events = _events_from_dicts(event_dicts)
+    raw_stdout = _render_stream_json(event_dicts)
     terminal_reason, is_error = extract_terminal_reason(events)
     present = requested_model_present(events, spec.model)
     split = extract_model_cost_split(events, spec.model)
@@ -67,13 +88,19 @@ def eval_run_from_messages(spec: EvalSpec, messages: list[Message]) -> EvalRun:
     )
 
 
-def _synthesize_stream_json(messages: list[Message]) -> str:
-    lines: list[str] = []
-    for message in messages:
-        event = _message_to_event(message)
+def _events_from_dicts(event_dicts: list[dict[str, Any]]) -> list[StreamJsonEvent]:
+    events: list[StreamJsonEvent] = []
+    for line_no, obj in enumerate(event_dicts, start=1):
+        event = StreamJsonEvent.from_obj(line_no, obj)
         if event is not None:
-            lines.append(json.dumps(event))
-    return "\n".join(lines) + ("\n" if lines else "")
+            events.append(event)
+    return events
+
+
+def _render_stream_json(event_dicts: list[dict[str, Any]]) -> str:
+    if not event_dicts:
+        return ""
+    return "\n".join(json.dumps(event) for event in event_dicts) + "\n"
 
 
 def _message_to_event(message: Message) -> dict[str, Any] | None:
@@ -123,6 +150,19 @@ def _block_to_dict(block: ContentBlock) -> dict[str, Any]:
         return {"type": "tool_use", "name": block.name, "input": dict(block.input)}
     if isinstance(block, TextBlock):
         return {"type": "text", "text": block.text}
+    if isinstance(block, ThinkingBlock):
+        return {"type": "thinking", "thinking": block.thinking, "signature": block.signature}
+    if isinstance(block, ToolResultBlock):
+        # The pydantic_ai lane surfaces every tool result / gate refusal as a
+        # ToolResultBlock (harness ``_tool_blocks_since``); rendering it to its
+        # canonical block shape keeps the synthesized transcript faithful instead
+        # of collapsing it to an opaque ``unknown``.
+        return {
+            "type": "tool_result",
+            "tool_use_id": block.tool_use_id,
+            "content": block.content,
+            "is_error": block.is_error,
+        }
     return {"type": "unknown"}
 
 
