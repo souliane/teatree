@@ -147,7 +147,8 @@ class WorktreeProvisioner(RunnerBase):
 
         created = self._create(clones_root, repo_name, ticket_dir, branch, adopt_path=adopt_path)
         if created is None:
-            worktree.delete()
+            if existing is None:
+                worktree.delete()  # roll back only the row we just created, never a reused one
             return None
 
         wt_path, clone_path = created

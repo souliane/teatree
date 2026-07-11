@@ -11,6 +11,7 @@ the runner aborts the provision (``ok=False``) before any provision or
 post-db step runs — pytest must never get a worktree with no test DB.
 """
 
+import os
 import threading
 from pathlib import Path
 from typing import Any
@@ -135,6 +136,81 @@ class TestRunnerSkipsDbImportWhenNoDbName(TestCase):
         assert overlay.db_import_calls == 1
         assert overlay.provision_steps_calls == 0
         assert overlay.post_db_steps_calls == 0
+
+
+_ENV_PROBE = "T3_WT_ENV_BLEED_PROBE"
+
+
+class _EnvCapturingProvisioning(_RecordingOverlayProvisioning):
+    """Records the ``os.environ`` state visible inside ``db_import``."""
+
+    def __init__(self, overlay: "_RecordingOverlay", captured: dict[str, str | None]) -> None:
+        super().__init__(overlay)
+        self._captured = captured
+
+    def env_extra(self, worktree: Worktree) -> dict[str, str]:
+        return {_ENV_PROBE: "applied"}
+
+    def db_import(self, worktree: Worktree, **kwargs: Any) -> bool:
+        self._overlay.db_import_calls += 1
+        self._captured["probe"] = os.environ.get(_ENV_PROBE)
+        self._captured["virtual_env"] = os.environ.get("VIRTUAL_ENV")
+        return self._overlay._db_import_result
+
+
+class _EnvCapturingOverlay(_RecordingOverlay):
+    def __init__(self) -> None:
+        super().__init__()
+        self.env_inside: dict[str, str | None] = {}
+        self.provisioning = _EnvCapturingProvisioning(self, self.env_inside)
+
+
+class TestRunnerScopesOverlayEnvToDbImport(TestCase):
+    """The overlay env applied for the DB import must not bleed into the loop process.
+
+    ``_run_db_import`` used to ``os.environ.update(env_extra)`` and never restore
+    it (and its ``VIRTUAL_ENV`` drop was a no-op), so one worktree's overlay env
+    leaked into every subsequent provision of the long-lived loop process. The
+    env is now scoped to the import and restored afterward.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _tmp_workspace(self, tmp_path: Path) -> None:
+        self.wt_path = tmp_path / "worktree"
+        self.wt_path.mkdir()
+
+    def _make_worktree(self) -> Worktree:
+        ticket = Ticket.objects.create(overlay="test", issue_url="https://example.com/i/envbleed")
+        return Worktree.objects.create(
+            overlay="test",
+            ticket=ticket,
+            repo_path="backend",
+            branch="feature",
+            db_name="wt_envbleed",
+            extra={"worktree_path": str(self.wt_path)},
+        )
+
+    def test_overlay_env_visible_during_import_and_restored_after(self) -> None:
+        worktree = self._make_worktree()
+        overlay = _EnvCapturingOverlay()
+
+        with (
+            patch("teatree.core.runners.worktree_provision._setup_worktree_dir", return_value=None),
+            patch("teatree.utils.db.db_exists", return_value=False),
+            patch.dict(os.environ, {"VIRTUAL_ENV": "/loop/venv"}, clear=False),
+        ):
+            os.environ.pop(_ENV_PROBE, None)
+            result = WorktreeProvisionRunner(worktree, overlay=overlay).run()
+
+            # The env WAS applied for the import (behaviour preserved) with the
+            # loop's venv dropped so host pg tools ignore it …
+            assert overlay.env_inside["probe"] == "applied"
+            assert overlay.env_inside["virtual_env"] is None
+            # … and fully restored afterward: no bleed into the process.
+            assert _ENV_PROBE not in os.environ
+            assert os.environ.get("VIRTUAL_ENV") == "/loop/venv"
+
+        assert result.ok is True, result.detail
 
 
 class _BlockingDbImportOverlayProvisioning(_RecordingOverlayProvisioning):

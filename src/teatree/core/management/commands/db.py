@@ -1,7 +1,6 @@
 """Database operations: migrate, refresh, restore from CI, reset passwords, introspect."""
 
 import json
-import os
 import sys
 
 import typer
@@ -15,6 +14,7 @@ from teatree.core.intake.resolve import resolve_worktree
 from teatree.core.overlay_loader import get_overlay
 from teatree.types import SqlRow
 from teatree.utils.approval import ApprovalRefusedError
+from teatree.utils.env import patched_environ
 
 #: Leading SQL keywords allowed past the cheap pre-filter of ``db query``.
 #: This is a *best-effort* guard, not a proof of read-only-ness: leading-token
@@ -207,39 +207,36 @@ class Command(TyperCommand):
 
         self.stdout.write(f"Refreshing DB '{worktree.db_name}' (force={force})...")
 
-        # Set overlay env vars so pg tools can connect with the right credentials
-        env = {**os.environ, **overlay.provisioning.env_extra(worktree)}
-        env.pop("VIRTUAL_ENV", None)
-        os.environ.update(overlay.provisioning.env_extra(worktree))
+        # Overlay env (and the VIRTUAL_ENV drop) lets the host pg tools connect with the
+        # right credentials, scoped to the DB work so it never bleeds into the process.
+        with patched_environ(overlay.provisioning.env_extra(worktree), remove=("VIRTUAL_ENV",)):
+            # #955: --fresh-dump must force slow_import. The remote-dump branch
+            # in DjangoDbImporter.run() sits *after* the `if not slow_import:
+            # return False` guard (which itself follows the early DSLR return),
+            # so without this the flag silently degrades to "restore the stale
+            # local DSLR snapshot" instead of fetching a fresh remote dump.
+            success = overlay.provisioning.db_import(
+                worktree,
+                force=force,
+                slow_import=fresh_dump,
+                dslr_snapshot=dslr_snapshot,
+                dump_path=dump_path,
+                approve_remote_dump=fresh_dump,
+            )
+            if not success:
+                self.stderr.write(f"DB import failed for {worktree.db_name}. Check output above for details.")
+                raise SystemExit(1)
 
-        # Run the overlay's import logic
-        # #955: --fresh-dump must force slow_import. The remote-dump branch
-        # in DjangoDbImporter.run() sits *after* the `if not slow_import:
-        # return False` guard (which itself follows the early DSLR return),
-        # so without this the flag silently degrades to "restore the stale
-        # local DSLR snapshot" instead of fetching a fresh remote dump.
-        success = overlay.provisioning.db_import(
-            worktree,
-            force=force,
-            slow_import=fresh_dump,
-            dslr_snapshot=dslr_snapshot,
-            dump_path=dump_path,
-            approve_remote_dump=fresh_dump,
-        )
-        if not success:
-            self.stderr.write(f"DB import failed for {worktree.db_name}. Check output above for details.")
-            raise SystemExit(1)
+            # Run post-DB steps (migrations, collectstatic, etc.)
+            for step in overlay.provisioning.post_db_steps(worktree):
+                self.stdout.write(f"  Running post-DB step: {step.name}")
+                step.callable()
 
-        # Run post-DB steps (migrations, collectstatic, etc.)
-        for step in overlay.provisioning.post_db_steps(worktree):
-            self.stdout.write(f"  Running post-DB step: {step.name}")
-            step.callable()
-
-        # Reset passwords
-        reset_step = overlay.provisioning.reset_passwords_command(worktree)
-        if reset_step:  # pragma: no branch
-            self.stdout.write("  Resetting passwords...")
-            reset_step.callable()
+            # Reset passwords
+            reset_step = overlay.provisioning.reset_passwords_command(worktree)
+            if reset_step:  # pragma: no branch
+                self.stdout.write("  Resetting passwords...")
+                reset_step.callable()
 
         # FSM transition
         worktree.db_refresh()

@@ -1,5 +1,4 @@
 import logging
-import os
 import time
 from pathlib import Path
 
@@ -13,6 +12,7 @@ from teatree.core.provision.provision_timebox import alert_provision_user, run_t
 from teatree.core.provision.step_runner import ProvisionReport, StepResult, run_provision_steps, run_step
 from teatree.core.runners.base import RunnerBase, RunnerResult
 from teatree.core.worktree.worktree_env import CACHE_DIRNAME, CACHE_FILENAME, worktree_pg_connection, write_env_cache
+from teatree.utils.env import patched_environ
 
 logger = logging.getLogger(__name__)
 
@@ -238,14 +238,15 @@ class WorktreeProvisionRunner(RunnerBase):
                 # loud on its own if the server is genuinely down (#3094).
                 pass
 
-        env = {**os.environ, **overlay.provisioning.env_extra(worktree)}
-        env.pop("VIRTUAL_ENV", None)
-        os.environ.update(env)
+        # The overlay env (and the VIRTUAL_ENV drop that keeps host pg tools off the
+        # loop's venv) is scoped to the import so it never bleeds into the next
+        # provision of the long-lived loop process.
         # #2244: a child blocked on its PIPE (no DSLR snapshot) must abort loud, never hang the provision.
-        imported = run_timeboxed_db_import(
-            lambda: overlay.provisioning.db_import(worktree, slow_import=self.slow_import),
-            repo=worktree.repo_path,
-        )
+        with patched_environ(overlay.provisioning.env_extra(worktree), remove=("VIRTUAL_ENV",)):
+            imported = run_timeboxed_db_import(
+                lambda: overlay.provisioning.db_import(worktree, slow_import=self.slow_import),
+                repo=worktree.repo_path,
+            )
         if imported:
             extra = worktree.extra or {}
             extra.pop("db_import_failures", None)

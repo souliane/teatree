@@ -359,6 +359,39 @@ class _RemotePathProvisioning(FullProvisioning):
             return importer.run(slow_import=slow_import, allow_remote_dump=approve_remote_dump)
 
 
+DB_ENV_PROBE = "T3_DB_REFRESH_ENV_BLEED_PROBE"
+
+
+class _EnvCaptureProvisioning(FullProvisioning):
+    """Records the ``os.environ`` state seen during ``db_import`` + reset step."""
+
+    def __init__(self) -> None:
+        self.seen: dict[str, object] = {}
+
+    def env_extra(self, worktree: Worktree) -> dict[str, str]:
+        return {DB_ENV_PROBE: "applied"}
+
+    def db_import(self, worktree: Worktree, **kwargs: object) -> bool:
+        self.seen["import_probe"] = os.environ.get(DB_ENV_PROBE)
+        self.seen["import_virtual_env"] = os.environ.get("VIRTUAL_ENV")
+        return True
+
+    def reset_passwords_command(self, worktree: Worktree) -> ProvisionStep | None:
+        def _capture() -> None:
+            self.seen["reset_probe"] = os.environ.get(DB_ENV_PROBE)
+
+        return ProvisionStep(name="reset-passwords", callable=_capture)
+
+
+class EnvCaptureOverlay(FullOverlay):
+    """Overlay recording the env visible during ``db refresh`` — proves no bleed."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.provisioning = _EnvCaptureProvisioning()
+        self.seen = self.provisioning.seen
+
+
 class _PreRunRuntime(FullRuntime):
     def pre_run_steps(self, worktree: Worktree, service: str) -> list[ProvisionStep]:
         def _log_step() -> None:
@@ -428,6 +461,9 @@ PRE_RUN_OVERLAY = "tests.teatree_core.management_commands._overlays.PreRunOverla
 
 
 REMOTE_PATH_RECORDING_OVERLAY = "tests.teatree_core.management_commands._overlays.RemotePathRecordingOverlay"
+
+
+ENV_CAPTURE_OVERLAY = "tests.teatree_core.management_commands._overlays.EnvCaptureOverlay"
 
 
 SETTINGS: dict[str, object] = {}

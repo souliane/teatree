@@ -60,21 +60,18 @@ def get_overlay_publish_gates() -> list[str]:
 
 
 def should_close_ticket(extra: Mapping[str, object] | None, *, setting_enabled: bool) -> bool:
-    """Resolve the effective close-on-merge disposition for a PR.
+    """Resolve the close-on-merge disposition from the pre-computed ``extra['more_prs_coming']`` flag.
 
-    The default is **close-on-merge**: a merged PR should systematically
-    close its referenced issue when the overlay's auto-close setting is
-    enabled. Suppression is the exception, applied only on an explicit
-    "more PRs are coming for this ticket/issue" signal — a declared
-    partial PR or an umbrella issue with remaining tracked scope, recorded
-    as ``extra['more_prs_coming']``. This preserves the umbrella/partial
-    protection (``feedback_partial_pr_never_closes_umbrella_issue``)
-    without defeating the setting for standalone single-target bug PRs.
+    Close-on-merge is the default: a merged PR keeps its ``Closes/Fixes #N``
+    keywords when the overlay's auto-close setting is enabled. This reads the
+    single ``extra['more_prs_coming']`` boolean and suppresses the close when
+    it is set — the caller is what detects a declared partial PR or a still-open
+    umbrella issue and records the flag
+    (``feedback_partial_pr_never_closes_umbrella_issue``).
 
-    Returns ``True`` when ``Closes/Fixes #N`` keywords must be kept so the
+    Returns ``True`` when the ``Closes/Fixes #N`` keywords must be kept so the
     platform auto-closes the issue on merge; ``False`` when they must be
-    rewritten to ``Relates to`` (setting disabled, or an explicit
-    follow-up opt-out is set).
+    rewritten to ``Relates to`` (setting disabled, or ``more_prs_coming`` set).
     """
     if not setting_enabled:
         return False
