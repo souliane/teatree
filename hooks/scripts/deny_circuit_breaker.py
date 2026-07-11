@@ -51,8 +51,8 @@ import json
 import re
 import sys
 
-from state_files import append_line as _append_line
-from state_files import read_lines as _read_lines
+from hooks.scripts.state_files import append_line as _append_line
+from hooks.scripts.state_files import read_lines as _read_lines
 
 # Alias the bare and ``hooks.scripts.`` identities so the breaker the router
 # re-exports and a test patching a helper here operate on ONE module object.
@@ -101,7 +101,7 @@ def deny_circuit_breaker_enabled() -> bool:
     router's shared ``_teatree_bool_setting`` so every gate reads the bare-boolean
     config the same single way.
     """
-    from hook_router import _teatree_bool_setting  # noqa: PLC0415, PLC2701
+    from hooks.scripts.hook_router import _teatree_bool_setting  # noqa: PLC0415 deferred back-import
 
     return _teatree_bool_setting("deny_circuit_breaker_enabled", default=True)
 
@@ -115,7 +115,7 @@ def deny_circuit_breaker_threshold() -> int:
     malformed config can never disable the breaker by setting an impossible
     threshold.
     """
-    from hook_router import _teatree_int_setting  # noqa: PLC0415, PLC2701
+    from hooks.scripts.hook_router import _teatree_int_setting  # noqa: PLC0415 deferred back-import
 
     return _teatree_int_setting(
         "deny_circuit_breaker_threshold", default=_DENY_CIRCUIT_BREAKER_DEFAULT_THRESHOLD, minimum=1
@@ -170,7 +170,7 @@ def _bump_deny_streak(session_id: str, fingerprint: str) -> int:
     is swallowed and the call is counted as 1 (a single isolated denial), so a
     state-file fault can never manufacture a trip nor crash the gate.
     """
-    from hook_router import _ensure_state_dir, _state_file  # noqa: PLC0415, PLC2701
+    from hooks.scripts.hook_router import _ensure_state_dir, _state_file  # noqa: PLC0415 deferred back-import
 
     if not session_id:
         return 1
@@ -197,7 +197,7 @@ def reset_deny_streak(session_id: str) -> None:
     breaker relaxes a UX gate. Best-effort — a failure to clear is harmless (the
     next bump with a new fingerprint resets the count anyway).
     """
-    from hook_router import _state_file  # noqa: PLC0415, PLC2701
+    from hooks.scripts.hook_router import _state_file  # noqa: PLC0415 deferred back-import
 
     if not session_id:
         return
@@ -214,7 +214,7 @@ def _record_circuit_broken_signal(session_id: str, gate_id: str, fingerprint: st
     PreCompact recovery snapshot already knows how to read back. Best-effort: a
     record failure must never propagate out of the deny path.
     """
-    from hook_router import _ensure_state_dir, _state_file  # noqa: PLC0415, PLC2701
+    from hooks.scripts.hook_router import _ensure_state_dir, _state_file  # noqa: PLC0415 deferred back-import
 
     if not session_id:
         return
@@ -239,7 +239,7 @@ def apply_deny_circuit_breaker(reason: str) -> _BreakerDecision:
     gate's original decision — the breaker never blocks nor wrongly allows on
     its own fault).
     """
-    from hook_router import _current_hook_context  # noqa: PLC0415, PLC2701
+    from hooks.scripts.hook_router import _current_hook_context  # noqa: PLC0415 deferred back-import
 
     try:
         event, data = _current_hook_context()

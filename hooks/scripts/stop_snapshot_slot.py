@@ -113,7 +113,7 @@ def _slot_enabled() -> bool:
     Fails OPEN to enabled (always-on infra) on a missing/broken config.
     """
     try:
-        from teatree_settings import teatree_bool_setting  # noqa: PLC0415 — lazy cold-import
+        from hooks.scripts.teatree_settings import teatree_bool_setting  # noqa: PLC0415 deferred cold-hook import
 
         return teatree_bool_setting("stop_snapshotter_enabled", default=True)
     except Exception:  # noqa: BLE001 — a config read must never wedge the slot
@@ -123,7 +123,7 @@ def _slot_enabled() -> bool:
 def _run_prepare_stop(session_id: str, data: dict) -> None:
     """Bootstrap Django and refresh the recovery artifacts — best-effort, silent."""
     try:
-        from django_bootstrap import bootstrap_teatree_django  # noqa: PLC0415 — lazy cold-import
+        from hooks.scripts.django_bootstrap import bootstrap_teatree_django  # noqa: PLC0415 deferred cold-hook import
 
         if not bootstrap_teatree_django():
             return

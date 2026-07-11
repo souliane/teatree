@@ -1,4 +1,4 @@
-"""The secret-file-print sibling: dual identity, re-export reachability, cold import.
+"""The secret-file-print sibling: single canonical identity, re-export reachability, cold import.
 
 The secret-file-print deny gate was extracted whole out of ``hook_router`` into
 ``hooks/scripts/secret_file_print_guard.py`` (the #2384 Wave-2 router split, PR4).
@@ -9,9 +9,9 @@ re-export unchanged.
 
 The contract:
 
-* the sibling registers BOTH its bare ``secret_file_print_guard`` and dotted
-    ``hooks.scripts.secret_file_print_guard`` identities as ONE module object, so a
-    test patching a helper here and the handler the router invokes are the same;
+* the sibling has a SINGLE canonical package identity ``hooks.scripts.secret_file_print_guard``
+    (no bare-name alias after the package-relative refactor), so a test patching a
+    helper here and the handler the router invokes are the same object;
 * the router re-exports ``handle_block_secret_file_print`` under its original
     name, so ``router.handle_block_secret_file_print`` resolves to the SAME object
     the sibling defines (and ``_HANDLERS['PreToolUse']`` registers it unchanged);
@@ -33,10 +33,12 @@ import hooks.scripts.secret_file_print_guard as sfp
 _SCRIPTS_DIR = Path(router.__file__).resolve().parent
 
 
-class TestDualIdentity:
-    def test_bare_and_dotted_names_are_one_module(self) -> None:
-        assert sys.modules["secret_file_print_guard"] is sys.modules["hooks.scripts.secret_file_print_guard"]
-        assert sys.modules["secret_file_print_guard"] is sfp
+class TestCanonicalIdentity:
+    def test_module_has_one_canonical_package_identity(self) -> None:
+        # The package-relative refactor gives the sibling a SINGLE canonical
+        # identity (``hooks.scripts.secret_file_print_guard``) — the old bare-name alias is gone —
+        # so the module a test patches is the one the router imports.
+        assert sys.modules["hooks.scripts.secret_file_print_guard"] is sfp
 
 
 class TestRouterReExportReachable:

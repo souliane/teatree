@@ -55,7 +55,7 @@ _BARE_PROMPT_RE = re.compile(r"^Run `t3 loops tick --loop \S+` in Bash, then bri
 def _reactive_slot_directives() -> list[str]:
     """The reactive infra ``/loop <duration>`` registrations; fail-open to ``[]`` on ANY error."""
     try:
-        from django_bootstrap import bootstrap_teatree_django  # noqa: PLC0415
+        from hooks.scripts.django_bootstrap import bootstrap_teatree_django  # noqa: PLC0415 deferred cold-hook import
 
         if not bootstrap_teatree_django():
             return []
@@ -69,7 +69,7 @@ def _reactive_slot_directives() -> list[str]:
 def _worker_owns_cadence() -> bool:
     """Whether ``loop_runner_enabled`` resolves ON (the worker drives the loops); fail-safe OFF."""
     try:
-        from django_bootstrap import bootstrap_teatree_django  # noqa: PLC0415 (deferred: cold-hook import)
+        from hooks.scripts.django_bootstrap import bootstrap_teatree_django  # noqa: PLC0415 deferred cold-hook import
 
         if not bootstrap_teatree_django():
             return False

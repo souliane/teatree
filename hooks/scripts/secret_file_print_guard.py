@@ -156,7 +156,7 @@ def handle_block_secret_file_print(data: dict) -> bool:
     contract); the ``emit_pretooluse_deny`` / ``_write_pretooluse_deny`` writer
     stays in the router.
     """
-    from hook_router import _fail_open_or_deny  # noqa: PLC0415, PLC2701
+    from hooks.scripts.hook_router import _fail_open_or_deny  # noqa: PLC0415 deferred back-import
 
     if data.get("tool_name") != "Bash":
         return False

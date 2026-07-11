@@ -21,7 +21,7 @@ import json
 import shutil
 from pathlib import Path
 
-from managed_repo import teatree_src_on_path
+from hooks.scripts.managed_repo import teatree_src_on_path
 
 
 def coverage_gate_repo_dir(command: str, cwd: str | None) -> Path | None:

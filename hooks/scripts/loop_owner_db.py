@@ -10,7 +10,7 @@ take-over reconcile read — lives here and is imported back into the router.
 
 import os
 
-from django_bootstrap import bootstrap_teatree_django
+from hooks.scripts.django_bootstrap import bootstrap_teatree_django
 
 # Skips the ``LoopLease`` DB cross-check (and its ``django.setup()``);
 # collapses to the same fail-open value an absent DB already yields.

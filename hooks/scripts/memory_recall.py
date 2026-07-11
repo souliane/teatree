@@ -39,7 +39,7 @@ def _memory_recall_enabled() -> bool:
     (``[teatree] memory_recall_enabled = false``, flipped by
     ``t3 <overlay> gate memory-recall disable``) is the one-line kill-switch.
     """
-    from teatree_settings import teatree_bool_setting  # noqa: PLC0415
+    from hooks.scripts.teatree_settings import teatree_bool_setting  # noqa: PLC0415 deferred cold-hook import
 
     return teatree_bool_setting("memory_recall_enabled", default=True)
 

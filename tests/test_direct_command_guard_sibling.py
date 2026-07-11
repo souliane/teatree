@@ -46,10 +46,12 @@ def _bash_event(command: str) -> dict:
     return {"session_id": "sib", "tool_name": "Bash", "tool_input": {"command": command}}
 
 
-class TestDualIdentity:
-    def test_bare_and_dotted_names_are_one_module(self) -> None:
-        assert sys.modules["direct_command_guard"] is sys.modules["hooks.scripts.direct_command_guard"]
-        assert sys.modules["direct_command_guard"] is dcg
+class TestCanonicalIdentity:
+    def test_module_has_one_canonical_package_identity(self) -> None:
+        # The package-relative refactor gives the sibling a SINGLE canonical
+        # identity (``hooks.scripts.direct_command_guard``) — the old bare-name alias is gone —
+        # so the module a test patches is the one the router imports.
+        assert sys.modules["hooks.scripts.direct_command_guard"] is dcg
 
 
 class TestRouterReExportReachable:

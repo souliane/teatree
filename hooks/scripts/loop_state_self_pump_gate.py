@@ -21,7 +21,7 @@ DECISION is unchanged — only the Django cold-boot is gone. ``src/`` is put on
 #1314).
 """
 
-from managed_repo import teatree_src_on_path
+from hooks.scripts.managed_repo import teatree_src_on_path
 
 # The core loop the in-session Stop self-pump exists to drive. The
 # self-pump re-fires ``t3 loop tick`` + ``claim-next``, which run this loop's

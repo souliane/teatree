@@ -29,7 +29,11 @@ def current_turn_tool_commands(transcript_path: str) -> list[str]:
     ``prompt`` + ``description``. These feed the same-turn-verification check
     so a ``gh pr view <id>`` in the turn clears the warning for that id.
     """
-    from hook_router import _entry_content, _entry_role, _read_transcript_entries  # noqa: PLC0415, PLC2701
+    from hooks.scripts.hook_router import (  # noqa: PLC0415 deferred back-import
+        _entry_content,
+        _entry_role,
+        _read_transcript_entries,
+    )
 
     entries = _read_transcript_entries(transcript_path)
     if not entries:

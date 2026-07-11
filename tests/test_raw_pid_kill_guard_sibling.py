@@ -1,4 +1,4 @@
-"""The raw-pid-kill sibling: dual identity, re-export reachability, cold import.
+"""The raw-pid-kill sibling: single canonical identity, re-export reachability, cold import.
 
 The raw-pid-kill deny gate was extracted whole out of ``hook_router`` into
 ``hooks/scripts/raw_pid_kill_guard.py`` (the #2384 Wave-2 router split, PR5).
@@ -9,9 +9,9 @@ via the router re-export unchanged.
 
 The contract:
 
-* the sibling registers BOTH its bare ``raw_pid_kill_guard`` and dotted
-    ``hooks.scripts.raw_pid_kill_guard`` identities as ONE module object, so a
-    test patching a helper here and the handler the router invokes are the same;
+* the sibling has a SINGLE canonical package identity ``hooks.scripts.raw_pid_kill_guard``
+    (no bare-name alias after the package-relative refactor), so a test patching a
+    helper here and the handler the router invokes are the same object;
 * the router re-exports ``handle_block_raw_pid_kill`` under its original name, so
     ``router.handle_block_raw_pid_kill`` resolves to the SAME object the sibling
     defines (and ``_HANDLERS['PreToolUse']`` registers it unchanged);
@@ -34,10 +34,12 @@ import hooks.scripts.raw_pid_kill_guard as rpk
 _SCRIPTS_DIR = Path(router.__file__).resolve().parent
 
 
-class TestDualIdentity:
-    def test_bare_and_dotted_names_are_one_module(self) -> None:
-        assert sys.modules["raw_pid_kill_guard"] is sys.modules["hooks.scripts.raw_pid_kill_guard"]
-        assert sys.modules["raw_pid_kill_guard"] is rpk
+class TestCanonicalIdentity:
+    def test_module_has_one_canonical_package_identity(self) -> None:
+        # The package-relative refactor gives the sibling a SINGLE canonical
+        # identity (``hooks.scripts.raw_pid_kill_guard``) — the old bare-name alias is gone —
+        # so the module a test patches is the one the router imports.
+        assert sys.modules["hooks.scripts.raw_pid_kill_guard"] is rpk
 
 
 class TestRouterReExportReachable:

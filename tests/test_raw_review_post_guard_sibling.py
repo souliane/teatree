@@ -1,4 +1,4 @@
-"""The raw-review-post sibling: dual identity, re-export reachability, cold import.
+"""The raw-review-post sibling: single canonical identity, re-export reachability, cold import.
 
 The raw-review-post deny gate (#1164) was extracted whole out of ``hook_router``
 into ``hooks/scripts/raw_review_post_guard.py`` (the #2384 Wave-2 router split,
@@ -9,9 +9,9 @@ router re-export unchanged.
 
 The contract:
 
-* the sibling registers BOTH its bare ``raw_review_post_guard`` and dotted
-    ``hooks.scripts.raw_review_post_guard`` identities as ONE module object, so a
-    test patching a helper here and the handler the router invokes are the same;
+* the sibling has a SINGLE canonical package identity ``hooks.scripts.raw_review_post_guard``
+    (no bare-name alias after the package-relative refactor), so a test patching a
+    helper here and the handler the router invokes are the same object;
 * the router re-exports ``handle_block_raw_review_post`` (and the
     ``is_raw_review_write`` helper + the ``REVIEW_POST_ENDPOINT_RE`` constant the
     transcript-conformance test reads as ``router._REVIEW_POST_ENDPOINT_RE``)
@@ -46,10 +46,12 @@ def _bash_event(command: str) -> dict:
     return {"session_id": "sib", "tool_name": "Bash", "tool_input": {"command": command}}
 
 
-class TestDualIdentity:
-    def test_bare_and_dotted_names_are_one_module(self) -> None:
-        assert sys.modules["raw_review_post_guard"] is sys.modules["hooks.scripts.raw_review_post_guard"]
-        assert sys.modules["raw_review_post_guard"] is rrp
+class TestCanonicalIdentity:
+    def test_module_has_one_canonical_package_identity(self) -> None:
+        # The package-relative refactor gives the sibling a SINGLE canonical
+        # identity (``hooks.scripts.raw_review_post_guard``) — the old bare-name alias is gone —
+        # so the module a test patches is the one the router imports.
+        assert sys.modules["hooks.scripts.raw_review_post_guard"] is rrp
 
 
 class TestRouterReExportReachable:

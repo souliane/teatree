@@ -31,7 +31,7 @@ import contextlib
 import sys
 from pathlib import Path
 
-from state_files import append_line, read_lines
+from hooks.scripts.state_files import append_line, read_lines
 
 # Alias the bare and ``hooks.scripts.`` identities so the handler the router
 # registers and a test patching a helper here operate on ONE module object.
@@ -48,7 +48,7 @@ def _record_no_commit_signal(session_id: str, finding: object) -> None:
     Live channel: a structured stderr line. Best-effort — a record failure
     must never propagate out of the Stop hook.
     """
-    from hook_router import _ensure_state_dir, _state_file  # noqa: PLC0415, PLC2701
+    from hooks.scripts.hook_router import _ensure_state_dir, _state_file  # noqa: PLC0415 deferred back-import
 
     branch = getattr(finding, "branch", "") or "(unknown)"
     worktree = getattr(finding, "worktree", "") or "(unknown)"
