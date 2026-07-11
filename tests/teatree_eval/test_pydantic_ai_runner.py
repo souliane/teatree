@@ -19,7 +19,7 @@ from pydantic_ai.models.function import AgentInfo, DeltaToolCall, FunctionModel
 from pydantic_ai.models.openai import OpenAIChatModel
 from pydantic_ai.models.test import TestModel
 
-from teatree.agents.harness import LANE_EVAL
+from teatree.agents.pydantic_ai_config import LANE_EVAL
 from teatree.eval.backends import KNOWN_BACKENDS, PYDANTIC_AI_BACKEND, UnknownBackendError, make_runner
 from teatree.eval.models import EvalSpec, Matcher
 from teatree.eval.pydantic_ai_runner import PydanticAiRunner

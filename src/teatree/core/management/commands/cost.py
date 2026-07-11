@@ -82,6 +82,13 @@ class Command(TyperCommand):
                     "per_lane_effective_tokens": {
                         lane: round(amount, 2) for lane, amount in breakdown.per_lane_effective_tokens.items()
                     },
+                    "estimated_usd": round(breakdown.estimated_usd, 4),
+                    "per_lane_cache_hit_ratio": {
+                        lane: round(ratio, 4) for lane, ratio in breakdown.per_lane_cache_hit_ratio.items()
+                    },
+                    "per_phase_cache_hit_ratio": {
+                        phase: round(ratio, 4) for phase, ratio in breakdown.per_phase_cache_hit_ratio.items()
+                    },
                 },
             )
         return "\n".join(report.render_lines())

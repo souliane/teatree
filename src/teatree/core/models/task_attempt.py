@@ -32,8 +32,10 @@ class TaskAttemptQuerySet(models.QuerySet):
                 cache_read_tokens=row.cache_read_tokens or 0,
                 cache_write_tokens=row.cache_write_tokens or 0,
                 lane=row.lane,
+                estimated=row.cost_is_estimated,
+                phase=row.task.phase,
             )
-            for row in self.only(
+            for row in self.select_related("task").only(
                 "model",
                 "cost_usd",
                 "input_tokens",
@@ -41,6 +43,8 @@ class TaskAttemptQuerySet(models.QuerySet):
                 "cache_read_tokens",
                 "cache_write_tokens",
                 "lane",
+                "cost_is_estimated",
+                "task__phase",
             )
         ]
 
@@ -95,6 +99,13 @@ class TaskAttempt(models.Model):
     cache_read_tokens = models.IntegerField(null=True, blank=True)
     cache_write_tokens = models.IntegerField(null=True, blank=True)
     cost_usd = models.FloatField(null=True, blank=True)
+    # #3157 E5: whether ``cost_usd`` is a price-table ESTIMATE (True) or a real
+    # reported figure — the CLI/SDK ``total_cost_usd`` or the metered router's own
+    # reported cost passed through. Default True so a historical row whose provenance
+    # is unknown is flagged conservatively as an estimate, never presented as a vetted
+    # billed figure. ``t3 cost`` annotates estimated spend so a router-lane run's real
+    # cost is distinguishable from a price-table guess.
+    cost_is_estimated = models.BooleanField(default=True)
     num_turns = models.IntegerField(null=True, blank=True)
     launch_url = models.URLField(max_length=500, blank=True)
     agent_session_id = models.CharField(max_length=255, blank=True)

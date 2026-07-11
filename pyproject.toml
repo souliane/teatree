@@ -363,6 +363,26 @@ source_modules = [
 ]
 forbidden_modules = [ "teatree.contrib" ]
 
+# #3157 E6: a factory overlay drives dispatch/attempt/eval/budget through the documented
+# ``teatree.overlay_sdk`` surface, never the PRIVATE ``teatree.agents._*`` internals (the
+# ``_headless_*`` option/env builders). The in-tree overlay (``teatree.contrib``) is the
+# proxy import-linter can see; a real overlay is an external package, but the same rule is
+# the documented contract. A private import here fails the gate.
+
+[[tool.importlinter.contracts]]
+name = "Overlays must not import private agents internals"
+type = "forbidden"
+source_modules = [ "teatree.contrib" ]
+forbidden_modules = [
+  "teatree.agents._headless_options",
+  "teatree.agents._headless_env",
+]
+# Direct-only: an overlay may use the SANCTIONED public surface (``teatree.overlay_sdk``,
+# ``run_headless``), which internally touches these agents-private modules — that transitive
+# chain is fine. Only a DIRECT ``import teatree.agents._headless_*`` from an overlay is the
+# reach-into-privates this gate forbids.
+allow_indirect_imports = "true"
+
 [[tool.importlinter.contracts]]
 name = "Mini-loops are mutually independent"
 type = "independence"

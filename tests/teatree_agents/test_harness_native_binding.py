@@ -1,0 +1,128 @@
+"""Native Anthropic Messages-API binding on the pydantic_ai lane (#3157 E1b).
+
+Acceptance: ``agent_harness_provider=anthropic_api`` under ``agent_harness=pydantic_ai``
+selects the NATIVE binding (real ``cache_control`` reachable), one branch in ``_resolve_model``,
+and the metered router's own reported cost is passed through when present.
+"""
+
+import importlib.util
+import os
+from types import SimpleNamespace
+from unittest.mock import patch
+
+import pytest
+from claude_agent_sdk import ClaudeAgentOptions
+from django.test import TestCase
+from pydantic_ai.models.test import TestModel
+
+from teatree.agents.context_plan import ContextPlan, ContextSegment, SegmentStability
+from teatree.agents.harness import PydanticAiHarness, resolve_harness
+from teatree.agents.pydantic_ai_config import (
+    PYDANTIC_AI_NATIVE_CAPABILITIES,
+    NativeAnthropicUnavailableError,
+    PydanticAiBinding,
+    PydanticAiModelConfig,
+)
+from teatree.agents.pydantic_ai_session import _router_reported_cost
+from teatree.config import AgentHarness, AgentHarnessProvider
+from teatree.core.models import ConfigSetting
+
+_ANTHROPIC_INSTALLED = importlib.util.find_spec("anthropic") is not None
+
+
+class TestBindingSelection(TestCase):
+    @pytest.fixture(autouse=True)
+    def _isolate(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.delenv("T3_AGENT_HARNESS", raising=False)
+        monkeypatch.delenv("T3_AGENT_HARNESS_PROVIDER", raising=False)
+        monkeypatch.delenv("T3_OVERLAY_NAME", raising=False)
+
+    def test_orca_router_provider_selects_the_router_binding(self) -> None:
+        ConfigSetting.objects.set_value("agent_harness", "pydantic_ai")
+        ConfigSetting.objects.set_value("agent_harness_provider", "orca_router_byok")
+        harness = resolve_harness()
+        assert isinstance(harness, PydanticAiHarness)
+        assert harness.binding is PydanticAiBinding.ROUTER
+        assert harness.capabilities.cache_control is False
+
+    def test_anthropic_api_provider_selects_the_native_binding(self) -> None:
+        ConfigSetting.objects.set_value("agent_harness", "pydantic_ai")
+        ConfigSetting.objects.set_value("agent_harness_provider", "anthropic_api")
+        harness = resolve_harness()
+        assert isinstance(harness, PydanticAiHarness)
+        assert harness.binding is PydanticAiBinding.NATIVE_ANTHROPIC
+        assert harness.capabilities == PYDANTIC_AI_NATIVE_CAPABILITIES
+        assert harness.capabilities.cache_control is True
+
+
+class TestProviderConstraintTable:
+    def test_anthropic_api_is_valid_under_pydantic_ai(self) -> None:
+        valid = AgentHarnessProvider.valid_for(AgentHarness.PYDANTIC_AI)
+        assert AgentHarnessProvider.ANTHROPIC_API in valid
+
+    def test_anthropic_api_is_not_valid_under_claude_sdk(self) -> None:
+        valid = AgentHarnessProvider.valid_for(AgentHarness.CLAUDE_SDK)
+        assert AgentHarnessProvider.ANTHROPIC_API not in valid
+
+
+class TestNativeModelResolution:
+    @pytest.mark.skipif(_ANTHROPIC_INSTALLED, reason="anthropic extra present — see the constructs test")
+    def test_native_branch_fails_loud_when_the_optional_extra_is_absent(self) -> None:
+        # `pydantic-ai-slim[anthropic]` is an OPTIONAL extra; when absent the ONE native branch
+        # (not the OpenAI router client) fails LOUD with the install hint rather than silently.
+        harness = PydanticAiHarness(config=PydanticAiModelConfig(binding=PydanticAiBinding.NATIVE_ANTHROPIC))
+        options = ClaudeAgentOptions(model="claude-opus-4-8")
+        with (
+            patch.dict(os.environ, {"ANTHROPIC_API_KEY": "sk-test"}, clear=False),
+            pytest.raises(NativeAnthropicUnavailableError, match="anthropic"),
+        ):
+            harness._resolve_model(options)
+
+    @pytest.mark.skipif(not _ANTHROPIC_INSTALLED, reason="anthropic extra absent — see the fails-loud test")
+    def test_native_branch_constructs_the_anthropic_model_when_the_extra_is_present(self) -> None:
+        harness = PydanticAiHarness(config=PydanticAiModelConfig(binding=PydanticAiBinding.NATIVE_ANTHROPIC))
+        options = ClaudeAgentOptions(model="claude-opus-4-8")
+        with patch.dict(os.environ, {"ANTHROPIC_API_KEY": "sk-test"}, clear=False):
+            model = harness._resolve_model(options)
+        # The native Anthropic model, NOT the OpenAI-compatible router model.
+        assert "anthropic" in type(model).__module__.lower()
+
+    def test_injected_model_short_circuits_before_the_native_branch(self) -> None:
+        injected = TestModel()
+        harness = PydanticAiHarness(
+            model=injected, config=PydanticAiModelConfig(binding=PydanticAiBinding.NATIVE_ANTHROPIC)
+        )
+        assert harness._resolve_model(ClaudeAgentOptions()) is injected
+
+
+class TestContextPlanCacheBreakpoints:
+    def test_native_binding_exposes_the_context_plan_breakpoints(self) -> None:
+        plan = ContextPlan.ordered(
+            [
+                ContextSegment("preamble", SegmentStability.STATIC),
+                ContextSegment("repo digest", SegmentStability.PER_REPO, cache=True, ttl="1h"),
+                ContextSegment("task tail", SegmentStability.PER_TASK),
+            ]
+        )
+        harness = PydanticAiHarness(
+            config=PydanticAiModelConfig(binding=PydanticAiBinding.NATIVE_ANTHROPIC, context_plan=plan)
+        )
+        breakpoints = harness.cache_control_breakpoints()
+        assert len(breakpoints) == 1
+
+    def test_router_binding_places_no_breakpoints_even_with_a_plan(self) -> None:
+        plan = ContextPlan.ordered([ContextSegment("x", SegmentStability.PER_REPO, cache=True)])
+        harness = PydanticAiHarness(config=PydanticAiModelConfig(binding=PydanticAiBinding.ROUTER, context_plan=plan))
+        assert harness.cache_control_breakpoints() == ()
+
+
+class TestRouterReportedCost:
+    def test_reads_a_cost_key_from_run_usage_details(self) -> None:
+        assert _router_reported_cost(SimpleNamespace(details={"cost": 0.37})) == pytest.approx(0.37)
+
+    def test_none_when_no_details(self) -> None:
+        assert _router_reported_cost(SimpleNamespace(details=None)) is None
+        assert _router_reported_cost(object()) is None
+
+    def test_ignores_a_bool_or_negative_value(self) -> None:
+        assert _router_reported_cost(SimpleNamespace(details={"cost": True, "total_cost": -1})) is None
