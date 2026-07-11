@@ -105,6 +105,16 @@ class TestRegistryConformance(TestCase):
             assert item.adversarial_question.strip(), item.slug
             assert item.origin.strip(), item.slug
 
+    def test_no_rubric_origin_embeds_a_raw_debt_marker(self) -> None:
+        # A rubric ``origin=`` is a human-readable provenance label. Embedding a
+        # literal debt token (TODO/FIXME/XXX/HACK) makes the rubric's OWN
+        # definition read as tech debt and false-positives any debt grep over the
+        # source — the ``deferred`` item, which DETECTS deferred-by-prose debt,
+        # must describe that class without itself being a debt marker.
+        markers = ("TODO", "FIXME", "XXX", "HACK")
+        offenders = [(item.slug, marker) for item in CRITIC_RUBRIC for marker in markers if marker in item.origin]
+        assert not offenders, f"rubric origin embeds a raw debt marker: {offenders}"
+
     def test_resolve_rejects_a_non_dotted_path(self) -> None:
         with pytest.raises(CriticRubricResolutionError):
             _resolve_predicate("notdotted")
