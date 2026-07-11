@@ -29,6 +29,7 @@ from teatree.loop.statusline_loops import (
     mini_loops_anchor,
     overlays_anchor,
     set_mini_loop_schedules_reader,
+    set_preset_segment_reader,
 )
 from teatree.loop.statusline_render import (
     StatuslineEntry,
@@ -56,5 +57,6 @@ __all__ = [
     "plain_link",
     "render",
     "set_mini_loop_schedules_reader",
+    "set_preset_segment_reader",
     "statusline_for_slack",
 ]

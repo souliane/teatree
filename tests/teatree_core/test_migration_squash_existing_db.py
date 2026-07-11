@@ -23,6 +23,8 @@ initial name stops matching the squashed node — the exact regression a
 name-changing re-squash (or a future ``0001`` rename) would reintroduce.
 """
 
+from pathlib import Path
+
 import pytest
 from django.core.management import call_command
 from django.db import connection
@@ -37,15 +39,18 @@ _MARKER_TABLE = "teatree_implemented_issue_marker"
 _CLAIMED_BY_INSTANCE = "claimed_by_instance"
 _CLAIM_REF_SHA = "claim_ref_sha"
 
-# The current, post-squash core graph.
-_CURRENT_GRAPH = frozenset(
-    {
-        "0001_initial",
-        "0002_implementedissuemarker_claimed_by_instance",
-        "0003_implementedissuemarker_claim_ref_sha",
-        "0004_ticket_issue_number",
-    }
-)
+_CORE_MIGRATIONS_DIR = Path(__file__).resolve().parents[2] / "src" / "teatree" / "core" / "migrations"
+
+# The current, post-squash core graph — every real on-disk ``core`` migration,
+# derived from disk (never a hardcoded set) so it cannot fall out of sync when a new
+# migration lands. ``_restore_core_head`` relies on this being the FULL real graph to
+# tell real records (keep) from the fileless pre-squash phantom rows (delete): a stale
+# set silently deletes the real records for the migrations it omits and then re-applies
+# their ops onto already-present schema — a ``CreateModel`` "table already exists" brick
+# that corrupts the xdist-reused ``default`` DB for every sibling test (the #3159 preset
+# ``CreateModel`` migration first exposed this latent staleness; AddFields tolerated it).
+# Mirrors ``test_schema_guard.py::_core_migration_names`` — the same disk-glob seam.
+_CURRENT_GRAPH: frozenset[str] = frozenset(p.stem for p in _CORE_MIGRATIONS_DIR.glob("[0-9]*.py"))
 
 # The frozen pre-squash migration names (post-``0001_initial``) as they existed at
 # ``666a9730^`` right before the squash. A fully-updated old install recorded

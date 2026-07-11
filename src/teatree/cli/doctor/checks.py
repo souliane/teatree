@@ -11,6 +11,8 @@ from pathlib import Path
 
 import typer
 
+from teatree.loop.preset_resolution import consistency_findings
+
 
 def _check_single_db() -> bool:
     """Warn if any ``db.sqlite3`` other than the canonical path exists under DATA_DIR."""
@@ -508,6 +510,27 @@ def _check_slack_socket_mode() -> bool:
     for finding in outcome.findings:
         typer.echo(f"{finding.level.value:<5} [{finding.overlay}] {finding.message}")
     return True
+
+
+def _check_loop_presets() -> bool:
+    """Warn on a dangling loop-preset reference (#3159): deleted preset / loop / schedule.
+
+    Presets, slots and the active-schedule selector reference loops and presets BY
+    NAME, so a deleted target fails open to base config at read time — but the
+    dangling reference should still be surfaced. Reports each such finding (never
+    repairs). Crash-proof: any error degrades to OK so a doctor run never aborts,
+    same posture as the other DB-reading checks.
+    """
+    try:
+        findings = consistency_findings()
+    except Exception as exc:  # noqa: BLE001  # doctor check must never crash the run
+        typer.echo(f"WARN  Loop-preset consistency check crashed: {exc.__class__.__name__}: {exc}")
+        return False
+    if not findings:
+        return True
+    for finding in findings:
+        typer.echo(f"WARN  Loop preset: {finding}")
+    return False
 
 
 def _check_dream_staleness() -> bool:

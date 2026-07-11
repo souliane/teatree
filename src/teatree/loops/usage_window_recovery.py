@@ -77,10 +77,25 @@ def recover_windows(now: dt.datetime) -> RecoveryOutcome:
         return RecoveryOutcome()
 
     released = _release_parked_tasks(now)
+    _clear_auto_engaged_low_power()
     _wake_loops(now)
     _notify_recovered(cleared_pks=cleared, released=released, now=now)
     logger.info("usage_window_recovery: cleared %s window(s), released %s parked task(s)", len(cleared), released)
     return RecoveryOutcome(cleared=cleared, released=released)
+
+
+def _clear_auto_engaged_low_power() -> None:
+    """Clear a low-power override this system auto-engaged on the park (#3159 item 6).
+
+    Best-effort — a user override is never touched, and a failure here must never
+    break usage-window recovery (a lingering override also expires at its ``until``).
+    """
+    from teatree.core.models import LoopPresetOverride  # noqa: PLC0415 — deferred import (cycle-safe / task-body)
+
+    try:
+        LoopPresetOverride.objects.clear_auto_engaged_low_power()
+    except Exception:
+        logger.debug("low-power auto-engage clear failed during recovery", exc_info=True)
 
 
 def _release_parked_tasks(now: dt.datetime) -> int:

@@ -25,7 +25,7 @@ from datetime import UTC, datetime
 from django.utils import timezone
 
 from teatree.config import get_effective_settings
-from teatree.core.models import LIMIT_PARKED_PREFIX, Task, TaskAttempt, UsageWindowState
+from teatree.core.models import LIMIT_PARKED_PREFIX, LoopPresetOverride, Task, TaskAttempt, UsageWindowState
 from teatree.llm.anthropic_limits import LimitCause, LimitMatch, window_horizon
 
 logger = logging.getLogger(__name__)
@@ -94,6 +94,10 @@ def park_task_on_limit(
     if reset is None:
         return None
     UsageWindowState.record_limit(lane=lane, cause=match.cause.value, resets_at=reset, now=moment)
+    # #3159 item 6: auto-engage the low-power preset for the parked window's tenure
+    # (default-off flag; never overwrites a live user override). Fail-soft — a park
+    # must never depend on the preset layer.
+    _auto_engage_low_power(reset, moment)
     logger.warning(
         "Task %s parked behind an exhausted usage window (%s, lane=%r) until %s",
         task.pk,
@@ -102,6 +106,13 @@ def park_task_on_limit(
         reset.isoformat(),
     )
     return _record_park(task, reason=f"{LIMIT_PARKED_PREFIX}{match.as_reason()}", not_before=reset)
+
+
+def _auto_engage_low_power(reset: datetime, moment: datetime) -> None:
+    try:
+        LoopPresetOverride.objects.auto_engage_low_power(resets_at=reset, now=moment)
+    except Exception:
+        logger.warning("low-power auto-engage failed on park — continuing", exc_info=True)
 
 
 def maybe_park_for_active_window(task: Task, *, lane: str, now: datetime | None = None) -> TaskAttempt | None:

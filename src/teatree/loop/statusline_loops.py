@@ -192,6 +192,39 @@ def _mini_loop_schedules() -> list[MiniLoopSchedule]:
     return _mini_loop_schedules_reader()
 
 
+# The active-preset statusline segment (#3159) is resolved up-stack in
+# :func:`teatree.loops.preset_status.statusline_chunk` (the resolver lives in
+# ``teatree.loops``), injected here through the same seam as the mini-loop
+# reader. Absent injection (a quiet machine, a unit test) the default reader
+# returns ``""`` and the preset segment is simply omitted — never a crash.
+type PresetSegmentReader = Callable[[], str]
+
+
+def _empty_preset_segment() -> str:
+    return ""
+
+
+_preset_segment_reader: PresetSegmentReader = _empty_preset_segment
+
+
+def set_preset_segment_reader(reader: PresetSegmentReader | None) -> None:
+    """Install the up-stack active-preset segment reader (``None`` resets to empty)."""
+    global _preset_segment_reader  # noqa: PLW0603 — process-global injection seam, mirrors set_mini_loop_schedules_reader
+    _preset_segment_reader = reader or _empty_preset_segment
+
+
+def _preset_segment() -> str:
+    """Return the active-preset statusline segment (``preset heads-down →19:00``), or ``""``.
+
+    Fails open to ``""`` on any read error so a broken preset resolver never
+    blanks the loop line.
+    """
+    try:
+        return _preset_segment_reader()
+    except Exception:  # noqa: BLE001 — rendering is best-effort; a failure degrades to empty
+        return ""
+
+
 # Per-loop cadence resolution (#1400). Each named loop ticks on its own
 # schedule, so the next-tick countdown is ``acquired_at + cadence`` with the
 # loop's own cadence — not a single shared value. Unknown / future loops fall
@@ -419,6 +452,9 @@ def live_loops_anchor(*, colorize: bool = False) -> list[str]:
         return []
 
     parts = [*chunks]
+    preset = _preset_segment()
+    if preset:
+        parts.append(preset)
     availability = _availability_segment()
     if availability:
         parts.append(availability)

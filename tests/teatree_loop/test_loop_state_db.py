@@ -31,6 +31,25 @@ class TestLoopStateAdmits(django.test.SimpleTestCase):
     def test_not_configured_and_held_is_not_admitted(self) -> None:
         assert loop_state_admits(configured_enabled=False, held=True) is False
 
+    def test_neutral_preset_default_is_byte_for_byte_the_two_plane_verdict(self) -> None:
+        # The #3159 empty-table no-op: omitting preset_state (or None) resolves
+        # exactly as the pre-#3159 `configured_enabled and not held`.
+        for configured in (True, False):
+            for held in (True, False):
+                assert loop_state_admits(configured_enabled=configured, held=held) == (configured and not held)
+                assert loop_state_admits(configured_enabled=configured, held=held, preset_state=None) == (
+                    configured and not held
+                )
+
+    def test_preset_force_on_overrides_disabled_base(self) -> None:
+        assert loop_state_admits(configured_enabled=False, held=False, preset_state=True) is True
+
+    def test_preset_force_off_overrides_enabled_base(self) -> None:
+        assert loop_state_admits(configured_enabled=True, held=False, preset_state=False) is False
+
+    def test_hold_still_wins_over_a_force_on_preset(self) -> None:
+        assert loop_state_admits(configured_enabled=True, held=True, preset_state=True) is False
+
 
 @django.test.override_settings(USE_TZ=True)
 class TestLoopEnabledCombinedVerdict(django.test.TestCase):
@@ -57,6 +76,40 @@ class TestLoopEnabledCombinedVerdict(django.test.TestCase):
 
     def test_missing_row_is_false(self) -> None:
         assert loop_enabled("le-absent") is False
+
+    def test_active_preset_force_off_masks_an_enabled_loop(self) -> None:
+        from teatree.core.models import (  # noqa: PLC0415 — deferred import (cycle-safe / pre-app-registry)
+            LoopPreset,
+            LoopPresetOverride,
+        )
+
+        self._loop("le-masked")
+        LoopPreset.objects.create(name="heads-down", entries={"le-masked": False})
+        LoopPresetOverride.objects.set_override("heads-down")
+        assert loop_enabled("le-masked") is False
+
+    def test_active_preset_force_on_admits_a_disabled_loop(self) -> None:
+        from teatree.core.models import (  # noqa: PLC0415 — deferred import (cycle-safe / pre-app-registry)
+            LoopPreset,
+            LoopPresetOverride,
+        )
+
+        self._loop("le-forced", enabled=False)
+        LoopPreset.objects.create(name="engaged", entries={"le-forced": True})
+        LoopPresetOverride.objects.set_override("engaged")
+        assert loop_enabled("le-forced") is True
+
+    def test_hold_beats_a_force_on_preset(self) -> None:
+        from teatree.core.models import (  # noqa: PLC0415 — deferred import (cycle-safe / pre-app-registry)
+            LoopPreset,
+            LoopPresetOverride,
+        )
+
+        self._loop("le-held-forced", enabled=False)
+        LoopState.objects.disable("le-held-forced")
+        LoopPreset.objects.create(name="engaged", entries={"le-held-forced": True})
+        LoopPresetOverride.objects.set_override("engaged")
+        assert loop_enabled("le-held-forced") is False
 
 
 class TestLoopHeldFailsSafeButWarns(django.test.TestCase):

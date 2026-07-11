@@ -59,19 +59,46 @@ whose cadence) moves from code into the DB rows + the unified verdict.
 
 import datetime as dt
 import logging
+from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 from teatree.core import availability
 from teatree.loop.job_identity import _ScannerJob
 from teatree.loop.loop_state_db import held_loop_names, loop_state_admits
+from teatree.loop.preset_resolution import preset_state_for, resolve_active_preset
 from teatree.loops.base import BuildJobsContext, MiniLoop
 from teatree.loops.registry import iter_loops
 
 if TYPE_CHECKING:
     from teatree.core.availability import Resolution
     from teatree.core.models import Loop
+    from teatree.loop.preset_resolution import ActivePreset
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True, slots=True)
+class _TickAdmission:
+    """The per-tick inputs the unified verdict shares across every loop this pass.
+
+    Resolved ONCE per tick (availability, the L3/L2 preset mask, the bulk
+    ``LoopState`` hold set) so a fan-out of N loops issues those reads once, not
+    per loop (#2584 / #3159).
+    """
+
+    now: dt.datetime
+    resolution: "Resolution"
+    active_preset: "ActivePreset | None"
+    held: set[str]
+
+    @classmethod
+    def resolve(cls, now: dt.datetime) -> "_TickAdmission":
+        return cls(
+            now=now,
+            resolution=availability.resolve_mode(),
+            active_preset=resolve_active_preset(now),
+            held=held_loop_names(),
+        )
 
 
 def _resolve_dispatch_loop(row: "Loop", registry_by_name: dict[str, MiniLoop]) -> MiniLoop:
@@ -92,28 +119,31 @@ def _resolve_dispatch_loop(row: "Loop", registry_by_name: dict[str, MiniLoop]) -
     return registry_by_name[target]
 
 
-def _loop_admitted(
-    row: "Loop | None", loop: MiniLoop, *, held: bool, now: dt.datetime, resolution: "Resolution"
-) -> bool:
+def _loop_admitted(row: "Loop | None", loop: MiniLoop, ctx: _TickAdmission) -> bool:
     """The unified enabled+due+reachable verdict for one loop — no cadence claim.
 
     A loop is admitted iff it is NOT ``off_live_tick`` (the heavy ``dream`` pass is
     driven by its own low-frequency cron), it HAS a ``Loop`` row that is
-    ``is_due(now)``, it is NOT ``colleague_facing`` while *resolution*
+    ``is_due(now)``, it is NOT ``colleague_facing`` while *ctx.resolution*
     ``defers_questions`` (holiday-``away`` / ``autonomous_away``, #2904), AND the
     combined enable verdict :func:`teatree.loop.loop_state_db.loop_state_admits`
-    admits it — ``Loop.enabled`` (configured) AND not *held* (the caller's bulk
-    ``LoopState`` read, #2584). The single verdict both :func:`build_loop_table_jobs`
-    and the loop-timer chains (:func:`admitted_loop_names`, via
+    admits it — not held (the bulk ``LoopState`` read, #2584), then the read-time
+    preset mask (L3/L2, resolved ONCE per tick as *ctx.active_preset*, #3159) over
+    ``Loop.enabled``. The single verdict both :func:`build_loop_table_jobs` and the
+    loop-timer chains (:func:`admitted_loop_names`, via
     :func:`teatree.loops.timer_chains.loop_admitted`) gate on, so it can never drift.
     """
     if loop.off_live_tick:
         return False
-    if row is None or not row.is_due(now):
+    if row is None or not row.is_due(ctx.now):
         return False
-    if row.colleague_facing and resolution.defers_questions:
+    if row.colleague_facing and ctx.resolution.defers_questions:
         return False
-    return loop_state_admits(configured_enabled=row.enabled, held=held)
+    return loop_state_admits(
+        configured_enabled=row.enabled,
+        held=loop.name in ctx.held,
+        preset_state=preset_state_for(ctx.active_preset, loop.name),
+    )
 
 
 def admitted_loop_names(now: dt.datetime, *, only: str | None = None) -> list[str]:
@@ -128,14 +158,12 @@ def admitted_loop_names(now: dt.datetime, *, only: str | None = None) -> list[st
     """
     from teatree.core.models import Loop  # noqa: PLC0415
 
-    resolution = availability.resolve_mode()
+    admission = _TickAdmission.resolve(now)
     rows = {row.name: row for row in Loop.objects.all()}
-    held = held_loop_names()
     return [
         loop.name
         for loop in iter_loops()
-        if (only is None or loop.name == only)
-        and _loop_admitted(rows.get(loop.name), loop, held=loop.name in held, now=now, resolution=resolution)
+        if (only is None or loop.name == only) and _loop_admitted(rows.get(loop.name), loop, admission)
     ]
 
 
@@ -174,16 +202,15 @@ def build_loop_table_jobs(
     """
     from teatree.core.models import Loop  # noqa: PLC0415
 
-    resolution = availability.resolve_mode()
+    admission = _TickAdmission.resolve(now)
     registry = tuple(iter_loops())
     registry_by_name = {loop.name: loop for loop in registry}
     rows = {row.name: row for row in Loop.objects.all()}
-    held = held_loop_names()
     jobs: list[_ScannerJob] = []
     for loop in registry:
         if only is not None and loop.name != only:
             continue
-        if not _loop_admitted(rows.get(loop.name), loop, held=loop.name in held, now=now, resolution=resolution):
+        if not _loop_admitted(rows.get(loop.name), loop, admission):
             continue
         row = rows[loop.name]
         # Atomically claim the cadence anchor BEFORE building jobs so two ticks

@@ -245,6 +245,31 @@ Claim, inspect, or release the session-scoped t3-master slot (#1073).
 | `whoami` | Print this Claude session's own id |
 | `release` | Release this session's t3-master claim (CAS — non-owner is a no-op) |
 
+## `loop_preset`
+
+List/show/use/auto/create/edit/delete loop presets (#3159).
+
+| Subcommand | Description |
+| --- | --- |
+| `show` | Show a named preset, or (no arg) the active preset + WHY + per-loop verdict table |
+| `use` | Activate *name* as the L3 manual override (default: until the next scheduled boundary) |
+| `auto` | Clear the manual override so the active schedule decides again |
+| `create` | Create a new preset from ``--set`` entries, optional pin and overlay scope |
+| `edit` | Edit a preset's entries / description / pin / scope in place |
+| `delete` | Delete a preset (a slot/override still pointing at it fails open to base config) |
+| `list` | List every preset with its pin, scope, entry count, and the ACTIVE marker |
+
+## `loop_schedule`
+
+List/show/set-active/clear-active loop schedules (#3159).
+
+| Subcommand | Description |
+| --- | --- |
+| `show` | Show a schedule's ordered slots (weekdays at a start time, then the preset) |
+| `list` | List every schedule with its timezone, slot count, and the ACTIVE marker |
+| `set-active` | Activate *name* — the single ``active_loop_schedule`` write that switches calendars |
+| `clear-active` | Clear the active schedule so no L2 layer applies (presets only via override) |
+
 ## `loop_self_improve`
 
 Run one schedule cycle of the self-improving monitor.
@@ -442,7 +467,7 @@ Signal *pid* only if it maps to a dead target AND is confirmed non-live.
 
 ## `seed_loops`
 
-Idempotently seed the default loops + prompts (#2513).
+Idempotently seed the default loops + prompts + presets + schedules (#2513, #3159).
 
 ## `session`
 

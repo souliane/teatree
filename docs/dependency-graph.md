@@ -232,6 +232,8 @@ graph TD
     teatree.loop.review_claim_signals --> teatree.core.models
     teatree.loop.review_claim_signals --> teatree.loop.loop_state_db
     teatree.loop.loop_state_db --> teatree.core.models
+    teatree.loop.loop_state_db --> teatree.loop.preset_resolution
+    teatree.loop.preset_resolution --> teatree.core.models
     teatree.loop.scanners --> teatree.types
     teatree.loop.scanners --> teatree.paths
     teatree.loop.scanners --> teatree.utils
@@ -303,6 +305,7 @@ graph TD
     teatree.loops --> teatree.core
     teatree.loops --> teatree.loop
     teatree.loops --> teatree.loop.loop_state_db
+    teatree.loops --> teatree.loop.preset_resolution
     teatree.loops --> teatree.messaging
     teatree.loops --> teatree.utils
     teatree.overlay_sdk --> teatree.types

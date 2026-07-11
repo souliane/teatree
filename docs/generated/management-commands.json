@@ -483,6 +483,62 @@
       ]
     },
     {
+      "help": "List/show/use/auto/create/edit/delete loop presets (#3159).",
+      "name": "loop_preset",
+      "subcommands": [
+        {
+          "help": "Show a named preset, or (no arg) the active preset + WHY + per-loop verdict table",
+          "name": "show"
+        },
+        {
+          "help": "Activate *name* as the L3 manual override (default: until the next scheduled boundary)",
+          "name": "use"
+        },
+        {
+          "help": "Clear the manual override so the active schedule decides again",
+          "name": "auto"
+        },
+        {
+          "help": "Create a new preset from ``--set`` entries, optional pin and overlay scope",
+          "name": "create"
+        },
+        {
+          "help": "Edit a preset's entries / description / pin / scope in place",
+          "name": "edit"
+        },
+        {
+          "help": "Delete a preset (a slot/override still pointing at it fails open to base config)",
+          "name": "delete"
+        },
+        {
+          "help": "List every preset with its pin, scope, entry count, and the ACTIVE marker",
+          "name": "list"
+        }
+      ]
+    },
+    {
+      "help": "List/show/set-active/clear-active loop schedules (#3159).",
+      "name": "loop_schedule",
+      "subcommands": [
+        {
+          "help": "Show a schedule's ordered slots (weekdays at a start time, then the preset)",
+          "name": "show"
+        },
+        {
+          "help": "List every schedule with its timezone, slot count, and the ACTIVE marker",
+          "name": "list"
+        },
+        {
+          "help": "Activate *name* \u2014 the single ``active_loop_schedule`` write that switches calendars",
+          "name": "set-active"
+        },
+        {
+          "help": "Clear the active schedule so no L2 layer applies (presets only via override)",
+          "name": "clear-active"
+        }
+      ]
+    },
+    {
       "help": "Run one schedule cycle of the self-improving monitor.",
       "name": "loop_self_improve",
       "subcommands": []
@@ -860,7 +916,7 @@
       "subcommands": []
     },
     {
-      "help": "Idempotently seed the default loops + prompts (#2513).",
+      "help": "Idempotently seed the default loops + prompts + presets + schedules (#2513, #3159).",
       "name": "seed_loops",
       "subcommands": []
     },

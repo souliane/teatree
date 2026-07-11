@@ -70,6 +70,27 @@ PR-28 retired the native Claude `/loop` cron mirror: the DB toggle is now the wh
 - **Disable a loop `X`:** `t3 loop disable X` — flips `Loop.enabled=False` + `LoopState=DISABLED`; the reconciler prunes its queued timers.
 - **Confirm the worker is running:** `t3 worker status` (the live flock holder + the resolved `loop_runner_enabled` + per-loop timer counts). If it is enabled but not running, `t3 worker ensure` spawns a detached worker. `loop_runner_enabled` OFF stops the loops entirely (the kill-switch).
 
+## Presets & weekly schedules (mode switching, #3159)
+
+`t3 loop <enable|disable|pause|resume>` are per-loop. **Presets** switch many loops at once as a read-time MASK above the base config and below a `LoopState` hold — no rows are rewritten on a switch. A preset's `entries` are **tri-state** per loop (`on` / `off` / *absent = inherit* the base `Loop.enabled`). Resolution order (first opinion wins): L4 `LoopState` hold → L3 manual override → L2 active-schedule slot → L1 `Loop.enabled`.
+
+```bash
+t3 loop preset list                      # every preset + the ACTIVE marker
+t3 loop preset show                      # active preset + WHY + per-loop effective verdict (deciding layer)
+t3 loop preset show heads-down           # a named preset's entries
+t3 loop preset use heads-down            # activate until the next scheduled boundary
+t3 loop preset use unattended --hold     # sticky until cleared; --for 2h / --until <iso> for a TTL
+t3 loop preset auto                      # clear the override — the schedule decides again
+t3 loop preset create|edit <name> --set review=off --set dispatch=on [--pin autonomous_away] [--scope <overlay>]
+t3 loop preset delete <name>
+
+t3 loop schedule list | show [<name>]    # the weekly calendars + their slots
+t3 loop schedule set-active standard     # one write switches calendars (e.g. flip to a holiday one)
+t3 loop schedule clear-active            # no L2 layer — presets apply only via a manual override
+```
+
+Seeded defaults (owner-editable DB data, never clobbered by re-seeding): presets `engaged` / `heads-down` / `unattended` (pins `autonomous_away`) / `maintenance` / `low-power` / `off`, and schedules `standard` / `always-unattended`. A fresh install seeds everything but leaves `active_loop_schedule` **unset** — fully opt-in, so with no active schedule and no override every loop admits exactly as its two-plane verdict does today. Everything fails OPEN: a deleted preset/loop/schedule resolves to base config with a WARNING + a `t3 doctor` finding — a broken schedule can never brick the fleet. A preset may pin an availability mode (written through the same `t3 teatree availability` override chokepoint) and a `focus:<overlay>` preset's `overlay_scope` restricts the tick to one backend. `low-power` auto-engages while a usage window is parked, behind the default-off `low_power_auto_engage` flag.
+
 ## Reactive infra loops (not DB `Loop` rows)
 
 Three tight-cadence reactive slots run as their OWN dedicated native Claude `/loop`s, separate from the DB-configured domain loops above. They are self-contained cycle commands (not scanner ticks). The **t3-master** session AUTO-registers all three at session start — the owner bootstrap (`hooks/scripts/loop_registrations.py`) emits one `/loop <cadence> Run …` directive per slot, reading the same `teatree.loop.loop_cadences` seam that `t3 loop <slot> start` prints, so you can also register or re-print any single slot by hand. Their cadence is env-overridable:

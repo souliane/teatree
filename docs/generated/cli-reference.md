@@ -3498,6 +3498,8 @@ Usage: t3 loop [OPTIONS] COMMAND [ARGS]...
 │                then drains a bounded batch of the fresh remainder, and       │
 │                stands down while a live worker holds either worker           │
 │                singleton.                                                    │
+│ preset         Named loop-state presets — mode switching (#3159).            │
+│ schedule       Weekly preset schedules — the L2 calendar (#3159).            │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -4018,6 +4020,229 @@ Usage: t3 loop drain-queue start [OPTIONS]
  (seconds; floor 10).
 
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+#### `t3 loop preset`
+
+```
+Usage: t3 loop preset [OPTIONS] COMMAND [ARGS]...
+
+ Named loop-state presets — mode switching (#3159).
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Commands ───────────────────────────────────────────────────────────────────╮
+│ list    List every preset with its pin, scope, entry count, and ACTIVE       │
+│         marker.                                                              │
+│ show    Show a preset, or (no arg) the active preset + WHY + per-loop        │
+│         verdict table.                                                       │
+│ use     Activate a preset as the manual override (default: until the next    │
+│         scheduled boundary).                                                 │
+│ auto    Clear the manual override so the active schedule decides again.      │
+│ create  Create a preset from ``--set`` entries, an optional availability pin │
+│         and overlay scope.                                                   │
+│ edit    Edit a preset's entries / description / pin / scope in place.        │
+│ delete  Delete a preset (a slot/override still pointing at it fails open to  │
+│         base config).                                                        │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 loop preset list`
+
+```
+Usage: t3 loop preset list [OPTIONS]
+
+ List every preset with its pin, scope, entry count, and ACTIVE marker.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --json                                                                       │
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 loop preset show`
+
+```
+Usage: t3 loop preset show [OPTIONS] [NAME]
+
+ Show a preset, or (no arg) the active preset + WHY + per-loop verdict table.
+
+╭─ Arguments ──────────────────────────────────────────────────────────────────╮
+│   name      [NAME]                                                           │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --json                                                                       │
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 loop preset use`
+
+```
+Usage: t3 loop preset use [OPTIONS] NAME
+
+ Activate a preset as the manual override (default: until the next scheduled
+ boundary).
+
+╭─ Arguments ──────────────────────────────────────────────────────────────────╮
+│ *    name      TEXT  [required]                                              │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --for          TEXT  TTL like 2h/30m/1d.                                     │
+│ --until        TEXT  Explicit ISO-8601 expiry.                               │
+│ --hold               Sticky until cleared.                                   │
+│ --json                                                                       │
+│ --help               Show this message and exit.                             │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 loop preset auto`
+
+```
+Usage: t3 loop preset auto [OPTIONS]
+
+ Clear the manual override so the active schedule decides again.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --json                                                                       │
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 loop preset create`
+
+```
+Usage: t3 loop preset create [OPTIONS] NAME
+
+ Create a preset from ``--set`` entries, an optional availability pin and
+ overlay scope.
+
+╭─ Arguments ──────────────────────────────────────────────────────────────────╮
+│ *    name      TEXT  [required]                                              │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --set                TEXT  <loop>=on|off (repeatable).                       │
+│ --description        TEXT                                                    │
+│ --pin                TEXT                                                    │
+│ --scope              TEXT                                                    │
+│ --help                     Show this message and exit.                       │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 loop preset edit`
+
+```
+Usage: t3 loop preset edit [OPTIONS] NAME
+
+ Edit a preset's entries / description / pin / scope in place.
+
+╭─ Arguments ──────────────────────────────────────────────────────────────────╮
+│ *    name      TEXT  [required]                                              │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --set                TEXT  <loop>=on|off|inherit (repeatable).               │
+│ --description        TEXT                                                    │
+│ --pin                TEXT                                                    │
+│ --scope              TEXT                                                    │
+│ --help                     Show this message and exit.                       │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 loop preset delete`
+
+```
+Usage: t3 loop preset delete [OPTIONS] NAME
+
+ Delete a preset (a slot/override still pointing at it fails open to base
+ config).
+
+╭─ Arguments ──────────────────────────────────────────────────────────────────╮
+│ *    name      TEXT  [required]                                              │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --json                                                                       │
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+#### `t3 loop schedule`
+
+```
+Usage: t3 loop schedule [OPTIONS] COMMAND [ARGS]...
+
+ Weekly preset schedules — the L2 calendar (#3159).
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Commands ───────────────────────────────────────────────────────────────────╮
+│ list          List every schedule with its timezone, slot count, and ACTIVE  │
+│               marker.                                                        │
+│ show          Show a schedule's ordered slots, or (no arg) the active one.   │
+│ set-active    Activate a schedule — the single write that switches calendars │
+│               (normal ↔ holiday).                                            │
+│ clear-active  Clear the active schedule so no L2 layer applies.              │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 loop schedule list`
+
+```
+Usage: t3 loop schedule list [OPTIONS]
+
+ List every schedule with its timezone, slot count, and ACTIVE marker.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --json                                                                       │
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 loop schedule show`
+
+```
+Usage: t3 loop schedule show [OPTIONS] [NAME]
+
+ Show a schedule's ordered slots, or (no arg) the active one.
+
+╭─ Arguments ──────────────────────────────────────────────────────────────────╮
+│   name      [NAME]                                                           │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --json                                                                       │
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 loop schedule set-active`
+
+```
+Usage: t3 loop schedule set-active [OPTIONS] NAME
+
+ Activate a schedule — the single write that switches calendars (normal ↔
+ holiday).
+
+╭─ Arguments ──────────────────────────────────────────────────────────────────╮
+│ *    name      TEXT  [required]                                              │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --json                                                                       │
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 loop schedule clear-active`
+
+```
+Usage: t3 loop schedule clear-active [OPTIONS]
+
+ Clear the active schedule so no L2 layer applies.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --json                                                                       │
 │ --help          Show this message and exit.                                  │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
