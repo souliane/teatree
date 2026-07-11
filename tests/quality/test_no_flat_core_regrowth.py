@@ -36,7 +36,10 @@ _CORE_DIR = Path(__file__).resolve().parents[2] / "src" / "teatree" / "core"
 # ship-flow alternative (stage → in-process leak gates → commit/push → PR upsert),
 # owned by no existing subpackage (merge/ is the keystone transition, runners/ is
 # the RunnerBase fleet).
-PINNED_FLAT_CORE_MODULES = 67
+# 66: -reply_retry.py (U24 hygiene) — the failed-dispatch retry sweep, an unwired
+# leaf whose loop-tick integration was a deferred follow-up that never landed, so no
+# production caller reached it; removed, returning the flat-core count to 66.
+PINNED_FLAT_CORE_MODULES = 66
 
 
 def _flat_core_modules() -> list[str]:
