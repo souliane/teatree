@@ -140,6 +140,33 @@ class TestWorktreeProvisioner(TestCase):
         assert "repo-a" in result.detail
         assert Worktree.objects.filter(ticket=ticket, repo_path="repo-a").count() == 0
 
+    def test_reused_row_survives_when_worktree_add_fails(self) -> None:
+        # A prior partial provision left a Worktree row with NO worktree_path.
+        # A subsequent failed `git worktree add` must NOT delete that reused row
+        # — only a JUST-created row is rolled back (the docstring contract).
+        repo_dir = self.workspace / "repo-a"
+        repo_dir.mkdir()
+        (repo_dir / ".git").mkdir()
+        ticket = self._scoped_ticket(repos=["repo-a"], branch="ac-repo-a-77-x")
+        reused = Worktree.objects.create(
+            ticket=ticket,
+            overlay="test",
+            repo_path="repo-a",
+            branch="ac-repo-a-77-x",
+        )
+
+        with (
+            patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY),
+            self._patch_workspace_dir(),
+            patch("teatree.core.runners.provision.git.worktree_add", return_value=False),
+            patch("teatree.core.runners.provision.git.pull_ff_only", return_value=True),
+        ):
+            result = WorktreeProvisioner(ticket).run()
+
+        assert result.ok is False
+        assert "repo-a" in result.detail
+        assert Worktree.objects.filter(pk=reused.pk).exists()
+
     def test_returns_failure_when_no_clone_found_anywhere(self) -> None:
         not_a_repo = self.workspace / "no-git"
         not_a_repo.mkdir()
