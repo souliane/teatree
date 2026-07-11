@@ -70,6 +70,16 @@ class LoopStateManager(models.Manager["LoopState"]):
         """True iff *name* is in the ``ENABLED`` state (no pause, no disable)."""
         return self.status_of(name) is LoopStatus.ENABLED
 
+    def held_names(self) -> set[str]:
+        """Every loop name a durable ``PAUSED`` / ``DISABLED`` row holds — the tick's single bulk read.
+
+        One ``values_list`` over the small control table, so the loop-table fan-out
+        resolves every loop's hold from ONE query instead of a per-loop
+        :meth:`is_runnable` round-trip (#2584 N+1). An absent name (no row) is
+        ``ENABLED`` → not held, so it is simply not in the returned set.
+        """
+        return {name for name, status in self.values_list("name", "status") if status != LoopStatus.ENABLED.value}
+
     def is_paused(self, name: str) -> bool:
         return self.status_of(name) is LoopStatus.PAUSED
 

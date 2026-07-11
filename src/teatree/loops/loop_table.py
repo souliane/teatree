@@ -4,16 +4,19 @@ The cutover from the code-cadence tick: the fan-out no longer consults a
 code-cadence ledger to decide whether a mini-loop should fire — the DB ``Loop``
 row carries cadence + the enable toggle, and ``Loop.last_run_at`` is the single
 cadence ledger. #2584 closes the gap the #2513 cutover opened: a loop runs this
-tick iff it is NOT ``off_live_tick`` AND its ``Loop`` row is ``enabled`` and
-``is_due(now)`` (its own ``delay_seconds`` interval, or its ``daily_at``
-wall-clock schedule) AND ``LoopsConfig.is_enabled`` agrees. ``LoopsConfig.is_enabled``
-resolves through the durable ``LoopState`` control tier only (``t3 loop pause`` /
-``disable``, #1913) — there is no env kill-switch and no ``[loops]`` toml
-disabled-state tier. ``row.enabled`` AND ``LoopsConfig.is_enabled`` together are
-the single enable verdict (``Loop.enabled`` + ``loop_held_in_db``) — the same
-verdict the dream cron gate, the review-claim chokepoint, and the #2650 cron
-mirror resolve through ``teatree.loop.loop_state_db.loop_enabled``, so no
-enable-decision site drifts into a tier-subset.
+tick iff it is NOT ``off_live_tick`` AND its ``Loop`` row is ``is_due(now)`` (its
+own ``delay_seconds`` interval, or its ``daily_at`` wall-clock schedule) AND the
+combined enable verdict admits it. That verdict is
+:func:`teatree.loop.loop_state_db.loop_state_admits` — ``Loop.enabled`` (the
+configured/opt-in plane) AND not ``LoopState``-held (the durable runtime control
+tier: ``t3 loop pause`` / ``disable``, #1913) — there is no env kill-switch and no
+``[loops]`` toml disabled-state tier. The tick applies that ONE predicate over its
+already-bulk-loaded ``Loop`` rows plus a SINGLE bulk ``LoopState`` read (no
+per-loop hold query), and the standalone :func:`loop_enabled` single-lookup used
+by the off-live-tick daily loop gates applies the same predicate — so no
+enable-decision site drifts into a tier-subset. (The review-claim chokepoint
+reads the ``LoopState`` arm only, by documented design — see
+:mod:`teatree.loop.loop_state_db`.)
 
 **The ``script``/``prompt`` column is LOAD-BEARING (#2513 regression fix).** The
 fan-out no longer selects an admitted row's behaviour by a name-only registry
@@ -28,10 +31,10 @@ column, not by its name.
 
 An ``off_live_tick`` loop (the heavy ``dream`` consolidation pass, #1933 § 3) is
 NEVER picked up here — the live tick must not invoke its ``build_jobs`` or bump
-its ``last_run_at``; it is driven by its own low-frequency cron. The
-``LoopsConfig.is_enabled`` check runs BEFORE the cadence claim so a held loop is
-neither dispatched nor cadence-bumped — its anchor is preserved, not silently
-consumed. The fan-out then ATOMICALLY claims an admitted loop's ``last_run_at``
+its ``last_run_at``; it is driven by its own low-frequency cron. The combined
+enable verdict (the ``LoopState`` hold check) runs BEFORE the cadence claim so a
+held loop is neither dispatched nor cadence-bumped — its anchor is preserved, not
+silently consumed. The fan-out then ATOMICALLY claims an admitted loop's ``last_run_at``
 (a compare-and-swap on the anchor it read, :meth:`LoopManager.mark_run_if_unchanged`)
 BEFORE building its jobs, so two ticks that read the same anchor cannot both
 drive the loop — exactly one wins the claim and dispatches.
@@ -60,13 +63,13 @@ from typing import TYPE_CHECKING
 
 from teatree.core import availability
 from teatree.loop.job_identity import _ScannerJob
+from teatree.loop.loop_state_db import held_loop_names, loop_state_admits
 from teatree.loops.base import BuildJobsContext, MiniLoop
 from teatree.loops.registry import iter_loops
 
 if TYPE_CHECKING:
     from teatree.core.availability import Resolution
     from teatree.core.models import Loop
-    from teatree.loops.config import LoopsConfig
 
 logger = logging.getLogger(__name__)
 
@@ -90,27 +93,27 @@ def _resolve_dispatch_loop(row: "Loop", registry_by_name: dict[str, MiniLoop]) -
 
 
 def _loop_admitted(
-    row: "Loop | None", loop: MiniLoop, config: "LoopsConfig", now: dt.datetime, resolution: "Resolution"
+    row: "Loop | None", loop: MiniLoop, *, held: bool, now: dt.datetime, resolution: "Resolution"
 ) -> bool:
     """The unified enabled+due+reachable verdict for one loop — no cadence claim.
 
     A loop is admitted iff it is NOT ``off_live_tick`` (the heavy ``dream`` pass is
-    driven by its own low-frequency cron), it HAS a ``Loop`` row that is ``enabled``
-    and ``is_due(now)``, it is NOT ``colleague_facing`` while *resolution*
-    ``defers_questions`` (holiday-``away`` / ``autonomous_away``, #2904), AND
-    ``LoopsConfig.is_enabled`` agrees (the durable ``LoopState`` control tier — a
-    ``t3 loop pause`` / ``disable`` hold, #2584). The single source of truth both
-    :func:`build_loop_table_jobs` and the loop-timer chains
-    (:func:`admitted_loop_names`, via :func:`teatree.loops.timer_chains.loop_admitted`)
-    gate on, so the verdict can never drift.
+    driven by its own low-frequency cron), it HAS a ``Loop`` row that is
+    ``is_due(now)``, it is NOT ``colleague_facing`` while *resolution*
+    ``defers_questions`` (holiday-``away`` / ``autonomous_away``, #2904), AND the
+    combined enable verdict :func:`teatree.loop.loop_state_db.loop_state_admits`
+    admits it — ``Loop.enabled`` (configured) AND not *held* (the caller's bulk
+    ``LoopState`` read, #2584). The single verdict both :func:`build_loop_table_jobs`
+    and the loop-timer chains (:func:`admitted_loop_names`, via
+    :func:`teatree.loops.timer_chains.loop_admitted`) gate on, so it can never drift.
     """
     if loop.off_live_tick:
         return False
-    if row is None or not row.enabled or not row.is_due(now):
+    if row is None or not row.is_due(now):
         return False
     if row.colleague_facing and resolution.defers_questions:
         return False
-    return config.is_enabled(loop)
+    return loop_state_admits(configured_enabled=row.enabled, held=held)
 
 
 def admitted_loop_names(now: dt.datetime, *, only: str | None = None) -> list[str]:
@@ -124,15 +127,15 @@ def admitted_loop_names(now: dt.datetime, *, only: str | None = None) -> list[st
     drives one.
     """
     from teatree.core.models import Loop  # noqa: PLC0415
-    from teatree.loops.config import LoopsConfig  # noqa: PLC0415
 
-    config = LoopsConfig.load()
     resolution = availability.resolve_mode()
     rows = {row.name: row for row in Loop.objects.all()}
+    held = held_loop_names()
     return [
         loop.name
         for loop in iter_loops()
-        if (only is None or loop.name == only) and _loop_admitted(rows.get(loop.name), loop, config, now, resolution)
+        if (only is None or loop.name == only)
+        and _loop_admitted(rows.get(loop.name), loop, held=loop.name in held, now=now, resolution=resolution)
     ]
 
 
@@ -146,8 +149,8 @@ def build_loop_table_jobs(
     or bump its ``last_run_at``. A registry mini-loop with no ``Loop`` row is
     skipped (its config was never seeded). A loop whose row is disabled or
     not-due is skipped; a ``colleague_facing`` row is skipped while availability
-    defers questions (#2904); and a loop the :meth:`LoopsConfig.is_enabled`
-    verdict holds — a ``LoopState`` PAUSED/DISABLED row (#1913, #2584) — is
+    defers questions (#2904); and a loop the combined verdict holds — a
+    ``LoopState`` PAUSED/DISABLED row in the single bulk read (#1913, #2584) — is
     skipped too, ALL BEFORE ``mark_run``, so a held loop's cadence anchor is
     preserved.
 
@@ -170,18 +173,17 @@ def build_loop_table_jobs(
     again).
     """
     from teatree.core.models import Loop  # noqa: PLC0415
-    from teatree.loops.config import LoopsConfig  # noqa: PLC0415
 
-    config = LoopsConfig.load()
     resolution = availability.resolve_mode()
     registry = tuple(iter_loops())
     registry_by_name = {loop.name: loop for loop in registry}
     rows = {row.name: row for row in Loop.objects.all()}
+    held = held_loop_names()
     jobs: list[_ScannerJob] = []
     for loop in registry:
         if only is not None and loop.name != only:
             continue
-        if not _loop_admitted(rows.get(loop.name), loop, config, now, resolution):
+        if not _loop_admitted(rows.get(loop.name), loop, held=loop.name in held, now=now, resolution=resolution):
             continue
         row = rows[loop.name]
         # Atomically claim the cadence anchor BEFORE building jobs so two ticks

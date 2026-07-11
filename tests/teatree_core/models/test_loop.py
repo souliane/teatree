@@ -15,7 +15,7 @@ from django.db import IntegrityError, transaction
 from django.test import TestCase, override_settings
 from django.utils import timezone
 
-from teatree.core.models import Loop, Prompt
+from teatree.core.models import Loop, LoopState, LoopStatus, Prompt
 from teatree.loops.seed import DEFAULT_LOOPS
 
 
@@ -206,16 +206,6 @@ class TestLoopManager(TestCase):
         assert "demo-on" in names
         assert "demo-disabled" not in names
 
-    def test_due_returns_enabled_overdue_only(self) -> None:
-        now = timezone.now()
-        Loop.objects.create(name="demo-due", delay_seconds=60, prompt=_prompt())
-        Loop.objects.create(name="demo-cooling", delay_seconds=60, prompt=_prompt(), last_run_at=now)
-        Loop.objects.create(name="demo-due-off", delay_seconds=60, prompt=_prompt(), enabled=False)
-        due = {row.name for row in Loop.objects.due(now)}
-        assert "demo-due" in due
-        assert "demo-cooling" not in due
-        assert "demo-due-off" not in due
-
     def test_mark_run_sets_last_run_at(self) -> None:
         Loop.objects.create(name="demo-mark", delay_seconds=60, prompt=_prompt())
         ts = timezone.now()
@@ -232,6 +222,44 @@ class TestLoopManager(TestCase):
 
     def test_set_enabled_is_a_no_op_for_an_absent_row(self) -> None:
         assert Loop.objects.set_enabled("demo-absent", enabled=True) == 0
+
+
+class TestAtomicTwoPlaneControl(TestCase):
+    """``Loop.objects.disable/enable/resume`` own the paired two-plane write atomically.
+
+    The #2584 tick verdict gates on BOTH ``Loop.enabled`` AND the ``LoopState``
+    control tier. Before, the paired write lived in the ``loop_state`` command, so a
+    second programmatic caller of ``LoopState.objects.disable`` left ``Loop.enabled``
+    stale — the "reports enabled but never ticks" bug (holistic 3c#4). The single
+    atomic manager method makes half-application impossible.
+    """
+
+    def test_disable_writes_both_planes(self) -> None:
+        Loop.objects.create(name="demo-dis", delay_seconds=60, prompt=_prompt(), enabled=True)
+        Loop.objects.disable("demo-dis")
+        assert Loop.objects.get(name="demo-dis").enabled is False
+        assert LoopState.objects.status_of("demo-dis") is LoopStatus.DISABLED
+
+    def test_enable_writes_both_planes(self) -> None:
+        Loop.objects.create(name="demo-en", delay_seconds=60, prompt=_prompt(), enabled=False)
+        LoopState.objects.disable("demo-en")
+        Loop.objects.enable("demo-en")
+        assert Loop.objects.get(name="demo-en").enabled is True
+        assert LoopState.objects.status_of("demo-en") is LoopStatus.ENABLED
+
+    def test_resume_writes_both_planes(self) -> None:
+        Loop.objects.create(name="demo-res", delay_seconds=60, prompt=_prompt(), enabled=False)
+        LoopState.objects.pause("demo-res")
+        Loop.objects.resume("demo-res")
+        assert Loop.objects.get(name="demo-res").enabled is True
+        assert LoopState.objects.status_of("demo-res") is LoopStatus.ENABLED
+
+    def test_disable_records_loopstate_intent_for_an_unseeded_name(self) -> None:
+        # A name with no Loop row still records its durable LoopState intent (the
+        # row-level update is a 0-row no-op) — mirrors the pre-refactor command.
+        Loop.objects.disable("demo-unseeded")
+        assert LoopState.objects.status_of("demo-unseeded") is LoopStatus.DISABLED
+        assert not Loop.objects.filter(name="demo-unseeded").exists()
 
 
 class TestLoopSeed(TestCase):

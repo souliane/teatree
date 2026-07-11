@@ -11,6 +11,8 @@ from typing import TYPE_CHECKING
 from unittest.mock import patch
 
 import django.test
+from django.db import connection
+from django.test.utils import CaptureQueriesContext
 from django.utils import timezone
 
 from teatree.core.availability import Resolution
@@ -404,6 +406,45 @@ class TestAtLeastOnceDoubleDeliveryIsACasNoOp(django.test.TestCase):
         assert "job-dd-once" in first
         assert second == []  # redelivery is a no-op
         assert Loop.objects.get(name="dd-once").last_run_at == claimed  # anchor unchanged by the redelivery
+
+
+@django.test.override_settings(USE_TZ=True)
+class TestLoopStateBulkLoadedOncePerTick(django.test.TestCase):
+    """The tick reads ``LoopState`` ONCE (bulk), never once-per-loop (holistic 3c#3).
+
+    The pre-fix ``_loop_admitted`` resolved the durable hold per loop via
+    ``LoopsConfig.is_enabled`` → ``loop_held_in_db`` → one ``teatree_loop_state``
+    SELECT for every registered loop (an N+1 on every tick while the ``Loop`` rows
+    were already bulk-loaded). The verdict now consumes a single bulk read.
+    """
+
+    @staticmethod
+    def _loop_state_query_count(ctx: CaptureQueriesContext) -> int:
+        return sum("teatree_loop_state" in q["sql"] for q in ctx.captured_queries)
+
+    def test_build_loop_table_jobs_reads_loop_state_at_most_once(self) -> None:
+        now = timezone.now()
+        registry = tuple(_mini(f"n1-{i}") for i in range(5))
+        for loop in registry:
+            Loop.objects.create(name=loop.name, delay_seconds=60, prompt=_prompt())
+        with (
+            patch("teatree.loops.loop_table.iter_loops", return_value=registry),
+            CaptureQueriesContext(connection) as ctx,
+        ):
+            build_loop_table_jobs({}, now=now)
+        assert self._loop_state_query_count(ctx) <= 1
+
+    def test_admitted_loop_names_reads_loop_state_at_most_once(self) -> None:
+        now = timezone.now()
+        registry = tuple(_mini(f"n2-{i}") for i in range(5))
+        for loop in registry:
+            Loop.objects.create(name=loop.name, delay_seconds=60, prompt=_prompt())
+        with (
+            patch("teatree.loops.loop_table.iter_loops", return_value=registry),
+            CaptureQueriesContext(connection) as ctx,
+        ):
+            admitted_loop_names(now)
+        assert self._loop_state_query_count(ctx) <= 1
 
 
 @django.test.override_settings(USE_TZ=True)
