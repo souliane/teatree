@@ -16,6 +16,7 @@ from teatree.loop.scanners.assigned_issues import AssignedIssuesScanner
 from teatree.loop.scanners.backlog_sweep import BacklogSweepScanner
 from teatree.loop.scanners.base import Scanner, ScanSignal
 from teatree.loop.scanners.codex_review import CodexReviewScanner, GhCodexPrApi
+from teatree.loop.scanners.db_backup import DbBackupScanner
 from teatree.loop.scanners.deferred_question_poster import DeferredQuestionPosterScanner
 from teatree.loop.scanners.eval_local import EvalLocalScanner
 from teatree.loop.scanners.gitlab_approvals import GitLabApprovalsScanner
@@ -74,6 +75,7 @@ __all__ = [
     "BacklogSweepScanner",
     "CallCommandMergeKeystone",
     "CodexReviewScanner",
+    "DbBackupScanner",
     "DeferredQuestionPosterScanner",
     "EvalLocalScanner",
     "GhCodexPrApi",

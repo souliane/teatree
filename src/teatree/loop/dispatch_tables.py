@@ -256,6 +256,10 @@ MECHANICAL_BY_KIND: dict[str, tuple[ActionKind, str]] = {
     # mechanical restore+migrate+snapshot refresh, out-of-band from any
     # ticket-critical-path provision.
     "snapshot_warmer.refresh_needed": ("mechanical", "refresh_snapshot"),
+    # Directive #2 daily control-DB backup — a due backup → mechanical
+    # snapshot + keep-last-N-days retention prune, off the tick. Mechanical-only
+    # (the scanner flags cadence; the executor writes the artifact), never an agent.
+    "db_backup.due": ("mechanical", "run_db_backup"),
 }
 
 
