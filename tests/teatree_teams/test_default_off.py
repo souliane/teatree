@@ -28,7 +28,7 @@ from teatree.teams.roles import TeamRole, team_claim_slot
 _SRC_ROOT = Path(teatree.__file__).resolve().parent
 
 _LIVE_PATH_PACKAGES = ("loop", "loops", "agents")
-_LIVE_PATH_MODULES = ("core/managers.py", "core/loop_lease_manager.py", "cli/loop.py")
+_LIVE_PATH_MODULES = ("core/managers.py", "core/loop_lease_manager.py", "cli/loop/app.py")
 
 # Every pane-layer module that must stay out of the live path except via the
 # sanctioned consumer.
