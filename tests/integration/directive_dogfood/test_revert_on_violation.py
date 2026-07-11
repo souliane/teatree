@@ -12,13 +12,13 @@ from datetime import timedelta
 
 from django.test import TestCase
 
-from teatree.core.gates.pr_budget_gate import resolve_pr_budget
-from teatree.core.models import PullRequest, Ticket
+from teatree.core.models import ConfigSetting, PullRequest, Ticket
 from teatree.core.models.directive import Directive
 from teatree.loops.directive_loop.revert import resolve_revert
 from teatree.loops.directive_loop.verify import VerifySeams
 from tests.integration.directive_dogfood.exemplar import (
     SCOPE,
+    SETTING_KEY,
     drive_activation_only_to_verifying,
     enable_directive_loop_in_test_db,
     seed_critic_liveness,
@@ -36,7 +36,9 @@ class TestRevertOnViolation(TestCase):
     def test_probe_violation_reverts_and_rolls_back_instantly(self) -> None:
         directive = drive_activation_only_to_verifying()
         assert directive.state == Directive.State.VERIFYING
-        assert resolve_pr_budget(SCOPE) == 1
+        # The activation wrote the explicit override row (value 1) — anti-vacuous vs the
+        # shipped default: a no-op activation would leave no row, not an equal effective value.
+        assert ConfigSetting.objects.get_effective(SETTING_KEY, scope=SCOPE) == 1
 
         # Plant the breach: two open PRs for one (ticket, repo) in scope — over the limit of 1.
         offender = Ticket.objects.create(issue_url="https://github.com/acme/repo-x/issues/9", overlay=SCOPE)
@@ -55,8 +57,9 @@ class TestRevertOnViolation(TestCase):
         assert directive.state == Directive.State.REVERT_PENDING
         assert "acme/repo-x" in directive.decision_reason
         assert "limit 1" in directive.decision_reason
-        # Instant rollback: the ConfigSetting row is gone, so the resolver reads the neutral default.
-        assert resolve_pr_budget(SCOPE) == 0
+        # Instant rollback: the ConfigSetting override row is gone, so the resolver falls back
+        # to the shipped default — asserting the row's absence is anti-vacuous vs that default.
+        assert ConfigSetting.objects.get_effective(SETTING_KEY, scope=SCOPE) is None
 
         # The revert is human-ratified: the next tick asks, then the operator close-out
         # (`t3 directive resolve-revert`) consumes the question and reaches terminal REVERTED.
@@ -64,4 +67,4 @@ class TestRevertOnViolation(TestCase):
         directive.refresh_from_db()
         resolve_revert(directive)
         assert Directive.objects.get(pk=directive.pk).state == Directive.State.REVERTED
-        assert resolve_pr_budget(SCOPE) == 0
+        assert ConfigSetting.objects.get_effective(SETTING_KEY, scope=SCOPE) is None
