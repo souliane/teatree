@@ -216,7 +216,7 @@ CRITIC_RUBRIC: tuple[CriticRubricItem, ...] = (
         slug="deferred",
         adversarial_question="Is every 'deferred by design' backed by a filed ticket, or is it bare prose?",
         kind=RubricKind.LLM,
-        origin="TODO-list-not-reconciled-with-reality; deferred-by-prose",
+        origin="deferral-list-not-reconciled-with-reality; deferred-by-prose",
     ),
     CriticRubricItem(
         slug="ignored_input",
