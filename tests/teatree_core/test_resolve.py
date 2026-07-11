@@ -954,6 +954,15 @@ class TestTicketByNumberFailsLoudOnCollision(TestCase):
         with pytest.raises(TicketIdentityCollisionError):
             _ticket_owning_branch("5-fix-the-thing")
 
+    def test_blank_number_returns_none_never_fans_out_to_pk_fallback_rows(self) -> None:
+        # A blank hint's empty ``issue_number`` filter would otherwise match EVERY
+        # pk-fallback ticket (issue_url with no trailing number → blank
+        # ``issue_number``) and then fail loud as a false collision.
+        Ticket.objects.create(issue_url="https://a.example.com/x/notes")
+        Ticket.objects.create(issue_url="https://b.example.com/y/wiki")
+
+        assert _ticket_by_number("") is None
+
 
 class TestRefreshReusedRowRefusesPathSteal(TestCase):
     """A reused row must never be repointed onto a path another row owns (#WT-PR-D finding 8)."""

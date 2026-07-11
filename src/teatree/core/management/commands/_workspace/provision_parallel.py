@@ -4,8 +4,8 @@ A ticket's worktrees provisioned one at a time paid the exact SUM of every
 worktree's provision time. Each worktree's provision now runs as its OWN
 subprocess under a bounded pool — never in-process threads, because
 ``WorktreeProvisionRunner``'s DB-import path mutates process-wide
-``os.environ`` (``os.environ.update(...)`` in ``_run_db_import``), which two
-concurrent in-process worktrees would clobber. A resource-aware admission
+``os.environ`` (the ``patched_environ(...)`` block in ``_run_db_import``),
+which two concurrent in-process worktrees would clobber. A resource-aware admission
 check runs before each new subprocess is submitted: a request that would push
 host RAM over the ceiling is HELD (not started) and re-checked on the next
 poll — it drains automatically once RAM frees, with no separate durable queue

@@ -164,6 +164,11 @@ def _ticket_by_number(number: str, *, overlay: str | None = None) -> Ticket | No
     arbitrary ``.first()`` that would cross-attach the worktree to the wrong
     ticket.
     """
+    if not number:
+        # A blank hint is not a ticket number: an empty ``issue_number`` filter
+        # would fan out to EVERY pk-fallback ticket (blank ``issue_number``) and
+        # then fail loud as a false collision, so refuse it up front.
+        return None
     real = Ticket.objects.exclude(issue_url="").exclude(issue_url__startswith="auto:")
     matches = list(real.filter(issue_number=number))
     if number.isdigit():
