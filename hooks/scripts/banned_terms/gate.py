@@ -15,7 +15,7 @@ Extracted whole from ``hook_router`` (the #2384 Wave-2 router split, PR2) so the
 Cold-import safe: the live PreToolUse hook is a bare ``python3`` subprocess with
 no guarantee ``teatree`` is importable, so the module top imports only stdlib and
 already-extracted ``hooks/scripts`` siblings (``teatree_settings`` /
-``banned_terms_deny`` / ``banned_terms_marker``) — never Django / ``teatree.core``.
+``banned_terms.deny`` / ``banned_terms.marker``) — never Django / ``teatree.core``.
 The pure ``teatree.hooks`` leaves (``banned_terms_scanner`` /
 ``publish_destination`` / ``publish_surface``) stay function-scoped, imported only
 after the handler bootstraps ``sys.path``. The shared spine helpers
@@ -29,14 +29,9 @@ import contextlib
 import sys
 from pathlib import Path
 
-from hooks.scripts.banned_terms_deny import emit_banned_term_deny
-from hooks.scripts.banned_terms_marker import resolve_marker as _resolve_banned_terms_marker
+from hooks.scripts.banned_terms.deny import emit_banned_term_deny
+from hooks.scripts.banned_terms.marker import resolve_marker as _resolve_banned_terms_marker
 from hooks.scripts.teatree_settings import teatree_bool_setting as _teatree_bool_setting
-
-# Alias the bare and ``hooks.scripts.`` identities so the handler the router
-# registers and a test patching a helper here operate on ONE module object.
-sys.modules.setdefault("banned_terms_gate", sys.modules[__name__])
-sys.modules.setdefault("hooks.scripts.banned_terms_gate", sys.modules[__name__])
 
 
 def _banned_terms_gate_enabled() -> bool:

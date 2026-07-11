@@ -2,7 +2,7 @@
 
 Split out of ``hook_router.py`` (a shrink-only module-health-capped god-module)
 so the verdict decision and its rationale live in a bare sibling the router
-imports thinly, mirroring ``banned_terms_marker.resolve_marker``. The router
+imports thinly, mirroring ``banned_terms.marker.resolve_marker``. The router
 keeps only the I/O (deny emission, stderr warning, ledger write); this module
 owns "given a HIGH scan result on a publish/commit surface, does it DENY or
 DOWNGRADE to a warn, and with which warning + ledger label?".

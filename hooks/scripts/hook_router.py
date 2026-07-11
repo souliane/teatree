@@ -54,7 +54,7 @@ if __name__ == "__main__":
 
 from hooks.scripts.availability_away_probe import resolved_away_mode as resolved_away_mode_stdlib
 from hooks.scripts.availability_away_probe import resolved_defers_questions as _resolved_defers_questions
-from hooks.scripts.banned_terms_gate import handle_banned_terms_pretool
+from hooks.scripts.banned_terms import handle_banned_terms_pretool
 from hooks.scripts.classifier_relax_gate import (
     _SETTINGS_JSON_PATH,  # noqa: F401 — re-export for test access
     _ask_question_has_relax_option,  # noqa: F401 — re-export for test access
