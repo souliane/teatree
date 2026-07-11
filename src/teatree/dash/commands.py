@@ -11,6 +11,7 @@ is audited by the caller.
 from collections.abc import Sequence
 from dataclasses import dataclass
 
+from teatree.core.models.loop import Loop
 from teatree.utils.run import TimeoutExpired, run_allowed_to_fail
 
 _TIMEOUT_SECONDS = 120
@@ -58,6 +59,11 @@ def _argv(spec: CommandSpec, loop_name: str) -> tuple[str, ...]:
         return spec.argv
     if not loop_name:
         msg = f"command {spec.key!r} requires a loop name"
+        raise CommandNotAllowedError(msg)
+    # Validate against registered loops before it reaches argv — the value is
+    # operator-supplied POST data, and only a real Loop name is a legal target.
+    if not Loop.objects.filter(name=loop_name).exists():
+        msg = f"unknown loop {loop_name!r}"
         raise CommandNotAllowedError(msg)
     return (*spec.argv, loop_name)
 

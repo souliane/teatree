@@ -14,12 +14,14 @@ from django.views.decorators.http import require_POST
 from teatree.agents.web_terminal import launch_web_session
 from teatree.dash import audit
 from teatree.dash.commands import CommandNotAllowedError, run_allowlisted
+from teatree.dash.views.access import require_loopback_or_staff
 from teatree.dash.views.base import actor
 
 if TYPE_CHECKING:
     from django.http import HttpRequest, HttpResponse
 
 
+@require_loopback_or_staff
 @require_POST
 def debug_session(request: "HttpRequest") -> "HttpResponse":
     """Spawn a loopback ttyd terminal wrapping a fresh or resumed ``claude`` session."""
@@ -32,6 +34,7 @@ def debug_session(request: "HttpRequest") -> "HttpResponse":
     return render(request, "dash/partials/_debug_session.html", {"result": result})
 
 
+@require_loopback_or_staff
 @require_POST
 def command_run(request: "HttpRequest") -> "HttpResponse":
     """Run one allowlisted ``t3`` command as a bounded subprocess and show its output."""

@@ -48,7 +48,7 @@ class LocalAdminAutoLoginMiddleware:
         if (
             request.path.startswith(_AUTOLOGIN_PREFIXES)
             and not request.user.is_authenticated
-            and _request_is_loopback(request)
+            and request_is_loopback(request)
             and get_effective_settings().admin_autologin_enabled
         ):
             superuser = get_user_model().objects.filter(is_superuser=True).first()
@@ -58,7 +58,7 @@ class LocalAdminAutoLoginMiddleware:
         return self.get_response(request)
 
 
-def _request_is_loopback(request: "HttpRequest") -> bool:
+def request_is_loopback(request: "HttpRequest") -> bool:
     """Whether the request's client address is a loopback address.
 
     Reads ``REMOTE_ADDR`` (the real peer address), never a forwarded header — a

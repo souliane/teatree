@@ -22,6 +22,7 @@ from teatree.dash.loop_control import (
     apply_loop_action,
     build_loop_control,
 )
+from teatree.dash.views.access import require_loopback_or_staff
 from teatree.dash.views.base import actor, nav_context
 
 if TYPE_CHECKING:
@@ -39,6 +40,7 @@ def _loops_context() -> LoopsContext:
     return {"control": build_loop_control(), "gate_confirm_phrase": GATE_CONFIRM_PHRASE}
 
 
+@require_loopback_or_staff
 @require_GET
 def loops(request: "HttpRequest") -> "HttpResponse":
     """Full loop-control page — every loop's effective verdict + the header controls."""
@@ -46,12 +48,14 @@ def loops(request: "HttpRequest") -> "HttpResponse":
     return render(request, "dash/loops.html", context)
 
 
+@require_loopback_or_staff
 @require_GET
 def loops_table_partial(request: "HttpRequest") -> "HttpResponse":
     """The loop table fragment — the target of the htmx poll."""
     return render(request, "dash/partials/_loops_table.html", _loops_context())
 
 
+@require_loopback_or_staff
 @require_POST
 def loop_action(request: "HttpRequest") -> "HttpResponse":
     """POST a per-loop control verb (pause / resume / disable / enable)."""
@@ -65,6 +69,7 @@ def loop_action(request: "HttpRequest") -> "HttpResponse":
     return redirect("dash:loops")
 
 
+@require_loopback_or_staff
 @require_POST
 def availability(request: "HttpRequest") -> "HttpResponse":
     """POST an availability-mode switch through the ``write_override`` chokepoint.
@@ -84,6 +89,7 @@ def availability(request: "HttpRequest") -> "HttpResponse":
     return redirect("dash:loops")
 
 
+@require_loopback_or_staff
 @require_POST
 def gate_toggle(request: "HttpRequest") -> "HttpResponse":
     """POST the ``danger_gate_fail_open`` master switch, gated behind a typed confirm.

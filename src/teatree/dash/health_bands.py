@@ -10,6 +10,7 @@ read degrades that band, never the whole page.
 """
 
 import logging
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import datetime
 
@@ -34,12 +35,22 @@ logger = logging.getLogger(__name__)
 class VerdictBand:
     status: str
     open_issues: tuple[KnownIssue, ...]
+    error: str | None = None
+
+    @classmethod
+    def degraded(cls, message: str) -> "VerdictBand":
+        return cls(status="error", open_issues=(), error=message)
 
 
 @dataclass(frozen=True, slots=True)
 class LoopsBand:
-    report: LoopStatusReport
+    report: LoopStatusReport | None
     worker_dead: bool
+    error: str | None = None
+
+    @classmethod
+    def degraded(cls, message: str) -> "LoopsBand":
+        return cls(report=None, worker_dead=False, error=message)
 
 
 @dataclass(frozen=True, slots=True)
@@ -79,6 +90,11 @@ class CapacityBand:
     accounts: tuple[AccountUtilization, ...] = ()
     spend: SpendSummary | None = None
     queue: QueueDepth = field(default_factory=lambda: QueueDepth(headless=0, interactive=0))
+    error: str | None = None
+
+    @classmethod
+    def degraded(cls, message: str) -> "CapacityBand":
+        return cls(error=message)
 
 
 @dataclass(frozen=True, slots=True)
@@ -86,6 +102,11 @@ class ModeBand:
     mode: str
     source: str
     gate_fail_open: bool
+    error: str | None = None
+
+    @classmethod
+    def degraded(cls, message: str) -> "ModeBand":
+        return cls(mode="error", source="error", gate_fail_open=False, error=message)
 
 
 @dataclass(frozen=True, slots=True)
@@ -96,13 +117,26 @@ class HealthView:
     mode: ModeBand
 
 
+def _fail_open[Band](build: Callable[[], Band], degrade: Callable[[str], Band], label: str) -> Band:
+    """Run one band's reader; degrade THAT band to a visible error on any exception.
+
+    The observability page must never 500 because a single reader raised — one broken
+    band shows its error, the other three still render (the docstring claim at module top).
+    """
+    try:
+        return build()
+    except Exception:
+        logger.warning("dash health band %r read failed — degrading to an error band", label, exc_info=True)
+        return degrade(f"{label} band unavailable — read failed")
+
+
 def build_health_view() -> HealthView:
     """Compose all four bands. Each band fails open independently."""
     return HealthView(
-        verdict=_verdict_band(),
-        loops=_loops_band(),
-        capacity=_capacity_band(),
-        mode=_mode_band(),
+        verdict=_fail_open(_verdict_band, VerdictBand.degraded, "verdict"),
+        loops=_fail_open(_loops_band, LoopsBand.degraded, "loops"),
+        capacity=_fail_open(_capacity_band, CapacityBand.degraded, "capacity"),
+        mode=_fail_open(_mode_band, ModeBand.degraded, "mode"),
     )
 
 
@@ -193,5 +227,9 @@ def _gate_fail_open() -> bool:
     reader consults in the admin process. Fail-closed to ``False`` on a broken
     read so the banner never falsely alarms.
     """
-    stored = ConfigSetting.objects.get_effective("danger_gate_fail_open")
+    try:
+        stored = ConfigSetting.objects.get_effective("danger_gate_fail_open")
+    except Exception:
+        logger.warning("dash danger_gate_fail_open read failed — treating as closed", exc_info=True)
+        return False
     return bool(stored)

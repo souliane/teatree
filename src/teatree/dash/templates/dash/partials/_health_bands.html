@@ -4,6 +4,7 @@
 
 <section class="band">
   <h2>Verdict</h2>
+  {% if health.verdict.error %}<div class="banner-red">{{ health.verdict.error }}</div>{% endif %}
   <p class="verdict {{ health.verdict.status }}">{{ health.verdict.status }}</p>
   {% if health.verdict.open_issues %}
     <table class="dash">
@@ -25,7 +26,9 @@
 
 <section class="band">
   <h2>Loops</h2>
+  {% if health.loops.error %}<div class="banner-red">{{ health.loops.error }}</div>{% endif %}
   {% if health.loops.worker_dead %}<div class="banner-red">Worker appears dead — every infra slot is unclaimed.</div>{% endif %}
+  {% if health.loops.report %}
   <table class="dash">
     <thead><tr><th>loop</th><th>enabled</th><th>held</th><th>cadence (s)</th><th>next due</th></tr></thead>
     <tbody>
@@ -49,10 +52,12 @@
       {% endfor %}
     </tbody>
   </table>
+  {% endif %}
 </section>
 
 <section class="band">
   <h2>Capacity</h2>
+  {% if health.capacity.error %}<div class="banner-red">{{ health.capacity.error }}</div>{% endif %}
   {% with cap=health.capacity %}
     <p>Queue depth — headless {{ cap.queue.headless }} · interactive {{ cap.queue.interactive }}</p>
     {% if cap.spend %}
@@ -91,6 +96,7 @@
 
 <section class="band">
   <h2>Mode</h2>
+  {% if health.mode.error %}<div class="banner-red">{{ health.mode.error }}</div>{% endif %}
   <p>Availability — <strong>{{ health.mode.mode }}</strong> (decided by {{ health.mode.source }})</p>
   <p>danger_gate_fail_open — <strong class="{% if health.mode.gate_fail_open %}eff-no{% else %}eff-yes{% endif %}">{{ health.mode.gate_fail_open|yesno:"ON,off" }}</strong></p>
 </section>

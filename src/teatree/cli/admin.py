@@ -7,11 +7,13 @@ Session / Task / TaskAttempt / PullRequest models, and ``urls.py`` mounts
 ``/admin/`` unconditionally (independent of ``DEBUG``).
 
 The command makes the admin immediately usable from a cold checkout: it applies
-migrations, ensures a superuser exists (creating one non-interactively from
-``T3_ADMIN_USER`` / ``T3_ADMIN_PASSWORD`` when absent), opens the browser at
-``/admin/``, then serves ``teatree.wsgi:application`` under gunicorn (a
-production WSGI server, not Django's dev ``runserver``) in the foreground until
-interrupted. It is DEBUG-agnostic — nothing here reads or sets ``DEBUG``.
+migrations, collects static into ``STATIC_ROOT`` (so WhiteNoise serves the admin
+and dashboard assets under gunicorn with DEBUG off), ensures a superuser exists
+(creating one non-interactively from ``T3_ADMIN_USER`` / ``T3_ADMIN_PASSWORD``
+when absent), opens the browser at ``/admin/``, then serves
+``teatree.wsgi:application`` under gunicorn (a production WSGI server, not
+Django's dev ``runserver``) in the foreground until interrupted. It is
+DEBUG-agnostic — nothing here reads or sets ``DEBUG``.
 """
 
 import threading
@@ -54,6 +56,7 @@ def admin(
     ensure_django()
 
     _ensure_migrated()
+    _collectstatic()
     superuser = _ensure_superuser()
     admin_url = f"http://{host}:{port}/admin/"
 
@@ -77,6 +80,18 @@ def _ensure_migrated() -> None:
     from django.core.management import call_command  # noqa: PLC0415
 
     call_command("migrate", run_syncdb=True, verbosity=0)
+
+
+def _collectstatic() -> None:
+    """Populate ``STATIC_ROOT`` so WhiteNoise serves the dashboard assets under gunicorn.
+
+    Runs on every admin boot (before gunicorn spawns and scans ``STATIC_ROOT``) so a
+    cold checkout serves ``/static/`` with DEBUG off — without it the dashboard CSS
+    and vendored JS 404 wholesale.
+    """
+    from django.core.management import call_command  # noqa: PLC0415 — deferred, post ensure_django()
+
+    call_command("collectstatic", interactive=False, verbosity=0)
 
 
 def _ensure_superuser() -> SuperuserResult:

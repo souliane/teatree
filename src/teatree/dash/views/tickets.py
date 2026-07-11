@@ -17,12 +17,14 @@ from django_fsm import TransitionNotAllowed
 from teatree.core.models.ticket import Ticket
 from teatree.dash import audit
 from teatree.dash.ticket_detail import build_ticket_detail, legal_transition_names
+from teatree.dash.views.access import require_loopback_or_staff
 from teatree.dash.views.base import actor
 
 if TYPE_CHECKING:
     from django.http import HttpRequest, HttpResponse
 
 
+@require_loopback_or_staff
 @require_GET
 def ticket_drawer(request: "HttpRequest", ticket_id: int) -> "HttpResponse":
     """The per-ticket detail drawer: history, lifecycle Mermaid, tasks, actions menu."""
@@ -34,6 +36,7 @@ def ticket_drawer(request: "HttpRequest", ticket_id: int) -> "HttpResponse":
     return render(request, "dash/partials/_drawer.html", {"detail": detail})
 
 
+@require_loopback_or_staff
 @require_POST
 def ticket_transition(request: "HttpRequest", ticket_id: int) -> "HttpResponse":
     """POST a single legal FSM transition, executed via the guarded model method."""

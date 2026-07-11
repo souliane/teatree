@@ -71,6 +71,12 @@ dependencies = [
   # runtime-dep fix; declared here so the installed tool env always has it.
   "pyyaml>=6",
   "tomlkit>=0.13",
+  # ``t3 admin`` serves ``teatree.wsgi:application`` under gunicorn with DEBUG off,
+  # where Django's staticfiles app serves nothing — so the dashboard CSS + vendored
+  # JS 404 wholesale. WhiteNoise serves ``STATIC_ROOT`` from the WSGI middleware, a
+  # RUNTIME command path (same class as the ``gunicorn`` runtime-dep above), so it
+  # must be in the installed tool env, not only the dev group.
+  "whitenoise>=6.6",
 ]
 # ``t3 tool to-markdown`` converts PDF/XLSX/DOCX/PPTX attachments to Markdown.
 # Narrow extras only — never ``markitdown[all]`` (avoids audio/onnx weight).
@@ -276,7 +282,7 @@ lint.preview = true
 [tool.codespell]
 dictionary = ".codespell-dictionary.txt,-"
 ignore-words-list = "caf,iterm"
-skip = "src/teatree/core/static/teatree/js/*"
+skip = "src/teatree/core/static/teatree/js/*,src/teatree/dash/static/dash/js/*"
 
 # --- Pytest ---
 
