@@ -33,11 +33,14 @@
 # with the remote's default branch as the comparison base.
 #
 # Visibility is resolved via `gh repo view <owner>/<repo> --json
-# visibility`. When `gh` is unavailable or the visibility cannot be
-# determined, the gate fails OPEN (passes through) — it is a safety net
-# layered on top of the privacy scan in retro/contribute, not the only
-# line of defence, and blocking every push on a gh-less machine would
-# break the workflow.
+# visibility`. The gate SKIPS the scan only when the remote is KNOWN to be
+# private/internal. Every undetermined case — no owner/repo shape, no
+# `gh`, a `gh` error, or an unrecognised answer — fails CLOSED and the
+# diff is scanned anyway, so a leak never rides out on a gh-less machine
+# or an unparsable remote (§3f #14; was fail-open). "Fail closed" here
+# means "scan anyway", NOT "block anyway": the scan still fails OPEN on a
+# scanner crash and blocks ONLY on a real finding, so a clean push on a
+# machine without `gh` is unaffected.
 #
 # Wired via prek in `.pre-commit-config.yaml` (stages: [push]) so it
 # ships with the repo and needs no per-machine bootstrap.
@@ -59,18 +62,36 @@ fi
 #   git@github.com:owner/repo(.git)  # privacy-scan:allow doc example
 slug=$(printf '%s' "${remote_url}" \
   | sed -E 's#^[^:]+://[^/]+/##; s#^git@[^:]+:##; s#\.git$##')
+
+# Resolve visibility only when we have an owner/repo shape AND gh. Any
+# other path leaves it empty (undetermined).
+visibility=""
 case "${slug}" in
-  */*) : ;;
-  *) exit 0 ;;  # not an owner/repo shape — cannot ask gh, fail open
+  */*)
+    if command -v gh >/dev/null 2>&1; then
+      visibility=$(gh repo view "${slug}" --json visibility \
+        --jq '.visibility' 2>/dev/null || true)
+      # Normalise (gh emits PUBLIC/PRIVATE/INTERNAL).
+      visibility=$(printf '%s' "${visibility}" | tr '[:lower:]' '[:upper:]')
+    fi
+    ;;
 esac
 
-command -v gh >/dev/null 2>&1 || exit 0  # no gh — fail open
-
-visibility=$(gh repo view "${slug}" --json visibility \
-  --jq '.visibility' 2>/dev/null || true)
-# Normalise (gh emits PUBLIC/PRIVATE/INTERNAL).
-visibility=$(printf '%s' "${visibility}" | tr '[:lower:]' '[:upper:]')
-[ "${visibility}" = "PUBLIC" ] || exit 0  # private/internal/unknown → pass
+case "${visibility}" in
+  PRIVATE | INTERNAL)
+    exit 0  # KNOWN non-public remote — nothing reaches public history
+    ;;
+  PUBLIC)
+    : ;;  # confirmed public — scan
+  *)
+    # Undetermined visibility (no owner/repo shape, no gh, a gh error, or
+    # an unrecognised answer). Fail CLOSED: scan anyway. The scan itself
+    # still fails OPEN on a scanner crash and blocks ONLY on a real
+    # finding, so a clean push on a gh-less machine still passes — only an
+    # actual leak is stopped. Warn loudly so the undetermined path shows.
+    echo "⚠ push privacy gate: could not confirm '${slug:-<remote>}' visibility (gh unavailable or unrecognised) — scanning anyway (fail closed, §3f #14)." >&2
+    ;;
+esac
 
 scan_cmd=${T3_PRIVACY_SCAN_CMD:-t3 tool privacy-scan}
 

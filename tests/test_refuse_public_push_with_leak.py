@@ -15,6 +15,7 @@ fixed visibility. Nothing about git or the filesystem is mocked.
 import os
 import stat
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -102,9 +103,15 @@ def _clone_with_remote(tmp_path: Path, gh_visibility: str) -> tuple[Path, dict[s
     return work, env
 
 
-def _run_hook(cwd: Path, env: dict[str, str], stdin: str) -> subprocess.CompletedProcess[str]:
+def _run_hook(
+    cwd: Path,
+    env: dict[str, str],
+    stdin: str,
+    remote_url: str = "https://github.com/acme/widget.git",
+) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
-        ["bash", str(HOOK), "origin", "https://github.com/acme/widget.git"],  # noqa: S607
+        # `bash <hook>` on PATH is git's real pre-push invocation shape; test-only driver.
+        ["bash", str(HOOK), "origin", remote_url],  # noqa: S607 — bash resolved via PATH is the hook's real invocation
         cwd=cwd,
         input=stdin,
         capture_output=True,
@@ -200,16 +207,22 @@ class TestRefusePublicPushWithLeak:
 
         assert result.returncode == 0, result.stdout + result.stderr
 
-    def test_passthrough_when_gh_unavailable(self, tmp_path: Path) -> None:
-        """No gh on PATH → visibility unknown → fail open (do not block).
+    def test_scans_and_blocks_leak_when_gh_unavailable(self, tmp_path: Path) -> None:
+        """No gh on PATH → visibility undetermined → fail CLOSED (scan anyway).
 
-        The gate is a safety net, not the only line of defence; blocking
-        every push on a machine without gh would break the workflow.
+        The gate now skips the scan only when the remote is KNOWN to be
+        private/internal. An undetermined remote (no gh) still gets
+        scanned, so a real leak cannot ride out to a public remote from a
+        gh-less machine (privacy-gate fail-closed hardening, §3f #14).
         """
         work, env = _clone_with_remote(tmp_path, "PUBLIC")
         # Keep system bins (bash/git) but drop the gh shim dir so `gh`
-        # is genuinely unavailable.
+        # is genuinely unavailable. Pin the scan command to this venv's
+        # interpreter by absolute path so the scanner still runs (a bare
+        # `python3` on the stripped PATH would miss the test deps and
+        # crash the scanner, masking the leak behind its fail-open path).
         env["PATH"] = "/usr/bin:/bin"
+        env["T3_PRIVACY_SCAN_CMD"] = f"{sys.executable} {SCAN}"
         (work / "leak.txt").write_text(
             "token = glpat-XXXXXXXXXXXXXXXX\n",
             encoding="utf-8",
@@ -219,7 +232,49 @@ class TestRefusePublicPushWithLeak:
 
         result = _run_hook(work, env, _push_stdin(work))
 
+        assert result.returncode == 1, result.stdout + result.stderr
+        combined = (result.stdout + result.stderr).lower()
+        assert "privacy" in combined
+
+    def test_allows_clean_push_when_gh_unavailable(self, tmp_path: Path) -> None:
+        """Undetermined visibility + a clean diff still passes.
+
+        Fail-closed means "scan anyway", not "block anyway": the scan
+        blocks only on a real finding, so a clean push on a gh-less
+        machine is unaffected (§3f #14).
+        """
+        work, env = _clone_with_remote(tmp_path, "PUBLIC")
+        env["PATH"] = "/usr/bin:/bin"
+        env["T3_PRIVACY_SCAN_CMD"] = f"{sys.executable} {SCAN}"
+        (work / "feature.txt").write_text("a clean new feature line\n", encoding="utf-8")
+        _git(work, "add", "feature.txt")
+        _git(work, "commit", "-m", "add feature")
+
+        result = _run_hook(work, env, _push_stdin(work))
+
         assert result.returncode == 0, result.stdout + result.stderr
+
+    def test_non_github_remote_shape_scans_and_blocks_leak(self, tmp_path: Path) -> None:
+        """A remote URL with no owner/repo shape is undetermined → scan.
+
+        Previously a non-owner/repo slug exited 0 (fail open). Now it is
+        treated as undetermined visibility and the diff is scanned, so a
+        leak to an unrecognised remote is still caught (§3f #14).
+        """
+        work, env = _clone_with_remote(tmp_path, "PUBLIC")
+        (work / "leak.txt").write_text(
+            "token = glpat-XXXXXXXXXXXXXXXX\n",
+            encoding="utf-8",
+        )
+        _git(work, "add", "leak.txt")
+        _git(work, "commit", "-m", "add config")
+
+        # Drive the hook with a bare, non-owner/repo remote URL.
+        result = _run_hook(work, env, _push_stdin(work), remote_url="https://example.invalid/no-slug-here")
+
+        assert result.returncode == 1, result.stdout + result.stderr
+        combined = (result.stdout + result.stderr).lower()
+        assert "privacy" in combined
 
     def test_annotated_fixture_does_not_block_but_real_leak_in_same_diff_does(self, tmp_path: Path) -> None:
         """The allow-annotation is line-scoped, not a file-level exclusion.
