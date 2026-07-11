@@ -22,7 +22,7 @@ _ROUTER = pathlib.Path(__file__).resolve().parent.parent / "hooks" / "scripts" /
 # The router's non-comment / non-blank LOC ceiling. Shrink-only: only ever
 # lowered, never raised. Measured the same way check_module_health._count_loc does.
 # Lowered by PR-28 c3, which removed the loop-registration nudge gate + helpers.
-_CEILING_LOC = 4698
+_CEILING_LOC = 4649
 
 
 def _count_loc(text: str) -> int:
