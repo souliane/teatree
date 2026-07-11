@@ -14,10 +14,11 @@ per-attempt and cycle-to-date dollar figures: the CLI-reported
 fallback so historical rows whose cost was never captured still get an estimate.
 """
 
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta
 
+from teatree.config import cold_reader
 from teatree.pricing import CACHE_READ_MULTIPLIER, CACHE_WRITE_MULTIPLIER
 
 _PER_MTOK = 1_000_000
@@ -56,20 +57,45 @@ class ModelPrice:
         ) / _PER_MTOK
 
 
+# The abstract-tier / model-id token whose usage carries NO built-in Claude
+# price. A present but unrecognised model id (a swapped GPT/open-source model
+# with no ``cost_model_prices`` override) resolves here instead of being SILENTLY
+# folded into the ``opus`` tier: it is still billed CONSERVATIVELY at the opus
+# rate (:data:`PRICE_TABLE`), but it buckets under its own key so ``t3 cost``
+# flags the figure as an un-vetted estimate rather than confidently-wrong Claude
+# spend (§3a #2, §7 #4).
+UNPRICED_TIER = "unpriced"
+
 # Tier keys are the short names the model_tiering layer emits (``opus`` /
 # ``sonnet`` / ``haiku``) plus the dated full model ids the CLI envelope
 # reports under ``modelUsage`` (``claude-opus-4-8`` ...). Lookup normalises a
 # model id to its tier (:func:`price_for_model`), so a future dated release of
-# the same tier prices correctly without a new entry.
+# the same tier prices correctly without a new entry. :data:`UNPRICED_TIER` is
+# priced at the conservative opus rate but kept a distinct bucket (above).
 PRICE_TABLE: dict[str, ModelPrice] = {
     "opus": ModelPrice(input_per_mtok=5.0, output_per_mtok=25.0),
     "sonnet": ModelPrice(input_per_mtok=3.0, output_per_mtok=15.0),
     "haiku": ModelPrice(input_per_mtok=1.0, output_per_mtok=5.0),
+    UNPRICED_TIER: ModelPrice(input_per_mtok=5.0, output_per_mtok=25.0),
 }
 
-# The reasoning tier is the conservative fallback for an unrecognised model id
-# (it never under-estimates the cost of an unknown model).
+# The Claude family short-names :func:`tier_of_model` matches (by substring) in a
+# model id before falling back to :data:`UNPRICED_TIER`. Explicit so the fallback
+# key (``unpriced``) is never itself a match target.
+_BUILTIN_TIERS: tuple[str, ...] = ("opus", "sonnet", "haiku")
+
+# The conservative reasoning tier a ``None`` model (an attempt that inherited the
+# user's own default model, whose id was never captured) is priced at — distinct
+# from :data:`UNPRICED_TIER`, which is for a PRESENT but unrecognised id.
 _DEFAULT_TIER = "opus"
+
+# The DB ``ConfigSetting`` key for per-model-id price overrides (§3a #2): a table
+# of ``{"<model-id substring>": {"input": <per-MTok>, "output": <per-MTok>}}``
+# read via :mod:`teatree.config.cold_reader`, merged BEFORE the built-in
+# :data:`PRICE_TABLE` so a swapped model is priced from real numbers instead of
+# the conservative opus fallback. Set with
+# ``t3 <overlay> config_setting set cost_model_prices '{"deepseek/": {"input": 0.5, "output": 1.5}}'``.
+_COST_MODEL_PRICES_KEY = "cost_model_prices"
 
 # Capability order, weakest to strongest, for the per-skill model floor merge
 # (:func:`teatree.agents.model_tiering.resolve_spawn_model`). Expressed in the
@@ -84,8 +110,10 @@ _CAPABILITY_ORDER: tuple[str, ...] = ("cheap", "balanced", "frontier")
 # ranks an old short-name (``opus``) or a concrete dated id (``claude-opus-4-8``)
 # identically to the abstract tier it belongs to (``frontier``). Keyed by the
 # family substring; checked after the abstract tier names so an explicit
-# ``frontier`` wins without depending on family.
-_FAMILY_TO_TIER: dict[str, str] = {"haiku": "cheap", "sonnet": "balanced", "opus": "frontier"}
+# ``frontier`` wins without depending on family. PUBLIC — the capability sibling
+# ``teatree.agents.model_tiering`` imports it to normalise a resolved Claude id
+# back to its abstract tier (it OWNS the abstract tiers but not this mapping).
+FAMILY_TO_TIER: dict[str, str] = {"haiku": "cheap", "sonnet": "balanced", "opus": "frontier"}
 
 # A floor whose capability cannot otherwise be inferred defaults to this abstract
 # tier rank — the same conservative-reasoning default the prior order used
@@ -97,24 +125,81 @@ DEFAULT_MONTHLY_CREDIT_USD = 200.0
 
 
 def tier_of_model(model: str | None) -> str:
-    """Normalise a model id / tier name to a :data:`PRICE_TABLE` tier key.
+    """Normalise a model id / tier name to a :data:`PRICE_TABLE` bucket key.
 
-    Accepts the short tier names (``opus``), the dated CLI ids
-    (``claude-opus-4-8``, optionally suffixed ``[1m]``), and ``None``
-    (an attempt that inherited the user's default model — priced at the
-    reasoning tier). Unknown ids fall back to :data:`_DEFAULT_TIER`.
+    Accepts the short tier names (``opus``) and the dated CLI ids
+    (``claude-opus-4-8``, optionally suffixed ``[1m]``). ``None`` — an attempt
+    that inherited the user's own (uncaptured) default model — is priced at the
+    conservative reasoning tier (:data:`_DEFAULT_TIER`). A PRESENT but
+    unrecognised id (a swapped non-Claude model) resolves to
+    :data:`UNPRICED_TIER` — NOT silently to ``opus`` — so its cost buckets
+    honestly instead of masquerading as Claude spend.
     """
     if not model:
         return _DEFAULT_TIER
     lowered = model.lower()
-    for tier in PRICE_TABLE:
+    for tier in _BUILTIN_TIERS:
         if tier in lowered:
             return tier
-    return _DEFAULT_TIER
+    return UNPRICED_TIER
 
 
-def price_for_model(model: str | None) -> ModelPrice:
-    """Return the :class:`ModelPrice` for a model id / tier name."""
+def _model_price_from(spec: object) -> ModelPrice | None:
+    """A :class:`ModelPrice` from a ``cost_model_prices`` entry, or ``None`` if malformed.
+
+    An entry is ``{"input": <per-MTok>, "output": <per-MTok>}`` (both numeric).
+    Anything else — a non-dict, a missing/non-numeric leg — is tolerated and
+    dropped (mirrors the ``agent_tier_models`` tolerance) so a malformed override
+    never poisons the built-in :data:`PRICE_TABLE`.
+    """
+    if not isinstance(spec, dict):
+        return None
+    entry = {str(key): value for key, value in spec.items()}
+    input_price = entry.get("input")
+    output_price = entry.get("output")
+    if isinstance(input_price, bool) or isinstance(output_price, bool):
+        return None
+    if not isinstance(input_price, int | float) or not isinstance(output_price, int | float):
+        return None
+    return ModelPrice(input_per_mtok=float(input_price), output_per_mtok=float(output_price))
+
+
+def _cost_price_overrides() -> dict[str, ModelPrice]:
+    """The ``cost_model_prices`` DB overrides: model-id substring → :class:`ModelPrice`.
+
+    Read Django-free via :mod:`teatree.config.cold_reader`; a non-dict value or a
+    malformed entry yields no override, so an absent/garbled setting leaves the
+    built-in :data:`PRICE_TABLE` untouched. Resolved ONCE per
+    :meth:`CostBreakdown.from_usages` and threaded into the per-attempt pricing so
+    an aggregation is not N cold reads.
+    """
+    raw = cold_reader.read_setting(_COST_MODEL_PRICES_KEY)
+    if not isinstance(raw, dict):
+        return {}
+    overrides: dict[str, ModelPrice] = {}
+    for pattern, spec in raw.items():
+        price = _model_price_from(spec)
+        if price is not None:
+            overrides[str(pattern)] = price
+    return overrides
+
+
+def price_for_model(model: str | None, *, overrides: Mapping[str, ModelPrice] | None = None) -> ModelPrice:
+    """Return the :class:`ModelPrice` for a model id / tier name.
+
+    A ``cost_model_prices`` *overrides* entry whose model-id substring matches
+    *model* wins (real numbers for a swapped model); otherwise the built-in
+    :data:`PRICE_TABLE` bucket (:func:`tier_of_model`), where an unrecognised id
+    lands on the conservative :data:`UNPRICED_TIER`. *overrides* defaults to a
+    fresh :func:`_cost_price_overrides` read for a standalone caller; an
+    aggregation passes a once-resolved map.
+    """
+    resolved = _cost_price_overrides() if overrides is None else overrides
+    if model and resolved:
+        lowered = model.lower()
+        for pattern, price in resolved.items():
+            if pattern.lower() in lowered:
+                return price
     return PRICE_TABLE[tier_of_model(model)]
 
 
@@ -124,7 +209,7 @@ def tier_rank(model: str | None) -> int:
     Ranks against :data:`_CAPABILITY_ORDER` (``cheap`` 0 < ``balanced`` <
     ``frontier``). A value is recognised two ways, in order: an abstract tier
     name (``frontier``), or a model FAMILY (``opus`` short-name or a dated
-    ``claude-opus-4-8`` id, mapped via :data:`_FAMILY_TO_TIER`). ``None`` and the
+    ``claude-opus-4-8`` id, mapped via :data:`FAMILY_TO_TIER`). ``None`` and the
     inherit sentinels (empty string) rank as :data:`_DEFAULT_CAPABILITY_TIER`
     (``frontier``) so a floor below the inherited default never silently
     downgrades a phase. An unrecognised full id ranks ABOVE every known tier
@@ -138,7 +223,7 @@ def tier_rank(model: str | None) -> int:
     for rank, tier in enumerate(_CAPABILITY_ORDER):
         if tier in lowered:
             return rank
-    for family, tier in _FAMILY_TO_TIER.items():
+    for family, tier in FAMILY_TO_TIER.items():
         if family in lowered:
             return _CAPABILITY_ORDER.index(tier)
     return len(_CAPABILITY_ORDER)
@@ -149,10 +234,16 @@ def tier_rank(model: str | None) -> int:
 # same tier PRICE_TABLE prices at, as GitHub's dimensionless weight, so ET
 # figures are comparable to the source article's. Cache-WRITE tokens are
 # deliberately excluded — the formula only counts I/C(read)/O.
+# Mirrors :data:`PRICE_TABLE`'s key set 1:1 (asserted by
+# ``tests/teatree_core/test_cost.py`` — the direct index in
+# :func:`compute_effective_tokens` fails LOUDLY the day they drift). The
+# :data:`UNPRICED_TIER` bucket takes the CONSERVATIVE opus weight, so a swapped
+# model's ET is never understated.
 ET_MODEL_MULTIPLIER: dict[str, float] = {
     "opus": 1.0,
     "sonnet": 0.2,
     "haiku": 0.05,
+    UNPRICED_TIER: 1.0,
 }
 
 # The Layer-2 lane (souliane/teatree#2887) a dispatch's usage is unattributable
@@ -195,9 +286,13 @@ def compute_effective_tokens(usage: AttemptUsage) -> float:
     return multiplier * (1.0 * usage.input_tokens + 0.1 * usage.cache_read_tokens + 4.0 * usage.output_tokens)
 
 
-def price_table_cost_usd(usage: AttemptUsage) -> float:
-    """Estimate an attempt's cost from the price table (no CLI cost used)."""
-    return price_for_model(usage.model).cost(
+def price_table_cost_usd(usage: AttemptUsage, *, overrides: Mapping[str, ModelPrice] | None = None) -> float:
+    """Estimate an attempt's cost from the price table (no CLI cost used).
+
+    *overrides* threads a once-resolved ``cost_model_prices`` map through so a
+    swapped model prices from its configured numbers; ``None`` reads the DB.
+    """
+    return price_for_model(usage.model, overrides=overrides).cost(
         input_tokens=usage.input_tokens,
         output_tokens=usage.output_tokens,
         cache_read_tokens=usage.cache_read_tokens,
@@ -205,17 +300,18 @@ def price_table_cost_usd(usage: AttemptUsage) -> float:
     )
 
 
-def attempt_cost_usd(usage: AttemptUsage) -> float:
+def attempt_cost_usd(usage: AttemptUsage, *, overrides: Mapping[str, ModelPrice] | None = None) -> float:
     """SDK-equivalent dollar cost for one attempt.
 
     Prefers the CLI-reported ``total_cost_usd`` when present (the most
     accurate figure — it already reflects the exact per-iteration rates);
     falls back to the price-table estimate when absent, so historical rows
-    whose cost was never captured still contribute an estimate.
+    whose cost was never captured still contribute an estimate. *overrides*
+    threads a once-resolved ``cost_model_prices`` map through to that fallback.
     """
     if usage.reported_cost_usd is not None:
         return usage.reported_cost_usd
-    return price_table_cost_usd(usage)
+    return price_table_cost_usd(usage, overrides=overrides)
 
 
 @dataclass(frozen=True, slots=True)
@@ -234,6 +330,9 @@ class CostBreakdown:
 
     @classmethod
     def from_usages(cls, usages: Iterable[AttemptUsage]) -> "CostBreakdown":
+        # Resolve the ``cost_model_prices`` overrides ONCE for the whole
+        # aggregation rather than a cold read per attempt.
+        overrides = _cost_price_overrides()
         per_tier: dict[str, float] = {}
         per_lane_usd: dict[str, float] = {}
         per_lane_et: dict[str, float] = {}
@@ -241,7 +340,7 @@ class CostBreakdown:
         et_total = 0.0
         count = 0
         for usage in usages:
-            cost = attempt_cost_usd(usage)
+            cost = attempt_cost_usd(usage, overrides=overrides)
             et = usage.effective_tokens
             tier = tier_of_model(usage.model)
             lane = usage.lane or UNATTRIBUTED_LANE
@@ -378,7 +477,15 @@ class CostReport:
         if self.breakdown.per_tier_usd:
             lines.append("  per model:")
             for tier, amount in sorted(self.breakdown.per_tier_usd.items(), key=lambda kv: -kv[1]):
-                lines.append(f"    {tier}: ${amount:,.2f}")
+                # An unrecognised model with no ``cost_model_prices`` override is
+                # billed at the conservative opus rate — flag the figure as an
+                # estimate rather than presenting it as a vetted Claude price.
+                annotation = (
+                    " (unrecognised model — est. at opus rate; set cost_model_prices)"
+                    if (tier == UNPRICED_TIER)
+                    else ""
+                )
+                lines.append(f"    {tier}: ${amount:,.2f}{annotation}")
         if self.breakdown.per_lane_usd:
             lines.append("  per lane:")
             for lane, amount in sorted(self.breakdown.per_lane_usd.items(), key=lambda kv: -kv[1]):

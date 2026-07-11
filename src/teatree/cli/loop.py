@@ -244,10 +244,10 @@ def _session_pin_flags() -> list[str]:
     spawn argv here — never into ``claude -p`` headless (effort is session-wide,
     not per-sub-agent). Absent settings inject nothing, so the spawn is
     byte-for-byte today's behaviour. Effort is validated at parse time
-    (``config_agent.resolve_agent_config``), so an off-scale value fails loudly
-    rather than reaching the CLI.
+    (``config.agent_spawn.resolve_agent_config``), so an off-scale value fails
+    loudly rather than reaching the CLI.
     """
-    from teatree.config_agent import resolve_agent_config  # noqa: PLC0415
+    from teatree.config.agent_spawn import resolve_agent_config  # noqa: PLC0415 — deferred: interactive-spawn path only
 
     cfg = resolve_agent_config()
     session_model = cfg.session_model

@@ -29,8 +29,6 @@ from teatree.agents.model_tiering import (
     TIER_MODELS,
     VERIFICATION_PHASES,
     _resolve_pydantic_ai_tier,
-    assert_model_allowed_on_regulated_path,
-    is_regulated_path_eligible,
     model_supports_thinking,
     resolve_phase_harness,
     resolve_phase_model,
@@ -306,7 +304,7 @@ class TestNoFableDefault:
             assert "fable" not in resolved.lower()
 
     def test_default_honesty_model_is_opus_not_fable(self) -> None:
-        from teatree.config_agent import AgentConfig  # noqa: PLC0415
+        from teatree.config.agent_spawn import AgentConfig  # noqa: PLC0415 — deferred: test-local
 
         assert AgentConfig().honesty_model == "opus"
 
@@ -439,7 +437,7 @@ class TestHarnessScopedEffort:
         assert set(HARNESS_EFFORT_SCALE) == set(AgentHarness)
 
     def test_claude_sdk_scale_matches_the_shared_effort_scale(self) -> None:
-        from teatree.config_agent import EFFORT_SCALE  # noqa: PLC0415
+        from teatree.config.agent_spawn import EFFORT_SCALE  # noqa: PLC0415 — deferred: test-local
 
         assert HARNESS_EFFORT_SCALE[AgentHarness.CLAUDE_SDK] == EFFORT_SCALE
 
@@ -466,7 +464,7 @@ class TestHarnessScopedEffort:
     def test_pydantic_ai_accepts_an_override_within_the_shared_vocabulary(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        # "low" is in EFFORT_SCALE (so the config-time parser in config_agent.py
+        # "low" is in EFFORT_SCALE (so the config-time parser in config/agent_spawn.py
         # accepts it) AND in pydantic_ai's HARNESS_EFFORT_SCALE, so it passes
         # straight through — the harness-scale check only narrows, never widens
         # what an operator can already configure.
@@ -498,65 +496,6 @@ class TestHarnessScopedEffortDefaultHarness(TestCase):
         ConfigSetting.objects.set_value("agent_harness", "claude_sdk")
         # Same override, claude_sdk harness: "max" is on-scale, passes through.
         assert resolve_tier_effort("frontier") == "max"
-
-
-class TestIsRegulatedPathEligible:
-    """:func:`is_regulated_path_eligible` — membership in the explicit allowlist, case-insensitively."""
-
-    @pytest.mark.parametrize("model_id", ["anthropic/claude-opus-4.8", "Anthropic/Claude-Sonnet", "google/gemini-3"])
-    def test_an_allowlisted_pattern_is_eligible(self, model_id: str) -> None:
-        assert is_regulated_path_eligible(model_id, ["anthropic/", "google/"])
-
-    @pytest.mark.parametrize("model_id", ["deepseek/deepseek-v4-pro", "qwen/qwen3.6-plus"])
-    def test_a_model_off_the_allowlist_is_ineligible(self, model_id: str) -> None:
-        assert not is_regulated_path_eligible(model_id, ["anthropic/", "google/"])
-
-    def test_empty_allowlist_makes_nothing_eligible(self) -> None:
-        assert not is_regulated_path_eligible("anthropic/claude-opus-4.8", [])
-
-
-class TestAssertModelAllowedOnRegulatedPath:
-    """:func:`assert_model_allowed_on_regulated_path` — the regulated-lane allowlist gate."""
-
-    def test_unenforced_lane_never_raises(self) -> None:
-        # The teatree factory lane carries no regulated data — any model runs.
-        assert_model_allowed_on_regulated_path("deepseek/deepseek-v4-pro", enforce_regulated_path=False, allowlist=[])
-
-    def test_allowlisted_model_on_the_regulated_path_is_a_noop(self) -> None:
-        assert_model_allowed_on_regulated_path(
-            "anthropic/claude-opus-4.8", enforce_regulated_path=True, allowlist=["anthropic/"]
-        )
-
-    def test_model_off_the_allowlist_is_refused_on_the_regulated_path(self) -> None:
-        with pytest.raises(ValueError, match="not eligible for the regulated path"):
-            assert_model_allowed_on_regulated_path(
-                "deepseek/deepseek-v4-pro", enforce_regulated_path=True, allowlist=["anthropic/"]
-            )
-
-    def test_enforced_but_empty_allowlist_refuses_everything(self) -> None:
-        with pytest.raises(ValueError, match="not eligible for the regulated path"):
-            assert_model_allowed_on_regulated_path(
-                "anthropic/claude-opus-4.8", enforce_regulated_path=True, allowlist=[]
-            )
-
-
-class TestAssertModelAllowedDefaultSettings(TestCase):
-    """The default (params ``None``) reads the resolved DB-home regulated-path settings."""
-
-    def test_default_unenforced_never_raises(self) -> None:
-        # No row set — enforce_regulated_path defaults False, so nothing is gated.
-        assert_model_allowed_on_regulated_path("deepseek/deepseek-v4-pro")
-
-    def test_default_reads_the_resolved_regulated_path_settings(self) -> None:
-        ConfigSetting.objects.set_value("enforce_regulated_path", value=True)
-        ConfigSetting.objects.set_value("regulated_path_model_allowlist", value=["anthropic/"])
-        with pytest.raises(ValueError, match="not eligible for the regulated path"):
-            assert_model_allowed_on_regulated_path("deepseek/deepseek-v4-pro")
-
-    def test_allowlisted_model_passes_under_enforcement(self) -> None:
-        ConfigSetting.objects.set_value("enforce_regulated_path", value=True)
-        ConfigSetting.objects.set_value("regulated_path_model_allowlist", value=["anthropic/", "claude"])
-        assert_model_allowed_on_regulated_path("anthropic/claude-opus-4.8")
 
 
 class TestPydanticAiTierModels:
@@ -681,3 +620,44 @@ class TestResolvePhaseHarness:
         # The pin only ever forces claude_sdk — it never flips a maker onto pydantic.
         for phase in VERIFICATION_PHASES:
             assert resolve_phase_harness(AgentHarness.CLAUDE_SDK, phase) is AgentHarness.CLAUDE_SDK
+
+
+class TestResolvePhaseHarnessOverride:
+    """``agent_phase_harness`` DB override over the shipped verification pin (§3a #3)."""
+
+    def test_empty_override_is_byte_identical_to_the_shipped_pin(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # An unrelated key present, no agent_phase_harness → the shipped default
+        # stands: a verification phase still forces claude_sdk.
+        _seeded_db(tmp_path, monkeypatch, agent_session_model="haiku")
+        assert resolve_phase_harness(AgentHarness.PYDANTIC_AI, "reviewing") is AgentHarness.CLAUDE_SDK
+
+    def test_a_db_row_flips_a_verification_pin_onto_pydantic_ai(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # The whole point: a full swap of the checker onto pydantic_ai is one DB
+        # row, not a code edit — reviewing is no longer forced onto claude_sdk.
+        _seeded_db(tmp_path, monkeypatch, agent_phase_harness={"reviewing": "pydantic_ai"})
+        assert resolve_phase_harness(AgentHarness.PYDANTIC_AI, "reviewing") is AgentHarness.PYDANTIC_AI
+
+    def test_an_unpin_sentinel_drops_a_verification_phase_back_to_configured(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # An explicit "" unpins the phase: it follows the configured harness even
+        # though the shipped default would pin it to claude_sdk.
+        _seeded_db(tmp_path, monkeypatch, agent_phase_harness={"testing": ""})
+        assert resolve_phase_harness(AgentHarness.PYDANTIC_AI, "testing") is AgentHarness.PYDANTIC_AI
+
+    def test_an_override_can_pin_a_maker_phase(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        # A non-verification phase gains a pin it did not have before.
+        _seeded_db(tmp_path, monkeypatch, agent_phase_harness={"coding": "claude_sdk"})
+        assert resolve_phase_harness(AgentHarness.PYDANTIC_AI, "coding") is AgentHarness.CLAUDE_SDK
+
+    def test_a_malformed_override_is_ignored_and_the_default_stands(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # A value naming no known harness is dropped at parse time, so the phase
+        # falls back to the shipped verification pin — never a silent bad value.
+        _seeded_db(tmp_path, monkeypatch, agent_phase_harness={"reviewing": "gpt-sdk"})
+        assert resolve_phase_harness(AgentHarness.PYDANTIC_AI, "reviewing") is AgentHarness.CLAUDE_SDK

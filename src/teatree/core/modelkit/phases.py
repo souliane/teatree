@@ -26,14 +26,14 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     # Annotation-only: ``resolve_fanout_directive`` receives a resolved
     # ``AgentConfig`` from the caller (loop-side), so ``core`` keeps NO runtime
-    # import of the ``config_agent`` platform module. (The layered tach config
-    # would actually permit a domain→platform edge; the decoupling is upheld by
-    # convention + the import-isolation guard
+    # import of the ``config.agent_spawn`` platform module. (The layered tach
+    # config would actually permit a domain→platform edge; the decoupling is
+    # upheld by convention + the import-isolation guard
     # ``test_core_phases_has_no_runtime_config_agent_import``, not by tach.) The
     # TYPE_CHECKING import is invisible to tach, mirroring the sibling
     # ``core.management.commands.loop_self_improve`` type-only import of
     # ``teatree.loop``.
-    from teatree.config_agent import AgentConfig
+    from teatree.config.agent_spawn import AgentConfig
 
 # Canonical token -> every accepted alias (including the canonical itself).
 _PHASE_ALIASES: dict[str, tuple[str, ...]] = {
@@ -257,8 +257,8 @@ def resolve_fanout_directive(role: str, phase: str, cfg: "AgentConfig") -> str:
 
     The SINGLE chokepoint both the interactive (``loop_dispatch._task_to_dict``)
     and headless (``agents.prompt.build_system_context``) routes call. ``cfg`` is
-    a resolved :class:`~teatree.config_agent.AgentConfig` passed by the
-    loop-side caller, so ``core`` never imports UP into ``config_agent`` (tach).
+    a resolved :class:`~teatree.config.agent_spawn.AgentConfig` passed by the
+    loop-side caller, so ``core`` never imports UP into ``config.agent_spawn`` (tach).
 
     Default-OFF guarantee (the anti-vacuous spine): a pair with no
     ``[agent.phase_fanout]`` opt-in — the absent-key / ``False`` case — renders
@@ -287,8 +287,8 @@ def _phase_fanout_opt_in(phase_fanout: "dict[str, bool | int]", *, role: str, ph
     canonical gerund (``"reviewer:reviewing"``) — mirroring
     :func:`fanout_for_phase`'s normalization on the registry side. Keys are
     normalized here (in ``core``, where :func:`normalize_phase` lives) rather
-    than at parse time, so the platform-layer ``config_agent`` need not import UP
-    into ``core``. The canonical key wins when both spellings are present.
+    than at parse time, so the platform-layer ``config.agent_spawn`` need not
+    import UP into ``core``. The canonical key wins when both spellings are present.
     """
     canonical_key = f"{role}:{normalize_phase(phase)}"
     direct = phase_fanout.get(canonical_key)

@@ -127,7 +127,7 @@ def _check_dangling_editable_pth() -> bool:
 
 def _check_singletons() -> bool:
     """Clean up stale pid files for known singleton processes."""
-    from teatree.utils.singleton import (  # noqa: PLC0415 — deferred: keeps the doctor-check import light
+    from teatree.utils.singleton import (  # noqa: PLC0415 (deferred: keeps the doctor-check import light)
         WORKER_SINGLETON,
         default_pid_path,
         read_pid,
@@ -381,9 +381,17 @@ def _check_agent_session_pins() -> bool:
     ``session_model`` or any ``[agent.skill_models]`` floor is a WARN (it ranks
     most-capable via ``cost.tier_rank``, so it still works, but it is most likely
     a typo). An absent or all-valid config is silently OK.
+
+    The recognition is model-vocabulary-aware (F4): a bare pin passes when it is
+    an abstract tier (``frontier``), a shipped tier-model id, a Claude family
+    (``opus`` short-name or a dated id), or the operator's OWN ``agent_tier_models``
+    value; a provider-prefixed id (anything carrying a ``/`` — ``deepseek/…``,
+    ``orcarouter/…``) is a deliberate non-Claude pin and always passes. Only a
+    bare token that is NONE of these (a genuine typo) warns.
     """
-    from teatree.config_agent import resolve_agent_config  # noqa: PLC0415
-    from teatree.core.cost import PRICE_TABLE  # noqa: PLC0415
+    from teatree.agents.model_tiering import known_model_vocabulary  # noqa: PLC0415 — deferred: keep import light
+    from teatree.config.agent_spawn import resolve_agent_config  # noqa: PLC0415 — deferred: keep import light
+    from teatree.core.cost import FAMILY_TO_TIER  # noqa: PLC0415 — deferred: keep import light
 
     try:
         cfg = resolve_agent_config()
@@ -391,20 +399,26 @@ def _check_agent_session_pins() -> bool:
         typer.echo(f"FAIL  Invalid agent_session_effort setting: {exc}")
         return False
 
+    known = known_model_vocabulary() | {value.lower() for value in cfg.tier_models.values()}
+
     def _unrecognised(model: str) -> bool:
         lowered = model.lower()
-        return not any(tier in lowered for tier in PRICE_TABLE)
+        if "/" in lowered:  # a deliberate provider-native pin (deepseek/…, orcarouter/…)
+            return False
+        if any(family in lowered for family in FAMILY_TO_TIER):  # a Claude family short-name or dated id
+            return False
+        return lowered not in known
 
     if cfg.session_model and _unrecognised(cfg.session_model):
         typer.echo(
-            f"WARN  [agent] session_model {cfg.session_model!r} matches no known tier "
-            f"({', '.join(PRICE_TABLE)}); it will be treated as most-capable. Likely a typo."
+            f"WARN  [agent] session_model {cfg.session_model!r} matches no known tier or model id; "
+            "it will be treated as most-capable. Likely a typo."
         )
     for skill, floor in cfg.skill_models.items():
         if floor and _unrecognised(floor):
             typer.echo(
-                f"WARN  [agent.skill_models] {skill} = {floor!r} matches no known tier "
-                f"({', '.join(PRICE_TABLE)}); it will be treated as most-capable. Likely a typo."
+                f"WARN  [agent.skill_models] {skill} = {floor!r} matches no known tier or model id; "
+                "it will be treated as most-capable. Likely a typo."
             )
     return True
 
