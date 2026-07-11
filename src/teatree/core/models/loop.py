@@ -39,8 +39,10 @@ import datetime as dt
 from typing import ClassVar
 
 from django.core.exceptions import ValidationError
-from django.db import models
+from django.db import models, transaction
 from django.utils import timezone
+
+from teatree.core.models.loop_state import LoopState
 
 
 class LoopManager(models.Manager["Loop"]):
@@ -49,10 +51,6 @@ class LoopManager(models.Manager["Loop"]):
     def enabled(self) -> "models.QuerySet[Loop]":
         """The enabled loops — the candidate set the loop-table fan-out considers each pass."""
         return self.filter(enabled=True)
-
-    def due(self, now: dt.datetime) -> "list[Loop]":
-        """Enabled loops whose cadence has elapsed (or that never ran)."""
-        return [loop for loop in self.enabled() if loop.is_due(now)]
 
     def mark_run(self, name: str, ts: dt.datetime) -> None:
         """Stamp ``last_run_at = ts`` for *name* — the cadence bump after a run.
@@ -84,13 +82,48 @@ class LoopManager(models.Manager["Loop"]):
 
         ``Loop.enabled`` is the row-level source of truth the #2584 loop tick
         reads (``not row.enabled`` skips a loop, independent of the durable
-        ``LoopState`` control plane). The ``enable`` / ``disable`` loop verbs move
-        this column in lock-step with their ``LoopState`` write so both planes
-        agree. A direct ``update`` is idempotent; a name with no row is a no-op
-        (returns ``0``) — the loop-config verbs still record their ``LoopState``
-        intent for a not-yet-seeded name.
+        ``LoopState`` control plane). :meth:`disable` / :meth:`enable` move this
+        column in lock-step with their ``LoopState`` write (one atomic method
+        owns the paired invariant) so both planes agree. A direct ``update`` is
+        idempotent; a name with no row is a no-op (returns ``0``) — the paired
+        methods still record their ``LoopState`` intent for a not-yet-seeded name.
         """
         return self.filter(name=name).update(enabled=enabled)
+
+    def disable(self, name: str) -> None:
+        """Durably disable *name* on BOTH planes atomically (#1913, #2584).
+
+        The single owner of the paired write the ``loop_state`` command used to
+        inline (holistic 3c#4): the ``DISABLED`` :class:`LoopState` kill-switch AND
+        the row-level ``enabled=False`` the #2584 tick reads move together in one
+        transaction, so no caller can leave one plane stale — the "reports enabled
+        but never ticks" bug this method exists to make impossible. A name with no
+        ``Loop`` row still records its durable ``LoopState`` intent (the row update
+        is a 0-row no-op).
+        """
+        with transaction.atomic():
+            LoopState.objects.disable(name)
+            self.set_enabled(name, enabled=False)
+
+    def enable(self, name: str) -> None:
+        """Re-enable *name* on BOTH planes atomically — clears EITHER a pause or a disable.
+
+        The inverse of :meth:`disable`: the ``ENABLED`` :class:`LoopState`
+        transition (which lifts a PAUSE or a DISABLE) AND ``enabled=True`` move
+        together, so both planes agree the loop runs again.
+        """
+        with transaction.atomic():
+            LoopState.objects.enable(name)
+            self.set_enabled(name, enabled=True)
+
+    def resume(self, name: str) -> None:
+        """Return *name* to running on BOTH planes — the pause-vocabulary alias of :meth:`enable`.
+
+        ``resume`` and ``enable`` are the one "make it run again" transition so a
+        loop is never stuck because the operator reached for the pause verb on a
+        disabled loop.
+        """
+        self.enable(name)
 
 
 class Loop(models.Model):

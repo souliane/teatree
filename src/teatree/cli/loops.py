@@ -1,9 +1,11 @@
 """``t3 loops`` — DB-configured autonomous loops (#1796).
 
 ``t3 loops list`` prints the loops from the DB (read-only). ``t3 loops tick
---loop <name>`` runs ONE enabled, due loop — the per-loop primitive each native
-Claude ``/loop`` fires (#2650). There is NO master tick: ``t3 loops tick`` with no
-``--loop`` is a hard error. Per-loop management — add / edit / enable / disable —
+--loop <name>`` runs ONE enabled, due loop — the per-loop primitive the
+self-rescheduling loop-timer chain drives (:mod:`teatree.loops.timer_chains`, the
+sole driver since PR-28 retired the native-``/loop`` cron mirror). There is NO
+master tick: ``t3 loops tick`` with no ``--loop`` is a hard error. Per-loop
+management — add / edit / enable / disable —
 is via ``t3 loop enable`` / ``t3 loop disable`` + the Django admin (``Loop`` rows: name /
 prompt / delay / enabled). ORM access lives in the ``loops_tick`` / ``loops_list``
 management commands, not a plain typer command.
@@ -52,15 +54,15 @@ def tick_command(
         "",
         "--loop",
         help=(
-            "REQUIRED. Run ONE enabled, due DB Loop by name (#2650) — what each native Claude `/loop` "
-            "fires, claiming the per-loop `loop:<name>` lease. There is no master tick: omitting --loop "
-            "is a hard error."
+            "REQUIRED. Run ONE enabled, due DB Loop by name — what the self-rescheduling loop-timer "
+            "chain drives, claiming the per-loop `loop:<name>` lease. There is no master tick: omitting "
+            "--loop is a hard error."
         ),
     ),
     overlay: str = typer.Option("", "--overlay", help="Restrict scanning to the named overlay (default: all)."),
     json_output: bool = typer.Option(False, "--json", help="Emit the tick report as JSON."),
 ) -> None:
-    """Run ONE enabled, due loop by name — the per-loop primitive each native Claude ``/loop`` fires (#2650).
+    """Run ONE enabled, due loop by name — the per-loop primitive the loop-timer chain drives.
 
     Scopes the tick to that single enabled, due ``Loop`` row, claiming the disjoint
     per-loop ``loop:<name>`` lease so the per-loop loops run in parallel. **There is

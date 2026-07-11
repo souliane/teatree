@@ -38,11 +38,13 @@ def review_loop_enabled() -> bool:
     ``LoopState`` row durably stops review claims across a restart; an absent row
     or a runnable one leaves them running. This is the discovery-time claim gate,
     not a loop-run decision — it fails OPEN to enabled by design (#79 / #1913), so
-    it intentionally does NOT read the ``Loop.enabled`` column (the loop tick,
-    the dream cron gate, and the #2650 cron mirror gate on that combined verdict;
-    this chokepoint suppresses over-claiming and must never silently swallow every
-    review on an unreadable or absent row). There is no env kill-switch and no
-    ``[loops]`` toml fallback — loop control is ``/loops`` + the DB only.
+    it intentionally does NOT read the ``Loop.enabled`` column (the loop-run sites
+    — the loop tick and the off-live-tick loop gates — combine ``Loop.enabled``
+    AND the ``LoopState`` hold via
+    :func:`teatree.loop.loop_state_db.loop_state_admits`; this chokepoint
+    suppresses over-claiming and must never silently swallow every review on an
+    unreadable or absent row). There is no env kill-switch and no ``[loops]`` toml
+    fallback — loop control is ``/loops`` + the DB only.
 
     Fail-safe: any read error resolves to enabled so an unreadable source never
     silently suppresses every review — the discovery-time claim removal is what

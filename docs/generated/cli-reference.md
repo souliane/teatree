@@ -4158,8 +4158,8 @@ Usage: t3 loops [OPTIONS] COMMAND [ARGS]...
 ╭─ Commands ───────────────────────────────────────────────────────────────────╮
 │ list  List DB-configured autonomous loops: name, enabled, delay, last run,   │
 │       next due.                                                              │
-│ tick  Run ONE enabled, due loop by name — the per-loop primitive each native │
-│       Claude ``/loop`` fires (#2650).                                        │
+│ tick  Run ONE enabled, due loop by name — the per-loop primitive the         │
+│       loop-timer chain drives.                                               │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -4184,8 +4184,8 @@ Usage: t3 loops list [OPTIONS]
 ```
 Usage: t3 loops tick [OPTIONS]
 
- Run ONE enabled, due loop by name — the per-loop primitive each native Claude
- ``/loop`` fires (#2650).
+ Run ONE enabled, due loop by name — the per-loop primitive the loop-timer
+ chain drives.
 
  Scopes the tick to that single enabled, due ``Loop`` row, claiming the
  disjoint
@@ -4195,8 +4195,8 @@ Usage: t3 loops tick [OPTIONS]
  management command refuses it). Delegates to that management command.
 
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
-│ --loop           TEXT  REQUIRED. Run ONE enabled, due DB Loop by name        │
-│                        (#2650) — what each native Claude `/loop` fires,      │
+│ --loop           TEXT  REQUIRED. Run ONE enabled, due DB Loop by name — what │
+│                        the self-rescheduling loop-timer chain drives,        │
 │                        claiming the per-loop `loop:<name>` lease. There is   │
 │                        no master tick: omitting --loop is a hard error.      │
 │ --overlay        TEXT  Restrict scanning to the named overlay (default:      │

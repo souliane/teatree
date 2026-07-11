@@ -1,0 +1,82 @@
+"""teatree.loop.loop_state_db — the single combined enable verdict over the DB.
+
+``loop_state_admits`` is the ONE pure predicate every enable-decision site
+resolves through: the standalone ``loop_enabled`` single-lookup (the off-live-tick
+loop gates) and the live loop-table tick both apply it, so the verdict can never
+drift into a tier-subset. ``loop_held_in_db`` is the durable per-loop
+PAUSE/DISABLE read; it fails SAFE to no-hold on a read error but must WARN (not
+whisper at debug) so a silently-unheld loop is observable (#2584 / holistic 3c#5).
+"""
+
+from unittest.mock import patch
+
+import django.test
+
+from teatree.core.models import Loop, LoopState, Prompt
+from teatree.loop.loop_state_db import loop_enabled, loop_held_in_db, loop_state_admits
+
+
+class TestLoopStateAdmits(django.test.SimpleTestCase):
+    """The pure combined verdict: configured-enabled AND not runtime-held."""
+
+    def test_configured_and_unheld_admits(self) -> None:
+        assert loop_state_admits(configured_enabled=True, held=False) is True
+
+    def test_held_is_not_admitted_even_when_configured(self) -> None:
+        assert loop_state_admits(configured_enabled=True, held=True) is False
+
+    def test_not_configured_is_not_admitted_even_when_unheld(self) -> None:
+        assert loop_state_admits(configured_enabled=False, held=False) is False
+
+    def test_not_configured_and_held_is_not_admitted(self) -> None:
+        assert loop_state_admits(configured_enabled=False, held=True) is False
+
+
+@django.test.override_settings(USE_TZ=True)
+class TestLoopEnabledCombinedVerdict(django.test.TestCase):
+    """``loop_enabled(name)`` is ``Loop.enabled`` AND not ``LoopState``-held — one verdict."""
+
+    def _loop(self, name: str, *, enabled: bool = True) -> Loop:
+        prompt, _ = Prompt.objects.get_or_create(name=f"{name}-p", defaults={"body": "x"})
+        return Loop.objects.update_or_create(
+            name=name, defaults={"delay_seconds": 60, "prompt": prompt, "script": "", "enabled": enabled}
+        )[0]
+
+    def test_enabled_and_unheld_is_true(self) -> None:
+        self._loop("le-on")
+        assert loop_enabled("le-on") is True
+
+    def test_configured_disabled_is_false(self) -> None:
+        self._loop("le-off", enabled=False)
+        assert loop_enabled("le-off") is False
+
+    def test_loopstate_hold_stops_a_configured_loop(self) -> None:
+        self._loop("le-held")
+        LoopState.objects.disable("le-held")
+        assert loop_enabled("le-held") is False
+
+    def test_missing_row_is_false(self) -> None:
+        assert loop_enabled("le-absent") is False
+
+
+class TestLoopHeldFailsSafeButWarns(django.test.TestCase):
+    """A per-loop PAUSE/DISABLE read error fails OPEN (no hold) — but WARNS, never whispers.
+
+    The global kill-switch fails CLOSED on a read error; the symmetric per-loop
+    hold fails OPEN so an unreadable DB can never silently disable a loop. That
+    fail-open was swallowed at ``debug`` (#2584 / holistic 3c#5): a loop silently
+    kept running with NO observable signal. It must log at WARNING so the operator
+    can see the degraded read.
+    """
+
+    def test_read_error_returns_no_hold(self) -> None:
+        with patch.object(LoopState.objects, "is_runnable", side_effect=RuntimeError("db down")):
+            assert loop_held_in_db("review") is False
+
+    def test_read_error_logs_at_warning(self) -> None:
+        with (
+            patch.object(LoopState.objects, "is_runnable", side_effect=RuntimeError("db down")),
+            self.assertLogs("teatree.loop.loop_state_db", level="WARNING") as logs,
+        ):
+            loop_held_in_db("review")
+        assert any("review" in line for line in logs.output)
