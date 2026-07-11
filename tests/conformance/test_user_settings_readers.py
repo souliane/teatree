@@ -18,7 +18,8 @@ high-confidence ``settings``/``cfg``/``config`` receiver), a ``getattr(settings,
 constant, a field-name string literal inside a settings-RESOLUTION module (where
 such a string IS a config key — ``getattr(settings, key)`` over a dict/tuple of
 key names, but NOT a name used only as a bare-dict ``.get("<key>")`` sub-key of
-a bespoke structured table, a coincidental collision), or the field on a
+a bespoke structured table nor a dict-literal ``{"<key>": ...}`` key, both
+coincidental collisions), or the field on a
 non-comment line of a ``hooks/*.sh`` cold-read script. A field read by none is dead config, unless named in
 ``FIELDS_WITHOUT_SRC_READER`` — the reviewable allowlist of fields consumed by
 agent-prose / documentation rather than ``src`` code, or documented reader-less.
@@ -177,11 +178,31 @@ def _bespoke_dict_get_keys(tree: ast.Module, settings_vars: set[str]) -> set[str
     return keys
 
 
+def _dict_literal_keys(tree: ast.Module) -> set[str]:
+    """String keys of dict literals ``{"<key>": ...}`` — structural keys, not settings reads.
+
+    A field name that appears only as a dict-literal key (e.g. the schedule
+    command's ``{"timezone": schedule.timezone}`` output row, whose value is a
+    ``LoopSchedule`` model attribute — never a settings object) collides with a
+    UserSettings field name but is NOT a settings-key read. It is the same
+    coincidental class as the ``<bare-var>.get("<key>")`` sub-key rule above, in
+    dict-literal form, so the resolution-module string rule must not count it.
+    """
+    keys: set[str] = set()
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Dict):
+            continue
+        for key in node.keys:
+            if isinstance(key, ast.Constant) and isinstance(key.value, str):
+                keys.add(key.value)
+    return keys
+
+
 def _file_python_readers(tree: ast.Module, field_names: set[str]) -> set[str]:
     read: set[str] = set()
     settings_vars, config_vars = _settings_vars_in(tree)
     resolves = _module_resolves_settings(tree)
-    bespoke_get_keys = _bespoke_dict_get_keys(tree, settings_vars)
+    coincidental_keys = _bespoke_dict_get_keys(tree, settings_vars) | _dict_literal_keys(tree)
     for node in ast.walk(tree):
         if (
             isinstance(node, ast.Attribute)
@@ -207,7 +228,7 @@ def _file_python_readers(tree: ast.Module, field_names: set[str]) -> set[str]:
             and isinstance(node, ast.Constant)
             and isinstance(node.value, str)
             and node.value in field_names
-            and node.value not in bespoke_get_keys
+            and node.value not in coincidental_keys
         ):
             read.add(node.value)
     return read

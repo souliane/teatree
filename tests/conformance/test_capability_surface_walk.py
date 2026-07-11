@@ -43,6 +43,8 @@ INTENTIONALLY_UNREGISTERED_MODULES: frozenset[str] = frozenset(
         "loop_drain_queue",
         "loop_list",
         "loop_owner",
+        "loop_preset",
+        "loop_schedule",
         "loop_self_improve",
         "loop_slack_answer",
         "loop_state",

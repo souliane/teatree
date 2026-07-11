@@ -72,7 +72,7 @@ PR-28 retired the native Claude `/loop` cron mirror: the DB toggle is now the wh
 
 ## Presets & weekly schedules (mode switching, #3159)
 
-`t3 loop enable/disable/pause/resume` are per-loop. **Presets** switch many loops at once as a read-time MASK above the base config and below a `LoopState` hold — no rows are rewritten on a switch. A preset's `entries` are **tri-state** per loop (`on` / `off` / *absent = inherit* the base `Loop.enabled`). Resolution order (first opinion wins): L4 `LoopState` hold → L3 manual override → L2 active-schedule slot → L1 `Loop.enabled`.
+`t3 loop <enable|disable|pause|resume>` are per-loop. **Presets** switch many loops at once as a read-time MASK above the base config and below a `LoopState` hold — no rows are rewritten on a switch. A preset's `entries` are **tri-state** per loop (`on` / `off` / *absent = inherit* the base `Loop.enabled`). Resolution order (first opinion wins): L4 `LoopState` hold → L3 manual override → L2 active-schedule slot → L1 `Loop.enabled`.
 
 ```bash
 t3 loop preset list                      # every preset + the ACTIVE marker
