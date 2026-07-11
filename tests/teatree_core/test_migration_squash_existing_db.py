@@ -43,6 +43,7 @@ _CURRENT_GRAPH = frozenset(
         "0001_initial",
         "0002_implementedissuemarker_claimed_by_instance",
         "0003_implementedissuemarker_claim_ref_sha",
+        "0004_ticket_issue_number",
     }
 )
 

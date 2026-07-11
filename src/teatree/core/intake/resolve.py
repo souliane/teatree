@@ -150,8 +150,12 @@ def _ticket_by_number(number: str, *, overlay: str | None = None) -> Ticket | No
 
     ``ticket_number`` is a DERIVED, non-unique key (trailing digits of
     ``issue_url``, else the pk), so two tickets on different repos/forges can
-    share one. The match is done in Python over real tickets — synthetic
-    ``auto:`` rows are excluded so a hint never resolves back to a placeholder.
+    share one. The forge-number branch is served by the indexed ``issue_number``
+    column (denormalized on ``save``); the pk-fallback branch — a real ticket
+    whose ``issue_url`` carries no forge number, so ``ticket_number`` degrades to
+    ``str(pk)`` — is matched by pk. Both exclude synthetic ``auto:`` rows so a
+    hint never resolves back to a placeholder. Together they reproduce the old
+    O(all tickets) Python scan as an indexed lookup.
 
     When *overlay* is known (inferred from the resolving repo's remote) the
     candidates are narrowed to that overlay first, so a same-number ticket in a
@@ -160,11 +164,13 @@ def _ticket_by_number(number: str, *, overlay: str | None = None) -> Ticket | No
     arbitrary ``.first()`` that would cross-attach the worktree to the wrong
     ticket.
     """
-    matches = [
-        ticket
-        for ticket in Ticket.objects.exclude(issue_url="").exclude(issue_url__startswith="auto:")
-        if ticket.ticket_number == number
-    ]
+    real = Ticket.objects.exclude(issue_url="").exclude(issue_url__startswith="auto:")
+    matches = list(real.filter(issue_number=number))
+    if number.isdigit():
+        # ``issue_number`` is blank exactly when ``ticket_number`` falls back to
+        # ``str(pk)``, so the pk lookup is the fallback branch (never double-counts
+        # a row already matched above, whose ``issue_number`` is non-blank).
+        matches += list(real.filter(issue_number="", pk=int(number)))
     if overlay:
         scoped = [ticket for ticket in matches if ticket.overlay == overlay]
         if scoped:

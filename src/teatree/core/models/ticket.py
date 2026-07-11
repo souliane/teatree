@@ -1,21 +1,19 @@
 import logging
-import re
 from typing import TYPE_CHECKING, ClassVar
 
-from django.apps import apps
-from django.db import models, transaction
-from django.utils import timezone
-from django_fsm import FSMField, TransitionNotAllowed, transition
+from django.db import models
+from django_fsm import FSMField, transition
 
-from teatree.config import Mode, get_effective_settings
 from teatree.core.managers import TicketManager
-from teatree.core.modelkit.gate_registry import get_gate, get_resolver
-from teatree.core.modelkit.phases import normalize_phase
+from teatree.core.modelkit.gate_registry import get_gate
 from teatree.core.modelkit.review_state import ReviewState
-from teatree.core.models.errors import DirtyWorktreeError, InvalidTransitionError
+from teatree.core.models.ticket_evidence import TicketEvidenceModel
 from teatree.core.models.ticket_ledger import retire_phase_ledger
-from teatree.core.models.ticket_worktree_checks import collect_dirty_worktree_paths, worktree_has_commits_ahead
-from teatree.core.models.types import validated_ticket_extra
+from teatree.core.models.ticket_number import derive_issue_number
+from teatree.core.models.ticket_overlay import TicketOverlayModel
+from teatree.core.models.ticket_phase_sessions import TicketPhaseSessionModel
+from teatree.core.models.ticket_scheduling import TicketSchedulingModel
+from teatree.core.models.ticket_status import TicketStatusModel
 from teatree.utils.url_slug import repo_namespaced_key as compute_repo_namespaced_key
 
 logger = logging.getLogger(__name__)
@@ -25,25 +23,23 @@ def _check_plan_artifact(ticket: object) -> bool:
     return bool(get_gate("plan_artifact")(ticket))
 
 
-def _auto_ship_enabled() -> bool:
-    return get_effective_settings().mode == Mode.AUTO
-
-
 if TYPE_CHECKING:
-    from teatree.core.models.session import Session
     from teatree.core.models.task import Task
-    from teatree.core.models.ticket_artifacts import PortResolver, TicketArtifacts
-    from teatree.core.models.types import (
-        AntiVacuityAttestation,
-        ReviewContext,
-        ReviewSkillRun,
-        TicketExtra,
-        TicketSiblingFields,
-    )
 
 
-# ast-grep-ignore: ac-django-no-complexity-suppressions
-class Ticket(models.Model):  # noqa: PLR0904 — FSM transition surface; method count reflects the lifecycle state graph, not poor encapsulation.
+# Composed via Django abstract-model facets (the framework's own model-decomposition
+# pattern) rather than composed attributes: the facets carry cohesive instance
+# behaviour while every method stays reachable as ``ticket.foo()``, so the large
+# consumer-facing API and the FSM state graph are preserved with zero call-site
+# churn. The concrete class owns the fields, the state graph, and ``save``.
+class Ticket(
+    TicketOverlayModel,
+    TicketPhaseSessionModel,
+    TicketSchedulingModel,
+    TicketEvidenceModel,
+    TicketStatusModel,
+    models.Model,
+):
     class State(models.TextChoices):
         NOT_STARTED = "not_started", "Not started"
         SCOPED = "scoped", "Scoped"
@@ -140,6 +136,11 @@ class Ticket(models.Model):  # noqa: PLR0904 — FSM transition surface; method 
     # does. Blank when `issue_url` is a PR/MR reference, a bare number, or
     # any other non-issue shape — see `repo_namespaced_key_from_path`.
     repo_namespaced_key = models.CharField(max_length=300, blank=True, default="", db_index=True)
+    # Denormalized forge issue number (trailing digits of `issue_url`, blank when
+    # there is none), kept in sync by ``save`` — the indexed backing that turns
+    # ``_ticket_by_number`` from an O(all tickets) Python scan into an O(1)
+    # lookup. The ``ticket_number`` property composes it with the pk fallback.
+    issue_number = models.CharField(max_length=32, blank=True, default="", db_index=True)
 
     objects = TicketManager()
 
@@ -166,67 +167,8 @@ class Ticket(models.Model):  # noqa: PLR0904 — FSM transition surface; method 
             self.overlay = self._infer_overlay()
         if not self.repo_namespaced_key and self.issue_url:
             self.repo_namespaced_key = compute_repo_namespaced_key(self.issue_url)
+        self.issue_number = derive_issue_number(self.issue_url)
         super().save(*args, **kwargs)  # type: ignore[arg-type]
-
-    def _infer_overlay(self) -> str:
-        """Derive overlay name from ``issue_url`` (see ``infer_overlay_for_url``)."""
-        return str(get_resolver("infer_overlay_for_url")(self.issue_url))
-
-    def apply_inferred_overlay(self, inferred: str) -> bool:
-        """Persist ``inferred`` overlay on a conclusive change (True when changed).
-
-        A blank inference never blanks out a manually-set attribution.
-        """
-        if not inferred or inferred == self.overlay:
-            return False
-        self.overlay = inferred
-        Ticket.objects.filter(pk=self.pk).update(overlay=inferred)
-        return True
-
-    def reconcile_overlay(self) -> bool:
-        """Re-infer ``overlay`` from ``issue_url`` and persist a correction."""
-        return self.apply_inferred_overlay(self._infer_overlay())
-
-    def has_dispatchable_overlay(self) -> bool:
-        """False only for a non-empty overlay that no longer resolves (#1959 poison-pill)."""
-        return not (self.overlay and get_resolver("resolve_overlay_name")(self.overlay) is None)
-
-    def has_active_work(self) -> bool:
-        """True iff this ticket has an open session or an active (pending/claimed) task.
-
-        The single owner of the ticket-liveness rule the reapers and the relocate
-        command consult — a busy ticket must never be torn down.
-        """
-        if self.sessions.filter(ended_at__isnull=True).exists():  # type: ignore[attr-defined]  # Django reverse FK
-            return True
-        # apps.get_model, not a direct import: task.py imports ticket.py at module scope (real cycle).
-        task_model = apps.get_model("core", "Task")
-        return self.tasks.filter(status__in=task_model.Status.active()).exists()  # type: ignore[attr-defined]  # Django reverse FK
-
-    def mark_remote_missing(self) -> None:
-        """Targeted UPDATE to set remote_missing; skips the FSM and save() overhead (#1875)."""
-        Ticket.objects.filter(pk=self.pk).update(remote_missing=True)
-        self.remote_missing = True
-
-    @property
-    def is_terminal(self) -> bool:
-        """True when the ticket is in a genuinely terminal/abandoned state (SHIPPED/MERGED/DELIVERED/IGNORED)."""
-        return self.state in self._TERMINAL_STATES
-
-    def may_expedite(self) -> bool:
-        """True iff this ticket may carry a human-authorized PENDING-checks waiver (PR-07).
-
-        The flag alone grants NO merge bypass — it only makes the per-CLEAR,
-        SHA-bound waiver ISSUABLE (§17.4.3 / ``MergeClear.expedite_pending_waived_by``).
-        """
-        return self.expedited
-
-    @property
-    def ticket_number(self) -> str:
-        match = re.search(r"(\d+)$", self.issue_url)
-        if match and match.group(1) != "0":
-            return match.group(1)
-        return str(self.pk)
 
     @transition(field=state, source=State.NOT_STARTED, target=State.SCOPED)
     def scope(
@@ -361,210 +303,6 @@ class Ticket(models.Model):  # noqa: PLR0904 — FSM transition surface; method 
         must NOT complete active reviewing tasks — those paths skip the
         attestation that would justify it.
         """
-
-    def aggregate_phase_records(self) -> tuple[list[str], dict[str, dict[str, str]]]:
-        """Union the phase records across all of this ticket's sessions (#694).
-
-        Returns ``(visited_phases, phase_visits)`` merged across
-        ``self.sessions`` in creation order. ``visited_phases`` is a
-        de-duplicated list; ``phase_visits`` keeps the first recorded
-        ``agent_id`` per phase (earliest session wins) as a deterministic
-        audit trail of who recorded each phase — it is not consumed for
-        gate enforcement. The shipping gate consumes the ``visited_phases``
-        union because FSM-advancing ``visit-phase`` forks fresh sessions by
-        design — the required phases are legitimately scattered, and the
-        single source of truth is the ticket's lifecycle, not one session.
-        """
-        visited: list[str] = []
-        visits: dict[str, dict[str, str]] = {}
-        for session in self.sessions.order_by("pk"):  # ty: ignore[unresolved-attribute]
-            for phase in session.visited_phases or []:
-                if phase not in visited:
-                    visited.append(phase)
-            for phase, record in (session.phase_visits or {}).items():
-                if phase not in visits:
-                    visits[phase] = record
-        return visited, visits
-
-    def resolve_phase_session(self, *, agent_id: str = "loop") -> "Session":
-        """The single canonical phase-visit session for the attestation writers (#801).
-
-        Which ``Session`` a phase visit lands on was decided four
-        inconsistent ways (``ensure_session`` earliest+locked; the
-        ``lifecycle visit-phase`` CLI, the ``tasks`` phase-handoff
-        command each ``order_by("-pk")`` *latest* with an unlocked raw
-        blank-``agent_id`` create on miss; the ``pr`` gate *latest* as
-        its gate object). A CLI visit then wrote the *latest* session
-        while dispatch reused the *earliest*, splitting attestation
-        across sessions (#801). The three attestation writers now route
-        here; the read-only gate uses :meth:`find_phase_session`.
-
-        Policy: the **earliest** session (``order_by("pk")`` — the one
-        dispatch's attestation uses, so the ledger never splits),
-        selected/created inside one ``transaction.atomic()`` with the
-        ticket row ``select_for_update``-locked (dispatch callers have
-        no surrounding transaction, so concurrent loop ticks for the
-        same ``issue_url`` must serialise). Always returns a Session —
-        on miss it creates one with a guaranteed **non-blank**
-        ``agent_id`` (never the raw blank-``agent_id`` create that left
-        the ``phase_visits`` audit trail unattributed).
-        """
-        from teatree.core.models.session import Session  # noqa: PLC0415
-        from teatree.core.models.ticket import Ticket  # noqa: PLC0415
-
-        with transaction.atomic():
-            Ticket.objects.select_for_update().filter(pk=self.pk).first()
-            existing = self.sessions.order_by("pk").first()  # ty: ignore[unresolved-attribute]
-            if existing is not None:
-                return existing
-            return Session.objects.create(ticket=self, agent_id=agent_id.strip() or "loop")
-
-    def find_phase_session(self) -> "Session | None":
-        """Read-only canonical phase-visit session for the gate (#801).
-
-        Same earliest + ticket-row-locked selection policy as
-        :meth:`resolve_phase_session` but **never creates** — a gate
-        check must not have the side effect of minting a session.
-        """
-        from teatree.core.models.ticket import Ticket  # noqa: PLC0415
-
-        with transaction.atomic():
-            Ticket.objects.select_for_update().filter(pk=self.pk).first()
-            return self.sessions.order_by("pk").first()  # ty: ignore[unresolved-attribute]
-
-    def ensure_session(self, *, agent_id: str = "loop") -> "Session":
-        """Durable phase-attestation Session for this ticket (#748).
-
-        Thin alias of the canonical :meth:`resolve_phase_session` (#801
-        SSOT) — kept for its existing callers / API.
-        """
-        return self.resolve_phase_session(agent_id=agent_id)
-
-    def has_shippable_diff(self) -> bool:
-        """Return True iff at least one worktree has commits ahead of its base branch.
-
-        Used by ``review()`` to skip auto-scheduling shipping when there is
-        nothing to ship — typically meta-tracker tickets whose work already
-        landed via sibling PRs. Manual ``schedule_shipping()`` callers are not
-        gated.
-        """
-        worktree_model = apps.get_model("core", "Worktree")
-        return any(worktree_has_commits_ahead(wt) for wt in worktree_model.objects.filter(ticket=self))
-
-    def artifacts(self, *, port_resolver: "PortResolver | None" = None) -> "TicketArtifacts":
-        """Read-only artifact-discovery aggregation (#273) — see ``ticket_artifacts``."""
-        from teatree.core.models.ticket_artifacts import collect_ticket_artifacts  # noqa: PLC0415
-
-        return collect_ticket_artifacts(self, port_resolver=port_resolver)
-
-    def schedule_planning(self, *, parent_task: "Task | None" = None) -> "Task":
-        """Create a fresh headless planning task after provisioning completes."""
-        return self._schedule_headless(
-            "planning", "Auto-scheduled planning — produce a plan before coding", parent_task, require_author=True
-        )
-
-    def schedule_coding(self, *, parent_task: "Task | None" = None) -> "Task":
-        """Create a fresh headless coding task after planning completes.
-
-        Gated by ``plan_currency`` (SELFCATCH-3) on the normal author PLANNED→CODED flow
-        (the same gate ``code()`` runs): no coding task for a thin/legacy or seam-stale
-        plan. NO-OP unless ``require_plan_adequacy`` is on; synthetic corrective
-        re-entries that mint a coding task directly are exempt (they carry no plan).
-        """
-        return self._schedule_headless(
-            "coding",
-            "Auto-scheduled coding — implement the ticket",
-            parent_task,
-            require_author=True,
-            gate="plan_currency",
-        )
-
-    def _schedule_headless(
-        self,
-        phase: str,
-        reason: str,
-        parent_task: "Task | None",
-        *,
-        require_author: bool = False,
-        gate: str | None = None,
-    ) -> "Task":
-        """Shared fresh-session headless scheduler for the auto-FSM phase tasks.
-
-        Optionally enforces ``role=author`` and runs an FSM ``gate`` (the
-        plan-currency leak-close), then mints the ``phase`` Session + headless Task.
-        The session ``agent_id`` is the ``phase`` (``reviewing`` uses ``review``).
-        """
-        from teatree.core.models.session import Session  # noqa: PLC0415
-        from teatree.core.models.task import Task  # noqa: PLC0415
-
-        if require_author and self.role != self.Role.AUTHOR:
-            msg = f"schedule_{phase} requires role=author (got role={self.role!r})"
-            raise InvalidTransitionError(msg)
-        if gate is not None:
-            get_gate(gate)(self)
-        session = Session.objects.create(
-            ticket=self, agent_id="review" if normalize_phase(phase) == "reviewing" else phase
-        )
-        return Task.objects.create(
-            ticket=self,
-            session=session,
-            phase=phase,
-            execution_target=Task.ExecutionTarget.HEADLESS,
-            execution_reason=reason,
-            parent_task=parent_task,
-        )
-
-    def schedule_testing(self, *, parent_task: "Task | None" = None) -> "Task":
-        """Create a fresh headless testing task after coding completes."""
-        return self._schedule_headless("testing", "Auto-scheduled testing — run + QA the coding work", parent_task)
-
-    def schedule_review(self, *, parent_task: "Task | None" = None) -> "Task":
-        """Create a fresh headless review+retro task (new session for bias-free evaluation)."""
-        return self._schedule_headless("reviewing", "Auto-scheduled review + retro — fresh agent, no bias", parent_task)
-
-    def schedule_review_in_session(self, session: "Session", *, parent_task: "Task | None" = None) -> "Task":
-        """Create a review task within an existing session (sub-agent, not a new session)."""
-        from teatree.core.models.task import Task  # noqa: PLC0415
-
-        return Task.objects.create(
-            ticket=self,
-            session=session,
-            phase="reviewing",
-            execution_target=Task.ExecutionTarget.HEADLESS,
-            execution_reason="Auto-review before shipping — sub-agent in current session",
-            parent_task=parent_task,
-        )
-
-    def schedule_shipping(self, *, parent_task: "Task | None" = None) -> "Task":
-        """Create an INTERACTIVE shipping task; approval gating rides the reason.
-
-        Shipping is a loop-dispatched phase (``(author, shipping)`` →
-        ``t3:shipper``), so it runs as an in-session sub-agent
-        (subscription-covered), never a metered detached headless-SDK run — regardless of
-        auto mode. Auto mode no longer changes the execution *target*; it only
-        changes the *approval posture* the in-session shipper reads from
-        ``execution_reason`` (auto = push without waiting; otherwise = gate for
-        user approval first).
-        """
-        from teatree.core.models.session import Session  # noqa: PLC0415
-        from teatree.core.models.task import Task  # noqa: PLC0415
-
-        session = Session.objects.create(ticket=self, agent_id="shipping")
-        if _auto_ship_enabled():
-            reason = "Auto-scheduled shipping — auto mode, push will proceed without waiting for approval"
-        else:
-            reason = (
-                "Auto-scheduled shipping — gated for user approval "
-                "(set mode = auto via config_setting set, or T3_MODE=auto, to skip)"
-            )
-        return Task.objects.create(
-            ticket=self,
-            session=session,
-            phase="shipping",
-            execution_target=Task.ExecutionTarget.INTERACTIVE,
-            execution_reason=reason,
-            parent_task=parent_task,
-        )
 
     @transition(
         field=state,
@@ -809,211 +547,3 @@ class Ticket(models.Model):  # noqa: PLR0904 — FSM transition surface; method 
         extra = self._extra()
         extra["ignored_from"] = self.state
         self.extra = extra
-
-    def unignore(self) -> None:
-        if self.state != self.State.IGNORED:
-            msg = f"Can't unignore from state '{self.state}'"
-            raise TransitionNotAllowed(msg)
-        extra = self._extra()
-        previous = extra.pop("ignored_from", self.State.NOT_STARTED)
-        self.extra = extra
-        self.state = str(previous)
-
-    def _cancel_pending_tasks(self) -> None:
-        """Fail all pending/claimed tasks when reworking."""
-        from teatree.core.models.task import Task  # noqa: PLC0415
-
-        for task in self.tasks.filter(status__in=Task.Status.active()):  # type: ignore[attr-defined]  # Django reverse FK
-            task.fail()
-
-    def _refuse_if_worktree_dirty(self, phase: str) -> None:
-        """Preflight gate (#884): refuse the transition if a worktree is tracked-dirty.
-
-        Run at the top of the ``code``/``test``/``review``/``ship``
-        transition bodies. Dirty-collection rule and the no-auto-stash/
-        lease-reaper rationale live on :func:`collect_dirty_worktree_paths`
-        (#1983 LOC-ratchet split). On dirty: a loud :class:`DirtyWorktreeError`
-        names the dirty worktree(s) and the transition does not advance —
-        every production caller wraps the transition body in an outer
-        ``transaction.atomic``, so the raise rolls that whole atomic back.
-        """
-        dirty = collect_dirty_worktree_paths(self)
-        if not dirty:
-            return
-        joined = ", ".join(dirty)
-        msg = (
-            f"Refusing the '{phase}' transition for ticket {self} — uncommitted tracked "
-            f"changes in worktree(s): {joined}. Commit or discard them, then retry. "
-            f"(No auto-stash: teatree worktrees share one .git, so a stash is repo-global "
-            f"and could clobber another branch — #806.)"
-        )
-        raise DirtyWorktreeError(msg)
-
-    def _consume_pending_phase_tasks(self, phase: str) -> None:
-        """Mark non-terminal tasks for ``phase`` as COMPLETED.
-
-        FSM transitions advance ticket state via two paths: the task-driven
-        chain (``Task.complete()`` → ``_advance_ticket()`` → transition body),
-        and direct CLI/API calls (e.g. ``pr.py`` calling ``ticket.ship()``).
-        On the task-driven path the task is already COMPLETED before this runs
-        — the filter is empty and this is a no-op. On the direct path the
-        previously-scheduled phase task is orphaned in PENDING/CLAIMED and
-        would be picked up later as a zombie session; consume it now.
-
-        Matches any accepted phase spelling via ``pending_in_phase`` (#769,
-        the consume-side mirror of #757's ``completed_in_phase``): a raw
-        ``phase=phase`` filter missed a short-verb ``review`` task stored
-        by the unnormalized ``tasks create <id> review`` path, leaving it
-        as a zombie session.
-        """
-        from teatree.core.models.task import Task  # noqa: PLC0415
-
-        Task.objects.pending_in_phase(phase).filter(ticket=self).update(
-            status=Task.Status.COMPLETED,
-            claimed_at=None,
-            claimed_by="",
-            lease_expires_at=None,
-            heartbeat_at=None,
-        )
-
-    def _extra(self) -> "TicketExtra":
-        return validated_ticket_extra(self.extra)
-
-    def merge_extra(
-        self,
-        *,
-        set_keys: "TicketExtra | None" = None,
-        pop_keys: "list[str] | None" = None,
-        also_set: "TicketSiblingFields | None" = None,
-    ) -> None:
-        """Canonical locked read-modify-write of ``extra`` (#800 N3).
-
-        Several writers mutate shared ``extra`` JSON — ``pr_urls`` (ship
-        worker), ``visual_qa`` (the pre-push gate), ``reviewed_sha`` /
-        ``last_review_state`` (reviewer path). Done as an unlocked
-        ``self.extra = …; self.save(update_fields=["extra"])`` they
-        last-writer-clobber each other's key (the Haki-Benita
-        lost-update). This is the single primitive every ``extra``
-        mutation routes through, with the same shape as
-        ``Session.visit_phase``: the RMW runs in ``transaction.atomic()``
-        with the row ``select_for_update``-locked and **re-read from the
-        locked row** (not the possibly-stale in-memory instance), so a
-        concurrent writer's key survives the merge instead of being
-        overwritten. The locked re-read is what makes it correct on the
-        production SQLite backend (where ``select_for_update`` is a no-op
-        but the #804 ``BEGIN IMMEDIATE`` serialises the writers, so the
-        re-read sees the other writer's committed key).
-
-        ``also_set`` writes sibling **model fields** (``state``,
-        ``repos``, ``variant``, …) in the SAME locked ``UPDATE`` as
-        ``extra``. The tracker-sync paths legitimately co-write
-        ``extra`` with ``state``/``repos`` in one ``save`` — routing
-        them through here keeps that write atomic (no split into two
-        non-atomic writes) while still going through the single locked
-        primitive, so the SSOT holds with zero unlocked ``extra`` RMW
-        anywhere.
-        """
-        with transaction.atomic():
-            locked = type(self).objects.select_for_update().get(pk=self.pk)
-            merged = dict(locked.extra or {})
-            if set_keys:
-                merged.update(set_keys)
-            for key in pop_keys or []:
-                merged.pop(key, None)
-            self.extra = merged
-            for field, value in (also_set or {}).items():
-                setattr(self, field, value)
-            type(self).objects.filter(pk=self.pk).update(extra=merged, **(also_set or {}))
-
-    def record_review_skill_run(self, skill: str) -> None:
-        """Stamp durable evidence that the deep-review ``skill`` ran (#1539).
-
-        Written through the canonical locked ``merge_extra`` primitive so a
-        concurrent ``extra`` writer's key survives. The timestamp is UTC ISO
-        so the reviewing-phase gate's audit trail is timezone-unambiguous.
-        """
-        run: ReviewSkillRun = {"skill": skill, "at": timezone.now().isoformat()}
-        self.merge_extra(set_keys={"review_skill_run": run})
-
-    def record_review_context(self, work_item: str, documents: list[str], analysis: str) -> None:
-        """Stamp durable evidence the referenced context was retrieved + analyzed.
-
-        Reviewing carries the same responsibility as implementing: the
-        ``-> reviewing`` deep-retrieval gate (``teatree.core.gates.review_context_gate``)
-        reads this to refuse a verdict formed from the diff alone. ``work_item``
-        is the fetched ticket / work-item source, ``documents`` the downloaded
-        references, ``analysis`` how the implementation was checked against the
-        specified requirements. Written through the canonical locked
-        ``merge_extra`` primitive so a concurrent ``extra`` writer's key
-        survives; the timestamp is UTC ISO.
-        """
-        context: ReviewContext = {
-            "work_item": work_item,
-            "documents": list(documents),
-            "analysis": analysis,
-            "at": timezone.now().isoformat(),
-        }
-        self.merge_extra(set_keys={"review_context": context})
-
-    def record_anti_vacuity_attestation(
-        self,
-        head_sha: str,
-        ac_coverage: str,
-        proven_tests: list[str],
-        *,
-        no_new_tests: bool = False,
-    ) -> None:
-        """Stamp the SHA-bound anti-vacuity attestation backing review-request/merge (#1829).
-
-        ``head_sha`` binds the attestation to the exact tree the maker
-        self-reviewed; the anti-vacuity gate (``teatree.core.gates.anti_vacuity_gate``)
-        drops it when the live head moves. ``ac_coverage`` records how the diff
-        was mapped to the acceptance criteria. ``proven_tests`` lists every new
-        regression test proven anti-vacuous (revert fix -> RED); ``no_new_tests``
-        is the explicit "this diff adds no new regression test" claim so an
-        empty ``proven_tests`` can never silently pass. Written through the
-        canonical locked ``merge_extra`` primitive so a concurrent ``extra``
-        writer's key survives; the timestamp is UTC ISO.
-        """
-        attestation: AntiVacuityAttestation = {
-            "head_sha": head_sha.strip().lower(),
-            "ac_coverage": ac_coverage,
-            "proven_tests": list(proven_tests),
-            "no_new_tests": no_new_tests,
-            "at": timezone.now().isoformat(),
-        }
-        self.merge_extra(set_keys={"anti_vacuity_attestation": attestation})
-
-    def review_context_satisfied(self) -> bool:
-        """Whether the ``-> reviewing`` deep-retrieval precondition is met.
-
-        An FSM ``condition`` on ``review()``: the ``TESTED -> REVIEWED``
-        transition is mechanically refused (``TransitionNotAllowed``) when
-        ``require_review_context`` is on and no complete ``review_context``
-        artifact is recorded — so a verdict from the diff alone cannot advance
-        the FSM regardless of entry path. NO-OP (returns ``True``) when the knob
-        is off (opt-in default preserved).
-        """
-        return bool(get_gate("review_context_satisfied")(self))
-
-    def append_context(self, entry: str) -> str:
-        r"""Append a timestamped block to the durable per-ticket knowledge store (#627).
-
-        ``context`` is append-only: parallel sessions on the same ticket each
-        add their own ``\n\n[YYYY-MM-DD HH:MM] …`` block rather than
-        overwriting, so a later session never loses an earlier one's note
-        (open question 2 — append-only with timestamp prefixes). Returns the
-        full updated context. Refuses a blank entry — an empty note carries no
-        durable knowledge and would just add noise.
-        """
-        text = entry.strip()
-        if not text:
-            msg = "context entry is empty"
-            raise ValueError(msg)
-        stamp = timezone.localtime().strftime("%Y-%m-%d %H:%M")
-        with transaction.atomic():
-            locked = type(self).objects.select_for_update().get(pk=self.pk)
-            updated = f"{locked.context}\n\n[{stamp}] {text}"
-            self.context = updated
-            type(self).objects.filter(pk=self.pk).update(context=updated)
-        return updated
