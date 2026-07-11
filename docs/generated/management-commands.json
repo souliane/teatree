@@ -1060,6 +1060,14 @@
           "name": "comment"
         },
         {
+          "help": "Check post-ship tickets against upstream issues and advance completed ones",
+          "name": "sync-completions"
+        },
+        {
+          "help": "Backfill ``overlay`` for rows whose attribution disagrees with inference",
+          "name": "reconcile-overlay"
+        },
+        {
           "help": "Close (``ignore``) a batch of tickets, gated by the no-bulk-close guard (PR-08)",
           "name": "bulk-close"
         },
@@ -1106,14 +1114,6 @@
         {
           "help": "List tickets, optionally filtered by state and/or overlay",
           "name": "list"
-        },
-        {
-          "help": "Check post-ship tickets against upstream issues and advance completed ones",
-          "name": "sync-completions"
-        },
-        {
-          "help": "Backfill ``overlay`` for rows whose attribution disagrees with inference",
-          "name": "reconcile-overlay"
         }
       ]
     },

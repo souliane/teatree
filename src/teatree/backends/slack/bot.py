@@ -41,15 +41,14 @@ re-probed on the next call so a transient failure that recovers
 resolves correctly.
 """
 
-import threading
-from pathlib import Path
 from typing import cast
 
-from teatree.backends.slack.bot_errors import GLOBAL_TOKEN_FAILURES as _GLOBAL_TOKEN_FAILURES
+from teatree.backends.slack.audio_upload import AudioDmRequest, upload_audio_dm
 from teatree.backends.slack.dm_history import read_single_message, read_thread_replies, read_user_dms
 from teatree.backends.slack.http import SlackHttpClient
+from teatree.backends.slack.inbound import SlackInbound
 from teatree.backends.slack.react_errors import SingleEmojiBodyRefusedError, is_single_emoji_body
-from teatree.backends.slack.scopes import OAUTH_SCOPES_HEADER, attach_granted_scopes
+from teatree.backends.slack.routing import is_self_dm, select_routed_token
 from teatree.backends.slack.self_identity import OwnSlackIdentity, resolve_own_identity, strip_self_audio_attachments
 from teatree.backends.slack.token_policy import SlackOp, channel_token
 from teatree.backends.slack.token_validation import (
@@ -59,10 +58,13 @@ from teatree.backends.slack.token_validation import (
     assert_user_token,
     resolve_user_token_or_degrade,
 )
-from teatree.backends.slack.upload_response import shared_message_ts
 from teatree.backends.slack.voice_classifier import ClassifierMode as VoiceClassifierMode
 from teatree.backends.slack.voice_classifier import SlackVoiceMismatchError, VoiceTokenGate
-from teatree.types import RawAPIDict, ScannerError
+from teatree.backends.slack.web_ops import join_conversation as join_slack_conversation
+from teatree.backends.slack.web_ops import read_permalink, run_auth_test
+from teatree.backends.slack.web_reads import read_channel_history, read_reactions
+from teatree.backends.slack.web_reads import resolve_user_id as resolve_slack_user_id
+from teatree.types import RawAPIDict
 
 __all__ = [
     "SingleEmojiBodyRefusedError",
@@ -75,80 +77,6 @@ __all__ = [
 
 
 type SlackPayload = dict[str, object]
-
-
-class _TickFanoutQueue:
-    """Thread-safe inbound event buffer read non-destructively within a tick.
-
-    The Socket Mode receiver calls :meth:`enqueue`; every scanner that
-    shares one backend calls :meth:`snapshot` in the same tick. A
-    destructive drain would let whichever scanner runs first consume the
-    batch and leave the others with nothing — for DMs and reactions that
-    means the RED CARD scanner falls back to degraded polling and can miss
-    a real signal (#1655). :meth:`snapshot` instead returns a copy, so each
-    of the concurrently-scheduled scanners observes the same events.
-
-    The defined clear point is the first :meth:`enqueue` after any
-    :meth:`snapshot`: a fresh event begins a new tick's batch and drops the
-    already-served one, bounding the buffer at one tick's worth of events.
-    Re-serving the same batch across consecutive no-arrival ticks is
-    idempotent — the consuming scanners dedup on Slack ``ts`` / ``event_ts``
-    in their persistence layer.
-    """
-
-    def __init__(self) -> None:
-        self._events: list[RawAPIDict] = []
-        self._served = False
-        self._lock = threading.Lock()
-
-    def enqueue(self, event: RawAPIDict) -> None:
-        with self._lock:
-            if self._served:
-                self._events = []
-                self._served = False
-            self._events.append(event)
-
-    def snapshot(self) -> list[RawAPIDict]:
-        with self._lock:
-            self._served = True
-            return list(self._events)
-
-
-class _SlackInbound:
-    """Socket Mode inbound ingestion for one backend.
-
-    The Phase 3.6 Socket Mode receiver pushes ``app_mention`` /
-    ``message.im`` / ``reaction_added`` events through :meth:`enqueue_mention`
-    / :meth:`enqueue_dm` / :meth:`enqueue_reaction`; the loop scanners read
-    each per-tick batch through :meth:`snapshot_mentions` / :meth:`snapshot_dms`
-    / :meth:`snapshot_reactions`. Reads are non-destructive within a tick so
-    the scanners that share one backend each observe the same batch (#1655).
-    Bundling the three queues and their ingestion behind one collaborator
-    keeps the inbound concern out of the outbound messaging surface.
-    """
-
-    def __init__(self) -> None:
-        self._mentions = _TickFanoutQueue()
-        self._dms = _TickFanoutQueue()
-        self._reactions = _TickFanoutQueue()
-
-    def enqueue_mention(self, event: RawAPIDict) -> None:
-        self._mentions.enqueue(event)
-
-    def enqueue_dm(self, event: RawAPIDict) -> None:
-        self._dms.enqueue(event)
-
-    def enqueue_reaction(self, event: RawAPIDict) -> None:
-        self._reactions.enqueue(event)
-
-    def snapshot_mentions(self) -> list[RawAPIDict]:
-        return self._mentions.snapshot()
-
-    def snapshot_dms(self) -> list[RawAPIDict]:
-        return self._dms.snapshot()
-
-    def snapshot_reactions(self) -> list[RawAPIDict]:
-        return self._reactions.snapshot()
 
 
 # ast-grep-ignore: ac-django-no-complexity-suppressions
@@ -226,7 +154,7 @@ class SlackBotBackend:  # noqa: PLR0904 — method count reflects the MessagingB
         # ``inbound.enqueue_reaction``. Reads are non-destructive within a
         # tick so the three scanners that share one backend each see the same
         # batch (#1655).
-        self._inbound = _SlackInbound()
+        self._inbound = SlackInbound()
 
     @property
     def app_token(self) -> str:
@@ -261,7 +189,7 @@ class SlackBotBackend:  # noqa: PLR0904 — method count reflects the MessagingB
         return self._channel_token(channel, op=SlackOp.WRITE)
 
     @property
-    def inbound(self) -> _SlackInbound:
+    def inbound(self) -> SlackInbound:
         """Socket Mode ingestion surface (#1655).
 
         The receiver pushes events via ``inbound.enqueue_mention`` /
@@ -471,37 +399,8 @@ class SlackBotBackend:  # noqa: PLR0904 — method count reflects the MessagingB
         if not channel:
             return []
         token = self._channel_token(channel, op=SlackOp.WRITE)
-        data = self._get(
-            "conversations.history",
-            {"channel": channel, "limit": max(1, min(limit, 200))},
-            token=token,
-        )
-        if not data.get("ok"):
-            error_code = str(data.get("error", ""))
-            # Global token failures (auth / missing scope / rate limit /
-            # deactivated) suppress every Slack scan — raise so the
-            # dispatcher records the error and DMs the user (#1287).
-            # Channel-scoped failures (``channel_not_found``,
-            # ``not_in_channel``, ``is_archived``) stay quiet per the
-            # #1255 "one slow channel never breaks the scan loop" design.
-            if error_code in _GLOBAL_TOKEN_FAILURES:
-                raise ScannerError(
-                    scanner="slack_broadcasts",
-                    error_class=_GLOBAL_TOKEN_FAILURES[error_code],
-                    detail=f"conversations.history on {channel}: {error_code}",
-                )
-            return []
-        messages = data.get("messages")
-        if not isinstance(messages, list):
-            return []
-        out: list[RawAPIDict] = []
-        for msg in messages:
-            if not isinstance(msg, dict):
-                continue
-            entry = cast("RawAPIDict", msg)
-            entry.setdefault("channel", channel)
-            out.append(entry)
-        return self._strip_own_tts_audio(out)
+        messages = read_channel_history(get=self._get, channel=channel, token=token, limit=limit)
+        return self._strip_own_tts_audio(messages)
 
     def _own_identity(self) -> OwnSlackIdentity | None:
         """The bot's own ``(user_id, bot_id)``, resolved once via ``auth.test``.
@@ -530,22 +429,10 @@ class SlackBotBackend:  # noqa: PLR0904 — method count reflects the MessagingB
         return strip_self_audio_attachments(messages, self._own_identity())
 
     def auth_test(self) -> RawAPIDict:
-        """Return the ``auth.test`` body with granted scopes from the ``X-OAuth-Scopes`` header.
-
-        Slack reports the token's scopes in the response header, not the JSON
-        body; they are attached under :data:`GRANTED_SCOPES_KEY` (native keys
-        untouched) so a connector-preflight scope guard can read them. ``{}``
-        when no bot token is configured.
-        """
+        """Return the ``auth.test`` body with granted scopes; ``{}`` when no bot token is configured."""
         if not self._bot_token:
             return {}
-        body, scopes_header = self._http.post_with_header(
-            "auth.test",
-            token=self._bot_token,
-            json={},
-            header=OAUTH_SCOPES_HEADER,
-        )
-        return attach_granted_scopes(body, scopes_header)
+        return run_auth_test(self._http, self._bot_token)
 
     def post_message(
         self,
@@ -578,44 +465,18 @@ class SlackBotBackend:  # noqa: PLR0904 — method count reflects the MessagingB
         )
 
     def _is_self_dm(self, channel: str) -> bool:
-        """True when *channel* is the configured user's own DM (#1750).
-
-        The single deterministic destination test for the #1750 routing
-        rule. The user's own IM is the channel id provisioned at
-        ``t3 setup`` time (:attr:`_dm_channel_id`), or — when an ``open_dm``
-        has not yet been resolved — the user's own ``U…`` id, which Slack
-        accepts as a ``chat.postMessage`` target that opens/uses the
-        self-IM. A *colleague's* DM is a different ``D…`` id and is
-        therefore NOT a self-DM, so it routes to ``xoxp`` like any other
-        non-self surface.
-        """
-        if not channel:
-            return False
-        if self._dm_channel_id and channel == self._dm_channel_id:
-            return True
-        return bool(self._user_id) and channel == self._user_id
+        """True when *channel* is the configured user's own DM (#1750)."""
+        return is_self_dm(channel, dm_channel_id=self._dm_channel_id, user_id=self._user_id)
 
     def _route_token(self, channel: str) -> str:
-        """The token a #1750-routed post/react to *channel* goes out under.
-
-        The single, deterministic destination router shared by
-        :meth:`post_routed` and :meth:`react_routed` (reacting follows the
-        same rule as posting). A private message *to the user* — the user's
-        own DM — goes through the per-overlay **bot** (``xoxb``); a message
-        or reaction to a *colleague* or a *channel* goes out under the
-        user's personal **OAuth** (``xoxp``) token. Distinct from
-        :meth:`_channel_token`, which is the Connect-membership policy that
-        keeps confirmed-internal channels (and *all* ``D…`` DMs) on the
-        bot — that policy cannot tell a colleague DM from the self DM,
-        which is exactly the distinction #1750 turns on.
-
-        Falls back to whichever single credential is configured when the
-        other is absent, so a bot-only or user-only deployment still has a
-        usable token.
-        """
-        if self._is_self_dm(channel):
-            return self._bot_token or self._user_token
-        return self._user_token or self._bot_token
+        """The token a #1750-routed post/react to *channel* goes out under (self-DM→bot, else→xoxp)."""
+        return select_routed_token(
+            channel,
+            dm_channel_id=self._dm_channel_id,
+            user_id=self._user_id,
+            bot_token=self._bot_token,
+            user_token=self._user_token,
+        )
 
     def route_token(self, channel: str) -> str:
         """Public accessor over the #1750 destination router (self-DM→bot, else→xoxp).
@@ -673,28 +534,12 @@ class SlackBotBackend:  # noqa: PLR0904 — method count reflects the MessagingB
         return channel_id if isinstance(channel_id, str) else ""
 
     def join_conversation(self, channel: str) -> RawAPIDict:
-        """Join the bot to a public channel via ``conversations.join`` (bot token).
-
-        Returns the raw Slack body. ``ok:true`` is returned both on a fresh
-        join and when the bot is already a member (Slack sets
-        ``already_in_channel``), so callers treat the call as idempotent. A
-        private or Slack-Connect channel rejects a self-join with an error in
-        the body; the setup-time channel provisioner maps that to a clean
-        "invite the bot manually" instruction rather than failing.
-        """
-        if not channel:
-            return {}
-        return self._post("conversations.join", {"channel": channel})
+        """Join the bot to a public channel via ``conversations.join`` (bot token)."""
+        return join_slack_conversation(self._post, channel)
 
     def get_permalink(self, *, channel: str, ts: str) -> str:
         """Return the archive permalink for ``(channel, ts)`` or ``""``."""
-        if not channel or not ts:
-            return ""
-        data = self._get("chat.getPermalink", {"channel": channel, "message_ts": ts})
-        if not data.get("ok"):
-            return ""
-        permalink = data.get("permalink", "")
-        return permalink if isinstance(permalink, str) else ""
+        return read_permalink(self._get, channel, ts)
 
     def post_audio_dm(
         self,
@@ -722,80 +567,21 @@ class SlackBotBackend:  # noqa: PLR0904 — method count reflects the MessagingB
         token = self._route_token(channel)
         if not token or not channel:
             return {}
-        path = Path(filepath)
-        try:
-            content = path.read_bytes()
-        except OSError:
-            return {}
-        reserve = self._get(
-            "files.getUploadURLExternal",
-            {"filename": path.name, "length": len(content)},
+        return upload_audio_dm(
+            http=self._http,
             token=token,
+            request=AudioDmRequest(channel=channel, filepath=filepath, text=text, thread_ts=thread_ts, title=title),
         )
-        if not reserve.get("ok"):
-            return reserve
-        upload_url = reserve.get("upload_url")
-        file_id = reserve.get("file_id")
-        if not isinstance(upload_url, str) or not isinstance(file_id, str):
-            return reserve
-        self._http.post_external(upload_url, content=content)
-        file_entry: RawAPIDict = {"id": file_id}
-        if title:
-            file_entry["title"] = title
-        payload: RawAPIDict = {"files": [file_entry], "channel_id": channel, "initial_comment": text}
-        if thread_ts:
-            payload["thread_ts"] = thread_ts
-        body = self._post("files.completeUploadExternal", payload, token=token, idempotent=False)
-        if shared_ts := shared_message_ts(body, channel=channel):
-            body["ts"] = shared_ts
-        return body
 
     def get_reactions(self, *, channel: str, ts: str) -> list[str]:
         """Return the emoji names currently set on a message."""
-        data = self._get(
-            "reactions.get",
-            {"channel": channel, "timestamp": ts},
+        return read_reactions(
+            get=self._get,
+            channel=channel,
+            ts=ts,
             token=self._channel_token(channel, op=SlackOp.WRITE),
         )
-        if not data.get("ok"):
-            return []
-        message = cast("RawAPIDict", data.get("message") or {})
-        reactions = message.get("reactions")
-        if not isinstance(reactions, list):
-            return []
-        names: list[str] = []
-        for raw_reaction in reactions:
-            if not isinstance(raw_reaction, dict):
-                continue
-            reaction = cast("RawAPIDict", raw_reaction)
-            name = reaction.get("name")
-            if isinstance(name, str):
-                names.append(name)
-        return names
 
     def resolve_user_id(self, handle: str) -> str:
         """Look up a Slack user id from a handle (``@alice`` or ``alice``)."""
-        clean = handle.lstrip("@")
-        if not clean:
-            return ""
-        data = self._get("users.lookupByEmail", {"email": clean}) if "@" in clean else {}
-        if data.get("ok"):
-            user = cast("RawAPIDict", data.get("user") or {})
-            user_id = user.get("id")
-            if isinstance(user_id, str):
-                return user_id
-        # Fallback: list users and match by name. Cheap for personal workspaces;
-        # the loop scanners cache the result via ``functools.lru_cache`` upstream.
-        listing = self._get("users.list", {"limit": 200})
-        members = listing.get("members")
-        if not isinstance(members, list):
-            return ""
-        for raw_member in members:
-            if not isinstance(raw_member, dict):
-                continue
-            member = cast("RawAPIDict", raw_member)
-            if member.get("name") == clean or member.get("real_name") == clean:
-                user_id = member.get("id")
-                if isinstance(user_id, str):
-                    return user_id
-        return ""
+        return resolve_slack_user_id(get=self._get, handle=handle)
