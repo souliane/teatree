@@ -25,6 +25,7 @@ deliberately simpler:
     ``architectural_review``).
 """
 
+import datetime as dt
 import logging
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, cast
@@ -34,7 +35,7 @@ from django.db import transaction
 from django.db.models import Max
 from django.utils import timezone
 
-from teatree.loop.scanners.base import ScanSignal
+from teatree.loop.scanners.base import ScanSignal, hours_since
 
 if TYPE_CHECKING:
     from teatree.core.models import Session as _Session
@@ -124,7 +125,7 @@ class ScanningNewsScanner:
             status__in=_IN_FLIGHT_TASK_STATES,
         ).exists()
 
-    def _last_run_at(self) -> object:
+    def _last_run_at(self) -> dt.datetime | None:
         """Return the most recent task's Session.started_at, or None.
 
         ``None`` when no prior scanning-news task has been recorded — the
@@ -139,16 +140,11 @@ class ScanningNewsScanner:
         ).aggregate(ts=Max("session__started_at"))
         return aggregate["ts"]
 
-    def _evaluate_trigger(self, *, now: object, last_run_at: object) -> str | None:
+    def _evaluate_trigger(self, *, now: dt.datetime, last_run_at: dt.datetime | None) -> str | None:
         """Return the trigger name (``bootstrap`` / ``cadence``) or None."""
         if last_run_at is None:
             return "bootstrap"
-        # ``now`` and ``last_run_at`` are ``datetime``s in practice;
-        # typed as ``object`` here to stay decoupled from ``Max()``'s
-        # return shape on the type checker. The subtraction is what
-        # matters, not the static type.
-        elapsed_hours = (now - last_run_at).total_seconds() / 3600.0  # type: ignore[operator]
-        if elapsed_hours >= self.cadence_hours:
+        if hours_since(last_run_at, now=now) >= self.cadence_hours:
             return "cadence"
         return None
 

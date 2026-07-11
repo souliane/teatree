@@ -52,7 +52,14 @@ class TestInlinedSeedMatchesCanonicalSeed:
             )
             for spec in DEFAULT_LOOPS
         )
-        assert expected == _migration._DEFAULT_LOOPS
+        assert expected == _migration._DEFAULT_LOOPS, (
+            "Default-loops dataset drifted. The canonical set lives in THREE places that must "
+            "stay in lock-step — edit all three:\n"
+            "  1. src/teatree/loops/seed.py            (DEFAULT_LOOPS — the canonical source)\n"
+            "  2. src/teatree/core/migrations/0001_initial.py  (_DEFAULT_LOOPS — inlined, frozen history)\n"
+            "  3. this pin (tests/teatree_core/test_initial_migration_seed.py) + the "
+            "registry-parity pin (tests/conformance/test_registry_parity.py)"
+        )
 
     def test_inlined_arch_review_body_matches_the_canonical_body(self) -> None:
         assert _migration._ARCH_REVIEW_PROMPT_BODY == ARCH_REVIEW_PROMPT_BODY

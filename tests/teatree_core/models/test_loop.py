@@ -8,6 +8,7 @@ one-time seed of the autonomous loop set. Integration-first against the real DB;
 """
 
 import datetime as dt
+from unittest.mock import patch
 
 import pytest
 from django.core.exceptions import ValidationError
@@ -138,6 +139,32 @@ class TestLoopPromptScriptXor(TestCase):
         with pytest.raises(IntegrityError), transaction.atomic():
             Loop.objects.create(name="demo-script-no-delay-db", delay_seconds=None, prompt=None, script="run.py")
 
+    def test_clean_and_db_constraints_reject_the_same_shapes(self) -> None:
+        """``clean()`` and the two ``CheckConstraint``s are one predicate in two idioms.
+
+        The model expresses the prompt-XOR-script and script-requires-delay rules
+        twice — Python ``clean()`` (the ``full_clean`` path) and DB
+        ``CheckConstraint``s in a different idiom — so they can silently drift. This
+        pins that they AGREE: every invalid shape one gate rejects, the other
+        rejects too (else a row could pass one and fail the far one), and a valid
+        shape passes BOTH (anti-vacuity — the rejections are of real invalidity).
+        """
+        invalid_shapes = (
+            ("both", True, "run.py", 60),  # prompt AND script → XOR violated
+            ("neither", False, "", 60),  # prompt NOR script → XOR violated
+            ("script-no-delay", False, "run.py", None),  # script but no interval
+        )
+        for label, with_prompt, script, delay in invalid_shapes:
+            prompt = _prompt(f"p-agree-{label}") if with_prompt else None
+            fields = {"script": script, "delay_seconds": delay, "prompt": prompt}
+            with pytest.raises(ValidationError):
+                Loop(name=f"demo-clean-{label}", **fields).full_clean()
+            with pytest.raises(IntegrityError), transaction.atomic():
+                Loop.objects.create(name=f"demo-db-{label}", **fields)
+        valid = {"script": "run.py", "delay_seconds": 60, "prompt": None}
+        Loop(name="demo-agree-ok-clean", **valid).full_clean()
+        Loop.objects.create(name="demo-agree-ok-db", **valid)
+
 
 class TestLoopIntervalCadence(TestCase):
     def test_never_run_loop_is_due_no_age_no_next(self) -> None:
@@ -196,6 +223,49 @@ class TestLoopDailyCadence(TestCase):
     def test_next_run_at_returns_a_datetime(self) -> None:
         loop = Loop.objects.create(name="demo-daily", delay_seconds=86400, prompt=_prompt(), daily_at=dt.time(8, 0))
         assert loop.next_run_at() is not None
+
+
+@override_settings(USE_TZ=True, TIME_ZONE="Europe/Vienna")
+class TestLoopDailyCadenceDstSafe(TestCase):
+    """The daily slot's offset comes from the zone rules, not from *now* (DST).
+
+    ``next_run_at`` for a daily loop must resolve ``daily_at``'s wall-clock at the
+    slot's OWN instant. Building it by mutating *now* (``now_local.replace(hour=…)``)
+    carries *now*'s UTC offset and DST ``fold`` onto the target, so during the
+    fall-back overlap — when *now* itself sits on the ``fold=1`` side — the
+    ambiguous slot resolves to the SECOND (one-hour-late) occurrence. The DST-safe
+    slot is the FIRST (earlier) occurrence, the sooner "next" firing. With the
+    project default ``TIME_ZONE="UTC"`` there is no transition and nothing changes;
+    this pins the behaviour for a non-UTC install.
+    """
+
+    def test_ambiguous_fall_back_slot_takes_the_earlier_occurrence(self) -> None:
+        # Europe/Vienna fall-back 2026-10-25: 03:00 local → 02:00 local, so
+        # 02:00-02:59 is ambiguous (+02:00 first pass, +01:00 second pass).
+        loop = Loop.objects.create(name="demo-dst", delay_seconds=86400, prompt=_prompt(), daily_at=dt.time(2, 45))
+        # now = 01:30 UTC → Vienna 02:30 fold=1 (second pass); 02:30 < 02:45, so
+        # the slot is today's 02:45 wall-clock.
+        now = dt.datetime(2026, 10, 25, 1, 30, tzinfo=dt.UTC)
+        with patch("teatree.core.models.loop.timezone.now", return_value=now):
+            slot = loop.next_run_at()
+        assert slot is not None
+        # DST-safe: 02:45 +02:00 (first occurrence) = 00:45 UTC. The mutate-now
+        # bug would carry now's fold=1 offset (+01:00) → 01:45 UTC.
+        assert slot.astimezone(dt.UTC) == dt.datetime(2026, 10, 25, 0, 45, tzinfo=dt.UTC)
+
+    def test_next_slot_rolls_to_tomorrows_wall_clock_not_plus_24h(self) -> None:
+        # After the slot has passed today, the next firing is TOMORROW at the same
+        # wall-clock — resolved on tomorrow's date, not now + a rigid 24h that would
+        # drift by the transition hour across a DST boundary. 08:00 is unambiguous
+        # on both sides, so the assertion is a clean wall-clock identity.
+        loop = Loop.objects.create(name="demo-dst-roll", delay_seconds=86400, prompt=_prompt(), daily_at=dt.time(8, 0))
+        # now = 2026-10-25 10:00 Vienna (after 08:00, standard time +01:00 post-fallback).
+        now = dt.datetime(2026, 10, 25, 9, 0, tzinfo=dt.UTC)  # 10:00 Vienna
+        with patch("teatree.core.models.loop.timezone.now", return_value=now):
+            slot = loop.next_run_at()
+        assert slot is not None
+        assert timezone.localtime(slot).date() == dt.date(2026, 10, 26)
+        assert timezone.localtime(slot).time() == dt.time(8, 0)
 
 
 class TestLoopManager(TestCase):

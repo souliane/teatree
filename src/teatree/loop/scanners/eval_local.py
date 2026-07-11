@@ -27,6 +27,7 @@ The scanner mirrors :mod:`teatree.loop.scanners.scanning_news`:
     long-running suite never blocks the tick.
 """
 
+import datetime as dt
 import logging
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, cast
@@ -36,7 +37,7 @@ from django.db import transaction
 from django.db.models import Max
 from django.utils import timezone
 
-from teatree.loop.scanners.base import ScanSignal
+from teatree.loop.scanners.base import ScanSignal, hours_since
 
 if TYPE_CHECKING:
     from teatree.core.models import Session as _Session
@@ -107,7 +108,7 @@ class EvalLocalScanner:
             status__in=_IN_FLIGHT_TASK_STATES,
         ).exists()
 
-    def _last_run_at(self) -> object:
+    def _last_run_at(self) -> dt.datetime | None:
         task_model = _task_model()
         if task_model is None:
             return None
@@ -117,11 +118,10 @@ class EvalLocalScanner:
         ).aggregate(ts=Max("session__started_at"))
         return aggregate["ts"]
 
-    def _evaluate_trigger(self, *, now: object, last_run_at: object) -> str | None:
+    def _evaluate_trigger(self, *, now: dt.datetime, last_run_at: dt.datetime | None) -> str | None:
         if last_run_at is None:
             return "bootstrap"
-        elapsed_hours = (now - last_run_at).total_seconds() / 3600.0  # type: ignore[operator]
-        if elapsed_hours >= self.cadence_hours:
+        if hours_since(last_run_at, now=now) >= self.cadence_hours:
             return "cadence"
         return None
 
