@@ -35,6 +35,7 @@ from django.test import TestCase
 from teatree.core.merge import MergePreconditionError, assert_merge_preconditions, merge_ticket_pr, resolve_pr_repo_slug
 from teatree.core.merge.authorization import assert_review_verdict_gate
 from teatree.core.models import ConfigSetting, MergeAudit, MergeClear, ReviewVerdict, Ticket
+from teatree.utils.pr_ref import PrRef
 from tests.teatree_core.conftest import seed_merge_safe_verdict
 
 # ast-grep-ignore: ac-django-no-pytest-django-db
@@ -673,8 +674,7 @@ def _assert_preconditions(clear: MergeClear, *, human_authorized: str = "", slug
         return assert_merge_preconditions(
             clear=clear,
             executing_loop_identity="merge-loop",
-            slug=clear.slug if slug is None else slug,
-            pr_id=clear.pr_id,
+            ref=PrRef(slug=clear.slug if slug is None else slug, pr_id=clear.pr_id),
             human_authorized=human_authorized,
         )
 
@@ -803,8 +803,7 @@ class TestFullAutonomySubstrateIsHeldAndPingedNotAutoMerged(TestCase):
             assert_merge_preconditions(
                 clear=clear,
                 executing_loop_identity="merge-loop",
-                slug=clear.slug,
-                pr_id=clear.pr_id,
+                ref=PrRef(slug=clear.slug, pr_id=clear.pr_id),
             )
 
     def test_full_on_other_overlay_does_not_leak(self) -> None:

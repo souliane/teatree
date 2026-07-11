@@ -100,7 +100,7 @@ class TestForgeConfirmsMerged(TestCase):
         ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.IN_REVIEW)
         _pr_for(ticket)
         with patch(
-            "teatree.core.gates.merge_evidence_gate.fetch_pr_merge_state", return_value=_pr_merge_state(merged=True)
+            "teatree.core.merge.ci_rollup.CodeHostQuery.pr_merge_state", return_value=_pr_merge_state(merged=True)
         ):
             assert forge_confirms_merged(ticket) is True
 
@@ -108,7 +108,7 @@ class TestForgeConfirmsMerged(TestCase):
         ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.IN_REVIEW)
         _pr_for(ticket)
         with patch(
-            "teatree.core.gates.merge_evidence_gate.fetch_pr_merge_state", return_value=_pr_merge_state(merged=False)
+            "teatree.core.merge.ci_rollup.CodeHostQuery.pr_merge_state", return_value=_pr_merge_state(merged=False)
         ):
             assert forge_confirms_merged(ticket) is False
 
@@ -116,9 +116,7 @@ class TestForgeConfirmsMerged(TestCase):
         """An unreachable / erroring probe is inconclusive → no evidence (never mistaken for merged)."""
         ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.IN_REVIEW)
         _pr_for(ticket)
-        with patch(
-            "teatree.core.gates.merge_evidence_gate.fetch_pr_merge_state", side_effect=RuntimeError("forge down")
-        ):
+        with patch("teatree.core.merge.ci_rollup.CodeHostQuery.pr_merge_state", side_effect=RuntimeError("forge down")):
             assert forge_confirms_merged(ticket) is False
 
     def test_false_without_any_pr_rows(self) -> None:
@@ -135,11 +133,13 @@ class TestForgeConfirmsMerged(TestCase):
             overlay="t3-teatree",
         )
         with patch(
-            "teatree.core.gates.merge_evidence_gate.fetch_pr_merge_state",
+            "teatree.core.merge.ci_rollup.CodeHostQuery.pr_merge_state",
+            autospec=True,
             return_value=_pr_merge_state(merged=True),
         ) as probe:
             forge_confirms_merged(ticket)
-        assert probe.call_args.kwargs["host_kind"] == "gitlab"
+        # The query was bound to the GitLab transport (the ``self`` the method ran on).
+        assert probe.call_args.args[0].ref.host_kind == "gitlab"
 
 
 class TestCheckMergeEvidence(TestCase):
@@ -168,7 +168,7 @@ class TestCheckMergeEvidence(TestCase):
         with (
             _gate(required=True),
             patch(
-                "teatree.core.gates.merge_evidence_gate.fetch_pr_merge_state", return_value=_pr_merge_state(merged=True)
+                "teatree.core.merge.ci_rollup.CodeHostQuery.pr_merge_state", return_value=_pr_merge_state(merged=True)
             ),
         ):
             check_merge_evidence(ticket)  # no raise
@@ -178,9 +178,7 @@ class TestCheckMergeEvidence(TestCase):
         _pr_for(ticket)
         with (
             _gate(required=True),
-            patch(
-                "teatree.core.gates.merge_evidence_gate.fetch_pr_merge_state", side_effect=RuntimeError("forge down")
-            ),
+            patch("teatree.core.merge.ci_rollup.CodeHostQuery.pr_merge_state", side_effect=RuntimeError("forge down")),
             pytest.raises(NoMergeEvidenceError),
         ):
             check_merge_evidence(ticket)
@@ -223,7 +221,7 @@ class TestMergeEvidenceFsmGate(TestCase):
         with (
             _gate(required=True),
             patch(
-                "teatree.core.gates.merge_evidence_gate.fetch_pr_merge_state", return_value=_pr_merge_state(merged=True)
+                "teatree.core.merge.ci_rollup.CodeHostQuery.pr_merge_state", return_value=_pr_merge_state(merged=True)
             ),
             self.captureOnCommitCallbacks(execute=False),
         ):

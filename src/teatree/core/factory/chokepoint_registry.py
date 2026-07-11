@@ -148,6 +148,21 @@ MERGE_KEYSTONE = GuardedChokepoint(
             callable_path="teatree.core.merge.authorization.assert_no_active_review_lock",
             purpose="No review is concurrently in flight for the MR (#1405).",
         ),
+        GateSpec(
+            name="merge_quality",
+            callable_path="teatree.core.gates.merge_quality_gate.assert_merge_quality_verdict",
+            purpose="A clean recorded merge-quality verdict covers the shipped head (north-star PR-4).",
+        ),
+        GateSpec(
+            name="not_draft",
+            callable_path="teatree.core.merge.execution.assert_not_draft",
+            purpose="The PR/MR is not in draft state at the live head (§17.4.3 step 4).",
+        ),
+        GateSpec(
+            name="ci_verdict",
+            callable_path="teatree.core.merge.execution.assert_ci_not_failed",
+            purpose="The live required-checks verdict is not FAILED — expedite can never waive it (§17.4.3 step 3).",
+        ),
     ),
 )
 

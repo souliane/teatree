@@ -170,7 +170,7 @@ def _red_pr_keys() -> tuple[set[tuple[str, int]], dict[tuple[str, int], set[str]
         slug = normalize_repo_slug(ref.slug)
         if not slug:
             continue
-        key = (slug, ref.number)
+        key = (slug, ref.pr_id)
         keys.add(key)
         heads[key].add(row.head_sha)
     return keys, heads

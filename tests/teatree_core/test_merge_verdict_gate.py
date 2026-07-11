@@ -242,13 +242,13 @@ class TestSoloOverlayPathHonoursNewestWins(TestCase):
     def _internal_repo(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setattr("teatree.core.review.author_trust.repo_is_internal", lambda *a, **k: True)
         monkeypatch.setattr(
-            "teatree.loop.scanners.pr_sweep_substrate.fetch_pr_changed_paths",
+            "teatree.core.merge.ci_rollup.CodeHostQuery.pr_changed_paths",
             lambda *a, **k: ["src/teatree/loop/scanners/pr_sweep.py"],
         )
         # #12: the sweep's CI gate reads the branch-protection required set; the
         # ``_solo_pr`` rollup carries a green ``test (3.13)`` so scope to just it.
         monkeypatch.setattr(
-            "teatree.loop.scanners.pr_sweep.fetch_required_context_names",
+            "teatree.core.merge.ci_rollup.CodeHostQuery.required_context_names",
             lambda *a, **k: {"test (3.13)"},
         )
 

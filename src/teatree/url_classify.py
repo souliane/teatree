@@ -1,7 +1,7 @@
 """The single home for forge classification and PR/MR-URL parsing.
 
 Every "is this a GitHub PR or a GitLab MR URL, and what repo/number does it
-name" question routes here, built on the canonical :class:`~teatree.utils.url_slug.PrRef`
+name" question routes here, built on the canonical :class:`~teatree.utils.pr_ref.PrRef`
 parser. The forge vocabulary (``github`` / ``gitlab``) matches the
 ``host_kind`` string the merge-execution transport already dispatches on.
 
@@ -14,7 +14,8 @@ re-deriving the path grammar.
 import re
 from enum import StrEnum
 
-from teatree.utils.url_slug import PrRef, pr_ref_from_url
+from teatree.utils.pr_ref import PrRef
+from teatree.utils.url_slug import pr_ref_from_url
 
 _GITLAB_MARKER = "/-/merge_requests/"
 _GITHUB_MARKERS = ("/pull/", "/pulls/")
@@ -55,7 +56,7 @@ def is_github_pr_url(url: str) -> bool:
 
 
 def pr_ref(url: str) -> PrRef | None:
-    """Parse *url* into a :class:`PrRef` (slug, number, host_kind), or ``None``."""
+    """Parse *url* into a :class:`PrRef` (slug, pr_id, host_kind), or ``None``."""
     return pr_ref_from_url(url)
 
 
@@ -69,7 +70,7 @@ def repo_and_iid(url: str) -> tuple[str, int] | None:
     ref = pr_ref_from_url(url)
     if ref is None:
         return None
-    return ref.slug, ref.number
+    return ref.slug, ref.pr_id
 
 
 def find_pr_urls(text: str) -> list[str]:

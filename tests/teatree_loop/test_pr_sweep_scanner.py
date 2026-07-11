@@ -56,7 +56,7 @@ def _non_substrate_changed_paths():
     their own ``with patch(...)``.
     """
     with patch(
-        "teatree.loop.scanners.pr_sweep_substrate.fetch_pr_changed_paths",
+        "teatree.core.merge.ci_rollup.CodeHostQuery.pr_changed_paths",
         return_value=["src/teatree/loop/scanners/pr_sweep.py"],
     ):
         yield
@@ -78,7 +78,7 @@ def _required_test_3_13(monkeypatch: pytest.MonkeyPatch) -> None:
     # so the green-path fixtures (a single green ``test (3.13)``) merge; a case that
     # needs another check to gate declares it via ``with _required(...)``.
     monkeypatch.setattr(
-        "teatree.loop.scanners.pr_sweep.fetch_required_context_names",
+        "teatree.core.merge.ci_rollup.CodeHostQuery.required_context_names",
         lambda *a, **k: {"test (3.13)"},
     )
 
@@ -129,7 +129,7 @@ def _required(*names: str) -> Iterator[None]:
     on another check to gate a merge declares that check required here (a check
     NOT in the set is advisory and can never block — the anti-vacuity core of #12).
     """
-    with patch("teatree.loop.scanners.pr_sweep.fetch_required_context_names", return_value=set(names)):
+    with patch("teatree.core.merge.ci_rollup.CodeHostQuery.required_context_names", return_value=set(names)):
         yield
 
 
@@ -1765,7 +1765,7 @@ class TestSoloOverlaySubstrateHold:
         scanner, notifier = _scanner(api=api, keystone=keystone, solo_overlay=True, substrate_pinger=pinger)
 
         with patch(
-            "teatree.loop.scanners.pr_sweep_substrate.fetch_pr_changed_paths",
+            "teatree.core.merge.ci_rollup.CodeHostQuery.pr_changed_paths",
             return_value=["src/teatree/core/merge/authorization.py"],
         ):
             signals = scanner.scan()
@@ -1787,7 +1787,7 @@ class TestSoloOverlaySubstrateHold:
         scanner, notifier = _scanner(api=api, keystone=keystone, solo_overlay=True, substrate_pinger=pinger)
 
         with patch(
-            "teatree.loop.scanners.pr_sweep_substrate.fetch_pr_changed_paths",
+            "teatree.core.merge.ci_rollup.CodeHostQuery.pr_changed_paths",
             return_value=["src/teatree/loop/scanners/pr_sweep.py"],
         ):
             signals = scanner.scan()
@@ -1807,7 +1807,7 @@ class TestSoloOverlaySubstrateHold:
         pinger = FakeSubstratePinger()
         scanner, notifier = _scanner(api=api, keystone=keystone, solo_overlay=True, substrate_pinger=pinger)
 
-        with patch("teatree.loop.scanners.pr_sweep_substrate.fetch_pr_changed_paths", return_value=[]):
+        with patch("teatree.core.merge.ci_rollup.CodeHostQuery.pr_changed_paths", return_value=[]):
             signals = scanner.scan()
 
         assert api.merge_pr_calls == []  # the can't-tell case held, did not merge
@@ -1825,7 +1825,7 @@ class TestSoloOverlaySubstrateHold:
         scanner, notifier = _scanner(api=api, keystone=keystone, solo_overlay=True, substrate_pinger=pinger)
 
         with patch(
-            "teatree.loop.scanners.pr_sweep_substrate.fetch_pr_changed_paths",
+            "teatree.core.merge.ci_rollup.CodeHostQuery.pr_changed_paths",
             side_effect=RuntimeError("forge down"),
         ):
             signals = scanner.scan()

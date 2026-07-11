@@ -33,6 +33,7 @@ from teatree.core.merge import (
     record_merge_and_advance,
 )
 from teatree.core.models import ClearRequest, MergeAudit, MergeClear, Session, Ticket, Worktree
+from teatree.utils.pr_ref import PrRef
 from tests.teatree_core.conftest import CommandOverlay
 
 _GIT = shutil.which("git") or "git"
@@ -449,8 +450,7 @@ class TestMergeExecutionEdgeCases(TestCase):
             assert_merge_preconditions(
                 clear=object(),
                 executing_loop_identity="merge-loop",
-                slug="souliane/teatree",
-                pr_id=1,
+                ref=PrRef(slug="souliane/teatree", pr_id=1),
             )
 
     def test_gh_runner_resolves_binary_and_forwards_argv(self) -> None:
@@ -815,14 +815,14 @@ class TestLostPostHookRecoverable(TestCase):
 
 
 class TestFetchPrMergeState(TestCase):
-    """`fetch_pr_merge_state` fails closed so reconciliation never fires on bad data."""
+    """`CodeHostQuery.pr_merge_state` fails closed so reconciliation never fires on bad data."""
 
     def test_gh_error_returns_empty_state(self) -> None:
         with patch(
             "teatree.backends.forge_merge_rpc.gh_runner",
             return_value=lambda *_a, **_k: (1, "", "api error"),
         ):
-            state = ci_rollup.fetch_pr_merge_state("souliane/teatree", 1)
+            state = ci_rollup.CodeHostQuery.for_ref(PrRef(slug="souliane/teatree", pr_id=1)).pr_merge_state()
         assert state.state == ""
         assert state.is_merged is False
 
@@ -831,7 +831,7 @@ class TestFetchPrMergeState(TestCase):
             "teatree.backends.forge_merge_rpc.gh_runner",
             return_value=lambda *_a, **_k: (0, "{not json", ""),
         ):
-            state = ci_rollup.fetch_pr_merge_state("souliane/teatree", 1)
+            state = ci_rollup.CodeHostQuery.for_ref(PrRef(slug="souliane/teatree", pr_id=1)).pr_merge_state()
         assert state.state == ""
 
     def test_non_dict_json_returns_empty_state(self) -> None:
@@ -839,7 +839,7 @@ class TestFetchPrMergeState(TestCase):
             "teatree.backends.forge_merge_rpc.gh_runner",
             return_value=lambda *_a, **_k: (0, "[1, 2, 3]", ""),
         ):
-            state = ci_rollup.fetch_pr_merge_state("souliane/teatree", 1)
+            state = ci_rollup.CodeHostQuery.for_ref(PrRef(slug="souliane/teatree", pr_id=1)).pr_merge_state()
         assert state.state == ""
 
     def test_merged_without_merge_commit_object(self) -> None:
@@ -847,7 +847,7 @@ class TestFetchPrMergeState(TestCase):
             "teatree.backends.forge_merge_rpc.gh_runner",
             return_value=lambda *_a, **_k: (0, '{"state": "MERGED", "mergeCommit": null}', ""),
         ):
-            state = ci_rollup.fetch_pr_merge_state("souliane/teatree", 1)
+            state = ci_rollup.CodeHostQuery.for_ref(PrRef(slug="souliane/teatree", pr_id=1)).pr_merge_state()
         assert state.is_merged is True
         assert state.merge_commit_oid == ""
 
@@ -1303,7 +1303,7 @@ class TestTransientMergeRetry(TestCase):
             patch("teatree.backends.forge_merge_rpc.gh_runner", return_value=_empty_then_fail),
             pytest.raises(MergeTransientError, match="transient"),
         ):
-            execute_bound_merge(slug="souliane/teatree", pr_id=859, expected_head_oid=_SHA)
+            execute_bound_merge(ref=PrRef(slug="souliane/teatree", pr_id=859), expected_head_oid=_SHA)
 
         assert attempts["merge"] >= 3, "an empty/truncated merge response was not retried"
 
@@ -1343,7 +1343,7 @@ class TestExecuteBoundMergeLiveFloor(TestCase):
             patch("teatree.backends.forge_merge_rpc.gh_runner", return_value=stub),
             pytest.raises(MergePreconditionError, match="draft"),
         ):
-            execute_bound_merge(slug="souliane/teatree", pr_id=859, expected_head_oid=_SHA)
+            execute_bound_merge(ref=PrRef(slug="souliane/teatree", pr_id=859), expected_head_oid=_SHA)
         assert self._merge_calls(stub) == [], "a draft PR must be refused BEFORE the bound-merge PUT"
 
     def test_ci_flip_to_failed_between_snapshot_and_put_is_refused(self) -> None:
@@ -1353,7 +1353,7 @@ class TestExecuteBoundMergeLiveFloor(TestCase):
             patch("teatree.backends.forge_merge_rpc.gh_runner", return_value=stub),
             pytest.raises(MergePreconditionError, match="failed"),
         ):
-            execute_bound_merge(slug="souliane/teatree", pr_id=859, expected_head_oid=_SHA)
+            execute_bound_merge(ref=PrRef(slug="souliane/teatree", pr_id=859), expected_head_oid=_SHA)
         assert self._merge_calls(stub) == [], "a FAILED required check must be refused BEFORE the PUT"
 
     def test_not_draft_and_ci_green_proceeds(self) -> None:
@@ -1363,7 +1363,7 @@ class TestExecuteBoundMergeLiveFloor(TestCase):
         _record_merge_safe_verdict(pr_id=859, sha=_SHA)
         stub = _GhStub()  # draft=false, green rollup, empty required set → green
         with patch("teatree.backends.forge_merge_rpc.gh_runner", return_value=stub):
-            merged_sha = execute_bound_merge(slug="souliane/teatree", pr_id=859, expected_head_oid=_SHA)
+            merged_sha = execute_bound_merge(ref=PrRef(slug="souliane/teatree", pr_id=859), expected_head_oid=_SHA)
         assert merged_sha
         assert self._merge_calls(stub), "a green, not-draft head must reach the bound-merge PUT"
 

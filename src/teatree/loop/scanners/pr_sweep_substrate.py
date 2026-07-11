@@ -10,9 +10,10 @@ only on a new reviewed SHA.
 import logging
 from typing import Protocol, runtime_checkable
 
-from teatree.core.merge.ci_rollup import fetch_pr_changed_paths
+from teatree.core.merge.ci_rollup import CodeHostQuery
 from teatree.core.models.merge_clear import diff_paths_are_substrate
 from teatree.loop.scanners.pr_sweep_types import MergeAttempt, PrSummary
+from teatree.utils.pr_ref import PrRef
 
 logger = logging.getLogger(__name__)
 
@@ -21,7 +22,7 @@ def pr_diff_is_substrate(pr: PrSummary) -> bool:
     """True iff *pr*'s changed paths make it a substrate change — FAIL-SAFE (Finding 2).
 
     The solo-overlay no-CLEAR bypass has no CLEAR row to read ``is_substrate`` from,
-    so the diff is classified live via :func:`fetch_pr_changed_paths` +
+    so the diff is classified live via :meth:`CodeHostQuery.pr_changed_paths` +
     :func:`diff_paths_are_substrate`. The fetch is FAIL-SAFE: an exception OR an
     empty list (a real open PR always changes >=1 file, so an empty list signals the
     forge fetch failed) is treated conservatively as substrate so the can't-tell case
@@ -29,7 +30,7 @@ def pr_diff_is_substrate(pr: PrSummary) -> bool:
     substrate diff lets the merge proceed.
     """
     try:
-        paths = fetch_pr_changed_paths(pr.slug, pr.number)
+        paths = CodeHostQuery.for_ref(PrRef(slug=pr.slug, pr_id=pr.number)).pr_changed_paths()
     except Exception:
         logger.exception("pr_sweep changed-paths fetch failed for %s#%d — holding", pr.slug, pr.number)
         return True

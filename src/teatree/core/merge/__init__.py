@@ -8,15 +8,7 @@ from ``teatree.core.merge`` while each symbol keeps an explicit defining module
 """
 
 from teatree.core.merge.authorization import MergePrecheck, PresentedApprovals, _assert_clear_authorized
-from teatree.core.merge.ci_rollup import (
-    classify_required_rollup,
-    failing_required_names,
-    fetch_live_head_sha,
-    fetch_pr_is_draft,
-    fetch_pr_merge_state,
-    fetch_required_checks_status,
-    fetch_required_context_names,
-)
+from teatree.core.merge.ci_rollup import CodeHostQuery, classify_required_rollup, failing_required_names
 from teatree.core.merge.errors import MergeHeadMovedError, MergePreconditionError, MergeReplayError, MergeTransientError
 from teatree.core.merge.execution import (
     MergeOutcome,
@@ -36,6 +28,7 @@ from teatree.core.merge.pr_slug_resolution import (
 
 __all__ = [
     "_GIT_BRANCH_PREFIXES",
+    "CodeHostQuery",
     "MergeHeadMovedError",
     "MergeOutcome",
     "MergePrecheck",
@@ -49,11 +42,6 @@ __all__ = [
     "classify_required_rollup",
     "execute_bound_merge",
     "failing_required_names",
-    "fetch_live_head_sha",
-    "fetch_pr_is_draft",
-    "fetch_pr_merge_state",
-    "fetch_required_checks_status",
-    "fetch_required_context_names",
     "merge_ticket_pr",
     "normalize_repo_slug",
     "record_merge_and_advance",

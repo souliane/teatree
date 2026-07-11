@@ -17,6 +17,7 @@ from typing import TYPE_CHECKING, TypedDict, cast
 from teatree.loop.scanners.base import ScannerError, classify_gh_stderr
 from teatree.loop.scanners.pr_sweep import GH_CONFLICT_MERGE_STATE, GH_CONFLICT_MERGEABLE, PrSummary
 from teatree.loop.scanners.pr_sweep_types import MERGEABLE_AWAITING_REVIEW_REASON as _MERGEABLE_AWAITING_REVIEW_REASON
+from teatree.utils.pr_ref import PrRef
 from teatree.utils.run import run_allowed_to_fail
 
 if TYPE_CHECKING:
@@ -202,7 +203,7 @@ class GhPrApiClient:
         from teatree.core.merge import MergePreconditionError, execute_bound_merge  # noqa: PLC0415
 
         try:
-            merged_sha = execute_bound_merge(slug=slug, pr_id=pr_id, expected_head_oid=expected_head_oid)
+            merged_sha = execute_bound_merge(ref=PrRef(slug=slug, pr_id=pr_id), expected_head_oid=expected_head_oid)
         except MergePreconditionError:
             return False, ""
         return True, merged_sha
