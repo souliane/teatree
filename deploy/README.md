@@ -59,7 +59,7 @@ both broken here and duplicates of the laptop's. The split:
 
 The box enforces its side in `deploy/entrypoint.sh` (init role): after seeding
 config it calls `t3 loop disable <name>` — the single DB-backed per-loop control
-plane (`Loop.enabled` AND `LoopsConfig.is_enabled`) — for each fleet-scoped loop.
+plane (`Loop.enabled` AND not `LoopState`-held, via `loop_state_admits`) — for each fleet-scoped loop.
 The disable is idempotent, so re-running the deploy converges.
 
 `TEATREE_DISABLED_LOOPS` (comma-separated) overrides the set the box disables. It
