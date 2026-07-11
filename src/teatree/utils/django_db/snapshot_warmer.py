@@ -2,23 +2,25 @@
 
 Keeps a reference DB's DSLR snapshot current out-of-band, so a
 ticket-critical-path provision never has to pay the slow restore+migrate
-path itself. Sibling of ``django_db_dslr.py`` (DSLR primitives) and
-``django_db_reconcile.py`` (migration reconciliation) — split out of
-``django_db.py`` to stay under the module-health LOC cap.
+path itself. Sibling of ``dslr`` (DSLR primitives) and ``reconcile``
+(migration reconciliation) within the ``django_db`` package.
 """
 
 from datetime import UTC, datetime
 from typing import TextIO
 
-from teatree.utils import django_db_dslr as _dslr
-from teatree.utils.django_db import DjangoDbImportConfig, DjangoDbImporter, _ensure_ref_db, _MigrateResult
+from teatree.utils.django_db import dslr as _dslr
+from teatree.utils.django_db.config import DjangoDbImportConfig
+from teatree.utils.django_db.helpers import _ensure_ref_db
+from teatree.utils.django_db.importer import DjangoDbImporter
+from teatree.utils.django_db.migrate import _MigrateResult
 
 
 def snapshot_age_days(cfg: DjangoDbImportConfig, *, now: datetime | None = None) -> int | None:
     """Age (days) of the newest DSLR snapshot for *cfg*, or ``None`` when none exists / no DSLR tool.
 
     A DSLR snapshot name embeds its capture date as a ``YYYYMMDD_<tenant>``
-    prefix (:func:`teatree.utils.django_db_dslr.dslr_snap_name`) — the date
+    prefix (:func:`teatree.utils.django_db.dslr.dslr_snap_name`) — the date
     the snapshot was taken doubles as its own "last refreshed" timestamp, so
     no separate persisted marker is needed.
     """
@@ -61,7 +63,7 @@ def refresh_reference_snapshot(
     provision never has to. Restores the newest available DSLR snapshot (when
     one exists), migrates, and takes a FRESH snapshot only when migrations
     were actually applied (mirrors the provisioning-time restore paths —
-    :meth:`teatree.utils.django_db.DjangoDbImporter._try_restore_from_dslr`).
+    :meth:`teatree.utils.django_db.importer.DjangoDbImporter._try_restore_from_dslr`).
     Returns ``True`` when the reference DB ends up migrated (whether or not a
     new snapshot was taken), ``False`` when no DSLR tool is configured or the
     restore/migrate itself failed.

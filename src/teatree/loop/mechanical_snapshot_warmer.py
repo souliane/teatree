@@ -22,7 +22,9 @@ def refresh_snapshot(payload: ActionPayload) -> None:
         logger.warning("refresh_snapshot: no config in payload — nothing to do")
         return
     try:
-        from teatree.utils.django_db_snapshot_warmer import refresh_reference_snapshot  # noqa: PLC0415
+        # Deferred: the snapshot warmer reaches the DB engine — kept off this handler
+        # module's import path and inside the fault-isolating try (best-effort tick).
+        from teatree.utils.django_db.snapshot_warmer import refresh_reference_snapshot  # noqa: PLC0415
 
         ok = refresh_reference_snapshot(cfg)
     except Exception:

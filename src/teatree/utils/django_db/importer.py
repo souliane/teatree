@@ -1,174 +1,39 @@
 """Generic Django database provisioning engine.
 
 Implements the reference-DB + template-copy pattern with a 4-strategy
-fallback chain: DSLR snapshot → local dump → remote dump → CI dump.
+fallback chain: DSLR snapshot -> local dump -> remote dump -> CI dump.
 
 Overlays configure the engine via ``DjangoDbImportConfig``; the engine
-does the rest.  No Django imports — shells out to ``manage.py``.
+does the rest.  No Django imports -- shells out to ``manage.py``.
 
 User-facing CLI output flows through ``self.stdout`` / ``self.stderr``
 on ``DjangoDbImporter`` (Django ``BaseCommand`` pattern), which keeps
 the source free of bare ``print`` calls and lets tests capture output
 by passing an ``io.StringIO``.
 
-DSLR snapshot helpers live in ``django_db_dslr``.
+DSLR snapshot helpers live in the sibling ``dslr`` module.
 """
 
-import enum
 import logging
 import os
 import sys
-from collections.abc import Callable
-from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 from subprocess import CompletedProcess
 from typing import TextIO
 
 from teatree.utils import bad_artifacts
-from teatree.utils import django_db_dslr as _dslr
-from teatree.utils import django_db_reconcile as _reconcile
-from teatree.utils.django_db_dslr import prune_dslr_snapshots
-from teatree.utils.django_db_reconcile import is_config_error as _is_config_error
+from teatree.utils.django_db import dslr as _dslr
+from teatree.utils.django_db import reconcile as _reconcile
+from teatree.utils.django_db.config import DjangoDbImportConfig
+from teatree.utils.django_db.helpers import _ensure_ref_db, _local_db_url, _pg_args, _terminate_connections
+from teatree.utils.django_db.migrate import _MAX_MIGRATE_RETRIES, _MigrateResult
+from teatree.utils.django_db.reconcile import is_config_error as _is_config_error
+from teatree.utils.django_db.restore import validate_dump
+from teatree.utils.django_db.runner import runner_prefix
 from teatree.utils.run import CommandFailedError, TimeoutExpired, run_allowed_to_fail
 
 logger = logging.getLogger(__name__)
-
-#: Overlay-supplied dockerized migrate runner. Given the ``manage.py`` args and
-#: the resolved subprocess env, it runs the migrate inside the repo-canonical
-#: docker image (every dependency baked in) and returns the result. Core calls
-#: it only as a fallback when the host runner fails with an import/config error
-#: — the signature of an unverified, dep-incomplete host venv (#1977).
-DockerizedMigrate = Callable[[list[str], dict[str, str]], CompletedProcess[str]]
-
-
-# ---------------------------------------------------------------------------
-# Stateless helpers (no I/O on stdout, no global state)
-# ---------------------------------------------------------------------------
-
-
-def _pg_args() -> tuple[str, str, dict[str, str]]:
-    from teatree.utils.db import pg_env, pg_host, pg_user  # noqa: PLC0415
-
-    return pg_host(), pg_user(), pg_env()
-
-
-def _is_pipenv_repo(repo: Path) -> bool:
-    """True iff *repo* is managed by pipenv rather than uv.
-
-    A repo is pipenv-managed when it carries a ``Pipfile`` and has no usable
-    ``uv.lock`` — either no lock at all, or a stub lock with no resolved
-    packages (only ``version``/``revision``/``requires-python``). Running
-    ``uv --directory <repo> run`` against such a stub builds a bare venv with
-    none of the repo's deps, so ``import django`` fails (souliane/teatree#1973).
-    """
-    if not (repo / "Pipfile").is_file():
-        return False
-    lock = repo / "uv.lock"
-    if not lock.is_file():
-        return True
-    try:
-        return "[[package]]" not in lock.read_text(encoding="utf-8")
-    except OSError:
-        return True
-
-
-def runner_prefix(repo: Path) -> list[str]:
-    """Build the interpreter prefix that runs ``python`` from *repo*'s environment.
-
-    The SOLE site that emits a ``manage.py`` interpreter prefix (migrate +
-    overlay ``managepy`` / ``db_worker`` route here) so the pipenv-vs-uv
-    detection lives in one place; a hand-rolled second prefix silently diverges
-    (souliane/teatree#1976, #1973; pinned by ``test_runner_prefix_chokepoint``).
-    Pipenv repos (:func:`_is_pipenv_repo`) use ``pipenv run`` with
-    ``PIPENV_PIPFILE`` pinned (cwd-independent); else ``uv --directory <repo> run``.
-    """
-    if _is_pipenv_repo(repo):
-        return ["env", f"PIPENV_PIPFILE={repo / 'Pipfile'}", "pipenv", "run", "python"]
-    return ["uv", "--directory", str(repo), "run", "python"]
-
-
-def _local_db_url(db_name: str) -> str:
-    from urllib.parse import quote  # noqa: PLC0415
-
-    from teatree.utils.db import pg_host, pg_user  # noqa: PLC0415
-    from teatree.utils.postgres_secret import resolve_postgres_password  # noqa: PLC0415
-
-    pw = resolve_postgres_password()
-    port = os.environ.get("POSTGRES_PORT", "5432")
-    return f"postgres://{pg_user()}:{quote(pw, safe='')}@{pg_host()}:{port}/{db_name}"
-
-
-def _ensure_ref_db(ref_db: str, pg_host: str, pg_user: str, pg_env: dict[str, str]) -> None:
-    run_allowed_to_fail(
-        ["createdb", "-h", pg_host, "-U", pg_user, ref_db],
-        env=pg_env,
-        expected_codes=None,
-    )
-
-
-def _terminate_connections(db_name: str, pg_host: str, pg_user: str, pg_env: dict[str, str]) -> None:
-    run_allowed_to_fail(
-        [
-            "psql",
-            "-h",
-            pg_host,
-            "-U",
-            pg_user,
-            "-d",
-            "postgres",
-            "-v",
-            f"dbname={db_name}",
-            "-c",
-            (
-                "SELECT pg_terminate_backend(pid) FROM pg_stat_activity "
-                "WHERE datname = :'dbname' AND pid <> pg_backend_pid()"
-            ),
-        ],
-        env=pg_env,
-        expected_codes=None,
-    )
-
-
-def validate_dump(dump_path: Path) -> bool:
-    if dump_path.stat().st_size == 0:
-        return False
-    result = run_allowed_to_fail(["pg_restore", "-l", str(dump_path)], expected_codes=None)
-    if "could not read" in (result.stderr or ""):
-        sys.stdout.write(f"  WARNING: Dump appears truncated: {dump_path.name} (delete and re-fetch)\n")
-        return False
-    return True
-
-
-@dataclass(frozen=True)
-class DjangoDbImportConfig:
-    ref_db_name: str
-    ticket_db_name: str
-    main_repo_path: str
-    dump_dir: str
-    dump_glob: str
-    ci_dump_glob: str
-    snapshot_tool: str = "dslr"
-    remote_db_url: str = ""
-    migrate_env_extra: dict[str, str] = field(default_factory=dict)
-    dump_timeout: int = 1800
-    dslr_snapshot: str = ""
-    dump_path: str = ""
-    dockerized_migrate: DockerizedMigrate | None = None
-
-
-_MAX_MIGRATE_RETRIES = 20
-
-
-class _MigrateResult(enum.Enum):
-    APPLIED = "applied"
-    ALREADY_MIGRATED = "already_migrated"
-    FAILED = "failed"
-
-
-# ---------------------------------------------------------------------------
-# Importer — owns per-run state and all CLI output streams.
-# ---------------------------------------------------------------------------
 
 
 class DjangoDbImporter:
@@ -641,13 +506,3 @@ def django_db_import(
         slow_import=slow_import,
         allow_remote_dump=allow_remote_dump,
     )
-
-
-__all__ = [
-    "DjangoDbImportConfig",
-    "DjangoDbImporter",
-    "django_db_import",
-    "prune_dslr_snapshots",
-    "runner_prefix",
-    "validate_dump",
-]
