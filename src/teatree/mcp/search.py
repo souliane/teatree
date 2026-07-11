@@ -21,7 +21,7 @@ from django.db.models import Count, Q
 
 from teatree.config import get_effective_settings
 from teatree.core.factory.factory_score import score as factory_score_compute
-from teatree.core.factory.factory_signals import DEFAULT_WINDOW_DAYS, compute_factory_signals
+from teatree.core.factory.factory_signals import DEFAULT_WINDOW_DAYS, FactorySignalsReportDict, compute_factory_signals
 from teatree.core.modelkit.phases import phase_spellings
 from teatree.core.models import IncomingEvent, PullRequest, ReplyDispatch, Task, Ticket, Worktree
 from teatree.mcp.serializers import (
@@ -178,7 +178,7 @@ def loop_stats(*, overlay: str | None = None) -> dict[str, Any]:
     return {"overlay": overlay or "", "tasks": counts, "dead_letter": dead_letter}
 
 
-def factory_signals(*, overlay: str | None = None, window_days: int = DEFAULT_WINDOW_DAYS) -> dict[str, Any]:
+def factory_signals(*, overlay: str | None = None, window_days: int = DEFAULT_WINDOW_DAYS) -> FactorySignalsReportDict:
     """The derived-on-read factory quality/velocity signals report (read-only).
 
     Delegates to :func:`teatree.core.factory.factory_signals.compute_factory_signals` —

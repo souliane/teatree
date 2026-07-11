@@ -33,7 +33,7 @@ from teatree.core.gates.provision_admission_gate import (
     resolve_provision_max_concurrency,
 )
 from teatree.core.models import Worktree
-from teatree.core.provision.step_runner import ProvisionReport
+from teatree.core.provision.provision_report import ProvisionReport
 from teatree.utils.run import TimeoutExpired, run_allowed_to_fail
 
 logger = logging.getLogger(__name__)

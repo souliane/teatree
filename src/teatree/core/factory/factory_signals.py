@@ -26,12 +26,13 @@ import enum
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Any
+from typing import TypedDict
 
 from django.utils import timezone
 
 from teatree.core.factory.factory_signal_queries import (
     Computation,
+    SignalEvidence,
     SignalReading,
     SignalStatus,
     Window,
@@ -43,6 +44,35 @@ from teatree.core.factory.factory_signal_queries import (
     compute_s5,
     current_window,
 )
+
+
+class SignalRowDict(TypedDict):
+    """JSON projection of a :class:`SignalRow` (its ``to_dict``)."""
+
+    provider_id: str
+    kind: str
+    value: float
+    sample_size: int
+    window_days: int
+    status: str
+    direction: str
+    red_when: float | None
+    baseline_value: float | None
+    delta: float | None
+    tripped: bool
+    verdict: str
+    evidence: SignalEvidence
+
+
+class FactorySignalsReportDict(TypedDict):
+    """JSON projection of a :class:`FactorySignalsReport` (its ``to_dict``)."""
+
+    overlay: str
+    window_days: int
+    generated_at: str
+    verdict: str
+    signals: list[SignalRowDict]
+
 
 # Re-exported so the signal surface is importable from one module.
 __all__ = [
@@ -99,9 +129,9 @@ class SignalRow:
     delta: float | None
     tripped: bool
     verdict: SignalVerdict
-    evidence: dict[str, Any] = field(default_factory=dict)
+    evidence: SignalEvidence = field(default_factory=dict)
 
-    def to_dict(self) -> dict[str, Any]:
+    def to_dict(self) -> SignalRowDict:
         return {
             "provider_id": self.provider_id,
             "kind": self.kind,
@@ -115,7 +145,7 @@ class SignalRow:
             "delta": self.delta,
             "tripped": self.tripped,
             "verdict": self.verdict.value,
-            "evidence": dict(self.evidence),
+            "evidence": self.evidence,
         }
 
 
@@ -139,7 +169,7 @@ class FactorySignalsReport:
     verdict: SignalVerdict
     overlay: str = ""
 
-    def to_dict(self) -> dict[str, Any]:
+    def to_dict(self) -> FactorySignalsReportDict:
         return {
             "overlay": self.overlay,
             "window_days": self.window_days,

@@ -36,6 +36,7 @@ from django.utils import timezone
 from teatree.core.loop_lease_manager import T3_MASTER_SLOT, is_per_loop_owner_slot, is_per_loop_tick_mutex
 from teatree.core.models.known_issue import KnownIssue
 from teatree.core.overlay_loader import get_all_overlays
+from teatree.utils.throttled_log import warn_throttled
 
 logger = logging.getLogger(__name__)
 
@@ -101,7 +102,16 @@ def _overlay_health_signals() -> list[HealthSignal]:
         try:
             signals.extend(overlay.get_health_signals())
         except Exception:  # noqa: BLE001 — fail-open: a broken health read must never crash the tick or blank the chip
-            logger.debug("overlay %s get_health_signals() failed — skipped", name)
+            # A one-off miss is expected; a persistently-failing overlay health
+            # read is a real fault the chip would otherwise silently drop — surface
+            # it at warning, throttled so a per-tick failure is not logged every beat.
+            warn_throttled(
+                logger,
+                f"health-overlay:{name}",
+                "overlay %s get_health_signals() failed — skipped",
+                name,
+                exc_info=True,
+            )
     return signals
 
 
@@ -173,6 +183,7 @@ def _stale_tick_signals() -> list[HealthSignal]:
             and row.acquired_at < now - timedelta(seconds=_TICK_OVERRUN_MULTIPLE * _lease_reference_seconds(row.name))
         ]
     except Exception:  # noqa: BLE001 — fail-open: a broken health read must never crash the tick or blank the chip
+        warn_throttled(logger, "health-stale-tick", "stale-tick health read failed — skipped", exc_info=True)
         return []
     return [
         HealthSignal(
@@ -199,6 +210,7 @@ def _failed_task_signals() -> list[HealthSignal]:
         cutoff = timezone.now() - _FAILED_TASK_WINDOW
         count = task_model.objects.filter(status="failed", created_at__gte=cutoff).count()
     except Exception:  # noqa: BLE001 — fail-open: a broken health read must never crash the tick or blank the chip
+        warn_throttled(logger, "health-failed-task", "failed-task health read failed — skipped", exc_info=True)
         return []
     if count <= 0:
         return []
@@ -226,7 +238,13 @@ def collect_signals() -> list[HealthSignal]:
         try:
             signals.extend(collector())
         except Exception:  # noqa: BLE001 — fail-open: a broken health read must never crash the tick or blank the chip
-            logger.debug("health collector %s failed — skipped", collector.__name__)
+            warn_throttled(
+                logger,
+                f"health-collector:{collector.__name__}",
+                "health collector %s failed — skipped",
+                collector.__name__,
+                exc_info=True,
+            )
     return signals
 
 
@@ -256,6 +274,7 @@ def read_health() -> HealthReport:
     try:
         issues = tuple(KnownIssue.objects.open())
     except Exception:  # noqa: BLE001 — fail-open: a broken health read must never crash the tick or blank the chip
+        warn_throttled(logger, "health-read", "open-issue read failed — chip degraded to green", exc_info=True)
         return HealthReport(status=HealthStatus.GREEN, open_issues=())
     return HealthReport(status=_status_from_issues(issues), open_issues=issues)
 
