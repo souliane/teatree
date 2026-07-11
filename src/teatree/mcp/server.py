@@ -29,6 +29,7 @@ from mcp.types import ToolAnnotations
 
 from teatree.backends.types import Service
 from teatree.config import get_effective_settings
+from teatree.core.factory.factory_signals import FactorySignalsReportDict
 from teatree.core.overlay_loader import get_all_overlays
 from teatree.mcp import (
     introspection,
@@ -191,7 +192,7 @@ async def _loop_stats(*, overlay: str | None = None) -> dict[str, Any]:
     return await sync_to_async(search.loop_stats, thread_sensitive=True)(overlay=overlay)
 
 
-async def _factory_signals(*, overlay: str | None = None, window_days: int = 28) -> dict[str, Any]:
+async def _factory_signals(*, overlay: str | None = None, window_days: int = 28) -> FactorySignalsReportDict:
     """Derived-on-read factory quality/velocity signals over the trailing window.
 
     Returns the five signals (first-try-green, defect-escape, review-catch,

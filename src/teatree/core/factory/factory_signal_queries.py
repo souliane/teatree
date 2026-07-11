@@ -13,7 +13,7 @@ from collections import defaultdict
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from statistics import mean, median
-from typing import Any
+from typing import NotRequired, TypedDict
 
 from django.db.models import Min
 
@@ -58,6 +58,62 @@ class Window:
     days: int
 
 
+class SignalReadingDict(TypedDict):
+    """JSON projection of a :class:`SignalReading` (its ``to_dict``)."""
+
+    value: float
+    sample_size: int
+    window_days: int
+    status: str
+
+
+class S1Evidence(TypedDict):
+    """S1 first-try-green evidence. The extra counts are absent below MIN_SAMPLE."""
+
+    merges: int
+    unmatched_slug: int
+    first_try_green: NotRequired[int]
+    re_ci_count: NotRequired[float]
+    fix_attempts_in_window: NotRequired[int]
+
+
+class S2Evidence(TypedDict):
+    """S2 defect-escape evidence."""
+
+    fix_tickets: int
+    red_cards: int
+    preceding_merges: int
+
+
+class S3Evidence(TypedDict):
+    """S3 review-catch evidence. ``caught`` is absent below MIN_SAMPLE."""
+
+    merges: int
+    unmatched_slug: int
+    caught: NotRequired[int]
+
+
+class S4Evidence(TypedDict):
+    """S4 merge-latency evidence."""
+
+    merges: int
+    stale_clear_hours: float
+
+
+class S5Evidence(TypedDict):
+    """S5 repair-iteration-burn evidence."""
+
+    attempts: int
+    success_groups: int
+    failed_fraction: float
+
+
+# The evidence payload of a :class:`Computation` — one fixed shape per signal,
+# discriminated by which ``compute_s*`` produced it. Replaces the former
+# ``dict[str, Any]`` so each signal's evidence keys are declared, not free-form.
+SignalEvidence = S1Evidence | S2Evidence | S3Evidence | S4Evidence | S5Evidence
+
+
 @dataclass(frozen=True, slots=True)
 class SignalReading:
     """One provider's reading — the seam PR-2's recipe registry consumes.
@@ -72,7 +128,7 @@ class SignalReading:
     window_days: int
     status: SignalStatus
 
-    def to_dict(self) -> dict[str, Any]:
+    def to_dict(self) -> SignalReadingDict:
         return {
             "value": self.value,
             "sample_size": self.sample_size,
@@ -92,7 +148,7 @@ class Computation:
     """
 
     reading: SignalReading
-    evidence: dict[str, Any]
+    evidence: SignalEvidence
     hard_red: bool = False
     hard_red_reason: str = ""
 
@@ -163,7 +219,10 @@ def _red_pr_keys() -> tuple[set[tuple[str, int]], dict[tuple[str, int], set[str]
     """
     keys: set[tuple[str, int]] = set()
     heads: dict[tuple[str, int], set[str]] = defaultdict(set)
-    for row in RedMrFixAttempt.objects.all().only("pr_url", "head_sha"):
+    # ``.iterator()`` streams the scan: this ledger is deliberately unbounded (a
+    # PR's redness record is not window-bound, so every row is considered), and
+    # streaming caps peak memory instead of materialising the whole table.
+    for row in RedMrFixAttempt.objects.only("pr_url", "head_sha").iterator():
         ref = pr_ref_from_url(row.pr_url)
         if ref is None:
             continue
@@ -196,7 +255,7 @@ def compute_s1(window: Window, overlay: str, now: datetime) -> Computation:  # n
         else:
             matchable.append(key)
     denom = len(matchable)
-    evidence: dict[str, Any] = {"merges": denom, "unmatched_slug": unmatched}
+    evidence: S1Evidence = {"merges": denom, "unmatched_slug": unmatched}
     if denom < MIN_SAMPLE:
         return Computation(SignalReading(0.0, denom, window.days, SignalStatus.INSUFFICIENT_DATA), evidence)
 
@@ -208,11 +267,9 @@ def compute_s1(window: Window, overlay: str, now: datetime) -> Computation:  # n
         dispatched_at__lt=window.end,
     ).count()
     reci_values = [len(red_heads[key]) for key in matchable if key in red_heads]
-    evidence |= {
-        "first_try_green": green,
-        "re_ci_count": round(mean(reci_values), 3) if reci_values else 0.0,
-        "fix_attempts_in_window": fix_in_window,
-    }
+    evidence["first_try_green"] = green
+    evidence["re_ci_count"] = round(mean(reci_values), 3) if reci_values else 0.0
+    evidence["fix_attempts_in_window"] = fix_in_window
     # A perfect 100% that coincides with a completely silent recorder this
     # window is indistinguishable from a dead ``my_prs`` scanner — refuse the
     # fabricated green and fail loud.
@@ -252,7 +309,7 @@ def compute_s2(window: Window, overlay: str, now: datetime) -> Computation:  # n
         red_cards = red_cards.filter(overlay=overlay)
     red_card_count = red_cards.count()
     numerator = fix_created + red_card_count
-    evidence: dict[str, Any] = {
+    evidence: S2Evidence = {
         "fix_tickets": fix_created,
         "red_cards": red_card_count,
         "preceding_merges": denom,
@@ -303,7 +360,7 @@ def compute_s3(window: Window, overlay: str, now: datetime) -> Computation:  # n
         else:
             matchable.append(key)
     denom = len(matchable)
-    evidence: dict[str, Any] = {"merges": denom, "unmatched_slug": unmatched}
+    evidence: S3Evidence = {"merges": denom, "unmatched_slug": unmatched}
     if denom < MIN_SAMPLE:
         return Computation(SignalReading(0.0, denom, window.days, SignalStatus.INSUFFICIENT_DATA), evidence)
     caught = sum(1 for slug, pr_id in matchable if _review_caught(slug, pr_id))
@@ -333,12 +390,16 @@ def superseding_context(overlay: str) -> tuple[dict[tuple[str, int], datetime], 
     if overlay:
         clears = clears.filter(ticket__overlay=overlay)
         audits = audits.filter(clear__ticket__overlay=overlay)
+    # Both scans are deliberately whole-ledger — a re-CLEAR shares its sibling's
+    # ``(slug, pr_id)`` across time, so the newest issue and every covering merge
+    # for a key must be seen regardless of window. ``.iterator()`` streams each so
+    # the unbounded ledgers cap peak memory rather than materialising in full.
     latest_issued: dict[tuple[str, int], datetime] = {}
-    for slug, pr_id, issued_at in clears.values_list("slug", "pr_id", "issued_at"):
+    for slug, pr_id, issued_at in clears.values_list("slug", "pr_id", "issued_at").iterator():
         key = (slug, pr_id)
         if key not in latest_issued or issued_at > latest_issued[key]:
             latest_issued[key] = issued_at
-    merged_keys = {(slug, pr_id) for slug, pr_id in audits.values_list("clear__slug", "clear__pr_id")}
+    merged_keys = {(slug, pr_id) for slug, pr_id in audits.values_list("clear__slug", "clear__pr_id").iterator()}
     return latest_issued, merged_keys
 
 
@@ -405,7 +466,7 @@ def compute_s4(window: Window, overlay: str, now: datetime) -> Computation:
     denom = len(latencies)
     stale_hours = _max_actionable_clear_age_hours(overlay, now)
     hard_red = stale_hours is not None and stale_hours > STALE_CLEAR_HOURS
-    evidence: dict[str, Any] = {
+    evidence: S4Evidence = {
         "merges": denom,
         "stale_clear_hours": round(stale_hours, 2) if stale_hours is not None else 0.0,
     }
@@ -438,24 +499,19 @@ def compute_s5(window: Window, overlay: str, now: datetime) -> Computation:  # n
     groups: dict[tuple[int, str], list[int]] = defaultdict(list)
     failed = 0
     for attempt in rows:
-        # #16: an envelope-refusal failure is recorded with exit_code=0 AND a
-        # non-empty error, so classifying on exit_code alone counted N pure
-        # refusals as a clean success group. Classify on the error field: a
-        # genuine success is exit_code==0 with NO error; a non-zero/unknown
-        # exit_code OR any error string is a failure. A None exit_code (attempt
-        # in flight) is neither — excluded from both, unchanged. A named
-        # follow-up will replace this overloaded exit_code+error read with an
-        # explicit TaskAttempt outcome discriminator (success/refusal/crash) so a
-        # refusal is a first-class terminal state rather than an inference (#16).
-        is_failed = attempt.exit_code not in {None, 0} or bool(attempt.error)
-        is_success = attempt.exit_code == 0 and not attempt.error
-        if is_failed:
-            failed += 1
-        if is_success:
+        # #16: classify on the explicit TaskAttempt.outcome discriminator, stamped
+        # from exit_code + error at save time, instead of re-deriving it here. An
+        # envelope refusal (exit_code=0 with a non-empty error) is a first-class
+        # REFUSAL, never miscounted as a clean success group; a CRASH is any
+        # non-zero exit; a blank outcome is an attempt still in flight — neither a
+        # success nor a failure, excluded from both.
+        if attempt.outcome == TaskAttempt.Outcome.SUCCESS:
             groups[attempt.task.ticket_id, attempt.task.phase].append(attempt.iteration)
+        elif attempt.outcome in {TaskAttempt.Outcome.REFUSAL, TaskAttempt.Outcome.CRASH}:
+            failed += 1
     terminal_iters = [max(iters) for iters in groups.values()]
     sample = len(terminal_iters)
-    evidence: dict[str, Any] = {
+    evidence: S5Evidence = {
         "attempts": total,
         "success_groups": sample,
         "failed_fraction": round(failed / total, 3) if total else 0.0,

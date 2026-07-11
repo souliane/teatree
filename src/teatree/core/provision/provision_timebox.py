@@ -39,7 +39,8 @@ from pathlib import Path
 
 from teatree.config import get_effective_settings
 from teatree.core.notify import NotifyKind, notify_user
-from teatree.core.provision.step_runner import StepResult, run_callable_step
+from teatree.core.provision.provision_report import StepResult
+from teatree.core.provision.step_runner import run_callable_step
 from teatree.utils.run import run_allowed_to_fail
 
 logger = logging.getLogger(__name__)
@@ -78,6 +79,29 @@ _MIGRATION_FORK_REMEDY = (
     "Rebase/renumber needed: merge the target branch in and run "
     "`python manage.py makemigrations --merge` to reconcile the leaves."
 )
+
+
+@dataclass(frozen=True, slots=True)
+class ProgressAlert:
+    """Where a time-boxed step reports progress and sends its overrun alert.
+
+    The three knobs that always travel together across every time-boxed entry
+    point (:func:`run_timeboxed_step`, :func:`run_timeboxed_callable`,
+    :func:`run_timeboxed_db_import`): *repo* scopes the loud out-of-band user
+    alert fired on a timeout / forked-graph, *interval* is the heartbeat cadence
+    in seconds, *heartbeat* is the sink each pulse is written to (``None`` uses
+    the module logger). Bundling them keeps each entry point's signature from
+    re-threading the same three arguments.
+    """
+
+    repo: str = ""
+    interval: float = DEFAULT_HEARTBEAT_INTERVAL_SECONDS
+    heartbeat: Callable[[str], object] | None = None
+
+
+# The default "no repo, log-only heartbeat, standard cadence" progress config,
+# shared as the frozen default so an entry-point signature names one value.
+_NO_PROGRESS = ProgressAlert()
 
 
 def resolve_step_timeout_seconds(*, heavy: bool = False) -> int:
@@ -158,48 +182,43 @@ def _emit_heartbeats(
         heartbeat(f"still running `{step}`… ({elapsed_min:.1f}m elapsed)")
 
 
-# ast-grep-ignore: ac-django-no-complexity-suppressions
-def run_timeboxed_step(  # noqa: PLR0913 — each kwarg is a documented opt-in / test seam.
+def run_timeboxed_step(
     name: str,
     cmd: Sequence[str],
     *,
     cwd: str | Path | None = None,
-    env: dict[str, str] | None = None,
     timeout: int | None = None,
-    repo: str = "",
-    heartbeat_interval: float = DEFAULT_HEARTBEAT_INTERVAL_SECONDS,
-    heartbeat: Callable[[str], object] | None = None,
-    heavy: bool = False,
+    progress: ProgressAlert = _NO_PROGRESS,
 ) -> StepResult:
     """Run one provisioning subprocess time-boxed, with heartbeat + loud alert.
 
     On a clean exit returns a successful :class:`StepResult`. On a non-zero
     exit whose output shows a **forked migration graph** the alert names that
     cause specifically (rebase/renumber). On exceeding *timeout* (defaulting
-    to :func:`resolve_step_timeout_seconds`, ``heavy``-selected) the op aborts
+    to the fast :func:`resolve_step_timeout_seconds` ceiling) the op aborts
     with a "timed out" error and a loud user alert — it never hangs. While the
-    op runs, a progress heartbeat fires every *heartbeat_interval* seconds so a
+    op runs, a progress heartbeat fires every ``progress.interval`` seconds so a
     slow-but-moving step is distinguishable from a hang.
     """
-    ceiling = timeout if timeout is not None else resolve_step_timeout_seconds(heavy=heavy)
+    ceiling = timeout if timeout is not None else resolve_step_timeout_seconds()
     start = time.monotonic()
     done = threading.Event()
-    beat = heartbeat or (lambda _msg: None)
+    beat = progress.heartbeat or (lambda _msg: None)
     pulse = threading.Thread(
         target=_emit_heartbeats,
-        kwargs={"step": name, "interval": heartbeat_interval, "done": done, "heartbeat": beat},
+        kwargs={"step": name, "interval": progress.interval, "done": done, "heartbeat": beat},
         daemon=True,
     )
     pulse.start()
     try:
-        proc = run_allowed_to_fail(cmd, cwd=cwd, env=env, expected_codes=None, timeout=ceiling)
+        proc = run_allowed_to_fail(cmd, cwd=cwd, expected_codes=None, timeout=ceiling)
     except subprocess.TimeoutExpired:
         duration = time.monotonic() - start
         error = f"timed out after {ceiling}s"
         logger.warning("Provisioning step %r %s — aborting (never hang)", name, error)
         alert_provision_user(
             step=name,
-            repo=repo,
+            repo=progress.repo,
             detail=f"exceeded {ceiling}s and was aborted — investigate a hang or a forked migration graph",
         )
         return StepResult(name=name, success=False, duration=duration, error=error)
@@ -220,7 +239,7 @@ def run_timeboxed_step(  # noqa: PLR0913 — each kwarg is a documented opt-in /
         if conflict is not None:
             error = f"{conflict} ({error})"
             logger.warning("Provisioning step %r hit a %s", name, conflict)
-            alert_provision_user(step=name, repo=repo, detail=conflict)
+            alert_provision_user(step=name, repo=progress.repo, detail=conflict)
         return StepResult(
             name=name,
             success=False,
@@ -236,15 +255,12 @@ def _log_heartbeat(message: str) -> None:
     logger.info("provision: %s", message)
 
 
-# ast-grep-ignore: ac-django-no-complexity-suppressions
-def _join_callable_on_ceiling(  # noqa: PLR0913 — each kwarg is a documented seam, mirroring run_timeboxed_step.
+def _join_callable_on_ceiling(
     name: str,
     invoke: Callable[[], None],
     *,
     ceiling: float,
-    repo: str,
-    heartbeat_interval: float,
-    heartbeat: Callable[[str], object] | None,
+    progress: ProgressAlert,
     overrun_detail: str,
 ) -> tuple[bool, float]:
     """Run *invoke* on a daemon thread, heartbeating, bounded by *ceiling* seconds.
@@ -258,11 +274,11 @@ def _join_callable_on_ceiling(  # noqa: PLR0913 — each kwarg is a documented s
     """
     start = time.monotonic()
     done = threading.Event()
-    beat = heartbeat or _log_heartbeat
+    beat = progress.heartbeat or _log_heartbeat
     worker = threading.Thread(target=invoke, daemon=True)
     pulse = threading.Thread(
         target=_emit_heartbeats,
-        kwargs={"step": name, "interval": heartbeat_interval, "done": done, "heartbeat": beat},
+        kwargs={"step": name, "interval": progress.interval, "done": done, "heartbeat": beat},
         daemon=True,
     )
     pulse.start()
@@ -273,21 +289,18 @@ def _join_callable_on_ceiling(  # noqa: PLR0913 — each kwarg is a documented s
     duration = time.monotonic() - start
     if worker.is_alive():
         logger.warning("Provisioning callable %r timed out after %ss — aborting (never hang)", name, ceiling)
-        alert_provision_user(step=name, repo=repo, detail=overrun_detail)
+        alert_provision_user(step=name, repo=progress.repo, detail=overrun_detail)
         return True, duration
     return False, duration
 
 
-# ast-grep-ignore: ac-django-no-complexity-suppressions
-def run_timeboxed_callable(  # noqa: PLR0913 — each kwarg is a documented opt-in / test seam.
+def run_timeboxed_callable(
     name: str,
     fn: Callable[[], object],
     *,
     timeout: float | None = None,
-    repo: str = "",
-    heartbeat_interval: float = DEFAULT_HEARTBEAT_INTERVAL_SECONDS,
-    heartbeat: Callable[[str], object] | None = None,
     heavy: bool = False,
+    progress: ProgressAlert = _NO_PROGRESS,
 ) -> StepResult:
     """The callable sibling of :func:`run_timeboxed_step`, for an ORM-free shellout (#2244).
 
@@ -316,9 +329,7 @@ def run_timeboxed_callable(  # noqa: PLR0913 — each kwarg is a documented opt-
         name,
         lambda: captured.__setitem__("result", run_callable_step(name, fn)),
         ceiling=ceiling,
-        repo=repo,
-        heartbeat_interval=heartbeat_interval,
-        heartbeat=heartbeat,
+        progress=progress,
         overrun_detail=(
             f"exceeded {ceiling}s and was aborted — a child process is blocked "
             "(a network stall on `uv sync` / `uv pip install`, or a hung shellout); never hangs"
@@ -337,15 +348,12 @@ class _DbImportOutcome:
     error: BaseException | None = None
 
 
-# ast-grep-ignore: ac-django-no-complexity-suppressions
-def run_timeboxed_db_import(  # noqa: PLR0913 — each kwarg is a documented opt-in / test seam.
+def run_timeboxed_db_import(
     fn: Callable[[], bool],
     *,
     name: str = "db_import",
     timeout: float | None = None,
-    repo: str = "",
-    heartbeat_interval: float = DEFAULT_HEARTBEAT_INTERVAL_SECONDS,
-    heartbeat: Callable[[str], object] | None = None,
+    progress: ProgressAlert = _NO_PROGRESS,
 ) -> bool:
     """The DB-import sibling of :func:`run_timeboxed_step`, for a bool callable (#2244).
 
@@ -372,9 +380,7 @@ def run_timeboxed_db_import(  # noqa: PLR0913 — each kwarg is a documented opt
         name,
         _invoke,
         ceiling=ceiling,
-        repo=repo,
-        heartbeat_interval=heartbeat_interval,
-        heartbeat=heartbeat,
+        progress=progress,
         overrun_detail=(
             f"exceeded {ceiling}s and was aborted — no local DSLR snapshot to restore "
             "(run `db refresh` or supply a dump); never hangs"

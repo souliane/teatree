@@ -32,7 +32,7 @@ from django.test import TestCase
 
 from teatree.core import prek_hook
 from teatree.core.models import Ticket, Worktree
-from teatree.core.provision.step_runner import StepResult
+from teatree.core.provision.provision_report import StepResult
 from teatree.core.runners.worktree_provision import WorktreeProvisionRunner, _setup_worktree_dir
 
 # Minimal valid prek/pre-commit config. The hook body itself never runs in

@@ -10,13 +10,8 @@ from django.db.backends.sqlite3.base import DatabaseWrapper
 from django.test import TestCase
 
 from teatree.core.overlay import ProvisionStep
-from teatree.core.provision.step_runner import (
-    ProvisionReport,
-    StepResult,
-    run_callable_step,
-    run_provision_steps,
-    run_step,
-)
+from teatree.core.provision.provision_report import ProvisionReport, StepResult
+from teatree.core.provision.step_runner import run_callable_step, run_provision_steps, run_step
 from tests.teatree_core._provision_timebox_stub import (
     BROKEN_DEPENDENCY_NAME,
     provision_timebox_internally_broken,

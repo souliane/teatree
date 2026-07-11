@@ -9,10 +9,11 @@ import subprocess  # noqa: S404 — only TimeoutExpired/CompletedProcess accesse
 import time
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
-from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING, TypedDict
+from types import ModuleType
+from typing import TYPE_CHECKING
 
+from teatree.core.provision.provision_report import ProvisionReport, StepReporter, StepResult
 from teatree.utils.run import run_allowed_to_fail
 
 if TYPE_CHECKING:
@@ -21,6 +22,37 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 _PROVISION_TIMEBOX_MODULE = "teatree.core.provision.provision_timebox"
+
+
+def _optional_timebox() -> ModuleType | None:
+    """Import ``provision_timebox``, or ``None`` when the running base predates it.
+
+    The single guarded lazy import behind every optional time-box call in this
+    module (souliane/teatree#2664). ``worktree teardown`` runs the worktree's OWN
+    checkout (``uv --directory <worktree> run``), whose base may predate
+    ``provision_timebox`` (#2220); the import then raised ``ModuleNotFoundError``
+    and aborted the whole teardown, orphaning the DB / ``Worktree`` row /
+    containers. Returning ``None`` there lets each call site degrade to its
+    time-box-free path instead of aborting the caller.
+
+    The catch is narrowed to the module's OWN absence (keyed on
+    ``ModuleNotFoundError.name``) so a *present* ``provision_timebox`` that fails
+    to import because of a real internal / transitive-import bug (whose ``.name``
+    is the missing DEPENDENCY, not this module) re-raises and surfaces via the
+    normal failure path, instead of silently disabling the time-box for every
+    healthy install.
+    """
+    try:
+        # Lazy by necessity: provision_timebox imports back from this module
+        # (StepResult / run_callable_step), so a top-level import would cycle; the
+        # import must also be free to FAIL at call time on a #2664 stale base.
+        import teatree.core.provision.provision_timebox as timebox  # noqa: PLC0415 — see comment above
+    except ModuleNotFoundError as exc:
+        if exc.name != _PROVISION_TIMEBOX_MODULE:
+            raise
+        return None
+    return timebox
+
 
 # Fallback hard ceiling (seconds) for the degraded plain-subprocess path, which
 # runs only when ``provision_timebox`` is ABSENT and so cannot consult its
@@ -31,132 +63,11 @@ _PROVISION_TIMEBOX_MODULE = "teatree.core.provision.provision_timebox"
 _PLAIN_STEP_TIMEOUT_FALLBACK_SECONDS = 1800
 
 
-@dataclass(frozen=True, slots=True)
-class StepResult:
-    """Outcome of a single provisioning step."""
-
-    name: str
-    success: bool
-    duration: float = 0.0
-    stdout: str = ""
-    stderr: str = ""
-    error: str = ""
-    required: bool = True
-    skipped: bool = False
-
-    def summary(self) -> str:
-        status = "SKIP" if self.skipped else ("OK" if self.success else "FAILED")
-        msg = f"  [{status}] {self.name} ({self.duration:.1f}s)"
-        if not self.success and self.error:
-            msg += f"\n         {self.error}"
-        return msg
-
-    def to_dict(self) -> "StepResultDict":
-        return {
-            "name": self.name,
-            "success": self.success,
-            "duration": self.duration,
-            "error": self.error,
-            "required": self.required,
-            "skipped": self.skipped,
-        }
-
-
-class StepResultDict(TypedDict):
-    """JSON-serializable projection of :class:`StepResult` for ``Worktree.extra`` persistence.
-
-    Deliberately narrower than the full dataclass — ``stdout``/``stderr`` can be
-    arbitrarily large subprocess output and add nothing to a persisted report
-    a human or the ``--report`` table reads later.
-    """
-
-    name: str
-    success: bool
-    duration: float
-    error: str
-    required: bool
-    skipped: bool
-
-
-class ProvisionReportDict(TypedDict):
-    """JSON-serializable projection of :class:`ProvisionReport` (``Worktree.extra['provision_report']``)."""
-
-    steps: list[StepResultDict]
-    total_duration: float
-    success: bool
-
-
-@dataclass
-class ProvisionReport:
-    """Aggregated outcome of a multi-step provisioning run."""
-
-    steps: list[StepResult] = field(default_factory=list)
-
-    @property
-    def success(self) -> bool:
-        return not any(s.required and not s.success for s in self.steps)
-
-    @property
-    def total_duration(self) -> float:
-        return sum(s.duration for s in self.steps)
-
-    @property
-    def slowest_step(self) -> StepResult | None:
-        return max(self.steps, key=lambda s: s.duration, default=None)
-
-    @property
-    def failed_step(self) -> str | None:
-        for s in self.steps:
-            if not s.success:
-                return s.name
-        return None
-
-    @property
-    def failed_required_step(self) -> str | None:
-        for s in self.steps:
-            if s.required and not s.success:
-                return s.name
-        return None
-
-    def summary(self) -> str:
-        lines = [s.summary() for s in self.steps]
-        total = len(self.steps)
-        ok = sum(1 for s in self.steps if s.success)
-        lines.append(f"\n  {ok}/{total} steps succeeded. Total: {self.total_duration:.1f}s")
-        if not self.success:
-            lines.append(f"  First failure: {self.failed_step}")
-        return "\n".join(lines)
-
-    def to_dict(self) -> ProvisionReportDict:
-        return {
-            "steps": [s.to_dict() for s in self.steps],
-            "total_duration": self.total_duration,
-            "success": self.success,
-        }
-
-    @classmethod
-    def from_dict(cls, data: ProvisionReportDict) -> "ProvisionReport":
-        steps = [
-            StepResult(
-                name=str(s.get("name", "")),
-                success=bool(s.get("success", False)),
-                duration=float(s.get("duration", 0.0)),
-                error=str(s.get("error", "")),
-                required=bool(s.get("required", True)),
-                skipped=bool(s.get("skipped", False)),
-            )
-            for s in data.get("steps", [])
-        ]
-        return cls(steps=steps)
-
-
-# ast-grep-ignore: ac-django-no-complexity-suppressions
-def run_step(  # noqa: PLR0913
+def run_step(
     name: str,
     cmd: list[str],
     *,
     cwd: str | Path | None = None,
-    env: dict[str, str] | None = None,
     check: bool = True,
     timeout: int | None = 300,
 ) -> StepResult:
@@ -173,16 +84,12 @@ def run_step(  # noqa: PLR0913
     stays benign (the historical contract), while a timeout / command-not-found
     is still surfaced as a failure.
 
-    The time-box enhancement is *optional*. ``worktree teardown`` runs the
-    worktree's OWN checkout (``uv --directory <worktree> run``), whose base may
-    predate ``provision_timebox`` (#2220); the lazy import then raised
-    ``ModuleNotFoundError`` and aborted the whole teardown, skipping the steps
-    ordered after it — orphaning the DB, the ``Worktree`` row, and containers
-    (souliane/teatree#2664). When the module is absent, degrade to a plain
-    time-box-free subprocess run that keeps the same ``StepResult`` contract,
-    never abort the caller.
+    The time-box enhancement is *optional* (:func:`_optional_timebox`): when the
+    ``provision_timebox`` module is absent on a stale base (souliane/teatree#2664)
+    this degrades to a plain time-box-free subprocess run that keeps the same
+    ``StepResult`` contract, never aborting the caller.
     """
-    result = _timeboxed_step(name, cmd, cwd=cwd, env=env, timeout=timeout)
+    result = _timeboxed_step(name, cmd, cwd=cwd, timeout=timeout)
     if result.success or check:
         return result
     if result.error.startswith(("timed out", "command not found")):
@@ -201,31 +108,20 @@ def _timeboxed_step(
     cmd: list[str],
     *,
     cwd: str | Path | None,
-    env: dict[str, str] | None,
     timeout: int | None,
 ) -> StepResult:
     """Run via the time-box enhancement, falling back to a plain subprocess.
 
     The enhancement (timeout ceiling + heartbeat + forked-migration alert) is
     layered on plain subprocess execution; when the ``provision_timebox`` module
-    itself is absent on a stale base it is simply not there, so the plain run is
-    the correct degradation (souliane/teatree#2664).
-
-    The catch is narrowed to the module's OWN absence — keyed on
-    ``ModuleNotFoundError.name`` — so a *present* ``provision_timebox`` that
-    fails to import because of a real internal/transitive-import bug (its
-    ``.name`` is the missing DEPENDENCY, not this module) re-raises and surfaces
-    via the normal failure path, instead of silently disabling the time-box for
-    every healthy install.
+    itself is absent on a stale base (:func:`_optional_timebox`, #2664) the plain
+    run is the correct degradation.
     """
-    try:
-        from teatree.core.provision.provision_timebox import run_timeboxed_step  # noqa: PLC0415
-    except ModuleNotFoundError as exc:
-        if exc.name != _PROVISION_TIMEBOX_MODULE:
-            raise
+    timebox = _optional_timebox()
+    if timebox is None:
         logger.warning("provision_timebox unavailable for step %r — plain subprocess run", name)
-        return _plain_subprocess_step(name, cmd, cwd=cwd, env=env, timeout=timeout)
-    return run_timeboxed_step(name, cmd, cwd=cwd, env=env, timeout=timeout)
+        return _plain_subprocess_step(name, cmd, cwd=cwd, timeout=timeout)
+    return timebox.run_timeboxed_step(name, cmd, cwd=cwd, timeout=timeout)
 
 
 def _plain_subprocess_step(
@@ -233,7 +129,6 @@ def _plain_subprocess_step(
     cmd: list[str],
     *,
     cwd: str | Path | None,
-    env: dict[str, str] | None,
     timeout: int | None,
 ) -> StepResult:
     """Time-box-free subprocess run with the same :class:`StepResult` contract.
@@ -249,7 +144,7 @@ def _plain_subprocess_step(
     ceiling = timeout if timeout is not None else _PLAIN_STEP_TIMEOUT_FALLBACK_SECONDS
     start = time.monotonic()
     try:
-        proc = run_allowed_to_fail(cmd, cwd=cwd, env=env, expected_codes=None, timeout=ceiling)
+        proc = run_allowed_to_fail(cmd, cwd=cwd, expected_codes=None, timeout=ceiling)
     except subprocess.TimeoutExpired:
         duration = time.monotonic() - start
         return StepResult(name=name, success=False, duration=duration, error=f"timed out after {ceiling}s")
@@ -324,18 +219,21 @@ def _timeboxed_subprocess_callable_step(
     heavy step (a DB import, a frontend build) keeps the long one. A caller
     that pre-resolved the ceiling (the parallel path, to keep pool workers
     ORM-free) passes it as *timeout*, bypassing the ``heavy`` lookup here.
+
+    When ``provision_timebox`` is absent on a stale base (:func:`_optional_timebox`,
+    souliane/teatree#2664) this degrades to a plain :func:`run_callable_step`,
+    never aborting the caller.
     """
-    try:
-        from teatree.core.provision.provision_timebox import run_timeboxed_callable  # noqa: PLC0415
-    except ModuleNotFoundError as exc:
-        if exc.name != _PROVISION_TIMEBOX_MODULE:
-            raise
+    timebox = _optional_timebox()
+    if timebox is None:
         logger.warning("provision_timebox unavailable for subprocess step %r — plain run", name)
         return run_callable_step(name, fn)
-    return run_timeboxed_callable(name, fn, heavy=heavy, timeout=timeout)
+    return timebox.run_timeboxed_callable(name, fn, heavy=heavy, timeout=timeout)
 
 
-def _run_single_step(step, *, write: Callable[[str], object], timeout: float | None = None) -> StepResult:  # noqa: ANN001
+def _run_single_step(
+    step: "ProvisionStep", *, write: Callable[[str], object], timeout: float | None = None
+) -> StepResult:
     """Run one ``ProvisionStep``, honouring its skip-probe first (souliane/teatree#2949).
 
     A cheap ``skip_probe`` that returns ``True`` means the precondition is
@@ -409,7 +307,7 @@ def _apply_post_condition(
     return True, result.error
 
 
-def _run_group_concurrently(group: list, *, write: Callable[[str], object]) -> list[StepResult]:
+def _run_group_concurrently(group: "list[ProvisionStep]", *, write: Callable[[str], object]) -> list[StepResult]:
     """Run every step in *group* concurrently on a bounded thread pool.
 
     Only ``subprocess_only`` steps reach here (souliane/teatree#2949, PR-27) —
@@ -434,56 +332,50 @@ def _run_group_concurrently(group: list, *, write: Callable[[str], object]) -> l
         )
 
 
-def _resolve_step_timeout(step) -> float | None:  # noqa: ANN001
+def _resolve_step_timeout(step: "ProvisionStep") -> float | None:
     """The time-box ceiling for *step*, resolved on the CALLER thread.
 
     :func:`teatree.core.provision.provision_timebox.resolve_step_timeout_seconds` reads the
     ``ConfigSetting`` store — an ORM access that must not run on a pool worker
     thread (see :func:`_run_group_concurrently`). Degrades to ``None`` — letting
     the time-box fall back to its own plain path — when ``provision_timebox`` is
-    absent on a stale base (souliane/teatree#2664).
+    absent on a stale base (:func:`_optional_timebox`, souliane/teatree#2664).
     """
-    try:
-        from teatree.core.provision.provision_timebox import resolve_step_timeout_seconds  # noqa: PLC0415
-    except ModuleNotFoundError as exc:
-        if exc.name != _PROVISION_TIMEBOX_MODULE:
-            raise
+    timebox = _optional_timebox()
+    if timebox is None:
         return None
-    return float(resolve_step_timeout_seconds(heavy=step.heavy))
+    return float(timebox.resolve_step_timeout_seconds(heavy=step.heavy))
 
 
-# ast-grep-ignore: ac-django-no-complexity-suppressions
-def _report_one_result(  # noqa: PLR0913 — each kwarg is a documented output sink, not poor design.
-    member,  # noqa: ANN001
+def _report_one_result(
+    member: "ProvisionStep",
     result: StepResult,
     *,
-    verbose: bool,
-    write: Callable[[str], object],
-    write_err: Callable[[str], object],
+    reporter: StepReporter,
     stop_on_required_failure: bool,
 ) -> bool:
     """Log one step's outcome; return whether it should halt the whole run."""
     if result.skipped:
         return False
-    if verbose and result.stdout:
+    if reporter.verbose and result.stdout:
         for line in result.stdout.strip().splitlines()[:20]:
-            write(f"    | {line}")
+            reporter.write(f"    | {line}")
     if result.success:
-        if verbose:
-            write(f"    OK ({result.duration:.1f}s)")
+        if reporter.verbose:
+            reporter.write(f"    OK ({result.duration:.1f}s)")
         return False
-    write_err(result.summary())
-    if verbose and result.stderr:
+    reporter.write_err(result.summary())
+    if reporter.verbose and result.stderr:
         for line in result.stderr.strip().splitlines()[:20]:
-            write_err(f"    | {line}")
+            reporter.write_err(f"    | {line}")
     _alert_on_migration_conflict(result)
     if member.required and stop_on_required_failure:
-        write_err(f"  HALTED: required step '{member.name}' failed.")
+        reporter.write_err(f"  HALTED: required step '{member.name}' failed.")
         return True
     return False
 
 
-def _resolve_step_deps(steps: list) -> dict[str, set[str]]:
+def _resolve_step_deps(steps: "list[ProvisionStep]") -> dict[str, set[str]]:
     """Map each step name to the set of step names it must run AFTER (PR-27 DAG).
 
     Edges come from ``requires``/``produces``: a step depends on every step that
@@ -506,7 +398,9 @@ def _resolve_step_deps(steps: list) -> dict[str, set[str]]:
     return deps
 
 
-def _run_subprocess_wave(subprocess_ready: list, *, write: Callable[[str], object]) -> list[StepResult]:
+def _run_subprocess_wave(
+    subprocess_ready: "list[ProvisionStep]", *, write: Callable[[str], object]
+) -> list[StepResult]:
     """Run a wave's independent, ORM-free ``subprocess_only`` steps, concurrently when >1.
 
     A bounded pool is the same thread-safety contract as one worker; results come
@@ -518,7 +412,7 @@ def _run_subprocess_wave(subprocess_ready: list, *, write: Callable[[str], objec
 
 
 def run_provision_steps(
-    steps: list,
+    steps: "list[ProvisionStep]",
     *,
     verbose: bool = False,
     stdout_writer: Callable[[str], object] | None = None,
@@ -538,6 +432,7 @@ def run_provision_steps(
     report = ProvisionReport()
     write = stdout_writer or (lambda _msg: None)
     write_err = stderr_writer or (lambda _msg: None)
+    reporter = StepReporter(write=write, write_err=write_err, verbose=verbose)
 
     deps = _resolve_step_deps(steps)
     completed: set[str] = set()
@@ -549,9 +444,7 @@ def run_provision_steps(
         return _report_one_result(
             step,
             result,
-            verbose=verbose,
-            write=write,
-            write_err=write_err,
+            reporter=reporter,
             stop_on_required_failure=stop_on_required_failure,
         )
 
@@ -595,19 +488,13 @@ def _alert_on_migration_conflict(result: StepResult) -> None:
     surfaced out-of-band, instead of leaving the agent to discover the grind
     (souliane/teatree#2220). Best-effort: the alert never breaks provisioning —
     including when the executing base predates ``provision_timebox`` itself
-    (souliane/teatree#2664), in which case there is no alert path and the call is
-    a no-op. The catch is narrowed to the module's OWN absence (keyed on
-    ``ModuleNotFoundError.name``) so a *present* module with a real internal
-    import bug re-raises rather than silently suppressing the alert.
+    (:func:`_optional_timebox`, souliane/teatree#2664), in which case there is no
+    alert path and the call is a no-op.
     """
-    try:
-        from teatree.core.provision import provision_timebox  # noqa: PLC0415 — lazy: base may predate the module
-    except ModuleNotFoundError as exc:
-        if exc.name != _PROVISION_TIMEBOX_MODULE:
-            raise
+    timebox = _optional_timebox()
+    if timebox is None:
         return
-
-    conflict = provision_timebox.detect_migration_conflict(f"{result.stdout}\n{result.stderr}\n{result.error}")
+    conflict = timebox.detect_migration_conflict(f"{result.stdout}\n{result.stderr}\n{result.error}")
     if conflict is not None:
         logger.warning("Provisioning step %r hit a %s", result.name, conflict)
-        provision_timebox.alert_provision_user(step=result.name, repo="", detail=conflict)
+        timebox.alert_provision_user(step=result.name, repo="", detail=conflict)

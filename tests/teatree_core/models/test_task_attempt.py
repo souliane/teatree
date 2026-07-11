@@ -61,6 +61,50 @@ class TestTaskAttemptLane(TestCase):
         assert metered.lane == "metered"
 
 
+class TestTaskAttemptOutcome(TestCase):
+    """``TaskAttempt.outcome`` is stamped from ``exit_code`` + ``error`` on save (#16)."""
+
+    @classmethod
+    def setUpTestData(cls) -> None:
+        cls.ticket = Ticket.objects.create()
+        cls.session = Session.objects.create(ticket=cls.ticket)
+        cls.task = Task.objects.create(ticket=cls.ticket, session=cls.session)
+
+    def test_in_flight_attempt_has_blank_outcome(self) -> None:
+        # No exit_code recorded yet — neither success nor failure.
+        attempt = TaskAttempt.objects.create(task=self.task)
+        attempt.refresh_from_db()
+        assert attempt.outcome == ""
+
+    def test_clean_exit_is_success(self) -> None:
+        attempt = TaskAttempt.objects.create(task=self.task, exit_code=0, error="")
+        attempt.refresh_from_db()
+        assert attempt.outcome == TaskAttempt.Outcome.SUCCESS
+
+    def test_exit0_with_error_is_refusal(self) -> None:
+        # The envelope-refusal fingerprint: a clean exit code but an error string.
+        attempt = TaskAttempt.objects.create(task=self.task, exit_code=0, error="refused: missing evidence")
+        attempt.refresh_from_db()
+        assert attempt.outcome == TaskAttempt.Outcome.REFUSAL
+
+    def test_nonzero_exit_is_crash(self) -> None:
+        attempt = TaskAttempt.objects.create(task=self.task, exit_code=1, error="boom")
+        attempt.refresh_from_db()
+        assert attempt.outcome == TaskAttempt.Outcome.CRASH
+
+    def test_outcome_restamped_when_terminal_fields_written_after_insert(self) -> None:
+        # The common lifecycle: the row is inserted in flight (blank outcome),
+        # then the terminal exit_code/error are written on completion — the
+        # discriminator must be recomputed on that later save, not only on insert.
+        attempt = TaskAttempt.objects.create(task=self.task)
+        assert attempt.outcome == ""
+        attempt.exit_code = 0
+        attempt.error = "refused: policy"
+        attempt.save()
+        attempt.refresh_from_db()
+        assert attempt.outcome == TaskAttempt.Outcome.REFUSAL
+
+
 class TestTaskAttemptQuerySetUsagesCarriesLane(TestCase):
     def test_usages_carries_lane_through_to_attempt_usage(self) -> None:
         ticket = Ticket.objects.create()

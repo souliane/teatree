@@ -455,7 +455,12 @@ class TestLifecycleSetup(TestCase):
             "_print_diagnostics removed in worktree FSM refactor — "
             "diagnostics moved to the t3 worktree diagnose subcommand; needs rewrite",
         )
-        from teatree.core.provision.step_runner import ProvisionReport, StepResult  # noqa: PLC0415
+        # Deferred import: the pytest.skip above short-circuits this body (the test
+        # awaits a rewrite), so keep the import local rather than at module top.
+        from teatree.core.provision.provision_report import (  # noqa: PLC0415 — see comment above
+            ProvisionReport,
+            StepResult,
+        )
 
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
