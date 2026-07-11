@@ -1,6 +1,5 @@
 """Ticket state management: transitions and listing for the loop and CLI."""
 
-import logging
 from typing import Annotated, TypedDict
 
 import typer
@@ -16,6 +15,7 @@ from teatree.core.management.commands._context_commands import ContextCommands
 from teatree.core.management.commands._merge_keystone_commands import MergeKeystoneCommands
 from teatree.core.management.commands._plan_commands import PlanCommands
 from teatree.core.management.commands._rubric_commands import RubricCommands
+from teatree.core.management.commands._sweep_commands import SweepCommands
 from teatree.core.management.commands._ticket_show import TicketShowCommands
 from teatree.core.management.commands._transition_names import ALLOWED_TRANSITIONS
 from teatree.core.management.commands._transition_refusals import review_context_refusal
@@ -24,14 +24,6 @@ from teatree.core.models import ClearIssuanceError, ClearRequest, MergeClear, Re
 from teatree.core.models.errors import InvalidTransitionError
 from teatree.core.models.external_delivery import refresh_external_delivery_if_active
 from teatree.core.send_proxy import forge_from_url, route_forge_write
-
-
-class CompletionResult(TypedDict, total=False):
-    ticket_id: int
-    issue_url: str
-    from_state: str
-    to_state: str
-    action: str
 
 
 class CommentResult(TypedDict, total=False):
@@ -74,17 +66,6 @@ class E2EBypassResult(TypedDict, total=False):
     approver: str
 
 
-class ReattributeResult(TypedDict, total=False):
-    ticket_id: int
-    issue_url: str
-    from_overlay: str
-    to_overlay: str
-    action: str
-
-
-logger = logging.getLogger(__name__)
-
-
 class Command(
     RubricCommands,
     PlanCommands,
@@ -93,6 +74,7 @@ class Command(
     CloseCommands,
     AttachmentCommands,
     MergeKeystoneCommands,
+    SweepCommands,
     TyperCommand,
 ):
     @command()
@@ -513,141 +495,3 @@ class Command(
             }
             for ticket in qs
         ]
-
-    @command()
-    def sync_completions(
-        self,
-        *,
-        dry_run: Annotated[bool, typer.Option(help="Show what would transition without acting.")] = False,
-    ) -> list[CompletionResult]:
-        """Check post-ship tickets against upstream issues and advance completed ones.
-
-        Walks tickets in shipped/in_review/merged states, calls the overlay's
-        ``is_issue_done()`` for each, and transitions completed tickets toward
-        delivered. Use ``--dry-run`` to preview without touching state.
-        """
-        from teatree.backends.loader import get_code_host_for_url  # noqa: PLC0415
-        from teatree.core.overlay_loader import get_all_overlays  # noqa: PLC0415
-
-        completable_states = frozenset({"shipped", "in_review", "merged"})
-        results: list[CompletionResult] = []
-
-        for overlay_name, overlay in get_all_overlays().items():
-            tickets = Ticket.objects.filter(
-                state__in=completable_states,
-                overlay=overlay_name,
-            ).exclude(issue_url="")
-
-            for ticket in tickets:
-                host = get_code_host_for_url(overlay, ticket.issue_url)
-                if host is None:
-                    continue
-                try:
-                    issue_data = host.get_issue(ticket.issue_url)
-                except Exception:  # noqa: BLE001 — an issue-fetch failure skips the ticket, never aborts the sweep
-                    logger.warning("Failed to fetch issue for ticket %s (%s)", ticket.pk, ticket.issue_url)
-                    continue
-                if not isinstance(issue_data, dict) or "error" in issue_data:
-                    continue
-                if not overlay.is_issue_done(issue_data):
-                    continue
-
-                from_state = ticket.state
-                if dry_run:
-                    results.append(
-                        CompletionResult(
-                            ticket_id=int(ticket.pk),
-                            issue_url=ticket.issue_url,
-                            from_state=from_state,
-                            action="would_complete",
-                        )
-                    )
-                    self.stdout.write(f"  [dry-run] #{ticket.pk} ({from_state}) → completed: {ticket.issue_url}")
-                else:
-                    _advance_ticket(ticket)
-                    results.append(
-                        CompletionResult(
-                            ticket_id=int(ticket.pk),
-                            issue_url=ticket.issue_url,
-                            from_state=from_state,
-                            to_state=ticket.state,
-                            action="completed",
-                        )
-                    )
-                    self.stdout.write(f"  #{ticket.pk} {from_state} → {ticket.state}: {ticket.issue_url}")
-
-        if not results:
-            self.stdout.write("No tickets to advance.")
-        else:
-            self.stdout.write(f"\n{len(results)} ticket(s) {'would be' if dry_run else ''} advanced.")
-        return results
-
-    @command()
-    def reconcile_overlay(
-        self,
-        *,
-        dry_run: Annotated[bool, typer.Option(help="Show what would change without persisting.")] = False,
-    ) -> list[ReattributeResult]:
-        """Backfill ``overlay`` for rows whose attribution disagrees with inference.
-
-        Walks every ticket with an ``issue_url`` and re-runs overlay
-        inference (now routed through ``get_workspace_repos()``). Rows whose
-        stored overlay differs from a *conclusive* inference are corrected;
-        an inconclusive (empty) inference never blanks an existing value.
-        Use ``--dry-run`` to preview.
-        """
-        results: list[ReattributeResult] = []
-
-        for ticket in Ticket.objects.exclude(issue_url="").order_by("pk"):
-            inferred = ticket._infer_overlay()  # noqa: SLF001 — backfill owns this model concern.
-            if not inferred or inferred == ticket.overlay:
-                continue
-
-            from_overlay = ticket.overlay
-            from_label = from_overlay or "(none)"
-            if dry_run:
-                results.append(
-                    ReattributeResult(
-                        ticket_id=int(ticket.pk),
-                        issue_url=ticket.issue_url,
-                        from_overlay=from_overlay,
-                        to_overlay=inferred,
-                        action="would_reattribute",
-                    )
-                )
-                self.stdout.write(f"  [dry-run] #{ticket.pk}: {from_label} → {inferred}: {ticket.issue_url}")
-            else:
-                ticket.apply_inferred_overlay(inferred)
-                results.append(
-                    ReattributeResult(
-                        ticket_id=int(ticket.pk),
-                        issue_url=ticket.issue_url,
-                        from_overlay=from_overlay,
-                        to_overlay=ticket.overlay,
-                        action="reattributed",
-                    )
-                )
-                self.stdout.write(f"  #{ticket.pk}: {from_label} → {ticket.overlay}: {ticket.issue_url}")
-
-        if not results:
-            self.stdout.write("All ticket overlays already consistent with inference.")
-        else:
-            verb = "would be" if dry_run else "were"
-            self.stdout.write(f"\n{len(results)} ticket(s) {verb} re-attributed.")
-        return results
-
-
-def _advance_ticket(ticket: Ticket) -> None:
-    """Walk the ticket through remaining FSM transitions toward delivered."""
-    with transaction.atomic():
-        if ticket.state == "shipped":
-            ticket.request_review()
-            ticket.save()
-    with transaction.atomic():
-        if ticket.state == "in_review":
-            ticket.mark_merged()
-            ticket.save()
-    with transaction.atomic():
-        if ticket.state == "merged":
-            ticket.retrospect()
-            ticket.save()
