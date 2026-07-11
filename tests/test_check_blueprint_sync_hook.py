@@ -51,7 +51,7 @@ class TestIsBlueprint:
         [
             "docs/dependency-graph.md",
             "docs/blueprint/notes.txt",
-            "src/teatree/config_agent.py",
+            "src/teatree/config/agent_spawn.py",
             "README.md",
             "docs/blueprintish.md",
         ],
@@ -82,7 +82,7 @@ class TestLooksLikeCommitMsgFile:
     @pytest.mark.parametrize(
         "path",
         [
-            "src/teatree/config_agent.py",
+            "src/teatree/config/agent_spawn.py",
             "scripts/hooks/check_blueprint_sync.py",
             "BLUEPRINT.md",
             "docs/blueprint/configuration.md",
@@ -162,7 +162,7 @@ class TestMain:
             monkeypatch,
             tmp_path,
             message="feat(agent): something",
-            staged=["src/teatree/config_agent.py"],
+            staged=["src/teatree/config/agent_spawn.py"],
         )
         assert rc == 1
 
@@ -171,7 +171,7 @@ class TestMain:
             monkeypatch,
             tmp_path,
             message="feat(agent): something",
-            staged=["src/teatree/config_agent.py", "BLUEPRINT.md"],
+            staged=["src/teatree/config/agent_spawn.py", "BLUEPRINT.md"],
         )
         assert rc == 0
 
@@ -182,7 +182,7 @@ class TestMain:
             monkeypatch,
             tmp_path,
             message="feat(agent): single-toggle model pin override",
-            staged=["src/teatree/config_agent.py", "docs/blueprint/configuration.md"],
+            staged=["src/teatree/config/agent_spawn.py", "docs/blueprint/configuration.md"],
         )
         assert rc == 0
 
@@ -191,7 +191,7 @@ class TestMain:
             monkeypatch,
             tmp_path,
             message="fix(agent): a bug",
-            staged=["src/teatree/config_agent.py"],
+            staged=["src/teatree/config/agent_spawn.py"],
         )
         assert rc == 0
 
@@ -202,7 +202,7 @@ class TestMain:
             monkeypatch,
             tmp_path,
             message="refactor(core): extract helper",
-            staged=["src/teatree/config_agent.py"],
+            staged=["src/teatree/config/agent_spawn.py"],
         )
         assert rc == 0
 
@@ -258,7 +258,7 @@ class TestMain:
             monkeypatch,
             tmp_path,
             message="Merge branch 'origin/main' into some-branch",
-            staged=["src/teatree/config_agent.py"],
+            staged=["src/teatree/config/agent_spawn.py"],
             options=_RunOptions(is_merge_commit=True),
         )
         assert rc == 0
@@ -273,7 +273,7 @@ class TestMain:
             monkeypatch,
             tmp_path,
             message="Merge in the new config helper",
-            staged=["src/teatree/config_agent.py"],
+            staged=["src/teatree/config/agent_spawn.py"],
             options=_RunOptions(is_merge_commit=False),
         )
         assert rc == 1
@@ -320,7 +320,7 @@ class TestMain:
             monkeypatch,
             tmp_path,
             message="Revert my own local experiment",
-            staged=["src/teatree/config_agent.py"],
+            staged=["src/teatree/config/agent_spawn.py"],
             options=_RunOptions(is_revert_commit=False),
         )
         assert rc == 1

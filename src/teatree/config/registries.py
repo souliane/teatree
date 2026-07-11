@@ -17,7 +17,8 @@ partition (``config/homes.py``):
     the DB exactly like every other setting — the leak surface is the ``export``
     path (``SECRET_SETTINGS`` guards it), not the storage.
 
-``config_setting set`` / ``get`` consult all three registries (this union with
+``config_setting set`` / ``get`` consult all four registries (:data:`REGISTRY_SETTINGS`,
+:data:`COLD_SETTINGS`, ``COLD_HOOK_SETTINGS``, and this union with
 ``OVERLAY_OVERRIDABLE_SETTINGS``) to allow + validate a key, so an admin cannot
 stash a row no reader would consult. These keys are deliberately NOT in
 ``OVERLAY_OVERRIDABLE_SETTINGS`` (the ``UserSettings`` partition), so the resolver's
@@ -64,13 +65,16 @@ COLD_SETTINGS: dict[str, Callable[[Any], Any]] = {
     "private_repos": _parse_str_list,
     "overlay_leak_terms": _parse_str_list,
     # ``[agent]`` spawn tables (str->str/bool/int maps) + scalars, read by the
-    # dispatch paths (``config_agent`` / ``model_tiering``) via ``cold_reader``.
+    # dispatch paths (``config.agent_spawn`` / ``model_tiering``) via ``cold_reader``.
     "agent_phase_models": _parse_registry_dict,
     "agent_skill_models": _parse_registry_dict,
     "agent_tier_models": _parse_registry_dict,
     "agent_pydantic_ai_tier_models": _parse_registry_dict,
     "agent_tier_effort": _parse_registry_dict,
     "agent_phase_fanout": _parse_registry_dict,
+    "agent_phase_harness": _parse_registry_dict,
+    # Per-model price overrides for ``t3 cost`` (model-id substring -> in/out rates).
+    "cost_model_prices": _parse_registry_dict,
     "agent_session_model": _parse_strict_str,
     "agent_session_effort": _parse_strict_str,
     "agent_honesty_model": _parse_strict_str,
