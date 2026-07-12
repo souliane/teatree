@@ -23,10 +23,21 @@ So the handler is driven in ISOLATION here — importing only
 ``hooks.scripts.banned_terms.gate`` and calling it directly — exactly as a run
 where it happens to be the first (or only) gate to reach teatree.
 
-Anti-vacuity: this test is RED against the pre-fix ``parents[2]`` bootstrap (the
-cold-host banned term is silently PASSED, exit 0) and GREEN once the gate routes
-through the shared ``managed_repo.teatree_src_on_path`` helper (blocked, exit 2).
-Confirmed failing before the fix.
+Anti-vacuity: the banned-term test is RED against the pre-fix ``parents[2]``
+bootstrap (the cold-host banned term is silently PASSED, exit 0) and GREEN once
+the gate routes through the shared ``managed_repo.teatree_src_on_path`` helper
+(blocked, exit 2). Confirmed failing before the fix.
+
+The SAFE property under test is "no silent fail-open on a cold host," NOT "a
+benign body always passes." A separate test drives a cold host whose scanner ALSO
+cannot run (the real CI-shard condition — the scanner's interpreter cannot import
+the matcher, forced here by starving its ``PATH``): the gate CANNOT determine
+benignity, so it must fail CLOSED (#1954), over-blocking safely rather than
+silently no-opping. A benign body is used deliberately to prove the block is on
+scanner-unavailability, not term content. (There is no "benign passes on a cold
+host" assertion — that outcome is scanner-availability-dependent and therefore
+environment-flaky; the warm benign-passes case is already covered in-process by
+``test_leak_gate_liveness_after_router_split``.)
 
 The final class also covers HLG-3: an INTERNAL error in the handler must stay
 fail-open (never-lockout) but NOT silent — it emits a loud stderr NOTE so the
@@ -53,7 +64,6 @@ _PROBE_SLUG = "github.com/souliane/teatree"
 # Exit-code contract of the isolation driver below (mirrors the router ``main()``:
 # 2 = deny, 0 = passthrough), plus two precondition sentinels.
 _EXIT_DENY = 2
-_EXIT_PASS = 0
 _EXIT_TEATREE_ALREADY_IMPORTABLE = 3
 _EXIT_GATE_IMPORT_PULLED_TEATREE = 4
 
@@ -126,16 +136,26 @@ class _ColdHost:
         self._db = tmp_path / "config.sqlite3"
         self._data = tmp_path / "data"
         self._driver = tmp_path / "driver.py"
+        # An empty dir with NO uv / python3 / bash on it — used as ``PATH`` to
+        # deterministically starve the scanner subprocess so it CANNOT run.
+        self._no_tools = tmp_path / "no-tools"
+        self._no_tools.mkdir()
         _seed_config_db(self._db)
         _seed_public_visibility(self._data)
         self._driver.write_text(_DRIVER, encoding="utf-8")
 
-    def run(self, command: str) -> subprocess.CompletedProcess[str]:
+    def run(self, command: str, *, scanner_reachable: bool = True) -> subprocess.CompletedProcess[str]:
+        # ``scanner_reachable`` picks the PATH the scanner subprocess inherits: a
+        # real PATH (its ``uv``/``python3`` can import the matcher) vs an empty dir
+        # (no tool resolves, so ``check-banned-terms.sh`` cannot start and #1954
+        # fails CLOSED). The gate's OWN teatree bootstrap needs no PATH (it is pure
+        # ``sys.path`` manipulation), so the interpreter is invoked by absolute
+        # path and ``-S`` keeps site (the editable install) out regardless.
+        real_path = os.environ.get("PATH", "/usr/bin:/bin:/usr/local/bin")
+        scanner_path = real_path if scanner_reachable else str(self._no_tools)
         env = {
-            # A real PATH so the shell scanner's ``uv run`` resolves; HOME for uv's
-            # cache. ``-S`` keeps site (and thus the editable install) out.
-            "PATH": os.environ.get("PATH", "/usr/bin:/bin:/usr/local/bin"),
-            "HOME": os.environ.get("HOME", str(self._data)),
+            "PATH": scanner_path,
+            "HOME": os.environ.get("HOME", str(self._data)),  # uv cache home
             "T3_CONFIG_DB": str(self._db),
             "T3_DATA_DIR": str(self._data),
             "TEATREE_CLAUDE_STATUSLINE_STATE_DIR": str(self._data / "state"),
@@ -181,10 +201,22 @@ class TestBannedTermsGateColdHostBootstrap:
             f"stdout={result.stdout!r} stderr={result.stderr!r}"
         )
 
-    def test_cold_host_benign_body_is_not_blocked(self, tmp_path: Path) -> None:
-        result = _ColdHost(tmp_path).run(_public_post_with("just a normal update"))
-        assert result.returncode == _EXIT_PASS, (
-            "a benign public post must pass on a cold host too — the gate must not over-block. "
+    def test_cold_host_scannerless_public_post_fails_closed(self, tmp_path: Path) -> None:
+        # When the cold host ALSO cannot run the scanner (the real CI-shard
+        # condition: the scanner's interpreter cannot import the matcher), the gate
+        # CANNOT determine benignity — so it must fail CLOSED (#1954), never silently
+        # allow an unscanned body onto a public surface. A body with no banned term
+        # is used deliberately: the block here is on scanner-unavailability, not term
+        # content, so it proves the SAFE property "no silent fail-open on a cold
+        # host" rather than the false "a benign body always passes" (which cannot
+        # hold on a host where the body cannot be scanned at all).
+        result = _ColdHost(tmp_path).run(_public_post_with("just a normal update"), scanner_reachable=False)
+        assert result.returncode != _EXIT_TEATREE_ALREADY_IMPORTABLE, (
+            "cold-host precondition broke: teatree was importable before the bootstrap"
+        )
+        assert result.returncode == _EXIT_DENY, (
+            "on a scanner-less cold host a public post must fail CLOSED (exit "
+            f"{_EXIT_DENY}) — an unscannable body must never be silently allowed (#1954). "
             f"stdout={result.stdout!r} stderr={result.stderr!r}"
         )
 
