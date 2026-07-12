@@ -7,18 +7,18 @@ tunnel, and the command buttons run a fixed code allowlist as bounded subprocess
 
 from typing import TYPE_CHECKING
 
-from django.http import HttpResponseBadRequest
+from django.http import HttpResponse, HttpResponseBadRequest
 from django.shortcuts import render
 from django.views.decorators.http import require_POST
 
 from teatree.agents.web_terminal import launch_web_session
 from teatree.dash import audit
-from teatree.dash.commands import CommandNotAllowedError, run_allowlisted
+from teatree.dash.commands import CommandBusyError, CommandNotAllowedError, run_allowlisted
 from teatree.dash.views.access import require_loopback_or_staff
 from teatree.dash.views.base import actor
 
 if TYPE_CHECKING:
-    from django.http import HttpRequest, HttpResponse
+    from django.http import HttpRequest
 
 
 @require_loopback_or_staff
@@ -44,5 +44,7 @@ def command_run(request: "HttpRequest") -> "HttpResponse":
         result = run_allowlisted(key, loop_name=loop_name)
     except CommandNotAllowedError as exc:
         return HttpResponseBadRequest(str(exc))
+    except CommandBusyError as exc:
+        return HttpResponse(str(exc), status=429, content_type="text/plain")
     audit.record(actor=actor(request), action=f"command:{key}", target=loop_name, after=f"exit={result.exit_code}")
     return render(request, "dash/partials/_command_result.html", {"result": result})

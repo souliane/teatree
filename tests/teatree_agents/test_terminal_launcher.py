@@ -1,5 +1,6 @@
 """The resurrected loopback ttyd launcher + claude-argv builder (#3162)."""
 
+from subprocess import DEVNULL, PIPE
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -23,6 +24,21 @@ def test_launch_ttyd_spawns_writable_once_on_loopback() -> None:
     assert "127.0.0.1" in argv
     assert result.launch_url == "http://127.0.0.1:45678"
     assert result.pid == 999
+
+
+def test_launch_ttyd_does_not_leave_an_unread_stderr_pipe() -> None:
+    # DASH-3: nothing ever reads the ttyd process's stderr, so a PIPE could fill the
+    # OS pipe buffer and block a chatty ttyd mid-session. Both streams go to DEVNULL.
+    proc = MagicMock(pid=999)
+    with (
+        patch.object(terminal_launcher.shutil, "which", return_value="/usr/bin/ttyd"),
+        patch.object(terminal_launcher, "find_free_port", return_value=45678),
+        patch.object(terminal_launcher, "spawn", return_value=proc) as spawn,
+    ):
+        terminal_launcher.launch_ttyd(["claude"])
+    assert spawn.call_args.kwargs["stderr"] == DEVNULL
+    assert spawn.call_args.kwargs["stderr"] != PIPE
+    assert spawn.call_args.kwargs["stdout"] == DEVNULL
 
 
 def test_launch_ttyd_missing_binary_returns_error_not_raise() -> None:

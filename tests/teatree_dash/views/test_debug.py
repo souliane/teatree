@@ -6,7 +6,7 @@ from django.test import Client, TestCase
 from django.urls import reverse
 
 from teatree.agents.terminal_launcher import LaunchResult
-from teatree.dash.commands import CommandResult
+from teatree.dash.commands import CommandBusyError, CommandResult
 
 
 class CommandRunViewTestCase(TestCase):
@@ -47,6 +47,17 @@ class CommandRunViewTestCase(TestCase):
         ):
             self.client.post(self.url, {"command": "doctor"})
         assert any("action=command:doctor" in line for line in logs.output)
+
+    def test_busy_command_returns_429(self) -> None:
+        # DASH-6: a run rejected because the same command (or the cap) is in flight
+        # is a transient busy-signal — surfaced as 429, not stacked onto a worker thread.
+        with patch(
+            "teatree.dash.views.debug.run_allowlisted",
+            side_effect=CommandBusyError("command 'doctor' is already running — wait for it to finish"),
+        ):
+            resp = self.client.post(self.url, {"command": "doctor"})
+        assert resp.status_code == 429
+        assert "already running" in resp.content.decode()
 
     def test_csrf_enforced(self) -> None:
         csrf_client = Client(enforce_csrf_checks=True)

@@ -19,7 +19,7 @@
   </form>
 
   <div id="board"
-    hx-get="{% url 'dash:board_columns' %}?text={{ filters.text }}&overlay={{ filters.overlay }}&role={{ filters.role }}&kind={{ filters.kind }}{% if filters.include_ignored %}&ignored=1{% endif %}"
+    hx-get="{% url 'dash:board_columns' %}?text={{ filters.text|urlencode }}&overlay={{ filters.overlay|urlencode }}&role={{ filters.role|urlencode }}&kind={{ filters.kind|urlencode }}{% if filters.include_ignored %}&ignored=1{% endif %}"
     hx-trigger="every 4s"
     hx-swap="innerHTML">
     {% include "dash/partials/_columns.html" %}
