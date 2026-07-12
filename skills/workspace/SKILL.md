@@ -361,8 +361,8 @@ Project skills define the specific endpoints to check (e.g., admin login, API ve
 
 Two distinct gates run on a worktree, with two different overlay hooks:
 
-- `OverlayBase.get_health_checks(worktree)` — **post-provision invariants**. Did `worktree provision` finish its job? (symlinks valid, env cache populated, compose override generated.) Run by `worktree provision` to fail fast on broken setup.
-- `OverlayBase.get_readiness_probes(worktree)` — **post-start runtime checks**. Is the started worktree actually serving? (HTTP probes against allocated ports, health endpoints, dependent services responding.) Run by `worktree ready` and `workspace ready` to gate "ready to use" claims.
+- `overlay.provisioning.health_checks(worktree)` (`OverlayProvisioning`) — **post-provision invariants**. Did `worktree provision` finish its job? (symlinks valid, env cache populated, compose override generated.) Run by `worktree provision` to fail fast on broken setup.
+- `overlay.runtime.readiness_probes(worktree)` (`OverlayRuntime`) — **post-start runtime checks**. Is the started worktree actually serving? (HTTP probes against allocated ports, health endpoints, dependent services responding.) Run by `worktree ready` and `workspace ready` to gate "ready to use" claims.
 
 **Decision rule for overlay authors:**
 
@@ -377,7 +377,7 @@ Two distinct gates run on a worktree, with two different overlay hooks:
 
 For the full extension points table, override chain, and project skill creation guide, see [`references/extension-points.md`](references/extension-points.md).
 
-Key methods on `OverlayBase`: `get_repos()`, `get_required_ports()`, `get_port_env()`, `get_provision_steps()`, `get_db_import_strategy()`, `get_env_extra()`, `get_run_commands()`, `get_services_config()`, `get_verify_endpoints()`, `get_health_checks()`, `get_readiness_probes()`. See the reference for the full list.
+Key hooks: `get_repos()` and `get_provision_steps()` are the mandatory hooks on `OverlayBase`. The rest are grouped on composed providers — provisioning hooks on `overlay.provisioning` (`env_extra()`, `db_import_strategy()`, `services_config()`, `compose_file()`, `health_checks()`, …) and run hooks on `overlay.runtime` (`run_commands()`, `verify_endpoints()`, `readiness_probes()`, …), with NO `get_` prefix. See the reference and the generated [`overlay-extension-points.md`](../../docs/generated/overlay-extension-points.md) for the full list.
 
 ## Lifecycle State Machine
 
@@ -407,7 +407,7 @@ stateDiagram-v2
 ```
 <!-- END GENERATED: worktree-fsm -->
 
-The `services_up → ready` transition runs `OverlayBase.get_readiness_probes()`. A worktree is **only** "ready to use" once probes pass — `services_up` alone proves processes launched, not that they serve traffic.
+The `services_up → ready` transition runs `overlay.runtime.readiness_probes()`. A worktree is **only** "ready to use" once probes pass — `services_up` alone proves processes launched, not that they serve traffic.
 
 ## Troubleshooting
 

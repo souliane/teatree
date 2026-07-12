@@ -18,7 +18,7 @@ import os
 import django.test
 from django.utils import timezone
 
-from teatree.core.models import Loop, LoopState, Prompt
+from teatree.core.models import Loop, LoopPreset, LoopPresetOverride, LoopState, Prompt
 from teatree.core.models.loop_lease import LoopLease
 from teatree.loops.live import STALL_FACTOR, LoopKind, LoopStatusEntry, build_report, owned_per_loop_owners
 
@@ -40,6 +40,7 @@ class TestEntryHelpers:
             cadence_seconds=60,
             last_fired_at=last,
             next_fire_at=nxt,
+            admitted=True,
         )
 
     def test_never_fired_entry(self) -> None:
@@ -329,3 +330,49 @@ class TestMiniEntriesHeldFromLoopState(django.test.TestCase):
         entry = next(e for e in build_report(now=now).mini_loops if e.name == "demo-held-running")
         assert entry.held is False
         assert entry.enabled is True
+
+
+@django.test.override_settings(USE_TZ=True, TIME_ZONE="UTC")
+class TestMiniEntriesAdmittedFoldsPresetMask(django.test.TestCase):
+    """``_mini_entries`` folds the #3159 preset mask into ``admitted`` (#3159).
+
+    ``admitted`` is the effective run verdict the tick gates on — NOT held, then
+    the preset mask over ``Loop.enabled``. Before this fix the entry carried only
+    ``enabled``/``held``, so a masked-off loop looked like a running loop and a
+    forced-on base-disabled loop looked dead.
+    """
+
+    def _loop(self, name: str, *, enabled: bool = True) -> Loop:
+        prompt, _ = Prompt.objects.get_or_create(name="demo-admit", defaults={"body": "x"})
+        return Loop.objects.create(name=name, delay_seconds=120, prompt=prompt, enabled=enabled)
+
+    def _activate(self, preset_name: str, entries: dict[str, bool]) -> None:
+        LoopPreset.objects.create(name=preset_name, entries=entries)
+        LoopPresetOverride.objects.set_override(preset_name)
+
+    def test_enabled_loop_with_no_preset_is_admitted(self) -> None:
+        self._loop("demo-admit-base")
+        entry = next(e for e in build_report().mini_loops if e.name == "demo-admit-base")
+        assert entry.admitted is True
+
+    def test_preset_masked_off_loop_is_not_admitted(self) -> None:
+        self._loop("demo-admit-masked")
+        self._activate("heads-down", {"demo-admit-masked": False})
+        entry = next(e for e in build_report().mini_loops if e.name == "demo-admit-masked")
+        assert entry.admitted is False
+        assert entry.enabled is True
+
+    def test_preset_forced_on_base_disabled_loop_is_admitted(self) -> None:
+        self._loop("demo-admit-forced", enabled=False)
+        self._activate("engaged", {"demo-admit-forced": True})
+        entry = next(e for e in build_report().mini_loops if e.name == "demo-admit-forced")
+        assert entry.admitted is True
+        assert entry.enabled is False
+
+    def test_hold_wins_over_a_force_on_preset(self) -> None:
+        self._loop("demo-admit-held", enabled=False)
+        LoopState.objects.disable("demo-admit-held")
+        self._activate("engaged", {"demo-admit-held": True})
+        entry = next(e for e in build_report().mini_loops if e.name == "demo-admit-held")
+        assert entry.admitted is False
+        assert entry.held is True

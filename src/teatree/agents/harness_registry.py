@@ -20,6 +20,7 @@ the concrete class, and an overlay can introspect a backend before selecting it.
 """
 
 import importlib.metadata
+import logging
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
@@ -29,6 +30,8 @@ if TYPE_CHECKING:
     from teatree.agents.harness import Harness
     from teatree.config.settings import UserSettings
     from teatree.core.models import Task
+
+logger = logging.getLogger(__name__)
 
 #: The entry-point group an installed overlay package adds a harness under. The
 #: value of each entry point is a zero-arg callable returning a :class:`HarnessSpec`.
@@ -158,7 +161,15 @@ def _load_entry_points() -> None:
         return
     _ENTRY_POINTS_LOADED = True
     for entry_point in importlib.metadata.entry_points(group=HARNESS_ENTRY_POINT_GROUP):
-        spec = entry_point.load()()
+        try:
+            spec = entry_point.load()()
+        except Exception:
+            logger.warning(
+                "Harness entry point %r failed to load; skipping it — other backends still resolve.",
+                getattr(entry_point, "name", entry_point),
+                exc_info=True,
+            )
+            continue
         _REGISTRY.setdefault(spec.name, spec)
 
 

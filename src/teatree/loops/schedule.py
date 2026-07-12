@@ -32,16 +32,15 @@ def mini_loop_schedules() -> list[tuple[str, dt.datetime | None, int]]:
     resolved cadence; ``None`` when the loop has never fired (no marker row) —
     the statusline renders that as ``due``. ``cadence_seconds`` is that resolved
     cadence — the denominator the statusline colors each chunk's imminence
-    against. The filter mirrors the loop tick's ``loop_enabled`` verdict
-    (``Loop.enabled`` AND not held): a disabled row OR a ``LoopState``-held
-    (paused/disabled) loop is omitted, so the statusline never shows a live
-    countdown for a loop the tick will skip. The snapshot already returns
-    mini-loops sorted by name for a deterministic render.
+    against. The filter is the loop tick's OWN effective verdict (``entry.admitted``):
+    NOT held, then the #3159 preset mask over ``Loop.enabled``. So a preset-masked-off
+    loop is omitted (no countdown for a tick that skips it) and a preset-forced-ON
+    base-disabled loop appears (the tick will fire it) — the statusline stays in
+    lockstep with what actually runs. The snapshot already returns mini-loops sorted
+    by name for a deterministic render.
     """
     return [
-        (entry.name, entry.next_fire_at, entry.cadence_seconds)
-        for entry in build_report().mini_loops
-        if entry.enabled and not entry.held
+        (entry.name, entry.next_fire_at, entry.cadence_seconds) for entry in build_report().mini_loops if entry.admitted
     ]
 
 
