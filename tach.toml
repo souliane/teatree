@@ -251,7 +251,6 @@ depends_on = [
   "teatree.core",
   "teatree.core.models",
   "teatree.loops",
-  "teatree.loop.loop_state_db",
   "teatree.config",
   "teatree.agents",
   "teatree.utils"
