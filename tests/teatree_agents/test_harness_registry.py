@@ -212,6 +212,46 @@ def test_programmatic_register_harness_is_resolvable(monkeypatch: pytest.MonkeyP
         harness_registry._REGISTRY.pop("prog_harness", None)
 
 
+class _BrokenEntryPoint:
+    """An overlay entry point whose ``load()`` raises — a broken/incompatible backend package."""
+
+    name = "broken_backend"
+
+    def load(self) -> object:
+        msg = "overlay harness backend failed to import"
+        raise ImportError(msg)
+
+
+def test_one_broken_entry_point_does_not_kill_resolution_of_the_others(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    # AH-7: a single broken overlay entry point raised UNCAUGHT on the first
+    # harness resolution, so ALL resolution died. The contract the module documents
+    # is a "recorded dispatch failure" that skips only the broken entry point while
+    # the working ones still load.
+    original = importlib.metadata.entry_points
+
+    def _fake_entry_points(*args: object, group: str | None = None, **kwargs: object) -> object:
+        if group == HARNESS_ENTRY_POINT_GROUP:
+            return [_BrokenEntryPoint(), _FakeEntryPoint("fake_third", _fake_third_spec())]
+        return original(*args, group=group, **kwargs) if group is not None else original(*args, **kwargs)
+
+    monkeypatch.setattr(importlib.metadata, "entry_points", _fake_entry_points)
+    harness_registry._reset_registry_for_test()
+    try:
+        with caplog.at_level("WARNING", logger="teatree.agents.harness_registry"):
+            # Does NOT raise — the broken entry point is skipped, the working one loads.
+            names = registered_harness_names()
+            spec = resolve_harness_spec("fake_third")
+        assert "fake_third" in names
+        assert "broken_backend" not in names
+        assert spec.name == "fake_third"
+        assert any("broken_backend" in rec.getMessage() for rec in caplog.records)
+    finally:
+        harness_registry._REGISTRY.pop("fake_third", None)
+        harness_registry._reset_registry_for_test()
+
+
 def test_injected_harness_drives_through_seam_with_capabilities() -> None:
     # A pure Harness double with capabilities drives through the seam unchanged.
     harness = FakeThirdHarness([assistant_text("done"), result_message(session_id="s1")])
