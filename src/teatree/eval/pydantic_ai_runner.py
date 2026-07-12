@@ -26,7 +26,7 @@ import asyncio
 import dataclasses
 from typing import cast
 
-from claude_agent_sdk import ClaudeAgentOptions, Message
+from claude_agent_sdk import Message
 from claude_agent_sdk.types import EffortLevel
 from openai import AsyncOpenAI
 from pydantic_ai import Agent
@@ -37,6 +37,7 @@ from pydantic_ai.settings import ModelSettings
 from pydantic_ai.toolsets import FunctionToolset
 
 from teatree.agents.harness import resolve_effort
+from teatree.agents.harness_options import HarnessOptions
 from teatree.agents.model_tiering import resolve_pydantic_ai_model
 from teatree.agents.pydantic_ai_config import LANE_EVAL, OrcaLaneConfig
 from teatree.agents.pydantic_ai_session import PydanticAiHarnessSession
@@ -94,7 +95,7 @@ def _model_settings(effort: EffortLevel | None) -> ModelSettings | None:
     so the ``pydantic_ai`` lane drops an out-of-vocabulary rung (``max``) exactly as
     a headless dispatch does, rather than handing the provider a level it rejects.
     """
-    resolved = resolve_effort(ClaudeAgentOptions(effort=effort))
+    resolved = resolve_effort(HarnessOptions(effort=effort))
     if resolved is None:
         return None
     return OpenAIChatModelSettings(openai_reasoning_effort=resolved)

@@ -11,17 +11,17 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
-from claude_agent_sdk import ClaudeAgentOptions
 from django.test import TestCase
 from pydantic_ai.models.test import TestModel
 
-from teatree.agents.context_plan import ContextPlan, ContextSegment, SegmentStability
 from teatree.agents.harness import PydanticAiHarness, resolve_harness
+from teatree.agents.harness_options import HarnessOptions
 from teatree.agents.pydantic_ai_config import (
     PYDANTIC_AI_NATIVE_CAPABILITIES,
     NativeAnthropicUnavailableError,
     PydanticAiBinding,
     PydanticAiModelConfig,
+    native_anthropic_model_name,
 )
 from teatree.agents.pydantic_ai_session import _router_reported_cost
 from teatree.config import AgentHarness, AgentHarnessProvider
@@ -71,7 +71,7 @@ class TestNativeModelResolution:
         # `pydantic-ai-slim[anthropic]` is an OPTIONAL extra; when absent the ONE native branch
         # (not the OpenAI router client) fails LOUD with the install hint rather than silently.
         harness = PydanticAiHarness(config=PydanticAiModelConfig(binding=PydanticAiBinding.NATIVE_ANTHROPIC))
-        options = ClaudeAgentOptions(model="claude-opus-4-8")
+        options = HarnessOptions(model="claude-opus-4-8")
         with (
             patch.dict(os.environ, {"ANTHROPIC_API_KEY": "sk-test"}, clear=False),
             pytest.raises(NativeAnthropicUnavailableError, match="anthropic"),
@@ -81,7 +81,7 @@ class TestNativeModelResolution:
     @pytest.mark.skipif(not _ANTHROPIC_INSTALLED, reason="anthropic extra absent — see the fails-loud test")
     def test_native_branch_constructs_the_anthropic_model_when_the_extra_is_present(self) -> None:
         harness = PydanticAiHarness(config=PydanticAiModelConfig(binding=PydanticAiBinding.NATIVE_ANTHROPIC))
-        options = ClaudeAgentOptions(model="claude-opus-4-8")
+        options = HarnessOptions(model="claude-opus-4-8")
         with patch.dict(os.environ, {"ANTHROPIC_API_KEY": "sk-test"}, clear=False):
             model = harness._resolve_model(options)
         # The native Anthropic model, NOT the OpenAI-compatible router model.
@@ -92,28 +92,21 @@ class TestNativeModelResolution:
         harness = PydanticAiHarness(
             model=injected, config=PydanticAiModelConfig(binding=PydanticAiBinding.NATIVE_ANTHROPIC)
         )
-        assert harness._resolve_model(ClaudeAgentOptions()) is injected
+        assert harness._resolve_model(HarnessOptions()) is injected
 
 
-class TestContextPlanCacheBreakpoints:
-    def test_native_binding_exposes_the_context_plan_breakpoints(self) -> None:
-        plan = ContextPlan.ordered(
-            [
-                ContextSegment("preamble", SegmentStability.STATIC),
-                ContextSegment("repo digest", SegmentStability.PER_REPO, cache=True, ttl="1h"),
-                ContextSegment("task tail", SegmentStability.PER_TASK),
-            ]
-        )
-        harness = PydanticAiHarness(
-            config=PydanticAiModelConfig(binding=PydanticAiBinding.NATIVE_ANTHROPIC, context_plan=plan)
-        )
-        breakpoints = harness.cache_control_breakpoints()
-        assert len(breakpoints) == 1
+class TestNativeModelNameFallback:
+    """AH-4: the unpinned native-Anthropic fallback must be a valid Anthropic model id."""
 
-    def test_router_binding_places_no_breakpoints_even_with_a_plan(self) -> None:
-        plan = ContextPlan.ordered([ContextSegment("x", SegmentStability.PER_REPO, cache=True)])
-        harness = PydanticAiHarness(config=PydanticAiModelConfig(binding=PydanticAiBinding.ROUTER, context_plan=plan))
-        assert harness.cache_control_breakpoints() == ()
+    def test_unpinned_fallback_is_a_concrete_anthropic_id_not_a_router_handle(self) -> None:
+        # The bug: an unpinned dispatch resolved through resolve_pydantic_ai_model, which
+        # returns an ``orcarouter/…`` router handle — invalid on the direct Anthropic API.
+        name = native_anthropic_model_name(HarnessOptions())
+        assert "/" not in name  # NOT a provider-prefixed router handle (orcarouter/teatree-factory)
+        assert name.startswith("claude-")  # a concrete Claude dash-form id, valid on the Messages API
+
+    def test_explicit_pin_passes_through_unchanged(self) -> None:
+        assert native_anthropic_model_name(HarnessOptions(model="claude-opus-4-8")) == "claude-opus-4-8"
 
 
 class TestRouterReportedCost:

@@ -269,10 +269,15 @@ def _seed_default_loops(apps, schema_editor):
     """
     Loop = apps.get_model("core", "Loop")
     Prompt = apps.get_model("core", "Prompt")
+    # Scope every write to the alias the migration is running against (matches
+    # 0004/0005) so a multi-DB / non-default-alias apply — e.g. a restored fleet
+    # DB mounted under a different alias — seeds the DB being migrated, not the
+    # default connection.
+    db_alias = schema_editor.connection.alias
     for name, delay_seconds, daily_at, prompt_body, description, colleague_facing, default_enabled in _DEFAULT_LOOPS:
         prompt = None
         if prompt_body is not None:
-            prompt, _ = Prompt.objects.get_or_create(
+            prompt, _ = Prompt.objects.using(db_alias).get_or_create(
                 name=name,
                 defaults={"body": prompt_body, "description": description},
             )
@@ -287,7 +292,7 @@ def _seed_default_loops(apps, schema_editor):
             defaults["prompt"] = prompt
         else:
             defaults["script"] = f"src/teatree/loops/{name}/loop.py"
-        Loop.objects.get_or_create(name=name, defaults=defaults)
+        Loop.objects.using(db_alias).get_or_create(name=name, defaults=defaults)
 
 
 class Migration(migrations.Migration):

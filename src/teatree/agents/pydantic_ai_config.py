@@ -9,20 +9,16 @@ module with no import cycle. Re-exported from ``teatree.agents.harness`` for bac
 
 from dataclasses import dataclass, field
 from enum import StrEnum
-from typing import TYPE_CHECKING
 
-from claude_agent_sdk import ClaudeAgentOptions
 from openai import AsyncOpenAI
 from pydantic_ai.models import Model
 from pydantic_ai.providers.openai import OpenAIProvider
 
+from teatree.agents.harness_options import HarnessOptions
 from teatree.agents.harness_registry import HarnessCapabilities
-from teatree.agents.model_tiering import resolve_pydantic_ai_model
+from teatree.agents.model_tiering import DEFAULT_TIER, resolve_tier
 from teatree.agents.regulated_path import assert_model_allowed_on_regulated_path
 from teatree.llm.credentials import AnthropicApiKeyCredential, OrcaRouterCredential, resolve_orca_router_provider_config
-
-if TYPE_CHECKING:
-    from teatree.agents.context_plan import ContextPlan
 
 # The OrcaRouter dispatch-lane header (OrcaRouter setup plan §3.4). Rides every
 # ``pydantic_ai`` request as ``x-lane: <factory|eval|bulk>`` so the named router's
@@ -55,14 +51,27 @@ class PydanticAiBinding(StrEnum):
 
 #: The OpenAI-compatible OrcaRouter binding's capabilities: MCP toolsets + schema-enforced
 #: structured output; no hooks port yet, no server-side resume (client-side thread reseed),
-#: no reachable cache-control (opaque router surface).
+#: no reachable cache-control (opaque router surface). Dispatch-lane hints (#3157 AH-5): the
+#: metered lane, no bundled CLI child (the credential resolves in-process).
 PYDANTIC_AI_ROUTER_CAPABILITIES = HarnessCapabilities(
-    hooks=False, mcp=True, cache_control=False, server_resume=False, structured_output=True
+    hooks=False,
+    mcp=True,
+    cache_control=False,
+    server_resume=False,
+    structured_output=True,
+    spawns_cli_child=False,
+    metered_lane=True,
 )
 #: The native Anthropic Messages-API binding's capabilities (#3157 E1b): the router set
-#: PLUS reachable ``cache_control`` breakpoints.
+#: PLUS reachable ``cache_control`` breakpoints. Same dispatch-lane hints (metered, no child).
 PYDANTIC_AI_NATIVE_CAPABILITIES = HarnessCapabilities(
-    hooks=False, mcp=True, cache_control=True, server_resume=False, structured_output=True
+    hooks=False,
+    mcp=True,
+    cache_control=True,
+    server_resume=False,
+    structured_output=True,
+    spawns_cli_child=False,
+    metered_lane=True,
 )
 
 
@@ -103,7 +112,7 @@ class OrcaLaneConfig:
 class PydanticAiModelConfig:
     """How :class:`PydanticAiHarness` builds its model + session (composition).
 
-    Bundles the three model-construction knobs into one config object so the harness
+    Bundles the model-construction knobs into one config object so the harness
     constructor stays narrow:
 
     *   ``orca`` — the OrcaRouter per-dispatch runtime knobs (:class:`OrcaLaneConfig`),
@@ -111,17 +120,38 @@ class PydanticAiModelConfig:
     *   ``binding`` — router (OrcaRouter OpenAI-compatible) vs native Anthropic Messages
         API (#3157 E1b, ``agent_harness_provider=anthropic_api``), selected by
         :func:`resolve_harness` from the provider.
-    *   ``context_plan`` — the assembled :class:`~teatree.agents.context_plan.ContextPlan`
-        whose ``cache`` boundaries the native binding maps to real ``cache_control``
-        breakpoints (#3157 E2). ``None`` on the router binding (opaque cache).
+
+    Prompt-cache breakpoints (the :class:`~teatree.agents.context_plan.ContextPlan`
+    → ``cache_control`` path, #3157 E2) are NOT wired into the harness here: nothing
+    yet assembles a ``ContextPlan`` on the dispatch path, and applying its breakpoints
+    to a live request needs the native-binding option-builder to emit pydantic_ai
+    :class:`~pydantic_ai.messages.CachePoint` markers — deferred to the Factory
+    overlay's option-builder. The ``ContextPlan`` core type (byte-stable-head
+    enforcement + breakpoint capping) ships and is proven through the
+    ``teatree.overlay_sdk`` surface (``test_factory_demo``) so the Factory can build
+    against it; only the never-fed harness passthrough was removed (AH-1).
     """
 
     orca: OrcaLaneConfig = field(default_factory=OrcaLaneConfig)
     binding: PydanticAiBinding = PydanticAiBinding.ROUTER
-    context_plan: "ContextPlan | None" = None
 
 
-def resolve_native_anthropic_model(options: ClaudeAgentOptions) -> Model:
+def native_anthropic_model_name(options: HarnessOptions) -> str:
+    """The Anthropic Messages-API model id for the native binding (#3157 AH-4).
+
+    An explicit ``options.model`` passes through unchanged (a Claude dash-form id is a valid
+    Anthropic Messages-API model). An UNPINNED dispatch falls back to the default tier's
+    CONCRETE Claude id (:func:`resolve_tier`, e.g. ``claude-sonnet-5``).
+
+    Critically it must NOT go through :func:`~teatree.agents.model_tiering.resolve_pydantic_ai_model`,
+    which normalises an unpinned id UP to an ``orcarouter/…`` router HANDLE. That handle is
+    meaningless to the direct Anthropic Messages API (it would 404 the request) — router-handle
+    normalisation belongs ONLY to the OpenAI-compatible router binding, never this native path.
+    """
+    return options.model or resolve_tier(DEFAULT_TIER)
+
+
+def resolve_native_anthropic_model(options: HarnessOptions) -> Model:
     """Construct the direct Anthropic Messages-API model (#3157 E1b) — the cache_control path.
 
     The one branch that makes real ``cache_control`` reachable: a native ``pydantic_ai``
@@ -130,10 +160,10 @@ def resolve_native_anthropic_model(options: ClaudeAgentOptions) -> Model:
     dependency (``pydantic-ai-slim[anthropic]``); it is imported lazily so a router-only
     install never pays for it, and its absence fails LOUD with the install hint only when
     this binding is actually selected — the same late-fail contract the OrcaRouter credential
-    uses. The model id passes through unchanged (a Claude dash-form id is a valid Anthropic
-    Messages-API model), gated by the regulated-path allowlist first.
+    uses. The model id (:func:`native_anthropic_model_name`) is gated by the regulated-path
+    allowlist first.
     """
-    model_name = options.model or resolve_pydantic_ai_model(options.model)
+    model_name = native_anthropic_model_name(options)
     assert_model_allowed_on_regulated_path(model_name)
     try:
         from pydantic_ai.models.anthropic import AnthropicModel  # noqa: PLC0415 — optional extra, imported lazily

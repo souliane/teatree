@@ -37,10 +37,11 @@ from pydantic_ai import Agent
 from pydantic_ai.models import Model
 from pydantic_ai.models.openai import OpenAIChatModel, OpenAIChatModelSettings, ReasoningEffort
 
-from teatree.agents.context_plan import cache_control_plan
+from teatree.agents.harness_options import HarnessOptions
 from teatree.agents.harness_registry import (
     HarnessBuildContext,
     HarnessCapabilities,
+    assert_provider_valid_for_harness,
     register_harness,
     resolve_harness_spec,
 )
@@ -62,7 +63,13 @@ from teatree.agents.regulated_path import assert_model_allowed_on_regulated_path
 from teatree.config import AgentHarness, AgentHarnessProvider, get_effective_settings
 
 CLAUDE_SDK_CAPABILITIES = HarnessCapabilities(
-    hooks=True, mcp=True, cache_control=False, server_resume=True, structured_output=False
+    hooks=True,
+    mcp=True,
+    cache_control=False,
+    server_resume=True,
+    structured_output=False,
+    spawns_cli_child=True,
+    metered_lane=False,
 )
 if TYPE_CHECKING:
     from pydantic_ai.messages import ModelMessage
@@ -88,11 +95,13 @@ class HarnessSession(Protocol):
 class Harness(Protocol):
     """Opens a :class:`HarnessSession` for a built set of agent options.
 
-    ``capabilities`` (#3157 E1) is the typed flag set the driver and doctors read instead
-    of ``isinstance``-branching on the concrete backend class. The transport-specific
-    dispatch hints (``spawns_cli_child`` / ``metered_lane`` / ``restore_unconsumed_resume_thread``)
-    are read defensively (getattr with defaults) so an overlay backend only has to implement
-    ``open`` + ``capabilities``.
+    ``capabilities`` (#3157 E1) is the typed flag set the driver and doctors read instead of
+    ``isinstance``-branching on the concrete backend class — including the dispatch-lane hints
+    ``spawns_cli_child`` / ``metered_lane`` (#3157 AH-5), which the driver reads as typed
+    fields through this attribute rather than by untyped ``getattr`` on the concrete class. So
+    an overlay backend implements ``open`` + ``capabilities`` and the driver routes it purely
+    off those flags. ``restore_unconsumed_resume_thread`` stays an OPTIONAL method hook (only a
+    client-side-resumable backend implements it), read defensively by the driver.
     """
 
     capabilities: HarnessCapabilities
@@ -103,19 +112,15 @@ class Harness(Protocol):
 class ClaudeSdkHarness:
     """The default backend — the ``claude-agent-sdk`` in-process transport.
 
-    Declares its capabilities and dispatch behaviour as attributes (#3157 E1) so the
+    Declares its capabilities as a typed :class:`HarnessCapabilities` (#3157 E1/AH-5) so the
     driver reads them instead of ``isinstance``-branching: it spawns the bundled ``claude``
-    CLI child (so it needs the provider child env), authenticates on the subscription lane
-    (not metered), and resumes server-side via ``--resume``.
+    CLI child (``spawns_cli_child`` → dispatch resolves the provider child env), authenticates
+    on the subscription lane (``metered_lane`` is ``False`` — attribution comes from the
+    explicit provider pin, see ``_resolve_dispatch_lane``), and resumes server-side via
+    ``--resume``.
     """
 
     capabilities: HarnessCapabilities = CLAUDE_SDK_CAPABILITIES
-    #: This backend spawns the bundled ``claude`` CLI child, so dispatch resolves the
-    #: Layer-2 provider child env for it (no other harness needs a CLI child env).
-    spawns_cli_child: bool = True
-    #: The subscription lane's attribution is resolved from the explicit provider pin, not
-    #: fixed by the transport — so this stays ``False`` (see ``_resolve_dispatch_lane``).
-    metered_lane: bool = False
 
     @staticmethod
     @asynccontextmanager
@@ -127,39 +132,22 @@ class ClaudeSdkHarness:
         """No client-side resume thread to restore — server-side ``--resume`` owns it."""
 
 
-def _extract_system_prompt(options: ClaudeAgentOptions) -> str:
-    """Pull the custom system context out of *options* for the pydantic_ai Agent.
+def resolve_effort(options: HarnessOptions) -> ReasoningEffort | None:
+    """Map the NEUTRAL ``options.effort`` onto pydantic_ai's ``ReasoningEffort`` vocabulary.
 
-    ``ClaudeAgentOptions.system_prompt`` is normally a ``SystemPromptPreset``
-    (``{"type": "preset", "preset": "claude_code", "append": <context>}``) —
-    the ``claude_code`` preset itself is meaningless outside the bundled CLI, so
-    only the appended custom context is portable; a plain ``str`` (as tests build)
-    is used as-is; anything else (a ``SystemPromptFile`` reference, or ``None``)
-    has no portable content here.
-    """
-    prompt = options.system_prompt
-    if isinstance(prompt, str):
-        return prompt
-    if isinstance(prompt, dict) and prompt.get("type") == "preset":
-        return str(prompt.get("append", ""))
-    return ""
-
-
-def resolve_effort(options: ClaudeAgentOptions) -> ReasoningEffort | None:
-    """Map ``options.effort`` onto pydantic_ai's ``ReasoningEffort`` vocabulary.
-
-    Public seam: the eval ``pydantic_ai`` runner (:mod:`teatree.eval.pydantic_ai_runner`)
-    reuses this single effort-vocabulary guard so a headless dispatch and an eval run drop
-    the same out-of-vocabulary rungs; it is therefore a supported cross-module name.
+    Takes the neutral :class:`~teatree.agents.harness_options.HarnessOptions` (#3157 AH-2), not
+    the vendor ``ClaudeAgentOptions`` — the effort axis is provider-agnostic, so the vendor type
+    does not reach here. Public seam: the eval ``pydantic_ai`` runner
+    (:mod:`teatree.eval.pydantic_ai_runner`) reuses this single effort-vocabulary guard so a
+    headless dispatch and an eval run drop the same out-of-vocabulary rungs.
 
     ``options.effort`` is already scoped to the ACTIVE harness by
-    :func:`teatree.agents.model_tiering.resolve_spawn_effort` (called while
-    *options* was built), so this is normally a pass-through; the
-    :data:`~teatree.agents.model_tiering.HARNESS_EFFORT_SCALE` re-check is a
-    defence-in-depth guard for options built outside that resolver (e.g. a test),
-    dropping an out-of-vocabulary value (``max``, the one rung
-    ``claude_sdk`` has that ``pydantic_ai`` does not) rather than handing the SDK
-    a reasoning-effort string it will reject.
+    :func:`teatree.agents.model_tiering.resolve_spawn_effort` (called while the SDK options were
+    built), so this is normally a pass-through; the
+    :data:`~teatree.agents.model_tiering.HARNESS_EFFORT_SCALE` re-check is a defence-in-depth
+    guard for options built outside that resolver (e.g. a test), dropping an out-of-vocabulary
+    value (``max``, the one rung ``claude_sdk`` has that ``pydantic_ai`` does not) rather than
+    handing the model a reasoning-effort string it will reject.
     """
     effort = options.effort
     if effort is None or effort not in HARNESS_EFFORT_SCALE[AgentHarness.PYDANTIC_AI]:
@@ -201,13 +189,12 @@ class PydanticAiHarness:
     — so a caller that refuses dispatch after construction but before a
     successful ``open`` (a budget breach, a credential failure) can restore
     the popped entry via :attr:`history` + *resume_source*.
-    """
 
-    #: A ``pydantic_ai`` run authenticates on the metered lane (OrcaRouter BYOK or the
-    #: native Anthropic API key) — the transport fixes it, unlike the ``claude_sdk`` lane.
-    metered_lane: bool = True
-    #: No bundled CLI child — the credential resolves in-process inside ``open``.
-    spawns_cli_child: bool = False
+    The dispatch-lane hints live on :attr:`capabilities` (#3157 AH-5): ``metered_lane`` is
+    ``True`` (a ``pydantic_ai`` run always authenticates on the metered lane — OrcaRouter BYOK
+    or the native Anthropic key — the transport fixes it) and ``spawns_cli_child`` is ``False``
+    (no bundled CLI child; the credential resolves in-process inside ``open``).
+    """
 
     def __init__(
         self,
@@ -225,13 +212,12 @@ class PydanticAiHarness:
         # phase resolves the phase-scoped, gated toolsets (:mod:`teatree.agents.lane_b`).
         # ``None`` (the default) keeps a text-in/text-out Agent with no tools.
         self._phase = phase
-        # The model-construction bundle (OrcaRouter knobs + binding + context plan),
-        # resolved SYNCHRONOUSLY by :func:`resolve_harness`. Absent → the defaults
-        # (router binding, factory lane, uncapped, no cache plan).
+        # The model-construction bundle (OrcaRouter knobs + binding), resolved
+        # SYNCHRONOUSLY by :func:`resolve_harness`. Absent → the defaults (router
+        # binding, factory lane, uncapped).
         cfg = config or PydanticAiModelConfig()
         self._orca = cfg.orca
         self._binding = cfg.binding
-        self._context_plan = cfg.context_plan
 
     @property
     def history(self) -> "list[ModelMessage] | None":
@@ -250,16 +236,6 @@ class PydanticAiHarness:
             return PYDANTIC_AI_NATIVE_CAPABILITIES
         return PYDANTIC_AI_ROUTER_CAPABILITIES
 
-    def cache_control_breakpoints(self) -> tuple[object, ...]:
-        """The ``cache_control`` breakpoints the native binding places, from the ContextPlan.
-
-        Empty when no plan was supplied or the binding cannot cache (the router), so the
-        native binding places markers only where the plan declares a byte-stable boundary.
-        """
-        if self._context_plan is None or self._binding is not PydanticAiBinding.NATIVE_ANTHROPIC:
-            return ()
-        return cache_control_plan(self._context_plan)
-
     def restore_unconsumed_resume_thread(self) -> None:
         """Re-persist a resume thread popped but never actually driven (#2916).
 
@@ -271,7 +247,7 @@ class PydanticAiHarness:
         if self.resume_source is not None and self._history:
             persist_parked_thread(self.resume_source, self._history)
 
-    def _resolve_model(self, options: ClaudeAgentOptions) -> Model:
+    def _resolve_model(self, options: HarnessOptions) -> Model:
         if self._model is not None:
             return self._model
         if self._binding is PydanticAiBinding.NATIVE_ANTHROPIC:
@@ -296,18 +272,23 @@ class PydanticAiHarness:
 
     @asynccontextmanager
     async def open(self, options: ClaudeAgentOptions) -> AsyncIterator[HarnessSession]:
-        model = self._resolve_model(options)
-        effort = resolve_effort(options)
+        # AH-2: adapt the vendor options into the neutral HarnessOptions ONCE at the boundary,
+        # then thread only the neutral type through the provider-agnostic build below — the
+        # ``ClaudeAgentOptions`` type never reaches ``_resolve_model`` / ``resolve_effort`` /
+        # the tool config, so the pydantic_ai (and future Vertex) path is vendor-type-free.
+        harness_options = HarnessOptions.from_sdk_options(options)
+        model = self._resolve_model(harness_options)
+        effort = resolve_effort(harness_options)
         model_settings = OpenAIChatModelSettings(openai_reasoning_effort=effort) if effort else None
         # PR-03: a phased dispatch wires the phase-scoped, gated tool/MCP layer
         # onto the Agent (``toolsets=`` + ``tool_timeout=``); an un-phased one
         # keeps a bare text Agent (byte-identical to before the tool port). The
         # worktree jail root is ``options.cwd`` (the resolved task cwd).
-        config = LaneBToolConfig.from_options(options, phase=self._phase or "")
+        config = LaneBToolConfig.from_options(harness_options, phase=self._phase or "")
         toolsets = build_lane_b_toolsets(config).toolsets if self._phase else []
         agent: Agent[None, str] = Agent(
             model,
-            system_prompt=_extract_system_prompt(options),
+            system_prompt=harness_options.system_prompt,
             model_settings=model_settings,
             toolsets=toolsets,
             tool_timeout=config.shell_timeout_seconds if self._phase else None,
@@ -404,8 +385,18 @@ def resolve_harness(task: "Task | None" = None, *, phase: str | None = None) -> 
     #2) — so when a MAKER phase rides a cheap model on ``pydantic_ai``, the checker stays on
     the trusted Claude lane. A verification phase therefore never rehydrates a pydantic_ai
     resume thread (its factory is the claude_sdk one).
+
+    Before building, the CONFIGURED ``(agent_harness, agent_harness_provider)`` pair is
+    validated against the resolved backend's registry-declared ``valid_providers`` (#3157
+    AH-6) — a live consumer that also enforces an overlay-registered backend's own provider
+    constraint, which the closed-enum ``AgentHarnessProvider.valid_for`` cannot. It validates
+    the CONFIG harness (never the phase-pinned one), so a verification-phase pin never turns a
+    provider valid for the configured harness into a spurious failure; an unpinned provider
+    always passes.
     """
     settings = get_effective_settings()
+    provider = settings.agent_harness_provider
+    assert_provider_valid_for_harness(settings.agent_harness, provider.value if provider is not None else None)
     harness_name = resolve_phase_harness(settings.agent_harness, phase)
     spec = resolve_harness_spec(harness_name)
     return spec.factory(HarnessBuildContext(task=task, phase=phase, settings=settings))

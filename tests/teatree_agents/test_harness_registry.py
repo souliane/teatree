@@ -24,10 +24,13 @@ from teatree.agents.harness_registry import (
     HarnessBuildContext,
     HarnessCapabilities,
     HarnessSpec,
+    InvalidHarnessProviderError,
     UnknownHarnessError,
+    assert_provider_valid_for_harness,
     register_harness,
     registered_harness_names,
     resolve_harness_spec,
+    valid_providers_for,
 )
 from teatree.agents.headless import LoopWatchdog, TaskUsage, _build_options, _drive_with_heartbeat, run_headless
 from teatree.agents.pydantic_ai_config import PYDANTIC_AI_ROUTER_CAPABILITIES
@@ -41,9 +44,10 @@ class FakeThirdHarness:
     """A minimal overlay-authored backend — implements only ``open`` + ``capabilities``.
 
     Proves the acceptance floor: an overlay backend needs to satisfy nothing more than the
-    :class:`~teatree.agents.harness.Harness` protocol; the dispatch behaviour attributes
-    (``spawns_cli_child`` / ``metered_lane``) default off via getattr, so no CLI child env is
-    resolved and the lane is unattributed.
+    :class:`~teatree.agents.harness.Harness` protocol; the dispatch-lane hints
+    (``capabilities.spawns_cli_child`` / ``capabilities.metered_lane``) default off on
+    :class:`HarnessCapabilities` (#3157 AH-5), so no CLI child env is resolved and the lane
+    is unattributed.
     """
 
     capabilities = HarnessCapabilities(
@@ -117,6 +121,34 @@ class TestBuiltinRegistrations:
             expected = {p.value for p in AgentHarnessProvider.valid_for(harness)}
             assert resolve_harness_spec(harness.value).valid_providers == frozenset(expected)
 
+
+class TestProviderConstraintConsumesValidProviders:
+    """AH-6: valid_providers is CONSULTED for the harness<->provider constraint, not dead."""
+
+    def test_valid_providers_for_reads_the_registered_set(self) -> None:
+        assert valid_providers_for("pydantic_ai") == frozenset({"orca_router_byok", "anthropic_api"})
+
+    def test_valid_providers_for_unregistered_name_is_unconstrained(self) -> None:
+        assert valid_providers_for("no_such_harness") == frozenset()
+
+    def test_none_provider_always_passes(self) -> None:
+        assert_provider_valid_for_harness("pydantic_ai", None)  # no pin → no constraint
+
+    def test_valid_pin_passes(self) -> None:
+        assert_provider_valid_for_harness("pydantic_ai", "orca_router_byok")
+
+    def test_invalid_pin_raises_naming_the_valid_set(self) -> None:
+        with pytest.raises(InvalidHarnessProviderError, match="valid: api_key, subscription_oauth"):
+            assert_provider_valid_for_harness("claude_sdk", "orca_router_byok")
+
+    def test_under_declared_backend_is_unconstrained(self) -> None:
+        # An overlay backend that declared no valid_providers is opt-out (never blocked).
+        register_harness("no_providers_declared", lambda ctx: FakeThirdHarness([]))
+        try:
+            assert_provider_valid_for_harness("no_providers_declared", "orca_router_byok")
+        finally:
+            harness_registry._REGISTRY.pop("no_providers_declared", None)
+
     def test_unknown_harness_raises(self) -> None:
         with pytest.raises(UnknownHarnessError, match="nope"):
             resolve_harness_spec("nope")
@@ -155,6 +187,20 @@ class TestThirdHarnessViaEntryPoint(TestCase):
         assert attempt.exit_code == 0
         assert attempt.result.get("summary") == "third-harness done"
 
+    def test_resolve_harness_enforces_the_overlay_backends_own_provider_constraint(self) -> None:
+        # AH-6: the fake_third backend declares valid_providers={anthropic_api}. A pinned
+        # provider outside that set is rejected at resolve_harness — proving valid_providers
+        # is CONSULTED (a live constraint) for an overlay-registered backend the closed-enum
+        # valid_for cannot know about.
+        with _register_third_harness_via_entry_point(self._monkeypatch):
+            ConfigSetting.objects.set_value("agent_harness", "fake_third")
+            ConfigSetting.objects.set_value("agent_harness_provider", "orca_router_byok")
+            with pytest.raises(InvalidHarnessProviderError, match="fake_third"):
+                resolve_harness()
+            # The declared-valid provider resolves cleanly.
+            ConfigSetting.objects.set_value("agent_harness_provider", "anthropic_api")
+            assert isinstance(resolve_harness(), FakeThirdHarness)
+
 
 class TestNoIsInstanceOnHarnessInDispatch:
     """The acceptance guard: no ``isinstance(harness, <HarnessClass>)`` remains in dispatch code."""
@@ -179,20 +225,30 @@ class TestNoIsInstanceOnHarnessInDispatch:
 
 class TestCapabilityDrivenDispatchBehaviour:
     def test_claude_sdk_spawns_cli_child_and_is_not_metered(self) -> None:
-        harness = ClaudeSdkHarness()
-        assert getattr(harness, "spawns_cli_child", False) is True
-        assert getattr(harness, "metered_lane", False) is False
+        # AH-5: the dispatch-lane hints are typed fields on HarnessCapabilities, not ad-hoc
+        # class attributes read by untyped getattr.
+        caps = ClaudeSdkHarness().capabilities
+        assert caps.spawns_cli_child is True
+        assert caps.metered_lane is False
 
     def test_pydantic_ai_is_metered_and_spawns_no_cli_child(self) -> None:
-        harness = PydanticAiHarness()
-        assert getattr(harness, "metered_lane", False) is True
-        assert getattr(harness, "spawns_cli_child", False) is False
+        caps = PydanticAiHarness().capabilities
+        assert caps.metered_lane is True
+        assert caps.spawns_cli_child is False
 
     def test_dispatch_lane_reads_metered_flag_not_isinstance(self) -> None:
-        # A metered-flagged harness resolves to the METERED lane regardless of provider.
+        # A metered-flagged harness resolves to the METERED lane regardless of provider —
+        # a REAL dispatch decision driven off the typed capabilities.metered_lane flag.
         assert headless_mod._resolve_dispatch_lane(PydanticAiHarness(), None) == TaskAttempt.Lane.METERED
         # A non-metered harness with no provider pin stays unattributed.
         assert headless_mod._resolve_dispatch_lane(ClaudeSdkHarness(), None) == ""
+
+    def test_an_overlay_backend_declaring_the_metered_flag_routes_to_the_metered_lane(self) -> None:
+        # An overlay-registered backend that sets capabilities.metered_lane drives the same
+        # dispatch decision with ZERO isinstance — proving the seam works for a third harness.
+        metered_third = FakeThirdHarness([])
+        metered_third.capabilities = HarnessCapabilities(metered_lane=True)
+        assert headless_mod._resolve_dispatch_lane(metered_third, None) == TaskAttempt.Lane.METERED
 
 
 def test_programmatic_register_harness_is_resolvable(monkeypatch: pytest.MonkeyPatch) -> None:

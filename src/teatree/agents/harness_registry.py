@@ -40,10 +40,12 @@ HARNESS_ENTRY_POINT_GROUP = "teatree.harnesses"
 
 @dataclass(frozen=True, slots=True)
 class HarnessCapabilities:
-    """What one harness backend supports — the typed flag set that replaces ``isinstance``.
+    """The typed flag set the driver + doctors read instead of ``isinstance``-branching.
 
-    Dispatch code and doctors ask a harness these questions instead of branching on
-    the concrete class; an overlay introspects them before selecting a backend.
+    Dispatch code and doctors ask a harness these questions instead of branching on the
+    concrete class; an overlay introspects them before selecting a backend. Two categories:
+
+    Capability flags — WHAT the backend supports:
 
     *   ``hooks`` — fires pre/post-tool hook events (the ``claude-agent-sdk`` lane does).
     *   ``mcp`` — drives MCP servers/toolsets.
@@ -52,6 +54,16 @@ class HarnessCapabilities:
     *   ``server_resume`` — resumes a prior session server-side (the SDK's ``--resume``).
     *   ``structured_output`` — enforces a schema-validated result envelope natively,
         rather than scraping the last JSON line of agent text.
+
+    Dispatch-lane hints — HOW the driver routes it (#3157 AH-5, previously read off the
+    concrete class by untyped ``getattr``; now typed fields the driver reads through the
+    protocol's ``capabilities`` attribute):
+
+    *   ``spawns_cli_child`` — spawns the bundled ``claude`` CLI child, so dispatch resolves
+        the Layer-2 provider child env for it (only the ``claude_sdk`` backend does).
+    *   ``metered_lane`` — the transport FIXES the run to the metered Layer-2 lane (OrcaRouter
+        BYOK or the native Anthropic key), unlike the ``claude_sdk`` subscription lane whose
+        attribution is resolved from the explicit provider pin.
     """
 
     hooks: bool = False
@@ -59,6 +71,8 @@ class HarnessCapabilities:
     cache_control: bool = False
     server_resume: bool = False
     structured_output: bool = False
+    spawns_cli_child: bool = False
+    metered_lane: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -100,6 +114,19 @@ class UnknownHarnessError(LookupError):
     Raised at resolve time (not config-parse time — the config layer cannot see the
     agents-layer registry), so a typo or an overlay whose entry point failed to load
     surfaces as a recorded dispatch failure rather than a silent wrong transport.
+    """
+
+
+class InvalidHarnessProviderError(ValueError):
+    """The pinned ``agent_harness_provider`` is not valid under the resolved harness backend.
+
+    The live harness↔provider constraint (#3157 AH-6). Raised at dispatch resolution — the
+    agents layer can consult the registry, the config layer cannot — from the registry's
+    declared :attr:`HarnessSpec.valid_providers`, so an overlay-registered THIRD harness's
+    provider constraint is enforced too. The closed-enum
+    :meth:`~teatree.config.AgentHarnessProvider.valid_for` only knows the two built-ins;
+    this backs it with the open registry so a Vertex/enterprise backend can declare and
+    enforce its own valid providers with zero core edits.
     """
 
 
@@ -147,6 +174,38 @@ def registered_harness_names() -> frozenset[str]:
     """Every registered harness name (built-ins + loaded overlay entry points)."""
     _load_entry_points()
     return frozenset(_REGISTRY)
+
+
+def valid_providers_for(name: str) -> frozenset[str]:
+    """The ``agent_harness_provider`` values valid under the harness registered as *name*.
+
+    Reads the registry-declared :attr:`HarnessSpec.valid_providers` (#3157 AH-6) — the OPEN
+    parallel of the closed-enum :meth:`~teatree.config.AgentHarnessProvider.valid_for`, so an
+    overlay backend's own constraint is consulted. An unregistered *name* returns an empty
+    set (unconstrained) rather than raising: the unknown-harness condition surfaces at real
+    dispatch resolution (:class:`UnknownHarnessError`), not here.
+    """
+    try:
+        return resolve_harness_spec(name).valid_providers
+    except UnknownHarnessError:
+        return frozenset()
+
+
+def assert_provider_valid_for_harness(name: str, provider: str | None) -> None:
+    """Raise :class:`InvalidHarnessProviderError` when *provider* is pinned but invalid under *name*.
+
+    The live consumer of :attr:`HarnessSpec.valid_providers` (#3157 AH-6). A ``None``/absent
+    *provider* (the ambient-default, no explicit pin) always passes. An empty declared valid
+    set (a harness that did not declare its providers) is treated as UNCONSTRAINED — declaring
+    ``valid_providers`` is opt-in, so an under-declared overlay backend is never blocked.
+    """
+    if provider is None:
+        return
+    valid = valid_providers_for(name)
+    if valid and provider not in valid:
+        allowed = ", ".join(sorted(valid))
+        msg = f"agent_harness_provider={provider!r} is not valid under agent_harness={name!r}; valid: {allowed}"
+        raise InvalidHarnessProviderError(msg)
 
 
 def _load_entry_points() -> None:

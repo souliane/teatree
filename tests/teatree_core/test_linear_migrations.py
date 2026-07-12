@@ -25,10 +25,12 @@ from pathlib import Path
 import django.conf
 from django.conf import settings
 from django.core.checks import run_checks
+from django.db.migrations.loader import MigrationLoader
 from django.test import override_settings
 
-_CORE_MIGRATIONS_DIR = Path(__file__).resolve().parents[2] / "src" / "teatree" / "core" / "migrations"
-_CORE_MAX_MIGRATION_TXT = _CORE_MIGRATIONS_DIR / "max_migration.txt"
+from tests.teatree_core._migration_graph import CORE_MIGRATIONS_DIR
+
+_CORE_MAX_MIGRATION_TXT = CORE_MIGRATIONS_DIR / "max_migration.txt"
 
 
 def _migration_source(dependencies: list[tuple[str, str]]) -> str:
@@ -153,3 +155,55 @@ def test_dlm_installed_and_live_core_graph_is_clean() -> None:
         "live core max_migration.txt must be a single line"
     )
     assert _dlm_error_ids() == [], "the live migration graph must be dlm-clean"
+
+
+def test_live_core_graph_is_linear_by_dependency() -> None:
+    """The live core graph is a single simple chain BY DEPENDENCY — not by numbering.
+
+    Stronger than ``django_linear_migrations``'s dlm.E005 (which only counts leaf
+    nodes): a mid-graph diamond (0005 -> 0007, 0005 -> 0006b, both -> 0008) has one
+    leaf yet is not linear, so dlm passes while this test would reject it. This is
+    the guard the finding asked for — it catches a future renumber-at-merge that
+    BRANCHES the graph, without demanding contiguous numbers.
+
+    It asserts NOTHING about the numbers being contiguous. The live graph
+    legitimately skips 0006 (0005 -> 0007 -> 0008 — see those migrations' headers),
+    and this test stays green on that gap because it walks DEPENDENCIES, not stems.
+    """
+    loader = MigrationLoader(connection=None, load=False)
+    loader.load_disk()
+    core = {name: migration for (app, name), migration in loader.disk_migrations.items() if app == "core"}
+    assert core, "expected on-disk core migrations to load"
+
+    # Each migration's dependencies restricted to the core app (a cross-app dep,
+    # e.g. on an initial, is not part of the intra-core chain).
+    core_parents: dict[str, list[str]] = {
+        name: [dep_name for dep_app, dep_name in migration.dependencies if dep_app == "core"]
+        for name, migration in core.items()
+    }
+    # No migration MERGES two core parents.
+    for name, parents in core_parents.items():
+        assert len(parents) <= 1, f"{name} depends on multiple core migrations {parents} — the graph merges"
+
+    # No parent is depended on by two children — no BRANCH.
+    core_children: dict[str, list[str]] = {name: [] for name in core}
+    for name, parents in core_parents.items():
+        for parent in parents:
+            core_children[parent].append(name)
+    for parent, children in core_children.items():
+        assert len(children) <= 1, f"{parent} is the parent of multiple migrations {children} — the graph branches"
+
+    roots = [name for name, parents in core_parents.items() if not parents]
+    leaves = [name for name, children in core_children.items() if not children]
+    assert roots == ["0001_initial"], f"expected exactly one root (0001_initial), got {roots}"
+    assert len(leaves) == 1, f"expected exactly one leaf migration, got {leaves}"
+
+    # Walk the unique chain from the root and confirm it visits every node — a
+    # disconnected component would leave a node the walk never reaches.
+    chain: list[str] = []
+    node: str | None = roots[0]
+    while node is not None:
+        chain.append(node)
+        children = core_children[node]
+        node = children[0] if children else None
+    assert set(chain) == set(core), "the dependency chain does not cover every core migration — graph is disconnected"
