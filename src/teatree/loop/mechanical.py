@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING
 from django_fsm import can_proceed
 
 from teatree.core.review.author_trust import classify_author
+from teatree.core.send_proxy import OutboundBlockedError, forge_from_url, route_forge_write
 from teatree.loop.dispatch import ActionPayload
 from teatree.loop.mechanical_db_backup import run_db_backup
 from teatree.loop.mechanical_local_stack import drain_stack_queue_item, reap_idle_stack
@@ -19,6 +20,7 @@ from teatree.loop.mechanical_snapshot_warmer import refresh_snapshot
 from teatree.utils.url_slug import pr_ref_from_url
 
 if TYPE_CHECKING:
+    from teatree.core.backend_protocols import CodeHostBackend
     from teatree.core.models.task import Task
 
 logger = logging.getLogger(__name__)
@@ -310,6 +312,31 @@ _DISPOSITION_AUDIT_REASONS: dict[str, str] = {
 }
 
 
+def _scrub_disposition_close_comment(host: "CodeHostBackend", issue_url: str, comment: str) -> str | None:
+    """Return the close comment to post after the scanned forge-write seam, or ``None`` to skip.
+
+    Matches the MCP ``<forge>_issue_close`` twin: the public-repo leak gate + the
+    #117 send-proxy run BEFORE the backend close, so this loop-driven close never
+    posts to a public forge on a laxer path than the MCP surface. A leak/blocked
+    verdict — or any scrub failure — returns ``None`` (skip the close: never
+    raise, never post unscanned) rather than wedging the tick.
+    """
+    try:
+        return route_forge_write(
+            forge=forge_from_url(issue_url),
+            repo=host.repo_for_issue_url(issue_url),
+            text=comment,
+            action="issue_disposition_close",
+            target=issue_url,
+        )
+    except OutboundBlockedError:
+        logger.warning("close_dead_issue: close comment refused by the forge-write seam for %s — skipping", issue_url)
+        return None
+    except Exception:
+        logger.exception("close_dead_issue: could not scrub the close comment for %s", issue_url)
+        return None
+
+
 def close_dead_issue(payload: ActionPayload) -> None:
     """Close a high-confidence DEAD issue with an audit-trail comment (#2122).
 
@@ -338,7 +365,10 @@ def close_dead_issue(payload: ActionPayload) -> None:
         logger.info("close_dead_issue: no code host resolved for %s", issue_url)
         return
     audit = _DISPOSITION_AUDIT_REASONS.get(reason, reason or "machine-detected dead evidence")
-    comment = f"Auto-closed by the issue-disposition scanner: {audit}."
+    raw_comment = f"Auto-closed by the issue-disposition scanner: {audit}."
+    comment = _scrub_disposition_close_comment(host, issue_url, raw_comment)
+    if comment is None:
+        return
     try:
         result = host.close_issue(issue_url=issue_url, comment=comment)
     except Exception:

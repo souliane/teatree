@@ -450,6 +450,20 @@ class Command(
         body = Path(description_file).read_text(encoding="utf-8") if description_file else description
         label_list = [label.strip() for label in labels.split(",") if label.strip()]
 
+        # Route the child title/body/labels through the shared forge-write seam
+        # (public-repo leak gate + #117 send-proxy) — the SAME seam the sibling
+        # `comment` and the MCP issue_create twin use — so a child carrying a
+        # customer codename bound for a public forge is REFUSED before the create.
+        # Labels ride the scrub too (a forge auto-creates a missing label),
+        # matching the MCP twin.
+        forge = forge_from_url(parent)
+        title = route_forge_write(forge=forge, repo=parent, text=title, action="ticket_create_sub", target=parent)
+        body = route_forge_write(forge=forge, repo=parent, text=body, action="ticket_create_sub", target=parent)
+        label_list = [
+            route_forge_write(forge=forge, repo=parent, text=label, action="ticket_create_sub", target=parent)
+            for label in label_list
+        ]
+
         for overlay in get_all_overlays().values():
             host = get_code_host_for_url(overlay, parent)
             if host is None:
