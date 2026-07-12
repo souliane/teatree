@@ -125,7 +125,7 @@ class Task(models.Model):
         runtime it runs via ``agents/headless.py``. A pair with no registered
         agent is free-form headless work and always runs headless.
         """
-        from teatree.core.modelkit.phases import subagent_for_phase  # noqa: PLC0415
+        from teatree.core.modelkit.phases import subagent_for_phase  # noqa: PLC0415 — deferred: call-time import
 
         return bool(subagent_for_phase(role, phase))
 
@@ -168,7 +168,7 @@ class Task(models.Model):
         ``core.models`` may not depend on the parent ``teatree.core`` node where
         ``headless_dispatch`` lives (tach); the ``teatree.config`` edge is allowed.
         """
-        from teatree.config import AgentRuntime, get_effective_settings  # noqa: PLC0415
+        from teatree.config import AgentRuntime, get_effective_settings  # noqa: PLC0415 — deferred: call-time import
 
         try:
             role = self.ticket.role
@@ -290,7 +290,7 @@ class Task(models.Model):
         ``complete()`` keeps its #883 single-atomic coupling for the loop /
         headless callers; this is the deliberate operator-only decoupling.
         """
-        from teatree.core.models.errors import QualityGateError  # noqa: PLC0415
+        from teatree.core.models.errors import QualityGateError  # noqa: PLC0415 — deferred: ORM/app-registry
 
         with transaction.atomic():
             self.status = self.Status.COMPLETED
@@ -322,7 +322,7 @@ class Task(models.Model):
         has advanced, later calls find the state mismatch and no-op.
         """
         if self._last_attempt_needs_user_input():
-            from teatree.core.models.task_handoff import park_for_user_input  # noqa: PLC0415
+            from teatree.core.models.task_handoff import park_for_user_input  # noqa: PLC0415 — deferred: import cycle
 
             park_for_user_input(self)
             return
@@ -376,7 +376,7 @@ class Task(models.Model):
         # phase is a short verb ("review"/"code"/...) must advance the
         # FSM too, not just record the session visit (#750). Raw
         # comparison silently desynced ticket.state from visited_phases.
-        from teatree.core.modelkit.phases import normalize_phase  # noqa: PLC0415
+        from teatree.core.modelkit.phases import normalize_phase  # noqa: PLC0415 — deferred: call-time import
 
         phase = normalize_phase(self.phase)
         # Mirror the FSM source list of mark_reviewed_externally() — guarding
@@ -448,7 +448,7 @@ class Task(models.Model):
         separate ``lifecycle visit-phase`` CLI call. The phase is normalized
         so the loop path and the CLI path write the same canonical token.
         """
-        from teatree.core.modelkit.phases import normalize_phase  # noqa: PLC0415
+        from teatree.core.modelkit.phases import normalize_phase  # noqa: PLC0415 — deferred: call-time import
 
         if not self.phase:
             return
@@ -553,7 +553,7 @@ class Task(models.Model):
 
     def phase_iteration_count(self) -> int:
         """How many attempts this ticket-phase has already recorded (#2009)."""
-        from teatree.core.models.task_repair import phase_attempts  # noqa: PLC0415
+        from teatree.core.models.task_repair import phase_attempts  # noqa: PLC0415 — deferred: import cycle
 
         return len(phase_attempts(self))
 
@@ -565,7 +565,7 @@ class Task(models.Model):
         ``MaxIterationsExceeded``; two consecutive identical failure fingerprints
         raise ``IterationStalled`` and record a user-facing ``DeferredQuestion``.
         """
-        from teatree.core.models.task_repair import check_requeue_allowed  # noqa: PLC0415
+        from teatree.core.models.task_repair import check_requeue_allowed  # noqa: PLC0415 — deferred: import cycle
 
         check_requeue_allowed(self)
 

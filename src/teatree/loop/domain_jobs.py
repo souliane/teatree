@@ -99,7 +99,7 @@ def _tickets_jobs_for_overlay(backend: OverlayBackends) -> list[_ScannerJob]:
     tag = backend.name
     jobs: list[_ScannerJob] = []
     if backend.external_db is not None:
-        from teatree.loop.scanners.external_tickets import ExternalTicketsScanner  # noqa: PLC0415
+        from teatree.loop.scanners.external_tickets import ExternalTicketsScanner  # noqa: PLC0415 — tick-time import
 
         jobs.append(
             _ScannerJob(
@@ -476,7 +476,7 @@ def _notify_scanner_error(*, label: str, exc: ScannerError, overlay: str) -> Non
 
 def _failed_e2e_scanner_for(backend: OverlayBackends) -> Scanner | None:
     """Build a per-overlay failed-E2E scanner from overlay watchers (#1295 cap E)."""
-    from teatree.loop.scanners.failed_e2e_posts import failed_e2e_scanner_for  # noqa: PLC0415
+    from teatree.loop.scanners.failed_e2e_posts import failed_e2e_scanner_for  # noqa: PLC0415 — tick-time import
 
     return failed_e2e_scanner_for(backend)
 

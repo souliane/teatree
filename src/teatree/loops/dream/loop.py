@@ -62,7 +62,7 @@ _DECAY = ("decay", "T3_DREAM_DECAY")
 
 def _dream_table() -> dict:
     """The ``dream`` sub-table of the DB ``loops`` setting; ``{}`` on absence/failure."""
-    from teatree.config import cold_reader  # noqa: PLC0415
+    from teatree.config import cold_reader  # noqa: PLC0415 — deferred: loaded at tick time, not import
 
     dream = cold_reader.mapping_setting("loops").get("dream")
     return dream if isinstance(dream, dict) else {}

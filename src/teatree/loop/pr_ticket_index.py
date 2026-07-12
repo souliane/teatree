@@ -64,7 +64,7 @@ def _lookup_pr_tickets(urls: Iterable[str]) -> dict[str, str]:
     if not url_list:
         return {}
     try:
-        from django.apps import apps  # noqa: PLC0415
+        from django.apps import apps  # noqa: PLC0415 — deferred: app registry read at call time
 
         pr_model = apps.get_model("core", "PullRequest")
     except Exception:  # noqa: BLE001 — an index-build failure degrades to no mapping, never breaks the tick
@@ -102,7 +102,7 @@ def _lookup_ticket_extra_prs(urls: Iterable[str]) -> dict[str, str]:
     if not url_set:
         return {}
     try:
-        from django.apps import apps  # noqa: PLC0415
+        from django.apps import apps  # noqa: PLC0415 — deferred: app registry read at call time
 
         ticket_model = apps.get_model("core", "Ticket")
     except Exception:  # noqa: BLE001 — an index-build failure degrades to no mapping
@@ -143,7 +143,7 @@ def resolve_author_ticket(*, slug: str, pr_id: int, pr_url: str) -> "Ticket | No
     caller treats the PR as unowned (arms the review as before).
     """
     try:
-        from django.apps import apps  # noqa: PLC0415
+        from django.apps import apps  # noqa: PLC0415 — deferred: app registry read at call time
 
         pr_model = apps.get_model("core", "PullRequest")
         ticket_model = apps.get_model("core", "Ticket")

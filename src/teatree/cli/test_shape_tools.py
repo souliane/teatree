@@ -80,7 +80,7 @@ def _print_report(report: TestShapeReport) -> None:
 
 
 def _update_baseline(pyproject: Path, root: Path, *, allow_regression: bool) -> None:
-    import tomlkit  # noqa: PLC0415
+    import tomlkit  # noqa: PLC0415 — deferred: heavy/optional dep at call site
 
     measured = measure_ratio(
         test_files=collect_test_files(root),

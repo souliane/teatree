@@ -254,7 +254,7 @@ def worktree_pg_connection(
     Returns ``("", "", {})`` for an unprovisioned worktree so callers fall
     back to the plain ``db_exists`` defaults.
     """
-    from teatree.utils.db import pg_env  # noqa: PLC0415
+    from teatree.utils.db import pg_env  # noqa: PLC0415 — deferred: call-time import, kept lazy
 
     extra: WorktreeExtra = validated_worktree_extra(worktree.extra)
     if not extra.get("worktree_path"):

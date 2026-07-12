@@ -47,7 +47,10 @@ def check_live_post(*, repo: str, mr: int) -> str:
     (#126) is what mints that token in the same command that records the
     on-behalf authorization, so a single user action satisfies both gates.
     """
-    from teatree.core.gates.live_post_gate import LivePostBlockedError, require_live_post_approval  # noqa: PLC0415
+    from teatree.core.gates.live_post_gate import (  # noqa: PLC0415 — deferred: keeps CLI startup light
+        LivePostBlockedError,
+        require_live_post_approval,
+    )
 
     try:
         require_live_post_approval(mr_url=f"{repo}!{mr}")
@@ -82,8 +85,8 @@ def notify_draft_created(*, repo: str, mr: int, mr_url: str, reviewed_head_sha: 
     ``:information_source:`` marker. No per-comment breakdown, no
     publish/discard instructions.
     """
-    from teatree.core.notify import NotifyKind  # noqa: PLC0415
-    from teatree.messaging import notify_with_fallback  # noqa: PLC0415
+    from teatree.core.notify import NotifyKind  # noqa: PLC0415 — deferred: keeps CLI startup light
+    from teatree.messaging import notify_with_fallback  # noqa: PLC0415 — deferred: keeps CLI startup light
 
     discriminator = reviewed_head_sha or datetime.now(tz=UTC).strftime("%Y-%m-%d")
     notify_with_fallback(

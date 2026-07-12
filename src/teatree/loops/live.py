@@ -196,7 +196,7 @@ def _mini_entries() -> tuple[LoopStatusEntry, ...]:
     so a preset-masked-off loop is reported un-admitted (no live countdown) and a
     preset-forced-ON base-disabled loop is reported admitted (the tick will fire it).
     """
-    from teatree.core.models import Loop  # noqa: PLC0415
+    from teatree.core.models import Loop  # noqa: PLC0415 — deferred: ORM import needs the app registry
 
     active = resolve_active_preset()
     entries = [_mini_entry(loop, active) for loop in Loop.objects.all()]

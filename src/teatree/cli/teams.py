@@ -35,8 +35,8 @@ teams_app = typer.Typer(
 def _set_enabled(*, value: bool) -> None:
     # Django/ORM imports are inline so building the overlay app (which loads this
     # module) never eagerly imports the model layer before settings are configured.
-    from teatree.core.models import ConfigSetting  # noqa: PLC0415
-    from teatree.utils.django_bootstrap import ensure_django  # noqa: PLC0415
+    from teatree.core.models import ConfigSetting  # noqa: PLC0415 — deferred: ORM import needs the app registry
+    from teatree.utils.django_bootstrap import ensure_django  # noqa: PLC0415 — deferred: keeps CLI startup light
 
     ensure_django()
     ConfigSetting.objects.set_value(ENABLED_KEY, value)
@@ -59,7 +59,7 @@ def off() -> None:
 @teams_app.command()
 def status() -> None:
     """Show whether agent teams is on/off (effective value, read-only)."""
-    from teatree.config import get_effective_settings  # noqa: PLC0415
+    from teatree.config import get_effective_settings  # noqa: PLC0415 — deferred: keeps CLI startup light
 
     if get_effective_settings().teams_enabled:
         typer.echo("agent teams = on")

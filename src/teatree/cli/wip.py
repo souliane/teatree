@@ -40,14 +40,14 @@ def _set_wip(level: Wip) -> None:
     never in the unbootstrapped console-script process (#2622). The management
     command parses ``value`` as JSON, so the canonical value is JSON-encoded here.
     """
-    from teatree.cli.overlay import managepy_core  # noqa: PLC0415
+    from teatree.cli.overlay import managepy_core  # noqa: PLC0415 — deferred: breaks wip ↔ overlay cycle
 
     managepy_core("config_setting", "set", WIP_KEY, json.dumps(level.value))
 
 
 def _set_boost_concurrency(target: int) -> None:
     """Persist the GLOBAL-scope ``boost_concurrency`` row (same subprocess seam as ``_set_wip``)."""
-    from teatree.cli.overlay import managepy_core  # noqa: PLC0415
+    from teatree.cli.overlay import managepy_core  # noqa: PLC0415 — deferred: breaks wip ↔ overlay cycle
 
     managepy_core("config_setting", "set", BOOST_CONCURRENCY_KEY, json.dumps(target))
 
@@ -59,8 +59,8 @@ def register_wip_commands(overlay_app: typer.Typer) -> None:
     @wip_group.command(name="show")
     def show() -> None:
         """Show the effective wip (env > per-overlay > global > default)."""
-        from teatree.config import get_effective_settings  # noqa: PLC0415
-        from teatree.utils.django_bootstrap import ensure_django  # noqa: PLC0415
+        from teatree.config import get_effective_settings  # noqa: PLC0415 — deferred: keeps CLI startup light
+        from teatree.utils.django_bootstrap import ensure_django  # noqa: PLC0415 — deferred: keeps CLI startup light
 
         # ``get_effective_settings`` reads the ``ConfigSetting`` DB tier via the
         # app registry, which fails SAFE to ``{}`` when Django is not configured —

@@ -36,8 +36,8 @@ def _session_owns_loop(session_id: str | None) -> bool:
     """
     if not session_id:
         return True
-    import json as _json  # noqa: PLC0415
-    from pathlib import Path  # noqa: PLC0415
+    import json as _json  # noqa: PLC0415 — deferred: loaded only when this command runs
+    from pathlib import Path  # noqa: PLC0415 — deferred: loaded only when this command runs
 
     base_env = os.environ.get("T3_LOOP_REGISTRY_DIR")
     base = Path(base_env) if base_env else Path.home() / ".local" / "share" / "teatree"
@@ -65,8 +65,8 @@ class Command(TyperCommand):
             typer.Option("--json", help="Emit the cycle report as JSON."),
         ] = False,
     ) -> None:
-        from teatree.core.models import LoopLease  # noqa: PLC0415
-        from teatree.loop.slack_answer.cycle import run_slack_answer_cycle  # noqa: PLC0415
+        from teatree.core.models import LoopLease  # noqa: PLC0415 — deferred: ORM import needs the app registry
+        from teatree.loop.slack_answer.cycle import run_slack_answer_cycle  # noqa: PLC0415 — lazy command import
 
         session_id = _non_owner_session_id()
         if not _session_owns_loop(session_id):

@@ -12,7 +12,7 @@ directory when available; otherwise skills are scanned on the fly from
 ``skill_search_dirs``.
 """
 
-from __future__ import annotations  # noqa: TID251
+from __future__ import annotations  # noqa: TID251 — standalone script, not a teatree package module
 
 import json
 import operator
@@ -38,7 +38,7 @@ def _get_installed_version() -> str:
         import importlib.metadata
 
         return importlib.metadata.version("teatree")
-    except Exception:  # noqa: BLE001
+    except Exception:  # noqa: BLE001 — best-effort helper: a failure is swallowed so the caller degrades, never aborts
         return ""
 
 
@@ -154,11 +154,11 @@ def read_overlay_companion_skills() -> list[str]:
     """
     try:
         from teatree.agents.skill_bundle import active_overlay_companion_skills
-    except Exception:  # noqa: BLE001
+    except Exception:  # noqa: BLE001 — best-effort helper: a failure is swallowed so the caller degrades, never aborts
         return []
     try:
         return active_overlay_companion_skills()
-    except Exception:  # noqa: BLE001
+    except Exception:  # noqa: BLE001 — best-effort helper: a failure is swallowed so the caller degrades, never aborts
         return []
 
 

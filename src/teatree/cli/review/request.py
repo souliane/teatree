@@ -28,8 +28,8 @@ def _active_project() -> tuple[Path, str]:
     #1312); it is kept on the tuple only to preserve the existing return
     shape for callers and tests.
     """
-    from teatree.cli import _find_project_root  # noqa: PLC0415
-    from teatree.config import _active_overlay_entry  # noqa: PLC0415
+    from teatree.cli import _find_project_root  # noqa: PLC0415 — deferred: breaks request ↔ cli cycle
+    from teatree.config import _active_overlay_entry  # noqa: PLC0415 — deferred: keeps CLI startup light
 
     active = _active_overlay_entry()
     project = active.project_path if active and active.project_path else _find_project_root()
@@ -64,13 +64,13 @@ def _overlay_name_for_mr(mr_url: str) -> str:
     so ``django.setup()`` is run here — idempotent — before inferring,
     matching the other DB-touching CLI wrappers.
     """
-    import os  # noqa: PLC0415
+    import os  # noqa: PLC0415 — deferred: loaded only when this command runs
 
     env_name = os.environ.get("T3_OVERLAY_NAME", "").strip()
     if env_name:
         return env_name
 
-    from teatree.core.overlay_loader import infer_overlay_for_url  # noqa: PLC0415
+    from teatree.core.overlay_loader import infer_overlay_for_url  # noqa: PLC0415 — deferred: keeps CLI startup light
 
     ensure_django()
     inferred = infer_overlay_for_url(mr_url)

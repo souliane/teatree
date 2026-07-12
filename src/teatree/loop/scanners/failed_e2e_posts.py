@@ -128,7 +128,7 @@ def failed_e2e_scanner_for(backend: object) -> FailedE2EPostsScanner | None:
     backend, or no watchers configured. Moved out of domain_jobs to keep
     that orchestrator under the module-LOC gate.
     """
-    from teatree.loop.scanners.slack_broadcasts import BackendChannelHistoryFetcher  # noqa: PLC0415
+    from teatree.loop.scanners.slack_broadcasts import BackendChannelHistoryFetcher  # noqa: PLC0415 — tick-time import
 
     overlay = getattr(backend, "overlay", None)
     messaging = getattr(backend, "messaging", None)

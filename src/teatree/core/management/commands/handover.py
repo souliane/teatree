@@ -100,7 +100,7 @@ class Command(TyperCommand):
         "next session", marks it claimed so it injects exactly once, and
         prints the payload. Empty payload when nothing is claimable.
         """
-        from teatree.core.models import SessionHandover  # noqa: PLC0415
+        from teatree.core.models import SessionHandover  # noqa: PLC0415 — deferred: ORM import needs the app registry
 
         session_id = session or current_session_id()
         claimed = SessionHandover.objects.claim_next(session_id) if session_id else None

@@ -309,7 +309,7 @@ def _advance_open_review_loop(recorded: ReviewVerdict) -> None:
 
 
 def _maybe_record_plan_artifact(task: Task, result: AgentResultBlob, *, phase: str) -> None:
-    from teatree.core.models.plan_artifact import PlanArtifact  # noqa: PLC0415
+    from teatree.core.models.plan_artifact import PlanArtifact  # noqa: PLC0415 — deferred: ORM/app-registry
 
     effective_phase = normalize_phase(phase or task.phase)
     plan_text = result.get("plan_text")

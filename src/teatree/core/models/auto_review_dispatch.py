@@ -150,9 +150,9 @@ class AutoReviewDispatch(models.Model):
 
     @staticmethod
     def _create_reviewing_task(*, slug: str, pr_id: int, head_sha: str, pr_url: str, overlay: str) -> "Task":
-        from teatree.core.models.session import Session  # noqa: PLC0415
-        from teatree.core.models.task import Task  # noqa: PLC0415
-        from teatree.core.models.ticket import Ticket  # noqa: PLC0415
+        from teatree.core.models.session import Session  # noqa: PLC0415 — deferred: ORM import needs the app registry
+        from teatree.core.models.task import Task  # noqa: PLC0415 — deferred: ORM import needs the app registry
+        from teatree.core.models.ticket import Ticket  # noqa: PLC0415 — deferred: ORM import needs the app registry
 
         ticket, _ = Ticket.objects.get_or_create(
             issue_url=pr_url or f"{slug}#{pr_id}",

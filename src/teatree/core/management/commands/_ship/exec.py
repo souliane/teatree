@@ -177,7 +177,7 @@ def _ship_sync(ticket: Ticket, title: str) -> ShipExecuted | ShippingGateFailure
     state under ``select_for_update``) so a worker later picking it up is
     a safe no-op (state is no longer SHIPPED).
     """
-    from teatree.core.tasks import execute_ship  # noqa: PLC0415
+    from teatree.core.tasks import execute_ship  # noqa: PLC0415 — deferred: keeps command import light
 
     try:
         with transaction.atomic():

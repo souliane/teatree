@@ -154,7 +154,7 @@ def ensure_external_e2e_dependencies(playwright_root: Path) -> None:
 
 def resolve_private_tests_path() -> Path | None:
     """Resolve the private tests directory from the ``T3_PRIVATE_TESTS`` env or the DB config."""
-    from teatree.config import cold_reader  # noqa: PLC0415
+    from teatree.config import cold_reader  # noqa: PLC0415 — deferred: keeps command import light
 
     private_tests = os.environ.get("T3_PRIVATE_TESTS", "") or cold_reader.str_setting("private_tests", default="")
     if not private_tests:

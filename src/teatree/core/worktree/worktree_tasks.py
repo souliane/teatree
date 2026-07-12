@@ -50,7 +50,7 @@ def _unknown_overlay_reason(worktree: Worktree, *, verb: str) -> str | None:
     short-circuit to a recorded ``ok=False`` instead of raising. A blank overlay
     is the ambient single-overlay default and stays dispatchable (``None``).
     """
-    from teatree.core.overlay_loader import resolve_overlay_name  # noqa: PLC0415
+    from teatree.core.overlay_loader import resolve_overlay_name  # noqa: PLC0415 — deferred: call-time import
 
     effective_overlay = worktree.overlay or worktree.ticket.overlay
     if effective_overlay and resolve_overlay_name(effective_overlay) is None:

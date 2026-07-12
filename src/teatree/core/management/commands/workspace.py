@@ -179,8 +179,8 @@ class Command(TyperCommand):
         self,
         ticket_id: int = typer.Argument(0, help="Optional ticket id (alias for PWD auto-detect; #941)."),
         path: str = typer.Option("", help="Worktree path inside the workspace (auto-detects from PWD)."),
-        slow_import: bool = typer.Option(default=False, help="Allow slow DB fallbacks."),  # noqa: FBT001
-        report: bool = typer.Option(  # noqa: FBT001
+        slow_import: bool = typer.Option(default=False, help="Allow slow DB fallbacks."),  # noqa: FBT001 — typer CLI boolean flag; the bool parameter is typer's option idiom
+        report: bool = typer.Option(  # noqa: FBT001 — typer CLI boolean flag; the bool parameter is typer's option idiom
             default=False,
             help="Print each worktree's per-step provision-report table (total + slowest step).",
         ),

@@ -283,7 +283,7 @@ def default_staging_dir() -> Path:
     Never under ``evals/scenarios``: a human / standing core-maker ratifies the
     staged ``derived_evals.yaml`` into the live suite via a PR.
     """
-    from teatree.loops.dream.engine import default_projects_dir  # noqa: PLC0415
+    from teatree.loops.dream.engine import default_projects_dir  # noqa: PLC0415 — deferred: loaded at tick time
 
     return default_projects_dir() / "dream-derived-evals"
 
@@ -303,7 +303,7 @@ def stage_proposals_file(
     one; tests inject a fake. A malformed row is skipped, never fatal — the queue is
     appended by a separate phase and one bad row must not block the rest.
     """
-    import json  # noqa: PLC0415
+    import json  # noqa: PLC0415 — deferred: loaded only on this code path
 
     if not proposals_path.is_file():
         return []
@@ -324,7 +324,7 @@ def stage_proposals_file(
         if name:
             slices[name] = str(row.get("seed_citation") or "")
     if synthesizer is None:
-        from teatree.loops.dream.sdk_eval_synthesizer import sdk_spec_synthesizer  # noqa: PLC0415
+        from teatree.loops.dream.sdk_eval_synthesizer import sdk_spec_synthesizer  # noqa: PLC0415 — import cycle
 
         synthesizer = sdk_spec_synthesizer
     return stage_derived_evals(

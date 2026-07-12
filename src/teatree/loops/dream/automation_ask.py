@@ -219,7 +219,7 @@ def promote_automatable_asks(
     Under *dry_run* nothing is written or scheduled. Returns one outcome per grounded
     ask gap (ungrounded clusters yield no outcome).
     """
-    from teatree.loops.dream import umbrella_ledger  # noqa: PLC0415
+    from teatree.loops.dream import umbrella_ledger  # noqa: PLC0415 — deferred: loaded at tick time, not import
 
     outcomes: list[AutomationAskOutcome] = []
     for finding in detect_automatable_asks(clusters, extract):

@@ -112,9 +112,9 @@ def _orchestrate(request: "TickRequest", *, statusline_path: Path | None) -> Non
     which the reader treats as unclamped: fail-safe by construction.
     """
     try:
-        from teatree.config import Wip  # noqa: PLC0415
-        from teatree.loop.admit_budget import clear_admit_budget, write_admit_budget  # noqa: PLC0415
-        from teatree.loop.statusline import default_path  # noqa: PLC0415
+        from teatree.config import Wip  # noqa: PLC0415 — deferred: loaded at tick time, not import
+        from teatree.loop.admit_budget import clear_admit_budget, write_admit_budget  # noqa: PLC0415 — tick-time import
+        from teatree.loop.statusline import default_path  # noqa: PLC0415 — deferred: loaded at tick time, not import
 
         target = statusline_path or default_path()
         if not _orchestrate_claim_enabled():
@@ -179,7 +179,7 @@ def _populate_live_loops_in_anchors(zones: StatuslineZones, *, colorize: bool | 
     Fails open: any import/query error degrades to a no-op.
     """
     try:
-        from teatree.loop.statusline import colorize_enabled, live_loops_anchor  # noqa: PLC0415
+        from teatree.loop.statusline import colorize_enabled, live_loops_anchor  # noqa: PLC0415 — tick-time import
     except Exception:  # noqa: BLE001 — the statusline import is best-effort; a failure degrades to no anchor
         return
     try:
@@ -199,8 +199,11 @@ def _write_open_prs_cache(signals: "list[ScanSignal]", *, target: Path | None) -
     snapshot can never abort the tick.
     """
     try:
-        from teatree.loop.open_prs import open_prs_from_signals, write_open_prs_cache  # noqa: PLC0415
-        from teatree.loop.statusline import default_path  # noqa: PLC0415
+        from teatree.loop.open_prs import (  # noqa: PLC0415 — deferred: loaded at tick time, not import
+            open_prs_from_signals,
+            write_open_prs_cache,
+        )
+        from teatree.loop.statusline import default_path  # noqa: PLC0415 — deferred: loaded at tick time, not import
 
         write_open_prs_cache(open_prs_from_signals(signals), statusline_path=target or default_path())
     except Exception:  # noqa: BLE001 — the open-PRs cache write is best-effort; a failure degrades to no-op
@@ -231,8 +234,8 @@ def _populate_open_prs_in_anchors(zones: StatuslineZones, *, target: Path | None
     error degrades to a no-op so a broken cache can never blank the statusline.
     """
     try:
-        from teatree.loop.open_prs import open_prs_anchor  # noqa: PLC0415
-        from teatree.loop.statusline import colorize_enabled, default_path  # noqa: PLC0415
+        from teatree.loop.open_prs import open_prs_anchor  # noqa: PLC0415 — deferred: loaded at tick time, not import
+        from teatree.loop.statusline import colorize_enabled, default_path  # noqa: PLC0415 — tick-time import
 
         zones.anchors.extend(
             open_prs_anchor(target=target or default_path(), colorize=colorize_enabled(colorize=colorize))
@@ -254,10 +257,10 @@ def _populate_loop_owner_anchor(zones: StatuslineZones) -> None:
     t3-master read can never blank the statusline.
     """
     try:
-        from teatree.core.loop_lease_manager import T3_MASTER_SLOT  # noqa: PLC0415
-        from teatree.core.models import LoopLease  # noqa: PLC0415
-        from teatree.loop.session_identity import current_session_id  # noqa: PLC0415
-        from teatree.loop.statusline import loop_owner_anchor  # noqa: PLC0415
+        from teatree.core.loop_lease_manager import T3_MASTER_SLOT  # noqa: PLC0415 — deferred: loaded at tick time
+        from teatree.core.models import LoopLease  # noqa: PLC0415 — deferred: ORM import needs the app registry
+        from teatree.loop.session_identity import current_session_id  # noqa: PLC0415 — deferred: loaded at tick time
+        from teatree.loop.statusline import loop_owner_anchor  # noqa: PLC0415 — deferred: loaded at tick time
 
         status = LoopLease.objects.ownership_status(T3_MASTER_SLOT)
         zone, line = loop_owner_anchor(status, current_session_id())

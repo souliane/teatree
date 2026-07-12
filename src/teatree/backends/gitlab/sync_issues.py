@@ -161,7 +161,7 @@ def fetch_issue_labels(client: "GitLabAPI", result: SyncResult) -> None:
 
 
 def extract_variant(labels: list[object]) -> str:
-    from teatree.core.overlay_loader import get_overlay  # noqa: PLC0415
+    from teatree.core.overlay_loader import get_overlay  # noqa: PLC0415 — deferred: avoids a backends ↔ core cycle
 
     known = get_overlay().config.known_variants
     known_lower = {v.lower(): v for v in known}

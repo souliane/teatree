@@ -349,7 +349,7 @@ def update_repo(name: str, repo: Path, *, is_primary: bool = False) -> RepoUpdat
     subject. Genuine un-upstreamed work blocks the reconcile and is surfaced
     loudly, and a recoverable backup ref is created before any reset.
     """
-    from teatree.cli._update_reconcile import reconcile_squash_merged  # noqa: PLC0415
+    from teatree.cli._update_reconcile import reconcile_squash_merged  # noqa: PLC0415 — deferred: lazy CLI import
 
     blocked = _precondition_block(name, repo, is_primary=is_primary)
     if blocked is not None:
@@ -375,7 +375,7 @@ def _running_clone() -> Path | None:
     configured main clone, which is exactly the silent-isolation case the
     currency gate must catch (#1507).
     """
-    import teatree  # noqa: PLC0415
+    import teatree  # noqa: PLC0415 — deferred: keeps CLI startup light
 
     pkg = teatree.__file__
     if pkg is None:
@@ -396,8 +396,8 @@ def _collect_repos() -> list[tuple[str, Path]]:
     config); each entry's ``project_path`` is walked up to its containing git
     work tree.
     """
-    from teatree.cli.setup import find_main_clone  # noqa: PLC0415
-    from teatree.config import discover_overlays  # noqa: PLC0415
+    from teatree.cli.setup import find_main_clone  # noqa: PLC0415 — deferred: keeps CLI startup light
+    from teatree.config import discover_overlays  # noqa: PLC0415 — deferred: keeps CLI startup light
 
     repos: list[tuple[str, Path]] = []
     seen: set[Path] = set()
@@ -526,7 +526,7 @@ def _notify_if_stale(result: RepoUpdate, *, repo: Path) -> None:
         return
     try:
         ensure_django()
-        from teatree.core.worktree.stale_clone_notice import (  # noqa: PLC0415
+        from teatree.core.worktree.stale_clone_notice import (  # noqa: PLC0415 — deferred: keeps CLI startup light
             StaleCloneReason,
             StaleCloneSkip,
             notify_stale_clone_skip,

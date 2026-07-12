@@ -78,7 +78,7 @@ class ReviewService:
     @staticmethod
     def get_gitlab_token() -> str:
         """Extract GitLab token from glab auth or GITLAB_TOKEN env var."""
-        import os  # noqa: PLC0415
+        import os  # noqa: PLC0415 — deferred: loaded only when this command runs
 
         token = os.environ.get("GITLAB_TOKEN", "")
         if token:
@@ -91,18 +91,18 @@ class ReviewService:
                     return token_value
         return ""
 
-    def _get_api(self):  # noqa: ANN202
-        from teatree.backends.gitlab.api import GitLabAPI  # noqa: PLC0415
+    def _get_api(self):  # noqa: ANN202 — returns a lazily-imported handle; annotating would pull the type to module scope
+        from teatree.backends.gitlab.api import GitLabAPI  # noqa: PLC0415 — deferred: keeps CLI startup light
 
         return GitLabAPI(token=self.token, base_url=self._resolve_base_url())
 
     @staticmethod
     def _resolve_base_url() -> str:
         """Resolve GitLab API base URL from overlay config or env, defaulting to gitlab.com."""
-        import os  # noqa: PLC0415
+        import os  # noqa: PLC0415 — deferred: loaded only when this command runs
 
         try:
-            from teatree.core.overlay_loader import get_overlay  # noqa: PLC0415
+            from teatree.core.overlay_loader import get_overlay  # noqa: PLC0415 — deferred: keeps CLI startup light
 
             return get_overlay().config.gitlab_url
         except Exception:  # noqa: BLE001 — an unresolvable GitLab URL degrades to the env/default
@@ -110,7 +110,7 @@ class ReviewService:
 
     def _post_draft_note_impl(self, repo: str, mr: int, note: str, *, file: str, line: int) -> tuple[str, int]:
         """The pre-gate-passed body of :meth:`post_draft_note` (extracted to :mod:`review_post_impl`)."""
-        from teatree.cli.review.post_impl import post_draft_note_impl  # noqa: PLC0415
+        from teatree.cli.review.post_impl import post_draft_note_impl  # noqa: PLC0415 — deferred: lazy CLI import
 
         return post_draft_note_impl(self, repo, mr, note, file=file, line=line)
 
@@ -166,7 +166,7 @@ class ReviewService:
         )
 
     # ast-grep-ignore: ac-django-no-complexity-suppressions
-    def _run_pre_publish_gates(  # noqa: PLR0913
+    def _run_pre_publish_gates(  # noqa: PLR0913 — wide signature by design: each parameter is a distinct required input
         self,
         *,
         repo: str,
@@ -188,7 +188,7 @@ class ReviewService:
         general-inline → TODO-anchor → evidence) and the per-call escape
         semantics; service.py stays under the module-health LOC ceiling.
         """
-        from teatree.cli.review.pre_publish_gates import run_pre_publish_gates  # noqa: PLC0415
+        from teatree.cli.review.pre_publish_gates import run_pre_publish_gates  # noqa: PLC0415 — lazy CLI import
 
         return run_pre_publish_gates(
             self,
@@ -207,7 +207,7 @@ class ReviewService:
 
     def _post_comment_impl(self, repo: str, mr: int, note: str, *, file: str, line: int) -> tuple[str, int]:
         """The pre-gate-passed body of :meth:`post_comment` (extracted to :mod:`review_post_impl`)."""
-        from teatree.cli.review.post_impl import post_comment_impl  # noqa: PLC0415
+        from teatree.cli.review.post_impl import post_comment_impl  # noqa: PLC0415 — deferred: keeps CLI startup light
 
         return post_comment_impl(self, repo, mr, note, file=file, line=line)
 
@@ -245,7 +245,7 @@ class ReviewService:
         for the shape, TODO-anchor, general-note, and comment-bloat gates,
         documented in :meth:`_run_pre_publish_gates`.
         """
-        from teatree.cli.review.authorize import resolve_live_authorization  # noqa: PLC0415
+        from teatree.cli.review.authorize import resolve_live_authorization  # noqa: PLC0415 — deferred: lazy CLI import
         from teatree.cli.review.default_draft import (  # noqa: PLC0415 — lazy: monkeypatchable + defers ORM
             check_live_post,
             notify_draft_created,
@@ -325,7 +325,7 @@ class ReviewService:
         blocked = check_on_behalf(repo, mr, "publish_draft_notes")
         if blocked:
             return blocked, 1
-        from teatree.cli.review.post_impl import publish_draft_notes_impl  # noqa: PLC0415
+        from teatree.cli.review.post_impl import publish_draft_notes_impl  # noqa: PLC0415 — deferred: lazy CLI import
 
         encoded = repo.replace("/", "%2F")
         return publish_or_blocked(
@@ -342,7 +342,7 @@ class ReviewService:
         blocked = check_on_behalf(repo, mr, "reply_to_discussion")
         if blocked:
             return blocked, 1
-        from teatree.cli.review.post_impl import reply_to_discussion_impl  # noqa: PLC0415
+        from teatree.cli.review.post_impl import reply_to_discussion_impl  # noqa: PLC0415 — deferred: lazy CLI import
 
         api = self._get_api()
         encoded = repo.replace("/", "%2F")
@@ -368,7 +368,7 @@ class ReviewService:
         blocked = check_on_behalf(repo, mr, "resolve_discussion")
         if blocked:
             return blocked, 1
-        from teatree.cli.review.post_impl import resolve_discussion_impl  # noqa: PLC0415
+        from teatree.cli.review.post_impl import resolve_discussion_impl  # noqa: PLC0415 — deferred: lazy CLI import
 
         encoded = repo.replace("/", "%2F")
         return publish_or_blocked(
@@ -391,7 +391,7 @@ class ReviewService:
         blocked = check_on_behalf(repo, mr, "update_note")
         if blocked:
             return blocked, 1
-        from teatree.cli.review.post_impl import update_note_impl  # noqa: PLC0415
+        from teatree.cli.review.post_impl import update_note_impl  # noqa: PLC0415 — deferred: keeps CLI startup light
 
         api = self._get_api()
         encoded = repo.replace("/", "%2F")
@@ -421,7 +421,7 @@ class ReviewService:
         blocked = check_on_behalf(repo, mr, "delete_discussion")
         if blocked:
             return blocked, 1
-        from teatree.cli.review.post_impl import delete_discussion_impl  # noqa: PLC0415
+        from teatree.cli.review.post_impl import delete_discussion_impl  # noqa: PLC0415 — deferred: lazy CLI import
 
         encoded = repo.replace("/", "%2F")
         return publish_or_blocked(
@@ -447,7 +447,7 @@ class ReviewService:
         blocked = check_on_behalf_issue(repo, issue_iid, "delete_issue_note")
         if blocked:
             return blocked, 1
-        from teatree.cli.review.post_impl import delete_issue_note_impl  # noqa: PLC0415
+        from teatree.cli.review.post_impl import delete_issue_note_impl  # noqa: PLC0415 — deferred: lazy CLI import
 
         encoded = repo.replace("/", "%2F")
         return publish_or_blocked_issue(
@@ -507,7 +507,7 @@ class ReviewService:
                 "`post-draft-note`) first, then approve."
             )
             return msg, 1
-        from teatree.cli.review.post_impl import approve_impl  # noqa: PLC0415
+        from teatree.cli.review.post_impl import approve_impl  # noqa: PLC0415 — deferred: keeps CLI startup light
 
         return publish_or_blocked(repo, mr, "approve", lambda: approve_impl(self, repo, mr, encoded=encoded))
 
@@ -526,7 +526,7 @@ class ReviewService:
         blocked = check_on_behalf(repo, mr, "unapprove")
         if blocked:
             return blocked, 1
-        from teatree.cli.review.post_impl import unapprove_impl  # noqa: PLC0415
+        from teatree.cli.review.post_impl import unapprove_impl  # noqa: PLC0415 — deferred: keeps CLI startup light
 
         encoded = repo.replace("/", "%2F")
         return publish_or_blocked(repo, mr, "unapprove", lambda: unapprove_impl(self, repo, mr, encoded=encoded))
@@ -541,7 +541,7 @@ from teatree.cli.review import commands as _review_commands  # noqa: E402 — re
 from teatree.cli.review.authorize import register as _register_authorize  # noqa: E402 — late, after typer app
 from teatree.cli.review.commands import _require_token  # noqa: E402, F401 — re-exported for monkeypatch targets
 from teatree.cli.review.live_approval import register as _register_live_approval  # noqa: E402 — late, after typer app
-from teatree.cli.teatree_gate import register_fail_open_gate_commands as _register_fail_open  # noqa: E402
+from teatree.cli.teatree_gate import register_fail_open_gate_commands as _register_fail_open  # noqa: E402 — late import
 
 _register_on_behalf(review_app)
 _register_drafts(review_app)

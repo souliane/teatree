@@ -106,7 +106,7 @@ class TeammatePane:
         Reads the effective setting (the DB-home single source of truth) at call
         time so a flip takes effect immediately; fails closed when off.
         """
-        from teatree.config import get_effective_settings  # noqa: PLC0415
+        from teatree.config import get_effective_settings  # noqa: PLC0415 — deferred: call-time import, kept lazy
 
         if not get_effective_settings().teams_enabled:
             msg = (
@@ -167,13 +167,13 @@ class TeammatePane:
 
     @staticmethod
     def _claim_is_live(task: Task) -> bool:
-        from django.utils import timezone  # noqa: PLC0415
+        from django.utils import timezone  # noqa: PLC0415 — deferred: Django import at call time
 
         return task.lease_expires_at is not None and task.lease_expires_at > timezone.now()
 
     @staticmethod
     def _ticket_has_live_session(task: Task) -> bool:
-        from teatree.core.models.session import Session  # noqa: PLC0415
+        from teatree.core.models.session import Session  # noqa: PLC0415 — deferred: ORM import needs the app registry
 
         return Session.objects.filter(ticket=task.ticket, ended_at__isnull=True).exists()
 

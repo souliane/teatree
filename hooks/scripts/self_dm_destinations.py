@@ -78,13 +78,13 @@ def read_self_dm_destinations() -> SelfDmDestinations:
     """
     try:
         with teatree_src_on_path():
-            from teatree.config import cold_reader  # noqa: PLC0415
+            from teatree.config import cold_reader  # noqa: PLC0415 — deferred: cold-hook import after sys.path setup
 
             if not cold_reader.row_exists(_CONFIG_STORE_PROBE, on_error=False):
                 return SelfDmDestinations(frozenset(), resolved=False)
             overlays = cold_reader.mapping_setting("overlays")
             global_user_id = cold_reader.str_setting("slack_user_id", default="")
-    except Exception:  # noqa: BLE001
+    except Exception:  # noqa: BLE001 — crash-proof hook: any failure degrades silently, never breaks the tool call
         return SelfDmDestinations(frozenset(), resolved=False)
     ids = overlay_slack_ids(overlays)
     if global_user_id:

@@ -574,7 +574,7 @@ def cleanup_worktree(
     # done-wipe owns the worktree's docker resources, so it removes the VOLUMES
     # too (a reaped worktree's volumes are a slow disk leak). Idempotent: down on
     # a project with no containers is a no-op.
-    from teatree.core.runners.worktree_start import docker_compose_down  # noqa: PLC0415
+    from teatree.core.runners.worktree_start import docker_compose_down  # noqa: PLC0415 — deferred: call-time import
 
     docker_compose_down(compose_project(worktree), remove_volumes=True)
 

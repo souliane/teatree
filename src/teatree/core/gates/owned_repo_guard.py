@@ -174,7 +174,7 @@ def classify_active_push(cwd: Path) -> PushScopeVerdict:
     (never-lockout on the internal-exception axis, distinct from the clean
     unknown verdict above which fails closed).
     """
-    from teatree.core.overlay_loader import OverlayConfigResolver, get_all_overlays  # noqa: PLC0415
+    from teatree.core.overlay_loader import OverlayConfigResolver, get_all_overlays  # noqa: PLC0415 — lazy import
 
     try:
         overlays = get_all_overlays()
@@ -254,7 +254,7 @@ def merge_clear_refusal(clear: "_MergeClearLike", *, approved: bool) -> MergeKey
     if approved:
         return None
     try:
-        from teatree.core.overlay_loader import OverlayConfigResolver, get_all_overlays  # noqa: PLC0415
+        from teatree.core.overlay_loader import OverlayConfigResolver, get_all_overlays  # noqa: PLC0415 — lazy import
 
         issue_url = str(getattr(clear.ticket, "issue_url", "") or "")
         verdict = merge_scope_verdict(

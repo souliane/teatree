@@ -71,7 +71,7 @@ def _gate_enabled(overlay_name: str | None) -> bool:
     ``[teatree] e2e_mandatory_gate_enabled`` (per-overlay overridable via
     ``[overlays.<name>]``) defaults to ``True``.
     """
-    from teatree.config import get_effective_settings  # noqa: PLC0415
+    from teatree.config import get_effective_settings  # noqa: PLC0415 — deferred: call-time import, kept lazy
 
     return bool(get_effective_settings(overlay_name).e2e_mandatory_gate_enabled)
 
@@ -91,7 +91,7 @@ def resolve_gate_inputs(ticket: Ticket, *, changed_files: list[str], head_sha: s
     misconfigured ticket. The evidence / bypass / kill-switch escapes keep this
     from being a hard lockout.
     """
-    from django.core.exceptions import ImproperlyConfigured  # noqa: PLC0415
+    from django.core.exceptions import ImproperlyConfigured  # noqa: PLC0415 — deferred: Django import at call time
 
     try:
         overlay = get_overlay(ticket.overlay or None)
@@ -131,7 +131,7 @@ def _passes_without_bypass(inputs: GateInputs) -> bool:
     The cheap, most-permissive short-circuits first: not display-impacting,
     kill-switch off, or green evidence at the reviewed tree.
     """
-    from teatree.core.models.e2e_mandatory_run import E2eMandatoryRun  # noqa: PLC0415
+    from teatree.core.models.e2e_mandatory_run import E2eMandatoryRun  # noqa: PLC0415 — deferred: ORM/app-registry
 
     if not inputs.display_impacting:
         return True
@@ -152,9 +152,9 @@ def check_e2e_mandatory(inputs: GateInputs) -> None:
     if _passes_without_bypass(inputs):
         return
 
-    from django.db import transaction  # noqa: PLC0415
+    from django.db import transaction  # noqa: PLC0415 — deferred: Django import at call time
 
-    from teatree.core.models.e2e_bypass import E2EBypassApproval, E2EBypassAudit  # noqa: PLC0415
+    from teatree.core.models.e2e_bypass import E2EBypassApproval, E2EBypassAudit  # noqa: PLC0415 — lazy ORM import
 
     with transaction.atomic():
         consumed = E2EBypassApproval.consume(inputs.ticket, inputs.head_sha)
@@ -207,7 +207,7 @@ def e2e_mandatory_block_message(inputs: GateInputs) -> str:
     if _passes_without_bypass(inputs):
         return ""
 
-    from teatree.core.models.e2e_bypass import E2EBypassApproval  # noqa: PLC0415
+    from teatree.core.models.e2e_bypass import E2EBypassApproval  # noqa: PLC0415 — deferred: ORM/app-registry
 
     if E2EBypassApproval.has_unconsumed(inputs.ticket, inputs.head_sha):
         return ""

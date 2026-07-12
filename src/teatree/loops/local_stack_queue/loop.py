@@ -18,8 +18,10 @@ _REGISTRY_CADENCE_FLOOR = 60
 
 
 def _build_jobs(**_: object) -> "list[_ScannerJob]":
-    from teatree.loop.global_scanner_factories import _local_stack_queue_drainer_scanner  # noqa: PLC0415
-    from teatree.loop.job_identity import _ScannerJob  # noqa: PLC0415
+    from teatree.loop.global_scanner_factories import (  # noqa: PLC0415 — deferred: loaded at tick time, not import
+        _local_stack_queue_drainer_scanner,
+    )
+    from teatree.loop.job_identity import _ScannerJob  # noqa: PLC0415 — deferred: loaded at tick time, not import
 
     scanner = _local_stack_queue_drainer_scanner()
     if scanner is None:

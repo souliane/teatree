@@ -69,7 +69,7 @@ def _dispatch_loop_status() -> str:
     """
     try:
         with teatree_src_on_path():
-            from teatree.config.cold_reader import loop_status  # noqa: PLC0415
+            from teatree.config.cold_reader import loop_status  # noqa: PLC0415 — deferred: cold-hook import
 
             return loop_status(_DISPATCH_LOOP_NAME, default=_RUNNABLE_STATUS)
     except Exception:  # noqa: BLE001 — Stop hook crash-proof: unreadable control plane ⇒ fail open (runnable)

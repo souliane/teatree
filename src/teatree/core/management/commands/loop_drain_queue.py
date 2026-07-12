@@ -32,8 +32,8 @@ class Command(TyperCommand):
         *,
         json_output: Annotated[bool, typer.Option("--json", help="Emit the cycle report as JSON.")] = False,
     ) -> None:
-        from teatree.core.models import LoopLease  # noqa: PLC0415
-        from teatree.loop.queue_drain import expire_then_drain  # noqa: PLC0415
+        from teatree.core.models import LoopLease  # noqa: PLC0415 — deferred: ORM import needs the app registry
+        from teatree.loop.queue_drain import expire_then_drain  # noqa: PLC0415 — deferred: keeps command import light
 
         owner = f"pid-{os.getpid()}"
         if not LoopLease.objects.acquire("loop-drain-queue", owner=owner):

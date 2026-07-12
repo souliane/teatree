@@ -14,7 +14,7 @@ _SIGNED_MARKERS = ("X-Amz-Signature", "expirationTimestamp", "signature=")
 
 def _brave_cookies(domain: str) -> httpx.Cookies:
     """Extract cookies for *domain* from the running Brave browser."""
-    import browser_cookie3  # noqa: PLC0415
+    import browser_cookie3  # noqa: PLC0415 — deferred: heavy/optional dep at call site
 
     jar = browser_cookie3.brave(domain_name=domain)
     cookies = httpx.Cookies()

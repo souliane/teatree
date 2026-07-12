@@ -143,7 +143,7 @@ def has_independent_cold_review(*, slug: str, pr_id: int, head_sha: str) -> bool
     Shares ``ReviewVerdict.objects.effective_state_at`` with that gate so the
     newest-wins logic cannot drift between the two.
     """
-    from teatree.core.models.review_verdict import HeadVerdictState, ReviewVerdict  # noqa: PLC0415
+    from teatree.core.models.review_verdict import HeadVerdictState, ReviewVerdict  # noqa: PLC0415 — lazy ORM import
 
     state = ReviewVerdict.objects.effective_state_at(slug=slug, pr_id=pr_id, head_sha=head_sha)
     return state is HeadVerdictState.MERGE_SAFE
@@ -161,7 +161,7 @@ def pr_ticket_under_external_delivery(*, slug: str, pr_id: int, pr_url: str) -> 
     has not seen this delivery) is treated as unowned, so the loop arms the
     review as before.
     """
-    from teatree.core.models.external_delivery import under_external_delivery  # noqa: PLC0415
+    from teatree.core.models.external_delivery import under_external_delivery  # noqa: PLC0415 — lazy ORM import
 
     ticket = resolve_author_ticket(slug=slug, pr_id=pr_id, pr_url=pr_url)
     return ticket is not None and under_external_delivery(ticket)
@@ -178,7 +178,7 @@ def record_mergeable_notified(*, pr: PrSummary, overlay: str) -> bool:
     to ``False`` so a DB hiccup never crashes the tick — the caller falls back to
     a quiet skip.
     """
-    from teatree.core.models.mergeable_notified import MergeableNotified  # noqa: PLC0415
+    from teatree.core.models.mergeable_notified import MergeableNotified  # noqa: PLC0415 — deferred: ORM/app-registry
 
     try:
         row = MergeableNotified.record(

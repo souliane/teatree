@@ -72,10 +72,10 @@ def db_overlays_registry() -> dict[str, Any] | None:
     """
     try:
         with teatree_src_on_path():
-            from teatree.config.cold_reader import read_setting  # noqa: PLC0415
+            from teatree.config.cold_reader import read_setting  # noqa: PLC0415 — deferred: cold-hook import
 
             value = read_setting("overlays")
-    except Exception:  # noqa: BLE001
+    except Exception:  # noqa: BLE001 — crash-proof hook: any failure degrades silently, never breaks the tool call
         return None
     return cast("dict[str, Any]", value) if isinstance(value, dict) else None
 
@@ -200,10 +200,10 @@ def repo_root_is_teatree_managed(repo_root: str) -> bool:
             return True
     try:
         with teatree_src_on_path():
-            from teatree.hooks import publish_surface  # noqa: PLC0415
+            from teatree.hooks import publish_surface  # noqa: PLC0415 — deferred: cold-hook import after sys.path setup
 
             slug = publish_surface.slug_for_cwd(root_resolved).lower()
-    except Exception:  # noqa: BLE001
+    except Exception:  # noqa: BLE001 — crash-proof hook: any failure degrades silently, never breaks the tool call
         return False
     return any(entry in slug for entry in slugs) if slug else False
 
@@ -218,8 +218,8 @@ def resolve_branch_and_root(parent: str) -> tuple[str, str] | None:
     """
 
     def _rev_parse(*flags: str) -> str:
-        return subprocess.check_output(  # noqa: S603
-            ["git", "-C", parent, "--no-optional-locks", "rev-parse", *flags],  # noqa: S607
+        return subprocess.check_output(  # noqa: S603 — trusted internal subprocess; fixed argv, no shell
+            ["git", "-C", parent, "--no-optional-locks", "rev-parse", *flags],  # noqa: S607 — trusted internal git invocation with a fixed argv
             text=True,
             timeout=3,
             stderr=subprocess.DEVNULL,
@@ -259,8 +259,8 @@ def default_branch(repo: Path) -> str | None:
 def _git_text(repo: Path, *args: str) -> str:
     """Run a read-only ``git`` query in *repo*; ``""`` on any failure/timeout."""
     try:
-        return subprocess.check_output(  # noqa: S603
-            ["git", "-C", str(repo), "--no-optional-locks", *args],  # noqa: S607
+        return subprocess.check_output(  # noqa: S603 — trusted internal subprocess; fixed argv, no shell
+            ["git", "-C", str(repo), "--no-optional-locks", *args],  # noqa: S607 — trusted internal git invocation with a fixed argv
             text=True,
             timeout=3,
             stderr=subprocess.DEVNULL,

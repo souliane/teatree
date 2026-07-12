@@ -217,7 +217,7 @@ class DjangoDbImporter:
     # ------- restore + clone pipeline -------------------------------------
 
     def _restore_ref_and_copy(self, dump_path: str, label: str) -> bool:
-        from teatree.utils.db import db_restore  # noqa: PLC0415
+        from teatree.utils.db import db_restore  # noqa: PLC0415 — deferred: call-time import, kept lazy
 
         cfg = self.cfg
         try:
@@ -243,7 +243,7 @@ class DjangoDbImporter:
 
     def _try_restore_from_dump_path(self) -> bool:
         """Restore from an explicit dump file path (skip all auto-discovery)."""
-        from teatree.utils.db import db_restore  # noqa: PLC0415
+        from teatree.utils.db import db_restore  # noqa: PLC0415 — deferred: call-time import, kept lazy
 
         dump = Path(self.cfg.dump_path)
         if not dump.is_file():

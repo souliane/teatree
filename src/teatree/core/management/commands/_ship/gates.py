@@ -169,7 +169,7 @@ def check_shipping_gate(ticket: Ticket) -> ShippingGateFailure | None:
     exact ``missing`` list so the calling agent can satisfy the gate rather
     than hitting a raw ``TransitionNotAllowed``.
     """
-    from teatree.core.models.errors import QualityGateError  # noqa: PLC0415
+    from teatree.core.models.errors import QualityGateError  # noqa: PLC0415 — deferred: ORM/app-registry
 
     # #801 SSOT: canonical earliest selection (was -pk-latest); the
     # gate only READS — create=False so a gate check never mints a
@@ -180,7 +180,7 @@ def check_shipping_gate(ticket: Ticket) -> ShippingGateFailure | None:
         # ``None`` here would let ``ticket.ship()`` raise a raw
         # ``TransitionNotAllowed`` from a non-REVIEWED state, breaking the
         # "pr create never raises a raw TransitionNotAllowed" invariant.
-        required = Session._REQUIRED_PHASES.get("shipping", [])  # noqa: SLF001
+        required = Session._REQUIRED_PHASES.get("shipping", [])  # noqa: SLF001 — intentional access to a sibling's internal within the same subsystem
         return ShippingGateFailure(
             allowed=False,
             error="No session: no attested work to reconcile.",
@@ -199,7 +199,7 @@ def check_shipping_gate(ticket: Ticket) -> ShippingGateFailure | None:
         # would name a phase as missing that the gate itself accepted.
         visited, _ = ticket.aggregate_phase_records()
         canonical_visited = {normalize_phase(phase) for phase in visited}
-        required = Session._REQUIRED_PHASES.get("shipping", [])  # noqa: SLF001
+        required = Session._REQUIRED_PHASES.get("shipping", [])  # noqa: SLF001 — intentional access to a sibling's internal within the same subsystem
         missing = [p for p in required if p not in canonical_visited]
         return ShippingGateFailure(
             allowed=False,

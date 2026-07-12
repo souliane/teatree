@@ -31,7 +31,7 @@ class UndeliveredNotifyScanner:
     name: str = "undelivered_notify"
 
     def scan(self) -> list[ScanSignal]:
-        from teatree.core.notify import drain_undelivered_notifies  # noqa: PLC0415
+        from teatree.core.notify import drain_undelivered_notifies  # noqa: PLC0415 — deferred: loaded at tick time
 
         try:
             delivered, total = drain_undelivered_notifies(limit=self.limit)

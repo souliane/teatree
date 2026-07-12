@@ -215,7 +215,7 @@ def record_note_claim(
     so the audit scanner re-reads the artifact through the same overlay's
     credentials that posted it (#1275).
     """
-    from teatree.outbound_claim import record_claim  # noqa: PLC0415
+    from teatree.outbound_claim import record_claim  # noqa: PLC0415 — deferred: keeps CLI startup light
 
     record_claim(
         kind=kind,
@@ -245,7 +245,7 @@ def notify_review_after_receipt(
     serves both surfaces. Never raises — ``notify_user_on_behalf_post``
     records the DM outcome durably.
     """
-    from teatree.core.on_behalf_post_receipt import notify_user_on_behalf_post  # noqa: PLC0415
+    from teatree.core.on_behalf_post_receipt import notify_user_on_behalf_post  # noqa: PLC0415 — lazy CLI import
 
     if issue_iid is not None:
         target = f"{repo}#{issue_iid}"

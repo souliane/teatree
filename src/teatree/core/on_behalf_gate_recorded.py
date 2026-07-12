@@ -158,9 +158,9 @@ def require_on_behalf_approval[PublishResult](
         _notify_on_behalf_autodraft(target=target, action=action)
         return publish()
 
-    from django.db import transaction  # noqa: PLC0415
+    from django.db import transaction  # noqa: PLC0415 — deferred: Django import at call time
 
-    from teatree.core.models.on_behalf_approval import OnBehalfApproval, OnBehalfAudit  # noqa: PLC0415
+    from teatree.core.models.on_behalf_approval import OnBehalfApproval, OnBehalfAudit  # noqa: PLC0415 — lazy ORM
 
     with transaction.atomic():
         consumed = OnBehalfApproval.consume(target, action)
@@ -202,7 +202,7 @@ def on_behalf_block_message(target: str, action: str, *, taint: str | None = Non
     if verdict is not OnBehalfVerdict.BLOCK:
         return ""
 
-    from teatree.core.models.on_behalf_approval import OnBehalfApproval  # noqa: PLC0415
+    from teatree.core.models.on_behalf_approval import OnBehalfApproval  # noqa: PLC0415 — deferred: ORM/app-registry
 
     if OnBehalfApproval.has_unconsumed(target, action) or _policy_grants_on_behalf(taint):
         return ""
@@ -234,8 +234,12 @@ def _policy_grants_on_behalf(taint: str) -> bool:
     Fail-closed: any error resolving the dial (or an untrusted *taint* hitting the
     floor) returns ``False`` — the gate then BLOCKs exactly as before.
     """
-    from teatree.core.models.approval_dial import policy_dial  # noqa: PLC0415
-    from teatree.core.models.approval_policy import ON_BEHALF_POST, Decision, approval_policy  # noqa: PLC0415
+    from teatree.core.models.approval_dial import policy_dial  # noqa: PLC0415 — deferred: ORM/app-registry
+    from teatree.core.models.approval_policy import (  # noqa: PLC0415 — deferred: ORM import needs the app registry
+        ON_BEHALF_POST,
+        Decision,
+        approval_policy,
+    )
 
     try:
         return approval_policy(ON_BEHALF_POST, taint, dial=policy_dial) is Decision.AUTO_APPROVE
@@ -257,7 +261,7 @@ def _notify_on_behalf_autodraft(*, target: str, action: str) -> None:
     ``False``. A misconfigured Slack backend must never block a
     legitimate autonomous draft-note publish.
     """
-    from teatree.core.notify import NotifyKind, notify_user  # noqa: PLC0415
+    from teatree.core.notify import NotifyKind, notify_user  # noqa: PLC0415 — deferred: call-time import, kept lazy
 
     text = (
         f"Posted a draft note autonomously under your identity ({action} on `{target}`). "

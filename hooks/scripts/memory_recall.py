@@ -59,7 +59,7 @@ def _load_recall():  # noqa: ANN202 — the imported module has no stable type t
         if str(src_dir) not in sys.path:
             sys.path.insert(0, str(src_dir))
             added = True
-        from teatree.loops.dream import recall  # noqa: PLC0415
+        from teatree.loops.dream import recall  # noqa: PLC0415 — deferred: cold-hook import after sys.path setup
     except Exception:  # noqa: BLE001 — a cold env without teatree injects nothing, never tracebacks.
         return None
     finally:

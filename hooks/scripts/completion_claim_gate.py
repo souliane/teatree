@@ -118,7 +118,7 @@ def _gate_is_out_of_scope(data: dict) -> bool:
 
 def _run_completion_claim_gate(data: dict) -> bool | None:
     from hooks.scripts.hook_router import _last_assistant_turn  # noqa: PLC0415 deferred back-import
-    from teatree.hooks import completion_claim_scanner  # noqa: PLC0415
+    from teatree.hooks import completion_claim_scanner  # noqa: PLC0415 — deferred: cold-hook import
 
     if _gate_is_out_of_scope(data):
         return None

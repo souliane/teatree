@@ -340,7 +340,7 @@ def prune_branches(repo: str) -> list[str]:
 
 def drop_orphan_databases() -> list[str]:
     """Drop Postgres databases matching wt_* that don't belong to any worktree."""
-    from teatree.utils.db import pg_env, pg_host, pg_user  # noqa: PLC0415
+    from teatree.utils.db import pg_env, pg_host, pg_user  # noqa: PLC0415 — deferred: keeps command import light
 
     result = run_allowed_to_fail(
         ["psql", "-h", pg_host(), "-U", pg_user(), "-l", "-t", "-A"],

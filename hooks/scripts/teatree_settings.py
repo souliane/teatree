@@ -39,10 +39,10 @@ def _cold_db_bool(name: str) -> bool | None:
     value — so the caller's per-setting default still stands (never-lockout).
     """
     try:
-        from teatree.config.cold_reader import read_setting  # noqa: PLC0415
+        from teatree.config.cold_reader import read_setting  # noqa: PLC0415 — deferred: cold-hook import
 
         value = read_setting(name, scope=_GLOBAL_SCOPE)
-    except Exception:  # noqa: BLE001
+    except Exception:  # noqa: BLE001 — crash-proof hook: any failure degrades silently, never breaks the tool call
         return None
     return value if isinstance(value, bool) else None
 
@@ -79,10 +79,10 @@ def _cold_db_raw(name: str) -> object | None:
     open to ``None`` on any error.
     """
     try:
-        from teatree.config.cold_reader import read_setting  # noqa: PLC0415
+        from teatree.config.cold_reader import read_setting  # noqa: PLC0415 — deferred: cold-hook import
 
         return read_setting(name, scope=_GLOBAL_SCOPE)
-    except Exception:  # noqa: BLE001
+    except Exception:  # noqa: BLE001 — crash-proof hook: any failure degrades silently, never breaks the tool call
         return None
 
 
@@ -123,10 +123,10 @@ def _cold_db_int(name: str) -> int | None:
     (never-lockout).
     """
     try:
-        from teatree.config.cold_reader import read_setting  # noqa: PLC0415
+        from teatree.config.cold_reader import read_setting  # noqa: PLC0415 — deferred: cold-hook import
 
         value = read_setting(name, scope=_GLOBAL_SCOPE)
-    except Exception:  # noqa: BLE001
+    except Exception:  # noqa: BLE001 — crash-proof hook: any failure degrades silently, never breaks the tool call
         return None
     if isinstance(value, bool) or not isinstance(value, int):
         return None

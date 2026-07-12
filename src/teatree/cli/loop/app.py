@@ -90,7 +90,7 @@ def tick_command(
     """
     ensure_django()
 
-    from django.core.management import call_command  # noqa: PLC0415
+    from django.core.management import call_command  # noqa: PLC0415 — deferred: Django import at call time
 
     kwargs: dict[str, str | bool | None] = {}
     if statusline_file is not None:
@@ -105,7 +105,7 @@ def tick_command(
 @loop_app.command("status")
 def status_command() -> None:
     """Show the loop's last-rendered statusline."""
-    from teatree.loop.statusline_staleness import staleness_banner_for  # noqa: PLC0415
+    from teatree.loop.statusline_staleness import staleness_banner_for  # noqa: PLC0415 — deferred: lazy CLI import
 
     target = default_path()
     if not target.is_file():
@@ -148,7 +148,7 @@ def pending_spawn_command(
     """
     ensure_django()
 
-    from django.core.management import call_command  # noqa: PLC0415
+    from django.core.management import call_command  # noqa: PLC0415 — deferred: Django import at call time
 
     kwargs: dict[str, bool] = {}
     if json_output:
@@ -176,7 +176,7 @@ def spawn_claim_command(
     """
     ensure_django()
 
-    from django.core.management import call_command  # noqa: PLC0415
+    from django.core.management import call_command  # noqa: PLC0415 — deferred: Django import at call time
 
     call_command("loop_dispatch", "spawn-claim", str(task_id), claimed_by=claimed_by)
 
@@ -294,7 +294,7 @@ def self_improve_run_command(
     """Run one self-improve schedule cycle for the given tier."""
     ensure_django()
 
-    from django.core.management import call_command  # noqa: PLC0415
+    from django.core.management import call_command  # noqa: PLC0415 — deferred: Django import at call time
 
     kwargs: dict[str, str | bool] = {"tier": tier}
     if json_output:
@@ -310,7 +310,7 @@ def self_improve_status_command(
     """List the most recent SelfImproveFiring rows."""
     ensure_django()
 
-    from teatree.core.models import SelfImproveFiring  # noqa: PLC0415
+    from teatree.core.models import SelfImproveFiring  # noqa: PLC0415 — deferred: ORM import needs the app registry
 
     rows = list(SelfImproveFiring.objects.all()[:limit])
     if not rows:

@@ -44,7 +44,7 @@ class CacheEntry:
 def _ticket_model() -> "TicketModel | None":
     """Return the ``core.Ticket`` model, or ``None`` if Django isn't ready."""
     try:
-        from django.apps import apps  # noqa: PLC0415
+        from django.apps import apps  # noqa: PLC0415 — deferred: app registry read at call time
 
         return cast("TicketModel", apps.get_model("core", "Ticket"))
     except Exception:  # noqa: BLE001 — a probe failure must never break the tick; degrade to no signal
@@ -57,9 +57,9 @@ def _migrate_legacy_json_cache_once() -> None:
     Idempotent: after the file is removed, subsequent runs are no-ops. Keeps the
     upgrade silent — users never run a migration command.
     """
-    import json  # noqa: PLC0415
+    import json  # noqa: PLC0415 — deferred: loaded only on this code path
 
-    from teatree.paths import DATA_DIR  # noqa: PLC0415
+    from teatree.paths import DATA_DIR  # noqa: PLC0415 — deferred: loaded at tick time, not import
 
     path = DATA_DIR / "loop" / "reviewer_prs.json"
     if not path.is_file():
@@ -195,7 +195,7 @@ def _orphaned_task_signals(
     if ticket_model is None:
         return []
     # Local import to keep the Django dependency lazy (mirrors _ticket_model).
-    from teatree.core.models.task import Task  # noqa: PLC0415
+    from teatree.core.models.task import Task  # noqa: PLC0415 — deferred: ORM import needs the app registry
 
     open_statuses = Task.Status.active()
     candidates = ticket_model.objects.filter(
@@ -357,7 +357,7 @@ class ReviewerPrsScanner:
         """
         if ticket_model is None or not url:
             return []
-        from teatree.core.models.task import Task  # noqa: PLC0415
+        from teatree.core.models.task import Task  # noqa: PLC0415 — deferred: ORM import needs the app registry
 
         open_statuses = Task.Status.active()
         candidates = ticket_model.objects.filter(

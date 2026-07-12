@@ -146,11 +146,11 @@ def _run_single_overlay(
     stop_event: threading.Event,
 ) -> None:
     try:
-        from slack_sdk.socket_mode import SocketModeClient  # noqa: PLC0415
-        from slack_sdk.socket_mode.client import BaseSocketModeClient  # noqa: PLC0415
-        from slack_sdk.socket_mode.request import SocketModeRequest  # noqa: PLC0415
-        from slack_sdk.socket_mode.response import SocketModeResponse  # noqa: PLC0415
-        from slack_sdk.web import WebClient  # noqa: PLC0415
+        from slack_sdk.socket_mode import SocketModeClient  # noqa: PLC0415 — deferred: heavy/optional dep at call site
+        from slack_sdk.socket_mode.client import BaseSocketModeClient  # noqa: PLC0415 — deferred: heavy/optional dep
+        from slack_sdk.socket_mode.request import SocketModeRequest  # noqa: PLC0415 — deferred: heavy/optional dep
+        from slack_sdk.socket_mode.response import SocketModeResponse  # noqa: PLC0415 — deferred: heavy/optional dep
+        from slack_sdk.web import WebClient  # noqa: PLC0415 — deferred: heavy/optional dep at call site
     except ImportError:
         logger.warning("slack_sdk not installed — reinstall with: uv tool install --editable '.[slack]'")
         return

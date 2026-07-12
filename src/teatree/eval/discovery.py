@@ -90,7 +90,7 @@ def find_spec(name: str) -> EvalSpec | None:
 
 
 def _discover_overlay_specs() -> list[EvalSpec]:
-    from teatree.core.overlay_loader import get_all_overlays  # noqa: PLC0415
+    from teatree.core.overlay_loader import get_all_overlays  # noqa: PLC0415 — deferred: loaded per eval run
 
     specs: list[EvalSpec] = []
     try:

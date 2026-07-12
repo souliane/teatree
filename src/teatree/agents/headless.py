@@ -215,7 +215,7 @@ def run_headless(
     overlay_skill_metadata: SkillMetadata,
 ) -> TaskAttempt:
     """Run a headless task in-process via ``claude-agent-sdk``."""
-    from teatree.agents.prompt import build_system_context, build_task_prompt  # noqa: PLC0415
+    from teatree.agents.prompt import build_system_context, build_task_prompt  # noqa: PLC0415 — lazy import
 
     # Checked BEFORE resolving the harness (souliane/teatree#2916): for a
     # resumed pydantic_ai task, resolving the harness destructively pops the
@@ -566,7 +566,7 @@ def _record_success(task: Task, outcome: HarnessOutcome, *, phase: str = "", lan
     result-envelope contract. *lane* is the resolved Layer-2 lane
     (souliane/teatree#657) this dispatch authenticated through.
     """
-    from teatree.agents.attempt_recorder import record_result_envelope  # noqa: PLC0415
+    from teatree.agents.attempt_recorder import record_result_envelope  # noqa: PLC0415 — deferred: call-time import
 
     result = _parse_result(outcome.agent_text)
     if not result:
@@ -599,7 +599,7 @@ def _validate_result(result: dict[str, object]) -> str:
     so the headless and ``record-attempt`` paths enforce the identical
     ``additionalProperties: false`` rule.
     """
-    from teatree.agents.attempt_recorder import validate_result_keys  # noqa: PLC0415
+    from teatree.agents.attempt_recorder import validate_result_keys  # noqa: PLC0415 — deferred: call-time import
 
     return validate_result_keys(result)
 

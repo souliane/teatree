@@ -43,8 +43,8 @@ def check_plan_artifact(ticket: "Ticket") -> bool:
     The carve-out is scoped to a ticket that explicitly carries the marker, so it
     cannot leak to an ordinary unmarked ticket.
     """
-    from teatree.core.models.plan_artifact import PlanArtifact  # noqa: PLC0415
-    from teatree.core.models.trivial_plan_skip import is_trivial_plan_skip  # noqa: PLC0415
+    from teatree.core.models.plan_artifact import PlanArtifact  # noqa: PLC0415 — deferred: ORM/app-registry
+    from teatree.core.models.trivial_plan_skip import is_trivial_plan_skip  # noqa: PLC0415 — deferred: ORM/app-registry
 
     if PlanArtifact.objects.filter(ticket=ticket).exists():
         return True

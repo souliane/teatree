@@ -359,7 +359,7 @@ class LoopLeaseQuerySet(models.QuerySet):
             return False
         if owner_pid is not None:
             try:
-                from teatree.utils.singleton import pid_alive  # noqa: PLC0415
+                from teatree.utils.singleton import pid_alive  # noqa: PLC0415 — deferred: call-time import, kept lazy
             except ImportError:
                 pid_alive = None  # type: ignore[assignment]
             if pid_alive is not None:
@@ -459,7 +459,7 @@ class LoopLeaseQuerySet(models.QuerySet):
         Returns the number of rows orphaned (0 or 1).
         """
         try:
-            from teatree.utils.singleton import pid_alive  # noqa: PLC0415
+            from teatree.utils.singleton import pid_alive  # noqa: PLC0415 — deferred: call-time import, kept lazy
         except ImportError:
             pid_alive = None  # type: ignore[assignment]
 

@@ -62,7 +62,7 @@ def _gate_key_is_enabled(key: str) -> bool:
     reports what the flipped hook reader sees. Fails OPEN to enabled on a
     missing/broken DB so the reported status matches the gate's own fail-open posture.
     """
-    from teatree.config import cold_reader  # noqa: PLC0415
+    from teatree.config import cold_reader  # noqa: PLC0415 — deferred: keeps CLI startup light
 
     return cold_reader.bool_setting(key, default=True)
 
@@ -107,7 +107,7 @@ def danger_gate_fail_open_is_enabled() -> bool:
     must never cause. The over-deny gates consult this; the PUBLIC-egress leak gate
     never does.
     """
-    from teatree.config import cold_reader  # noqa: PLC0415
+    from teatree.config import cold_reader  # noqa: PLC0415 — deferred: keeps CLI startup light
 
     return cold_reader.bool_setting(DANGER_GATE_FAIL_OPEN_KEY, default=False)
 
@@ -120,7 +120,7 @@ def _set_gate_key(key: str, *, enabled: bool) -> Path:
     A missing DB tier or a locked write is caught by the caller's read-back-verify —
     the toggle does not silently land somewhere the reader ignores.
     """
-    from teatree.config import cold_writer  # noqa: PLC0415
+    from teatree.config import cold_writer  # noqa: PLC0415 — deferred: keeps CLI startup light
 
     cold_writer.write_setting(key, enabled)
     return cold_writer.canonical_config_db()

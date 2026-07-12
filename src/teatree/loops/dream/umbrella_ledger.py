@@ -269,7 +269,7 @@ def _in_flight_gap_tickets() -> list[Ticket]:
 
 def _merged_pr_url(ticket: Ticket) -> str:
     """The merged PR URL backing this gap-fix ticket, or ``""`` when none merged."""
-    from teatree.core.models.pull_request import PullRequest  # noqa: PLC0415
+    from teatree.core.models.pull_request import PullRequest  # noqa: PLC0415 — deferred: ORM/app-registry
 
     pr = PullRequest.objects.filter(ticket=ticket, state=PullRequest.State.MERGED).first()
     return pr.url if pr is not None else ""
@@ -287,7 +287,7 @@ def reconcile_merged_gaps(host: CodeHostBackend, *, umbrella_url: str) -> list[T
     serve. A BINDING memory is never retired; a gap whose fix has not merged is left
     alone. Returns the gap-fix tickets reconciled this pass.
     """
-    from teatree.loops.dream.promote_memory import retire_resolved_memories  # noqa: PLC0415
+    from teatree.loops.dream.promote_memory import retire_resolved_memories  # noqa: PLC0415 — tick-time import
 
     reconciled: list[Ticket] = []
     merged_memory_urls: set[str] = set()

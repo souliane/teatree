@@ -23,6 +23,7 @@ truncation preserves at least the first ~40 chars of the cached title —
 much better than leaving the row blank forever).
 """
 
+from collections.abc import Callable
 from typing import Annotated
 
 import typer
@@ -96,8 +97,8 @@ def _summarize(title: str) -> str:
     return lines[-1].strip().strip('"').strip("'")
 
 
-def _describe_one(ticket_id: int, *, stdout_write) -> None:  # noqa: ANN001
-    from teatree.core.models import Ticket  # noqa: PLC0415
+def _describe_one(ticket_id: int, *, stdout_write: Callable[[str], object]) -> None:
+    from teatree.core.models import Ticket  # noqa: PLC0415 — deferred: ORM import needs the app registry
 
     ticket = Ticket.objects.filter(pk=ticket_id).first()
     if ticket is None:
@@ -114,8 +115,8 @@ def _describe_one(ticket_id: int, *, stdout_write) -> None:  # noqa: ANN001
     stdout_write(f"OK    ticket {ticket_id}: short_description={summary!r}")
 
 
-def _describe_all_missing(*, stdout_write) -> None:  # noqa: ANN001
-    from teatree.core.models import Ticket  # noqa: PLC0415
+def _describe_all_missing(*, stdout_write: Callable[[str], object]) -> None:
+    from teatree.core.models import Ticket  # noqa: PLC0415 — deferred: ORM import needs the app registry
 
     qs = Ticket.objects.filter(short_description="").exclude(extra__issue_title="")
     count = 0

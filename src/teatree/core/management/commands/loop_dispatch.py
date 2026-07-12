@@ -158,8 +158,8 @@ def _resolve_model_and_bundle(task: Task) -> tuple[str | None, list[str]]:
     verification spawn to the most-honest model. Both default to absent on a
     session-less task → byte-identical to today when no escalation is active.
     """
-    from teatree.agents.model_tiering import resolve_spawn_model  # noqa: PLC0415
-    from teatree.core.modelkit.phases import normalize_phase  # noqa: PLC0415
+    from teatree.agents.model_tiering import resolve_spawn_model  # noqa: PLC0415 — deferred: keeps command import light
+    from teatree.core.modelkit.phases import normalize_phase  # noqa: PLC0415 — deferred: keeps command import light
 
     skill_bundle = _resolve_skill_bundle(task)
     session_id = task.session.agent_id if task.session_id else None  # ty: ignore[unresolved-attribute]
@@ -181,10 +181,10 @@ def _resolve_skill_bundle(task: Task) -> list[str]:
     ``resolve_skill_bundle`` locally to keep ``teatree.core`` free of a top-level
     ``teatree.agents`` dependency edge (core is the lower layer).
     """
-    from teatree.agents.skill_bundle import resolve_skill_bundle  # noqa: PLC0415
+    from teatree.agents.skill_bundle import resolve_skill_bundle  # noqa: PLC0415 — deferred: keeps command import light
 
     try:
-        from teatree.core.overlay_loader import get_overlay_for_ticket  # noqa: PLC0415
+        from teatree.core.overlay_loader import get_overlay_for_ticket  # noqa: PLC0415 — deferred: lazy command import
 
         overlay_skill_metadata = get_overlay_for_ticket(task.ticket).metadata.get_skill_metadata()
         return resolve_skill_bundle(
@@ -304,7 +304,7 @@ class Command(TyperCommand):
         orphans a claim. Absence / staleness of the budget is UNCLAMPED — the
         default ``medium`` / toggle-off throughput is byte-identical.
         """
-        from teatree.core.session_identity import current_session_id  # noqa: PLC0415
+        from teatree.core.session_identity import current_session_id  # noqa: PLC0415 — deferred: lazy command import
 
         # Reclaim a dead session's orphan BEFORE claiming (#652): a unit whose
         # owner stopped heartbeating (its lease lapsed) is returned to PENDING so
@@ -323,7 +323,7 @@ class Command(TyperCommand):
         if _admit_budget_exhausted():
             task = None
         else:
-            from teatree.loop.queue_drain import admission_claim_order  # noqa: PLC0415
+            from teatree.loop.queue_drain import admission_claim_order  # noqa: PLC0415 — deferred: lazy command import
 
             task = Task.objects.claim_next_pending(
                 claimed_by=claimed_by,

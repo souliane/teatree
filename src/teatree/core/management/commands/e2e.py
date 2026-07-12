@@ -62,7 +62,7 @@ class DispatchOptions:
 class Command(TyperCommand):
     @command()
     # ast-grep-ignore: ac-django-no-complexity-suppressions
-    def run(  # noqa: PLR0913
+    def run(  # noqa: PLR0913 — wide signature by design: each parameter is a distinct required input
         self,
         work_item: Annotated[
             str,
@@ -138,12 +138,12 @@ class Command(TyperCommand):
         MVP runs an already-present workspace as-is and records the run's
         SHA-set + result to the durable recipe keyed by ``issue_url``.
         """
-        from teatree.core.intake.e2e_workitem import (  # noqa: PLC0415
+        from teatree.core.intake.e2e_workitem import (  # noqa: PLC0415 — deferred: keeps command import light
             record_run,
             resolve_environment,
             resolve_run_provenance,
         )
-        from teatree.utils import git  # noqa: PLC0415
+        from teatree.utils import git  # noqa: PLC0415 — deferred: keeps command import light
 
         try:
             ticket = Ticket.objects.resolve(work_item)
@@ -220,7 +220,7 @@ class Command(TyperCommand):
     @command(name="trigger-ci")
     def trigger_ci(self, branch: str = "") -> dict[str, object]:
         """Trigger E2E tests on a remote CI pipeline."""
-        from teatree.core.backend_factory import ci_service_from_overlay  # noqa: PLC0415
+        from teatree.core.backend_factory import ci_service_from_overlay  # noqa: PLC0415 — lazy command import
 
         overlay = get_overlay()
         config = overlay.metadata.get_e2e_config()
@@ -316,7 +316,7 @@ class Command(TyperCommand):
 
     @command()
     # ast-grep-ignore: ac-django-no-complexity-suppressions
-    def external(  # noqa: PLR0913
+    def external(  # noqa: PLR0913 — wide signature by design: each parameter is a distinct required input
         self,
         test_path: str = "",
         *,

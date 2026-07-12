@@ -114,14 +114,14 @@ class Command(TyperCommand):
         propose_evals`` toml kill-switch disables it (see
         :func:`teatree.loops.dream.loop.propose_evals_enabled`).
         """
-        from teatree.loops.dream.loop import propose_evals_enabled  # noqa: PLC0415
+        from teatree.loops.dream.loop import propose_evals_enabled  # noqa: PLC0415 — deferred: lazy command import
 
         self._run_pass(since=None, dry_run=False, enforce_cadence=True, propose_evals=propose_evals_enabled())
 
     @command(name="compliance")
     def compliance(self) -> None:
         """Print the latest instruction-compliance snapshot — read-only (#2663)."""
-        from teatree.loops.dream.compliance import render_compliance_show  # noqa: PLC0415
+        from teatree.loops.dream.compliance import render_compliance_show  # noqa: PLC0415 — lazy command import
 
         for line in render_compliance_show():
             self.stdout.write(line)
@@ -135,13 +135,17 @@ class Command(TyperCommand):
         propose_evals: bool,
         mode: PipelineMode = _DEFAULT_MODE,
     ) -> None:
-        import os  # noqa: PLC0415
+        import os  # noqa: PLC0415 — deferred: loaded only when this command runs
 
-        from django.utils import timezone  # noqa: PLC0415
+        from django.utils import timezone  # noqa: PLC0415 — deferred: Django import at call time
 
-        from teatree.core.models import DreamRunMarker, Loop, LoopLease  # noqa: PLC0415
-        from teatree.loop.loop_state_db import loop_enabled  # noqa: PLC0415
-        from teatree.loops.dream.loop import DREAM_LEASE_NAME, DREAM_LEASE_SECONDS, MINI_LOOP  # noqa: PLC0415
+        from teatree.core.models import DreamRunMarker, Loop, LoopLease  # noqa: PLC0415 — deferred: ORM/app-registry
+        from teatree.loop.loop_state_db import loop_enabled  # noqa: PLC0415 — deferred: keeps command import light
+        from teatree.loops.dream.loop import (  # noqa: PLC0415 — deferred: keeps command import light
+            DREAM_LEASE_NAME,
+            DREAM_LEASE_SECONDS,
+            MINI_LOOP,
+        )
 
         now = timezone.now()
         if enforce_cadence:
@@ -188,9 +192,9 @@ class Command(TyperCommand):
         propose_evals: bool,
         mode: PipelineMode = _DEFAULT_MODE,
     ) -> bool:
-        from teatree.core.models import DreamRunMarker  # noqa: PLC0415
-        from teatree.loops.dream import engine  # noqa: PLC0415
-        from teatree.loops.dream.eval_proposer import EvalProposalRequest  # noqa: PLC0415
+        from teatree.core.models import DreamRunMarker  # noqa: PLC0415 — deferred: ORM import needs the app registry
+        from teatree.loops.dream import engine  # noqa: PLC0415 — deferred: keeps command import light
+        from teatree.loops.dream.eval_proposer import EvalProposalRequest  # noqa: PLC0415 — lazy command import
 
         request = EvalProposalRequest() if propose_evals else None
         try:
@@ -298,7 +302,7 @@ class Command(TyperCommand):
         if extract is None:
             return ""
         try:
-            from teatree.loops.dream import compliance  # noqa: PLC0415
+            from teatree.loops.dream import compliance  # noqa: PLC0415 — deferred: keeps command import light
             from teatree.loops.dream.loop import (  # noqa: PLC0415 — deferred: breaks the loop->command import cycle
                 compliance_escalate_enabled,
                 compliance_measure_enabled,
@@ -333,7 +337,7 @@ class Command(TyperCommand):
         the bounded extract the engine already built (for the grounding guard), wires the
         resolved backlog host, and fault-isolates the phase.
         """
-        from teatree.loops.dream.loop import automation_asks_enabled  # noqa: PLC0415
+        from teatree.loops.dream.loop import automation_asks_enabled  # noqa: PLC0415 — deferred: lazy command import
 
         if not force_all_phases and not automation_asks_enabled():
             return ""
@@ -353,7 +357,7 @@ class Command(TyperCommand):
     @staticmethod
     def _automation_umbrella_url() -> str:
         """The standing umbrella issue every grounded dream gap rides (#2663)."""
-        from teatree.loops.dream.promote_memory import UMBRELLA_ISSUE_URL  # noqa: PLC0415
+        from teatree.loops.dream.promote_memory import UMBRELLA_ISSUE_URL  # noqa: PLC0415 — lazy command import
 
         return UMBRELLA_ISSUE_URL
 
@@ -376,8 +380,8 @@ class Command(TyperCommand):
         if not propose_evals:
             return ""
         try:
-            from teatree.loops.dream import promote  # noqa: PLC0415
-            from teatree.loops.dream.eval_proposer import _default_proposals_path  # noqa: PLC0415
+            from teatree.loops.dream import promote  # noqa: PLC0415 — deferred: keeps command import light
+            from teatree.loops.dream.eval_proposer import _default_proposals_path  # noqa: PLC0415 — lazy command import
 
             validator = promote.build_live_validator() if validate_live else None
             outcomes = promote.promote_proposals_file(
@@ -400,13 +404,13 @@ class Command(TyperCommand):
         and STAGED for a human/maker to ratify via a PR — never auto-committed to the
         live suite. A failure is reported in the summary line, never crashing the pass.
         """
-        from teatree.loops.dream.loop import derive_evals_enabled  # noqa: PLC0415
+        from teatree.loops.dream.loop import derive_evals_enabled  # noqa: PLC0415 — deferred: lazy command import
 
         if not force_all_phases and not derive_evals_enabled():
             return ""
         try:
-            from teatree.loops.dream import llm_eval_proposer  # noqa: PLC0415
-            from teatree.loops.dream.eval_proposer import _default_proposals_path  # noqa: PLC0415
+            from teatree.loops.dream import llm_eval_proposer  # noqa: PLC0415 — deferred: keeps command import light
+            from teatree.loops.dream.eval_proposer import _default_proposals_path  # noqa: PLC0415 — lazy command import
 
             outcomes = llm_eval_proposer.stage_proposals_file(_default_proposals_path(), dry_run=dry_run)
         except Exception as exc:  # noqa: BLE001 — an eval-derivation failure degrades to a WARN clause
@@ -428,12 +432,12 @@ class Command(TyperCommand):
         and its memory retired. A failure is reported in the summary line, never
         crashing the pass.
         """
-        from teatree.loops.dream.loop import memory_promote_enabled  # noqa: PLC0415
+        from teatree.loops.dream.loop import memory_promote_enabled  # noqa: PLC0415 — deferred: lazy command import
 
         if not force_all_phases and not memory_promote_enabled():
             return ""
         try:
-            from teatree.loops.dream import promote_memory, umbrella_ledger  # noqa: PLC0415
+            from teatree.loops.dream import promote_memory, umbrella_ledger  # noqa: PLC0415 — lazy command import
 
             host, _repo = self._teatree_backlog_host()
             if host is None:
@@ -461,7 +465,7 @@ class Command(TyperCommand):
 
     def _phase_runner(self) -> "MemoryPhaseRunner":
         """The composed file-side phase runner, wired to the backlog host resolver."""
-        from teatree.loops.dream.phase_runner import MemoryPhaseRunner  # noqa: PLC0415
+        from teatree.loops.dream.phase_runner import MemoryPhaseRunner  # noqa: PLC0415 — deferred: lazy command import
 
         return MemoryPhaseRunner(backlog_host_resolver=self._teatree_backlog_host)
 
@@ -484,7 +488,7 @@ def _env_propose_evals() -> bool:
     seam (LIVE by default, env/toml kill-switch) via
     :func:`teatree.loops.dream.loop.propose_evals_enabled`.
     """
-    from teatree.config import get_effective_settings  # noqa: PLC0415
+    from teatree.config import get_effective_settings  # noqa: PLC0415 — deferred: keeps command import light
 
     return get_effective_settings().dream_propose_evals
 
@@ -496,8 +500,8 @@ def _parse_since(raw: str) -> dt.datetime | None:
     timezone so the ``USE_TZ`` engine never compares naive against aware. A
     malformed value raises ``CommandError`` instead of a raw traceback.
     """
-    from django.core.management.base import CommandError  # noqa: PLC0415
-    from django.utils import timezone  # noqa: PLC0415
+    from django.core.management.base import CommandError  # noqa: PLC0415 — deferred: Django import at call time
+    from django.utils import timezone  # noqa: PLC0415 — deferred: Django import at call time
 
     value = raw.strip()
     if not value:

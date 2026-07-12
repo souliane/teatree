@@ -59,7 +59,7 @@ def _reactive_slot_directives() -> list[str]:
 
         if not bootstrap_teatree_django():
             return []
-        from teatree.loop.loop_cadences import reactive_slot_directives  # noqa: PLC0415
+        from teatree.loop.loop_cadences import reactive_slot_directives  # noqa: PLC0415 — deferred: cold-hook import
 
         return list(reactive_slot_directives())
     except Exception:  # noqa: BLE001 — fast hook must never raise; silent fail-open.

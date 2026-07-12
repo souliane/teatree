@@ -15,22 +15,31 @@ Extracted whole from ``hook_router`` (the #2384 Wave-2 router split, PR2) so the
 Cold-import safe: the live PreToolUse hook is a bare ``python3`` subprocess with
 no guarantee ``teatree`` is importable, so the module top imports only stdlib and
 already-extracted ``hooks/scripts`` siblings (``teatree_settings`` /
-``banned_terms.deny`` / ``banned_terms.marker``) — never Django / ``teatree.core``.
-The pure ``teatree.hooks`` leaves (``banned_terms_scanner`` /
+``banned_terms.deny`` / ``banned_terms.marker`` / ``managed_repo``) — never Django
+/ ``teatree.core``. The pure ``teatree.hooks`` leaves (``banned_terms_scanner`` /
 ``publish_destination`` / ``publish_surface``) stay function-scoped, imported only
-after the handler bootstraps ``sys.path``. The shared spine helpers
-``emit_pretooluse_deny`` and ``_resolve_cwd_repo`` stay in the router and are
-back-imported lazily inside the handler bodies — the ``hooks/scripts`` sibling
+after the handler puts the sibling ``src/`` on ``sys.path``. The shared spine
+helpers ``emit_pretooluse_deny`` and ``_resolve_cwd_repo`` stay in the router and
+are back-imported lazily inside the handler bodies — the ``hooks/scripts`` sibling
 back-import the import-direction fitness test permits (it governs only the
 ``src/teatree/hooks`` leaves).
+
+The ``src`` bootstrap is the SHARED ``managed_repo.teatree_src_on_path`` context
+manager, NOT a hand-rolled ``parents[N] / "src"`` computation. This module lives
+one level deeper than its ``hooks/scripts`` siblings
+(``hooks/scripts/banned_terms/``), so a per-file ``parents`` index is off-by-one
+relative to theirs; routing through the one shared helper — which resolves ``src``
+relative to ITS OWN location, correct for a caller at any depth — is what keeps the
+bootstrap from silently pointing at a nonexistent ``hooks/src`` and fail-opening
+the leak gate on a cold host (HLG-1/HLG-5).
 """
 
-import contextlib
 import sys
 from pathlib import Path
 
 from hooks.scripts.banned_terms.deny import emit_banned_term_deny
 from hooks.scripts.banned_terms.marker import resolve_marker as _resolve_banned_terms_marker
+from hooks.scripts.managed_repo import teatree_src_on_path as _teatree_src_on_path
 from hooks.scripts.teatree_settings import teatree_bool_setting as _teatree_bool_setting
 
 
@@ -64,27 +73,31 @@ def handle_banned_terms_pretool(data: dict) -> bool:
     reason naming the matched term and pointing at the
     ``--allow-banned-term`` / ``ALLOW_BANNED_TERM=1`` override.
 
-    Fail-open on any internal error: a crashing hook is worse than no
-    scan. The handler bootstraps ``sys.path`` to import ``teatree`` from
-    the sibling ``src/`` directory (the hook script runs in the user's
-    session shell with no guarantee that ``teatree`` is already
-    importable, #1314) and swallows any exception, returning ``False``.
+    Fail-open on any internal error: a crashing hook is worse than no scan
+    (never-lockout). But the fail-open is NOT silent — an unscanned body on the
+    PUBLIC-egress publish path is exactly the leak this gate exists to catch, so an
+    internal error is named loudly on stderr (HLG-3) rather than swallowed into an
+    invisible no-op. The handler puts the sibling ``src/`` on ``sys.path`` via the
+    shared :func:`managed_repo.teatree_src_on_path` bootstrap (the hook script runs
+    in the user's session shell with no guarantee ``teatree`` is already importable,
+    #1314); the shared helper resolves ``src`` relative to its own ``hooks/scripts``
+    location, so this deeper-nested caller can never drift into the off-by-one that
+    pointed the bootstrap at a nonexistent ``hooks/src`` (HLG-1/HLG-5).
     """
     if not _banned_terms_gate_enabled():
         return False
-    src_dir = Path(__file__).resolve().parents[2] / "src"
-    added = False
     try:
-        if str(src_dir) not in sys.path:
-            sys.path.insert(0, str(src_dir))
-            added = True
-        return _run_banned_terms_pretool(data)
-    except Exception:  # noqa: BLE001
+        with _teatree_src_on_path():
+            return _run_banned_terms_pretool(data)
+    except Exception as exc:  # noqa: BLE001 — fail-open on ANY error is the never-lockout contract
+        sys.stderr.write(
+            "[teatree] NOTE: banned-terms publish gate failed open on an internal error "
+            f"({type(exc).__name__}: {exc}); the publish body was NOT scanned for banned terms. "
+            "This is a fail-open safeguard (a crashing hook is worse than no scan), NOT a clean "
+            "scan — fix the underlying error, or verify the body by hand before it reaches a "
+            "public surface.\n"
+        )
         return False
-    finally:
-        if added:
-            with contextlib.suppress(ValueError):
-                sys.path.remove(str(src_dir))
 
 
 _BANNED_TERMS_CREDENTIAL_DENY = (
@@ -94,7 +107,7 @@ _BANNED_TERMS_CREDENTIAL_DENY = (
 )
 
 
-def _banned_term_marker_blocks(term: str, command: str, cwd_repo: "Path | None") -> bool | None:
+def _banned_term_marker_blocks(term: str, command: str, cwd_repo: Path | None) -> bool | None:
     """Decide a fail-closed MARKER term, or ``None`` when ``term`` is a real banned term.
 
     Thin router wrapper over ``banned_terms_marker.resolve_marker`` (which owns the
@@ -116,10 +129,10 @@ def _banned_term_marker_blocks(term: str, command: str, cwd_repo: "Path | None")
 
 def _run_banned_terms_pretool(data: dict) -> bool:
     """Banned-terms inner body — assumes ``teatree`` is already importable."""
-    from typing import cast  # noqa: PLC0415
+    from typing import cast  # noqa: PLC0415 — deferred: off the fast hook's load path
 
     from hooks.scripts.hook_router import _resolve_cwd_repo, emit_pretooluse_deny  # noqa: PLC0415 deferred back-import
-    from teatree.hooks import banned_terms_scanner, public_visibility, publish_surface  # noqa: PLC0415
+    from teatree.hooks import banned_terms_scanner, public_visibility, publish_surface  # noqa: PLC0415 — cold-hook read
 
     tool_name = data.get("tool_name", "")
     raw_input = data.get("tool_input", {}) or {}

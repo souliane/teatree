@@ -98,7 +98,7 @@ def _resolve_ticket(pr: _ScannedPr) -> "Ticket | None":
     repo never binds a PR from another. Falls back to the FK + ``Ticket.extra["prs"]``
     walk :func:`resolve_author_ticket` already implements for a bare manual MR.
     """
-    from teatree.core.models import Ticket  # noqa: PLC0415
+    from teatree.core.models import Ticket  # noqa: PLC0415 — deferred: ORM import needs the app registry
 
     number = parse_closes_ticket(pr.description)
     if number and pr.slug:
@@ -109,7 +109,7 @@ def _resolve_ticket(pr: _ScannedPr) -> "Ticket | None":
 
 def _reconcile_one(pr: _ScannedPr) -> bool:
     """Upsert one row; return True when a row was created or transitioned to merged."""
-    from teatree.core.models import PullRequest  # noqa: PLC0415
+    from teatree.core.models import PullRequest  # noqa: PLC0415 — deferred: ORM import needs the app registry
 
     row = PullRequest.objects.filter(url=pr.url).first()
     if row is None:

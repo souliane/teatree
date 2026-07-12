@@ -53,7 +53,7 @@ def heal_missing_provisioned_db(worktree: Worktree, overlay: OverlayBase) -> boo
     fails, so the caller can surface a hard failure rather than start a broken
     stack.
     """
-    from teatree.utils.db import db_exists  # noqa: PLC0415
+    from teatree.utils.db import db_exists  # noqa: PLC0415 — deferred: call-time import, kept lazy
 
     if not worktree.db_name or overlay.provisioning.db_import_strategy(worktree) is None:
         return False
@@ -217,7 +217,7 @@ class WorktreeProvisionRunner(RunnerBase):
         return StepResult(name="db_import", success=ok, duration=duration, required=True)
 
     def _run_db_import(self) -> bool:
-        from teatree.utils.db import db_exists  # noqa: PLC0415
+        from teatree.utils.db import db_exists  # noqa: PLC0415 — deferred: call-time import, kept lazy
         from teatree.utils.run import CommandFailedError  # noqa: PLC0415 — paired with the local db_exists import above
 
         worktree = self.worktree

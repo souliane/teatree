@@ -112,7 +112,7 @@ def _session_is_loop_owner(session_id: str) -> bool:
     if not session_id or not bootstrap_teatree_django():
         return False
     try:
-        from teatree.core.loop_lease_manager import T3_MASTER_SLOT  # noqa: PLC0415
+        from teatree.core.loop_lease_manager import T3_MASTER_SLOT  # noqa: PLC0415 — deferred: cold-hook import
         from teatree.core.models import LoopLease  # noqa: PLC0415 — Django model; importable only after django.setup().
 
         status = LoopLease.objects.ownership_status(T3_MASTER_SLOT)

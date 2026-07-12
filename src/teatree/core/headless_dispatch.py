@@ -60,8 +60,8 @@ def runs_in_session(*, role: str, phase: str) -> bool:
     ``execute_headless_task`` / ``work-next-headless``) takes it. Free-form work (no
     registered agent) is never in-session.
     """
-    from teatree.config import AgentRuntime, get_effective_settings  # noqa: PLC0415
-    from teatree.core.models import Task  # noqa: PLC0415
+    from teatree.config import AgentRuntime, get_effective_settings  # noqa: PLC0415 — deferred: call-time import
+    from teatree.core.models import Task  # noqa: PLC0415 — deferred: ORM import needs the app registry
 
     if get_effective_settings().agent_runtime is not AgentRuntime.INTERACTIVE:
         return False

@@ -441,7 +441,7 @@ class GitLabCodeHost:  # noqa: PLR0904 — method count reflects the CodeHostBac
         try:
             issue = self._client.get_issue(project.project_id, int(match["iid"]))
         except httpx.HTTPStatusError as exc:
-            if exc.response.status_code == 404:  # noqa: PLR2004
+            if exc.response.status_code == 404:  # noqa: PLR2004 — HTTP status compared inline; the numeric code is self-documenting
                 raise IssueNotFoundError(issue_url) from exc
             raise
         return issue if isinstance(issue, dict) else {"error": f"Issue not found: {issue_url}"}

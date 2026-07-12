@@ -66,7 +66,7 @@ def build_review_post_permalinks(actions: Iterable[DispatchAction]) -> dict[str,
     if not urls:
         return {}
     try:
-        from django.apps import apps  # noqa: PLC0415
+        from django.apps import apps  # noqa: PLC0415 — deferred: app registry read at call time
 
         model = apps.get_model("core", "ReviewRequestPost")
         pr_model = apps.get_model("core", "PullRequest")

@@ -24,7 +24,7 @@ _DATA_DIR.mkdir(parents=True, exist_ok=True)
 
 def _discover_overlay_apps() -> list[str]:
     """Scan ``teatree.overlays`` entry points for overlays that declare a Django app."""
-    from importlib.metadata import entry_points  # noqa: PLC0415
+    from importlib.metadata import entry_points  # noqa: PLC0415 — deferred: loaded only on this code path
 
     apps: list[str] = []
     for ep in entry_points(group="teatree.overlays"):

@@ -58,7 +58,7 @@ class MarkerVerdict:
 
 def resolve_marker(term: str, command: str, cwd_repo: Path | None) -> MarkerVerdict:
     """Resolve a ``scan_text`` result to a deny / downgrade / not-a-marker verdict."""
-    from teatree.hooks import banned_terms_scanner, publish_surface  # noqa: PLC0415
+    from teatree.hooks import banned_terms_scanner, publish_surface  # noqa: PLC0415 — deferred: cold-hook import
 
     marker_message = banned_terms_scanner.marker_deny_message(term)
     if marker_message is None:

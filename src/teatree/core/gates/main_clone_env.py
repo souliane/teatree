@@ -38,7 +38,7 @@ def _overlays_registry() -> dict[str, Any]:
     Mirrors ``hooks/scripts/managed_repo.overlays_registry`` so both lanes read
     the identical managed-repo signals.
     """
-    from teatree.config.cold_reader import read_setting  # noqa: PLC0415
+    from teatree.config.cold_reader import read_setting  # noqa: PLC0415 — deferred: call-time import, kept lazy
 
     try:
         db = read_setting("overlays")
@@ -87,7 +87,7 @@ def repo_root_is_teatree_managed(repo_root: str) -> bool:
             continue
         return True
     try:
-        from teatree.hooks._repo_visibility import slug_for_cwd  # noqa: PLC0415
+        from teatree.hooks._repo_visibility import slug_for_cwd  # noqa: PLC0415 — deferred: call-time import, kept lazy
 
         slug = slug_for_cwd(root_resolved).lower()
     except Exception:  # noqa: BLE001 — cannot resolve a slug → not provably managed.
@@ -108,7 +108,7 @@ def is_managed_main_clone(repo_root: str) -> bool:
     except (OSError, RuntimeError, ValueError):
         return False
     try:
-        from teatree.paths import running_from_worktree  # noqa: PLC0415
+        from teatree.paths import running_from_worktree  # noqa: PLC0415 — deferred: call-time import, kept lazy
 
         if running_from_worktree(root):
             return False
@@ -128,7 +128,7 @@ def effective_command_dir(command: str, cwd: "Path | None") -> "Path | None":
     when the target cannot be pinned statically (a substitution marker) — failing
     OPEN rather than guessing a repo. Mirrors the hook's ``_effective_command_dir``.
     """
-    from teatree.hooks._commit_repo_dir import resolve_commit_dir  # noqa: PLC0415
+    from teatree.hooks._commit_repo_dir import resolve_commit_dir  # noqa: PLC0415 — deferred: call-time import
 
     try:
         resolved = resolve_commit_dir(command, cwd)

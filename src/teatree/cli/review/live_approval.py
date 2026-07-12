@@ -159,7 +159,7 @@ def _has_approval_phrase(text: str) -> bool:
 
 def _is_fresh(slack_ts: str, *, ttl_minutes: int) -> bool:
     """True iff the Slack ``ts`` is within ``ttl_minutes`` of now."""
-    from django.utils import timezone  # noqa: PLC0415
+    from django.utils import timezone  # noqa: PLC0415 — deferred: Django import at call time
 
     try:
         epoch = float(slack_ts)
@@ -176,7 +176,7 @@ def _fetch_user_message(*, slack_ts: str, user_id: str, channel: str) -> tuple[S
     backend is missing, the DM channel cannot be opened, or no message
     exists at the timestamp.
     """
-    from teatree.core.backend_factory import messaging_from_overlay  # noqa: PLC0415
+    from teatree.core.backend_factory import messaging_from_overlay  # noqa: PLC0415 — deferred: keeps CLI startup light
 
     backend = messaging_from_overlay()
     if backend is None:
@@ -199,7 +199,7 @@ def _verify_slack_message(*, slack_ts: str, user_id: str, channel: str) -> tuple
     so a misconfigured Slack backend surfaces the same way here as it
     does in the bot→user DM path.
     """
-    from teatree.core.models.live_post_approval import LIVE_POST_APPROVAL_TTL_MINUTES  # noqa: PLC0415
+    from teatree.core.models.live_post_approval import LIVE_POST_APPROVAL_TTL_MINUTES  # noqa: PLC0415 — lazy ORM import
 
     message, error = _fetch_user_message(slack_ts=slack_ts, user_id=user_id, channel=channel)
     if error:
@@ -239,7 +239,7 @@ def _verify_on_behalf_authorization(*, scope: str) -> tuple[str, str]:
     token as the audit reference for which durable authorization minted
     it.
     """
-    from teatree.core.models.on_behalf_approval import OnBehalfApproval  # noqa: PLC0415
+    from teatree.core.models.on_behalf_approval import OnBehalfApproval  # noqa: PLC0415 — deferred: ORM/app-registry
 
     approval = (
         OnBehalfApproval.objects.filter(
@@ -269,7 +269,7 @@ def _resolve_authorization(*, mr_url: str, slack_ts: str, from_on_behalf: bool, 
     when neither channel authorizes. The caller mints the token only on
     an empty error.
     """
-    from teatree.core.models.live_post_approval import canonical_mr_scope  # noqa: PLC0415
+    from teatree.core.models.live_post_approval import canonical_mr_scope  # noqa: PLC0415 — deferred: ORM/app-registry
 
     scope = canonical_mr_scope(mr_url)
     if from_on_behalf:
@@ -287,7 +287,7 @@ def _resolve_authorization(*, mr_url: str, slack_ts: str, from_on_behalf: bool, 
                 "or --from-on-behalf (a recorded `t3 review approve-on-behalf` token)"
             ),
         )
-    from teatree.core.notify import resolve_user_channel  # noqa: PLC0415
+    from teatree.core.notify import resolve_user_channel  # noqa: PLC0415 — deferred: keeps CLI startup light
 
     _approval_text, error = _verify_slack_message(slack_ts=slack_ts, user_id=user_id, channel=resolve_user_channel())
     if error:
@@ -347,12 +347,12 @@ def register(review_app: typer.Typer) -> None:
         """
         ensure_django()
 
-        from teatree.core.models.live_post_approval import (  # noqa: PLC0415
+        from teatree.core.models.live_post_approval import (  # noqa: PLC0415 — deferred: ORM/app-registry
             LivePostApproval,
             LivePostApprovalError,
             canonical_mr_scope,
         )
-        from teatree.core.notify import resolve_user_id  # noqa: PLC0415
+        from teatree.core.notify import resolve_user_id  # noqa: PLC0415 — deferred: keeps CLI startup light
 
         user_id = resolve_user_id()
         if not user_id:

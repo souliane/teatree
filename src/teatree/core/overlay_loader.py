@@ -126,7 +126,7 @@ def get_overlay_for_repo(repo: str = ".") -> "OverlayBase | None":
     rather than guess wrong. An overlay whose ``get_workspace_repos()``
     raises is skipped so one broken overlay can't poison resolution.
     """
-    from teatree.utils.git import remote_slug  # noqa: PLC0415
+    from teatree.utils.git import remote_slug  # noqa: PLC0415 — deferred: call-time import, kept lazy
 
     slug = remote_slug(repo=repo)
     if not slug:
@@ -185,7 +185,7 @@ class OverlayConfigResolver:
         OverlayBase but should appear when listing overlays known to teatree
         (for ticket filtering, etc.).
         """
-        from teatree.config import load_config  # noqa: PLC0415
+        from teatree.config import load_config  # noqa: PLC0415 — deferred: call-time import, kept lazy
 
         names = set(_discover_overlays())
         config = load_config()
@@ -205,7 +205,7 @@ class OverlayConfigResolver:
         posture for a genuinely unknown overlay instead of silently inferring
         the empty value.
         """
-        from teatree.config import load_config  # noqa: PLC0415
+        from teatree.config import load_config  # noqa: PLC0415 — deferred: call-time import, kept lazy
 
         resolved = _canonical_overlay_name(name) if name else None
         try:
@@ -252,7 +252,7 @@ class OverlayConfigResolver:
         carry an empty ``owned_repos``, or are instantiable (already covered by
         ``get_all_overlays()``) are excluded.
         """
-        from teatree.config import load_config  # noqa: PLC0415
+        from teatree.config import load_config  # noqa: PLC0415 — deferred: call-time import, kept lazy
 
         instantiable = set(_discover_overlays())
         overlays_cfg = load_config().raw.get("overlays", {})
@@ -280,7 +280,7 @@ class OverlayConfigResolver:
         so inference can attribute a URL to it. Instantiable overlays (already
         covered by ``get_all_overlays()``) are excluded to avoid double-counting.
         """
-        from teatree.config import load_config  # noqa: PLC0415
+        from teatree.config import load_config  # noqa: PLC0415 — deferred: call-time import, kept lazy
 
         instantiable = set(_discover_overlays())
         overlays_cfg = load_config().raw.get("overlays", {})
@@ -329,7 +329,7 @@ def resolve_overlay_name(name: str) -> str | None:
     is not None``; an empty/blank ``name`` is the ambient single-overlay default
     and is the caller's responsibility to special-case (it returns ``None``).
     """
-    from teatree.config import _match_canonical_ep  # noqa: PLC0415
+    from teatree.config import _match_canonical_ep  # noqa: PLC0415 — deferred: call-time import, kept lazy
 
     if not name:
         return None
@@ -526,9 +526,9 @@ def _overlay_repo_slugs_for_inference() -> "list[tuple[str, list[str]]]":
 
 @lru_cache(maxsize=1)
 def _discover_overlays() -> "dict[str, OverlayBase]":
-    import importlib.metadata  # noqa: PLC0415
+    import importlib.metadata  # noqa: PLC0415 — deferred: loaded only on this code path
 
-    from teatree.core.overlay import OverlayBase  # noqa: PLC0415
+    from teatree.core.overlay import OverlayBase  # noqa: PLC0415 — deferred: call-time import, kept lazy
 
     result: dict[str, OverlayBase] = {}
 
@@ -558,7 +558,7 @@ def _discover_toml_overlays(
     already_found: set[str],
 ) -> "dict[str, OverlayBase]":
     """Discover overlays from the DB overlays registry that aren't already entry-point-registered."""
-    from teatree.config import load_config  # noqa: PLC0415
+    from teatree.config import load_config  # noqa: PLC0415 — deferred: call-time import, kept lazy
 
     result: dict[str, OverlayBase] = {}
     config = load_config()
@@ -617,7 +617,7 @@ def reset_overlay_cache() -> None:
     pollution incident this design closes (originally surfaced by
     ``slack_bridge_e2e``, then independently by ``tests/teatree_core``).
     """
-    import sys  # noqa: PLC0415
+    import sys  # noqa: PLC0415 — deferred: loaded only on this code path
 
     _discover_overlays.cache_clear()
     sys.modules.pop("teatree.contrib.t3_teatree.overlay", None)

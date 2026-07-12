@@ -117,7 +117,7 @@ def _scoped_jobs_builder(only: str) -> "Callable[[TickRequest, dt.datetime], lis
     """
 
     def builder(request: "TickRequest", started_at: dt.datetime) -> "list[_ScannerJob]":
-        from teatree.loops.loop_table import build_loop_table_jobs  # noqa: PLC0415
+        from teatree.loops.loop_table import build_loop_table_jobs  # noqa: PLC0415 — deferred: lazy command import
 
         return build_loop_table_jobs(_scanner_context(request), now=started_at, only=only)
 
@@ -167,7 +167,7 @@ def _drain_pending_reinstall_guarded() -> None:
     throttle. A no-op when nothing is pending; :func:`drain_pending_reinstall`
     itself defers while a loop unit is in flight.
     """
-    from teatree.loop.self_update_reinstall import drain_pending_reinstall  # noqa: PLC0415
+    from teatree.loop.self_update_reinstall import drain_pending_reinstall  # noqa: PLC0415 — lazy command import
 
     owner = f"reinstall-{os.getpid()}-{uuid.uuid4().hex}"
     if not LoopLease.objects.acquire(
@@ -181,7 +181,7 @@ class Command(TyperCommand):
     help = "Run ONE enabled, due DB Loop by name (--loop) — the per-loop primitive each native Claude `/loop` fires."
 
     def _emit_skip(self, reason: str, *, json_output: bool, statusline_file: Path | None) -> None:
-        from teatree.loop.tick import _write_tick_meta  # noqa: PLC0415
+        from teatree.loop.tick import _write_tick_meta  # noqa: PLC0415 — deferred: keeps command import light
 
         now = dt.datetime.now(tz=dt.UTC)
         _write_tick_meta(now, target=statusline_file)
@@ -191,7 +191,7 @@ class Command(TyperCommand):
             self.stdout.write(f"SKIP  {reason}")
 
     def _build_request(self, overlay: str) -> "TickRequest":
-        from teatree.loop.tick import TickRequest  # noqa: PLC0415
+        from teatree.loop.tick import TickRequest  # noqa: PLC0415 — deferred: keeps command import light
 
         if overlay:
             return TickRequest(host=code_host_from_overlay(), messaging=messaging_from_overlay())
@@ -255,12 +255,17 @@ class Command(TyperCommand):
         # A per-loop tick (#2650) preflights ONLY its own overlay, gated on the
         # loop being enabled + due — so one overlay's connector outage can't
         # SystemExit an unrelated loop's tick (LOOP-PR-C).
-        from teatree.loops.connector_preflight import run_loop_connector_preflight  # noqa: PLC0415
+        from teatree.loops.connector_preflight import (  # noqa: PLC0415 — deferred: keeps command import light
+            run_loop_connector_preflight,
+        )
 
         run_loop_connector_preflight(loop)
 
         from teatree.loop.driver_detection import detect_driver  # noqa: PLC0415 — deferred
-        from teatree.loop.session_identity import current_session_id, current_session_pid  # noqa: PLC0415
+        from teatree.loop.session_identity import (  # noqa: PLC0415 — deferred: keeps command import light
+            current_session_id,
+            current_session_pid,
+        )
 
         owner_slot = per_loop_owner_slot(loop)
         tick_mutex = f"{PER_LOOP_TICK_MUTEX_PREFIX}{loop}"
@@ -307,9 +312,9 @@ class Command(TyperCommand):
             )
             return
 
-        from teatree.loop.statusline import set_mini_loop_schedules_reader  # noqa: PLC0415
-        from teatree.loop.tick import run_tick  # noqa: PLC0415
-        from teatree.loops.schedule import mini_loop_schedules  # noqa: PLC0415
+        from teatree.loop.statusline import set_mini_loop_schedules_reader  # noqa: PLC0415 — lazy command import
+        from teatree.loop.tick import run_tick  # noqa: PLC0415 — deferred: keeps command import light
+        from teatree.loops.schedule import mini_loop_schedules  # noqa: PLC0415 — deferred: keeps command import light
 
         # The statusline dedicated loop line shows every enabled loop with its own
         # next-tick countdown (#1400) plus the active-preset segment (#3159); install

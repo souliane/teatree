@@ -65,7 +65,7 @@ class Command(TyperCommand):
             typer.Option("--json", help="Emit the sync summary as JSON on stdout instead of the human view."),
         ] = False,
     ) -> dict[str, int | list[str] | list[dict[str, int | str]]]:
-        from teatree.core.sync import sync_followup  # noqa: PLC0415
+        from teatree.core.sync import sync_followup  # noqa: PLC0415 — deferred: keeps command import light
 
         result = sync_followup()
         # The conflict banner is a human diagnostic, not machine data — always to
@@ -157,7 +157,10 @@ class Command(TyperCommand):
         stale DB. Fails open: an unconfigured channel or a slow/failed
         read leaves the MR unannotated rather than wedging discovery.
         """
-        from teatree.core.gates.review_request_guard import reconcile_out_of_band, resolve_guard_target  # noqa: PLC0415
+        from teatree.core.gates.review_request_guard import (  # noqa: PLC0415 — deferred: keeps command import light
+            reconcile_out_of_band,
+            resolve_guard_target,
+        )
 
         url = mr.get("url")
         if not isinstance(url, str) or not url:

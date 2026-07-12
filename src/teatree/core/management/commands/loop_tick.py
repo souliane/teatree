@@ -27,7 +27,7 @@ class Command(TyperCommand):
     help = "Run one user-manual full-scan tick: scan every overlay once, dispatch, render the statusline."
 
     def _build_request(self, overlay: str) -> "TickRequest":
-        from teatree.loop.tick import TickRequest  # noqa: PLC0415
+        from teatree.loop.tick import TickRequest  # noqa: PLC0415 — deferred: keeps command import light
 
         if overlay:
             return TickRequest(host=code_host_from_overlay(), messaging=messaging_from_overlay())
@@ -44,9 +44,9 @@ class Command(TyperCommand):
         ] = "",
         json_output: Annotated[bool, typer.Option("--json", help="Emit the tick report as JSON.")] = False,
     ) -> None:
-        from teatree.loop.statusline import set_mini_loop_schedules_reader  # noqa: PLC0415
-        from teatree.loop.tick import run_tick  # noqa: PLC0415
-        from teatree.loops.schedule import mini_loop_schedules  # noqa: PLC0415
+        from teatree.loop.statusline import set_mini_loop_schedules_reader  # noqa: PLC0415 — lazy command import
+        from teatree.loop.tick import run_tick  # noqa: PLC0415 — deferred: keeps command import light
+        from teatree.loops.schedule import mini_loop_schedules  # noqa: PLC0415 — deferred: keeps command import light
 
         # Install the DB-backed mini-loop reader so the by-hand render still
         # carries the full per-loop countdown line, then reset the process-global

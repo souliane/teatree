@@ -26,8 +26,8 @@ class OverlayMetadata:
         description must carry a What/Why header plus every section declared in
         :meth:`get_required_description_sections`. A real gate, not a no-op.
         """
-        from teatree.config import get_effective_settings  # noqa: PLC0415
-        from teatree.core.review.mr_metadata import validate_mr_metadata  # noqa: PLC0415
+        from teatree.config import get_effective_settings  # noqa: PLC0415 — deferred: call-time import, kept lazy
+        from teatree.core.review.mr_metadata import validate_mr_metadata  # noqa: PLC0415 — deferred: call-time import
 
         errors = validate_mr_metadata(
             title,
@@ -37,7 +37,7 @@ class OverlayMetadata:
         )
         return {"errors": errors, "warnings": []}
 
-    def get_required_description_sections(self) -> list[str]:  # noqa: PLR6301
+    def get_required_description_sections(self) -> list[str]:  # noqa: PLR6301 — overlay hook default; overridden per-overlay on the instance
         """MR-description sections required beyond What/Why (#312); default none.
 
         An overlay declares mandatory sections (e.g. ``["Configuration"]``); the
@@ -45,7 +45,7 @@ class OverlayMetadata:
         """
         return []
 
-    def get_description_section_defaults(self) -> dict[str, str]:  # noqa: PLR6301
+    def get_description_section_defaults(self) -> dict[str, str]:  # noqa: PLR6301 — overlay hook default; overridden per-overlay on the instance
         """Default body the generator writes under a missing required section (#312).
 
         Maps a section header to its default text so a thin commit ships a
@@ -53,7 +53,7 @@ class OverlayMetadata:
         """
         return {}
 
-    def build_pr_title(self, *, branch: str, subject: str, body: str, issue_url: str) -> str:  # noqa: PLR6301, ARG002
+    def build_pr_title(self, *, branch: str, subject: str, body: str, issue_url: str) -> str:  # noqa: PLR6301, ARG002 — overlay hook default: instance method by contract; args consumed by per-overlay overrides
         """Produce the PR title from structured data instead of copying the subject.
 
         Default returns ``subject``. An overlay enforcing a title grammar
@@ -62,23 +62,23 @@ class OverlayMetadata:
         """
         return subject
 
-    def get_followup_repos(self) -> list[str]:  # noqa: PLR6301
+    def get_followup_repos(self) -> list[str]:  # noqa: PLR6301 — overlay hook default; overridden per-overlay on the instance
         return []
 
-    def get_skill_metadata(self) -> SkillMetadata:  # noqa: PLR6301
+    def get_skill_metadata(self) -> SkillMetadata:  # noqa: PLR6301 — overlay hook default; overridden per-overlay on the instance
         return {}
 
-    def get_ci_project_path(self) -> str:  # noqa: PLR6301
+    def get_ci_project_path(self) -> str:  # noqa: PLR6301 — overlay hook default; overridden per-overlay on the instance
         return ""
 
-    def get_e2e_config(self) -> dict[str, str]:  # noqa: PLR6301
+    def get_e2e_config(self) -> dict[str, str]:  # noqa: PLR6301 — overlay hook default; overridden per-overlay on the instance
         return {}
 
-    def detect_variant(self) -> str:  # noqa: PLR6301
+    def detect_variant(self) -> str:  # noqa: PLR6301 — overlay hook default; overridden per-overlay on the instance
         return ""
 
-    def get_tool_commands(self) -> list[ToolCommand]:  # noqa: PLR6301
+    def get_tool_commands(self) -> list[ToolCommand]:  # noqa: PLR6301 — overlay hook default; overridden per-overlay on the instance
         return []
 
-    def get_issue_title(self, url: str) -> str:  # noqa: PLR6301, ARG002
+    def get_issue_title(self, url: str) -> str:  # noqa: PLR6301, ARG002 — overlay hook default: instance method by contract; args consumed by per-overlay overrides
         return ""

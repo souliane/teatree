@@ -269,7 +269,7 @@ class Command(TyperCommand):
         recorded ``(op, tenant)`` matches the gate's expected scope (named
         in its refusal message) regardless of case/whitespace.
         """
-        from teatree.core.models.db_approval import DbApproval, DbApprovalError  # noqa: PLC0415
+        from teatree.core.models.db_approval import DbApproval, DbApprovalError  # noqa: PLC0415 — lazy ORM import
 
         try:
             approval = DbApproval.record(op, tenant, approver)

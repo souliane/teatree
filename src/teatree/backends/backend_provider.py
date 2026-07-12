@@ -32,31 +32,31 @@ if TYPE_CHECKING:
 
 
 class ConcreteBackendProvider:
-    def get_code_host(self, overlay: "OverlayBase") -> "CodeHostBackend | None":  # noqa: PLR6301
+    def get_code_host(self, overlay: "OverlayBase") -> "CodeHostBackend | None":  # noqa: PLR6301 — fail-safe provider seam: instance method by Protocol contract
         return loader.get_code_host(overlay)
 
-    def get_code_host_for_repo(self, overlay: "OverlayBase", repo_path: str) -> "CodeHostBackend | None":  # noqa: PLR6301
+    def get_code_host_for_repo(self, overlay: "OverlayBase", repo_path: str) -> "CodeHostBackend | None":  # noqa: PLR6301 — fail-safe provider seam: instance method by Protocol contract
         return loader.get_code_host_for_repo(overlay, repo_path)
 
-    def get_code_hosts(self, overlay: "OverlayBase") -> "list[CodeHostBackend]":  # noqa: PLR6301
+    def get_code_hosts(self, overlay: "OverlayBase") -> "list[CodeHostBackend]":  # noqa: PLR6301 — fail-safe provider seam: instance method by Protocol contract
         return loader.get_code_hosts(overlay)
 
-    def get_messaging(self, overlay: "OverlayBase") -> "MessagingBackend | None":  # noqa: PLR6301
+    def get_messaging(self, overlay: "OverlayBase") -> "MessagingBackend | None":  # noqa: PLR6301 — fail-safe provider seam: instance method by Protocol contract
         return loader.get_messaging(overlay)
 
-    def get_ci_service(self, *, gitlab_token: str, gitlab_url: str) -> "CIService | None":  # noqa: PLR6301
+    def get_ci_service(self, *, gitlab_token: str, gitlab_url: str) -> "CIService | None":  # noqa: PLR6301 — fail-safe provider seam: instance method by Protocol contract
         return loader.get_ci_service(gitlab_token=gitlab_token, gitlab_url=gitlab_url)
 
-    def reset_caches(self) -> None:  # noqa: PLR6301
+    def reset_caches(self) -> None:  # noqa: PLR6301 — fail-safe provider seam: instance method by Protocol contract
         loader.reset_backend_caches()
 
-    def build_github_host(self, *, token: str) -> "CodeHostBackend":  # noqa: PLR6301
+    def build_github_host(self, *, token: str) -> "CodeHostBackend":  # noqa: PLR6301 — fail-safe provider seam: instance method by Protocol contract
         return GitHubCodeHost(token=token)
 
-    def build_gitlab_host(self, *, token: str, base_url: str) -> "CodeHostBackend":  # noqa: PLR6301
+    def build_gitlab_host(self, *, token: str, base_url: str) -> "CodeHostBackend":  # noqa: PLR6301 — fail-safe provider seam: instance method by Protocol contract
         return GitLabCodeHost(token=token, base_url=base_url)
 
-    def build_slack_messaging(  # noqa: PLR6301
+    def build_slack_messaging(  # noqa: PLR6301 — fail-safe provider seam: instance method by Protocol contract
         self,
         *,
         bot_token: str,
@@ -74,7 +74,7 @@ class ConcreteBackendProvider:
             degrade_bad_user_token=True,
         )
 
-    def build_sync_backends(self) -> "list[SyncBackend]":  # noqa: PLR6301
+    def build_sync_backends(self) -> "list[SyncBackend]":  # noqa: PLR6301 — fail-safe provider seam: instance method by Protocol contract
         return [github_sync.GitHubSyncBackend(), gitlab_sync.GitLabSyncBackend()]
 
     def build_notion_client(self, *, token: str) -> "NotionPageClient | None":  # noqa: PLR6301 — BackendProvider protocol method
@@ -83,7 +83,7 @@ class ConcreteBackendProvider:
     def build_sentry_client(self, *, token: str, org: str, base_url: str) -> "SentryReadClient | None":  # noqa: PLR6301 — BackendProvider protocol method
         return SentryClient(token=token, org=org, base_url=base_url)
 
-    def read_recent_review_matches(self, spec: "ReviewSearchSpec") -> "ReviewHistoryReadLike":  # noqa: PLR6301
+    def read_recent_review_matches(self, spec: "ReviewSearchSpec") -> "ReviewHistoryReadLike":  # noqa: PLR6301 — fail-safe provider seam: instance method by Protocol contract
         return read_recent_review_matches(
             SlackReviewSearchRequest(
                 token=spec.token,

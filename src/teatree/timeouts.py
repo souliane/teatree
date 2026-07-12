@@ -56,7 +56,7 @@ def load_timeouts(overlay: "OverlayBase | None" = None) -> TimeoutConfig:
     merged = dict(CORE_DEFAULTS)
 
     # Tier 3: Django settings (core defaults, already in merged)
-    from django.conf import settings  # noqa: PLC0415
+    from django.conf import settings  # noqa: PLC0415 — deferred: Django import at call time
 
     django_timeouts = getattr(settings, "TEATREE_TIMEOUTS", None)
     if isinstance(django_timeouts, dict):
@@ -71,7 +71,7 @@ def load_timeouts(overlay: "OverlayBase | None" = None) -> TimeoutConfig:
     # Tier 1: User settings (the DB-home ``timeouts`` setting)
     # Deferred (PLC0415): importing `teatree.config` at module scope eagerly
     # loads its heavy package __init__; keep this module's import light.
-    from teatree.config import cold_reader  # noqa: PLC0415
+    from teatree.config import cold_reader  # noqa: PLC0415 — deferred: call-time import, kept lazy
 
     user_timeouts = cold_reader.mapping_setting("timeouts")
     merged.update({k: int(v) for k, v in user_timeouts.items() if isinstance(v, int | float | str)})

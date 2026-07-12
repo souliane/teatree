@@ -186,7 +186,7 @@ class Command(TyperCommand):
 
     def _show_all_overlays(self, *, now: datetime, flags: _ShowFlags) -> str:
         """All-overlays path (default): aggregate every configured overlay."""
-        from teatree.core.overlay_loader import get_all_overlays  # noqa: PLC0415
+        from teatree.core.overlay_loader import get_all_overlays  # noqa: PLC0415 — deferred: keeps command import light
 
         overlays = get_all_overlays()
 
@@ -228,7 +228,7 @@ class Command(TyperCommand):
         host (the builder then defaults to the GitHub URL shape).
         """
         try:
-            from teatree.core.overlay_loader import get_overlay  # noqa: PLC0415
+            from teatree.core.overlay_loader import get_overlay  # noqa: PLC0415 — deferred: keeps command import light
 
             return get_overlay().config.code_host or ""
         except Exception:  # noqa: BLE001 — config read must never wedge a read-only report
@@ -245,7 +245,7 @@ class Command(TyperCommand):
         group then keeps the ticket-bearing back-compat scope only.
         """
         try:
-            from teatree.core.overlay_loader import get_overlay  # noqa: PLC0415
+            from teatree.core.overlay_loader import get_overlay  # noqa: PLC0415 — deferred: keeps command import light
 
             overlay = get_overlay()
             repos = list(overlay.metadata.get_followup_repos()) + list(overlay.get_repos())

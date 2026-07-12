@@ -59,7 +59,7 @@ def run_command(
     """Run one consolidation pass NOW (ignores cadence)."""
     ensure_django()
 
-    from django.core.management import call_command  # noqa: PLC0415
+    from django.core.management import call_command  # noqa: PLC0415 — deferred: Django import at call time
 
     args: list[str] = ["run"]
     if dry_run:
@@ -78,7 +78,7 @@ def tick_command() -> None:
     """Run one consolidation pass IF the dream cadence has elapsed (cron entry)."""
     ensure_django()
 
-    from django.core.management import call_command  # noqa: PLC0415
+    from django.core.management import call_command  # noqa: PLC0415 — deferred: Django import at call time
 
     call_command("dream", "tick")
 
@@ -96,6 +96,6 @@ def compliance_show_command() -> None:
     """Print the latest compliance snapshot — rate, recurrence count, open escalations."""
     ensure_django()
 
-    from django.core.management import call_command  # noqa: PLC0415
+    from django.core.management import call_command  # noqa: PLC0415 — deferred: Django import at call time
 
     call_command("dream", "compliance")

@@ -36,7 +36,7 @@ class Command(TyperCommand):
         tokens: Annotated[list[str] | None, typer.Option("--token", help=_ADHOC_HELP)] = None,
     ) -> str:
         """Show per-account Anthropic 5h / weekly token utilization + status."""
-        from teatree.token_report import TokenReport, render_table  # noqa: PLC0415
+        from teatree.token_report import TokenReport, render_table  # noqa: PLC0415 — deferred: lazy command import
 
         rows = TokenReport(ad_hoc_tokens=tokens).rows()
         if json_output:

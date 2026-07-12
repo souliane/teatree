@@ -81,7 +81,7 @@ def _config_trusted_handles() -> set[str]:
     consumer of the alias set (the loop scanners' ``backend.identities``).
     """
     try:
-        from teatree.config import get_effective_settings  # noqa: PLC0415
+        from teatree.config import get_effective_settings  # noqa: PLC0415 — deferred: call-time import, kept lazy
 
         aliases = get_effective_settings().user_identity_aliases
         return {alias.strip().lower() for alias in aliases if alias.strip()}
@@ -108,7 +108,10 @@ def repo_is_internal(slug: str, *, host_kind: str = "github") -> bool:
     host-prefixed slug. A GitLab slug is therefore host-prefixed here so the
     probe routes to ``glab`` rather than mis-routing to ``gh``.
     """
-    from teatree.hooks._repo_visibility import slug_is_allowlisted_private, slug_is_private  # noqa: PLC0415
+    from teatree.hooks._repo_visibility import (  # noqa: PLC0415 — deferred: call-time import, kept lazy
+        slug_is_allowlisted_private,
+        slug_is_private,
+    )
 
     probe_slug = _host_prefixed_slug(slug, host_kind=host_kind)
     if slug_is_allowlisted_private(probe_slug, None):

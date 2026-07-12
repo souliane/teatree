@@ -75,9 +75,9 @@ def _build_setting_homes() -> dict[str, SettingHome]:
     carve-out is empty). The two derived fields are excluded entirely. The import is
     deferred to avoid a settings -> homes -> settings cycle at module load.
     """
-    import dataclasses  # noqa: PLC0415
+    import dataclasses  # noqa: PLC0415 — deferred: loaded only on this code path
 
-    from teatree.config.settings import UserSettings  # noqa: PLC0415
+    from teatree.config.settings import UserSettings  # noqa: PLC0415 — deferred: breaks homes ↔ settings cycle
 
     homes: dict[str, SettingHome] = {}
     for field in dataclasses.fields(UserSettings):

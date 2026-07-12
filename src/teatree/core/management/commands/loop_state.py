@@ -52,7 +52,7 @@ def _reconcile_timers() -> None:
     to the periodic reconciler catching up.
     """
     try:
-        from teatree.loops.timer_reconciler import ensure_loop_timers  # noqa: PLC0415
+        from teatree.loops.timer_reconciler import ensure_loop_timers  # noqa: PLC0415 — deferred: lazy command import
 
         ensure_loop_timers()
     except Exception:
@@ -81,7 +81,7 @@ def _require_known_loop(name: str, *, json_output: bool, stdout_write: Callable[
     raise SystemExit(2)
 
 
-def _report(name: str, *, json_output: bool, stdout_write) -> None:  # noqa: ANN001
+def _report(name: str, *, json_output: bool, stdout_write: Callable[[str], object]) -> None:
     """Re-read and report the LANDED status after a mutating transition."""
     status = LoopState.objects.status_of(name)
     if json_output:
@@ -90,7 +90,7 @@ def _report(name: str, *, json_output: bool, stdout_write) -> None:  # noqa: ANN
         stdout_write(f"OK    loop {name!r} is now {status.value}.")
 
 
-def _report_status(name: str, *, json_output: bool, stdout_write) -> None:  # noqa: ANN001
+def _report_status(name: str, *, json_output: bool, stdout_write: Callable[[str], object]) -> None:
     """Read-only status report for ``status`` — phrased as a READ, never a mutation.
 
     The mutation verbs print ``is now <status>``; the read prints

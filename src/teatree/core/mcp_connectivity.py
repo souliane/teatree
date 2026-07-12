@@ -271,7 +271,7 @@ def overlay_provider_expectations() -> dict[str, str]:
     ``OverlayBase.connectors.mcp_provider_expectations()``. Teatree's own default is
     empty; the real values live in the overlay repo (souliane/teatree#251).
     """
-    from teatree.core.backend_factory import iter_overlay_backends  # noqa: PLC0415
+    from teatree.core.backend_factory import iter_overlay_backends  # noqa: PLC0415 — deferred: call-time import
 
     merged: dict[str, str] = {}
     for backend in iter_overlay_backends():

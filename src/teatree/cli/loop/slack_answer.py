@@ -34,7 +34,7 @@ def slack_answer_run_command(
     """Run one reactive Slack-answer cycle."""
     ensure_django()
 
-    from django.core.management import call_command  # noqa: PLC0415
+    from django.core.management import call_command  # noqa: PLC0415 — deferred: Django import at call time
 
     kwargs: dict[str, bool] = {}
     if json_output:
@@ -47,7 +47,7 @@ def slack_answer_status_command() -> None:
     """Show the reactive Slack-answer loop's unreplied queue depth."""
     ensure_django()
 
-    from teatree.core.models import PendingChatInjection  # noqa: PLC0415
+    from teatree.core.models import PendingChatInjection  # noqa: PLC0415 — deferred: ORM import needs the app registry
 
     count = PendingChatInjection.loop_unreplied().count()
     if not count:

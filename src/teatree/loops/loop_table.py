@@ -113,7 +113,7 @@ def _resolve_dispatch_loop(row: "Loop", registry_by_name: dict[str, MiniLoop]) -
     logs and skips, never a silent no-op. A **prompt** row dispatches its own
     registered mini-loop.
     """
-    from teatree.loops.run import parse_script_loop_name  # noqa: PLC0415
+    from teatree.loops.run import parse_script_loop_name  # noqa: PLC0415 — deferred: loaded at tick time, not import
 
     target = parse_script_loop_name(row.script) if row.script else row.name
     return registry_by_name[target]
@@ -156,7 +156,7 @@ def admitted_loop_names(now: dt.datetime, *, only: str | None = None) -> list[st
     there — the timer's admission step only ASKS whether the row is due, it never
     drives one.
     """
-    from teatree.core.models import Loop  # noqa: PLC0415
+    from teatree.core.models import Loop  # noqa: PLC0415 — deferred: ORM import needs the app registry
 
     admission = _TickAdmission.resolve(now)
     rows = {row.name: row for row in Loop.objects.all()}
@@ -200,7 +200,7 @@ def build_loop_table_jobs(
     advanced its anchor (it is simply not re-driven until its cadence elapses
     again).
     """
-    from teatree.core.models import Loop  # noqa: PLC0415
+    from teatree.core.models import Loop  # noqa: PLC0415 — deferred: ORM import needs the app registry
 
     admission = _TickAdmission.resolve(now)
     registry = tuple(iter_loops())

@@ -15,16 +15,16 @@ def ui() -> None:
     Requires the ``ui`` dependency group: ``uv sync --group ui``
     """
     try:
-        from trogon.trogon import Trogon  # noqa: PLC0415
+        from trogon.trogon import Trogon  # noqa: PLC0415 — deferred: heavy/optional dep at call site
     except ImportError:
         typer.echo("ui browser requires the 'ui' extra: uv sync --group ui")
         raise typer.Exit(code=1) from None
 
     ensure_django()
 
-    from typer.main import get_group  # noqa: PLC0415
+    from typer.main import get_group  # noqa: PLC0415 — deferred: heavy/optional dep at call site
 
-    from teatree.cli import app, register_overlay_commands  # noqa: PLC0415
+    from teatree.cli import app, register_overlay_commands  # noqa: PLC0415 — deferred: breaks ui ↔ cli cycle
 
     register_overlay_commands()
     Trogon(get_group(app), app_name="t3").run()

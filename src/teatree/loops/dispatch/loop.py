@@ -16,8 +16,8 @@ def _build_jobs(**_: object) -> "list[_ScannerJob]":
     fan-out stays the single source of which scanners run in this
     mini-loop. The dispatch set carries no per-overlay state.
     """
-    from teatree.loop.domain_jobs import jobs_for_domain  # noqa: PLC0415
-    from teatree.loop.job_identity import Domain  # noqa: PLC0415
+    from teatree.loop.domain_jobs import jobs_for_domain  # noqa: PLC0415 — deferred: loaded at tick time, not import
+    from teatree.loop.job_identity import Domain  # noqa: PLC0415 — deferred: loaded at tick time, not import
 
     return jobs_for_domain(Domain.DISPATCH)
 

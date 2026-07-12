@@ -71,7 +71,7 @@ def triage_issues(
     ),
 ) -> None:
     """Scan for resolved-but-open and stale issues."""
-    from teatree.triage import TriageScanner  # noqa: PLC0415
+    from teatree.triage import TriageScanner  # noqa: PLC0415 — deferred: keeps CLI startup light
 
     scanner = TriageScanner(repo)
 

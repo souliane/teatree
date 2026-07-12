@@ -23,6 +23,7 @@ free-lane summary) and exposed as the standalone ``t3 eval skill-command-validit
 
 import sys
 from collections.abc import Callable
+from pathlib import Path
 
 import typer
 
@@ -59,7 +60,7 @@ def build_command_registry() -> tuple[set[str], set[str]]:
     return _registry_provider()
 
 
-def validate_shipped_skill_commands(skills_dir=DEFAULT_SKILLS_DIR) -> CommandValidityReport:  # noqa: ANN001
+def validate_shipped_skill_commands(skills_dir: Path = DEFAULT_SKILLS_DIR) -> CommandValidityReport:
     """Validate the shipped skill docs against the live registry (the lane body)."""
     valid, groups = build_command_registry()
     return validate_skill_commands(valid, groups, skills_dir=skills_dir)
@@ -96,7 +97,7 @@ def skill_command_validity(
     require_valid_format(output_format)
     report = validate_shipped_skill_commands()
     if output_format == "json":
-        import json  # noqa: PLC0415
+        import json  # noqa: PLC0415 — deferred: loaded only when this command runs
 
         typer.echo(
             json.dumps(

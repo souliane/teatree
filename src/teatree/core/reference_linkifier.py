@@ -104,7 +104,7 @@ class ReferenceResolver:
         """
         if overlay is None:
             try:
-                from teatree.core.overlay_loader import get_overlay  # noqa: PLC0415
+                from teatree.core.overlay_loader import get_overlay  # noqa: PLC0415 — deferred: call-time import
 
                 overlay = get_overlay()
             except Exception:  # noqa: BLE001 — overlay resolution is best-effort
@@ -116,7 +116,7 @@ class ReferenceResolver:
     @staticmethod
     def _repo_context(overlay: "OverlayBase") -> tuple[str, str]:
         """Return ``(owner/repo slug, web_base)`` from the overlay's first repo remote."""
-        from teatree.utils import git, git_remote  # noqa: PLC0415
+        from teatree.utils import git, git_remote  # noqa: PLC0415 — deferred: call-time import, kept lazy
 
         try:
             repos = overlay.get_repos()
@@ -185,7 +185,7 @@ def _db_pull_request_url(iid: int, *, slug: str) -> str | None:
     if not slug:
         return None
     try:
-        from teatree.core.models import PullRequest  # noqa: PLC0415
+        from teatree.core.models import PullRequest  # noqa: PLC0415 — deferred: ORM import needs the app registry
 
         row = PullRequest.objects.filter(repo=slug, iid=str(iid)).order_by("-id").first()
     except Exception as exc:  # noqa: BLE001 — DB lookup is best-effort; degrade to construction
@@ -204,7 +204,7 @@ def _db_issue_url(iid: int, *, slug: str) -> str | None:
     if not slug:
         return None
     try:
-        from teatree.core.models import Ticket  # noqa: PLC0415
+        from teatree.core.models import Ticket  # noqa: PLC0415 — deferred: ORM import needs the app registry
 
         candidates = Ticket.objects.filter(issue_url__contains=f"/{slug}/").exclude(issue_url="")
         for ticket in candidates:
@@ -284,7 +284,7 @@ def linkify_with_overlay(text: str, overlay: "OverlayBase | None" = None) -> str
         return text
     if overlay is None:
         try:
-            from teatree.core.overlay_loader import get_overlay  # noqa: PLC0415
+            from teatree.core.overlay_loader import get_overlay  # noqa: PLC0415 — deferred: call-time import, kept lazy
 
             overlay = get_overlay()
         except Exception:  # noqa: BLE001 — overlay resolution is best-effort

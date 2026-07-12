@@ -121,7 +121,7 @@ def loop_enabled(name: str) -> bool:
     :func:`loop_held_in_db`.
     """
     try:
-        from teatree.core.models import Loop  # noqa: PLC0415
+        from teatree.core.models import Loop  # noqa: PLC0415 — deferred: ORM import needs the app registry
 
         row = Loop.objects.filter(name=name).only("enabled").first()
     except Exception:

@@ -545,7 +545,7 @@ class GlabGhMrStateClassifier:
         return MrState(url=url, merged=False, approved=False)
 
     def _classify_gitlab(self, url: str) -> MrState:
-        from teatree.utils.run import run_allowed_to_fail  # noqa: PLC0415
+        from teatree.utils.run import run_allowed_to_fail  # noqa: PLC0415 — deferred: loaded at tick time, not import
 
         parsed = repo_and_iid(url)
         if parsed is None:
@@ -585,7 +585,7 @@ class GlabGhMrStateClassifier:
         return MrState(url=url, merged=merged, approved=approved, author_username=author_username)
 
     def _classify_github(self, url: str) -> MrState:
-        from teatree.utils.run import run_allowed_to_fail  # noqa: PLC0415
+        from teatree.utils.run import run_allowed_to_fail  # noqa: PLC0415 — deferred: loaded at tick time, not import
 
         gh = shutil.which("gh") or "gh"
         env = {**os.environ, "GH_TOKEN": self.github_token} if self.github_token else None

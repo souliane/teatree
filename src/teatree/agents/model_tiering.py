@@ -482,7 +482,7 @@ def _honesty_escalation_active(session_id: str | None, task_id: int | None) -> b
     if not session_id:
         return False
     try:
-        from teatree.core.models import HonestyEscalation  # noqa: PLC0415
+        from teatree.core.models import HonestyEscalation  # noqa: PLC0415 — deferred: ORM import needs the app registry
 
         return HonestyEscalation.is_active(session_id, task_id=task_id)
     except Exception:  # noqa: BLE001 — best-effort; a failure degrades to disabled

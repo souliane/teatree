@@ -42,10 +42,10 @@ def db_owner_is_current_session(session_id: str) -> bool:
     if not bootstrap_teatree_django():
         return False
     try:
-        from teatree.core.loop_lease_manager import T3_MASTER_SLOT  # noqa: PLC0415
-        from teatree.core.models import LoopLease  # noqa: PLC0415
+        from teatree.core.loop_lease_manager import T3_MASTER_SLOT  # noqa: PLC0415 — deferred: cold-hook import
+        from teatree.core.models import LoopLease  # noqa: PLC0415 — deferred: ORM import needs the app registry
 
         status = LoopLease.objects.ownership_status(T3_MASTER_SLOT)
-    except Exception:  # noqa: BLE001
+    except Exception:  # noqa: BLE001 — crash-proof hook: any failure degrades silently, never breaks the tool call
         return False
     return status.is_live and status.owner_session == session_id

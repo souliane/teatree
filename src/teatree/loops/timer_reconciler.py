@@ -54,8 +54,8 @@ def timer_chain_loop_names() -> set[str]:
     (``dream``) are driven by their own low-frequency cron, never a worker timer, so
     they never get a chain that would only ever no-op.
     """
-    from teatree.core.models import Loop  # noqa: PLC0415
-    from teatree.loops.registry import iter_loops  # noqa: PLC0415
+    from teatree.core.models import Loop  # noqa: PLC0415 — deferred: ORM import needs the app registry
+    from teatree.loops.registry import iter_loops  # noqa: PLC0415 — deferred: loaded at tick time, not import
 
     registered = {loop.name for loop in iter_loops() if not loop.off_live_tick}
     enabled = set(Loop.objects.enabled().values_list("name", flat=True))
@@ -63,9 +63,9 @@ def timer_chain_loop_names() -> set[str]:
 
 
 def _loop_timers_by_name(status: str) -> dict[str, list]:
-    from django_tasks_db.models import DBTaskResult  # noqa: PLC0415
+    from django_tasks_db.models import DBTaskResult  # noqa: PLC0415 — deferred: heavy/optional dep at call site
 
-    from teatree.loops.timer_chains import _loop_timer_path  # noqa: PLC0415
+    from teatree.loops.timer_chains import _loop_timer_path  # noqa: PLC0415 — deferred: loaded at tick time, not import
 
     grouped: dict[str, list] = {}
     for row in DBTaskResult.objects.filter(task_path=_loop_timer_path(), status=status):
@@ -75,7 +75,7 @@ def _loop_timers_by_name(status: str) -> dict[str, list]:
     return grouped
 
 
-def _is_stranded(result, loop_row, now: dt.datetime) -> bool:  # noqa: ANN001
+def _is_stranded(result, loop_row, now: dt.datetime) -> bool:  # noqa: ANN001 — untyped by design: a duck-typed handle passed positionally
     """Whether a RUNNING timer has outlived its tick deadline + grace (a dead worker)."""
     if result.started_at is None:
         return False
@@ -91,10 +91,10 @@ def ensure_loop_timers() -> dict[str, int]:
     RUNNING timer and re-heads its loop, and deletes the queued timers of a
     disabled/unknown loop. Dispatches nothing.
     """
-    from django_tasks.base import TaskResultStatus  # noqa: PLC0415
-    from django_tasks_db.models import DBTaskResult  # noqa: PLC0415
+    from django_tasks.base import TaskResultStatus  # noqa: PLC0415 — deferred: heavy/optional dep at call site
+    from django_tasks_db.models import DBTaskResult  # noqa: PLC0415 — deferred: heavy/optional dep at call site
 
-    from teatree.core.models import Loop  # noqa: PLC0415
+    from teatree.core.models import Loop  # noqa: PLC0415 — deferred: ORM import needs the app registry
 
     now = timezone.now()
     chain_names = timer_chain_loop_names()
@@ -137,8 +137,8 @@ def ensure_loop_timers() -> dict[str, int]:
 
 
 def _pending_for_path(path: str) -> bool:
-    from django_tasks.base import TaskResultStatus  # noqa: PLC0415
-    from django_tasks_db.models import DBTaskResult  # noqa: PLC0415
+    from django_tasks.base import TaskResultStatus  # noqa: PLC0415 — deferred: heavy/optional dep at call site
+    from django_tasks_db.models import DBTaskResult  # noqa: PLC0415 — deferred: heavy/optional dep at call site
 
     return DBTaskResult.objects.filter(task_path=path, status=TaskResultStatus.READY).exists()
 
@@ -165,8 +165,8 @@ def prune_task_results() -> dict[str, int]:
     (successful/failed) rows past the retention window are removed — a READY or
     RUNNING row is never touched.
     """
-    from django_tasks.base import TaskResultStatus  # noqa: PLC0415
-    from django_tasks_db.models import DBTaskResult  # noqa: PLC0415
+    from django_tasks.base import TaskResultStatus  # noqa: PLC0415 — deferred: heavy/optional dep at call site
+    from django_tasks_db.models import DBTaskResult  # noqa: PLC0415 — deferred: heavy/optional dep at call site
 
     if _pending_for_path(prune_task_results.module_path):
         return {"deduped": 1}

@@ -64,7 +64,7 @@ def notify_user_on_behalf_post(
     if not (settings.notify_on_post_on_behalf or settings.notify_on_behalf):
         return
 
-    from teatree.core.notify import NotifyKind, notify_user  # noqa: PLC0415
+    from teatree.core.notify import NotifyKind, notify_user  # noqa: PLC0415 — deferred: call-time import, kept lazy
 
     short = artifact_url.rsplit("/", 1)[-1] or artifact_url
     text = f"Posted under your identity to {destination}.\n[{short}]({artifact_url})\n{summary}"

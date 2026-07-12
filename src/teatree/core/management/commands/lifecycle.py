@@ -241,9 +241,9 @@ class Command(TyperCommand):
         the row in place (idempotent). A red run, or a green run with no
         ``--posted-url``, records provenance without satisfying the gate.
         """
-        from teatree.core.models.e2e_mandatory_run import E2eMandatoryRun  # noqa: PLC0415
-        from teatree.core.models.merge_clear import is_commit_sha  # noqa: PLC0415
-        from teatree.core.models.worktree import Worktree  # noqa: PLC0415
+        from teatree.core.models.e2e_mandatory_run import E2eMandatoryRun  # noqa: PLC0415 — deferred: ORM/app-registry
+        from teatree.core.models.merge_clear import is_commit_sha  # noqa: PLC0415 — deferred: ORM/app-registry
+        from teatree.core.models.worktree import Worktree  # noqa: PLC0415 — deferred: ORM import needs the app registry
 
         ticket = Ticket.objects.resolve(ticket_id)
         assert_lifecycle_db_is_canonical(ticket)

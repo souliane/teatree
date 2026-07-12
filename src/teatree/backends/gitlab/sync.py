@@ -31,14 +31,14 @@ logger = logging.getLogger(__name__)
 class GitLabSyncBackend(SyncBackend):
     @override
     def is_configured(self, overlay: object) -> bool:
-        from teatree.core.overlay import OverlayBase  # noqa: PLC0415
+        from teatree.core.overlay import OverlayBase  # noqa: PLC0415 — deferred: avoids a backends ↔ core cycle
 
         return isinstance(overlay, OverlayBase) and bool(overlay.config.get_gitlab_token())
 
     @override
     def sync(self, overlay: object) -> SyncResult:
-        from teatree.backends.gitlab.api import ProjectInfo  # noqa: PLC0415
-        from teatree.core.overlay import OverlayBase  # noqa: PLC0415
+        from teatree.backends.gitlab.api import ProjectInfo  # noqa: PLC0415 — deferred: avoids a backends ↔ core cycle
+        from teatree.core.overlay import OverlayBase  # noqa: PLC0415 — deferred: avoids a backends ↔ core cycle
 
         if not isinstance(overlay, OverlayBase):
             return SyncResult(errors=["Invalid overlay"])

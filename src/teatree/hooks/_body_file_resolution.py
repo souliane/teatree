@@ -438,7 +438,7 @@ def commit_body_file_base(command: str, cwd: Path | None = None) -> Path | None:
     when the dir is the fail-closed sentinel (a ``-C`` value the gate cannot
     pin down statically).
     """
-    from teatree.hooks import _commit_repo_dir  # noqa: PLC0415
+    from teatree.hooks import _commit_repo_dir  # noqa: PLC0415 — deferred: call-time import, kept lazy
 
     # A plain ``git commit`` names no dir; keep the historical ``None`` so the
     # caller's own ``cwd`` fallback governs (anchoring only changes a command
@@ -462,7 +462,7 @@ def command_body_file_base(command: str) -> Path | None:
     actually run in, so resolving the body file against it lets the gate scan the
     real body. ``None`` when the command has no leading ``cd``.
     """
-    from teatree.hooks._commit_repo_dir import leading_cd_dir  # noqa: PLC0415
+    from teatree.hooks._commit_repo_dir import leading_cd_dir  # noqa: PLC0415 — deferred: call-time import, kept lazy
 
     cd_dir = leading_cd_dir(command)
     return Path(cd_dir) if cd_dir is not None else None

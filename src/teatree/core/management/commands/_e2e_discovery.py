@@ -101,7 +101,7 @@ def _runs_backend_stack(worktree: Worktree) -> bool:
     returns ``""``). ``docker compose exec web`` and the exported
     ``COMPOSE_PROJECT_NAME`` must target *that* worktree.
     """
-    from teatree.core.overlay_loader import get_overlay  # noqa: PLC0415
+    from teatree.core.overlay_loader import get_overlay  # noqa: PLC0415 — deferred: keeps command import light
 
     try:
         return bool(get_overlay().provisioning.compose_file(worktree))

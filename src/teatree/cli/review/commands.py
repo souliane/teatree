@@ -76,7 +76,7 @@ _ALLOW_BLOAT_HELP = (
 
 def _parse_evidence(raw: str) -> "FindingEvidence | None":
     """Build a :class:`FindingEvidence` from a CLI JSON string, or ``None`` when omitted."""
-    from teatree.cli.review.evidence_gate import FindingEvidence  # noqa: PLC0415
+    from teatree.cli.review.evidence_gate import FindingEvidence  # noqa: PLC0415 — deferred: keeps CLI startup light
 
     if not raw:
         return None
@@ -137,9 +137,9 @@ def post_draft_note(  # noqa: PLR0913 — typer command: every param is a CLI fl
     — post each one inline instead. Pass ``--force-general`` to override
     for a genuinely MR-wide (verdict-only) note.
     """
-    import sys  # noqa: PLC0415
+    import sys  # noqa: PLC0415 — deferred: loaded only when this command runs
 
-    from teatree.cli.review.drafts import validate_inline_or_general  # noqa: PLC0415
+    from teatree.cli.review.drafts import validate_inline_or_general  # noqa: PLC0415 — deferred: lazy CLI import
 
     sys.stderr.write(
         "DeprecationWarning: `t3 review post-draft-note` is deprecated (#1207). "
@@ -235,7 +235,7 @@ def post_comment(  # noqa: PLR0913 — typer command: every param is a CLI flag 
     per-file finding list) is refused by default — post each one inline
     instead, or pass ``--force-general`` for a genuinely MR-wide note.
     """
-    from teatree.cli.review.body_source import PostBodyError, resolve_post_body  # noqa: PLC0415
+    from teatree.cli.review.body_source import PostBodyError, resolve_post_body  # noqa: PLC0415 — lazy CLI import
 
     try:
         resolved_note = resolve_post_body(note=note, body=body, body_file=body_file)

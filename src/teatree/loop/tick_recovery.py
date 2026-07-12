@@ -25,7 +25,7 @@ def _reap_stale_task_claims() -> None:
     access (pytest-django without a ``db`` marker), the loop tick should still
     render scanners and signals.
     """
-    from teatree.core.worktree.recovery_sweeps import run_boot_sweeps  # noqa: PLC0415
+    from teatree.core.worktree.recovery_sweeps import run_boot_sweeps  # noqa: PLC0415 — deferred: loaded at tick time
 
     with contextlib.suppress(RuntimeError):
         run_boot_sweeps()
@@ -44,7 +44,7 @@ def _persist_agent_dispatches(report: "TickReport") -> None:
     bidirectional ``ReviewerPrsScanner`` cache (updated when the review
     Task completes) prevents re-spawning at the same SHA.
     """
-    from teatree.loop.persistence import persist_agent_actions  # noqa: PLC0415
+    from teatree.loop.persistence import persist_agent_actions  # noqa: PLC0415 — deferred: loaded at tick time
 
     try:
         # Thread the report's error sink so a dropped/failed per-zone persist
@@ -63,7 +63,7 @@ def _execute_mechanical(report: "TickReport") -> None:
     reflects the post-transition state. Errors are captured in
     ``report.errors`` — they never abort the tick.
     """
-    from teatree.loop.mechanical import HANDLERS  # noqa: PLC0415
+    from teatree.loop.mechanical import HANDLERS  # noqa: PLC0415 — deferred: loaded at tick time, not import
 
     for action in report.actions:
         if action.kind != "mechanical":

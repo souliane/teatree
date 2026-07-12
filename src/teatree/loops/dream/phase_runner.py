@@ -46,7 +46,7 @@ class MemoryPhaseRunner:
         The quiet-night path (0 transcript members): no gates, just the file-side
         maintenance over the discovered ``~/.claude`` memory dirs.
         """
-        from teatree.memory_audit import discover_memory_dirs  # noqa: PLC0415
+        from teatree.memory_audit import discover_memory_dirs  # noqa: PLC0415 — deferred: loaded at tick time
 
         memory_dirs = discover_memory_dirs()
         if not memory_dirs:
@@ -72,9 +72,9 @@ class MemoryPhaseRunner:
         a lossy consolidation into a success. A gate-evaluation failure for one dir is
         reported in the summary, defaults that dir's verdict to PASS, and never crashes.
         """
-        from teatree.loops.dream import acceptance, gates  # noqa: PLC0415
-        from teatree.loops.dream.decay import ARCHIVE_DIRNAME  # noqa: PLC0415
-        from teatree.memory_audit import discover_memory_dirs  # noqa: PLC0415
+        from teatree.loops.dream import acceptance, gates  # noqa: PLC0415 — deferred: loaded at tick time, not import
+        from teatree.loops.dream.decay import ARCHIVE_DIRNAME  # noqa: PLC0415 — deferred: loaded at tick time
+        from teatree.memory_audit import discover_memory_dirs  # noqa: PLC0415 — deferred: loaded at tick time
 
         memory_dirs = discover_memory_dirs()
         if not memory_dirs:
@@ -157,8 +157,8 @@ class MemoryPhaseRunner:
         reach — the reachable on-disk RETIRE for the curated corpus, just enough to bring
         the hot index back under budget while their signatures persist in MEMORY_ARCHIVE.md.
         """
-        from teatree.loops.dream import decay  # noqa: PLC0415
-        from teatree.loops.dream.loop import decay_enabled  # noqa: PLC0415
+        from teatree.loops.dream import decay  # noqa: PLC0415 — deferred: loaded at tick time, not import
+        from teatree.loops.dream.loop import decay_enabled  # noqa: PLC0415 — deferred: loaded at tick time, not import
 
         archived_by_dir: dict[Path, tuple[ArchivedMemory, ...]] = {}
         if not decay_enabled():
@@ -202,8 +202,8 @@ class MemoryPhaseRunner:
 
     @staticmethod
     def _cross_link_dirs(memory_dirs: list[Path], *, dry_run: bool) -> int:
-        from teatree.loops.dream import cross_link  # noqa: PLC0415
-        from teatree.loops.dream.loop import cross_link_enabled  # noqa: PLC0415
+        from teatree.loops.dream import cross_link  # noqa: PLC0415 — deferred: loaded at tick time, not import
+        from teatree.loops.dream.loop import cross_link_enabled  # noqa: PLC0415 — deferred: loaded at tick time
 
         if not cross_link_enabled():
             return 0
@@ -218,8 +218,8 @@ class MemoryPhaseRunner:
         ``(summary_clause, merged_count)`` pair so the count feeds the
         ``maintenance_performed`` gate signal.
         """
-        from teatree.loops.dream import merge  # noqa: PLC0415
-        from teatree.loops.dream.loop import merge_enabled  # noqa: PLC0415
+        from teatree.loops.dream import merge  # noqa: PLC0415 — deferred: loaded at tick time, not import
+        from teatree.loops.dream.loop import merge_enabled  # noqa: PLC0415 — deferred: loaded at tick time, not import
 
         if not merge_enabled():
             return "", 0
@@ -241,7 +241,7 @@ class MemoryPhaseRunner:
         if not conflicts or dry_run:
             return ""
         try:
-            from teatree.loops.dream import promote_memory  # noqa: PLC0415
+            from teatree.loops.dream import promote_memory  # noqa: PLC0415 — deferred: loaded at tick time, not import
 
             host, repo = self._backlog_host_resolver()
             if host is None:
@@ -256,8 +256,8 @@ class MemoryPhaseRunner:
 
     @staticmethod
     def _reindex_dirs(memory_dirs: list[Path], *, dry_run: bool) -> int:
-        from teatree.loops.dream import reindex  # noqa: PLC0415
-        from teatree.loops.dream.loop import reindex_enabled  # noqa: PLC0415
+        from teatree.loops.dream import reindex  # noqa: PLC0415 — deferred: loaded at tick time, not import
+        from teatree.loops.dream.loop import reindex_enabled  # noqa: PLC0415 — deferred: loaded at tick time
 
         if not reindex_enabled():
             return 0
@@ -265,8 +265,8 @@ class MemoryPhaseRunner:
 
     @staticmethod
     def _decay_dirs(memory_dirs: list[Path], *, dry_run: bool) -> int:
-        from teatree.loops.dream import decay  # noqa: PLC0415
-        from teatree.loops.dream.loop import decay_enabled  # noqa: PLC0415
+        from teatree.loops.dream import decay  # noqa: PLC0415 — deferred: loaded at tick time, not import
+        from teatree.loops.dream.loop import decay_enabled  # noqa: PLC0415 — deferred: loaded at tick time, not import
 
         if not decay_enabled():
             return 0

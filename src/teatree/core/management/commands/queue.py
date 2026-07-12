@@ -40,8 +40,8 @@ class Command(TyperCommand):
         ] = False,
     ) -> QueueStatus:
         """Print the queue breakdown by status, and READY jobs by task name."""
-        from django_tasks.base import TaskResultStatus  # noqa: PLC0415
-        from django_tasks_db.models import DBTaskResult  # noqa: PLC0415
+        from django_tasks.base import TaskResultStatus  # noqa: PLC0415 — deferred: heavy/optional dep at call site
+        from django_tasks_db.models import DBTaskResult  # noqa: PLC0415 — deferred: heavy/optional dep at call site
 
         total = DBTaskResult.objects.count()
         by_status = {value: DBTaskResult.objects.filter(status=value).count() for value in TaskResultStatus.values}
@@ -80,13 +80,16 @@ class Command(TyperCommand):
         FAILED is reversible — the row and its args are preserved — so an
         operator can re-enqueue a wrongly-retired job.
         """
-        import datetime as dt  # noqa: PLC0415
+        import datetime as dt  # noqa: PLC0415 — deferred: loaded only when this command runs
 
-        from django.utils import timezone  # noqa: PLC0415
-        from django_tasks.base import TaskResultStatus  # noqa: PLC0415
-        from django_tasks_db.models import DBTaskResult  # noqa: PLC0415
+        from django.utils import timezone  # noqa: PLC0415 — deferred: Django import at call time
+        from django_tasks.base import TaskResultStatus  # noqa: PLC0415 — deferred: heavy/optional dep at call site
+        from django_tasks_db.models import DBTaskResult  # noqa: PLC0415 — deferred: heavy/optional dep at call site
 
-        from teatree.loop.queue_drain import expire_stale_ready_jobs, stale_threshold_hours  # noqa: PLC0415
+        from teatree.loop.queue_drain import (  # noqa: PLC0415 — deferred: keeps command import light
+            expire_stale_ready_jobs,
+            stale_threshold_hours,
+        )
 
         threshold = hours if hours > 0 else stale_threshold_hours()
         if dry_run:

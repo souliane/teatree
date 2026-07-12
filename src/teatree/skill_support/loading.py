@@ -25,7 +25,7 @@ logger = logging.getLogger(__name__)
 
 
 def _default_skills_dir() -> Path:
-    from teatree import find_project_root  # noqa: PLC0415
+    from teatree import find_project_root  # noqa: PLC0415 — deferred: call-time import, kept lazy
 
     root = find_project_root()
     if root:
@@ -134,7 +134,7 @@ class SkillLoadingPolicy:
         return resolved
 
     # ast-grep-ignore: ac-django-no-complexity-suppressions
-    def select_for_agent_launch(  # noqa: PLR0913
+    def select_for_agent_launch(  # noqa: PLR0913 — wide signature by design: each parameter is a distinct required input
         self,
         *,
         cwd: Path,
@@ -187,7 +187,7 @@ class SkillLoadingPolicy:
         )
 
     # ast-grep-ignore: ac-django-no-complexity-suppressions
-    def select_for_prompt_hook(  # noqa: PLR0913
+    def select_for_prompt_hook(  # noqa: PLR0913 — wide signature by design: each parameter is a distinct required input
         self,
         *,
         cwd: Path,
@@ -227,7 +227,7 @@ class SkillLoadingPolicy:
         )
 
     # ast-grep-ignore: ac-django-no-complexity-suppressions
-    def select_for_runtime_phase(  # noqa: PLR0913
+    def select_for_runtime_phase(  # noqa: PLR0913 — wide signature by design: each parameter is a distinct required input
         self,
         *,
         cwd: Path,
@@ -383,7 +383,7 @@ def _git_remote_urls(cwd: Path) -> list[str]:
     urls: list[str] = []
     for raw_line in raw.splitlines():
         parts = raw_line.split()
-        if len(parts) >= 2 and parts[1] not in seen:  # noqa: PLR2004
+        if len(parts) >= 2 and parts[1] not in seen:  # noqa: PLR2004 — self-documenting literal in this context
             seen.add(parts[1])
             urls.append(parts[1])
     return urls
