@@ -118,14 +118,16 @@ def loop_enabled(name: str) -> bool:
     honour a preset without a code change at each call site.
     FAIL SAFE: a genuine read error (DB unavailable, Django not configured) resolves
     to ``True`` so a hiccup never silently disables a loop — symmetric with
-    :func:`loop_held_in_db`.
+    :func:`loop_held_in_db`, and it WARNS for the same reason its sibling does: a
+    loop silently mis-deciding is a real problem, so the swallowed fail-open must be
+    observable, not whispered at ``debug``.
     """
     try:
         from teatree.core.models import Loop  # noqa: PLC0415 — deferred: ORM import needs the app registry
 
         row = Loop.objects.filter(name=name).only("enabled").first()
     except Exception:
-        logger.debug("Loop.enabled read failed for %r — failing safe to enabled", name, exc_info=True)
+        logger.warning("Loop.enabled read failed for %r — failing safe to enabled", name, exc_info=True)
         return True
     if row is None:
         return False

@@ -61,7 +61,13 @@ from teatree.core.models.local_stack_queue import LocalStackQueueItem
 from teatree.core.models.local_stack_reaper_marker import LocalStackReaperMarker
 from teatree.core.models.loop import Loop, LoopManager
 from teatree.core.models.loop_lease import LoopDriver, LoopLease
-from teatree.core.models.loop_preset import LoopPreset, LoopPresetManager, LoopPresetOverride, LoopPresetOverrideManager
+from teatree.core.models.loop_preset import (
+    PIN_MODES,
+    LoopPreset,
+    LoopPresetManager,
+    LoopPresetOverride,
+    LoopPresetOverrideManager,
+)
 from teatree.core.models.loop_schedule import LoopSchedule, LoopScheduleSlot
 from teatree.core.models.loop_state import LoopState, LoopStateManager, LoopStatus
 from teatree.core.models.mechanism_sketch import MechanismSketch, MechanismSketchError
@@ -127,6 +133,7 @@ __all__ = [
     "LIMIT_PARKED_PREFIX",
     "LIVE_POST_APPROVAL_TTL_MINUTES",
     "NEEDS_TRIAGE_LABEL",
+    "PIN_MODES",
     "AnthropicActivePick",
     "AnthropicActivePickManager",
     "AnthropicTokenUsage",

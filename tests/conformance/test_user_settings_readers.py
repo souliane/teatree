@@ -198,11 +198,57 @@ def _dict_literal_keys(tree: ast.Module) -> set[str]:
     return keys
 
 
+# Django ``ModelAdmin`` / inline option attributes whose value is a tuple/list of
+# MODEL field (or method) names — structural column references, never settings reads.
+_ADMIN_OPTION_ATTRS = frozenset(
+    {
+        "list_display",
+        "list_display_links",
+        "list_editable",
+        "list_filter",
+        "list_select_related",
+        "search_fields",
+        "readonly_fields",
+        "fields",
+        "exclude",
+        "ordering",
+        "raw_id_fields",
+        "autocomplete_fields",
+        "filter_horizontal",
+        "filter_vertical",
+        "sortable_by",
+    }
+)
+
+
+def _admin_option_strings(tree: ast.Module) -> set[str]:
+    """String elements of Django admin option tuples (``list_display = ("timezone", …)``).
+
+    A field name listed in a ``ModelAdmin``'s ``list_display`` / ``fields`` / … is a
+    MODEL column reference (e.g. ``LoopSchedule.timezone``), never a settings-object
+    read — the same coincidental class as :func:`_dict_literal_keys`, in admin-option
+    form. Excluded so a bare field-name string in an admin option never counts as a
+    settings reader.
+    """
+    strings: set[str] = set()
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Assign) or not isinstance(node.value, ast.Tuple | ast.List):
+            continue
+        if not any(isinstance(target, ast.Name) and target.id in _ADMIN_OPTION_ATTRS for target in node.targets):
+            continue
+        strings.update(
+            elt.value for elt in node.value.elts if isinstance(elt, ast.Constant) and isinstance(elt.value, str)
+        )
+    return strings
+
+
 def _file_python_readers(tree: ast.Module, field_names: set[str]) -> set[str]:
     read: set[str] = set()
     settings_vars, config_vars = _settings_vars_in(tree)
     resolves = _module_resolves_settings(tree)
-    coincidental_keys = _bespoke_dict_get_keys(tree, settings_vars) | _dict_literal_keys(tree)
+    coincidental_keys = (
+        _bespoke_dict_get_keys(tree, settings_vars) | _dict_literal_keys(tree) | _admin_option_strings(tree)
+    )
     for node in ast.walk(tree):
         if (
             isinstance(node, ast.Attribute)

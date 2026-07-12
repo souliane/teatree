@@ -16,6 +16,8 @@ import datetime as dt
 import os
 
 import django.test
+from django.db import connection
+from django.test.utils import CaptureQueriesContext
 from django.utils import timezone
 
 from teatree.core.models import Loop, LoopPreset, LoopPresetOverride, LoopState, Prompt
@@ -330,6 +332,34 @@ class TestMiniEntriesHeldFromLoopState(django.test.TestCase):
         entry = next(e for e in build_report(now=now).mini_loops if e.name == "demo-held-running")
         assert entry.held is False
         assert entry.enabled is True
+
+
+@django.test.override_settings(USE_TZ=True)
+class TestMiniEntriesHeldResolvedInConstantQueries(django.test.TestCase):
+    """LP-9: the live report bulk-resolves held-state once, not per-loop.
+
+    #2584 removed the per-loop ``loop_held_in_db`` query from the tick, but the same
+    N+1 survived in ``_mini_entries`` — a per-loop hold query inside the row
+    comprehension. The report must resolve held-state in O(1) queries (a single bulk
+    ``held_loop_names`` read, exactly as the tick does), not O(loops).
+    """
+
+    def _make_loops(self, count: int, *, prefix: str) -> None:
+        prompt, _ = Prompt.objects.get_or_create(name="demo-n1", defaults={"body": "x"})
+        Loop.objects.bulk_create(
+            Loop(name=f"{prefix}-{index}", delay_seconds=60, prompt=prompt, enabled=True) for index in range(count)
+        )
+
+    def test_query_count_is_independent_of_loop_count(self) -> None:
+        self._make_loops(2, prefix="n1-small")
+        with CaptureQueriesContext(connection) as small:
+            build_report()
+        self._make_loops(8, prefix="n1-large")
+        with CaptureQueriesContext(connection) as large:
+            build_report()
+        # Eight extra loops must add ZERO queries — held-state is one bulk read, not
+        # one query per loop (before the fix, large carried 8 extra hold queries).
+        assert len(large.captured_queries) == len(small.captured_queries)
 
 
 @django.test.override_settings(USE_TZ=True, TIME_ZONE="UTC")

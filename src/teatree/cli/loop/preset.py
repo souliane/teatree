@@ -50,13 +50,13 @@ def register(loop_app: typer.Typer) -> None:
     def use_command(
         name: Annotated[str, typer.Argument()],
         *,
-        for_: Annotated[str, typer.Option("--for", help="TTL like 2h/30m/1d.")] = "",
-        until: Annotated[str, typer.Option("--until", help="Explicit ISO-8601 expiry.")] = "",
+        expiry: Annotated[str, typer.Option("--for", "--until", help="TTL (2h/30m/1d) or ISO-8601 instant.")] = "",
         hold: Annotated[bool, typer.Option("--hold", help="Sticky until cleared.")] = False,
+        reason: Annotated[str, typer.Option("--reason", help="Audit note on the active-preset WHY line.")] = "",
         json_output: Annotated[bool, typer.Option("--json")] = False,
     ) -> None:
         """Activate a preset as the manual override (default: until the next scheduled boundary)."""
-        _delegate(*_use_args(name, for_=for_, until=until, hold=hold), json_output=json_output)
+        _delegate(*_use_args(name, expiry=expiry, hold=hold, reason=reason), json_output=json_output)
 
     @preset_app.command("auto")
     def auto_command(*, json_output: Annotated[bool, typer.Option("--json")] = False) -> None:
@@ -99,14 +99,14 @@ def register(loop_app: typer.Typer) -> None:
     loop_app.add_typer(preset_app, name="preset")
 
 
-def _use_args(name: str, *, for_: str, until: str, hold: bool) -> list[str]:
+def _use_args(name: str, *, expiry: str, hold: bool, reason: str) -> list[str]:
     args = ["use", name]
-    if for_:
-        args += ["--for", for_]
-    if until:
-        args += ["--until", until]
+    if expiry:
+        args += ["--for", expiry]
     if hold:
         args += ["--hold"]
+    if reason:
+        args += ["--reason", reason]
     return args
 
 
