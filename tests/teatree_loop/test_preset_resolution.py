@@ -140,6 +140,66 @@ class TestScheduleSlots(django.test.TestCase):
 
 
 @django.test.override_settings(USE_TZ=True, TIME_ZONE="UTC")
+class TestScheduleSlotsAcrossDstBoundaries(django.test.TestCase):
+    """L2 slot resolution honours the fold=0 semantics of ``datetime.combine(..., tzinfo=tz)``.
+
+    Slot starts materialise via ``datetime.combine(day, start_time, tzinfo=zone)``,
+    which uses ``fold=0`` — the deterministic DST behaviour #3159 (build item 4, §6
+    "Deterministic, documented, testable") promised tests for but never wrote. A
+    Europe/Zurich spring-forward gap slot (02:30, which never occurs on 2026-03-29)
+    resolves at the pre-transition offset UTC+1 = 01:30 UTC, and a fall-back
+    ambiguous slot (02:30, which occurs twice on 2026-10-25) governs from its FIRST
+    occurrence UTC+2 = 00:30 UTC. Each test drives the resolver across the boundary;
+    the mid-transition query is the discriminating one (fold=1 would flip it).
+    """
+
+    def _schedule_with_slots(self, tz_name: str) -> None:
+        _preset("early", {"review": True})
+        _preset("late", {"review": False})
+        schedule = LoopSchedule.objects.create(name="dst", timezone=tz_name)
+        # Both slots fire on Sunday only (weekday 6) — the DST-transition day.
+        LoopScheduleSlot.objects.create(schedule=schedule, days=[6], start_time=dt.time(1, 0), preset_name="early")
+        LoopScheduleSlot.objects.create(schedule=schedule, days=[6], start_time=dt.time(2, 30), preset_name="late")
+        _activate_schedule("dst")
+
+    def test_spring_forward_gap_slot_uses_pre_transition_offset(self) -> None:
+        self._schedule_with_slots("Europe/Zurich")
+        # 01:00 local (00:00 UTC) → "early"; the 02:30 gap slot materialises at
+        # 01:30 UTC (fold=0, UTC+1). At 01:00 UTC the gap slot has NOT begun yet, so
+        # "early" still governs — under fold=1 (00:30 UTC) "late" would already win.
+        before_gap = dt.datetime(2026, 3, 29, 0, 30, tzinfo=dt.UTC)
+        discriminating = dt.datetime(2026, 3, 29, 1, 0, tzinfo=dt.UTC)
+        after_gap = dt.datetime(2026, 3, 29, 2, 0, tzinfo=dt.UTC)
+        assert resolve_preset_state("review", now=before_gap) is True
+        assert resolve_preset_state("review", now=discriminating) is True
+        assert resolve_preset_state("review", now=after_gap) is False
+        # The next boundary from just before the gap is the fold=0 instant, 01:30 UTC.
+        # (Compare instants via astimezone: PEP 495 makes a gap-time aware datetime
+        # compare unequal to its own UTC instant across zones, though it ORDERS by it.)
+        boundary = next_boundary(now=dt.datetime(2026, 3, 29, 0, 15, tzinfo=dt.UTC))
+        assert boundary is not None
+        assert boundary.astimezone(dt.UTC) == dt.datetime(2026, 3, 29, 1, 30, tzinfo=dt.UTC)
+
+    def test_fall_back_slot_governs_from_the_first_occurrence(self) -> None:
+        self._schedule_with_slots("Europe/Zurich")
+        # 01:00 local (2026-10-24 23:00 UTC) → "early"; the ambiguous 02:30 slot
+        # governs from its FIRST occurrence, 00:30 UTC (fold=0, UTC+2). At 01:00 UTC
+        # "late" already governs — under fold=1 (second occurrence, 01:30 UTC) it
+        # would not yet.
+        before_fold = dt.datetime(2026, 10, 25, 0, 0, tzinfo=dt.UTC)
+        discriminating = dt.datetime(2026, 10, 25, 1, 0, tzinfo=dt.UTC)
+        after_fold = dt.datetime(2026, 10, 25, 2, 0, tzinfo=dt.UTC)
+        assert resolve_preset_state("review", now=before_fold) is True
+        assert resolve_preset_state("review", now=discriminating) is False
+        assert resolve_preset_state("review", now=after_fold) is False
+        # The next boundary from just after midnight UTC is the fold=0 first
+        # occurrence, 00:30 UTC (instant compared via astimezone, per above).
+        boundary = next_boundary(now=before_fold)
+        assert boundary is not None
+        assert boundary.astimezone(dt.UTC) == dt.datetime(2026, 10, 25, 0, 30, tzinfo=dt.UTC)
+
+
+@django.test.override_settings(USE_TZ=True, TIME_ZONE="UTC")
 class TestScheduleTimezone(django.test.TestCase):
     """Slot starts are local wall-clock in the schedule's own zoneinfo, not project UTC."""
 
