@@ -1618,7 +1618,14 @@ class TestBannedTermPublishFormsMustBlock:
     def _isolated_cache(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv("T3_DATA_DIR", str(tmp_path / "data"))
 
-    def test_git_commit_inline_m_banned_term_blocks(self, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    def test_git_commit_inline_m_readable_term_downgrades(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        # #1415 Case A: a readable-body ``git commit -m`` in a public repo DOWNGRADES
+        # to warn, matching the unreadable-body commit path. A commit is LOCAL; the
+        # #703 pre-push gate re-scans commit messages before a public push. The
+        # must-BLOCK anti-vacuity in this class is the ``gh``/``glab`` POST forms
+        # below (a real public surface with no push gate behind it).
         repo = _public_repo(tmp_path)
         data = {
             "tool_name": "Bash",
@@ -1626,12 +1633,14 @@ class TestBannedTermPublishFormsMustBlock:
             "cwd": str(repo),
         }
         blocked = handle_banned_terms_pretool(data)
-        assert blocked is True
-        assert json.loads(capsys.readouterr().out)["permissionDecision"] == "deny"
+        assert blocked is False  # downgraded to warn, not denied
+        assert capsys.readouterr().out == ""  # no deny JSON on stdout
 
-    def test_git_commit_file_absolute_path_banned_term_blocks(
+    def test_git_commit_file_absolute_path_readable_term_downgrades(
         self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
     ) -> None:
+        # #1415 Case A: a readable ``git commit -F`` body file in a public repo
+        # DOWNGRADES to warn — LOCAL commit, #703 backstop on push.
         repo = _public_repo(tmp_path)
         body_file = tmp_path / "commit_msg.txt"
         body_file.write_text("feat: ship acmecorp feature\n", encoding="utf-8")
@@ -1641,8 +1650,8 @@ class TestBannedTermPublishFormsMustBlock:
             "cwd": str(repo),
         }
         blocked = handle_banned_terms_pretool(data)
-        assert blocked is True
-        assert json.loads(capsys.readouterr().out)["permissionDecision"] == "deny"
+        assert blocked is False  # downgraded to warn, not denied
+        assert capsys.readouterr().out == ""  # no deny JSON on stdout
 
     def test_gh_pr_create_inline_body_banned_term_blocks(self, capsys: pytest.CaptureFixture[str]) -> None:
         blocked = handle_banned_terms_pretool(
@@ -2089,14 +2098,15 @@ class TestPrivateRepoCarveOut:
         assert blocked is False  # downgraded to warn, not denied
         assert capsys.readouterr().out == ""  # no deny JSON on stdout
 
-    def test_public_repo_commit_bodyfile_relative_path_still_blocks(
+    def test_public_repo_commit_bodyfile_relative_path_downgrades(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
     ) -> None:
-        # Regression guard symmetric to the fix: the same ``-F <relpath>`` shape
-        # whose body the gate now resolves from the commit's repo dir must STILL
-        # hard-block when that repo is PUBLIC. The resolution fix must not weaken
-        # the real protection -- a banned term in a body file committed to a
-        # public repo is a leak.
+        # #1415 Case A: the same readable ``-F <relpath>`` shape resolved from the
+        # commit's repo dir now DOWNGRADES to warn even when that repo is PUBLIC,
+        # matching the unreadable-body twin below. A commit is LOCAL; the #703
+        # pre-push gate re-scans commit messages before a public push. The real
+        # public-surface anti-vacuity is the ``gh``/``glab`` POST path (no push gate
+        # behind it) and the chained-public-post commit guard.
         repo = tmp_path / "pub"
         repo.mkdir()
         _git(repo, "init", "-b", "main")
@@ -2110,8 +2120,8 @@ class TestPrivateRepoCarveOut:
             "cwd": str(tmp_path),
         }
         blocked = handle_banned_terms_pretool(data)
-        assert blocked is True
-        assert json.loads(capsys.readouterr().out)["permissionDecision"] == "deny"
+        assert blocked is False  # downgraded to warn, not denied
+        assert capsys.readouterr().out == ""  # no deny JSON on stdout
 
     def test_commit_bodyfile_genuinely_missing_on_private_repo_downgrades(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
@@ -2146,9 +2156,12 @@ class TestPrivateRepoCarveOut:
         # commit message in the push range for banned terms before they reach a
         # public remote. The commit-time hard-block on an unreadable body to a
         # public repo was a pure over-block that stuck multiple coders mid-commit;
-        # the real public-surface protection is the paired READABLE-term guard
-        # (``...public_commit_with_banned_term_still_blocks``) and the public
-        # ``gh``/``glab`` post path, both of which still hard-block.
+        # the real public-surface protection is the #703 pre-push gate (which
+        # re-scans commit messages before a public push) and the public
+        # ``gh``/``glab`` post path (no push gate behind it), both of which
+        # still hard-block. Since #1415 Case A the readable-term commit path
+        # downgrades too, so both the readable and unreadable body paths for a
+        # LOCAL commit are consistent.
         repo = tmp_path / "pub"
         repo.mkdir()
         _git(repo, "init", "-b", "main")
@@ -2188,15 +2201,18 @@ class TestPrivateRepoCarveOut:
         assert blocked is False  # downgraded to warn, not denied
         assert capsys.readouterr().out == ""
 
-    def test_public_repo_commit_with_banned_term_still_blocks(
+    def test_public_repo_commit_with_readable_term_downgrades(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
     ) -> None:
+        # #1415 Case A: a readable ``git commit -m`` term in an unknown-visibility
+        # public clone DOWNGRADES to warn — LOCAL commit, #703 backstop on push.
         repo = tmp_path / "pub"
         repo.mkdir()
         _git(repo, "init", "-b", "main")
         _git(repo, "remote", "add", "origin", "https://github.com/some/public.git")
-        # No allowlist hit; the visibility probe finds nothing → unknown →
-        # NOT private → hard-block stands.
+        # No allowlist hit; the visibility probe finds nothing → unknown. The commit
+        # is LOCAL, so it downgrades regardless of visibility (the #703 pre-push gate
+        # is the public-surface chokepoint).
         monkeypatch.setattr(_repo_visibility, "probe_visibility", lambda _slug: None)
         data = {
             "tool_name": "Bash",
@@ -2204,8 +2220,8 @@ class TestPrivateRepoCarveOut:
             "cwd": str(repo),
         }
         blocked = handle_banned_terms_pretool(data)
-        assert blocked is True
-        assert json.loads(capsys.readouterr().out)["permissionDecision"] == "deny"
+        assert blocked is False  # downgraded to warn, not denied
+        assert capsys.readouterr().out == ""  # no deny JSON on stdout
 
     def test_private_repo_posting_command_with_cwd_target_allowed(
         self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
@@ -2350,12 +2366,14 @@ class TestGitCommitSegmentBehindNonCdPrefix:
         assert blocked is False  # downgraded to warn, not denied
         assert capsys.readouterr().out == ""  # no deny JSON on stdout
 
-    def test_heredoc_bodyfile_public_commit_with_banned_term_still_blocks(
+    def test_heredoc_bodyfile_public_commit_with_readable_term_downgrades(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
     ) -> None:
-        # ANTI-VACUITY guard: the SAME heredoc-bodyfile shape landing in a PUBLIC
-        # repo must STILL hard-block. Recognising the commit segment behind the
-        # heredoc prefix must not weaken the public-surface protection.
+        # #1415 Case A: the SAME heredoc-bodyfile shape landing in a PUBLIC repo now
+        # DOWNGRADES to warn. Recognising the commit segment behind the heredoc
+        # prefix routes it to the LOCAL-commit downgrade; the #703 pre-push gate
+        # re-scans commit messages before a public push. The chained-PUBLIC-post
+        # guard (below) keeps a commit chained to a real public post hard-blocked.
         repo = _public_repo(tmp_path)
         body = repo / "COMMIT_MSG.txt"
         monkeypatch.setattr(_repo_visibility, "probe_visibility", lambda _slug: None)
@@ -2363,8 +2381,8 @@ class TestGitCommitSegmentBehindNonCdPrefix:
         cmd = f"cat > {body} <<'EOF'\nship to acmecorp\nEOF\ngit -C {repo} commit -F {body}"
         data = {"tool_name": "Bash", "tool_input": {"command": cmd}, "cwd": str(tmp_path)}
         blocked = handle_banned_terms_pretool(data)
-        assert blocked is True
-        assert json.loads(capsys.readouterr().out)["permissionDecision"] == "deny"
+        assert blocked is False  # downgraded to warn, not denied
+        assert capsys.readouterr().out == ""  # no deny JSON on stdout
 
     def test_prefix_segment_private_commit_unreadable_body_downgrades(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
@@ -2392,7 +2410,7 @@ class TestGitCommitSegmentBehindNonCdPrefix:
         # re-scans commit messages before a public push -- so the commit-time gate
         # must not hard-block an ordinary commit merely because its body is
         # unreadable at scan time. The anti-vacuity guard is the chained-PUBLIC-post
-        # case (still blocks, below) and the readable-term case.
+        # case (still blocks, below) and the #703 pre-push backstop.
         repo = _public_repo(tmp_path)
         monkeypatch.setattr(_repo_visibility, "probe_visibility", lambda _slug: "PUBLIC")
         monkeypatch.chdir(tmp_path)
@@ -2586,7 +2604,7 @@ class TestNormalCommitWithDollarParenMessage:
         # LOCAL and the pre-push gate (#703) is the real public-leak chokepoint, so
         # an ordinary commit whose message merely mentions a ``$(...)`` snippet must
         # not hard-block. The commit-scoped anti-vacuity guard is the gh/glab POST
-        # below (still blocks); the readable-term commit guards block too.
+        # below (still blocks) and the #703 pre-push backstop.
         repo = _public_repo(tmp_path)
         monkeypatch.setattr(_repo_visibility, "probe_visibility", lambda _slug: "PUBLIC")
         data = {
@@ -2627,13 +2645,15 @@ class TestNormalCommitWithDollarParenMessage:
         assert blocked is True
         assert json.loads(capsys.readouterr().out)["permissionDecision"] == "deny"
 
-    def test_unknown_repo_commit_with_real_banned_term_still_blocks(
+    def test_unknown_repo_commit_with_readable_term_downgrades(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
     ) -> None:
-        # ANTI-VACUITY guard: the downgrade is for UNREADABLE bodies only. A
-        # SCANNABLE real banned term in an unknown-visibility commit still
-        # hard-blocks -- the gate can see the leak and the commit may be pushed
-        # public, so the real-term path is untouched by this fix.
+        # #1415 Case A: a SCANNABLE real banned term in an unknown-visibility commit
+        # DOWNGRADES to warn — the readable-body path now matches the unreadable-body
+        # path. A commit is LOCAL, and the #703 pre-push gate re-scans commit
+        # messages before they reach a public remote. The real-term path stays
+        # hard-blocked for a chained PUBLIC post (below) and for a pure ``gh``/``glab``
+        # public post (no push gate behind it).
         repo = _unknown_repo(tmp_path)
         monkeypatch.setattr(_repo_visibility, "probe_visibility", lambda _slug: None)
         data = {
@@ -2642,8 +2662,8 @@ class TestNormalCommitWithDollarParenMessage:
             "cwd": str(repo),
         }
         blocked = handle_banned_terms_pretool(data)
-        assert blocked is True
-        assert json.loads(capsys.readouterr().out)["permissionDecision"] == "deny"
+        assert blocked is False  # downgraded to warn, not denied
+        assert capsys.readouterr().out == ""  # no deny JSON on stdout
 
 
 class TestGitCommitStdinBodyResolution:
@@ -2673,17 +2693,20 @@ class TestGitCommitStdinBodyResolution:
         assert self._run(cmd, repo) is False
         assert capsys.readouterr().out == ""  # clean: no deny JSON
 
-    def test_heredoc_stdin_banned_term_to_public_still_blocks(
+    def test_heredoc_stdin_readable_term_to_public_downgrades(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
     ) -> None:
-        # ANTI-VACUITY: a REAL banned term in the SAME readable heredoc body still
-        # hard-blocks -- resolution feeds the real body to the scanner, so the leak
-        # is caught. The fix removes the false-block, never the true-block.
+        # #1415 Case A: a REAL banned term in a readable ``git commit -F -`` heredoc
+        # body to a PUBLIC repo DOWNGRADES to warn — the resolved body IS scanned and
+        # the term reported, but a commit is LOCAL and the #703 pre-push gate re-scans
+        # the message before a public push. Anti-vacuity for the scanning itself is
+        # the clean-body pass above (no warn) vs. this term-bearing body (warn); the
+        # real public surface stays hard-blocked on the ``gh``/``glab`` POST path.
         repo = _public_repo(tmp_path)
         monkeypatch.setattr(_repo_visibility, "probe_visibility", lambda _slug: "PUBLIC")
         cmd = "git commit -F - <<'EOF'\nfix: ship to acmecorp this sprint\nEOF"
-        assert self._run(cmd, repo) is True
-        assert json.loads(capsys.readouterr().out)["permissionDecision"] == "deny"
+        assert self._run(cmd, repo) is False  # downgraded to warn, not denied
+        assert capsys.readouterr().out == ""  # no deny JSON on stdout
 
     def test_piped_printf_clean_commit_to_public_passes(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]

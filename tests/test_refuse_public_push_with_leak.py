@@ -374,6 +374,46 @@ class TestRefusePublicPushWithLeak:
 
         assert result.returncode == 0, result.stdout + result.stderr
 
+    def test_blocks_public_push_when_commit_message_carries_banned_term(self, tmp_path: Path) -> None:
+        """A banned term in a commit MESSAGE is caught before it reaches a public remote (#703/#1415).
+
+        This is the backstop the commit-time downgrade relies on: the
+        commit-time gate now downgrades a banned term on a LOCAL commit to a
+        warn (Case A), so the pre-push gate MUST re-scan the commit MESSAGE
+        (not only the diff) for banned terms on a push to a public remote.
+        The file diff is clean — the term lives only in the message body — so
+        this proves the message-scan dimension, not the diff scan.
+        """
+        work, env = _clone_with_remote(tmp_path, "PUBLIC")
+        env["T3_BANNED_TERMS"] = "democorp"
+        (work / "feature.txt").write_text("a perfectly clean feature line\n", encoding="utf-8")
+        _git(work, "add", "feature.txt")
+        _git(work, "commit", "-m", "feat: onboard democorp customer")
+
+        result = _run_hook(work, env, _push_stdin(work))
+
+        assert result.returncode == 1, result.stdout + result.stderr
+        combined = (result.stdout + result.stderr).lower()
+        assert "banned_term" in combined
+        assert "privacy" in combined
+
+    def test_allows_public_push_with_clean_message_under_banned_terms_config(self, tmp_path: Path) -> None:
+        """Anti-vacuity for the message-banned-term block.
+
+        Same public remote and the SAME ``T3_BANNED_TERMS`` config, but a clean
+        message with no configured term still passes — proving the block above
+        measures the term, not the mere presence of the banned-terms config.
+        """
+        work, env = _clone_with_remote(tmp_path, "PUBLIC")
+        env["T3_BANNED_TERMS"] = "democorp"
+        (work / "feature.txt").write_text("a perfectly clean feature line\n", encoding="utf-8")
+        _git(work, "add", "feature.txt")
+        _git(work, "commit", "-m", "feat: onboard the new customer pipeline")
+
+        result = _run_hook(work, env, _push_stdin(work))
+
+        assert result.returncode == 0, result.stdout + result.stderr
+
     def test_hook_is_executable(self) -> None:
         assert os.access(HOOK, os.X_OK), f"{HOOK} must be chmod +x"
 
