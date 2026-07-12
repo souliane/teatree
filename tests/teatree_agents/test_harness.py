@@ -48,6 +48,7 @@ from teatree.agents.pydantic_ai_config import (
     PydanticAiModelConfig,
     build_orca_provider,
 )
+from teatree.agents.pydantic_ai_resume import persist_parked_thread
 from teatree.config import get_effective_settings
 from teatree.core.models import ConfigSetting, Session, Task, TaskAttempt, Ticket
 from teatree.llm.credentials import CredentialError, OrcaRouterProviderConfig
@@ -324,6 +325,35 @@ class TestRunHeadlessDrivesPydanticAiHarness(TestCase):
         assert attempt.exit_code == 1
         assert "ORCA_ROUTER" in attempt.error
         assert resumed_task.status == Task.Status.FAILED
+        self.ticket.refresh_from_db()
+        assert str(parked.pk) in self.ticket.extra.get("pydantic_ai_threads", {})
+
+    def test_non_credential_open_failure_on_resume_preserves_the_parked_thread(self) -> None:
+        # AH-3 / #2916: `resolve_harness` pops the parked ancestor's thread when it
+        # BUILDS the harness, before `open()` runs. If `open()` fails with anything
+        # OTHER than CredentialError (a provider/transport/policy error), the popped
+        # thread must STILL be restored — the run never opened, so it never consumed
+        # it. Before the fix only CredentialError restored, so a plain failure lost
+        # the conversation for good.
+        agent = Agent(TestModel(custom_output_text="hi"))
+        history = asyncio.run(agent.run("hello")).all_messages()
+        parked = Task.objects.create(ticket=self.ticket, session=self.session)
+        persist_parked_thread(parked, history)
+        resumed_task = Task.objects.create(ticket=self.ticket, session=self.session, phase="coding", parent_task=parked)
+
+        def _boom(_self: PydanticAiHarness, _options: object) -> object:
+            msg = "orca router transport unavailable"
+            raise RuntimeError(msg)
+
+        with (
+            patch.object(harness_mod.PydanticAiHarness, "_resolve_model", _boom),
+            patch.object(headless_mod.TaskUsage, "for_task", classmethod(lambda cls, task: TaskUsage(0, 0.0))),
+            pytest.raises(RuntimeError, match="orca router transport unavailable"),
+        ):
+            run_headless(resumed_task, phase="coding", overlay_skill_metadata={})
+
+        # The non-CredentialError failure still propagates (the caller records it), but
+        # the parked ancestor thread was restored, so the resume is recoverable.
         self.ticket.refresh_from_db()
         assert str(parked.pk) in self.ticket.extra.get("pydantic_ai_threads", {})
 
