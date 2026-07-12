@@ -34,7 +34,7 @@ from django.utils import timezone
 from teatree.agents._headless_env import _overlay_scope, _provider_child_env
 from teatree.agents._headless_options import _build_options
 from teatree.agents.harness import Harness, HarnessSession, pydantic_ai_thread, resolve_harness
-from teatree.agents.harness_registry import UnknownHarnessError
+from teatree.agents.harness_registry import InvalidHarnessProviderError, UnknownHarnessError
 from teatree.agents.headless_budget import TicketBudget
 from teatree.agents.headless_usage import _attempt_usage
 from teatree.agents.pydantic_ai_resume import maybe_persist_on_park
@@ -309,7 +309,10 @@ def _resolve_backend_or_failure(task: Task, *, phase: str = "") -> Harness | Tas
     never fails here — both the ``claude_sdk`` and ``pydantic_ai`` backends
     ([#2885](https://github.com/souliane/teatree/issues/2885)) are shipped;
     ``NotImplementedError`` is still caught below as a forward-compatible guard
-    for a FUTURE reserved backend value.
+    for a FUTURE reserved backend value. An :class:`InvalidHarnessProviderError`
+    (#3157 AH-6 — the configured ``agent_harness_provider`` is not valid under the
+    configured ``agent_harness``) is a misconfiguration that surfaces as a recorded
+    dispatch failure here, never an uncaught crash.
 
     *phase* opts a ``pydantic_ai`` dispatch into the Lane-B tool layer (PR-03,
     souliane/teatree#2512): the resolved harness wires the phase-scoped, gated
@@ -317,7 +320,7 @@ def _resolve_backend_or_failure(task: Task, *, phase: str = "") -> Harness | Tas
     """
     try:
         return resolve_harness(task, phase=phase or None)
-    except (NotImplementedError, UnknownHarnessError) as exc:
+    except (NotImplementedError, UnknownHarnessError, InvalidHarnessProviderError) as exc:
         return _record_failure(task, error=str(exc))
 
 

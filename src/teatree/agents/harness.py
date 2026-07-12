@@ -40,6 +40,7 @@ from pydantic_ai.models.openai import OpenAIChatModel, OpenAIChatModelSettings, 
 from teatree.agents.harness_registry import (
     HarnessBuildContext,
     HarnessCapabilities,
+    assert_provider_valid_for_harness,
     register_harness,
     resolve_harness_spec,
 )
@@ -395,8 +396,18 @@ def resolve_harness(task: "Task | None" = None, *, phase: str | None = None) -> 
     #2) — so when a MAKER phase rides a cheap model on ``pydantic_ai``, the checker stays on
     the trusted Claude lane. A verification phase therefore never rehydrates a pydantic_ai
     resume thread (its factory is the claude_sdk one).
+
+    Before building, the CONFIGURED ``(agent_harness, agent_harness_provider)`` pair is
+    validated against the resolved backend's registry-declared ``valid_providers`` (#3157
+    AH-6) — a live consumer that also enforces an overlay-registered backend's own provider
+    constraint, which the closed-enum ``AgentHarnessProvider.valid_for`` cannot. It validates
+    the CONFIG harness (never the phase-pinned one), so a verification-phase pin never turns a
+    provider valid for the configured harness into a spurious failure; an unpinned provider
+    always passes.
     """
     settings = get_effective_settings()
+    provider = settings.agent_harness_provider
+    assert_provider_valid_for_harness(settings.agent_harness, provider.value if provider is not None else None)
     harness_name = resolve_phase_harness(settings.agent_harness, phase)
     spec = resolve_harness_spec(harness_name)
     return spec.factory(HarnessBuildContext(task=task, phase=phase, settings=settings))
