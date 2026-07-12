@@ -1026,7 +1026,7 @@ A repo's treatment is decided on three INDEPENDENT axes. Conflating them is the 
 - **A path-only TOML overlay cannot carry its own scope.** An overlay registered with a `path` but no Python `class` is skipped by overlay discovery (`get_all_overlays` returns only instantiable overlays), so it can never opt itself into the gate. Its repos must be declared under an INSTANTIABLE overlay's `owned_repos` (e.g. the always-registered `t3-teatree`).
 - **Never-lockout** regardless: a per-call `[scope-push-ok: <reason>]` token, the `unknown_repo_push_gate_enabled` kill-switch, and fail-open on a resolver exception (incl. a failed Django bootstrap in the hook subprocess) all keep the gate from wedging a push.
 
-Pinned by `tests/teatree_core/test_repo_scope.py` (host-symmetric gate), `tests/teatree_core/gates/test_owned_repo_guard.py` (polarity + orthogonality), `tests/teatree_core/test_review_candidate.py` § `TestClassificationIsAuthorNotNamespace` (author-not-namespace), and the A/B eval `evals/scenarios/owned_repo_not_colleague.yaml`.
+Pinned by `tests/teatree_core/intake/test_repo_scope.py` (host-symmetric gate), `tests/teatree_core/gates/test_owned_repo_guard.py` (polarity + orthogonality), `tests/teatree_core/review/test_review_candidate.py` § `TestClassificationIsAuthorNotNamespace` (author-not-namespace), and the A/B eval `evals/scenarios/owned_repo_not_colleague.yaml`.
 
 ## Run Retro Before Ending Non-Trivial Sessions
 
