@@ -46,6 +46,7 @@ EXPECTED_SURFACE: frozenset[str] = frozenset(
         "Harness",
         "HarnessBuildContext",
         "HarnessCapabilities",
+        "HarnessOptions",
         "HarnessSession",
         "HarnessSpec",
         "HealthCheck",
@@ -190,6 +191,49 @@ def _signatures(cls: type) -> dict[str, str]:
     }
 
 
+# The headless-FACTORY dependency seam a factory overlay dispatches through: the pluggable
+# agent runtime, the model/option binding, the capability flags, and the dispatch/cost/context
+# surface. AH-9's honest claim is scoped to the overlay-AUTHORING CONTRACT (this + the extension
+# points), NOT to every internal an overlay's provisioning couples to — so the guarantee we DO
+# make is that this factory seam is FULLY spanned by the surface. This locks that.
+FACTORY_SEAM: frozenset[str] = frozenset(
+    {
+        "Harness",
+        "HarnessSession",
+        "HarnessBuildContext",
+        "HarnessCapabilities",
+        "HarnessSpec",
+        "HarnessOptions",
+        "UnknownHarnessError",
+        "register_harness",
+        "registered_harness_names",
+        "resolve_harness_spec",
+        "run_headless",
+        "LoopWatchdog",
+        "TicketBudget",
+        "ContextPlan",
+        "ContextSegment",
+        "SegmentStability",
+        "CacheBreakpoint",
+        "cache_control_plan",
+        "assert_byte_stable_head",
+        "find_unstable_tokens",
+        "UnstableCacheHeadError",
+        "LaneBToolConfig",
+        "build_lane_b_toolsets",
+        "CompactionPolicy",
+        "AttemptUsage",
+        "CostReport",
+        "CostBreakdown",
+        "headless_cost_breakdown",
+        "parse_result_envelope",
+        "record_result_envelope",
+        "validate_result_keys",
+        "ResultEnvelopeError",
+    }
+)
+
+
 def test_surface_is_frozen():
     assert set(overlay_sdk.__all__) == EXPECTED_SURFACE
 
@@ -197,6 +241,20 @@ def test_surface_is_frozen():
 def test_every_exported_name_is_importable():
     missing = [name for name in overlay_sdk.__all__ if not hasattr(overlay_sdk, name)]
     assert missing == [], f"overlay_sdk.__all__ names that do not resolve: {missing}"
+
+
+def test_factory_dependency_seam_is_fully_spanned_by_the_surface():
+    """AH-9: the factory-overlay dependency seam is entirely importable from overlay_sdk.
+
+    The honest, corrected claim is that overlay_sdk spans the overlay-AUTHORING CONTRACT + the
+    headless-factory seam — not every teatree internal an overlay's provisioning couples to. This
+    proves the guarantee we DO make: a factory overlay dispatches through this whole seam via the
+    single surface, importing each symbol without reaching into ``teatree.agents.*`` internals.
+    """
+    unspanned = sorted(name for name in FACTORY_SEAM if name not in set(overlay_sdk.__all__))
+    assert unspanned == [], f"factory-seam symbols missing from the overlay_sdk surface: {unspanned}"
+    unresolved = sorted(name for name in FACTORY_SEAM if not hasattr(overlay_sdk, name))
+    assert unresolved == [], f"factory-seam symbols not importable from overlay_sdk: {unresolved}"
 
 
 def test_base_signatures_are_frozen():
