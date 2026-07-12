@@ -563,7 +563,10 @@ jobs:
   # previously-unrecorded `tests/quality` + doctest items). This job unions them
   # back into one complete file and, ONLY when the drift gate fires (test set
   # changed, or aggregate per-test time moved past the threshold — never on pure
-  # jitter), opens/updates a single dated refresh PR a human reviews and merges.
+  # jitter), opens/updates ONE single refresh PR a human reviews and merges.
+  # The refresh branch name is STABLE (`ci/test-durations-refresh`) and force-
+  # updated, so an unmerged refresh is UPDATED in place instead of stacking a new
+  # dated PR every day (which piled up conflicting PRs — #3160 residual CI-3).
   # Never gates a PR; a merge failure or empty diff is a no-op.
   refresh-durations:
     needs: test-shard
@@ -576,6 +579,13 @@ jobs:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
         with:
           fetch-depth: 0
+          # CI-2: persist the PAT (not the default GITHUB_TOKEN) as the git credential
+          # so the `git push` to the refresh branch is attributed to a real identity and
+          # TRIGGERS the required `test (3.13)` check. A push authenticated with
+          # GITHUB_TOKEN never fires downstream workflows (GitHub's recursion guard), so
+          # the refresh PR would sit forever without its required check and could never
+          # merge. The token guard in the PR step below fails loud if it is unset.
+          token: ${{ secrets.TEATREE_GH_TOKEN }}
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8.0.1
         with:
           pattern: durations-shard-*
@@ -598,14 +608,27 @@ jobs:
       - name: Open or update the durations-refresh PR
         if: steps.merge.outputs.refresh == 'true' && !cancelled()
         env:
-          GH_TOKEN: ${{ github.token }}
+          # CI-2: a PAT (TEATREE_GH_TOKEN), NOT the default GITHUB_TOKEN. A PR opened /
+          # a branch pushed with GITHUB_TOKEN never triggers the required `test (3.13)`
+          # check (GitHub suppresses workflow-triggered workflows), so such a refresh PR
+          # can never merge unaided. `gh pr create`/`gh pr view` read GH_TOKEN; the
+          # checkout above persists the same token for the `git push`.
+          GH_TOKEN: ${{ secrets.TEATREE_GH_TOKEN }}
         run: |
           set -euo pipefail
+          # Fail LOUD, never silently open an un-mergeable PR: without a CI-triggering
+          # token the required check never fires and the refresh stalls forever.
+          if [ -z "${GH_TOKEN:-}" ]; then
+            echo "::error::TEATREE_GH_TOKEN is unset. The durations-refresh PR must be opened with a PAT that triggers the required 'test (3.13)' check — the default GITHUB_TOKEN does not, so the PR could never merge. Set the TEATREE_GH_TOKEN secret." >&2
+            exit 1
+          fi
           if git diff --quiet dev/.test_durations; then
             echo "No net change to dev/.test_durations — nothing to open."
             exit 0
           fi
-          BRANCH="chore/refresh-test-durations-$(date +%Y-%m-%d)"
+          # STABLE branch (CI-3): reused + force-updated so there is at most ONE open
+          # refresh PR, updated in place — never a new dated branch/PR each unmerged day.
+          BRANCH="ci/test-durations-refresh"
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git checkout -B "$BRANCH"
@@ -743,34 +766,31 @@ jobs:
           (run_heavy_python=false). Emitting a passing 'test (${{ matrix.python-version }})'
           so the required status context is satisfied without re-running the suite."
 
-  # GATE (heavy lane): order-dependence audit. Runs the order-fragile loop test
-  # subset under a SHUFFLED collection order (pytest-randomly) so a test that
+  # GATE (heavy lane): order-dependence audit. Runs a curated, order-safe slice of
+  # the suite under a SHUFFLED collection order (pytest-randomly) so a test that
   # leaks shared global state — a stray env var, an unreset singleton, a
   # module-level cache — and the victim it breaks cannot silently return
   # (souliane/teatree#2359 Class B). The heavy `test (3.13)` lane runs the suite
   # in its committed file order and so never exercises the polluter→victim
   # adjacency; this lane does.
   test-shuffle:
-    # WHY a SUBSET, not the whole suite: a small set of concurrency/timeout tests
-    # seed their isolated DB at import time and are only collectable in the
-    # suite's natural order, so a full-suite shuffle reds on an UNRELATED
-    # collection error. The Class B flakes live in ``tests/teatree_loop/``, which
-    # collects cleanly under shuffle — scoping here keeps the gate signal about
-    # order-dependence, not about that separate import-order fragility.
+    # WHY a CURATED SET, not the whole suite (widened #3160 residual CI-4): the
+    # Class B flakes this lane was built for live in ``tests/teatree_loop/`` (#2359),
+    # but the audit only has value over the tests it shuffles. The lane is widened to
+    # every ADDITIONAL directory empirically verified order-safe under ALL four
+    # matrixed seeds — both standalone AND shuffled TOGETHER in one ``-n0`` process
+    # (cross-directory polluter→victim adjacency): ``config``, ``teatree_config``,
+    # ``teatree_utils``, ``utils``, ``teatree_quality``, ``messaging``, ``cli_doctor``,
+    # ``conformance``, ``teatree_hooks`` (high-value — hooks mutate process-global
+    # env/cwd most often). ~6k tests, ~5-7 min serial per seed, under the 20-min cap.
     #
-    # WHY ``--group shuffle`` (not the default ``dev``): adding pytest-randomly to
-    # ``dev`` would shuffle every ``uv run pytest`` and the heavy coverage lane,
-    # destabilising them; the plugin is isolated to this lane.
-    #
-    # SEEDS: 7 is the recorded reproducer (it red'd 27 ``tests/teatree_loop/``
-    # tests on the pre-fix code); the others widen the order coverage. ``-n0`` is
-    # serial so a single in-process collection order is exercised end to end
-    # (xdist would isolate the polluter from the victim across workers). The four
-    # seeds are MATRIXED (was a serial ~11-min for-loop) so each runs as its own
-    # ~2.5-min parallel job — the failure-wave latency when shuffle is the slowest
-    # lane drops accordingly (#3160). `leak_sentinel_plugin` runs WARN-ONLY so a
-    # process-global env/cwd polluter is NAMED (not just its downstream victim)
-    # without failing the lane during the #3160 rollout week.
+    # STILL SCOPED-OUT (measured, not silent): ``teatree_core``, ``teatree_cli``,
+    # ``teatree_loops``, ``teatree_backends``, ``teatree_agents``, ``eval_replay``,
+    # ``integration``, ``django_db``, … are NOT yet in the lane — not verified
+    # order-safe under shuffle. Widening them needs the plan's step 1 (audit/fix the
+    # import-time DB seeding in the concurrency/timeout tests), a larger separate
+    # effort; add a dir here only after it passes shuffled (all four seeds) TOGETHER
+    # with this set.
     #
     # Heavy lane: PR-only AND skipped on a provably pure-docs diff
     # (preflight ``run_heavy_python=false``); any non-pure-docs PR runs it.
@@ -794,13 +814,32 @@ jobs:
       - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405  # v6
         with:
           python-version: ${{ matrix.python-version }}
+      # WHY ``--group shuffle`` (not the default ``dev``): adding pytest-randomly to
+      # ``dev`` would shuffle every ``uv run pytest`` and the heavy coverage lane,
+      # destabilising them; the plugin is isolated to this lane.
       - run: uv sync --group shuffle
-      - name: Run the order-fragile loop subset under shuffled collection (seed ${{ matrix.seed }})
+      # SEEDS: 7 is the recorded reproducer (it red'd 27 ``tests/teatree_loop/`` tests
+      # on the pre-fix code); the others widen order coverage. ``-n0`` is serial so a
+      # single in-process collection order runs end to end (xdist would isolate the
+      # polluter from the victim across workers). The four seeds are MATRIXED so each
+      # runs as its own ~5-7-min parallel job over the curated set (#3160).
+      # ``leak_sentinel_plugin`` runs WARN-ONLY: a process-global env/cwd polluter is
+      # NAMED (not just its downstream victim) without failing the lane.
+      - name: Run the curated order-safe set under shuffled collection (seed ${{ matrix.seed }})
         run: >
           uv run -p ${{ matrix.python-version }} pytest -n0 -q -p randomly
           --randomly-seed=${{ matrix.seed }}
           -p scripts.ci.leak_sentinel_plugin --leak-sentinel=warn
           tests/teatree_loop/
+          tests/config/
+          tests/teatree_config/
+          tests/teatree_utils/
+          tests/utils/
+          tests/teatree_quality/
+          tests/messaging/
+          tests/cli_doctor/
+          tests/conformance/
+          tests/teatree_hooks/
 
   # ── 6. Architecture / quality fitness gates ────────────────────────────────
 
