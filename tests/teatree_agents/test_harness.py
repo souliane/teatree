@@ -34,11 +34,11 @@ from teatree.agents.harness import (
     HarnessSession,
     PydanticAiHarness,
     PydanticAiHarnessSession,
-    _extract_system_prompt,
     pydantic_ai_thread,
     resolve_effort,
     resolve_harness,
 )
+from teatree.agents.harness_options import HarnessOptions
 from teatree.agents.headless import LoopWatchdog, TaskUsage, _build_options, _drive_with_heartbeat, run_headless
 from teatree.agents.pydantic_ai_config import (
     LANE_BULK,
@@ -643,22 +643,6 @@ async def _collect_all(session: PydanticAiHarnessSession) -> list[object]:
     return [m async for m in session.receive_response()]
 
 
-class TestExtractSystemPrompt:
-    def test_plain_string_passes_through(self) -> None:
-        options = ClaudeAgentOptions(system_prompt="a plain prompt")
-        assert _extract_system_prompt(options) == "a plain prompt"
-
-    def test_preset_extracts_the_appended_context(self) -> None:
-        options = ClaudeAgentOptions(
-            system_prompt={"type": "preset", "preset": "claude_code", "append": "the appended context"}
-        )
-        assert _extract_system_prompt(options) == "the appended context"
-
-    def test_none_yields_empty_string(self) -> None:
-        options = ClaudeAgentOptions(system_prompt=None)
-        assert _extract_system_prompt(options) == ""
-
-
 class TestResolveEffort:
     def test_is_a_public_seam(self) -> None:
         # The eval pydantic_ai runner reuses this effort-vocabulary guard as a
@@ -668,18 +652,16 @@ class TestResolveEffort:
         assert not hasattr(harness_mod, "_resolve_effort")
 
     def test_valid_shared_effort_passes_through(self) -> None:
-        options = ClaudeAgentOptions(effort="xhigh")
-        assert resolve_effort(options) == "xhigh"
+        # AH-2: resolve_effort takes the NEUTRAL HarnessOptions, never the vendor type.
+        assert resolve_effort(HarnessOptions(effort="xhigh")) == "xhigh"
 
     def test_claude_only_max_is_dropped(self) -> None:
         # "max" is on claude_sdk's EFFORT_SCALE but not pydantic_ai's
         # ReasoningEffort vocabulary — the harness must never forward it.
-        options = ClaudeAgentOptions(effort="max")
-        assert resolve_effort(options) is None
+        assert resolve_effort(HarnessOptions(effort="max")) is None
 
     def test_absent_effort_is_none(self) -> None:
-        options = ClaudeAgentOptions(effort=None)
-        assert resolve_effort(options) is None
+        assert resolve_effort(HarnessOptions(effort=None)) is None
 
 
 class TestPydanticAiModelIdNormalization(TestCase):
@@ -694,22 +676,22 @@ class TestPydanticAiModelIdNormalization(TestCase):
         # The bug: options.model carries a teatree-abstract-tier default in Claude
         # dash-form (claude-opus-4-8), which OrcaRouter does NOT carry. It must be
         # normalised to the router handle, never sent verbatim.
-        model = PydanticAiHarness()._resolve_model(ClaudeAgentOptions(model="claude-opus-4-8"))
+        model = PydanticAiHarness()._resolve_model(HarnessOptions(model="claude-opus-4-8"))
         assert model.model_name == "orcarouter/teatree-factory"
 
     def test_no_model_pin_resolves_to_the_router_handle(self) -> None:
-        model = PydanticAiHarness()._resolve_model(ClaudeAgentOptions())
+        model = PydanticAiHarness()._resolve_model(HarnessOptions())
         assert model.model_name == "orcarouter/teatree-factory"
 
     def test_explicit_orca_native_pin_passes_through(self) -> None:
-        model = PydanticAiHarness()._resolve_model(ClaudeAgentOptions(model="deepseek/deepseek-v4-pro"))
+        model = PydanticAiHarness()._resolve_model(HarnessOptions(model="deepseek/deepseek-v4-pro"))
         assert model.model_name == "deepseek/deepseek-v4-pro"
 
     def test_a_model_off_the_regulated_allowlist_is_refused(self) -> None:
         ConfigSetting.objects.set_value("enforce_regulated_path", value=True)
         ConfigSetting.objects.set_value("regulated_path_model_allowlist", value=["anthropic/"])
         with pytest.raises(ValueError, match="not eligible for the regulated path"):
-            PydanticAiHarness()._resolve_model(ClaudeAgentOptions(model="deepseek/deepseek-v4-pro"))
+            PydanticAiHarness()._resolve_model(HarnessOptions(model="deepseek/deepseek-v4-pro"))
 
 
 class TestBuildOrcaProvider(TestCase):
@@ -847,11 +829,11 @@ class TestOrcaRouterLaneAndRouterNameCallSite(TestCase):
         harness = PydanticAiHarness(
             config=PydanticAiModelConfig(orca=OrcaLaneConfig(router_name="orcarouter/secondary-factory"))
         )
-        model = harness._resolve_model(ClaudeAgentOptions(model="claude-opus-4-8"))
+        model = harness._resolve_model(HarnessOptions(model="claude-opus-4-8"))
         assert model.model_name == "orcarouter/secondary-factory"
 
     def test_default_orca_lane_config_keeps_the_teatree_factory_handle(self) -> None:
-        model = PydanticAiHarness()._resolve_model(ClaudeAgentOptions(model="claude-opus-4-8"))
+        model = PydanticAiHarness()._resolve_model(HarnessOptions(model="claude-opus-4-8"))
         assert model.model_name == "orcarouter/teatree-factory"
 
     def test_resolve_harness_reads_lane_and_router_name_synchronously(self) -> None:
@@ -878,7 +860,7 @@ class TestOrcaRouterLaneAndRouterNameCallSite(TestCase):
                 orca=OrcaLaneConfig(lane=LANE_BULK, router_name="orcarouter/secondary-factory")
             )
         )
-        model = harness._resolve_model(ClaudeAgentOptions(model="claude-opus-4-8"))
+        model = harness._resolve_model(HarnessOptions(model="claude-opus-4-8"))
         assert model.model_name == "orcarouter/secondary-factory"
         client = model.client
         assert str(client.base_url).rstrip("/") == "https://api.orcarouter.ai/v1"

@@ -33,6 +33,7 @@ from teatree.agents.context_plan import (
     find_unstable_tokens,
 )
 from teatree.agents.harness import Harness, HarnessSession
+from teatree.agents.harness_options import HarnessOptions
 from teatree.agents.harness_registry import (
     HarnessBuildContext,
     HarnessCapabilities,
@@ -75,6 +76,7 @@ __all__ = [
     "Harness",
     "HarnessBuildContext",
     "HarnessCapabilities",
+    "HarnessOptions",
     "HarnessSession",
     "HarnessSpec",
     "LaneBToolConfig",

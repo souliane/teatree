@@ -8,10 +8,11 @@ the whole tool layer is driven by one injectable dataclass a test can build by
 hand with no DB.
 """
 
+import os
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from claude_agent_sdk import ClaudeAgentOptions
+from teatree.agents.harness_options import HarnessOptions
 
 #: Shell command prefixes refused outright on Lane B regardless of phase — the
 #: irreversible/destructive set. This is a coarse denylist ON TOP OF the shared
@@ -44,6 +45,11 @@ class LaneBToolConfig:
     phase-scoping (every assembled tool is exposed), the construction-time
     default so an un-phased ``PydanticAiHarness()`` stays text-only.
     ``shell_denylist`` / ``shell_timeout_seconds`` are the coarse Shell knobs.
+    ``shell_env`` is the RESOLVED child environment (base ``os.environ`` MERGED
+    with any pinned overrides), never a bare override set — a subprocess ``env=``
+    REPLACES the environment, so passing only the credential overrides would strip
+    ``PATH``/``HOME`` from every shell (and then even ``bash`` would not resolve).
+    An empty ``shell_env`` means "no overrides pinned → inherit the ambient env".
     """
 
     fs_root: Path | None = None
@@ -53,15 +59,28 @@ class LaneBToolConfig:
     shell_env: dict[str, str] = field(default_factory=dict)
 
     @classmethod
-    def from_options(cls, options: ClaudeAgentOptions, *, phase: str = "") -> "LaneBToolConfig":
-        """Build the tool config from the already-built SDK *options* + *phase*.
+    def from_options(cls, options: HarnessOptions, *, phase: str = "") -> "LaneBToolConfig":
+        """Build the tool config from the neutral harness *options* + *phase* (#3157 AH-2).
+
+        Takes the provider-agnostic :class:`~teatree.agents.harness_options.HarnessOptions`, not
+        the vendor ``ClaudeAgentOptions`` — the tool layer's knobs (cwd, env) are
+        provider-agnostic, so the vendor type is confined to the harness ``open`` boundary.
 
         ``options.cwd`` is the worktree :func:`teatree.agents._headless_options._resolve_task_cwd`
         resolved for the task, so it is the natural File System jail root; a
-        falsy cwd (no on-disk worktree) leaves ``fs_root`` ``None``. ``options.env``
-        (the pinned-credential child env, if any) is passed to the Shell tool so a
-        command runs under the same environment the SDK child would.
+        falsy cwd (no on-disk worktree) leaves ``fs_root`` ``None``.
+
+        ``options.env`` (the pinned-credential child env, if any) is MERGED OVER a
+        snapshot of ``os.environ`` — matching how the ``claude-agent-sdk`` child is
+        spawned (the SDK merges ``options.env`` onto the inherited environment). A
+        subprocess ``env=`` REPLACES the whole environment, so the merge is what
+        keeps ``PATH``/``HOME`` present in the Lane-B shell; passing only the
+        credential overrides would strip them from every command. When no override
+        is pinned, ``shell_env`` stays empty so the Shell tool inherits the ambient
+        env unchanged (``env=None``), byte-identical to before the credential port.
         """
         cwd = options.cwd
         fs_root = Path(cwd) if cwd else None
-        return cls(fs_root=fs_root, phase=phase, shell_env=dict(options.env or {}))
+        overrides = dict(options.env or {})
+        shell_env = {**os.environ, **overrides} if overrides else {}
+        return cls(fs_root=fs_root, phase=phase, shell_env=shell_env)
