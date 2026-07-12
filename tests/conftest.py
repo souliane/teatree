@@ -148,6 +148,41 @@ def _restore_django_settings_module() -> Iterator[None]:
 
 
 @pytest.fixture(autouse=True)
+def _reset_forge_pr_budget_memo() -> Iterator[None]:
+    """Reset the pk-keyed forge PR-budget memo around every test (TSH-1/TSH-7).
+
+    ``pr_budget_forge._forge_cache`` is keyed on ``(ticket.pk, repo)``. Under
+    sqlite ``TestCase`` rollback, rowids recycle, so a stale entry from an earlier
+    test collides with a later test's fresh ticket and returns a bogus cached forge
+    PR set — the 'green locally, red under a shard' pollution the budget-test
+    classes were reactively patching in their own setUp. Resetting universally here
+    is the durable fix for the whole pk-keyed-cache class.
+    """
+    from teatree.core.gates.pr_budget_forge import reset_forge_pr_budget_cache  # noqa: PLC0415
+
+    reset_forge_pr_budget_cache()
+    yield
+    reset_forge_pr_budget_cache()
+
+
+@pytest.fixture(autouse=True)
+def _reset_log_throttle() -> Iterator[None]:
+    """Reset the process-local log-throttle memo around every test.
+
+    ``throttled_log._last_warned`` records the last-``warning`` monotonic time per
+    key. A leaked entry demotes a later test's throttled warning to ``debug``, so a
+    test asserting the warning fires flakes by order. Its own reset helper is
+    documented test-only; wire it into the roster so no individual test must
+    remember to call it.
+    """
+    from teatree.utils.throttled_log import reset_throttle  # noqa: PLC0415
+
+    reset_throttle()
+    yield
+    reset_throttle()
+
+
+@pytest.fixture(autouse=True)
 def _isolate_scope_cache() -> Iterator[None]:
     """Reset the process-singleton token-scope cache with a no-op banner sink (PR-19).
 
