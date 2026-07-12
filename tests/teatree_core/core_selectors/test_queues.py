@@ -9,13 +9,10 @@ from django.test import TestCase
 from django.utils import timezone
 
 from teatree.core.models import Session, Task, TaskAttempt, Ticket
-from teatree.core.selectors import _panel_cache, build_automation_summary, build_headless_queue, build_interactive_queue
+from teatree.core.selectors import build_automation_summary, build_headless_queue, build_interactive_queue
 
 
 class TestBuildInteractiveQueue(TestCase):
-    def setUp(self) -> None:
-        _panel_cache.clear()
-
     def test_returns_non_completed_manual_tasks(self) -> None:
         first_ticket = Ticket.objects.create(state=Ticket.State.STARTED)
         second_ticket = Ticket.objects.create(state=Ticket.State.CODED)
@@ -284,10 +281,6 @@ class TestHeadlessQueueElapsedTime(TestCase):
 
 class TestOverlayFiltering(TestCase):
     """Verify that overlay= parameter filters all selector functions."""
-
-    def setUp(self) -> None:
-        super().setUp()
-        _panel_cache.clear()
 
     def test_headless_queue_filters_by_overlay(self) -> None:
         t1 = Ticket.objects.create(overlay="alpha")
