@@ -372,7 +372,13 @@ class OverlayEntry:
 
 
 @dataclass
-class UserSettings:
+class _WorkspaceCoreSettings:
+    """Workspace root + the core engagement / identity flags.
+
+    A private in-file group base (see :class:`UserSettings`). Pure data-declaration —
+    no behaviour — so the flat persisted schema is preserved by inheritance.
+    """
+
     workspace_dir: Path = field(default_factory=lambda: Path.home() / "workspace")
     privacy: str = ""
     check_updates: bool = True
@@ -391,6 +397,12 @@ class UserSettings:
     timezone: str = ""
     contribute: bool = False
     excluded_skills: list[str] = field(default_factory=list)
+
+
+@dataclass
+class _ModeHarnessSettings:
+    """Mode / autonomy + the two-layer agent-harness (runtime / transport / provider) selectors."""
+
     mode: Mode = Mode.INTERACTIVE
     autonomy: Autonomy = Autonomy.BABYSIT
     # The single LANE selector for loop-dispatched phase agents (those whose
@@ -497,6 +509,12 @@ class UserSettings:
     # ``metered_api_key`` rides the metered key (per-token cost, no window) and stays
     # selectable. Per-overlay overridable; ``T3_EVAL_CREDENTIAL`` env wins over both.
     eval_credential: EvalCredential = EvalCredential.SUBSCRIPTION_OAUTH
+
+
+@dataclass
+class _LoopAndTeamsSettings:
+    """WIP dial + loop cadence/runner + the agent-teams pane budget."""
+
     # How much new work a loop tick admits at once — the bounded-WIP dial. The
     # conservative ``MEDIUM`` baseline means NO orchestrator fan-out — only
     # the intrinsic loop + PR sweep + per-overlay ``max_concurrent_auto_starts``
@@ -557,6 +575,12 @@ class UserSettings:
     # `[teams]`/`[overlays.<name>]` TOML value is ignored on read. A bad value
     # fails SAFE to `none` at every tier.
     teams_display: TeamsDisplay = TeamsDisplay.NONE
+
+
+@dataclass
+class _OnBehalfSettings:
+    """Human-approval training wheels + the on-behalf post gate + bot→user notify flags."""
+
     # Training-wheel for `auto` overlays: when true, the loop autonomously
     # pushes and creates PRs but stops short of merging — merge requires a
     # human reaction (👍 or `/merge`). The user flips this off only once
@@ -674,6 +698,12 @@ class UserSettings:
     notify_on_post_on_behalf: bool = True
     # Derived under the ``notify`` tier by ``_apply_autonomy``; ORed with the field above.
     notify_on_behalf: bool = False
+
+
+@dataclass
+class _IdentityRoutingSettings:
+    """Statusline chain, operator identity aliases, repo mode, and the missing-issue policy."""
+
     statusline_chain: list[str] = field(default_factory=list)
     # Usernames / handles that all map to the same human operator across
     # platforms (a GitHub login, a GitLab username, an internal handle).
@@ -707,6 +737,12 @@ class UserSettings:
     # ``teatree.missing_issue_policy.resolve_missing_issue_verdict``; the agent
     # prose lives in ``skills/ship/SKILL.md`` § "Missing Issue Reference Policy".
     missing_issue_ref_policy: MissingIssuePolicy = MissingIssuePolicy.FIND_EXISTING_THEN_ASK
+
+
+@dataclass
+class _QualityGateSettings:
+    """The architectural-review cadence + the opt-in DoD / merge / critic / send-proxy quality gates."""
+
     # #1136 / #1152 Periodic architectural-review scanner — CORE
     # always-on (not per-overlay opt-in). The cadence applies uniformly
     # to every overlay's worktrees because it is a teatree-platform
@@ -867,6 +903,12 @@ class UserSettings:
     # the typed home so the doc value and any future programmatic consumer share
     # one source of truth. Per-overlay overridable.
     e2e_confidence_threshold: int = 90
+
+
+@dataclass
+class _ScannerSettings:
+    """The periodic loop scanners — news, local-eval, backlog-sweep, dogfood-smoke, self-update cadences."""
+
     # #1191 Periodic scanning-news scanner — CORE always-on with a daily
     # cadence (24h). Companion to the `scanning-news` skill (#1190): the
     # loop fires a `scanning_news` task daily so the news-scan workflow
@@ -939,6 +981,12 @@ class UserSettings:
     # ``auto_update_require_green_main`` fails closed on non-green default-branch CI.
     auto_update_reinstall: bool = False
     auto_update_require_green_main: bool = True
+
+
+@dataclass
+class _ResourcePressureSettings:
+    """Resource-pressure auto-free thresholds (disk / RAM) + the destructive-lever opt-ins + task-sweep."""
+
     # #128 Resource-pressure scanner — teatree-controlled auto-free before
     # the host hits OOM / full-disk. Measures ABSOLUTE free bytes
     # (``os.statvfs`` for disk, ``vm_stat`` reclaimable pages for RAM) — never
@@ -999,6 +1047,12 @@ class UserSettings:
     # Per-overlay overridable: a heavy overlay can cap to ``1`` while a
     # cheap dogfood overlay stays unbounded.
     max_concurrent_local_stacks: int = 0
+
+
+@dataclass
+class _ProvisioningSettings:
+    """Provisioning timeouts / concurrency + the idle-stack, stale-stack, and queue reaper knobs."""
+
     # #2220 Hard ceiling (seconds) for one long-blocking provisioning subprocess
     # — a DSLR snapshot restore, ``migrate``, or a ``--create-db`` test-DB
     # rebuild. On exceeding it the step ABORTS with an actionable error AND
@@ -1080,6 +1134,12 @@ class UserSettings:
     # spikes. Matched against the full branch name. Default empty: nothing
     # protected beyond the data-loss guards. Per-overlay overridable.
     clean_ignore: list[str] = field(default_factory=list)
+
+
+@dataclass
+class _PrePublishGateSettings:
+    """Slack voice + speak/mr-reminder + the pre-publish / commit-time gate kill-switches and repo patterns."""
+
     # #1395 Slack voice/token mismatch classifier. The pre-publish gate
     # between ``chat.postMessage`` and the Slack API refuses (or warns)
     # when the body's voice ("PR merged" / "evidence" → agent vs "please
@@ -1195,6 +1255,12 @@ class UserSettings:
     # ``[overlays.<name>].mr_title_regex = "…"`` so an overlay with a different
     # title grammar declares its own pattern without flipping the global.
     mr_title_regex: str = DEFAULT_MR_TITLE_REGEX
+
+
+@dataclass
+class _LoopFlagAndCredentialSettings:
+    """Loop feature-flags (issue-implementer, fleet/orchestrate, outer/directive), cost + Anthropic pass routing."""
+
     # #1548 Opt-in, default-OFF gate for the always-on issue-implementer
     # loop. The loop is a hard NO-OP unless ``issue_implementer_enabled``
     # is flipped on, mirroring the ``review_skill = ""`` opt-in (#1541) and
@@ -1383,6 +1449,37 @@ class UserSettings:
     # anthropic_oauth_pass_paths '["anthropic/<account>/oauth-token"]'``.
     anthropic_oauth_pass_paths: list[str] = field(default_factory=list)
     anthropic_api_key_pass_paths: list[str] = field(default_factory=list)
+
+
+@dataclass
+class UserSettings(
+    _WorkspaceCoreSettings,
+    _ModeHarnessSettings,
+    _LoopAndTeamsSettings,
+    _OnBehalfSettings,
+    _IdentityRoutingSettings,
+    _QualityGateSettings,
+    _ScannerSettings,
+    _ResourcePressureSettings,
+    _ProvisioningSettings,
+    _PrePublishGateSettings,
+    _LoopFlagAndCredentialSettings,
+):
+    """The ``[teatree]`` settings — the FLAT, 160-field persisted contract.
+
+    The fields are declared across ~11 private in-file group bases above purely for
+    readability; ``UserSettings`` is the sole public API and ``dataclasses.fields()``
+    stays inheritance-transparent, so the flat field namespace (DB ``ConfigSetting.key``,
+    env overrides, cold sqlite3 readers, the rename-guard and golden pin) is unchanged.
+
+    CLAUDE.md's "composition over mixins" targets behaviour-carrying classes; these bases
+    are pure data-declaration with no behaviour, and the flat schema IS the persisted
+    contract, so grouping them as declaration bases (not composed attributes) is the
+    deliberate divergence — nesting would be a ~160-key data migration, not a refactor.
+    The ``tests/config/test_settings_group_partition.py`` guard pins the group field sets
+    pairwise-disjoint and their union == ``dataclasses.fields(UserSettings)`` so a
+    silently-shadowed duplicate field can never slip in.
+    """
 
 
 @dataclass

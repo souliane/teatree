@@ -30,10 +30,10 @@ Cold-import safe: the live PreToolUse hook is a bare ``python3`` subprocess with
 no guarantee ``teatree`` is importable, so the module top imports only stdlib —
 never Django / ``teatree.core``. The effective-HTTP-method regexes
 (``_GLAB_GH_API_RE`` / ``_REVIEW_POST_METHOD_RE`` / ``_REVIEW_POST_BODY_FLAG_RE``)
-are SHARED with handlers that stay in the router (``_effective_method_is_write``
-and the out-of-band-merge gate), so they stay defined in the router and are
-back-imported lazily inside the handler body — exactly one definition each. Only
-``REVIEW_POST_ENDPOINT_RE`` and the deny reason, used solely by this gate, move.
+are SHARED with handlers in the router (``_effective_method_is_write`` and the
+out-of-band-merge gate), so they live in the ``forge_api_detect`` sibling — one
+canonical definition each — and are back-imported lazily inside the handler body.
+Only ``REVIEW_POST_ENDPOINT_RE`` and the deny reason, used solely by this gate, live here.
 """
 
 import re
@@ -69,11 +69,11 @@ def is_raw_review_write(command: str) -> bool:
     create a comment, so it is the only read (#1568).
 
     Uses a word-boundary regex (not plain ``in``) so ``glab  api`` / ``gh  api``
-    double-space variants are caught (F4). The effective-method regexes stay in
-    the router (shared with ``_effective_method_is_write`` and the
-    out-of-band-merge gate) and are back-imported lazily — one definition each.
+    double-space variants are caught (F4). The effective-method regexes live in
+    the ``forge_api_detect`` sibling (shared with ``_effective_method_is_write``
+    and the out-of-band-merge gate) and are back-imported lazily — one definition each.
     """
-    from hooks.scripts.hook_router import (  # noqa: PLC0415 deferred back-import
+    from hooks.scripts.forge_api_detect import (  # noqa: PLC0415 deferred back-import
         _GLAB_GH_API_RE,
         _REVIEW_POST_BODY_FLAG_RE,
         _REVIEW_POST_METHOD_RE,

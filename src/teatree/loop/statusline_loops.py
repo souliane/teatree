@@ -41,9 +41,9 @@ def availability_segment(resolution: "Resolution") -> str:
     ``Mode`` enum (auto/interactive) and other ``mode=`` usages, which the bare
     ``mode=away`` form collided with. An unrecognised mode renders nothing.
     """
-    from teatree.core.availability import _VALID_MODES  # noqa: PLC0415 — deferred: loaded at tick time, not import
+    from teatree.core.availability import VALID_MODES  # noqa: PLC0415 — deferred: loaded at tick time, not import
 
-    if resolution.mode not in _VALID_MODES:
+    if resolution.mode not in VALID_MODES:
         return ""
     return f"availability: {resolution.mode} ({resolution.source})"
 

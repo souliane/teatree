@@ -20,8 +20,9 @@ The contract:
     registers it unchanged);
 * the effective-HTTP-method regexes the gate SHARES with router-resident handlers
     (``_GLAB_GH_API_RE`` / ``_REVIEW_POST_METHOD_RE`` / ``_REVIEW_POST_BODY_FLAG_RE``,
-    read by ``_effective_method_is_write`` and the out-of-band-merge gate) stay
-    defined ONLY in the router — the sibling back-imports them lazily, so there is
+    read by ``_effective_method_is_write`` and the out-of-band-merge gate) live in
+    the ``forge_api_detect`` sibling (#81), re-exported onto the router and NOT
+    redefined in this gate — the gate back-imports them lazily, so there is
     exactly one definition each;
 * the sibling cold-imports with stdlib only — no Django, no ``teatree`` at module
     top (the live PreToolUse hook is a bare ``python3`` subprocess with no Django
@@ -67,7 +68,7 @@ class TestRouterReExportReachable:
         assert router._REVIEW_POST_ENDPOINT_RE is rrp.REVIEW_POST_ENDPOINT_RE
 
     def test_shared_method_regexes_have_one_definition_in_the_router(self) -> None:
-        """The effective-method regexes are NOT redefined in the sibling — one definition, in the router."""
+        """The effective-method regexes are NOT redefined in this gate — re-exported onto the router."""
         for name in ("_GLAB_GH_API_RE", "_REVIEW_POST_METHOD_RE", "_REVIEW_POST_BODY_FLAG_RE"):
             assert hasattr(router, name), name
             assert not hasattr(rrp, name), name

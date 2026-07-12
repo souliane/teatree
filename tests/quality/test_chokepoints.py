@@ -12,6 +12,7 @@ the subprocess coverage so the registry can never regress below the deleted
 import importlib.util
 import inspect
 from pathlib import Path
+from typing import Protocol
 
 import pytest
 
@@ -234,30 +235,58 @@ _FORGE_WRITE_BODY_METHODS = frozenset(
     }
 )
 
-#: A parameter carrying outbound colleague-visible content — the shape that must
-#: be leak-scanned before it can reach a forge. Enumerating the protocol by these
-#: names (rather than trusting a hardcoded method list) is what makes the guard
-#: genuinely exhaustive: a new body-bearing forge-write method is caught the
-#: moment it is added to the protocol, even if nobody remembered to register it.
-#: ``create_pr(spec)`` carries its body inside a ``PullRequestSpec`` object (no
-#: body-shaped param), so it is intentionally out of this param-shape scope.
-_BODY_BEARING_PARAMS = frozenset({"body", "title", "comment", "labels", "description", "text"})
+#: The reviewed allowlist of NON-content parameter names — every parameter a
+#: ``CodeHostBackend`` method may carry that does NOT ferry outbound colleague-
+#: visible body text (identifiers, slugs, filters, upload handles). A method is
+#: body-bearing when its signature carries ANY parameter outside this set, so a
+#: NEW parameter name is treated as content by default: the guard fails closed —
+#: adding a body-shaped parameter (or a whole new forge-write method) turns the
+#: seam test red the moment it lands, even if nobody remembered to register it.
+#: Documented exclusions that are content-free by construction: ``create_pr``
+#: carries its body inside a ``PullRequestSpec`` (``spec``), ``search_open_issues``
+#: takes a ``query`` filter, and ``upload_file`` takes a ``filepath`` — none is a
+#: colleague-visible message body.
+_NON_CONTENT_PARAMS = frozenset(
+    {
+        "self",
+        "issue_url",
+        "repo",
+        "parent_url",
+        "comment_id",
+        "slug",
+        "pr_id",
+        "pr_iid",
+        "pr_url",
+        "reviewer",
+        "login",
+        "assignee",
+        "author",
+        "updated_after",
+        "state",
+        "query",
+        "expected_head_oid",
+        "child_type",
+        "spec",
+        "filepath",
+        "upload",
+    }
+)
 
 
-def _protocol_body_bearing_methods() -> set[str]:
-    """Every ``CodeHostBackend`` method whose signature carries a body-bearing parameter."""
+def _protocol_body_bearing_methods(protocol: type) -> set[str]:
+    """Every ``protocol`` method whose signature carries a non-allowlisted (body-bearing) parameter."""
     found: set[str] = set()
-    for name in dir(CodeHostBackend):
+    for name in dir(protocol):
         if name.startswith("_"):
             continue
-        attr = getattr(CodeHostBackend, name)
+        attr = getattr(protocol, name)
         if not callable(attr):
             continue
         try:
             params = inspect.signature(attr).parameters
         except (TypeError, ValueError):
             continue
-        if _BODY_BEARING_PARAMS & set(params):
+        if set(params) - _NON_CONTENT_PARAMS:
             found.add(name)
     return found
 
@@ -281,7 +310,7 @@ class TestSelfMaintenance:
         protocol enumeration must all agree.
         """
         entry = next(e for e in registry if e.id == "forge-comment-write-seam")
-        enumerated = _protocol_body_bearing_methods()
+        enumerated = _protocol_body_bearing_methods(CodeHostBackend)
         assert enumerated, "protocol enumeration found no body-bearing methods — the heuristic is broken"
         assert enumerated == _FORGE_WRITE_BODY_METHODS, (
             "protocol body-bearing methods drifted from the registered set: "
@@ -289,6 +318,19 @@ class TestSelfMaintenance:
             f"stale={sorted(_FORGE_WRITE_BODY_METHODS - enumerated)}"
         )
         assert set(entry.protected_attrs) == _FORGE_WRITE_BODY_METHODS
+
+    def test_new_body_bearing_method_is_flagged_by_default(self) -> None:
+        """A method carrying an un-allowlisted parameter is flagged — the fail-closed teeth.
+
+        The allowlist inversion means any NEW parameter name (here ``message``) is
+        body-bearing by default, so a forge-write method added to the protocol
+        without touching the registry is caught automatically.
+        """
+
+        class _Probe(Protocol):
+            def announce(self, *, repo: str, message: str) -> None: ...
+
+        assert _protocol_body_bearing_methods(_Probe) == {"announce"}
 
 
 class TestLoaderValidation:

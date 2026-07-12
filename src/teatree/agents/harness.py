@@ -102,6 +102,16 @@ class Harness(Protocol):
     an overlay backend implements ``open`` + ``capabilities`` and the driver routes it purely
     off those flags. ``restore_unconsumed_resume_thread`` stays an OPTIONAL method hook (only a
     client-side-resumable backend implements it), read defensively by the driver.
+
+    ``open`` deliberately takes the vendor ``claude_agent_sdk.ClaudeAgentOptions`` at the seam
+    boundary (#3157 AH-2): the ``claude_sdk`` backend hands it straight to ``ClaudeSDKClient``,
+    and re-homing the SDK-specific surface (``mcp_servers``, hooks, tool permissions) onto a
+    fully-neutral ``open`` signature is the deferred strangler-fig migration — hence the boundary
+    type is still the vendor one. A PROVIDER-AGNOSTIC backend must not thread that vendor type
+    through its own logic: it adapts the vendor options into the neutral
+    :class:`~teatree.agents.harness_options.HarnessOptions` ONCE at the top of ``open``
+    (``HarnessOptions.from_sdk_options``, see :meth:`PydanticAiHarness.open`) and reads only
+    neutral fields afterward, so ``ClaudeAgentOptions`` never leaks past the boundary.
     """
 
     capabilities: HarnessCapabilities

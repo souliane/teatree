@@ -71,7 +71,7 @@ MODE_AWAY = "away"
 # silently killed long unattended runs — ``away`` conflated "defer my questions"
 # with "stop self-pumping", so an unattended operator got both-or-neither.
 MODE_AUTONOMOUS_AWAY = "autonomous_away"
-_VALID_MODES = frozenset({MODE_PRESENT, MODE_AWAY, MODE_AUTONOMOUS_AWAY})
+VALID_MODES = frozenset({MODE_PRESENT, MODE_AWAY, MODE_AUTONOMOUS_AWAY})
 
 # Modes in which the user is unreachable NOW: questions defer to the durable
 # backlog, local TTS is silenced, and returning to present drains the backlog.
@@ -162,7 +162,7 @@ class Override:
     until: datetime | None
 
     def is_active(self, now: datetime) -> bool:
-        if self.mode not in _VALID_MODES:
+        if self.mode not in VALID_MODES:
             return False
         if self.until is None:
             return True
@@ -334,7 +334,7 @@ def load_override(path: Path | None = None) -> Override | None:
     if not isinstance(raw, dict):
         return None
     mode = str(raw.get("mode", "")).strip().lower()
-    if mode not in _VALID_MODES:
+    if mode not in VALID_MODES:
         return None
     until_raw = raw.get("until")
     until: datetime | None = None
@@ -373,7 +373,7 @@ def write_override(
     never blocks the availability flip. ``user_id`` / ``overlay`` are
     forwarded to the drain for DM targeting and per-overlay bot routing.
     """
-    if mode not in _VALID_MODES:
+    if mode not in VALID_MODES:
         msg = f"mode must be 'present' or 'away', got {mode!r}"
         raise ValueError(msg)
     target = path or override_path()
@@ -600,6 +600,7 @@ __all__ = [
     "MODE_PRESENT",
     "PRESENCE",
     "PRESENCE_FRESHNESS",
+    "VALID_MODES",
     "Override",
     "PresenceHeartbeat",
     "Resolution",
