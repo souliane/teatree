@@ -4,7 +4,6 @@ Loop scanners and the CLI consume these selectors to render the statusline
 and answer status queries without bypassing the FSM models.
 """
 
-from ._cache import _cached, _panel_cache, invalidate_panel_cache
 from ._filters import _overlay_q, _task_overlay_q
 from ._helpers import (
     _CLAUDE_SESSIONS_DIR,
@@ -48,7 +47,6 @@ __all__ = [
     "TaskGraphNode",
     "TaskRelatedRow",
     "UnifiedSessionRow",
-    "_cached",
     "_check_pr",
     "_display_id",
     "_extra_str",
@@ -56,7 +54,6 @@ __all__ = [
     "_last_result_for_tasks",
     "_list_of_str",
     "_overlay_q",
-    "_panel_cache",
     "_task_overlay_q",
     "_uptime_from_epoch_ms",
     "build_action_required",
@@ -69,5 +66,4 @@ __all__ = [
     "build_task_graph",
     "build_ticket_lifecycle_mermaid",
     "build_unified_sessions",
-    "invalidate_panel_cache",
 ]

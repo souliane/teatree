@@ -12,11 +12,13 @@ per overlay. TestShippedDefault (D9): the shipped default is ``1``, so a second
 open PR is refused out of the box and ``0`` restores the unlimited opt-out.
 """
 
+import time
+
 import httpx
 import pytest
 from django.test import TestCase
 
-from teatree.core.gates.pr_budget_forge import reset_forge_pr_budget_cache
+from teatree.core.gates.pr_budget_forge import _forge_cache, reset_forge_pr_budget_cache
 from teatree.core.gates.pr_budget_gate import (
     PrBudgetExceededError,
     check_pr_budget,
@@ -182,12 +184,15 @@ class TestOpenPrUrlsForRepo(TestCase):
 class TestForgeAuthoritativeBackstop(TestCase):
     """Fleet-safety Stage 3: a sibling instance's forge PR counts against the budget.
 
-    Uses a stubbed code host; ``setUp`` resets the forge memo so a cached result
-    never bleeds across cases.
+    Uses a stubbed code host. The process-global forge memo is reset on BOTH
+    sides of every test — ``setUp`` clears any bleed from an earlier test, and
+    the ``addCleanup`` guarantees the class never leaks a cached entry into a
+    later, pk-recycling test that reads the same memo (TSH-1).
     """
 
     def setUp(self) -> None:
         reset_forge_pr_budget_cache()
+        self.addCleanup(reset_forge_pr_budget_cache)
 
     def _ticket(self, number: int = 123, *, repo: str = _REPO_A) -> Ticket:
         return Ticket.objects.create(
@@ -320,3 +325,31 @@ class TestShippedDefault(TestCase):
         limit = resolve_pr_budget(None)
         assert limit == 0
         check_pr_budget(ticket, _REPO_A, limit=limit)  # unlimited opt-out -> no raise
+
+
+class TestForgeBudgetMemoIsolation:
+    """TSH-1 regression: the forge PR-budget memo resets AFTER every test, not only before.
+
+    Resetting the process-global ``_forge_cache`` solely in ``setUp`` let the
+    class's last cache-populating test leak an
+    entry into any later test that reads the same pk-keyed memo
+    (e.g. the ``pr ensure-pr`` budget check) — the "green locally, red under a
+    shard" pollution class, amplified by sqlite pk-recycling colliding a stale
+    ``(ticket.pk, repo)`` key onto a fresh ticket. The class now registers an
+    ``addCleanup`` so the memo is clean on both sides of every test.
+    """
+
+    def test_class_registers_a_teardown_reset_for_the_forge_memo(self) -> None:
+        # Anti-vacuous: drive the class's own setUp/cleanup machinery. With the
+        # addCleanup present, doCleanups() empties the memo populated between them;
+        # without it (the pre-fix state), doCleanups() is a no-op and the entry
+        # survives -> RED. The method name is only for a valid TestCase construction;
+        # setUp/doCleanups touch no database.
+        case = TestForgeAuthoritativeBackstop("test_respects_the_limit_setting")
+        try:
+            case.setUp()  # clears now AND registers the teardown reset (the fix)
+            _forge_cache[1, _REPO_A] = (time.monotonic(), {f"https://github.com/{_REPO_A}/pull/9"})
+            case.doCleanups()  # runs the registered addCleanup -> resets the memo
+            assert _forge_cache == {}, "TestForgeAuthoritativeBackstop must reset the forge memo in teardown"
+        finally:
+            reset_forge_pr_budget_cache()

@@ -58,7 +58,11 @@ class _FakeHost:
 
 class _ForgeBudgetTestCase(TestCase):
     def setUp(self) -> None:
+        # Reset the process-global forge memo on BOTH sides of every test — the
+        # setUp-only pattern let the last test leak a cached (ticket.pk, repo)
+        # entry into a later, pk-recycling test that reads the same memo (TSH-1).
         reset_forge_pr_budget_cache()
+        self.addCleanup(reset_forge_pr_budget_cache)
 
     def _ticket(self, number: int = 123, *, overlay: str = "t3-teatree", repo: str = _REPO) -> Ticket:
         return Ticket.objects.create(
