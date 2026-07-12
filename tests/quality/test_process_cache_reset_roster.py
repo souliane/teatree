@@ -32,22 +32,30 @@ from teatree.utils.throttled_log import _last_warned, reset_throttle
 _SRC = Path(__file__).resolve().parents[2] / "src" / "teatree"
 _CONFTEST = Path(__file__).resolve().parents[1] / "conftest.py"
 
-#: Constructors that build an empty mutable container when called with no args.
-_EMPTY_CONTAINER_CTORS = frozenset(
-    {
-        "dict",
-        "list",
-        "set",
-        "defaultdict",
-        "OrderedDict",
-        "WeakValueDictionary",
-        "WeakKeyDictionary",
-        "Counter",
-        "deque",
-    },
+#: Plain builtin containers that are EMPTY only when called with no args. A data
+#: iterable — ``list(SEQ)``, ``dict(pairs)``, ``set(SEQ)`` — materialises a constant
+#: at import, not a runtime-accumulating cache, so those forms are NOT discovered.
+_PLAIN_EMPTY_CTORS = frozenset({"dict", "list", "set"})
+#: Specialised cache-shaped containers that start EMPTY at import even carrying a
+#: factory / maxlen / typecode argument — ``defaultdict(list)``, ``deque(maxlen=8)``,
+#: ``Counter()``. Detected by ctor NAME regardless of args: a factory/maxlen is not
+#: seed data. Erring toward discovery is deliberate — a false positive only forces an
+#: explicit exempt-with-reason (safe), whereas a false negative is exactly the
+#: pk-keyed-cache flake hole this gate exists to close.
+_CACHE_SHAPED_CTORS = frozenset(
+    {"defaultdict", "deque", "Counter", "OrderedDict", "WeakValueDictionary", "WeakKeyDictionary"},
 )
 #: Module-function decorators that install a process-lifetime memo.
 _MEMO_DECORATORS = frozenset({"lru_cache", "cache"})
+
+
+def _ctor_name(call: ast.Call) -> str | None:
+    fn = call.func
+    if isinstance(fn, ast.Name):
+        return fn.id
+    if isinstance(fn, ast.Attribute):
+        return fn.attr
+    return None
 
 
 def _is_empty_container(node: ast.expr) -> bool:
@@ -56,10 +64,12 @@ def _is_empty_container(node: ast.expr) -> bool:
         return not node.keys
     if isinstance(node, (ast.List, ast.Set)):
         return not node.elts
-    if isinstance(node, ast.Call) and not node.args and not node.keywords:
-        fn = node.func
-        name = fn.id if isinstance(fn, ast.Name) else fn.attr if isinstance(fn, ast.Attribute) else None
-        return name in _EMPTY_CONTAINER_CTORS
+    if isinstance(node, ast.Call):
+        name = _ctor_name(node)
+        if name in _CACHE_SHAPED_CTORS:
+            return True  # empty at import even with a factory/maxlen/typecode arg
+        if name in _PLAIN_EMPTY_CTORS:
+            return not node.args and not node.keywords  # dict(pairs)/list(SEQ) is a constant, not a cache
     return False
 
 
@@ -173,6 +183,25 @@ class TestProcessCacheResetRoster:
         source = "from functools import lru_cache\n\n@lru_cache\ndef memoised():\n    return 1\n"
         discovered = discover_caches_in_source(source, "teatree.synthetic")
         assert discovered == {"teatree.synthetic:memoised": "lru_cache"}
+
+    def test_detector_flags_arg_carrying_cache_ctors(self) -> None:
+        # defaultdict(list) / deque(maxlen=8) / Counter() are empty-at-import caches
+        # even though they carry a factory/maxlen arg. The old "zero args" rule missed
+        # them, so a pk-keyed `_cache = defaultdict(list)` would have stayed GREEN. A
+        # data-iterable ctor (`list(SEQ)`) is a materialised constant, not discovered.
+        source = (
+            "from collections import Counter, defaultdict, deque\n"
+            "_by_key = defaultdict(list)\n"
+            "_recent = deque(maxlen=8)\n"
+            "_counts = Counter()\n"
+            "MATERIALISED = list(SOME_SEQUENCE)\n"
+        )
+        discovered = discover_caches_in_source(source, "teatree.synthetic")
+        assert discovered == {
+            "teatree.synthetic:_by_key": "container",
+            "teatree.synthetic:_recent": "container",
+            "teatree.synthetic:_counts": "container",
+        }
 
     def test_reset_functions_are_wired_into_conftest(self) -> None:
         conftest_source = _CONFTEST.read_text(encoding="utf-8")
