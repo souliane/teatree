@@ -33,6 +33,7 @@ quote-scanner's ``--quote-ok`` / ``QUOTE_OK=1`` escape hatch.
 """
 
 import os
+import sys
 import tempfile
 from pathlib import Path
 from typing import TypedDict
@@ -248,12 +249,14 @@ def scan_text(text: str, *, config_path: Path | None = None) -> str | None:
     :data:`UNRESOLVABLE_BODY_MARKER`. Both BLOCK; only the message differs. The
     sibling ``quote_scanner`` blocks on both sentinels too.
 
-    Returns ``None`` only on a genuine no-op (no config, no script — there is
+    Returns ``None`` only on a genuine no-op (nothing configured — there is
     nothing to scan, matching the shell hook's own no-op contract). A scanner
-    that was supposed to run but could NOT (a crashing interpreter, a timeout,
-    an unexpected exit, or an exit-1 with no parseable report) returns
-    :data:`SCANNER_UNAVAILABLE_MARKER` so the gate FAILS CLOSED — a security
-    gate that fails open on a crash is the bug class (#1954).
+    that was supposed to run but could NOT — a crashing interpreter, a timeout,
+    an unexpected exit, an exit-1 with no parseable report, OR a MISSING scanner
+    script while banned-terms is configured (HLG-7) — returns
+    :data:`SCANNER_UNAVAILABLE_MARKER` so the gate FAILS CLOSED, never a silent
+    clean scan: a security gate that fails open on a broken scanner is the bug
+    class (#1954).
     """
     if not text:
         return None
@@ -268,16 +271,33 @@ def _run_shell_scanner(text: str, config_path: Path | None) -> str | None:
     """Delegate ``text`` to ``check-banned-terms.sh``; return the matched term, else ``None``.
 
     Writes ``text`` to a temp file and invokes the shell scanner (which reads the
-    DB-home term list). Returns ``None`` on a genuine no-op (nothing configured /
-    no script). Returns :data:`SCANNER_UNAVAILABLE_MARKER` (the gate fails CLOSED)
-    when the scanner could not run. *config_path* overrides the DB path the shell
-    scanner reads (forwarded as ``T3_CONFIG_DB`` in the subprocess env).
+    DB-home term list). Returns ``None`` ONLY on a genuine no-op — nothing
+    configured, so there is nothing to scan. Returns
+    :data:`SCANNER_UNAVAILABLE_MARKER` (the gate fails CLOSED) when the scanner
+    could not run, INCLUDING a MISSING scanner script while banned-terms IS
+    configured (HLG-7): a missing script is a broken install, not a clean scan, so
+    it is failed loud + closed like a crashing interpreter (#1954) rather than
+    silently reporting clean. *config_path* overrides the DB path the shell scanner
+    reads (forwarded as ``T3_CONFIG_DB`` in the subprocess env).
     """
     if not _banned_terms_configured(config_path):
         return None
     script = _scanner_script()
     if not script.is_file():
-        return None
+        # banned-terms IS configured (checked above) but the scanner script is
+        # ABSENT — a broken install, not a clean scan. Silently returning ``None``
+        # made a missing script indistinguishable from a real clean scan, so a
+        # PUBLIC body slipped through unscanned (HLG-7). Fail LOUD + CLOSED like a
+        # crashing interpreter (#1954): a scanner that cannot run must never resolve
+        # to ALLOW. Never-lockout escapes remain (the ``ALLOW_BANNED_TERM=1``
+        # override, the ``banned_terms_gate_enabled`` kill-switch).
+        sys.stderr.write(
+            f"[teatree] NOTE: banned-terms scanner script is missing at {script} while "
+            "banned-terms is configured. Failing CLOSED rather than reporting a clean scan — "
+            "restore scripts/hooks/check-banned-terms.sh (or disable the gate) before posting "
+            "to a public surface.\n"
+        )
+        return SCANNER_UNAVAILABLE_MARKER
 
     with tempfile.NamedTemporaryFile("w", suffix=".txt", encoding="utf-8", delete=False) as fh:
         fh.write(text)
