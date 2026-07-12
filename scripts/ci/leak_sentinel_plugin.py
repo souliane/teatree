@@ -130,10 +130,20 @@ def pytest_configure(config: pytest.Config) -> None:
         config.pluginmanager.register(LeakSentinelPlugin(mode), "leak-sentinel-plugin")
 
 
+#: ``config.workeroutput`` key an xdist worker ships its serialised leaks under.
+_WORKEROUTPUT_KEY = "leak_sentinel_leaks"
+
+
 class LeakSentinelPlugin:
     def __init__(self, mode: str) -> None:
         self._mode = mode
+        #: Leaks detected in THIS process (populated at teardown). On an xdist
+        #: worker this is the worker-local set; on a serial run it is the whole set.
         self.leaks: list[tuple[str, LeakDiff]] = []
+        #: Leaks fanned IN from finished xdist workers (controller-side only). A
+        #: worker has no terminal, so its ``pytest_terminal_summary`` never fires;
+        #: without this fan-in warn-mode names no polluter under xdist (CI-1).
+        self._worker_leaks: list[tuple[str, str]] = []
 
     @pytest.hookimpl(hookwrapper=True)
     def pytest_runtest_setup(self, item: pytest.Item) -> "Generator[None, object]":  # noqa: PLR6301 — pytest invokes this hookimpl on the registered plugin INSTANCE; it must stay a method
@@ -159,9 +169,43 @@ class LeakSentinelPlugin:
             )
             raise LeakDetectedError(message)
 
+    def pytest_sessionfinish(self, session: pytest.Session) -> None:
+        """On an xdist worker, ship this worker's leaks to the controller (CI-1).
+
+        A worker has no terminal, so :meth:`pytest_terminal_summary` never fires on
+        it and its ``self.leaks`` would be lost — the warn-mode silent no-op under
+        xdist. xdist forwards ``config.workeroutput`` back to the controller (it
+        collects it in :meth:`pytest_testnodedown`); ``workeroutput`` exists ONLY on
+        a worker, so a serial / controller run skips this. Serialise to plain
+        ``(nodeid, description)`` string pairs — execnet marshals only basic types,
+        not the :class:`LeakDiff` dataclass.
+        """
+        workeroutput = getattr(session.config, "workeroutput", None)
+        if workeroutput is None:
+            return
+        workeroutput[_WORKEROUTPUT_KEY] = [(nodeid, diff.describe()) for nodeid, diff in self.leaks]
+
+    @pytest.hookimpl(optionalhook=True)
+    def pytest_testnodedown(self, node: object, error: object) -> None:  # noqa: ARG002 — xdist hookspec signature
+        """On the controller, collect a finished xdist worker's leak findings (CI-1).
+
+        Each worker ships its serialised leaks in ``node.workeroutput``; the
+        controller accumulates them so :meth:`pytest_terminal_summary` names every
+        polluter under xdist exactly as it does on a serial run. ``optionalhook``
+        keeps this a no-op when xdist is not installed (the hookspec is absent).
+        """
+        workeroutput = getattr(node, "workeroutput", None)
+        if not isinstance(workeroutput, dict):
+            return
+        for entry in workeroutput.get(_WORKEROUTPUT_KEY, ()):
+            nodeid, description = entry
+            self._worker_leaks.append((nodeid, description))
+
     def pytest_terminal_summary(self, terminalreporter: "TerminalReporter") -> None:
-        if not self.leaks:
+        findings: list[tuple[str, str]] = [(nodeid, diff.describe()) for nodeid, diff in self.leaks]
+        findings.extend(self._worker_leaks)
+        if not findings:
             return
         terminalreporter.section(f"leak sentinel ({self._mode})")
-        for nodeid, diff in self.leaks:
-            terminalreporter.write_line(f"POLLUTER {nodeid}: {diff.describe()}")
+        for nodeid, description in findings:
+            terminalreporter.write_line(f"POLLUTER {nodeid}: {description}")

@@ -1219,17 +1219,14 @@ class TestOverride:
 
 
 class TestScanTextNoOpWhenNothingToScan:
-    """A genuine no-op (no config, no script) returns None — there is nothing to scan.
+    """A genuine no-op (nothing CONFIGURED) returns None — there is nothing to scan.
 
-    These are NOT scanner failures: the missing-config / missing-script paths
-    mirror ``check-banned-terms.sh``'s own no-op contract (no config ⇒ exit 0).
-    A scanner *crash* is the opposite case and must fail CLOSED — see
+    This is NOT a scanner failure: with no ``banned_terms`` configured the gate
+    mirrors ``check-banned-terms.sh``'s own no-op contract (no config ⇒ exit 0). A
+    scanner *crash* — and a MISSING script while banned-terms IS configured (HLG-7)
+    — are the opposite case and must fail CLOSED; see
     ``TestScanTextScannerCrashFailsClosed``.
     """
-
-    def test_missing_script_is_a_noop(self, config: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setattr(banned_terms_scanner, "_scanner_script", lambda: Path("/nonexistent/check.sh"))
-        assert banned_terms_scanner.scan_text("acmecorp", config_path=config) is None
 
     def test_missing_config_is_a_noop(self, tmp_path: Path) -> None:
         assert banned_terms_scanner.scan_text("acmecorp", config_path=tmp_path / "absent.sqlite3") is None
@@ -1245,6 +1242,17 @@ class TestScanTextScannerCrashFailsClosed:
     now returns the ``SCANNER_UNAVAILABLE_MARKER`` (the gate blocks), instead
     of ``None`` (the gate allowed).
     """
+
+    def test_missing_script_while_configured_fails_closed(self, config: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        # A MISSING ``check-banned-terms.sh`` while banned-terms IS configured is a
+        # broken install, not a clean scan (HLG-7). Silently returning None made it
+        # indistinguishable from a real clean scan, slipping a PUBLIC body through
+        # unscanned; it now fails CLOSED like any other unrunnable scanner.
+        monkeypatch.setattr(banned_terms_scanner, "_scanner_script", lambda: Path("/nonexistent/check.sh"))
+        assert (
+            banned_terms_scanner.scan_text("acmecorp", config_path=config)
+            == banned_terms_scanner.SCANNER_UNAVAILABLE_MARKER
+        )
 
     def test_subprocess_oserror_fails_closed(self, config: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         def _boom(*_args: object, **_kwargs: object) -> None:

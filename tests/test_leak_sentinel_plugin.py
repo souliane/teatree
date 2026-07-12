@@ -72,10 +72,11 @@ def test_clean(monkeypatch, tmp_path):
 """
 
 
-def _run_toy_suite(tmp_path: Path, mode: str) -> subprocess.CompletedProcess[str]:
+def _run_toy_suite(tmp_path: Path, mode: str, *, xdist_workers: int = 0) -> subprocess.CompletedProcess[str]:
     (tmp_path / "test_toy_leaks.py").write_text(_LEAKY_SUITE, encoding="utf-8")
     env = dict(_clean_env())
     env["PYTHONPATH"] = str(_REPO_ROOT)
+    xdist_args = ["-n", str(xdist_workers), "--dist", "load"] if xdist_workers else ["-p", "no:xdist"]
     return subprocess.run(
         [
             sys.executable,
@@ -89,6 +90,7 @@ def _run_toy_suite(tmp_path: Path, mode: str) -> subprocess.CompletedProcess[str
             f"--leak-sentinel={mode}",
             "-p",
             "no:cacheprovider",
+            *xdist_args,
             "-o",
             "addopts=",
             "-q",
@@ -127,6 +129,33 @@ class TestSentinelNamesThePolluter:
         assert result.returncode == 0, combined
         assert "POLLUTER" not in combined
         assert "leak sentinel" not in combined
+
+
+@pytest.mark.integration
+class TestSentinelUnderXdist:
+    """Warn-mode findings must fan IN to the controller under xdist (CI-1).
+
+    Under xdist the leaks are detected on WORKERS, whose ``pytest_terminal_summary``
+    never fires (no terminal), so before the fix warn-mode named no polluter under
+    the exact sharded lane it instruments — a silent no-op. The worker→controller
+    ``workeroutput`` fan-in restores it.
+    """
+
+    def test_warn_mode_names_polluters_under_xdist(self, tmp_path: Path) -> None:
+        result = _run_toy_suite(tmp_path, "warn", xdist_workers=2)
+        combined = result.stdout + result.stderr
+        # warn mode still never reds the run, even under xdist.
+        assert result.returncode == 0, combined
+        # the summary printed on the CONTROLLER must name each worker-detected polluter.
+        assert "POLLUTER test_toy_leaks.py::test_env_polluter" in combined, combined
+        assert "_SENTINEL_LEAK" in combined, combined
+        assert "POLLUTER test_toy_leaks.py::test_cwd_polluter" in combined, combined
+
+    def test_error_mode_still_fails_the_polluter_under_xdist(self, tmp_path: Path) -> None:
+        result = _run_toy_suite(tmp_path, "error", xdist_workers=2)
+        combined = result.stdout + result.stderr
+        assert result.returncode != 0, combined
+        assert "leaked process-global state" in combined, combined
 
 
 def _clean_env() -> dict[str, str]:
