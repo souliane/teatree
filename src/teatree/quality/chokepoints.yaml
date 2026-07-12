@@ -71,3 +71,42 @@
     - souliane/teatree#128
     - souliane/teatree#1750
     - souliane/teatree#1877
+
+- id: forge-comment-write-seam
+  name: Colleague-visible forge body write (issue/PR comment, issue create/close/update)
+  concern: >
+    Every colleague-visible forge body — a PR/MR comment, an issue
+    create/comment/close/update — must first pass through the shared scanned
+    seam (teatree.core.send_proxy.route_forge_write, which runs the public-repo
+    leak gate + the #117 send-proxy audit/allowlist/redaction) BEFORE the backend
+    call, so a customer codename bound for a public forge is refused and every
+    write is audited. A NEW forge writer that calls a raw backend forge-write
+    method without routing through the seam is a leak bypass (the CC-1 test-plan
+    poster and the CC-2 dead-issue closer both did exactly this). A module is
+    added to allowed_modules only after it is verified to scrub via
+    route_forge_write first (or, for the reply transport, the equivalent
+    _enforce_privacy + _route_reply twin); the backend client modules are the
+    primitive layer the seam sits above.
+  match_kind: method
+  protected_attrs:
+    - post_pr_comment
+    - update_pr_comment
+    - post_issue_comment
+    - update_issue_comment
+    - close_issue
+    - create_issue
+    - update_issue
+  allowed_modules:
+    - teatree.backends.github.client
+    - teatree.backends.gitlab.client
+    - teatree.core.reply_transport
+    - teatree.core.review.review_findings
+    - teatree.core.management.commands.pr
+    - teatree.core.management.commands.ticket
+    - teatree.core.management.commands._test_plan.post
+    - teatree.loop.mechanical
+    - teatree.loops.dream.promote_memory
+    - teatree.loops.dream.umbrella_ledger
+    - teatree.mcp.services_forge
+  refs:
+    - souliane/teatree#117

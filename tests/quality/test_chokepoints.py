@@ -16,7 +16,7 @@ import pytest
 
 import scripts.hooks.check_chokepoints as checker
 from teatree.backends.slack.bot import SlackBotBackend
-from teatree.core.backend_protocols import MessagingBackend
+from teatree.core.backend_protocols import CodeHostBackend, MessagingBackend
 from teatree.quality.chokepoints import Chokepoint, ChokepointError, load_registry, registry_path
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -183,11 +183,71 @@ class TestCheckerBehavior:
         target.write_text("import subprocess\nsubprocess.run(['ls'])\n", encoding="utf-8")
         assert checker.main([str(target)]) == 0
 
+    def test_flags_close_issue_outside_the_forge_write_seam(
+        self, src_file: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        src_file.write_text("host.close_issue(issue_url='u', comment='leak Contoso')\n", encoding="utf-8")
+        assert checker.main([str(src_file)]) == 1
+        err = capsys.readouterr().err
+        assert "close_issue(...)" in err
+        assert "forge-comment-write-seam" in err
+
+    def test_flags_post_pr_comment_outside_the_forge_write_seam(
+        self, src_file: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        src_file.write_text("host.post_pr_comment(repo='o/r', pr_iid=1, body='raw')\n", encoding="utf-8")
+        assert checker.main([str(src_file)]) == 1
+        assert "forge-comment-write-seam" in capsys.readouterr().err
+
+    def test_flags_create_issue_outside_the_forge_write_seam(
+        self, src_file: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        src_file.write_text("host.create_issue(repo='o/r', title='t', body='b')\n", encoding="utf-8")
+        assert checker.main([str(src_file)]) == 1
+        assert "forge-comment-write-seam" in capsys.readouterr().err
+
+    def test_allows_forge_write_inside_a_scrubbing_seam_module(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.chdir(tmp_path)
+        target = tmp_path / "src" / "teatree" / "loop" / "mechanical.py"
+        target.parent.mkdir(parents=True)
+        target.write_text("host.close_issue(issue_url='u', comment=clean)\n", encoding="utf-8")
+        assert checker.main([str(target)]) == 0
+
+    def test_forge_write_method_definition_not_flagged(self, src_file: Path) -> None:
+        src_file.write_text("def close_issue(self, *, issue_url, comment=''):\n    return {}\n", encoding="utf-8")
+        assert checker.main([str(src_file)]) == 0
+
+
+_FORGE_WRITE_BODY_METHODS = frozenset(
+    {
+        "post_pr_comment",
+        "update_pr_comment",
+        "post_issue_comment",
+        "update_issue_comment",
+        "close_issue",
+        "create_issue",
+        "update_issue",
+    }
+)
+
 
 class TestSelfMaintenance:
     def test_subprocess_attrs_cover_historical_ban(self, registry: tuple[Chokepoint, ...]) -> None:
         entry = next(e for e in registry if e.id == "subprocess-egress")
         assert set(entry.protected_attrs) >= _HISTORICAL_SUBPROCESS_ATTRS
+
+    def test_forge_write_seam_covers_every_body_bearing_method(self, registry: tuple[Chokepoint, ...]) -> None:
+        """Every body-bearing CodeHostBackend forge-write method is pinned by the seam entry.
+
+        A new colleague-visible forge-write method added to the backend protocol
+        must be added to this chokepoint too, or a writer could reach it raw.
+        """
+        entry = next(e for e in registry if e.id == "forge-comment-write-seam")
+        assert set(entry.protected_attrs) == _FORGE_WRITE_BODY_METHODS
+        for method in _FORGE_WRITE_BODY_METHODS:
+            assert hasattr(CodeHostBackend, method), f"CodeHostBackend protocol has no {method}"
 
 
 class TestLoaderValidation:
