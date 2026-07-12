@@ -1,5 +1,6 @@
 """The board page + column poll partial render tickets grouped by FSM state (#3162)."""
 
+from django.contrib.auth import get_user_model
 from django.test import TestCase
 from django.urls import reverse
 
@@ -8,6 +9,8 @@ from teatree.dash.selectors import BOARD_COLUMNS
 from tests.factories import TicketFactory
 
 State = Ticket.State
+
+_NON_LOOPBACK = "203.0.113.7"
 
 
 class BoardPageTestCase(TestCase):
@@ -40,3 +43,28 @@ class BoardPageTestCase(TestCase):
         body = resp.content.decode()
         assert f'data-ticket="{keep.pk}"' in body
         assert "drop me" not in body
+
+
+class BoardAccessGateTestCase(TestCase):
+    """DASH-2: the board page + its poll partial carry the same loopback gate.
+
+    An off-loopback anonymous GET is refused with 403, exactly like every other dash view.
+    """
+
+    def test_off_loopback_anonymous_board_page_is_refused(self) -> None:
+        resp = self.client.get(reverse("dash:board"), REMOTE_ADDR=_NON_LOOPBACK)
+        assert resp.status_code == 403
+
+    def test_off_loopback_anonymous_columns_poll_is_refused(self) -> None:
+        resp = self.client.get(reverse("dash:board_columns"), REMOTE_ADDR=_NON_LOOPBACK)
+        assert resp.status_code == 403
+
+    def test_loopback_board_page_still_serves(self) -> None:
+        # 127.0.0.1 is the default test-client REMOTE_ADDR — the loopback bind the deploy relies on.
+        assert self.client.get(reverse("dash:board")).status_code == 200
+
+    def test_off_loopback_staff_user_passes_the_gate(self) -> None:
+        staff = get_user_model().objects.create_user("boardstaff", password="x", is_staff=True)
+        self.client.force_login(staff)
+        resp = self.client.get(reverse("dash:board"), REMOTE_ADDR=_NON_LOOPBACK)
+        assert resp.status_code == 200
