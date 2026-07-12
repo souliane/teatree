@@ -25,12 +25,14 @@ from django.utils import timezone
 
 from teatree.core.loop_lease_manager import T3_MASTER_SLOT, is_per_loop_owner_slot
 from teatree.core.models.loop_lease import LoopLease
-from teatree.loop.loop_state_db import loop_held_in_db
+from teatree.loop.loop_state_db import loop_held_in_db, loop_state_admits
+from teatree.loop.preset_resolution import preset_state_for, resolve_active_preset
 from teatree.loop.statusline_loops import _cadence_for_loop as cadence_for_loop
 from teatree.utils.singleton import pid_alive
 
 if TYPE_CHECKING:
     from teatree.core.models import Loop
+    from teatree.loop.preset_resolution import ActivePreset
 
 INFRA_SLOTS: tuple[str, ...] = (
     "loop-tick",
@@ -69,6 +71,11 @@ class LoopStatusEntry:
     cadence_seconds: int
     last_fired_at: dt.datetime | None
     next_fire_at: dt.datetime | None
+    #: The effective run verdict the tick actually gates on: NOT held, then the
+    #: #3159 preset mask (L3/L2) over the base ``enabled`` flag. Required — every
+    #: construction site resolves it, so a masked loop can never masquerade as a
+    #: running, counting-down loop (the drift #3159's single predicate exists to prevent).
+    admitted: bool
     held: bool = False
 
     @property
@@ -149,6 +156,9 @@ def _infra_entry(slot: str, lease: LoopLease | None) -> LoopStatusEntry:
         cadence_seconds=cadence,
         last_fired_at=acquired_at,
         next_fire_at=next_fire_at,
+        # An infra slot is always enabled and no preset masks it — its run verdict
+        # is simply "not held".
+        admitted=not held,
         held=held,
     )
 
@@ -180,22 +190,33 @@ def _mini_entries() -> tuple[LoopStatusEntry, ...]:
     (``loop_enabled`` = ``Loop.enabled`` AND not :func:`loop_held_in_db`), so a
     PAUSED loop — which keeps ``Loop.enabled=True`` and a live cadence anchor — is
     surfaced as held rather than masquerading as a running, counting-down loop.
+
+    ``admitted`` folds in the #3159 preset mask on top of held+enabled — the SAME
+    effective verdict the tick gates on. The active preset is resolved ONCE here,
+    so a preset-masked-off loop is reported un-admitted (no live countdown) and a
+    preset-forced-ON base-disabled loop is reported admitted (the tick will fire it).
     """
     from teatree.core.models import Loop  # noqa: PLC0415 — deferred: ORM import needs the app registry
 
-    entries = [
-        LoopStatusEntry(
-            name=loop.name,
-            kind=LoopKind.MINI,
-            enabled=loop.enabled,
-            cadence_seconds=_row_cadence_seconds(loop),
-            last_fired_at=loop.last_run_at,
-            next_fire_at=loop.next_run_at(),
-            held=loop_held_in_db(loop.name),
-        )
-        for loop in Loop.objects.all()
-    ]
+    active = resolve_active_preset()
+    entries = [_mini_entry(loop, active) for loop in Loop.objects.all()]
     return tuple(sorted(entries, key=operator.attrgetter("name")))
+
+
+def _mini_entry(loop: "Loop", active: "ActivePreset | None") -> LoopStatusEntry:
+    held = loop_held_in_db(loop.name)
+    return LoopStatusEntry(
+        name=loop.name,
+        kind=LoopKind.MINI,
+        enabled=loop.enabled,
+        cadence_seconds=_row_cadence_seconds(loop),
+        last_fired_at=loop.last_run_at,
+        next_fire_at=loop.next_run_at(),
+        admitted=loop_state_admits(
+            configured_enabled=loop.enabled, held=held, preset_state=preset_state_for(active, loop.name)
+        ),
+        held=held,
+    )
 
 
 def _owner_status(lease: LoopLease | None, now: dt.datetime, *, slot: str) -> LoopOwnerStatus:

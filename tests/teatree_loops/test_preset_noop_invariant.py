@@ -48,7 +48,7 @@ class TestEmptyTableNoOpInvariant(django.test.TestCase):
             if name in due_registry
             and (row := rows.get(name)) is not None
             and row.is_due(now)
-            and loop_state_admits(configured_enabled=row.enabled, held=name in held)
+            and loop_state_admits(configured_enabled=row.enabled, held=name in held, preset_state=None)
         }
 
     def test_admission_matches_base_two_plane_verdict(self) -> None:

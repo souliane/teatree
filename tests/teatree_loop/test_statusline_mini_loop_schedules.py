@@ -19,7 +19,7 @@ import datetime as dt
 import django.test
 from django.utils import timezone
 
-from teatree.core.models import Loop, LoopState, Prompt
+from teatree.core.models import Loop, LoopPreset, LoopPresetOverride, LoopState, Prompt
 from teatree.loop.statusline import mini_loops_anchor, set_mini_loop_schedules_reader
 from teatree.loops.schedule import mini_loop_schedules
 
@@ -87,6 +87,36 @@ class TestMiniLoopSchedulesFromLedger(django.test.TestCase):
         assert "review" not in names
         # The peer loop proves the schedule is non-empty (not a blanket exclude).
         assert "dispatch" in names
+
+
+@django.test.override_settings(USE_TZ=True, TIME_ZONE="UTC")
+class TestMiniLoopSchedulesHonourPresetMask(django.test.TestCase):
+    """The statusline countdown mirrors the #3159 preset mask, not just enabled+held.
+
+    A preset-masked-off loop must NOT show a live countdown for a tick that skips
+    it; a preset-forced-ON (base-disabled) loop MUST appear because the tick fires
+    it. Before this fix the ``enabled and not held`` filter got both wrong.
+    """
+
+    def _activate(self, preset_name: str, entries: dict[str, bool]) -> None:
+        LoopPreset.objects.create(name=preset_name, entries=entries)
+        LoopPresetOverride.objects.set_override(preset_name)
+
+    def test_preset_masked_off_loop_is_excluded(self) -> None:
+        Loop.objects.all().delete()
+        _make_loop("dispatch", 300, last_run_at=timezone.now())
+        _make_loop("review", 300, last_run_at=timezone.now())
+        self._activate("heads-down", {"review": False})
+        names = [name for name, _, _ in mini_loop_schedules()]
+        assert "review" not in names
+        assert "dispatch" in names
+
+    def test_preset_forced_on_base_disabled_loop_is_included(self) -> None:
+        Loop.objects.all().delete()
+        _make_loop("audit", 300, last_run_at=timezone.now(), enabled=False)
+        self._activate("engaged", {"audit": True})
+        names = [name for name, _, _ in mini_loop_schedules()]
+        assert "audit" in names
 
 
 @django.test.override_settings(USE_TZ=True)

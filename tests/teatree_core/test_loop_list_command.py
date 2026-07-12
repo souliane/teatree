@@ -21,7 +21,7 @@ import django.test
 from django.core.management import call_command
 from django.utils import timezone
 
-from teatree.core.models import Loop, LoopState, Prompt
+from teatree.core.models import Loop, LoopPreset, LoopPresetOverride, LoopState, Prompt
 from teatree.core.models.loop_lease import LoopLease
 
 _LIVE_PID = os.getpid()
@@ -199,6 +199,49 @@ class TestLoopListJson(django.test.TestCase):
         payload = json.loads(_run("--json"))
         dispatch = next(e for e in payload["mini_loops"] if e["name"] == "dispatch")
         assert dispatch["held"] is False
+
+
+@django.test.override_settings(USE_TZ=True, TIME_ZONE="UTC")
+class TestLoopListReflectsPresetMask(django.test.TestCase):
+    """#3159: the live view surfaces a preset mask, not just enabled+held.
+
+    A preset can mask a base-enabled loop OFF (or force a base-disabled loop ON)
+    with no ``LoopState`` hold, so the ``Held`` signal column — "will this tick" —
+    must reflect it instead of leaving a masked loop reading plainly ``enabled``.
+    """
+
+    def _activate(self, preset_name: str, entries: dict[str, bool]) -> None:
+        LoopPreset.objects.create(name=preset_name, entries=entries)
+        LoopPresetOverride.objects.set_override(preset_name)
+
+    def test_masked_off_loop_shows_masked(self) -> None:
+        Loop.objects.all().delete()
+        _make_loop("review", 300, last_run_at=timezone.now())
+        self._activate("heads-down", {"review": False})
+        line = next(ln for ln in _run().splitlines() if "review" in ln)
+        assert "masked" in line
+
+    def test_forced_on_base_disabled_loop_shows_forced_on(self) -> None:
+        Loop.objects.all().delete()
+        _make_loop("audit", 300, last_run_at=timezone.now(), enabled=False)
+        self._activate("engaged", {"audit": True})
+        line = next(ln for ln in _run().splitlines() if "audit" in ln)
+        assert "forced-on" in line
+
+    def test_plain_disabled_loop_is_not_labelled_masked(self) -> None:
+        Loop.objects.all().delete()
+        _make_loop("inbox", 300, enabled=False)
+        line = next(ln for ln in _run().splitlines() if "inbox" in ln)
+        assert "masked" not in line
+        assert "disabled" in line
+
+    def test_json_carries_admitted_verdict(self) -> None:
+        Loop.objects.all().delete()
+        _make_loop("review", 300, last_run_at=timezone.now())
+        self._activate("heads-down", {"review": False})
+        review = next(e for e in json.loads(_run("--json"))["mini_loops"] if e["name"] == "review")
+        assert review["admitted"] is False
+        assert review["enabled"] is True
 
 
 @django.test.override_settings(USE_TZ=True)
