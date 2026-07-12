@@ -13,6 +13,17 @@ down (so ``monkeypatch``'s own reversions are already applied). A mismatch is at
 to the test that produced it — the POLLUTER — turning a non-deterministic downstream
 red into a named, deterministic local failure.
 
+A per-test snapshot boundary is asymmetric for a MODULE / SESSION / CLASS / PACKAGE
+scoped fixture: it sets up during the FIRST test that uses it (after that test's
+baseline) and tears down during the LAST test (before that test's final snapshot), so a
+naive diff blames the first test for an ``env added`` and the last for an ``env removed``
+that the scoped fixture legitimately owns — a false positive on a well-behaved fixture.
+To avoid that the plugin watches ``pytest_fixture_setup`` / ``pytest_fixture_post_finalizer``
+for every non-function scope, records the exact env keys / cwd each scoped fixture owns,
+and excludes those from the per-test leak. A genuine per-test leak (a test body or a
+FUNCTION-scoped fixture that mutates env/cwd without restoring) is owned by no scoped
+fixture and is still flagged.
+
 Loaded opt-in via ``-p scripts.ci.leak_sentinel_plugin --leak-sentinel=<mode>``:
 
 - ``off`` (default) — the plugin registers nothing; zero overhead on a normal run.
@@ -72,6 +83,11 @@ class LeakDiff:
     def is_empty(self) -> bool:
         return not (self.env_added or self.env_removed or self.env_changed or self.cwd_from is not None)
 
+    @property
+    def all_env_keys(self) -> frozenset[str]:
+        """Every env key this diff touches (added, removed, or changed)."""
+        return frozenset(self.env_added) | frozenset(self.env_removed) | frozenset(self.env_changed)
+
     def describe(self) -> str:
         parts: list[str] = []
         if self.env_added:
@@ -90,14 +106,20 @@ def diff_snapshots(
     after: Snapshot,
     *,
     ignore: frozenset[str] = _VOLATILE_ENV_KEYS,
+    ignore_cwd: bool = False,
 ) -> LeakDiff:
-    """The process-global surface *after* left dirty relative to *before* (ignoring volatile keys)."""
+    """The process-global surface *after* left dirty relative to *before*.
+
+    ``ignore`` drops env keys never treated as a leak (volatile pytest keys, plus
+    keys a module/session-scoped fixture legitimately owns — see the plugin).
+    ``ignore_cwd`` suppresses the cwd delta when a scoped fixture owns the cwd change.
+    """
     before_env = {k: v for k, v in before.env.items() if k not in ignore}
     after_env = {k: v for k, v in after.env.items() if k not in ignore}
     added = tuple(sorted(set(after_env) - set(before_env)))
     removed = tuple(sorted(set(before_env) - set(after_env)))
     changed = tuple(sorted(k for k in set(before_env) & set(after_env) if before_env[k] != after_env[k]))
-    cwd_changed = before.cwd != after.cwd
+    cwd_changed = (not ignore_cwd) and before.cwd != after.cwd
     return LeakDiff(
         env_added=added,
         env_removed=removed,
@@ -144,13 +166,64 @@ class LeakSentinelPlugin:
         #: worker has no terminal, so its ``pytest_terminal_summary`` never fires;
         #: without this fan-in warn-mode names no polluter under xdist (CI-1).
         self._worker_leaks: list[tuple[str, str]] = []
+        #: Env keys / cwd each CURRENTLY-ACTIVE non-function-scoped fixture owns,
+        #: keyed by ``id(fixturedef)``. Populated when the scoped fixture sets up and
+        #: dropped when it finalizes, so the per-test diff never blames a scope
+        #: transition (first/last test of a module/session) on the test (CI-8).
+        self._scoped_owned: dict[int, tuple[frozenset[str], bool]] = {}
+        #: Env keys / cwd released by a scoped fixture DURING the current test's
+        #: teardown (the last test of its scope). Reset each test; excluded from that
+        #: test's diff so the fixture's teardown is not mistaken for a per-test leak.
+        self._released_env: set[str] = set()
+        self._released_cwd = False
 
     @pytest.hookimpl(hookwrapper=True)
-    def pytest_runtest_setup(self, item: pytest.Item) -> "Generator[None, object]":  # noqa: PLR6301 — pytest invokes this hookimpl on the registered plugin INSTANCE; it must stay a method
+    def pytest_runtest_setup(self, item: pytest.Item) -> "Generator[None, object]":
         # Pre-yield: BEFORE this item's fixtures set up, so the baseline predates any
         # monkeypatch-managed env/cwd the fixtures install (they revert symmetrically).
         item.stash[_BEFORE_KEY] = Snapshot.capture()
+        # Reset the per-test "released by a scoped fixture" record: the last-in-scope
+        # teardown that fires during THIS test's teardown populates it (below).
+        self._released_env = set()
+        self._released_cwd = False
         yield
+
+    @pytest.hookimpl(hookwrapper=True)
+    def pytest_fixture_setup(self, fixturedef: "pytest.FixtureDef[object]") -> "Generator[None, object]":
+        # A module/session/class/package-scoped fixture sets up ONCE, during the first
+        # test that uses it — after that test's baseline snapshot. Record exactly the
+        # env keys / cwd it introduces so the per-test diff does not blame that first
+        # test for state the fixture owns. Function-scoped fixtures revert per-test and
+        # need no tracking (a broken one that leaks is a real per-test leak).
+        if getattr(fixturedef, "scope", "function") == "function":
+            yield
+            return
+        before = Snapshot.capture()
+        yield
+        owned = diff_snapshots(before, Snapshot.capture())
+        if not owned.is_empty:
+            self._scoped_owned[id(fixturedef)] = (owned.all_env_keys, owned.cwd_from is not None)
+
+    @pytest.hookimpl
+    def pytest_fixture_post_finalizer(self, fixturedef: "pytest.FixtureDef[object]") -> None:
+        # A scoped fixture tears down during the LAST test of its scope. Drop it from
+        # the active-ownership set and mark its keys/cwd as released THIS test, so that
+        # test's diff excludes the fixture's teardown (an ``env removed`` it owns) too.
+        owned = self._scoped_owned.pop(id(fixturedef), None)
+        if owned is None:
+            return
+        owned_env, owns_cwd = owned
+        self._released_env |= set(owned_env)
+        self._released_cwd = self._released_cwd or owns_cwd
+
+    def _scoped_ignored(self) -> tuple[frozenset[str], bool]:
+        """Env keys / cwd currently owned by an active scoped fixture, plus any released this test."""
+        active_env: set[str] = set(self._released_env)
+        active_cwd = self._released_cwd
+        for owned_env, owns_cwd in self._scoped_owned.values():
+            active_env |= set(owned_env)
+            active_cwd = active_cwd or owns_cwd
+        return frozenset(active_env), active_cwd
 
     @pytest.hookimpl(hookwrapper=True)
     def pytest_runtest_teardown(self, item: pytest.Item) -> "Generator[None, object]":
@@ -158,7 +231,13 @@ class LeakSentinelPlugin:
         before = item.stash.get(_BEFORE_KEY, None)
         if before is None:
             return
-        diff = diff_snapshots(before, Snapshot.capture())
+        scoped_env, scoped_cwd = self._scoped_ignored()
+        diff = diff_snapshots(
+            before,
+            Snapshot.capture(),
+            ignore=_VOLATILE_ENV_KEYS | scoped_env,
+            ignore_cwd=scoped_cwd,
+        )
         if diff.is_empty:
             return
         self.leaks.append((item.nodeid, diff))
