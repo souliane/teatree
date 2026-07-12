@@ -21,6 +21,7 @@ when there is genuinely no resolvable session id anywhere.
 """
 
 import json
+from collections.abc import Callable
 from typing import Annotated
 
 import typer
@@ -136,7 +137,7 @@ def _claim(command: TyperCommand, slot: str, *, take_over: bool, driver: str, js
         stderr_write(_DRIVERLESS_WARNING.format(slot=slot))
 
 
-def _owner(slot: str, *, json_output: bool, stdout_write) -> None:  # noqa: ANN001 — untyped by design: a duck-typed handle passed positionally
+def _owner(slot: str, *, json_output: bool, stdout_write: Callable[[str], object]) -> None:
     from teatree.core.models import LoopLease  # noqa: PLC0415 — deferred: ORM import needs the app registry
     from teatree.loop.session_identity import current_session_id  # noqa: PLC0415 — deferred: keeps command import light
 
@@ -171,7 +172,7 @@ def _owner(slot: str, *, json_output: bool, stdout_write) -> None:  # noqa: ANN0
         stdout_write(f"OWNER {slot}: unclaimed (no live owner).")
 
 
-def _whoami(*, json_output: bool, stdout_write) -> None:  # noqa: ANN001 — untyped by design: a duck-typed handle passed positionally
+def _whoami(*, json_output: bool, stdout_write: Callable[[str], object]) -> None:
     """Print this Claude session's own id — the hand-off ``--to`` target."""
     from teatree.loop.driver_detection import detect_driver  # noqa: PLC0415 — deferred
     from teatree.loop.session_identity import current_session_id  # noqa: PLC0415 — deferred: keeps command import light
@@ -188,7 +189,7 @@ def _whoami(*, json_output: bool, stdout_write) -> None:  # noqa: ANN001 — unt
         stdout_write("(no Claude session id — not running inside a Claude Code session)")
 
 
-def _release(slot: str, *, json_output: bool, stdout_write) -> None:  # noqa: ANN001 — untyped by design: a duck-typed handle passed positionally
+def _release(slot: str, *, json_output: bool, stdout_write: Callable[[str], object]) -> None:
     from teatree.core.models import LoopLease  # noqa: PLC0415 — deferred: ORM import needs the app registry
     from teatree.loop.session_identity import current_session_id  # noqa: PLC0415 — deferred: keeps command import light
 
