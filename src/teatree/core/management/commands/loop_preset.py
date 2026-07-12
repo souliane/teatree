@@ -33,6 +33,18 @@ def _parse_duration(raw: str) -> dt.timedelta:
     return dt.timedelta(seconds=int(match.group(1)) * _DURATION_UNIT_SECONDS[match.group(2)])
 
 
+def _parse_expiry(raw: str) -> dt.datetime | None:
+    """Resolve an expiry spec: a TTL (``2h``) from now, else an ISO-8601 instant, else ``None``.
+
+    The one ``--for``/``--until`` input accepts either spelling — a relative TTL or an
+    absolute instant — so the two-flag alias never depends on which name the user typed.
+    """
+    try:
+        return timezone.now() + _parse_duration(raw)
+    except ValueError:
+        return _parse_iso(raw)
+
+
 def _apply_entry_edits(entries: object, edits: list[str]) -> dict[str, bool]:
     """Fold ``inbox=on`` / ``review=off`` / ``dream=inherit`` edits into *entries* (a copy).
 
@@ -108,19 +120,19 @@ class Command(TyperCommand):
         self,
         name: Annotated[str, typer.Argument(help="Preset to activate as a manual override.")],
         *,
-        for_: Annotated[str, typer.Option("--for", help="TTL like 2h/30m/1d (default: until the next boundary).")] = "",
-        until: Annotated[str, typer.Option("--until", help="Explicit ISO-8601 expiry instant.")] = "",
+        expiry: Annotated[str, typer.Option("--for", "--until", help="TTL (2h/30m/1d) or ISO-8601 instant.")] = "",
         hold: Annotated[bool, typer.Option("--hold", help="Sticky: hold until explicitly cleared.")] = False,
+        reason: Annotated[str, typer.Option("--reason", help="Audit note on the active-preset WHY line.")] = "",
         json_output: Annotated[bool, typer.Option("--json", help="Emit JSON.")] = False,
     ) -> None:
         """Activate *name* as the L3 manual override (default: until the next scheduled boundary)."""
         if LoopPreset.objects.by_name(name) is None:
             self._refuse(f"no preset named {name!r} — run `t3 loop preset list`", json_output=json_output)
-        until_dt = self._resolve_until(for_=for_, until=until, hold=hold, json_output=json_output)
-        LoopPresetOverride.objects.set_override(name, until=until_dt)
+        until_dt = self._resolve_until(expiry=expiry, hold=hold, json_output=json_output)
+        LoopPresetOverride.objects.set_override(name, until=until_dt, reason=reason)
         window = "held until cleared" if until_dt is None else f"until {until_dt.isoformat()}"
         self._emit(
-            {"preset": name, "until": until_dt.isoformat() if until_dt else None},
+            {"preset": name, "until": until_dt.isoformat() if until_dt else None, "reason": reason},
             f"loop preset {name!r} active ({window}).",
             json_output=json_output,
         )
@@ -236,18 +248,14 @@ class Command(TyperCommand):
             state = "run" if verdict.admitted else "masked"
             self.stdout.write(f"  {verdict.name:<22} {state:<7} [{verdict.layer}] {verdict.detail}")
 
-    def _resolve_until(self, *, for_: str, until: str, hold: bool, json_output: bool) -> dt.datetime | None:
+    def _resolve_until(self, *, expiry: str, hold: bool, json_output: bool) -> dt.datetime | None:
         if hold:
             return None
-        if for_:
-            try:
-                return timezone.now() + _parse_duration(for_)
-            except ValueError as exc:
-                self._refuse(str(exc), json_output=json_output)
-        if until:
-            parsed = _parse_iso(until)
+        if expiry:
+            parsed = _parse_expiry(expiry)
             if parsed is None:
-                self._refuse(f"invalid --until {until!r}; use ISO-8601", json_output=json_output)
+                msg = f"invalid --for/--until {expiry!r}; use a TTL (2h/30m/1d) or ISO-8601"
+                self._refuse(msg, json_output=json_output)
             return parsed
         return next_boundary()
 

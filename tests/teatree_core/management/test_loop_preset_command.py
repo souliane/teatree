@@ -69,6 +69,27 @@ class TestLoopPresetCommand(django.test.TestCase):
         _run("use", "engaged", "--for", "2h")
         assert LoopPresetOverride.objects.current().until is not None
 
+    def test_use_with_until_iso_instant_still_works(self) -> None:
+        # --until remains a valid spelling of the unified expiry input.
+        LoopPreset.objects.create(name="engaged", entries={})
+        _run("use", "engaged", "--until", "2099-01-01T00:00:00+00:00")
+        until = LoopPresetOverride.objects.current().until
+        assert until is not None
+        assert until.year == 2099
+
+    def test_use_records_reason_and_show_surfaces_it(self) -> None:
+        # LP-6: --reason is stored on the override and rendered on the active WHY line.
+        LoopPreset.objects.create(name="engaged", entries={})
+        _run("use", "engaged", "--hold", "--reason", "release freeze")
+        assert LoopPresetOverride.objects.current().reason == "release freeze"
+        payload = json.loads(_run("show", json_output=True))
+        assert "release freeze" in payload["active"]["reason"]
+
+    def test_use_without_reason_leaves_it_blank(self) -> None:
+        LoopPreset.objects.create(name="engaged", entries={})
+        _run("use", "engaged", "--hold")
+        assert LoopPresetOverride.objects.current().reason == ""
+
     def test_use_refuses_unknown_preset(self) -> None:
         with pytest.raises(SystemExit):
             _run("use", "ghost")

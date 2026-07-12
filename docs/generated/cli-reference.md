@@ -4092,11 +4092,11 @@ Usage: t3 loop preset use [OPTIONS] NAME
 │ *    name      TEXT  [required]                                              │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
-│ --for          TEXT  TTL like 2h/30m/1d.                                     │
-│ --until        TEXT  Explicit ISO-8601 expiry.                               │
-│ --hold               Sticky until cleared.                                   │
+│ --for,--until        TEXT  TTL (2h/30m/1d) or ISO-8601 instant.              │
+│ --hold                     Sticky until cleared.                             │
+│ --reason             TEXT  Audit note on the active-preset WHY line.         │
 │ --json                                                                       │
-│ --help               Show this message and exit.                             │
+│ --help                     Show this message and exit.                       │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
