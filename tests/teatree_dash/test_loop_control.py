@@ -1,6 +1,7 @@
 """Loop-control read model: effective verdict + deciding layer, and the action dispatch (#3162)."""
 
 import datetime as dt
+from unittest.mock import patch
 
 import pytest
 from django.test import TestCase, override_settings
@@ -10,6 +11,7 @@ from teatree.core.models.loop import Loop
 from teatree.core.models.loop_state import LoopState, LoopStatus
 from teatree.dash import loop_control
 from teatree.loop.preset_resolution import ACTIVE_SCHEDULE_SETTING
+from teatree.loops.preset_status import LoopVerdict
 
 
 def _make_loop(name: str = "dashloop") -> Loop:
@@ -89,6 +91,18 @@ class LoopRowsPresetMaskTestCase(TestCase):
         assert row.effective is False
         assert "L2 schedule" in row.deciding_layer
         assert "masked" in row.deciding_layer
+
+
+class LoopRowsRaceSafetyTestCase(TestCase):
+    """A verdict whose ``Loop`` row vanished between the two reads is skipped, not a KeyError."""
+
+    def test_verdict_without_a_loop_row_is_skipped(self) -> None:
+        _make_loop("present")
+        phantom = LoopVerdict(name="ghost-loop", admitted=True, layer="base", detail="Loop.enabled")
+        real = LoopVerdict(name="present", admitted=True, layer="base", detail="Loop.enabled")
+        with patch("teatree.dash.loop_control.effective_verdicts", return_value=[phantom, real]):
+            names = {row.name for row in loop_control.build_loop_rows()}
+        assert names == {"present"}
 
 
 class ApplyLoopActionTestCase(TestCase):

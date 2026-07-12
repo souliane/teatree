@@ -87,13 +87,15 @@ def build_loop_rows() -> tuple[LoopRow, ...]:
     :func:`teatree.loops.preset_status.effective_verdicts`, so the dashboard never
     recomputes an admission verdict that could drift from the tick. Display fields
     (description, cadence, the paused-vs-disabled hold status) are joined by name
-    from one ``Loop`` and one ``LoopState`` read.
+    from one ``Loop`` and one ``LoopState`` read; a verdict whose ``Loop`` row
+    vanished between the two reads is skipped rather than raising.
     """
     loops = {loop.name: loop for loop in Loop.objects.all()}
     status_by_name = {row.name: row.status for row in LoopState.objects.all()}
     return tuple(
-        _loop_row(loops[verdict.name], status_by_name.get(verdict.name, LoopStatus.ENABLED.value), verdict)
+        _loop_row(loop, status_by_name.get(verdict.name, LoopStatus.ENABLED.value), verdict)
         for verdict in effective_verdicts()
+        if (loop := loops.get(verdict.name)) is not None
     )
 
 
