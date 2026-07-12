@@ -293,8 +293,8 @@ class SlackBotBackend:  # noqa: PLR0904 — method count reflects the MessagingB
         Socket Mode receiver delivers events in real time, so the queue
         only ever holds events that arrived after the previous tick. The
         read is a snapshot so every scanner sharing this backend sees the
-        same batch within a tick; the buffer rolls on the next enqueue
-        (#1655).
+        same batch within a tick, frozen at the first snapshot; the buffer
+        rolls on the next ``inbound.begin_tick`` (#1655).
         """
         _ = since
         return self._inbound.snapshot_mentions()
@@ -346,7 +346,7 @@ class SlackBotBackend:  # noqa: PLR0904 — method count reflects the MessagingB
         only holds events that arrived after the previous tick. The read is
         a snapshot so ``SlackReviewIntentScanner`` and ``RedCardScanner``
         each see the same batch within a tick rather than the first one
-        draining it (#1655); the buffer rolls on the next enqueue.
+        draining it (#1655); the buffer rolls on the next ``inbound.begin_tick``.
         """
         _ = since
         return self._inbound.snapshot_reactions()
