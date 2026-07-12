@@ -361,6 +361,26 @@ class TestOverlayConfig(TestCase):
         assert config._secret_registry() == {"aaa_token": "store/aaa"}
         assert config.zzz_plain_setting == "plain"
 
+    def test_callable_assigned_to_declared_field_fails_loud(self) -> None:
+        # A callable assigned to a DECLARED typed field must NOT bypass Pydantic
+        # validation: ``__setattr__`` routes callables past validation only for
+        # non-field names (per-instance method overrides). Assigning a callable to
+        # ``gitlab_url`` (a ``str`` field) has to raise so a settings module that
+        # mistakenly supplies a callable for a typed field fails loud, not silently
+        # corrupt the config.
+        config = OverlayConfig()
+        with pytest.raises(ValidationError):
+            config.gitlab_url = lambda: "https://example.test"  # type: ignore[assignment]
+
+    def test_callable_assigned_to_non_field_shadows_class_method(self) -> None:
+        # The legitimate idiom must still work: a callable assigned to a NON-field
+        # name (a method / helper, not a declared field) lands in the instance
+        # ``__dict__`` and shadows the class attribute exactly as normal Python
+        # attribute resolution does.
+        config = OverlayConfig()
+        config.get_review_channel = lambda: ("chan", "C123")  # type: ignore[method-assign]
+        assert config.get_review_channel() == ("chan", "C123")
+
     def test_apply_toml_overrides_after_init_overwrites_subclass_defaults(self) -> None:
         # Subclasses that pass only ``settings_module`` (like AcmeConfig) miss
         # TOML overrides unless apply_toml_overrides is called explicitly.

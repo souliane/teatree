@@ -226,15 +226,20 @@ class OverlayConfig(BaseModel):
 
     def __setattr__(self, name: str, value: object) -> None:
         # Route past Pydantic's field machinery for the two overlay-config idioms
-        # a plain object supports but a strict model does not: private state
-        # (secret holders, caches — single-underscore names) and per-instance
-        # method overrides (``config.get_review_channel = lambda: ...`` in tests /
-        # dynamic overlays). Both land in the instance ``__dict__`` via
+        # a plain object supports but a strict model does not — but ONLY for names
+        # that are not declared model fields: private state (secret holders,
+        # caches — single-underscore names) and per-instance method overrides
+        # (``config.get_review_channel = lambda: ...`` in tests / dynamic
+        # overlays). Both land in the instance ``__dict__`` via
         # ``object.__setattr__`` so a callable override shadows the class method
-        # exactly as normal Python attribute resolution does. Dunder
-        # ``__pydantic_*`` internals and real data fields still go through the
-        # model machinery (type validation preserved — the fail-closed contract).
-        if (name.startswith("_") and not name.startswith("__")) or callable(value):
+        # exactly as normal Python attribute resolution does. A DECLARED field
+        # ALWAYS takes the validated model path, even when the assigned value is a
+        # callable — so a settings module that assigns a callable to a typed field
+        # fails LOUD (the fail-closed contract) instead of silently bypassing
+        # validation. Dunder ``__pydantic_*`` internals and real data fields keep
+        # the validated path.
+        fields = type(self).model_fields
+        if name not in fields and ((name.startswith("_") and not name.startswith("__")) or callable(value)):
             object.__setattr__(self, name, value)
         else:
             # Pydantic's ``validate_assignment`` path REBUILDS ``__dict__`` from
@@ -246,7 +251,6 @@ class OverlayConfig(BaseModel):
             # plain assignment survived — every earlier credential (e.g. a
             # ``gitlab_token``) silently resolved to ``""``. Snapshot the
             # non-field entries and restore any the rebuild dropped.
-            fields = type(self).model_fields
             plain_entries = {
                 key: kept for key, kept in self.__dict__.items() if key not in fields and not key.startswith("__")
             }
