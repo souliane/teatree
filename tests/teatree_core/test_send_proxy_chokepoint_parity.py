@@ -24,21 +24,33 @@ from teatree.types import RawAPIDict
 
 SRC = pathlib.Path(__file__).resolve().parents[2] / "src" / "teatree"
 
-#: The chokepoints B4 enumerates — Slack (notify / on-behalf egress / reply
-#: transport) and forge comments (the review send-routing helper the service
-#: delegates its live posts to).
-_CHOKEPOINTS = (
+#: The Slack chokepoints B4 enumerates — notify / on-behalf egress / reply
+#: transport route through the send-proxy (:func:`route_send`) directly.
+_SEND_PROXY_CHOKEPOINTS = (
     "core/notify.py",
     "core/on_behalf_egress.py",
     "core/reply_transport.py",
-    "cli/review/send_routing.py",
 )
 
+#: The forge-comment chokepoint routes through the STRICTLY STRONGER scanned
+#: seam (:func:`route_forge_write` = public-repo leak gate + the #117 send-proxy),
+#: not a bare :func:`route_send`, so an MR comment can never reach a colleague
+#: surface on the send-proxy-only path that skips the leak scan (CC-4).
+_FORGE_WRITE_CHOKEPOINTS = ("cli/review/send_routing.py",)
 
-@pytest.mark.parametrize("relative", _CHOKEPOINTS)
-def test_chokepoint_routes_through_the_proxy(relative: str) -> None:
+
+@pytest.mark.parametrize("relative", _SEND_PROXY_CHOKEPOINTS)
+def test_slack_chokepoint_routes_through_the_proxy(relative: str) -> None:
     source = (SRC / relative).read_text()
     assert "route_send" in source, f"{relative} does not route through send_proxy.route_send"
+
+
+@pytest.mark.parametrize("relative", _FORGE_WRITE_CHOKEPOINTS)
+def test_forge_comment_chokepoint_routes_through_the_scanned_seam(relative: str) -> None:
+    source = (SRC / relative).read_text()
+    assert "route_forge_write" in source, (
+        f"{relative} does not route through the scanned forge-write seam send_proxy.route_forge_write"
+    )
 
 
 class TestNotifyUserRoutesThroughProxy(TestCase):
