@@ -12,9 +12,11 @@ already exist? It does not — and the reason is the name reuse, not ``replaces`
 Django's executor keys applied state on ``(app_label, name)``. Because the squash
 kept the name ``0001_initial``, the recorded ``(core, 0001_initial)`` row marks
 the new squashed node applied (a no-op); the executor never re-runs its
-``CreateModel`` ops. The two post-squash ``AddField`` migrations (``0002``/``0003``)
-then apply cleanly onto the already-present ``teatree_implemented_issue_marker``
-table.
+``CreateModel`` ops. The post-squash migrations (``0002``..``0008`` — the numbering
+skips ``0006``, see those files' headers; the dependency chain stays linear) then
+apply cleanly on top: ``0002``/``0003`` AddField the two fleet columns onto the
+already-present ``teatree_implemented_issue_marker`` table, and ``0004``/``0005``/
+``0007``/``0008`` add fields to (or create) their own tables.
 
 This gate proves both paths empirically and is anti-vacuous:
 ``test_old_chain_db_bricks_when_initial_record_name_does_not_match`` shows the
@@ -168,8 +170,9 @@ class TestSquashMigratesCleanBothWays(TransactionTestCase):
         """Path (b): a DB carrying the recorded old chain migrates without a brick.
 
         The new ``migrate`` must skip the squashed ``0001_initial`` (its name is
-        already recorded) and apply only the two post-squash AddFields onto the
-        existing marker table — no ``CREATE``-existing-table, no lost data.
+        already recorded) and apply the post-squash migrations on top — the
+        ``0002``/``0003`` AddFields land the fleet columns onto the existing marker
+        table with no ``CREATE``-existing-table and no lost data.
         """
         self._reset_to_old_chain_install()
         assert _CLAIMED_BY_INSTANCE not in self._marker_columns()  # 0043 install lacks the fleet columns
