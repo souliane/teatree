@@ -563,7 +563,10 @@ jobs:
   # previously-unrecorded `tests/quality` + doctest items). This job unions them
   # back into one complete file and, ONLY when the drift gate fires (test set
   # changed, or aggregate per-test time moved past the threshold — never on pure
-  # jitter), opens/updates a single dated refresh PR a human reviews and merges.
+  # jitter), opens/updates ONE single refresh PR a human reviews and merges.
+  # The refresh branch name is STABLE (`ci/test-durations-refresh`) and force-
+  # updated, so an unmerged refresh is UPDATED in place instead of stacking a new
+  # dated PR every day (which piled up conflicting PRs — #3160 residual CI-3).
   # Never gates a PR; a merge failure or empty diff is a no-op.
   refresh-durations:
     needs: test-shard
@@ -605,7 +608,9 @@ jobs:
             echo "No net change to dev/.test_durations — nothing to open."
             exit 0
           fi
-          BRANCH="chore/refresh-test-durations-$(date +%Y-%m-%d)"
+          # STABLE branch (CI-3): reused + force-updated so there is at most ONE open
+          # refresh PR, updated in place — never a new dated branch/PR each unmerged day.
+          BRANCH="ci/test-durations-refresh"
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git checkout -B "$BRANCH"
