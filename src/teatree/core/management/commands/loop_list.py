@@ -57,8 +57,17 @@ def _next_tick_label(entry: LoopStatusEntry, now: dt.datetime) -> str:
 def _held_cell(entry: LoopStatusEntry) -> str:
     if entry.kind.value == "infra-slot":
         return "held" if entry.held else "idle"
-    # A held mini-loop keeps enabled=True + a live countdown — the marker is its only "won't tick" signal.
-    return "held" if entry.held else ""
+    if entry.held:
+        # A held mini-loop keeps enabled=True + a live countdown — the marker is its only "won't tick" signal.
+        return "held"
+    # A #3159 preset can flip a mini-loop with NO LoopState hold: the disagreement
+    # between the effective `admitted` verdict and the base `enabled` flag is the
+    # preset's doing — masking a base-enabled loop off, or forcing a base-disabled one on.
+    if entry.enabled and not entry.admitted:
+        return "masked"
+    if not entry.enabled and entry.admitted:
+        return "forced-on"
+    return ""
 
 
 def _entry_row(entry: LoopStatusEntry, now: dt.datetime) -> list[str]:
@@ -140,6 +149,7 @@ def _entry_payload(entry: LoopStatusEntry, now: dt.datetime) -> dict[str, Any]:
         "name": entry.name,
         "kind": entry.kind.value,
         "enabled": entry.enabled,
+        "admitted": entry.admitted,
         "cadence_seconds": entry.cadence_seconds,
         "last_fired_at": entry.last_fired_at.isoformat() if entry.last_fired_at else "",
         "age_seconds": entry.age_seconds(now),
