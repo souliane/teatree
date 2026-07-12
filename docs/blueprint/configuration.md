@@ -312,8 +312,12 @@ The active overlay is resolved via (in order): `T3_OVERLAY_NAME` env var
 single installed overlay.
 
 Overridable keys live in `OVERLAY_OVERRIDABLE_SETTINGS` in
-`src/teatree/config.py`. The registry is the single source of truth — the table
-below mirrors it; consult the dataclass for type signatures and defaults.
+`src/teatree/config/settings.py`, alongside the gate-flag and registry settings
+`t3 <overlay> config_setting set` also accepts (`COLD_HOOK_SETTINGS` in
+`config/cold_hook_settings.py`, `REGISTRY_SETTINGS` in `config/registries.py`).
+The code registries are the single source of truth — the curated table below
+explains why representative keys are per-overlay-overridable; consult the
+registries for the full set, type signatures, and defaults.
 
 | Key | Why overridable |
 |-----|------------------|
@@ -330,7 +334,7 @@ below mirrors it; consult the dataclass for type signatures and defaults.
 | `missing_issue_ref_policy` | What to do when a commit/MR needs an issue ref and none is in hand: `find_existing_then_ask` (default) / `create` / `dummy`. Scoped per overlay so a colleague-facing client overlay stays on the never-create default while a personal one can opt into `create`. The default always recovers the original existing issue first, then ASKs on a colleague-facing repo and CREATEs on the user's own repo — never a dummy. `create` / `dummy` are opt-in and authorise auto-create / a placeholder ref on colleague repos too. Resolved by `teatree.missing_issue_policy.resolve_missing_issue_verdict`; `T3_MISSING_ISSUE_POLICY` env wins; agent prose in `skills/ship/SKILL.md` § 0a |
 | `on_behalf_auto_actions` | Allowlist of on-behalf actions that PROCEED even under `ask`/`draft_or_ask` (default `["post_e2e_evidence"]`): the user's own-ticket self-documentation, not a colleague-facing voice, so they never need per-post approval. Clear to `[]` to re-gate test plan; env `T3_ON_BEHALF_AUTO_ACTIONS` (comma-separated) wins |
 | `review_request_post_disabled` | Whether agent-driven review-request posting is BLOCKED for this overlay (#2579, replacing the deleted `agent_review_request_disabled` side flag). Resolved off the autonomy TIER by `_apply_autonomy`: the `notify` tier sets it `true` so `resolve_on_behalf_verdict("review_request_post")` BLOCKs **regardless of `on_behalf_post_mode`** (including the `immediate` value the collapse forces); the `full` tier leaves it `false` (review-request proceeds); `babysit` keeps the default `false` so review-request follows `on_behalf_post_mode`. The customer-overlay done-definition gate: an overlay running `notify` stops at "MR is mergeable + review-requestable" and never auto-requests review. An explicit per-overlay pin always wins (Option A — the per-overlay escape): a `full` overlay can pin `true` to suppress auto-request, a `notify` overlay can pin `false` to opt back in. Orthogonal to `require_human_approval_to_merge` (which gates merge, not the review-request post). Scoped per overlay |
-| `notify_user_via_bot` | Whether the bot→operator `notify_user(...)` channel (#963) DMs the user via the overlay's Slack bot (out of scope for the on-behalf gates — see config.py for the boundary) |
+| `notify_user_via_bot` | Whether the bot→operator `notify_user(...)` channel (#963) DMs the user via the overlay's Slack bot (out of scope for the on-behalf gates — see `config/settings.py` for the boundary) |
 | `notify_on_post_on_behalf` | DM the user after every on-behalf post (#949) — per-overlay because noise tolerance differs |
 | `admin_autologin_enabled` | Whether the loopback admin dashboard auto-logs-in the first superuser (`LocalAdminAutoLoginMiddleware`). Default `true` so `t3 admin` and the deploy's loopback admin need no password. Never opens the admin alone: the middleware ALSO requires a loopback source (`127.0.0.1` / `::1` / `INTERNAL_IPS`), so a non-loopback request is never auto-logged-in even with the flag on — decoupled from `DEBUG`. Set `false` to force Django's auth wall. Per-overlay overridable |
 | `user_identity_aliases` | Per-overlay handles (e.g. different GitHub login on a client overlay), consumed by §5.6 scanners (#975/#976) |
@@ -609,7 +613,7 @@ Overlay-specific configuration lives on `overlay.config` (an `OverlayConfig` dat
 
 ### 10.3 Logging
 
-`default_logging(namespace)` in `config.py` returns a Django `LOGGING` dict writing to `~/.local/share/teatree/<namespace>/logs/teatree.log` with rotation (5MB, 3 backups).
+`default_logging(namespace)` in `config/loader.py` returns a Django `LOGGING` dict writing to `~/.local/share/teatree/<namespace>/logs/teatree.log` with rotation (5MB, 3 backups).
 
 ### 10.4 Data Storage
 

@@ -84,7 +84,21 @@ Project metadata, CI integration, MR validation, and skill registration live on 
 
 ## `OverlayBase`
 
-### Mandatory hooks
+`OverlayBase` composes its extension surface: `config` (`OverlayConfig`),
+`metadata` (`OverlayMetadata`), `provisioning` (`OverlayProvisioning`), `runtime`
+(`OverlayRuntime`), `e2e` (`OverlayE2E`), `review` (`OverlayReview`), and
+`connectors` (`OverlayConnectors`) are attributes on the base. The provisioning,
+run, e2e, review, and connector hooks live on those providers — reached as
+`overlay.provisioning.*`, `overlay.runtime.*`, `overlay.review.*`, and so on, with
+NO `get_` prefix — not directly on `OverlayBase`. Override a hook by assigning your
+own provider subclass to the corresponding attribute, exactly the way `config` and
+`metadata` are subclassed above.
+
+The generated [`overlay-extension-points.md`](generated/overlay-extension-points.md)
+is the always-current, machine-derived hook list; the tables below give the shape
+and defaults.
+
+### Mandatory hooks (on `OverlayBase`)
 
 These are abstract -- you must implement them.
 
@@ -96,93 +110,90 @@ Return the list of repository names your project manages. Teatree uses this to k
 
 Return the ordered steps to provision a worktree after creation. Each step is a `ProvisionStep` with a name, callable, and optional description. Steps run sequentially during `worktree provision`.
 
-### Provisioning hooks
+### Other hooks on `OverlayBase`
 
-These have default implementations that return empty/neutral values. Override them as needed.
+These have default implementations. Override them as needed.
 
-#### `get_env_extra(worktree: Worktree) -> dict[str, str]`
+| Method | Default | Purpose |
+|--------|---------|---------|
+| `get_workspace_repos()` | `get_repos()` | Repo paths relative to `workspace_dir`; supports nested paths (e.g. `souliane/teatree`). Reads `config.workspace_repos` first, else `get_repos()`. |
+| `get_issue_title(url)` | `""` | Fetch an issue's title from its URL via the resolved code host. |
+| `is_issue_done(issue_data)` | `state ∈ {closed, completed}` | Whether an issue's raw API payload indicates the work is complete. |
+| `resolve_mr_token(iid)` | ref store → constructed URL | Canonical URL for `!<iid>` on this overlay's code host, or `None`. |
+| `resolve_issue_token(iid)` | ref store → constructed URL | Canonical URL for `#<iid>`, same contract as `resolve_mr_token`. |
+| `get_timeouts()` | `{}` | Timeout overrides in seconds keyed by `teatree.timeouts` operation name; `0` disables a timeout. |
+| `get_health_signals()` | `[]` | Overlay operational-health signals for the global aggregator. |
+| `get_checking_sources()` | `[]` | Extra "needs you" source identifiers for `t3 <overlay> checking show`. |
+| `get_eval_scenarios_dir()` | `None` | Package-relative directory of overlay-contributed behavioral eval scenarios. |
 
-Extra environment variables to set for a worktree. Defaults to `{}`.
+### Provisioning hooks (`overlay.provisioning`, `OverlayProvisioning`)
 
-#### `get_db_import_strategy(worktree: Worktree) -> DbImportStrategy | None`
+Worktree setup + environment. Override by assigning an `OverlayProvisioning` subclass to `OverlayBase.provisioning`.
 
-How to import/restore a database for this worktree. Returns `None` if no DB import is needed.
+| Method | Default | Purpose |
+|--------|---------|---------|
+| `env_extra(worktree)` | `{}` | Extra environment variables to set for a worktree. |
+| `declared_env_keys()` | `set()` | Env keys the overlay declares it writes (for env-cache validation). |
+| `declared_secret_env_keys()` | `{POSTGRES_PASSWORD}` | Env keys whose values are secrets (redacted in diagnostics). |
+| `db_import_strategy(worktree)` | `None` | How to import/restore a database for this worktree; `None` = no DB import. |
+| `db_import(worktree, *, force, slow_import, dslr_snapshot, dump_path, approve_remote_dump)` | `False` | Run the actual database import. Called by `worktree provision` and `db refresh`. `approve_remote_dump` is `True` only when the user approved a fresh remote DEV dump for this single invocation via the `db refresh --fresh-dump` gate — an unattended agent cannot satisfy it, so it still cannot self-trigger a network pg_dump. |
+| `post_db_steps(worktree)` | `[]` | Steps to run after a database import (migrations, data fixups). |
+| `reset_passwords_command(worktree)` | `None` | A provision step that resets user passwords to a known dev value; run by `db reset-passwords`. |
+| `envrc_lines(worktree)` | `[]` | Extra lines to append to the worktree's `.envrc`. |
+| `symlinks(worktree)` | `[]` | Symlinks to create in the worktree (shared config, node_modules). |
+| `services_config(worktree)` | `{}` | Service config (compose files, readiness checks, shared vs. per-worktree). |
+| `compose_file(worktree)` | `""` | Path to the docker-compose file; used by `worktree start` and `run backend`. |
+| `base_images(worktree)` | `[]` | Docker base images teatree builds once and shares across worktrees. |
+| `docker_services(worktree)` | `set()` | Service names that MUST run in Docker — enforced at `worktree provision`. |
+| `cleanup_steps(worktree)` | `[]` | Extra cleanup steps run before a worktree is removed. |
+| `health_checks(worktree)` | default set | Post-provision health checks (path exists, symlinks valid, DB name set). |
+| `snapshot_warmer_configs()` | `[]` | Reference-DB configs the snapshot-warmer loop keeps current, one per variant. |
+| `reap_external_resources(worktree)` | `[]` | Out-of-band resources a reaped worktree leaves behind (compose containers/images). |
+| `resolve_variant(name)` | `Variant.bare(name)` | Resolve a variant name into a first-class `Variant` (tenant / language / DSLR snapshot / E2E creds). |
 
-#### `db_import(worktree, *, force, slow_import, dslr_snapshot, dump_path, approve_remote_dump) -> bool`
+### Run hooks (`overlay.runtime`, `OverlayRuntime`)
 
-Run the actual database import logic. Called by `worktree provision` and `db refresh`. Returns `True` on success. Defaults to `False` (no-op).
+Running services, tests, and readiness probes. Override by assigning an `OverlayRuntime` subclass to `OverlayBase.runtime`.
 
-`approve_remote_dump` is `True` only when the user explicitly approved a fresh remote DEV dump for this single invocation via the `db refresh --fresh-dump` interactive gate (`teatree.utils.approval`). It replaces the old blanket `T3_ALLOW_REMOTE_DUMP` / hardcoded-`False` prohibition: an unattended agent cannot satisfy the interactive gate, so it still cannot self-trigger a network pg_dump, but a human can sanction one per run.
+| Method | Default | Purpose |
+|--------|---------|---------|
+| `run_commands(worktree)` | `{}` | Named service commands (backend, frontend, build-frontend, …) for `worktree start`. |
+| `pre_run_steps(worktree, service)` | `[]` | Steps to run before starting a specific service (copy config, refresh translations). |
+| `test_command(worktree)` | `[]` | The command to run the project test suite; used by `run tests`. |
+| `lint_command(worktree)` | `[]` | The command to lint the worktree; used by `run lint`. When empty, `run lint` exits non-zero so a caller is not told green. |
+| `verify_endpoints(worktree)` | `{}` | Health-check URL paths per service keyed by `worktree.ports` entry; unlisted services fall back to `/`. |
+| `readiness_probes(worktree)` | `[]` | Post-start runtime probes gating the `services_up → ready` transition. |
 
-#### `get_post_db_steps(worktree: Worktree) -> list[ProvisionStep]`
+### E2E hooks (`overlay.e2e`, `OverlayE2E`)
 
-Steps to run after a database import (migrations, data fixups). Defaults to `[]`.
+| Method | Default | Purpose |
+|--------|---------|---------|
+| `env_extras(env_cache)` | `{}` | Extra env for the e2e runner derived from the worktree env cache. |
+| `run_provenance(spec_path)` | `""` | Manifest entry id (e.g. CI lane) recorded on the run for a spec. |
+| `playwright_args(spec_path)` | `[]` | Extra `npx playwright test` CLI args for a spec (e.g. `-c <config>`). |
+| `scenarios(spec_path)` | `()` | Per-feature acceptance scenarios for the templated-test-plan renderer. |
+| `preflight(*, customer, base_url)` | `[]` | Zero-arg probes run before an e2e run; each raises when a dependency is unreachable. |
 
-#### `get_reset_passwords_command(worktree: Worktree) -> ProvisionStep | None`
+### Review hooks (`overlay.review`, `OverlayReview`)
 
-Return a provision step that resets user passwords to a known dev value. Called after post-DB steps and by `db reset-passwords`. Defaults to `None`.
+| Method | Default | Purpose |
+|--------|---------|---------|
+| `merge_candidate_repo_slugs()` | `[]` | Static working-repo slugs the cross-repo merge probe binds against. |
+| `can_auto_merge(*, target_ref, thread_ref)` | `MergeGuard(allowed=True)` | Verdict on whether an approved merge request may auto-merge. Override to enforce human-approval gates, freeze windows, or policy checks — return `MergeGuard(allowed=False, reason=…)` to block, adding `escalate=True` to raise an escalation instead of a silent block. |
+| `visual_qa_targets(changed_files)` | `[]` | Files whose change warrants a visual-QA pass. |
+| `classify_customer_display_impact(changed_files)` | `True` (fail-closed) | Whether a diff could impact what the customer sees; the mandatory-E2E gate reads it, so the default treats every diff as display-impacting. |
 
-#### `get_envrc_lines(worktree: Worktree) -> list[str]`
+### Connector hooks (`overlay.connectors`, `OverlayConnectors`)
 
-Extra lines to append to the worktree's `.envrc` file. Defaults to `[]`.
-
-#### `get_symlinks(worktree: Worktree) -> list[SymlinkSpec]`
-
-Symlinks to create in the worktree (e.g., shared config files, node_modules). Defaults to `[]`.
-
-#### `get_services_config(worktree: Worktree) -> dict[str, ServiceSpec]`
-
-Service configuration (Docker compose files, readiness checks, shared vs. per-worktree). Defaults to `{}`.
-
-#### `get_compose_file(worktree: Worktree) -> str`
-
-Return the path to the docker-compose file for this worktree. Used by `worktree start` and `run backend`. Defaults to `""`.
-
-### Run hooks
-
-#### `get_run_commands(worktree: Worktree) -> RunCommands`
-
-Commands to run services (backend, frontend, build-frontend, etc.) for a worktree. Returns a dict mapping service name to command args or `RunCommand`. Defaults to `{}`.
-
-#### `get_pre_run_steps(worktree: Worktree, service: str) -> list[ProvisionStep]`
-
-Steps to run before starting a specific service (e.g., copy customer config, refresh translations). Called for each service during `worktree start`. Defaults to `[]`.
-
-#### `get_test_command(worktree: Worktree) -> list[str] | RunCommand`
-
-The command to run the project test suite. Used by `run tests`. Defaults to `[]`.
-
-#### `get_lint_command(worktree: Worktree) -> list[str] | RunCommand`
-
-The command to lint this worktree (usually the project's `prek`/`pre-commit` config). Used by `run lint`. Defaults to `[]`; when empty, `run lint` exits non-zero so a caller that asked to lint is not told green.
-
-#### `get_verify_endpoints(worktree: Worktree) -> dict[str, str]`
-
-Custom health-check URL paths per service. Keys match `worktree.ports` entries (e.g., `"backend"`, `"frontend"`). Values are URL paths (e.g., `"/admin/login/"`). Services not listed fall back to `/`. Defaults to `{}`.
-
-#### `get_timeouts() -> dict[str, int]`
-
-Overlay-specific timeout overrides in seconds. Keys match `teatree.timeouts` operation names (e.g., `"setup"`, `"db_import"`). `0` disables the timeout. Only return overrides — missing keys use core defaults. Defaults to `{}`.
-
-#### `get_cleanup_steps(worktree: Worktree) -> list[ProvisionStep]`
-
-Extra cleanup steps run before a worktree is removed (Docker containers, cache dirs, etc.). Defaults to `[]`.
-
-#### `get_health_checks(worktree: Worktree) -> list[HealthCheck]`
-
-Post-provision health checks to verify the worktree is functional. The default checks verify: worktree path exists, symlinks are valid, DB name is set. Override to add project-specific checks.
-
-#### `can_auto_merge(*, target_ref: str, thread_ref: str) -> MergeGuard`
-
-Verdict on whether an approved merge request may be merged automatically. `target_ref` is the branch/ref that would be merged into; `thread_ref` is the notification thread that carried the approval. The default implementation is permissive (`MergeGuard(allowed=True)`). Override to enforce human-approval gates, freeze windows, or policy checks — return `MergeGuard(allowed=False, reason=...)` to block, adding `escalate=True` to raise an escalation signal instead of a silent block.
-
-#### `get_workspace_repos() -> list[str]`
-
-Repo paths relative to `workspace_dir`. Supports nested paths (e.g., `souliane/teatree`). Reads from `config.workspace_repos` first; falls back to `get_repos()`. Defaults to `get_repos()`.
+| Method | Default | Purpose |
+|--------|---------|---------|
+| `preflight()` | `[]` | Zero-arg probes run before connector-dependent loop work; each raises when a hard-depended connector is unreachable. |
+| `mcp_provider_expectations()` | `{}` | `{mcp_server_name: provider}` for the connectivity check. |
+| `manifest()` | `[]` | The overlay's required-vs-optional claude.ai connectors by name. |
 
 ## Supporting types
 
-Most of these are defined in `teatree/types.py` (the Django-free shared types module). `HealthCheck` lives in `teatree/core/health.py` and `MergeGuard` in `teatree/core/gates/merge_guard.py`:
+Most of these are defined in `teatree/types.py` (the Django-free shared types module). `HealthCheck` lives in `teatree/core/worktree/health.py` and `MergeGuard` in `teatree/core/gates/merge_guard.py`:
 
 | Type | Kind | Fields |
 |------|------|--------|
