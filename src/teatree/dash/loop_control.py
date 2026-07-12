@@ -1,11 +1,13 @@
 """Loop-control read model: each loop's effective verdict + the layer that decided it (#3162).
 
-The dashboard drives the SAME two control planes the tick gates on — ``Loop.enabled``
-and the durable ``LoopState`` hold — resolved through the one admission predicate
-(``loop_state_admits``), never a second verdict. Until the presets layer (#3159)
-lands the deciding layer is either the enabled flag (L1) or the durable hold (L4);
-the write side (pause/resume/disable/enable) goes exclusively through the paired
-atomic ``LoopManager`` verbs, so this module only reads.
+The dashboard reads the SAME effective verdict the tick gates on — from the one
+shared source ``teatree.loops.preset_status.effective_verdicts`` that ``t3 loops
+list``, ``t3 loop preset show`` and the statusline also read — so it can never
+recompute a verdict that drifts from the fleet. That verdict folds all four layers:
+the durable ``LoopState`` hold (L4), the active preset's L3 override / L2 schedule
+mask (#3159), and the base ``Loop.enabled`` flag (L1). The write side
+(pause/resume/disable/enable) goes exclusively through the paired atomic
+``LoopManager`` verbs, so this module only reads.
 """
 
 import logging
@@ -16,7 +18,7 @@ from teatree.core.availability import resolve_mode
 from teatree.core.models.config_setting import ConfigSetting
 from teatree.core.models.loop import Loop
 from teatree.core.models.loop_state import LoopState, LoopStatus
-from teatree.loop.loop_state_db import loop_state_admits
+from teatree.loops.preset_status import LoopVerdict, effective_verdicts
 
 logger = logging.getLogger(__name__)
 
@@ -81,43 +83,53 @@ def _runner_enabled() -> bool:
 def build_loop_rows() -> tuple[LoopRow, ...]:
     """Every ``Loop`` row with its effective verdict and deciding layer.
 
-    One bulk read of the durable hold table, joined in Python to the loop rows,
-    so the table renders in two queries regardless of loop count.
+    The verdict + deciding layer come from the shared canonical source
+    :func:`teatree.loops.preset_status.effective_verdicts`, so the dashboard never
+    recomputes an admission verdict that could drift from the tick. Display fields
+    (description, cadence, the paused-vs-disabled hold status) are joined by name
+    from one ``Loop`` and one ``LoopState`` read.
     """
-    held = {row.name: row.status for row in LoopState.objects.all()}
-    rows = [_loop_row(loop, held.get(loop.name, LoopStatus.ENABLED.value)) for loop in Loop.objects.all()]
-    return tuple(rows)
+    loops = {loop.name: loop for loop in Loop.objects.all()}
+    status_by_name = {row.name: row.status for row in LoopState.objects.all()}
+    return tuple(
+        _loop_row(loops[verdict.name], status_by_name.get(verdict.name, LoopStatus.ENABLED.value), verdict)
+        for verdict in effective_verdicts()
+    )
 
 
-def _loop_row(loop: Loop, status: str) -> LoopRow:
-    held = status != LoopStatus.ENABLED.value
-    effective = loop_state_admits(configured_enabled=loop.enabled, held=held)
+def _loop_row(loop: Loop, status: str, verdict: LoopVerdict) -> LoopRow:
     return LoopRow(
         name=loop.name,
         description=loop.description,
         enabled=loop.enabled,
         status=status,
-        effective=effective,
-        deciding_layer=_deciding_layer(enabled=loop.enabled, status=status),
+        effective=verdict.admitted,
+        deciding_layer=_deciding_layer(verdict, enabled=loop.enabled, status=status),
         cadence_label=loop.cadence_label,
     )
 
 
-def _deciding_layer(*, enabled: bool, status: str) -> str:
+def _deciding_layer(verdict: LoopVerdict, *, enabled: bool, status: str) -> str:
     """Which control layer decides the loop's verdict — answers "why isn't it running".
 
-    Precedence mirrors the tick's resolution order: the durable ``LoopState`` hold
-    (the future L4) is checked first, then the configured ``Loop.enabled`` flag
-    (L1). The presets layers (#3159 L3 override / L2 schedule) slot between them
-    once that lands.
+    Reads the shared verdict's ``layer`` so the precedence mirrors the resolver
+    exactly: an L4 ``LoopState`` hold (paused/disabled) always wins, then the active
+    preset's L3 override / L2 schedule mask (#3159), else the base L1 ``Loop.enabled``.
     """
-    if status == LoopStatus.PAUSED.value:
-        return "L4 hold — paused"
-    if status == LoopStatus.DISABLED.value:
-        return "L4 hold — disabled"
+    if verdict.layer == "hold":
+        return "L4 hold — paused" if status == LoopStatus.PAUSED.value else "L4 hold — disabled"
+    if verdict.layer == "override":
+        return f"L3 override — {_preset_effect(verdict)}"
+    if verdict.layer == "schedule":
+        return f"L2 schedule — {_preset_effect(verdict)}"
     if not enabled:
         return "L1 — Loop.enabled off"
     return "L1 — enabled"
+
+
+def _preset_effect(verdict: LoopVerdict) -> str:
+    """How the active preset flipped this loop: ``masked`` (forced off) or ``forced-on``."""
+    return "masked" if not verdict.admitted else "forced-on"
 
 
 def apply_loop_action(action: str, name: str) -> str:

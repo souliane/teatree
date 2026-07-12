@@ -81,7 +81,6 @@ graph TD
     teatree.dash --> teatree.core
     teatree.dash --> teatree.core.models
     teatree.dash --> teatree.loops
-    teatree.dash --> teatree.loop.loop_state_db
     teatree.dash --> teatree.config
     teatree.dash --> teatree.agents
     teatree.dash --> teatree.utils
