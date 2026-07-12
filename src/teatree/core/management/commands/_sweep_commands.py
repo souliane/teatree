@@ -11,7 +11,7 @@ stays out of the (cap-bound) ``ticket.py`` god-module. django-typer collects
 """
 
 import logging
-from typing import Annotated, TypedDict
+from typing import TYPE_CHECKING, Annotated, TypedDict
 
 import typer
 from django.db import transaction
@@ -20,6 +20,9 @@ from django_typer.management import TyperCommand, command
 from teatree.backends.loader import get_code_host_for_url
 from teatree.core.models import Ticket
 from teatree.core.overlay_loader import get_all_overlays
+
+if TYPE_CHECKING:
+    from teatree.core.overlay import OverlayBase
 
 logger = logging.getLogger(__name__)
 
@@ -30,6 +33,7 @@ class CompletionResult(TypedDict, total=False):
     from_state: str
     to_state: str
     action: str
+    error: str
 
 
 class ReattributeResult(TypedDict, total=False):
@@ -63,47 +67,14 @@ class SweepCommands(TyperCommand):
             ).exclude(issue_url="")
 
             for ticket in tickets:
-                host = get_code_host_for_url(overlay, ticket.issue_url)
-                if host is None:
+                if not _issue_is_done(overlay, ticket):
                     continue
-                try:
-                    issue_data = host.get_issue(ticket.issue_url)
-                except Exception:  # noqa: BLE001 — an issue-fetch failure skips the ticket, never aborts the sweep
-                    logger.warning("Failed to fetch issue for ticket %s (%s)", ticket.pk, ticket.issue_url)
-                    continue
-                if not isinstance(issue_data, dict) or "error" in issue_data:
-                    continue
-                if not overlay.is_issue_done(issue_data):
-                    continue
+                result = _complete_one_ticket(ticket, dry_run=dry_run)
+                results.append(result)
+                self.stdout.write(_completion_line(result))
 
-                from_state = ticket.state
-                if dry_run:
-                    results.append(
-                        CompletionResult(
-                            ticket_id=int(ticket.pk),
-                            issue_url=ticket.issue_url,
-                            from_state=from_state,
-                            action="would_complete",
-                        )
-                    )
-                    self.stdout.write(f"  [dry-run] #{ticket.pk} ({from_state}) → completed: {ticket.issue_url}")
-                else:
-                    _advance_ticket(ticket)
-                    results.append(
-                        CompletionResult(
-                            ticket_id=int(ticket.pk),
-                            issue_url=ticket.issue_url,
-                            from_state=from_state,
-                            to_state=ticket.state,
-                            action="completed",
-                        )
-                    )
-                    self.stdout.write(f"  #{ticket.pk} {from_state} → {ticket.state}: {ticket.issue_url}")
-
-        if not results:
-            self.stdout.write("No tickets to advance.")
-        else:
-            self.stdout.write(f"\n{len(results)} ticket(s) {'would be' if dry_run else ''} advanced.")
+        for line in _completion_summary_lines(results, dry_run=dry_run):
+            self.stdout.write(line)
         return results
 
     @command()
@@ -159,6 +130,82 @@ class SweepCommands(TyperCommand):
             verb = "would be" if dry_run else "were"
             self.stdout.write(f"\n{len(results)} ticket(s) {verb} re-attributed.")
         return results
+
+
+def _issue_is_done(overlay: "OverlayBase", ticket: Ticket) -> bool:
+    """Whether *ticket*'s upstream issue is done — the eligibility gate for advancement.
+
+    A missing host, an issue-fetch failure, an error payload, or an unfinished issue
+    all skip the ticket. A fetch failure is logged, never fatal — it must not abort the sweep.
+    """
+    host = get_code_host_for_url(overlay, ticket.issue_url)
+    if host is None:
+        return False
+    try:
+        issue_data = host.get_issue(ticket.issue_url)
+    except Exception:  # noqa: BLE001 — an issue-fetch failure skips the ticket, never aborts the sweep
+        logger.warning("Failed to fetch issue for ticket %s (%s)", ticket.pk, ticket.issue_url)
+        return False
+    if not isinstance(issue_data, dict) or "error" in issue_data:
+        return False
+    return bool(overlay.is_issue_done(issue_data))
+
+
+def _complete_one_ticket(ticket: Ticket, *, dry_run: bool) -> CompletionResult:
+    """Advance one done ticket toward delivered, returning the recorded outcome.
+
+    A gate-refused (or otherwise failing) FSM advance is caught and recorded as a
+    ``refused`` result so the sweep CONTINUES to the next ticket — the whole-table
+    sweep must never abort on one bad row (CFG-2). ``--dry-run`` records the intent.
+    """
+    from_state = ticket.state
+    if dry_run:
+        return CompletionResult(
+            ticket_id=int(ticket.pk), issue_url=ticket.issue_url, from_state=from_state, action="would_complete"
+        )
+    try:
+        _advance_ticket(ticket)
+    except Exception as exc:  # noqa: BLE001 — a gate-refused / failed FSM advance skips this ticket, never aborts the sweep
+        logger.warning("Failed to advance ticket %s (%s): %s", ticket.pk, ticket.issue_url, exc)
+        return CompletionResult(
+            ticket_id=int(ticket.pk),
+            issue_url=ticket.issue_url,
+            from_state=from_state,
+            action="refused",
+            error=str(exc),
+        )
+    return CompletionResult(
+        ticket_id=int(ticket.pk),
+        issue_url=ticket.issue_url,
+        from_state=from_state,
+        to_state=ticket.state,
+        action="completed",
+    )
+
+
+def _completion_line(result: CompletionResult) -> str:
+    """The per-ticket stdout line for one completion outcome."""
+    pk, from_state = result["ticket_id"], result["from_state"]
+    if result["action"] == "would_complete":
+        return f"  [dry-run] #{pk} ({from_state}) → completed: {result['issue_url']}"
+    if result["action"] == "refused":
+        return f"  #{pk} {from_state} → refused: {result['error']}"
+    return f"  #{pk} {from_state} → {result['to_state']}: {result['issue_url']}"
+
+
+def _completion_summary_lines(results: list[CompletionResult], *, dry_run: bool) -> list[str]:
+    """The trailing summary — advanced count plus an explicit report of any refusals."""
+    refused = [r for r in results if r.get("action") == "refused"]
+    advanced = [r for r in results if r.get("action") != "refused"]
+    lines: list[str] = []
+    if not advanced:
+        lines.append("No tickets to advance.")
+    else:
+        lines.append(f"\n{len(advanced)} ticket(s) {'would be' if dry_run else ''} advanced.")
+    if refused:
+        lines.append(f"{len(refused)} ticket(s) skipped (gate-refused or errored):")
+        lines.extend(f"  #{r['ticket_id']} ({r['from_state']}): {r['error']}" for r in refused)
+    return lines
 
 
 def _advance_ticket(ticket: Ticket) -> None:
