@@ -35,6 +35,12 @@ def _pr_step() -> dict[str, Any]:
     return matches[0]
 
 
+def _checkout_step() -> dict[str, Any]:
+    matches = [s for s in _steps() if "actions/checkout" in str(s.get("uses", ""))]
+    assert matches, "refresh-durations must have an actions/checkout step."
+    return matches[0]
+
+
 class TestRefreshBranchIsStable:
     """CI-3: a STABLE branch name means at most one open refresh PR, updated in place."""
 
@@ -54,3 +60,34 @@ class TestRefreshBranchIsStable:
                 "The refresh branch name must NOT embed the date — a dated branch opens a "
                 "NEW PR every unmerged day, stacking conflicting PRs (CI-3)."
             )
+
+
+class TestRefreshPrTriggersCi:
+    """CI-2: the refresh PR must be opened with a token that fires the required check."""
+
+    def test_pr_step_uses_the_pat_not_github_token(self) -> None:
+        gh_token = str(_pr_step().get("env", {}).get("GH_TOKEN", ""))
+        assert "TEATREE_GH_TOKEN" in gh_token, (
+            "The refresh-PR step must use TEATREE_GH_TOKEN so the PR triggers the required "
+            "test (3.13) check; the default GITHUB_TOKEN never fires it (un-mergeable PR)."
+        )
+        assert "github.token" not in gh_token, (
+            "GH_TOKEN must NOT be the default github.token — a PR/push it authenticates never "
+            "triggers downstream workflows, so the required check never runs (CI-2)."
+        )
+
+    def test_checkout_persists_the_pat_for_push(self) -> None:
+        token = str(_checkout_step().get("with", {}).get("token", ""))
+        assert "TEATREE_GH_TOKEN" in token, (
+            "The checkout must persist TEATREE_GH_TOKEN so the `git push` to the refresh "
+            "branch is attributed to a real identity and re-triggers CI on updates (CI-2)."
+        )
+
+    def test_pr_step_fails_loud_when_token_unset(self) -> None:
+        run = str(_pr_step().get("run", ""))
+        guard_msg = (
+            "The refresh-PR step must fail LOUD when the CI-triggering token is unset, rather "
+            "than silently opening a PR whose required check never fires (CI-2)."
+        )
+        assert 'if [ -z "${GH_TOKEN:-}" ]' in run, guard_msg
+        assert "exit 1" in run, guard_msg

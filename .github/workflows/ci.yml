@@ -579,6 +579,13 @@ jobs:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
         with:
           fetch-depth: 0
+          # CI-2: persist the PAT (not the default GITHUB_TOKEN) as the git credential
+          # so the `git push` to the refresh branch is attributed to a real identity and
+          # TRIGGERS the required `test (3.13)` check. A push authenticated with
+          # GITHUB_TOKEN never fires downstream workflows (GitHub's recursion guard), so
+          # the refresh PR would sit forever without its required check and could never
+          # merge. The token guard in the PR step below fails loud if it is unset.
+          token: ${{ secrets.TEATREE_GH_TOKEN }}
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8.0.1
         with:
           pattern: durations-shard-*
@@ -601,9 +608,20 @@ jobs:
       - name: Open or update the durations-refresh PR
         if: steps.merge.outputs.refresh == 'true' && !cancelled()
         env:
-          GH_TOKEN: ${{ github.token }}
+          # CI-2: a PAT (TEATREE_GH_TOKEN), NOT the default GITHUB_TOKEN. A PR opened /
+          # a branch pushed with GITHUB_TOKEN never triggers the required `test (3.13)`
+          # check (GitHub suppresses workflow-triggered workflows), so such a refresh PR
+          # can never merge unaided. `gh pr create`/`gh pr view` read GH_TOKEN; the
+          # checkout above persists the same token for the `git push`.
+          GH_TOKEN: ${{ secrets.TEATREE_GH_TOKEN }}
         run: |
           set -euo pipefail
+          # Fail LOUD, never silently open an un-mergeable PR: without a CI-triggering
+          # token the required check never fires and the refresh stalls forever.
+          if [ -z "${GH_TOKEN:-}" ]; then
+            echo "::error::TEATREE_GH_TOKEN is unset. The durations-refresh PR must be opened with a PAT that triggers the required 'test (3.13)' check — the default GITHUB_TOKEN does not, so the PR could never merge. Set the TEATREE_GH_TOKEN secret." >&2
+            exit 1
+          fi
           if git diff --quiet dev/.test_durations; then
             echo "No net change to dev/.test_durations — nothing to open."
             exit 0
