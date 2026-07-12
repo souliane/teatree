@@ -64,6 +64,7 @@ from teatree.core.overlay_loader import get_overlay
 from teatree.core.provision.db_anchor import assert_lifecycle_db_is_canonical
 from teatree.core.public_identity import MergeResult
 from teatree.core.runners.ship import resolve_and_reconcile_branch, resolve_ship_worktree
+from teatree.core.send_proxy import OutboundBlockedError, route_forge_write
 from teatree.types import RawAPIDict
 from teatree.utils import git
 from teatree.utils.run import CommandFailedError
@@ -574,6 +575,21 @@ class Command(TyperCommand):
         note_body = f"## {title}\n\n{body}" if body else f"## {title}\n\n_No details provided._"
         if embed_section:
             note_body += f"\n\n{embed_section}"
+
+        # Route the colleague-visible body through the shared scanned forge-write
+        # seam (public-repo leak gate + #117 send-proxy) — the SAME seam the MCP /
+        # ticket / test-plan-body writers use — BEFORE consuming the on-behalf
+        # approval, so a test-plan body carrying a customer codename bound for a
+        # public forge is REFUSED (and every post audited) instead of reaching the
+        # PR comment raw. The overlay's CI project path is a bare slug, so the
+        # forge is left unqualified: the leak gate then fails CLOSED (scans) on an
+        # unknown host rather than skipping the scan.
+        try:
+            note_body = route_forge_write(
+                forge="", repo=repo_path, text=note_body, action="post_evidence", target=target
+            )
+        except OutboundBlockedError as blocked:
+            return {"error": str(blocked)}
 
         # Find existing test plan note to update
         existing_notes = host.list_pr_comments(repo=repo_path, pr_iid=mr_iid)

@@ -745,8 +745,8 @@ symlinks and caches.
 
 ### Operating mode
 
-`teatree.mode` (or the `T3_MODE` env var) controls how much autonomy the agent
-has for publishing actions:
+`mode` (a DB-home setting, or the `T3_MODE` env var) controls how much autonomy
+the agent has for publishing actions:
 
 - `interactive` *(default, conservative on security)* — the agent pauses for
   explicit approval before push, MR create, MR merge, Slack posts, or any other
@@ -762,25 +762,21 @@ has for publishing actions:
 Unknown values raise an error — a typo in `mode` will never silently downgrade
 to a less-safe mode.
 
-A subset of `[teatree]` keys can be **overridden per-overlay** in
-`[overlays.<name>]`. The overridable set lives in
-`OVERLAY_OVERRIDABLE_SETTINGS` in `src/teatree/config/settings.py`: `mode`,
-`agent_runtime`, `contribute`, `excluded_skills`,
-`loop_cadence_seconds`, `require_human_approval_to_merge`, and
-`require_human_approval_to_answer`. For example, run `auto` mode on a personal
+`mode` lives in the teatree DB `ConfigSetting` store — there is no TOML key for
+it (a `[teatree] mode` / `[overlays.<name>] mode` value is ignored on read and
+warned about). Set it globally or per-overlay, so you can run `auto` on a personal
 dogfooding overlay while keeping `interactive` on a client project:
 
-```toml
-[teatree]
-mode = "interactive"
-
-[overlays.my-project]
-mode = "auto"
+```bash
+t3 <overlay> config_setting set mode interactive                 # global default
+t3 <overlay> config_setting set mode auto --overlay my-project   # per-overlay override
 ```
 
-The resolution chain is, first match wins: `T3_*` env var → active overlay's
-`[overlays.<name>]` override → global `[teatree]` value → `UserSettings`
-default. See `BLUEPRINT.md` § 10.1.1 for the full details.
+The resolution chain is, first match wins: `T3_MODE` env var → the active
+overlay's per-overlay DB row → the global DB row → the `UserSettings` default
+(`interactive`). `mode` is one of the per-overlay-overridable keys; the full
+registry is `OVERLAY_OVERRIDABLE_SETTINGS` in `src/teatree/config/settings.py`.
+See `BLUEPRINT.md` § 10.1.1 for the full details.
 
 ## Contributing & Self-Improvement
 
@@ -810,9 +806,9 @@ prek run --all-files         # ruff, codespell, banned-terms
 
 ### E2E Tests
 
-E2E tests run via `t3 <overlay> e2e run`, which dispatches to the in-repo
-pytest-playwright runner or an external playwright repo based on
-`OverlayBase.get_e2e_config()`. Overlays declare `"runner": "project"` or
+E2E tests run via `t3 <overlay> e2e run`, which dispatches to an in-repo
+pytest-playwright runner or an external playwright repo based on the overlay's
+`overlay.metadata.get_e2e_config()`. Overlays declare `"runner": "project"` or
 `"runner": "external"`; the runner is overlay-agnostic from the call site:
 
 ```bash
@@ -821,19 +817,11 @@ t3 <overlay> e2e run --headed                 # interactive debug
 t3 <overlay> e2e run --update-snapshots       # accept new snapshots
 ```
 
-**Failure triage artifacts** (git-ignored, mounted writable into the e2e
-container):
-
-- `e2e/.logs/server-<ISO>-<worker>.log` — captured stdout/stderr from the
-  live ASGI server. Path is printed on every test failure via
-  `pytest_runtest_makereport`.
-- `e2e/.videos/<test-name>/<rand>.webm` — Playwright video recording. Only
-  retained for **failing** tests (passing tests delete their video on teardown
-  to keep CI artifact size small).
-
-In CI, attach the `e2e/.logs/` and `e2e/.videos/` directories as job artifacts
-and link them from the failed run summary so reviewers can replay the failure
-without rerunning the suite.
+Teatree itself ships no in-repo E2E suite — the top-level `e2e/` directory holds
+only the `/t3:e2e`-skill conventions doc. Each overlay owns its own specs, runner
+configuration, and failure-triage artifacts (Playwright videos, traces, server
+logs); where those artifacts land and how CI attaches them is the overlay
+runner's concern, driven by its own pytest-playwright / playwright config.
 
 ## Security Considerations
 

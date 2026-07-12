@@ -48,6 +48,46 @@ class TicketCommentRoutesThroughSeam(TestCase):
         host.post_issue_comment.assert_not_called()
 
 
+class TicketCreateSubRoutesThroughSeam(TestCase):
+    """``t3 ticket create-sub`` scrubs the child title/body/labels like its sibling `comment`."""
+
+    def test_create_sub_writes_a_send_audit_row(self) -> None:
+        host = MagicMock()
+        host.create_sub_issue.return_value = {"iid": 7, "web_url": f"{_ISSUE_URL}/7"}
+        with (
+            patch.object(overlay_loader_mod, "get_all_overlays", return_value=_MOCK_OVERLAY),
+            patch.object(loader_mod, "get_code_host_for_url", return_value=host),
+            patch("teatree.core.gates.privacy_gate._target_is_public", return_value=False),
+        ):
+            call_command("ticket", "create-sub", parent=_ISSUE_URL, title="Child task")
+        assert SendAudit.objects.filter(destination=_ISSUE_URL, action="ticket_create_sub").exists()
+        host.create_sub_issue.assert_called_once()
+
+    def test_a_leaking_title_is_refused_before_the_backend(self) -> None:
+        host = MagicMock()
+        with (
+            patch.object(overlay_loader_mod, "get_all_overlays", return_value=_MOCK_OVERLAY),
+            patch.object(loader_mod, "get_code_host_for_url", return_value=host),
+            patch("teatree.core.gates.privacy_gate._target_is_public", return_value=True),
+            patch("teatree.core.gates.privacy_gate._overlay_privacy_rules", return_value=(["SECRETCORP"], [])),
+            pytest.raises(OutboundLeakError, match="privacy gate refused"),
+        ):
+            call_command("ticket", "create-sub", parent=_ISSUE_URL, title="ship for SECRETCORP")
+        host.create_sub_issue.assert_not_called()
+
+    def test_a_leaking_label_is_refused_before_the_backend(self) -> None:
+        host = MagicMock()
+        with (
+            patch.object(overlay_loader_mod, "get_all_overlays", return_value=_MOCK_OVERLAY),
+            patch.object(loader_mod, "get_code_host_for_url", return_value=host),
+            patch("teatree.core.gates.privacy_gate._target_is_public", return_value=True),
+            patch("teatree.core.gates.privacy_gate._overlay_privacy_rules", return_value=(["SECRETCORP"], [])),
+            pytest.raises(OutboundLeakError, match="privacy gate refused"),
+        ):
+            call_command("ticket", "create-sub", parent=_ISSUE_URL, title="Child", labels="SECRETCORP,ok")
+        host.create_sub_issue.assert_not_called()
+
+
 class TestPlanNoteRoutesThroughSeam(TestCase):
     def test_body_file_note_writes_a_send_audit_row(self) -> None:
         host = MagicMock()

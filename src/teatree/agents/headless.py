@@ -269,6 +269,16 @@ def run_headless(
         _restore_unconsumed_resume_thread(harness)
         logger.warning("Refusing dispatch for task %s: %s", task.pk, exc)
         return _record_failure(task, error=str(exc))
+    except Exception:
+        # AH-3 / #2916: a NON-CredentialError ``open()`` (or drive) failure must not
+        # irrecoverably destroy a resumed task's parked thread either. ``resolve_harness``
+        # popped it when BUILDING the harness, and the thread is re-persisted ONLY on the
+        # success path (``_record_success`` below, outside this try) — never reached here.
+        # Restore it so the resumed conversation survives for a retry, then let the failure
+        # propagate: the caller (``tasks.py``) records the durable failed attempt with the
+        # full traceback exactly as before, so only the thread-loss changes.
+        _restore_unconsumed_resume_thread(harness)
+        raise
 
     failure = _outcome_failure(task, outcome, lane=lane)
     if failure is not None:
