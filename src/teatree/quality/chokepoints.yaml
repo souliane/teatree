@@ -95,6 +95,7 @@
     - update_issue_comment
     - close_issue
     - create_issue
+    - create_sub_issue
     - update_issue
   allowed_modules:
     - teatree.backends.github.client

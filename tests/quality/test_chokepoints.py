@@ -10,6 +10,7 @@ the subprocess coverage so the registry can never regress below the deleted
 """
 
 import importlib.util
+import inspect
 from pathlib import Path
 
 import pytest
@@ -228,9 +229,37 @@ _FORGE_WRITE_BODY_METHODS = frozenset(
         "update_issue_comment",
         "close_issue",
         "create_issue",
+        "create_sub_issue",
         "update_issue",
     }
 )
+
+#: A parameter carrying outbound colleague-visible content — the shape that must
+#: be leak-scanned before it can reach a forge. Enumerating the protocol by these
+#: names (rather than trusting a hardcoded method list) is what makes the guard
+#: genuinely exhaustive: a new body-bearing forge-write method is caught the
+#: moment it is added to the protocol, even if nobody remembered to register it.
+#: ``create_pr(spec)`` carries its body inside a ``PullRequestSpec`` object (no
+#: body-shaped param), so it is intentionally out of this param-shape scope.
+_BODY_BEARING_PARAMS = frozenset({"body", "title", "comment", "labels", "description", "text"})
+
+
+def _protocol_body_bearing_methods() -> set[str]:
+    """Every ``CodeHostBackend`` method whose signature carries a body-bearing parameter."""
+    found: set[str] = set()
+    for name in dir(CodeHostBackend):
+        if name.startswith("_"):
+            continue
+        attr = getattr(CodeHostBackend, name)
+        if not callable(attr):
+            continue
+        try:
+            params = inspect.signature(attr).parameters
+        except (TypeError, ValueError):
+            continue
+        if _BODY_BEARING_PARAMS & set(params):
+            found.add(name)
+    return found
 
 
 class TestSelfMaintenance:
@@ -238,16 +267,28 @@ class TestSelfMaintenance:
         entry = next(e for e in registry if e.id == "subprocess-egress")
         assert set(entry.protected_attrs) >= _HISTORICAL_SUBPROCESS_ATTRS
 
-    def test_forge_write_seam_covers_every_body_bearing_method(self, registry: tuple[Chokepoint, ...]) -> None:
-        """Every body-bearing CodeHostBackend forge-write method is pinned by the seam entry.
+    def test_forge_write_seam_registers_every_body_bearing_protocol_method(
+        self, registry: tuple[Chokepoint, ...]
+    ) -> None:
+        """The seam registers EXACTLY the protocol's body-bearing forge-write methods.
 
-        A new colleague-visible forge-write method added to the backend protocol
-        must be added to this chokepoint too, or a writer could reach it raw.
+        This is the anti-false-assurance guard: it ENUMERATES the CodeHostBackend
+        protocol and derives "body-bearing" from each method's signature, so a NEW
+        colleague-visible forge-write method (any method taking body/title/comment/
+        labels/description) that is added to the protocol but NOT registered here
+        turns this test RED — the exact way ``create_sub_issue`` slipped through a
+        hardcoded-list check. The registry, the local constant, and the live
+        protocol enumeration must all agree.
         """
         entry = next(e for e in registry if e.id == "forge-comment-write-seam")
+        enumerated = _protocol_body_bearing_methods()
+        assert enumerated, "protocol enumeration found no body-bearing methods — the heuristic is broken"
+        assert enumerated == _FORGE_WRITE_BODY_METHODS, (
+            "protocol body-bearing methods drifted from the registered set: "
+            f"unregistered={sorted(enumerated - _FORGE_WRITE_BODY_METHODS)}, "
+            f"stale={sorted(_FORGE_WRITE_BODY_METHODS - enumerated)}"
+        )
         assert set(entry.protected_attrs) == _FORGE_WRITE_BODY_METHODS
-        for method in _FORGE_WRITE_BODY_METHODS:
-            assert hasattr(CodeHostBackend, method), f"CodeHostBackend protocol has no {method}"
 
 
 class TestLoaderValidation:
