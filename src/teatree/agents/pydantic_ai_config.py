@@ -9,7 +9,6 @@ module with no import cycle. Re-exported from ``teatree.agents.harness`` for bac
 
 from dataclasses import dataclass, field
 from enum import StrEnum
-from typing import TYPE_CHECKING
 
 from claude_agent_sdk import ClaudeAgentOptions
 from openai import AsyncOpenAI
@@ -20,9 +19,6 @@ from teatree.agents.harness_registry import HarnessCapabilities
 from teatree.agents.model_tiering import resolve_pydantic_ai_model
 from teatree.agents.regulated_path import assert_model_allowed_on_regulated_path
 from teatree.llm.credentials import AnthropicApiKeyCredential, OrcaRouterCredential, resolve_orca_router_provider_config
-
-if TYPE_CHECKING:
-    from teatree.agents.context_plan import ContextPlan
 
 # The OrcaRouter dispatch-lane header (OrcaRouter setup plan §3.4). Rides every
 # ``pydantic_ai`` request as ``x-lane: <factory|eval|bulk>`` so the named router's
@@ -103,7 +99,7 @@ class OrcaLaneConfig:
 class PydanticAiModelConfig:
     """How :class:`PydanticAiHarness` builds its model + session (composition).
 
-    Bundles the three model-construction knobs into one config object so the harness
+    Bundles the model-construction knobs into one config object so the harness
     constructor stays narrow:
 
     *   ``orca`` — the OrcaRouter per-dispatch runtime knobs (:class:`OrcaLaneConfig`),
@@ -111,14 +107,20 @@ class PydanticAiModelConfig:
     *   ``binding`` — router (OrcaRouter OpenAI-compatible) vs native Anthropic Messages
         API (#3157 E1b, ``agent_harness_provider=anthropic_api``), selected by
         :func:`resolve_harness` from the provider.
-    *   ``context_plan`` — the assembled :class:`~teatree.agents.context_plan.ContextPlan`
-        whose ``cache`` boundaries the native binding maps to real ``cache_control``
-        breakpoints (#3157 E2). ``None`` on the router binding (opaque cache).
+
+    Prompt-cache breakpoints (the :class:`~teatree.agents.context_plan.ContextPlan`
+    → ``cache_control`` path, #3157 E2) are NOT wired into the harness here: nothing
+    yet assembles a ``ContextPlan`` on the dispatch path, and applying its breakpoints
+    to a live request needs the native-binding option-builder to emit pydantic_ai
+    :class:`~pydantic_ai.messages.CachePoint` markers — deferred to the Factory
+    overlay's option-builder. The ``ContextPlan`` core type (byte-stable-head
+    enforcement + breakpoint capping) ships and is proven through the
+    ``teatree.overlay_sdk`` surface (``test_factory_demo``) so the Factory can build
+    against it; only the never-fed harness passthrough was removed (AH-1).
     """
 
     orca: OrcaLaneConfig = field(default_factory=OrcaLaneConfig)
     binding: PydanticAiBinding = PydanticAiBinding.ROUTER
-    context_plan: "ContextPlan | None" = None
 
 
 def resolve_native_anthropic_model(options: ClaudeAgentOptions) -> Model:

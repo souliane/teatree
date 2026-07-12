@@ -15,7 +15,6 @@ from claude_agent_sdk import ClaudeAgentOptions
 from django.test import TestCase
 from pydantic_ai.models.test import TestModel
 
-from teatree.agents.context_plan import ContextPlan, ContextSegment, SegmentStability
 from teatree.agents.harness import PydanticAiHarness, resolve_harness
 from teatree.agents.pydantic_ai_config import (
     PYDANTIC_AI_NATIVE_CAPABILITIES,
@@ -93,27 +92,6 @@ class TestNativeModelResolution:
             model=injected, config=PydanticAiModelConfig(binding=PydanticAiBinding.NATIVE_ANTHROPIC)
         )
         assert harness._resolve_model(ClaudeAgentOptions()) is injected
-
-
-class TestContextPlanCacheBreakpoints:
-    def test_native_binding_exposes_the_context_plan_breakpoints(self) -> None:
-        plan = ContextPlan.ordered(
-            [
-                ContextSegment("preamble", SegmentStability.STATIC),
-                ContextSegment("repo digest", SegmentStability.PER_REPO, cache=True, ttl="1h"),
-                ContextSegment("task tail", SegmentStability.PER_TASK),
-            ]
-        )
-        harness = PydanticAiHarness(
-            config=PydanticAiModelConfig(binding=PydanticAiBinding.NATIVE_ANTHROPIC, context_plan=plan)
-        )
-        breakpoints = harness.cache_control_breakpoints()
-        assert len(breakpoints) == 1
-
-    def test_router_binding_places_no_breakpoints_even_with_a_plan(self) -> None:
-        plan = ContextPlan.ordered([ContextSegment("x", SegmentStability.PER_REPO, cache=True)])
-        harness = PydanticAiHarness(config=PydanticAiModelConfig(binding=PydanticAiBinding.ROUTER, context_plan=plan))
-        assert harness.cache_control_breakpoints() == ()
 
 
 class TestRouterReportedCost:

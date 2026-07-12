@@ -37,7 +37,6 @@ from pydantic_ai import Agent
 from pydantic_ai.models import Model
 from pydantic_ai.models.openai import OpenAIChatModel, OpenAIChatModelSettings, ReasoningEffort
 
-from teatree.agents.context_plan import cache_control_plan
 from teatree.agents.harness_registry import (
     HarnessBuildContext,
     HarnessCapabilities,
@@ -225,13 +224,12 @@ class PydanticAiHarness:
         # phase resolves the phase-scoped, gated toolsets (:mod:`teatree.agents.lane_b`).
         # ``None`` (the default) keeps a text-in/text-out Agent with no tools.
         self._phase = phase
-        # The model-construction bundle (OrcaRouter knobs + binding + context plan),
-        # resolved SYNCHRONOUSLY by :func:`resolve_harness`. Absent → the defaults
-        # (router binding, factory lane, uncapped, no cache plan).
+        # The model-construction bundle (OrcaRouter knobs + binding), resolved
+        # SYNCHRONOUSLY by :func:`resolve_harness`. Absent → the defaults (router
+        # binding, factory lane, uncapped).
         cfg = config or PydanticAiModelConfig()
         self._orca = cfg.orca
         self._binding = cfg.binding
-        self._context_plan = cfg.context_plan
 
     @property
     def history(self) -> "list[ModelMessage] | None":
@@ -249,16 +247,6 @@ class PydanticAiHarness:
         if self._binding is PydanticAiBinding.NATIVE_ANTHROPIC:
             return PYDANTIC_AI_NATIVE_CAPABILITIES
         return PYDANTIC_AI_ROUTER_CAPABILITIES
-
-    def cache_control_breakpoints(self) -> tuple[object, ...]:
-        """The ``cache_control`` breakpoints the native binding places, from the ContextPlan.
-
-        Empty when no plan was supplied or the binding cannot cache (the router), so the
-        native binding places markers only where the plan declares a byte-stable boundary.
-        """
-        if self._context_plan is None or self._binding is not PydanticAiBinding.NATIVE_ANTHROPIC:
-            return ()
-        return cache_control_plan(self._context_plan)
 
     def restore_unconsumed_resume_thread(self) -> None:
         """Re-persist a resume thread popped but never actually driven (#2916).
