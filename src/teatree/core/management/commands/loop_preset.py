@@ -16,7 +16,7 @@ import typer
 from django.utils import timezone
 from django_typer.management import TyperCommand, command
 
-from teatree.core.models import Loop, LoopPreset, LoopPresetOverride
+from teatree.core.models import PIN_MODES, Loop, LoopPreset, LoopPresetOverride
 from teatree.loop.preset_resolution import next_boundary
 from teatree.loops.preset_status import active_summary, effective_verdicts
 
@@ -259,7 +259,7 @@ class Command(TyperCommand):
 
     def _validated_pin(self, pin: str, *, json_output: bool) -> str:
         value = pin.strip()
-        if value and value not in {"present", "away", "autonomous_away"}:
+        if value and value not in PIN_MODES:
             self._refuse(f"invalid --pin {pin!r}; use present|away|autonomous_away", json_output=json_output)
         return value
 

@@ -26,7 +26,14 @@ from teatree.core.models.config_setting import ConfigSetting
 
 logger = logging.getLogger(__name__)
 
-_PIN_MODES = frozenset({"present", "away", "autonomous_away"})
+# The canonical availability-pin set — the modes a preset may pin. It is exactly
+# the availability-mode set (``teatree.core.availability._VALID_MODES``); the two
+# cannot share the constant because ``core.models`` is a domain leaf that must not
+# import ``core.availability`` (a backwards tach edge), so equality is asserted by
+# ``tests/teatree_core/models/test_loop_preset.py`` instead. Referenced by the
+# model's ``availability_pin`` property and the ``loop_preset`` command's pin
+# validator — the single source both consult (no more triplication).
+PIN_MODES = frozenset({"present", "away", "autonomous_away"})
 
 # Low-power auto-engage (#3159 build item 6): default-OFF flag + re-pointable target.
 LOW_POWER_AUTO_ENGAGE_SETTING = "low_power_auto_engage"
@@ -79,7 +86,7 @@ class LoopPreset(models.Model):
     def availability_pin(self) -> str | None:
         """The availability mode this preset pins when active, or ``None`` for no pin."""
         mode = self.availability_mode.strip()
-        return mode if mode in _PIN_MODES else None
+        return mode if mode in PIN_MODES else None
 
     @property
     def overlay_scope_names(self) -> list[str]:

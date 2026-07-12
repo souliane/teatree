@@ -43,7 +43,6 @@ TRANSITION_POLL_SECONDS = 60
 
 _STAMP_KEY = "loop_preset_transition_stamp"
 _PIN_STAMP_KEY = "loop_preset_pin_stamp"
-_PIN_MODES = frozenset({"present", "away", "autonomous_away"})
 
 
 def apply_preset_transition(now: dt.datetime) -> dict[str, Any]:

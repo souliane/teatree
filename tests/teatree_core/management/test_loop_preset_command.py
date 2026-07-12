@@ -11,7 +11,7 @@ import django.test
 import pytest
 from django.core.management import call_command
 
-from teatree.core.models import Loop, LoopPreset, LoopPresetOverride
+from teatree.core.models import PIN_MODES, Loop, LoopPreset, LoopPresetOverride
 
 
 def _run(*args: str, **kwargs: object) -> str:
@@ -39,6 +39,17 @@ class TestLoopPresetCommand(django.test.TestCase):
         with pytest.raises(SystemExit):
             _run("create", "bad", "--set", "review=maybe")
         assert not LoopPreset.objects.filter(name="bad").exists()
+
+    def test_create_accepts_every_canonical_pin(self) -> None:
+        # LP-5: --pin validates against the SAME canonical PIN_MODES the model uses.
+        for index, mode in enumerate(sorted(PIN_MODES)):
+            _run("create", f"pinned-{index}", "--pin", mode)
+            assert LoopPreset.objects.get(name=f"pinned-{index}").availability_mode == mode
+
+    def test_create_refuses_a_non_canonical_pin(self) -> None:
+        with pytest.raises(SystemExit):
+            _run("create", "bad-pin", "--pin", "sideways")
+        assert not LoopPreset.objects.filter(name="bad-pin").exists()
 
     def test_edit_inherit_removes_an_entry(self) -> None:
         LoopPreset.objects.create(name="p", entries={"review": False, "dispatch": True})
