@@ -29,6 +29,22 @@ from teatree.utils.run import CommandFailedError
 logger = logging.getLogger(__name__)
 
 
+class LandscapeForgeReadError(RuntimeError):
+    """A configured forge read failed while gathering the intake landscape.
+
+    Directive #10 — a third-party read failure (a forge API error, a missing
+    connector) is surfaced loudly rather than degraded to a confidently-empty
+    survey a consumer would mistake for "nothing in flight". Raised by
+    :func:`run_landscape` only when a code host IS configured but one of its
+    reads (open PRs, merged PRs, in-scope issues, current user) errored. The
+    SANCTIONED fallback of no code host configured — a deliberate, known-empty
+    local-only survey (the #1192 fallback transport) — never raises. The intake
+    FSM caller catches this so provisioning stays non-blocking (fail-open by
+    orchestration choice); the operator-facing ``t3 <overlay> workspace
+    landscape`` command surfaces it.
+    """
+
+
 class WorktreeReport(TypedDict):
     """One in-flight local checkout, flattened for the JSON command output."""
 
@@ -171,10 +187,18 @@ def _to_report(survey: LandscapeSurvey) -> LandscapeReport:
 def run_landscape(workspace: Path) -> LandscapeReport:
     """Gather and render the intake landscape survey for the active overlay.
 
-    Resolves the overlay code host (a missing host degrades to a warning-only
-    report rather than failing — intake still benefits from the local git
-    landscape), enumerates the workspace worktrees and in-scope open issues, then
-    delegates classification to :func:`teatree.core.intake.landscape.survey_landscape`.
+    Resolves the overlay code host, enumerates the workspace worktrees and
+    in-scope open issues, then delegates classification to
+    :func:`teatree.core.intake.landscape.survey_landscape`.
+
+    A missing code host is the SANCTIONED fallback (the #1192 fallback transport):
+    a deliberate, known-empty configuration that degrades to a local-git-only
+    survey with a warning, never a failure. A CONFIGURED host whose read errors
+    is a third-party read failure and FAILS LOUD (``LandscapeForgeReadError``) —
+    a forge outage must not be laundered into a confidently-empty survey the
+    planner would read as "nothing in flight" (directive #10). The intake FSM
+    caller catches the error so provisioning stays non-blocking; the operator's
+    ``t3 <overlay> workspace landscape`` command surfaces it.
     """
     worktree_paths = _workspace_worktree_paths(workspace)
     host = code_host_from_overlay()
@@ -193,7 +217,7 @@ def run_landscape(workspace: Path) -> LandscapeReport:
     open_issues, issue_warnings = _open_issues_in_scope(host, repo_slugs)
     try:
         author = host.current_user()
-    except Exception as exc:  # noqa: BLE001 — degrade to empty author + warning, never abort
+    except Exception as exc:  # noqa: BLE001 — surfaced as a forge read error below, never a silent empty author
         author = ""
         issue_warnings.append(f"could not resolve current user: {exc}")
 
@@ -205,10 +229,17 @@ def run_landscape(workspace: Path) -> LandscapeReport:
         open_issues=open_issues,
         merged_pr_issue_numbers=merged_issue_numbers,
     )
-    report = _to_report(survey)
-    report["warnings"].extend(issue_warnings)
-    report["warnings"].extend(merged_warnings)
-    return report
+    # Every warning from a CONFIGURED host is a forge read failure (the survey
+    # primitives append only on a caught read error). Refuse to return a
+    # degraded-empty survey — fail loud so the read error is not silently
+    # consumed as "nothing in flight".
+    forge_read_errors = [*survey.warnings, *issue_warnings, *merged_warnings]
+    if forge_read_errors:
+        raise LandscapeForgeReadError(
+            "forge read failed during intake landscape survey; refusing a degraded-empty survey: "
+            + "; ".join(forge_read_errors)
+        )
+    return _to_report(survey)
 
 
 class _NullCodeHost:

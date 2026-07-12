@@ -13,7 +13,7 @@ from unittest.mock import patch
 import pytest
 from django.test import TestCase
 
-from teatree.core.intake.landscape_gather import _workspace_worktree_paths, run_landscape
+from teatree.core.intake.landscape_gather import LandscapeForgeReadError, _workspace_worktree_paths, run_landscape
 from teatree.types import RawAPIDict
 from tests._git_repo import make_git_repo, run_git
 
@@ -47,6 +47,44 @@ class _FakeHost:
     def list_assigned_issues(self, *, assignee: str) -> list[RawAPIDict]:
         _ = assignee
         return self._issues
+
+
+class _RaisingHost:
+    """A CONFIGURED code host whose forge read errors — the directive-#10 target.
+
+    ``fail_on`` selects which read raises (``prs`` / ``issues`` / ``merged`` /
+    ``user``); the others succeed, so each test isolates one read-error surface.
+    """
+
+    def __init__(self, *, fail_on: str) -> None:
+        self._fail_on = fail_on
+
+    def current_user(self) -> str:
+        if self._fail_on == "user":
+            msg = "gh api /user exited 1 (auth)"
+            raise RuntimeError(msg)
+        return "me"
+
+    def list_my_prs(self, *, author: str, updated_after: str | None = None) -> list[RawAPIDict]:
+        _ = (author, updated_after)
+        if self._fail_on == "prs":
+            msg = "gh search/issues exited 1 (rate limited)"
+            raise RuntimeError(msg)
+        return []
+
+    def list_my_merged_prs(self, *, author: str, updated_after: str | None = None) -> list[RawAPIDict]:
+        _ = (author, updated_after)
+        if self._fail_on == "merged":
+            msg = "gh search/issues exited 1 (rate limited)"
+            raise RuntimeError(msg)
+        return []
+
+    def list_assigned_issues(self, *, assignee: str) -> list[RawAPIDict]:
+        _ = assignee
+        if self._fail_on == "issues":
+            msg = "gh search/issues exited 1 (network)"
+            raise RuntimeError(msg)
+        return []
 
 
 class _FakeReview:
@@ -128,3 +166,31 @@ class TestRunLandscape(TestCase):
         assert any("no code host configured" in w for w in report["warnings"])
         # Local worktree landscape is still surveyed.
         assert len(report["worktrees"]) >= 1
+
+    def test_configured_forge_read_error_fails_loud(self) -> None:
+        # Directive #10: a CONFIGURED forge whose read errors must fail loud, not
+        # return a confidently-empty survey. Anti-vacuity: on the pre-fix code
+        # run_landscape RETURNED a report (with the error buried in `warnings`),
+        # so this `raises` assertion goes RED before the fix and GREEN after.
+        # Every read-error surface (open PRs, in-scope issues, merged PRs, the
+        # current-user resolve) must fail loud, not just one.
+        for fail_on in ("prs", "issues", "merged", "user"):
+            with self.subTest(fail_on=fail_on):
+                host = _RaisingHost(fail_on=fail_on)
+                with (
+                    patch(_FACTORY, return_value=host),
+                    patch(_OVERLAY, return_value=_FakeOverlay()),
+                    pytest.raises(LandscapeForgeReadError),
+                ):
+                    run_landscape(self.workspace)
+
+    def test_healthy_forge_read_returns_report_not_raise(self) -> None:
+        # The fail-loud fires ONLY on a read error — a host whose reads all
+        # succeed returns a report, never raises (proves the guard is not
+        # over-broad).
+        host = _RaisingHost(fail_on="none")
+        with patch(_FACTORY, return_value=host), patch(_OVERLAY, return_value=_FakeOverlay()):
+            report = run_landscape(self.workspace)
+
+        assert report["warnings"] == []
+        assert report["open_prs"] == []

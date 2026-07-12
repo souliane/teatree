@@ -90,6 +90,7 @@ Use `Ctrl+F`/`grep` to jump to a rule. Sections are grouped below by theme; numb
 37. [Commit Before Declaring Done](#commit-before-declaring-done-non-negotiable)
 38. [Pre-Commit Hook Failures on Unrelated Tests](#pre-commit-hook-failures-on-unrelated-tests)
 38a. [Re-Derive the Minimal Blocker](#re-derive-the-minimal-blocker)
+38b. [External Read Failure Must Fail Loud, Never Silent-Empty](#external-read-failure-must-fail-loud-never-silent-empty-non-negotiable)
 
 **Design principles**
 
@@ -212,6 +213,16 @@ When the auto-mode classifier denies a tool call (Bash command rejected, MCP cal
 ## Re-Derive the Minimal Blocker
 
 When an operation is blocked — a classifier denial, a failing gate, an external or human-gated wait — re-derive the **minimal** set of work that genuinely depends on that exact operation before declaring anything else blocked. A blocked merge does not block PR creation, implementation, review, or research; a blocked deploy does not block the next feature. Before reporting "nothing actionable", ask of each pending task: does it consume the blocked operation's output, or does it merely share a goal (or sit later in the same chain) reachable by a different, available path? Reporting "nothing actionable" for two or more cycles behind a single external block is itself the signal to audit for a non-blocked path rather than continue idling. This complements the Classifier Denial Protocol (which governs the denied operation itself); this rule governs not over-propagating that block to independent work.
+
+## External Read Failure Must Fail Loud, Never Silent-Empty (Non-Negotiable)
+
+An external / third-party read that FAILS — a missing MCP connector, an absent API token, a forge/API error, a down service — must **fail loud**: raise or surface the failure. Never degrade a read _error_ to an empty/degraded result that a caller then consumes as truth. A confidently-empty answer manufactured from a read failure is the trap — "no open PRs" / "no in-flight work" / "no findings" returned because the read errored, indistinguishable from a genuine empty, leads the caller to proceed on data it does not actually have. Silent-empty is forbidden.
+
+- **A read ERROR ≠ a genuine empty.** "The forge returned zero rows" and "the forge read raised" are different outcomes; do not collapse them into the same empty return. Surface the error so the consumer cannot mistake a failure for "nothing there".
+- **A sanctioned fallback transport is fine — a silent-empty is not.** Compatible with the #1192 fallback-transport pattern: a _deliberate, known_ fallback (a configured secondary channel, an explicitly-chosen local-only mode when a dependency is _absent by configuration_) is legitimate and may proceed. What is banned is laundering a _read failure_ into an empty result with no loud signal. The distinction is the seam: "no connector configured" (a known state → sanctioned degraded path) versus "the configured connector's read errored" (a failure → fail loud).
+- **Fail-open at the ORCHESTRATION layer is a separate, explicit choice.** A caller may legitimately decide "this read must not block me" and catch the loud failure to continue (e.g. intake must not be blocked by a transient forge outage). That is a conscious, local decision at the _caller_, not a license for the _reader_ to hide the failure behind an empty return. The reader fails loud; the caller decides what to do with the failure.
+
+Enforced in code by `teatree.core.intake.landscape_gather.run_landscape`, which raises `LandscapeForgeReadError` when a _configured_ forge's read errors (rather than returning a degraded-empty survey), while the _no-host-configured_ sanctioned fallback still degrades to a local-only survey.
 
 ## Read the Canonical Source Before Fixing a Conformance Bug
 

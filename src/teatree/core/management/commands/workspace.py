@@ -454,9 +454,10 @@ class Command(TyperCommand):
         The intake landscape survey the ``/t3:ticket`` step runs and the planner
         consumes: the operator's open PRs/MRs, the local worktrees carrying
         uncommitted or unpushed work, and a per-issue close/merge/supersede
-        recommendation against the in-flight PR landscape. Forge or git probes
-        that cannot complete degrade to ``warnings`` rather than aborting — a
-        missed in-flight branch is worse than a noisy warning. Emits a
+        recommendation against the in-flight PR landscape. A missing code host
+        degrades to a local-git-only survey with a warning; a CONFIGURED forge
+        whose read errors FAILS LOUD (``LandscapeForgeReadError``) rather than
+        laundering the outage into a confidently-empty survey. Emits a
         JSON-serialisable survey so the planner plans against reality instead of
         re-deriving it.
         """
