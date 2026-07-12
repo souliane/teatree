@@ -361,7 +361,7 @@ def _resolve_child_env_or_failure(
     provider base is built from (which would re-introduce every secret over the
     ``os.environ`` scrub). This is the suspenders to :func:`reader_env_hermetic`'s belt.
     """
-    if not getattr(harness, "spawns_cli_child", False):
+    if not harness.capabilities.spawns_cli_child:
         return None
     # The SDK spawns the ``claude`` CLI child; keep the same provisioning gate
     # the ``claude -p`` runner used.
@@ -428,7 +428,7 @@ def _resolve_dispatch_lane(harness: Harness, provider: AgentHarnessProvider | No
     own login state resolves, which is unobservable here, so it stays
     unattributed (``""``) rather than guessing.
     """
-    if getattr(harness, "metered_lane", False):
+    if harness.capabilities.metered_lane:
         return TaskAttempt.Lane.METERED
     if provider is None:
         return ""

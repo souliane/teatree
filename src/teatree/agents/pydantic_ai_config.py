@@ -51,14 +51,27 @@ class PydanticAiBinding(StrEnum):
 
 #: The OpenAI-compatible OrcaRouter binding's capabilities: MCP toolsets + schema-enforced
 #: structured output; no hooks port yet, no server-side resume (client-side thread reseed),
-#: no reachable cache-control (opaque router surface).
+#: no reachable cache-control (opaque router surface). Dispatch-lane hints (#3157 AH-5): the
+#: metered lane, no bundled CLI child (the credential resolves in-process).
 PYDANTIC_AI_ROUTER_CAPABILITIES = HarnessCapabilities(
-    hooks=False, mcp=True, cache_control=False, server_resume=False, structured_output=True
+    hooks=False,
+    mcp=True,
+    cache_control=False,
+    server_resume=False,
+    structured_output=True,
+    spawns_cli_child=False,
+    metered_lane=True,
 )
 #: The native Anthropic Messages-API binding's capabilities (#3157 E1b): the router set
-#: PLUS reachable ``cache_control`` breakpoints.
+#: PLUS reachable ``cache_control`` breakpoints. Same dispatch-lane hints (metered, no child).
 PYDANTIC_AI_NATIVE_CAPABILITIES = HarnessCapabilities(
-    hooks=False, mcp=True, cache_control=True, server_resume=False, structured_output=True
+    hooks=False,
+    mcp=True,
+    cache_control=True,
+    server_resume=False,
+    structured_output=True,
+    spawns_cli_child=False,
+    metered_lane=True,
 )
 
 

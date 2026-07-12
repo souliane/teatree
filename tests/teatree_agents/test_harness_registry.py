@@ -41,9 +41,10 @@ class FakeThirdHarness:
     """A minimal overlay-authored backend — implements only ``open`` + ``capabilities``.
 
     Proves the acceptance floor: an overlay backend needs to satisfy nothing more than the
-    :class:`~teatree.agents.harness.Harness` protocol; the dispatch behaviour attributes
-    (``spawns_cli_child`` / ``metered_lane``) default off via getattr, so no CLI child env is
-    resolved and the lane is unattributed.
+    :class:`~teatree.agents.harness.Harness` protocol; the dispatch-lane hints
+    (``capabilities.spawns_cli_child`` / ``capabilities.metered_lane``) default off on
+    :class:`HarnessCapabilities` (#3157 AH-5), so no CLI child env is resolved and the lane
+    is unattributed.
     """
 
     capabilities = HarnessCapabilities(
@@ -179,20 +180,30 @@ class TestNoIsInstanceOnHarnessInDispatch:
 
 class TestCapabilityDrivenDispatchBehaviour:
     def test_claude_sdk_spawns_cli_child_and_is_not_metered(self) -> None:
-        harness = ClaudeSdkHarness()
-        assert getattr(harness, "spawns_cli_child", False) is True
-        assert getattr(harness, "metered_lane", False) is False
+        # AH-5: the dispatch-lane hints are typed fields on HarnessCapabilities, not ad-hoc
+        # class attributes read by untyped getattr.
+        caps = ClaudeSdkHarness().capabilities
+        assert caps.spawns_cli_child is True
+        assert caps.metered_lane is False
 
     def test_pydantic_ai_is_metered_and_spawns_no_cli_child(self) -> None:
-        harness = PydanticAiHarness()
-        assert getattr(harness, "metered_lane", False) is True
-        assert getattr(harness, "spawns_cli_child", False) is False
+        caps = PydanticAiHarness().capabilities
+        assert caps.metered_lane is True
+        assert caps.spawns_cli_child is False
 
     def test_dispatch_lane_reads_metered_flag_not_isinstance(self) -> None:
-        # A metered-flagged harness resolves to the METERED lane regardless of provider.
+        # A metered-flagged harness resolves to the METERED lane regardless of provider —
+        # a REAL dispatch decision driven off the typed capabilities.metered_lane flag.
         assert headless_mod._resolve_dispatch_lane(PydanticAiHarness(), None) == TaskAttempt.Lane.METERED
         # A non-metered harness with no provider pin stays unattributed.
         assert headless_mod._resolve_dispatch_lane(ClaudeSdkHarness(), None) == ""
+
+    def test_an_overlay_backend_declaring_the_metered_flag_routes_to_the_metered_lane(self) -> None:
+        # An overlay-registered backend that sets capabilities.metered_lane drives the same
+        # dispatch decision with ZERO isinstance — proving the seam works for a third harness.
+        metered_third = FakeThirdHarness([])
+        metered_third.capabilities = HarnessCapabilities(metered_lane=True)
+        assert headless_mod._resolve_dispatch_lane(metered_third, None) == TaskAttempt.Lane.METERED
 
 
 def test_programmatic_register_harness_is_resolvable(monkeypatch: pytest.MonkeyPatch) -> None:

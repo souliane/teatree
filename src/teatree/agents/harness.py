@@ -61,7 +61,13 @@ from teatree.agents.regulated_path import assert_model_allowed_on_regulated_path
 from teatree.config import AgentHarness, AgentHarnessProvider, get_effective_settings
 
 CLAUDE_SDK_CAPABILITIES = HarnessCapabilities(
-    hooks=True, mcp=True, cache_control=False, server_resume=True, structured_output=False
+    hooks=True,
+    mcp=True,
+    cache_control=False,
+    server_resume=True,
+    structured_output=False,
+    spawns_cli_child=True,
+    metered_lane=False,
 )
 if TYPE_CHECKING:
     from pydantic_ai.messages import ModelMessage
@@ -87,11 +93,13 @@ class HarnessSession(Protocol):
 class Harness(Protocol):
     """Opens a :class:`HarnessSession` for a built set of agent options.
 
-    ``capabilities`` (#3157 E1) is the typed flag set the driver and doctors read instead
-    of ``isinstance``-branching on the concrete backend class. The transport-specific
-    dispatch hints (``spawns_cli_child`` / ``metered_lane`` / ``restore_unconsumed_resume_thread``)
-    are read defensively (getattr with defaults) so an overlay backend only has to implement
-    ``open`` + ``capabilities``.
+    ``capabilities`` (#3157 E1) is the typed flag set the driver and doctors read instead of
+    ``isinstance``-branching on the concrete backend class — including the dispatch-lane hints
+    ``spawns_cli_child`` / ``metered_lane`` (#3157 AH-5), which the driver reads as typed
+    fields through this attribute rather than by untyped ``getattr`` on the concrete class. So
+    an overlay backend implements ``open`` + ``capabilities`` and the driver routes it purely
+    off those flags. ``restore_unconsumed_resume_thread`` stays an OPTIONAL method hook (only a
+    client-side-resumable backend implements it), read defensively by the driver.
     """
 
     capabilities: HarnessCapabilities
@@ -102,19 +110,15 @@ class Harness(Protocol):
 class ClaudeSdkHarness:
     """The default backend — the ``claude-agent-sdk`` in-process transport.
 
-    Declares its capabilities and dispatch behaviour as attributes (#3157 E1) so the
+    Declares its capabilities as a typed :class:`HarnessCapabilities` (#3157 E1/AH-5) so the
     driver reads them instead of ``isinstance``-branching: it spawns the bundled ``claude``
-    CLI child (so it needs the provider child env), authenticates on the subscription lane
-    (not metered), and resumes server-side via ``--resume``.
+    CLI child (``spawns_cli_child`` → dispatch resolves the provider child env), authenticates
+    on the subscription lane (``metered_lane`` is ``False`` — attribution comes from the
+    explicit provider pin, see ``_resolve_dispatch_lane``), and resumes server-side via
+    ``--resume``.
     """
 
     capabilities: HarnessCapabilities = CLAUDE_SDK_CAPABILITIES
-    #: This backend spawns the bundled ``claude`` CLI child, so dispatch resolves the
-    #: Layer-2 provider child env for it (no other harness needs a CLI child env).
-    spawns_cli_child: bool = True
-    #: The subscription lane's attribution is resolved from the explicit provider pin, not
-    #: fixed by the transport — so this stays ``False`` (see ``_resolve_dispatch_lane``).
-    metered_lane: bool = False
 
     @staticmethod
     @asynccontextmanager
@@ -200,13 +204,12 @@ class PydanticAiHarness:
     — so a caller that refuses dispatch after construction but before a
     successful ``open`` (a budget breach, a credential failure) can restore
     the popped entry via :attr:`history` + *resume_source*.
-    """
 
-    #: A ``pydantic_ai`` run authenticates on the metered lane (OrcaRouter BYOK or the
-    #: native Anthropic API key) — the transport fixes it, unlike the ``claude_sdk`` lane.
-    metered_lane: bool = True
-    #: No bundled CLI child — the credential resolves in-process inside ``open``.
-    spawns_cli_child: bool = False
+    The dispatch-lane hints live on :attr:`capabilities` (#3157 AH-5): ``metered_lane`` is
+    ``True`` (a ``pydantic_ai`` run always authenticates on the metered lane — OrcaRouter BYOK
+    or the native Anthropic key — the transport fixes it) and ``spawns_cli_child`` is ``False``
+    (no bundled CLI child; the credential resolves in-process inside ``open``).
+    """
 
     def __init__(
         self,

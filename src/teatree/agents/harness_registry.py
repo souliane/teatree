@@ -40,10 +40,12 @@ HARNESS_ENTRY_POINT_GROUP = "teatree.harnesses"
 
 @dataclass(frozen=True, slots=True)
 class HarnessCapabilities:
-    """What one harness backend supports — the typed flag set that replaces ``isinstance``.
+    """The typed flag set the driver + doctors read instead of ``isinstance``-branching.
 
-    Dispatch code and doctors ask a harness these questions instead of branching on
-    the concrete class; an overlay introspects them before selecting a backend.
+    Dispatch code and doctors ask a harness these questions instead of branching on the
+    concrete class; an overlay introspects them before selecting a backend. Two categories:
+
+    Capability flags — WHAT the backend supports:
 
     *   ``hooks`` — fires pre/post-tool hook events (the ``claude-agent-sdk`` lane does).
     *   ``mcp`` — drives MCP servers/toolsets.
@@ -52,6 +54,16 @@ class HarnessCapabilities:
     *   ``server_resume`` — resumes a prior session server-side (the SDK's ``--resume``).
     *   ``structured_output`` — enforces a schema-validated result envelope natively,
         rather than scraping the last JSON line of agent text.
+
+    Dispatch-lane hints — HOW the driver routes it (#3157 AH-5, previously read off the
+    concrete class by untyped ``getattr``; now typed fields the driver reads through the
+    protocol's ``capabilities`` attribute):
+
+    *   ``spawns_cli_child`` — spawns the bundled ``claude`` CLI child, so dispatch resolves
+        the Layer-2 provider child env for it (only the ``claude_sdk`` backend does).
+    *   ``metered_lane`` — the transport FIXES the run to the metered Layer-2 lane (OrcaRouter
+        BYOK or the native Anthropic key), unlike the ``claude_sdk`` subscription lane whose
+        attribution is resolved from the explicit provider pin.
     """
 
     hooks: bool = False
@@ -59,6 +71,8 @@ class HarnessCapabilities:
     cache_control: bool = False
     server_resume: bool = False
     structured_output: bool = False
+    spawns_cli_child: bool = False
+    metered_lane: bool = False
 
 
 @dataclass(frozen=True, slots=True)
