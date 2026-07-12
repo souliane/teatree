@@ -21,6 +21,7 @@ from teatree.agents.pydantic_ai_config import (
     NativeAnthropicUnavailableError,
     PydanticAiBinding,
     PydanticAiModelConfig,
+    native_anthropic_model_name,
 )
 from teatree.agents.pydantic_ai_session import _router_reported_cost
 from teatree.config import AgentHarness, AgentHarnessProvider
@@ -92,6 +93,20 @@ class TestNativeModelResolution:
             model=injected, config=PydanticAiModelConfig(binding=PydanticAiBinding.NATIVE_ANTHROPIC)
         )
         assert harness._resolve_model(ClaudeAgentOptions()) is injected
+
+
+class TestNativeModelNameFallback:
+    """AH-4: the unpinned native-Anthropic fallback must be a valid Anthropic model id."""
+
+    def test_unpinned_fallback_is_a_concrete_anthropic_id_not_a_router_handle(self) -> None:
+        # The bug: an unpinned dispatch resolved through resolve_pydantic_ai_model, which
+        # returns an ``orcarouter/…`` router handle — invalid on the direct Anthropic API.
+        name = native_anthropic_model_name(ClaudeAgentOptions())
+        assert "/" not in name  # NOT a provider-prefixed router handle (orcarouter/teatree-factory)
+        assert name.startswith("claude-")  # a concrete Claude dash-form id, valid on the Messages API
+
+    def test_explicit_pin_passes_through_unchanged(self) -> None:
+        assert native_anthropic_model_name(ClaudeAgentOptions(model="claude-opus-4-8")) == "claude-opus-4-8"
 
 
 class TestRouterReportedCost:

@@ -16,7 +16,7 @@ from pydantic_ai.models import Model
 from pydantic_ai.providers.openai import OpenAIProvider
 
 from teatree.agents.harness_registry import HarnessCapabilities
-from teatree.agents.model_tiering import resolve_pydantic_ai_model
+from teatree.agents.model_tiering import DEFAULT_TIER, resolve_tier
 from teatree.agents.regulated_path import assert_model_allowed_on_regulated_path
 from teatree.llm.credentials import AnthropicApiKeyCredential, OrcaRouterCredential, resolve_orca_router_provider_config
 
@@ -123,6 +123,21 @@ class PydanticAiModelConfig:
     binding: PydanticAiBinding = PydanticAiBinding.ROUTER
 
 
+def native_anthropic_model_name(options: ClaudeAgentOptions) -> str:
+    """The Anthropic Messages-API model id for the native binding (#3157 AH-4).
+
+    An explicit ``options.model`` passes through unchanged (a Claude dash-form id is a valid
+    Anthropic Messages-API model). An UNPINNED dispatch falls back to the default tier's
+    CONCRETE Claude id (:func:`resolve_tier`, e.g. ``claude-sonnet-5``).
+
+    Critically it must NOT go through :func:`~teatree.agents.model_tiering.resolve_pydantic_ai_model`,
+    which normalises an unpinned id UP to an ``orcarouter/…`` router HANDLE. That handle is
+    meaningless to the direct Anthropic Messages API (it would 404 the request) — router-handle
+    normalisation belongs ONLY to the OpenAI-compatible router binding, never this native path.
+    """
+    return options.model or resolve_tier(DEFAULT_TIER)
+
+
 def resolve_native_anthropic_model(options: ClaudeAgentOptions) -> Model:
     """Construct the direct Anthropic Messages-API model (#3157 E1b) — the cache_control path.
 
@@ -132,10 +147,10 @@ def resolve_native_anthropic_model(options: ClaudeAgentOptions) -> Model:
     dependency (``pydantic-ai-slim[anthropic]``); it is imported lazily so a router-only
     install never pays for it, and its absence fails LOUD with the install hint only when
     this binding is actually selected — the same late-fail contract the OrcaRouter credential
-    uses. The model id passes through unchanged (a Claude dash-form id is a valid Anthropic
-    Messages-API model), gated by the regulated-path allowlist first.
+    uses. The model id (:func:`native_anthropic_model_name`) is gated by the regulated-path
+    allowlist first.
     """
-    model_name = options.model or resolve_pydantic_ai_model(options.model)
+    model_name = native_anthropic_model_name(options)
     assert_model_allowed_on_regulated_path(model_name)
     try:
         from pydantic_ai.models.anthropic import AnthropicModel  # noqa: PLC0415 — optional extra, imported lazily
