@@ -20,7 +20,7 @@ import json
 import os
 import re
 import shutil
-import subprocess  # noqa: S404
+import subprocess  # noqa: S404 — stdlib subprocess for trusted internal git/CLI calls
 import sys
 import tempfile
 import time
@@ -161,7 +161,7 @@ from hooks.scripts.ups_fastpath import has_pending_chat_work, has_pending_questi
 STATE_DIR = Path(
     os.environ.get(
         "TEATREE_CLAUDE_STATUSLINE_STATE_DIR",
-        os.environ.get("T3_HOOK_STATE_DIR", "/tmp/claude-statusline"),  # noqa: S108
+        os.environ.get("T3_HOOK_STATE_DIR", "/tmp/claude-statusline"),  # noqa: S108 — fixed agent-controlled path, not user input
     )
 )
 
@@ -385,9 +385,9 @@ def _bootstrap_teatree_src() -> "tuple[ModuleType, ModuleType] | None":
         if str(src_dir) not in sys.path:
             sys.path.insert(0, str(src_dir))
             added = True
-        from teatree.cli import teatree_gate  # noqa: PLC0415
-        from teatree.hooks import self_rescue  # noqa: PLC0415
-    except Exception:  # noqa: BLE001
+        from teatree.cli import teatree_gate  # noqa: PLC0415 — deferred: cold-hook import after sys.path setup
+        from teatree.hooks import self_rescue  # noqa: PLC0415 — deferred: cold-hook import after sys.path setup
+    except Exception:  # noqa: BLE001 — crash-proof hook: any failure degrades silently, never breaks the tool call
         return None
     finally:
         if added:
@@ -411,7 +411,7 @@ def _is_self_rescue(command: str) -> bool:
     self_rescue, _ = modules
     try:
         return bool(self_rescue.is_self_rescue(command))
-    except Exception:  # noqa: BLE001
+    except Exception:  # noqa: BLE001 — crash-proof hook: any failure degrades silently, never breaks the tool call
         return False
 
 
@@ -427,7 +427,7 @@ def _danger_gate_fail_open_enabled() -> bool:
     _, teatree_gate = modules
     try:
         return bool(teatree_gate.danger_gate_fail_open_is_enabled())
-    except Exception:  # noqa: BLE001
+    except Exception:  # noqa: BLE001 — crash-proof hook: any failure degrades silently, never breaks the tool call
         return False
 
 
@@ -632,10 +632,10 @@ def handle_user_prompt_submit(data: dict) -> None:
 
     sys.path.insert(0, str(scripts_dir))
     try:
-        from lib.skill_loader import suggest_skills  # noqa: PLC0415
+        from lib.skill_loader import suggest_skills  # noqa: PLC0415 — deferred: cold-hook import after sys.path setup
 
         result = suggest_skills(loader_input)
-    except Exception:  # noqa: BLE001
+    except Exception:  # noqa: BLE001 — crash-proof hook: any failure degrades silently, never breaks the tool call
         return
     finally:
         sys.path.pop(0)
@@ -729,10 +729,10 @@ def _loop_cadence_seconds() -> int:
     """
     try:
         with _teatree_src_on_path():
-            from teatree.config import cadence_seconds  # noqa: PLC0415
+            from teatree.config import cadence_seconds  # noqa: PLC0415 — deferred: cold-hook import
 
             return cadence_seconds()
-    except Exception:  # noqa: BLE001
+    except Exception:  # noqa: BLE001 — crash-proof hook: any failure degrades silently, never breaks the tool call
         return int(os.environ.get("T3_LOOP_CADENCE", _LOOP_CADENCE_DEFAULT) or _LOOP_CADENCE_DEFAULT)
 
 
@@ -742,8 +742,6 @@ def _tick_meta_stale() -> bool:
     if not meta.is_file():
         return True
     cadence = _loop_cadence_seconds()
-    import time  # noqa: PLC0415
-
     age = int(time.time()) - int(meta.stat().st_mtime)
     return age > cadence * 2
 
@@ -860,7 +858,7 @@ def handle_todo_freshness_nudge(data: dict) -> None:
     if marker.exists():
         return
     marker.write_text("1", encoding="utf-8")
-    print(_TODO_FRESHNESS_NUDGE)  # noqa: T201
+    print(_TODO_FRESHNESS_NUDGE)  # noqa: T201 — hook writes its protocol output to stdout
 
 
 # ── PreToolUse: enforce-skill-loading ───────────────────────────────
@@ -1379,7 +1377,7 @@ def _resolve_worktree_state(toplevel: str) -> str | None:
     a programming error so the caller can log it loudly rather than swallow it
     into a silent fail-open.
     """
-    from teatree.core.intake.resolve import match_worktree_by_path  # noqa: PLC0415
+    from teatree.core.intake.resolve import match_worktree_by_path  # noqa: PLC0415 — deferred: cold-hook import
 
     worktree = match_worktree_by_path(toplevel)
     if worktree is None or worktree.ticket is None:
@@ -1403,15 +1401,15 @@ def _ticket_state_for_cwd(cwd: str) -> str | None:
         if str(src_dir) not in sys.path:
             sys.path.insert(0, str(src_dir))
             added = True
-        import django  # noqa: PLC0415
-        from django.core.exceptions import FieldError  # noqa: PLC0415
+        import django  # noqa: PLC0415 — deferred: Django import at call time
+        from django.core.exceptions import FieldError  # noqa: PLC0415 — deferred: Django import at call time
 
         os.environ.setdefault("DJANGO_SETTINGS_MODULE", "teatree.settings")
         django.setup()
 
         try:
-            toplevel = subprocess.check_output(  # noqa: S603
-                ["git", "-C", cwd, "--no-optional-locks", "rev-parse", "--show-toplevel"],  # noqa: S607
+            toplevel = subprocess.check_output(  # noqa: S603 — trusted internal subprocess; fixed argv, no shell
+                ["git", "-C", cwd, "--no-optional-locks", "rev-parse", "--show-toplevel"],  # noqa: S607 — trusted internal git invocation with a fixed argv
                 text=True,
                 timeout=3,
                 stderr=subprocess.DEVNULL,
@@ -1425,7 +1423,7 @@ def _ticket_state_for_cwd(cwd: str) -> str | None:
             # crash-proof (return None) but make it LOUD, never a silent ALLOW.
             sys.stderr.write(f"NOTE: plan-gate edit-block resolver hit a programming error ({exc!r}); failing open.\n")
             return None
-    except Exception:  # noqa: BLE001
+    except Exception:  # noqa: BLE001 — crash-proof hook: any failure degrades silently, never breaks the tool call
         return None
     finally:
         if added:
@@ -1472,7 +1470,7 @@ def handle_block_edit_before_planned(data: dict) -> bool:
     cwd = data.get("cwd", "") or str(Path.cwd())
     try:
         state = _ticket_state_for_cwd(cwd)
-    except Exception:  # noqa: BLE001
+    except Exception:  # noqa: BLE001 — crash-proof hook: any failure degrades silently, never breaks the tool call
         return False
     if state != "started":
         return False
@@ -1718,7 +1716,7 @@ def _run_mr_validator(
     """
     repo_args = ["--repo", target_repo] if target_repo else []
     try:
-        return subprocess.run(  # noqa: S603
+        return subprocess.run(  # noqa: S603 — trusted internal subprocess; fixed argv, no shell
             [*argv, "--title", title, "--description", description, *repo_args],
             capture_output=True,
             text=True,
@@ -1874,7 +1872,7 @@ def _extract_bash_ai_sig_payload(command: str, cwd: Path | None = None) -> str |
     hook router cannot import a private name from an external module), mirroring
     how ``banned_terms_scanner.extract_publish_payload`` wraps the same parser.
     """
-    from teatree.hooks.ai_signature_gate import extract_forge_post_body  # noqa: PLC0415
+    from teatree.hooks.ai_signature_gate import extract_forge_post_body  # noqa: PLC0415 — deferred: cold-hook import
 
     return extract_forge_post_body(command, cwd)
 
@@ -2000,7 +1998,7 @@ def _run_block_ai_signature(data: dict) -> bool:
         return False
 
     try:
-        result = subprocess.run(  # noqa: S603
+        result = subprocess.run(  # noqa: S603 — trusted internal subprocess; fixed argv, no shell
             argv,
             input=payload,
             capture_output=True,
@@ -2103,7 +2101,7 @@ def handle_quote_scanner_pretool(data: dict) -> bool:
             sys.path.insert(0, str(src_dir))
             added = True
         return _run_quote_scanner_pretool(data)
-    except Exception:  # noqa: BLE001
+    except Exception:  # noqa: BLE001 — crash-proof hook: any failure degrades silently, never breaks the tool call
         return False
     finally:
         if added:
@@ -2135,9 +2133,9 @@ def _run_quote_scanner_pretool(data: dict) -> bool:
     wrapper owns the ``sys.path`` bootstrap + fail-open exception
     handler (#1314) without inflating its return count.
     """
-    from typing import cast  # noqa: PLC0415
+    from typing import cast  # noqa: PLC0415 — deferred: off the fast hook's load path
 
-    from teatree.hooks import quote_scanner  # noqa: PLC0415
+    from teatree.hooks import quote_scanner  # noqa: PLC0415 — deferred: cold-hook import after sys.path setup
 
     tool_name = data.get("tool_name", "")
     raw_input = data.get("tool_input", {}) or {}
@@ -2345,7 +2343,7 @@ def handle_dispatch_prompt_quote_scanner(data: dict) -> bool:
             sys.path.insert(0, str(src_dir))
             added = True
         return _run_dispatch_quote_scanner(data)
-    except Exception:  # noqa: BLE001
+    except Exception:  # noqa: BLE001 — crash-proof hook: any failure degrades silently, never breaks the tool call
         return False
     finally:
         if added:
@@ -2360,9 +2358,9 @@ def _run_dispatch_quote_scanner(data: dict) -> bool:
     wrapper owns the ``sys.path`` bootstrap + fail-open handler without
     inflating its return count (mirrors the #1213 split).
     """
-    from typing import cast  # noqa: PLC0415
+    from typing import cast  # noqa: PLC0415 — deferred: off the fast hook's load path
 
-    from teatree.hooks import quote_scanner  # noqa: PLC0415
+    from teatree.hooks import quote_scanner  # noqa: PLC0415 — deferred: cold-hook import after sys.path setup
 
     tool_name = data.get("tool_name", "")
     raw_input = data.get("tool_input", {}) or {}
@@ -2468,7 +2466,7 @@ def handle_dispatch_prompt_quote_scanner_on_task_create(data: dict) -> bool:
             sys.path.insert(0, str(src_dir))
             added = True
         return _run_dispatch_quote_scanner_on_task_create(data)
-    except Exception:  # noqa: BLE001
+    except Exception:  # noqa: BLE001 — crash-proof hook: any failure degrades silently, never breaks the tool call
         return False
     finally:
         if added:
@@ -2484,7 +2482,7 @@ def _run_dispatch_quote_scanner_on_task_create(data: dict) -> bool:
     (mirrors the #1213/#1401 split). A HIGH match emits the ``TaskCreated``
     teammate-stop deny envelope (NOT the PreToolUse ``hookSpecificOutput`` deny).
     """
-    from teatree.hooks import quote_scanner  # noqa: PLC0415
+    from teatree.hooks import quote_scanner  # noqa: PLC0415 — deferred: cold-hook import after sys.path setup
 
     subject = data.get("task_subject", "") or ""
     description = data.get("task_description", "") or ""
@@ -2611,7 +2609,7 @@ def handle_block_uncovered_diff(data: dict) -> bool:
         return False
 
     try:
-        result = subprocess.run(  # noqa: S603
+        result = subprocess.run(  # noqa: S603 — trusted internal subprocess; fixed argv, no shell
             argv,
             capture_output=True,
             text=True,
@@ -3140,7 +3138,7 @@ def _emit_turn_budget_nudge_once(session_id: str, message: str) -> None:
         nudged_marker.write_text("1", encoding="utf-8")
     except OSError:
         return
-    print(json.dumps({"additionalContext": message + _TURN_BUDGET_NUDGE_TAIL}))  # noqa: T201
+    print(json.dumps({"additionalContext": message + _TURN_BUDGET_NUDGE_TAIL}))  # noqa: T201 — hook writes its protocol output to stdout
 
 
 def handle_orchestrator_turn_budget_nudge(data: dict) -> None:
@@ -3215,15 +3213,15 @@ def _resolve_repo_key(file_path: str, workspace: str) -> str | None:
     if (main_repo_dir / ".git").is_dir():
         return first
 
-    if len(parts) < 2:  # noqa: PLR2004
+    if len(parts) < 2:  # noqa: PLR2004 — self-documenting literal in this context
         return None
     repo_in_wt = parts[1]
     wt_dir = main_repo_dir / repo_in_wt
     if not (wt_dir / ".git").exists():
         return None
     try:
-        branch = subprocess.check_output(  # noqa: S603
-            ["git", "-C", str(wt_dir), "--no-optional-locks", "rev-parse", "--abbrev-ref", "HEAD"],  # noqa: S607
+        branch = subprocess.check_output(  # noqa: S603 — trusted internal subprocess; fixed argv, no shell
+            ["git", "-C", str(wt_dir), "--no-optional-locks", "rev-parse", "--abbrev-ref", "HEAD"],  # noqa: S607 — trusted internal git invocation with a fixed argv
             text=True,
             timeout=3,
         ).strip()
@@ -3305,13 +3303,13 @@ def _resolve_skill_closure(skills: list[str]) -> list[str]:
             sys.path.insert(0, extra)
             added.append(extra)
     try:
-        from lib.skill_loader import build_requires_index  # noqa: PLC0415
+        from lib.skill_loader import build_requires_index  # noqa: PLC0415 — deferred: cold-hook import
 
-        from teatree.skill_support.deps import resolve_requires  # noqa: PLC0415
+        from teatree.skill_support.deps import resolve_requires  # noqa: PLC0415 — deferred: cold-hook import
 
         index = build_requires_index(_skill_search_dirs())
         return resolve_requires(skills, index)
-    except Exception:  # noqa: BLE001
+    except Exception:  # noqa: BLE001 — crash-proof hook: any failure degrades silently, never breaks the tool call
         return list(skills)
     finally:
         for extra in added:
@@ -3412,7 +3410,7 @@ def handle_read_dedup(data: dict) -> None:
     reads: dict[str, str] = {}
     for line in _read_lines(reads_file):
         parts = line.split("\t", 1)
-        if len(parts) == 2:  # noqa: PLR2004
+        if len(parts) == 2:  # noqa: PLR2004 — self-documenting literal in this context
             reads[parts[1]] = parts[0]
 
     # Get current mtime
@@ -3423,7 +3421,7 @@ def handle_read_dedup(data: dict) -> None:
 
     prev_mtime = reads.get(file_path)
     if prev_mtime == current_mtime:
-        print(  # noqa: T201
+        print(  # noqa: T201 — hook writes its protocol output to stdout
             f"TOKEN SAVINGS HINT: {file_path} was already read this session "
             "and hasn't changed. Use your cached knowledge of its contents "
             "instead of re-reading."
@@ -3462,7 +3460,7 @@ def _agent_id_from_response(tool_response: object) -> str:
     / ``id``). Returns ``""`` when none is present — the caller then
     falls back to scanning the harness tasks dir.
     """
-    from typing import cast  # noqa: PLC0415
+    from typing import cast  # noqa: PLC0415 — deferred: off the fast hook's load path
 
     if not isinstance(tool_response, dict):
         return ""
@@ -3544,8 +3542,8 @@ def _git_state_for_repo(repo_path: Path) -> dict[str, str] | None:
 
     def _git(*args: str) -> str:
         try:
-            return subprocess.check_output(  # noqa: S603
-                ["git", "-C", str(repo_path), "--no-optional-locks", *args],  # noqa: S607
+            return subprocess.check_output(  # noqa: S603 — trusted internal subprocess; fixed argv, no shell
+                ["git", "-C", str(repo_path), "--no-optional-locks", *args],  # noqa: S607 — trusted internal git invocation with a fixed argv
                 text=True,
                 timeout=3,
                 stderr=subprocess.DEVNULL,
@@ -3935,7 +3933,7 @@ def _registry_write_lock() -> Iterator[None]:
     because every writer must eventually win — the critical section is a
     sub-millisecond JSON dump.
     """
-    import fcntl  # noqa: PLC0415
+    import fcntl  # noqa: PLC0415 — deferred: off the fast hook's load path
 
     lock_path = _registry_lock_path()
     lock_path.parent.mkdir(parents=True, exist_ok=True)
@@ -4076,7 +4074,7 @@ def _claim_agent_consolidation_slot(agent_id: str, session_id: str) -> bool:
     not pump) the pre-WS4 tests assert.
     """
     try:
-        from teatree.utils.singleton import pid_alive  # noqa: F401, PLC0415
+        from teatree.utils.singleton import pid_alive  # noqa: F401, PLC0415 — deferred: cold-hook import; re-export
     except ImportError:
         return False
     with _registry_write_lock():
@@ -4124,7 +4122,7 @@ def _prune_dead_owner(registry: dict[str, dict]) -> dict[str, dict]:
     hook must be crash-proof by contract.
     """
     try:
-        from teatree.utils.singleton import pid_alive  # noqa: PLC0415
+        from teatree.utils.singleton import pid_alive  # noqa: PLC0415 — deferred: cold-hook import after sys.path setup
     except ImportError as exc:
         print(  # noqa: T201 — hook stderr is the module's logging channel
             f"[hook_router] loop self-pump skipped: teatree unavailable ({exc})",
@@ -4146,7 +4144,7 @@ def _emit_osc_title() -> None:
     terminal: a non-interactive/headless session has no writable tty, so
     the ``open`` fails and the OSC is silently skipped. Never raised.
     """
-    with contextlib.suppress(OSError), open(_TTY_PATH, "a", encoding="utf-8") as tty:  # noqa: PTH123
+    with contextlib.suppress(OSError), open(_TTY_PATH, "a", encoding="utf-8") as tty:  # noqa: PTH123 — builtin open on a device/proc path; Path.open adds nothing here
         tty.write("\033]0;TEATREE LOOP\007")
 
 
@@ -4159,8 +4157,6 @@ def _emit_osc_title() -> None:
 
 
 def _now_ts() -> int:
-    import time  # noqa: PLC0415
-
     return int(time.time())
 
 
@@ -4271,10 +4267,10 @@ def _db_live_foreign_owner(session_id: str, current_pid: int | None) -> str:
     if not bootstrap_teatree_django():
         return ""
     try:
-        from teatree.core.models import LoopLease  # noqa: PLC0415
+        from teatree.core.models import LoopLease  # noqa: PLC0415 — deferred: ORM import needs the app registry
 
         return LoopLease.objects.live_foreign_owner("t3-master", session_id=session_id, current_pid=current_pid)
-    except Exception:  # noqa: BLE001
+    except Exception:  # noqa: BLE001 — crash-proof hook: any failure degrades silently, never breaks the tool call
         return ""
 
 
@@ -4309,12 +4305,12 @@ def _evict_stale_db_lease_owner(session_id: str, current_pid: int | None) -> Non
     if not bootstrap_teatree_django():
         return
     try:
-        from teatree.core.models import LoopLease  # noqa: PLC0415
-    except Exception:  # noqa: BLE001
+        from teatree.core.models import LoopLease  # noqa: PLC0415 — deferred: ORM import needs the app registry
+    except Exception:  # noqa: BLE001 — crash-proof hook: any failure degrades silently, never breaks the tool call
         return
     try:
         LoopLease.objects.evict_stale_owner("t3-master", keep_session_id=session_id, current_pid=current_pid)
-    except Exception:  # noqa: BLE001
+    except Exception:  # noqa: BLE001 — crash-proof hook: any failure degrades silently, never breaks the tool call
         return
 
 
@@ -4335,7 +4331,7 @@ def _claim_session_handover(session_id: str) -> str | None:
     from_session = ""
     if bootstrap_teatree_django():
         try:
-            from teatree.core.models import SessionHandover  # noqa: PLC0415
+            from teatree.core.models import SessionHandover  # noqa: PLC0415 — deferred: ORM/app-registry
 
             claimed = SessionHandover.objects.claim_next(session_id)
             if claimed is not None:
@@ -4375,7 +4371,7 @@ def _claim_session_handover_from_file() -> tuple[str, str]:
         # ``handover_mirror_path`` is DB-home. Read it Django-free via ``cold_reader``
         # (the canonical sqlite); an absent row / unreachable DB fails open through
         # the parser to the default bootstrap path.
-        from teatree.config import _parse_handover_mirror_path, cold_reader  # noqa: PLC0415, PLC2701
+        from teatree.config import _parse_handover_mirror_path, cold_reader  # noqa: PLC0415, PLC2701 — cold-hook import
 
         path = _parse_handover_mirror_path(cold_reader.str_setting("handover_mirror_path", default=""))
         text = path.read_text(encoding="utf-8").strip() if path.is_file() else ""
@@ -4383,7 +4379,7 @@ def _claim_session_handover_from_file() -> tuple[str, str]:
             return "", ""
         with contextlib.suppress(OSError):
             path.replace(path.with_name("latest.claimed.md"))
-    except Exception:  # noqa: BLE001
+    except Exception:  # noqa: BLE001 — crash-proof hook: any failure degrades silently, never breaks the tool call
         return "", ""
     else:
         return text, ""
@@ -4412,10 +4408,10 @@ def _autocompact_kill_switch_advisory() -> str | None:
         if str(src_dir) not in sys.path:
             sys.path.insert(0, str(src_dir))
             added = True
-        from teatree.core.autocompact_advisory import AutocompactConfig, advisory_text  # noqa: PLC0415
+        from teatree.core.autocompact_advisory import AutocompactConfig, advisory_text  # noqa: PLC0415 — cold-hook read
 
         return advisory_text(AutocompactConfig.from_env())
-    except Exception:  # noqa: BLE001
+    except Exception:  # noqa: BLE001 — crash-proof hook: any failure degrades silently, never breaks the tool call
         return None
     finally:
         if added:
@@ -4439,7 +4435,7 @@ def _account_switch_advisory() -> str | None:
         if str(src_dir) not in sys.path:
             sys.path.insert(0, str(src_dir))
             added = True
-        from teatree.core.account_fingerprint import fingerprint_switched  # noqa: PLC0415
+        from teatree.core.account_fingerprint import fingerprint_switched  # noqa: PLC0415 — deferred: cold-hook import
 
         return _ACCOUNT_SWITCH_DIRECTIVE if fingerprint_switched() else None
     except Exception:  # noqa: BLE001 — never block SessionStart on a fingerprint read hiccup
@@ -4466,7 +4462,7 @@ def _mcp_connectivity_advisory() -> str | None:
         if str(src_dir) not in sys.path:
             sys.path.insert(0, str(src_dir))
             added = True
-        from teatree.core.mcp_connectivity import has_enabled_mcp_servers  # noqa: PLC0415
+        from teatree.core.mcp_connectivity import has_enabled_mcp_servers  # noqa: PLC0415 — deferred: cold-hook import
 
         return _MCP_CONNECTIVITY_DIRECTIVE if has_enabled_mcp_servers() else None
     except Exception:  # noqa: BLE001 — never block SessionStart on a config read hiccup
@@ -4710,7 +4706,7 @@ def _consolidated_pending_work() -> list[dict]:
     if not t3_bin:
         return []
     try:
-        result = subprocess.run(  # noqa: S603
+        result = subprocess.run(  # noqa: S603 — trusted internal subprocess; fixed argv, no shell
             [t3_bin, "loop", "pending-spawn", "--json", "--claimable-only"],
             capture_output=True,
             text=True,
@@ -4771,8 +4767,6 @@ def _session_drives_loop(session_id: str) -> bool:
 def _self_pump_recently_armed(marker: Path) -> bool:
     if not marker.is_file():
         return False
-    import time  # noqa: PLC0415
-
     return int(time.time()) - int(marker.stat().st_mtime) < _SELF_PUMP_MIN_INTERVAL
 
 
@@ -5207,7 +5201,7 @@ def _fetch_orphans() -> list[dict]:
     if not t3_bin:
         return []
     try:
-        result = subprocess.run(  # noqa: S603
+        result = subprocess.run(  # noqa: S603 — trusted internal subprocess; fixed argv, no shell
             [t3_bin, "teatree", "workspace", "list-orphans"],
             capture_output=True,
             text=True,
@@ -5347,10 +5341,10 @@ def _cwd_is_teatree_managed(cwd: Path) -> bool | None:
                 return True
     try:
         with _teatree_src_on_path():
-            from teatree.hooks import publish_surface  # noqa: PLC0415
+            from teatree.hooks import publish_surface  # noqa: PLC0415 — deferred: cold-hook import after sys.path setup
 
             slug = publish_surface.slug_for_cwd(cwd).lower()
-    except Exception:  # noqa: BLE001
+    except Exception:  # noqa: BLE001 — crash-proof hook: any failure degrades silently, never breaks the tool call
         return None
     if not slug:
         return None
@@ -5369,10 +5363,10 @@ def _invokes_raw_merge_subcommand(command: str) -> bool:
     """
     try:
         with _teatree_src_on_path():
-            from teatree.hooks import raw_merge_detect  # noqa: PLC0415
+            from teatree.hooks import raw_merge_detect  # noqa: PLC0415 — deferred: cold-hook import
 
             return raw_merge_detect.invokes_raw_merge_subcommand(command)
-    except Exception:  # noqa: BLE001
+    except Exception:  # noqa: BLE001 — crash-proof hook: any failure degrades silently, never breaks the tool call
         return True
 
 
@@ -5471,21 +5465,21 @@ def _active_dm_thread_for_channel(channel: str) -> str:
     if not channel or not bootstrap_teatree_django():
         return ""
     try:
-        from teatree.core.models import IncomingEvent  # noqa: PLC0415
+        from teatree.core.models import IncomingEvent  # noqa: PLC0415 — deferred: ORM import needs the app registry
 
         return IncomingEvent.objects.active_dm_thread(channel=channel)
-    except Exception:  # noqa: BLE001
+    except Exception:  # noqa: BLE001 — crash-proof hook: any failure degrades silently, never breaks the tool call
         return ""
 
 
 def _slack_config_from_toml() -> tuple[str, str] | None:
-    from teatree.hooks.slack_mirror import slack_config_from_toml  # noqa: PLC0415
+    from teatree.hooks.slack_mirror import slack_config_from_toml  # noqa: PLC0415 — deferred: cold-hook import
 
     return slack_config_from_toml()
 
 
 def _perform_slack_post(slack_cfg: tuple[str, str], questions: list[dict]) -> str:
-    from teatree.hooks.slack_mirror import perform_slack_post  # noqa: PLC0415
+    from teatree.hooks.slack_mirror import perform_slack_post  # noqa: PLC0415 — deferred: cold-hook import
 
     return perform_slack_post(
         slack_cfg,
@@ -5497,7 +5491,7 @@ def _perform_slack_post(slack_cfg: tuple[str, str], questions: list[dict]) -> st
 
 
 def _read_dm_channel_cache(user_id: str) -> str:
-    from teatree.hooks.slack_mirror import read_dm_channel_cache  # noqa: PLC0415
+    from teatree.hooks.slack_mirror import read_dm_channel_cache  # noqa: PLC0415 — deferred: cold-hook import
 
     return read_dm_channel_cache(user_id)
 
@@ -5644,8 +5638,8 @@ def _capture_and_defer_question(data: dict, *, mode: str) -> int | None:
     if not bootstrap_teatree_django():
         return None
     try:
-        from teatree.core.models.deferred_question import DeferredQuestion  # noqa: PLC0415
-    except Exception:  # noqa: BLE001
+        from teatree.core.models.deferred_question import DeferredQuestion  # noqa: PLC0415 — deferred: ORM/app-registry
+    except Exception:  # noqa: BLE001 — crash-proof hook: any failure degrades silently, never breaks the tool call
         return None
     first = _first_question(data)
     question_text = str(first.get("question", "")).strip()
@@ -5660,7 +5654,7 @@ def _capture_and_defer_question(data: dict, *, mode: str) -> int | None:
             session_id=session_id, run_id=run_id, answered_at__isnull=True, dismissed_at__isnull=True
         ):
             prior.mark_stale("superseded by newer question")
-    except Exception:  # noqa: BLE001
+    except Exception:  # noqa: BLE001 — crash-proof hook: any failure degrades silently, never breaks the tool call
         return None
     slack_ts, slack_channel = _mirror_question_to_slack(first, session_id, mode=mode)
     try:
@@ -5675,7 +5669,7 @@ def _capture_and_defer_question(data: dict, *, mode: str) -> int | None:
             generation=generation,
             run_id=run_id,
         )
-    except Exception:  # noqa: BLE001
+    except Exception:  # noqa: BLE001 — crash-proof hook: any failure degrades silently, never breaks the tool call
         return None
     return int(row.pk)
 
@@ -5708,10 +5702,10 @@ def _is_live_user_turn(data: dict) -> bool:
     if not bootstrap_teatree_django():
         return False
     try:
-        from teatree.core import availability  # noqa: PLC0415
+        from teatree.core import availability  # noqa: PLC0415 — deferred: cold-hook import after sys.path setup
 
         return availability.PRESENCE.is_live_user_turn(session_id=str(data.get("session_id", "")))
-    except Exception:  # noqa: BLE001
+    except Exception:  # noqa: BLE001 — crash-proof hook: any failure degrades silently, never breaks the tool call
         return False
 
 
@@ -5728,10 +5722,10 @@ def _refresh_live_turn(data: dict) -> None:
     if not bootstrap_teatree_django():
         return
     try:
-        from teatree.core import availability  # noqa: PLC0415
+        from teatree.core import availability  # noqa: PLC0415 — deferred: cold-hook import after sys.path setup
 
         availability.PRESENCE.refresh_live_turn(session_id=str(data.get("session_id", "")))
-    except Exception:  # noqa: BLE001
+    except Exception:  # noqa: BLE001 — crash-proof hook: any failure degrades silently, never breaks the tool call
         return
 
 
@@ -5816,19 +5810,19 @@ def handle_inject_pending_questions(data: dict) -> None:
     if not (has_pending_question_work() and bootstrap_teatree_django()):
         return
     try:
-        from teatree.core.availability import pending_questions_count  # noqa: PLC0415
-        from teatree.core.models.deferred_question import DeferredQuestion  # noqa: PLC0415
-    except Exception:  # noqa: BLE001
+        from teatree.core.availability import pending_questions_count  # noqa: PLC0415 — deferred: cold-hook import
+        from teatree.core.models.deferred_question import DeferredQuestion  # noqa: PLC0415 — deferred: ORM/app-registry
+    except Exception:  # noqa: BLE001 — crash-proof hook: any failure degrades silently, never breaks the tool call
         return
     session_id = str(data.get("session_id", ""))
     try:
         answered = list(DeferredQuestion.answered_not_applied(session_id=session_id)[:5])
-    except Exception:  # noqa: BLE001
+    except Exception:  # noqa: BLE001 — crash-proof hook: any failure degrades silently, never breaks the tool call
         answered = []
     for row in answered:
         with contextlib.suppress(Exception):
             if DeferredQuestion.mark_applied(row.pk):
-                print(  # noqa: T201
+                print(  # noqa: T201 — hook writes its protocol output to stdout
                     f"Your AskUserQuestion (#{row.pk}) was answered by the user on Slack: "
                     f'"{row.answer_text}". Apply it now.'
                 )
@@ -5837,11 +5831,11 @@ def handle_inject_pending_questions(data: dict) -> None:
         if count == 0:
             return
         rows = list(DeferredQuestion.pending()[:5])
-    except Exception:  # noqa: BLE001
+    except Exception:  # noqa: BLE001 — crash-proof hook: any failure degrades silently, never breaks the tool call
         return
     lines = [f"You have {count} deferred question(s) awaiting user answer:"]
     lines.extend(f"  #{row.pk} — {row.question[:120]}" for row in rows)
-    print("\n".join(lines))  # noqa: T201
+    print("\n".join(lines))  # noqa: T201 — hook writes its protocol output to stdout
 
 
 # ── UserPromptSubmit: inject pending Slack-DM backlog into context ─────────────
@@ -5888,18 +5882,18 @@ def handle_inject_pending_chat(data: dict) -> None:
     if not (has_pending_chat_work() and bootstrap_teatree_django()):
         return
     try:
-        from teatree.core.models.pending_chat_injection import PendingChatInjection  # noqa: PLC0415
+        from teatree.core.models.pending_chat_injection import PendingChatInjection  # noqa: PLC0415 — lazy ORM import
     except Exception:  # noqa: BLE001 — fail open: queue survives to the next tick
         return
     try:
         rows = list(PendingChatInjection.pending())
-    except Exception:  # noqa: BLE001
+    except Exception:  # noqa: BLE001 — crash-proof hook: any failure degrades silently, never breaks the tool call
         return
     drained: list[str] = [f"User replied on Slack at {row.slack_ts}: {row.text}" for row in rows if row.consume()]
     if not drained:
         return
     header = f"You have {len(drained)} new Slack DM reply(ies) from the user:"
-    print("\n".join([header, *drained]))  # noqa: T201
+    print("\n".join([header, *drained]))  # noqa: T201 — hook writes its protocol output to stdout
 
 
 # ── Stop: enforce-answered-questions gate (#1063) ───────────────────
@@ -5947,14 +5941,14 @@ def _enforce_answered_questions(data: dict) -> bool | None:
     if not bootstrap_teatree_django():
         return None
     try:
-        from datetime import timedelta  # noqa: PLC0415
+        from datetime import timedelta  # noqa: PLC0415 — deferred: off the fast hook's load path
 
-        from teatree.core.models.pending_chat_injection import PendingChatInjection  # noqa: PLC0415
+        from teatree.core.models.pending_chat_injection import PendingChatInjection  # noqa: PLC0415 — lazy ORM import
     except Exception:  # noqa: BLE001 — fail open: nag re-tries next turn
         return None
     try:
         rows = PendingChatInjection.unanswered_questions_since(timedelta(hours=_ANSWERED_GATE_WINDOW_HOURS))
-    except Exception:  # noqa: BLE001
+    except Exception:  # noqa: BLE001 — crash-proof hook: any failure degrades silently, never breaks the tool call
         return None
     if not rows:
         return None
@@ -6145,7 +6139,7 @@ def _speak_settings() -> tuple[str, bool]:
     the defaults so the Stop arm stays silent unless the user opted in. A
     ``[teatree.speak]`` TOML value is ignored on read.
     """
-    from typing import cast  # noqa: PLC0415
+    from typing import cast  # noqa: PLC0415 — deferred: off the fast hook's load path
 
     from teatree.config import cold_reader  # noqa: PLC0415 — Django-free DB read on the pre-Django Stop path
 
@@ -6247,7 +6241,7 @@ def handle_closure_reverify_stop(data: dict) -> bool | None:
 
 
 def _run_closure_reverify_stop(data: dict) -> bool | None:
-    from teatree.hooks import closure_reverify_scanner  # noqa: PLC0415
+    from teatree.hooks import closure_reverify_scanner  # noqa: PLC0415 — deferred: cold-hook import
 
     turn = _last_assistant_turn(data.get("transcript_path", ""))
     if turn is None:

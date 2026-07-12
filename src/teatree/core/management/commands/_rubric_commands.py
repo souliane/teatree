@@ -129,7 +129,7 @@ def clear_honesty_escalation_on_pass(ticket: Ticket) -> None:
     ticket's session ``agent_id``s. Fail-SAFE: a recording error never blocks the
     grade command (the grade is already recorded — this is post-success cleanup).
     """
-    from teatree.core.models.honesty_escalation import HonestyEscalation  # noqa: PLC0415
+    from teatree.core.models.honesty_escalation import HonestyEscalation  # noqa: PLC0415 — deferred: ORM/app-registry
 
     try:
         sessions = ticket.sessions.exclude(agent_id="")  # ty: ignore[unresolved-attribute]

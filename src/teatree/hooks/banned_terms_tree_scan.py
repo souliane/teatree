@@ -248,7 +248,7 @@ def scan_tree(repo_root: Path, terms: tuple[str, ...]) -> list[TreeFinding]:
     teatree-internal vocabulary conflations regardless of any operator
     config.
     """
-    from teatree.hooks import terminology_gate  # noqa: PLC0415
+    from teatree.hooks import terminology_gate  # noqa: PLC0415 — deferred: call-time import, kept lazy
 
     findings: list[TreeFinding] = []
     for path in git_tracked_files(repo_root):

@@ -484,7 +484,7 @@ def _escalate_one_recurrence(
     structural fix — a gate or an eval — never another memory. The banned-term /
     bare-reference withholding is enforced inside ``promote_gap``.
     """
-    from teatree.loops.dream import umbrella_ledger  # noqa: PLC0415
+    from teatree.loops.dream import umbrella_ledger  # noqa: PLC0415 — deferred: loaded at tick time, not import
 
     gap_key = f"{_RECURRENCE_MARKER}-{finding.rule_identity}"
     outcome = umbrella_ledger.promote_gap(

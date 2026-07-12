@@ -225,7 +225,7 @@ def _messaging_from_toml_overlay(overlay_name: str) -> MessagingBackend | None:
     """
     if not overlay_name:
         return None
-    from teatree.config import load_config  # noqa: PLC0415
+    from teatree.config import load_config  # noqa: PLC0415 — deferred: call-time import, kept lazy
 
     overlays = load_config().raw.get("overlays") or {}
     cfg = overlays.get(overlay_name)
@@ -238,7 +238,7 @@ def _code_host_from_toml_overlay(overlay_name: str) -> CodeHostBackend | None:
     """Build a code-host backend from a path-only TOML overlay entry."""
     if not overlay_name:
         return None
-    from teatree.config import load_config  # noqa: PLC0415
+    from teatree.config import load_config  # noqa: PLC0415 — deferred: call-time import, kept lazy
 
     overlays = load_config().raw.get("overlays") or {}
     cfg = overlays.get(overlay_name)
@@ -256,7 +256,7 @@ def _code_host_from_toml_overlay_for_repo(overlay_name: str, repo_path: str) -> 
     """
     if not overlay_name:
         return None
-    from teatree.config import load_config  # noqa: PLC0415
+    from teatree.config import load_config  # noqa: PLC0415 — deferred: call-time import, kept lazy
 
     overlays = load_config().raw.get("overlays") or {}
     cfg = overlays.get(overlay_name)
@@ -321,7 +321,7 @@ def _resolved_identities() -> tuple[str, ...]:
     user_identity_aliases '[...]'``). Reading through ``get_effective_settings``
     means every consumer agrees on the parsed shape and sees the DB value.
     """
-    from teatree.config import get_effective_settings  # noqa: PLC0415
+    from teatree.config import get_effective_settings  # noqa: PLC0415 — deferred: call-time import, kept lazy
 
     return tuple(get_effective_settings().user_identity_aliases)
 
@@ -331,7 +331,7 @@ def _backends_from_toml(
     identities: tuple[str, ...] = (),
 ) -> list[OverlayBackends]:
     """Build backends for TOML overlays not discovered via entry points."""
-    from teatree.config import load_config  # noqa: PLC0415
+    from teatree.config import load_config  # noqa: PLC0415 — deferred: call-time import, kept lazy
 
     result: list[OverlayBackends] = []
     config = load_config()
@@ -487,7 +487,7 @@ def _apply_voice_classifier_mode(backend: "MessagingBackend | None") -> None:
     if setter is None or not callable(setter):
         return
     try:
-        from teatree.config import get_effective_settings  # noqa: PLC0415
+        from teatree.config import get_effective_settings  # noqa: PLC0415 — deferred: call-time import, kept lazy
 
         setter(get_effective_settings().slack_voice_classifier_mode)
     except (AttributeError, ImportError):

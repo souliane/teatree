@@ -111,7 +111,7 @@ def _presence_path() -> Path | None:
     """
     try:
         with teatree_src_on_path():
-            from teatree.config.cold_reader import canonical_config_db  # noqa: PLC0415
+            from teatree.config.cold_reader import canonical_config_db  # noqa: PLC0415 — deferred: cold-hook import
 
             return canonical_config_db().parent / _PRESENCE_FILENAME
     except Exception:  # noqa: BLE001 — hook crash-proof: unresolvable data dir ⇒ no heartbeat
@@ -126,7 +126,7 @@ def _row_exists(query: str) -> bool:
     """
     try:
         with teatree_src_on_path():
-            from teatree.config.cold_reader import row_exists  # noqa: PLC0415
+            from teatree.config.cold_reader import row_exists  # noqa: PLC0415 — deferred: cold-hook import
 
             return row_exists(query, on_error=True)
     except Exception:  # noqa: BLE001 — can't probe ⇒ assume work ⇒ let the handler boot Django

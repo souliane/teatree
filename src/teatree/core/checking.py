@@ -98,7 +98,7 @@ class CheckItem:
         return CheckItemDict(label=self.label, url=self.url, detail=self.detail, title=self.title)
 
     def render(self) -> str:
-        from teatree.core.ref_render import render_ref  # noqa: PLC0415
+        from teatree.core.ref_render import render_ref  # noqa: PLC0415 — deferred: call-time import, kept lazy
 
         ref = render_ref(self.label, title=self.title, url=self.url)
         return f"  - {ref} — {self.detail}" if self.detail else f"  - {ref}"
@@ -165,7 +165,7 @@ class CheckingReport:
         single ``Nothing since <local time>.`` line — no preamble, no
         "Here is your report."
         """
-        from django.utils import timezone  # noqa: PLC0415
+        from django.utils import timezone  # noqa: PLC0415 — deferred: Django import at call time
 
         local = timezone.localtime(self.since) if timezone.is_aware(self.since) else self.since
         stamp = local.strftime("%H:%M")
@@ -211,7 +211,7 @@ class AllOverlaysReport:
         Header: ``Since <local HH:MM> · all overlays``.
         Empty report: ``Nothing since <local time>.``
         """
-        from django.utils import timezone  # noqa: PLC0415
+        from django.utils import timezone  # noqa: PLC0415 — deferred: Django import at call time
 
         local = (
             timezone.localtime(self.earliest_since) if timezone.is_aware(self.earliest_since) else self.earliest_since
@@ -238,7 +238,7 @@ def build_pr_url(*, slug: str, pr_id: int, code_host: str) -> str:
     link (#1559). A caller with no real repo slug falls back to the stored PR
     URL or the ticket's issue URL instead.
     """
-    from teatree.core.merge import _looks_like_owner_repo  # noqa: PLC0415
+    from teatree.core.merge import _looks_like_owner_repo  # noqa: PLC0415 — deferred: call-time import, kept lazy
 
     clean = slug.strip().strip("/")
     if not _looks_like_owner_repo(clean):

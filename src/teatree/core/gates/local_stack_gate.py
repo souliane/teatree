@@ -203,7 +203,7 @@ def reap_idle_stacks(*, overlay: str, write_out: Callable[[str], object] | None 
     Fail-safe: any uncertainty in ``reapable_worktrees`` keeps the stack
     running.
     """
-    from teatree.core.gates.idle_stack import reapable_worktrees  # noqa: PLC0415
+    from teatree.core.gates.idle_stack import reapable_worktrees  # noqa: PLC0415 — deferred: call-time import
 
     idle_minutes = int(get_effective_settings().idle_stack_idle_minutes)
     reaped = 0
@@ -249,7 +249,7 @@ def acquire_or_enqueue(candidate: Worktree | None, *, write_out: Callable[[str],
     try:
         check_local_stack_limit(candidate)
     except LocalStackLimitExceededError as exc:
-        from teatree.core.models import LocalStackQueueItem  # noqa: PLC0415
+        from teatree.core.models import LocalStackQueueItem  # noqa: PLC0415 — deferred: ORM/app-registry
 
         LocalStackQueueItem.objects.enqueue(candidate)
         write_out(

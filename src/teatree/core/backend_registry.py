@@ -124,60 +124,60 @@ class BackendProvider(Protocol):
 class _UnconfiguredProvider:
     """Fail-safe provider used before the backends app registers the real one."""
 
-    def get_code_host(self, overlay: "OverlayBase") -> "CodeHostBackend | None":  # noqa: ARG002, PLR6301
+    def get_code_host(self, overlay: "OverlayBase") -> "CodeHostBackend | None":  # noqa: ARG002, PLR6301 — fail-safe provider seam: instance method by Protocol contract; args used by real overrides
         return None
 
-    def get_code_host_for_repo(self, overlay: "OverlayBase", repo_path: str) -> "CodeHostBackend | None":  # noqa: ARG002, PLR6301
+    def get_code_host_for_repo(self, overlay: "OverlayBase", repo_path: str) -> "CodeHostBackend | None":  # noqa: ARG002, PLR6301 — fail-safe provider seam: instance method by Protocol contract; args used by real overrides
         return None
 
-    def get_code_hosts(self, overlay: "OverlayBase") -> "list[CodeHostBackend]":  # noqa: ARG002, PLR6301
+    def get_code_hosts(self, overlay: "OverlayBase") -> "list[CodeHostBackend]":  # noqa: ARG002, PLR6301 — fail-safe provider seam: instance method by Protocol contract; args used by real overrides
         return []
 
-    def get_messaging(self, overlay: "OverlayBase") -> "MessagingBackend | None":  # noqa: ARG002, PLR6301
+    def get_messaging(self, overlay: "OverlayBase") -> "MessagingBackend | None":  # noqa: ARG002, PLR6301 — fail-safe provider seam: instance method by Protocol contract; args used by real overrides
         return None
 
-    def get_ci_service(self, *, gitlab_token: str, gitlab_url: str) -> "CIService | None":  # noqa: ARG002, PLR6301
+    def get_ci_service(self, *, gitlab_token: str, gitlab_url: str) -> "CIService | None":  # noqa: ARG002, PLR6301 — fail-safe provider seam: instance method by Protocol contract; args used by real overrides
         return None
 
-    def reset_caches(self) -> None:  # noqa: PLR6301
+    def reset_caches(self) -> None:  # noqa: PLR6301 — fail-safe provider seam: instance method by Protocol contract
         return
 
-    def build_github_host(self, *, token: str) -> "CodeHostBackend":  # noqa: ARG002, PLR6301
+    def build_github_host(self, *, token: str) -> "CodeHostBackend":  # noqa: ARG002, PLR6301 — fail-safe provider seam: instance method by Protocol contract; args used by real overrides
         msg = "no backend provider registered — teatree.backends app is not installed"
         raise RuntimeError(msg)
 
-    def build_gitlab_host(self, *, token: str, base_url: str) -> "CodeHostBackend":  # noqa: ARG002, PLR6301
+    def build_gitlab_host(self, *, token: str, base_url: str) -> "CodeHostBackend":  # noqa: ARG002, PLR6301 — fail-safe provider seam: instance method by Protocol contract; args used by real overrides
         msg = "no backend provider registered — teatree.backends app is not installed"
         raise RuntimeError(msg)
 
-    def build_slack_messaging(  # noqa: PLR6301
+    def build_slack_messaging(  # noqa: PLR6301 — fail-safe provider seam: instance method by Protocol contract
         self,
         *,
-        bot_token: str,  # noqa: ARG002
-        app_token: str,  # noqa: ARG002
-        user_token: str,  # noqa: ARG002
-        user_id: str,  # noqa: ARG002
-        dm_channel_id: str,  # noqa: ARG002
+        bot_token: str,  # noqa: ARG002 — unused in this default seam; the concrete provider consumes it
+        app_token: str,  # noqa: ARG002 — unused in this default seam; the concrete provider consumes it
+        user_token: str,  # noqa: ARG002 — unused in this default seam; the concrete provider consumes it
+        user_id: str,  # noqa: ARG002 — unused in this default seam; the concrete provider consumes it
+        dm_channel_id: str,  # noqa: ARG002 — unused in this default seam; the concrete provider consumes it
     ) -> "MessagingBackend":
         msg = "no backend provider registered — teatree.backends app is not installed"
         raise RuntimeError(msg)
 
-    def build_sync_backends(self) -> "list[SyncBackend]":  # noqa: PLR6301
+    def build_sync_backends(self) -> "list[SyncBackend]":  # noqa: PLR6301 — fail-safe provider seam: instance method by Protocol contract
         return []
 
-    def build_notion_client(self, *, token: str) -> "NotionPageClient | None":  # noqa: ARG002, PLR6301
+    def build_notion_client(self, *, token: str) -> "NotionPageClient | None":  # noqa: ARG002, PLR6301 — fail-safe provider seam: instance method by Protocol contract; args used by real overrides
         return None
 
     def build_sentry_client(self, *, token: str, org: str, base_url: str) -> "SentryReadClient | None":  # noqa: ARG002, PLR6301 — fail-safe protocol stub; args unused, returns None with no backends app
         return None
 
-    def read_recent_review_matches(self, spec: ReviewSearchSpec) -> ReviewHistoryReadLike:  # noqa: ARG002, PLR6301
+    def read_recent_review_matches(self, spec: ReviewSearchSpec) -> ReviewHistoryReadLike:  # noqa: ARG002, PLR6301 — fail-safe provider seam: instance method by Protocol contract; args used by real overrides
         return _EmptyReviewHistoryRead()
 
 
 class _EmptyReviewHistoryRead:
     ok = False
-    matches: list[ReviewMatchLike] = []  # noqa: RUF012
+    matches: list[ReviewMatchLike] = []  # noqa: RUF012 — fail-safe empty default, never a shared mutable class attribute
 
 
 _UNCONFIGURED: BackendProvider = _UnconfiguredProvider()

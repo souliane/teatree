@@ -118,7 +118,7 @@ def _t3_review_note_body(words: list[str], raws: list[str], verb_index: int) -> 
     merely MENTIONS is scanned verbatim rather than fail-closed (#1415);
     consistent with the inline body flags.
     """
-    from teatree.hooks._body_file_resolution import resolve_inline_body_value  # noqa: PLC0415
+    from teatree.hooks._body_file_resolution import resolve_inline_body_value  # noqa: PLC0415 — lazy import
 
     positionals: list[tuple[str, str]] = []
     i = verb_index + 1
@@ -155,8 +155,8 @@ def _t3_review_body_file_payload(words: list[str], payloads: list[str], ctx: "Bo
     space-separated (``--body-file <path>``) and equals (``--body-file=<path>``)
     spellings are handled.
     """
-    from teatree.hooks._body_file_resolution import _append_file_payload  # noqa: PLC0415
-    from teatree.hooks._command_parser import attached_value  # noqa: PLC0415
+    from teatree.hooks._body_file_resolution import _append_file_payload  # noqa: PLC0415 — deferred: call-time import
+    from teatree.hooks._command_parser import attached_value  # noqa: PLC0415 — deferred: call-time import, kept lazy
 
     i = 0
     n = len(words)

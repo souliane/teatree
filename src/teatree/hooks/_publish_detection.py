@@ -292,7 +292,7 @@ def _token_is_commit_body_flag(token: str) -> bool:
 
 def _strip_cd_prefix(words: list[str]) -> list[str]:
     rest = words
-    while rest and rest[0] in {"cd", "pushd"} and len(rest) >= 2:  # noqa: PLR2004
+    while rest and rest[0] in {"cd", "pushd"} and len(rest) >= 2:  # noqa: PLR2004 — self-documenting literal in this context
         rest = rest[2:]
     return rest
 
@@ -303,7 +303,7 @@ def _strip_cd_env_prefix(words: list[str]) -> list[str]:
         if _ENV_ASSIGNMENT_RE.fullmatch(rest[0]):
             rest = rest[1:]
             continue
-        if rest[0] in {"cd", "pushd"} and len(rest) >= 2:  # noqa: PLR2004
+        if rest[0] in {"cd", "pushd"} and len(rest) >= 2:  # noqa: PLR2004 — self-documenting literal in this context
             rest = rest[2:]
             continue
         break

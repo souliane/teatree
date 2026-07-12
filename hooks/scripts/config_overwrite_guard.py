@@ -132,7 +132,7 @@ def _path_exists(file_path: str) -> bool:
         return False
 
 
-def _load_core():  # noqa: ANN202
+def _load_core():  # noqa: ANN202 — returns a lazily-imported handle; annotating would pull the type to module scope
     """Import the decision core, bootstrapping the sibling ``src/`` onto the path.
 
     The hook runs in the user's session shell with no guarantee ``teatree`` is
@@ -147,7 +147,7 @@ def _load_core():  # noqa: ANN202
         if str(src_dir) not in sys.path:
             sys.path.insert(0, str(src_dir))
             added = True
-        from teatree.core.gates import config_overwrite_guard as core  # noqa: PLC0415
+        from teatree.core.gates import config_overwrite_guard as core  # noqa: PLC0415 — deferred: cold-hook import
     except Exception:  # noqa: BLE001 — a cold env without teatree fails OPEN, never tracebacks.
         return None
     finally:
@@ -158,7 +158,7 @@ def _load_core():  # noqa: ANN202
 
 
 def _find_finding(
-    core,  # noqa: ANN001
+    core,  # noqa: ANN001 — untyped by design: a duck-typed handle passed positionally
     tool_name: str,
     tool_input: dict,
     was_read: Callable[[str], bool],

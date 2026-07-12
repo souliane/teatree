@@ -27,7 +27,7 @@ _OVERLAYS_REGISTRY_KEY = "overlays"
 
 def read_overlay_registry() -> dict[str, dict]:
     """Return the DB ``overlays`` registry (``{name: {fields}}``), or ``{}`` when unset."""
-    from teatree.core.models import ConfigSetting  # noqa: PLC0415
+    from teatree.core.models import ConfigSetting  # noqa: PLC0415 — deferred: ORM import needs the app registry
 
     stored = ConfigSetting.objects.get_effective(_OVERLAYS_REGISTRY_KEY)
     return stored if isinstance(stored, dict) else {}
@@ -39,7 +39,7 @@ def write_overlay_fields(overlay: str, fields: dict[str, str]) -> None:
     Creates the overlay's entry when absent so ``t3 setup slack-bot`` can record
     a bot on an overlay that had no registry fields yet.
     """
-    from teatree.core.models import ConfigSetting  # noqa: PLC0415
+    from teatree.core.models import ConfigSetting  # noqa: PLC0415 — deferred: ORM import needs the app registry
 
     registry = read_overlay_registry()
     block = registry.get(overlay)

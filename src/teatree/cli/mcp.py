@@ -50,7 +50,7 @@ def serve() -> None:
     """Run the structured-search MCP server over stdio (blocks until stdin closes)."""
     ensure_django()
 
-    from teatree.mcp.server import build_server  # noqa: PLC0415
+    from teatree.mcp.server import build_server  # noqa: PLC0415 — deferred: keeps CLI startup light
 
     build_server().run("stdio")
 

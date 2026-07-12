@@ -34,7 +34,7 @@ task_app = typer.Typer(
 
 def _resolve_overlay() -> tuple[Path | None, str]:
     """Return (project_path, overlay_name) for the active overlay, if any."""
-    from teatree.config import discover_active_overlay  # noqa: PLC0415
+    from teatree.config import discover_active_overlay  # noqa: PLC0415 — deferred: keeps CLI startup light
 
     active = discover_active_overlay()
     if active is None:

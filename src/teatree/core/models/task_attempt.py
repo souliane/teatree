@@ -21,7 +21,7 @@ class TaskAttemptQuerySet(models.QuerySet):
 
     def usages(self) -> "list[AttemptUsage]":
         """Map each attempt to the :class:`AttemptUsage` the cost layer reads."""
-        AttemptUsage = cast("type[AttemptUsage]", get("cost", "AttemptUsage"))  # noqa: N806
+        AttemptUsage = cast("type[AttemptUsage]", get("cost", "AttemptUsage"))  # noqa: N806 — PascalCase binds a runtime-resolved model class, matching its class name
 
         return [
             AttemptUsage(
@@ -50,7 +50,7 @@ class TaskAttemptQuerySet(models.QuerySet):
 
     def cost_breakdown(self) -> "CostBreakdown":
         """SDK-equivalent spend across the attempts in this queryset."""
-        CostBreakdown = cast("type[CostBreakdown]", get("cost", "CostBreakdown"))  # noqa: N806
+        CostBreakdown = cast("type[CostBreakdown]", get("cost", "CostBreakdown"))  # noqa: N806 — PascalCase binds a runtime-resolved model class, matching its class name
 
         return CostBreakdown.from_usages(self.usages())
 
@@ -165,7 +165,7 @@ class TaskAttempt(models.Model):
         """
         if self.input_tokens is None and self.output_tokens is None and self.cache_read_tokens is None:
             return None
-        AttemptUsage = cast("type[AttemptUsage]", get("cost", "AttemptUsage"))  # noqa: N806
+        AttemptUsage = cast("type[AttemptUsage]", get("cost", "AttemptUsage"))  # noqa: N806 — PascalCase binds a runtime-resolved model class, matching its class name
         return AttemptUsage(
             model=self.model or None,
             reported_cost_usd=self.cost_usd,

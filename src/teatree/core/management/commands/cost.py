@@ -50,9 +50,13 @@ class Command(TyperCommand):
         ] = False,
     ) -> str:
         """Print cycle-to-date SDK-equivalent spend vs the monthly credit."""
-        from teatree.config import get_effective_settings  # noqa: PLC0415
-        from teatree.core.cost import CostReport, cycle_start, cycle_start_datetime  # noqa: PLC0415
-        from teatree.core.models.task_attempt import TaskAttempt  # noqa: PLC0415
+        from teatree.config import get_effective_settings  # noqa: PLC0415 — deferred: keeps command import light
+        from teatree.core.cost import (  # noqa: PLC0415 — deferred: keeps command import light
+            CostReport,
+            cycle_start,
+            cycle_start_datetime,
+        )
+        from teatree.core.models.task_attempt import TaskAttempt  # noqa: PLC0415 — deferred: ORM/app-registry
 
         settings = get_effective_settings()
         anchor = settings.billing_cycle_anchor_day or None

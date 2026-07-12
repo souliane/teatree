@@ -142,7 +142,7 @@ class SkillLinker:
 
         Returns ``(created, fixed)`` counts (pruned links are not counted).
         """
-        from teatree.agents.skill_bundle import DEFAULT_SKILLS_DIR  # noqa: PLC0415
+        from teatree.agents.skill_bundle import DEFAULT_SKILLS_DIR  # noqa: PLC0415 — deferred: keeps CLI startup light
 
         created = 0
         fixed = 0

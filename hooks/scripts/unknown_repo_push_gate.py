@@ -92,7 +92,7 @@ def _classify_push_for_cwd(cwd: Path) -> str:
     if not bootstrap_teatree_django():
         return "allow"
     try:
-        from teatree.core.gates.owned_repo_guard import classify_active_push  # noqa: PLC0415
+        from teatree.core.gates.owned_repo_guard import classify_active_push  # noqa: PLC0415 — cold-hook import
 
         return str(classify_active_push(cwd))
     except Exception:  # noqa: BLE001 — fail OPEN; a broken resolver must not wedge a push.

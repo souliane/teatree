@@ -30,7 +30,7 @@ logger = logging.getLogger(__name__)
 
 
 def run_loop_connector_preflight(loop_name: str) -> None:
-    from teatree.core.models import Loop  # noqa: PLC0415
+    from teatree.core.models import Loop  # noqa: PLC0415 — deferred: ORM import needs the app registry
 
     row = Loop.objects.filter(name=loop_name).first()
     if row is None:

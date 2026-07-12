@@ -29,8 +29,8 @@ def _consolidation_registry_holders() -> list[str]:
     the file is missing or unreadable — the safe fail-open).  The
     registry layout mirrors ``hook_router._actor_key``.
     """
-    import json  # noqa: PLC0415
-    import os  # noqa: PLC0415
+    import json  # noqa: PLC0415 — deferred: loaded only on this code path
+    import os  # noqa: PLC0415 — deferred: loaded only on this code path
 
     base_env = os.environ.get("T3_LOOP_REGISTRY_DIR")
     base = Path(base_env) if base_env else Path.home() / ".local" / "share" / "teatree"

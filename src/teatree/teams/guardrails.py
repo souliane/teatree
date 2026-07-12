@@ -64,7 +64,7 @@ def live_owner_blocks_pane(*, pane_session_id: str) -> bool:
     liveness predicate is the same one ``claim_ownership`` / ``evict_stale_owner``
     use — it can never drift from the t3-master doctrine.
     """
-    from teatree.core.models import LoopLease  # noqa: PLC0415
+    from teatree.core.models import LoopLease  # noqa: PLC0415 — deferred: ORM import needs the app registry
 
     status = LoopLease.objects.ownership_status(T3_MASTER_SLOT)
     if not status.is_live:

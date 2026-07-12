@@ -141,9 +141,9 @@ class Command(
         blank ``--reason`` is refused: a silent bypass is exactly what #88
         forecloses.
         """
-        from django.utils import timezone  # noqa: PLC0415
+        from django.utils import timezone  # noqa: PLC0415 — deferred: Django import at call time
 
-        from teatree.core.models.types import DodE2EOverride  # noqa: PLC0415
+        from teatree.core.models.types import DodE2EOverride  # noqa: PLC0415 — deferred: ORM/app-registry
 
         cleaned = reason.strip()
         if not cleaned:
@@ -182,7 +182,7 @@ class Command(
         is refused). The next ship-gate / §17.4 CLEAR evaluation at that exact
         SHA consumes it once.
         """
-        from teatree.core.models.e2e_bypass import E2EBypassApproval, E2EBypassApprovalError  # noqa: PLC0415
+        from teatree.core.models.e2e_bypass import E2EBypassApproval, E2EBypassApprovalError  # noqa: PLC0415 — lazy ORM
 
         ticket = self._resolve_ticket(ticket_id)
         try:
@@ -393,10 +393,10 @@ class Command(
         work items, GitHub issues). Pass the body inline with ``--body`` or
         from a file with ``--body-file``.
         """
-        from pathlib import Path  # noqa: PLC0415
+        from pathlib import Path  # noqa: PLC0415 — deferred: loaded only when this command runs
 
-        from teatree.backends.loader import get_code_host_for_url  # noqa: PLC0415
-        from teatree.core.overlay_loader import get_all_overlays  # noqa: PLC0415
+        from teatree.backends.loader import get_code_host_for_url  # noqa: PLC0415 — deferred: lazy command import
+        from teatree.core.overlay_loader import get_all_overlays  # noqa: PLC0415 — deferred: keeps command import light
 
         text = Path(body_file).read_text(encoding="utf-8") if body_file else body
         if not text:
@@ -439,10 +439,10 @@ class Command(
         or from a file with ``--description-file``. Prints the child IID and URL
         for chaining into dispatch prompts.
         """
-        from pathlib import Path  # noqa: PLC0415
+        from pathlib import Path  # noqa: PLC0415 — deferred: loaded only when this command runs
 
-        from teatree.backends.loader import get_code_host_for_url  # noqa: PLC0415
-        from teatree.core.overlay_loader import get_all_overlays  # noqa: PLC0415
+        from teatree.backends.loader import get_code_host_for_url  # noqa: PLC0415 — deferred: lazy command import
+        from teatree.core.overlay_loader import get_all_overlays  # noqa: PLC0415 — deferred: keeps command import light
 
         if not parent.strip() or not title.strip():
             return {"error": "create-sub refused: --parent and --title are both required"}

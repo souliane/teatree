@@ -121,7 +121,7 @@ def _run_commands(worktree: Worktree) -> list[str] | None:
     start proceeds with the default service set (``None``) so the worker
     enumerates them itself.
     """
-    from teatree.core.overlay_loader import get_overlay_for_worktree  # noqa: PLC0415
+    from teatree.core.overlay_loader import get_overlay_for_worktree  # noqa: PLC0415 — deferred: loaded at tick time
 
     try:
         overlay = get_overlay_for_worktree(worktree)

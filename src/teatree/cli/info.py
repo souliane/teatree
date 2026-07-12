@@ -22,7 +22,7 @@ def info(ctx: typer.Context) -> None:
     """
     if ctx.invoked_subcommand is not None:
         return
-    from teatree.cli.doctor import DoctorService  # noqa: PLC0415
+    from teatree.cli.doctor import DoctorService  # noqa: PLC0415 — deferred: keeps CLI startup light
 
     DoctorService.show_info()
 
@@ -46,10 +46,10 @@ def artifacts(
     ``--format`` validation, ticket resolution, and rendering all live in the
     ``info`` management command this delegates to (the ORM-touching seam).
     """
-    from teatree.utils.django_bootstrap import ensure_django  # noqa: PLC0415
+    from teatree.utils.django_bootstrap import ensure_django  # noqa: PLC0415 — deferred: keeps CLI startup light
 
     ensure_django()
-    from django.core.management import call_command  # noqa: PLC0415
+    from django.core.management import call_command  # noqa: PLC0415 — deferred: Django import at call time
 
     call_command("info", "artifacts", ticket_id, output_format=output_format)
 
@@ -66,7 +66,7 @@ def startoverlay(
     ),
 ) -> None:
     """Create a new TeaTree overlay package."""
-    from teatree.overlay_init.generator import OverlayScaffolder  # noqa: PLC0415
+    from teatree.overlay_init.generator import OverlayScaffolder  # noqa: PLC0415 — deferred: keeps CLI startup light
 
     project_root = destination / project_name
     if project_root.exists():
@@ -87,8 +87,8 @@ def docs(
 
     Requires the ``docs`` dependency group: ``uv sync --group docs``
     """
-    from teatree.cli import _find_project_root  # noqa: PLC0415
-    from teatree.utils.run import run_streamed  # noqa: PLC0415
+    from teatree.cli import _find_project_root  # noqa: PLC0415 — deferred: breaks info ↔ cli cycle
+    from teatree.utils.run import run_streamed  # noqa: PLC0415 — deferred: keeps CLI startup light
 
     project_root = _find_project_root()
     mkdocs_yml = project_root / "mkdocs.yml"
@@ -96,7 +96,7 @@ def docs(
         typer.echo(f"No mkdocs.yml found in {project_root}")
         raise typer.Exit(code=1)
     try:
-        import mkdocs  # noqa: F401, PLC0415
+        import mkdocs  # noqa: F401, PLC0415 — deferred: heavy/optional dep at call site; re-export
     except ImportError:
         typer.echo("mkdocs is not installed. Run: uv sync --group docs")
         raise typer.Exit(code=1) from None

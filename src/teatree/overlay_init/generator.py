@@ -77,7 +77,7 @@ class OverlayScaffolder:
         )
 
     def copy_config_templates(self) -> None:
-        from importlib.resources import files  # noqa: PLC0415
+        from importlib.resources import files  # noqa: PLC0415 — deferred: loaded only on this code path
 
         template_dir = files("teatree.templates").joinpath("overlay")
         templates = {
@@ -95,7 +95,7 @@ class OverlayScaffolder:
             dest.write_text(source.read_text(encoding="utf-8"), encoding="utf-8")
 
     def write_pyproject(self, project_name: str) -> None:
-        from importlib.resources import files  # noqa: PLC0415
+        from importlib.resources import files  # noqa: PLC0415 — deferred: loaded only on this code path
 
         template = (
             files("teatree.templates").joinpath("overlay").joinpath("pyproject.toml.tmpl").read_text(encoding="utf-8")

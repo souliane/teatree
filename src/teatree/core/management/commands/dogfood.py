@@ -52,15 +52,15 @@ def _notify_failure(*, summary_text: str, failing_step: str, command_str: str, s
     swallowed so a notify failure never propagates out of the smoke
     command (the CLI exit code already carries the verdict).
     """
-    from teatree.core.notify import NotifyKind  # noqa: PLC0415
-    from teatree.messaging import notify_with_fallback  # noqa: PLC0415
+    from teatree.core.notify import NotifyKind  # noqa: PLC0415 — deferred: keeps command import light
+    from teatree.messaging import notify_with_fallback  # noqa: PLC0415 — deferred: keeps command import light
 
     body = _dm_failure_body(summary_text, failing_step=failing_step, command_str=command_str, stderr=stderr)
     key = f"dogfood_smoke:{failing_step}"
     try:
         notify_with_fallback(body, kind=NotifyKind.INFO, idempotency_key=key)
     except Exception:
-        import logging  # noqa: PLC0415
+        import logging  # noqa: PLC0415 — deferred: loaded only when this command runs
 
         logging.getLogger(__name__).exception("Failed to DM user about dogfood smoke failure")
 
@@ -110,7 +110,7 @@ class Command(TyperCommand):
             bool,
             typer.Option("--dry-run", help="Print the planned steps and exit 0 without executing them."),
         ] = False,
-        notify_on_failure: Annotated[  # noqa: FBT002
+        notify_on_failure: Annotated[  # noqa: FBT002 — typer CLI boolean flag; the bool parameter is typer's option idiom
             bool,
             typer.Option(
                 "--notify-on-failure/--no-notify-on-failure",
@@ -167,7 +167,7 @@ class Command(TyperCommand):
 
 def _resolve_active_overlay() -> str:
     """Return the active overlay short name, or empty string when none is registered."""
-    from teatree.config import OverlayEntry, discover_active_overlay  # noqa: PLC0415
+    from teatree.config import OverlayEntry, discover_active_overlay  # noqa: PLC0415 — deferred: lazy command import
 
     active = discover_active_overlay()
     if active is None:

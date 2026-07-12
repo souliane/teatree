@@ -154,7 +154,7 @@ class OnBehalfSlackEgress:
         so callers keep inspecting ``ok`` / ``error`` / ``ts``.
         """
         if self._is_self_dm(channel):
-            from teatree.core.speak import deliver_user_dm  # noqa: PLC0415
+            from teatree.core.speak import deliver_user_dm  # noqa: PLC0415 — deferred: call-time import, kept lazy
 
             response = deliver_user_dm(self._messaging, channel=channel, text=text, thread_ts=thread_ts)
             _retire_threaded_answer(thread_ts)
@@ -217,7 +217,7 @@ def _retire_threaded_answer(thread_ts: str) -> None:
     """
     if not thread_ts:
         return
-    from teatree.core.models import PendingChatInjection  # noqa: PLC0415
+    from teatree.core.models import PendingChatInjection  # noqa: PLC0415 — deferred: ORM import needs the app registry
 
     try:
         PendingChatInjection.retire_answered_in_thread(thread_ts)

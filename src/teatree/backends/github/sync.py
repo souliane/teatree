@@ -22,7 +22,7 @@ logger = logging.getLogger(__name__)
 class GitHubSyncBackend(SyncBackend):
     @staticmethod
     def _overlay_name(overlay: object) -> str:
-        from teatree.core.overlay_loader import get_all_overlays  # noqa: PLC0415
+        from teatree.core.overlay_loader import get_all_overlays  # noqa: PLC0415 — deferred: backends ↔ core cycle
 
         for name, ov in get_all_overlays().items():
             if ov is overlay:
@@ -31,16 +31,16 @@ class GitHubSyncBackend(SyncBackend):
 
     @override
     def is_configured(self, overlay: object) -> bool:
-        from teatree.core.overlay import OverlayBase  # noqa: PLC0415
+        from teatree.core.overlay import OverlayBase  # noqa: PLC0415 — deferred: avoids a backends ↔ core cycle
 
         return isinstance(overlay, OverlayBase) and bool(overlay.config.get_github_token())
 
     @override
     def sync(self, overlay: object) -> SyncResult:
-        from teatree.backends.github import fetch_project_items, issue_repo_short  # noqa: PLC0415
+        from teatree.backends.github import fetch_project_items, issue_repo_short  # noqa: PLC0415 — import cycle
         from teatree.core.intake.ticket_kind_classification import classify_ticket_kind  # noqa: PLC0415 — lazy: cycle
-        from teatree.core.models import Ticket  # noqa: PLC0415
-        from teatree.core.overlay import OverlayBase  # noqa: PLC0415
+        from teatree.core.models import Ticket  # noqa: PLC0415 — deferred: ORM import needs the app registry
+        from teatree.core.overlay import OverlayBase  # noqa: PLC0415 — deferred: avoids a backends ↔ core cycle
 
         if not isinstance(overlay, OverlayBase):
             return SyncResult(errors=["Invalid overlay"])
@@ -132,8 +132,8 @@ class GitHubSyncBackend(SyncBackend):
         the gap is recorded as a durable marker + loud log rather than being
         silently bypassed (mirrors the merged-PR terminal handling).
         """
-        from teatree.core.gates.dod_gate import record_terminal_dod_violation  # noqa: PLC0415
-        from teatree.core.models import Ticket  # noqa: PLC0415
+        from teatree.core.gates.dod_gate import record_terminal_dod_violation  # noqa: PLC0415 — import cycle
+        from teatree.core.models import Ticket  # noqa: PLC0415 — deferred: ORM import needs the app registry
 
         record_terminal_dod_violation(ticket, Ticket.State.DELIVERED)
 
@@ -145,7 +145,7 @@ class GitHubSyncBackend(SyncBackend):
         branches carry genuinely-unpushed work are kept (the RuntimeError path);
         the user resolves those by running ``t3 teatree workspace clean-all``.
         """
-        from teatree.core.models import Worktree  # noqa: PLC0415
+        from teatree.core.models import Worktree  # noqa: PLC0415 — deferred: ORM import needs the app registry
 
         for worktree in Worktree.objects.filter(ticket=ticket):
             try:

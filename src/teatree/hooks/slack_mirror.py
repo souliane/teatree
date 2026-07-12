@@ -71,7 +71,7 @@ def slack_config_from_toml() -> tuple[str, str] | None:
 
     Sources the per-overlay Slack wiring from the DB overlays registry.
     """
-    from teatree.config import load_config  # noqa: PLC0415
+    from teatree.config import load_config  # noqa: PLC0415 — deferred: call-time import, kept lazy
 
     try:
         overlays = load_config().raw.get("overlays") or {}

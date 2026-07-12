@@ -45,7 +45,7 @@ def _attempt_usage(message: ResultMessage | None, *, lane: str = "") -> "Attempt
     independent of the message, so it is stamped even when *message* is
     ``None``.
     """
-    from teatree.agents.attempt_recorder import AttemptUsage  # noqa: PLC0415
+    from teatree.agents.attempt_recorder import AttemptUsage  # noqa: PLC0415 — deferred: call-time import, kept lazy
 
     if message is None:
         return AttemptUsage(lane=lane)
@@ -93,7 +93,7 @@ def _resolve_cost_usd(message: ResultMessage, *, usage: dict[str, Any], model: s
     token_keys = ("input_tokens", "output_tokens", "cache_read_input_tokens", "cache_creation_input_tokens")
     if all(usage.get(key) is None for key in token_keys):
         return None, True
-    from teatree.core.cost import AttemptUsage, price_table_cost_usd  # noqa: PLC0415
+    from teatree.core.cost import AttemptUsage, price_table_cost_usd  # noqa: PLC0415 — deferred: call-time import
 
     estimate = price_table_cost_usd(
         AttemptUsage(

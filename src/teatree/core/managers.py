@@ -256,7 +256,7 @@ class TaskQuerySet(models.QuerySet):
         ``reviewing`` one, mirroring the ``normalize_phase`` contract the
         rest of the system honours.
         """
-        from teatree.core.modelkit.phases import phase_spellings  # noqa: PLC0415
+        from teatree.core.modelkit.phases import phase_spellings  # noqa: PLC0415 — deferred: call-time import
 
         task_model = cast("type[Task]", apps.get_model("core", "Task"))
 
@@ -272,7 +272,7 @@ class TaskQuerySet(models.QuerySet):
         as a zombie session. Same SSOT (``phase_spellings``), opposite
         status set.
         """
-        from teatree.core.modelkit.phases import phase_spellings  # noqa: PLC0415
+        from teatree.core.modelkit.phases import phase_spellings  # noqa: PLC0415 — deferred: call-time import
 
         task_model = cast("type[Task]", apps.get_model("core", "Task"))
 
@@ -469,7 +469,7 @@ class TaskQuerySet(models.QuerySet):
         # the first one seen for each ticket. ``distinct("ticket_id")`` is
         # Postgres-only; teatree's production DB is SQLite (the #786 B1
         # backend-agnostic lesson), so this stays a plain ordered scan.
-        from django_fsm import TransitionNotAllowed  # noqa: PLC0415
+        from django_fsm import TransitionNotAllowed  # noqa: PLC0415 — deferred: heavy/optional dep at call site
 
         task_model = cast("type[Task]", apps.get_model("core", "Task"))
 

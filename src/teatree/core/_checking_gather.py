@@ -44,7 +44,7 @@ def pr_url_for(ticket: Ticket | None, *, repo_slug: str, pr_id: int, code_host: 
             for url in stored:
                 if isinstance(url, str) and url and _url_matches_pr_id(url, pr_id):
                     return url
-    from teatree.core.checking import build_pr_url  # noqa: PLC0415
+    from teatree.core.checking import build_pr_url  # noqa: PLC0415 — deferred: breaks _checking_gather ↔ checking cycle
 
     built = build_pr_url(slug=repo_slug, pr_id=pr_id, code_host=code_host)
     if built:
@@ -128,7 +128,7 @@ def merged_group_from_qs(
     overlay_tag: str = "",
 ) -> tuple[list, int]:
     """Query and scope the merged audits; return (items, total)."""
-    from teatree.core.checking import CheckItem  # noqa: PLC0415
+    from teatree.core.checking import CheckItem  # noqa: PLC0415 — deferred: breaks _checking_gather ↔ checking cycle
     from teatree.core.merge import resolved_repo_slug  # noqa: PLC0415 — deferred merge edge
 
     qs = (
@@ -166,7 +166,7 @@ def motion_for_overlay(
     seen_failed: set[int],
 ) -> tuple[list, list]:
     """Query ticket transitions and failed attempts for one overlay."""
-    from teatree.core.checking import CheckItem  # noqa: PLC0415
+    from teatree.core.checking import CheckItem  # noqa: PLC0415 — deferred: breaks _checking_gather ↔ checking cycle
 
     since, now = window
     in_flight: list = []
@@ -222,7 +222,7 @@ def motion_for_overlay(
 
 def deferred_questions(*, overlay_slug: str) -> list:
     """Return pending :class:`DeferredQuestion` rows as :class:`CheckItem` list."""
-    from teatree.core.checking import CheckItem  # noqa: PLC0415
+    from teatree.core.checking import CheckItem  # noqa: PLC0415 — deferred: breaks _checking_gather ↔ checking cycle
 
     items: list = []
     for question in DeferredQuestion.pending():

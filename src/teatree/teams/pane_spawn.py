@@ -154,7 +154,7 @@ def build_pane_options(task: Task, *, role: TeamRole) -> ClaudeAgentOptions:
 
 def _resolve_pane_skills(task: Task) -> list[str]:
     """The skill bundle a maker pane loads — drives the per-skill model floor."""
-    from teatree.core.overlay_loader import get_overlay_for_ticket  # noqa: PLC0415
+    from teatree.core.overlay_loader import get_overlay_for_ticket  # noqa: PLC0415 — deferred: call-time import
 
     overlay = get_overlay_for_ticket(task.ticket)
     return resolve_skill_bundle(
@@ -231,7 +231,7 @@ def claim_maker_pane(
 
 def _live_team_claim_count() -> int:
     """Count live (CLAIMED, unexpired-lease) maker panes — the budget denominator."""
-    from django.utils import timezone  # noqa: PLC0415
+    from django.utils import timezone  # noqa: PLC0415 — deferred: Django import at call time
 
     return Task.objects.filter(
         status=Task.Status.CLAIMED,

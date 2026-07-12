@@ -42,9 +42,9 @@ def trigger_sweep_for_verdict(*, slug: str, pr_id: int, overlay: str) -> MergeAt
 
 
 def _sweep_scanner_for_overlay(overlay: str) -> PrSweepScanner | None:
-    from teatree.core.backend_factory import iter_overlay_backends  # noqa: PLC0415
-    from teatree.loop.scanner_factories import _pr_sweep_scanner_for  # noqa: PLC0415
-    from teatree.loop.scanner_factory_config import _user_slack_id_for_overlay  # noqa: PLC0415
+    from teatree.core.backend_factory import iter_overlay_backends  # noqa: PLC0415 — deferred: loaded at tick time
+    from teatree.loop.scanner_factories import _pr_sweep_scanner_for  # noqa: PLC0415 — deferred: loaded at tick time
+    from teatree.loop.scanner_factory_config import _user_slack_id_for_overlay  # noqa: PLC0415 — tick-time import
 
     backend = next((candidate for candidate in iter_overlay_backends() if candidate.name == overlay), None)
     if backend is None:

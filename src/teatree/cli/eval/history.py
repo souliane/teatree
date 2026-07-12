@@ -40,7 +40,7 @@ class HistoryRun(TypedDict):
 
 
 def mark_run_baseline(run_id: int) -> bool:
-    from teatree.core.models import EvalRunRecord  # noqa: PLC0415
+    from teatree.core.models import EvalRunRecord  # noqa: PLC0415 — deferred: ORM import needs the app registry
 
     run = EvalRunRecord.objects.filter(pk=run_id).first()
     if run is None:
@@ -114,7 +114,7 @@ def history_command(
     """
     ensure_django()
     require_valid_format(output_format)
-    from teatree.core.models import EvalRunRecord  # noqa: PLC0415
+    from teatree.core.models import EvalRunRecord  # noqa: PLC0415 — deferred: ORM import needs the app registry
 
     if mark_baseline is not None and not mark_run_baseline(mark_baseline):
         typer.echo(f"unknown run id: {mark_baseline}", err=True)

@@ -204,7 +204,7 @@ def ledger_durable_home_resolver() -> HomeResolver:
     nothing, which is exactly the rail — a memory with no confirmed home is never
     aged out.
     """
-    from teatree.core.models import ConsolidatedMemory  # noqa: PLC0415
+    from teatree.core.models import ConsolidatedMemory  # noqa: PLC0415 — deferred: ORM import needs the app registry
 
     rows = list(ConsolidatedMemory.objects.prunable())
     homed_source_paths: set[str] = set()
@@ -336,7 +336,7 @@ def _over_budget(byte_size: int) -> bool:
     are the only constraint — the harness truncates ``MEMORY.md`` by BYTES at session
     load, so line count is irrelevant to what reaches the agent (#2755).
     """
-    from teatree.loops.dream.gates import INDEX_BYTE_BUDGET  # noqa: PLC0415
+    from teatree.loops.dream.gates import INDEX_BYTE_BUDGET  # noqa: PLC0415 — deferred: loaded at tick time, not import
 
     return byte_size > INDEX_BYTE_BUDGET
 
@@ -449,7 +449,7 @@ def _budget_tier_candidates(
     """
     if not _index_over_budget(index_text):
         return
-    from teatree.loops.dream import reindex  # noqa: PLC0415
+    from teatree.loops.dream import reindex  # noqa: PLC0415 — deferred: loaded at tick time, not import
 
     inbound = _inbound_link_counts(files, index_text)
     ordered = sorted(
@@ -492,7 +492,7 @@ def _cold_index_line(archived_md: Path) -> str:
     for the archived entry — its lesson stays answerable from the cold index. Uncapped:
     the verbatim signature is what retention needs.
     """
-    from teatree.loops.dream.gates import _signature_line  # noqa: PLC0415
+    from teatree.loops.dream.gates import _signature_line  # noqa: PLC0415 — deferred: loaded at tick time, not import
 
     try:
         text = archived_md.read_text(encoding="utf-8")

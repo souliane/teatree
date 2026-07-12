@@ -18,7 +18,7 @@ def cost(
     """Show cycle-to-date SDK-equivalent spend vs the monthly credit."""
     ensure_django()
 
-    from django.core.management import call_command  # noqa: PLC0415
+    from django.core.management import call_command  # noqa: PLC0415 — deferred: Django import at call time
 
     # The ``cost`` TyperCommand echoes its rendered output to stdout itself
     # (django-typer serialises the return value); call it for the side effect.

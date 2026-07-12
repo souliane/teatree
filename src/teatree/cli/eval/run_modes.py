@@ -115,7 +115,7 @@ def persist_single(
     max_turns: int | None,
     baseline: bool,
 ) -> "EvalRunRecord":
-    from teatree.eval.persistence import persist_run  # noqa: PLC0415
+    from teatree.eval.persistence import persist_run  # noqa: PLC0415 — deferred: keeps CLI startup light
 
     record = persist_run(results, model=run_model_label(specs), max_turns_override=max_turns)
     if baseline:
@@ -130,7 +130,7 @@ def persist_pass_at_k_run(
     max_turns: int | None,
     baseline: bool,
 ) -> "EvalRunRecord":
-    from teatree.eval.persistence import persist_pass_at_k  # noqa: PLC0415
+    from teatree.eval.persistence import persist_pass_at_k  # noqa: PLC0415 — deferred: keeps CLI startup light
 
     record = persist_pass_at_k(results, model=model, max_turns_override=max_turns)
     if baseline:
@@ -145,7 +145,7 @@ def persist_matrix_run(
     max_turns: int | None,
     baseline: bool,
 ) -> "EvalRunRecord":
-    from teatree.eval.persistence import persist_matrix  # noqa: PLC0415
+    from teatree.eval.persistence import persist_matrix  # noqa: PLC0415 — deferred: keeps CLI startup light
 
     record = persist_matrix(rows, models=models, max_turns_override=max_turns)
     if baseline:
@@ -199,7 +199,7 @@ class RegressionGates:
         """Diff *record* against each model's baseline; print drops; True if any regressed."""
         if not enabled:
             return False
-        from teatree.core.models import EvalRunRecord  # noqa: PLC0415
+        from teatree.core.models import EvalRunRecord  # noqa: PLC0415 — deferred: ORM import needs the app registry
 
         any_regressed = False
         any_baseline = False
@@ -237,7 +237,7 @@ class RegressionGates:
         """
         if not enabled:
             return False
-        from teatree.core.models import EvalRunRecord  # noqa: PLC0415
+        from teatree.core.models import EvalRunRecord  # noqa: PLC0415 — deferred: ORM import needs the app registry
 
         any_regressed = False
         any_baseline = False
@@ -277,7 +277,7 @@ class CostBoundsGate:
         """Check *record*'s per-scenario cost against the ceilings; print violations; True if any."""
         if not enabled:
             return False
-        from teatree.eval.cost_bounds import check_cost_bounds, load_cost_bounds  # noqa: PLC0415
+        from teatree.eval.cost_bounds import check_cost_bounds, load_cost_bounds  # noqa: PLC0415 — lazy CLI import
 
         config = load_cost_bounds()
         if not config.bounds:

@@ -174,9 +174,9 @@ def _overlay_importable_in_current_env(entry: "OverlayEntry") -> bool:
     ``overlay_class`` (no ``:``) or a blank one is not a locatable package, so it
     does not assert same-env on its own — the entry-point check decides.
     """
-    from importlib.metadata import entry_points  # noqa: PLC0415
+    from importlib.metadata import entry_points  # noqa: PLC0415 — deferred: loaded only when this command runs
 
-    from teatree.config import OverlayEntry  # noqa: PLC0415
+    from teatree.config import OverlayEntry  # noqa: PLC0415 — deferred: keeps CLI startup light
 
     canonical = OverlayEntry.canonical_overlay_name(entry.name)
     ep_canon = {OverlayEntry.canonical_overlay_name(ep.name) for ep in entry_points(group="teatree.overlays")}
@@ -213,7 +213,7 @@ def _overlay_project_env(overlay_name: str) -> Path | None:
     """
     if not overlay_name:
         return None
-    from teatree.config import OverlayEntry, discover_overlays  # noqa: PLC0415
+    from teatree.config import OverlayEntry, discover_overlays  # noqa: PLC0415 — deferred: keeps CLI startup light
 
     canonical = OverlayEntry.canonical_overlay_name(overlay_name)
     for entry in discover_overlays():
@@ -317,7 +317,7 @@ class OverlayAppBuilder:
         @overlay_app.command()
         def resetdb() -> None:
             """Drop the SQLite database and re-run all migrations."""
-            from teatree.paths import CANONICAL_DB  # noqa: PLC0415
+            from teatree.paths import CANONICAL_DB  # noqa: PLC0415 — deferred: keeps CLI startup light
 
             if CANONICAL_DB.exists():
                 CANONICAL_DB.unlink()
@@ -404,10 +404,10 @@ class OverlayAppBuilder:
             ),
         ) -> None:
             """Launch Claude Code with overlay context and auto-detected skills."""
-            from teatree.cli import _find_project_root  # noqa: PLC0415
-            from teatree.cli.agent import _detect_agent_ticket_status, _launch_claude  # noqa: PLC0415
-            from teatree.core.overlay_loader import get_overlay  # noqa: PLC0415
-            from teatree.skill_support.loading import SkillLoadingPolicy  # noqa: PLC0415
+            from teatree.cli import _find_project_root  # noqa: PLC0415 — deferred: breaks overlay ↔ cli cycle
+            from teatree.cli.agent import _detect_agent_ticket_status, _launch_claude  # noqa: PLC0415 — lazy CLI import
+            from teatree.core.overlay_loader import get_overlay  # noqa: PLC0415 — deferred: keeps CLI startup light
+            from teatree.skill_support.loading import SkillLoadingPolicy  # noqa: PLC0415 — deferred: lazy CLI import
 
             overlay_root = project_path or _find_project_root()
             if phase and skill:

@@ -38,7 +38,7 @@ def _state_dir() -> Path:
     return Path(
         os.environ.get(
             "TEATREE_CLAUDE_STATUSLINE_STATE_DIR",
-            os.environ.get("T3_HOOK_STATE_DIR", "/tmp/claude-statusline"),  # noqa: S108
+            os.environ.get("T3_HOOK_STATE_DIR", "/tmp/claude-statusline"),  # noqa: S108 — fixed agent-controlled path, not user input
         )
     )
 
@@ -76,7 +76,7 @@ def resolve_target_session(explicit_to: str) -> str:
     """
     if explicit_to:
         return explicit_to
-    from teatree.core.models import LoopLease  # noqa: PLC0415
+    from teatree.core.models import LoopLease  # noqa: PLC0415 — deferred: ORM import needs the app registry
 
     # The t3-master owner slot (``T3_MASTER_SLOT``); the tach boundary forbids
     # importing it here, so the literal is repeated at this read site.
@@ -115,7 +115,7 @@ def create_handover(*, from_session: str, explicit_to: str) -> "tuple[SessionHan
     Returns ``(handover_row, mirror_path)``. The payload is the reused
     PreCompact snapshot; the target is resolved per :func:`resolve_target_session`.
     """
-    from teatree.core.models import SessionHandover  # noqa: PLC0415
+    from teatree.core.models import SessionHandover  # noqa: PLC0415 — deferred: ORM import needs the app registry
 
     to_session = resolve_target_session(explicit_to)
     handover = SessionHandover.objects.create_handover(

@@ -72,7 +72,7 @@ class ReviewLoopRound(models.Model):
 
 
 def _author_leg_done(loop: object) -> bool:
-    from teatree.core.models.task import Task  # noqa: PLC0415
+    from teatree.core.models.task import Task  # noqa: PLC0415 — deferred: ORM import needs the app registry
 
     instance = cast("ReviewLoop", loop)
     return instance.current_task is not None and instance.current_task.status == Task.Status.COMPLETED
@@ -299,8 +299,8 @@ class ReviewLoop(models.Model):
             return ReviewLoopRound.objects.get_or_create(review_loop=self, round=self.round, leg=leg)
 
     def _make_task(self, *, phase: str, reason: str, leg: str) -> "Task":
-        from teatree.core.models.session import Session  # noqa: PLC0415
-        from teatree.core.models.task import Task  # noqa: PLC0415
+        from teatree.core.models.session import Session  # noqa: PLC0415 — deferred: ORM import needs the app registry
+        from teatree.core.models.task import Task  # noqa: PLC0415 — deferred: ORM import needs the app registry
 
         session = Session.objects.create(ticket=self.ticket, agent_id=f"review-loop-{leg}")
         return Task.objects.create(

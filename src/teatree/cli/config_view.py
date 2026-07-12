@@ -88,8 +88,8 @@ def _flags() -> list[dict[str, Any]]:
 def _ticket_session_counts() -> dict[str, int] | None:
     try:
         ensure_django()
-        from teatree.core.models.session import Session  # noqa: PLC0415
-        from teatree.core.models.ticket import Ticket  # noqa: PLC0415
+        from teatree.core.models.session import Session  # noqa: PLC0415 — deferred: ORM import needs the app registry
+        from teatree.core.models.ticket import Ticket  # noqa: PLC0415 — deferred: ORM import needs the app registry
 
         return {"tickets": Ticket.objects.count(), "sessions": Session.objects.count()}
     except Exception:  # noqa: BLE001 — DB absent/unmigrated is a valid offline state, not a crash.

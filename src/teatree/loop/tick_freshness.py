@@ -23,7 +23,7 @@ def _repo_freshness(repo_path: Path) -> dict[str, int | str] | None:
     ``behind`` inline after a ``git pull`` — otherwise the cached value
     stays stale until the next tick (~12 min later).
     """
-    from teatree.utils.run import run_allowed_to_fail  # noqa: PLC0415
+    from teatree.utils.run import run_allowed_to_fail  # noqa: PLC0415 — deferred: loaded at tick time, not import
 
     git_dir = repo_path / ".git"
     if not git_dir.exists():
@@ -45,7 +45,7 @@ def _repo_freshness(repo_path: Path) -> dict[str, int | str] | None:
 
 def _repos_from_toml() -> dict[str, Path]:
     """Extract repo paths from the DB overlays registry."""
-    from teatree.config import clone_root, load_config  # noqa: PLC0415
+    from teatree.config import clone_root, load_config  # noqa: PLC0415 — deferred: loaded at tick time, not import
 
     overlays_cfg = load_config().raw.get("overlays") or {}
     # ``workspace_repos`` resolve to CLONES, so join them under the CLONE root.
@@ -81,8 +81,8 @@ def _canonical_overlay_names() -> dict[str, str]:
     (souliane/teatree#1138) — a single home shared with config-time discovery.
     """
     try:
-        from teatree.config import _match_canonical_ep, load_config  # noqa: PLC0415
-        from teatree.core.overlay_loader import get_all_overlays  # noqa: PLC0415
+        from teatree.config import _match_canonical_ep, load_config  # noqa: PLC0415 — deferred: loaded at tick time
+        from teatree.core.overlay_loader import get_all_overlays  # noqa: PLC0415 — deferred: loaded at tick time
     except Exception:  # noqa: BLE001 — a config-read failure degrades to no overlays
         return {}
     canonical = set(get_all_overlays().keys())
@@ -118,15 +118,15 @@ def _cost_chip() -> str:
     handing the rendered string to the shell keeps the dollar figure in one
     place. Fails open to ``""`` so a broken cost read never blanks the line.
     """
-    from teatree.loop.rendering import cost_chip_lines  # noqa: PLC0415
+    from teatree.loop.rendering import cost_chip_lines  # noqa: PLC0415 — deferred: loaded at tick time, not import
 
     lines = cost_chip_lines()
     return lines[0] if lines else ""
 
 
 def _write_tick_meta(started_at: dt.datetime, *, target: Path | None = None) -> None:
-    from teatree.config import cadence_seconds  # noqa: PLC0415
-    from teatree.loop.statusline import default_path  # noqa: PLC0415
+    from teatree.config import cadence_seconds  # noqa: PLC0415 — deferred: loaded at tick time, not import
+    from teatree.loop.statusline import default_path  # noqa: PLC0415 — deferred: loaded at tick time, not import
 
     meta_path = (target or default_path()).with_name("tick-meta.json")
     # #744: the skip path writes tick-meta directly without the

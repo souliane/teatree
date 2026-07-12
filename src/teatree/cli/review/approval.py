@@ -85,7 +85,7 @@ def _internal_approve_verdict_recorded(encoded_repo: str, mr: int) -> bool:
     approval. Its presence is a reviewing footprint that needs no public
     note. Read lazily so the CLI imports before ``django.setup()``.
     """
-    from teatree.core.models.on_behalf_approval import OnBehalfApproval  # noqa: PLC0415
+    from teatree.core.models.on_behalf_approval import OnBehalfApproval  # noqa: PLC0415 — deferred: ORM/app-registry
 
     repo = encoded_repo.replace("%2F", "/")
     return OnBehalfApproval.has_unconsumed(f"{repo}!{mr}", "approve")

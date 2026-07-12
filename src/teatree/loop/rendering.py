@@ -189,9 +189,9 @@ def cost_chip_lines() -> list[str]:
     error so a broken cost read never blanks the statusline.
     """
     try:
-        from teatree.config import get_effective_settings  # noqa: PLC0415
-        from teatree.core.cost import CostReport, cycle_start, cycle_start_datetime  # noqa: PLC0415
-        from teatree.core.models.task_attempt import TaskAttempt  # noqa: PLC0415
+        from teatree.config import get_effective_settings  # noqa: PLC0415 — deferred: loaded at tick time, not import
+        from teatree.core.cost import CostReport, cycle_start, cycle_start_datetime  # noqa: PLC0415 — tick-time import
+        from teatree.core.models.task_attempt import TaskAttempt  # noqa: PLC0415 — deferred: ORM/app-registry
 
         settings = get_effective_settings()
         anchor = settings.billing_cycle_anchor_day or None

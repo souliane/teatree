@@ -35,8 +35,8 @@ def _build_jobs(
     cannot drift from the per-overlay inbound set (#23).
     """
     from teatree.loop.domain_jobs import jobs_for_domain, single_overlay_messaging_jobs  # noqa: PLC0415 (lazy import)
-    from teatree.loop.job_identity import Domain, _ScannerJob  # noqa: PLC0415
-    from teatree.loop.scanners import NotionViewScanner  # noqa: PLC0415
+    from teatree.loop.job_identity import Domain, _ScannerJob  # noqa: PLC0415 — deferred: loaded at tick time
+    from teatree.loop.scanners import NotionViewScanner  # noqa: PLC0415 — deferred: loaded at tick time, not import
 
     jobs: list[_ScannerJob] = []
     if backends:

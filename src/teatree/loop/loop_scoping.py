@@ -25,9 +25,9 @@ def owned_per_loop_slots(session_id: str) -> set[str] | None:
     if not session_id:
         return None
     try:
-        from django.apps import apps  # noqa: PLC0415
+        from django.apps import apps  # noqa: PLC0415 — deferred: app registry read at call time
 
-        from teatree.core.loop_lease_manager import PER_LOOP_OWNER_PREFIX  # noqa: PLC0415
+        from teatree.core.loop_lease_manager import PER_LOOP_OWNER_PREFIX  # noqa: PLC0415 — tick-time import
 
         lease_model = apps.get_model("core", "LoopLease")
         rows = lease_model.objects.filter(name__startswith=PER_LOOP_OWNER_PREFIX, session_id=session_id).values_list(
@@ -46,7 +46,7 @@ def current_session_owned_per_loop_slots() -> set[str] | None:
     inherits the fail-open ``None`` sentinel from :func:`owned_per_loop_slots`
     (anonymous / cron tick, or DB read error).
     """
-    from teatree.loop.session_identity import current_session_id  # noqa: PLC0415
+    from teatree.loop.session_identity import current_session_id  # noqa: PLC0415 — deferred: loaded at tick time
 
     return owned_per_loop_slots(current_session_id())
 
@@ -59,7 +59,7 @@ def per_loop_chunk_visible(name: str, owned_per_loop: set[str] | None) -> bool:
     it; ``owned_per_loop is None`` is the fail-open marker (no resolvable
     session / read error) under which every per-loop chunk stays visible.
     """
-    from teatree.core.loop_lease_manager import is_per_loop_owner_slot  # noqa: PLC0415
+    from teatree.core.loop_lease_manager import is_per_loop_owner_slot  # noqa: PLC0415 — deferred: loaded at tick time
 
     if not is_per_loop_owner_slot(name):
         return True
@@ -93,7 +93,7 @@ def is_transient_tick_mutex(name: str) -> bool:
     (the owner lease). The statusline loop line therefore drops it. The bare
     master ``loop-tick`` mutex (no trailing ``:``) is left visible as ``tick``.
     """
-    from teatree.core.loop_lease_manager import is_per_loop_tick_mutex  # noqa: PLC0415
+    from teatree.core.loop_lease_manager import is_per_loop_tick_mutex  # noqa: PLC0415 — deferred: loaded at tick time
 
     return is_per_loop_tick_mutex(name)
 

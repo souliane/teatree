@@ -191,7 +191,7 @@ class ResourcePressureScanner:
     name: str = "resource_pressure"
 
     def scan(self) -> list[ScanSignal]:
-        from teatree.core.models.resource_pressure_marker import ResourcePressureMarker  # noqa: PLC0415
+        from teatree.core.models.resource_pressure_marker import ResourcePressureMarker  # noqa: PLC0415 — lazy ORM
 
         try:
             marker = ResourcePressureMarker.load()

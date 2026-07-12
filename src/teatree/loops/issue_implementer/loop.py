@@ -29,8 +29,8 @@ def _build_jobs(
     **_: object,
 ) -> "list[_ScannerJob]":
     """Wire each overlay's ``Domain.ISSUE_IMPLEMENTER`` slice (empty by default)."""
-    from teatree.loop.domain_jobs import jobs_for_domain  # noqa: PLC0415
-    from teatree.loop.job_identity import Domain  # noqa: PLC0415
+    from teatree.loop.domain_jobs import jobs_for_domain  # noqa: PLC0415 — deferred: loaded at tick time, not import
+    from teatree.loop.job_identity import Domain  # noqa: PLC0415 — deferred: loaded at tick time, not import
 
     if not backends:
         return []

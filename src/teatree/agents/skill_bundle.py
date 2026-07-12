@@ -23,7 +23,7 @@ def _active_overlay_config() -> object | None:
     caller's contract is to behave as if no overlay declared anything.
     """
     try:
-        from teatree.core.overlay_loader import get_overlay  # noqa: PLC0415
+        from teatree.core.overlay_loader import get_overlay  # noqa: PLC0415 — deferred: call-time import, kept lazy
     except Exception:  # noqa: BLE001 — overlay loader may be unavailable pre-bootstrap; degrade to no overlay
         return None
     try:

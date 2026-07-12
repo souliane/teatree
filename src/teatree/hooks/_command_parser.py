@@ -379,7 +379,7 @@ def _walk_body_flags(words: list[str], raws: list[str], payloads: list[str], bas
     is the literal text — scanned) from a live one — an embedded substitution in a
     body the gate can read is no longer mis-flagged as unresolvable.
     """
-    from teatree.hooks._body_file_resolution import resolve_inline_body_value  # noqa: PLC0415
+    from teatree.hooks._body_file_resolution import resolve_inline_body_value  # noqa: PLC0415 — deferred: import cycle
 
     i = 0
     n = len(words)
@@ -467,7 +467,7 @@ def _handle_field_assignment(arg: str, payloads: list[str], base: "Path | None",
     field token's verbatim source span so a single-quoted INERT ``$(...)`` is
     scanned; a LIVE unresolvable indirection yields the fail-closed sentinel.
     """
-    from teatree.hooks._body_file_resolution import resolve_inline_body_value  # noqa: PLC0415
+    from teatree.hooks._body_file_resolution import resolve_inline_body_value  # noqa: PLC0415 — deferred: import cycle
 
     if "=" not in arg:
         return
@@ -497,8 +497,8 @@ def _first_two_words(segment: list[Token]) -> tuple[str, str]:
 
 def _walk_command_segment(segment: list[Token], payloads: list[str], ctx: "BodyFileContext") -> None:
     """Route a single command segment to the right argument walkers."""
-    from teatree.hooks._body_file_resolution import walk_body_file_flags  # noqa: PLC0415
-    from teatree.hooks._t3_review_post import append_t3_review_note_payload  # noqa: PLC0415
+    from teatree.hooks._body_file_resolution import walk_body_file_flags  # noqa: PLC0415 — deferred: import cycle
+    from teatree.hooks._t3_review_post import append_t3_review_note_payload  # noqa: PLC0415 — lazy import
 
     word_tokens = [tok for tok in segment if tok.kind is TokenKind.WORD]
     words = [tok.value for tok in word_tokens]
@@ -575,7 +575,7 @@ def extract_bash_payload(command: str, *, fail_closed_body_file: bool = False, c
     the gate scans the real body and applies the private-repo carve-out instead
     of fail-closing on a clean post whose body it could not read.
     """
-    from teatree.hooks._body_file_resolution import (  # noqa: PLC0415
+    from teatree.hooks._body_file_resolution import (  # noqa: PLC0415 — deferred: import cycle
         BodyFileContext,
         command_body_file_base,
         commit_body_file_base,

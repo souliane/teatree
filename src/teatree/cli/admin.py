@@ -77,7 +77,7 @@ def admin(
 
 
 def _ensure_migrated() -> None:
-    from django.core.management import call_command  # noqa: PLC0415
+    from django.core.management import call_command  # noqa: PLC0415 — deferred: Django import at call time
 
     call_command("migrate", run_syncdb=True, verbosity=0)
 
@@ -101,10 +101,10 @@ def _ensure_superuser() -> SuperuserResult:
     random token is generated and surfaced to the caller — never a hardcoded
     default. An existing superuser is reused untouched (no password is exposed).
     """
-    import os  # noqa: PLC0415
-    import secrets  # noqa: PLC0415
+    import os  # noqa: PLC0415 — deferred: loaded only when this command runs
+    import secrets  # noqa: PLC0415 — deferred: loaded only when this command runs
 
-    from django.contrib.auth import get_user_model  # noqa: PLC0415
+    from django.contrib.auth import get_user_model  # noqa: PLC0415 — deferred: Django import at call time
 
     user_model = get_user_model()
     existing = user_model.objects.filter(is_superuser=True).first()
@@ -130,9 +130,9 @@ def _open_browser_when_ready(url: str) -> threading.Timer:
 
 
 def _run_server(host: str, port: int) -> None:
-    import sys  # noqa: PLC0415
+    import sys  # noqa: PLC0415 — deferred: loaded only when this command runs
 
-    from teatree.utils.run import CommandFailedError, run_streamed  # noqa: PLC0415
+    from teatree.utils.run import CommandFailedError, run_streamed  # noqa: PLC0415 — deferred: keeps CLI startup light
 
     # gunicorn (a production WSGI server) against teatree's WSGI app — not
     # Django's dev ``runserver``, which is single-threaded, unfit for a

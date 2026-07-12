@@ -39,9 +39,9 @@ def sessions(
     By default shows sessions for the current working directory.
     Use --all to show sessions across all projects.
     """
-    from datetime import datetime  # noqa: PLC0415
+    from datetime import datetime  # noqa: PLC0415 — deferred: loaded only when this command runs
 
-    from teatree.claude_sessions import SessionQuery, list_sessions  # noqa: PLC0415
+    from teatree.claude_sessions import SessionQuery, list_sessions  # noqa: PLC0415 — deferred: keeps CLI startup light
 
     results = list_sessions(
         SessionQuery(

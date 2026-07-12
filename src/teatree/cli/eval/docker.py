@@ -191,7 +191,7 @@ def run_eval_in_docker(eval_args: list[str], *, artifacts_dir: Path | None = Non
         # Imported at call time (not module top) to keep the eval CLI import chain
         # Django-free — ``credential_config`` pulls in the routing models + settings,
         # which cannot be created before ``django.setup()`` (plain ``import teatree.cli``).
-        from teatree.credential_config import resolve_eval_credential  # noqa: PLC0415
+        from teatree.credential_config import resolve_eval_credential  # noqa: PLC0415 — deferred: lazy CLI import
 
         credential = resolve_eval_credential()
         credential.export()

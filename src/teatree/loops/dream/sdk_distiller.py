@@ -130,8 +130,8 @@ def _run_distiller_turn(extract: ConsolidationExtract) -> str:
     turn fails (including :class:`TimeoutError` when the turn exceeds the
     watchdog), so the caller never reports a fake success and never hangs.
     """
-    import asyncio  # noqa: PLC0415
-    import shutil  # noqa: PLC0415
+    import asyncio  # noqa: PLC0415 — deferred: loaded only on this code path
+    import shutil  # noqa: PLC0415 — deferred: loaded only on this code path
 
     if shutil.which("claude") is None:
         msg = "claude is not installed — the dream distiller cannot run"
@@ -160,7 +160,7 @@ def _distill_options() -> "ClaudeAgentOptions":
 
 
 async def _collect_turn(prompt: str) -> str:
-    import asyncio  # noqa: PLC0415
+    import asyncio  # noqa: PLC0415 — deferred: loaded only on this code path
 
     from claude_agent_sdk import (  # noqa: PLC0415 — deferred: optional heavy SDK dep, imported only at turn time
         AssistantMessage,

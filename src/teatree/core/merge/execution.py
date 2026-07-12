@@ -409,8 +409,8 @@ def record_merge_and_advance(
     irreversible GitHub merge already ran before this hook; only this
     idempotent DB write retries).
     """
-    from teatree.core.modelkit.db_retry import retry_on_locked  # noqa: PLC0415
-    from teatree.core.models import MergeClear  # noqa: PLC0415
+    from teatree.core.modelkit.db_retry import retry_on_locked  # noqa: PLC0415 — deferred: call-time import, kept lazy
+    from teatree.core.models import MergeClear  # noqa: PLC0415 — deferred: ORM import needs the app registry
 
     if not isinstance(clear, MergeClear):  # pragma: no cover - guarded by caller
         msg = "record_merge_and_advance requires a MergeClear instance"
@@ -513,7 +513,7 @@ def merge_ticket_pr(
     (never a FAILED) required check — a distinct key from ``human_authorized`` so
     the substrate hold and the pending waiver can never cross-unlock.
     """
-    from teatree.core.models import MergeClear  # noqa: PLC0415
+    from teatree.core.models import MergeClear  # noqa: PLC0415 — deferred: ORM import needs the app registry
 
     if not isinstance(clear, MergeClear):
         msg = "merge_ticket_pr requires a MergeClear instance"

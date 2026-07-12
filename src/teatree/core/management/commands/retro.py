@@ -244,8 +244,8 @@ class Command(TyperCommand):
 
     @staticmethod
     def _resolve_host(pr_url: str) -> "CodeHostBackend | None":
-        from teatree.backends.loader import get_code_host_for_url  # noqa: PLC0415
-        from teatree.core.overlay_loader import get_all_overlays  # noqa: PLC0415
+        from teatree.backends.loader import get_code_host_for_url  # noqa: PLC0415 — deferred: lazy command import
+        from teatree.core.overlay_loader import get_all_overlays  # noqa: PLC0415 — deferred: keeps command import light
 
         for overlay in get_all_overlays().values():
             host = get_code_host_for_url(overlay, pr_url)

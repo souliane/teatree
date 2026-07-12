@@ -118,7 +118,7 @@ def scan_for_publication(  # noqa: PLR0913 — gate entry-point; each kwarg is a
             )
             continue
         for match in compiled.finditer(text):
-            matches.append(  # noqa: PERF401
+            matches.append(  # noqa: PERF401 — explicit append: the multi-field constructor reads clearer than a comprehension
                 PrivacyMatch(
                     pattern_name=name,
                     matched_text=match.group(0),
@@ -155,7 +155,7 @@ def _target_is_public(target_repo: str, forge: str) -> bool:
     (treats the target as public → scanned), so a detection failure never silently
     skips the scan.
     """
-    from teatree.hooks.publish_destination import Destination, is_public_destination  # noqa: PLC0415
+    from teatree.hooks.publish_destination import Destination, is_public_destination  # noqa: PLC0415 — lazy import
 
     try:
         return is_public_destination(Destination(slug=target_repo, via="api", forge=forge))

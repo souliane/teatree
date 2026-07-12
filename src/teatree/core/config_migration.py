@@ -69,7 +69,7 @@ def _resolve_export_scan_terms() -> tuple[str, ...]:
     """
     # Deferred (PLC0415): importing `teatree.config` at module scope eagerly
     # loads its heavy package __init__; keep this module's import light.
-    from teatree.config import cold_reader  # noqa: PLC0415
+    from teatree.config import cold_reader  # noqa: PLC0415 — deferred: call-time import, kept lazy
 
     terms: list[str] = []
     for key in ("banned_terms", "banned_brands"):

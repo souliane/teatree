@@ -37,7 +37,7 @@ def _user_slack_id_for_overlay(overlay_name: str) -> str:
     warnings. Reads the DB overlays registry + ``ConfigSetting`` store directly
     so a fresh tick picks up a runtime config change without an overlay reload.
     """
-    from teatree.config import cold_reader, load_config  # noqa: PLC0415
+    from teatree.config import cold_reader, load_config  # noqa: PLC0415 — deferred: loaded at tick time, not import
 
     overlays = load_config().raw.get("overlays") or {}
     if overlay_name and isinstance(overlays.get(overlay_name), dict):

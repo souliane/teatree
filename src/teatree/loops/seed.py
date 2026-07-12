@@ -282,7 +282,7 @@ def seed_default_loops_and_prompts() -> SeedResult:
     the spec. The backfill filters on ``description=""``, so it is idempotent and
     never clobbers a description an operator rewrote.
     """
-    from teatree.core.models import Loop, Prompt  # noqa: PLC0415
+    from teatree.core.models import Loop, Prompt  # noqa: PLC0415 — deferred: ORM import needs the app registry
 
     loops_created = 0
     prompts_created = 0

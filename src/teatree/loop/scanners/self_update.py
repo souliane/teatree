@@ -181,7 +181,7 @@ class SelfUpdateScanner:
         # Import inside the method so the scanner module imports cleanly even
         # when Django app loading hasn't run yet (the wiring layer imports
         # this class at module load time).
-        from teatree.core.models.self_update_marker import SelfUpdateMarker  # noqa: PLC0415
+        from teatree.core.models.self_update_marker import SelfUpdateMarker  # noqa: PLC0415 — lazy ORM import
 
         marker = SelfUpdateMarker.objects.filter(repo_label=label).first()
         if marker is None:
@@ -202,7 +202,7 @@ def _maybe_notify_stale_clone(*, label: str, path: Path, outcome: _PullOutcome) 
     """
     if outcome.outcome != "skipped":
         return
-    from teatree.core.worktree.stale_clone_notice import (  # noqa: PLC0415
+    from teatree.core.worktree.stale_clone_notice import (  # noqa: PLC0415 — deferred: loaded at tick time, not import
         StaleCloneReason,
         StaleCloneSkip,
         notify_stale_clone_skip,
@@ -230,7 +230,7 @@ def _maybe_notify_stale_clone(*, label: str, path: Path, outcome: _PullOutcome) 
 
 def _record_marker(*, label: str, path: Path, outcome: _PullOutcome) -> _PullOutcome:
     """Upsert the :class:`SelfUpdateMarker` row + return *outcome*."""
-    from teatree.core.models.self_update_marker import SelfUpdateMarker  # noqa: PLC0415
+    from teatree.core.models.self_update_marker import SelfUpdateMarker  # noqa: PLC0415 — deferred: ORM/app-registry
 
     sha = outcome.new_sha or outcome.old_sha
     try:
@@ -362,7 +362,7 @@ def _origin_ahead(repo: Path, *, pre_sha: str) -> bool:
 
 def _queue_reinstall(*, label: str, target_sha: str) -> None:
     """Upsert a deferred-reinstall row; never crash the tick on a DB error."""
-    from teatree.core.models.pending_reinstall import PendingReinstall  # noqa: PLC0415
+    from teatree.core.models.pending_reinstall import PendingReinstall  # noqa: PLC0415 — deferred: ORM/app-registry
 
     try:
         with transaction.atomic():

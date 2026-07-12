@@ -27,7 +27,7 @@ def _read_json_safe(path: Path) -> dict:
 
 
 def _resolve_main_clone() -> Path | None:
-    from teatree.cli.doctor import DoctorService  # noqa: PLC0415
+    from teatree.cli.doctor import DoctorService  # noqa: PLC0415 — deferred: breaks plugin_repair ↔ doctor cycle
 
     env_path = os.environ.get("T3_REPO", "")
     if env_path:
@@ -116,7 +116,7 @@ def _do_ensure_plugin_registered() -> bool:
     if not repo:
         return True
 
-    from datetime import UTC, datetime  # noqa: PLC0415
+    from datetime import UTC, datetime  # noqa: PLC0415 — deferred: loaded only when this command runs
 
     target = str(repo.resolve())
     now = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%S.000Z")

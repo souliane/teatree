@@ -42,7 +42,7 @@ def validate_skill_refs_cmd(
     incident) exits non-zero with file:line + the bad name + nearest matches.
     A missing optional config is not a failure (fail-open).
     """
-    from teatree.skill_support.ref_validator import validate_skill_refs  # noqa: PLC0415
+    from teatree.skill_support.ref_validator import validate_skill_refs  # noqa: PLC0415 — deferred: lazy CLI import
 
     findings = validate_skill_refs(supplementary_config=supplementary_config, agents_dir=agents_dir)
     if json_output:

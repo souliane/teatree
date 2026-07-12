@@ -465,7 +465,7 @@ def _next_cycle_start(cycle_start_date: date) -> date:
 
 def cycle_start_datetime(today: date, *, anchor_day: int | None = None) -> datetime:
     """Aware ``datetime`` at midnight of the cycle start (for DB filtering)."""
-    from django.utils import timezone  # noqa: PLC0415
+    from django.utils import timezone  # noqa: PLC0415 — deferred: Django import at call time
 
     start_date = cycle_start(today, anchor_day=anchor_day)
     midnight = datetime.combine(start_date, time.min)
@@ -567,7 +567,7 @@ def register_cost_factories() -> None:
     the edge: the model fetches ``AttemptUsage`` / ``CostBreakdown`` by name at
     call time.
     """
-    from teatree.core.modelkit.gate_registry import register  # noqa: PLC0415
+    from teatree.core.modelkit.gate_registry import register  # noqa: PLC0415 — deferred: call-time import, kept lazy
 
     register("cost", "AttemptUsage", AttemptUsage)
     register("cost", "CostBreakdown", CostBreakdown)

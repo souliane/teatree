@@ -312,7 +312,7 @@ def load_schedule(db_path: Path | None = None) -> Schedule:
     """
     # Deferred (PLC0415): importing `teatree.config` at module scope eagerly
     # loads its heavy package __init__; keep this module's import light.
-    from teatree.config import cold_reader  # noqa: PLC0415
+    from teatree.config import cold_reader  # noqa: PLC0415 — deferred: call-time import, kept lazy
 
     return Schedule.from_table(cold_reader.read_setting("availability_schedule", db_path=db_path))
 

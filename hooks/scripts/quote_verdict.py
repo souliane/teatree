@@ -86,7 +86,7 @@ def resolve_high_verdict(command: str, cwd: Path | None) -> QuoteVerdict:
     default env/home one (the live gate passes no explicit config; tests pin it
     via ``T3_BANNED_TERMS_CONFIG``).
     """
-    from teatree.hooks import public_visibility, publish_surface  # noqa: PLC0415
+    from teatree.hooks import public_visibility, publish_surface  # noqa: PLC0415 — deferred: cold-hook import
 
     if public_visibility.gate_skips_for_visibility(command, cwd):
         return QuoteVerdict(deny=False, warning=_NON_PUBLIC_SKIP, decision="allow-nonpublic-destination")

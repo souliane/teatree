@@ -319,8 +319,8 @@ class SlackReactionPublisher:
     ``backends`` (#1922).
     """
 
-    def add_reactions_for_transition(self, ticket: "Ticket", transition_name: str) -> int:  # noqa: PLR6301
+    def add_reactions_for_transition(self, ticket: "Ticket", transition_name: str) -> int:  # noqa: PLR6301 — reaction-dispatch seam method; on the instance by Protocol contract
         return add_reactions_for_transition(ticket, transition_name)
 
-    def add_approval_reaction(self, pull_request: "PullRequest") -> int:  # noqa: PLR6301
+    def add_approval_reaction(self, pull_request: "PullRequest") -> int:  # noqa: PLR6301 — reaction-dispatch seam method; on the instance by Protocol contract
         return add_approval_reaction(pull_request)

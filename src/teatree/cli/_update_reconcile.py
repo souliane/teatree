@@ -56,7 +56,7 @@ def _create_reconcile_backup_ref(repo: Path, head_sha: str) -> str:
     reachable (not just in the reflog), making any future misclassification
     trivially recoverable via ``git reset --hard <ref>``.
     """
-    from teatree.cli.update import _git  # noqa: PLC0415
+    from teatree.cli.update import _git  # noqa: PLC0415 — deferred: keeps CLI startup light
 
     ref = f"refs/t3-reconcile-backup/{head_sha}"
     _git(repo, "update-ref", ref, head_sha, expected_codes=None)
@@ -93,7 +93,7 @@ def reconcile_squash_merged(name: str, repo: Path, old_sha: str, pull_stderr: st
     ``refs/t3-reconcile-backup/<sha>`` ref is created at the pre-reset HEAD (and
     named in the log) for trivial recovery.
     """
-    from teatree.cli.update import (  # noqa: PLC0415
+    from teatree.cli.update import (  # noqa: PLC0415 — deferred: keeps CLI startup light
         RepoUpdate,
         UpdateStatus,
         _commit_count,
@@ -162,7 +162,7 @@ def _refuse_reconcile(name: str, repo: Path, target: str, *, reason: str, shas: 
     commits in the unique range all funnel here, so genuine work is surfaced
     identically and never destroyed.
     """
-    from teatree.cli.update import RepoUpdate, UpdateStatus  # noqa: PLC0415
+    from teatree.cli.update import RepoUpdate, UpdateStatus  # noqa: PLC0415 — deferred: keeps CLI startup light
 
     preview = shas[:_SUBJECT_PREVIEW_LIMIT]
     listed = ", ".join(sha[:7] if len(sha) >= _SHORT_SHA_LEN else sha for sha in preview)

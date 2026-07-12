@@ -34,7 +34,7 @@ def list_command(
     """
     ensure_django()
 
-    from django.core.management import call_command  # noqa: PLC0415
+    from django.core.management import call_command  # noqa: PLC0415 — deferred: Django import at call time
 
     kwargs: dict[str, bool] = {}
     if json_output:
@@ -55,7 +55,7 @@ def render_command(
     """
     ensure_django()
 
-    from django.core.management import call_command  # noqa: PLC0415
+    from django.core.management import call_command  # noqa: PLC0415 — deferred: Django import at call time
 
     call_command("prompts_render", name, arg=arg or [])
 

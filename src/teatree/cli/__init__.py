@@ -134,7 +134,7 @@ def _maybe_show_update_notice() -> None:
     if _machine_readable_invocation():
         return
     try:
-        from teatree.config import check_for_updates  # noqa: PLC0415
+        from teatree.config import check_for_updates  # noqa: PLC0415 — deferred: keeps CLI startup light
 
         message = check_for_updates()
         if message:
@@ -153,7 +153,7 @@ def _find_project_root() -> Path:
 
 def _find_overlay_project() -> Path:
     """Find the active overlay project root."""
-    from teatree.config import discover_active_overlay  # noqa: PLC0415
+    from teatree.config import discover_active_overlay  # noqa: PLC0415 — deferred: keeps CLI startup light
 
     active = discover_active_overlay()
     if active and active.project_path:
@@ -219,9 +219,9 @@ def _collapse_to_canonical(entries: "list[OverlayEntry]") -> "list[OverlayEntry]
     the canonical installed overlay), inheriting a ``project_path`` from its
     bare TOML sibling when it lacks one.
     """
-    from dataclasses import replace  # noqa: PLC0415
+    from dataclasses import replace  # noqa: PLC0415 — deferred: loaded only when this command runs
 
-    from teatree.config import OverlayEntry  # noqa: PLC0415
+    from teatree.config import OverlayEntry  # noqa: PLC0415 — deferred: keeps CLI startup light
 
     by_key: dict[str, OverlayEntry] = {}
     for entry in entries:
@@ -245,7 +245,11 @@ def register_overlay_commands(allowlist: set[str] | None = None) -> None:
     Pass *allowlist* of entry names (e.g. ``{"t3-teatree"}``) to register a subset —
     used by the CLI reference generator to keep generated docs deterministic.
     """
-    from teatree.config import OverlayEntry, discover_active_overlay, discover_overlays  # noqa: PLC0415
+    from teatree.config import (  # noqa: PLC0415 — deferred: keeps CLI startup light
+        OverlayEntry,
+        discover_active_overlay,
+        discover_overlays,
+    )
 
     active = discover_active_overlay()
     installed = discover_overlays()
@@ -295,7 +299,7 @@ def _build_skill_command_registry() -> tuple[set[str], set[str]]:
     ``teatree.cli.eval`` cannot import ``teatree.cli`` (cycle), so the parent
     injects this builder via ``register_command_registry_provider``.
     """
-    from teatree.cli.command_tree import command_groups, command_paths  # noqa: PLC0415
+    from teatree.cli.command_tree import command_groups, command_paths  # noqa: PLC0415 — deferred: import cycle
 
     teatree_app = _assemble_teatree_app()
     return command_paths(teatree_app), command_groups(teatree_app)
@@ -347,9 +351,9 @@ def _reinstall_editable_if_needed() -> None:
         if repo:
             DoctorService.make_editable("teatree", repo)
 
-    from importlib.metadata import packages_distributions  # noqa: PLC0415
+    from importlib.metadata import packages_distributions  # noqa: PLC0415 — deferred: loaded on this path
 
-    from teatree.core.overlay_loader import get_all_overlays  # noqa: PLC0415
+    from teatree.core.overlay_loader import get_all_overlays  # noqa: PLC0415 — deferred: keeps CLI startup light
 
     dist_map = packages_distributions()
     for overlay_inst in get_all_overlays().values():

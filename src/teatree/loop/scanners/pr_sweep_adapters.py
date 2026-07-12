@@ -200,7 +200,7 @@ class GhPrApiClient:
         precondition failure (head moved, policy refusal, transient exhaustion)
         returns ``(False, "")`` to preserve the caller's ``(ok, sha)`` contract.
         """
-        from teatree.core.merge import MergePreconditionError, execute_bound_merge  # noqa: PLC0415
+        from teatree.core.merge import MergePreconditionError, execute_bound_merge  # noqa: PLC0415 — tick-time import
 
         try:
             merged_sha = execute_bound_merge(ref=PrRef(slug=slug, pr_id=pr_id), expected_head_oid=expected_head_oid)
@@ -225,7 +225,7 @@ class CallCommandMergeKeystone:
     loop_identity: str = "merge-loop"
 
     def merge_clear(self, *, clear_id: int) -> tuple[bool, str, str, str]:
-        from django.core.management import call_command  # noqa: PLC0415
+        from django.core.management import call_command  # noqa: PLC0415 — deferred: Django import at call time
 
         result = call_command("ticket", "merge", str(clear_id), loop_identity=self.loop_identity)
         if not isinstance(result, dict):
@@ -244,7 +244,7 @@ class AutoReviewTaskDispatcher:
     def enqueue(  # noqa: PLR6301 — instance method to satisfy the injected ReviewDispatcher Protocol (mirrors sibling port adapters).
         self, *, slug: str, pr_id: int, head_sha: str, pr_url: str, overlay: str
     ) -> bool:
-        from teatree.core.models.auto_review_dispatch import AutoReviewDispatch  # noqa: PLC0415
+        from teatree.core.models.auto_review_dispatch import AutoReviewDispatch  # noqa: PLC0415 — lazy ORM import
 
         row = AutoReviewDispatch.enqueue(
             slug=slug,

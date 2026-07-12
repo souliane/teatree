@@ -268,7 +268,7 @@ def _extract_frames(ffmpeg_path: str, video_path: Path, out: Path, *, vf: str, f
     return frames
 
 
-def _print_report(  # noqa: PLR0913
+def _print_report(  # noqa: PLR0913 — wide signature by design: each parameter is a distinct required input
     *,
     video_path: Path,
     duration: float,
@@ -313,7 +313,7 @@ def _print_report(  # noqa: PLR0913
 
 
 @app.command()
-def main(  # noqa: PLR0913, PLR0917
+def main(  # noqa: PLR0913, PLR0917 — wide signature by design: each parameter is a distinct required input
     source: str = typer.Argument(help="Video file path or URL (GitLab/GitHub upload URLs are fetched authenticated)"),
     interval: float = typer.Option(
         0.0,

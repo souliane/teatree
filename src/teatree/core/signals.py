@@ -37,14 +37,14 @@ _WORKTREE_TRANSITION_TASKS: dict[str, str] = {
 
 
 def _log_ticket_transition(
-    sender: type,  # noqa: ARG001
+    sender: type,  # noqa: ARG001 — Django signal receiver signature requires sender even when unused
     instance: Ticket,
     name: str,
     source: str,
     target: str,
     **_kwargs: object,
 ) -> None:
-    from teatree.core.models.transition import TicketTransition  # noqa: PLC0415
+    from teatree.core.models.transition import TicketTransition  # noqa: PLC0415 — deferred: ORM/app-registry
 
     try:
         session = instance.sessions.order_by("-started_at").first()  # ty: ignore[unresolved-attribute]
@@ -156,7 +156,7 @@ def _add_approval_reaction_on_transition(
     # reaction → review → approve cycle. Best-effort: a missing row or DB
     # outage must never block the FSM transition.
     try:
-        from teatree.core.models import ReviewAssignment  # noqa: PLC0415
+        from teatree.core.models import ReviewAssignment  # noqa: PLC0415 — deferred: ORM import needs the app registry
 
         ReviewAssignment.approve_for_mr(mr_url=instance.url, overlay=instance.overlay)
     except Exception:
@@ -180,7 +180,7 @@ def _runs_in_session(instance: Task) -> bool:
 
 
 def _auto_enqueue_headless_task(
-    sender: type,  # noqa: ARG001
+    sender: type,  # noqa: ARG001 — Django signal receiver signature requires sender even when unused
     instance: Task,
     **_kwargs: object,
 ) -> None:
@@ -208,7 +208,7 @@ def _auto_enqueue_headless_task(
     if not instance.ticket.has_dispatchable_overlay():
         logger.warning("Skipping auto-enqueue of task %s: unknown overlay %r", instance.pk, instance.ticket.overlay)
         return
-    from teatree.core.tasks import execute_headless_task  # noqa: PLC0415
+    from teatree.core.tasks import execute_headless_task  # noqa: PLC0415 — deferred: call-time import, kept lazy
 
     try:
         execute_headless_task.enqueue(int(instance.pk), instance.phase)
@@ -218,7 +218,7 @@ def _auto_enqueue_headless_task(
 
 
 def _enqueue_ticket_transition_task(
-    sender: type,  # noqa: ARG001
+    sender: type,  # noqa: ARG001 — Django signal receiver signature requires sender even when unused
     instance: Ticket,
     name: str,
     **_kwargs: object,
@@ -234,7 +234,7 @@ def _enqueue_ticket_transition_task(
     executor_name = _TICKET_TRANSITION_TASKS.get(name)
     if executor_name is None:
         return
-    from teatree.core import tasks as tasks_mod  # noqa: PLC0415
+    from teatree.core import tasks as tasks_mod  # noqa: PLC0415 — deferred: call-time import, kept lazy
 
     executor = getattr(tasks_mod, executor_name)
     ticket_pk = int(instance.pk)
@@ -242,7 +242,7 @@ def _enqueue_ticket_transition_task(
 
 
 def _enqueue_worktree_transition_task(
-    sender: type,  # noqa: ARG001
+    sender: type,  # noqa: ARG001 — Django signal receiver signature requires sender even when unused
     instance: Worktree,
     name: str,
     **_kwargs: object,
@@ -256,7 +256,7 @@ def _enqueue_worktree_transition_task(
     executor_name = _WORKTREE_TRANSITION_TASKS.get(name)
     if executor_name is None:
         return
-    from teatree.core.worktree import worktree_tasks as worktree_tasks_mod  # noqa: PLC0415
+    from teatree.core.worktree import worktree_tasks as worktree_tasks_mod  # noqa: PLC0415 — deferred: call-time import
 
     executor = getattr(worktree_tasks_mod, executor_name)
     worktree_pk = int(instance.pk)
@@ -264,7 +264,7 @@ def _enqueue_worktree_transition_task(
 
 
 def _enqueue_worktree_teardown_task(
-    sender: type,  # noqa: ARG001
+    sender: type,  # noqa: ARG001 — Django signal receiver signature requires sender even when unused
     instance: Worktree,
     name: str,
     **_kwargs: object,
@@ -279,7 +279,7 @@ def _enqueue_worktree_teardown_task(
     """
     if name != "teardown":
         return
-    from teatree.core.worktree import worktree_tasks as worktree_tasks_mod  # noqa: PLC0415
+    from teatree.core.worktree import worktree_tasks as worktree_tasks_mod  # noqa: PLC0415 — deferred: call-time import
 
     worktree_pk = int(instance.pk)
     snapshot_db_name, snapshot_extra = instance.teardown_snapshot

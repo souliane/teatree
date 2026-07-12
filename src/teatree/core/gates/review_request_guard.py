@@ -147,7 +147,7 @@ def _live_matches(
     ``ok`` is False on any failed/timed-out/not-ok read so the caller
     fails safe to suppression.
     """
-    from teatree.core.backend_registry import ReviewSearchSpec, get_backend_provider  # noqa: PLC0415
+    from teatree.core.backend_registry import ReviewSearchSpec, get_backend_provider  # noqa: PLC0415 — lazy import
 
     right_now = opts.now or timezone.now()
     oldest = right_now - opts.recency_window
@@ -323,10 +323,10 @@ def resolve_guard_target(channel_id: str = "", channel_name: str = "") -> GuardT
     channel / token is configured (the caller treats that as "cannot
     dedup live → fall back to the DB-only behaviour").
     """
-    from django.core.exceptions import ImproperlyConfigured  # noqa: PLC0415
+    from django.core.exceptions import ImproperlyConfigured  # noqa: PLC0415 — deferred: Django import at call time
 
-    from teatree.core.backend_factory import messaging_from_overlay  # noqa: PLC0415
-    from teatree.core.overlay_loader import get_overlay  # noqa: PLC0415
+    from teatree.core.backend_factory import messaging_from_overlay  # noqa: PLC0415 — deferred: call-time import
+    from teatree.core.overlay_loader import get_overlay  # noqa: PLC0415 — deferred: call-time import, kept lazy
 
     try:
         overlay = get_overlay()
@@ -352,10 +352,10 @@ def resolve_guard_targets() -> list[GuardTarget]:
     list when no channels resolve to a usable target — callers fall back
     to the legacy single-channel behaviour.
     """
-    from django.core.exceptions import ImproperlyConfigured  # noqa: PLC0415
+    from django.core.exceptions import ImproperlyConfigured  # noqa: PLC0415 — deferred: Django import at call time
 
-    from teatree.core.backend_factory import messaging_from_overlay  # noqa: PLC0415
-    from teatree.core.overlay_loader import get_overlay  # noqa: PLC0415
+    from teatree.core.backend_factory import messaging_from_overlay  # noqa: PLC0415 — deferred: call-time import
+    from teatree.core.overlay_loader import get_overlay  # noqa: PLC0415 — deferred: call-time import, kept lazy
 
     try:
         overlay = get_overlay()

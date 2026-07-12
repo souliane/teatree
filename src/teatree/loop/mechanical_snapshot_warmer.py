@@ -24,7 +24,9 @@ def refresh_snapshot(payload: ActionPayload) -> None:
     try:
         # Deferred: the snapshot warmer reaches the DB engine — kept off this handler
         # module's import path and inside the fault-isolating try (best-effort tick).
-        from teatree.utils.django_db.snapshot_warmer import refresh_reference_snapshot  # noqa: PLC0415
+        from teatree.utils.django_db.snapshot_warmer import (  # noqa: PLC0415 — deferred: loaded at tick time, not import
+            refresh_reference_snapshot,
+        )
 
         ok = refresh_reference_snapshot(cfg)
     except Exception:

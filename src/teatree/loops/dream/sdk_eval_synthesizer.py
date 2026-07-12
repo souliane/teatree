@@ -102,8 +102,8 @@ def sdk_spec_synthesizer(candidate: Mapping[str, object], transcript_slice: str)
     caller DROPS the candidate (never a staged unproven spec) rather than reporting a fake
     success.
     """
-    import asyncio  # noqa: PLC0415
-    import shutil  # noqa: PLC0415
+    import asyncio  # noqa: PLC0415 — deferred: loaded only on this code path
+    import shutil  # noqa: PLC0415 — deferred: loaded only on this code path
 
     if shutil.which("claude") is None:
         msg = "claude is not installed — the dream eval synthesizer cannot run"
@@ -138,7 +138,7 @@ def _synth_options() -> "ClaudeAgentOptions":
 
 
 async def _collect_synth_turn(prompt: str) -> str:
-    import asyncio  # noqa: PLC0415
+    import asyncio  # noqa: PLC0415 — deferred: loaded only on this code path
 
     from claude_agent_sdk import (  # noqa: PLC0415 — deferred: optional heavy SDK dep, imported only at turn time
         AssistantMessage,

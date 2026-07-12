@@ -269,7 +269,7 @@ def _int_field(data: RawAPIDict, *names: str) -> int:
 
 def _ticket_model() -> "TicketModel | None":
     try:
-        from django.apps import apps  # noqa: PLC0415
+        from django.apps import apps  # noqa: PLC0415 — deferred: app registry read at call time
 
         return cast("TicketModel", apps.get_model("core", "Ticket"))
     except Exception:  # noqa: BLE001 — a probe failure must never break the tick; degrade to no signal
@@ -298,7 +298,7 @@ def _already_emitted_at(url: str, head_sha: str) -> bool:
         return False
     # Reach via the validator (mirrors ``Ticket._extra`` private accessor),
     # avoiding the SLF001 violation while keeping the JSON-key contract.
-    from teatree.core.models.types import validated_ticket_extra  # noqa: PLC0415
+    from teatree.core.models.types import validated_ticket_extra  # noqa: PLC0415 — deferred: ORM/app-registry
 
     return validated_ticket_extra(ticket.extra).get("last_approval_sha", "") == head_sha
 

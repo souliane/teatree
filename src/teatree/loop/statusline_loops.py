@@ -41,7 +41,7 @@ def availability_segment(resolution: "Resolution") -> str:
     ``Mode`` enum (auto/interactive) and other ``mode=`` usages, which the bare
     ``mode=away`` form collided with. An unrecognised mode renders nothing.
     """
-    from teatree.core.availability import _VALID_MODES  # noqa: PLC0415
+    from teatree.core.availability import _VALID_MODES  # noqa: PLC0415 — deferred: loaded at tick time, not import
 
     if resolution.mode not in _VALID_MODES:
         return ""
@@ -117,8 +117,8 @@ def _live_loop_leases() -> list[tuple[str, datetime | None]]:
     lease row that has never recorded an acquire (no tick yet); the
     renderer then drops the per-loop countdown for that loop.
     """
-    from django.apps import apps  # noqa: PLC0415
-    from django.utils import timezone  # noqa: PLC0415
+    from django.apps import apps  # noqa: PLC0415 — deferred: app registry read at call time
+    from django.utils import timezone  # noqa: PLC0415 — deferred: Django import at call time
 
     lease_model = apps.get_model("core", "LoopLease")
     rows = lease_model.objects.filter(lease_expires_at__gt=timezone.now()).only("name", "acquired_at").order_by("name")
@@ -174,7 +174,7 @@ def set_mini_loop_schedules_reader(reader: MiniLoopSchedulesReader | None) -> No
     allowed to bridge :mod:`teatree.loops` into the statusline without
     violating the tach module graph.
     """
-    global _mini_loop_schedules_reader  # noqa: PLW0603
+    global _mini_loop_schedules_reader  # noqa: PLW0603 — module-level reader rebound once via this single sanctioned setter
     _mini_loop_schedules_reader = reader or _empty_mini_loop_schedules
 
 
@@ -251,7 +251,7 @@ def _cadence_seconds() -> int:
     full config layer; production reads :func:`teatree.config.cadence_seconds`.
     Doubles as the fallback cadence for loops with no dedicated reader.
     """
-    from teatree.config import cadence_seconds  # noqa: PLC0415
+    from teatree.config import cadence_seconds  # noqa: PLC0415 — deferred: loaded at tick time, not import
 
     return cadence_seconds()
 
@@ -388,7 +388,7 @@ def _lease_recency_color(name: str, acquired_at: datetime | None) -> str:
 
 def _seconds_until(next_fire_at: datetime) -> float:
     """Return seconds from now until *next_fire_at* (negative once overdue)."""
-    from django.utils import timezone  # noqa: PLC0415
+    from django.utils import timezone  # noqa: PLC0415 — deferred: Django import at call time
 
     return (next_fire_at - timezone.now()).total_seconds()
 
@@ -473,7 +473,7 @@ def _availability_segment() -> str:
     availability config never blanks the loop line.
     """
     try:
-        from teatree.core.availability import resolve_mode  # noqa: PLC0415
+        from teatree.core.availability import resolve_mode  # noqa: PLC0415 — deferred: loaded at tick time, not import
 
         return availability_segment(resolve_mode())
     except Exception:  # noqa: BLE001 — rendering is best-effort; a failure degrades to empty
@@ -543,7 +543,7 @@ def _relative_minutes(next_fire_at: datetime) -> str:
     time so the value counts down across successive renders rather than
     freezing on a cached string.
     """
-    from django.utils import timezone  # noqa: PLC0415
+    from django.utils import timezone  # noqa: PLC0415 — deferred: Django import at call time
 
     delta_seconds = int((next_fire_at - timezone.now()).total_seconds())
     if delta_seconds <= 0:

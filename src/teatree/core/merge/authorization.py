@@ -64,7 +64,7 @@ def _assert_clear_actionable(clear: object, *, slug: str, pr_id: int) -> "MergeC
     boundary check the deeper guards then rely on (they take the narrowed type).
     Raises :class:`MergePreconditionError` when no actionable CLEAR backs the PR.
     """
-    from teatree.core.models import MergeClear  # noqa: PLC0415
+    from teatree.core.models import MergeClear  # noqa: PLC0415 — deferred: ORM import needs the app registry
 
     if not isinstance(clear, MergeClear):
         msg = f"no MergeClear row for {slug}#{pr_id} — refusing to merge (§17.4.3 step 1)"
@@ -122,7 +122,7 @@ def _assert_reviewer_independent(clear: "MergeClear", *, executing_loop_identity
     the equality check, so the issue-time and merge-time gates re-check identically
     and cannot drift apart (codex #1282 finding 1 / #1283).
     """
-    from teatree.core.models.merge_clear import is_non_reviewer_role  # noqa: PLC0415
+    from teatree.core.models.merge_clear import is_non_reviewer_role  # noqa: PLC0415 — deferred: ORM/app-registry
 
     if clear.reviewer_identity.strip() == executing_loop_identity.strip():
         msg = (
@@ -256,7 +256,7 @@ def _resolve_clear_overlay_name(clear: "MergeClear", *, resolved_slug: str = "")
 
     Returns ``""`` when no source resolves an overlay (the fail-closed default).
     """
-    from teatree.core.overlay_loader import infer_overlay_for_url  # noqa: PLC0415
+    from teatree.core.overlay_loader import infer_overlay_for_url  # noqa: PLC0415 — deferred: call-time import
 
     from_stored = infer_overlay_for_url(str(getattr(clear, "slug", "") or "")).strip()
     if from_stored:
@@ -288,7 +288,7 @@ def _overlay_grants_standing_substrate_signoff(clear: "MergeClear", *, resolved_
     this CLEAR (threaded from :func:`assert_merge_preconditions`'s ``slug``
     kwarg) — see :func:`_resolve_clear_overlay_name`.
     """
-    from teatree.config import Autonomy, get_effective_settings  # noqa: PLC0415
+    from teatree.config import Autonomy, get_effective_settings  # noqa: PLC0415 — deferred: call-time import, kept lazy
 
     # Substrate is excluded from the standing grant entirely (the §3.2 gate):
     # substrate PINGS-and-HOLDS for the owner, so the standing grant never removes
@@ -319,7 +319,7 @@ def _assert_anti_vacuity(clear: "MergeClear", head_sha: str) -> None:
     single re-escalation path surfaces it (the loop never self-issues a
     replacement CLEAR).
     """
-    from teatree.core.gates.anti_vacuity_gate import (  # noqa: PLC0415
+    from teatree.core.gates.anti_vacuity_gate import (  # noqa: PLC0415 — deferred: call-time import, kept lazy
         AntiVacuityAttestationError,
         check_anti_vacuity_attestation,
     )
@@ -345,7 +345,10 @@ def _assert_rubric_satisfied(clear: "MergeClear", head_sha: str) -> None:
     just-verified live head SHA so a force-push invalidates the CLEAR, the
     attestation, and the rubric grade together.
     """
-    from teatree.core.gates.rubric_gate import RubricNotSatisfiedError, check_rubric_satisfied  # noqa: PLC0415
+    from teatree.core.gates.rubric_gate import (  # noqa: PLC0415 — deferred: call-time import, kept lazy
+        RubricNotSatisfiedError,
+        check_rubric_satisfied,
+    )
 
     ticket = clear.ticket
     if ticket is None:

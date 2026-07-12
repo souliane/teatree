@@ -128,7 +128,7 @@ class PullMainCloneScanner:
         # Import inside the method so the scanner module imports cleanly even
         # when Django app loading hasn't run yet (the wiring layer imports
         # this class at module load time).
-        from teatree.core.models.pull_main_clone_marker import PullMainCloneMarker  # noqa: PLC0415
+        from teatree.core.models.pull_main_clone_marker import PullMainCloneMarker  # noqa: PLC0415 — lazy ORM import
 
         marker = PullMainCloneMarker.objects.filter(repo_label=label).first()
         if marker is None:
@@ -139,7 +139,7 @@ class PullMainCloneScanner:
 
 def _record_marker(*, label: str, path: Path, outcome: _PullOutcome) -> _PullOutcome:
     """Upsert the :class:`PullMainCloneMarker` row + return *outcome*."""
-    from teatree.core.models.pull_main_clone_marker import PullMainCloneMarker  # noqa: PLC0415
+    from teatree.core.models.pull_main_clone_marker import PullMainCloneMarker  # noqa: PLC0415 — lazy ORM import
 
     sha = outcome.new_sha or outcome.old_sha
     try:
