@@ -10,7 +10,7 @@ import datetime as dt
 import django.test
 from django.utils import timezone
 
-from teatree.core.availability import MODE_AUTONOMOUS_AWAY, MODE_AWAY, MODE_PRESENT
+from teatree.core import availability
 from teatree.core.models import PIN_MODES, ConfigSetting, LoopPreset, LoopPresetOverride
 
 
@@ -18,9 +18,11 @@ class TestPinModesCanonical(django.test.SimpleTestCase):
     """LP-5: ONE canonical ``PIN_MODES`` drives pin validation (was triplicated + a dead copy)."""
 
     def test_pin_modes_are_the_availability_modes(self) -> None:
-        # The pin set IS the availability-mode set; asserting equality documents
-        # the shared meaning the (layer-separated) constants must never drift from.
-        assert frozenset({MODE_PRESENT, MODE_AWAY, MODE_AUTONOMOUS_AWAY}) == PIN_MODES
+        # The pin set IS the availability-mode set; pinning to the canonical
+        # ``VALID_MODES`` (not a hand-built copy) means a NEW availability mode
+        # turns this red until the pin set adopts it — the two layer-separated
+        # constants can never silently drift.
+        assert PIN_MODES == availability.VALID_MODES
 
     def test_model_pin_validation_accepts_exactly_the_canonical_set(self) -> None:
         for mode in PIN_MODES:

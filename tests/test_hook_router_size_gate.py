@@ -23,7 +23,9 @@ _ROUTER = pathlib.Path(__file__).resolve().parent.parent / "hooks" / "scripts" /
 # lowered, never raised. Measured the same way check_module_health._count_loc does.
 # Lowered by U17, which extracted the classifier-denial handlers into the
 # hooks/scripts/handlers/ per-domain package behind the routing table.
-_CEILING_LOC = 4545
+# Lowered by #81 step 1, which extracted the shared forge-API detection
+# (effective-method + endpoint regexes/classifiers) into hooks/scripts/forge_api_detect.py.
+_CEILING_LOC = 4515
 
 
 def _count_loc(text: str) -> int:

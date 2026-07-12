@@ -27,7 +27,7 @@ from teatree.core.models.config_setting import ConfigSetting
 logger = logging.getLogger(__name__)
 
 # The canonical availability-pin set — the modes a preset may pin. It is exactly
-# the availability-mode set (``teatree.core.availability._VALID_MODES``); the two
+# the availability-mode set (``teatree.core.availability.VALID_MODES``); the two
 # cannot share the constant because ``core.models`` is a domain leaf that must not
 # import ``core.availability`` (a backwards tach edge), so equality is asserted by
 # ``tests/teatree_core/models/test_loop_preset.py`` instead. Referenced by the

@@ -14,11 +14,14 @@ of candidate ``pass`` entries from the config store (keys
 global). :class:`PassPathSelector` then routes to the first account that is not
 exhausted:
 
-*   An empty list means "no routing configured" — the selector returns ``None``. The
-    metered API-key credential then keeps its built-in ``pass_path`` (the pre-routing
-    default; the HOT path for metered/eval consumers). The subscription OAuth credential
-    has NO built-in default, so :func:`resolve_subscription_credential` instead fails loud
-    (unless ``CLAUDE_CODE_OAUTH_TOKEN`` is set in the env) — it never lands on a dead entry.
+*   An empty list for the REQUESTED scope falls back to the cross-scope union, so a bare
+    eval shell (no active overlay → the global scope) still routes to an overlay-scoped
+    account without a manual env export. Only when the union is empty (nothing configured
+    in ANY scope) does the selector return ``None``. The metered API-key credential then
+    keeps its built-in ``pass_path`` (the pre-routing default; the HOT path for
+    metered/eval consumers). The subscription OAuth credential has NO built-in default, so
+    :func:`resolve_subscription_credential` instead fails loud (unless
+    ``CLAUDE_CODE_OAUTH_TOKEN`` is set in the env) — it never lands on a dead entry.
 *   A sticky pick whose health-cache row is fresh and non-exhausted is reused with NO
     probe — the hot path reads the CACHED table only, never the network.
 *   On a cache miss / expiry each candidate is probed once (the reader), its health
@@ -33,6 +36,7 @@ parsed health are persisted.
 """
 
 import datetime as dt
+import logging
 import os
 from enum import StrEnum
 from typing import TYPE_CHECKING
@@ -61,6 +65,8 @@ from teatree.utils.eval_container import in_container
 
 if TYPE_CHECKING:
     from teatree.config.agent_enums import EvalCredential
+
+logger = logging.getLogger(__name__)
 
 
 class TokenKind(StrEnum):
@@ -109,12 +115,20 @@ class PassPathSelector:
 
         Reuses a fresh, non-exhausted sticky pick with no probe; else selects the first
         non-exhausted account from the overlay's list, then falls back across overlays.
+        When the REQUESTED scope has no routing configured, falls back to the cross-scope
+        union — a bare eval shell (no active overlay → :data:`GLOBAL_SCOPE`) still routes
+        to an overlay-scoped account without a manual env export. An empty union (nothing
+        configured anywhere) returns ``None`` so the caller fails loud downstream.
         Raises :class:`AllTokensExhaustedError` when a configured list has no usable
         account anywhere.
         """
         configured = self._configured_paths(kind, scope)
+        fell_back_across_scopes = False
         if not configured:
-            return None
+            configured = self._all_configured_paths(kind)
+            if not configured:
+                return None
+            fell_back_across_scopes = True
         now = timezone.now()
 
         sticky = AnthropicActivePick.objects.pick_for(kind.value, scope)
@@ -129,6 +143,16 @@ class PassPathSelector:
             raise AllTokensExhaustedError(self._all_exhausted_message(kind))
 
         AnthropicActivePick.objects.set_pick(kind.value, scope, chosen)
+        if fell_back_across_scopes:
+            # Make the auto-resolution visible: the requested scope had no routing, so a
+            # cross-scope account was selected and pinned. The pass_path is a store path
+            # (already persisted), never the token value.
+            logger.info(
+                "credential routing: no %s account configured for requested scope %r; auto-resolved cross-scope to %s",
+                kind.value,
+                scope,
+                chosen,
+            )
         return chosen
 
     @staticmethod
@@ -205,7 +229,11 @@ class PassPathSelector:
         rows = AnthropicTokenUsage.objects.filter(pass_path__in=candidates)
         resets = [row.earliest_reset for row in rows if row.is_exhausted and row.earliest_reset is not None]
         when = f" — earliest reset {min(resets).isoformat()}" if resets else ""
-        return f"all configured Anthropic {kind.value} accounts are exhausted{when}"
+        # Name the candidate accounts so the operator knows exactly which ones to
+        # refill/check. A ``pass_path`` is a store path (already persisted, logged in
+        # ``select``), never the token value — safe to surface in the loud error.
+        accounts = f" (accounts: {', '.join(candidates)})" if candidates else ""
+        return f"all configured Anthropic {kind.value} accounts are exhausted{accounts}{when}"
 
 
 def reading_from(snapshot: RateLimitSnapshot) -> TokenHealthReading:
@@ -257,8 +285,10 @@ _SELECTOR = PassPathSelector()
 def resolve_subscription_credential(*, scope: str = GLOBAL_SCOPE) -> AnthropicSubscriptionCredential:
     """The subscription OAuth credential, routed to its selected account's ``pass`` entry.
 
-    The subscription credential has NO built-in ``pass`` path. When the routing list is
-    empty for *scope* (overlay then global) the selector returns no override, so the
+    The subscription credential has NO built-in ``pass`` path. The selector reads *scope*
+    (overlay then global) and, when that is empty, falls back to the cross-scope union, so
+    an overlay-scoped account routes even for a global-scope request. Only when NO OAuth
+    account is configured in any scope does the selector return no override, so the
     returned credential resolves ONLY from ``CLAUDE_CODE_OAUTH_TOKEN``; if that too is
     absent, :meth:`~teatree.llm.credentials.Credential.resolve` fails loud with a
     :class:`CredentialError` naming ``anthropic_oauth_pass_paths`` AND the empty scope —
@@ -282,8 +312,13 @@ def resolve_subscription_credential(*, scope: str = GLOBAL_SCOPE) -> AnthropicSu
 
 
 def _empty_routing_note(credential_label: str, scope: str) -> str:
-    """A failure-message note naming the scope whose routing list is empty."""
-    where = "globally" if scope == GLOBAL_SCOPE else f"for scope {scope!r} (nor globally)"
+    """A failure-message note: nothing is configured in *scope* nor in any other scope.
+
+    Reached only when the cross-scope union is empty (the selector already tried the
+    fallback), so a global-scope request names "any scope" and an overlay-scope request
+    names its own scope plus "nor in any other scope".
+    """
+    where = "in any scope" if scope == GLOBAL_SCOPE else f"for scope {scope!r} (nor in any other scope)"
     return f"(no {credential_label} account is configured {where})"
 
 
@@ -335,7 +370,10 @@ def resolve_eval_credential(*, kind: "EvalCredential | None" = None, scope: str 
     configured at the overlay scope — defaulting to :data:`GLOBAL_SCOPE` here made a
     bare eval abort with :class:`~teatree.llm.credentials.CredentialError` whenever the
     routing lived only at the overlay scope. An explicit *scope* (including
-    :data:`GLOBAL_SCOPE`) overrides the active-overlay default.
+    :data:`GLOBAL_SCOPE`) overrides the active-overlay default. Even when ``scope``
+    resolves to :data:`GLOBAL_SCOPE` (no active overlay), the selector's cross-scope union
+    fallback still finds an overlay-scoped account — so a bare ``t3 eval`` shell routes
+    without a manual ``CLAUDE_CODE_OAUTH_TOKEN`` export.
 
     :attr:`EvalCredential.SUBSCRIPTION_OAUTH` → :func:`resolve_subscription_credential`
     (per-account OAuth routing via ``anthropic_oauth_pass_paths`` for the same

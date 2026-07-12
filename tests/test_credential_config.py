@@ -22,6 +22,7 @@ from django.utils import timezone
 from teatree.config import EvalCredential
 from teatree.core.models import AnthropicActivePick, AnthropicTokenUsage, ConfigSetting
 from teatree.core.models.anthropic_token_usage import HEALTH_TTL, REJECTED_STATUS, TokenHealthReading
+from teatree.core.models.config_setting import GLOBAL_SCOPE
 from teatree.credential_config import (
     AllTokensExhaustedError,
     PassPathSelector,
@@ -207,6 +208,62 @@ class TestSelectorRouting(TestCase):
         message = str(caught.value)
         assert "exhausted" in message
         assert soon.isoformat() in message, "the loud error names the soonest an account frees up"
+
+
+class TestSelectorCrossScopeFallback(TestCase):
+    """A requested scope with no routing falls back to the cross-scope union.
+
+    The bug: ``anthropic_oauth_pass_paths`` rows configured only at overlay scopes and a
+    bare ``select(OAUTH, GLOBAL_SCOPE)`` (no active overlay) short-circuited ``None`` at
+    the empty-requested-scope check, never reaching the cross-overlay routing — so a bare
+    eval shell aborted even though a healthy account was configured. The fix falls back to
+    the union while PRESERVING fail-loud-on-nothing-anywhere and never picking an
+    exhausted account.
+    """
+
+    def test_empty_requested_scope_routes_the_overlay_account_and_pins_it_at_the_requested_scope(self) -> None:
+        # Overlay-scoped row only; the global-scope request must still find it.
+        ConfigSetting.objects.set_value(_OAUTH_SETTING, ["anthropic/overlay/oauth"], scope="some-overlay")
+        reader = _FakeReader({"anthropic/overlay/oauth": _snapshot()})
+        with _pass_echoes_path():
+            chosen = PassPathSelector(reader=reader).select(TokenKind.OAUTH, scope=GLOBAL_SCOPE)
+        assert chosen == "anthropic/overlay/oauth"
+        assert AnthropicActivePick.objects.pick_for("oauth", GLOBAL_SCOPE) == "anthropic/overlay/oauth", (
+            "the cross-scope pick is pinned sticky under the REQUESTED (global) scope"
+        )
+
+    def test_cross_scope_union_skips_an_exhausted_member_for_the_next_healthy_one(self) -> None:
+        ConfigSetting.objects.set_value(_OAUTH_SETTING, ["anthropic/spent/oauth"], scope="overlay-a")
+        ConfigSetting.objects.set_value(_OAUTH_SETTING, ["anthropic/healthy/oauth"], scope="overlay-b")
+        reader = _FakeReader(
+            {
+                "anthropic/spent/oauth": _snapshot(u5=0.97, reset=timezone.now() + dt.timedelta(hours=2)),
+                "anthropic/healthy/oauth": _snapshot(),
+            }
+        )
+        with _pass_echoes_path():
+            chosen = PassPathSelector(reader=reader).select(TokenKind.OAUTH, scope=GLOBAL_SCOPE)
+        assert chosen == "anthropic/healthy/oauth", "an exhausted union member is skipped for the next healthy account"
+
+    def test_empty_union_returns_none_without_probing(self) -> None:
+        # Nothing configured in ANY scope → fail-loud contract preserved: no override, no probe.
+        reader = _FakeReader({})
+        with _pass_echoes_path():
+            assert PassPathSelector(reader=reader).select(TokenKind.OAUTH, scope=GLOBAL_SCOPE) is None
+        assert reader.calls == [], "an all-empty union must not probe"
+
+    def test_all_exhausted_union_raises_all_tokens_exhausted(self) -> None:
+        soon = timezone.now() + dt.timedelta(hours=1)
+        ConfigSetting.objects.set_value(_OAUTH_SETTING, ["anthropic/a/oauth"], scope="overlay-a")
+        ConfigSetting.objects.set_value(_OAUTH_SETTING, ["anthropic/b/oauth"], scope="overlay-b")
+        reader = _FakeReader(
+            {
+                "anthropic/a/oauth": _snapshot(u5=0.97, reset=soon),
+                "anthropic/b/oauth": _snapshot(u5=0.98, reset=soon + dt.timedelta(hours=1)),
+            }
+        )
+        with _pass_echoes_path(), pytest.raises(AllTokensExhaustedError):
+            PassPathSelector(reader=reader).select(TokenKind.OAUTH, scope=GLOBAL_SCOPE)
 
 
 class TestSelectorSkipsUnusableCandidates(TestCase):
@@ -507,3 +564,29 @@ class TestResolveEvalCredentialUsesActiveOverlayScope(TestCase):
         ):
             resolved = resolve_eval_credential().resolve()
         assert resolved == "oauth-token-for::anthropic/global/oauth"
+
+    def test_no_active_overlay_auto_resolves_the_overlay_only_account(self) -> None:
+        # The headline fix: NO active overlay + routing configured ONLY at an overlay scope
+        # + an EMPTY global list. A bare eval must auto-resolve the overlay-scoped account
+        # via the cross-scope fallback — no manual CLAUDE_CODE_OAUTH_TOKEN export.
+        ConfigSetting.objects.set_value(_OAUTH_SETTING, ["anthropic/t3-teatree/oauth"], scope="t3-teatree")
+        with (
+            patch.dict(os.environ, {}, clear=True),  # no T3_OVERLAY_NAME → the request scope is GLOBAL
+            patch("teatree.llm.credentials.read_pass", side_effect=lambda path: f"oauth-token-for::{path}"),
+            patch("teatree.credential_config.read_rate_limits", return_value=_snapshot()),
+        ):
+            resolved = resolve_eval_credential().resolve()
+        assert resolved == "oauth-token-for::anthropic/t3-teatree/oauth", (
+            "a bare eval (no active overlay) must route the overlay-scoped OAuth account, not fail loud"
+        )
+
+    def test_nothing_configured_anywhere_fails_loud_naming_the_setting(self) -> None:
+        # The fail-loud contract is preserved: with NO OAuth account in any scope, a bare
+        # eval still fails loud naming the setting to configure — never a dead default.
+        with (
+            patch.dict(os.environ, {}, clear=True),
+            patch("teatree.llm.credentials.read_pass", return_value=""),
+            pytest.raises(CredentialError) as caught,
+        ):
+            resolve_eval_credential().resolve()
+        assert _OAUTH_SETTING in str(caught.value), "the loud error names anthropic_oauth_pass_paths to configure"

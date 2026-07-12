@@ -16,6 +16,7 @@ from unittest.mock import patch
 from django.core.management import call_command
 from django.test import TestCase
 
+from teatree.core.management.commands._sweep_commands import CompletionResult, _completion_line
 from teatree.core.models import ConfigSetting, Ticket
 
 type _Completion = dict[str, object]
@@ -80,3 +81,43 @@ class TestSyncCompletionsSurvivesGateRefusal(TestCase):
         assert "merged-SHA evidence" in cast("str", refused_rows[0]["error"])
         completed_rows = [r for r in results if r["action"] == "completed"]
         assert [r["ticket_id"] for r in completed_rows] == [advancing.pk]
+
+    def test_mid_chain_refusal_reports_the_persisted_partial_state(self) -> None:
+        # A ``shipped`` ticket walks ``request_review()`` (ungated → commits, so it
+        # lands at ``in_review``) then ``mark_merged()`` (merge-evidence gate refuses).
+        # The refusal must report the persisted ``in_review`` landing, not the stale
+        # ``shipped`` starting state, so the operator sees the partial progress.
+        partial = Ticket.objects.create(
+            overlay="fake-overlay",
+            state=Ticket.State.SHIPPED,
+            issue_url="https://gitlab.com/acme/widgets/-/issues/3",
+        )
+
+        with (
+            patch(
+                "teatree.core.management.commands._sweep_commands.get_all_overlays",
+                return_value={"fake-overlay": _AlwaysDoneOverlay()},
+            ),
+            patch(
+                "teatree.core.management.commands._sweep_commands.get_code_host_for_url",
+                return_value=_FakeHost(),
+            ),
+        ):
+            results = cast("list[_Completion]", call_command("ticket", "sync-completions"))
+
+        partial.refresh_from_db()
+        assert partial.state == Ticket.State.IN_REVIEW  # the first transition persisted
+        refused_rows = [r for r in results if r["action"] == "refused"]
+        assert [r["ticket_id"] for r in refused_rows] == [partial.pk]
+        assert refused_rows[0]["from_state"] == "shipped"
+        assert refused_rows[0]["to_state"] == "in_review"
+
+    def test_completion_line_shows_partial_state_only_when_it_diverges(self) -> None:
+        diverged = CompletionResult(
+            ticket_id=7, issue_url="u", from_state="shipped", to_state="in_review", action="refused", error="boom"
+        )
+        assert _completion_line(diverged) == "  #7 shipped → in_review refused: boom"
+        stalled = CompletionResult(
+            ticket_id=8, issue_url="u", from_state="in_review", to_state="in_review", action="refused", error="boom"
+        )
+        assert _completion_line(stalled) == "  #8 in_review → refused: boom"

@@ -10,6 +10,7 @@ stays out of the (cap-bound) ``ticket.py`` god-module. django-typer collects
 ``@command`` methods from every ``TyperCommand`` base in the MRO.
 """
 
+import contextlib
 import logging
 from typing import TYPE_CHECKING, Annotated, TypedDict
 
@@ -167,10 +168,18 @@ def _complete_one_ticket(ticket: Ticket, *, dry_run: bool) -> CompletionResult:
         _advance_ticket(ticket)
     except Exception as exc:  # noqa: BLE001 — a gate-refused / failed FSM advance skips this ticket, never aborts the sweep
         logger.warning("Failed to advance ticket %s (%s): %s", ticket.pk, ticket.issue_url, exc)
+        # ``_advance_ticket`` commits up to three transitions in separate
+        # ``atomic()`` blocks, so a mid-chain refusal leaves the earlier
+        # transitions persisted. Reload the true landing state to report the
+        # partial progress instead of the (possibly stale) starting state; a
+        # vanished row must not abort the sweep either, so keep the in-memory state.
+        with contextlib.suppress(Exception):
+            ticket.refresh_from_db()
         return CompletionResult(
             ticket_id=int(ticket.pk),
             issue_url=ticket.issue_url,
             from_state=from_state,
+            to_state=ticket.state,
             action="refused",
             error=str(exc),
         )
@@ -189,6 +198,9 @@ def _completion_line(result: CompletionResult) -> str:
     if result["action"] == "would_complete":
         return f"  [dry-run] #{pk} ({from_state}) → completed: {result['issue_url']}"
     if result["action"] == "refused":
+        to_state = result.get("to_state")
+        if to_state and to_state != from_state:
+            return f"  #{pk} {from_state} → {to_state} refused: {result['error']}"
         return f"  #{pk} {from_state} → refused: {result['error']}"
     return f"  #{pk} {from_state} → {result['to_state']}: {result['issue_url']}"
 
