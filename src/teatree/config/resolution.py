@@ -1,19 +1,20 @@
-"""Effective-settings resolution — the DB/TOML hard partition + env + the autonomy collapse.
+"""Effective-settings resolution — the DB-home partition + env + the autonomy collapse.
 
 ``get_effective_settings`` (the single resolver both the active-overlay and
 named-overlay paths share), ``cadence_seconds``, and the autonomy-collapse
 (``_apply_autonomy``). Split out of the package module for the module-health LOC
 cap; re-exported from ``teatree.config``.
 
-The #1775 hard partition: every ``UserSettings`` field has exactly one home (see
-``config/homes.py``). A DB-home field resolves from the ``ConfigSetting`` store
-(``_db_setting_overrides``: global rows then the active overlay's rows on top) +
-``T3_*`` env ONLY — its ``[teatree]`` / ``[overlays.<name>]`` TOML tables are not
-read. A TOML-home field resolves from ``[teatree]`` / ``[overlays.<name>]`` (the
-per-overlay layer, filtered to TOML-home keys) + env ONLY — a ``ConfigSetting``
-row for it is ignored. The DB read is fail-safe (an absent/empty table or
-unconfigured Django yields no overrides) so an empty table resolves every DB-home
-field to its dataclass default.
+The #1775 partition: every ``UserSettings`` field has exactly one home (see
+``config/homes.py``). The file config tier was removed, so every field is DB-home
+now — the ``SettingHome.TOML`` carve-out is retained but EMPTY (a future file tier
+would be a deliberate, tested re-introduction). A DB-home field resolves from the
+``ConfigSetting`` store (``_db_setting_overrides``: global rows then the active
+overlay's rows on top) + ``T3_*`` env ONLY. A DB-home key mistakenly placed in the
+DB overlays-registry entry (the ``[overlays.<name>]`` table in ``config.raw``) is
+NOT one of its homes, so it is dropped on read (``_drop_db_home_overlay_keys``).
+The DB read is fail-safe (an absent/empty table or unconfigured Django yields no
+overrides) so an empty table resolves every DB-home field to its dataclass default.
 """
 
 import logging
@@ -42,42 +43,37 @@ _BESPOKE_STRUCTURED_FIELDS: frozenset[str] = frozenset({"speak", "mr_reminder"})
 
 
 def get_effective_settings(overlay_name: str | None = None) -> UserSettings:
-    """Return the user settings under the #1775 DB/TOML hard partition + env.
+    """Return the user settings under the #1775 DB-home partition + env.
 
-    Every ``UserSettings`` field has exactly ONE home (see ``config/homes.py``),
-    so resolution per field depends on that home (first match wins):
-
-    *   DB-home field — ``T3_*`` env var, then the ``ConfigSetting`` store
-        (overlay-scope row, then global-scope row), then — for a key promoted to
-        an overlay code default (#36, ``overlay_code_defaults``) — the active
-        overlay's ``OverlayConfig`` value, then the dataclass default:
+    Every ``UserSettings`` field has exactly ONE home (see ``config/homes.py``).
+    The file config tier was removed, so every field is DB-home now (the
+    ``SettingHome.TOML`` carve-out is retained but empty). A DB-home field
+    resolves, first match wins:
 
             env -> DB(overlay scope) -> DB(global scope) -> overlay code default -> default.
 
-        Its ``[teatree]`` / ``[overlays.<name>]`` TOML value is NOT read. The
-        overlay-code-default tier is a DEFAULT (never a hard pin), so it sits
-        below every DB / env override and above the dataclass default; a key with
-        no promoted code default skips it and resolves to the dataclass default as
-        before.
-    *   TOML-home field — ``T3_*`` env var, then the active overlay's
-        ``[overlays.<name>]`` override, then the global ``[teatree]`` value, then
-        the dataclass default:
+    ``T3_*`` env var, then the ``ConfigSetting`` store (overlay-scope row, then
+    global-scope row), then — for a key promoted to an overlay code default (#36,
+    ``overlay_code_defaults``) — the active overlay's ``OverlayConfig`` value, then
+    the dataclass default. A value for the field in the DB overlays-registry entry
+    (its ``[overlays.<name>]`` table in ``config.raw``) is NOT one of its homes and
+    is dropped on read. The overlay-code-default tier is a DEFAULT (never a hard
+    pin), so it sits below every DB / env override and above the dataclass default;
+    a key with no promoted code default skips it and resolves to the dataclass
+    default as before.
 
-            env -> per-overlay TOML -> global [teatree] -> default.
+    The per-overlay overlays-registry override layer is filtered by home
+    (``_drop_db_home_overlay_keys`` / ``_toml_home``) so a ``[overlays.<name>]``
+    value for a DB-home key never leaks in — with the TOML carve-out empty, that
+    drops every such key with a loud WARN. The DB read fails safe to ``{}``
+    whenever Django is not configured or the table does not exist yet, so an empty
+    table resolves every DB-home field to its dataclass default.
 
-        A ``ConfigSetting`` row for it is ignored on read.
-
-    The per-overlay TOML layer is filtered to TOML-home keys (``_toml_home``) so a
-    ``[overlays.<name>]`` value for a DB-home key never leaks in. The DB read fails
-    safe to ``{}`` whenever Django is not configured or the table does not exist
-    yet, so an empty table resolves every DB-home field to its dataclass default.
-
-    The DB tier has TWO scopes, mirroring the TOML two-tier shape: a GLOBAL
-    ``ConfigSetting`` row (``scope=""``) applies to every overlay, and an
-    OVERLAY-scoped row (``scope=<overlay name>``) applies to that overlay alone.
-    The resolver layers global rows first, then the active overlay's rows on top —
-    so an overlay-scoped DB row beats a global DB row, exactly as a per-overlay
-    ``[overlays.<name>]`` TOML value beats the global ``[teatree]`` value.
+    The DB tier has TWO scopes: a GLOBAL ``ConfigSetting`` row (``scope=""``)
+    applies to every overlay, and an OVERLAY-scoped row (``scope=<overlay name>``)
+    applies to that overlay alone. The resolver layers global rows first, then the
+    active overlay's rows on top — so an overlay-scoped DB row beats a global DB
+    row.
 
     The active overlay is resolved via ``T3_OVERLAY_NAME`` first (matches
     ``get_overlay()``), then cwd-based discovery, then the single
@@ -111,14 +107,14 @@ def get_effective_settings(overlay_name: str | None = None) -> UserSettings:
     else:
         active = _active_overlay_entry()
         overrides = dict(active.overrides) if active is not None else {}
-    # The hard partition (#1775): the per-overlay TOML layer applies ONLY to
-    # TOML-home keys. A ``[overlays.<name>]`` value for a DB-home key is ignored
-    # on read — that field's authoritative tier is the DB store below. The drop is
-    # made LOUD (never silent) so an operator who set a DB-home key in their
-    # ``[overlays.<name>]`` table is told the value had no effect.
+    # The #1775 partition: the per-overlay overlays-registry override layer applies
+    # ONLY to TOML-home keys — an empty carve-out today, so every ``[overlays.<name>]``
+    # value for a DB-home key is dropped on read (that field's authoritative tier is
+    # the DB store below). The drop is made LOUD (never silent) so an operator who set
+    # a DB-home key in their overlays-registry entry is told the value had no effect.
     overrides = _drop_db_home_overlay_keys(overrides, _resolved_overlay_name(overlay_name))
     # ``hard_pinned`` (a per-overlay/env opinion that beats the autonomy collapse,
-    # including for ``mode``) is the per-overlay TOML layer so far. DB-home fields
+    # including for ``mode``) is the per-overlay override layer so far. DB-home fields
     # get their SOLE value from ``ConfigSetting``: the GLOBAL scope is a workspace
     # default (NOT a hard pin), the OVERLAY scope is a per-overlay opinion (a hard
     # pin), env beats both.
@@ -167,11 +163,10 @@ def _apply_structured_db_settings(
 ) -> UserSettings:
     """Resolve the nested-table DB-home fields from the raw rows (#1775).
 
-    ``mr_reminder`` is global-or-overlay (an overlay row wins, no merge — it had no
-    per-overlay layer in TOML either). ``speak`` is the one non-generic override:
-    the per-overlay ``speak`` row MERGES onto the global ``speak`` base so a partial
-    overlay table overrides only the keys it sets (the DB twin of the old
-    ``[overlays.<name>.speak]`` sub-table merge).
+    ``mr_reminder`` is global-or-overlay (an overlay row wins, no merge — it has no
+    per-overlay merge layer). ``speak`` is the one non-generic override: the
+    per-overlay ``speak`` row MERGES onto the global ``speak`` base so a partial
+    overlay row overrides only the keys it sets.
     """
     mr = overlay_rows.get("mr_reminder")
     if not isinstance(mr, dict):
@@ -193,8 +188,7 @@ def _resolve_speak_db(
 
     ``None`` (no ``speak`` row in either scope) → the dataclass default stands. A
     global row sets the base; an overlay row merges onto it so only the keys it
-    carries override — the DB equivalent of the old ``[overlays.<name>.speak]``
-    partial-table merge in :func:`speak_from_subtable`.
+    carries override — the partial-merge shape of :func:`speak_from_subtable`.
     """
     global_speak = global_rows.get("speak")
     overlay_speak = overlay_rows.get("speak")
@@ -209,9 +203,10 @@ def _resolve_speak_db(
 def _active_overlay_overrides() -> dict[str, Any]:
     """Per-overlay overrides for the active overlay, with the DB + env layers applied.
 
-    Precedence (later wins): per-overlay TOML -> DB tier -> env. Retained as the
-    composed helper for the public re-export; :func:`get_effective_settings`
-    layers the same tiers inline so the named-overlay path can skip the env layer.
+    Precedence (later wins): per-overlay overlays-registry override -> DB tier ->
+    env. Retained as the composed helper for the public re-export;
+    :func:`get_effective_settings` layers the same tiers inline so the
+    named-overlay path can skip the env layer.
     """
     active = _active_overlay_entry()
     overrides: dict[str, Any] = dict(active.overrides) if active is not None else {}
@@ -236,10 +231,10 @@ def _resolved_overlay_name(overlay_name: str | None) -> str:
 
     For the named-overlay path this is the explicit ``overlay_name``; for the
     active-overlay path it is ``T3_OVERLAY_NAME`` if set, then the cwd/single
-    discovered overlay — the same active-overlay resolution the per-overlay TOML
-    layer uses, so the DB and TOML overlay tiers always agree on which overlay
-    is active. ``""`` (no resolvable overlay) means only the global DB scope
-    applies.
+    discovered overlay — the same active-overlay resolution the per-overlay
+    overlays-registry layer uses, so the DB scope and the overlays-registry layer
+    always agree on which overlay is active. ``""`` (no resolvable overlay) means
+    only the global DB scope applies.
     """
     if overlay_name is not None:
         return overlay_name
@@ -441,9 +436,12 @@ _AUTONOMOUS_TIERS: frozenset[Autonomy] = frozenset({Autonomy.NOTIFY, Autonomy.FU
 def _toml_home(key: str) -> bool:
     """Whether *key* is a TOML-home ``UserSettings`` field (#1775 partition).
 
-    A DB-home key (or an unknown one) returns ``False`` so the per-overlay TOML
-    override layer drops it — its authoritative tier is the ``ConfigSetting``
-    store, never the ``[overlays.<name>]`` table.
+    The TOML-home carve-out is currently EMPTY (the file config tier was removed),
+    so this returns ``False`` for every live key — the per-overlay overlays-registry
+    override layer then drops it, since its authoritative tier is the
+    ``ConfigSetting`` store, never the ``[overlays.<name>]`` registry entry. Kept as
+    the carve-out predicate so a future file-tier re-introduction is a deliberate,
+    tested change (``config/homes.py``).
     """
     return SETTING_HOMES.get(key) is SettingHome.TOML
 
@@ -451,13 +449,15 @@ def _toml_home(key: str) -> bool:
 def _drop_db_home_overlay_keys(overrides: dict[str, Any], overlay_name: str) -> dict[str, Any]:
     """Keep only TOML-home override keys, WARNING loud on each dropped DB-home key.
 
-    The footgun the warning closes (the silent-drop the maintainer flagged): a
-    ``[overlays.<name>]`` table carries a DB-home key (e.g. ``mode = "auto"``)
-    that the operator expects to take effect, but a DB-home field's sole home is
-    the ``ConfigSetting`` store — so the resolver drops the TOML value. With NO
-    DB row beneath it the dropped value also has no effect, and nothing told the
-    operator their TOML was ignored. Surfacing the drop loud (one aggregated WARN
-    naming every dropped key and the migration path) makes the no-op visible.
+    The footgun the warning closes (the silent-drop the maintainer flagged): a DB
+    overlays-registry entry (``[overlays.<name>]`` in ``config.raw``) carries a
+    DB-home key (e.g. ``mode = "auto"``) that the operator expects to take effect,
+    but a DB-home field's sole home is the ``ConfigSetting`` store — so the resolver
+    drops the registry value. With NO DB row beneath it the dropped value also has
+    no effect, and nothing told the operator their override was ignored. Surfacing
+    the drop loud (one aggregated WARN naming every dropped key and the migration
+    path) makes the no-op visible. With the TOML carve-out empty, every override
+    key is DB-home, so this keeps nothing and returns ``{}``.
 
     Unknown keys (not in the home registry at all) are NOT warned — a stray key is
     a different concern; only a genuine DB-home ``UserSettings`` field flagged here.

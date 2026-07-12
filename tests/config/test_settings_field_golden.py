@@ -206,3 +206,12 @@ def test_user_settings_field_set_matches_golden() -> None:
     added = sorted(current - GOLDEN_USER_SETTINGS_FIELDS)
     removed = sorted(GOLDEN_USER_SETTINGS_FIELDS - current)
     assert current == GOLDEN_USER_SETTINGS_FIELDS, f"added={added} removed={removed}\n{_ROUTING}"
+
+
+def test_golden_pin_flags_a_synthetic_add_and_removal() -> None:
+    # Anti-vacuity: the exact-match pin fires RED on either a field the golden did
+    # not acknowledge (an add) or a golden key the dataclass no longer has (a
+    # rename/removal), so the deliberate-edit gate can never be silently vacuous.
+    current = _field_names()
+    assert current != (GOLDEN_USER_SETTINGS_FIELDS | {"synthetic_added_field"})
+    assert current != (GOLDEN_USER_SETTINGS_FIELDS - {"mode"})
