@@ -30,178 +30,17 @@ from teatree.config import resolution as _resolution
 from teatree.config.resolution import _LEGACY_SETTING_ALIASES, _RETIRED_SETTING_KEYS
 from teatree.core.models import ConfigSetting
 
-# The append-only GOLDEN snapshot of every DB-home settings key (the keys of
-# ``OVERLAY_OVERRIDABLE_SETTINGS``). It only GROWS: a new field is added here, and a
-# renamed/removed field is LEFT here and recorded in ``_RETIRED_SETTING_KEYS`` (renamed,
-# aliased) or ``_REMOVED_DEAD_SETTING_KEYS`` (removed-dead). This makes the previously
-# opt-in retired-key discipline mechanical (U10/3d#2): the guard below fails the moment
-# the live field set diverges from this pin without the retirement recorded, so a rename
-# can never silently orphan a stored ``ConfigSetting`` row. Pinned HERE (not in a
-# ``src`` settings-resolution module) so its field-name string literals are not
-# mis-counted as settings reads by ``test_user_settings_readers``' AST reader walk.
-_GOLDEN_SETTING_FIELDS: frozenset[str] = frozenset(
-    {
-        "admin_autologin_enabled",
-        "agent_harness",
-        "agent_harness_provider",
-        "agent_runtime",
-        "agent_signature",
-        "allow_destructive_disk",
-        "allow_destructive_ram",
-        "anthropic_api_key_pass_paths",
-        "anthropic_oauth_pass_paths",
-        "approved_recipe_sha",
-        "architectural_review_after_merge_count",
-        "architectural_review_cadence_hours",
-        "architectural_review_disabled",
-        "architectural_review_skill",
-        "ask_before_backlog_sweep_closes",
-        "ask_before_creating_news_tickets",
-        "attachment_gate_enabled",
-        "auto_disposition_enabled",
-        "auto_disposition_max_closes_per_tick",
-        "auto_update_reinstall",
-        "auto_update_require_green_main",
-        "autoload",
-        "autonomy",
-        "backlog_sweep_cadence_hours",
-        "backlog_sweep_disabled",
-        "backlog_sweep_skill",
-        "ban_close_trailers_on_namespaces",
-        "billing_cycle_anchor_day",
-        "boost_concurrency",
-        "bulk_close_threshold",
-        "check_updates",
-        "chrome_devtools_mcp_enabled",
-        "claude_chrome",
-        "clean_ignore",
-        "colleague_repo_url_pattern",
-        "contribute",
-        "contribute_plugin_dir",
-        "critic_gate_mode",
-        "db_backup_cadence_hours",
-        "db_backup_disabled",
-        "db_backup_retention_days",
-        "directive_loop_enabled",
-        "directive_verify_days",
-        "disk_cache_allowlist",
-        "disk_crit_free_gb",
-        "disk_warn_free_gb",
-        "dogfood_smoke_cadence_hours",
-        "dogfood_smoke_disabled",
-        "dogfood_smoke_overlay",
-        "dogfood_smoke_skill",
-        "dream_propose_evals",
-        "e2e_confidence_threshold",
-        "e2e_mandatory_gate_enabled",
-        "enforce_regulated_path",
-        "eval_credential",
-        "eval_local_cadence_hours",
-        "eval_local_disabled",
-        "eval_local_skill",
-        "excluded_skills",
-        "factory_score_enabled",
-        "fleet_claim_enabled",
-        "gate_relaxation_gate_enabled",
-        "gitlab_approval_scanner_enabled",
-        "handover_mirror_path",
-        "hook_fetch_titles",
-        "idle_stack_e2e_recent_minutes",
-        "idle_stack_idle_minutes",
-        "idle_stack_reaper_cadence_minutes",
-        "idle_stack_reaper_disabled",
-        "incremental_push_gate",
-        "issue_implementer_cadence_hours",
-        "issue_implementer_enabled",
-        "issue_implementer_label",
-        "issue_implementer_max_concurrent",
-        "limit_autorecovery_enabled",
-        "local_stack_queue_disabled",
-        "local_stack_queue_max_attempts",
-        "loop_cadence_seconds",
-        "loop_runner_enabled",
-        "max_concurrent_local_stacks",
-        "max_open_prs_per_repo_per_ticket",
-        "max_worktree_gc_per_tick",
-        "missing_issue_ref_policy",
-        "mode",
-        "mr_reminder",
-        "mr_title_regex",
-        "notify_on_post_on_behalf",
-        "notify_user_via_bot",
-        "on_behalf_auto_actions",
-        "on_behalf_post_mode",
-        "orca_router_lane",
-        "orca_router_name",
-        "orca_router_pass_path",
-        "orchestrate_claim_enabled",
-        "orchestrator_bash_gate_enabled",
-        "outer_loop_enabled",
-        "outer_loop_max_per_week",
-        "outer_loop_measure_days",
-        "outer_loop_stop_after_consecutive_failures",
-        "privacy",
-        "provision_fast_step_timeout_seconds",
-        "provision_max_concurrency",
-        "provision_ram_ceiling_percent",
-        "provision_slow_threshold_seconds",
-        "provision_step_timeout_seconds",
-        "pull_main_clone_cadence_hours",
-        "pull_main_clone_disabled",
-        "pydantic_ai_request_limit",
-        "ram_crit_avail_gb",
-        "ram_kill_allowlist",
-        "ram_warn_avail_gb",
-        "regulated_path_model_allowlist",
-        "repo_mode",
-        "require_anti_vacuity_attestation",
-        "require_debt_delta",
-        "require_executed_repro",
-        "require_human_approval_to_answer",
-        "require_human_approval_to_merge",
-        "require_integration_review",
-        "require_merge_evidence",
-        "require_merge_quality_verdict",
-        "require_plan_adequacy",
-        "require_review_context",
-        "require_reviewed_state_for_review_request",
-        "require_rubric_verification",
-        "require_spec_coverage",
-        "resource_pressure_cadence_minutes",
-        "resource_pressure_disabled",
-        "resource_pressure_min_free_interval_minutes",
-        "review_nag_enabled",
-        "review_request_post_disabled",
-        "review_skill",
-        "scanning_news_cadence_hours",
-        "scanning_news_disabled",
-        "scanning_news_skill",
-        "sdk_monthly_credit_usd",
-        "self_update_cadence_hours",
-        "self_update_disabled",
-        "send_proxy_allowlist",
-        "send_proxy_mode",
-        "slack_voice_classifier_mode",
-        "snapshot_baseline_gate_enabled",
-        "snapshot_warmer_disabled",
-        "snapshot_warmer_max_age_days",
-        "solo_repo_url_pattern",
-        "speak",
-        "stale_stack_min_age_minutes",
-        "statusline_chain",
-        "task_sweep_disabled",
-        "task_sweep_recheck_interval_hours",
-        "teams_display",
-        "teams_enabled",
-        "teams_idle_minutes",
-        "teams_max_panes",
-        "timezone",
-        "user_identity_aliases",
-        "wip",
-        "workspace_dir",
-        "worktree_stale_days",
-    }
-)
+from .test_settings_field_golden import GOLDEN_USER_SETTINGS_FIELDS
+
+# The overlay-overridable golden snapshot of every DB-home settings key is DERIVED,
+# not a second hand-maintained list: it is ``GOLDEN_USER_SETTINGS_FIELDS`` (the ONE
+# hand-maintained field-set pin, in ``test_settings_field_golden.py``) filtered through
+# the live ``OVERLAY_OVERRIDABLE_SETTINGS`` registry. A DB-home field add is therefore
+# recorded in exactly one golden (the ``UserSettings`` one); this subset tracks it
+# automatically instead of a ~159-key duplicate to edit in lockstep. The subset pin
+# below still fails RED if a DB-home registry key is not a pinned ``UserSettings``
+# field, so the overlay-overridable-subset invariant is preserved.
+_GOLDEN_SETTING_FIELDS: frozenset[str] = GOLDEN_USER_SETTINGS_FIELDS & frozenset(OVERLAY_OVERRIDABLE_SETTINGS)
 
 # DB-home keys removed as provably-dead — the field intentionally resolves to nothing
 # (NOT renamed, so NOT aliased). Paired with ``_RETIRED_SETTING_KEYS`` as the accounting
@@ -341,19 +180,24 @@ def _unaccounted_dropped_keys(golden: frozenset[str]) -> set[str]:
 
 
 class TestGoldenSnapshotCatchesSilentDropOrRename:
-    """The golden pin turns the opt-in retired-key discipline mechanical (U10/3d#2).
+    """The overlay-overridable-subset pin, derived from the single ``UserSettings`` golden.
 
-    ``_GOLDEN_SETTING_FIELDS`` is the append-only record of every DB-home settings
-    key. A field renamed/removed without recording it (in ``_RETIRED_SETTING_KEYS``
-    or ``_REMOVED_DEAD_SETTING_KEYS``) leaves a golden key with no live counterpart —
-    caught here — so a stored ``ConfigSetting`` row can never be silently orphaned.
+    ``_GOLDEN_SETTING_FIELDS`` is ``GOLDEN_USER_SETTINGS_FIELDS`` filtered through the
+    live ``OVERLAY_OVERRIDABLE_SETTINGS`` registry — so a DB-home field add is
+    recorded once (in the ``UserSettings`` golden) and this subset tracks it. The
+    pin below fails RED if a live DB-home registry key is NOT a pinned
+    ``UserSettings`` field, so a DB-home key can never drift away from the single
+    hand-maintained golden. Renames are still routed to ``_RETIRED_SETTING_KEYS`` /
+    ``_LEGACY_SETTING_ALIASES`` by the full-field-set pin in
+    ``test_settings_field_golden.py`` and kept reachable by ``RetiredSettingKeysStayReachable``.
     """
 
     def test_every_live_db_home_key_is_pinned(self) -> None:
         unpinned = sorted(_unpinned_new_keys(_GOLDEN_SETTING_FIELDS))
         assert not unpinned, (
-            f"DB-home setting(s) {unpinned} are live but absent from _GOLDEN_SETTING_FIELDS. "
-            f"Add each new field to the golden snapshot in src/teatree/config/resolution.py."
+            f"DB-home setting(s) {unpinned} are live in OVERLAY_OVERRIDABLE_SETTINGS but absent from "
+            f"GOLDEN_USER_SETTINGS_FIELDS. Every DB-home key must be a pinned UserSettings field — add "
+            f"each to the golden in tests/config/test_settings_field_golden.py."
         )
 
     def test_every_dropped_golden_key_is_recorded_as_retired_or_removed_dead(self) -> None:
@@ -391,11 +235,15 @@ class TestGoldenSnapshotGuardFiresRed:
         golden = _GOLDEN_SETTING_FIELDS | {"speed"}
         assert "speed" not in _unaccounted_dropped_keys(golden)
 
-    def test_a_synthetic_unpinned_new_field_is_flagged(self) -> None:
-        # A live key missing from the golden pin is caught so a new field can never
-        # be added without acknowledging it in the snapshot.
-        stripped = _GOLDEN_SETTING_FIELDS - {"mode"}
-        assert "mode" in _unpinned_new_keys(stripped)
+    def test_a_db_home_key_missing_from_the_user_settings_golden_is_flagged(self) -> None:
+        # The subset pin fires RED if a live DB-home registry key is not a pinned
+        # UserSettings field: derive the subset from a golden with a live DB-home
+        # key removed and confirm that key surfaces as unpinned. This is the
+        # anti-vacuity for the derived overlay-overridable-subset invariant.
+        live_key = "mode"
+        assert live_key in _live_db_home_keys()
+        derived_without = (GOLDEN_USER_SETTINGS_FIELDS - {live_key}) & frozenset(OVERLAY_OVERRIDABLE_SETTINGS)
+        assert live_key in _unpinned_new_keys(derived_without)
 
     def test_the_live_snapshot_is_currently_pinned_and_clean(self) -> None:
         # The shipped state passes both directions — no unpinned add, no unaccounted drop.
