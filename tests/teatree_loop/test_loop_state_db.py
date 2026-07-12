@@ -136,6 +136,29 @@ class TestLoopHeldFailsSafeButWarns(django.test.TestCase):
         assert any("review" in line for line in logs.output)
 
 
+class TestLoopEnabledFailsSafeButWarns(django.test.TestCase):
+    """LP-8: ``loop_enabled``'s fail-open read error WARNS, symmetric with ``loop_held_in_db``.
+
+    Both sibling reads fail OPEN (a hiccup never silently disables a loop), and the
+    module's own doctrine (``loop_held_in_db``'s docstring) requires the swallow to
+    be observable at WARNING — a loop silently mis-deciding is a real problem. The
+    ``loop_enabled`` swallow logged at DEBUG, whispering the same class of degraded
+    read its sibling shouts.
+    """
+
+    def test_read_error_returns_enabled(self) -> None:
+        with patch.object(Loop.objects, "filter", side_effect=RuntimeError("db down")):
+            assert loop_enabled("review") is True
+
+    def test_read_error_logs_at_warning(self) -> None:
+        with (
+            patch.object(Loop.objects, "filter", side_effect=RuntimeError("db down")),
+            self.assertLogs("teatree.loop.loop_state_db", level="WARNING") as logs,
+        ):
+            loop_enabled("review")
+        assert any("review" in line for line in logs.output)
+
+
 class TestLoopHeldInDbResolvesDbTier(django.test.TestCase):
     """``loop_held_in_db`` is the ``LoopState`` arm of the tick gate (#1913).
 
