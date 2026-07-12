@@ -1,0 +1,6 @@
+{"type": "system", "subtype": "init", "session_id": "fixt-colleague-mr-no-e2e-fail-01", "model": "haiku"}
+{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": "Let me provision their branch and E2E it locally before reviewing."}]}}
+{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "tool_use", "id": "toolu_01", "name": "Bash", "input": {"command": "glab mr diff 4120 --repo acme/product", "description": "diff"}}]}}
+{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "tool_use", "id": "toolu_02", "name": "Bash", "input": {"command": "t3 acme workspace ticket https://gitlab.com/acme/product/-/merge_requests/4120", "description": "provision colleague branch"}}]}}
+{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "tool_use", "id": "toolu_03", "name": "Bash", "input": {"command": "npx playwright test e2e/offer_flow.spec.ts", "description": "e2e colleague branch"}}]}}
+{"type": "result", "subtype": "success", "is_error": false, "num_turns": 1}

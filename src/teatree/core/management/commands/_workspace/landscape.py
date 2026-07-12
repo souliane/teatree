@@ -9,6 +9,7 @@ backwards ``core → management`` dependency edge. The ``workspace`` command imp
 """
 
 from teatree.core.intake.landscape_gather import (
+    LandscapeForgeReadError,
     LandscapeReport,
     OpenPrReport,
     RecommendationReport,
@@ -17,6 +18,7 @@ from teatree.core.intake.landscape_gather import (
 )
 
 __all__ = [
+    "LandscapeForgeReadError",
     "LandscapeReport",
     "OpenPrReport",
     "RecommendationReport",

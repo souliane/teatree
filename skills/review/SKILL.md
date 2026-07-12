@@ -245,6 +245,8 @@ A colleague-authored MR on a **shared product repo** (a repo you do NOT solely o
 
 - **The merge commands are out of scope on a colleague's product-repo MR.** `glab mr merge`, `gh pr merge`, and `t3 <overlay> ticket merge` do not belong on a teammate-authored shared-repo MR — merging a colleague's product-repo MR treats their work as yours to land. The keystone merge (`t3 <overlay> ticket merge <id>`) is reserved for **your OWN** green, cold-review-cleared work (a solo-owned overlay repo you authored), not a colleague's. A repo being private is a visibility axis, not an ownership one — private ≠ yours-to-merge.
 
+- **Provisioning and E2E are out of scope too.** Reviewing a colleague's MR is a **static diff review** plus **trusting their CI** — never a local checkout, `t3 <overlay> workspace ticket` / `worktree provision` / `worktree start` of their branch, nor an E2E/Playwright run of it; their pipeline is the runtime gate, your read of the diff is the review.
+
 The A/B distinction: your own solo-owned overlay repo, green and cleared → merge it via the keystone; a teammate's shared product-repo MR → fetch the diff and review it, hold for the colleague, never auto-merge. (Own-vs-external routing is Step -1 below.)
 
 **Pre-flight gate — complete BEFORE reading any diff:**
