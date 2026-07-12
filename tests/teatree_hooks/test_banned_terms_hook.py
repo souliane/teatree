@@ -487,16 +487,17 @@ def test_live_hook_allows_substring_term_on_bare_commit_in_private_worktree(
     assert captured.out == ""  # no deny JSON
 
 
-def test_live_hook_blocks_bare_commit_with_private_body_file_but_divergent_public_landing(
+def test_live_hook_downgrades_bare_commit_with_readable_body_file_divergent_public_landing(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    # BLOCKER REGRESSION (#1958 review): a BARE ``git commit -F <abs body file
-    # inside a PRIVATE repo>`` whose harness cwd is a DIVERGENT repo that is
-    # public-but-UNKNOWN (the common cold-hook state -- no probe tool). The commit
-    # lands in the cwd repo, NOT where the body file lives, so the private body
-    # file must NEVER vouch for the divergent landing repo's visibility. This must
-    # STAY hard-blocked -- downgrading it would widen the leak surface (a private
-    # body file laundering a banned term into a public commit).
+    # #1415 Case A: a BARE ``git commit -F <abs readable body file>`` whose harness
+    # cwd is a public-but-UNKNOWN repo (the common cold-hook state -- no probe tool).
+    # The commit lands in the cwd repo. Since the readable-body commit path now
+    # matches the unreadable-body path, this DOWNGRADES to warn: a commit is LOCAL,
+    # so the banned term reaches no public surface until a push, and the #703
+    # pre-push gate re-scans commit messages before they reach a public remote. The
+    # public-surface anti-vacuity is the chained-public-post guard (below) and the
+    # pure ``gh``/``glab`` public post path.
     home = Path(os.environ["HOME"])
     _write_home_config(home, _SUBSTRING_TERM_CONFIG, monkeypatch, tmp_path)
     monkeypatch.setattr(_repo_visibility, "_resolve_probe_tool", lambda _tool: None)
@@ -511,17 +512,17 @@ def test_live_hook_blocks_bare_commit_with_private_body_file_but_divergent_publi
     blocked = handle_banned_terms_pretool(data)
     captured = capsys.readouterr()
 
-    assert blocked is True
-    decision = json.loads(captured.out)
-    assert decision["permissionDecision"] == "deny"
+    assert blocked is False  # downgraded to warn, not denied
+    assert captured.out == ""  # no deny JSON
 
 
-def test_live_hook_blocks_substring_term_on_bare_commit_with_body_file_in_public_repo(
+def test_live_hook_downgrades_bare_commit_with_readable_body_file_in_public_repo(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    # SAFETY (#1958): a bare ``git commit -F <abs body file>`` landing in a PUBLIC
-    # repo (cwd == that public repo) must STAY hard-blocked. The carve-out only
-    # downgrades a PROVABLY-private landing repo.
+    # #1415 Case A: a bare ``git commit -F <abs readable body file>`` landing in a
+    # PUBLIC repo (cwd == that public repo) DOWNGRADES to warn. A commit is LOCAL and
+    # the #703 pre-push gate re-scans commit messages before a public push, so the
+    # readable-body commit path matches the unreadable-body path.
     home = Path(os.environ["HOME"])
     _write_home_config(home, _SUBSTRING_TERM_CONFIG, monkeypatch, tmp_path)
     monkeypatch.setattr(_repo_visibility, "_resolve_probe_tool", lambda _tool: None)
@@ -536,9 +537,8 @@ def test_live_hook_blocks_substring_term_on_bare_commit_with_body_file_in_public
     blocked = handle_banned_terms_pretool(data)
     captured = capsys.readouterr()
 
-    assert blocked is True
-    decision = json.loads(captured.out)
-    assert decision["permissionDecision"] == "deny"
+    assert blocked is False  # downgraded to warn, not denied
+    assert captured.out == ""  # no deny JSON
 
 
 def test_live_hook_blocks_private_commit_chained_to_public_post(
@@ -838,8 +838,10 @@ def test_live_hook_downgrades_unreadable_commit_body_file_in_provably_public_rep
     # re-scans every commit message before a public push -- so the commit-time gate
     # must not hard-block an ordinary commit merely because its body is unreadable
     # at scan time (the over-block that stuck multiple coders mid-commit). The
-    # public-surface protection lives in the readable-term guard and the chained
+    # public-surface protection lives in the #703 pre-push gate and the chained
     # public ``gh`` post guard (``...chained...``), both of which still hard-block.
+    # Since #1415 Case A the readable-term commit path downgrades too, so the
+    # readable and unreadable body paths for a LOCAL commit are consistent.
     home = Path(os.environ["HOME"])
     _write_home_config(home, _SUBSTRING_TERM_CONFIG, monkeypatch, tmp_path)
     monkeypatch.setattr(_repo_visibility, "probe_visibility", lambda _slug: "PUBLIC")

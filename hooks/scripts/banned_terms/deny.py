@@ -13,24 +13,41 @@ known-private target, where the repo's own domain words are expected. (2)
 own org/repo slug, landing in that private repo; a work-item URL naming the repo
 is not a leak. (3) ``own_repo_url_carve_out`` — a structured ``gh``/``glab`` post
 to a PUBLIC surface whose term appears ONLY inside a URL of one of the overlay's
-own configured repos; the address of the repo is not a leak.
+own configured repos; the address of the repo is not a leak. (4)
+``command_targets_local_commit`` — ANY LOCAL ``git commit`` (a landing repo of
+ANY visibility, PUBLIC included) whose chained segments cannot publish. This is
+the READABLE-body twin of the UNREADABLE-body commit downgrade already applied by
+``marker.py``: a commit is LOCAL, so a banned term in its message reaches no
+public surface until a ``git push``, and the #703 pre-push gate
+(``refuse-public-push-with-leak.sh`` → ``scripts/privacy_scan.py``, which re-scans
+commit MESSAGES via ``git log --format='%B'``) hard-blocks any banned term before
+it reaches a public remote. Case A (#1415): before this arm a plain
+``git commit -m "…<term>…"`` in the user's OWN repo — neither in ``private_repos``
+nor probe-resolvable — hard-blocked, forcing a clumsy ``ALLOW_BANNED_TERM=1``,
+while the same commit with an UNREADABLE body already downgraded. The asymmetry is
+closed by matching (4) to the unreadable-body path.
 
-Every carve-out above conditions its downgrade on a PROVABLY-internal landing
-repo or a PROVABLY-own configured URL — never on the destination SLUG TEXT
-alone. A slug-text downgrade (a term that merely matches the resolved
-destination's own repo slug) would fail OPEN: this deny path is reached ONLY
-after ``public_visibility.gate_skips_for_visibility`` already returned False, so
-the destination is affirmatively PUBLIC (an unknown/private target skips the
-gate before reaching here) — exactly the surface the leak block protects. An
-org/repo slug is attacker-controllable (``<term>-eng/tracker``), so downgrading
-on slug text would let a genuinely-public repo named after the term silence the
-leak block. The #2597 false positive (a status comment to the overlay's OWN
-private tracker) is resolved the SOUND way instead: a private/unknown tracker is
-NOT affirmatively public, so ``gate_skips_for_visibility`` skips the WHOLE gate
-for it; declaring it in ``[teatree] private_repos`` /
-``internal_publish_namespaces`` makes the skip reliable offline, and the #1657
-NOTE below points the operator at that config when an in-hook probe cannot
-prove visibility.
+Arms (1) to (3) condition their downgrade on a PROVABLY-internal landing repo or a
+PROVABLY-own configured URL — never on the destination SLUG TEXT alone. A
+slug-text downgrade (a term that merely matches the resolved destination's own
+repo slug) would fail OPEN: this deny path is reached ONLY after
+``public_visibility.gate_skips_for_visibility`` returned False; for a ``gh``/
+``glab`` post that means the destination is affirmatively PUBLIC (an
+unknown/private target skips the gate before reaching here) — exactly the surface
+the leak block protects. An org/repo slug is attacker-controllable
+(``<term>-eng/tracker``), so downgrading on slug text would let a genuinely-public
+repo named after the term silence the leak block. Arm (4) is NOT a slug-text
+downgrade: it is scoped to a LOCAL ``git commit`` (which never skips on visibility
+— ``gate_skips_for_visibility`` defers every commit to the landing-repo carve-out
+and the #703 backstop), and ``command_targets_local_commit``'s chained-segment
+proof keeps a commit chained to a real PUBLIC ``gh``/``glab`` post hard-blocked,
+so the widening never relaxes a public post. The #2597 false positive (a status
+comment to the overlay's OWN private tracker) is resolved the SOUND way instead: a
+private/unknown tracker is NOT affirmatively public, so
+``gate_skips_for_visibility`` skips the WHOLE gate for it; declaring it in
+``[teatree] private_repos`` / ``internal_publish_namespaces`` makes the skip
+reliable offline, and the #1657 NOTE below points the operator at that config when
+an in-hook probe cannot prove visibility.
 
 Anything not downgraded hard-blocks, after emitting the #1657 unknown-visibility
 NOTE when the target's visibility could not be resolved in-hook.
@@ -68,6 +85,14 @@ def emit_banned_term_deny(tool_name: str, command: str, payload: str, term: str,
         sys.stderr.write(
             f"WARNING: banned-terms gate (#1415) — term '{term}' appears only inside a URL of "
             "the overlay's own configured repo; downgraded to warn. The address of the repo is not a leak.\n"
+        )
+        return False
+    if tool_name == "Bash" and publish_surface.command_targets_local_commit(command, cwd_repo):
+        sys.stderr.write(
+            f"WARNING: banned-terms gate (#1415) — term '{term}' on a LOCAL git commit; "
+            "downgraded to warn (#126). The #703 pre-push gate re-scans commit messages for "
+            "banned terms before they reach a public remote. A chained public gh/glab post "
+            "still hard-blocks.\n"
         )
         return False
     unknown_slug = publish_surface.visibility_unknown_for_block(command, cwd_repo)
