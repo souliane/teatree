@@ -18,13 +18,17 @@ def _backfill_issue_number(apps, schema_editor):
     correct ``""`` default and are skipped.
     """
     ticket_model = apps.get_model("core", "Ticket")
+    # Scope the read and the bulk_update to the alias the migration is running
+    # against (matches 0005) so a multi-DB / non-default-alias apply backfills the
+    # DB being migrated, not the default connection.
+    db_alias = schema_editor.connection.alias
     pending = []
-    for ticket in ticket_model.objects.exclude(issue_url="").only("pk", "issue_url", "issue_number"):
+    for ticket in ticket_model.objects.using(db_alias).exclude(issue_url="").only("pk", "issue_url", "issue_number"):
         derived = derive_issue_number(ticket.issue_url)
         if ticket.issue_number != derived:
             ticket.issue_number = derived
             pending.append(ticket)
-    ticket_model.objects.bulk_update(pending, ["issue_number"], batch_size=500)
+    ticket_model.objects.using(db_alias).bulk_update(pending, ["issue_number"], batch_size=500)
 
 
 class Migration(migrations.Migration):

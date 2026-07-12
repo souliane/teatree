@@ -15,7 +15,7 @@ from pydantic import ValidationError
 
 from teatree.backends.types import Service
 from teatree.core.models import Ticket, Worktree
-from teatree.core.overlay import OverlayBase, OverlayConfig, ProvisionStep
+from teatree.core.overlay import OverlayBase, OverlayConfig, OverlayMetadata, ProvisionStep
 from teatree.core.overlay_loader import OverlayConfigResolver, get_overlay, reset_overlay_cache
 from teatree.utils.run import CommandFailedError
 
@@ -361,6 +361,26 @@ class TestOverlayConfig(TestCase):
         assert config._secret_registry() == {"aaa_token": "store/aaa"}
         assert config.zzz_plain_setting == "plain"
 
+    def test_callable_assigned_to_declared_field_fails_loud(self) -> None:
+        # A callable assigned to a DECLARED typed field must NOT bypass Pydantic
+        # validation: ``__setattr__`` routes callables past validation only for
+        # non-field names (per-instance method overrides). Assigning a callable to
+        # ``gitlab_url`` (a ``str`` field) has to raise so a settings module that
+        # mistakenly supplies a callable for a typed field fails loud, not silently
+        # corrupt the config.
+        config = OverlayConfig()
+        with pytest.raises(ValidationError):
+            config.gitlab_url = lambda: "https://example.test"  # type: ignore[assignment]
+
+    def test_callable_assigned_to_non_field_shadows_class_method(self) -> None:
+        # The legitimate idiom must still work: a callable assigned to a NON-field
+        # name (a method / helper, not a declared field) lands in the instance
+        # ``__dict__`` and shadows the class attribute exactly as normal Python
+        # attribute resolution does.
+        config = OverlayConfig()
+        config.get_review_channel = lambda: ("chan", "C123")  # type: ignore[method-assign]
+        assert config.get_review_channel() == ("chan", "C123")
+
     def test_apply_toml_overrides_after_init_overwrites_subclass_defaults(self) -> None:
         # Subclasses that pass only ``settings_module`` (like AcmeConfig) miss
         # TOML overrides unless apply_toml_overrides is called explicitly.
@@ -382,6 +402,70 @@ class TestOverlayConfig(TestCase):
             config.apply_toml_overrides("test-overlay")
 
         assert config.exclude_labels == ["Process::DEV review", "Process::QA review"]
+
+
+class _ConfigHoldingMetadata(OverlayMetadata):
+    """Metadata facet that keeps a reference to the config it was built with."""
+
+    def __init__(self, config: OverlayConfig) -> None:
+        self._config = config
+
+
+class _MetadataBoundOverlay(OverlayBase):
+    """Overlay whose metadata facet is constructed from the class-level config."""
+
+    config = OverlayConfig()
+    metadata = _ConfigHoldingMetadata(config)
+
+    def get_repos(self) -> list[str]:
+        return ["r"]
+
+    def get_provision_steps(self, worktree: Worktree) -> list[ProvisionStep]:
+        return []
+
+
+class TestOverlayFacetIsolation(TestCase):
+    """Each overlay instance owns its config/facets — no cross-overlay state bleed."""
+
+    def test_two_instances_have_independent_config_objects(self) -> None:
+        first = DummyOverlay()
+        second = DummyOverlay()
+        assert first.config is not second.config
+        first.config.exclude_labels.append("only-first")
+        assert second.config.exclude_labels == []
+
+    def test_config_does_not_bleed_across_overlay_classes(self) -> None:
+        # Two DIFFERENT overlay classes that both inherit the OverlayBase config
+        # default must not share the single class-level OverlayConfig instance.
+        dummy = DummyOverlay()
+        other = SuperCallingOverlay()
+        assert dummy.config is not other.config
+        dummy.config.gitlab_url = "https://only-dummy.test/api"
+        assert other.config.gitlab_url != "https://only-dummy.test/api"
+
+    def test_apply_toml_overrides_does_not_bleed_into_a_sibling(self) -> None:
+        first = DummyOverlay()
+        second = DummyOverlay()
+        mock_config = MagicMock()
+        mock_config.raw = {"overlays": {"first-overlay": {"exclude_labels": ["First::x"]}}}
+        with patch("teatree.config.load_config", return_value=mock_config):
+            first.config.apply_toml_overrides("first-overlay")
+        assert first.config.exclude_labels == ["First::x"]
+        assert second.config.exclude_labels == []
+
+    def test_metadata_facet_is_repointed_at_the_instance_config(self) -> None:
+        # A facet built with the class-level config is re-pointed at the
+        # per-instance copy so the two never diverge across a config mutation.
+        overlay = _MetadataBoundOverlay()
+        assert overlay.metadata._config is overlay.config
+        other = _MetadataBoundOverlay()
+        assert overlay.metadata._config is not other.metadata._config
+
+    def test_facets_are_per_instance(self) -> None:
+        first = DummyOverlay()
+        second = DummyOverlay()
+        assert first.review is not second.review
+        assert first.connectors is not second.connectors
 
 
 class TestBundledOverlayConfigTable(TestCase):

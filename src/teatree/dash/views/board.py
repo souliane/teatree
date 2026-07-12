@@ -6,6 +6,7 @@ from django.shortcuts import render
 from django.views.decorators.http import require_GET
 
 from teatree.dash.selectors import BoardFilters, KanbanBoard, build_kanban_columns
+from teatree.dash.views.access import require_loopback_or_staff
 from teatree.dash.views.base import nav_context
 
 if TYPE_CHECKING:
@@ -33,12 +34,14 @@ def _board_context(request: "HttpRequest") -> BoardContext:
     return {"board": build_kanban_columns(filters), "filters": filters}
 
 
+@require_loopback_or_staff
 @require_GET
 def board(request: "HttpRequest") -> "HttpResponse":
     """Full board page — the kanban of tickets grouped by ``Ticket.state``."""
     return render(request, "dash/board.html", {**nav_context("dash:board"), **_board_context(request)})
 
 
+@require_loopback_or_staff
 @require_GET
 def board_columns_partial(request: "HttpRequest") -> "HttpResponse":
     """Just the columns fragment — the target of the htmx poll (no page chrome)."""

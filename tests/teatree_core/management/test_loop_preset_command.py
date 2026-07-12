@@ -11,7 +11,7 @@ import django.test
 import pytest
 from django.core.management import call_command
 
-from teatree.core.models import Loop, LoopPreset, LoopPresetOverride
+from teatree.core.models import PIN_MODES, Loop, LoopPreset, LoopPresetOverride
 
 
 def _run(*args: str, **kwargs: object) -> str:
@@ -40,6 +40,17 @@ class TestLoopPresetCommand(django.test.TestCase):
             _run("create", "bad", "--set", "review=maybe")
         assert not LoopPreset.objects.filter(name="bad").exists()
 
+    def test_create_accepts_every_canonical_pin(self) -> None:
+        # LP-5: --pin validates against the SAME canonical PIN_MODES the model uses.
+        for index, mode in enumerate(sorted(PIN_MODES)):
+            _run("create", f"pinned-{index}", "--pin", mode)
+            assert LoopPreset.objects.get(name=f"pinned-{index}").availability_mode == mode
+
+    def test_create_refuses_a_non_canonical_pin(self) -> None:
+        with pytest.raises(SystemExit):
+            _run("create", "bad-pin", "--pin", "sideways")
+        assert not LoopPreset.objects.filter(name="bad-pin").exists()
+
     def test_edit_inherit_removes_an_entry(self) -> None:
         LoopPreset.objects.create(name="p", entries={"review": False, "dispatch": True})
         _run("edit", "p", "--set", "review=inherit")
@@ -57,6 +68,27 @@ class TestLoopPresetCommand(django.test.TestCase):
         LoopPreset.objects.create(name="engaged", entries={})
         _run("use", "engaged", "--for", "2h")
         assert LoopPresetOverride.objects.current().until is not None
+
+    def test_use_with_until_iso_instant_still_works(self) -> None:
+        # --until remains a valid spelling of the unified expiry input.
+        LoopPreset.objects.create(name="engaged", entries={})
+        _run("use", "engaged", "--until", "2099-01-01T00:00:00+00:00")
+        until = LoopPresetOverride.objects.current().until
+        assert until is not None
+        assert until.year == 2099
+
+    def test_use_records_reason_and_show_surfaces_it(self) -> None:
+        # LP-6: --reason is stored on the override and rendered on the active WHY line.
+        LoopPreset.objects.create(name="engaged", entries={})
+        _run("use", "engaged", "--hold", "--reason", "release freeze")
+        assert LoopPresetOverride.objects.current().reason == "release freeze"
+        payload = json.loads(_run("show", json_output=True))
+        assert "release freeze" in payload["active"]["reason"]
+
+    def test_use_without_reason_leaves_it_blank(self) -> None:
+        LoopPreset.objects.create(name="engaged", entries={})
+        _run("use", "engaged", "--hold")
+        assert LoopPresetOverride.objects.current().reason == ""
 
     def test_use_refuses_unknown_preset(self) -> None:
         with pytest.raises(SystemExit):

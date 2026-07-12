@@ -1,7 +1,7 @@
 # Codebase Map
 
 The file to read first. One line per directory, so a fresh contributor or
-sub-agent can find where something lives without reading the 2000-line
+sub-agent can find where something lives without reading the full
 `BLUEPRINT.md` or grepping blindly. Each entry links to the relevant
 `BLUEPRINT.md` section for the full design rationale.
 
@@ -13,7 +13,8 @@ lightweight entry-point packages. The Python source lives under
 
 | Directory | Purpose | BLUEPRINT |
 |---|---|---|
-| `src/teatree/` | Package root: `__main__.py` entry point, `config.py` (`UserSettings` + the DB `ConfigSetting` store), `identity.py`, `paths.py` (XDG + worktree-aware DB isolation), `project.py`, `notify.py`, `on_behalf_gate.py`, `outbound_claim.py` | [§3](../BLUEPRINT.md#3-package-structure) |
+| `src/teatree/` | Package root: `__main__.py`/`wsgi.py` entry points, `identity.py`, `paths.py` (XDG + worktree-aware DB isolation), `project.py`, `on_behalf_gate.py`, `outbound_claim.py`, `types.py` (Django-free shared types), `settings.py`/`urls.py` (Django wiring) | [§3](../BLUEPRINT.md#3-package-structure) |
+| `src/teatree/config/` | Config load + resolution: `UserSettings`, the DB `ConfigSetting` store, the `OVERLAY_OVERRIDABLE_SETTINGS`/registry/cold-hook settings surface, and overlay discovery | [§10](../BLUEPRINT.md#10-configuration) |
 | `src/teatree/cli/` | The `t3` CLI command tree — Typer apps for the Django-free bootstrap commands plus per-overlay subapp registration | [§8](../BLUEPRINT.md#8-command-tiers) |
 | `src/teatree/core/` | The heart of teatree: the Django app with the FSM models, scanners, sync, cleanup, reconcile, signals, and provisioning | [§4](../BLUEPRINT.md#4-domain-models) |
 | `src/teatree/core/models/` | FSM and supporting models (`Ticket`, `Worktree`, `Session`, `Task`, `TaskAttempt`) split into domain modules, plus shared errors/types | [§4](../BLUEPRINT.md#4-domain-models) |
@@ -30,6 +31,18 @@ lightweight entry-point packages. The Python source lives under
 | `src/teatree/loop/self_improve/detectors/` | Individual self-improve detectors | [§5](../BLUEPRINT.md#57-self-improving-monitor-loop-phase-1) |
 | `src/teatree/loop/slack_answer/` | Reactive Slack-answer loop — classifier and answer cycle for inbound chat | [§5](../BLUEPRINT.md#58-reactive-slack-answer-loop-loop-phase-2--the-third-slot) |
 | `src/teatree/backends/` | Pluggable external service adapters: GitHub/GitLab code-host clients and sync, Slack messaging, Notion, Sentry, plus the per-overlay loader | [§7](../BLUEPRINT.md#7-backend-protocols-and-abcs) |
+| `src/teatree/loops/` | Per-domain mini-loops + orchestrator — the fat `/loop` tick split into per-domain loops the singleton `t3 worker` timer chains drive | [§5](../BLUEPRINT.md#5-agent-execution) |
+| `src/teatree/mcp/` | Structured-search + gate-preserving-write MCP server (`t3 mcp serve`) — read tools plus a write suite over the internal model | [§3](../BLUEPRINT.md#3-package-structure) |
+| `src/teatree/messaging/` | Messaging egress helpers above the raw backend transports (the verified-delivery notify wrapper) | [§7](../BLUEPRINT.md#7-backend-protocols-and-abcs) |
+| `src/teatree/llm/` | Provider-neutral LLM plumbing — currently the credential layer | [§5](../BLUEPRINT.md#5-agent-execution) |
+| `src/teatree/dash/` | First-party admin dashboard app served by the `t3 admin` gunicorn process (`/dash/`) | [§8](../BLUEPRINT.md#8-command-tiers) |
+| `src/teatree/eval/` | Behavioral evals — runtime checks on agent behavior via the Agent SDK | [§12](../BLUEPRINT.md#12-testing) |
+| `src/teatree/quality/` | Architectural anti-pattern catalog — `antipatterns.yaml` plus the typed catalog | [§13](../BLUEPRINT.md#13-quality-gates) |
+| `src/teatree/verification/` | Deterministic existence checks for cited external sources (intake-source verification) | [§4](../BLUEPRINT.md#4-domain-models) |
+| `src/teatree/skill_support/` | Skill metadata, loading policy, dependency resolution, and schema/ref validation | [§11](../BLUEPRINT.md#11-skills--plugin-architecture) |
+| `src/teatree/hooks/` | Pre-publish enforcement primitives consumed by the PreToolUse hook chain (leak/term/opaque-id matchers) | [§11](../BLUEPRINT.md#11-skills--plugin-architecture) |
+| `src/teatree/teams/` | Agent-teams WORK layer — the inert team-role registry (ships dark) | [§5](../BLUEPRINT.md#5-agent-execution) |
+| `src/teatree/overlay_sdk/` | Surface-frozen overlay-authoring namespace — the stable teatree symbols an overlay subclasses | [§6](../BLUEPRINT.md#6-overlay-system) |
 | `src/teatree/utils/` | Pure utility modules — git, ports, db, diff coverage, compose contract, dependency drift, postgres secret helpers | [§3](../BLUEPRINT.md#3-package-structure) |
 | `src/teatree/overlay_init/` | `t3 startoverlay` scaffold generation logic | [§6](../BLUEPRINT.md#6-overlay-system) |
 | `src/teatree/contrib/` | First-party overlays shipped with the package | [§6](../BLUEPRINT.md#6-overlay-system) |

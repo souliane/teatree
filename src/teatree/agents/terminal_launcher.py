@@ -29,7 +29,7 @@ import threading
 from dataclasses import dataclass
 
 from teatree.utils.ports import find_free_port
-from teatree.utils.run import DEVNULL, PIPE, Popen, run_allowed_to_fail, spawn
+from teatree.utils.run import DEVNULL, Popen, run_allowed_to_fail, spawn
 
 logger = logging.getLogger(__name__)
 
@@ -106,10 +106,13 @@ def launch_ttyd(command: list[str]) -> LaunchResult:
         return LaunchResult(error=_TTYD_INSTALL_HINT)
 
     port = find_free_port(_LOOPBACK)
+    # Both streams go to DEVNULL: nothing reads ttyd's output, and an unread PIPE
+    # can fill the OS pipe buffer and block a chatty ttyd mid-session. The reaper's
+    # liveness probe is an independent loopback ``lsof`` on the port, not ttyd's stderr.
     proc = spawn(
         [ttyd_bin, "--writable", "--interface", _LOOPBACK, "--port", str(port), "--once", *command],
         stdout=DEVNULL,
-        stderr=PIPE,
+        stderr=DEVNULL,
     )
     _arm_connect_grace_reaper(proc, port)
     logger.info("Launched loopback ttyd (pid=%d, port=%d)", proc.pid, port)

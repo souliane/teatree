@@ -23,6 +23,10 @@ DEFAULT_DRIFT_RATIO_THRESHOLD = 0.15
 _MIN_ARGS = 2  # a durations path + at least one shard file
 
 
+class MissingShardDurationsError(FileNotFoundError):
+    """An expected per-shard durations file is absent — refuse to write a truncated merge."""
+
+
 def load_durations(path: Path) -> dict[str, float]:
     if not path.exists():
         return {}
@@ -31,9 +35,25 @@ def load_durations(path: Path) -> dict[str, float]:
 
 
 def merge_durations(paths: list[Path]) -> dict[str, float]:
-    """Union the per-shard duration slices (the four groups partition the suite)."""
+    """Union the per-shard duration slices (the four groups partition the suite).
+
+    A missing shard file is a HARD error, never an empty contribution: the four
+    groups partition the suite, so an absent shard would silently drop ~1/4 of the
+    tests from the merged file and PR a truncated ``dev/.test_durations`` that
+    unbalances the shard split. Fail LOUD (raise) so a partial merge never ships —
+    an absent artifact means an upload/download failure to investigate, not a
+    refresh to publish.
+    """
     merged: dict[str, float] = {}
     for path in paths:
+        if not path.exists():
+            message = (
+                f"expected shard-durations file is absent: {path}. The four shards partition "
+                "the suite, so a missing shard would silently drop ~1/4 of the tests from the "
+                "merged durations — refusing to write a truncated file. Check the "
+                "durations-shard-* artifact upload/download in the refresh-durations job."
+            )
+            raise MissingShardDurationsError(message)
         merged.update(load_durations(path))
     return merged
 
@@ -108,7 +128,15 @@ def main(argv: list[str] | None = None) -> int:
     shard_paths = [Path(a) for a in args[1:]]
 
     committed = load_durations(durations_path)
-    merged = merge_durations(shard_paths)
+    try:
+        merged = merge_durations(shard_paths)
+    except MissingShardDurationsError as exc:
+        # Fail LOUD: a missing shard would truncate the merge. Do NOT emit a refresh
+        # verdict and do NOT touch the committed file — the job step fails so the
+        # maintainer investigates the artifact instead of shipping a partial file.
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+
     if not merged:
         print("No shard durations to merge — nothing recorded.", file=sys.stderr)
         _emit_output(False)

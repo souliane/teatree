@@ -5,10 +5,22 @@ The autonomous-loop control plane (#1796) is manageable from the Django admin â€
 disabled there.
 """
 
+import datetime as dt
+
 import django.test
 from django.contrib import admin
+from django.contrib.auth import get_user_model
+from django.urls import reverse
 
-from teatree.core.models import ConfigSetting, Loop, Prompt
+from teatree.core.models import (
+    ConfigSetting,
+    Loop,
+    LoopPreset,
+    LoopPresetOverride,
+    LoopSchedule,
+    LoopScheduleSlot,
+    Prompt,
+)
 
 
 def _prompt(name: str = "demo-prompt") -> Prompt:
@@ -56,3 +68,77 @@ class TestLoopAdmin(django.test.TestCase):
     def test_loop_admin_allows_inline_enable_disable(self) -> None:
         model_admin = admin.site._registry[Loop]
         assert "enabled" in model_admin.list_editable
+
+
+class TestPresetScheduleAdminRegistered:
+    """LP-4: the preset + schedule models are editable from the Django admin.
+
+    The plan promised an admin surface for presets and slot editing, but the
+    four #3159 models had no ``ModelAdmin`` â€” leaving slot times/days/preset only
+    editable by a raw DB write.
+    """
+
+    def test_loop_preset_registered(self) -> None:
+        assert LoopPreset in admin.site._registry
+
+    def test_loop_preset_override_registered(self) -> None:
+        assert LoopPresetOverride in admin.site._registry
+
+    def test_loop_schedule_registered(self) -> None:
+        assert LoopSchedule in admin.site._registry
+
+    def test_loop_schedule_slot_registered(self) -> None:
+        assert LoopScheduleSlot in admin.site._registry
+
+    def test_slots_editable_inline_under_schedule(self) -> None:
+        # The cheapest slot-editing surface: a slot inline under its schedule so
+        # days/start_time/preset are edited in place without a standalone add.
+        model_admin = admin.site._registry[LoopSchedule]
+        inline_models = [inline.model for inline in model_admin.inlines]
+        assert LoopScheduleSlot in inline_models
+        slot_inline = next(inline for inline in model_admin.inlines if inline.model is LoopScheduleSlot)
+        for field in ("days", "start_time", "preset_name"):
+            assert field in slot_inline.fields
+
+
+class TestPresetScheduleAdminChangelistsLoad(django.test.TestCase):
+    """LP-4 smoke test: each new admin changelist renders for a superuser (HTTP 200).
+
+    Loads the actual changelist through the admin client so a misconfigured
+    ``list_display`` / inline would surface as a non-200, not just a registry hit.
+    """
+
+    def setUp(self) -> None:
+        user = get_user_model().objects.create_superuser("admin-lp4", "lp4@example.com", "pw")
+        self.client.force_login(user)
+
+    def _assert_changelist_loads(self, model: type) -> None:
+        url = reverse(f"admin:core_{model._meta.model_name}_changelist")
+        assert self.client.get(url).status_code == 200
+
+    def test_loop_preset_changelist_loads(self) -> None:
+        LoopPreset.objects.create(name="heads-down", entries={"review": False})
+        self._assert_changelist_loads(LoopPreset)
+
+    def test_loop_preset_override_changelist_loads(self) -> None:
+        LoopPresetOverride.objects.set_override("heads-down", reason="deep work")
+        self._assert_changelist_loads(LoopPresetOverride)
+
+    def test_loop_schedule_changelist_loads(self) -> None:
+        schedule = LoopSchedule.objects.create(name="standard", timezone="UTC")
+        LoopScheduleSlot.objects.create(schedule=schedule, days=[0, 1, 2], start_time=dt.time(8, 0), preset_name="x")
+        self._assert_changelist_loads(LoopSchedule)
+
+    def test_loop_schedule_slot_changelist_loads(self) -> None:
+        schedule = LoopSchedule.objects.create(name="standard", timezone="UTC")
+        LoopScheduleSlot.objects.create(schedule=schedule, days=[0, 1, 2], start_time=dt.time(8, 0), preset_name="x")
+        self._assert_changelist_loads(LoopScheduleSlot)
+
+    def test_loop_schedule_change_form_shows_slot_inline(self) -> None:
+        schedule = LoopSchedule.objects.create(name="standard", timezone="UTC")
+        LoopScheduleSlot.objects.create(schedule=schedule, days=[0], start_time=dt.time(8, 0), preset_name="engaged")
+        url = reverse("admin:core_loopschedule_change", args=[schedule.pk])
+        response = self.client.get(url)
+        assert response.status_code == 200
+        # The inline renders the slot's start_time field on the schedule change form.
+        assert b"slots-0-start_time" in response.content

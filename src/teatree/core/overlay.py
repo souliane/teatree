@@ -1,3 +1,4 @@
+import copy
 import json
 import logging
 from abc import ABC, abstractmethod
@@ -226,15 +227,20 @@ class OverlayConfig(BaseModel):
 
     def __setattr__(self, name: str, value: object) -> None:
         # Route past Pydantic's field machinery for the two overlay-config idioms
-        # a plain object supports but a strict model does not: private state
-        # (secret holders, caches — single-underscore names) and per-instance
-        # method overrides (``config.get_review_channel = lambda: ...`` in tests /
-        # dynamic overlays). Both land in the instance ``__dict__`` via
+        # a plain object supports but a strict model does not — but ONLY for names
+        # that are not declared model fields: private state (secret holders,
+        # caches — single-underscore names) and per-instance method overrides
+        # (``config.get_review_channel = lambda: ...`` in tests / dynamic
+        # overlays). Both land in the instance ``__dict__`` via
         # ``object.__setattr__`` so a callable override shadows the class method
-        # exactly as normal Python attribute resolution does. Dunder
-        # ``__pydantic_*`` internals and real data fields still go through the
-        # model machinery (type validation preserved — the fail-closed contract).
-        if (name.startswith("_") and not name.startswith("__")) or callable(value):
+        # exactly as normal Python attribute resolution does. A DECLARED field
+        # ALWAYS takes the validated model path, even when the assigned value is a
+        # callable — so a settings module that assigns a callable to a typed field
+        # fails LOUD (the fail-closed contract) instead of silently bypassing
+        # validation. Dunder ``__pydantic_*`` internals and real data fields keep
+        # the validated path.
+        fields = type(self).model_fields
+        if name not in fields and ((name.startswith("_") and not name.startswith("__")) or callable(value)):
             object.__setattr__(self, name, value)
         else:
             # Pydantic's ``validate_assignment`` path REBUILDS ``__dict__`` from
@@ -246,7 +252,6 @@ class OverlayConfig(BaseModel):
             # plain assignment survived — every earlier credential (e.g. a
             # ``gitlab_token``) silently resolved to ``""``. Snapshot the
             # non-field entries and restore any the rebuild dropped.
-            fields = type(self).model_fields
             plain_entries = {
                 key: kept for key, kept in self.__dict__.items() if key not in fields and not key.startswith("__")
             }
@@ -600,6 +605,12 @@ class OverlayConnectors:
 
 class OverlayBase(ABC):
     django_app: str | None = None
+    # These facet attributes are declared at class level as TEMPLATES only. The
+    # per-instance copies are installed by ``__init__`` below — declaring a bare
+    # ``OverlayConfig()`` here (or on a subclass) would otherwise share ONE
+    # mutable instance across every overlay, and ``_discover_overlays`` mutates
+    # ``overlay.config`` (``apply_toml_overrides``), so that shared instance would
+    # bleed one overlay's config into another.
     config: OverlayConfig = OverlayConfig()
     metadata: OverlayMetadata = OverlayMetadata()
     provisioning: OverlayProvisioning = OverlayProvisioning()
@@ -607,6 +618,34 @@ class OverlayBase(ABC):
     e2e: OverlayE2E = OverlayE2E()
     review: OverlayReview = OverlayReview()
     connectors: OverlayConnectors = OverlayConnectors()
+
+    #: The composed facet attributes ``__init__`` promotes to per-instance copies.
+    _FACET_ATTRS: tuple[str, ...] = ("config", "metadata", "provisioning", "runtime", "e2e", "review", "connectors")
+
+    def __init__(self) -> None:
+        super().__init__()
+        # Give this overlay instance its OWN config + facets so state never bleeds
+        # across overlays. Whether the facets come from the OverlayBase defaults
+        # (a subclass that inherits them) or a subclass' own class-level overrides
+        # (``TeatreeOverlay.config = OverlayConfig(...)``), they are shared class
+        # attributes: two overlays would otherwise reference the SAME mutable
+        # OverlayConfig, and ``_discover_overlays`` mutates it during discovery.
+        # The config is deep-copied (it is the mutable one); each facet is a
+        # shallow per-instance copy with any reference to the shared class-level
+        # config re-pointed at this instance's copy so a facet built with the
+        # config (e.g. ``OverlayMetadata``) never diverges from ``self.config``.
+        cls = type(self)
+        shared_config = cls.config
+        own_config = shared_config.model_copy(deep=True)
+        self.config = own_config
+        for name in self._FACET_ATTRS:
+            if name == "config":
+                continue
+            facet = copy.copy(getattr(cls, name))
+            for attr, value in vars(facet).items():
+                if value is shared_config:
+                    setattr(facet, attr, own_config)
+            setattr(self, name, facet)
 
     # ── Required hooks ───────────────────────────────────────────────
 

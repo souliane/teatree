@@ -12,9 +12,11 @@ already exist? It does not — and the reason is the name reuse, not ``replaces`
 Django's executor keys applied state on ``(app_label, name)``. Because the squash
 kept the name ``0001_initial``, the recorded ``(core, 0001_initial)`` row marks
 the new squashed node applied (a no-op); the executor never re-runs its
-``CreateModel`` ops. The two post-squash ``AddField`` migrations (``0002``/``0003``)
-then apply cleanly onto the already-present ``teatree_implemented_issue_marker``
-table.
+``CreateModel`` ops. The post-squash migrations (``0002``..``0008`` — the numbering
+skips ``0006``, see those files' headers; the dependency chain stays linear) then
+apply cleanly on top: ``0002``/``0003`` AddField the two fleet columns onto the
+already-present ``teatree_implemented_issue_marker`` table, and ``0004``/``0005``/
+``0007``/``0008`` add fields to (or create) their own tables.
 
 This gate proves both paths empirically and is anti-vacuous:
 ``test_old_chain_db_bricks_when_initial_record_name_does_not_match`` shows the
@@ -23,14 +25,14 @@ initial name stops matching the squashed node — the exact regression a
 name-changing re-squash (or a future ``0001`` rename) would reintroduce.
 """
 
-from pathlib import Path
-
 import pytest
 from django.core.management import call_command
 from django.db import connection
 from django.db.migrations.recorder import MigrationRecorder
 from django.db.utils import OperationalError
 from django.test import TransactionTestCase
+
+from tests.teatree_core._migration_graph import core_migration_names
 
 _MARKER_TABLE = "teatree_implemented_issue_marker"
 
@@ -39,18 +41,17 @@ _MARKER_TABLE = "teatree_implemented_issue_marker"
 _CLAIMED_BY_INSTANCE = "claimed_by_instance"
 _CLAIM_REF_SHA = "claim_ref_sha"
 
-_CORE_MIGRATIONS_DIR = Path(__file__).resolve().parents[2] / "src" / "teatree" / "core" / "migrations"
-
 # The current, post-squash core graph — every real on-disk ``core`` migration,
-# derived from disk (never a hardcoded set) so it cannot fall out of sync when a new
-# migration lands. ``_restore_core_head`` relies on this being the FULL real graph to
-# tell real records (keep) from the fileless pre-squash phantom rows (delete): a stale
-# set silently deletes the real records for the migrations it omits and then re-applies
-# their ops onto already-present schema — a ``CreateModel`` "table already exists" brick
-# that corrupts the xdist-reused ``default`` DB for every sibling test (the #3159 preset
-# ``CreateModel`` migration first exposed this latent staleness; AddFields tolerated it).
-# Mirrors ``test_schema_guard.py::_core_migration_names`` — the same disk-glob seam.
-_CURRENT_GRAPH: frozenset[str] = frozenset(p.stem for p in _CORE_MIGRATIONS_DIR.glob("[0-9]*.py"))
+# derived from disk via the shared ``_migration_graph`` seam (never a hardcoded set)
+# so it cannot fall out of sync when a new migration lands. ``_restore_core_head``
+# relies on this being the FULL real graph to tell real records (keep) from the
+# fileless pre-squash phantom rows (delete): a stale set silently deletes the real
+# records for the migrations it omits and then re-applies their ops onto
+# already-present schema — a ``CreateModel`` "table already exists" brick that
+# corrupts the xdist-reused ``default`` DB for every sibling test (the #3159 preset
+# ``CreateModel`` migration first exposed this latent staleness; AddFields tolerated
+# it). ``test_schema_guard`` derives its ledger names from the same shared seam.
+_CURRENT_GRAPH: frozenset[str] = frozenset(core_migration_names())
 
 # The frozen pre-squash migration names (post-``0001_initial``) as they existed at
 # ``666a9730^`` right before the squash. A fully-updated old install recorded
@@ -169,8 +170,9 @@ class TestSquashMigratesCleanBothWays(TransactionTestCase):
         """Path (b): a DB carrying the recorded old chain migrates without a brick.
 
         The new ``migrate`` must skip the squashed ``0001_initial`` (its name is
-        already recorded) and apply only the two post-squash AddFields onto the
-        existing marker table — no ``CREATE``-existing-table, no lost data.
+        already recorded) and apply the post-squash migrations on top — the
+        ``0002``/``0003`` AddFields land the fleet columns onto the existing marker
+        table with no ``CREATE``-existing-table and no lost data.
         """
         self._reset_to_old_chain_install()
         assert _CLAIMED_BY_INSTANCE not in self._marker_columns()  # 0043 install lacks the fleet columns
