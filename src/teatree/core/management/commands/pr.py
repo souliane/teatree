@@ -251,7 +251,7 @@ class Command(TyperCommand):
     # the flags. Same targeted-noqa-for-framework-reality pattern as the
     # repo's PLC0415 (import-in-function) and SLF001 (framework internals).
     # ast-grep-ignore: ac-django-no-complexity-suppressions
-    def create(  # noqa: PLR0913
+    def create(  # noqa: PLR0913 — wide signature by design: each parameter is a distinct required input
         self,
         ticket_id: str,
         *,
@@ -418,7 +418,7 @@ class Command(TyperCommand):
     @command(name="check-gates")
     def check_gates(self, ticket_id: int, target_phase: str = "shipping") -> dict[str, object]:
         """Check whether session gates allow a phase transition (#1118: cross-session)."""
-        from teatree.core.models.errors import QualityGateError  # noqa: PLC0415
+        from teatree.core.models.errors import QualityGateError  # noqa: PLC0415 — deferred: ORM/app-registry
 
         canonical_target = normalize_phase(target_phase)
         ticket = Ticket.objects.get(pk=ticket_id)
@@ -430,7 +430,7 @@ class Command(TyperCommand):
         except QualityGateError:
             visited, _ = ticket.aggregate_phase_records()
             canonical_visited = {normalize_phase(phase) for phase in visited}
-            required = session._REQUIRED_PHASES.get(canonical_target, [])  # noqa: SLF001
+            required = session._REQUIRED_PHASES.get(canonical_target, [])  # noqa: SLF001 — intentional access to a sibling's internal within the same subsystem
             missing = [p for p in required if p not in canonical_visited]
             return {"allowed": False, "missing": missing, "reason": f"{target_phase} requires: {', '.join(missing)}"}
         except (ValueError, KeyError) as exc:

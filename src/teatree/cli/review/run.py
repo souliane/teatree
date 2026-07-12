@@ -230,11 +230,11 @@ def _audit_gitlab_mr(url: str) -> ReviewRunResult:
     normalized into :class:`_ReviewRunAPIError` so the CLI surfaces a
     structured ``api_unavailable`` payload rather than a raw traceback.
     """
-    import httpx  # noqa: PLC0415
+    import httpx  # noqa: PLC0415 — deferred: heavy/optional dep at call site
 
-    from teatree.backends.gitlab.api import GitLabAPI  # noqa: PLC0415
-    from teatree.cli.review.service import ReviewService  # noqa: PLC0415
-    from teatree.core.models.live_post_approval import canonical_mr_scope  # noqa: PLC0415
+    from teatree.backends.gitlab.api import GitLabAPI  # noqa: PLC0415 — deferred: keeps CLI startup light
+    from teatree.cli.review.service import ReviewService  # noqa: PLC0415 — deferred: keeps CLI startup light
+    from teatree.core.models.live_post_approval import canonical_mr_scope  # noqa: PLC0415 — deferred: ORM/app-registry
 
     parsed = repo_and_iid(url)
     if parsed is None:
@@ -242,7 +242,7 @@ def _audit_gitlab_mr(url: str) -> ReviewRunResult:
         raise ValueError(msg)
     repo, iid = parsed
     encoded = repo.replace("/", "%2F")
-    api = GitLabAPI(token=ReviewService.get_gitlab_token(), base_url=ReviewService._resolve_base_url())  # noqa: SLF001
+    api = GitLabAPI(token=ReviewService.get_gitlab_token(), base_url=ReviewService._resolve_base_url())  # noqa: SLF001 — intentional access to a sibling's internal within the same subsystem
 
     try:
         changes_payload = api.get_json(f"projects/{encoded}/merge_requests/{iid}/changes")

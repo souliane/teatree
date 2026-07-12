@@ -68,7 +68,7 @@ def _session_owns_loop(session_id: str | None) -> bool:
     """
     if not session_id:
         return True
-    from pathlib import Path  # noqa: PLC0415
+    from pathlib import Path  # noqa: PLC0415 — deferred: loaded only when this command runs
 
     base_env = os.environ.get("T3_LOOP_REGISTRY_DIR")
     base = Path(base_env) if base_env else Path.home() / ".local" / "share" / "teatree"
@@ -100,9 +100,9 @@ class Command(TyperCommand):
             typer.Option("--json", help="Emit the cycle report as JSON."),
         ] = False,
     ) -> None:
-        from teatree.core.models import LoopLease  # noqa: PLC0415
-        from teatree.loop.phases.render import self_improve_rerender  # noqa: PLC0415
-        from teatree.loop.self_improve.schedule import run_tier  # noqa: PLC0415
+        from teatree.core.models import LoopLease  # noqa: PLC0415 — deferred: ORM import needs the app registry
+        from teatree.loop.phases.render import self_improve_rerender  # noqa: PLC0415 — deferred: lazy command import
+        from teatree.loop.self_improve.schedule import run_tier  # noqa: PLC0415 — deferred: keeps command import light
 
         session_id = _non_owner_session_id()
         if not _session_owns_loop(session_id):

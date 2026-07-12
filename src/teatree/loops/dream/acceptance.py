@@ -108,7 +108,7 @@ def persist_probe_results(
     second recording on (it now carries over from an earlier run). Returns the
     number of probes that PASSED this replay.
     """
-    from teatree.core.models import DreamQaProbe  # noqa: PLC0415
+    from teatree.core.models import DreamQaProbe  # noqa: PLC0415 — deferred: ORM import needs the app registry
 
     passed = 0
     for probe in probes:
@@ -138,7 +138,7 @@ def _prior_pass_rate(overlay: str) -> tuple[float, bool]:
     regress against a non-existent baseline, so the first run is never failed by
     interference/monotonicity.
     """
-    from teatree.core.models import DreamQaProbe  # noqa: PLC0415
+    from teatree.core.models import DreamQaProbe  # noqa: PLC0415 — deferred: ORM import needs the app registry
 
     prior = list(DreamQaProbe.objects.prior_session_probes(overlay))
     if not prior:
@@ -153,7 +153,7 @@ def _compliance_remediations(overlay: str) -> list[ComplianceRemediationView]:
     maps each of its records to a :class:`ComplianceRemediationView`. A pass with no
     snapshot yet returns no views — gate (g) then cleanly passes (nothing observed).
     """
-    from teatree.core.models import (  # noqa: PLC0415
+    from teatree.core.models import (  # noqa: PLC0415 — deferred: ORM import needs the app registry
         InstructionComplianceRecord,
         InstructionComplianceSnapshot,
         RemediationKind,

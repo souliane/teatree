@@ -21,7 +21,7 @@ def _report_mcp_connectivity() -> bool:
     every enabled server is connected (or the check degraded), ``False`` on a
     loud disconnection/provider finding.
     """
-    from teatree.core.mcp_connectivity import check_mcp_connectivity  # noqa: PLC0415
+    from teatree.core.mcp_connectivity import check_mcp_connectivity  # noqa: PLC0415 — deferred: lazy CLI import
 
     outcome = check_mcp_connectivity()
     for finding in outcome.findings:
@@ -65,7 +65,7 @@ def recover_account_switch(
 ) -> None:
     """Detect a Claude account switch, invalidate the backend cache, re-probe connectors."""
     ensure_django()
-    from teatree.core.account_switch import detect_and_recover_account_switch  # noqa: PLC0415
+    from teatree.core.account_switch import detect_and_recover_account_switch  # noqa: PLC0415 — lazy CLI import
 
     outcome = detect_and_recover_account_switch()
     if not outcome.switched:

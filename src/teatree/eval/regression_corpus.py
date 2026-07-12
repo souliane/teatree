@@ -78,7 +78,7 @@ def _check_migration_graph_single_leaf() -> bool:
     :func:`_count_core_leaves` — the same predicate a synthetic forked graph
     drives ``> 1`` in the corpus's anti-vacuous test.
     """
-    from django.db.migrations.loader import MigrationLoader  # noqa: PLC0415
+    from django.db.migrations.loader import MigrationLoader  # noqa: PLC0415 — deferred: Django import at call time
 
     loader = MigrationLoader(None, ignore_no_migrations=True)
     return _count_core_leaves(loader.graph) == 1
@@ -189,7 +189,7 @@ _CHECKS: tuple[RegressionCheck, ...] = (
 
 def _django_ready() -> bool:
     try:
-        from django.apps import apps  # noqa: PLC0415
+        from django.apps import apps  # noqa: PLC0415 — deferred: app registry read at call time
     except ImportError:
         return False
     return apps.ready

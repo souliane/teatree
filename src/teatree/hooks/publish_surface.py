@@ -490,7 +490,7 @@ def carve_out_applies(
     Ineligible regardless: ``gh api`` / ``glab api`` raw REST, ``curl``,
     Slack, and any non-structured verb. Public/unknown targets stay blocked.
     """
-    from teatree.hooks._command_parser import is_fail_closed_sentinel  # noqa: PLC0415
+    from teatree.hooks._command_parser import is_fail_closed_sentinel  # noqa: PLC0415 — deferred: call-time import
 
     if tool_name != "Bash" or is_fail_closed_sentinel(payload) or contains_secret(payload):
         return False

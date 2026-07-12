@@ -70,8 +70,8 @@ def diff_coverage(
     (the test-a-local-copy anti-vacuity check). Exits non-zero when a new line is
     uncovered or a symbol is unreferenced.
     """
-    from teatree.utils.diff_coverage import measure_diff_coverage  # noqa: PLC0415
-    from teatree.utils.git import branch_diff  # noqa: PLC0415
+    from teatree.utils.diff_coverage import measure_diff_coverage  # noqa: PLC0415 — deferred: keeps CLI startup light
+    from teatree.utils.git import branch_diff  # noqa: PLC0415 — deferred: keeps CLI startup light
 
     if not coverage_file.exists():
         typer.echo(

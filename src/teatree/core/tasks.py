@@ -74,10 +74,10 @@ class TransitionResult(TypedDict, total=False):
 
 @task()
 def execute_headless_task(task_id: int, phase: str) -> dict[str, object]:
-    import traceback  # noqa: PLC0415
+    import traceback  # noqa: PLC0415 — deferred: loaded only on this code path
 
-    from teatree.core.headless_dispatch import loop_dispatch_refusal  # noqa: PLC0415
-    from teatree.core.overlay_loader import get_overlay_for_ticket  # noqa: PLC0415
+    from teatree.core.headless_dispatch import loop_dispatch_refusal  # noqa: PLC0415 — deferred: call-time import
+    from teatree.core.overlay_loader import get_overlay_for_ticket  # noqa: PLC0415 — deferred: call-time import
 
     task_obj = Task.objects.get(pk=task_id)
 
@@ -115,7 +115,7 @@ def execute_headless_task(task_id: int, phase: str) -> dict[str, object]:
     if task_obj.status == Task.Status.PENDING:
         task_obj.claim(claimed_by="headless-worker")
     try:
-        from teatree.core.headless_dispatch import get_headless_runner  # noqa: PLC0415
+        from teatree.core.headless_dispatch import get_headless_runner  # noqa: PLC0415 — deferred: call-time import
 
         overlay = get_overlay_for_ticket(task_obj.ticket)
         attempt = get_headless_runner()(
@@ -147,7 +147,7 @@ def drain_headless_queue() -> dict[str, list[int]]:
     must not keep feeding. A blank overlay is the ambient single-overlay default
     and stays dispatchable.
     """
-    from teatree.core.headless_dispatch import runs_in_session  # noqa: PLC0415
+    from teatree.core.headless_dispatch import runs_in_session  # noqa: PLC0415 — deferred: call-time import, kept lazy
 
     pending = (
         Task.objects.filter(
@@ -176,7 +176,7 @@ def drain_headless_queue() -> dict[str, list[int]]:
 
 @task()
 def sync_followup() -> dict[str, int | list[str] | list[dict[str, int | str]]]:
-    from teatree.core.sync import sync_followup as _sync  # noqa: PLC0415
+    from teatree.core.sync import sync_followup as _sync  # noqa: PLC0415 — deferred: call-time import, kept lazy
 
     result = _sync()
     return {

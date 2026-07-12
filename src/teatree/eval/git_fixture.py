@@ -50,7 +50,7 @@ _E2E_ARTIFACT_FILES = ("run.webm", "step1.png", "step2.png")
 #: is present in the working tree of every ``git_repo`` scenario without changing
 #: ``feat/example``'s two-commits-ahead squash contract or the staged-change set.
 _MESSY_PY = """\
-def classify_status(code):  # noqa: C901, PLR0911
+def classify_status(code):  # noqa: C901, PLR0911 — flat status-code dispatch; splitting the mapping adds no clarity
     if code == 100:
         return "continue"
     if code == 200:

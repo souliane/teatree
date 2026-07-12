@@ -68,10 +68,10 @@ def handle_block_raw_pid_kill(data: dict) -> bool:
         return False
     try:
         with _teatree_src_on_path():
-            from teatree.hooks import safe_kill_detect  # noqa: PLC0415
+            from teatree.hooks import safe_kill_detect  # noqa: PLC0415 — deferred: cold-hook import
 
             detection = safe_kill_detect.detect_raw_pid_kill(command)
-    except Exception:  # noqa: BLE001
+    except Exception:  # noqa: BLE001 — crash-proof hook: any failure degrades silently, never breaks the tool call
         return False
     if not detection.is_raw_pid_kill:
         return False

@@ -426,7 +426,7 @@ def _linkify_for_slack(body: str) -> str:
     if not body:
         return body
     try:
-        from teatree.core.overlay_loader import get_overlay  # noqa: PLC0415
+        from teatree.core.overlay_loader import get_overlay  # noqa: PLC0415 — deferred: call-time import, kept lazy
 
         overlay = get_overlay()
     except Exception:  # noqa: BLE001 — overlay resolution is best-effort; never crash a post

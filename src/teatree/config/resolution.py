@@ -368,7 +368,7 @@ def _load_global_rows() -> dict[str, Any]:
     than an exception in the hot config path.
     """
     try:
-        from django.apps import apps  # noqa: PLC0415
+        from django.apps import apps  # noqa: PLC0415 — deferred: app registry read at call time
 
         model = apps.get_model("core", "ConfigSetting")
         return dict(model.objects.overrides_for_scope(""))
@@ -390,7 +390,7 @@ def _load_overlay_rows(overlay_name: str = "") -> dict[str, Any]:
     if not overlay_name:
         return {}
     try:
-        from django.apps import apps  # noqa: PLC0415
+        from django.apps import apps  # noqa: PLC0415 — deferred: app registry read at call time
 
         model = apps.get_model("core", "ConfigSetting")
         canonical = OverlayEntry.canonical_overlay_name(overlay_name)

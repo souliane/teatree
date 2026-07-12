@@ -262,7 +262,7 @@ def _review_phase_scoping(skills: list[str]) -> tuple[set[str], set[str]]:
     Only the review skills actually present in *skills* are scoped, so a
     companion that failed to resolve is not surfaced as required.
     """
-    from teatree.agents.skill_bundle import active_overlay_review_skills  # noqa: PLC0415
+    from teatree.agents.skill_bundle import active_overlay_review_skills  # noqa: PLC0415 — deferred: call-time import
 
     review_skills = [s for s in active_overlay_review_skills() if s in skills]
     primary: set[str] = set(_REVIEW_PHASE_ALWAYS_FULL)
@@ -294,7 +294,7 @@ def build_reviewer_dispatch_prompt(*, review_instruction: str, review_skills: li
     caller that already resolved the bundle); otherwise the active overlay's
     :func:`active_overlay_review_skills` are used.
     """
-    from teatree.agents.skill_bundle import active_overlay_review_skills  # noqa: PLC0415
+    from teatree.agents.skill_bundle import active_overlay_review_skills  # noqa: PLC0415 — deferred: call-time import
 
     resolved = review_skills if review_skills is not None else active_overlay_review_skills()
     ordered: list[str] = []
@@ -338,7 +338,7 @@ def _intake_landscape_lines(task: Task) -> tuple[str, ...]:
     instead of re-deriving it. Empty when intake recorded none (forge outage),
     so the planner falls back to ``t3 <overlay> workspace landscape``.
     """
-    from teatree.core.models.landscape_artifact import LandscapeArtifact  # noqa: PLC0415
+    from teatree.core.models.landscape_artifact import LandscapeArtifact  # noqa: PLC0415 — deferred: ORM/app-registry
 
     latest = LandscapeArtifact.latest_for(task.ticket)
     if latest is None:

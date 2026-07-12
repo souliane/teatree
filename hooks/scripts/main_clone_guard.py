@@ -89,7 +89,7 @@ def _ok_token(data: dict) -> str | None:
     return None
 
 
-def _load_core():  # noqa: ANN202
+def _load_core():  # noqa: ANN202 — returns a lazily-imported handle; annotating would pull the type to module scope
     """Import the decision core, bootstrapping the sibling ``src/`` onto the path.
 
     Returns the core module, or ``None`` on any import failure — the caller then
@@ -101,7 +101,7 @@ def _load_core():  # noqa: ANN202
         if str(src_dir) not in sys.path:
             sys.path.insert(0, str(src_dir))
             added = True
-        from teatree.core.gates import main_clone_guard as core  # noqa: PLC0415
+        from teatree.core.gates import main_clone_guard as core  # noqa: PLC0415 — deferred: cold-hook import
     except Exception:  # noqa: BLE001 — a cold env without teatree fails OPEN, never tracebacks.
         return None
     finally:
@@ -125,7 +125,7 @@ def _is_managed_main_clone(repo_root: str) -> bool:
         return False
     try:
         with teatree_src_on_path():
-            from teatree.paths import running_from_worktree  # noqa: PLC0415
+            from teatree.paths import running_from_worktree  # noqa: PLC0415 — deferred: cold-hook import
 
             if running_from_worktree(root):
                 return False
@@ -136,7 +136,7 @@ def _is_managed_main_clone(repo_root: str) -> bool:
     return repo_root_is_teatree_managed(str(root))
 
 
-def _edit_finding(core, data: dict) -> "MainCloneFinding | None":  # noqa: ANN001
+def _edit_finding(core, data: dict) -> "MainCloneFinding | None":  # noqa: ANN001 — untyped by design: a duck-typed handle passed positionally
     """Resolve an Edit/Write landing on a path under a managed main clone, else None."""
     file_path = data.get("tool_input", {}).get("file_path", "")
     if not isinstance(file_path, str) or not file_path or is_agent_state_path(file_path):
@@ -177,7 +177,7 @@ def _effective_command_dir(command: str, cwd: "Path | None") -> "Path | None":
     """
     try:
         with teatree_src_on_path():
-            from teatree.hooks._commit_repo_dir import resolve_commit_dir  # noqa: PLC0415, PLC2701
+            from teatree.hooks._commit_repo_dir import resolve_commit_dir  # noqa: PLC0415, PLC2701 — cold-hook import
 
             resolved = resolve_commit_dir(command, cwd)
     except Exception:  # noqa: BLE001 — a cold env without teatree fails OPEN to cwd-keying.
@@ -190,7 +190,7 @@ def _effective_command_dir(command: str, cwd: "Path | None") -> "Path | None":
     return resolved.parent if resolved.name == ".git" else resolved
 
 
-def _git_finding(core, data: dict) -> "MainCloneFinding | None":  # noqa: ANN001
+def _git_finding(core, data: dict) -> "MainCloneFinding | None":  # noqa: ANN001 — untyped by design: a duck-typed handle passed positionally
     """Resolve a forbidden git command targeting a managed main clone, else None.
 
     The targeted repo is the command's EFFECTIVE dir (honouring ``cd`` / ``-C``

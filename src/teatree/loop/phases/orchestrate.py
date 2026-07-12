@@ -102,7 +102,7 @@ def orchestrate_phase(
     claim: bool = False,
     claimed_by: str = "orchestrate-phase",
 ) -> OrchestrationManifest:
-    from teatree.core.models.task import Task  # noqa: PLC0415
+    from teatree.core.models.task import Task  # noqa: PLC0415 — deferred: ORM import needs the app registry
 
     settings = get_effective_settings()
     wip = settings.wip
@@ -135,7 +135,7 @@ def _admit_into(manifest: OrchestrationManifest, *, claim: bool, claimed_by: str
     Fail-open like every other tick phase: a DB-blocked harness or query error
     degrades to whatever was collected so far, never aborting the tick.
     """
-    from teatree.core.models.task import Task  # noqa: PLC0415
+    from teatree.core.models.task import Task  # noqa: PLC0415 — deferred: ORM import needs the app registry
 
     dispatchable = _dispatchable_filter()
     try:
@@ -189,7 +189,7 @@ def _concurrency_ceiling(settings: "UserSettings") -> int:
     Shared with parallel worktree provisioning so a boost burst and a cold
     provision honour the same machine-wide bound.
     """
-    from teatree.utils.ram_probe import default_provision_concurrency  # noqa: PLC0415
+    from teatree.utils.ram_probe import default_provision_concurrency  # noqa: PLC0415 — deferred: loaded at tick time
 
     if settings.provision_max_concurrency > 0:
         return settings.provision_max_concurrency
@@ -197,7 +197,7 @@ def _concurrency_ceiling(settings: "UserSettings") -> int:
 
 
 def _active_overlay_cap() -> int:
-    from teatree.core.backend_factory import iter_overlay_backends  # noqa: PLC0415
+    from teatree.core.backend_factory import iter_overlay_backends  # noqa: PLC0415 — deferred: loaded at tick time
 
     return sum(max(0, backend.max_concurrent_auto_starts) for backend in iter_overlay_backends())
 

@@ -77,13 +77,13 @@ def refresh_reference_snapshot(
     if snapshots:
         ok, is_env, stderr_text = _dslr.restore_ref_from_dslr(importer.dslr_cmd, importer.dslr_env, snapshots[0])
         if not ok:
-            importer._log_dslr_restore_failure(snapshots[0], is_env=is_env, stderr=stderr_text)  # noqa: SLF001
+            importer._log_dslr_restore_failure(snapshots[0], is_env=is_env, stderr=stderr_text)  # noqa: SLF001 — intentional access to a sibling's internal within the same subsystem
             return False
-    migrate_result = importer._migrate_reference_db()  # noqa: SLF001
+    migrate_result = importer._migrate_reference_db()  # noqa: SLF001 — intentional access to a sibling's internal within the same subsystem
     if migrate_result is _MigrateResult.FAILED:
         return False
     if migrate_result is _MigrateResult.APPLIED:
-        importer._take_dslr_snapshot()  # noqa: SLF001
+        importer._take_dslr_snapshot()  # noqa: SLF001 — intentional access to a sibling's internal within the same subsystem
     return True
 
 

@@ -25,7 +25,7 @@ def _delegate(
     slot-agnostic subcommands (``whoami``) that take no ``--slot`` arg.
     """
     ensure_django()
-    from django.core.management import call_command  # noqa: PLC0415
+    from django.core.management import call_command  # noqa: PLC0415 — deferred: Django import at call time
 
     kwargs: dict[str, str | bool] = {}
     if slot is not None:

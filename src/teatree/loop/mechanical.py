@@ -45,7 +45,7 @@ def payload_author_untrusted_public(payload: ActionPayload) -> bool:
 
 
 def ignore_disposed_ticket(payload: ActionPayload) -> None:
-    from django.apps import apps  # noqa: PLC0415
+    from django.apps import apps  # noqa: PLC0415 — deferred: app registry read at call time
 
     ticket_model = apps.get_model("core", "Ticket")
     ticket_id = payload.get("ticket_id")
@@ -69,7 +69,7 @@ def complete_ticket(payload: ActionPayload) -> None:
 
     FSM path: shipped → request_review → mark_merged → retrospect.
     """
-    from django.apps import apps  # noqa: PLC0415
+    from django.apps import apps  # noqa: PLC0415 — deferred: app registry read at call time
 
     ticket_model = apps.get_model("core", "Ticket")
     ticket_id = payload.get("ticket_id")
@@ -89,7 +89,7 @@ def complete_ticket(payload: ActionPayload) -> None:
 
 
 def reopen_ticket(payload: ActionPayload) -> None:
-    from django.apps import apps  # noqa: PLC0415
+    from django.apps import apps  # noqa: PLC0415 — deferred: app registry read at call time
 
     ticket_model = apps.get_model("core", "Ticket")
     ticket_id = payload.get("ticket_id")
@@ -120,7 +120,7 @@ def reviewer_task_orphaned(payload: ActionPayload) -> None:
     tasks on the same ticket (or other phases) are untouched. Best-effort —
     a missing ticket or already-completed tasks no-op silently.
     """
-    from django.apps import apps  # noqa: PLC0415
+    from django.apps import apps  # noqa: PLC0415 — deferred: app registry read at call time
 
     ticket_model = apps.get_model("core", "Ticket")
     ticket_id = payload.get("ticket_id")
@@ -155,7 +155,7 @@ def reviewer_task_self_authored(payload: ActionPayload) -> None:
     ticket id, only ``phase=reviewing`` non-terminal tasks; a missing
     ticket no-ops silently.
     """
-    from django.apps import apps  # noqa: PLC0415
+    from django.apps import apps  # noqa: PLC0415 — deferred: app registry read at call time
 
     ticket_model = apps.get_model("core", "Ticket")
     ticket_id = payload.get("ticket_id")
@@ -189,7 +189,7 @@ def reviewer_task_self_authored(payload: ActionPayload) -> None:
 
 def _complete_open_reviewing_tasks(ticket: object) -> int:
     """Complete every non-terminal ``phase=reviewing`` task on *ticket*; return the count."""
-    from teatree.core.models.task import Task  # noqa: PLC0415
+    from teatree.core.models.task import Task  # noqa: PLC0415 — deferred: ORM import needs the app registry
 
     open_tasks = Task.objects.pending_in_phase("reviewing").filter(ticket=ticket)
     completed = 0
@@ -211,7 +211,7 @@ def task_completion(payload: ActionPayload) -> None:
     already-terminal task, or a host that can no longer confirm the issue is
     done all no-op silently rather than crash the tick.
     """
-    from teatree.core.models.task import Task  # noqa: PLC0415
+    from teatree.core.models.task import Task  # noqa: PLC0415 — deferred: ORM import needs the app registry
 
     task_id = payload.get("task_id")
     if task_id is None:
@@ -238,8 +238,8 @@ def _artifact_still_terminal(task: "Task") -> bool:
     the scanner's fail-OPEN-to-orphaned: at the *completion* gate, uncertainty
     must block the irreversible action, not permit it).
     """
-    from teatree.backends.loader import get_code_host_for_url  # noqa: PLC0415
-    from teatree.core.overlay_loader import get_overlay  # noqa: PLC0415
+    from teatree.backends.loader import get_code_host_for_url  # noqa: PLC0415 — deferred: loaded at tick time
+    from teatree.core.overlay_loader import get_overlay  # noqa: PLC0415 — deferred: loaded at tick time, not import
 
     issue_url = task.ticket.issue_url
     if not issue_url:
@@ -277,8 +277,8 @@ def assign_gitlab_reviewer(payload: ActionPayload) -> None:
     if not pr_url or not reviewer_username:
         return
     try:
-        from teatree.backends.loader import get_code_host  # noqa: PLC0415
-        from teatree.core.overlay_loader import get_overlay  # noqa: PLC0415
+        from teatree.backends.loader import get_code_host  # noqa: PLC0415 — deferred: loaded at tick time, not import
+        from teatree.core.overlay_loader import get_overlay  # noqa: PLC0415 — deferred: loaded at tick time, not import
 
         overlay = get_overlay(str(payload.get("overlay") or "") or None)
         host = get_code_host(overlay)
@@ -321,8 +321,8 @@ def close_dead_issue(payload: ActionPayload) -> None:
     unresolvable host, or a backend error logs without raising so the tick
     never wedges. The handler labels/closes only; it creates no Task or claim.
     """
-    from teatree.backends.loader import get_code_host_for_url  # noqa: PLC0415
-    from teatree.core.overlay_loader import get_overlay  # noqa: PLC0415
+    from teatree.backends.loader import get_code_host_for_url  # noqa: PLC0415 — deferred: loaded at tick time
+    from teatree.core.overlay_loader import get_overlay  # noqa: PLC0415 — deferred: loaded at tick time, not import
 
     issue_url = str(payload.get("url") or payload.get("issue_url") or "")
     if not issue_url:

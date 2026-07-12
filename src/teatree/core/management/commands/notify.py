@@ -149,7 +149,7 @@ class Command(TyperCommand):
             # user_id configured) from a FAILED transport error and carries
             # the error detail, so the #1173 silent-rc=1 class is diagnosable
             # at the CLI edge and a wrapper can decide whether to fall back.
-            from teatree.core.models import BotPing  # noqa: PLC0415
+            from teatree.core.models import BotPing  # noqa: PLC0415 — deferred: ORM import needs the app registry
 
             row = BotPing.objects.filter(idempotency_key=idempotency_key).first()
             reason = (row.error_message or row.status) if row is not None else "no audit row recorded"

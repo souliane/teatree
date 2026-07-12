@@ -67,7 +67,7 @@ def _new_ticket_autostart_q() -> Q:
     drain first. Matched across every accepted spelling so a short-verb
     ``plan``/``scope`` row ranks identically to the canonical gerund.
     """
-    from teatree.core.modelkit.phases import phase_spellings  # noqa: PLC0415
+    from teatree.core.modelkit.phases import phase_spellings  # noqa: PLC0415 — deferred: loaded at tick time
 
     autostart_phases = phase_spellings("planning") + phase_spellings("scoping")
     return Q(parent_task__isnull=True) & Q(phase__in=autostart_phases)
@@ -96,7 +96,7 @@ def admission_claim_order() -> "ClaimOrder":
     so the live claim path admits a queued TODO/followup before a new-ticket
     auto-start.
     """
-    from teatree.core.managers import ClaimOrder  # noqa: PLC0415
+    from teatree.core.managers import ClaimOrder  # noqa: PLC0415 — deferred: loaded at tick time, not import
 
     return ClaimOrder(annotations=admission_priority_annotations(), order_by=ADMISSION_ORDER)
 
@@ -180,8 +180,8 @@ def expire_stale_ready_jobs(*, threshold_hours: int | None = None, queue_name: s
     timer chains — those are owned by the reconciler's own staleness repair
     (stranded-RUNNING / surplus prune), and a shared cutoff sweep would fight it.
     """
-    from django_tasks.base import TaskResultStatus  # noqa: PLC0415
-    from django_tasks_db.models import DBTaskResult  # noqa: PLC0415
+    from django_tasks.base import TaskResultStatus  # noqa: PLC0415 — deferred: heavy/optional dep at call site
+    from django_tasks_db.models import DBTaskResult  # noqa: PLC0415 — deferred: heavy/optional dep at call site
 
     hours = threshold_hours if threshold_hours is not None else stale_threshold_hours()
     cutoff = timezone.now() - dt.timedelta(hours=hours)
@@ -237,15 +237,15 @@ def _run_one_ready_job() -> bool:
     non-``default`` queue, so scoping the claim to ``DEFAULT_TASK_QUEUE_NAME``
     leaves the timer rows for the worker.
     """
-    from django.db import close_old_connections  # noqa: PLC0415
+    from django.db import close_old_connections  # noqa: PLC0415 — deferred: Django import at call time
     from django_tasks import (  # noqa: PLC0415 — deferred: django_tasks needs the app registry ready
         DEFAULT_TASK_BACKEND_ALIAS,
         DEFAULT_TASK_QUEUE_NAME,
     )
-    from django_tasks.signals import task_finished, task_started  # noqa: PLC0415
-    from django_tasks.utils import get_random_id  # noqa: PLC0415
-    from django_tasks_db.models import DBTaskResult  # noqa: PLC0415
-    from django_tasks_db.utils import exclusive_transaction  # noqa: PLC0415
+    from django_tasks.signals import task_finished, task_started  # noqa: PLC0415 — deferred: heavy/optional dep
+    from django_tasks.utils import get_random_id  # noqa: PLC0415 — deferred: heavy/optional dep at call site
+    from django_tasks_db.models import DBTaskResult  # noqa: PLC0415 — deferred: heavy/optional dep at call site
+    from django_tasks_db.utils import exclusive_transaction  # noqa: PLC0415 — deferred: heavy/optional dep at call site
 
     worker_id = f"tickdrain-{os.getpid()}-{get_random_id()}"
     ready = (
@@ -271,7 +271,7 @@ def _run_one_ready_job() -> bool:
         backend_type = task.get_backend()
         task_started.send(sender=backend_type, task_result=task_result)
         if task.takes_context:
-            from django_tasks.base import TaskContext  # noqa: PLC0415
+            from django_tasks.base import TaskContext  # noqa: PLC0415 — deferred: heavy/optional dep at call site
 
             return_value = task.call(TaskContext(task_result=task_result), *task_result.args, **task_result.kwargs)
         else:

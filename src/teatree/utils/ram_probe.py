@@ -13,9 +13,9 @@ import platform
 
 def _macos_ram_used_percent() -> float:
     """Read mac RAM use via ``sysctl`` + ``vm_stat`` (mirrors statusline.sh)."""
-    import shutil  # noqa: PLC0415
+    import shutil  # noqa: PLC0415 — deferred: loaded only on this code path
 
-    from teatree.utils.run import CommandFailedError, run_checked  # noqa: PLC0415
+    from teatree.utils.run import CommandFailedError, run_checked  # noqa: PLC0415 — deferred: call-time import
 
     sysctl = shutil.which("sysctl")
     vm_stat = shutil.which("vm_stat")
@@ -41,7 +41,7 @@ def _macos_ram_used_percent() -> float:
 def _linux_ram_used_percent() -> float:
     """Read Linux RAM use via ``/proc/meminfo`` (mirrors statusline.sh)."""
     try:
-        with open("/proc/meminfo", encoding="utf-8") as handle:  # noqa: PTH123
+        with open("/proc/meminfo", encoding="utf-8") as handle:  # noqa: PTH123 — builtin open on a device/proc path; Path.open adds nothing here
             lines = handle.readlines()
     except OSError:
         return 0.0

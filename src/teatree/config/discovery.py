@@ -28,7 +28,7 @@ def discover_overlays() -> list[OverlayEntry]:
     ``teatree`` entry for the ``t3-teatree`` overlay, which made discovery list both
     as if they were distinct overlays (souliane/teatree#1108).
     """
-    from importlib.metadata import entry_points  # noqa: PLC0415
+    from importlib.metadata import entry_points  # noqa: PLC0415 — deferred: loaded only on this code path
 
     seen: dict[str, OverlayEntry] = {}
 
@@ -138,7 +138,7 @@ def _canonical_active_overlay_name(directory_name: str) -> str:
     names directly and reuses the local ``_match_canonical_ep`` alias rule
     rather than calling into the ``core`` overlay loader.
     """
-    from importlib.metadata import entry_points  # noqa: PLC0415
+    from importlib.metadata import entry_points  # noqa: PLC0415 — deferred: loaded only on this code path
 
     try:
         ep_names = {ep.name for ep in entry_points(group="teatree.overlays")}

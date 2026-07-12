@@ -167,7 +167,7 @@ class ClaudeJudge:
         # credential exclusively. Imported at call time (not module top) to keep the
         # eval CLI import chain Django-free — ``credential_config`` pulls in the
         # routing models + settings, which cannot be created before ``django.setup()``.
-        from teatree.credential_config import resolve_eval_credential  # noqa: PLC0415
+        from teatree.credential_config import resolve_eval_credential  # noqa: PLC0415 — deferred: loaded per eval run
 
         credential = resolve_eval_credential()
         credential.export()

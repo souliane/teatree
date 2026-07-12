@@ -244,7 +244,7 @@ def default_projects_dir() -> Path:
 
 def _task_output_roots() -> list[Path]:
     uid = os.geteuid()
-    candidate = Path(f"/tmp/claude-{uid}")  # noqa: S108
+    candidate = Path(f"/tmp/claude-{uid}")  # noqa: S108 — fixed agent-controlled path, not user input
     return [candidate] if candidate.is_dir() else []
 
 
@@ -460,7 +460,7 @@ def write_clusters(
     Returns a :class:`WriteOutcome` tallying rows written vs rejected. Under *dry_run*
     the tally is computed but nothing is written.
     """
-    from teatree.loops.dream.compliance import reclassify_recurring_memory_clusters  # noqa: PLC0415
+    from teatree.loops.dream.compliance import reclassify_recurring_memory_clusters  # noqa: PLC0415 — import cycle
 
     clusters = reclassify_recurring_memory_clusters(clusters)
     snippet_texts = {str(snippet.path): normalize_ws(snippet.text) for snippet in extract.snippets}
@@ -503,7 +503,7 @@ def _cited_max_weight(cluster: DistilledCluster, snippet_weights: dict[str, int]
 
 
 def _upsert(cluster: DistilledCluster, *, max_member_weight: int, overlay: str) -> None:
-    from teatree.core.models import ConsolidatedMemory  # noqa: PLC0415
+    from teatree.core.models import ConsolidatedMemory  # noqa: PLC0415 — deferred: ORM import needs the app registry
 
     sources = [str(path) for path in cluster.source_files]
     row = ConsolidatedMemory.record_cluster(
@@ -552,8 +552,8 @@ def run_consolidation(
     grounded clusters and appends them to the review queue — only candidate
     descriptors, never a scenario file or fixture.
     """
-    from teatree.loops.dream.distill import distill_in_batches  # noqa: PLC0415
-    from teatree.loops.dream.sdk_distiller import sdk_distill  # noqa: PLC0415
+    from teatree.loops.dream.distill import distill_in_batches  # noqa: PLC0415 — deferred: import cycle
+    from teatree.loops.dream.sdk_distiller import sdk_distill  # noqa: PLC0415 — deferred: import cycle
 
     members = enumerate_members(since=since)
     extract = build_extract(members)
@@ -563,7 +563,7 @@ def run_consolidation(
     write_outcome = write_clusters(clusters, extract, dry_run=dry_run, overlay=overlay)
     proposed = 0
     if eval_proposals is not None:
-        from teatree.loops.dream import eval_proposer  # noqa: PLC0415
+        from teatree.loops.dream import eval_proposer  # noqa: PLC0415 — deferred: loaded at tick time, not import
 
         proposals = eval_proposer.propose_evals(clusters, extract, proposer=eval_proposals.proposer)
         proposed = eval_proposer.write_eval_proposals(proposals, dry_run=dry_run, out_path=eval_proposals.out_path)

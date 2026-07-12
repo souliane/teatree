@@ -25,7 +25,7 @@ def tokens(
     """Show per-account Anthropic 5h / weekly token utilization + status."""
     ensure_django()
 
-    from django.core.management import call_command  # noqa: PLC0415
+    from django.core.management import call_command  # noqa: PLC0415 — deferred: Django import at call time
 
     # The ``tokens`` TyperCommand echoes its rendered output to stdout itself
     # (django-typer serialises the return value); call it for the side effect. The ad-hoc

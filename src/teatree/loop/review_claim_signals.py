@@ -63,7 +63,7 @@ def _reaction_claim_key(*, channel: str, ts: str, emoji: str) -> str:
 
 def _claim_already_recorded(key: str) -> bool:
     try:
-        from teatree.core.models import OutboundClaim  # noqa: PLC0415
+        from teatree.core.models import OutboundClaim  # noqa: PLC0415 — deferred: ORM import needs the app registry
 
         return OutboundClaim.objects.filter(idempotency_key=key).exists()
     except Exception:  # noqa: BLE001 — ledger read must never crash a tick.
@@ -118,7 +118,7 @@ def record_reaction_claim(*, channel: str, ts: str, emoji: str, target_url: str 
     the field shape matches :func:`teatree.outbound_claim.record_claim`.
     """
     try:
-        from teatree.core.models import OutboundClaim  # noqa: PLC0415
+        from teatree.core.models import OutboundClaim  # noqa: PLC0415 — deferred: ORM import needs the app registry
 
         OutboundClaim.objects.get_or_create(
             idempotency_key=_reaction_claim_key(channel=channel, ts=ts, emoji=emoji),

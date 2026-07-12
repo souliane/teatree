@@ -38,9 +38,9 @@ def claim_next_command(
     """Atomically claim the oldest pending dispatchable Task, then emit it."""
     ensure_django()
 
-    from django.core.management import call_command  # noqa: PLC0415
+    from django.core.management import call_command  # noqa: PLC0415 — deferred: Django import at call time
 
-    from teatree.loop.session_identity import current_session_id  # noqa: PLC0415
+    from teatree.loop.session_identity import current_session_id  # noqa: PLC0415 — deferred: keeps CLI startup light
 
     session = current_session_id() if claimed_by_session is None else claimed_by_session
     kwargs: dict[str, str | bool] = {"claimed_by_session": session}

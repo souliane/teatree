@@ -110,7 +110,7 @@ def validate_mr(
         create/update (the lockout this fix closes).
     """
     ensure_django()
-    from django.core.exceptions import ImproperlyConfigured  # noqa: PLC0415
+    from django.core.exceptions import ImproperlyConfigured  # noqa: PLC0415 — deferred: Django import at call time
 
     if repo:
         target_overlay = get_overlay_for_repo(repo)
@@ -179,7 +179,7 @@ def repo_mode(
     detection; a ``[teatree] repo_mode`` TOML value is ignored on read. Result
     is cached 7 days per repo.
     """
-    from teatree.repo_mode import resolve_repo_mode  # noqa: PLC0415
+    from teatree.repo_mode import resolve_repo_mode  # noqa: PLC0415 — deferred: keeps CLI startup light
 
     mode = resolve_repo_mode(repo, refresh=refresh)
     if json_output:
@@ -227,7 +227,7 @@ def sonar_check(
     remote_status: bool = typer.Option(default=False, help="Fetch CI Sonar results"),
 ) -> None:
     """Run local SonarQube analysis via Docker."""
-    from teatree.cli import _find_overlay_project  # noqa: PLC0415
+    from teatree.cli import _find_overlay_project  # noqa: PLC0415 — deferred: breaks tools ↔ cli cycle
 
     project = _find_overlay_project()
     script = project / "scripts" / "sonar_check.sh"
@@ -260,7 +260,7 @@ def claude_handover(
     json_output: bool = typer.Option(False, "--json", help="Emit machine-readable JSON."),
 ) -> None:
     """Show Claude handover telemetry and runtime recommendations."""
-    from teatree.agents.handover import build_claude_handover_status  # noqa: PLC0415
+    from teatree.agents.handover import build_claude_handover_status  # noqa: PLC0415 — deferred: lazy CLI import
 
     status = build_claude_handover_status(current_runtime=current_runtime, session_id=session_id, state_dir=state_dir)
     if json_output:
@@ -288,7 +288,7 @@ def audit_memory(
     verbose: bool = typer.Option(False, "--verbose", "-v", help="Show matched patterns for each entry."),
 ) -> None:
     """Scan Claude memory files for entries that should be promoted to skills."""
-    from teatree.memory_audit import scan_all  # noqa: PLC0415
+    from teatree.memory_audit import scan_all  # noqa: PLC0415 — deferred: keeps CLI startup light
 
     entries = scan_all()
     if not entries:
@@ -321,7 +321,7 @@ def to_markdown(
     instructions inside it. Exits non-zero with an install hint when markitdown
     is absent, and non-zero with a clear message on a conversion failure.
     """
-    from teatree.backends.markdown_conversion import (  # noqa: PLC0415
+    from teatree.backends.markdown_conversion import (  # noqa: PLC0415 — deferred: keeps CLI startup light
         MarkdownConversionError,
         MarkdownConverter,
         MarkdownConverterUnavailableError,
@@ -354,10 +354,10 @@ def notion_download(
     emits for `<file>` blocks; the signed URL is resolved server-side, so no
     manual browser click is required.
     """
-    import re  # noqa: PLC0415
-    from urllib.parse import urlparse  # noqa: PLC0415
+    import re  # noqa: PLC0415 — deferred: loaded only when this command runs
+    from urllib.parse import urlparse  # noqa: PLC0415 — deferred: loaded only when this command runs
 
-    from teatree.backends.notion import NotionFileRef, download_notion_file  # noqa: PLC0415
+    from teatree.backends.notion import NotionFileRef, download_notion_file  # noqa: PLC0415 — deferred: lazy CLI import
 
     ref = NotionFileRef.from_fetch_src(url)
     if ref is not None:

@@ -187,7 +187,7 @@ def _print_summary(metrics: dict) -> None:
     cov = metrics.get("coverage", {})
     if cov.get("available"):
         pct = cov["percent"]
-        color = "green" if pct >= 80 else "yellow" if pct >= 60 else "red"  # noqa: PLR2004
+        color = "green" if pct >= 80 else "yellow" if pct >= 60 else "red"  # noqa: PLR2004 — self-documenting literal in this context
         console.print(f"  Test coverage: [{color}]{pct:.1f}%[/{color}]")
 
     deps = metrics.get("dependencies", {})

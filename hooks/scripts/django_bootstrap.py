@@ -23,10 +23,10 @@ def bootstrap_teatree_django() -> bool:
     if str(src_dir) not in sys.path:
         sys.path.insert(0, str(src_dir))
     try:
-        import django  # noqa: PLC0415
+        import django  # noqa: PLC0415 — deferred: Django import at call time
 
         os.environ.setdefault("DJANGO_SETTINGS_MODULE", "teatree.settings")
         django.setup()
-    except Exception:  # noqa: BLE001
+    except Exception:  # noqa: BLE001 — crash-proof hook: any failure degrades silently, never breaks the tool call
         return False
     return True

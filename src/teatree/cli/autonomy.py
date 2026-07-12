@@ -51,7 +51,7 @@ AUTONOMY_KEY = "autonomy"
 
 
 def _active_overlay_name() -> str | None:
-    from teatree.config import _active_overlay_entry  # noqa: PLC0415
+    from teatree.config import _active_overlay_entry  # noqa: PLC0415 — deferred: keeps CLI startup light
 
     entry = _active_overlay_entry()
     return entry.name if entry is not None else None
@@ -69,7 +69,7 @@ def _write_setting_row(value: str, *, scope: str = "") -> None:
     An empty ``scope`` addresses the GLOBAL store; a name scopes the row to that
     overlay.
     """
-    from teatree.cli.overlay import managepy_core  # noqa: PLC0415
+    from teatree.cli.overlay import managepy_core  # noqa: PLC0415 — deferred: breaks autonomy ↔ overlay cycle
 
     args = ["config_setting", "set", AUTONOMY_KEY, json.dumps(value)]
     if scope:
@@ -100,8 +100,8 @@ def register_autonomy_commands(overlay_app: typer.Typer) -> None:
     @autonomy_group.command(name="show")
     def show() -> None:
         """Show the effective autonomy tier (DB overlay-scope > DB global-scope > default; no env layer)."""
-        from teatree.config import get_effective_settings  # noqa: PLC0415
-        from teatree.utils.django_bootstrap import ensure_django  # noqa: PLC0415
+        from teatree.config import get_effective_settings  # noqa: PLC0415 — deferred: keeps CLI startup light
+        from teatree.utils.django_bootstrap import ensure_django  # noqa: PLC0415 — deferred: keeps CLI startup light
 
         # ``get_effective_settings`` reads the ``ConfigSetting`` DB tier via the
         # app registry, which fails SAFE to ``{}`` when Django is not configured.

@@ -112,7 +112,7 @@ def dslr_tenants_in_use() -> set[str]:
 
 def prune_dslr_snapshots_skipping(*, keep: int, in_use_tenants: set[str]) -> list[str]:
     """Prune DSLR snapshots (skipping in-use tenants) and return cleanup labels."""
-    from teatree.utils.django_db import prune_dslr_snapshots  # noqa: PLC0415
+    from teatree.utils.django_db import prune_dslr_snapshots  # noqa: PLC0415 — deferred: keeps command import light
 
     pruned = prune_dslr_snapshots(keep=keep, in_use_tenants=in_use_tenants)
     return [f"Pruned DSLR snapshot: {name}" for name in pruned]

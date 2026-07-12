@@ -105,7 +105,7 @@ def _owning_overlay(url: str, scan_tag: str) -> str:
     scan tag is only a fallback for the inconclusive case (URL owned by no
     registered overlay, e.g. a host neither overlay declares).
     """
-    from teatree.core.overlay_loader import infer_overlay_for_url  # noqa: PLC0415
+    from teatree.core.overlay_loader import infer_overlay_for_url  # noqa: PLC0415 — deferred: loaded at tick time
 
     return infer_overlay_for_url(url) or scan_tag
 
@@ -200,7 +200,7 @@ def _already_reviewed_at_head(ticket: Ticket, head_sha: str) -> bool:
     """
     if not head_sha:
         return False
-    from teatree.core.backend_protocols import ReviewState  # noqa: PLC0415
+    from teatree.core.backend_protocols import ReviewState  # noqa: PLC0415 — deferred: loaded at tick time, not import
 
     extra = ticket.extra or {}
     terminal = {ReviewState.APPROVED.value, ReviewState.REVIEWED_NO_ACTION.value}

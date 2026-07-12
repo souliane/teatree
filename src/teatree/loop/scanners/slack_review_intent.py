@@ -97,7 +97,7 @@ class SlackReviewIntentScanner:
             # Discard the backing file only after the reactions above are
             # handled (rows persisted) — a crash before this point leaves it
             # for the next drain to recover (#1047).
-            from teatree.backends.slack.receiver import commit_reactions_drain  # noqa: PLC0415
+            from teatree.backends.slack.receiver import commit_reactions_drain  # noqa: PLC0415 — tick-time import
 
             commit_reactions_drain()
 
@@ -125,7 +125,7 @@ class SlackReviewIntentScanner:
         JSONL queue yielded events, so :meth:`scan` knows to commit the
         backing file only after the rows are persisted.
         """
-        from teatree.backends.slack.receiver import drain_reactions_queue  # noqa: PLC0415
+        from teatree.backends.slack.receiver import drain_reactions_queue  # noqa: PLC0415 — tick-time import
 
         events: list[RawAPIDict] = []
         drained_file = False

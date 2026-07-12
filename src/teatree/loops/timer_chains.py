@@ -135,7 +135,7 @@ def _timers_for(name: str, *, status: str) -> "list[DBTaskResult]":
     ``args`` list, so the query stays backend-agnostic (no JSONField array-index
     lookup) and still exact.
     """
-    from django_tasks_db.models import DBTaskResult  # noqa: PLC0415
+    from django_tasks_db.models import DBTaskResult  # noqa: PLC0415 — deferred: heavy/optional dep at call site
 
     rows = DBTaskResult.objects.filter(task_path=_loop_timer_path(), status=status)
     return [row for row in rows if row.args_kwargs.get("args") == [name]]
@@ -143,14 +143,14 @@ def _timers_for(name: str, *, status: str) -> "list[DBTaskResult]":
 
 def pending_loop_timers(name: str) -> "list[DBTaskResult]":
     """READY (queued, not yet claimed) ``loop_timer`` rows for *name*."""
-    from django_tasks.base import TaskResultStatus  # noqa: PLC0415
+    from django_tasks.base import TaskResultStatus  # noqa: PLC0415 — deferred: heavy/optional dep at call site
 
     return _timers_for(name, status=TaskResultStatus.READY)
 
 
 def running_loop_timers(name: str) -> "list[DBTaskResult]":
     """RUNNING (claimed, executing) ``loop_timer`` rows for *name*."""
-    from django_tasks.base import TaskResultStatus  # noqa: PLC0415
+    from django_tasks.base import TaskResultStatus  # noqa: PLC0415 — deferred: heavy/optional dep at call site
 
     return _timers_for(name, status=TaskResultStatus.RUNNING)
 
@@ -168,8 +168,8 @@ def refine_successor(name: str, *, run_after: dt.datetime) -> None:
     successor is pending (the successor-first enqueue guarantees one under normal
     flow).
     """
-    from django_tasks.base import TaskResultStatus  # noqa: PLC0415
-    from django_tasks_db.models import DBTaskResult  # noqa: PLC0415
+    from django_tasks.base import TaskResultStatus  # noqa: PLC0415 — deferred: heavy/optional dep at call site
+    from django_tasks_db.models import DBTaskResult  # noqa: PLC0415 — deferred: heavy/optional dep at call site
 
     ids = [row.id for row in _timers_for(name, status=TaskResultStatus.READY)]
     if ids:
@@ -215,7 +215,7 @@ def loop_admitted(name: str, now: dt.datetime) -> bool:
     Reuses :func:`teatree.loops.loop_table.admitted_loop_names` scoped to the one
     loop, so the timer chain's admission can never drift from the tick's.
     """
-    from teatree.loops.loop_table import admitted_loop_names  # noqa: PLC0415
+    from teatree.loops.loop_table import admitted_loop_names  # noqa: PLC0415 — deferred: loaded at tick time
 
     return name in admitted_loop_names(now, only=name)
 
@@ -331,7 +331,7 @@ def loop_timer(name: str) -> TimerResult:
     same loop is unambiguously a duplicate successor — the self-dedup in step 1 does
     not need this row's own id.
     """
-    from teatree.core.models import Loop  # noqa: PLC0415
+    from teatree.core.models import Loop  # noqa: PLC0415 — deferred: ORM import needs the app registry
 
     now = timezone.now()
 

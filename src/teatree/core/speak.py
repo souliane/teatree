@@ -177,7 +177,7 @@ def _is_away() -> bool:
     A resolution failure degrades to NOT away (returns ``False``): the
     away-gate must never suppress local audio on a transient error.
     """
-    from teatree.core import availability  # noqa: PLC0415
+    from teatree.core import availability  # noqa: PLC0415 — deferred: call-time import, kept lazy
 
     try:
         return availability.resolve_mode().defers_questions
@@ -608,7 +608,7 @@ def _surface_upload_failure(error: str) -> None:
     Idempotent per error class — the ``BotPing`` ledger dedupes the
     ``speak-upload-failed-<error>`` key. Never raises into the speak seam.
     """
-    from teatree.core.notify import NotifyKind, notify_user  # noqa: PLC0415
+    from teatree.core.notify import NotifyKind, notify_user  # noqa: PLC0415 — deferred: call-time import, kept lazy
 
     hint = _MISSING_SCOPE_HINT if error == "missing_scope" else ""
     message = f"Couldn't attach the spoken audio to your Slack DM (Slack error: {error})."

@@ -77,7 +77,7 @@ def run(
 
     _report_statusline_install(settings_json, repo)
 
-    from teatree.config import clone_root, load_config  # noqa: PLC0415
+    from teatree.config import clone_root, load_config  # noqa: PLC0415 — deferred: keeps CLI startup light
 
     config = load_config()
 
@@ -142,7 +142,7 @@ def run(
     # Suggest (never apply) the recommended per-user auto-mode authorizations.
     # Teatree ships no classifier whitelist of its own — see
     # ``skills/setup/references/recommended-automode-authorizations.md``.
-    from teatree.cli.recommended_authorizations import report_missing_authorizations  # noqa: PLC0415
+    from teatree.cli.recommended_authorizations import report_missing_authorizations  # noqa: PLC0415 — lazy CLI import
 
     report_missing_authorizations(typer.echo)
 

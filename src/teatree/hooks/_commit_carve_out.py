@@ -55,7 +55,7 @@ def commit_target_downgrades(command: str, cwd: Path | None, *, config_path: Pat
     The ``UNRESOLVABLE_REPO_DIR`` sentinel (a ``-C`` value carrying a
     substitution marker) hard-blocks rather than fail-opens.
     """
-    from teatree.hooks.publish_surface import commit_targets_private_repo  # noqa: PLC0415
+    from teatree.hooks.publish_surface import commit_targets_private_repo  # noqa: PLC0415 — deferred: call-time import
 
     commit_target = _commit_repo_dir.resolve_commit_dir(command, cwd)
     if commit_target == _commit_repo_dir.UNRESOLVABLE_REPO_DIR:
@@ -87,7 +87,7 @@ def _chained_segments_provably_inert(command: str, cwd: Path | None, *, config_p
     repos/<owner>/<public>/...`` POST -- leaking the body to a public repo while
     the gate downgraded to warn (#1213/#1415).
     """
-    from teatree.hooks.publish_surface import (  # noqa: PLC0415
+    from teatree.hooks.publish_surface import (  # noqa: PLC0415 — deferred: call-time import, kept lazy
         _segment_is_raw_rest,
         is_git_commit_command,
         segment_target_is_private,
@@ -189,7 +189,7 @@ def command_has_git_commit_segment(command: str) -> bool:
     proof in :func:`commit_branch_downgrades`: a chained PUBLIC post in the same
     command fails the proof and keeps the hard-block.
     """
-    from teatree.hooks.publish_surface import is_git_commit_command  # noqa: PLC0415
+    from teatree.hooks.publish_surface import is_git_commit_command  # noqa: PLC0415 — deferred: call-time import
 
     return any(is_git_commit_command(" ".join(words)) for words in _gh_glab_hiding.command_segments(command))
 
@@ -218,7 +218,7 @@ def command_targets_private_only(command: str, cwd: Path | None, *, config_path:
     a commit that is the literal first word) -> :func:`commit_branch_downgrades`,
     else :func:`publish_surface.command_is_pure_private_gh_glab_post`.
     """
-    from teatree.hooks.publish_surface import command_is_pure_private_gh_glab_post  # noqa: PLC0415
+    from teatree.hooks.publish_surface import command_is_pure_private_gh_glab_post  # noqa: PLC0415 — lazy import
 
     if command_has_git_commit_segment(command):
         return commit_branch_downgrades(command, cwd, config_path=config_path)

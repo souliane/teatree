@@ -288,7 +288,7 @@ def _flagless_destination(words: list[str], tool: str, cwd: Path | None) -> Dest
     url_dest = _destination_from_forge_url(words, forge)
     if url_dest is not None:
         return url_dest
-    if len(words) >= 3 and (words[1], words[2]) in _CURRENT_REPO_VERBS:  # noqa: PLR2004
+    if len(words) >= 3 and (words[1], words[2]) in _CURRENT_REPO_VERBS:  # noqa: PLR2004 — self-documenting literal in this context
         return _destination_from_current_repo(cwd, forge)
     return None
 

@@ -132,8 +132,8 @@ class Command(TyperCommand):
         failure (#2559). A blank/whitespace reason records no attempt (no empty
         audit row); the cancellation itself is unchanged.
         """
-        from django.db import transaction  # noqa: PLC0415
-        from django.utils import timezone  # noqa: PLC0415
+        from django.db import transaction  # noqa: PLC0415 — deferred: Django import at call time
+        from django.utils import timezone  # noqa: PLC0415 — deferred: Django import at call time
 
         with transaction.atomic():
             try:
@@ -192,10 +192,10 @@ class Command(TyperCommand):
         and before storage. A note with no outcome claim — or no note — is
         untouched.
         """
-        from django.db import transaction  # noqa: PLC0415
-        from django.utils import timezone  # noqa: PLC0415
+        from django.db import transaction  # noqa: PLC0415 — deferred: Django import at call time
+        from django.utils import timezone  # noqa: PLC0415 — deferred: Django import at call time
 
-        from teatree.core.review.completion_evidence import (  # noqa: PLC0415
+        from teatree.core.review.completion_evidence import (  # noqa: PLC0415 — deferred: keeps command import light
             CompletionEvidenceError,
             check_completion_evidence,
             normalize_artifact_pointers,
@@ -284,7 +284,7 @@ class Command(TyperCommand):
         must be ``claimed`` (the claim is the spawn boundary); recording onto a
         finished task is rejected.
         """
-        from teatree.agents.attempt_recorder import (  # noqa: PLC0415
+        from teatree.agents.attempt_recorder import (  # noqa: PLC0415 — deferred: keeps command import light
             AttemptUsage,
             ResultEnvelopeError,
             parse_result_envelope,
@@ -494,10 +494,10 @@ class Command(TyperCommand):
 
     @staticmethod
     def _execute_headless(task: Task) -> dict[str, str]:
-        import traceback  # noqa: PLC0415
+        import traceback  # noqa: PLC0415 — deferred: loaded only when this command runs
 
-        from teatree.agents.headless import run_headless  # noqa: PLC0415
-        from teatree.core.headless_dispatch import loop_dispatch_refusal  # noqa: PLC0415
+        from teatree.agents.headless import run_headless  # noqa: PLC0415 — deferred: keeps command import light
+        from teatree.core.headless_dispatch import loop_dispatch_refusal  # noqa: PLC0415 — lazy command import
 
         # Fail-closed billing guard, shared with ``execute_headless_task`` via
         # the single ``loop_dispatch_refusal`` chokepoint (souliane/teatree#1375):
@@ -584,7 +584,7 @@ def _resolve_reason(*, reason: str, reason_file: pathlib.Path | None) -> str:
 
 
 def _exec_inline(argv: list[str]) -> None:
-    from teatree.utils.run import run_streamed  # noqa: PLC0415
+    from teatree.utils.run import run_streamed  # noqa: PLC0415 — deferred: keeps command import light
 
     orig_cwd = os.environ.get("T3_ORIG_CWD", "")
     cwd = orig_cwd if orig_cwd and pathlib.Path(orig_cwd).is_dir() else None

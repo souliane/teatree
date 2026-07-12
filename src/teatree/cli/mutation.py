@@ -125,7 +125,7 @@ def _update_baseline(outcome: MutationOutcome, *, allow_regression: bool) -> Non
 
 
 def _write_baseline(pyproject: Path, baseline: dict[str, int]) -> None:
-    import tomlkit  # noqa: PLC0415
+    import tomlkit  # noqa: PLC0415 — deferred: heavy/optional dep at call site
 
     doc = tomlkit.parse(pyproject.read_text(encoding="utf-8"))
     table = doc.setdefault("tool", {}).setdefault("teatree", {}).setdefault("mutation", tomlkit.table())

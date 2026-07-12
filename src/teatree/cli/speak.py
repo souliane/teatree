@@ -20,6 +20,6 @@ def speak(
     """Read text aloud through the local speakers per [teatree.speak] (no-op unless local = all)."""
     ensure_django()
 
-    from django.core.management import call_command  # noqa: PLC0415
+    from django.core.management import call_command  # noqa: PLC0415 — deferred: Django import at call time
 
     call_command("speak", text, overlay=overlay)

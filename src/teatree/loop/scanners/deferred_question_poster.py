@@ -31,7 +31,9 @@ class DeferredQuestionPosterScanner:
     name: str = "deferred_question_poster"
 
     def scan(self) -> list[ScanSignal]:
-        from teatree.core.notify_question_drains import drain_unmirrored_deferred_questions  # noqa: PLC0415
+        from teatree.core.notify_question_drains import (  # noqa: PLC0415 — deferred: loaded at tick time, not import
+            drain_unmirrored_deferred_questions,
+        )
 
         try:
             mirrored, total = drain_unmirrored_deferred_questions(overlay=self.overlay)

@@ -276,7 +276,7 @@ class OverlayConfig(BaseModel):
         entry-point overlay (so ``OverlayConfig`` subclasses don't have to
         opt in by threading ``overlay_name`` through every ``super().__init__``).
         """
-        from teatree.config import load_config  # noqa: PLC0415
+        from teatree.config import load_config  # noqa: PLC0415 — deferred: call-time import, kept lazy
 
         config = load_config()
         overlay_cfg = config.raw.get("overlays", {}).get(overlay_name, {})
@@ -307,7 +307,7 @@ class OverlayConfig(BaseModel):
         pass_key = self._secret_registry().get(name)
         if not pass_key:
             return ""
-        from teatree.utils.secrets import read_pass  # noqa: PLC0415
+        from teatree.utils.secrets import read_pass  # noqa: PLC0415 — deferred: call-time import, kept lazy
 
         return read_pass(pass_key)
 
@@ -628,7 +628,7 @@ class OverlayBase(ABC):
     # ── Issue / reference resolution ─────────────────────────────────
 
     def get_issue_title(self, url: str) -> str:
-        from teatree.core.backend_registry import get_backend_provider  # noqa: PLC0415
+        from teatree.core.backend_registry import get_backend_provider  # noqa: PLC0415 — deferred: call-time import
 
         host = get_backend_provider().get_code_host(self)
         if host is None:
@@ -653,7 +653,7 @@ class OverlayBase(ABC):
         this overlay's ``code_host`` + the active repo's git remote slug. Returns
         ``None`` when neither resolves.
         """
-        from teatree.core.reference_linkifier import ReferenceResolver  # noqa: PLC0415
+        from teatree.core.reference_linkifier import ReferenceResolver  # noqa: PLC0415 — deferred: call-time import
 
         return ReferenceResolver.from_overlay(self).resolve_mr(iid)
 
@@ -662,7 +662,7 @@ class OverlayBase(ABC):
 
         Same DB-first, construction-fallback contract as :meth:`resolve_mr_token`.
         """
-        from teatree.core.reference_linkifier import ReferenceResolver  # noqa: PLC0415
+        from teatree.core.reference_linkifier import ReferenceResolver  # noqa: PLC0415 — deferred: call-time import
 
         return ReferenceResolver.from_overlay(self).resolve_issue(iid)
 

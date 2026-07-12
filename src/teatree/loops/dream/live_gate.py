@@ -59,8 +59,8 @@ def build_live_validator() -> LiveValidator:
         ApiInProcessRunner,
         ApiRunnerParams,
     )
-    from teatree.eval.pass_at_k import run_pass_at_k  # noqa: PLC0415
-    from teatree.eval.report import evaluate as evaluate_run  # noqa: PLC0415
+    from teatree.eval.pass_at_k import run_pass_at_k  # noqa: PLC0415 — deferred: loaded at tick time, not import
+    from teatree.eval.report import evaluate as evaluate_run  # noqa: PLC0415 — deferred: loaded at tick time
 
     def _validate(spec: EvalSpec, *, trials: int, require: str) -> bool:
         runner = ApiInProcessRunner(ApiRunnerParams(require_executed=True))

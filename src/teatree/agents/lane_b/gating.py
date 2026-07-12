@@ -139,11 +139,11 @@ def hard_deny_reason(tool_name: str, tool_args: dict[str, Any], *, cwd: Path | N
     shell command) yields no payload and is not scanned, so the two lanes refuse the
     identical publish set, not a wider everything-scan nor a wider deny-any-HIGH.
     """
-    from teatree.core.gates.main_clone_env import main_clone_git_deny_reason  # noqa: PLC0415
+    from teatree.core.gates.main_clone_env import main_clone_git_deny_reason  # noqa: PLC0415 — lazy import
     from teatree.hooks.hard_deny_registry import (  # noqa: PLC0415 (lazy, mirrors the other in-function hard-deny imports)
         hard_deny_reason as bash_hard_deny_reason,
     )
-    from teatree.hooks.quote_scanner import HIGH, scan_text  # noqa: PLC0415
+    from teatree.hooks.quote_scanner import HIGH, scan_text  # noqa: PLC0415 — deferred: call-time import, kept lazy
 
     command = _command_of(tool_name, tool_args)
     if command:

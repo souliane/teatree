@@ -34,7 +34,7 @@ def drain_queue_run_command(
     """Run one reactive DB-queue drain cycle."""
     ensure_django()
 
-    from django.core.management import call_command  # noqa: PLC0415
+    from django.core.management import call_command  # noqa: PLC0415 — deferred: Django import at call time
 
     kwargs: dict[str, bool] = {}
     if json_output:
@@ -47,8 +47,8 @@ def drain_queue_status_command() -> None:
     """Show how many READY jobs are waiting in the DB queue."""
     ensure_django()
 
-    from django_tasks.base import TaskResultStatus  # noqa: PLC0415
-    from django_tasks_db.models import DBTaskResult  # noqa: PLC0415
+    from django_tasks.base import TaskResultStatus  # noqa: PLC0415 — deferred: heavy/optional dep at call site
+    from django_tasks_db.models import DBTaskResult  # noqa: PLC0415 — deferred: heavy/optional dep at call site
 
     count = DBTaskResult.objects.filter(status=TaskResultStatus.READY).count()
     if not count:

@@ -49,7 +49,7 @@ _STALE_STATUSLINE_DAYS = 2
 
 # The well-known statusline scratch dir. A module constant so it is patchable
 # in tests without monkeypatching ``pathlib.Path`` itself.
-_STATUSLINE_DIR = Path("/tmp/claude-statusline")  # noqa: S108
+_STATUSLINE_DIR = Path("/tmp/claude-statusline")  # noqa: S108 — fixed agent-controlled path, not user input
 
 
 @dataclass(slots=True)
@@ -84,7 +84,7 @@ def free_resources(payload: ActionPayload) -> None:
 
 
 def _free_resources_inner(payload: ActionPayload) -> None:
-    from teatree.core.models.resource_pressure_marker import ResourcePressureMarker  # noqa: PLC0415
+    from teatree.core.models.resource_pressure_marker import ResourcePressureMarker  # noqa: PLC0415 — lazy ORM import
 
     resource = str(payload.get("resource", ""))
     if resource == "disk":
@@ -332,7 +332,7 @@ def _execute_ram(payload: ActionPayload) -> None:
 
 
 def _ram_kill_enabled(payload: ActionPayload) -> bool:
-    return bool(payload.get("allow_destructive_ram")) and int(payload.get("consecutive_critical", 0)) >= 2  # noqa: PLR2004
+    return bool(payload.get("allow_destructive_ram")) and int(payload.get("consecutive_critical", 0)) >= 2  # noqa: PLR2004 — self-documenting literal in this context
 
 
 def _ram_kill_skip_reason(payload: ActionPayload) -> str:
@@ -430,7 +430,7 @@ def _list_processes() -> list[tuple[int, str]]:
     processes: list[tuple[int, str]] = []
     for line in out.splitlines():
         parts = line.strip().split(None, 1)
-        if len(parts) == 2 and parts[0].isdigit():  # noqa: PLR2004
+        if len(parts) == 2 and parts[0].isdigit():  # noqa: PLR2004 — self-documenting literal in this context
             processes.append((int(parts[0]), parts[1]))
     return processes
 

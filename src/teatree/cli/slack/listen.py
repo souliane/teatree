@@ -17,7 +17,7 @@ slack_app = typer.Typer(name="slack", help="Slack integration commands.", no_arg
 
 
 def _resolve_overlays(restrict: str) -> list[tuple[str, str, str]]:
-    from teatree.config import cold_reader  # noqa: PLC0415
+    from teatree.config import cold_reader  # noqa: PLC0415 — deferred: keeps CLI startup light
 
     registry = cold_reader.mapping_setting("overlays")
     result: list[tuple[str, str, str]] = []
@@ -85,9 +85,9 @@ def check_command() -> None:
     Returns exit code 0 when messages were found, 1 when the queue
     was empty. Designed to be called from a fast cron (every 30s).
     """
-    import json  # noqa: PLC0415
+    import json  # noqa: PLC0415 — deferred: loaded only when this command runs
 
-    from teatree.backends.slack.receiver import commit_drain, drain_event_queue  # noqa: PLC0415
+    from teatree.backends.slack.receiver import commit_drain, drain_event_queue  # noqa: PLC0415 — lazy CLI import
 
     events = drain_event_queue()
     messages: list[dict[str, str]] = []

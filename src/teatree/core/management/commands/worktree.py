@@ -124,7 +124,7 @@ def _update_ticket_variant(ticket: Ticket, variant: str) -> None:
     ticket.save(update_fields=["variant"])
     for wt in ticket.worktrees.all():  # type: ignore[attr-defined]
         old_db = wt.db_name
-        wt.db_name = wt._build_db_name()  # noqa: SLF001
+        wt.db_name = wt._build_db_name()  # noqa: SLF001 — intentional access to a sibling's internal within the same subsystem
         if wt.db_name != old_db:
             wt.save(update_fields=["db_name"])
 
@@ -194,7 +194,7 @@ class Command(TyperCommand):
             "",
             help="Pin attribution to this ticket number (overrides auto-register for a manual worktree).",
         ),
-        slow_import: bool = typer.Option(  # noqa: FBT001
+        slow_import: bool = typer.Option(  # noqa: FBT001 — typer CLI boolean flag; the bool parameter is typer's option idiom
             default=False,
             help="Allow slow DB fallbacks (pg_restore, remote dump). DSLR-only by default.",
         ),
@@ -531,7 +531,7 @@ class Command(TyperCommand):
         hook_file = hook_config / ".pre-commit-config.yaml"
         if hook_file.is_file():
             try:
-                from importlib import import_module  # noqa: PLC0415
+                from importlib import import_module  # noqa: PLC0415 — deferred: loaded only when this command runs
 
                 yaml = import_module("yaml")
                 yaml.safe_load(hook_file.read_text(encoding="utf-8"))
@@ -558,7 +558,7 @@ class Command(TyperCommand):
     def diagram(self, model: str = "worktree", ticket: int | None = None) -> str:
         """Print a state diagram as Mermaid. Models: worktree, ticket, task."""
         if ticket is not None:
-            from teatree.core.selectors import build_ticket_lifecycle_mermaid  # noqa: PLC0415
+            from teatree.core.selectors import build_ticket_lifecycle_mermaid  # noqa: PLC0415 — lazy command import
 
             return build_ticket_lifecycle_mermaid(ticket)
 

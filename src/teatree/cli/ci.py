@@ -29,7 +29,7 @@ class CICommands:
         """
         ensure_django()
         try:
-            from teatree.core.backend_factory import ci_service_from_overlay  # noqa: PLC0415
+            from teatree.core.backend_factory import ci_service_from_overlay  # noqa: PLC0415 — lazy CLI import
 
             result = ci_service_from_overlay()
             if result is not None:
@@ -42,8 +42,8 @@ class CICommands:
         # works from any overlay repo. A multi-overlay install makes the active
         # path raise "Multiple overlays" — exactly the bare-repo case.
         try:
-            from teatree.core.backend_registry import get_backend_provider  # noqa: PLC0415
-            from teatree.core.overlay_loader import get_overlay_for_repo  # noqa: PLC0415
+            from teatree.core.backend_registry import get_backend_provider  # noqa: PLC0415 — deferred: lazy CLI import
+            from teatree.core.overlay_loader import get_overlay_for_repo  # noqa: PLC0415 — deferred: lazy CLI import
 
             overlay = get_overlay_for_repo(".")
             if overlay is not None:
@@ -58,7 +58,7 @@ class CICommands:
 
         token = os.environ.get("GITLAB_TOKEN", "")
         if token:
-            from teatree.backends.loader import get_ci_service  # noqa: PLC0415
+            from teatree.backends.loader import get_ci_service  # noqa: PLC0415 — deferred: keeps CLI startup light
 
             base_url = os.environ.get("GITLAB_URL", "https://gitlab.com/api/v4")
             return get_ci_service(gitlab_token=token, gitlab_url=base_url)
@@ -69,7 +69,7 @@ class CICommands:
         """Get the CI project path — from overlay or git remote."""
         try:
             ensure_django()
-            from teatree.core.overlay_loader import get_overlay  # noqa: PLC0415
+            from teatree.core.overlay_loader import get_overlay  # noqa: PLC0415 — deferred: keeps CLI startup light
 
             project = get_overlay().metadata.get_ci_project_path()
             if project:
@@ -77,14 +77,14 @@ class CICommands:
         except Exception:  # noqa: BLE001, S110 — Django may not be configured
             pass
 
-        from teatree.backends.gitlab.api import GitLabAPI  # noqa: PLC0415
+        from teatree.backends.gitlab.api import GitLabAPI  # noqa: PLC0415 — deferred: keeps CLI startup light
 
         project_info = GitLabAPI().resolve_project_from_remote()
         return project_info.path_with_namespace if project_info else ""
 
     @staticmethod
     def current_git_branch() -> str:
-        from teatree.utils.git import current_branch  # noqa: PLC0415
+        from teatree.utils.git import current_branch  # noqa: PLC0415 — deferred: keeps CLI startup light
 
         return current_branch()
 
@@ -120,8 +120,8 @@ def cancel(
 @ci_app.command()
 def divergence() -> None:
     """Check fork divergence from upstream."""
-    from teatree.utils.git import current_branch  # noqa: PLC0415
-    from teatree.utils.git import run as git_run  # noqa: PLC0415
+    from teatree.utils.git import current_branch  # noqa: PLC0415 — deferred: keeps CLI startup light
+    from teatree.utils.git import run as git_run  # noqa: PLC0415 — deferred: keeps CLI startup light
 
     try:
         git_run(repo=".", args=["fetch", "upstream"])

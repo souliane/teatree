@@ -87,8 +87,8 @@ def _enqueue_short_describe(ticket: "Ticket") -> None:
     the ticket — at-least-once delivery from django-tasks means the loop
     may scan again before the previous task lands.
     """
-    from teatree.core.models import Task  # noqa: PLC0415
-    from teatree.core.models.session import Session  # noqa: PLC0415
+    from teatree.core.models import Task  # noqa: PLC0415 — deferred: ORM import needs the app registry
+    from teatree.core.models.session import Session  # noqa: PLC0415 — deferred: ORM import needs the app registry
 
     existing = Task.objects.filter(
         ticket=ticket,

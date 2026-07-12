@@ -344,7 +344,7 @@ def resolve_eval_credential(*, kind: "EvalCredential | None" = None, scope: str 
     Imported at call time so the eval CLI import chain stays Django-free until Django
     is up (the resolvers already require it).
     """
-    from teatree.config import EvalCredential, get_effective_settings  # noqa: PLC0415
+    from teatree.config import EvalCredential, get_effective_settings  # noqa: PLC0415 — deferred: call-time import
 
     if scope is None:
         scope = _active_overlay_scope()

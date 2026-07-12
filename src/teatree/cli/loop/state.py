@@ -21,7 +21,7 @@ from teatree.utils.django_bootstrap import ensure_django
 def _delegate(subcommand: str, name: str, *, json_output: bool) -> None:
     """Call ``loop_state <subcommand> <name>``; map a ``SystemExit`` to ``typer.Exit``."""
     ensure_django()
-    from django.core.management import call_command  # noqa: PLC0415
+    from django.core.management import call_command  # noqa: PLC0415 — deferred: Django import at call time
 
     args = ["loop_state", subcommand, name]
     kwargs: dict[str, bool] = {"json_output": True} if json_output else {}

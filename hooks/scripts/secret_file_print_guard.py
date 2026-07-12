@@ -106,7 +106,7 @@ def _command_captures_or_redirects(command: str) -> bool:
     if _CAPTURE_RE.search(command):
         return True
     segments = command.split("|")
-    if len(segments) < 2:  # noqa: PLR2004
+    if len(segments) < 2:  # noqa: PLR2004 — self-documenting literal in this context
         return False
     return not any(_RE_EMITTER_SINK_RE.match(segment) for segment in segments[1:])
 
@@ -120,7 +120,7 @@ def _echo_arg_is_token(command: str) -> bool:
     so it is treated as a token. Only quoted prose (no token shape) passes.
     """
     parts = command.split(None, 1)
-    if len(parts) < 2:  # noqa: PLR2004
+    if len(parts) < 2:  # noqa: PLR2004 — self-documenting literal in this context
         return False
     arg = parts[1].strip()
     if _ECHO_SAFE_QUOTE_RE.match(arg):
@@ -138,7 +138,7 @@ def _is_secret_print(command: str) -> bool:  # [skill-load-ok: souliane/teatree 
         if re.match(r"^\s*(?:echo|printf)\b", command):
             return _echo_arg_is_token(command)
         return bool(_PASS_SHOW_RE.match(command))
-    except Exception:  # noqa: BLE001
+    except Exception:  # noqa: BLE001 — crash-proof hook: any failure degrades silently, never breaks the tool call
         return False
 
 

@@ -79,8 +79,8 @@ class _Handle(Protocol):
 
 def _build_executor(queue_name: str, worker_id: str) -> "Worker":
     """A programmatic ``db_worker`` executor drained forever on ONE queue."""
-    from django_tasks import DEFAULT_TASK_BACKEND_ALIAS  # noqa: PLC0415
-    from django_tasks_db.management.commands.db_worker import Worker  # noqa: PLC0415
+    from django_tasks import DEFAULT_TASK_BACKEND_ALIAS  # noqa: PLC0415 — deferred: heavy/optional dep at call site
+    from django_tasks_db.management.commands.db_worker import Worker  # noqa: PLC0415 — deferred: heavy/optional dep
 
     return Worker(
         queue_names=[queue_name],
@@ -100,7 +100,7 @@ def _spawn_executor_thread(executor: _Executor) -> _Handle:
         try:
             executor.run()
         finally:
-            from django.db import connections  # noqa: PLC0415
+            from django.db import connections  # noqa: PLC0415 — deferred: Django import at call time
 
             connections.close_all()
 

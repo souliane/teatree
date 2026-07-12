@@ -181,7 +181,7 @@ def _mini_entries() -> tuple[LoopStatusEntry, ...]:
     PAUSED loop — which keeps ``Loop.enabled=True`` and a live cadence anchor — is
     surfaced as held rather than masquerading as a running, counting-down loop.
     """
-    from teatree.core.models import Loop  # noqa: PLC0415
+    from teatree.core.models import Loop  # noqa: PLC0415 — deferred: ORM import needs the app registry
 
     entries = [
         LoopStatusEntry(

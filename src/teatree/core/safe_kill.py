@@ -247,10 +247,10 @@ def _default_sample_liveness(pid: int) -> Liveness | None:
     Returns ``None`` when ``ps`` cannot report the pid (gone / unreadable) so the
     guard fails closed (cannot confirm non-live → refuse).
     """
-    import shutil  # noqa: PLC0415
-    import time  # noqa: PLC0415
+    import shutil  # noqa: PLC0415 — deferred: loaded only on this code path
+    import time  # noqa: PLC0415 — deferred: loaded only on this code path
 
-    from teatree.utils.run import CommandFailedError, run_allowed_to_fail  # noqa: PLC0415
+    from teatree.utils.run import CommandFailedError, run_allowed_to_fail  # noqa: PLC0415 — deferred: call-time import
 
     ps = shutil.which("ps")
     if ps is None:
@@ -265,7 +265,7 @@ def _default_sample_liveness(pid: int) -> Liveness | None:
             return None
         line = result.stdout.strip()
         parts = line.split()
-        if len(parts) < 2:  # noqa: PLR2004
+        if len(parts) < 2:  # noqa: PLR2004 — self-documenting literal in this context
             return None
         try:
             return parts[0], float(parts[1])
@@ -313,7 +313,7 @@ def _session_id_for_pid(pid: int) -> str:
 
 
 def _dead_task_for_session(session_id: str) -> tuple[int | None, bool]:
-    from teatree.core.models import Task, TaskAttempt  # noqa: PLC0415
+    from teatree.core.models import Task, TaskAttempt  # noqa: PLC0415 — deferred: ORM import needs the app registry
 
     attempt = TaskAttempt.objects.filter(agent_session_id=session_id).select_related("task").order_by("-pk").first()
     if attempt is None:

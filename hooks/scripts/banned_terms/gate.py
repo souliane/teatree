@@ -79,7 +79,7 @@ def handle_banned_terms_pretool(data: dict) -> bool:
             sys.path.insert(0, str(src_dir))
             added = True
         return _run_banned_terms_pretool(data)
-    except Exception:  # noqa: BLE001
+    except Exception:  # noqa: BLE001 — crash-proof hook: any failure degrades silently, never breaks the tool call
         return False
     finally:
         if added:
@@ -116,10 +116,10 @@ def _banned_term_marker_blocks(term: str, command: str, cwd_repo: "Path | None")
 
 def _run_banned_terms_pretool(data: dict) -> bool:
     """Banned-terms inner body — assumes ``teatree`` is already importable."""
-    from typing import cast  # noqa: PLC0415
+    from typing import cast  # noqa: PLC0415 — deferred: off the fast hook's load path
 
     from hooks.scripts.hook_router import _resolve_cwd_repo, emit_pretooluse_deny  # noqa: PLC0415 deferred back-import
-    from teatree.hooks import banned_terms_scanner, public_visibility, publish_surface  # noqa: PLC0415
+    from teatree.hooks import banned_terms_scanner, public_visibility, publish_surface  # noqa: PLC0415 — cold-hook read
 
     tool_name = data.get("tool_name", "")
     raw_input = data.get("tool_input", {}) or {}

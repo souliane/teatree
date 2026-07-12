@@ -16,7 +16,7 @@ from teatree.loop.preset_resolution import consistency_findings
 
 def _check_single_db() -> bool:
     """Warn if any ``db.sqlite3`` other than the canonical path exists under DATA_DIR."""
-    from teatree.paths import CANONICAL_DB, DATA_DIR, find_stale_dbs  # noqa: PLC0415
+    from teatree.paths import CANONICAL_DB, DATA_DIR, find_stale_dbs  # noqa: PLC0415 — deferred: lazy CLI import
 
     stale = list(find_stale_dbs(DATA_DIR, canonical=CANONICAL_DB))
     if not stale:
@@ -40,8 +40,8 @@ def _check_entrypoint_is_primary_clone() -> bool:
     import time from the entrypoint's on-disk location), so it reports the
     state of the process actually running ``t3 doctor``.
     """
-    import teatree  # noqa: PLC0415
-    from teatree import paths  # noqa: PLC0415
+    import teatree  # noqa: PLC0415 — deferred: keeps CLI startup light
+    from teatree import paths  # noqa: PLC0415 — deferred: keeps CLI startup light
 
     if not paths.DATA_DIR_AUTO_ISOLATED:
         return True
@@ -75,7 +75,7 @@ def _check_dangling_editable_pth() -> bool:
     A healthy install passes silently. Crash-proof: any unexpected error degrades
     to a pass so this diagnostic never aborts the whole doctor run.
     """
-    from teatree.utils.editable_pth import (  # noqa: PLC0415
+    from teatree.utils.editable_pth import (  # noqa: PLC0415 — deferred: keeps CLI startup light
         canonical_src_dir,
         detect_dangling_editable,
         repair_pth_to_canonical,
@@ -162,7 +162,7 @@ def _check_worker_running() -> bool:
 
 
 def _check_editable_sanity() -> bool:
-    from teatree.cli.doctor import DoctorService  # noqa: PLC0415
+    from teatree.cli.doctor import DoctorService  # noqa: PLC0415 — deferred: breaks checks ↔ doctor cycle
 
     ok = True
     try:
@@ -179,7 +179,7 @@ def _check_skills() -> bool:
     ok = True
     claude_skills = Path.home() / ".claude" / "skills"
     if claude_skills.is_dir():
-        from teatree.skill_support.schema import validate_directory  # noqa: PLC0415
+        from teatree.skill_support.schema import validate_directory  # noqa: PLC0415 — deferred: keeps CLI startup light
 
         errors, warnings = validate_directory(claude_skills)
         for warning in warnings:
@@ -203,7 +203,7 @@ def _check_account_switch() -> bool:
     degrades to a WARN so a doctor run never aborts on this check.
     """
     try:
-        from teatree.core.account_switch import detect_and_recover_account_switch  # noqa: PLC0415
+        from teatree.core.account_switch import detect_and_recover_account_switch  # noqa: PLC0415 — lazy CLI import
 
         outcome = detect_and_recover_account_switch()
     except Exception as exc:  # noqa: BLE001 — doctor check must never crash the run
@@ -238,7 +238,7 @@ def _check_mcp_connectivity() -> bool:
     WARN so a doctor run never aborts on this check.
     """
     try:
-        from teatree.core.mcp_connectivity import check_mcp_connectivity  # noqa: PLC0415
+        from teatree.core.mcp_connectivity import check_mcp_connectivity  # noqa: PLC0415 — deferred: lazy CLI import
 
         outcome = check_mcp_connectivity()
     except Exception as exc:  # noqa: BLE001 — doctor check must never crash the run
@@ -307,7 +307,10 @@ def _check_teatree_mcp_registration() -> bool:
     over. Crash-proof: any error also degrades to a WARN.
     """
     from teatree.cli.doctor.plugin_repair import _resolve_main_clone  # noqa: PLC0415 — avoids a doctor-package cycle
-    from teatree.core.mcp_registration import TEATREE_MCP_SERVER_NAME, verify_teatree_mcp_registration  # noqa: PLC0415
+    from teatree.core.mcp_registration import (  # noqa: PLC0415 — deferred: keeps CLI startup light
+        TEATREE_MCP_SERVER_NAME,
+        verify_teatree_mcp_registration,
+    )
 
     try:
         repo = _resolve_main_clone()
@@ -323,7 +326,7 @@ def _check_teatree_mcp_registration() -> bool:
         return True
 
     try:
-        from teatree.core.mcp_connectivity import probe_mcp_servers  # noqa: PLC0415
+        from teatree.core.mcp_connectivity import probe_mcp_servers  # noqa: PLC0415 — deferred: keeps CLI startup light
 
         statuses = probe_mcp_servers()
     except Exception:  # noqa: BLE001 — live probe is best-effort; claude may be absent
@@ -348,10 +351,10 @@ def _check_stale_uv_venv() -> bool:
     no-op (idempotent). Crash-proof: any error degrades to a WARN so the doctor
     run never aborts on this check.
     """
-    import shutil  # noqa: PLC0415
+    import shutil  # noqa: PLC0415 — deferred: loaded only when this command runs
 
-    from teatree.cli.update import _collect_repos  # noqa: PLC0415
-    from teatree.utils.venv_artifacts import find_stale_uv_venv  # noqa: PLC0415
+    from teatree.cli.update import _collect_repos  # noqa: PLC0415 — deferred: keeps CLI startup light
+    from teatree.utils.venv_artifacts import find_stale_uv_venv  # noqa: PLC0415 — deferred: keeps CLI startup light
 
     ok = True
     for _name, repo in _collect_repos():
@@ -436,9 +439,9 @@ def _check_legacy_overlay_alias() -> None:
     agent/user does the edit (no auto-rewrite of the user's registry).
     """
     try:
-        from importlib.metadata import entry_points  # noqa: PLC0415
+        from importlib.metadata import entry_points  # noqa: PLC0415 — deferred: loaded only when this command runs
 
-        from teatree.config import _match_canonical_ep, load_config  # noqa: PLC0415
+        from teatree.config import _match_canonical_ep, load_config  # noqa: PLC0415 — deferred: keeps CLI startup light
 
         config = load_config()
         ep_names = {ep.name for ep in entry_points(group="teatree.overlays")}
@@ -457,7 +460,7 @@ def _check_legacy_overlay_alias() -> None:
 
 
 def _check_stale_path_t3(env: dict[str, str] | None = None) -> bool:
-    import os  # noqa: PLC0415
+    import os  # noqa: PLC0415 — deferred: loaded only when this command runs
 
     resolved_env = env if env is not None else dict(os.environ)
     path_dirs = [Path(d) for d in resolved_env.get("PATH", "").split(os.pathsep) if d]
@@ -549,9 +552,9 @@ def _check_dream_staleness() -> bool:
     doctor run never aborts on this check — same posture as the other
     DB-reading doctor checks.
     """
-    from django.utils import timezone  # noqa: PLC0415
+    from django.utils import timezone  # noqa: PLC0415 — deferred: Django import at call time
 
-    from teatree.core.models import DreamRunMarker  # noqa: PLC0415
+    from teatree.core.models import DreamRunMarker  # noqa: PLC0415 — deferred: ORM import needs the app registry
 
     try:
         stale = DreamRunMarker.objects.is_stale(timezone.now())

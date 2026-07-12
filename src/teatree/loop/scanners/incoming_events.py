@@ -43,7 +43,7 @@ type MessagingResolver = Callable[[str], MessagingBackend | None]
 
 
 def _default_messaging_resolver(overlay: str) -> MessagingBackend | None:
-    from teatree.core.backend_factory import messaging_from_overlay  # noqa: PLC0415
+    from teatree.core.backend_factory import messaging_from_overlay  # noqa: PLC0415 — deferred: loaded at tick time
 
     return messaging_from_overlay(overlay or None)
 

@@ -91,7 +91,7 @@ def handle_subagent_stop_no_commit(data: dict) -> None:
         src_dir = Path(__file__).resolve().parents[2] / "src"
         if str(src_dir) not in sys.path:
             sys.path.insert(0, str(src_dir))
-        from teatree.hooks import no_commit_detector  # noqa: PLC0415
+        from teatree.hooks import no_commit_detector  # noqa: PLC0415 — deferred: cold-hook import after sys.path setup
 
         finding = no_commit_detector.detect(worktree)
         if finding.is_flagged:

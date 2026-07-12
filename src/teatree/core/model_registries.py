@@ -19,13 +19,13 @@ def _infer_overlay_for_url(url: str) -> str:
     # Re-read the module attribute at call time so a test patching
     # ``teatree.core.overlay_loader.infer_overlay_for_url`` is still seen by the
     # model that fetches this resolver from the registry (#2385).
-    from teatree.core.overlay_loader import infer_overlay_for_url  # noqa: PLC0415
+    from teatree.core.overlay_loader import infer_overlay_for_url  # noqa: PLC0415 — deferred: call-time import
 
     return infer_overlay_for_url(url)
 
 
 def _resolve_overlay_name(name: str) -> str | None:
-    from teatree.core.overlay_loader import resolve_overlay_name  # noqa: PLC0415
+    from teatree.core.overlay_loader import resolve_overlay_name  # noqa: PLC0415 — deferred: call-time import
 
     return resolve_overlay_name(name)
 
@@ -33,8 +33,8 @@ def _resolve_overlay_name(name: str) -> str | None:
 def populate_model_registries() -> None:
     """Import every gate (self-registering) and register the resolvers + cost factories."""
     # Importing a gate module runs its module-level ``register_gate(...)`` call.
-    from teatree.core.cost import register_cost_factories  # noqa: PLC0415
-    from teatree.core.gates import (  # noqa: F401, PLC0415
+    from teatree.core.cost import register_cost_factories  # noqa: PLC0415 — deferred: call-time import, kept lazy
+    from teatree.core.gates import (  # noqa: F401, PLC0415 — deferred: call-time import, kept lazy; re-export
         critic_gate,
         design_critic_gate,
         dod_gate,
@@ -47,7 +47,7 @@ def populate_model_registries() -> None:
         review_context_gate,
         spec_coverage_gate,
     )
-    from teatree.core.modelkit.gate_registry import register_resolver  # noqa: PLC0415
+    from teatree.core.modelkit.gate_registry import register_resolver  # noqa: PLC0415 — deferred: call-time import
 
     register_resolver("infer_overlay_for_url", _infer_overlay_for_url)
     register_resolver("resolve_overlay_name", _resolve_overlay_name)

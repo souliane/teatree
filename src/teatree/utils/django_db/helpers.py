@@ -12,17 +12,17 @@ from teatree.utils.run import run_allowed_to_fail
 def _pg_args() -> tuple[str, str, dict[str, str]]:
     # Deferred so importing the engine facade never eagerly pulls the psycopg-backed
     # ``teatree.utils.db`` stack — only the runner/config surface is wanted by most importers.
-    from teatree.utils.db import pg_env, pg_host, pg_user  # noqa: PLC0415
+    from teatree.utils.db import pg_env, pg_host, pg_user  # noqa: PLC0415 — deferred: call-time import, kept lazy
 
     return pg_host(), pg_user(), pg_env()
 
 
 def _local_db_url(db_name: str) -> str:
-    from urllib.parse import quote  # noqa: PLC0415
+    from urllib.parse import quote  # noqa: PLC0415 — deferred: loaded only on this code path
 
     # Deferred (same reason as ``_pg_args``): the DB/secret resolvers stay off the facade import path.
-    from teatree.utils.db import pg_host, pg_user  # noqa: PLC0415
-    from teatree.utils.postgres_secret import resolve_postgres_password  # noqa: PLC0415
+    from teatree.utils.db import pg_host, pg_user  # noqa: PLC0415 — deferred: call-time import, kept lazy
+    from teatree.utils.postgres_secret import resolve_postgres_password  # noqa: PLC0415 — deferred: call-time import
 
     pw = resolve_postgres_password()
     port = os.environ.get("POSTGRES_PORT", "5432")

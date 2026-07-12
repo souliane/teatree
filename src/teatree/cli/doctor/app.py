@@ -177,7 +177,7 @@ class DoctorService:
     @staticmethod
     def show_info() -> None:
         """Display t3 entry point, teatree/overlay sources, and editable status."""
-        from teatree.config import discover_active_overlay, discover_overlays  # noqa: PLC0415
+        from teatree.config import discover_active_overlay, discover_overlays  # noqa: PLC0415 — lazy CLI import
         from teatree.instance_id import instance_id  # noqa: PLC0415 — deferred: keep CLI module load light
 
         t3_bin = shutil.which("t3") or "not found on PATH"
@@ -254,7 +254,7 @@ class DoctorService:
 
         Returns (target_dir, link_name) pairs for symlink creation.
         """
-        from teatree.config import discover_overlays  # noqa: PLC0415
+        from teatree.config import discover_overlays  # noqa: PLC0415 — deferred: keeps CLI startup light
 
         results: list[tuple[Path, str]] = []
         for entry in discover_overlays():
@@ -308,7 +308,7 @@ class DoctorService:
         """
         problems: list[str] = []
 
-        from teatree.config import get_effective_settings  # noqa: PLC0415
+        from teatree.config import get_effective_settings  # noqa: PLC0415 — deferred: keeps CLI startup light
 
         contribute = get_effective_settings().contribute
 
@@ -325,7 +325,7 @@ class DoctorService:
                 )
 
         # Overlays — resolve dist names from entry points metadata (no Django needed).
-        import importlib.metadata  # noqa: PLC0415
+        import importlib.metadata  # noqa: PLC0415 — deferred: loaded only when this command runs
 
         overlay_dists = [
             ep.dist.name if ep.dist else ep.name for ep in importlib.metadata.entry_points(group="teatree.overlays")
@@ -370,14 +370,14 @@ class DoctorService:
             p = Path(env_path).expanduser()
             if (p / "pyproject.toml").is_file():
                 return p
-        from teatree import find_project_root  # noqa: PLC0415
+        from teatree import find_project_root  # noqa: PLC0415 — deferred: keeps CLI startup light
 
         return find_project_root()
 
     @staticmethod
     def find_overlay_repo(dist_name: str) -> Path | None:
         """Find the overlay repo in the workspace directory."""
-        from teatree.config import clone_root, load_config  # noqa: PLC0415
+        from teatree.config import clone_root, load_config  # noqa: PLC0415 — deferred: keeps CLI startup light
 
         config = load_config()
         workspace = clone_root()
@@ -484,7 +484,7 @@ class IntrospectionHelpers:
         label = label or dist_name
 
         try:
-            import importlib  # noqa: PLC0415
+            import importlib  # noqa: PLC0415 — deferred: loaded only when this command runs
 
             mod = importlib.import_module(import_name)
             source_path = getattr(mod, "__file__", None) or ""
@@ -527,9 +527,9 @@ class IntrospectionHelpers:
 def check() -> bool:
     """Verify imports, required tools, and editable-install sanity."""
     try:
-        import django  # noqa: PLC0415, F401
+        import django  # noqa: PLC0415, F401 — deferred: Django import at call time; re-export
 
-        import teatree.core  # noqa: PLC0415, F401
+        import teatree.core  # noqa: PLC0415, F401 — deferred: keeps CLI startup light; re-export
     except ImportError as exc:
         typer.echo(f"FAIL  Import check: {exc}")
         return False
@@ -565,7 +565,7 @@ def check() -> bool:
     # (#126). Configure Django first so the guard reports the REAL state.
     ensure_django()
 
-    from teatree.core.gates.schema_guard import doctor_check_self_db_migrations  # noqa: PLC0415
+    from teatree.core.gates.schema_guard import doctor_check_self_db_migrations  # noqa: PLC0415 — lazy CLI import
 
     ok = doctor_check_self_db_migrations() and ok
 
@@ -588,8 +588,8 @@ def check() -> bool:
     # reads source files. An offline/missing remote is a valid state —
     # ``doctor_check_clone_currency`` skips affected repos rather than
     # FAILing (same posture as schema_guard's DB-offline WARN).
-    from teatree.cli.update import _collect_repos  # noqa: PLC0415
-    from teatree.core.gates.clone_guard import doctor_check_clone_currency  # noqa: PLC0415
+    from teatree.cli.update import _collect_repos  # noqa: PLC0415 — deferred: keeps CLI startup light
+    from teatree.core.gates.clone_guard import doctor_check_clone_currency  # noqa: PLC0415 — deferred: lazy CLI import
 
     ok = doctor_check_clone_currency(_collect_repos()) and ok
 

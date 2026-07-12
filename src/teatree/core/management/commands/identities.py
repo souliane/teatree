@@ -43,7 +43,7 @@ class Command(TyperCommand):
         ``user_identity_aliases`` (the migration-window behaviour), so trust
         never regresses.
         """
-        from teatree.config import get_effective_settings  # noqa: PLC0415
+        from teatree.config import get_effective_settings  # noqa: PLC0415 — deferred: keeps command import light
 
         aliases = [alias.strip() for alias in get_effective_settings().user_identity_aliases if alias.strip()]
         created = 0

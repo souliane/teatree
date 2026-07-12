@@ -92,7 +92,7 @@ def _inject_db_registries(raw: dict) -> None:
     (with no overlays / e2e repos) rather than raising.
     """
     from teatree.config import cold_reader  # noqa: PLC0415 — Django-free DB read on the pre-Django discovery path
-    from teatree.config.registries import REGISTRY_KEYS  # noqa: PLC0415
+    from teatree.config.registries import REGISTRY_KEYS  # noqa: PLC0415 — deferred: breaks loader ↔ registries cycle
 
     for key in REGISTRY_KEYS:
         stored = cold_reader.read_setting(key)
@@ -160,10 +160,10 @@ def clone_root() -> Path:
     env_override = os.environ.get("T3_WORKSPACE_DIR")
     if env_override:
         return Path(env_override).expanduser()
-    from django.core.exceptions import ImproperlyConfigured  # noqa: PLC0415
+    from django.core.exceptions import ImproperlyConfigured  # noqa: PLC0415 — deferred: Django import at call time
 
     with suppress(ImproperlyConfigured):
-        from django.conf import settings  # noqa: PLC0415
+        from django.conf import settings  # noqa: PLC0415 — deferred: Django import at call time
 
         if hasattr(settings, "T3_WORKSPACE_DIR"):
             return Path(settings.T3_WORKSPACE_DIR)
@@ -211,9 +211,9 @@ def worktree_root() -> Path:
     edge the module docstring describes) so it stays fail-safe to "no row" when
     Django is unconfigured.
     """
-    from django.conf import settings  # noqa: PLC0415
+    from django.conf import settings  # noqa: PLC0415 — deferred: Django import at call time
 
-    from teatree.config.resolution import (  # noqa: PLC0415
+    from teatree.config.resolution import (  # noqa: PLC0415 — deferred: breaks loader ↔ resolution cycle
         _db_global_overrides,
         _db_overlay_overrides,
         _resolved_overlay_name,

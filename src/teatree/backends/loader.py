@@ -135,7 +135,7 @@ def pr_is_merged_or_closed(pr_url: str) -> bool:
     """
     if not pr_url:
         return False
-    from teatree.core.overlay_loader import get_overlay_for_url  # noqa: PLC0415
+    from teatree.core.overlay_loader import get_overlay_for_url  # noqa: PLC0415 — deferred: backends ↔ core cycle
 
     try:
         host = get_code_host_for_url(get_overlay_for_url(pr_url), pr_url)

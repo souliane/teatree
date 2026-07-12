@@ -140,7 +140,7 @@ class Worktree(models.Model):
         receiver's job (``teatree.core.signals``), keyed on the transition
         name (#2385).
         """
-        from django.utils import timezone  # noqa: PLC0415
+        from django.utils import timezone  # noqa: PLC0415 — deferred: Django import at call time
 
         if services is not None:
             extra = self._extra()
@@ -161,7 +161,7 @@ class Worktree(models.Model):
         receiver's job (``teatree.core.signals``), keyed on the transition
         name (#2385).
         """
-        from django.utils import timezone  # noqa: PLC0415
+        from django.utils import timezone  # noqa: PLC0415 — deferred: Django import at call time
 
         extra = self._extra()
         if urls:
@@ -171,7 +171,7 @@ class Worktree(models.Model):
 
     @transition(field=state, source=[State.PROVISIONED, State.SERVICES_UP, State.READY], target=State.PROVISIONED)
     def db_refresh(self) -> None:
-        from django.utils import timezone  # noqa: PLC0415
+        from django.utils import timezone  # noqa: PLC0415 — deferred: Django import at call time
 
         extra = self._extra()
         extra["db_refreshed_at"] = timezone.now().isoformat()

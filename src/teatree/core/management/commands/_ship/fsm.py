@@ -65,4 +65,4 @@ def reconcile_fsm_for_ship(ticket: Ticket, *, consume_reviewing_tasks: bool = Fa
             ticket.reconcile_reviewed()
             ticket.save()
         if consume_reviewing_tasks:
-            ticket._consume_pending_phase_tasks("reviewing")  # noqa: SLF001
+            ticket._consume_pending_phase_tasks("reviewing")  # noqa: SLF001 — intentional access to a sibling's internal within the same subsystem

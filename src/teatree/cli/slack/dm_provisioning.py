@@ -95,7 +95,7 @@ def resolve_user_slack_id(*, bot_token: str) -> str:
 
 def _load_overlays_registry() -> dict[str, dict]:
     """Return the DB ``overlays`` registry dict (``{name: {fields}}``), or ``{}`` when unset."""
-    from teatree.core.models import ConfigSetting  # noqa: PLC0415
+    from teatree.core.models import ConfigSetting  # noqa: PLC0415 — deferred: ORM import needs the app registry
 
     stored = ConfigSetting.objects.get_effective(_OVERLAYS_REGISTRY_KEY)
     return stored if isinstance(stored, dict) else {}
@@ -103,7 +103,7 @@ def _load_overlays_registry() -> dict[str, dict]:
 
 def _persist_dm_channel(overlay_name: str, channel_id: str) -> None:
     """Write *channel_id* into the overlay's entry of the DB ``overlays`` registry row."""
-    from teatree.core.models import ConfigSetting  # noqa: PLC0415
+    from teatree.core.models import ConfigSetting  # noqa: PLC0415 — deferred: ORM import needs the app registry
 
     registry = _load_overlays_registry()
     block = registry.get(overlay_name)

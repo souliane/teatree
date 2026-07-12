@@ -173,7 +173,7 @@ def run_check(targets: list[str], base_url: str, screenshot_dir: str = DEFAULT_S
     can fail open with a clear message rather than blocking the push.
     """
     try:
-        from playwright.sync_api import sync_playwright  # noqa: PLC0415
+        from playwright.sync_api import sync_playwright  # noqa: PLC0415 — deferred: heavy/optional dep at call site
     except ImportError:
         msg = "playwright is not installed. Run: uv sync && playwright install chromium"
         raise VisualQAUnavailableError(msg) from None

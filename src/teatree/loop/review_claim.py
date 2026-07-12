@@ -152,8 +152,8 @@ def _slack_message_for_pr(slug: str, pr_id: int) -> tuple[str, str, str] | None:
     if not slug or not pr_id:
         return None
     try:
-        from teatree.core.models import ReviewRequestPost  # noqa: PLC0415
-        from teatree.utils.url_slug import pr_ref_from_url  # noqa: PLC0415
+        from teatree.core.models import ReviewRequestPost  # noqa: PLC0415 — deferred: ORM import needs the app registry
+        from teatree.utils.url_slug import pr_ref_from_url  # noqa: PLC0415 — deferred: loaded at tick time, not import
 
         for post in ReviewRequestPost.objects.exclude(slack_thread_ts="").iterator():
             ref = pr_ref_from_url(post.mr_url)

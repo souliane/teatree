@@ -277,9 +277,9 @@ class Command(TyperCommand):
         """
         if not recorded.is_merge_safe():
             return
-        import os  # noqa: PLC0415
+        import os  # noqa: PLC0415 — deferred: loaded only when this command runs
 
-        from teatree.loop.sweep_on_demand import trigger_sweep_for_verdict  # noqa: PLC0415
+        from teatree.loop.sweep_on_demand import trigger_sweep_for_verdict  # noqa: PLC0415 — lazy command import
 
         attempt = trigger_sweep_for_verdict(
             slug=recorded.slug,
@@ -304,7 +304,7 @@ class Command(TyperCommand):
         ticket_id = recorded.ticket_id  # type: ignore[attr-defined]  # Django implicit FK id
         if ticket_id is None:
             return
-        from teatree.core.models import ReviewLoop  # noqa: PLC0415
+        from teatree.core.models import ReviewLoop  # noqa: PLC0415 — deferred: ORM import needs the app registry
 
         loop = ReviewLoop.open_external_for_ticket(ticket_id)
         if loop is None:
@@ -324,8 +324,8 @@ class Command(TyperCommand):
         Best-effort: any failure logs and continues — a Slack outage must not
         turn a recorded verdict into a command failure.
         """
-        from teatree.core.backend_factory import messaging_from_overlay  # noqa: PLC0415
-        from teatree.loop.review_claim import emit_review_done_reactions  # noqa: PLC0415
+        from teatree.core.backend_factory import messaging_from_overlay  # noqa: PLC0415 — deferred: lazy command import
+        from teatree.loop.review_claim import emit_review_done_reactions  # noqa: PLC0415 — lazy command import
 
         try:
             posted = emit_review_done_reactions(

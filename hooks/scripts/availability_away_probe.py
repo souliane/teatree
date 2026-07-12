@@ -194,7 +194,7 @@ def _primary_data_dir() -> Path | None:
     """
     try:
         with teatree_src_on_path():
-            from teatree.config.cold_reader import canonical_config_db  # noqa: PLC0415
+            from teatree.config.cold_reader import canonical_config_db  # noqa: PLC0415 — deferred: cold-hook import
 
             return canonical_config_db().parent
     except Exception:  # noqa: BLE001 — hook crash-proof: unresolvable data dir ⇒ no override read
@@ -214,7 +214,7 @@ def _schedule_has_windows() -> bool:
     """
     try:
         with teatree_src_on_path():
-            from teatree.config.cold_reader import mapping_setting  # noqa: PLC0415
+            from teatree.config.cold_reader import mapping_setting  # noqa: PLC0415 — deferred: cold-hook import
 
             windows = mapping_setting("availability_schedule").get("windows")
     except Exception:  # noqa: BLE001 — hook crash-proof: unreadable DB ⇒ no schedule tier

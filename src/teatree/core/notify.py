@@ -242,7 +242,7 @@ def _maybe_stamp_answered(*, idempotency_key: str, answering_slack_ts: str) -> N
     # the model import out of ``teatree.core.notify`` import time avoids
     # perturbing the module-import graph that the on-behalf gate and
     # notify suites rely on.
-    from teatree.core.models import PendingChatInjection  # noqa: PLC0415
+    from teatree.core.models import PendingChatInjection  # noqa: PLC0415 — deferred: ORM import needs the app registry
 
     try:
         PendingChatInjection.agent_answered_question(ts)
@@ -251,7 +251,7 @@ def _maybe_stamp_answered(*, idempotency_key: str, answering_slack_ts: str) -> N
 
 
 def _active_dm_thread(channel: str) -> str:
-    from teatree.core.models import IncomingEvent  # noqa: PLC0415
+    from teatree.core.models import IncomingEvent  # noqa: PLC0415 — deferred: ORM import needs the app registry
 
     try:
         return IncomingEvent.objects.active_dm_thread(channel=channel)
@@ -299,7 +299,7 @@ def _deliver_dm(
     enrichment are independent concerns. A failure on the speak side never
     suppresses the text delivery.
     """
-    from teatree.core.speak import deliver_user_dm_sidecar  # noqa: PLC0415
+    from teatree.core.speak import deliver_user_dm_sidecar  # noqa: PLC0415 — deferred: call-time import, kept lazy
 
     try:
         channel = backend.open_dm(user_id)
@@ -409,7 +409,7 @@ def resolve_user_id() -> str:
     ``load_config().raw["overlays"]``); the GLOBAL fallback reads the DB-home
     ``slack_user_id`` setting so every routing path agrees on the same order.
     """
-    from teatree.config import cold_reader  # noqa: PLC0415
+    from teatree.config import cold_reader  # noqa: PLC0415 — deferred: call-time import, kept lazy
 
     cfg = load_config().raw
     overlay_name = os.environ.get("T3_OVERLAY_NAME", "")
@@ -435,7 +435,7 @@ def resolve_user_channel() -> str:
     as "open a DM to the resolved user_id" rather than pinning to a
     specific ``D...`` channel.
     """
-    from teatree.config import cold_reader  # noqa: PLC0415
+    from teatree.config import cold_reader  # noqa: PLC0415 — deferred: call-time import, kept lazy
 
     cfg = load_config().raw
     overlay_name = os.environ.get("T3_OVERLAY_NAME", "")
@@ -456,7 +456,7 @@ def maybe_linkify(text: str) -> str:
     ``[label](url)`` to ``<url|label>`` but leaves bare ``!N`` / ``#N``
     tokens as-is.
     """
-    from teatree.core.overlay_loader import get_overlay  # noqa: PLC0415
+    from teatree.core.overlay_loader import get_overlay  # noqa: PLC0415 — deferred: call-time import, kept lazy
 
     try:
         overlay = get_overlay()

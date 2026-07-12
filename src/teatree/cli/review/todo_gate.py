@@ -217,7 +217,7 @@ def _refusal(file: str, anchor_line: int, marker_line: int, marker_text: str) ->
     author to do work they have already deferred is the failure this gate
     exists to prevent.
     """
-    truncated = marker_text if len(marker_text) <= 80 else marker_text[:77] + "..."  # noqa: PLR2004
+    truncated = marker_text if len(marker_text) <= 80 else marker_text[:77] + "..."  # noqa: PLR2004 — self-documenting literal in this context
     at_anchor = "at the anchor line" if marker_line == anchor_line else f"at line {marker_line} (±3 of anchor)"
     return (
         f"Refusing TODO-anchored blocker post: {file}:{anchor_line} — the diff line "

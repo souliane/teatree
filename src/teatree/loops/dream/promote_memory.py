@@ -163,7 +163,7 @@ def _promote_one_gap(host: CodeHostBackend, row: ConsolidatedMemory, *, umbrella
     scheduled for the fix (deduped by the same key). The banned-term / bare-reference
     withholding is enforced inside ``promote_gap`` against the rendered title.
     """
-    from teatree.loops.dream import umbrella_ledger  # noqa: PLC0415
+    from teatree.loops.dream import umbrella_ledger  # noqa: PLC0415 — deferred: loaded at tick time, not import
 
     outcome = umbrella_ledger.promote_gap(
         host,

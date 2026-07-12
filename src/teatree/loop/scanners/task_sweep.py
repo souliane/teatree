@@ -83,7 +83,7 @@ class TaskSweepScanner:
     def _candidate_tasks(self, now: datetime) -> list["Task"]:
         task_model = cast("type[Task]", apps.get_model("core", "Task"))
         cutoff = now - timedelta(hours=self.recheck_interval_hours)
-        from django.db.models import Q  # noqa: PLC0415
+        from django.db.models import Q  # noqa: PLC0415 — deferred: Django import at call time
 
         qs = (
             task_model.objects.filter(status__in=_OPEN_STATUSES)
@@ -102,7 +102,7 @@ class TaskSweepScanner:
 
     def _claim_for_sweep(self, *, task_id: int, now: datetime) -> bool:
         """Atomically stamp ``last_sweep_check_ts``; True iff this tick won the race."""
-        from django.db.models import Q  # noqa: PLC0415
+        from django.db.models import Q  # noqa: PLC0415 — deferred: Django import at call time
 
         task_model = cast("type[Task]", apps.get_model("core", "Task"))
         cutoff = now - timedelta(hours=self.recheck_interval_hours)

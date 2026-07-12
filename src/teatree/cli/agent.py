@@ -23,7 +23,7 @@ def _detect_agent_ticket_status(project_root: Path) -> str:
         return ""
     try:
         ensure_django()
-        from teatree.core.intake.resolve import resolve_worktree  # noqa: PLC0415
+        from teatree.core.intake.resolve import resolve_worktree  # noqa: PLC0415 — deferred: keeps CLI startup light
 
         return str(resolve_worktree().ticket.state)
     except Exception:
@@ -40,9 +40,9 @@ def _launch_claude(
     ask_user_which_skill: bool,
 ) -> None:
     """Shared logic: resolve skills, build prompt, exec into claude."""
-    import shutil  # noqa: PLC0415
+    import shutil  # noqa: PLC0415 — deferred: loaded only when this command runs
 
-    from teatree.cli.doctor import IntrospectionHelpers  # noqa: PLC0415
+    from teatree.cli.doctor import IntrospectionHelpers  # noqa: PLC0415 — deferred: keeps CLI startup light
 
     claude_bin = shutil.which("claude")
     if not claude_bin:
@@ -71,7 +71,7 @@ def _launch_claude(
     if task:
         context_lines.extend(("", f"Task: {task}"))
 
-    from teatree.config import get_effective_settings  # noqa: PLC0415
+    from teatree.config import get_effective_settings  # noqa: PLC0415 — deferred: keeps CLI startup light
 
     settings = get_effective_settings()
     context = "\n".join(context_lines)
@@ -81,7 +81,7 @@ def _launch_claude(
     cmd.extend(["--append-system-prompt", context])
 
     if settings.contribute_plugin_dir:
-        from teatree import find_project_root  # noqa: PLC0415
+        from teatree import find_project_root  # noqa: PLC0415 — deferred: keeps CLI startup light
 
         teatree_root = find_project_root()
         if teatree_root:
@@ -100,10 +100,10 @@ def agent(
     skill: list[str] = AGENT_SKILL_OPTION,
 ) -> None:
     """Launch Claude Code with auto-detected project context."""
-    from teatree.cli import _find_project_root  # noqa: PLC0415
-    from teatree.config import discover_active_overlay  # noqa: PLC0415
-    from teatree.core.overlay_loader import get_overlay  # noqa: PLC0415
-    from teatree.skill_support.loading import SkillLoadingPolicy  # noqa: PLC0415
+    from teatree.cli import _find_project_root  # noqa: PLC0415 — deferred: breaks agent ↔ cli cycle
+    from teatree.config import discover_active_overlay  # noqa: PLC0415 — deferred: keeps CLI startup light
+    from teatree.core.overlay_loader import get_overlay  # noqa: PLC0415 — deferred: keeps CLI startup light
+    from teatree.skill_support.loading import SkillLoadingPolicy  # noqa: PLC0415 — deferred: keeps CLI startup light
 
     project_root = _find_project_root()
     active = discover_active_overlay()

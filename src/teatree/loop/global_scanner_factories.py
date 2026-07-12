@@ -38,7 +38,7 @@ from teatree.loop.scanners.self_update_ci import GhMainCiStatus
 
 def _dogfood_smoke_scanner() -> Scanner | None:
     """Wire the global provision-smoke scanner (#1308)."""
-    from teatree.loop.scanners.provision_smoke import build_provision_smoke_scanner  # noqa: PLC0415
+    from teatree.loop.scanners.provision_smoke import build_provision_smoke_scanner  # noqa: PLC0415 — tick-time import
 
     return build_provision_smoke_scanner(
         load_config=load_config,
@@ -103,7 +103,7 @@ def _resolve_t3_repo() -> Path | None:
 
 def _git_toplevel(path: Path) -> Path | None:
     """Return the git work-tree root containing *path*, or ``None`` if not a repo."""
-    from teatree.utils.run import run_allowed_to_fail  # noqa: PLC0415
+    from teatree.utils.run import run_allowed_to_fail  # noqa: PLC0415 — deferred: loaded at tick time, not import
 
     if not path.is_dir():
         return None
@@ -217,7 +217,7 @@ def _snapshot_warmer_scanner() -> SnapshotWarmerScanner | None:
     settings = load_config().user
     if settings.snapshot_warmer_disabled:
         return None
-    from teatree.core.overlay_loader import get_overlay  # noqa: PLC0415
+    from teatree.core.overlay_loader import get_overlay  # noqa: PLC0415 — deferred: loaded at tick time, not import
 
     active = discover_active_overlay()
     overlay_name = active.name if active is not None else _CANONICAL_CORE_OVERLAY

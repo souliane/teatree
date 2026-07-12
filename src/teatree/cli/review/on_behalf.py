@@ -45,7 +45,7 @@ def on_behalf_gate_active() -> bool:
     as inactive (no behaviour change until it lands).
     """
     try:
-        from teatree.on_behalf_gate import OnBehalfVerdict, resolve_on_behalf_verdict  # noqa: PLC0415
+        from teatree.on_behalf_gate import OnBehalfVerdict, resolve_on_behalf_verdict  # noqa: PLC0415 — lazy CLI import
     except ModuleNotFoundError:
         return False
     # "approve" is a non-draft action: PROCEED under IMMEDIATE, BLOCK under
@@ -89,7 +89,7 @@ def check_on_behalf(repo: str, mr: int, action: str) -> str:
     (``post_draft_note``) is exempt under every mode and always returns
     ``""`` here — a draft is colleague-invisible and needs no approval.
     """
-    from teatree.core.on_behalf_gate_recorded import on_behalf_block_message  # noqa: PLC0415
+    from teatree.core.on_behalf_gate_recorded import on_behalf_block_message  # noqa: PLC0415 — lazy CLI import
 
     return on_behalf_block_message(gate_target(repo, mr), action)
 
@@ -103,7 +103,7 @@ def publish_on_behalf[T](repo: str, mr: int, action: str, publish: Callable[[], 
     approval survives a retry) and writes no audit; a BLOCK with no recorded
     approval raises :class:`OnBehalfPostBlockedError` before *publish* runs.
     """
-    from teatree.core.on_behalf_gate_recorded import require_on_behalf_approval  # noqa: PLC0415
+    from teatree.core.on_behalf_gate_recorded import require_on_behalf_approval  # noqa: PLC0415 — lazy CLI import
 
     return require_on_behalf_approval(target=gate_target(repo, mr), action=action, publish=publish)
 
@@ -115,7 +115,7 @@ def check_on_behalf_issue(repo: str, issue_iid: int, action: str) -> str:
     recorded :class:`OnBehalfApproval` matches ``(<repo>#<issue>, <action>)``),
     else ``""``.
     """
-    from teatree.core.on_behalf_gate_recorded import on_behalf_block_message  # noqa: PLC0415
+    from teatree.core.on_behalf_gate_recorded import on_behalf_block_message  # noqa: PLC0415 — lazy CLI import
 
     return on_behalf_block_message(issue_gate_target(repo, issue_iid), action)
 
@@ -127,7 +127,7 @@ def publish_on_behalf_issue[T](repo: str, issue_iid: int, action: str, publish: 
     before *publish* runs; a post that raises rolls back the consume so the
     approval survives a retry.
     """
-    from teatree.core.on_behalf_gate_recorded import require_on_behalf_approval  # noqa: PLC0415
+    from teatree.core.on_behalf_gate_recorded import require_on_behalf_approval  # noqa: PLC0415 — lazy CLI import
 
     return require_on_behalf_approval(target=issue_gate_target(repo, issue_iid), action=action, publish=publish)
 
@@ -235,7 +235,10 @@ def register(review_app: typer.Typer) -> None:
         """
         ensure_django()
 
-        from teatree.core.models.on_behalf_approval import OnBehalfApproval, OnBehalfApprovalError  # noqa: PLC0415
+        from teatree.core.models.on_behalf_approval import (  # noqa: PLC0415 — deferred: ORM import needs the app registry
+            OnBehalfApproval,
+            OnBehalfApprovalError,
+        )
 
         try:
             approval = OnBehalfApproval.record(target=target, action=action, approver_id=approver)

@@ -54,7 +54,7 @@ def latest_rubric(ticket: "Ticket") -> "Rubric | None":
     the manager's ``active_for_ticket`` (order by ``-created_at``, first) is the
     active row.
     """
-    from teatree.core.models.rubric import Rubric  # noqa: PLC0415
+    from teatree.core.models.rubric import Rubric  # noqa: PLC0415 — deferred: ORM import needs the app registry
 
     return Rubric.objects.active_for_ticket(ticket)
 
@@ -70,7 +70,7 @@ def _record_shipped_incomplete_escalation(ticket: "Ticket") -> None:
     (ticket-wide, ``task_id=None``). Fail-SAFE: any error recording the row is
     swallowed — the backstop must never block the (already-refusing) gate.
     """
-    from teatree.core.models.honesty_escalation import HonestyEscalation  # noqa: PLC0415
+    from teatree.core.models.honesty_escalation import HonestyEscalation  # noqa: PLC0415 — deferred: ORM/app-registry
 
     try:
         session = ticket.sessions.exclude(agent_id="").order_by("-started_at").first()  # ty: ignore[unresolved-attribute]

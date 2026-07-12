@@ -188,7 +188,7 @@ class Command(TyperCommand):
             slack_thread_ts=ts,
         )
 
-        from django.utils import timezone  # noqa: PLC0415
+        from django.utils import timezone  # noqa: PLC0415 — deferred: Django import at call time
 
         persist_review_message(
             mr_url=canonical,
@@ -225,7 +225,7 @@ class Command(TyperCommand):
         ``action=suppress`` so a genuinely-undeliverable fallback stays loud
         instead of masquerading as a draft.
         """
-        from teatree.core.notify import NotifyKind, notify_user  # noqa: PLC0415
+        from teatree.core.notify import NotifyKind, notify_user  # noqa: PLC0415 — deferred: keeps command import light
 
         canonical = canonical_mr_url(mr_url)
         subject = title or _DEFAULT_TITLE
@@ -250,7 +250,7 @@ class Command(TyperCommand):
         is itself a block with actionable steering, since the request-review
         transition must be SHA-bound.
         """
-        from teatree.core.gates.anti_vacuity_gate import (  # noqa: PLC0415
+        from teatree.core.gates.anti_vacuity_gate import (  # noqa: PLC0415 — deferred: keeps command import light
             AntiVacuityAttestationError,
             anti_vacuity_required,
             check_anti_vacuity_attestation,
@@ -308,7 +308,7 @@ class Command(TyperCommand):
         message yet (``done_at`` unset and no thread ts) — never reconcile
         away a real prior post the guard reconciled.
         """
-        from teatree.core.models import ReviewRequestPost  # noqa: PLC0415
+        from teatree.core.models import ReviewRequestPost  # noqa: PLC0415 — deferred: ORM import needs the app registry
 
         ReviewRequestPost.objects.filter(
             mr_url=canonical,
@@ -322,7 +322,7 @@ class Command(TyperCommand):
         Always raises ``SystemExit`` (``0`` post/suppress, ``2`` refused) so
         the handle body has one uniform terminator and no dead ``return``.
         """
-        import json  # noqa: PLC0415
+        import json  # noqa: PLC0415 — deferred: loaded only when this command runs
 
         self.stdout.write(json.dumps(payload))
         raise SystemExit(exit_code)

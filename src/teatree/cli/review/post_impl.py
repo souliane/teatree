@@ -33,9 +33,9 @@ from teatree.cli.review.audit import (
 _HTTP_OK_CODES = frozenset({HTTPStatus.OK, HTTPStatus.CREATED, HTTPStatus.NO_CONTENT})
 
 
-def _resolve_inline_position(*args, **kwargs):  # noqa: ANN002, ANN003, ANN202
+def _resolve_inline_position(*args, **kwargs):  # noqa: ANN002, ANN003, ANN202 — passthrough shim: *args/**kwargs forwarded to the real resolver
     """Indirection so test monkeypatches on ``teatree.cli.review.service.resolve_inline_position`` apply here too."""
-    from teatree.cli.review import service as review_mod  # noqa: PLC0415
+    from teatree.cli.review import service as review_mod  # noqa: PLC0415 — deferred: keeps CLI startup light
 
     return review_mod.resolve_inline_position(*args, **kwargs)
 

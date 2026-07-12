@@ -350,7 +350,7 @@ _MUTMUT_CMD = ("uv", "run", "--group", "mutation", "mutmut")
 
 
 def _mutmut_env() -> dict[str, str]:
-    import os  # noqa: PLC0415
+    import os  # noqa: PLC0415 — deferred: loaded only on this code path
 
     env = dict(os.environ)
     # macOS aborts a fork()ed child that touches the Objective-C runtime once a

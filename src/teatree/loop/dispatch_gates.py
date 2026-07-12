@@ -51,7 +51,7 @@ def review_target_is_dead(pr_url: str) -> bool:
     MERGED/CLOSED target is dead. Fail-OPEN: anything indefinite still
     dispatches — see :func:`teatree.backends.loader.pr_is_merged_or_closed`.
     """
-    from teatree.backends.loader import pr_is_merged_or_closed  # noqa: PLC0415
+    from teatree.backends.loader import pr_is_merged_or_closed  # noqa: PLC0415 — deferred: loaded at tick time
 
     return pr_is_merged_or_closed(pr_url)
 
@@ -194,7 +194,7 @@ def claim_red_mr_fix(payload: ActionPayload) -> bool:
     still fails open (a missing migration must not silently drop the fix path) but
     now logs at WARNING with the ``pr_url`` so the fail-open is visible and bounded.
     """
-    from django.db import DatabaseError  # noqa: PLC0415
+    from django.db import DatabaseError  # noqa: PLC0415 — deferred: Django import at call time
 
     pr_url = str(payload.get("pr_url") or payload.get("url") or "")
     if not pr_url:
@@ -207,7 +207,7 @@ def claim_red_mr_fix(payload: ActionPayload) -> bool:
         )
         sha = _BLANK_SHA_SENTINEL
     try:
-        from teatree.core.models import RedMrFixAttempt  # noqa: PLC0415
+        from teatree.core.models import RedMrFixAttempt  # noqa: PLC0415 — deferred: ORM import needs the app registry
 
         row = RedMrFixAttempt.claim(
             pr_url=pr_url,

@@ -83,7 +83,7 @@ def _worker_enabled() -> bool:
     if env:
         return env in _ENABLED_TRUTHY
     try:
-        from teatree.config.cold_reader import bool_setting  # noqa: PLC0415
+        from teatree.config.cold_reader import bool_setting  # noqa: PLC0415 — deferred: cold-hook import
 
         return bool_setting("loop_runner_enabled", default=_ENABLED_DEFAULT, scope_chain=_enabled_scope_chain())
     except Exception:  # noqa: BLE001 — fast hook must never raise; silent fail-off.

@@ -480,7 +480,7 @@ def term_is_own_repo_slug(term: str, config_path: Path | None = None) -> bool:
     is longer than the entry's token run and so is NOT contained -- both stay
     blocked.
     """
-    from teatree.hooks.term_match import _contains_run, tokens  # noqa: PLC0415
+    from teatree.hooks.term_match import _contains_run, tokens  # noqa: PLC0415 — deferred: call-time import, kept lazy
 
     term_tokens = tokens(term)
     if not term_tokens:
