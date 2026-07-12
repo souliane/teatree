@@ -20,23 +20,24 @@ class TestLoopStateAdmits(django.test.SimpleTestCase):
     """The pure combined verdict: configured-enabled AND not runtime-held."""
 
     def test_configured_and_unheld_admits(self) -> None:
-        assert loop_state_admits(configured_enabled=True, held=False) is True
+        assert loop_state_admits(configured_enabled=True, held=False, preset_state=None) is True
 
     def test_held_is_not_admitted_even_when_configured(self) -> None:
-        assert loop_state_admits(configured_enabled=True, held=True) is False
+        assert loop_state_admits(configured_enabled=True, held=True, preset_state=None) is False
 
     def test_not_configured_is_not_admitted_even_when_unheld(self) -> None:
-        assert loop_state_admits(configured_enabled=False, held=False) is False
+        assert loop_state_admits(configured_enabled=False, held=False, preset_state=None) is False
 
     def test_not_configured_and_held_is_not_admitted(self) -> None:
-        assert loop_state_admits(configured_enabled=False, held=True) is False
+        assert loop_state_admits(configured_enabled=False, held=True, preset_state=None) is False
 
-    def test_neutral_preset_default_is_byte_for_byte_the_two_plane_verdict(self) -> None:
-        # The #3159 empty-table no-op: omitting preset_state (or None) resolves
-        # exactly as the pre-#3159 `configured_enabled and not held`.
+    def test_none_preset_is_byte_for_byte_the_two_plane_verdict(self) -> None:
+        # The #3159 empty-table no-op: an explicit `preset_state=None` (what the
+        # resolver returns with no preset) resolves exactly as the pre-#3159
+        # `configured_enabled and not held`. There is no neutral default —
+        # preset_state is required at every call site (the LP-3 structural guard).
         for configured in (True, False):
             for held in (True, False):
-                assert loop_state_admits(configured_enabled=configured, held=held) == (configured and not held)
                 assert loop_state_admits(configured_enabled=configured, held=held, preset_state=None) == (
                     configured and not held
                 )

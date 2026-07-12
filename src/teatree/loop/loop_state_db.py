@@ -35,7 +35,7 @@ from teatree.loop.preset_resolution import resolve_preset_state
 logger = logging.getLogger(__name__)
 
 
-def loop_state_admits(*, configured_enabled: bool, held: bool, preset_state: bool | None = None) -> bool:
+def loop_state_admits(*, configured_enabled: bool, held: bool, preset_state: bool | None) -> bool:
     """The combined enable verdict: NOT runtime-HELD, then the preset mask over base config.
 
     Resolution: a durable ``LoopState`` hold (``held``) always wins (the L4
@@ -44,9 +44,12 @@ def loop_state_admits(*, configured_enabled: bool, held: bool, preset_state: boo
     (``True`` forces on, ``False`` forces off), and ``None`` means "no preset opinion",
     falling through to L1 ``configured_enabled`` (``Loop.enabled``).
 
-    **Empty-table no-op:** the neutral ``preset_state=None`` default makes this
-    ``not held and configured_enabled`` — byte-for-byte the pre-#3159 two-plane
-    verdict — so an install with no presets resolves every loop exactly as today.
+    ``preset_state`` is REQUIRED at every call site — there is no neutral default,
+    so the type checker structurally catches any observability surface that resolves
+    a loop without the preset opinion (the #3159 drift class). The **empty-table
+    no-op** is guaranteed instead by the resolver: with no preset, no override, and
+    no active schedule every loop resolves ``preset_state=None``, making this
+    ``not held and configured_enabled`` — byte-for-byte the pre-#3159 two-plane verdict.
 
     The single predicate both :func:`loop_enabled` (single-lookup) and the live
     loop-table tick apply, so the layers are combined identically everywhere and
