@@ -33,7 +33,6 @@ tightly as possible (see :class:`BehindSelfDbReportingTest` and
 
 import io
 from contextlib import redirect_stdout
-from pathlib import Path
 from typing import cast
 from unittest.mock import patch
 
@@ -51,12 +50,8 @@ from teatree.core.gates.schema_guard import (
     require_current_schema,
 )
 from teatree.core.models import MergeClear
+from tests.teatree_core._migration_graph import core_migration_names
 from tests.teatree_core.conftest import SchemaGuardAlias
-
-# ``0001_initial`` (post the #2652 squash) creates the ``teatree_merge_clear``
-# table; later migrations extend the graph. Migrating all the way back to
-# ``zero`` reverses the whole chain regardless of how many migrations exist.
-_CORE_MIGRATIONS_DIR = Path(__file__).resolve().parents[2] / "src" / "teatree" / "core" / "migrations"
 
 
 def _unmigrate_core_to_zero() -> None:
@@ -111,16 +106,11 @@ def _reapply_initial_migration() -> None:
         with connection.schema_editor() as editor:
             editor.create_model(MergeClear)
     with connection.cursor() as cursor:
-        for name in _core_migration_names():
+        for name in core_migration_names():
             cursor.execute(
                 "INSERT OR IGNORE INTO django_migrations (app, name, applied) VALUES ('core', %s, CURRENT_TIMESTAMP)",
                 [name],
             )
-
-
-def _core_migration_names() -> list[str]:
-    """Every on-disk ``core`` migration name, oldest first."""
-    return sorted(p.stem for p in _CORE_MIGRATIONS_DIR.glob("[0-9]*.py"))
 
 
 def _table_exists(table: str) -> bool:
