@@ -12,7 +12,7 @@ import os
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from claude_agent_sdk import ClaudeAgentOptions
+from teatree.agents.harness_options import HarnessOptions
 
 #: Shell command prefixes refused outright on Lane B regardless of phase — the
 #: irreversible/destructive set. This is a coarse denylist ON TOP OF the shared
@@ -59,8 +59,12 @@ class LaneBToolConfig:
     shell_env: dict[str, str] = field(default_factory=dict)
 
     @classmethod
-    def from_options(cls, options: ClaudeAgentOptions, *, phase: str = "") -> "LaneBToolConfig":
-        """Build the tool config from the already-built SDK *options* + *phase*.
+    def from_options(cls, options: HarnessOptions, *, phase: str = "") -> "LaneBToolConfig":
+        """Build the tool config from the neutral harness *options* + *phase* (#3157 AH-2).
+
+        Takes the provider-agnostic :class:`~teatree.agents.harness_options.HarnessOptions`, not
+        the vendor ``ClaudeAgentOptions`` — the tool layer's knobs (cwd, env) are
+        provider-agnostic, so the vendor type is confined to the harness ``open`` boundary.
 
         ``options.cwd`` is the worktree :func:`teatree.agents._headless_options._resolve_task_cwd`
         resolved for the task, so it is the natural File System jail root; a

@@ -10,11 +10,11 @@ module with no import cycle. Re-exported from ``teatree.agents.harness`` for bac
 from dataclasses import dataclass, field
 from enum import StrEnum
 
-from claude_agent_sdk import ClaudeAgentOptions
 from openai import AsyncOpenAI
 from pydantic_ai.models import Model
 from pydantic_ai.providers.openai import OpenAIProvider
 
+from teatree.agents.harness_options import HarnessOptions
 from teatree.agents.harness_registry import HarnessCapabilities
 from teatree.agents.model_tiering import DEFAULT_TIER, resolve_tier
 from teatree.agents.regulated_path import assert_model_allowed_on_regulated_path
@@ -136,7 +136,7 @@ class PydanticAiModelConfig:
     binding: PydanticAiBinding = PydanticAiBinding.ROUTER
 
 
-def native_anthropic_model_name(options: ClaudeAgentOptions) -> str:
+def native_anthropic_model_name(options: HarnessOptions) -> str:
     """The Anthropic Messages-API model id for the native binding (#3157 AH-4).
 
     An explicit ``options.model`` passes through unchanged (a Claude dash-form id is a valid
@@ -151,7 +151,7 @@ def native_anthropic_model_name(options: ClaudeAgentOptions) -> str:
     return options.model or resolve_tier(DEFAULT_TIER)
 
 
-def resolve_native_anthropic_model(options: ClaudeAgentOptions) -> Model:
+def resolve_native_anthropic_model(options: HarnessOptions) -> Model:
     """Construct the direct Anthropic Messages-API model (#3157 E1b) — the cache_control path.
 
     The one branch that makes real ``cache_control`` reachable: a native ``pydantic_ai``

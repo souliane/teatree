@@ -37,6 +37,7 @@ from pydantic_ai import Agent
 from pydantic_ai.models import Model
 from pydantic_ai.models.openai import OpenAIChatModel, OpenAIChatModelSettings, ReasoningEffort
 
+from teatree.agents.harness_options import HarnessOptions
 from teatree.agents.harness_registry import (
     HarnessBuildContext,
     HarnessCapabilities,
@@ -131,39 +132,22 @@ class ClaudeSdkHarness:
         """No client-side resume thread to restore — server-side ``--resume`` owns it."""
 
 
-def _extract_system_prompt(options: ClaudeAgentOptions) -> str:
-    """Pull the custom system context out of *options* for the pydantic_ai Agent.
+def resolve_effort(options: HarnessOptions) -> ReasoningEffort | None:
+    """Map the NEUTRAL ``options.effort`` onto pydantic_ai's ``ReasoningEffort`` vocabulary.
 
-    ``ClaudeAgentOptions.system_prompt`` is normally a ``SystemPromptPreset``
-    (``{"type": "preset", "preset": "claude_code", "append": <context>}``) —
-    the ``claude_code`` preset itself is meaningless outside the bundled CLI, so
-    only the appended custom context is portable; a plain ``str`` (as tests build)
-    is used as-is; anything else (a ``SystemPromptFile`` reference, or ``None``)
-    has no portable content here.
-    """
-    prompt = options.system_prompt
-    if isinstance(prompt, str):
-        return prompt
-    if isinstance(prompt, dict) and prompt.get("type") == "preset":
-        return str(prompt.get("append", ""))
-    return ""
-
-
-def resolve_effort(options: ClaudeAgentOptions) -> ReasoningEffort | None:
-    """Map ``options.effort`` onto pydantic_ai's ``ReasoningEffort`` vocabulary.
-
-    Public seam: the eval ``pydantic_ai`` runner (:mod:`teatree.eval.pydantic_ai_runner`)
-    reuses this single effort-vocabulary guard so a headless dispatch and an eval run drop
-    the same out-of-vocabulary rungs; it is therefore a supported cross-module name.
+    Takes the neutral :class:`~teatree.agents.harness_options.HarnessOptions` (#3157 AH-2), not
+    the vendor ``ClaudeAgentOptions`` — the effort axis is provider-agnostic, so the vendor type
+    does not reach here. Public seam: the eval ``pydantic_ai`` runner
+    (:mod:`teatree.eval.pydantic_ai_runner`) reuses this single effort-vocabulary guard so a
+    headless dispatch and an eval run drop the same out-of-vocabulary rungs.
 
     ``options.effort`` is already scoped to the ACTIVE harness by
-    :func:`teatree.agents.model_tiering.resolve_spawn_effort` (called while
-    *options* was built), so this is normally a pass-through; the
-    :data:`~teatree.agents.model_tiering.HARNESS_EFFORT_SCALE` re-check is a
-    defence-in-depth guard for options built outside that resolver (e.g. a test),
-    dropping an out-of-vocabulary value (``max``, the one rung
-    ``claude_sdk`` has that ``pydantic_ai`` does not) rather than handing the SDK
-    a reasoning-effort string it will reject.
+    :func:`teatree.agents.model_tiering.resolve_spawn_effort` (called while the SDK options were
+    built), so this is normally a pass-through; the
+    :data:`~teatree.agents.model_tiering.HARNESS_EFFORT_SCALE` re-check is a defence-in-depth
+    guard for options built outside that resolver (e.g. a test), dropping an out-of-vocabulary
+    value (``max``, the one rung ``claude_sdk`` has that ``pydantic_ai`` does not) rather than
+    handing the model a reasoning-effort string it will reject.
     """
     effort = options.effort
     if effort is None or effort not in HARNESS_EFFORT_SCALE[AgentHarness.PYDANTIC_AI]:
@@ -263,7 +247,7 @@ class PydanticAiHarness:
         if self.resume_source is not None and self._history:
             persist_parked_thread(self.resume_source, self._history)
 
-    def _resolve_model(self, options: ClaudeAgentOptions) -> Model:
+    def _resolve_model(self, options: HarnessOptions) -> Model:
         if self._model is not None:
             return self._model
         if self._binding is PydanticAiBinding.NATIVE_ANTHROPIC:
@@ -288,18 +272,23 @@ class PydanticAiHarness:
 
     @asynccontextmanager
     async def open(self, options: ClaudeAgentOptions) -> AsyncIterator[HarnessSession]:
-        model = self._resolve_model(options)
-        effort = resolve_effort(options)
+        # AH-2: adapt the vendor options into the neutral HarnessOptions ONCE at the boundary,
+        # then thread only the neutral type through the provider-agnostic build below — the
+        # ``ClaudeAgentOptions`` type never reaches ``_resolve_model`` / ``resolve_effort`` /
+        # the tool config, so the pydantic_ai (and future Vertex) path is vendor-type-free.
+        harness_options = HarnessOptions.from_sdk_options(options)
+        model = self._resolve_model(harness_options)
+        effort = resolve_effort(harness_options)
         model_settings = OpenAIChatModelSettings(openai_reasoning_effort=effort) if effort else None
         # PR-03: a phased dispatch wires the phase-scoped, gated tool/MCP layer
         # onto the Agent (``toolsets=`` + ``tool_timeout=``); an un-phased one
         # keeps a bare text Agent (byte-identical to before the tool port). The
         # worktree jail root is ``options.cwd`` (the resolved task cwd).
-        config = LaneBToolConfig.from_options(options, phase=self._phase or "")
+        config = LaneBToolConfig.from_options(harness_options, phase=self._phase or "")
         toolsets = build_lane_b_toolsets(config).toolsets if self._phase else []
         agent: Agent[None, str] = Agent(
             model,
-            system_prompt=_extract_system_prompt(options),
+            system_prompt=harness_options.system_prompt,
             model_settings=model_settings,
             toolsets=toolsets,
             tool_timeout=config.shell_timeout_seconds if self._phase else None,

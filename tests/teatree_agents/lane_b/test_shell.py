@@ -3,8 +3,8 @@ import subprocess
 from pathlib import Path
 
 import pytest
-from claude_agent_sdk import ClaudeAgentOptions
 
+from teatree.agents.harness_options import HarnessOptions
 from teatree.agents.lane_b.config import LaneBToolConfig
 from teatree.agents.lane_b.shell import ShellDeniedError, _resolve_shell, build_shell_toolset
 
@@ -42,7 +42,7 @@ class TestShellTool:
         # AH-10: a pinned child env (built through from_options, which merges over
         # os.environ) must still expose PATH/HOME to the spawned shell — a bare
         # replacement would strip them and break every command.
-        options = ClaudeAgentOptions(cwd=str(tmp_path), env={"ANTHROPIC_API_KEY": "sk-pinned"})
+        options = HarnessOptions(cwd=str(tmp_path), env={"ANTHROPIC_API_KEY": "sk-pinned"})
         cfg = LaneBToolConfig.from_options(options, phase="coding")
         out = _shell(cfg)('printf "PATH=%s HOME=%s KEY=%s" "$PATH" "$HOME" "$ANTHROPIC_API_KEY"')
         assert out.startswith("exit=0")
