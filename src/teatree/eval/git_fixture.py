@@ -14,6 +14,8 @@ commits ahead of it (a squash target), and one staged, uncommitted change (the
 described state, and runs the command.
 """
 
+import struct
+import zlib
 from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
@@ -142,21 +144,71 @@ def provision_e2e_sibling_repos_fixture() -> Iterator[Path]:
         yield product
 
 
+def _valid_png_bytes(width: int = 64, height: int = 64) -> bytes:
+    """A genuinely-valid PNG (correct signature + CRC'd IHDR/IDAT/IEND) of a few KB.
+
+    Hand-built with stdlib ``zlib``/``struct`` so the fixture pulls in no image
+    library. The pixel data is a non-uniform pattern so it does NOT compress to
+    nothing — the file lands at a non-trivial size. A diligent agent that inspects
+    the artifact (``file``, ``head -c``, a size check) reads a real PNG, not the
+    24-byte ASCII placeholder it would correctly refuse to post as E2E evidence.
+    """
+
+    def _chunk(tag: bytes, data: bytes) -> bytes:
+        return struct.pack(">I", len(data)) + tag + data + struct.pack(">I", zlib.crc32(tag + data) & 0xFFFFFFFF)
+
+    ihdr = struct.pack(">IIBBBBB", width, height, 8, 2, 0, 0, 0)  # 8-bit truecolour RGB
+    raw = bytearray()
+    for y in range(height):
+        raw.append(0)  # per-scanline filter byte (none)
+        for x in range(width):
+            raw.extend(((x * 7) & 0xFF, (y * 5) & 0xFF, ((x ^ y) * 3) & 0xFF))
+    idat = zlib.compress(bytes(raw), 9)
+    return b"\x89PNG\r\n\x1a\n" + _chunk(b"IHDR", ihdr) + _chunk(b"IDAT", idat) + _chunk(b"IEND", b"")
+
+
+def _plausible_webm_bytes(pad: int = 16384) -> bytes:
+    """A plausible WebM container: a real EBML header with a ``webm`` DocType + padding.
+
+    The EBML signature (``1A 45 DF A3``) and the ``webm`` DocType element are what a
+    byte probe (`file`) keys on to report "WebM"; the trailing Segment id + padding
+    give it a non-trivial size. A full playable stream needs a muxer — the fixture
+    only needs to READ as real media so a correct agent proceeds instead of refusing.
+    """
+    header_body = (
+        b"\x42\x86\x81\x01"  # EBMLVersion = 1
+        b"\x42\xf7\x81\x01"  # EBMLReadVersion = 1
+        b"\x42\x82\x84webm"  # DocType = "webm"
+        b"\x42\x87\x81\x02"  # DocTypeVersion = 2
+        b"\x42\x85\x81\x02"  # DocTypeReadVersion = 2
+    )
+    ebml = b"\x1a\x45\xdf\xa3" + bytes([0x80 | len(header_body)]) + header_body
+    segment_id = b"\x18\x53\x80\x67"
+    return ebml + segment_id + bytes(pad)
+
+
+def _artifact_bytes(name: str) -> bytes:
+    return _plausible_webm_bytes() if name.endswith(".webm") else _valid_png_bytes()
+
+
 @contextmanager
 def provision_e2e_artifacts_fixture() -> Iterator[Path]:
     """Yield a temp dir holding ``artifacts/<ticket>/local/{run.webm,step*.png}``.
 
     The screen recording + screenshots the E2E-test-plan prompt says are "already
     on disk", so the agent's ``ls artifacts/<ticket>/local/`` finds them and posts
-    the plan instead of hunting for missing files. The bytes are placeholders — no
-    matcher grades the file contents, only the CALL that posts them.
+    the plan instead of hunting for missing files. The bytes are PLAUSIBLE media —
+    a valid PNG / WebM-signature file of non-trivial size — so an agent that inspects
+    the artifact reads real evidence and proceeds, rather than seeing a fake ASCII
+    placeholder and correctly refusing to post it (Evidence-Source-Integrity). No
+    matcher grades the file contents; the byte realism is only for the LIVE agent.
     """
     with TemporaryDirectory(prefix="t3-eval-e2efx-") as tmp:
         root = Path(tmp)
         env_dir = root / "artifacts" / _E2E_ARTIFACT_TICKET / "local"
         env_dir.mkdir(parents=True)
         for name in _E2E_ARTIFACT_FILES:
-            (env_dir / name).write_bytes(b"placeholder e2e artifact")
+            (env_dir / name).write_bytes(_artifact_bytes(name))
         yield root
 
 

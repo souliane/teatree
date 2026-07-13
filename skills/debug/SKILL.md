@@ -133,6 +133,7 @@ Only after the base diff is clean do you move on to blaming application code.
 
 ### Phase 1: Root Cause Investigation
 
+- **When the task says "run the command", issue it with a sensible placeholder — do not ask for a routine argument first.** A clear diagnostic instruction ("read its recent logs", "list the commits that touched this test") is actionable even when the exact path/service/branch is not spelled out: the missing piece is a fill-in-the-blank that does not change the command's shape, so supply the obvious value or a placeholder (`git log --oneline -- <path/to/test>`, `docker logs <service>`) and RUN it. Bouncing back "which file path?" stalls on a detail you were asked to demonstrate the command around. (See `t3:rules` § "Do Work Now" → "Run the command with one routine argument missing".)
 - Read **full** error output, stack traces, logs. Do not skim.
 - Identify the exact failure point (file, line, function).
 - Check if the error is environment-specific: **test with the user's real env, not a sanitized one.** Do not use `unset VAR` or `env -i` to mask env issues — if the command fails in the user's shell, that's the bug. Find the source of the stale env var (`.zshrc`, direnv, `.env`) and fix it.

@@ -68,6 +68,22 @@ class TestProvisionE2eArtifactsFixture:
             assert (env_dir / "step1.png").is_file()
             assert (env_dir / "step2.png").is_file()
 
+    def test_artifacts_are_plausible_media_not_an_ascii_placeholder(self) -> None:
+        # A diligent agent inspects the artifact bytes before posting E2E evidence; a
+        # fake ASCII placeholder makes it correctly REFUSE (Evidence-Source-Integrity),
+        # nulling the graded post. Each artifact must carry its real media magic and a
+        # non-trivial size so a correct agent reads it as genuine and proceeds.
+        with provision_e2e_artifacts_fixture() as root:
+            env_dir = root / "artifacts" / "4242" / "local"
+            for png in ("step1.png", "step2.png"):
+                data = (env_dir / png).read_bytes()
+                assert data[:8] == b"\x89PNG\r\n\x1a\n", f"{png} lacks the PNG signature"
+                assert len(data) > 1024, f"{png} is trivially small ({len(data)} bytes)"
+            webm = (env_dir / "run.webm").read_bytes()
+            assert webm[:4] == b"\x1a\x45\xdf\xa3", "run.webm lacks the EBML/WebM signature"
+            assert b"webm" in webm[:64], "run.webm lacks a webm DocType"
+            assert len(webm) > 1024, f"run.webm is trivially small ({len(webm)} bytes)"
+
 
 class TestProvisionE2eSiblingReposFixture:
     def test_yields_the_product_repo_cwd_with_a_sibling_e2e_repo(self) -> None:
