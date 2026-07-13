@@ -495,7 +495,7 @@ t3 <overlay> config_setting set privacy '"strict"' --overlay client-project
 
 The `[agent]` table holds the model/effort settings for spawned sub-agents and
 the interactive main agent. It is read with a raw `tomllib` parse
-(`config_agent.resolve_agent_config` + `model_tiering._load_phase_model_overrides`),
+(`config.agent_spawn.resolve_agent_config` + `model_tiering._load_phase_model_overrides`),
 independent of the per-overlay `[teatree]` merge — these are session-scoped
 spawn inputs, not overridable `UserSettings`.
 
