@@ -38,6 +38,11 @@ RUN mkdir -p \
         /home/teatree/.local/share/teatree-worktrees \
         /home/teatree/workspace/t3-workspaces \
         /opt/teatree/uv && \
+    # clone_root() resolves clones under ~/workspace, but the runtime clone
+    # lives on the teatree_src volume at ~/teatree — without this link the
+    # fleet-claim wire finds no local clone for the repo and fails safe
+    # (never claims), silently disabling the issue-implementer intake.
+    ln -s /home/teatree/teatree /home/teatree/workspace/teatree && \
     chown -R teatree:teatree /home/teatree /opt/teatree
 
 COPY --chmod=0755 deploy/entrypoint.sh /usr/local/bin/entrypoint.sh
