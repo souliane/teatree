@@ -7,7 +7,11 @@ and returns the constants sorted alphabetically by name.
 
 Only true subpackages are considered (``sub.ispkg``), so the top-level helper
 modules (``base``, ``registry``, ``config``, ``run``, …) — plain ``.py`` files,
-not packages — are skipped by that check alone.
+not packages — are skipped by that check alone. Helper *subpackages* that carry
+no ``loop`` submodule (e.g. ``shared``, holding cross-loop utilities) are skipped
+silently: a missing ``teatree.loops.<sub>.loop`` is the expected shape, not an
+error, and only a ``loop`` module that exists but fails to import warrants a
+``WARNING``.
 """
 
 import importlib
@@ -29,7 +33,13 @@ def iter_loops() -> tuple[MiniLoop, ...]:
         try:
             mod = importlib.import_module(f"teatree.loops.{sub.name}.loop")
         except ImportError as exc:
-            logger.warning("Skipping loop %r — import failed: %s", sub.name, exc)
+            missing_own_loop = isinstance(exc, ModuleNotFoundError) and exc.name == f"teatree.loops.{sub.name}.loop"
+            if missing_own_loop:
+                # Helper subpackage with no ``loop`` submodule — expected, not an error.
+                logger.debug("Skipping %r — no loop submodule (helper package)", sub.name)
+            else:
+                # ``loop`` exists but its own import chain is broken — a real error.
+                logger.warning("Skipping loop %r — import failed: %s", sub.name, exc)
             continue
         mini_loop = getattr(mod, "MINI_LOOP", None)
         if not isinstance(mini_loop, MiniLoop):
