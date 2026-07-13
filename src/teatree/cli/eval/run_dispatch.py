@@ -55,6 +55,7 @@ class ResolvedRun:
     judge: bool
     transcript_html: Path | None
     summary_md: Path | None
+    summary_json: Path | None
     trials: int
     require: str
     models: str | None
@@ -125,6 +126,7 @@ def dispatch_resolved_run(
             judge=run.judge,
             transcript_html=run.transcript_html,
             summary_md=run.summary_md,
+            summary_json=run.summary_json,
             gates=SingleTrialGates(
                 persist=run.persist,
                 baseline=run.baseline,
@@ -158,6 +160,7 @@ def dispatch_resolved_run(
             effort=run.effort,
             transcript_html=run.transcript_html,
             summary_md=run.summary_md,
+            summary_json=run.summary_json,
         )
         return
     run_single_trial(
@@ -174,6 +177,7 @@ def dispatch_resolved_run(
         judge=run.judge,
         transcript_html=run.transcript_html,
         summary_md=run.summary_md,
+        summary_json=run.summary_json,
         gates=SingleTrialGates(
             persist=run.persist,
             baseline=run.baseline,

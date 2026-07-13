@@ -32,6 +32,7 @@ from teatree.eval.models import EvalSpec
 from teatree.eval.pass_at_k import PassAtKResult, run_pass_at_k
 from teatree.eval.pass_at_k_html import render_pass_at_k_html
 from teatree.eval.report import ScenarioResult, evaluate, render_summary_markdown
+from teatree.eval.summary_json import write_summary_json
 
 #: How many extra attempts a single matrix/benchmark cell gets after its first
 #: failure. A clean-room scenario is idempotent (re-running costs only extra
@@ -39,6 +40,26 @@ from teatree.eval.report import ScenarioResult, evaluate, render_summary_markdow
 #: ``MAX_MATRIX_CELL_RETRIES + 1`` attempts total before the cell is recorded
 #: ERRORED so the rest of the comparison table is still produced.
 MAX_MATRIX_CELL_RETRIES = 2
+
+
+def _write_pass_at_k_artifacts(
+    results: list[PassAtKResult],
+    *,
+    transcript_html: Path | None,
+    summary_md: Path | None,
+    summary_json: Path | None,
+) -> None:
+    """Drop the per-trial transcript + sanitized dashboards BEFORE any guard/gate exits.
+
+    Each is written from THIS run's in-memory results so a red lane still drops the
+    diagnostic transcript AND the publish-safe summary/JSON the workflow uploads.
+    """
+    if transcript_html is not None:
+        transcript_html.write_text(render_pass_at_k_html(results), encoding="utf-8")
+    if summary_md is not None:
+        summary_md.write_text(render_summary_markdown(results), encoding="utf-8")
+    if summary_json is not None:
+        write_summary_json(results, summary_json)
 
 
 def _emit_progress(line: str) -> None:
@@ -92,6 +113,7 @@ def run_pass_at_k_lane(  # noqa: PLR0913 — each kwarg threads one `eval run` C
     effort: EffortLevel | None = None,
     transcript_html: Path | None = None,
     summary_md: Path | None = None,
+    summary_json: Path | None = None,
 ) -> bool:
     """Run the pass@k path; return ``True`` when any scenario failed or regressed.
 
@@ -167,16 +189,9 @@ def run_pass_at_k_lane(  # noqa: PLR0913 — each kwarg threads one `eval run` C
                 continue
             status = "PASS" if r.ok else "FAIL"
             typer.echo(f"{status} {r.spec_name} ({r.passes}/{r.trials} trials, require={r.require})")
-    # Drop the per-trial transcript artifact BEFORE any guard/gate can exit the
-    # process — the report is exactly what a maintainer reads to triage the
-    # failure those guards are about to surface, so it must be written even when
-    # the run is about to exit non-zero.
-    if transcript_html is not None:
-        transcript_html.write_text(render_pass_at_k_html(results), encoding="utf-8")
-    # The SANITIZED publish-safe dashboard, also written BEFORE any guard/gate can
-    # exit so a red lane still drops the summary the workflow merges + publishes.
-    if summary_md is not None:
-        summary_md.write_text(render_summary_markdown(results), encoding="utf-8")
+    _write_pass_at_k_artifacts(
+        results, transcript_html=transcript_html, summary_md=summary_md, summary_json=summary_json
+    )
     RunGuards.executed(
         executed=sum(1 for r in results if not r.skipped), collected=len(specs), required=require_executed
     )

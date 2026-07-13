@@ -1,0 +1,165 @@
+# ============================================================
+# CI-EVAL SELF-HEALING — the behavioral eval against a PR branch
+# ============================================================
+#
+# A purpose-built, `workflow_dispatch`-ONLY workflow the CI-eval heal loop (and an
+# operator, manually) dispatches to run the behavioral eval against a PR branch
+# under repair and emit a machine-readable, PUBLISH-SAFE per-scenario JSON with a
+# triage class (the `eval-heal-<sha>` artifact). It reuses the EXACT in-Docker eval
+# invocation `eval.yml` / `eval-pr-reusable.yml` already prove — it reinvents
+# nothing about HOW the eval runs, only WHICH scenarios and WHAT it uploads.
+#
+# INPUTS
+#   * scenarios  — comma-joined scenario names (the red subset a heal re-trigger
+#                  re-runs). EMPTY (default) = the full suite, in ONE invocation.
+#   * credential — subscription_oauth (default, no per-token bill) | metered_api_key.
+#   * pr_ref     — the branch to check out and eval (default: the dispatched ref),
+#                  so the workflow definition can live on main while the eval runs
+#                  against a branch that predates it.
+#
+# AUTH — the `eval_credential` knob (mirrors eval.yml)
+#   Both repo secrets are wired so the `credential` input is a pure config flip:
+#   the DEFAULT subscription OAuth token (CLAUDE_CODE_OAUTH_TOKEN — no per-token
+#   bill, a depleting usage window) or the metered ANTHROPIC_API_KEY (per-token, no
+#   window). `T3_EVAL_CREDENTIAL` selects which one every eval chokepoint resolves,
+#   and docker forwards ONLY the selected credential's var into the container.
+#
+# NO-SILENT-GREEN
+#   `claude --version` is asserted and `--require-executed` is passed unconditionally
+#   (never key-gated), so a missing binary / all-skipped run fails RED — a skipped
+#   scenario can never masquerade as a pass.
+#
+# PUBLISH SAFETY
+#   The `eval-heal-<sha>` JSON is publish-safe BY CONSTRUCTION (only spec identity +
+#   verdict + triage discriminators — no transcript). The per-trial transcript
+#   (`eval-heal-transcript-<sha>`) is PRIVATE: the heal loop downloads it to the box
+#   for the fix agent to read; it is NEVER published.
+# ============================================================
+
+name: Eval CI heal
+
+on:
+  workflow_dispatch:
+    inputs:
+      scenarios:
+        description: "Comma-joined scenario names to run (the red subset). Empty = the full suite."
+        required: false
+        default: ""
+        type: string
+      credential:
+        description: "Eval credential (subscription_oauth | metered_api_key). Default subscription_oauth — no per-token bill, a depleting usage window; metered_api_key is per-token cost, no window."
+        required: false
+        default: "subscription_oauth"
+        type: string
+      pr_ref:
+        description: "Branch to check out and eval (default: the dispatched ref)."
+        required: false
+        default: ""
+        type: string
+
+concurrency:
+  group: eval-ci-heal-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # EVAL: run the heal subset (or the full suite) in the CI container, emitting the
+  # publish-safe JSON + the private transcript. FAIL LOUD on a hang — the job cap
+  # sits just above the 2x80min eval-step budget so a wedge is killed, not stalled.
+  eval:
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
+        with:
+          ref: ${{ inputs.pr_ref || github.ref }}
+      - uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78  # v7
+        with:
+          enable-cache: true
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405  # v6
+        with:
+          python-version: "3.13"
+      - name: Sync dependencies (retry on transient network failure)
+        uses: nick-fields/retry@ad984534de44a9489a53aefd81eb77f87c70dc60  # v4
+        with:
+          timeout_minutes: 10
+          max_attempts: 3
+          retry_wait_seconds: 30
+          command: uv sync
+      # Install the Claude CLI the metered api backend shells out to, then ASSERT
+      # it — a missing binary must FAIL the job, not skip every scenario green.
+      - name: Install and assert the Claude CLI
+        run: |
+          npm install -g @anthropic-ai/claude-code
+          claude --version
+      - name: Migrate the self-DB (the eval run-history ledger persists into it)
+        run: uv run python -m teatree migrate --no-input
+      # Resolve the ACTUAL checked-out SHA (pr_ref may differ from github.sha) so the
+      # JSON's head_sha and the artifact names key on the tree that was eval'd.
+      - name: Resolve the checked-out head SHA
+        id: sha
+        run: echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+      # Run the eval IN the CI image (dev/Dockerfile.test), exactly as eval.yml does:
+      # `--backend api` on the in-process Agent SDK, `--trials 2 --require any` (the
+      # right-sized pass@k), `--effort high` (a single representative tier),
+      # `--require-executed` armed unconditionally, `--docker` routing through the
+      # image with the SELECTED credential forwarded via docker `-e`. EMPTY scenarios
+      # = the full suite in ONE invocation; a comma-joined subset loops one
+      # `t3 eval run <name>` per scenario (the eval-pr-reusable.yml shape) since the
+      # positional NAME filter runs one scenario. All caller values ride env vars
+      # (never inlined into a run line). Both the JSON and the transcript land in the
+      # ONE writable artifacts dir (the docker runner mounts a single parent).
+      - name: Behavioral eval — the heal subset (in Docker)
+        uses: nick-fields/retry@ad984534de44a9489a53aefd81eb77f87c70dc60  # v4
+        env:
+          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          T3_EVAL_CREDENTIAL: ${{ inputs.credential || 'subscription_oauth' }}
+          GITHUB_SHA: ${{ steps.sha.outputs.sha }}
+          EVAL_SCENARIOS: ${{ inputs.scenarios }}
+          EVAL_TRIALS: "2"
+          HEAL_DIR: ${{ runner.temp }}/heal
+        with:
+          timeout_minutes: 80
+          max_attempts: 2
+          retry_wait_seconds: 60
+          command: |
+            set -euo pipefail
+            mkdir -p "$HEAL_DIR"
+            if [ -z "$EVAL_SCENARIOS" ]; then
+              uv run t3 eval run --backend api --trials "$EVAL_TRIALS" --require any \
+                --effort high --require-executed --docker \
+                --transcript-html "$HEAL_DIR/eval-transcripts.html" \
+                --summary-json "$HEAL_DIR/eval-heal.json"
+            else
+              rc=0
+              IFS=',' read -ra NAMES <<< "$EVAL_SCENARIOS"
+              for name in "${NAMES[@]}"; do
+                name="$(echo "$name" | xargs)"
+                [ -z "$name" ] && continue
+                uv run t3 eval run "$name" --backend api --trials "$EVAL_TRIALS" --require any \
+                  --effort high --require-executed --docker \
+                  --transcript-html "$HEAL_DIR/eval-transcripts-$name.html" \
+                  --summary-json "$HEAL_DIR/eval-heal-$name.json" || rc=$?
+              done
+              exit "$rc"
+            fi
+      # The PUBLISH-SAFE per-scenario JSON (triage class, no transcript) — the
+      # artifact the heal loop downloads and triages. `if: always()` so a red run
+      # still publishes it (a red run is precisely when the reds must be triaged).
+      - name: Upload the publish-safe per-scenario JSON
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7
+        with:
+          name: eval-heal-${{ steps.sha.outputs.sha }}
+          path: ${{ runner.temp }}/heal/eval-heal*.json
+          if-no-files-found: warn
+      # The PRIVATE per-trial transcript (reasoning + tool calls) — downloaded to the
+      # box for the fix agent, NEVER published. `if: always()` so a red run still
+      # captures it (the transcript is exactly what a fix diagnoses).
+      - name: Upload the private per-trial transcript
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7
+        with:
+          name: eval-heal-transcript-${{ steps.sha.outputs.sha }}
+          path: ${{ runner.temp }}/heal/eval-transcripts*.html
+          if-no-files-found: warn

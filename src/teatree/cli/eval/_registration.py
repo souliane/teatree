@@ -15,6 +15,8 @@ from teatree.cli.eval.audit import audit
 from teatree.cli.eval.benchmark import benchmark
 from teatree.cli.eval.capture_subagent import capture_subagent
 from teatree.cli.eval.changed_scenarios import changed_scenarios
+from teatree.cli.eval.ci_status import ci_status
+from teatree.cli.eval.ci_trigger import ci_trigger
 from teatree.cli.eval.corpus import corpus_app
 from teatree.cli.eval.history import history_command
 from teatree.cli.eval.label import label_app
@@ -40,6 +42,8 @@ def register_imported_commands(eval_app: typer.Typer) -> None:
     eval_app.command("skill-prose-judge")(skill_prose_judge)
     eval_app.command("audit")(audit)
     eval_app.command("changed-scenarios")(changed_scenarios)
+    eval_app.command("ci-trigger")(ci_trigger)
+    eval_app.command("ci-status")(ci_status)
     eval_app.command("merged-prs-since")(merged_prs_since)
     eval_app.command("merge-summaries")(merge_summaries)
     eval_app.command("prepare-transcript")(prepare_transcript)

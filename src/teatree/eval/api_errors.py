@@ -19,6 +19,13 @@ from teatree.llm.anthropic_limits import LimitCause, classify_limit, window_hori
 BUDGET_EXCEEDED_REASON = "budget_exceeded"
 MAX_TURNS_REASON = "max_turns"
 
+#: The ``terminal_reason`` prefix a throttle that outlasted its bounded retry
+#: budget carries (built in :func:`teatree.eval.throttle_retry.throttle_reason`).
+#: The single source both that surface and the CI-eval triage classifier
+#: (:func:`teatree.eval.triage.classify_red`) key on, so a "throttled:" red is
+#: never matched by a divergent hardcoded copy.
+THROTTLE_TERMINAL_PREFIX = "throttled:"
+
 #: The SDK has no typed error-result exception: when a run hits a cap the CLI
 #: emits an ``is_error`` ``result`` event and exits non-zero, which the SDK's
 #: ``receive_messages`` (``claude_agent_sdk/_internal/query.py`` L852) surfaces as

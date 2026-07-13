@@ -83,6 +83,7 @@ def run_single_trial(  # noqa: PLR0913 — each kwarg threads one resolved `eval
     summary_md: Path | None,
     gates: SingleTrialGates,
     escalation: EscalationConfig | None = None,
+    summary_json: Path | None = None,
 ) -> None:
     """Run every spec once, render, drop the per-run artifacts, and gate the result.
 
@@ -119,7 +120,9 @@ def run_single_trial(  # noqa: PLR0913 — each kwarg threads one resolved `eval
     results = [evaluate(spec, run, judge=grader) for spec, run in zip(specs, runs, strict=True)]
     renderers = {"json": render_json, "html": render_html}
     typer.echo(renderers.get(output_format, render_text)(results))
-    write_single_trial_reports(results, transcript_html=transcript_html, summary_md=summary_md)
+    write_single_trial_reports(
+        results, transcript_html=transcript_html, summary_md=summary_md, summary_json=summary_json
+    )
     if backend == TRANSCRIPT_BACKEND and isinstance(runner, TranscriptRunner):
         hint_missing_transcripts(runner, [spec for spec, r in zip(specs, results, strict=True) if r.skipped])
     executed = sum(1 for r in results if not r.skipped)
