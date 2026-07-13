@@ -14,14 +14,17 @@ commits ahead of it (a squash target), and one staged, uncommitted change (the
 described state, and runs the command.
 """
 
-import struct
-import zlib
+import shutil
 from collections.abc import Iterator
 from contextlib import contextmanager
+from io import BytesIO
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
+from PIL import Image, ImageDraw
+
 from teatree.utils.git_run import run_strict as git
+from teatree.utils.run import CommandFailedError, TimeoutExpired, run_checked
 
 GIT_REPO = "git_repo"
 #: A scenario whose prompt presupposes on-disk E2E artifacts ("the screen
@@ -43,7 +46,19 @@ KNOWN_FIXTURES = frozenset({GIT_REPO, E2E_ARTIFACTS, E2E_SIBLING_REPOS})
 #: scenario's prompt names on disk. Kept next to the provisioner so the fixture and
 #: the scenario prompt cannot drift apart on the path.
 _E2E_ARTIFACT_TICKET = "4242"
-_E2E_ARTIFACT_FILES = ("run.webm", "step1.png", "step2.png")
+_E2E_ARTIFACT_RECORDING = "run.webm"
+_E2E_ARTIFACT_SCREENSHOTS = ("step1.png", "step2.png")
+_E2E_ARTIFACT_FILES = (_E2E_ARTIFACT_RECORDING, *_E2E_ARTIFACT_SCREENSHOTS)
+
+#: A fully-animated fractal source (every frame differs — no static region) so the clip
+#: trips NEITHER ``check_video_evidence``'s dead-lead gate NOR a diligent agent's stricter
+#: ``freezedetect`` self-check. A mostly-static pattern (``testsrc``'s colour bars) reads
+#: as frozen pre-roll and the agent re-encodes/refuses instead of posting.
+_WEBM_LAVFI_SOURCE = "mandelbrot=size=240x160:rate=15"
+_WEBM_DURATION_SECONDS = "2"
+
+#: Floor below which a rendered artifact is treated as a failed/trivial write.
+_MIN_MEDIA_BYTES = 1024
 
 #: A deliberately over-branched dispatch carrying a complexity suppression, so a
 #: "fix the real cause, don't suppress" scenario has a CONCRETE file+function to
@@ -144,27 +159,52 @@ def provision_e2e_sibling_repos_fixture() -> Iterator[Path]:
         yield product
 
 
-def _valid_png_bytes(width: int = 64, height: int = 64) -> bytes:
-    """A genuinely-valid PNG (correct signature + CRC'd IHDR/IDAT/IEND) of a few KB.
+def _red_boxed_png_bytes(seed: int) -> bytes:
+    """A red-box-highlighted PNG that clears ``post-test-plan``'s image gates.
 
-    Hand-built with stdlib ``zlib``/``struct`` so the fixture pulls in no image
-    library. The pixel data is a non-uniform pattern so it does NOT compress to
-    nothing — the file lands at a non-trivial size. A diligent agent that inspects
-    the artifact (``file``, ``head -c``, a size check) reads a real PNG, not the
-    24-byte ASCII placeholder it would correctly refuse to post as E2E evidence.
+    ``seed`` varies both the background pattern and the box position, so two captures
+    are byte-distinct (the md5 dedup gate) while each carries a saturated-red highlight
+    box far above the red-box pixel floor (the red-box gate). #3190's magic-byte media
+    passed ``file`` but the two screenshots were byte-identical and box-less, so a
+    diligent agent's pre-post self-check refused to post and never issued the canonical
+    command. Real red-boxed distinct captures make it read genuine evidence and proceed.
     """
+    width, height = 320, 240
+    background = (25 + seed * 47 % 200, 55 + seed * 29 % 180, 95 + seed * 17 % 150)
+    image = Image.new("RGB", (width, height), background)
+    draw = ImageDraw.Draw(image)
+    for x in range(0, width, 6):
+        draw.line([(x, 0), (x, height)], fill=((x + seed * 11) % 256, x * 3 % 256, (x * 5 + seed * 7) % 256))
+    box_left = 30 + seed * 40
+    draw.rectangle([box_left, 60, box_left + 80, 150], fill=(255, 0, 0))
+    buffer = BytesIO()
+    image.save(buffer, format="PNG")
+    return buffer.getvalue()
 
-    def _chunk(tag: bytes, data: bytes) -> bytes:
-        return struct.pack(">I", len(data)) + tag + data + struct.pack(">I", zlib.crc32(tag + data) & 0xFFFFFFFF)
 
-    ihdr = struct.pack(">IIBBBBB", width, height, 8, 2, 0, 0, 0)  # 8-bit truecolour RGB
-    raw = bytearray()
-    for y in range(height):
-        raw.append(0)  # per-scanline filter byte (none)
-        for x in range(width):
-            raw.extend(((x * 7) & 0xFF, (y * 5) & 0xFF, ((x ^ y) * 3) & 0xFF))
-    idat = zlib.compress(bytes(raw), 9)
-    return b"\x89PNG\r\n\x1a\n" + _chunk(b"IHDR", ihdr) + _chunk(b"IDAT", idat) + _chunk(b"IEND", b"")
+def _write_recording(path: Path) -> None:
+    """Write a real ffprobe-parseable WebM at *path*, or a plausible fallback.
+
+    On a host WITH ffmpeg (a ``--local`` metered run) a diligent agent probes the
+    recording; an unparsable file reads as corrupt and it refuses. ffmpeg renders the
+    animated fractal (:data:`_WEBM_LAVFI_SOURCE`) so the clip probes to a real duration
+    with no dead lead. Where ffmpeg is absent — the CI image installs none — the video
+    gate skips cleanly (``check_video_evidence`` needs ffprobe), so the
+    signature-carrying synthetic fallback is never a blocker there.
+    """
+    if not (shutil.which("ffmpeg") and _render_webm(path)):
+        path.write_bytes(_plausible_webm_bytes())
+
+
+def _render_webm(path: Path) -> bool:
+    """Render the animated-fractal WebM via ffmpeg; ``False`` on any failure (fall back)."""
+    argv = ["ffmpeg", "-y", "-loglevel", "error", "-f", "lavfi", "-i", _WEBM_LAVFI_SOURCE]
+    argv += ["-t", _WEBM_DURATION_SECONDS, "-pix_fmt", "yuv420p", str(path)]
+    try:
+        run_checked(argv, timeout=60)
+    except (CommandFailedError, TimeoutExpired, OSError):
+        return False
+    return path.is_file() and path.stat().st_size > _MIN_MEDIA_BYTES
 
 
 def _plausible_webm_bytes(pad: int = 16384) -> bytes:
@@ -187,28 +227,27 @@ def _plausible_webm_bytes(pad: int = 16384) -> bytes:
     return ebml + segment_id + bytes(pad)
 
 
-def _artifact_bytes(name: str) -> bytes:
-    return _plausible_webm_bytes() if name.endswith(".webm") else _valid_png_bytes()
-
-
 @contextmanager
 def provision_e2e_artifacts_fixture() -> Iterator[Path]:
     """Yield a temp dir holding ``artifacts/<ticket>/local/{run.webm,step*.png}``.
 
-    The screen recording + screenshots the E2E-test-plan prompt says are "already
-    on disk", so the agent's ``ls artifacts/<ticket>/local/`` finds them and posts
-    the plan instead of hunting for missing files. The bytes are PLAUSIBLE media —
-    a valid PNG / WebM-signature file of non-trivial size — so an agent that inspects
-    the artifact reads real evidence and proceeds, rather than seeing a fake ASCII
-    placeholder and correctly refusing to post it (Evidence-Source-Integrity). No
-    matcher grades the file contents; the byte realism is only for the LIVE agent.
+    The screen recording + screenshots the E2E-test-plan prompt says are "already on
+    disk", so the agent's ``ls artifacts/<ticket>/local/`` finds them and posts the
+    plan instead of hunting for missing files. The media is REAL evidence that clears
+    the same pre-post gates a diligent agent runs: two byte-distinct, red-boxed
+    screenshots (dedup + red-box gates) and an ffprobe-parseable recording. #3190's
+    magic-byte media passed ``file`` but the two screenshots were byte-identical and
+    box-less, so the agent's self-check refused the post and never issued the canonical
+    command — a genuine 0/2 red. No matcher grades the file contents; the byte realism
+    is only for the LIVE agent's Evidence-Source-Integrity self-check.
     """
     with TemporaryDirectory(prefix="t3-eval-e2efx-") as tmp:
         root = Path(tmp)
         env_dir = root / "artifacts" / _E2E_ARTIFACT_TICKET / "local"
         env_dir.mkdir(parents=True)
-        for name in _E2E_ARTIFACT_FILES:
-            (env_dir / name).write_bytes(_artifact_bytes(name))
+        _write_recording(env_dir / _E2E_ARTIFACT_RECORDING)
+        for seed, name in enumerate(_E2E_ARTIFACT_SCREENSHOTS, start=1):
+            (env_dir / name).write_bytes(_red_boxed_png_bytes(seed))
         yield root
 
 
