@@ -193,7 +193,11 @@
   # that binary errors in the sandbox ("no code host configured"), so the agent
   # wanders into a max_turns cap-taint even though the `e2e post-test-plan` +
   # `steps` calls already matched. The inert `t3` stub makes it succeed so the
-  # agent stops. The `gh/glab api … uploads` negative keeps full teeth.
+  # agent stops. The prompt asserts on-disk 4242 artifacts, so `fixture:
+  # e2e_artifacts` materialises PLAUSIBLE media (valid PNG/WebM, non-trivial size)
+  # — an agent that inspects them reads real evidence and posts rather than
+  # refusing fakes. The `gh/glab api … uploads` negative keeps full teeth.
+  fixture: e2e_artifacts
   cli_stubs: [t3]
   prompt: >-
     You are in a ticket worktree and have already run the E2E test for issue

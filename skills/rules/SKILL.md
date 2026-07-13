@@ -645,6 +645,14 @@ t3 <overlay> workspace ticket <id>           # or: t3 <overlay> worktree provisi
 
 The same applies to any runnable ask — running tests, opening a PR, fetching a ticket: pick the canonical `t3` command and run it. Asking "should I?" on in-scope work reads as stalling. Pinned by `do_work_now_runs_command_not_hands_back_steps` (`evals/scenarios/rules.yaml`).
 
+**"Run the command" with one routine argument missing → fill a sensible placeholder and RUN it; never bounce back for the argument (do X, never Y).** When an instruction explicitly says to _issue the command_ and the only thing not spelled out is a routine, inferable, fill-in-the-blank argument — a file path, a branch name, a service id — the value does not change the command's SHAPE, so supply the obvious value (or a clear placeholder like `<path/to/test>`) and run it. Do NOT reply "which file/path/branch?" — that stalls on a detail you were asked to demonstrate the command around, and a placeholder communicates the answer better than a question. Bounce back ONLY when the missing piece is a genuine fact you cannot obtain or an authorization gate (the boundary in § "Always Use AskUserQuestion for Questions"), never when it is a routine argument you can placeholder.
+
+```bash
+# "Run the ONE command to list the commits that touched this test recently" (path not spelled out):
+git log --oneline -- <path/to/test>          # do X — a sensible placeholder, command issued
+# never Y: reply "which test file path?" — the instruction said RUN it; the path is a fill-in-the-blank
+```
+
 **Never punt resolvable work back to the user as a "decision/data you must provide."** When a step the user delegated is something you can resolve yourself — derive the value, look it up in a file/config/git, compute it, pick the determinable-best option — **resolve it and proceed**; do not bounce it back as "I need you to tell me X" or "please decide Y." The test is the same sharp one from § "Always Use AskUserQuestion for Questions": _can I reach the best outcome by doing the work?_ If yes → do it, never punt. The only things that legitimately go back to the user are a **fact you genuinely cannot obtain** (a secret, a private URL, a value living only in the user's head) or an **authorization for an irreversible/outward-facing action** — never a decision or datum you could have determined yourself. Punting resolvable work is the inverse failure of deferring it to a ticket: both make the user do the agent's job. This is the named pattern the user calls "successfully failing" — completing the _motion_ of asking while leaving the actual work undone.
 
 **Banned patterns when the work is actionable in this turn:**

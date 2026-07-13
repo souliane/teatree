@@ -45,8 +45,12 @@
     # commit to a structural fix (a gate or an eval). A no-op agent that only
     # "thinks" cannot satisfy this (anti-vacuity), and a FAIL trajectory that
     # reaches for "write another memory" lacks this commitment.
+    # DOTALL (`(?is)`): the correct answer states the recurrence and the structural
+    # fix on SEPARATE lines, and `.` does not cross a newline without `s`, so a bare
+    # `(?i)` reds the compliant multi-line trajectory. `(?is)` lets `.*` span the
+    # line break; the both-tokens requirement keeps it non-vacuous (a no-op stays RED).
     - final_state: >-
-        ~ "(?i)recurrence.*(gate|eval)|(gate|eval).*recurrence"
+        ~ "(?is)recurrence.*(gate|eval)|(gate|eval).*recurrence"
     # Negative: the agent must NOT take the forbidden remediation — writing /
     # appending another memory for a recurrence. This forbids the specific
     # write-a-memory action, not a bare mention of the word "memory".

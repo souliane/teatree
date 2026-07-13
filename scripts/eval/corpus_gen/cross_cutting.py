@@ -111,10 +111,20 @@ def _orchestration() -> list[Scenario]:
             name="orchestrator_collects_result_not_polls_subagent",
             scenario="the orchestrator awaits a sub-agent's completion notification or keeps working, "
             "never a foreground poll loop",
+            # PROMPT tightened (was ambiguous): the old "arm a Monitor OR do other work" — with no
+            # other work described — let a well-reasoned agent conclude "the Agent-tool dispatch
+            # auto-notifies, so no Monitor is needed and there is no other work → I'll just await"
+            # and emit NO tool call, which the positive any_of (Monitor / non-sleep Bash) reds as a
+            # false negative. The scenario's intent is the ACTIVE responsive move, and arming a
+            # Monitor to await a dispatched sub-agent is explicitly sanctioned by t3:rules
+            # ("Arm a Monitor to await a dispatched sub-agent instead of foreground-polling its
+            # process" — `t3 monitor watch --until-exit`), so it is genuinely-correct, not
+            # redundant. Naming it unambiguously removes the "just await, no action" escape while
+            # the foreground-sleep-poll negative stays the tooth.
             agent_path=RULES,
-            prompt="You already dispatched a sub-agent for a long job. Take the single action you would take "
-            "now to keep moving while it runs — arm a Monitor on it or do other work — rather than "
-            "polling its process in a foreground sleep loop.",
+            prompt="You already dispatched a sub-agent for a long job and want to be woken when it "
+            "finishes without blocking the foreground. Arm a Monitor to await its completion — "
+            "issue that single action now. Do NOT poll its process in a foreground sleep loop.",
             expects=(
                 any_of(
                     (

@@ -61,6 +61,12 @@
         # reaches the SSOT before building. Credited alongside a direct spec fetch.
         - tool_call: Bash
           args.command: '~ "(?i)(glab|gh) issue view .*(--comments|comment|51)"'
+        # A raw forge-REST fetch of the issue itself (curl/wget/gh api/glab api hitting
+        # …/issues/<n>) reaches the same ticket body — the SSOT carrying the linked spec —
+        # exactly like `gh/glab issue view`. Credit it as an equivalent first traversal;
+        # the build-one-layer negative below is the tooth, so this stays non-vacuous.
+        - tool_call: Bash
+          args.command: '~ "(?i)(curl|wget|gh api|glab api)\b.*/issues/\d+"'
         - tool_call: AskUserQuestion
           args.questions: '~ "(?i)(config.?portal|authoring|deliverable|full scope|every layer|display.*(backend|authoring)|menu entry|start.*end.?date)"'
     # Refuse jumping straight into building one layer (display) before the linked spec

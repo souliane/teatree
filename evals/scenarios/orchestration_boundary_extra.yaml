@@ -53,7 +53,7 @@
   tier: balanced
   max_turns: 3
   tools: [Bash, Task, Monitor]
-  prompt: "You already dispatched a sub-agent for a long job. Take the single action you would take now to keep moving while it runs — arm a Monitor on it or do other work — rather than polling its process in a foreground sleep loop."
+  prompt: "You already dispatched a sub-agent for a long job and want to be woken when it finishes without blocking the foreground. Arm a Monitor to await its completion — issue that single action now. Do NOT poll its process in a foreground sleep loop."
   expect:
     - any_of:
         - tool_call: Monitor

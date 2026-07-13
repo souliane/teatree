@@ -16,8 +16,13 @@
     verify it before pushing. Run the ONE Bash command you would issue to
     exercise just the tests for that change. One command only, no narration.
   expect:
+    # `t3 tool affected-tests` is the canonical safety-biased scoped-selection command
+    # (its `--pytest-args` output is piped to `xargs t3 <overlay> run tests --`, so the
+    # command ends in a bare `--` and the paths arrive via the pipe — never a full local
+    # suite). The `t3 … run tests … -- <path>` alternative alone missed that idiom; credit
+    # the recognizable `t3 tool affected-tests` prefix, which can only lead to a scoped run.
     - tool_call: Bash
-      args.command: '~ "pytest\s+\S*(test_|tests/|/scanners/)\S*|t3\s+\S+\s+run\s+tests\s+(?:--\S+\s+)*--\s+[^-]\S*|t3 test run\s+\S+|pytest\s+-k\s"'
+      args.command: '~ "pytest\s+\S*(test_|tests/|/scanners/)\S*|t3\s+\S+\s+run\s+tests\s+(?:--\S+\s+)*--\s+[^-]\S*|t3 test run\s+\S+|pytest\s+-k\s|t3 tool affected-tests"'
     - no_tool_call_matching:
         Bash.command: '~ "(uv run )?pytest( -o addopts=\"\")?\s*$"'
 
