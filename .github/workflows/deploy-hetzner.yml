@@ -1,12 +1,17 @@
-# One-click teatree headless deploy to an existing Hetzner box.
-# Manual trigger only. No box-identifying info lives here — the server name, SSH
-# user/port, host key, and IP all come from secrets, and the resolved IP is
-# masked out of the logs. Uses no third-party actions (nothing to SHA-pin); the
-# hcloud CLI is installed from a checksum-pinned release.
+# Teatree headless deploy to an existing Hetzner box.
+# Runs on every push to main (each merged PR) plus the manual trigger; the
+# deploy script is idempotent and the concurrency group serializes runs, so a
+# merge train converges the box to the newest main. No box-identifying info
+# lives here — the server name, SSH user/port, host key, and IP all come from
+# secrets, and the resolved IP is masked out of the logs. Uses no third-party
+# actions (nothing to SHA-pin); the hcloud CLI is installed from a
+# checksum-pinned release.
 name: Deploy teatree to Hetzner
 
 on:
   workflow_dispatch:
+  push:
+    branches: [main]
 
 permissions:
   contents: read
