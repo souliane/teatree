@@ -41,9 +41,14 @@ jobs:
           GIT_AUTHOR_NAME: ${{ secrets.GIT_AUTHOR_NAME }}
           GIT_AUTHOR_EMAIL: ${{ secrets.GIT_AUTHOR_EMAIL }}
         run: |
+          # CLAUDE_CODE_OAUTH_TOKEN is deliberately NOT required: a box whose
+          # pass store is provisioned with anthropic/<account>/oauth-token
+          # entries (anthropic_oauth_pass_paths routing) runs without the env
+          # token — the entrypoint preflight fails loud when NEITHER source
+          # exists, so removing the secret cannot silently deploy a dead loop.
           missing=0
           for name in HCLOUD_TOKEN HETZNER_SERVER_NAME HETZNER_SSH_KEY HETZNER_SSH_KNOWN_HOSTS \
-                      HETZNER_SSH_USER HETZNER_SSH_PORT CLAUDE_CODE_OAUTH_TOKEN TEATREE_GH_TOKEN \
+                      HETZNER_SSH_USER HETZNER_SSH_PORT TEATREE_GH_TOKEN \
                       T3_ADMIN_USER T3_ADMIN_PASSWORD GIT_AUTHOR_NAME GIT_AUTHOR_EMAIL; do
             if [ -z "${!name}" ]; then
               echo "MISSING SECRET $name - set it under Settings > Secrets and re-run"
@@ -109,8 +114,13 @@ jobs:
           $SSH "$TARGET" 'set -e; REMOTE_DIR="$HOME/teatree-deploy"; if [ ! -d "$REMOTE_DIR/.git" ]; then git clone https://github.com/souliane/teatree.git "$REMOTE_DIR"; fi; mkdir -p "$REMOTE_DIR/deploy"'
 
           # 2. Write the secrets file (piped over stdin — never on argv or in logs; mode 600).
+          # The Anthropic env token is written only when the secret exists; without
+          # it the box resolves credentials via its pass store (option-b routing),
+          # and an absent env line is what lets the pass rotation actually win.
           {
-            printf 'CLAUDE_CODE_OAUTH_TOKEN=%s\n' "$CLAUDE_CODE_OAUTH_TOKEN"
+            if [ -n "$CLAUDE_CODE_OAUTH_TOKEN" ]; then
+              printf 'CLAUDE_CODE_OAUTH_TOKEN=%s\n' "$CLAUDE_CODE_OAUTH_TOKEN"
+            fi
             printf 'TEATREE_GH_TOKEN=%s\n' "$TEATREE_GH_TOKEN"
             printf 'T3_ADMIN_USER=%s\n' "$T3_ADMIN_USER"
             printf 'T3_ADMIN_PASSWORD=%s\n' "$T3_ADMIN_PASSWORD"

@@ -30,10 +30,27 @@ git config --global user.email "${GIT_AUTHOR_EMAIL:-teatree@localhost}"
 git config --global init.defaultBranch main
 git config --global --add safe.directory "$CLONE_DIR"
 
+# The pass store's GPG home rides the teatree_data volume (see Dockerfile ENV);
+# gpg refuses a home directory that is readable by group/other, and volume
+# copy-up does not preserve the mode a provisioning run set. Every role fixes
+# the mode before anything reads a credential.
+if [ -n "${GNUPGHOME:-}" ] && [ -d "$GNUPGHOME" ]; then
+    chmod 700 "$GNUPGHOME"
+fi
+
+# True when the box pass store holds at least one Anthropic account entry —
+# the option-b credential source (anthropic_oauth_pass_paths routing).
+pass_store_has_anthropic() {
+    pass ls anthropic >/dev/null 2>&1
+}
+
 # Fail loud, early, and actionably when a required runtime token is missing or
 # does not authenticate — otherwise a green deploy hides a dead loop.
 init_preflight() {
-    : "${CLAUDE_CODE_OAUTH_TOKEN:?MISSING CLAUDE_CODE_OAUTH_TOKEN - set the repo secret and re-run Deploy}"
+    if [ -z "${CLAUDE_CODE_OAUTH_TOKEN:-}" ] && ! pass_store_has_anthropic; then
+        echo "entrypoint: no Anthropic credential - set the CLAUDE_CODE_OAUTH_TOKEN repo secret, OR provision the box pass store (anthropic/<account>/oauth-token entries) and set anthropic_oauth_pass_paths - then re-run Deploy" >&2
+        exit 1
+    fi
     : "${TEATREE_GH_TOKEN:?MISSING TEATREE_GH_TOKEN - set the repo secret and re-run Deploy}"
     : "${GIT_AUTHOR_NAME:?MISSING GIT_AUTHOR_NAME - set the repo secret and re-run Deploy}"
     : "${GIT_AUTHOR_EMAIL:?MISSING GIT_AUTHOR_EMAIL - set the repo secret and re-run Deploy}"
