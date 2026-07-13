@@ -1,12 +1,17 @@
-# One-click teatree headless deploy to an existing Hetzner box.
-# Manual trigger only. No box-identifying info lives here — the server name, SSH
-# user/port, host key, and IP all come from secrets, and the resolved IP is
-# masked out of the logs. Uses no third-party actions (nothing to SHA-pin); the
-# hcloud CLI is installed from a checksum-pinned release.
+# Teatree headless deploy to an existing Hetzner box.
+# Runs on every push to main (each merged PR) plus the manual trigger; the
+# deploy script is idempotent and the concurrency group serializes runs, so a
+# merge train converges the box to the newest main. No box-identifying info
+# lives here — the server name, SSH user/port, host key, and IP all come from
+# secrets, and the resolved IP is masked out of the logs. Uses no third-party
+# actions (nothing to SHA-pin); the hcloud CLI is installed from a
+# checksum-pinned release.
 name: Deploy teatree to Hetzner
 
 on:
   workflow_dispatch:
+  push:
+    branches: [main]
 
 permissions:
   contents: read
@@ -90,6 +95,12 @@ jobs:
           T3_ADMIN_PASSWORD: ${{ secrets.T3_ADMIN_PASSWORD }}
           GIT_AUTHOR_NAME: ${{ secrets.GIT_AUTHOR_NAME }}
           GIT_AUTHOR_EMAIL: ${{ secrets.GIT_AUTHOR_EMAIL }}
+          # Repo VARIABLE (not a secret): the box's fleet-scoped loop split,
+          # consumed by the entrypoint's disable_fleet_scoped_loops. The
+          # fallback preserves the historical default when the variable is
+          # unset; the entrypoint validates every name and fails the deploy
+          # loudly on a typo.
+          TEATREE_DISABLED_LOOPS: ${{ vars.TEATREE_DISABLED_LOOPS || 'inbox,review,directive_loop' }}
         run: |
           SSH="ssh -p ${SSH_PORT} -i ${HOME}/.ssh/id_deploy -o UserKnownHostsFile=${HOME}/.ssh/known_hosts -o StrictHostKeyChecking=yes -o ConnectTimeout=20"
           TARGET="${SSH_USER}@${SERVER_IP}"
@@ -105,6 +116,7 @@ jobs:
             printf 'T3_ADMIN_PASSWORD=%s\n' "$T3_ADMIN_PASSWORD"
             printf 'GIT_AUTHOR_NAME=%s\n' "$GIT_AUTHOR_NAME"
             printf 'GIT_AUTHOR_EMAIL=%s\n' "$GIT_AUTHOR_EMAIL"
+            printf 'TEATREE_DISABLED_LOOPS=%s\n' "$TEATREE_DISABLED_LOOPS"
           } | $SSH "$TARGET" 'umask 077; cat > "$HOME/teatree-deploy/deploy/teatree.env"'
 
           # 3. Converge the stack (deploy.sh reads no secrets — compose's env_file does).

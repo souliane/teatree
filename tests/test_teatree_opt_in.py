@@ -594,11 +594,18 @@ class TestStatuslineGating:
         )
         return result.stdout
 
-    def test_no_marker_produces_no_output(self, tmp_path: Path) -> None:
+    def test_no_marker_but_autoload_on_produces_output(self, tmp_path: Path) -> None:
+        # The render gate keys on the ``autoload`` owner flag ALONE, not the
+        # per-session ``.teatree-active`` marker: the owner's foreground TUI
+        # sessions frequently never get that marker (the harness's background
+        # bg-spare daemon owns the tick and holds it), so requiring it blanked the
+        # statusline in exactly the sessions the owner looks at. ``autoload`` on ->
+        # render even without the marker. (Loop *arming* keeps its stricter
+        # marker AND autoload gate; this is display *visibility*.)
         state_dir = tmp_path / "state"
         state_dir.mkdir(parents=True, exist_ok=True)
         out = self._run_statusline("no-teatree-sess", state_dir, extra_env={"T3_AUTOLOAD": "1"})
-        assert out == ""
+        assert out != ""
 
     def test_marker_present_but_auto_load_off_produces_no_output(self, tmp_path: Path) -> None:
         # The #256 colleague case: a session that loaded teatree (marker

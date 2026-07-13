@@ -1433,3 +1433,75 @@ class TestStatuslineAutoloadDbFlip:
         result = self._run_gate(tmp_path, config_db=tmp_path / "absent.sqlite3")
         assert result.returncode == 0, result.stderr
         assert result.stdout == ""
+
+
+class TestStatuslineRendersOnAutoloadWithoutMarker:
+    """Render gate keys on the ``autoload`` owner flag alone, not the marker.
+
+    The per-session ``.teatree-active`` marker is NOT required (souliane/teatree
+    render-gate fix). Root cause of the reported blank statusline: the gate ANDed the
+    per-session ``.teatree-active`` marker WITH ``autoload``. That marker is written
+    by SessionStart-engage / a teatree-skill load, but the harness runs the loop in
+    a background ``bg-spare`` daemon session (which gets the marker and owns the
+    tick) while the owner's foreground TUI sessions frequently never get it — so the
+    statusline blanked in exactly the sessions the owner looks at, despite a global
+    ``autoload = true``. ``autoload`` is the ONE owner flag that "engages the
+    session", so it alone gates whether the statusline renders. Loop *arming* keeps
+    its stricter ``marker AND autoload`` gate (``_loop_auto_load_active``); this is
+    display *visibility*, which the owner wants in every one of their sessions. The
+    #256 colleague guarantee is preserved: ``autoload`` off is blank regardless of
+    the marker.
+    """
+
+    def _run(self, tmp_path: Path, *, autoload: bool, marker: bool) -> subprocess.CompletedProcess:
+        state_dir = tmp_path / "state"
+        state_dir.mkdir(exist_ok=True)
+        session_id = "owner-sess"
+        if marker:
+            (state_dir / f"{session_id}.teatree-active").touch()
+        home = tmp_path / "home"
+        home.mkdir(exist_ok=True)
+        env = os.environ.copy()
+        # env autoload short-circuits the DB read, keeping the case hermetic.
+        env["T3_AUTOLOAD"] = "1" if autoload else "0"
+        env["HOME"] = str(home)
+        env["TEATREE_CLAUDE_STATUSLINE_STATE_DIR"] = str(state_dir)
+        env["CLAUDE_CONFIG_DIR"] = str(state_dir)
+        env["CLAUDE_TASKS_DIR"] = str(state_dir / "_tasks")
+        env.pop("XDG_DATA_HOME", None)
+        env.pop("T3_CONFIG_DB", None)
+        return subprocess.run(
+            [str(SCRIPT)],
+            input=json.dumps({"session_id": session_id, "model": {"display_name": "Claude Opus"}}),
+            capture_output=True,
+            text=True,
+            env=env,
+            check=False,
+            cwd=REPO_ROOT,
+        )
+
+    def test_autoload_on_without_marker_renders(self, tmp_path: Path) -> None:
+        # THE regression: the owner enabled autoload but this foreground session
+        # never got the .teatree-active marker -> must STILL render (was blank).
+        result = self._run(tmp_path, autoload=True, marker=False)
+        assert result.returncode == 0, result.stderr
+        assert "model=" in _strip_ansi(result.stdout)
+
+    def test_autoload_on_with_marker_renders(self, tmp_path: Path) -> None:
+        result = self._run(tmp_path, autoload=True, marker=True)
+        assert result.returncode == 0, result.stderr
+        assert "model=" in _strip_ansi(result.stdout)
+
+    def test_autoload_off_without_marker_is_blank(self, tmp_path: Path) -> None:
+        # Colleague who merely cloned the repo: autoload off, no marker -> blank (#256).
+        result = self._run(tmp_path, autoload=False, marker=False)
+        assert result.returncode == 0, result.stderr
+        assert result.stdout == ""
+
+    def test_autoload_off_with_marker_is_blank(self, tmp_path: Path) -> None:
+        # #256: a colleague who even loaded a teatree skill (marker present) but did
+        # NOT enable autoload is still not shown the statusline — autoload is the
+        # authoritative owner opt-in, so it alone can turn the statusline on.
+        result = self._run(tmp_path, autoload=False, marker=True)
+        assert result.returncode == 0, result.stderr
+        assert result.stdout == ""
