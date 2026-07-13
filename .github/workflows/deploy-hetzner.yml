@@ -106,6 +106,12 @@ jobs:
           # unset; the entrypoint validates every name and fails the deploy
           # loudly on a typo.
           TEATREE_DISABLED_LOOPS: ${{ vars.TEATREE_DISABLED_LOOPS || 'inbox,review,directive_loop' }}
+          # Repo VARIABLE: when 'true' the box's teatree.env gets NO Anthropic
+          # env token even though the secret exists (the eval workflows still
+          # need the secret) — the env source beats the pass rotation in
+          # llm/credentials, so omitting the line is what hands the box to its
+          # provisioned pass store.
+          TEATREE_BOX_USE_PASS: ${{ vars.TEATREE_BOX_USE_PASS || 'false' }}
         run: |
           SSH="ssh -p ${SSH_PORT} -i ${HOME}/.ssh/id_deploy -o UserKnownHostsFile=${HOME}/.ssh/known_hosts -o StrictHostKeyChecking=yes -o ConnectTimeout=20"
           TARGET="${SSH_USER}@${SERVER_IP}"
@@ -118,7 +124,7 @@ jobs:
           # it the box resolves credentials via its pass store (option-b routing),
           # and an absent env line is what lets the pass rotation actually win.
           {
-            if [ -n "$CLAUDE_CODE_OAUTH_TOKEN" ]; then
+            if [ -n "$CLAUDE_CODE_OAUTH_TOKEN" ] && [ "$TEATREE_BOX_USE_PASS" != "true" ]; then
               printf 'CLAUDE_CODE_OAUTH_TOKEN=%s\n' "$CLAUDE_CODE_OAUTH_TOKEN"
             fi
             printf 'TEATREE_GH_TOKEN=%s\n' "$TEATREE_GH_TOKEN"
