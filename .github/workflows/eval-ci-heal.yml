@@ -9,9 +9,30 @@
 # invocation `eval.yml` / `eval-pr-reusable.yml` already prove — it reinvents
 # nothing about HOW the eval runs, only WHICH scenarios and WHAT it uploads.
 #
+# WHY SHARDED (souliane/teatree#3202)
+#   The FULL suite (~231 scenarios) cannot finish in ONE eval step inside any
+#   reasonable per-step timeout — a single invocation timed out at ~127/231, its
+#   retry re-ran from scratch and timed out again, and NO JSON was produced. So the
+#   full suite is FANNED OUT across a parallel matrix of `shards` legs: each leg
+#   runs `t3 eval run --shard <index>/<total>`, a deterministic partition by
+#   scenario name (every scenario in exactly one shard, none dropped or duplicated),
+#   so every leg meters a bounded subset well under the step cap. A final `combine`
+#   job merges every shard's per-scenario JSON into ONE `eval-heal-<sha>.json` with
+#   the same §2.4 schema, so the `t3 eval ci-status` download path is unchanged.
+#
+# ADAPTIVE SINGLE-TRIAL (souliane/teatree#3202)
+#   The eval runs SINGLE-TRIAL by default with `--escalate-on-fail`: a passing
+#   scenario runs ONCE (halving the base spend of the retired blanket pass@2, which
+#   ran every scenario twice), and only a scenario that FAILS its single trial is
+#   re-run at higher trials to confirm — the lane reds only on a confirmed failure,
+#   a flake recovers.
+#
 # INPUTS
 #   * scenarios  — comma-joined scenario names (the red subset a heal re-trigger
-#                  re-runs). EMPTY (default) = the full suite, in ONE invocation.
+#                  re-runs). EMPTY (default) = the full suite, sharded. A NON-empty
+#                  subset is NOT sharded — one leg runs the named subset loop.
+#   * shards     — how many parallel legs the full suite fans out across (default 8;
+#                  ignored when `scenarios` is non-empty).
 #   * credential — subscription_oauth (default, no per-token bill) | metered_api_key.
 #   * pr_ref     — the branch to check out and eval (default: the dispatched ref),
 #                  so the workflow definition can live on main while the eval runs
@@ -31,9 +52,10 @@
 #
 # PUBLISH SAFETY
 #   The `eval-heal-<sha>` JSON is publish-safe BY CONSTRUCTION (only spec identity +
-#   verdict + triage discriminators — no transcript). The per-trial transcript
-#   (`eval-heal-transcript-<sha>`) is PRIVATE: the heal loop downloads it to the box
-#   for the fix agent to read; it is NEVER published.
+#   verdict + triage discriminators — no transcript), and the merge only folds those
+#   already-sanitized rows, so the combined artifact stays publish-safe. The per-trial
+#   transcript (`eval-heal-transcript-<sha>-<shard>`) is PRIVATE: the heal loop
+#   downloads it to the box for the fix agent to read; it is NEVER published.
 # ============================================================
 
 name: Eval CI heal
@@ -42,9 +64,14 @@ on:
   workflow_dispatch:
     inputs:
       scenarios:
-        description: "Comma-joined scenario names to run (the red subset). Empty = the full suite."
+        description: "Comma-joined scenario names to run (the red subset). Empty = the full suite, sharded."
         required: false
         default: ""
+        type: string
+      shards:
+        description: "Parallel shards the full suite fans out across (default 8; ignored for a named subset)."
+        required: false
+        default: "8"
         type: string
       credential:
         description: "Eval credential (subscription_oauth | metered_api_key). Default subscription_oauth — no per-token bill, a depleting usage window; metered_api_key is per-token cost, no window."
@@ -62,12 +89,49 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  # EVAL: run the heal subset (or the full suite) in the CI container, emitting the
-  # publish-safe JSON + the private transcript. FAIL LOUD on a hang — the job cap
-  # sits just above the 2x80min eval-step budget so a wedge is killed, not stalled.
+  # PREPARE: resolve the checked-out head SHA once (every shard + the combine job
+  # key their artifact names on it) and compute the shard matrix. Empty `scenarios`
+  # fans the full suite out across `shards` legs; a named subset emits ONE unsharded
+  # leg. The helper imports nothing from teatree, so no `uv sync` is needed here.
+  prepare:
+    runs-on: ubuntu-latest
+    outputs:
+      sha: ${{ steps.sha.outputs.sha }}
+      matrix: ${{ steps.matrix.outputs.matrix }}
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
+        with:
+          ref: ${{ inputs.pr_ref || github.ref }}
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405  # v6
+        with:
+          python-version: "3.13"
+      # Resolve the ACTUAL checked-out SHA (pr_ref may differ from github.sha) so
+      # the JSON's head_sha and every artifact name key on the tree that was eval'd.
+      - name: Resolve the checked-out head SHA
+        id: sha
+        run: echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+      - name: Compute the shard matrix
+        id: matrix
+        env:
+          EVAL_SHARDS: ${{ inputs.shards }}
+          EVAL_SCENARIOS: ${{ inputs.scenarios }}
+        run: |
+          MATRIX="$(python scripts/eval/shard_matrix.py --shards "$EVAL_SHARDS" --scenarios "$EVAL_SCENARIOS")"
+          echo "matrix=$MATRIX" >> "$GITHUB_OUTPUT"
+          echo "Shard matrix: $MATRIX"
+
+  # EVAL: run ONE shard of the full suite (or the whole named subset) in the CI
+  # container, emitting the publish-safe JSON + the private transcript. A red shard
+  # does not cancel the others — each leg's verdict is independent. The job cap sits
+  # just above the 2x80min eval-step budget so a wedge is killed, not stalled.
   eval:
+    needs: prepare
     runs-on: ubuntu-latest
     timeout-minutes: 180
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJSON(needs.prepare.outputs.matrix) }}
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
         with:
@@ -93,30 +157,40 @@ jobs:
           claude --version
       - name: Migrate the self-DB (the eval run-history ledger persists into it)
         run: uv run python -m teatree migrate --no-input
-      # Resolve the ACTUAL checked-out SHA (pr_ref may differ from github.sha) so the
-      # JSON's head_sha and the artifact names key on the tree that was eval'd.
-      - name: Resolve the checked-out head SHA
-        id: sha
-        run: echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+      # A filesystem-safe per-shard artifact suffix ('1/8' -> '1-8', empty subset
+      # token -> 'subset'), computed BEFORE the eval so each leg's summary JSON and
+      # transcript are uniquely named — a shared basename would collide under
+      # `merge-multiple` in the combine job and drop all but one shard's results.
+      - name: Filesystem-safe per-shard artifact suffix
+        id: artifact
+        env:
+          EVAL_SHARD: ${{ matrix.shard }}
+        run: |
+          if [ -z "$EVAL_SHARD" ]; then
+            echo "suffix=subset" >> "$GITHUB_OUTPUT"
+          else
+            echo "suffix=${EVAL_SHARD//\//-}" >> "$GITHUB_OUTPUT"
+          fi
       # Run the eval IN the CI image (dev/Dockerfile.test), exactly as eval.yml does:
-      # `--backend api` on the in-process Agent SDK, `--trials 2 --require any` (the
-      # right-sized pass@k), `--effort high` (a single representative tier),
+      # `--backend api` on the in-process Agent SDK, `--escalate-on-fail` (the ADAPTIVE
+      # single-trial-with-escalation default — a passing scenario runs once, a real
+      # failure escalates to pass@k), `--effort high` (a single representative tier),
       # `--require-executed` armed unconditionally, `--docker` routing through the
       # image with the SELECTED credential forwarded via docker `-e`. EMPTY scenarios
-      # = the full suite in ONE invocation; a comma-joined subset loops one
-      # `t3 eval run <name>` per scenario (the eval-pr-reusable.yml shape) since the
-      # positional NAME filter runs one scenario. All caller values ride env vars
-      # (never inlined into a run line). Both the JSON and the transcript land in the
-      # ONE writable artifacts dir (the docker runner mounts a single parent).
-      - name: Behavioral eval — the heal subset (in Docker)
+      # = ONE shard of the full suite (`--shard $EVAL_SHARD`); a comma-joined subset
+      # loops one `t3 eval run <name>` per scenario (the eval-pr-reusable.yml shape).
+      # All caller values ride env vars (never inlined into a run line). Both the JSON
+      # and the transcript land in the ONE writable artifacts dir (a single mounted parent).
+      - name: Behavioral eval — one shard (in Docker)
         uses: nick-fields/retry@ad984534de44a9489a53aefd81eb77f87c70dc60  # v4
         env:
           CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           T3_EVAL_CREDENTIAL: ${{ inputs.credential || 'subscription_oauth' }}
-          GITHUB_SHA: ${{ steps.sha.outputs.sha }}
+          GITHUB_SHA: ${{ needs.prepare.outputs.sha }}
           EVAL_SCENARIOS: ${{ inputs.scenarios }}
-          EVAL_TRIALS: "2"
+          EVAL_SHARD: ${{ matrix.shard }}
+          SUFFIX: ${{ steps.artifact.outputs.suffix }}
           HEAL_DIR: ${{ runner.temp }}/heal
         with:
           timeout_minutes: 80
@@ -126,40 +200,105 @@ jobs:
             set -euo pipefail
             mkdir -p "$HEAL_DIR"
             if [ -z "$EVAL_SCENARIOS" ]; then
-              uv run t3 eval run --backend api --trials "$EVAL_TRIALS" --require any \
-                --effort high --require-executed --docker \
-                --transcript-html "$HEAL_DIR/eval-transcripts.html" \
-                --summary-json "$HEAL_DIR/eval-heal.json"
+              uv run t3 eval run --backend api --escalate-on-fail \
+                --effort high --require-executed --docker --shard "$EVAL_SHARD" \
+                --transcript-html "$HEAL_DIR/eval-transcripts-$SUFFIX.html" \
+                --summary-json "$HEAL_DIR/eval-heal-shard-$SUFFIX.json"
             else
               rc=0
               IFS=',' read -ra NAMES <<< "$EVAL_SCENARIOS"
               for name in "${NAMES[@]}"; do
                 name="$(echo "$name" | xargs)"
                 [ -z "$name" ] && continue
-                uv run t3 eval run "$name" --backend api --trials "$EVAL_TRIALS" --require any \
+                uv run t3 eval run "$name" --backend api --escalate-on-fail \
                   --effort high --require-executed --docker \
                   --transcript-html "$HEAL_DIR/eval-transcripts-$name.html" \
                   --summary-json "$HEAL_DIR/eval-heal-$name.json" || rc=$?
               done
               exit "$rc"
             fi
-      # The PUBLISH-SAFE per-scenario JSON (triage class, no transcript) — the
-      # artifact the heal loop downloads and triages. `if: always()` so a red run
-      # still publishes it (a red run is precisely when the reds must be triaged).
-      - name: Upload the publish-safe per-scenario JSON
+      # This shard's PUBLISH-SAFE per-scenario JSON (triage class, no transcript) —
+      # the combine job merges every shard's JSON into the one `eval-heal-<sha>`.
+      # `if: always()` so a red shard still publishes it (a red run is precisely when
+      # the reds must be triaged). The per-shard suffix keeps parallel legs distinct.
+      - name: Upload this shard's publish-safe per-scenario JSON
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7
         with:
-          name: eval-heal-${{ steps.sha.outputs.sha }}
+          name: eval-heal-shard-${{ needs.prepare.outputs.sha }}-${{ steps.artifact.outputs.suffix }}
           path: ${{ runner.temp }}/heal/eval-heal*.json
           if-no-files-found: warn
-      # The PRIVATE per-trial transcript (reasoning + tool calls) — downloaded to the
-      # box for the fix agent, NEVER published. `if: always()` so a red run still
-      # captures it (the transcript is exactly what a fix diagnoses).
-      - name: Upload the private per-trial transcript
+      # This shard's PRIVATE per-trial transcript (reasoning + tool calls) —
+      # downloaded to the box for the fix agent, NEVER published. `if: always()` so
+      # a red shard still captures it (the transcript is exactly what a fix diagnoses).
+      - name: Upload this shard's private per-trial transcript
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7
         with:
-          name: eval-heal-transcript-${{ steps.sha.outputs.sha }}
+          name: eval-heal-transcript-${{ needs.prepare.outputs.sha }}-${{ steps.artifact.outputs.suffix }}
           path: ${{ runner.temp }}/heal/eval-transcripts*.html
+          if-no-files-found: warn
+
+  # COMBINE: fold every shard's publish-safe per-scenario JSON into ONE
+  # `eval-heal-<sha>.json` (totals summed, scenarios concatenated — the same §2.4
+  # schema), so the `t3 eval ci-status` download path reads the combined run exactly
+  # as it read a single-invocation run. `if: always()` so a red shard still merges
+  # (a red run is when the reds must be triaged); the merge only folds already-
+  # sanitized rows, so the combined artifact stays publish-safe. Guarded on prepare
+  # success — there is nothing to combine if the matrix never computed.
+  combine:
+    needs: [prepare, eval]
+    if: always() && needs.prepare.result == 'success'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
+        with:
+          ref: ${{ inputs.pr_ref || github.ref }}
+      - uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78  # v7
+        with:
+          enable-cache: true
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405  # v6
+        with:
+          python-version: "3.13"
+      - name: Sync dependencies (retry on transient network failure)
+        uses: nick-fields/retry@ad984534de44a9489a53aefd81eb77f87c70dc60  # v4
+        with:
+          timeout_minutes: 10
+          max_attempts: 3
+          retry_wait_seconds: 30
+          command: uv sync
+      # Pull every shard's publish-safe JSON into one dir (`merge-multiple` flattens
+      # the per-artifact subdirs). Only the `eval-heal-shard-<sha>-*` JSONs — never
+      # the private `eval-heal-transcript-*` HTML.
+      - name: Download every shard's publish-safe JSON
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8.0.1
+        with:
+          path: ${{ runner.temp }}/shards
+          pattern: eval-heal-shard-${{ needs.prepare.outputs.sha }}-*
+          merge-multiple: true
+      # Merge the per-shard JSONs into ONE §2.4 `eval-heal-<sha>.json` — totals
+      # summed, scenarios concatenated. `--sha`/`--generated-at` are injected (never
+      # computed in the merge), so the fold is deterministic. Only publish-safe rows
+      # are read, so the combined artifact carries no transcript.
+      - name: Merge the shard JSONs into one eval-heal-<sha>.json
+        env:
+          SHA: ${{ needs.prepare.outputs.sha }}
+          SHARDS_DIR: ${{ runner.temp }}/shards
+          OUT_DIR: ${{ runner.temp }}/combined
+        run: |
+          set -euo pipefail
+          mkdir -p "$OUT_DIR"
+          GENERATED_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          uv run t3 eval merge-summary-json "$SHARDS_DIR" \
+            --sha "$SHA" --generated-at "$GENERATED_AT" \
+            --out "$OUT_DIR/eval-heal-$SHA.json"
+      # Upload the ONE merged JSON under the `eval-heal-<sha>` name the
+      # `t3 eval ci-status` download path resolves — the combine seam that keeps the
+      # sharded run indistinguishable from a single-invocation run to every consumer.
+      - name: Upload the merged publish-safe eval-heal JSON
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7
+        with:
+          name: eval-heal-${{ needs.prepare.outputs.sha }}
+          path: ${{ runner.temp }}/combined/eval-heal-*.json
           if-no-files-found: warn

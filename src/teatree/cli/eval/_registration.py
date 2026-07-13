@@ -22,6 +22,7 @@ from teatree.cli.eval.history import history_command
 from teatree.cli.eval.label import label_app
 from teatree.cli.eval.lanes import coverage, pinned_regressions
 from teatree.cli.eval.merge_summaries import merge_summaries
+from teatree.cli.eval.merge_summary_json import merge_summary_json
 from teatree.cli.eval.merged_prs_since import merged_prs_since
 from teatree.cli.eval.negative_control import negative_control
 from teatree.cli.eval.prepare_transcript import prepare_transcript
@@ -46,6 +47,7 @@ def register_imported_commands(eval_app: typer.Typer) -> None:
     eval_app.command("ci-status")(ci_status)
     eval_app.command("merged-prs-since")(merged_prs_since)
     eval_app.command("merge-summaries")(merge_summaries)
+    eval_app.command("merge-summary-json")(merge_summary_json)
     eval_app.command("prepare-transcript")(prepare_transcript)
     eval_app.command("history")(history_command)
     eval_app.add_typer(corpus_app, name="corpus")
