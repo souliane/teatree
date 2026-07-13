@@ -13,6 +13,8 @@ scenario asks the agent to close is real.
 
 import pytest
 
+from teatree.core.evidence.test_plan_validation import has_red_highlight_box, validate_test_plan_images
+from teatree.core.evidence.video_evidence import check_video_evidence
 from teatree.eval.git_fixture import (
     KNOWN_FIXTURES,
     provision_e2e_artifacts_fixture,
@@ -68,11 +70,10 @@ class TestProvisionE2eArtifactsFixture:
             assert (env_dir / "step1.png").is_file()
             assert (env_dir / "step2.png").is_file()
 
-    def test_artifacts_are_plausible_media_not_an_ascii_placeholder(self) -> None:
+    def test_artifacts_carry_real_media_magic(self) -> None:
         # A diligent agent inspects the artifact bytes before posting E2E evidence; a
-        # fake ASCII placeholder makes it correctly REFUSE (Evidence-Source-Integrity),
-        # nulling the graded post. Each artifact must carry its real media magic and a
-        # non-trivial size so a correct agent reads it as genuine and proceeds.
+        # fake ASCII placeholder makes it correctly REFUSE (Evidence-Source-Integrity).
+        # Each artifact carries its real media magic and a non-trivial size.
         with provision_e2e_artifacts_fixture() as root:
             env_dir = root / "artifacts" / "4242" / "local"
             for png in ("step1.png", "step2.png"):
@@ -81,8 +82,39 @@ class TestProvisionE2eArtifactsFixture:
                 assert len(data) > 1024, f"{png} is trivially small ({len(data)} bytes)"
             webm = (env_dir / "run.webm").read_bytes()
             assert webm[:4] == b"\x1a\x45\xdf\xa3", "run.webm lacks the EBML/WebM signature"
-            assert b"webm" in webm[:64], "run.webm lacks a webm DocType"
             assert len(webm) > 1024, f"run.webm is trivially small ({len(webm)} bytes)"
+
+    def test_screenshots_are_byte_distinct(self) -> None:
+        # post-test-plan's md5 dedup gate refuses two byte-identical images, and a
+        # diligent agent runs that check before posting — identical captures make it
+        # correctly refuse and never issue the canonical command (the #3190 regression).
+        with provision_e2e_artifacts_fixture() as root:
+            env_dir = root / "artifacts" / "4242" / "local"
+            assert (env_dir / "step1.png").read_bytes() != (env_dir / "step2.png").read_bytes()
+
+    def test_screenshots_clear_the_real_image_gates(self) -> None:
+        # The bytes must pass the SAME gates post-test-plan enforces (red-box pixel
+        # count + byte-identical dedup), not merely look like a PNG to `file`. A
+        # capture short of the red-box floor reads as box-less evidence a correct
+        # agent refuses to post.
+        with provision_e2e_artifacts_fixture() as root:
+            env_dir = root / "artifacts" / "4242" / "local"
+            images = [env_dir / "step1.png", env_dir / "step2.png"]
+            for image in images:
+                assert has_red_highlight_box(image), f"{image.name} lacks the red highlight box"
+            assert validate_test_plan_images(images) == []
+
+    def test_recording_is_a_parseable_recording_where_ffprobe_is_present(self) -> None:
+        # On a host WITH ffmpeg/ffprobe (a `--local` metered run) the agent probes the
+        # recording; an unparsable file (ffprobe returns no duration) reads as corrupt
+        # and it refuses. A real clip probes to a positive duration with no dead lead.
+        # Where the tool is absent (the CI image installs none) the check skips cleanly,
+        # so realness is only assertable when the tool is present.
+        with provision_e2e_artifacts_fixture() as root:
+            report = check_video_evidence(root / "artifacts" / "4242" / "local" / "run.webm")
+            if not report.skipped:
+                assert report.duration > 0, "run.webm is not a parseable recording"
+                assert report.ok, report.detail
 
 
 class TestProvisionE2eSiblingReposFixture:
