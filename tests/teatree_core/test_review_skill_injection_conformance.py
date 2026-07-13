@@ -13,13 +13,10 @@ with a sentinel body and assert the sentinel appears in full in the
 reviewing-phase system context — RED on ``origin/main`` (the body is demoted
 to the summary line), GREEN after the fix embeds the overlay review skills.
 
-They also assert the two backstops the fix threads through:
+They also assert the backstop the fix threads through:
 
 *   ``OverlayConfig.get_review_companion_skills()`` returns the deduped ordered
     ``[pr_review_companion, *companion_skills]``.
-*   ``OverlayConfig.get_lifecycle_companion_skills(lifecycle)`` generalizes that
-    to every lifecycle (``review`` keeps the richer set; others get the standing
-    companions).
 *   Back-compat: ``code-review`` (the #1135 default ``pr_review_companion``)
     is still present when no overlay override is declared.
 """
@@ -32,7 +29,7 @@ import pytest
 from django.test import TestCase
 
 from teatree.agents import prompt, skill_injection
-from teatree.agents.skill_bundle import active_overlay_lifecycle_skills, active_overlay_review_skills
+from teatree.agents.skill_bundle import active_overlay_review_skills
 from teatree.core.models import Session, Task, Ticket
 from teatree.core.overlay import OverlayConfig
 
@@ -98,28 +95,6 @@ class TestOverlayConfigGetReviewCompanionSkills:
         assert config.get_review_companion_skills() == ["ac-django"]
 
 
-class TestOverlayConfigGetLifecycleCompanionSkills:
-    """``get_lifecycle_companion_skills`` generalizes the review companions to every lifecycle."""
-
-    def test_review_lifecycle_returns_review_companion_set(self) -> None:
-        config = OverlayConfig()
-        config.pr_review_companion = "primary-review"
-        config.companion_skills = ["ac-django"]
-        assert config.get_lifecycle_companion_skills("review") == ["primary-review", "ac-django"]
-
-    def test_non_review_lifecycle_returns_standing_companions_only(self) -> None:
-        config = OverlayConfig()
-        config.pr_review_companion = "primary-review"
-        config.companion_skills = ["ac-django", "backend-dev"]
-        assert config.get_lifecycle_companion_skills("code") == ["ac-django", "backend-dev"]
-
-    def test_non_review_lifecycle_excludes_pr_review_companion(self) -> None:
-        config = OverlayConfig()
-        config.pr_review_companion = "primary-review"
-        config.companion_skills = []
-        assert config.get_lifecycle_companion_skills("e2e") == []
-
-
 class TestActiveOverlayReviewSkills:
     """``active_overlay_review_skills`` mirrors ``active_overlay_pr_review_companion``."""
 
@@ -129,26 +104,6 @@ class TestActiveOverlayReviewSkills:
     def test_no_overlay_returns_empty(self) -> None:
         with patch("teatree.core.overlay_loader.get_overlay", side_effect=RuntimeError("no overlay")):
             assert active_overlay_review_skills() == []
-
-
-class TestActiveOverlayLifecycleSkills:
-    """``active_overlay_lifecycle_skills`` reads the per-lifecycle overlay hook."""
-
-    def test_reads_overlay_lifecycle_hook(self) -> None:
-        overlay = MagicMock()
-        overlay.config.get_lifecycle_companion_skills.side_effect = lambda lifecycle: [f"{lifecycle}-companion"]
-        with patch("teatree.core.overlay_loader.get_overlay", return_value=overlay):
-            assert active_overlay_lifecycle_skills("code") == ["code-companion"]
-
-    def test_no_overlay_returns_empty(self) -> None:
-        with patch("teatree.core.overlay_loader.get_overlay", side_effect=RuntimeError("no overlay")):
-            assert active_overlay_lifecycle_skills("code") == []
-
-    def test_overlay_without_hook_returns_empty(self) -> None:
-        overlay = MagicMock()
-        overlay.config = object()
-        with patch("teatree.core.overlay_loader.get_overlay", return_value=overlay):
-            assert active_overlay_lifecycle_skills("code") == []
 
 
 class TestReviewingContextEmbedsOverlayReviewSkillInFull(TestCase):

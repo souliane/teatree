@@ -12,13 +12,12 @@ from typing import TYPE_CHECKING
 
 import typer
 
-from teatree.agents.skill_injection import build_subagent_skill_preamble
+from teatree.agents.skill_injection import build_subagent_skill_preamble, harness_skills_dirs
 from teatree.cli.autonomy import register_autonomy_commands
 from teatree.cli.django_groups import DJANGO_GROUPS, DjangoGroup
 from teatree.cli.overlay_leaves import register_core_passthrough_leaves
 from teatree.cli.teatree_gate import register_gate_commands
 from teatree.cli.wip import register_wip_commands
-from teatree.skill_support.loading import DEFAULT_SKILLS_DIR
 from teatree.utils.django_db import runner_prefix
 from teatree.utils.run import CommandFailedError, run_streamed, spawn
 from teatree.utils.singleton import WORKER_SINGLETON, AlreadyRunningError, singleton
@@ -459,7 +458,11 @@ class OverlayAppBuilder:
                 typer.echo("No skills given. Pass --skills t3:rules,t3:e2e[,<overlay-skill>].", err=True)
                 raise typer.Exit(code=1)
 
-            skills_dirs = [DEFAULT_SKILLS_DIR]
+            # Framework dir + the harness user skills dir (~/.claude/skills, where
+            # team skills installed via `npx skills add` resolve) + the overlay's
+            # own skills/ dir — so a stage skill body embeds for a fan-out brief
+            # exactly as an overlay-local one does.
+            skills_dirs = list(harness_skills_dirs())
             overlay_dir = _overlay_skills_dir(project_path)
             if overlay_dir is not None and overlay_dir not in skills_dirs:
                 skills_dirs.append(overlay_dir)

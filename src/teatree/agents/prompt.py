@@ -14,6 +14,7 @@ from teatree.agents.skill_injection import (
     _read_skill_contents,
     _read_skill_contents_scoped,
 )
+from teatree.agents.stage_skill_prompt import stage_precedence_line, stage_skills_present
 from teatree.config.agent_spawn import resolve_agent_config
 from teatree.core.modelkit.phases import normalize_phase, resolve_fanout_directive
 from teatree.core.models import Task, Ticket
@@ -22,6 +23,7 @@ from teatree.skill_support.loading import FRAMEWORK_SKILL_NAMES
 # The #1135 default ``pr_review_companion``. A headless reviewer must always
 # see the project review-quality bar in full, not the demoted summary.
 _REVIEW_PHASE_ALWAYS_FULL = frozenset({"code-review"})
+
 # Symmetric to the reviewer set: a headless BUILDER loses every loaded skill, so
 # the enumerate-and-preserve architecture pass must embed in full, not be demoted.
 _CODING_PHASE_ALWAYS_FULL = frozenset({"architecture-design"})
@@ -94,7 +96,7 @@ _REVIEW_VERDICT_RETURN_LINES: tuple[str, ...] = (
 _DIRECTIVE_FORCED_SKILLS = frozenset({"architecture-design", "code"}) | _ALWAYS_FULL_SKILLS
 
 
-def _stack_overlay_load_names(skills: list[str] | None) -> list[str]:
+def _stack_overlay_load_names(skills: list[str] | None, *, exclude: frozenset[str] = frozenset()) -> list[str]:
     """Return the ordered framework-then-overlay skill names to force-load.
 
     The resolved bundle minus the skills the directive already force-loads by
@@ -102,9 +104,12 @@ def _stack_overlay_load_names(skills: list[str] | None) -> list[str]:
     full). Framework skills (``ac-*`` / ``fastapi``) lead, then the overlay /
     remaining coding skills. Single source of truth for both the directive's
     load block and the system-context summary-suppression set so the two never
-    disagree on which skills are force-loaded (#1368).
+    disagree on which skills are force-loaded (#1368). *exclude* drops the
+    phase's stage skills — a no-Skill-tool maker gets them embedded in full, so
+    a "load via the Skill tool" directive it cannot act on must not list them.
     """
-    extra = [s for s in (skills or []) if _explicit_load_name(s) not in _DIRECTIVE_FORCED_SKILLS]
+    forced = _DIRECTIVE_FORCED_SKILLS | exclude
+    extra = [s for s in (skills or []) if _explicit_load_name(s) not in forced]
     framework = [s for s in extra if _explicit_load_name(s) in FRAMEWORK_SKILL_NAMES]
     overlay = [s for s in extra if _explicit_load_name(s) not in FRAMEWORK_SKILL_NAMES]
     ordered: list[str] = []
@@ -115,7 +120,7 @@ def _stack_overlay_load_names(skills: list[str] | None) -> list[str]:
     return ordered
 
 
-def _stack_skill_load_lines(skills: list[str] | None) -> list[str]:
+def _stack_skill_load_lines(skills: list[str] | None, *, exclude: frozenset[str] = frozenset()) -> list[str]:
     """Return the explicit "load the stack + overlay skills BEFORE code" block.
 
     A dispatched builder does not inherit the parent's loaded skills and
@@ -129,7 +134,7 @@ def _stack_skill_load_lines(skills: list[str] | None) -> list[str]:
     coding skill itself, so a code-touching dispatch can never go out with no
     skill-load directive at all.
     """
-    ordered = _stack_overlay_load_names(skills)
+    ordered = _stack_overlay_load_names(skills, exclude=exclude)
     if not ordered:
         return [
             "REQUIRED: before writing code, also load your stack's coding skill via the Skill tool",
@@ -149,7 +154,9 @@ def _stack_skill_load_lines(skills: list[str] | None) -> list[str]:
     return lines
 
 
-def _coding_phase_directive(skills: list[str] | None = None) -> list[str]:
+def _coding_phase_directive(
+    skills: list[str] | None = None, *, stage_exclude: frozenset[str] = frozenset()
+) -> list[str]:
     """Return the forced-load + behavior-preservation + verify directive lines.
 
     Symmetric to ``build_reviewer_dispatch_prompt``: a headless builder loses
@@ -166,7 +173,7 @@ def _coding_phase_directive(skills: list[str] | None = None) -> list[str]:
         "Do this FIRST — these carry the design-first and TDD disciplines a dispatched builder",
         "does not auto-load.",
         "",
-        *_stack_skill_load_lines(skills),
+        *_stack_skill_load_lines(skills, exclude=stage_exclude),
         "BEHAVIOR PRESERVATION (non-negotiable): When you rewrite or REPLACE existing code, first",
         "enumerate every behavior/case the old code handled — especially safety/privacy/leak-gate",
         "coverage and the regression tests that pin it — and preserve each, or STOP and request input.",
@@ -236,13 +243,14 @@ def build_task_prompt(task: Task, *, skills: list[str] | None = None) -> str:
     )
 
     if normalize_phase(task.phase) == "coding":
+        stage_exclude = frozenset(_explicit_load_name(s) for s in stage_skills_present(task, skills or []))
         lines.extend(
             (
                 "",
                 "PHASE: coding",
                 *head_state_brief_lines(task),
                 *declared_seams_brief_lines(task),
-                *_coding_phase_directive(skills),
+                *_coding_phase_directive(skills, stage_exclude=stage_exclude),
             )
         )
 
@@ -403,13 +411,17 @@ def _shipping_phase_lines() -> tuple[str, ...]:
     )
 
 
-def _phase_specific_lines(task: Task, skills: list[str]) -> tuple[str, ...]:
+def _phase_specific_lines(
+    task: Task, skills: list[str], *, stage_exclude: frozenset[str] = frozenset()
+) -> tuple[str, ...]:
     """The per-phase trailing block for ``build_system_context``, or ``()``.
 
     Dispatches on the canonical phase token. coding/shipping carry their
     existing directives; planning/reviewing additionally surface an opted-in
     fan-out directive (default-OFF). One ``(role, phase)`` pair maps to one
-    block — they are mutually exclusive on the canonical phase.
+    block — they are mutually exclusive on the canonical phase. *stage_exclude*
+    keeps the phase's stage skills out of the coding force-load block (they are
+    embedded in full instead).
     """
     phase = normalize_phase(task.phase)
     if phase == "coding":
@@ -417,7 +429,7 @@ def _phase_specific_lines(task: Task, skills: list[str]) -> tuple[str, ...]:
             "",
             "PHASE: coding — builder dispatch contract",
             *head_state_brief_lines(task),
-            *_coding_phase_directive(skills),
+            *_coding_phase_directive(skills, stage_exclude=stage_exclude),
         )
     if phase == "planning":
         return _planning_phase_lines(task)
@@ -447,9 +459,14 @@ def build_system_context(task: Task, *, skills: list[str], lifecycle_skill: str 
     if parent_summary:
         lines.extend(("", "# Prior Task Result", "", parent_summary))
 
+    stage_present = stage_skills_present(task, skills)
+    stage_exclude = frozenset(_explicit_load_name(s) for s in stage_present)
+
     if skills:
         if lifecycle_skill:
-            primary_skills = {lifecycle_skill}
+            # Stage skills embed IN FULL — a no-Skill-tool maker cannot load them
+            # by reference, so they are primary alongside the lifecycle skill.
+            primary_skills = {lifecycle_skill, *stage_present}
             explicit_load_skills: set[str] | None = None
             suppress_names: set[str] | None = None
             phase = normalize_phase(task.phase)
@@ -462,7 +479,8 @@ def build_system_context(task: Task, *, skills: list[str], lifecycle_skill: str 
                 primary_skills |= _CODING_PHASE_ALWAYS_FULL
                 # The directive force-loads the stack + overlay skills (#1368);
                 # drop them from the ignorable summary so it cannot contradict it.
-                suppress_names = set(_stack_overlay_load_names(skills))
+                # Stage skills are primary/full-embed, so excluded from the block.
+                suppress_names = set(_stack_overlay_load_names(skills, exclude=stage_exclude))
             skill_content = _read_skill_contents_scoped(
                 skills,
                 primary_skills=primary_skills,
@@ -473,8 +491,10 @@ def build_system_context(task: Task, *, skills: list[str], lifecycle_skill: str 
             skill_content = _read_skill_contents(skills)
         if skill_content:
             lines.extend(("", "# Loaded Skills", "", skill_content))
+            if stage_present:
+                lines.extend(("", stage_precedence_line(stage_present)))
 
-    lines.extend(_phase_specific_lines(task, skills))
+    lines.extend(_phase_specific_lines(task, skills, stage_exclude=stage_exclude))
 
     lines.extend(
         (
