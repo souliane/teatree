@@ -8,9 +8,13 @@ and defines the trajectory-carrying exceptions (:class:`TerminalResultError`,
 :class:`SuccessMislabelResultError`) the runner raises mid-stream and grades.
 """
 
+import dataclasses
 import re
+from enum import Enum
 
 from claude_agent_sdk import Message
+
+from teatree.llm.anthropic_limits import LimitCause, classify_limit, window_horizon
 
 BUDGET_EXCEEDED_REASON = "budget_exceeded"
 MAX_TURNS_REASON = "max_turns"
@@ -73,6 +77,95 @@ def is_success_result_error(message: str) -> bool:
     ``result`` event is already in the captured messages).
     """
     return _SUCCESS_RESULT_MARKER in message
+
+
+class ThrottleKind(Enum):
+    """The retry disposition a transient throttle demands.
+
+    ``TRANSIENT`` clears within minutes (a 429, an overloaded 529, a dropped
+    stream, a generic under-load exit-1) and is ridden out with fast exponential
+    backoff. ``SUSTAINED`` is a rolling subscription-window cap that needs a
+    (bounded) window wait before the token frees up.
+    """
+
+    TRANSIENT = "transient"
+    SUSTAINED = "sustained"
+
+
+@dataclasses.dataclass(frozen=True)
+class ThrottleSignal:
+    """A throttle graded from a raw SDK error message: its kind, cause, and wait.
+
+    ``cause`` is the classified :class:`~teatree.llm.anthropic_limits.LimitCause`
+    when a limit phrase matched, else ``None`` for a generic transient drop.
+    ``wait_seconds`` carries the SUSTAINED window horizon (the caller clamps it to
+    a bounded cap); it is ``None`` for a TRANSIENT signal, which uses the caller's
+    exponential backoff instead.
+    """
+
+    kind: ThrottleKind
+    cause: LimitCause | None
+    wait_seconds: float | None
+
+
+#: Substrings marking a TRANSIENT throttle/transport signal the phrase taxonomy
+#: does not carry. Kept DELIBERATELY specific: an OPAQUE SDK error result with no
+#: recognizable throttle signature is NOT laundered into a retry — it re-raises as
+#: a genuine crash (the "preserve the genuine-crash red" contract). ``overloaded``
+#: is HTTP 529; ``too many requests`` / ``rate_limit_error`` are the 429 status
+#: text and API error type; the rest are dropped-stream signatures under load.
+_TRANSIENT_INFRA_MARKERS: tuple[str, ...] = (
+    "overloaded",
+    "too many requests",
+    "rate_limit_error",
+    "connection error",
+    "connection reset",
+    "connection aborted",
+    "server disconnected",
+    "peer closed connection",
+    "incomplete read",
+    "stream error",
+    "read timed out",
+)
+
+#: Limit causes that are NEVER a retriable throttle: a $0 metered key has no
+#: time-based recovery (fail loud), and a 7-day weekly cap is never worth waiting
+#: out inside a single run (surface loud). The remaining causes ARE retriable —
+#: RATE_LIMIT as TRANSIENT, SUBSCRIPTION_SESSION as a bounded SUSTAINED window wait.
+_NEVER_RETRY_CAUSES: frozenset[LimitCause] = frozenset({LimitCause.API_CREDIT, LimitCause.SUBSCRIPTION_WEEKLY})
+
+
+def _throttle_from_limit(cause: LimitCause) -> ThrottleSignal | None:
+    """Map a matched limit *cause* to its retry disposition, or ``None`` when never-retriable."""
+    if cause in _NEVER_RETRY_CAUSES:
+        return None
+    if cause is LimitCause.SUBSCRIPTION_SESSION:
+        horizon = window_horizon(cause)
+        wait = horizon.total_seconds() if horizon is not None else None
+        return ThrottleSignal(kind=ThrottleKind.SUSTAINED, cause=cause, wait_seconds=wait)
+    return ThrottleSignal(kind=ThrottleKind.TRANSIENT, cause=cause, wait_seconds=None)
+
+
+def classify_transient_throttle(message: str) -> ThrottleSignal | None:
+    """Grade an SDK error *message* into a retry disposition, or ``None`` if not a throttle.
+
+    Returns a :class:`ThrottleSignal` for a retriable throttle and ``None`` for
+    everything the runner must NOT ride out: a genuine behavioral cap
+    (budget/max-turns — the anti-cheat boundary), a credit exhaustion or weekly
+    cap (surface loud), a mislabeled success, or a real crash. A matched limit
+    phrase drives the disposition (RATE_LIMIT -> TRANSIENT, SUBSCRIPTION_SESSION ->
+    SUSTAINED); otherwise a transient infra marker (:data:`_TRANSIENT_INFRA_MARKERS`)
+    grades an unclassified transport/overload signal as TRANSIENT.
+    """
+    if is_success_result_error(message) or classify_terminal_error(message) is not None:
+        return None
+    limit = classify_limit(message)
+    if limit is not None:
+        return _throttle_from_limit(limit.cause)
+    haystack = message.casefold()
+    if any(marker in haystack for marker in _TRANSIENT_INFRA_MARKERS):
+        return ThrottleSignal(kind=ThrottleKind.TRANSIENT, cause=None, wait_seconds=None)
+    return None
 
 
 def budget_amount_from_message(message: str) -> float | None:

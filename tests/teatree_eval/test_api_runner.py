@@ -48,6 +48,7 @@ from teatree.eval.models import (
 )
 from teatree.eval.production_hooks import t3_plugin, teatree_root
 from teatree.eval.system_prompt_file import resolve_system_prompt, spill_system_prompt
+from teatree.eval.throttle_retry import THROTTLE_WINDOW_WAIT_MAX_SECONDS
 from teatree.eval.toolset import (
     DELEGATION_SUBAGENT_NAME,
     KNOWN_BUILTIN_TOOLS,
@@ -461,7 +462,9 @@ class TestApiInProcessRunnerCapture:
             patch("teatree.eval.api_runner.query", _slow_query),
             patch("teatree.eval.api_runner.WATCHDOG_SECONDS", 0.01),
         ):
-            run = ApiInProcessRunner(ApiRunnerParams(workspace=tmp_path)).run(spec)
+            # throttle_max_attempts=0 disables the transient-throttle retry so a
+            # persistently-timing-out query surfaces the timeout run immediately.
+            run = ApiInProcessRunner(ApiRunnerParams(workspace=tmp_path, throttle_max_attempts=0)).run(spec)
         assert run.terminal_reason == "timeout"
         assert run.is_error is True
 
@@ -2349,3 +2352,174 @@ class TestApiRunnerParams:
         params = ApiRunnerParams()
         with pytest.raises(dataclasses.FrozenInstanceError):
             params.max_turns_override = 3  # type: ignore[misc]
+
+
+def _scripted_query(script: list[BaseException | list[Any]]):
+    """A ``query`` stub that walks *script* on successive calls, one per SDK attempt.
+
+    Each entry consumed on an attempt is either a ``BaseException`` (raised BEFORE
+    any message yields, exactly as the SDK surfaces an error-result mid-stream) or a
+    list of messages to yield. The last entry repeats if the runner attempts more
+    times than the script is long. ``calls["n"]`` records how many attempts the SDK
+    was actually driven for — the observable that proves a retry did (or did NOT)
+    happen.
+    """
+    calls: dict[str, int] = {"n": 0}
+
+    async def _query(*, prompt: str, options: Any = None, **_: Any) -> AsyncIterator[Any]:
+        await asyncio.sleep(0)
+        index = min(calls["n"], len(script) - 1)
+        calls["n"] += 1
+        step = script[index]
+        if isinstance(step, BaseException):
+            raise step
+        for message in step:
+            yield message
+
+    return _query, calls
+
+
+class TestThrottleRetry:
+    """Layer 2: bounded transient-throttle retry around the SDK drive.
+
+    A parallel metered suite shares ONE OAuth token, so a rate-limit burst turns
+    into false reds unless a run rides it out. These pin that a TRANSIENT/SUSTAINED
+    throttle is retried (with backoff) while a GENUINE cap, credit exhaustion, or
+    weekly cap is NEVER retried — the anti-cheat boundary that keeps a real
+    behavioral fail from being laundered into a passing retry.
+    """
+
+    def _run(
+        self,
+        spec: EvalSpec,
+        script: list[BaseException | list[Any]],
+        **params: Any,
+    ) -> tuple[Any, dict[str, int], list[float]]:
+        query, calls = _scripted_query(script)
+        sleeps: list[float] = []
+        runner_params = ApiRunnerParams(
+            workspace=params.pop("workspace", None),
+            sleep=sleeps.append,
+            rand=lambda: 0.0,
+            **params,
+        )
+        with (
+            patch("teatree.eval.api_runner.shutil.which", return_value="/usr/local/bin/claude"),
+            patch("teatree.eval.api_runner.query", query),
+        ):
+            run = ApiInProcessRunner(runner_params).run(spec)
+        return run, calls, sleeps
+
+    def test_rate_limit_is_retried_then_succeeds(self, tmp_path: Path) -> None:
+        spec = _spec(tmp_path)
+        throttle = RuntimeError("Claude Code returned an error result: rate limit exceeded (429)")
+        run, calls, sleeps = self._run(spec, [throttle, [_result()]], workspace=tmp_path)
+        assert calls["n"] == 2  # one retry after the throttle, then success
+        assert run.is_error is False
+        assert run.throttle_retries == 1
+        assert sleeps == [pytest.approx(1.0)]  # first backoff = base 1s, jitter pinned to 0
+
+    def test_repeated_throttles_back_off_exponentially(self, tmp_path: Path) -> None:
+        spec = _spec(tmp_path)
+        throttle = RuntimeError("Overloaded")
+        run, calls, sleeps = self._run(spec, [throttle, throttle, throttle, [_result()]], workspace=tmp_path)
+        assert calls["n"] == 4
+        assert run.throttle_retries == 3
+        assert sleeps == [pytest.approx(1.0), pytest.approx(2.0), pytest.approx(4.0)]
+
+    def test_genuine_max_turns_cap_is_not_retried(self, tmp_path: Path) -> None:
+        # THE anti-cheat test. The script would "succeed" on a 2nd attempt, so if
+        # the runner WRONGLY retried the cap the run would flip to a false pass.
+        # It must instead surface the cap on the FIRST attempt, ungraded by retry.
+        spec = _spec(tmp_path)
+        cap = RuntimeError("Claude Code returned an error result: Reached maximum number of turns (3)")
+        run, calls, sleeps = self._run(spec, [cap, [_result()]], workspace=tmp_path)
+        assert calls["n"] == 1  # NOT retried — the cap surfaces immediately
+        assert run.terminal_reason == "max_turns"
+        assert run.is_error is True
+        assert run.throttle_retries == 0
+        assert sleeps == []
+
+    def test_budget_cap_is_not_retried(self, tmp_path: Path) -> None:
+        spec = _spec(tmp_path)
+        cap = RuntimeError("Claude Code returned an error result: Reached maximum budget ($0.1)")
+        run, calls, sleeps = self._run(spec, [cap, [_result()]], workspace=tmp_path)
+        assert calls["n"] == 1
+        assert run.terminal_reason == "budget_exceeded"
+        assert run.is_error is True
+        assert sleeps == []
+
+    def test_api_credit_exhaustion_fails_loud_not_retried(self, tmp_path: Path) -> None:
+        spec = _spec(tmp_path)
+        credit = RuntimeError("credit balance is too low")
+        query, calls = _scripted_query([credit, [_result()]])
+        sleeps: list[float] = []
+        runner_params = ApiRunnerParams(workspace=tmp_path, sleep=sleeps.append, rand=lambda: 0.0)
+        with (
+            patch("teatree.eval.api_runner.shutil.which", return_value="/usr/local/bin/claude"),
+            patch("teatree.eval.api_runner.query", query),
+            pytest.raises(CreditExhaustedError),
+        ):
+            ApiInProcessRunner(runner_params).run(spec)
+        assert calls["n"] == 1  # a $0 key is terminal for the suite — never retried
+        assert sleeps == []
+
+    def test_weekly_limit_fails_loud_not_retried(self, tmp_path: Path) -> None:
+        spec = _spec(tmp_path)
+        weekly = RuntimeError("Claude Code returned an error result: weekly limit reached")
+        query, calls = _scripted_query([weekly, [_result()]])
+        sleeps: list[float] = []
+        runner_params = ApiRunnerParams(workspace=tmp_path, sleep=sleeps.append, rand=lambda: 0.0)
+        with (
+            patch("teatree.eval.api_runner.shutil.which", return_value="/usr/local/bin/claude"),
+            patch("teatree.eval.api_runner.query", query),
+            pytest.raises(RuntimeError, match="weekly limit"),
+        ):
+            ApiInProcessRunner(runner_params).run(spec)
+        assert calls["n"] == 1  # a 7-day wait is never right inside a run
+        assert sleeps == []
+
+    def test_session_window_wait_is_bounded_by_the_cap(self, tmp_path: Path) -> None:
+        spec = _spec(tmp_path)
+        session = RuntimeError("Claude Code returned an error result: session limit reached")
+        run, calls, sleeps = self._run(spec, [session, [_result()]], workspace=tmp_path)
+        assert calls["n"] == 2
+        assert run.is_error is False
+        # The ~5h session horizon is clamped to the bounded window cap so a real
+        # session cap surfaces loud after a finite wait, never hangs forever.
+        assert sleeps == [pytest.approx(THROTTLE_WINDOW_WAIT_MAX_SECONDS)]
+
+    def test_empty_trajectory_timeout_is_retried(self, tmp_path: Path) -> None:
+        # The infra-hang signature: an empty-trajectory watchdog timeout is ridden
+        # out like any transient throttle, not immediately red'd.
+        spec = _spec(tmp_path)
+        run, calls, sleeps = self._run(spec, [TimeoutError(), [_result()]], workspace=tmp_path)
+        assert calls["n"] == 2
+        assert run.is_error is False
+        assert run.throttle_retries == 1
+        assert sleeps == [pytest.approx(1.0)]
+
+    def test_genuine_crash_re_raises_not_retried(self, tmp_path: Path) -> None:
+        spec = _spec(tmp_path)
+        crash = RuntimeError("TypeError: 'NoneType' object is not subscriptable")
+        query, calls = _scripted_query([crash, [_result()]])
+        sleeps: list[float] = []
+        runner_params = ApiRunnerParams(workspace=tmp_path, sleep=sleeps.append, rand=lambda: 0.0)
+        with (
+            patch("teatree.eval.api_runner.shutil.which", return_value="/usr/local/bin/claude"),
+            patch("teatree.eval.api_runner.query", query),
+            pytest.raises(RuntimeError, match="NoneType"),
+        ):
+            ApiInProcessRunner(runner_params).run(spec)
+        assert calls["n"] == 1  # a real crash preserves the genuine-crash red
+        assert sleeps == []
+
+    def test_exhausted_transient_throttle_surfaces_loud(self, tmp_path: Path) -> None:
+        spec = _spec(tmp_path)
+        throttle = RuntimeError("Overloaded")
+        run, calls, sleeps = self._run(spec, [throttle], workspace=tmp_path, throttle_max_attempts=2)
+        assert calls["n"] == 3  # initial attempt + 2 bounded retries, all throttled
+        assert run.is_error is True
+        assert run.throttle_retries == 2
+        assert "throttled" in run.terminal_reason
+        assert sleeps == [pytest.approx(1.0), pytest.approx(2.0)]

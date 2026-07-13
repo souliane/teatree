@@ -432,3 +432,9 @@ class EvalRun:
     #: carry no hook stream). Additive: the report reads it to annotate a
     #: gate-assisted pass; grading never consults it.
     gate_events: tuple[GateEvent, ...] = ()
+    #: Count of transient-throttle retries this run rode out before it completed
+    #: (0 on a run that hit no rate limit). The AIMD concurrency governor
+    #: (``parallel.py``) reads it as the throttle signal: ``>0`` multiplicatively
+    #: shrinks the shared permit count, ``0``-and-clean grows it back — so a
+    #: throttled suite backs its parallel load off the single shared OAuth token.
+    throttle_retries: int = 0

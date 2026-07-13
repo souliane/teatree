@@ -7,7 +7,7 @@ from pathlib import Path
 import pytest
 
 from teatree.eval.models import EvalRun, EvalSpec, Matcher
-from teatree.eval.parallel import DEFAULT_PARALLEL, run_specs
+from teatree.eval.parallel import DEFAULT_PARALLEL, ConcurrencyGovernor, run_specs
 from teatree.llm.anthropic_limits import CreditExhaustedError
 
 
@@ -168,3 +168,90 @@ class TestCreditExhaustedAbortsTheSuite:
             run_specs(runner, specs, parallel=4)
         # Pending scenarios were cancelled, so NOT all eight ran on the dead key.
         assert runner.ran < len(specs)
+
+
+def _completed(name: str, *, throttle_retries: int = 0, is_error: bool = False) -> EvalRun:
+    return EvalRun(
+        spec_name=name,
+        tool_calls=(),
+        text_blocks=(),
+        terminal_reason="throttled" if is_error else "success",
+        is_error=is_error,
+        raw_stdout="",
+        raw_stderr="",
+        throttle_retries=throttle_retries,
+    )
+
+
+class TestConcurrencyGovernor:
+    """Layer 3: an AIMD governor backs the shared permit count off a throttle.
+
+    Standard congestion control: a throttle event (a run that rode out one or more
+    Layer-2 retries) multiplicatively HALVES the permit ceiling toward a floor of 1;
+    N consecutive clean completions ADDITIVELY grow it one step back toward the
+    worker count. A cooldown keeps a burst of near-simultaneous throttles from
+    collapsing the ceiling in one step.
+    """
+
+    def test_starts_at_the_worker_count(self) -> None:
+        assert ConcurrencyGovernor(8).limit == 8
+
+    def test_throttle_multiplicatively_halves_toward_a_floor_of_one(self) -> None:
+        gov = ConcurrencyGovernor(8, cooldown=0.0)
+        gov.record_completion(_completed("a", throttle_retries=1))
+        assert gov.limit == 4
+        gov.record_completion(_completed("b", throttle_retries=2))
+        assert gov.limit == 2
+        gov.record_completion(_completed("c", throttle_retries=1))
+        assert gov.limit == 1
+        gov.record_completion(_completed("d", throttle_retries=1))
+        assert gov.limit == 1  # floored at 1, never 0
+
+    def test_clean_completions_additively_grow_back_toward_workers(self) -> None:
+        gov = ConcurrencyGovernor(8, cooldown=0.0, grow_after=3)
+        gov.record_completion(_completed("a", throttle_retries=1))  # 8 -> 4
+        assert gov.limit == 4
+        for i in range(2):
+            gov.record_completion(_completed(f"c{i}"))
+        assert gov.limit == 4  # not yet N clean completions
+        gov.record_completion(_completed("c2"))  # third clean -> +1
+        assert gov.limit == 5
+
+    def test_a_clean_run_never_grows_past_the_worker_count(self) -> None:
+        gov = ConcurrencyGovernor(2, grow_after=1)
+        for i in range(5):
+            gov.record_completion(_completed(f"c{i}"))
+        assert gov.limit == 2
+
+    def test_cooldown_suppresses_a_second_immediate_shrink(self) -> None:
+        clock = {"t": 0.0}
+        gov = ConcurrencyGovernor(8, cooldown=5.0, clock=lambda: clock["t"])
+        gov.record_completion(_completed("a", throttle_retries=1))  # 8 -> 4
+        assert gov.limit == 4
+        gov.record_completion(_completed("b", throttle_retries=1))  # within cooldown -> ignored
+        assert gov.limit == 4
+        clock["t"] = 10.0
+        gov.record_completion(_completed("c", throttle_retries=1))  # cooldown elapsed -> 4 -> 2
+        assert gov.limit == 2
+
+    def test_a_non_throttle_error_neither_shrinks_nor_grows(self) -> None:
+        gov = ConcurrencyGovernor(8, cooldown=0.0, grow_after=1)
+        gov.record_completion(_completed("a", throttle_retries=1))  # 8 -> 4
+        assert gov.limit == 4
+        gov.record_completion(_completed("crash", is_error=True))  # a genuine crash is neutral
+        assert gov.limit == 4
+
+
+class TestRunSpecsGovernorIntegration:
+    def test_run_specs_drains_every_spec_even_when_every_run_throttles(self, tmp_path: Path) -> None:
+        # Every run reports a throttle, so the governor shrinks toward its floor.
+        # The floor of 1 keeps progress, so all specs still complete in order — the
+        # governed path must never deadlock nor drop a spec.
+        specs = [_spec(tmp_path, name=f"s{i}") for i in range(6)]
+
+        class _AlwaysThrottled:
+            def run(self, spec: EvalSpec) -> EvalRun:
+                return _completed(spec.name, throttle_retries=1)
+
+        runs = run_specs(_AlwaysThrottled(), specs, parallel=4)
+        assert [r.spec_name for r in runs] == [s.name for s in specs]
