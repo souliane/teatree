@@ -11,6 +11,7 @@ from collections.abc import Callable
 import pytest
 
 from teatree.eval.api_errors import SuccessMislabelResultError, TerminalResultError
+from teatree.eval.ephemeral_checkout import EphemeralCheckoutError
 from teatree.eval.models import EvalRun
 from teatree.eval.throttle_retry import (
     THROTTLE_RETRY_MAX_ATTEMPTS,
@@ -20,6 +21,20 @@ from teatree.eval.throttle_retry import (
     resolve_throttle_retries,
 )
 from teatree.llm.anthropic_limits import CreditExhaustedError
+
+#: The verbatim string the SDK message reader surfaces when the subprocess CLI
+#: dies mid-stream with no ``result`` event (the "Fatal error in message reader"
+#: transport crash that aborted a whole eval run) — no trajectory, safe to re-run.
+_TRANSPORT_CRASH_MESSAGE = (
+    "Command failed with exit code 1 (exit code: 1)\nError output: Check stderr output for details"
+)
+#: The verbatim message an `EphemeralCheckoutError` carries when a host RAM spike
+#: makes the per-run ephemeral-checkout `git clone` fail — the second transient shape
+#: that aborted a whole eval run before this fix. No trajectory, safe to re-run.
+_EPHEMERAL_GIT_CLONE_MESSAGE = (
+    "cannot provision an isolated ephemeral checkout at /tmp/t3-eval-ephemeral-checkout-x/teatree: "
+    "git clone failed. The sub-agent-spawning scenario REFUSES to run on the real clone."
+)
 
 
 def _run(*, throttle_retries: int = 0, is_error: bool = False, terminal_reason: str = "success") -> EvalRun:
@@ -78,6 +93,28 @@ class TestThrottleRetryDriver:
         assert calls["n"] == 4
         assert run.throttle_retries == 3
         assert sleeps == [pytest.approx(1.0), pytest.approx(2.0), pytest.approx(4.0)]
+
+    def test_transport_crash_is_retried_then_success(self) -> None:
+        # A mid-stream SDK transport crash aborted the whole 2.5h run before this
+        # fix; it carries NO trajectory, so it is ridden out like any transient
+        # throttle and the retried attempt succeeds.
+        drive, calls = _scripted_drive([RuntimeError(_TRANSPORT_CRASH_MESSAGE), []])
+        sleeps: list[float] = []
+        run = _driver(sleeps).run(drive, _handlers())
+        assert calls["n"] == 2
+        assert run.throttle_retries == 1
+        assert sleeps == [pytest.approx(1.0)]
+
+    def test_ephemeral_checkout_transient_is_retried_then_success(self) -> None:
+        # A per-run ephemeral-checkout provision failure (a RAM-spike git-clone abort)
+        # carries NO trajectory; like any transient it is ridden out and the retried
+        # attempt succeeds — one flaky clone no longer kills the whole suite.
+        drive, calls = _scripted_drive([EphemeralCheckoutError(_EPHEMERAL_GIT_CLONE_MESSAGE), []])
+        sleeps: list[float] = []
+        run = _driver(sleeps).run(drive, _handlers())
+        assert calls["n"] == 2
+        assert run.throttle_retries == 1
+        assert sleeps == [pytest.approx(1.0)]
 
     def test_genuine_cap_is_graded_not_retried(self) -> None:
         cap = TerminalResultError(terminal_reason="max_turns", messages=[], cause=RuntimeError("max turns"))
