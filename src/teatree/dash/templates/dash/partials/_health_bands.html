@@ -3,9 +3,11 @@
 {% endif %}
 
 <section class="band">
-  <h2>Verdict</h2>
   {% if health.verdict.error %}<div class="banner-red">{{ health.verdict.error }}</div>{% endif %}
-  <p class="verdict {{ health.verdict.status }}">{{ health.verdict.status }}</p>
+  <div class="verdict-lead">
+    <span class="verdict {{ health.verdict.status }}">{{ health.verdict.status }}</span>
+    <span class="verdict-count">{{ health.verdict.open_issues|length }} open issue{{ health.verdict.open_issues|length|pluralize }}</span>
+  </div>
   {% if health.verdict.open_issues %}
     <table class="dash">
       <thead><tr><th>severity</th><th>summary</th><th>evidence</th></tr></thead>
@@ -20,7 +22,7 @@
       </tbody>
     </table>
   {% else %}
-    <p class="card-dwell">No open issues.</p>
+    <p class="muted">Everything the readers check is passing.</p>
   {% endif %}
 </section>
 
@@ -30,14 +32,14 @@
   {% if health.loops.worker_dead %}<div class="banner-red">Worker appears dead — every infra slot is unclaimed.</div>{% endif %}
   {% if health.loops.report %}
   <table class="dash">
-    <thead><tr><th>loop</th><th>enabled</th><th>held</th><th>cadence (s)</th><th>next due</th></tr></thead>
+    <thead><tr><th>loop</th><th>enabled</th><th>held</th><th class="num">cadence (s)</th><th>next due</th></tr></thead>
     <tbody>
       {% for slot in health.loops.report.infra_slots %}
         <tr>
           <td>{{ slot.name }}</td>
           <td>{{ slot.enabled|yesno:"yes,no" }}</td>
           <td class="{% if slot.held %}held{% endif %}">{{ slot.held|yesno:"held,–" }}</td>
-          <td>{{ slot.cadence_seconds }}</td>
+          <td class="num">{{ slot.cadence_seconds }}</td>
           <td>{{ slot.next_fire_at|default:"–" }}</td>
         </tr>
       {% endfor %}
@@ -46,7 +48,7 @@
           <td>{{ loop.name }}</td>
           <td>{{ loop.enabled|yesno:"yes,no" }}</td>
           <td class="{% if loop.held %}held{% endif %}">{{ loop.held|yesno:"held,–" }}</td>
-          <td>{{ loop.cadence_seconds }}</td>
+          <td class="num">{{ loop.cadence_seconds }}</td>
           <td>{{ loop.next_fire_at|default:"–" }}</td>
         </tr>
       {% endfor %}
@@ -59,9 +61,9 @@
   <h2>Capacity</h2>
   {% if health.capacity.error %}<div class="banner-red">{{ health.capacity.error }}</div>{% endif %}
   {% with cap=health.capacity %}
-    <p>Queue depth — headless {{ cap.queue.headless }} · interactive {{ cap.queue.interactive }}</p>
+    <p>Queue depth — headless <span class="mono">{{ cap.queue.headless }}</span> · interactive <span class="mono">{{ cap.queue.interactive }}</span></p>
     {% if cap.spend %}
-      <p>Spend — {{ cap.spend.chip }} (${{ cap.spend.cycle_to_date_usd }} of ${{ cap.spend.credit_usd }}, projected ${{ cap.spend.projected_month_end_usd }})</p>
+      <p>Spend — {{ cap.spend.chip }} (<span class="mono">${{ cap.spend.cycle_to_date_usd }}</span> of <span class="mono">${{ cap.spend.credit_usd }}</span>, projected <span class="mono">${{ cap.spend.projected_month_end_usd }}</span>)</p>
     {% endif %}
     {% if cap.parked_lanes %}
       <h3>Parked lanes</h3>
@@ -77,13 +79,13 @@
     {% if cap.accounts %}
       <h3>Account utilization</h3>
       <table class="dash">
-        <thead><tr><th>account</th><th>5h</th><th>7d</th><th>exhausted</th><th>reset</th></tr></thead>
+        <thead><tr><th>account</th><th class="num">5h</th><th class="num">7d</th><th>exhausted</th><th>reset</th></tr></thead>
         <tbody>
           {% for acct in cap.accounts %}
             <tr class="{% if acct.is_exhausted %}stalled{% endif %}">
               <td>{{ acct.pass_path }}</td>
-              <td>{{ acct.utilization_5h }}</td>
-              <td>{{ acct.utilization_7d }}</td>
+              <td class="num">{{ acct.utilization_5h }}</td>
+              <td class="num">{{ acct.utilization_7d }}</td>
               <td>{{ acct.is_exhausted|yesno:"yes,no" }}</td>
               <td>{{ acct.earliest_reset|default:"—" }}</td>
             </tr>

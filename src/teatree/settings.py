@@ -5,6 +5,7 @@ Auto-discovers overlay Django apps via entry points and adds them to INSTALLED_A
 """
 
 import os
+from pathlib import Path
 
 from teatree.config import default_logging
 from teatree.config.setting_parsers import _parse_env_bool_default_on
@@ -96,10 +97,17 @@ MIDDLEWARE = [
 
 ROOT_URLCONF = "teatree.urls"
 
+# Project-level templates dir, searched before any app's — where the /admin/
+# re-skin lives (``admin/base_site.html``). A DIRS entry (not an app-dir override)
+# is the robust way to win over ``django.contrib.admin``'s own base_site, which is
+# listed earlier in INSTALLED_APPS. Mirrored in ``tests/django_settings.py`` so the
+# admin snapshot renders identically under pytest and the generator hook.
+_PROJECT_TEMPLATES = Path(__file__).resolve().parent / "templates"
+
 TEMPLATES = [
     {
         "BACKEND": "django.template.backends.django.DjangoTemplates",
-        "DIRS": [],
+        "DIRS": [str(_PROJECT_TEMPLATES)],
         "APP_DIRS": True,
         "OPTIONS": {
             "context_processors": [

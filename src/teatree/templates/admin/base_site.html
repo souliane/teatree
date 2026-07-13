@@ -1,0 +1,26 @@
+{% extends "admin/base.html" %}
+{% load static %}
+
+{% comment %}
+  TeaTree /admin/ re-skin. Stock admin structure is kept — the ONLY change is
+  extrastyle, which layers the shared design tokens + an admin-var mapping over
+  Django's defaults so /admin/ and /dash/ read as one product. Django's documented
+  admin CSS custom properties are remapped in dash/css/admin-theme.css; no template
+  surgery beyond this file (don't fight the framework).
+{% endcomment %}
+
+{% block extrastyle %}{{ block.super }}
+  <link rel="stylesheet" href="{% static 'dash/css/tokens.css' %}">
+  <link rel="stylesheet" href="{% static 'dash/css/admin-theme.css' %}">
+{% endblock %}
+
+{% block title %}{% if subtitle %}{{ subtitle }} | {% endif %}{{ title }} | {{ site_title|default:_('Django site admin') }}{% endblock %}
+
+{% block branding %}
+<div id="site-name"><a href="{% url 'admin:index' %}">{{ site_header|default:_('Django administration') }}</a></div>
+{% if user.is_anonymous %}
+  {% include "admin/color_theme_toggle.html" %}
+{% endif %}
+{% endblock %}
+
+{% block nav-global %}{% endblock %}

@@ -1,24 +1,27 @@
 <div class="drawer">
-  <h2>#{{ detail.number }} — {{ detail.short_description|default:"(no description)" }}</h2>
-  <p>
-    <span class="chip">{{ detail.state_label }}</span>
+  <div class="drawer-head">
+    <h2><span class="mono">#{{ detail.number }}</span> {{ detail.short_description|default:"(no description)" }}</h2>
+    <button type="button" class="drawer-close" data-drawer-close aria-label="Close ticket detail">×</button>
+  </div>
+  <div class="card-meta">
+    <span class="chip state" data-group="{{ detail.state_group }}">{{ detail.state_label }}</span>
     {% if detail.overlay %}<span class="chip">{{ detail.overlay }}</span>{% endif %}
     <span class="chip role">{{ detail.role }}</span>
     <span class="chip">{{ detail.kind }}</span>
     {% if detail.expedited %}<span class="chip expedited">expedited</span>{% endif %}
     {% if detail.issue_url %}<a class="chip" href="{{ detail.issue_url }}" target="_blank" rel="noopener">issue</a>{% endif %}
-  </p>
+  </div>
 
   <h3>Actions</h3>
   {% if detail.available_transitions %}
-    <form method="post" action="{% url 'dash:ticket_transition' detail.ticket_id %}">
+    <form class="toolbar" method="post" action="{% url 'dash:ticket_transition' detail.ticket_id %}">
       {% csrf_token %}
       {% for name in detail.available_transitions %}
-        <button class="dash-btn" name="action" value="{{ name }}">{{ name }}</button>
+        <button class="dash-btn primary" name="action" value="{{ name }}">{{ name }}</button>
       {% endfor %}
     </form>
   {% else %}
-    <p class="card-dwell">No legal transitions from {{ detail.state }}.</p>
+    <p class="muted">No legal transitions from {{ detail.state }}.</p>
   {% endif %}
 
   <h3>Lifecycle</h3>
@@ -29,38 +32,46 @@
     <thead><tr><th>when</th><th>from</th><th>to</th><th>by</th><th>session</th></tr></thead>
     <tbody>
       {% for t in detail.transitions %}
-        <tr><td>{{ t.created_at }}</td><td>{{ t.from_state }}</td><td>{{ t.to_state }}</td><td>{{ t.triggered_by }}</td><td>{{ t.session_label }}</td></tr>
+        <tr>
+          <td>{{ t.created_at }}</td>
+          <td><span class="chip state" data-group="{{ t.from_group }}">{{ t.from_state }}</span></td>
+          <td><span class="chip state" data-group="{{ t.to_group }}">{{ t.to_state }}</span></td>
+          <td>{{ t.triggered_by }}</td>
+          <td>{{ t.session_label }}</td>
+        </tr>
       {% empty %}
-        <tr><td colspan="5" class="card-dwell">No transitions recorded.</td></tr>
+        <tr class="empty-row"><td colspan="5">No transitions recorded.</td></tr>
       {% endfor %}
     </tbody>
   </table>
 
   {% if detail.pr_chips %}
     <h3>Pull requests</h3>
-    {% for pr in detail.pr_chips %}<a class="chip" href="{{ pr.url }}" target="_blank" rel="noopener">{{ pr.repo }}!{{ pr.iid }} · {{ pr.state }}</a>{% endfor %}
+    <div class="card-meta">
+      {% for pr in detail.pr_chips %}<a class="chip pr" href="{{ pr.url }}" target="_blank" rel="noopener">{{ pr.repo }}!{{ pr.iid }} · {{ pr.state }}</a>{% endfor %}
+    </div>
   {% endif %}
 
   <h3>Tasks</h3>
   <table class="dash">
-    <thead><tr><th>id</th><th>phase</th><th>status</th><th>target</th><th>claimed by</th></tr></thead>
+    <thead><tr><th class="num">id</th><th>phase</th><th>status</th><th>target</th><th>claimed by</th></tr></thead>
     <tbody>
       {% for task in detail.tasks %}
-        <tr><td>{{ task.task_id }}</td><td>{{ task.phase }}</td><td>{{ task.status }}</td><td>{{ task.execution_target }}</td><td>{{ task.claimed_by }}</td></tr>
+        <tr><td class="num">{{ task.task_id }}</td><td>{{ task.phase }}</td><td>{{ task.status }}</td><td>{{ task.execution_target }}</td><td>{{ task.claimed_by }}</td></tr>
       {% empty %}
-        <tr><td colspan="5" class="card-dwell">No tasks.</td></tr>
+        <tr class="empty-row"><td colspan="5">No tasks.</td></tr>
       {% endfor %}
     </tbody>
   </table>
 
   <h3>Sessions</h3>
   <table class="dash">
-    <thead><tr><th>id</th><th>agent</th><th>started</th><th>ended</th></tr></thead>
+    <thead><tr><th class="num">id</th><th>agent</th><th>started</th><th>ended</th></tr></thead>
     <tbody>
       {% for s in detail.sessions %}
-        <tr><td>{{ s.session_id }}</td><td>{{ s.agent_id }}</td><td>{{ s.started_at }}</td><td>{{ s.ended_at|default:"(open)" }}</td></tr>
+        <tr><td class="num">{{ s.session_id }}</td><td>{{ s.agent_id }}</td><td>{{ s.started_at }}</td><td>{{ s.ended_at|default:"(open)" }}</td></tr>
       {% empty %}
-        <tr><td colspan="4" class="card-dwell">No sessions.</td></tr>
+        <tr class="empty-row"><td colspan="4">No sessions.</td></tr>
       {% endfor %}
     </tbody>
   </table>

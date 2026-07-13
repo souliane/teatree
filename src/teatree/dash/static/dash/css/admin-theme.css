@@ -1,0 +1,85 @@
+/* /admin/ re-skin — maps Django's documented admin CSS custom properties onto the
+ * shared TeaTree tokens (tokens.css). The token values already resolve per theme
+ * (system preference or the admin's own data-theme toggle, which shares our
+ * data-theme attribute), so mapping each admin var to a token once covers light
+ * and dark. Selectors match Django's own (html[data-theme] + :root) and load
+ * after base.css, so they win by source order without !important. */
+@import "tokens.css";
+
+html[data-theme="light"],
+html[data-theme="dark"],
+:root {
+  --primary: var(--brand);
+  --secondary: var(--surface);
+  --accent: var(--brand);
+  --primary-fg: var(--ink);
+
+  --body-fg: var(--ink);
+  --body-bg: var(--bg);
+  --body-quiet-color: var(--ink-muted);
+  --body-medium-color: var(--ink-muted);
+  --body-loud-color: var(--ink);
+
+  --header-color: var(--ink);
+  --header-branding-color: var(--brand);
+  --header-bg: var(--surface);
+  --header-link-color: var(--ink-muted);
+
+  --breadcrumbs-fg: var(--ink-muted);
+  --breadcrumbs-link-fg: var(--ink);
+  --breadcrumbs-bg: var(--surface-2);
+
+  --link-fg: var(--brand);
+  --link-hover-color: var(--ink);
+  --link-selected-fg: var(--brand);
+
+  --hairline-color: var(--line);
+  --border-color: var(--line);
+
+  --error-fg: var(--danger);
+
+  --message-success-bg: color-mix(in srgb, var(--ok) 16%, var(--surface));
+  --message-warning-bg: color-mix(in srgb, var(--warn) 16%, var(--surface));
+  --message-error-bg: color-mix(in srgb, var(--danger) 16%, var(--surface));
+  --message-info-bg: color-mix(in srgb, var(--state-building) 16%, var(--surface));
+
+  --darkened-bg: var(--surface);
+  --selected-bg: var(--surface-2);
+  --selected-row: color-mix(in srgb, var(--brand) 18%, var(--surface));
+
+  --button-bg: var(--surface-2);
+  --button-fg: var(--ink);
+  --button-hover-bg: var(--surface);
+  --default-button-bg: var(--surface-2);
+  --default-button-hover-bg: var(--surface);
+  --close-button-bg: var(--surface-2);
+  --close-button-hover-bg: var(--surface);
+  --delete-button-bg: var(--danger);
+  --delete-button-hover-bg: color-mix(in srgb, var(--danger) 80%, black);
+
+  --object-tools-fg: var(--ink);
+  --object-tools-bg: var(--surface-2);
+  --object-tools-hover-bg: var(--surface);
+
+  --font-family-primary: var(--font-ui);
+  --font-family-monospace: var(--font-mono);
+}
+
+/* The default (primary) submit button keeps its emphasis via a brand outline
+ * rather than a filled amber that would risk button-text contrast. */
+.submit-row input.default,
+input[type="submit"].default,
+.button.default {
+  border: 1px solid var(--brand);
+  color: var(--brand);
+  font-weight: 600;
+}
+
+/* Visible keyboard focus, consistent with /dash/. */
+a:focus-visible,
+button:focus-visible,
+input:focus-visible,
+select:focus-visible {
+  outline: 2px solid var(--brand);
+  outline-offset: 2px;
+}
