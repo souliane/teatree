@@ -87,3 +87,19 @@ class TestVerifyTeatreeMcpRegistration:
         outcome = verify_teatree_mcp_registration(tmp_path)
 
         assert outcome.ok is False
+
+
+class TestShippedMcpJson:
+    """The committed repo-root ``.mcp.json`` must declare the teatree server.
+
+    Without it, every fresh install falls back to shelling out to the ``t3``
+    CLI instead of the ``mcp__teatree__*`` tools, and ``t3 setup`` / ``t3
+    doctor`` warn forever (the registrar is read-only and never writes it).
+    """
+
+    def test_repo_mcp_json_declares_teatree_server(self) -> None:
+        repo_root = Path(__file__).resolve().parents[2]
+
+        outcome = verify_teatree_mcp_registration(repo_root)
+
+        assert outcome.ok is True, outcome.message
