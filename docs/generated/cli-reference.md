@@ -1542,6 +1542,8 @@ Usage: t3 eval [OPTIONS] COMMAND [ARGS]...
 │                         --skip-code (non-list payload exits 2).              │
 │ merge-summaries         Merge per-shard summary markdown into one dashboard  │
 │                         (to --out or stdout).                                │
+│ merge-summary-json      Merge per-shard eval-heal summary JSONs into one     │
+│                         §2.4 JSON (to --out or stdout).                      │
 │ prepare-transcript      Emit the per-scenario prompts for a LOCAL            │
 │                         transcript-backend eval run.                         │
 │ history                 Show recent eval runs and per-scenario pass-rate     │
@@ -1902,6 +1904,31 @@ Usage: t3 eval merge-summaries [OPTIONS] INPUTS...
 │                                here).                                        │
 │                                [required]                                    │
 │    --out                 PATH  Write the dashboard to this path instead of   │
+│                                stdout.                                       │
+│    --help                      Show this message and exit.                   │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+#### `t3 eval merge-summary-json`
+
+```
+Usage: t3 eval merge-summary-json [OPTIONS] INPUTS...
+
+ Merge per-shard eval-heal summary JSONs into one §2.4 JSON (to --out or
+ stdout).
+
+╭─ Arguments ──────────────────────────────────────────────────────────────────╮
+│ *    inputs      INPUTS...  Per-shard summary .json files, or a directory of │
+│                             them.                                            │
+│                             [required]                                       │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ *  --sha                 TEXT  The commit SHA the run measured (injected).   │
+│                                [required]                                    │
+│ *  --generated-at        TEXT  ISO-8601 timestamp (injected; never computed  │
+│                                here).                                        │
+│                                [required]                                    │
+│    --out                 PATH  Write the merged JSON to this path instead of │
 │                                stdout.                                       │
 │    --help                      Show this message and exit.                   │
 ╰──────────────────────────────────────────────────────────────────────────────╯
