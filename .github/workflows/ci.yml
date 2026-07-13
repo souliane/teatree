@@ -271,6 +271,38 @@ jobs:
           git reset --soft FETCH_HEAD
       - run: uv run python scripts/hooks/check_e2e_no_skip.py
 
+  # GATE (PR-only): the behavioral e2e for teatree's OWN /dash/ dashboard (#3162
+  # redesign). It lives OUTSIDE ``testpaths=[tests]``, so the ``test`` lane never
+  # collects it and it never touches the 93% floor; this dedicated job installs
+  # chromium and drives a ``live_server`` with the production-derived
+  # ``e2e.dash.settings``. Behavioral assertions only (htmx swap stability, drawer
+  # flows, mermaid render, loop round-trips, theme toggle) — never pixel snapshots.
+  dash-e2e:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
+      - uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78  # v7
+        with:
+          enable-cache: true
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405  # v6
+        with:
+          python-version: "3.13"
+      - run: uv sync
+      - run: uv run playwright install --with-deps chromium
+      - name: Provide ttyd + a stub claude for the terminal-launch e2e
+        # The header terminal button spawns `ttyd --once <claude>` on a loopback
+        # port; the spec asserts the launch URL renders (it never connects, and
+        # the launcher's reaper bounds the unconnected ttyd). ttyd must exist and
+        # `shutil.which("claude")` must resolve — the stub is never executed.
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ttyd
+          printf '#!/bin/sh\nexec sleep 3600\n' | sudo tee /usr/local/bin/claude >/dev/null
+          sudo chmod +x /usr/local/bin/claude
+      - name: Behavioral dashboard e2e (live_server + chromium)
+        run: uv run pytest e2e/dash --ds=e2e.dash.settings -n0 -p no:randomly -p no:cacheprovider
+
   # GATE (PR-only): re-runs the module-health LOC/function ratchet on the PR's
   # full base..head diff so a prek-bypassing or merge-routed module growth still
   # trips the gate.

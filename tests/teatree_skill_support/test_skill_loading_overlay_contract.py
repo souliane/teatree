@@ -5,9 +5,8 @@ contract, using a SYNTHETIC overlay config and synthetic skill names.
 
 Case 1 — a synthetic overlay declaring companion set ``S`` → the policy
 resolves ``S`` for that overlay's work (the overlay declaration drives the
-result, threaded through ``OverlayConfig.get_lifecycle_companion_skills``
-exactly as the production dispatch path feeds ``companion_skills=`` to the
-policy).
+result, threaded through ``OverlayConfig.companion_skills`` exactly as the
+production dispatch path feeds ``companion_skills=`` to the policy).
 
 Case 2 — a Python-file domain → the (core) language skill ``ac-python``; a
 Django-change domain → the (core) framework skill ``ac-django``. This
@@ -54,7 +53,7 @@ class TestOverlayDeclaredSkillsResolve:
 
     def test_declared_companion_set_resolved_for_overlay_work(self, tmp_path: Path) -> None:
         config = _overlay_config(_DECLARED_S)
-        declared = config.get_lifecycle_companion_skills("code")
+        declared = list(config.companion_skills)
         assert declared == _DECLARED_S
 
         result = SkillLoadingPolicy().select_for_runtime_phase(
@@ -72,7 +71,7 @@ class TestOverlayDeclaredSkillsResolve:
         # resolve none of the declared set. The discriminating input is the
         # declaration — the positive test above genuinely depends on it.
         config = _overlay_config([])
-        declared = config.get_lifecycle_companion_skills("code")
+        declared = list(config.companion_skills)
         assert declared == []
 
         result = SkillLoadingPolicy().select_for_runtime_phase(
@@ -105,7 +104,7 @@ class TestOverlayDeclaredSkillsResolve:
             explicit_phase="",
             explicit_skills=[],
             overlay_active=False,
-            companion_skills=config.get_lifecycle_companion_skills("code"),
+            companion_skills=list(config.companion_skills),
         )
         assert "t3:synth" not in result.skills
         for skill in _DECLARED_S:
@@ -131,7 +130,7 @@ class TestOverlayDeclaredSkillsResolve:
             explicit_phase="",
             explicit_skills=[],
             overlay_active=False,
-            companion_skills=config.get_lifecycle_companion_skills("code"),
+            companion_skills=list(config.companion_skills),
         )
         assert "t3:synth" in result.skills
         for skill in _DECLARED_S:

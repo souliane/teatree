@@ -42,6 +42,17 @@ HIDDEN_STATES: tuple[str, ...] = (State.IGNORED,)
 # Every column the board renders, in lifecycle order (excludes IGNORED).
 BOARD_COLUMNS: tuple[str, ...] = tuple(state for _group, states in COLUMN_GROUPS for state in states)
 
+# state -> group slug (backlog/building/reviewing/landed/ignored), the ONE mapping
+# behind the FSM-rail hue language: column tops, the rail, and the drawer's
+# transition-history + current-state chip all colour by it, so board, diagram and
+# history speak one hue set. Derived from COLUMN_GROUPS so it cannot drift.
+_GROUP_SLUG_BY_STATE: dict[str, str] = {state: name.lower() for name, states in COLUMN_GROUPS for state in states}
+
+
+def group_slug(state: str) -> str:
+    """The FSM-rail group slug a state belongs to (IGNORED / unknown -> ``ignored``)."""
+    return _GROUP_SLUG_BY_STATE.get(str(state), "ignored")
+
 
 @dataclass(frozen=True, slots=True)
 class PrChip:
@@ -92,6 +103,11 @@ class KanbanBoard:
     groups: tuple[KanbanGroup, ...]
     include_ignored: bool
     ignored: KanbanColumn | None = None
+
+    @property
+    def total(self) -> int:
+        shown = sum(column.count for group in self.groups for column in group.columns)
+        return shown + (self.ignored.count if self.ignored else 0)
 
 
 @dataclass(frozen=True, slots=True)

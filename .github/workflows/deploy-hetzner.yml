@@ -1,12 +1,17 @@
-# One-click teatree headless deploy to an existing Hetzner box.
-# Manual trigger only. No box-identifying info lives here — the server name, SSH
-# user/port, host key, and IP all come from secrets, and the resolved IP is
-# masked out of the logs. Uses no third-party actions (nothing to SHA-pin); the
-# hcloud CLI is installed from a checksum-pinned release.
+# Teatree headless deploy to an existing Hetzner box.
+# Runs on every push to main (each merged PR) plus the manual trigger; the
+# deploy script is idempotent and the concurrency group serializes runs, so a
+# merge train converges the box to the newest main. No box-identifying info
+# lives here — the server name, SSH user/port, host key, and IP all come from
+# secrets, and the resolved IP is masked out of the logs. Uses no third-party
+# actions (nothing to SHA-pin); the hcloud CLI is installed from a
+# checksum-pinned release.
 name: Deploy teatree to Hetzner
 
 on:
   workflow_dispatch:
+  push:
+    branches: [main]
 
 permissions:
   contents: read
@@ -36,9 +41,14 @@ jobs:
           GIT_AUTHOR_NAME: ${{ secrets.GIT_AUTHOR_NAME }}
           GIT_AUTHOR_EMAIL: ${{ secrets.GIT_AUTHOR_EMAIL }}
         run: |
+          # CLAUDE_CODE_OAUTH_TOKEN is deliberately NOT required: a box whose
+          # pass store is provisioned with anthropic/<account>/oauth-token
+          # entries (anthropic_oauth_pass_paths routing) runs without the env
+          # token — the entrypoint preflight fails loud when NEITHER source
+          # exists, so removing the secret cannot silently deploy a dead loop.
           missing=0
           for name in HCLOUD_TOKEN HETZNER_SERVER_NAME HETZNER_SSH_KEY HETZNER_SSH_KNOWN_HOSTS \
-                      HETZNER_SSH_USER HETZNER_SSH_PORT CLAUDE_CODE_OAUTH_TOKEN TEATREE_GH_TOKEN \
+                      HETZNER_SSH_USER HETZNER_SSH_PORT TEATREE_GH_TOKEN \
                       T3_ADMIN_USER T3_ADMIN_PASSWORD GIT_AUTHOR_NAME GIT_AUTHOR_EMAIL; do
             if [ -z "${!name}" ]; then
               echo "MISSING SECRET $name - set it under Settings > Secrets and re-run"
@@ -90,6 +100,18 @@ jobs:
           T3_ADMIN_PASSWORD: ${{ secrets.T3_ADMIN_PASSWORD }}
           GIT_AUTHOR_NAME: ${{ secrets.GIT_AUTHOR_NAME }}
           GIT_AUTHOR_EMAIL: ${{ secrets.GIT_AUTHOR_EMAIL }}
+          # Repo VARIABLE (not a secret): the box's fleet-scoped loop split,
+          # consumed by the entrypoint's disable_fleet_scoped_loops. The
+          # fallback preserves the historical default when the variable is
+          # unset; the entrypoint validates every name and fails the deploy
+          # loudly on a typo.
+          TEATREE_DISABLED_LOOPS: ${{ vars.TEATREE_DISABLED_LOOPS || 'inbox,review,directive_loop' }}
+          # Repo VARIABLE: when 'true' the box's teatree.env gets NO Anthropic
+          # env token even though the secret exists (the eval workflows still
+          # need the secret) — the env source beats the pass rotation in
+          # llm/credentials, so omitting the line is what hands the box to its
+          # provisioned pass store.
+          TEATREE_BOX_USE_PASS: ${{ vars.TEATREE_BOX_USE_PASS || 'false' }}
         run: |
           SSH="ssh -p ${SSH_PORT} -i ${HOME}/.ssh/id_deploy -o UserKnownHostsFile=${HOME}/.ssh/known_hosts -o StrictHostKeyChecking=yes -o ConnectTimeout=20"
           TARGET="${SSH_USER}@${SERVER_IP}"
@@ -98,13 +120,19 @@ jobs:
           $SSH "$TARGET" 'set -e; REMOTE_DIR="$HOME/teatree-deploy"; if [ ! -d "$REMOTE_DIR/.git" ]; then git clone https://github.com/souliane/teatree.git "$REMOTE_DIR"; fi; mkdir -p "$REMOTE_DIR/deploy"'
 
           # 2. Write the secrets file (piped over stdin — never on argv or in logs; mode 600).
+          # The Anthropic env token is written only when the secret exists; without
+          # it the box resolves credentials via its pass store (option-b routing),
+          # and an absent env line is what lets the pass rotation actually win.
           {
-            printf 'CLAUDE_CODE_OAUTH_TOKEN=%s\n' "$CLAUDE_CODE_OAUTH_TOKEN"
+            if [ -n "$CLAUDE_CODE_OAUTH_TOKEN" ] && [ "$TEATREE_BOX_USE_PASS" != "true" ]; then
+              printf 'CLAUDE_CODE_OAUTH_TOKEN=%s\n' "$CLAUDE_CODE_OAUTH_TOKEN"
+            fi
             printf 'TEATREE_GH_TOKEN=%s\n' "$TEATREE_GH_TOKEN"
             printf 'T3_ADMIN_USER=%s\n' "$T3_ADMIN_USER"
             printf 'T3_ADMIN_PASSWORD=%s\n' "$T3_ADMIN_PASSWORD"
             printf 'GIT_AUTHOR_NAME=%s\n' "$GIT_AUTHOR_NAME"
             printf 'GIT_AUTHOR_EMAIL=%s\n' "$GIT_AUTHOR_EMAIL"
+            printf 'TEATREE_DISABLED_LOOPS=%s\n' "$TEATREE_DISABLED_LOOPS"
           } | $SSH "$TARGET" 'umask 077; cat > "$HOME/teatree-deploy/deploy/teatree.env"'
 
           # 3. Converge the stack (deploy.sh reads no secrets — compose's env_file does).

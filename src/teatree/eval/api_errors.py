@@ -135,6 +135,29 @@ _TRANSIENT_INFRA_MARKERS: tuple[str, ...] = (
     "read timed out",
 )
 
+#: Substrings marking a mid-stream SDK TRANSPORT CRASH — the subprocess CLI dying
+#: with NO ``result`` event, surfaced by the message reader's bare ``ProcessError``
+#: (``subprocess_cli.py`` L711) via its ``"Fatal error in message reader"`` branch
+#: (``_internal/query.py`` L351). This is the anti-cheat boundary's SAFE side: the
+#: crash aborted the run before any trajectory was captured (0-byte, no verdict),
+#: so re-running the scenario launders nothing. It is DISTINCT from a behavioral
+#: cap by SDK construction — when the CLI DID emit a ``result`` event (a genuine
+#: max-turns/budget cap, or an ``error_during_execution`` terminus), the message
+#: reader REPLACES this ProcessError with ``"Claude Code returned an error result:
+#: …"`` (``query.py`` L342), which carries a real trajectory and is NEVER matched
+#: here. So this marker fires only when no verdict exists — retry-safe.
+_TRANSPORT_CRASH_MARKERS: tuple[str, ...] = ("command failed with exit code",)
+
+#: Substrings marking a host-resource-starvation transient during eval PROVISIONING
+#: — the per-run ephemeral checkout's ``git clone`` (or repo-root resolution) failing
+#: under a momentary RAM spike, raised as ``EphemeralCheckoutError`` (both raise sites,
+#: ``ephemeral_checkout.py`` L115/L126, begin with this substring). Same SAFE side of
+#: the anti-cheat boundary as a transport crash: the scenario aborted during setup, so
+#: NO trajectory and NO behavioral verdict were produced — a retry after the spike
+#: clears re-runs a cell that graded nothing, laundering nothing. A provisioning
+#: failure is never a ``result`` event, so it can never collide with a behavioral cap.
+_PROVISION_TRANSIENT_MARKERS: tuple[str, ...] = ("cannot provision an isolated ephemeral checkout",)
+
 #: Limit causes that are NEVER a retriable throttle: a $0 metered key has no
 #: time-based recovery (fail loud), and a 7-day weekly cap is never worth waiting
 #: out inside a single run (surface loud). The remaining causes ARE retriable —
@@ -159,10 +182,13 @@ def classify_transient_throttle(message: str) -> ThrottleSignal | None:
     Returns a :class:`ThrottleSignal` for a retriable throttle and ``None`` for
     everything the runner must NOT ride out: a genuine behavioral cap
     (budget/max-turns — the anti-cheat boundary), a credit exhaustion or weekly
-    cap (surface loud), a mislabeled success, or a real crash. A matched limit
-    phrase drives the disposition (RATE_LIMIT -> TRANSIENT, SUBSCRIPTION_SESSION ->
-    SUSTAINED); otherwise a transient infra marker (:data:`_TRANSIENT_INFRA_MARKERS`)
-    grades an unclassified transport/overload signal as TRANSIENT.
+    cap (surface loud), a mislabeled success, or an opaque behavioral error the
+    CLI reported via a ``result`` event. A matched limit phrase drives the
+    disposition (RATE_LIMIT -> TRANSIENT, SUBSCRIPTION_SESSION -> SUSTAINED);
+    otherwise a transient infra marker (:data:`_TRANSIENT_INFRA_MARKERS`), a
+    mid-stream transport crash (:data:`_TRANSPORT_CRASH_MARKERS`), or a
+    provisioning transient (:data:`_PROVISION_TRANSIENT_MARKERS`) — each a
+    subprocess/setup death with NO captured trajectory — grades as TRANSIENT.
     """
     if is_success_result_error(message) or classify_terminal_error(message) is not None:
         return None
@@ -170,7 +196,8 @@ def classify_transient_throttle(message: str) -> ThrottleSignal | None:
     if limit is not None:
         return _throttle_from_limit(limit.cause)
     haystack = message.casefold()
-    if any(marker in haystack for marker in _TRANSIENT_INFRA_MARKERS):
+    transient_markers = (*_TRANSIENT_INFRA_MARKERS, *_TRANSPORT_CRASH_MARKERS, *_PROVISION_TRANSIENT_MARKERS)
+    if any(marker in haystack for marker in transient_markers):
         return ThrottleSignal(kind=ThrottleKind.TRANSIENT, cause=None, wait_seconds=None)
     return None
 

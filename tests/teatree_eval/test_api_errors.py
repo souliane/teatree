@@ -10,6 +10,21 @@ exhaustion, a 7-day weekly cap, a success mislabel, or a real crash).
 from teatree.eval.api_errors import ThrottleKind, classify_transient_throttle
 from teatree.llm.anthropic_limits import LimitCause, window_horizon
 
+#: The exact string the SDK surfaces when the subprocess CLI dies mid-stream with
+#: NO ``result`` event: the message reader's bare ``ProcessError`` (subprocess_cli
+#: L711, verbatim ``str()``), reported via the ``"Fatal error in message reader"``
+#: branch (query.py L351). No trajectory was captured, so a re-run launders nothing.
+_TRANSPORT_CRASH_MESSAGE = (
+    "Command failed with exit code 1 (exit code: 1)\nError output: Check stderr output for details"
+)
+#: The verbatim ``EphemeralCheckoutError`` string when a host RAM spike makes the
+#: per-run ephemeral-checkout ``git clone`` fail (ephemeral_checkout.py L126) — the
+#: SECOND transient shape that aborted a whole eval run. No trajectory, safe to re-run.
+_EPHEMERAL_GIT_CLONE_MESSAGE = (
+    "cannot provision an isolated ephemeral checkout at /tmp/t3-eval-ephemeral-checkout-x/teatree: "
+    "git clone failed. The sub-agent-spawning scenario REFUSES to run on the real clone."
+)
+
 
 class TestClassifyTransientThrottle:
     def test_rate_limit_is_transient(self) -> None:
@@ -36,6 +51,34 @@ class TestClassifyTransientThrottle:
         # genuine crash that must re-raise — never laundered into a retry. This is
         # the "preserve the genuine-crash red" contract the runner relies on.
         assert classify_transient_throttle("Claude Code returned an error result: error_during_execution") is None
+
+    def test_transport_crash_is_transient(self) -> None:
+        # A mid-stream subprocess-pipe death (bare ProcessError, NO result event)
+        # is INFRA, not a verdict: retrying it re-runs a scenario that produced
+        # nothing, so it rides out as a TRANSIENT throttle with backoff.
+        signal = classify_transient_throttle(_TRANSPORT_CRASH_MESSAGE)
+        assert signal is not None
+        assert signal.kind is ThrottleKind.TRANSIENT
+        assert signal.cause is None
+
+    def test_ephemeral_checkout_git_clone_failure_is_transient(self) -> None:
+        # A host RAM spike making the per-run ephemeral-checkout `git clone` fail
+        # aborts the scenario BEFORE any trajectory — INFRA, not a verdict. It rides
+        # out as a TRANSIENT throttle so the retried clone succeeds seconds later.
+        signal = classify_transient_throttle(_EPHEMERAL_GIT_CLONE_MESSAGE)
+        assert signal is not None
+        assert signal.kind is ThrottleKind.TRANSIENT
+        assert signal.cause is None
+
+    def test_behavioral_cap_wrapper_is_not_confused_for_transport_crash(self) -> None:
+        # The anti-cheat boundary at the classifier: a genuine cap DID produce a
+        # result event, so the SDK surfaces it as "returned an error result: ..."
+        # (query.py L342) — NEVER as the bare "Command failed with exit code"
+        # transport signature. Both max-turns and budget stay non-retriable.
+        max_turns = "Claude Code returned an error result: Reached maximum number of turns (3)"
+        budget = "Claude Code returned an error result: Reached maximum budget ($0.1)"
+        assert classify_transient_throttle(max_turns) is None
+        assert classify_transient_throttle(budget) is None
 
     def test_session_limit_is_sustained_with_window_wait(self) -> None:
         signal = classify_transient_throttle("session limit reached")

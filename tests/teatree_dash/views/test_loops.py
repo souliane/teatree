@@ -1,5 +1,7 @@
 """Loop-control POSTs drive the paired atomic verbs + are CSRF-protected + audited (#3162)."""
 
+import re
+
 from django.test import Client, TestCase
 from django.urls import reverse
 
@@ -109,3 +111,40 @@ class GateTogglePostTestCase(TestCase):
         with self.assertLogs("teatree.dash.audit", level="INFO") as logs:
             self.client.post(self.url, {"enable": "1", "confirm": "fail-open"})
         assert any("action=gate:danger_gate_fail_open" in line for line in logs.output)
+
+
+class LoopsTableContextualVerbsTestCase(TestCase):
+    """The loops table shows only the applicable verb of each pair (#3162 redesign).
+
+    pause XOR resume by the LoopState hold; disable XOR enable by ``Loop.enabled`` —
+    never all four, so the affordance always says what actually applies.
+    """
+
+    def _row_for(self, name: str) -> str:
+        body = self.client.get(reverse("dash:loops_table")).content.decode()
+        rows = re.findall(r"<tr>.*?</tr>", body, re.DOTALL)
+        matching = [row for row in rows if f">{name}<" in row]
+        assert matching, f"no loops-table row for {name!r}"
+        return matching[0]
+
+    def test_paused_loop_offers_resume_not_pause(self) -> None:
+        _make_loop("ctxpaused")
+        LoopState.objects.pause("ctxpaused")
+        row = self._row_for("ctxpaused")
+        assert 'value="resume"' in row
+        assert 'value="pause"' not in row
+
+    def test_disabled_loop_offers_enable_not_disable(self) -> None:
+        _make_loop("ctxdisabled")
+        Loop.objects.disable("ctxdisabled")
+        row = self._row_for("ctxdisabled")
+        assert 'value="enable"' in row
+        assert 'value="disable"' not in row
+
+    def test_running_loop_offers_pause_and_disable_only(self) -> None:
+        _make_loop("ctxrunning")
+        row = self._row_for("ctxrunning")
+        assert 'value="pause"' in row
+        assert 'value="disable"' in row
+        assert 'value="resume"' not in row
+        assert 'value="enable"' not in row

@@ -126,6 +126,12 @@ SUBAGENT_BY_PHASE: dict[tuple[str, str], str] = {
     ("author", "directive_interpreting"): "t3:planner",
 }
 
+#: Every canonical FSM phase plus every reactive/dispatch-only phase registered
+#: in ``SUBAGENT_BY_PHASE`` (``debugging``/``bughunt``/``answering``/…). The full
+#: set a per-stage config key (``OverlayConfig.stage_skills``) may name — a key
+#: that does not normalize into this set is a typo the field validator rejects.
+KNOWN_PHASES: frozenset[str] = CANONICAL_PHASES | frozenset(phase for _role, phase in SUBAGENT_BY_PHASE)
+
 #: The chaining orchestrator must never be the target of an author phase
 #: dispatch — that is the shadowing the per-phase restoration removes. A
 #: conformance test asserts no author phase routes here.
@@ -343,6 +349,24 @@ def phase_spellings(phase: str) -> tuple[str, ...]:
     """
     canonical = normalize_phase(phase)
     return _PHASE_ALIASES.get(canonical, (canonical,))
+
+
+def canonicalize_stage_skill_keys(value: dict[str, list[str]]) -> dict[str, list[str]]:
+    """Canonicalize a per-stage skills map's keys, rejecting an unknown phase.
+
+    Each key normalizes to its canonical phase (so a stored alias ``review`` and
+    a lookup gerund ``reviewing`` resolve to one entry); a key that does not
+    normalize into :data:`KNOWN_PHASES` is a typo and raises (fail loud at config
+    load). Empty skill names are dropped.
+    """
+    canonical: dict[str, list[str]] = {}
+    for phase, skills in value.items():
+        key = normalize_phase(phase)
+        if key not in KNOWN_PHASES:
+            msg = f"stage_skills key {phase!r} is not a known phase (normalized {key!r})"
+            raise ValueError(msg)
+        canonical[key] = [s for s in skills if isinstance(s, str) and s]
+    return canonical
 
 
 def phase_transition(phase: str) -> str | None:

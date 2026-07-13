@@ -237,6 +237,7 @@ class SkillLoadingPolicy:
         companion_skills: list[str] | None = None,
         pr_review_companion: str = "",
         review_skills: list[str] | None = None,
+        stage_skills: list[str] | None = None,
     ) -> SkillSelectionResult:
         lifecycle_skill = self.lifecycle_for_phase(phase)
         ordered = self._base_detected_skills(
@@ -260,6 +261,13 @@ class SkillLoadingPolicy:
                 ordered.extend(review_skills)
             elif pr_review_companion:
                 ordered.append(pr_review_companion)
+        # Per-stage overlay skills (``OverlayConfig.stage_skills``) are ADDITIVE:
+        # appended LAST — after the base/overlay/review skills, before the
+        # requires-chain resolution — so a stage skill's own ``requires:`` chain
+        # resolves AND the first-wins dedupe keeps the base authoritative when a
+        # stage skill repeats one already in the bundle.
+        if stage_skills:
+            ordered.extend(s for s in stage_skills if isinstance(s, str) and s)
         resolved = self._resolve_requires_chain(ordered, skill_index or [])
         return SkillSelectionResult(
             skills=_dedupe(resolved),

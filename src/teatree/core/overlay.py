@@ -9,10 +9,11 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 import httpx
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from teatree.backends.types import Service
 from teatree.core.gates.merge_guard import MergeGuard
+from teatree.core.modelkit.phases import canonicalize_stage_skill_keys, normalize_phase
 from teatree.core.overlay_metadata import OverlayMetadata
 from teatree.core.provision.variant import Variant
 from teatree.core.worktree.health import HealthCheck
@@ -187,6 +188,15 @@ class OverlayConfig(BaseModel):
     require_owned_repo_approval: bool = False
     # Per-overlay skills loaded alongside the active lifecycle skill.
     companion_skills: list[str] = Field(default_factory=list)
+    # Per-stage ADDITIONAL skills, keyed by canonical phase token (see
+    # ``core.modelkit.phases``). Always additive on top of the lifecycle skill,
+    # the overlay skill, and ``companion_skills`` — never a replacement. Code
+    # default per overlay (``STAGE_SKILLS`` in its settings module), DB-overridable
+    # via the ``overlays`` registry row exactly like ``required_third_party_services``.
+    # Keys are canonicalized on validation so a stored alias (``review``) and a
+    # lookup gerund (``reviewing``) resolve to one entry; an unknown phase key
+    # fails LOUD at config load.
+    stage_skills: dict[str, list[str]] = Field(default_factory=dict)
     # The single skill injected alongside ``/t3:review`` for a reviewer
     # sub-agent; empty string disables injection without dropping the skill.
     pr_review_companion: str = "code-review"
@@ -375,15 +385,13 @@ class OverlayConfig(BaseModel):
         """
         return list(dict.fromkeys(s for s in [self.pr_review_companion, *self.companion_skills] if s))
 
-    def get_lifecycle_companion_skills(self, lifecycle: str) -> list[str]:
-        """Return the overlay's companion skills a *lifecycle* task must hold.
+    @field_validator("stage_skills", mode="after")
+    @classmethod
+    def _validate_stage_skills(cls, value: dict[str, list[str]]) -> dict[str, list[str]]:
+        return canonicalize_stage_skill_keys(value)
 
-        ``review`` keeps the richer review set; every other lifecycle gets the
-        standing ``companion_skills``.
-        """
-        if lifecycle == "review":
-            return self.get_review_companion_skills()
-        return [s for s in self.companion_skills if s]
+    def get_stage_skills(self, phase: str) -> list[str]:
+        return list(self.stage_skills.get(normalize_phase(phase), []))
 
 
 # ── Overlay facets ───────────────────────────────────────────────────

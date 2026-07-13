@@ -15,7 +15,10 @@ class HealthPageTestCase(TestCase):
         resp = self.client.get(reverse("dash:health"))
         assert resp.status_code == 200
         body = resp.content.decode()
-        assert "Verdict" in body
+        # The verdict is the page lead (status word + open-issue count), not a
+        # "Verdict" heading; the other three bands keep their headings.
+        assert 'class="verdict ' in body
+        assert "open issue" in body
         assert "Loops" in body
         assert "Capacity" in body
         assert "Mode" in body
@@ -32,7 +35,9 @@ class HealthPageTestCase(TestCase):
     def test_bands_partial_renders(self) -> None:
         resp = self.client.get(reverse("dash:health_bands"))
         assert resp.status_code == 200
-        assert "Verdict" in resp.content.decode()
+        body = resp.content.decode()
+        assert 'class="verdict ' in body
+        assert "open issue" in body
 
     def test_command_buttons_present_on_page(self) -> None:
         resp = self.client.get(reverse("dash:health"))

@@ -14,7 +14,7 @@ from teatree.core.models.pull_request import PullRequest
 from teatree.core.models.ticket import Ticket
 from teatree.core.models.transition import TicketTransition
 from teatree.core.selectors import build_ticket_lifecycle_mermaid
-from teatree.dash.selectors import PrChip
+from teatree.dash.selectors import PrChip, group_slug
 
 
 @dataclass(frozen=True, slots=True)
@@ -24,6 +24,8 @@ class TransitionRow:
     triggered_by: str
     created_at: datetime
     session_label: str
+    from_group: str
+    to_group: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -49,6 +51,7 @@ class TicketDetail:
     number: str
     state: str
     state_label: str
+    state_group: str
     overlay: str
     role: str
     kind: str
@@ -95,6 +98,7 @@ def build_ticket_detail(ticket_id: int) -> TicketDetail:
         number=ticket.ticket_number,
         state=str(ticket.state),
         state_label=Ticket.State(ticket.state).label,
+        state_group=group_slug(ticket.state),
         overlay=ticket.overlay,
         role=ticket.role,
         kind=ticket.kind,
@@ -120,6 +124,8 @@ def _transitions(ticket_id: int) -> tuple[TransitionRow, ...]:
             triggered_by=row.triggered_by,
             created_at=row.created_at,
             session_label=str(row.session.agent_id) if row.session_id else "",
+            from_group=group_slug(row.from_state),
+            to_group=group_slug(row.to_state),
         )
         for row in rows
     )
