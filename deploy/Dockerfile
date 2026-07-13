@@ -5,10 +5,12 @@
 FROM ubuntu:24.04
 
 # Toolchain layer — ca-certificates, curl, git, jq, sqlite3, direnv, node 24, the
-# claude CLI (as in dev/Dockerfile.test) plus gh. No pass/gpg (auth is token-only).
+# claude CLI (as in dev/Dockerfile.test) plus gh, plus pass/gnupg so the box can
+# route the Anthropic credential through a per-account pass store
+# (anthropic_oauth_pass_paths) instead of a single env token.
 RUN apt-get update -qq && \
     apt-get install -y -qq --no-install-recommends \
-        ca-certificates curl direnv git jq sqlite3 && \
+        ca-certificates curl direnv git gnupg jq pass sqlite3 && \
     curl -fsSL https://deb.nodesource.com/setup_24.x | bash - && \
     apt-get install -y -qq --no-install-recommends nodejs && \
     install -m 0755 -d /etc/apt/keyrings && \
@@ -52,11 +54,16 @@ RUN curl -LsSf https://astral.sh/uv/install.sh | sh
 # it explicitly to that same canonical value would make paths.py refuse every
 # loop-provisioned worktree (CanonicalDBFromWorktreeError) and defeat the
 # teatree_worktrees auto-isolation volume.
+# The pass store and its GPG home live under the teatree_data volume so a
+# provisioned multi-account credential store survives container recreation
+# (the container HOME itself is image-backed and reset on every deploy).
 ENV PATH="/opt/teatree/uv/bin:/home/teatree/.local/bin:${PATH}" \
     UV_TOOL_DIR=/opt/teatree/uv/tools \
     UV_TOOL_BIN_DIR=/opt/teatree/uv/bin \
     UV_PYTHON_INSTALL_DIR=/opt/teatree/uv/python \
     TEATREE_CLONE_DIR=/home/teatree/teatree \
-    TEATREE_REPO_URL=https://github.com/souliane/teatree.git
+    TEATREE_REPO_URL=https://github.com/souliane/teatree.git \
+    PASSWORD_STORE_DIR=/home/teatree/.local/share/teatree/.password-store \
+    GNUPGHOME=/home/teatree/.local/share/teatree/.gnupg
 
 ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]
