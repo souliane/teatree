@@ -97,6 +97,15 @@ disable_fleet_scoped_loops() {
 
 ensure_clone() {
     if [ -e "$CLONE_DIR/.git" ]; then
+        # The clone lives in a shared volume that outlives the image, so a
+        # redeploy must bring it current or the stack keeps serving the code
+        # from the first boot. Fast-forward only, and fail loud on divergence —
+        # silently serving stale code is worse than a red deploy.
+        git -C "$CLONE_DIR" fetch --prune origin
+        git -C "$CLONE_DIR" merge --ff-only "@{upstream}" || {
+            echo "entrypoint: $CLONE_DIR cannot fast-forward to its upstream - the runtime clone has local commits or a diverged branch; reconcile it on the box and re-run Deploy" >&2
+            exit 1
+        }
         return 0
     fi
     git clone "$REPO_URL" "$CLONE_DIR"
