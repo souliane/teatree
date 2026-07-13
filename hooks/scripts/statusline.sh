@@ -61,9 +61,17 @@ if ! [ -t 0 ] && command -v jq >/dev/null 2>&1; then
     fi
 fi
 
-if [ -n "$session_id" ] && [ ! -f "${state_dir}/${session_id}.teatree-active" ]; then
-    exit 0
-fi
+# The render gate is the `autoload` owner flag ALONE (below), NOT the per-session
+# `.teatree-active` marker. That marker is written by SessionStart-engage / a
+# teatree-skill load, but the harness runs the loop in a background `bg-spare`
+# daemon session (which gets the marker and owns the tick) while the owner's
+# foreground TUI sessions frequently never get it — so ANDing the marker with
+# autoload blanked the statusline in exactly the sessions the owner looks at.
+# `autoload` is the ONE owner flag that "engages the session", so it alone gates
+# whether the statusline is shown here. Loop *arming* keeps its stricter
+# `marker AND autoload` gate (hook_router._loop_auto_load_active); this is display
+# *visibility*, which the owner wants in every one of their sessions. The #256
+# colleague guarantee still holds: `autoload` off is blank regardless of the marker.
 
 # The canonical ConfigSetting store's GLOBAL `autoload` value, JSON-decoded:
 # `true` / `false` / empty. Read-only via the sqlite3 CLI (so the statusline needs
