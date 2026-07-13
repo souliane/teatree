@@ -103,8 +103,8 @@ class TestSweepProtectsLiveReaderFiles:
         ephemeral = _touch("live-session.loop-pending", age_seconds=_STATE_FILE_MAX_AGE_SECONDS + 3600)
         _sweep_stale_state_files()
         assert teatree_active.exists(), (
-            "an active session's .teatree-active gates the statusline by presence and "
-            "is not re-touched for the life of a normal session; it must survive the sweep"
+            "an active session's .teatree-active gates loop auto-load (arming) by presence "
+            "and is not re-touched for the life of a normal session; it must survive the sweep"
         )
         assert not ephemeral.exists(), (
             "an unprotected re-armed-on-demand marker of the same age must still be swept "
