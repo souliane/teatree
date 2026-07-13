@@ -598,9 +598,10 @@ unused-ignore-comment = "error"
 no-matching-overload = "error"
 
 [[tool.ty.overrides]]
-include = [ "tests" ]
-# Tests use tmp_path / "file" (ty can't resolve Path.__truediv__) and
-# intentionally use broad *args/**kwargs for monkey-patching
+include = [ "tests", "e2e" ]
+# Test code (tests/ + the e2e/ lane) uses tmp_path / "file" (ty can't resolve
+# Path.__truediv__), factory-boy factories (ty sees the factory type, not the
+# built model), and broad *args/**kwargs for monkey-patching.
 [tool.ty.overrides.rules]
 unsupported-operator = "ignore"
 invalid-argument-type = "ignore"

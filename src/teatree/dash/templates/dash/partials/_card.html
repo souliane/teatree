@@ -1,20 +1,20 @@
-<article class="card" data-ticket="{{ card.ticket_id }}"
+<article class="card" data-ticket="{{ card.ticket_id }}" tabindex="0"
   hx-get="{% url 'dash:ticket_drawer' card.ticket_id %}"
-  hx-target="#drawer" hx-swap="innerHTML">
+  hx-target="#drawer" hx-swap="innerHTML" hx-trigger="click, keyup[key=='Enter']">
   <div class="card-top">
     {% if card.active %}<span class="dot active" title="active work: {{ card.active_phase }} {{ card.claimed_by }}"></span>{% endif %}
-    <span class="card-num">#{{ card.number }}</span>
+    <span class="card-num mono">#{{ card.number }}</span>
     {% if card.expedited %}<span class="chip expedited">expedited</span>{% endif %}
     {% if card.remote_missing %}<span class="chip warn">remote 404</span>{% endif %}
   </div>
   <div class="card-desc">{{ card.short_description|default:"(no description)" }}</div>
-  <div>
+  <div class="card-meta">
     {% if card.overlay %}<span class="chip">{{ card.overlay }}</span>{% endif %}
     <span class="chip role">{{ card.role }}</span>
     <span class="chip">{{ card.kind }}</span>
+    {% for pr in card.pr_chips %}<a class="chip pr" href="{{ pr.url }}" target="_blank" rel="noopener">{{ pr.repo }}!{{ pr.iid }} · {{ pr.state }}</a>{% endfor %}
   </div>
-  {% if card.active_phase %}<div class="card-dwell">phase: {{ card.active_phase }}{% if card.claimed_by %} · {{ card.claimed_by }}{% endif %}</div>{% endif %}
-  {% for pr in card.pr_chips %}<a class="chip" href="{{ pr.url }}" target="_blank" rel="noopener">{{ pr.repo }}!{{ pr.iid }} · {{ pr.state }}</a>{% endfor %}
-  {% if card.dwell %}<div class="card-dwell">in column {{ card.dwell }}</div>{% endif %}
+  {% if card.active_phase %}<div class="card-dwell">phase <span class="mono">{{ card.active_phase }}</span>{% if card.claimed_by %} · {{ card.claimed_by }}{% endif %}</div>{% endif %}
+  {% if card.dwell %}<div class="card-dwell">in column <span class="mono">{{ card.dwell }}</span></div>{% endif %}
   {% if card.last_error %}<div class="card-error">{{ card.last_error|truncatechars:140 }}</div>{% endif %}
 </article>

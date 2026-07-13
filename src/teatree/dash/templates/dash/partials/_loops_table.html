@@ -9,22 +9,34 @@
         <tr>
           <td title="{{ loop.description }}">{{ loop.name }}</td>
           <td>{{ loop.cadence_label }}</td>
-          <td class="{% if loop.effective %}eff-yes{% else %}eff-no{% endif %}">{{ loop.effective|yesno:"running,held" }}</td>
+          <td>
+            <span class="state-cell">
+              <span class="dot {% if loop.effective %}running{% else %}stopped{% endif %}"></span>
+              <span class="{% if loop.effective %}eff-yes{% else %}eff-no{% endif %}">{{ loop.effective|yesno:"running,held" }}</span>
+            </span>
+          </td>
           <td>{{ loop.deciding_layer }}</td>
           <td>{{ loop.status }}</td>
           <td>
-            <form method="post" action="{% url 'dash:loop_action' %}" style="display:inline">
+            {# Only the applicable verb of each pair — pause XOR resume, disable XOR enable. #}
+            <form class="row-actions" method="post" action="{% url 'dash:loop_action' %}">
               {% csrf_token %}
               <input type="hidden" name="name" value="{{ loop.name }}">
-              <button class="dash-btn" name="action" value="pause">pause</button>
-              <button class="dash-btn" name="action" value="resume">resume</button>
-              <button class="dash-btn" name="action" value="disable">disable</button>
-              <button class="dash-btn" name="action" value="enable">enable</button>
+              {% if loop.status == "paused" %}
+                <button class="dash-btn" name="action" value="resume">resume</button>
+              {% else %}
+                <button class="dash-btn" name="action" value="pause">pause</button>
+              {% endif %}
+              {% if loop.enabled %}
+                <button class="dash-btn danger" name="action" value="disable">disable</button>
+              {% else %}
+                <button class="dash-btn" name="action" value="enable">enable</button>
+              {% endif %}
             </form>
           </td>
         </tr>
       {% empty %}
-        <tr><td colspan="6" class="card-dwell">No loops configured.</td></tr>
+        <tr class="empty-row"><td colspan="6">No loops configured.</td></tr>
       {% endfor %}
     </tbody>
   </table>

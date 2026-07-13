@@ -285,8 +285,10 @@ repos:
         pass_filenames: false
         # Also fires on any registered model module: the snapshot lists every
         # model's verbose_name, so a verbose_name change must regenerate it (the
-        # FSM-diagram hook keys on its model modules the same way).
-        files: ^src/teatree/core/(admin\.py|dashboard_snapshot\.py|models/.*\.py)$
+        # FSM-diagram hook keys on its model modules the same way). The /admin/
+        # re-skin adds two HTML-affecting inputs: the base_site.html override
+        # (injects the token <link>s the snapshot captures) and admin-theme.css.
+        files: ^src/teatree/(core/(admin\.py|dashboard_snapshot\.py|models/.*\.py)|templates/admin/base_site\.html|dash/static/dash/css/admin-theme\.css)$
       - id: generate-cli-output-snapshot
         name: Generate the representative CLI-output fixture from the CLI
         language: system

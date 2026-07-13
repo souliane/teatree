@@ -1,7 +1,16 @@
+from pathlib import Path
+
+import teatree
+
 SECRET_KEY = "teatree-tests"
 USE_TZ = True
 ROOT_URLCONF = "teatree.urls"
 STATIC_URL = "/static/"
+
+# The project templates dir (holds the /admin/ re-skin's base_site.html). Mirrors
+# ``teatree.settings`` so the admin snapshot renders identically here and in the
+# generate-dashboard-snapshot hook.
+_PROJECT_TEMPLATES = Path(teatree.__file__).resolve().parent / "templates"
 
 DATABASES = {
     "default": {
@@ -38,7 +47,7 @@ MIDDLEWARE = [
 TEMPLATES = [
     {
         "BACKEND": "django.template.backends.django.DjangoTemplates",
-        "DIRS": [],
+        "DIRS": [str(_PROJECT_TEMPLATES)],
         "APP_DIRS": True,
         "OPTIONS": {
             "context_processors": [
