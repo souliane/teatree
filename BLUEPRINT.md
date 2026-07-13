@@ -2,11 +2,11 @@
 
 The product spec. Code is an artifact; this file is the product.
 
-If the entire `src/` and `tests/` tree were deleted, this document — plus the three architectural appendices linked below and the skills in `skills/` — should be enough to regenerate the project without ambiguity.
+If the entire `src/` and `tests/` tree were deleted, this document — plus the four architectural appendices linked below and the skills in `skills/` — should be enough to regenerate the project without ambiguity.
 
 **Tone.** This blueprint is functional and architectural. It names classes and files where the structure carries the design, but it is deliberately language-agnostic — a competent engineer should be able to reimplement teatree in another language with this file alone. Prose-of-code (paragraph descriptions of method bodies, ticket-history rationale, line-by-line walkthroughs) does not belong here. The code itself is the source of truth for implementation; this file is the source of truth for architecture.
 
-**Change policy.** Every code change to teatree must keep this file consistent with the architecture. Implementation details — new flags, new error messages, why a particular regex was tightened — belong in docstrings, commit messages, or the issue tracker, not here. Before modifying this file (or any of the three appendices) please ask the user for approval — this is the source of truth and the user validates every change.
+**Change policy.** Every code change to teatree must keep this file consistent with the architecture. Implementation details — new flags, new error messages, why a particular regex was tightened — belong in docstrings, commit messages, or the issue tracker, not here. Before modifying this file (or any of the four appendices) please ask the user for approval — this is the source of truth and the user validates every change.
 
 **Status:** current architecture under [#541](https://github.com/souliane/teatree/issues/541). All phases (0–8) shipped.
 
@@ -60,6 +60,7 @@ cli/         # Typer CLI — bootstrap commands (no Django needed); cohesive gro
 core/        # Django app — models, FSM, managers, sync, runners, management commands; backend_protocols hub at root + packages models/ gates/ merge/ runners/ selectors/ views/ modelkit/ and the clustered leaf packages cleanup/ worktree/ provision/ factory/ intake/ review/ evidence/
 agents/      # Headless executor (in-process claude-agent-sdk)
 loop/        # /loop topology — tick, scanners, dispatch, statusline
+loops/       # Per-domain mini-loops + orchestrator — the fat /loop tick split per domain, driven by the singleton `t3 worker` timer chains (§5)
 mcp/         # Structured-search + gate-preserving-write MCP server (serializers + search + command_catalogue + per-service groups + write_tools + FastMCP wiring); `t3 mcp serve`. 13 read tools: command_search (CLI discoverability) + ticket_get/ticket_list/ticket_search/worktree_status/pr_for_ticket/task_list/question_list/loop_stats/incoming_event_recent/config_setting_get/gate_status/factory_signals(+factory_score dark) — plus the per-service read groups and the gate-preserving write suite (#3076)
 backends/    # Pluggable external service integrations; per-forge subpackages github/ gitlab/ slack/ (+ flat notion, sentry, figma)
 config/      # Settings load + overlay discovery
@@ -407,7 +408,7 @@ Internal utilities (`utils/`) are Python modules, not a CLI tier.
 
 **Checking report** (`t3 <overlay> checking show`, #1529): a terse, read-only "what did I miss" catch-up for when the user checks in mid-loop. By default aggregates ALL configured overlays into one `AllOverlaysReport`; `--this-overlay` restores single-overlay scope. Each overlay has its own `checking_checkpoint_<overlay>.json` marker (atomic `tmp.replace` write, tolerant read); each marker advances independently AFTER gathering so a second run sees an empty window. Three groups: Merged / In-flight / Needs you, every reference clickable, capped at 5. `DeferredQuestion` is queried ONCE for the whole report; overlay-scoped items carry an `[overlay]` inline tag. A window start at/after `now` falls back to the 24h lookback; advance is monotonic. `--since` and `--no-advance` inspect without advancing. The needs-you group is overlay-extensible via `OverlayBase.get_checking_sources()` (default `[]`); core makes no live forge calls.
 
-**Global CLI** (`cli/`): `t3 startoverlay`, `t3 agent`, `t3 capabilities`, `t3 info {,artifacts}`, `t3 sessions`, `t3 cost`, `t3 docs`, `t3 ui`, `t3 admin`, `t3 ci ...`, `t3 review ...`, `t3 review-request ...`, `t3 tool ...`, `t3 config ...`, `t3 doctor ...`, `t3 update`, `t3 setup ...`, `t3 assess`, `t3 loop {start,stop,status,tick,slack-answer,claim-next,pause,resume,disable,enable,loop-state}`, `t3 mcp serve`, `t3 recover`, `t3 fast-push`, `t3 overlay {install,uninstall,status}`. `t3 fast-push` (directive #8, `core/fast_push.py`) is the leak-gated escape hatch for session hand-offs: it stages everything, runs ONLY the four leak gates in-process and fail-closed (banned-terms, the `scripts/privacy_scan.py` secret scan, overlay-leak terms + opaque IDs, and the #730 public-repo commit-author-identity check — the same canonical matchers and DB-home sources as the hook chain, so bypassing the hook chain never bypasses leak protection), then commits, pushes with the hook chain bypassed, and idempotently creates-or-updates the branch PR (`--remaining` records unfinished work as a `REMAINING:` PR-body section). Any finding refuses the push and prints the offending path/term; every non-leak gate (ci-parity, coverage, lint, module-health, tests) is skipped by design. `t3 ui` is a trogon-backed terminal browser of the command tree (optional `ui` dependency group). `t3 admin` runs the Django admin for the teatree project under a local gunicorn server (`teatree.wsgi:application`, a production WSGI server — not Django's dev `runserver`; #3134) — it migrates, collects static into `STATIC_ROOT` (so WhiteNoise serves the admin and dashboard assets with DEBUG off; #3162), ensures a superuser (creating one non-interactively from `T3_ADMIN_USER`/`T3_ADMIN_PASSWORD` when absent), and opens `/admin/`. The same process also serves the first-party `teatree.dash` admin dashboard at `/dash/` ([#3162](https://github.com/souliane/teatree/issues/3162)) — a ticket-FSM kanban (`build_kanban_columns` groups tickets by `Ticket.State`, tasks are card badges), an "is-everything-OK?" health view (over `read_health` / `loops.live.build_report` / parked-lane / utilization / `t3 cost` / queue readers), a loop-control surface (per-loop pause/resume/disable/enable through the SAME paired `LoopState`/`LoopManager` verbs, availability via `write_override`, the `danger_gate_fail_open` toggle behind a typed confirm), a ticket drawer with the per-ticket lifecycle Mermaid and the legal-FSM-transition action menu, and a debug tier (a loopback `ttyd --writable --once` "Debug session" button + an allowlisted-`t3`-command surface). Server-rendered Django templates + vendored htmx polling (no SPA/build/websockets), loopback-only behind the same `LocalAdminAutoLoginMiddleware` (its prefix gate widened from `/admin/` to also cover `/dash/`); it owns no models and reads the existing selectors as the only source of truth (`docs/debug-runbook.md` documents the host-SSH+tmux break-glass tier). `t3 cost` reports cycle-to-date SDK-equivalent spend vs the monthly Agent-SDK credit from each `TaskAttempt`'s captured cost, alongside the GitHub agentic-workflow ET (effective-tokens) metric ([#657](https://github.com/souliane/teatree/issues/657), `ET = m*(1.0*input + 0.1*cache_read + 4.0*output)`, `core/cost.py`'s `ET_MODEL_MULTIPLIER`) and both totals split per Layer-2 lane (`subscription`/`metered`) so the two-lane cost strategy ([#2565](https://github.com/souliane/teatree/issues/2565)) is observable. An unrecognised model id with no `cost_model_prices` override is billed in a separate `unpriced` bucket (at the opus rate, annotated) instead of being SILENTLY priced as opus; the DB-home `cost_model_prices` key supplies per-model (id-substring → in/out MTok rate) overrides. `t3 info artifacts <ticket>` is the read-only "find our eggs" report — where a ticket's worktrees/stacks live, its `PlanArtifact` rows, each `Task.result_artifact_path`, and its `E2eMandatoryRun` evidence (aggregated by `Ticket.artifacts()`, no new storage). `t3 overlay install <name>` editable-installs a sibling overlay checkout into a teatree feature worktree — refuses to run in the main clone.
+**Global CLI** (`cli/`): `t3 startoverlay`, `t3 agent`, `t3 capabilities`, `t3 info {,artifacts}`, `t3 sessions`, `t3 cost`, `t3 docs`, `t3 ui`, `t3 admin`, `t3 ci ...`, `t3 review ...`, `t3 review-request ...`, `t3 tool ...`, `t3 config ...`, `t3 doctor ...`, `t3 update`, `t3 setup ...`, `t3 assess`, `t3 loop {start,stop,status,tick,slack-answer,claim-next,pause,resume,disable,enable,loop-state}`, `t3 loops {list,tick}`, `t3 worker`, `t3 goal ...`, `t3 teams ...`, `t3 outer ...`, `t3 directive ...`, `t3 dream`, `t3 mutation run`, `t3 dogfood ...`, `t3 identities ...`, `t3 task ...`, `t3 prompts {list,render}`, `t3 codex ...`, `t3 mcp serve`, `t3 recover`, `t3 fast-push`, `t3 overlay {install,uninstall,status}`. `t3 fast-push` (directive #8, `core/fast_push.py`) is the leak-gated escape hatch for session hand-offs: it stages everything, runs ONLY the four leak gates in-process and fail-closed (banned-terms, the `scripts/privacy_scan.py` secret scan, overlay-leak terms + opaque IDs, and the #730 public-repo commit-author-identity check — the same canonical matchers and DB-home sources as the hook chain, so bypassing the hook chain never bypasses leak protection), then commits, pushes with the hook chain bypassed, and idempotently creates-or-updates the branch PR (`--remaining` records unfinished work as a `REMAINING:` PR-body section). Any finding refuses the push and prints the offending path/term; every non-leak gate (ci-parity, coverage, lint, module-health, tests) is skipped by design. `t3 ui` is a trogon-backed terminal browser of the command tree (optional `ui` dependency group). `t3 admin` runs the Django admin for the teatree project under a local gunicorn server (`teatree.wsgi:application`, a production WSGI server — not Django's dev `runserver`; #3134) — it migrates, collects static into `STATIC_ROOT` (so WhiteNoise serves the admin and dashboard assets with DEBUG off; #3162), ensures a superuser (creating one non-interactively from `T3_ADMIN_USER`/`T3_ADMIN_PASSWORD` when absent), and opens `/admin/`. The same process also serves the first-party `teatree.dash` admin dashboard at `/dash/` ([#3162](https://github.com/souliane/teatree/issues/3162)) — a ticket-FSM kanban (`build_kanban_columns` groups tickets by `Ticket.State`, tasks are card badges), an "is-everything-OK?" health view (over `read_health` / `loops.live.build_report` / parked-lane / utilization / `t3 cost` / queue readers), a loop-control surface (per-loop pause/resume/disable/enable through the SAME paired `LoopState`/`LoopManager` verbs, availability via `write_override`, the `danger_gate_fail_open` toggle behind a typed confirm), a ticket drawer with the per-ticket lifecycle Mermaid and the legal-FSM-transition action menu, and a debug tier (a loopback `ttyd --writable --once` "Debug session" button + an allowlisted-`t3`-command surface). Server-rendered Django templates + vendored htmx polling (no SPA/build/websockets), loopback-only behind the same `LocalAdminAutoLoginMiddleware` (its prefix gate widened from `/admin/` to also cover `/dash/`); it owns no models and reads the existing selectors as the only source of truth (`docs/debug-runbook.md` documents the host-SSH+tmux break-glass tier). `t3 cost` reports cycle-to-date SDK-equivalent spend vs the monthly Agent-SDK credit from each `TaskAttempt`'s captured cost, alongside the GitHub agentic-workflow ET (effective-tokens) metric ([#657](https://github.com/souliane/teatree/issues/657), `ET = m*(1.0*input + 0.1*cache_read + 4.0*output)`, `core/cost.py`'s `ET_MODEL_MULTIPLIER`) and both totals split per Layer-2 lane (`subscription`/`metered`) so the two-lane cost strategy ([#2565](https://github.com/souliane/teatree/issues/2565)) is observable. An unrecognised model id with no `cost_model_prices` override is billed in a separate `unpriced` bucket (at the opus rate, annotated) instead of being SILENTLY priced as opus; the DB-home `cost_model_prices` key supplies per-model (id-substring → in/out MTok rate) overrides. `t3 info artifacts <ticket>` is the read-only "find our eggs" report — where a ticket's worktrees/stacks live, its `PlanArtifact` rows, each `Task.result_artifact_path`, and its `E2eMandatoryRun` evidence (aggregated by `Ticket.artifacts()`, no new storage). `t3 overlay install <name>` editable-installs a sibling overlay checkout into a teatree feature worktree — refuses to run in the main clone.
 
 **Attachment ingestion** (`t3 tool to-markdown <file>`, #1479): converts binary spec attachments (PDF, XLSX, DOCX, PPTX) to Markdown so the agent can read them as structured text. Wraps `markitdown` (`teatree.backends.markdown_conversion.MarkdownConverter`) behind the **optional** `markdown` extra (`markitdown[pdf,docx,xlsx,pptx]` — never `[all]`); absent the extra the command exits non-zero with an install hint rather than crashing. Plugins are disabled and no LLM client is wired — converted output is treated as untrusted data and emitted verbatim.
 
@@ -574,27 +575,38 @@ Reference DB architecture, the import fallback chain (`DjangoDbImportConfig` str
 Runtime:
 
 ```toml
+asgiref>=3.8
+claude-agent-sdk==0.2.94
+coverage>=7
 croniter>=6.2.2
 django>=5.2,<6.1
 django-fsm-2>=4
+django-linear-migrations>=2.19
 django-rich>=2.2
 django-tasks>=0.9
 django-tasks-db>=0.12
 django-typer>=3.3
+gunicorn>=23
 httpx>=0.27
+mcp>=1.27
+pillow>=11
+pydantic-ai-slim[openai]>=2.3
+pyyaml>=6
 tomlkit>=0.13
+whitenoise>=6.6
 ```
 
-`croniter` parses the `[teatree.availability].windows` cron expressions (§5.6.3 / §17.1 invariant 9); `tomlkit` renders the `config_setting export` DB→TOML interchange dump.
+`croniter` parses the `[teatree.availability].windows` cron expressions (§5.6.3 / §17.1 invariant 9); `tomlkit` renders the `config_setting export` DB→TOML interchange dump; `claude-agent-sdk` is EXACT-pinned (see the dependency comment in `pyproject.toml`); `mcp`/`asgiref` back `t3 mcp serve`; `gunicorn`/`whitenoise` serve `teatree.dash`.
 
 Optional extras (installed on demand):
 
 ```toml
-notion = ["browser-cookie3>=0.20"]
-slack  = ["slack-sdk>=3.35"]
+notion   = ["browser-cookie3>=0.20"]
+slack    = ["slack-sdk>=3.35"]
+markdown = ["markitdown[docx,pdf,pptx,xlsx]>=0.1.6"]
 ```
 
-Dev: `ruff`, `pytest`, `pytest-cov`, `pytest-django`, `ty`, `import-linter`, `prek`, `safety`, `typer`, `django-types`.
+Dev (`dependency-groups.dev`): `ruff`, `pytest`, `pytest-cov`, `pytest-django`, `pytest-playwright`, `pytest-playwright-visual`, `pytest-timeout`, `pytest-xdist`, `ty`, `import-linter`, `prek`, `typer`, `django-types`, `factory-boy`, `inline-snapshot`, `patchy`, `cyclonedx-bom`, `browser-cookie3`, `slack-sdk`, `tach`, `trogon[typer]`. Split out of the default group: `docs` (mkdocs), `mutation` (mutmut), `shuffle` (pytest-randomly), `shard` (pytest-split), `ui` (trogon).
 
 ---
 
@@ -689,13 +701,14 @@ A skill's evals live in the central catalog `evals/scenarios/<skill>.yaml` (each
 
 ## Architectural Appendices
 
-This file holds the architecture. Three appendices carry detail that is genuinely architectural but too long to inline:
+This file holds the architecture. Four appendices carry detail that is genuinely architectural but too long to inline:
 
 | Appendix | Why it stays an appendix |
 |---|---|
 | [factory-architecture.md](docs/blueprint/factory-architecture.md) | §17.2–§17.8 — flywheel, components, orchestrator-decides / loop-executes topology, enforcement-gate family. Subsections are cross-referenced from code (`hook_router.py` cites §17.4 / §17.6 / §17.8). |
 | [loop-topology.md](docs/blueprint/loop-topology.md) | §5.6 deep mechanics — lease + owner-record interplay, scanner roster, three-stage tick, statusline, availability dual-mode. Cited from `tests/test_blueprint_loop_epic_alignment.py`. |
 | [configuration.md](docs/blueprint/configuration.md) | §10 — the #1775 config home (the DB-home `ConfigSetting` store, env on top), Django settings, `OverlayConfig` methods, logging, data storage, state-placement rule. `### 10.1` cited from `commands/followup.py`; `### 11.4` from `cli/recommended_authorizations.py`. |
+| [rubric-done-gate.md](docs/blueprint/rubric-done-gate.md) | §17.4.3 — the rubric→verifier done-gate: data model, grading flow, merge-precondition placement. Cited from `_rubric_commands.py`. |
 
 Implementation details that previously lived in nine prose-of-code appendices have been folded into the sections above or moved to their true home — model and `OverlayBase` docstrings, typer `--help` text, `CLAUDE.md` / `AGENTS.md`, or kept in code where they were always canonical. See [#1128](https://github.com/souliane/teatree/issues/1128).
 

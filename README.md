@@ -866,6 +866,9 @@ teatree/
     agents/            #   Agent runtime adapters (Claude Code, Codex)
     backends/          #   Code-host (GitHub, GitLab) + messaging (Slack, Notion) Protocols
     loop/              #   Fat /loop tick — scanners, dispatch, statusline render
+    loops/             #   Per-domain mini-loops the worker's timer chains drive
+    mcp/               #   Structured-search + gate-preserving-write MCP server
+    config/            #   Settings load + overlay discovery
     utils/             #   Internal helpers (ports, git, DB)
     templates/overlay/ #   `t3 startoverlay` scaffolding
   skills/              # AI agent skills (SKILL.md + references)
