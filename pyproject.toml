@@ -54,7 +54,7 @@ dependencies = [
   # detect the highlightAndShoot red box before ``e2e post-test-plan`` uploads.
   # A RUNTIME command path, so it must be in the installed tool env, not only
   # the dev group — same class as the ``coverage`` / ``pyyaml`` runtime deps.
-  "pillow>=11",
+  "pillow>=12.3",
   # ``teatree.agents.harness.PydanticAiHarness``
   # ([#2885](https://github.com/souliane/teatree/issues/2885)) is a headless
   # dispatch RUNTIME command path (``agent_harness=pydantic_ai``), so — same
