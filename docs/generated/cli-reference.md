@@ -1534,6 +1534,10 @@ Usage: t3 eval [OPTIONS] COMMAND [ARGS]...
 │                         print per-session verdicts.                          │
 │ changed-scenarios       Print the scenario names a PR's STDIN diff touched;  │
 │                         exit --skip-code when none.                          │
+│ ci-trigger              Dispatch ``eval-ci-heal.yml`` for a PR branch and    │
+│                         print the head SHA it keys on.                       │
+│ ci-status               Resolve one eval-ci-heal run's verdict (and, on      │
+│                         failure, its triaged reds).                          │
 │ merged-prs-since        Exit 0 if any PR merged in the last --days, else     │
 │                         --skip-code (non-list payload exits 2).              │
 │ merge-summaries         Merge per-shard summary markdown into one dashboard  │
@@ -1811,6 +1815,47 @@ Usage: t3 eval changed-scenarios [OPTIONS]
 │ --skip-code        INTEGER  Exit code when no scenario file changed.         │
 │                             [default: 1]                                     │
 │ --help                      Show this message and exit.                      │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+#### `t3 eval ci-trigger`
+
+```
+Usage: t3 eval ci-trigger [OPTIONS]
+
+ Dispatch ``eval-ci-heal.yml`` for a PR branch and print the head SHA it keys
+ on.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ *  --ref               TEXT  PR branch to run the behavioral eval against in │
+│                              CI.                                             │
+│                              [required]                                      │
+│    --scenarios         TEXT  Comma-joined scenario names to run (the red     │
+│                              subset). Empty (default) = the full suite.      │
+│    --credential        TEXT  Eval credential: subscription_oauth (default,   │
+│                              no per-token bill) | metered_api_key.           │
+│                              [default: subscription_oauth]                   │
+│    --repo              TEXT  owner/repo the eval-ci-heal workflow lives in.  │
+│                              [default: souliane/teatree]                     │
+│    --help                    Show this message and exit.                     │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+#### `t3 eval ci-status`
+
+```
+Usage: t3 eval ci-status [OPTIONS]
+
+ Resolve one eval-ci-heal run's verdict (and, on failure, its triaged reds).
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ *  --ref         TEXT  PR branch whose newest eval-ci-heal run to resolve.   │
+│                        [required]                                            │
+│    --run         TEXT  Explicit run id (else the newest run for --ref).      │
+│    --json              Emit the structured verdict as JSON.                  │
+│    --repo        TEXT  owner/repo the eval-ci-heal workflow lives in.        │
+│                        [default: souliane/teatree]                           │
+│    --help              Show this message and exit.                           │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -2250,6 +2295,26 @@ Usage: t3 eval run [OPTIONS] [NAME]
 │                                                     $GITHUB_STEP_SUMMARY and │
 │                                                     the weekly public        │
 │                                                     dashboard. Written from  │
+│                                                     THIS run's results       │
+│                                                     (single-trial AND        │
+│                                                     --trials).               │
+│ --summary-json                             PATH     Write a PUBLISH-safe     │
+│                                                     per-scenario JSON        │
+│                                                     (generated_at, model,    │
+│                                                     head_sha, totals, and a  │
+│                                                     scenarios[] of           │
+│                                                     name/lane/verdict + the  │
+│                                                     triage discriminators +  │
+│                                                     a triage_class) to this  │
+│                                                     path. Like --summary-md  │
+│                                                     it carries NO            │
+│                                                     transcript, so it is     │
+│                                                     safe to upload; unlike   │
+│                                                     it, it is                │
+│                                                     machine-readable — the   │
+│                                                     CI heal loop's           │
+│                                                     eval-heal-<sha>          │
+│                                                     artifact. Written from   │
 │                                                     THIS run's results       │
 │                                                     (single-trial AND        │
 │                                                     --trials).               │

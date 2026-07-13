@@ -21,6 +21,7 @@ from collections.abc import Callable
 from claude_agent_sdk import Message
 
 from teatree.eval.api_errors import (
+    THROTTLE_TERMINAL_PREFIX,
     SuccessMislabelResultError,
     TerminalResultError,
     ThrottleKind,
@@ -78,7 +79,7 @@ def throttle_reason(signal: ThrottleSignal, attempts: int) -> str:
     honest red — never mislabeled as a behavioral fail.
     """
     label = signal.cause.value if signal.cause is not None else signal.kind.value
-    return f"throttled: {label} (exhausted {attempts} retries)"
+    return f"{THROTTLE_TERMINAL_PREFIX} {label} (exhausted {attempts} retries)"
 
 
 @dataclasses.dataclass(frozen=True)

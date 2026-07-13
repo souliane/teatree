@@ -373,7 +373,9 @@ depends_on = [
   "teatree.eval",
   "teatree.utils",
   "teatree.claude_sessions",
-  "teatree.llm"
+  "teatree.llm",
+  "teatree.backends.github",
+  "teatree.types"
 ]
 
 [[modules]]

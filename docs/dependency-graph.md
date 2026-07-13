@@ -153,6 +153,8 @@ graph TD
     teatree.cli.eval --> teatree.utils
     teatree.cli.eval --> teatree.claude_sessions
     teatree.cli.eval --> teatree.llm
+    teatree.cli.eval --> teatree.backends.github
+    teatree.cli.eval --> teatree.types
     teatree.eval --> teatree.core
     teatree.eval --> teatree.credential_config
     teatree.eval --> teatree.hooks

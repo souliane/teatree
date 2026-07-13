@@ -41,6 +41,7 @@ def _resolved(**overrides: Any) -> ResolvedRun:
         "judge": False,
         "transcript_html": None,
         "summary_md": None,
+        "summary_json": None,
         "trials": 1,
         "require": "any",
         "models": None,
@@ -95,3 +96,13 @@ class TestDispatchResolvedRun:
         config = EscalationConfig(escalate_trials=3)
         dispatch_resolved_run([_spec()], _resolved(), grader=None, escalation=config)
         assert lanes["single"].kwargs["escalation"] is config
+
+    def test_summary_json_is_forwarded_to_the_single_trial_lane(self, lanes: dict[str, _LaneSpy]) -> None:
+        out = Path("/tmp/eval-heal.json")
+        dispatch_resolved_run([_spec()], _resolved(summary_json=out), grader=None, escalation=None)
+        assert lanes["single"].kwargs["summary_json"] == out
+
+    def test_summary_json_is_forwarded_to_the_pass_at_k_lane(self, lanes: dict[str, _LaneSpy]) -> None:
+        out = Path("/tmp/eval-heal.json")
+        dispatch_resolved_run([_spec()], _resolved(trials=3, summary_json=out), grader=None, escalation=None)
+        assert lanes["pass_at_k"].kwargs["summary_json"] == out

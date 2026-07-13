@@ -204,14 +204,23 @@ t3 eval label review                          # validate every label loads + eve
 t3 eval changed-scenarios < changed-files.txt # CI primitive: print the scenario names a PR's STDIN diff touched (selective-PR gate); exit --skip-code when none
 t3 eval merged-prs-since --prs-file prs.json --days 7  # CI primitive: exit 0 iff any PR merged in the window (the scheduled-eval no-PR guard); else --skip-code
 t3 eval merge-summaries summaries/ --run-url … --sha … --generated-at …  # CI primitive: merge per-shard sanitized summaries into one weekly dashboard
+t3 eval ci-trigger --ref <pr-branch>          # CI heal loop: dispatch eval-ci-heal (workflow_dispatch, scenarios/credential/pr_ref inputs) against a PR branch; prints the head SHA the run keys on (non-blocking)
+t3 eval ci-status --ref <pr-branch>           # CI heal loop: resolve a PR branch's newest eval-ci-heal run and print its structured verdict + triaged reds (non-blocking)
 ```
 
-The last three are the reusable CI primitives an overlay's eval workflow consumes
-(`changed-scenarios` selects a PR's scenarios, `merged-prs-since` guards the
-weekly cron, `merge-summaries` builds the public dashboard) — the same logic the
-host's `scripts/eval/*.py` workflow shims and the reusable `eval-pr-reusable.yml`
-/ `eval-weekly-reusable.yml` (`workflow_call`) workflows delegate to, so an
-overlay reuses teatree's eval CI instead of duplicating it.
+`changed-scenarios`, `merged-prs-since`, and `merge-summaries` are the reusable
+CI primitives an overlay's eval workflow consumes (`changed-scenarios` selects a
+PR's scenarios, `merged-prs-since` guards the weekly cron, `merge-summaries`
+builds the public dashboard) — the same logic the host's `scripts/eval/*.py`
+workflow shims and the reusable `eval-pr-reusable.yml` /
+`eval-weekly-reusable.yml` (`workflow_call`) workflows delegate to, so an overlay
+reuses teatree's eval CI instead of duplicating it.
+
+`ci-trigger` and `ci-status` are the eval-CI **heal-loop** pair: `ci-trigger`
+dispatches the `eval-ci-heal` workflow against a PR branch and reports the
+`(branch, head_sha)` the monitor keys on; `ci-status` resolves that run and
+returns the structured verdict plus the triaged reds. Both are non-blocking (they
+dispatch/read and return) so the orchestrator owns the wait.
 
 The deterministic regression lane is wired into prek under its explicit name:
 `eval-pinned-regressions` runs at the **pre-push** stage (real git/FSM work) —

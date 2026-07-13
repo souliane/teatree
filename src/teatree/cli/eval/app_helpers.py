@@ -19,6 +19,7 @@ from teatree.eval.discovery import discover_specs, find_spec
 from teatree.eval.model_variant import EFFORT_LEVELS
 from teatree.eval.models import EvalSpec
 from teatree.eval.report import ScenarioResult, render_html, render_summary_markdown
+from teatree.eval.summary_json import write_summary_json
 
 #: The tiers the ``--benchmark`` matrix compares, strongest → cheapest, so the
 #: matrix columns read in capability order. Resolved to concrete models through
@@ -136,47 +137,72 @@ def resolve_escalation(
     return EscalationConfig(escalate_trials=escalate_trials)
 
 
+@dataclasses.dataclass(frozen=True)
+class RunReportPaths:
+    """The per-run report artifact output paths — each ``None`` when not requested.
+
+    ``transcript_html`` is the private per-trial transcript; ``summary_md`` and
+    ``summary_json`` are the sanitized, publish-safe dashboards. Grouped so the
+    matrix-shape guard iterates the report flags rather than repeating one
+    near-identical rejection per flag.
+    """
+
+    transcript_html: Path | None = None
+    summary_md: Path | None = None
+    summary_json: Path | None = None
+
+    def matrix_incompatible(self) -> tuple[tuple[Path | None, str, str], ...]:
+        """The report flags a ``--models`` matrix cannot render, with their message parts."""
+        return (
+            (self.transcript_html, "--transcript-html", "the per-TRIAL transcript report (a --trials run)"),
+            (self.summary_md, "--summary-md", "the single-trial / --trials aggregate dashboard"),
+            (self.summary_json, "--summary-json", "the single-trial / --trials per-scenario artifact"),
+        )
+
+
 def reject_unsupported_run_output(
-    *, output_format: str, transcript_html: Path | None, summary_md: Path | None, trials: int, models: str | None
+    *, output_format: str, reports: RunReportPaths, trials: int, models: str | None
 ) -> None:
     """Reject the report flags on the multi-trial/matrix shapes they don't support.
 
-    ``--format html`` renders a SINGLE-trial ``list[ScenarioResult]`` and
-    ``--transcript-html`` / ``--summary-md`` render the single-trial or per-TRIAL
-    results; a ``--models`` matrix has neither, so all three are usage errors
-    there (and ``--format html`` is likewise rejected for ``--trials``). Exits 2
-    naming the fix rather than failing obscurely deeper in the run.
+    ``--format html`` renders a SINGLE-trial ``list[ScenarioResult]`` and the
+    ``reports`` flags render the single-trial or per-TRIAL results; a ``--models``
+    matrix has neither, so each is a usage error there (and ``--format html`` is
+    likewise rejected for ``--trials``). Exits 2 naming the fix rather than failing
+    obscurely deeper in the run.
     """
     if output_format == "html" and (trials > 1 or models is not None):
         typer.echo("--format html is only supported for a single-trial run (not --trials/--models)", err=True)
         raise typer.Exit(code=2)
-    if transcript_html is not None and models is not None:
-        typer.echo(
-            "--transcript-html is the per-TRIAL transcript report (a --trials run); a --models matrix "
-            "has no per-trial transcript to render. Drop --models or drop --transcript-html.",
-            err=True,
-        )
-        raise typer.Exit(code=2)
-    if summary_md is not None and models is not None:
-        typer.echo(
-            "--summary-md is the single-trial / --trials aggregate dashboard; a --models matrix "
-            "has no such summary to render. Drop --models or drop --summary-md.",
-            err=True,
-        )
-        raise typer.Exit(code=2)
+    if models is None:
+        return
+    for value, flag, description in reports.matrix_incompatible():
+        if value is not None:
+            typer.echo(
+                f"{flag} is {description}; a --models matrix has none to render. Drop --models or drop {flag}.",
+                err=True,
+            )
+            raise typer.Exit(code=2)
 
 
 def write_single_trial_reports(
-    results: list[ScenarioResult], *, transcript_html: Path | None, summary_md: Path | None
+    results: list[ScenarioResult],
+    *,
+    transcript_html: Path | None,
+    summary_md: Path | None,
+    summary_json: Path | None = None,
 ) -> None:
-    """Write the single-trial transcript HTML and/or sanitized summary markdown.
+    """Write the single-trial transcript HTML, sanitized summary markdown, and/or JSON.
 
-    Both are written from THIS run's results (no re-run) and BEFORE any guard/gate
-    can exit, so a red run still drops both artifacts. ``transcript_html`` is the
-    full per-scenario transcript (private); ``summary_md`` is the sanitized,
-    publish-safe dashboard (no transcript). Either path being ``None`` is a no-op.
+    All are written from THIS run's results (no re-run) and BEFORE any guard/gate
+    can exit, so a red run still drops each artifact. ``transcript_html`` is the
+    full per-scenario transcript (private); ``summary_md`` / ``summary_json`` are
+    the sanitized, publish-safe dashboards (no transcript). Each path being
+    ``None`` is a no-op.
     """
     if transcript_html is not None:
         transcript_html.write_text(render_html(results), encoding="utf-8")
     if summary_md is not None:
         summary_md.write_text(render_summary_markdown(results), encoding="utf-8")
+    if summary_json is not None:
+        write_summary_json(results, summary_json)

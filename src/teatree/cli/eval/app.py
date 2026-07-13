@@ -9,6 +9,7 @@ from teatree.cli._format_opts import VALID_FORMATS, require_valid_format
 from teatree.cli.eval._registration import register_imported_commands
 from teatree.cli.eval.all import STRICT_HELP, build_scenarios_table, run_full_suite
 from teatree.cli.eval.app_helpers import (
+    RunReportPaths,
     reject_unsupported_run_output,
     require_api_backend_for_fresh_run,
     require_effort,
@@ -258,6 +259,17 @@ def run(  # noqa: PLR0913, PLR0917 — typer command: each param maps 1:1 to a p
             "the weekly public dashboard. Written from THIS run's results (single-trial AND --trials)."
         ),
     ),
+    summary_json: Path | None = typer.Option(
+        None,
+        "--summary-json",
+        help=(
+            "Write a PUBLISH-safe per-scenario JSON (generated_at, model, head_sha, totals, and a "
+            "scenarios[] of name/lane/verdict + the triage discriminators + a triage_class) to this "
+            "path. Like --summary-md it carries NO transcript, so it is safe to upload; unlike it, it "
+            "is machine-readable — the CI heal loop's eval-heal-<sha> artifact. Written from THIS run's "
+            "results (single-trial AND --trials)."
+        ),
+    ),
     benchmark: bool = typer.Option(  # noqa: FBT001 — typer boolean flag, not a positional bool foot-gun.
         False,
         "--benchmark",
@@ -393,6 +405,7 @@ def run(  # noqa: PLR0913, PLR0917 — typer command: each param maps 1:1 to a p
             parallel=parallel,
             transcript_html=transcript_html,
             summary_md=summary_md,
+            summary_json=summary_json,
             benchmark=benchmark,
             model=model,
             escalate_on_fail=escalate_on_fail,
@@ -415,8 +428,11 @@ def run(  # noqa: PLR0913, PLR0917 — typer command: each param maps 1:1 to a p
         # Under --benchmark, --transcript-html is REPURPOSED as the matrix HTML
         # dashboard out (not a per-trial transcript), so it is permitted alongside
         # the resolved tier models. Pass None to the guard to skip that rejection.
-        transcript_html=None if benchmark else transcript_html,
-        summary_md=summary_md,
+        reports=RunReportPaths(
+            transcript_html=None if benchmark else transcript_html,
+            summary_md=summary_md,
+            summary_json=summary_json,
+        ),
         trials=trials,
         models=None if benchmark else models,
     )
@@ -453,6 +469,7 @@ def run(  # noqa: PLR0913, PLR0917 — typer command: each param maps 1:1 to a p
             # by benchmark_html), not a single-trial transcript — so suppress it here.
             transcript_html=None if benchmark else transcript_html,
             summary_md=summary_md,
+            summary_json=summary_json,
             trials=trials,
             require=require,
             models=models,

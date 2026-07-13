@@ -71,6 +71,17 @@ def _auth_passthrough_flags(auth_env_vars: tuple[str, ...]) -> list[str]:
     return [flag for var in forward if os.environ.get(var) for flag in ("-e", var)]
 
 
+#: The CI checkout SHA the ``--summary-json`` artifact records as ``head_sha`` — it
+#: is written in-container, so the value must be forwarded through the container
+#: env (never argv), and only when GitHub Actions set it.
+_HEAD_SHA_ENV_VAR = "GITHUB_SHA"
+
+
+def _head_sha_passthrough_flags() -> list[str]:
+    """Forward ``GITHUB_SHA`` into the container when set, so the JSON records the real SHA."""
+    return ["-e", _HEAD_SHA_ENV_VAR] if os.environ.get(_HEAD_SHA_ENV_VAR) else []
+
+
 def _requests_api_lane(eval_args: list[str]) -> bool:
     """Whether *eval_args* drives the metered/api lane, so the credential pre-export must fire.
 
@@ -137,6 +148,7 @@ def _run_in_image(
             "-e",
             f"{IN_CONTAINER_ENV_VAR}=1",
             *_auth_passthrough_flags(auth_env_vars),
+            *_head_sha_passthrough_flags(),
             "-v",
             f"{root}:/app:ro",
             *_artifacts_mount_flags(artifacts_dir),

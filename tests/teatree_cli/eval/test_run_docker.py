@@ -98,6 +98,26 @@ class TestSummaryMdPassthrough:
         assert run_in_docker.call_args.kwargs["artifacts_dir"] == tmp_path
 
 
+class TestSummaryJsonPassthrough:
+    def test_translates_host_path_to_the_artifacts_mount(self) -> None:
+        args = _args(summary_json=Path("/home/runner/_temp/eval-heal.json"))
+        passthrough = args.passthrough()
+        index = passthrough.index("--summary-json")
+        assert passthrough[index + 1] == f"{ARTIFACTS_MOUNT}/eval-heal.json"
+
+    def test_omits_the_flag_when_no_json_requested(self) -> None:
+        assert "--summary-json" not in _args(summary_json=None).passthrough()
+
+    def test_json_only_run_still_resolves_an_artifacts_dir(self, tmp_path: Path) -> None:
+        host = tmp_path / "eval-heal.json"
+        with (
+            patch("teatree.cli.eval.run_docker.run_eval_in_docker", return_value=0) as run_in_docker,
+            pytest.raises(typer.Exit),
+        ):
+            _args(transcript_html=None, summary_md=None, summary_json=host).dispatch()
+        assert run_in_docker.call_args.kwargs["artifacts_dir"] == tmp_path
+
+
 class TestDispatchMountsHostParentDir:
     def test_dispatch_passes_the_host_parent_dir_as_artifacts_dir(self, tmp_path: Path) -> None:
         host = tmp_path / "eval-transcripts.html"

@@ -37,6 +37,7 @@ class RunDockerArgs:
     parallel: int
     transcript_html: Path | None = None
     summary_md: Path | None = None
+    summary_json: Path | None = None
     benchmark: bool = False
     model: str | None = None
     escalate_on_fail: bool = False
@@ -67,11 +68,24 @@ class RunDockerArgs:
             return ""
         return f"{ARTIFACTS_MOUNT}/{self.summary_md.name}"
 
+    def _container_summary_json_path(self) -> str:
+        """The in-container path the publish-safe per-scenario JSON is written to.
+
+        Redirected to ``/artifacts/<filename>`` like the summary/transcript, so the
+        host ``--summary-json`` file lands back on the host via the writable
+        bind-mount. ``""`` when no JSON was requested.
+        """
+        if self.summary_json is None:
+            return ""
+        return f"{ARTIFACTS_MOUNT}/{self.summary_json.name}"
+
     def _artifacts_dir(self) -> Path | None:
         if self.transcript_html is not None:
             return self.transcript_html.parent
         if self.summary_md is not None:
             return self.summary_md.parent
+        if self.summary_json is not None:
+            return self.summary_json.parent
         return None
 
     def _leading_optionals(self) -> list[list[str]]:
@@ -96,6 +110,7 @@ class RunDockerArgs:
             ["--parallel", str(self.parallel)] if self.parallel != DEFAULT_PARALLEL else [],
             ["--transcript-html", self._container_transcript_path()] if self.transcript_html is not None else [],
             ["--summary-md", self._container_summary_path()] if self.summary_md is not None else [],
+            ["--summary-json", self._container_summary_json_path()] if self.summary_json is not None else [],
             ["--escalate-on-fail", "--escalate-trials", str(self.escalate_trials)] if self.escalate_on_fail else [],
         ]
 

@@ -283,6 +283,35 @@ class TestAuthPassthroughIntoContainer(TestCase):
         return command[index - 1 : index + 1]
 
 
+class TestHeadShaPassthroughIntoContainer(TestCase):
+    """``GITHUB_SHA`` is forwarded so the in-container ``--summary-json`` records the SHA.
+
+    The publish-safe JSON is written IN the container, so its ``head_sha`` reads the
+    forwarded ``GITHUB_SHA``. It rides docker's ``-e VARNAME`` pass-through (value
+    via env, never argv) and is forwarded only when GitHub Actions set it — a host
+    run with no ``GITHUB_SHA`` adds no flag.
+    """
+
+    def _run_command(self, env: dict[str, str]) -> list[str]:
+        with (
+            patch(f"{_MODULE}.shutil.which", return_value="/usr/bin/docker"),
+            patch(f"{_MODULE}._image_present", return_value=True),
+            patch(f"{_MODULE}.os.environ", env),
+            patch(f"{_MODULE}.run_streamed", return_value=0) as streamed,
+        ):
+            run_eval_in_docker(["run", "--backend", "api", "--require-executed"])
+        return streamed.call_args.args[0]
+
+    def test_github_sha_is_forwarded_as_passthrough_when_set(self) -> None:
+        command = self._run_command({_OAUTH_ENV: "oauth-sub", "GITHUB_SHA": "deadbeef"})
+        index = command.index("GITHUB_SHA")
+        assert command[index - 1 : index + 1] == ["-e", "GITHUB_SHA"]
+        assert "deadbeef" not in command  # value rides the env, never argv
+
+    def test_github_sha_flag_absent_when_unset(self) -> None:
+        assert "GITHUB_SHA" not in self._run_command({_OAUTH_ENV: "oauth-sub"})
+
+
 class TestBenchmarkLaneFailsLoudBeforeDocker(TestCase):
     """``t3 eval benchmark`` is always a fresh run, so the Docker pre-export fires for it too.
 
