@@ -19,11 +19,41 @@ from teatree.skill_support.loading import DEFAULT_SKILLS_DIR
 _ALWAYS_FULL_SKILLS = frozenset({"rules"})
 
 
+def harness_skills_dirs() -> list[Path]:
+    """Skill-body search roots: teatree's own skills dir, then the harness dir.
+
+    A headless / no-Skill-tool dispatch can only "see" a skill whose ``SKILL.md``
+    body is embedded, so the resolver must reach the harness user skills dir
+    (``~/.claude/skills``) where team / overlay skills installed via ``npx skills
+    add`` (or symlinked from an overlay clone) live — not only teatree's own dir.
+    Teatree-local first, so a name collision resolves to the framework body.
+    """
+    dirs = [DEFAULT_SKILLS_DIR]
+    harness = Path.home() / ".claude" / "skills"
+    if harness not in dirs:
+        dirs.append(harness)
+    return dirs
+
+
+def _resolve_dirs(skills_dir: Path | None) -> list[Path]:
+    """The ordered search roots: an explicit single dir, else the harness dirs."""
+    return [skills_dir] if skills_dir is not None else harness_skills_dirs()
+
+
 def _find_skill_md(name: str, skills_dir: Path | None = None) -> Path | None:
     """Locate SKILL.md for a skill name within the skills directory."""
     sd = skills_dir if skills_dir is not None else DEFAULT_SKILLS_DIR
     candidate = sd / name / "SKILL.md"
     return candidate if candidate.is_file() else None
+
+
+def _find_skill_md_in_dirs(name: str, skills_dirs: Sequence[Path]) -> Path | None:
+    """First ``<dir>/<name>/SKILL.md`` across *skills_dirs*, in order."""
+    for sd in skills_dirs:
+        found = _find_skill_md(name, sd)
+        if found is not None:
+            return found
+    return None
 
 
 def _skill_section(name: str, content: str) -> str:
@@ -33,10 +63,10 @@ def _skill_section(name: str, content: str) -> str:
 
 def _read_skill_contents(skills: list[str], *, skills_dir: Path | None = None) -> str:
     """Read and concatenate SKILL.md content for each resolved skill."""
-    sd = skills_dir if skills_dir is not None else DEFAULT_SKILLS_DIR
+    dirs = _resolve_dirs(skills_dir)
     sections: list[str] = []
     for name in skills:
-        skill_md = _find_skill_md(name, sd)
+        skill_md = _find_skill_md_in_dirs(name, dirs)
         if skill_md is not None:
             sections.append(_skill_section(name, skill_md.read_text(encoding="utf-8")))
     return "\n\n".join(sections)
@@ -74,7 +104,7 @@ def _read_skill_contents_scoped(
     directive's stack-load block, #1368), so listing them in the ignorable
     summary would contradict that. Everything else gets the generic summary.
     """
-    sd = skills_dir if skills_dir is not None else DEFAULT_SKILLS_DIR
+    dirs = _resolve_dirs(skills_dir)
     explicit = explicit_load_skills or set()
     suppress = suppress_names or set()
     sections: list[str] = []
@@ -82,7 +112,7 @@ def _read_skill_contents_scoped(
     explicit_names: list[str] = []
     for name in skills:
         if _is_primary(name, primary_skills):
-            skill_md = _find_skill_md(name, sd)
+            skill_md = _find_skill_md_in_dirs(name, dirs)
             if skill_md is not None:
                 sections.append(_skill_section(name, skill_md.read_text(encoding="utf-8")))
         elif name in explicit or _explicit_load_name(name) in explicit:

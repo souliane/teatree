@@ -2,11 +2,13 @@
 
 from pathlib import Path
 
+from teatree.agents import skill_injection
 from teatree.agents.skill_injection import (
     _is_primary,
     _read_skill_contents,
     _read_skill_contents_scoped,
     build_subagent_skill_preamble,
+    harness_skills_dirs,
 )
 
 # --- _read_skill_contents ---
@@ -202,3 +204,30 @@ def test_subagent_preamble_resolves_explicit_skill_md_path_form(tmp_path: Path) 
 
     assert "--- SKILL: rules ---" in preamble.text
     assert preamble.resolved == ["rules"]
+
+
+# --- harness_skills_dirs ---
+
+
+def test_harness_skills_dirs_includes_default_and_claude_dir() -> None:
+    dirs = harness_skills_dirs()
+    assert skill_injection.DEFAULT_SKILLS_DIR in dirs
+    assert (Path.home() / ".claude" / "skills") in dirs
+
+
+def test_read_skill_contents_falls_back_to_harness_dirs(tmp_path: Path, monkeypatch) -> None:
+    # With no explicit skills_dir, the reader searches the harness dirs; a skill
+    # seeded only in the patched DEFAULT dir must still resolve.
+    seeded = tmp_path / "seeded"
+    _write_skill(seeded, "harness-skill", "# harness body")
+    monkeypatch.setattr(skill_injection, "DEFAULT_SKILLS_DIR", seeded)
+    result = _read_skill_contents(["harness-skill"])
+    assert "# harness body" in result
+
+
+def test_read_scoped_falls_back_to_harness_dirs(tmp_path: Path, monkeypatch) -> None:
+    seeded = tmp_path / "seeded"
+    _write_skill(seeded, "scoped-skill", "# scoped body")
+    monkeypatch.setattr(skill_injection, "DEFAULT_SKILLS_DIR", seeded)
+    result = _read_skill_contents_scoped(["scoped-skill"], primary_skills={"scoped-skill"})
+    assert "# scoped body" in result

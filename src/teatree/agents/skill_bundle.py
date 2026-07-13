@@ -1,3 +1,4 @@
+import logging
 from pathlib import Path
 
 from teatree.skill_support.deps import SkillIndex
@@ -7,11 +8,13 @@ from teatree.types import SkillMetadata
 __all__ = [
     "DEFAULT_SKILLS_DIR",
     "active_overlay_companion_skills",
-    "active_overlay_lifecycle_skills",
     "active_overlay_pr_review_companion",
     "active_overlay_review_skills",
+    "active_overlay_stage_skills",
     "resolve_skill_bundle",
 ]
+
+logger = logging.getLogger(__name__)
 
 
 def _active_overlay_config() -> object | None:
@@ -92,27 +95,45 @@ def active_overlay_review_skills() -> list[str]:
     return [s for s in skills if isinstance(s, str) and s]
 
 
-def active_overlay_lifecycle_skills(lifecycle: str) -> list[str]:
-    """Return the active overlay's ``get_lifecycle_companion_skills(lifecycle)``.
+def active_overlay_stage_skills(phase: str) -> list[str]:
+    """Return the active overlay's ADDITIONAL skills for *phase*, or ``[]``.
 
-    Generalizes :func:`active_overlay_review_skills` to every lifecycle so a
-    fanned-out ``code``/``e2e``/``test`` task — not only a reviewing task —
-    demands the overlay's companion skills. When no overlay is reachable, or the
-    overlay predates the hook, the caller behaves as if none were declared.
+    Reads ``config.get_stage_skills(phase)`` on the ACTIVE overlay only — a
+    teatree-core (public repo) dispatch runs under the teatree overlay, whose
+    stage map never carries a team overlay's skills, so team-internal skill
+    bodies cannot leak into a public-repo work prompt. When no overlay is
+    reachable — pre-bootstrap, tests without a configured overlay — returns
+    ``[]``. A configured stage skill that resolves to no ``SKILL.md`` in any
+    search dir is an operator config error: it is logged (fail loud) but still
+    returned, so the requires-chain / preamble path also surfaces it.
     """
     config = _active_overlay_config()
     if config is None:
         return []
-    getter = getattr(config, "get_lifecycle_companion_skills", None)
+    getter = getattr(config, "get_stage_skills", None)
     if not callable(getter):
         return []
     try:
-        skills = getter(lifecycle)
-    except Exception:  # noqa: BLE001 — an unreadable skill list degrades to none
+        skills = getter(phase)
+    except Exception:  # noqa: BLE001 — an unreadable stage map degrades to none
         return []
     if not isinstance(skills, list):
         return []
-    return [s for s in skills if isinstance(s, str) and s]
+    resolved = [s for s in skills if isinstance(s, str) and s]
+    _warn_unresolvable_stage_skills(resolved, phase)
+    return resolved
+
+
+def _warn_unresolvable_stage_skills(skills: list[str], phase: str) -> None:
+    from teatree.agents.skill_injection import (  # noqa: PLC0415 — deferred: keeps module import light
+        _resolve_skill_md,
+        harness_skills_dirs,
+    )
+
+    dirs = harness_skills_dirs()
+    for name in skills:
+        if _resolve_skill_md(name, dirs) is None:
+            logger.warning("Stage skill %r for phase %r resolves to no SKILL.md — continuing", name, phase)
 
 
 def _dispatch_cwd(worktree_path: str | Path | None) -> Path:
@@ -147,5 +168,6 @@ def resolve_skill_bundle(
         companion_skills=active_overlay_companion_skills(),
         pr_review_companion=active_overlay_pr_review_companion(),
         review_skills=active_overlay_review_skills(),
+        stage_skills=active_overlay_stage_skills(phase),
     )
     return result.skills
