@@ -37,6 +37,7 @@ The async ``query`` is bridged to the sync :meth:`ApiInProcessRunner.run` via
 
 import asyncio
 import dataclasses
+import functools
 import os
 import shutil
 import time
@@ -68,6 +69,7 @@ from teatree.eval.models import CLEAN_ROOM_LANE, CLEAN_ROOM_MIN_TURNS, EvalRun, 
 from teatree.eval.production_hooks import has_hook_events, hooked_env, t3_plugin, teatree_root
 from teatree.eval.prompt_framing import LIVE_ENV_FRAMING
 from teatree.eval.system_prompt_file import spill_system_prompt
+from teatree.eval.throttle_retry import THROTTLE_MAX_ATTEMPTS, ThrottleRetryDriver, ThrottleRetryHandlers
 from teatree.eval.toolset import (
     build_delegation_agents,
     compute_available_tools,
@@ -424,10 +426,12 @@ def load_agent_definition(agent_path: str, agent_sections: tuple[str, ...] = ())
 class ApiRunnerParams:
     """The construction knobs for :class:`ApiInProcessRunner`, grouped into one object.
 
-    Six knobs threaded one runner-construction concern each. Grouping them here
-    keeps the constructor a single parameter (so ``ApiInProcessRunner`` no longer
-    trips the too-many-arguments bar) and gives ``make_runner`` one value to build
-    and thread from the ``t3 eval run`` CLI.
+    Threads one runner-construction concern each. Grouping them here keeps the
+    constructor a single parameter (so ``ApiInProcessRunner`` no longer trips the
+    too-many-arguments bar) and gives ``make_runner`` one value to build and thread
+    from the ``t3 eval run`` CLI. The final three (``sleep``, ``rand``,
+    ``throttle_max_attempts``) are the transient-throttle-retry seams — injectable
+    so the bounded backoff is testable without real time or a real RNG.
     """
 
     #: ``None`` (the CI/production path, where ``make_runner`` passes no workspace
@@ -448,6 +452,15 @@ class ApiRunnerParams:
     #: resolved eval credential's ``spec.conflicting_vars``; the default preserves
     #: the pre-#2707-reversal metered strip for direct callers.
     conflicting_vars: tuple[str, ...] = _DEFAULT_CONFLICTING_VARS
+    #: Throttle-retry seams threaded to :class:`~teatree.eval.throttle_retry.ThrottleRetryDriver`.
+    #: ``sleep`` / ``rand`` (the jitter RNG returning ``[0, 1)``) are injectable so a
+    #: test asserts the backoff schedule without real time or a real RNG; ``None``
+    #: keeps the driver's defaults (real time / a system RNG). ``throttle_max_attempts``
+    #: ``None`` resolves to the env-overridable
+    #: :data:`~teatree.eval.throttle_retry.THROTTLE_MAX_ATTEMPTS` (``0`` disables retry).
+    sleep: Callable[[float], None] | None = None
+    rand: Callable[[], float] | None = None
+    throttle_max_attempts: int | None = None
 
 
 class ApiInProcessRunner:
@@ -461,6 +474,15 @@ class ApiInProcessRunner:
         self._max_budget_usd = params.max_budget_usd
         self._effort = params.effort
         self._conflicting_vars = params.conflicting_vars
+        max_attempts = (
+            params.throttle_max_attempts if params.throttle_max_attempts is not None else THROTTLE_MAX_ATTEMPTS
+        )
+        driver = ThrottleRetryDriver(max_attempts=max_attempts)
+        if params.sleep is not None:
+            driver = dataclasses.replace(driver, sleep=params.sleep)
+        if params.rand is not None:
+            driver = dataclasses.replace(driver, rand=params.rand)
+        self._retry = driver
 
     def _resolve_max_turns(self, spec: EvalSpec) -> int:
         """Override wins; else a clean-room budget is floored to :data:`CLEAN_ROOM_MIN_TURNS`."""
@@ -491,37 +513,41 @@ class ApiInProcessRunner:
         clean_room_prompt = load_agent_definition(spec.agent_path, spec.agent_sections) + LIVE_ENV_FRAMING
         system_prompt = build_system_prompt(spec, clean_room_prompt=clean_room_prompt)
         max_turns = self._resolve_max_turns(spec)
-        try:
-            messages = asyncio.run(self._drive(spec, system_prompt=system_prompt, max_turns=max_turns))
-        except TimeoutError:
-            return self._terminal_run(spec, terminal_reason="timeout")
-        except TerminalResultError as terminal:
-            return self._terminal_capped_run(spec, terminal)
-        except SuccessMislabelResultError as mislabel:
-            return self._success_mislabel_run(spec, mislabel)
+
+        def _drive_once() -> list[Message]:
+            return asyncio.run(self._drive(spec, system_prompt=system_prompt, max_turns=max_turns))
+
+        handlers = ThrottleRetryHandlers(
+            grade_success=functools.partial(self._grade_success, spec),
+            grade_cap=functools.partial(self._terminal_capped_run, spec),
+            grade_mislabel=functools.partial(self._success_mislabel_run, spec),
+            # A throttle that outlasted its retry budget surfaces loud as an errored
+            # run stamped with the retry count (visible to the AIMD governor).
+            surface_throttled=lambda reason, retries: dataclasses.replace(
+                self._terminal_run(spec, terminal_reason=reason), throttle_retries=retries
+            ),
+        )
+        return self._retry.run(_drive_once, handlers)
+
+    def _grade_success(self, spec: EvalSpec, messages: list[Message], retries: int) -> EvalRun:
+        # A hooked run that captured ZERO hook events means the shipped plugin did
+        # NOT register (the lane silently degraded to raw-model measurement) — fail
+        # loud rather than report a spurious pass. Otherwise grade the trajectory and
+        # carry the retry count for the AIMD governor.
         if spec.production_hooks and not has_hook_events(messages):
-            # A hooked run that captured ZERO hook events means the shipped plugin
-            # did NOT register — the lane silently degraded back to raw-model
-            # measurement. Fail loud (is_error) rather than report a spurious pass,
-            # mirroring the all-skipped gate's philosophy.
             return self._terminal_run(spec, terminal_reason="hooks_not_registered")
-        return eval_run_from_messages(spec, messages)
+        run = eval_run_from_messages(spec, messages)
+        return dataclasses.replace(run, throttle_retries=retries) if retries else run
 
     def _terminal_capped_run(self, spec: EvalSpec, terminal: TerminalResultError) -> EvalRun:
-        """Grade a run the SDK terminated at a known cap (budget/max-turns).
+        """Grade a run the SDK capped (budget/max-turns) on its REAL partial trajectory.
 
-        When the agent produced a trajectory before the cap, grade the REAL
-        trajectory: build via :func:`eval_run_from_messages` so the matchers
-        decide pass/fail on what the agent actually did, then stamp the classified
-        ``terminal_reason`` (so the renderer shows ``max_turns``/``budget_exceeded``)
-        and clear ``is_error`` — a capped run that satisfied its matchers must not
-        be forced to FAIL; the cap is surfaced via ``terminal_reason``, not by
-        marking the run errored. Recover cost from the message's ``($X)`` (budget),
-        else from any captured ``ResultMessage`` cost; when neither names a cost (a
-        max-turns run with no metered result) cost is ``0.0``, with the
-        ``terminal_reason`` making the incompleteness visible. Only when NOTHING
-        was captured does it fall back to the empty :meth:`_terminal_run` shape —
-        whose budget cost floors to the cap, the existing over-budget behavior.
+        A capped run that satisfied its matchers must not be forced to FAIL: grade the
+        captured messages, stamp the classified ``terminal_reason``, and clear
+        ``is_error`` (the cap is surfaced via ``terminal_reason``, not the error flag).
+        Cost comes from the message's ``($X)``, else a captured ``ResultMessage``, else
+        ``0.0``; a run that captured NOTHING falls back to the empty
+        :meth:`_terminal_run` (whose budget cost floors to the cap).
         """
         message_amount = budget_amount_from_message(str(terminal.cause))
         if not terminal.messages:
@@ -543,16 +569,12 @@ class ApiInProcessRunner:
 
     @staticmethod
     def _success_mislabel_run(spec: EvalSpec, mislabel: SuccessMislabelResultError) -> EvalRun:
-        """Grade a finished SUCCESS the CLI mislabeled by exiting non-zero.
+        """Grade a finished SUCCESS the CLI mislabeled by exiting non-zero on the ``success`` subtype.
 
-        The captured ``result`` event reads ``subtype="success"`` but carries a
-        stray ``is_error=True`` (the CLI exited non-zero on the success subtype).
-        Grade the REAL trajectory via :func:`eval_run_from_messages` so the
-        matchers decide pass/fail, then clear ``is_error`` — exactly the correction
-        :meth:`_terminal_capped_run` applies — so a finished, all-matchers-pass run
-        is not forced to FAIL on the flag alone (:attr:`ScenarioResult.passed` fails
-        on ``is_error`` BEFORE consulting matchers). The ``terminal_reason`` already
-        reads ``success`` and is left untouched — this is a finished run, not a cap.
+        The captured trajectory is graded and ``is_error`` cleared (the same correction
+        :meth:`_terminal_capped_run` applies), so a finished, all-matchers-pass run is
+        not forced to FAIL on the stray flag alone — ``ScenarioResult.passed`` fails on
+        ``is_error`` BEFORE consulting matchers.
         """
         graded = eval_run_from_messages(spec, mislabel.messages)
         return dataclasses.replace(graded, is_error=False)
@@ -595,25 +617,15 @@ class ApiInProcessRunner:
     def _resolve_eval_target(self, spec: EvalSpec) -> Iterator[tuple[Path, str, dict[str, str]]]:
         """Yield ``(workspace, cwd, env)`` — ISOLATED to a throwaway for spawning scenarios.
 
-        A non-spawning scenario keeps the existing clean-room shape: the
-        configured ``workspace``, the :func:`isolated_claude_env` neutral cwd, and
-        the personal-context-redirected env.
-
-        A SUB-AGENT-SPAWNING scenario (:func:`scenario_exposes_subagent_spawn`)
-        additionally runs against a per-run EPHEMERAL CHECKOUT: ``workspace`` (the
-        SDK ``add_dirs`` grant) and ``cwd`` both point at the throwaway, and the env
-        is overlaid by :func:`ephemeral_checkout_env` so ``import teatree`` and
-        ``git`` resolve into the throwaway rather than the developer's real clone.
-        Without this, a spawned sub-agent locates the real clone via the editable
-        install + shared ``.git`` (a neutral cwd does NOT block that) and does
-        destructive git work on it — the corruption this isolation prevents.
-
-        A scenario declaring ``cli_stubs`` additionally gets a throwaway ``bin/`` of
-        inert CLI stubs prepended to ``PATH`` (a SEPARATE lever from ``fixture``, so
-        the two compose): the correct ``t3``/``gh``/``glab`` command resolves and
-        exits 0 instead of erroring, so the agent stops rather than wandering into a
-        ``max_turns`` cap-taint. The stubs hold no state; the matchers still grade
-        the CALL, so negatives keep full teeth.
+        A non-spawning scenario keeps the clean-room shape (configured ``workspace``,
+        neutral :func:`isolated_claude_env` cwd, personal-context-redirected env). A
+        SUB-AGENT-SPAWNING scenario additionally runs against a per-run EPHEMERAL
+        CHECKOUT so a spawned sub-agent cannot reach the developer's real clone via the
+        editable install + shared ``.git`` and do destructive git work on it — the
+        corruption this isolation exists to prevent. A ``cli_stubs`` scenario also gets a
+        throwaway ``bin/`` of inert stubs on ``PATH`` (composes with ``fixture``) so the
+        correct ``t3``/``gh``/``glab`` exits 0 instead of wandering into a cap-taint; the
+        matchers still grade the CALL, so negatives keep full teeth.
         """
         with ExitStack() as stack:
             env, cwd = stack.enter_context(isolated_claude_env(self._conflicting_vars))
