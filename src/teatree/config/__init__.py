@@ -70,6 +70,7 @@ from teatree.config.settings import (
     UserSettings,
 )
 from teatree.config.speak import resolve_speak, speak_from_subtable
+from teatree.config.trusted_authors import effective_trusted_issue_authors
 from teatree.paths import DATA_DIR, get_data_dir
 
 __all__ = [
@@ -127,6 +128,7 @@ __all__ = [
     "default_logging",
     "discover_active_overlay",
     "discover_overlays",
+    "effective_trusted_issue_authors",
     "get_data_dir",
     "get_effective_settings",
     "is_feature_flag",

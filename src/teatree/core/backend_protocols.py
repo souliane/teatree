@@ -272,6 +272,8 @@ class CodeHostBackend(Protocol):
 
     def list_assigned_issues(self, *, assignee: str) -> list[RawAPIDict]: ...  # pragma: no branch
 
+    def list_authored_issues(self, *, author: str) -> list[RawAPIDict]: ...  # pragma: no branch
+
     def create_issue(
         self,
         *,

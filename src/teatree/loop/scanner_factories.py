@@ -9,43 +9,38 @@ the per-overlay domain slices (``domain_jobs``) consume. Depends DOWN on
 import logging
 from typing import TYPE_CHECKING
 
-from teatree.config import Autonomy, Mode, UserSettings, clone_root, get_effective_settings
+from teatree.config import (
+    Autonomy,
+    Mode,
+    UserSettings,
+    clone_root,
+    effective_trusted_issue_authors,
+    get_effective_settings,
+)
 from teatree.core.backend_factory import OverlayBackends
-from teatree.core.backend_protocols import CodeHostBackend
 from teatree.core.models import ImplementedIssueMarker
 from teatree.core.worktree.clone_paths import find_clone_path
-from teatree.loop.job_identity import _TUPLE_PAIR, _ScannerJob
-from teatree.loop.scanner_factory_config import _gitlab_approvals_enabled, _user_identity_aliases_for_overlay
+from teatree.loop.job_identity import _TUPLE_PAIR
+from teatree.loop.scanner_host_fanout import _competing_url_prefixes, _jobs_for_backend_hosts
 from teatree.loop.scanners import (
     ArchitecturalReviewScanner,
-    AssignedIssuesScanner,
     AutoReviewTaskDispatcher,
     BackendChannelHistoryFetcher,
     CallCommandMergeKeystone,
     CodexReviewScanner,
     GhCodexPrApi,
     GhPrApiClient,
-    GitLabApprovalsScanner,
     GlabGhMrStateClassifier,
     IssueDispositionScanner,
     IssueImplementerScanner,
-    MyPrsScanner,
     NullMergeNotifier,
     PrSweepScanner,
     PullMainCloneScanner,
-    ReviewerPrsScanner,
     SlackBroadcastsScanner,
     SlackMergeNotifier,
     TaskSweepScanner,
-    TicketCompletionScanner,
-    TicketDispositionScanner,
 )
 from teatree.loop.substrate_pinger import NotifyWithFallbackSubstratePinger
-from teatree.loop.tick_resolvers import (
-    _allowed_url_prefixes_for_host,
-    _identity_alias_groups_for_overlay,
-    _web_origin_for_host,
-)
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -53,145 +48,9 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-
-def _jobs_for_backend_hosts(
-    backend: OverlayBackends,
-    tag: str,
-    *,
-    all_backends: tuple[OverlayBackends, ...] = (),
-) -> list[_ScannerJob]:
-    """Build one scanner-job fan-out per host on *backend* (#976).
-
-    Pre-fix the caller assumed one ``backend.host``; with multi-host the
-    same fan-out must run for each platform that resolved a credential.
-    ``TicketCompletionScanner`` is overlay-scoped (reads local Ticket
-    rows), so it's emitted exactly once even when two hosts are present.
-
-    *all_backends* (when provided) lets each scanner know the URL claims
-    of sibling overlays so a less-specific claim here yields to a more
-    specific claim there — see :func:`_competing_url_prefixes` (#1324).
-    """
-    jobs: list[_ScannerJob] = []
-    ticket_completion_emitted = False
-    gitlab_approvals_enabled = _gitlab_approvals_enabled()
-    identity_groups = _identity_alias_groups_for_overlay(tag, backend)
-    # #1113 Defect 1: the trusted operator identity set (``backend.identities``,
-    # #976) is an implicit self-group when no explicit ``identity_aliases``
-    # config overrides it. Without this union, ``user_identity_aliases`` and
-    # ``identity_alias_groups`` both resolve to empty in the user's deployment
-    # → ``_is_self_handoff`` short-circuits to False → same-human reassigns
-    # between ``backend.identities`` members (the multi-identity operator set)
-    # render as ``reassigned`` churn. Explicit groups still take precedence.
-    if not identity_groups and len(backend.identities) > 1:
-        identity_groups = (tuple(backend.identities),)
-    for code_host in backend.hosts:
-        url_prefixes = _allowed_url_prefixes_for_host(backend, code_host)
-        competing_prefixes = _competing_url_prefixes(
-            this_backend=backend,
-            code_host=code_host,
-            all_backends=all_backends,
-        )
-        jobs.extend(
-            [
-                _ScannerJob(
-                    scanner=MyPrsScanner(
-                        host=code_host,
-                        identities=backend.identities,
-                        allowed_url_prefixes=url_prefixes,
-                        competing_url_prefixes=competing_prefixes,
-                    ),
-                    overlay=tag,
-                ),
-                _ScannerJob(
-                    scanner=ReviewerPrsScanner(
-                        host=code_host,
-                        identities=backend.identities,
-                        overlay_name=tag,
-                        allowed_url_prefixes=url_prefixes,
-                        competing_url_prefixes=competing_prefixes,
-                    ),
-                    overlay=tag,
-                ),
-                _ScannerJob(
-                    scanner=AssignedIssuesScanner(
-                        host=code_host,
-                        ready_labels=backend.ready_labels,
-                        exclude_labels=backend.exclude_labels,
-                        auto_start=backend.auto_start_assigned_issues,
-                        max_concurrent=backend.max_concurrent_auto_starts,
-                        overlay_name=tag,
-                        identities=backend.identities,
-                    ),
-                    overlay=tag,
-                ),
-                _ScannerJob(
-                    scanner=TicketDispositionScanner(
-                        host=code_host,
-                        overlay=backend.overlay,
-                        ready_labels=backend.ready_labels,
-                        overlay_name=tag,
-                        user_identity_aliases=_user_identity_aliases_for_overlay(tag),
-                        identity_alias_groups=identity_groups,
-                    ),
-                    overlay=tag,
-                ),
-            ],
-        )
-        if backend.overlay is not None and not ticket_completion_emitted:
-            jobs.append(
-                _ScannerJob(
-                    scanner=TicketCompletionScanner(
-                        overlay=backend.overlay,
-                        overlay_name=tag,
-                    ),
-                    overlay=tag,
-                ),
-            )
-            ticket_completion_emitted = True
-        if gitlab_approvals_enabled:
-            # Poll-driven complement to the webhook-driven `SCHEDULE_MERGE` path
-            # (#936). Off by default — opt-in via the env flag so deployments
-            # that already wire the GitLab webhook do not double-emit.
-            jobs.append(
-                _ScannerJob(
-                    scanner=GitLabApprovalsScanner(host=code_host, identities=backend.identities),
-                    overlay=tag,
-                ),
-            )
-    return jobs
-
-
-def _competing_url_prefixes(
-    *,
-    this_backend: OverlayBackends,
-    code_host: CodeHostBackend,
-    all_backends: tuple[OverlayBackends, ...],
-) -> tuple[str, ...]:
-    """Collect URL claims from every overlay OTHER than *this_backend* (#1324).
-
-    Lets a scanner reject a URL it claims less specifically than a sibling
-    overlay claims — the most-specific overlay attribution wins, so a
-    dogfooding overlay that lists a sibling's repo path under
-    ``workspace_repos`` no longer steals the sibling's PRs from its zone.
-
-    Only sibling backends with a code-host that resolves to the same web
-    origin contribute claims; a GitLab-only sibling can't compete for a
-    GitHub URL.
-    """
-    if not all_backends:
-        return ()
-    own_origin = _web_origin_for_host(code_host)
-    if not own_origin:
-        return ()
-    prefixes: list[str] = []
-    for sibling in all_backends:
-        if sibling is this_backend or sibling.name == this_backend.name:
-            continue
-        for sibling_host in sibling.hosts:
-            if _web_origin_for_host(sibling_host) != own_origin:
-                continue
-            prefixes.extend(_allowed_url_prefixes_for_host(sibling, sibling_host))
-    return tuple(prefixes)
+# Re-exported for ``tick`` / ``domain_jobs`` / the builder tests, which import the
+# host fan-out from this module; its body lives in ``scanner_host_fanout`` (#3235).
+__all__ = ["_competing_url_prefixes", "_jobs_for_backend_hosts"]
 
 
 def _resolve_broadcast_channels(config: object) -> list[tuple[str, str]]:
@@ -443,7 +302,7 @@ def _architectural_review_scanner_for(backend: OverlayBackends) -> Architectural
 
 
 def _issue_implementer_scanner_for(backend: OverlayBackends) -> IssueImplementerScanner | None:
-    """Build a per-overlay issue-implementer scanner behind the triple gate (#1553).
+    """Build a per-overlay issue-implementer scanner behind the triple gate (#1553, #3235).
 
     Returns a scanner ONLY when the always-on issue-implementer loop is
     opted in for this overlay AND the in-flight budget has room. Two of the
@@ -464,16 +323,20 @@ def _issue_implementer_scanner_for(backend: OverlayBackends) -> IssueImplementer
     ``build_default_jobs`` emits anything for this domain — the live
     fan-out stays byte-for-byte unchanged until an overlay opts in.
 
-    A loop that is enabled with an empty ``issue_implementer_label`` is a
-    safe but silent no-op (the scanner short-circuits on a blank label so no
-    issue is ever claimed). That fails closed by design, but an operator who
-    flipped the master gate without setting a label sees nothing dispatch and
-    no reason why — so we emit one WARNING naming the missing label (#1554).
+    #3235 — INTAKE BY TRUSTED AUTHOR. The builder resolves the CONFIG tier of the
+    trusted-author set (:func:`~teatree.config.effective_trusted_issue_authors`: the
+    owner's ``user_identity_aliases`` unioned with the ``trusted_issue_authors`` allowlist) and
+    hands it to the scanner, which unions in the DB ``TrustedIdentity`` rows and
+    enforces the fail-closed per-issue gate. An EMPTY label is therefore no longer a
+    kill-switch: intake is by author, and the label only applies when the operator
+    explicitly opts back into it with ``issue_implementer_require_label``. That flag
+    WITH an empty label is a safe but silent no-op (nothing can ever match), so the
+    operator who set up that contradiction gets one WARNING naming the missing label.
 
     Fleet-safety Stage 2: when ``fleet_claim_enabled`` is on the scanner is
-    emitted even at a full budget (or an empty label) — with ``can_claim=False``
-    it claims nothing new but STILL runs the per-tick heartbeat sweep, so an
-    in-flight claim can never expire and be stolen mid-dispatch. With the
+    emitted even at a full budget (or a require-label contradiction) — with
+    ``can_claim=False`` it claims nothing new but STILL runs the per-tick heartbeat
+    sweep, so an in-flight claim can never expire and be stolen mid-dispatch. With the
     kill-switch OFF the emission stays byte-for-byte the pre-Stage-2 behaviour
     (no scanner unless we can actually claim).
     """
@@ -485,22 +348,26 @@ def _issue_implementer_scanner_for(backend: OverlayBackends) -> IssueImplementer
     code_host = backend.host
     if code_host is None:
         return None
-    if not settings.issue_implementer_label:
+    label_satisfiable = bool(settings.issue_implementer_label) or not settings.issue_implementer_require_label
+    if not label_satisfiable:
         logger.warning(
-            "issue-implementer loop enabled for overlay %r but issue_implementer_label is empty — "
-            "nothing will be dispatched until a label is set",
+            "issue-implementer loop enabled for overlay %r with issue_implementer_require_label=true but "
+            "issue_implementer_label is empty — nothing will be dispatched until a label is set "
+            "(or the require-label flag is turned off, which intakes by trusted author alone)",
             backend.name,
         )
     has_budget = (
         ImplementedIssueMarker.objects.in_flight_count(backend.name) < settings.issue_implementer_max_concurrent
     )
-    can_claim = bool(settings.issue_implementer_label) and has_budget
+    can_claim = label_satisfiable and has_budget
     if not can_claim and not wire.fleet_claim_enabled(backend.name):
         return None
     return IssueImplementerScanner(
         host=code_host,
         label=settings.issue_implementer_label,
         overlay_name=backend.name,
+        trusted_authors=tuple(sorted(effective_trusted_issue_authors(settings))),
+        require_label=settings.issue_implementer_require_label,
         identities=backend.identities,
         can_claim=can_claim,
     )

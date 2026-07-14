@@ -90,10 +90,23 @@ def _config_trusted_handles() -> set[str]:
         return set()
 
 
-def is_trusted_author(author: str) -> bool:
-    """True iff *author* is in the trusted set (case-insensitive)."""
+def is_trusted_author(author: str, *, extra_trusted: frozenset[str] = frozenset()) -> bool:
+    """True iff *author* is in the trusted set (case-insensitive).
+
+    *extra_trusted* is a caller-supplied set of ALREADY-normalised (lower-cased)
+    handles, UNIONED with :func:`trusted_handles` rather than replacing it (#3235).
+    It exists because two of the issue-implementer's three trust sources —
+    ``user_identity_aliases`` and the ``trusted_issue_authors`` allowlist — live in
+    :mod:`teatree.config`, which sits below the DB and so cannot union itself with
+    the ``TrustedIdentity`` rows; the caller resolves those two
+    (:func:`teatree.config.effective_trusted_issue_authors`) and hands them in here,
+    where the DB half is known. Default-empty, so every pre-existing consumer (the
+    merge keystone, the four reviewing scanners) resolves exactly as before.
+
+    Fail-closed: an EMPTY author is never trusted, whatever *extra_trusted* holds.
+    """
     cleaned = author.strip().lower()
-    return bool(cleaned) and cleaned in trusted_handles()
+    return bool(cleaned) and cleaned in (trusted_handles() | extra_trusted)
 
 
 def repo_is_internal(slug: str, *, host_kind: str = "github") -> bool:
@@ -127,16 +140,29 @@ def _host_prefixed_slug(slug: str, *, host_kind: str) -> str:
     return slug
 
 
-def classify_author(slug: str, author: str, *, host_kind: str = "github") -> AuthorClassification:
+def classify_author(
+    slug: str,
+    author: str,
+    *,
+    host_kind: str = "github",
+    extra_trusted: frozenset[str] = frozenset(),
+) -> AuthorClassification:
     """Classify *author* on *slug* — the one decision the four scanners share.
 
     A PRIVATE / internal repo yields ``internal_repo=True`` + ``trusted=True``
     (no author check; the user owns access control). A PUBLIC repo with a
     trusted author yields ``trusted=True``; a PUBLIC repo with an untrusted /
     unknown / empty author yields ``untrusted=True`` (fail-closed).
+
+    *extra_trusted* widens only the TRUST SET, never the repo-visibility rule — see
+    :func:`is_trusted_author`. Callers that additionally need the author to be an
+    EXPLICIT member of the trusted set (the issue-implementer's intake gate, where the
+    internal-repo bypass would otherwise hand an unlisted collaborator the keys to the
+    autonomous factory) must conjoin :func:`is_trusted_author`; ``trusted=True`` alone
+    means "cleared for this repo", not "named in the trust set".
     """
     if repo_is_internal(slug, host_kind=host_kind):
         return AuthorClassification(trusted=True, untrusted=False, internal_repo=True)
-    if is_trusted_author(author):
+    if is_trusted_author(author, extra_trusted=extra_trusted):
         return AuthorClassification(trusted=True, untrusted=False, internal_repo=False)
     return AuthorClassification(trusted=False, untrusted=True, internal_repo=False)

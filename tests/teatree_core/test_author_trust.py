@@ -17,6 +17,11 @@ from django.test import TestCase
 from teatree.core.models import TrustedIdentity
 from teatree.core.review import author_trust
 
+# Imported by NAME (not merely module-qualified) so a revert of either production
+# symbol turns TestExtraTrustedUnion red — the anti-vacuity contract the per-diff
+# coverage gate enforces (BLUEPRINT §17.6.3).
+from teatree.core.review.author_trust import classify_author, is_trusted_author
+
 # ast-grep-ignore: ac-django-no-pytest-django-db
 pytestmark = pytest.mark.django_db
 
@@ -138,3 +143,44 @@ class TestPreMigrationTolerance(TestCase):
             ):
                 mock_settings.return_value.user_identity_aliases = ["souliane"]
                 assert author_trust.trusted_handles() == {"souliane"}
+
+
+class TestExtraTrustedUnion(TestCase):
+    """``extra_trusted`` unions caller-supplied handles into the trust set (#3235).
+
+    The issue-implementer's intake set is a UNION of three sources — the owner's
+    ``user_identity_aliases``, the ``trusted_issue_authors`` allowlist, and the
+    ``TrustedIdentity`` rows. The first two live in config (which cannot reach the
+    DB), so the caller resolves them and hands them to this seam. Default-empty, so
+    every existing consumer (the keystone, the four reviewing scanners) is byte-for-byte
+    unchanged.
+    """
+
+    def test_extra_trusted_defaults_to_empty_so_existing_callers_are_unchanged(self) -> None:
+        _seed_known()
+        with _public():
+            assert classify_author(_PUBLIC, "trusted-colleague").untrusted is True
+
+    def test_extra_trusted_handle_is_trusted(self) -> None:
+        _seed_known()
+        with _public():
+            classification = classify_author(
+                _PUBLIC, "trusted-colleague", extra_trusted=frozenset({"trusted-colleague"})
+            )
+        assert classification.trusted is True
+        assert classification.untrusted is False
+
+    def test_extra_trusted_is_a_union_not_a_replacement(self) -> None:
+        """A DB-trusted handle stays trusted when the caller supplies its own extras."""
+        _seed_known()
+        with _public():
+            assert classify_author(_PUBLIC, "souliane", extra_trusted=frozenset({"trusted-colleague"})).trusted
+
+    def test_extra_trusted_match_is_case_insensitive(self) -> None:
+        assert is_trusted_author("Trusted-Colleague", extra_trusted=frozenset({"trusted-colleague"})) is True
+
+    def test_extra_trusted_never_admits_an_unlisted_author(self) -> None:
+        assert is_trusted_author("evilhacker", extra_trusted=frozenset({"trusted-colleague"})) is False
+
+    def test_empty_author_is_untrusted_even_with_extras(self) -> None:
+        assert is_trusted_author("", extra_trusted=frozenset({"trusted-colleague"})) is False
