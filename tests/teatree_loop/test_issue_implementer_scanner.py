@@ -23,6 +23,7 @@ class _Host:
     user: str = "alice"
     issues: list[RawAPIDict] = field(default_factory=list)
     open_prs: list[RawAPIDict] = field(default_factory=list)
+    merged_prs: list[RawAPIDict] = field(default_factory=list)
 
     def current_user(self) -> str:
         return self.user
@@ -34,6 +35,10 @@ class _Host:
     def list_my_prs(self, *, author: str) -> list[RawAPIDict]:
         _ = author
         return self.open_prs
+
+    def list_my_merged_prs(self, *, author: str) -> list[RawAPIDict]:
+        _ = author
+        return self.merged_prs
 
 
 class IssueImplementerScannerTests(TestCase):
@@ -142,6 +147,17 @@ class IssueImplementerReadbackTests(TestCase):
         host = _Host(
             issues=[self._issue(self.URL_A)],
             open_prs=[{"html_url": "https://github.com/souliane/teatree/pull/7", "head": {"ref": "100-feature-x"}}],
+        )
+        assert self._scanner(host).scan() == []
+        assert not ImplementedIssueMarker.objects.filter(issue_url=self.URL_A).exists()
+
+    def test_skips_claim_when_merged_pr_closes_issue(self) -> None:
+        # A fully-implemented issue (its PRs already merged) must not be re-claimed.
+        host = _Host(
+            issues=[self._issue(self.URL_A)],
+            merged_prs=[
+                {"html_url": "https://github.com/souliane/teatree/pull/7", "head": {"ref": "x"}, "body": "Closes #100"}
+            ],
         )
         assert self._scanner(host).scan() == []
         assert not ImplementedIssueMarker.objects.filter(issue_url=self.URL_A).exists()
