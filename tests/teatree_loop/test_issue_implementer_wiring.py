@@ -19,9 +19,11 @@ from django.test import TestCase
 from teatree.config import UserSettings
 from teatree.core.backend_factory import OverlayBackends
 from teatree.core.backend_protocols import CodeHostBackend
+from teatree.core.models import Task, Ticket
 from teatree.loop.dispatch import dispatch
 from teatree.loop.domain_jobs import jobs_for_domain
 from teatree.loop.job_identity import Domain
+from teatree.loop.persistence import persist_agent_actions
 from teatree.loop.scanner_factories import _issue_implementer_scanner_for
 from teatree.loop.scanners.issue_implementer import IssueImplementerScanner
 from teatree.loops.issue_implementer.loop import MINI_LOOP
@@ -229,3 +231,51 @@ class IssueImplementerMiniLoopTests(TestCase):
         agent_zones = [a.zone for a in actions if a.kind == "agent"]
         assert agent_zones == ["t3:orchestrator"]
         assert any(a.kind == "statusline" and a.zone == "action_needed" for a in actions)
+
+    def test_claimed_issue_persists_orchestrator_coding_task(self) -> None:
+        """A claimed auto-implement issue must produce the orchestrator dispatch — a real Ticket + coding Task.
+
+        Regression (#3100/#3213): the scanner claimed the issue (an
+        ``ImplementedIssueMarker`` row was written) and ``dispatch`` emitted the
+        ``t3:orchestrator`` agent action, but the emitted payload omitted
+        ``auto_start`` — so the shared ``_handle_orchestrator`` persistence handler
+        (which returns ``None`` unless ``auto_start is True``) silently dropped it.
+        No ``Ticket``/``Task`` was ever created and the claim stranded. This asserts
+        the WHOLE path scan → dispatch → persist yields the coding Task.
+        """
+        url = "https://github.com/souliane/teatree/issues/100"
+        host = _labelled_host(url)
+        with patch(
+            _PATCH_TARGET,
+            return_value=_settings(issue_implementer_enabled=True, issue_implementer_label="auto-implement"),
+        ):
+            jobs = MINI_LOOP.build_jobs(backends=[_backend_with_host(host)])
+        signals = [signal for job in jobs for signal in job.scanner.scan()]
+        claimed = [s for s in signals if s.kind == "issue_implementer.claimed"]
+
+        created = persist_agent_actions(dispatch(claimed))
+
+        assert len(created) == 1
+        task = created[0]
+        assert task.phase == "coding"
+        assert task.ticket.role == Ticket.Role.AUTHOR
+        assert task.ticket.issue_url == url
+
+    def test_claimed_issue_dispatch_never_double_dispatches(self) -> None:
+        """Re-persisting the same claimed-issue dispatch is a no-op (idempotency)."""
+        url = "https://github.com/souliane/teatree/issues/100"
+        host = _labelled_host(url)
+        with patch(
+            _PATCH_TARGET,
+            return_value=_settings(issue_implementer_enabled=True, issue_implementer_label="auto-implement"),
+        ):
+            jobs = MINI_LOOP.build_jobs(backends=[_backend_with_host(host)])
+        claimed = [s for job in jobs for s in job.scanner.scan() if s.kind == "issue_implementer.claimed"]
+        actions = dispatch(claimed)
+
+        first = persist_agent_actions(actions)
+        second = persist_agent_actions(actions)
+
+        assert len(first) == 1
+        assert second == []
+        assert Task.objects.filter(ticket__issue_url=url, phase="coding").count() == 1
