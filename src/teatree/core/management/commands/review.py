@@ -25,7 +25,7 @@ import typer
 from django_typer.management import TyperCommand, command, initialize
 
 from teatree.core.gates.schema_guard import SelfDbMigrationError, require_current_schema
-from teatree.core.merge import CodeHostQuery
+from teatree.core.merge import CodeHostQuery, _looks_like_owner_repo
 from teatree.core.merge.conflict_only import rebind_clearance_after_conflict_only_merge
 from teatree.core.models import (
     Finding,
@@ -128,7 +128,13 @@ class Command(TyperCommand):
     def record(  # noqa: PLR0913 — django-typer command: every param maps 1:1 to a ReviewVerdict field, the arg list IS the public CLI surface (same rationale as `ticket clear`).
         self,
         pr_id: int,
-        slug: str,
+        slug: Annotated[
+            str,
+            typer.Argument(
+                help="repo slug owner/repo (e.g. acme/widgets), NEVER a branch name — "
+                "the merge verdict lookup keys by the resolved repo slug"
+            ),
+        ],
         *,
         reviewed_sha: Annotated[
             str, typer.Option("--reviewed-sha", help="Full 40-char hex commit id of the reviewed tree.")
@@ -152,6 +158,12 @@ class Command(TyperCommand):
         Refuses the same way ``MergeClear.issue`` does (full-SHA bind, known
         verdict/blast/verify, non-empty reviewer, no merge_safe-on-red-checks).
         """
+        if not _looks_like_owner_repo(slug):
+            self.stderr.write(
+                f"  record refused: slug must be owner/repo (got {slug!r}) — this looks like a branch "
+                f"name; the review-verdict / merge lookup keys by repo slug"
+            )
+            raise SystemExit(1)
         if not reviewed_sha.strip():
             self.stderr.write("  record refused: --reviewed-sha is required (full hex commit id of the reviewed tree)")
             raise SystemExit(1)
