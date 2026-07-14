@@ -1,3 +1,8 @@
 {
-  "mcpServers": {}
+  "mcpServers": {
+    "teatree": {
+      "command": "t3",
+      "args": ["mcp", "serve"]
+    }
+  }
 }
