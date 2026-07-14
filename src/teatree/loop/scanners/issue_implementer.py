@@ -23,7 +23,7 @@ from teatree.core.backend_protocols import CodeHostBackend
 from teatree.core.fleet import wire
 from teatree.core.models import NEEDS_TRIAGE_LABEL, ImplementedIssueMarker
 from teatree.loop.scanners.base import ScanSignal
-from teatree.loop.scanners.forge_readback import existing_work_for_issue, fetch_open_prs, issue_number
+from teatree.loop.scanners.forge_readback import existing_work_for_issue, fetch_merged_prs, fetch_open_prs, issue_number
 from teatree.types import RawAPIDict
 
 logger = logging.getLogger(__name__)
@@ -87,9 +87,10 @@ class IssueImplementerScanner:
 
     ``readback_enabled`` (default on) runs the pre-dispatch forge read-back
     (:func:`~teatree.loop.scanners.forge_readback.existing_work_for_issue`)
-    before each claim: an issue whose ``<ticket_number>-*`` branch or a
-    referencing PR already exists on the forge is skipped, closing most of the
-    cross-instance double-claim window that the local claim ledger cannot see.
+    before each claim: an issue whose branch cites the ticket number or an
+    open/merged PR referencing it already exists on the forge is skipped,
+    closing most of the cross-instance double-claim window that the local claim
+    ledger cannot see.
     """
 
     host: CodeHostBackend
@@ -118,11 +119,17 @@ class IssueImplementerScanner:
         if not candidates:
             return []
         open_prs = fetch_open_prs(self.host, authors=assignees) if self.readback_enabled else []
+        merged_prs = fetch_merged_prs(self.host, authors=assignees) if self.readback_enabled else []
         signals: list[ScanSignal] = []
         for issue in candidates:
             url = _issue_url(issue)
             try:
-                hit = existing_work_for_issue(issue_url=url, ticket_number=issue_number(url), open_prs=open_prs)
+                hit = existing_work_for_issue(
+                    issue_url=url,
+                    ticket_number=issue_number(url),
+                    open_prs=open_prs,
+                    merged_prs=merged_prs,
+                )
                 if hit is not None:
                     logger.info(
                         "IssueImplementerScanner read-back skip %s: %s (%s)",
