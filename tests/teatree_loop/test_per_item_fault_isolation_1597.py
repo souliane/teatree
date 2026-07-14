@@ -672,6 +672,14 @@ class _ImplementerHost:
         _ = assignee
         return self.issues
 
+    def list_my_prs(self, *, author: str, updated_after: str | None = None) -> list[RawAPIDict]:
+        _ = (author, updated_after)
+        return []
+
+    def list_my_merged_prs(self, *, author: str, updated_after: str | None = None) -> list[RawAPIDict]:
+        _ = (author, updated_after)
+        return []
+
 
 IMPL_LABEL = "auto-implement"
 IMPL_URL_A = "https://github.com/acme/repo/issues/1"
