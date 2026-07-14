@@ -404,7 +404,7 @@ class TicketDispositionBackendIdentitySelfGroupTests(TestCase):
         # An explicit non-empty groups tuple skips the union branch entirely.
         backend = _FakeBackend(_Host(user="acme-gh"), name=self.OVERLAY, identities=("acme-gh",))
         with patch(
-            "teatree.loop.scanner_factories._identity_alias_groups_for_overlay",
+            "teatree.loop.scanner_host_fanout._identity_alias_groups_for_overlay",
             return_value=(("explicit", "group"),),
         ):
             jobs = _jobs_for_backend_hosts(backend, self.OVERLAY)

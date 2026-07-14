@@ -22,7 +22,7 @@ from teatree.loop.scanners.issue_implementer import IssueImplementerScanner
 from teatree.types import RawAPIDict
 
 OWNER = "souliane"
-COLLEAGUE = "adrien-oper"
+COLLEAGUE = "trusted-colleague"
 STRANGER = "random-user"
 TRUSTED = (OWNER, COLLEAGUE)
 

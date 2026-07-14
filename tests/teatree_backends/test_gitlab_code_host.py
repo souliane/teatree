@@ -269,10 +269,10 @@ def test_list_authored_issues_delegates_to_client() -> None:
     client.list_open_issues_for_author.return_value = [{"iid": 4, "title": "Issue 4"}]
     host = GitLabCodeHost(client=client)
 
-    result = host.list_authored_issues(author="adrien-oper")
+    result = host.list_authored_issues(author="trusted-colleague")
 
     assert result == [{"iid": 4, "title": "Issue 4"}]
-    client.list_open_issues_for_author.assert_called_once_with("adrien-oper")
+    client.list_open_issues_for_author.assert_called_once_with("trusted-colleague")
 
 
 def test_post_pr_comment_returns_error_when_project_not_resolved() -> None:

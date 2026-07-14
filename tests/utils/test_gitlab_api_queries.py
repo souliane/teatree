@@ -2,6 +2,10 @@ import pytest
 
 from teatree.backends.gitlab import api as gitlab_api
 
+# The REST transport (and its ``httpx`` handle) lives in ``http_client`` since the
+# api.py transport/domain split; ``api`` is the domain layer on top of it.
+from teatree.backends.gitlab import http_client as gitlab_http
+
 
 class _PagedResponse:
     """Minimal httpx.Response stand-in for a single GitLab REST list page."""
@@ -55,7 +59,7 @@ def test_get_json_paginated_breaks_on_non_list_body(monkeypatch: pytest.MonkeyPa
         def json(self) -> dict[str, object]:
             return {"message": "403 Forbidden"}
 
-    monkeypatch.setattr(gitlab_api.httpx, "get", lambda url, *, headers, timeout: _ErrorResponse())
+    monkeypatch.setattr(gitlab_http.httpx, "get", lambda url, *, headers, timeout: _ErrorResponse())
     client = gitlab_api.GitLabAPI(token="test-token")
 
     assert client.get_json_paginated("merge_requests?per_page=100") == []
@@ -69,7 +73,7 @@ def test_get_json_paginated_appends_page_with_question_mark_separator(monkeypatc
         requested.append(url)
         return _PagedResponse([{"iid": 1}], next_page="")
 
-    monkeypatch.setattr(gitlab_api.httpx, "get", fake_get)
+    monkeypatch.setattr(gitlab_http.httpx, "get", fake_get)
     client = gitlab_api.GitLabAPI(token="test-token")
     client.get_json_paginated("issues")
 
@@ -84,7 +88,7 @@ def test_get_json_paginated_stops_at_max_pages(monkeypatch: pytest.MonkeyPatch) 
         requested.append(url)
         return _PagedResponse([{"iid": 1}], next_page="999")
 
-    monkeypatch.setattr(gitlab_api.httpx, "get", fake_get)
+    monkeypatch.setattr(gitlab_http.httpx, "get", fake_get)
     client = gitlab_api.GitLabAPI(token="test-token")
     result = client.get_json_paginated("merge_requests?per_page=100")
 
@@ -104,7 +108,7 @@ def test_list_all_open_mrs_follows_pagination(monkeypatch: pytest.MonkeyPatch) -
         "1": _PagedResponse([{"iid": 1, "draft": False}, {"iid": 2, "draft": False}], next_page="2"),
         "2": _PagedResponse([{"iid": 3, "draft": False}], next_page=""),
     }
-    monkeypatch.setattr(gitlab_api.httpx, "get", _two_page_httpx_get(pages, requested))
+    monkeypatch.setattr(gitlab_http.httpx, "get", _two_page_httpx_get(pages, requested))
 
     client = gitlab_api.GitLabAPI(token="test-token")
     result = client.list_all_open_mrs("adrien")
@@ -120,7 +124,7 @@ def test_list_open_issues_for_assignee_follows_pagination(monkeypatch: pytest.Mo
         "1": _PagedResponse([{"iid": 10}, {"iid": 11}], next_page="2"),
         "2": _PagedResponse([{"iid": 12}], next_page=""),
     }
-    monkeypatch.setattr(gitlab_api.httpx, "get", _two_page_httpx_get(pages, requested))
+    monkeypatch.setattr(gitlab_http.httpx, "get", _two_page_httpx_get(pages, requested))
 
     client = gitlab_api.GitLabAPI(token="test-token")
     result = client.list_open_issues_for_assignee("adrien")
@@ -135,7 +139,7 @@ def test_list_open_mrs_as_reviewer_follows_pagination(monkeypatch: pytest.Monkey
         "1": _PagedResponse([{"iid": 20}, {"iid": 21}], next_page="2"),
         "2": _PagedResponse([{"iid": 22}], next_page=""),
     }
-    monkeypatch.setattr(gitlab_api.httpx, "get", _two_page_httpx_get(pages, requested))
+    monkeypatch.setattr(gitlab_http.httpx, "get", _two_page_httpx_get(pages, requested))
 
     client = gitlab_api.GitLabAPI(token="test-token")
     result = client.list_open_mrs_as_reviewer("adrien")
@@ -150,7 +154,7 @@ def test_list_recently_merged_mrs_follows_pagination(monkeypatch: pytest.MonkeyP
         "1": _PagedResponse([{"iid": 30}, {"iid": 31}], next_page="2"),
         "2": _PagedResponse([{"iid": 32}], next_page=""),
     }
-    monkeypatch.setattr(gitlab_api.httpx, "get", _two_page_httpx_get(pages, requested))
+    monkeypatch.setattr(gitlab_http.httpx, "get", _two_page_httpx_get(pages, requested))
 
     client = gitlab_api.GitLabAPI(token="test-token")
     result = client.list_recently_merged_mrs("adrien")
@@ -225,11 +229,11 @@ def test_list_open_issues_for_author(monkeypatch: pytest.MonkeyPatch) -> None:
 
     monkeypatch.setattr(client, "get_json_paginated", _capture)
 
-    result = client.list_open_issues_for_author("adrien-oper", updated_after="2024-01-01T00:00:00Z")
+    result = client.list_open_issues_for_author("trusted-colleague", updated_after="2024-01-01T00:00:00Z")
 
     assert result == [{"iid": 42, "web_url": "https://gitlab.com/org/repo/-/issues/42"}]
     assert captured_endpoints[0].startswith("issues?")
-    assert "author_username=adrien-oper" in captured_endpoints[0]
+    assert "author_username=trusted-colleague" in captured_endpoints[0]
     assert "assignee_username" not in captured_endpoints[0]
     assert "state=opened" in captured_endpoints[0]
     assert "updated_after=2024-01-01T00%3A00%3A00Z" in captured_endpoints[0]
@@ -239,7 +243,7 @@ def test_list_open_issues_for_author_returns_empty_on_no_pages(monkeypatch: pyte
     client = gitlab_api.GitLabAPI(token="test-token")
     monkeypatch.setattr(client, "get_json_paginated", lambda _endpoint: [])
 
-    assert client.list_open_issues_for_author("adrien-oper") == []
+    assert client.list_open_issues_for_author("trusted-colleague") == []
 
 
 def test_list_recently_merged_mrs_returns_data(monkeypatch: pytest.MonkeyPatch) -> None:

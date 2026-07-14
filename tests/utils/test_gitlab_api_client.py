@@ -1,6 +1,10 @@
 import pytest
 
 from teatree.backends.gitlab import api as gitlab_api
+
+# The REST transport (and its ``httpx`` handle) lives in ``http_client`` since the
+# api.py transport/domain split; ``api`` is the domain layer on top of it.
+from teatree.backends.gitlab import http_client as gitlab_http
 from teatree.utils import git
 
 
@@ -70,8 +74,8 @@ def test_gitlab_api_helpers_cover_http_paths_and_failures(monkeypatch: pytest.Mo
 
         return Response()
 
-    monkeypatch.setattr(gitlab_api.httpx, "get", fake_get)
-    monkeypatch.setattr(gitlab_api.httpx, "post", fake_post)
+    monkeypatch.setattr(gitlab_http.httpx, "get", fake_get)
+    monkeypatch.setattr(gitlab_http.httpx, "post", fake_post)
     monkeypatch.setattr(git, "remote_url", lambda **kwargs: "")
     monkeypatch.setattr(git, "current_branch", lambda **kwargs: "")
 
@@ -121,7 +125,7 @@ def test_gitlab_api_graphql_sends_post_request(monkeypatch: pytest.MonkeyPatch) 
 
         return Response()
 
-    monkeypatch.setattr(gitlab_api.httpx, "post", fake_post)
+    monkeypatch.setattr(gitlab_http.httpx, "post", fake_post)
 
     client = gitlab_api.GitLabAPI(token="test-token")
     result = client.graphql("query { project { id } }", {"projectPath": "org/repo"})

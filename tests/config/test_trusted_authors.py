@@ -26,26 +26,26 @@ class TestEffectiveTrustedIssueAuthors:
         assert effective_trusted_issue_authors(settings) == frozenset({"souliane"})
 
     def test_trusted_issue_authors_allowlist_is_trusted(self) -> None:
-        settings = UserSettings(trusted_issue_authors=["adrien-oper"])
-        assert effective_trusted_issue_authors(settings) == frozenset({"adrien-oper"})
+        settings = UserSettings(trusted_issue_authors=["trusted-colleague"])
+        assert effective_trusted_issue_authors(settings) == frozenset({"trusted-colleague"})
 
     def test_the_two_sources_are_unioned_not_overridden(self) -> None:
         settings = UserSettings(
             user_identity_aliases=["souliane", "souliane-bot"],
-            trusted_issue_authors=["adrien-oper"],
+            trusted_issue_authors=["trusted-colleague"],
         )
         assert effective_trusted_issue_authors(settings) == frozenset(
             {
                 "souliane",
                 "souliane-bot",
-                "adrien-oper",
+                "trusted-colleague",
             }
         )
 
     def test_handles_are_lower_cased_and_stripped(self) -> None:
         """Forge handles are case-insensitive; the trust set normalises so a gate cannot be case-dodged."""
-        settings = UserSettings(user_identity_aliases=["  Souliane "], trusted_issue_authors=["Adrien-Oper"])
-        assert effective_trusted_issue_authors(settings) == frozenset({"souliane", "adrien-oper"})
+        settings = UserSettings(user_identity_aliases=["  Souliane "], trusted_issue_authors=["Trusted-Colleague"])
+        assert effective_trusted_issue_authors(settings) == frozenset({"souliane", "trusted-colleague"})
 
     def test_blank_entries_never_enter_the_trusted_set(self) -> None:
         """A blank handle must not become a wildcard — an empty author is untrusted, always."""

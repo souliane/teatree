@@ -1,14 +1,12 @@
 import re
 from pathlib import Path
 from typing import TypedDict, cast
-from urllib.parse import quote_plus, urlparse
-
-import httpx
+from urllib.parse import urlparse
 
 from teatree.backends import forge_merge_rpc as _forge_merge
-from teatree.backends.errors import IssueNotFoundError
 from teatree.backends.gitlab import api as _gitlab_api
 from teatree.backends.gitlab import issue_notes as _issue_notes
+from teatree.backends.gitlab import issue_ops as _issue_ops
 from teatree.backends.gitlab import pr_reads as _pr_reads
 from teatree.backends.gitlab import subissues as _subissues
 from teatree.backends.gitlab import uploads as _uploads
@@ -205,18 +203,9 @@ class GitLabCodeHost:  # noqa: PLR0904 — method count reflects the CodeHostBac
         body: str,
         labels: list[str] | None = None,
     ) -> RawAPIDict:
-        """Open a GitLab issue on *repo* and return the created payload.
-
-        The returned dict carries ``web_url`` (the clickable issue link) and
-        ``iid``. Returns ``{"error": ...}`` when the project cannot resolve.
-        """
-        project = self._resolve_project(repo)
-        if project is None:
-            return {"error": f"Could not resolve project: {repo}"}
-        payload: RawAPIDict = {"title": title, "description": body}
-        if labels:
-            payload["labels"] = ",".join(labels)
-        return self._client.post_json(f"projects/{project.project_id}/issues", payload) or {}
+        """Open a GitLab issue on *repo* and return the created payload."""
+        spec = _issue_ops.NewIssue(repo=repo, title=title, body=body, labels=labels or [])
+        return _issue_ops.create_issue(self._client, self._resolve_project(repo), spec)
 
     def create_sub_issue(
         self,
@@ -255,16 +244,8 @@ class GitLabCodeHost:  # noqa: PLR0904 — method count reflects the CodeHostBac
         return nest_error or created
 
     def search_open_issues(self, *, repo: str, query: str) -> list[RawAPIDict]:
-        """Return open issues on *repo* whose title/description match *query*.
-
-        Returns an empty list when the project cannot resolve — the caller
-        treats "no matches" and "unresolvable" identically.
-        """
-        project = self._resolve_project(repo)
-        if project is None:
-            return []
-        endpoint = f"projects/{project.project_id}/issues?state=opened&search={quote_plus(query)}&per_page=100"
-        return self._client.get_json_paginated(endpoint)
+        """Return open issues on *repo* whose title/description match *query*."""
+        return _issue_ops.search_open_issues(self._client, self._resolve_project(repo), query=query)
 
     def post_pr_comment(self, *, repo: str, pr_iid: int, body: str) -> RawAPIDict:
         project = self._resolve_project(repo)
@@ -423,84 +404,26 @@ class GitLabCodeHost:  # noqa: PLR0904 — method count reflects the CodeHostBac
     def get_issue(self, issue_url: str) -> RawAPIDict:
         """Fetch a GitLab issue from its full URL.
 
-        Supports the canonical web format ``https://gitlab.example.com/<group>/<repo>/-/issues/<iid>``.
-        Returns ``{"error": ...}`` when the URL is not a recognised GitLab issue URL or when
-        the project cannot be resolved.
-
-        Raises:
-            IssueNotFoundError: when the GitLab API returns HTTP 404 (issue
-                permanently deleted or never existed).  Any other HTTP error
-                (5xx) or network failure propagates as-is so the scanner keeps
-                retrying it.
+        Propagates :class:`IssueNotFoundError` from the delegate on HTTP 404 (the
+        issue was permanently deleted); every other error propagates as-is so the
+        scanner keeps retrying it.
         """
-        path = urlparse(issue_url).path
-        match = _ISSUE_URL_RE.match(path)
-        if match is None:
-            return {"error": f"Not a GitLab issue URL: {issue_url}"}
-
-        project = self._client.resolve_project(match["path"])
-        if project is None:
-            return {"error": f"Could not resolve project: {match['path']}"}
-
-        try:
-            issue = self._client.get_issue(project.project_id, int(match["iid"]))
-        except httpx.HTTPStatusError as exc:
-            if exc.response.status_code == 404:  # noqa: PLR2004 — HTTP status compared inline; the numeric code is self-documenting
-                raise IssueNotFoundError(issue_url) from exc
-            raise
-        return issue if isinstance(issue, dict) else {"error": f"Issue not found: {issue_url}"}
+        return _issue_ops.get_issue(self._client, issue_url)
 
     def close_issue(self, *, issue_url: str, comment: str = "") -> RawAPIDict:
         """Close a GitLab issue, optionally leaving an audit-trail note first.
 
-        Idempotent: ``PUT state_event=close`` is a no-op on an already-closed
-        issue. Returns ``{"error": ...}`` when the URL is not a recognised
-        GitLab issue URL or when the project cannot be resolved.
+        The note is posted here (not in the delegate) so the delegate stays a
+        single-purpose state transition; an unparseable URL still short-circuits
+        there, before any write.
         """
-        path = urlparse(issue_url).path
-        match = _ISSUE_URL_RE.match(path)
-        if match is None:
-            return {"error": f"Not a GitLab issue URL: {issue_url}"}
-
-        project = self._client.resolve_project(match["path"])
-        if project is None:
-            return {"error": f"Could not resolve project: {match['path']}"}
-
         if comment:
             self.post_issue_comment(issue_url=issue_url, body=comment)
-        return (
-            self._client.put_json(
-                f"projects/{project.project_id}/issues/{int(match['iid'])}",
-                {"state_event": "close"},
-            )
-            or {}
-        )
+        return _issue_ops.close_issue(self._client, issue_url)
 
     def update_issue(self, *, issue_url: str, body: str) -> RawAPIDict:
-        """Replace a GitLab issue's description in place.
-
-        Mirrors :meth:`GitHubCodeHost.update_issue`: the dream-promote flow
-        re-fetches the description, upserts a gap checkbox keyed on a stable
-        HTML-comment marker, and writes the whole description back. Returns
-        ``{"error": ...}`` when the URL is not a recognised GitLab issue URL or
-        when the project cannot be resolved.
-        """
-        path = urlparse(issue_url).path
-        match = _ISSUE_URL_RE.match(path)
-        if match is None:
-            return {"error": f"Not a GitLab issue URL: {issue_url}"}
-
-        project = self._client.resolve_project(match["path"])
-        if project is None:
-            return {"error": f"Could not resolve project: {match['path']}"}
-
-        return (
-            self._client.put_json(
-                f"projects/{project.project_id}/issues/{int(match['iid'])}",
-                {"description": body},
-            )
-            or {}
-        )
+        """Replace a GitLab issue's description in place."""
+        return _issue_ops.update_issue(self._client, issue_url, body=body)
 
     def repo_for_issue_url(self, issue_url: str) -> str:  # noqa: PLR6301 — pure URL parse, on the host for the Protocol surface.
         """Return the project slug that OWNS *issue_url* (the note's own project).

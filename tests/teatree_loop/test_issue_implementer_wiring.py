@@ -98,12 +98,12 @@ class IssueImplementerGateTests(TestCase):
         settings = _settings(
             issue_implementer_enabled=True,
             user_identity_aliases=["souliane"],
-            trusted_issue_authors=["adrien-oper"],
+            trusted_issue_authors=["trusted-colleague"],
         )
         with patch(_PATCH_TARGET, return_value=settings):
             scanner = _issue_implementer_scanner_for(_backend())
         assert isinstance(scanner, IssueImplementerScanner)
-        assert set(scanner.trusted_authors) == {"souliane", "adrien-oper"}
+        assert set(scanner.trusted_authors) == {"souliane", "trusted-colleague"}
 
     def test_require_label_flag_is_plumbed_to_the_scanner(self) -> None:
         with patch(
