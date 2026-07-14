@@ -1744,6 +1744,44 @@ class TestWorkspaceCleanAll(TestCase):
 
     @_no_prune
     @_no_stash
+    @_no_orphan_isolated_roots
+    @_no_orphan_docker
+    @_no_dslr_prune
+    @_no_liveness
+    @_patch_overlays(FULL_OVERLAY)
+    @override_settings(**SETTINGS)
+    def test_missing_psql_does_not_abort_the_reaper(self) -> None:
+        """souliane/teatree#3234: a SQLite-only box has no ``psql`` — clean-all must still run.
+
+        The orphan-DB prune is the FIRST destructive pass after the done-reaper, so
+        a ``FileNotFoundError`` escaping it took the whole reaper down with it. This
+        drives the REAL :func:`drop_orphan_databases` (note the absent
+        ``_no_orphan_dbs`` patch) on a box where the Postgres client is not
+        installed, and pins that clean-all completes AND still tears down the merged
+        worktree fixture.
+        """
+        with tempfile.TemporaryDirectory() as tmp_s:
+            tmp = Path(tmp_s)
+            _make_squash_merged_worktree(tmp, ticket_number="3234")
+
+            with (
+                _pg_client_missing(),
+                patch.object(ws_cleanup_mod, "run_allowed_to_fail", side_effect=_pg_binary_not_installed),
+                patch.object(workspace_mod, "_worktree_root", return_value=tmp),
+                patch.object(provision_mod, "clone_root", return_value=tmp),
+                patch.object(provision_mod, "worktree_root", return_value=tmp),
+                patch.object(cleanup_mod, "drop_db"),
+                patch("teatree.core.runners.worktree_start.docker_compose_down"),
+            ):
+                # Pre-fix this raised FileNotFoundError: No such file or directory: 'psql'.
+                call_command("workspace", "clean-all")
+
+            assert Worktree.objects.count() == 0, (
+                "the merged worktree was not reaped — a missing psql aborted the whole reaper"
+            )
+
+    @_no_prune
+    @_no_stash
     @_no_orphan_dbs
     @_no_orphan_isolated_roots
     @_no_orphan_docker
@@ -2497,9 +2535,40 @@ class TestStashBranch(TestCase):
         assert ws_stash_mod._stash_branch("stash@{0}: On (no branch): detached work") == ""
 
 
+def _pg_client_present() -> AbstractContextManager[object]:
+    """Pretend the Postgres client binaries ARE on PATH (the postgres-backend box).
+
+    The orphan-DB prune is guarded on the Postgres client being installed
+    (souliane/teatree#3234), so every test that exercises the prune ITSELF must
+    pin that probe rather than inherit the host's PATH — otherwise the suite is
+    green on a developer box with postgres installed and red on the SQLite-only
+    CI/deploy box (or vice versa).
+    """
+    return patch.object(ws_cleanup_mod.shutil, "which", side_effect=lambda binary: f"/usr/bin/{binary}")
+
+
+def _pg_client_missing() -> AbstractContextManager[object]:
+    """The SQLite-only box: no ``psql`` / ``dropdb`` anywhere on PATH."""
+    return patch.object(ws_cleanup_mod.shutil, "which", return_value=None)
+
+
+def _pg_binary_not_installed(cmd: list[str], **_kw: object) -> MagicMock:
+    """Stand in for ``subprocess`` on a box with no Postgres client.
+
+    A missing binary raises ``FileNotFoundError`` from ``subprocess.run`` — it is
+    NOT a non-zero return code, which is exactly why the prune's pre-existing
+    ``returncode != 0`` check could not absorb it and the whole reaper died.
+    """
+    if cmd and cmd[0] in {"psql", "dropdb"}:
+        msg = f"[Errno 2] No such file or directory: {cmd[0]!r}"
+        raise FileNotFoundError(msg)
+    return MagicMock(returncode=0, stdout="")
+
+
 class TestDropOrphanDatabasesFailure(TestCase):
     def test_returns_empty_when_psql_fails(self) -> None:
         with (
+            _pg_client_present(),
             patch.object(utils_run_mod, "subprocess") as mock_sp,
             patch.object(db_mod, "pg_env", return_value={}),
             patch.object(db_mod, "pg_host", return_value="localhost"),
@@ -2509,6 +2578,37 @@ class TestDropOrphanDatabasesFailure(TestCase):
             result = ws_cleanup_mod.drop_orphan_databases()
 
         assert result == []
+
+
+class TestDropOrphanDatabasesWithoutPostgres(TestCase):
+    """souliane/teatree#3234: the orphan-DB prune must not exist on a SQLite-only box.
+
+    The prune shells ``psql``/``dropdb`` unconditionally. On a deployment with no
+    Postgres client those binaries are absent, ``subprocess`` raises
+    ``FileNotFoundError`` (never a non-zero exit), and the exception escaped the
+    prune and aborted the ENTIRE ``clean-all`` reaper — so merged worktrees, stale
+    branches, orphan stashes and dangling registrations were all left uncleaned.
+    """
+
+    def test_prune_is_skipped_when_the_postgres_client_is_absent(self) -> None:
+        with (
+            _pg_client_missing(),
+            patch.object(ws_cleanup_mod, "run_allowed_to_fail", side_effect=_pg_binary_not_installed) as run_probe,
+        ):
+            result = ws_cleanup_mod.drop_orphan_databases()
+
+        assert result == []
+        # The missing binary must be detected BEFORE it is shelled out to.
+        run_probe.assert_not_called()
+
+    def test_skip_is_reported_at_debug_level(self) -> None:
+        with (
+            _pg_client_missing(),
+            self.assertLogs(ws_cleanup_mod.__name__, level="DEBUG") as logs,
+        ):
+            ws_cleanup_mod.drop_orphan_databases()
+
+        assert any("psql" in line for line in logs.output)
 
 
 class TestWorktreeBranches(TestCase):
@@ -2616,6 +2716,7 @@ class TestDropOrphanDatabases(TestCase):
             return MagicMock(returncode=0)
 
         with (
+            _pg_client_present(),
             patch.object(utils_run_mod, "subprocess") as mock_sp,
             patch.object(db_mod, "pg_env", return_value={}),
             patch.object(db_mod, "pg_host", return_value="localhost"),
