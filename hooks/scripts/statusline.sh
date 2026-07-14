@@ -641,6 +641,64 @@ if [ -n "$_skills_segment" ]; then
     fi
 fi
 
+# Claude Code's statusline docs warn that long, multi-line ANSI output "may get
+# truncated or wrap awkwardly" and that "multi-line status lines with escape
+# codes are more prone to rendering issues than single-line plain text" — on some
+# render surfaces a ~900-char multi-line loop line makes the WHOLE bar render
+# blank. So every emitted line (header, zones, owner badge, chain-script output)
+# is bounded to the visible terminal width at one choke point below. The width is
+# COLUMNS when set and > 0; else `tput cols` when stdout is a real terminal (a
+# piped, non-terminal stdout — Claude's own capture, a test — has no meaningful
+# terminal width, so it is not consulted); else a safe 200. `_cap_line_widths`
+# is an ANSI-aware awk one-pass filter (below).
+_cap_cols="${COLUMNS:-}"
+if ! [[ "$_cap_cols" =~ ^[0-9]+$ ]] || [ "$_cap_cols" -le 0 ]; then
+    _cap_cols=""
+    if [ -t 1 ] && command -v tput >/dev/null 2>&1; then
+        _cap_cols=$(tput cols 2>/dev/null)
+    fi
+fi
+if ! [[ "$_cap_cols" =~ ^[0-9]+$ ]] || [ "$_cap_cols" -le 0 ]; then
+    _cap_cols=200
+fi
+
+# ANSI-aware per-line width cap. Measures ONLY visible characters — SGR
+# (`\033[…m` / any CSI) and OSC 8 hyperlink wrappers (`\033]8;…\033\\` / BEL) are
+# copied verbatim but counted as zero width — so a line already within width
+# passes through byte-for-byte (escapes and OSC 8 links intact) and a too-long
+# line is cut on a character boundary (never mid-escape), marked with a single
+# `…` ellipsis, and terminated with a reset so colour never bleeds past the cut.
+# One awk process for the whole stream keeps the hook fast (<10ms).
+_cap_line_widths() {
+    awk -v cap="$_cap_cols" '
+    function viswidth(s,   n, i, rest, vis) {
+        n = length(s); i = 1; vis = 0
+        while (i <= n) {
+            rest = substr(s, i)
+            if (match(rest, /^\033\[[0-9;?]*[ -\/]*[@-~]/)) { i += RLENGTH; continue }
+            if (match(rest, /^\033\][^\033\007]*(\033\\|\007)/)) { i += RLENGTH; continue }
+            if (match(rest, /^\033./)) { i += RLENGTH; continue }
+            vis++; i++
+        }
+        return vis
+    }
+    function capline(s, limit,   n, i, rest, out, vis) {
+        n = length(s); i = 1; out = ""; vis = 0
+        while (i <= n) {
+            rest = substr(s, i)
+            if (match(rest, /^\033\[[0-9;?]*[ -\/]*[@-~]/)) { out = out substr(rest, 1, RLENGTH); i += RLENGTH; continue }
+            if (match(rest, /^\033\][^\033\007]*(\033\\|\007)/)) { out = out substr(rest, 1, RLENGTH); i += RLENGTH; continue }
+            if (match(rest, /^\033./)) { out = out substr(rest, 1, RLENGTH); i += RLENGTH; continue }
+            if (vis >= limit) break
+            out = out substr(rest, 1, 1); vis++; i++
+        }
+        return out "\342\200\246" "\033[0m"
+    }
+    { if (viswidth($0) <= cap) print $0; else print capline($0, cap - 1) }
+    '
+}
+
+{
 # The staleness banner (when the render is frozen) leads every other line so
 # the reader sees the warning before the out-of-date content it qualifies.
 [ -n "$_stale_banner" ] && printf '%s\n' "$_stale_banner"
@@ -709,3 +767,4 @@ if [ -n "${input:-}" ]; then
         printf '%s' "$input" | "$_runner" "$_resolved" 2>/dev/null
     done < <(_statusline_chain_db)
 fi
+} | _cap_line_widths
