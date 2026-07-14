@@ -214,6 +214,34 @@ def test_list_open_issues_for_assignee_returns_empty_on_no_pages(monkeypatch: py
     assert client.list_open_issues_for_assignee("adrien") == []
 
 
+def test_list_open_issues_for_author(monkeypatch: pytest.MonkeyPatch) -> None:
+    """#3235 — the author-scoped intake query: ``author_username``, never ``assignee_username``."""
+    client = gitlab_api.GitLabAPI(token="test-token")
+    captured_endpoints: list[str] = []
+
+    def _capture(endpoint: str) -> list[dict[str, object]]:
+        captured_endpoints.append(endpoint)
+        return [{"iid": 42, "web_url": "https://gitlab.com/org/repo/-/issues/42"}]
+
+    monkeypatch.setattr(client, "get_json_paginated", _capture)
+
+    result = client.list_open_issues_for_author("adrien-oper", updated_after="2024-01-01T00:00:00Z")
+
+    assert result == [{"iid": 42, "web_url": "https://gitlab.com/org/repo/-/issues/42"}]
+    assert captured_endpoints[0].startswith("issues?")
+    assert "author_username=adrien-oper" in captured_endpoints[0]
+    assert "assignee_username" not in captured_endpoints[0]
+    assert "state=opened" in captured_endpoints[0]
+    assert "updated_after=2024-01-01T00%3A00%3A00Z" in captured_endpoints[0]
+
+
+def test_list_open_issues_for_author_returns_empty_on_no_pages(monkeypatch: pytest.MonkeyPatch) -> None:
+    client = gitlab_api.GitLabAPI(token="test-token")
+    monkeypatch.setattr(client, "get_json_paginated", lambda _endpoint: [])
+
+    assert client.list_open_issues_for_author("adrien-oper") == []
+
+
 def test_list_recently_merged_mrs_returns_data(monkeypatch: pytest.MonkeyPatch) -> None:
     client = gitlab_api.GitLabAPI(token="test-token")
     monkeypatch.setattr(

@@ -324,6 +324,31 @@ class GitLabAPI(GitLabHTTPClient):
         params = urlencode(query)
         return self.get_json_paginated(f"issues?{params}")
 
+    def list_open_issues_for_author(
+        self,
+        author: str,
+        *,
+        per_page: int = 100,
+        updated_after: str | None = None,
+    ) -> list[RawMR]:
+        """Fetch all open issues (and work items) AUTHORED by *author* across accessible projects.
+
+        The author-scoped sibling of :meth:`list_open_issues_for_assignee`, backing the
+        issue-implementer's trusted-author intake (#3235): ``author_username``, never
+        ``assignee_username`` — a trusted human's issue is actionable the moment they
+        file it, with no triage, assignment, or label.
+        """
+        query: dict[str, str | int] = {
+            "state": "opened",
+            "author_username": author,
+            "scope": "all",
+            "per_page": per_page,
+        }
+        if updated_after:
+            query["updated_after"] = updated_after
+        params = urlencode(query)
+        return self.get_json_paginated(f"issues?{params}")
+
     def list_open_mrs_as_reviewer(
         self,
         reviewer: str,

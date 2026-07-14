@@ -186,8 +186,10 @@ OVERLAY_OVERRIDABLE_SETTINGS: dict[str, Callable[[Any], Any]] = {
     "mr_title_regex": _parse_strict_str,
     "issue_implementer_enabled": _parse_strict_bool,
     "issue_implementer_label": _parse_strict_str,
+    "issue_implementer_require_label": _parse_strict_bool,
     "issue_implementer_max_concurrent": _parse_strict_int,
     "issue_implementer_cadence_hours": _parse_strict_int,
+    "trusted_issue_authors": _parse_str_list,
     "fleet_claim_enabled": _parse_strict_bool,
     "auto_disposition_enabled": _parse_strict_bool,
     "limit_autorecovery_enabled": _parse_strict_bool,
@@ -330,6 +332,8 @@ ENV_SETTING_OVERRIDES: dict[str, tuple[str, Callable[[str], Any]]] = {
     "T3_ON_BEHALF_AUTO_ACTIONS": ("on_behalf_auto_actions", _parse_env_str_list),
     "T3_REVIEW_SKILL": ("review_skill", str),
     "T3_ISSUE_IMPLEMENTER_ENABLED": ("issue_implementer_enabled", _parse_env_bool),
+    "T3_ISSUE_IMPLEMENTER_REQUIRE_LABEL": ("issue_implementer_require_label", _parse_env_bool),
+    "T3_TRUSTED_ISSUE_AUTHORS": ("trusted_issue_authors", _parse_env_str_list),
     "T3_FLEET_CLAIM_ENABLED": ("fleet_claim_enabled", _parse_env_bool),
     "T3_LOOP_AUTO_UPDATE": ("auto_update_reinstall", _parse_env_bool),
     "T3_ORCHESTRATE_CLAIM_ENABLED": ("orchestrate_claim_enabled", _parse_env_bool),
@@ -1267,11 +1271,34 @@ class _LoopFlagAndCredentialSettings:
     # the ``scanning_news_*`` cadence pattern. This PR adds only the config
     # surface — the scanner and dispatch land in later PRs.
     issue_implementer_enabled: bool = False
-    # Label marking an issue as auto-implement. Empty means no issue is
-    # ever dispatched even when the loop is enabled (defence-in-depth: both
-    # the master gate AND a non-empty label are required before any work
-    # is picked up).
+    # Label marking an issue as auto-implement. Consulted ONLY when
+    # ``issue_implementer_require_label`` is on — since #3235 intake is decided by
+    # the issue's trusted AUTHOR, not by a hand-applied label. With the flag on,
+    # an empty label means no issue is ever dispatched even when the loop is
+    # enabled (defence-in-depth: the master gate AND a non-empty label are both
+    # required before any work is picked up).
     issue_implementer_label: str = ""
+    # #3235 Opt-in, default-FALSE: restore the pre-#3235 label filter as a
+    # MANDATORY second gate on top of author trust. OFF (the default) means the
+    # label is NOT required — every open issue authored by a TRUSTED author is
+    # intaken, because the owner will not hand-tag tickets. The label filter can
+    # only ever NARROW intake; it never widens it, and it can never launder an
+    # untrusted author (the per-issue author gate refuses those regardless).
+    issue_implementer_require_label: bool = False
+    # #3235 The allowlist of OTHER humans whose issues the factory may act on (a
+    # colleague, an operator account) — one of the three UNION sources of the
+    # trusted-author set, alongside the owner's own ``user_identity_aliases`` and
+    # the canonical ``TrustedIdentity`` rows. Resolved by
+    # ``teatree.config.effective_trusted_issue_authors`` (config tier) and unioned
+    # with the DB rows at ``teatree.core.review.author_trust``.
+    #
+    # SAFETY: this is an intake authority — an entry here can command the
+    # autonomous factory by filing an issue. Default EMPTY, fail-closed: teatree
+    # ships trusting NOBODY but the operator's own configured aliases, so an
+    # unconfigured deployment can never auto-implement a stranger's issue. It
+    # governs INTAKE only; merge authority is untouched (a substrate PR still
+    # needs a recorded human approver).
+    trusted_issue_authors: list[str] = field(default_factory=list)
     # Cap on simultaneously in-flight auto-implement tickets.
     issue_implementer_max_concurrent: int = 1
     # Internal dispatch-rate floor (hours) between auto-implement pickups.

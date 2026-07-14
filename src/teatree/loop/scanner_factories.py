@@ -9,7 +9,14 @@ the per-overlay domain slices (``domain_jobs``) consume. Depends DOWN on
 import logging
 from typing import TYPE_CHECKING
 
-from teatree.config import Autonomy, Mode, UserSettings, clone_root, get_effective_settings
+from teatree.config import (
+    Autonomy,
+    Mode,
+    UserSettings,
+    clone_root,
+    effective_trusted_issue_authors,
+    get_effective_settings,
+)
 from teatree.core.backend_factory import OverlayBackends
 from teatree.core.backend_protocols import CodeHostBackend
 from teatree.core.models import ImplementedIssueMarker
@@ -443,7 +450,7 @@ def _architectural_review_scanner_for(backend: OverlayBackends) -> Architectural
 
 
 def _issue_implementer_scanner_for(backend: OverlayBackends) -> IssueImplementerScanner | None:
-    """Build a per-overlay issue-implementer scanner behind the triple gate (#1553).
+    """Build a per-overlay issue-implementer scanner behind the triple gate (#1553, #3235).
 
     Returns a scanner ONLY when the always-on issue-implementer loop is
     opted in for this overlay AND the in-flight budget has room. Two of the
@@ -464,16 +471,20 @@ def _issue_implementer_scanner_for(backend: OverlayBackends) -> IssueImplementer
     ``build_default_jobs`` emits anything for this domain — the live
     fan-out stays byte-for-byte unchanged until an overlay opts in.
 
-    A loop that is enabled with an empty ``issue_implementer_label`` is a
-    safe but silent no-op (the scanner short-circuits on a blank label so no
-    issue is ever claimed). That fails closed by design, but an operator who
-    flipped the master gate without setting a label sees nothing dispatch and
-    no reason why — so we emit one WARNING naming the missing label (#1554).
+    #3235 — INTAKE BY TRUSTED AUTHOR. The builder resolves the CONFIG tier of the
+    trusted-author set (:func:`~teatree.config.effective_trusted_issue_authors`: the
+    owner's ``user_identity_aliases`` unioned with the ``trusted_issue_authors`` allowlist) and
+    hands it to the scanner, which unions in the DB ``TrustedIdentity`` rows and
+    enforces the fail-closed per-issue gate. An EMPTY label is therefore no longer a
+    kill-switch: intake is by author, and the label only applies when the operator
+    explicitly opts back into it with ``issue_implementer_require_label``. That flag
+    WITH an empty label is a safe but silent no-op (nothing can ever match), so the
+    operator who set up that contradiction gets one WARNING naming the missing label.
 
     Fleet-safety Stage 2: when ``fleet_claim_enabled`` is on the scanner is
-    emitted even at a full budget (or an empty label) — with ``can_claim=False``
-    it claims nothing new but STILL runs the per-tick heartbeat sweep, so an
-    in-flight claim can never expire and be stolen mid-dispatch. With the
+    emitted even at a full budget (or a require-label contradiction) — with
+    ``can_claim=False`` it claims nothing new but STILL runs the per-tick heartbeat
+    sweep, so an in-flight claim can never expire and be stolen mid-dispatch. With the
     kill-switch OFF the emission stays byte-for-byte the pre-Stage-2 behaviour
     (no scanner unless we can actually claim).
     """
@@ -485,22 +496,26 @@ def _issue_implementer_scanner_for(backend: OverlayBackends) -> IssueImplementer
     code_host = backend.host
     if code_host is None:
         return None
-    if not settings.issue_implementer_label:
+    label_satisfiable = bool(settings.issue_implementer_label) or not settings.issue_implementer_require_label
+    if not label_satisfiable:
         logger.warning(
-            "issue-implementer loop enabled for overlay %r but issue_implementer_label is empty — "
-            "nothing will be dispatched until a label is set",
+            "issue-implementer loop enabled for overlay %r with issue_implementer_require_label=true but "
+            "issue_implementer_label is empty — nothing will be dispatched until a label is set "
+            "(or the require-label flag is turned off, which intakes by trusted author alone)",
             backend.name,
         )
     has_budget = (
         ImplementedIssueMarker.objects.in_flight_count(backend.name) < settings.issue_implementer_max_concurrent
     )
-    can_claim = bool(settings.issue_implementer_label) and has_budget
+    can_claim = label_satisfiable and has_budget
     if not can_claim and not wire.fleet_claim_enabled(backend.name):
         return None
     return IssueImplementerScanner(
         host=code_host,
         label=settings.issue_implementer_label,
         overlay_name=backend.name,
+        trusted_authors=tuple(sorted(effective_trusted_issue_authors(settings))),
+        require_label=settings.issue_implementer_require_label,
         identities=backend.identities,
         can_claim=can_claim,
     )

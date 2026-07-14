@@ -659,6 +659,8 @@ class TestTaskSweepIsolation(TestCase):
 
 
 class _ImplementerHost:
+    """Author-scoped issue host — the #3235 intake query the scanner now uses."""
+
     user: str = "alice"
     issues: list[RawAPIDict]
 
@@ -668,8 +670,8 @@ class _ImplementerHost:
     def current_user(self) -> str:
         return self.user
 
-    def list_assigned_issues(self, *, assignee: str) -> list[RawAPIDict]:
-        _ = assignee
+    def list_authored_issues(self, *, author: str) -> list[RawAPIDict]:
+        _ = author
         return self.issues
 
     def list_my_prs(self, *, author: str, updated_after: str | None = None) -> list[RawAPIDict]:
@@ -682,17 +684,35 @@ class _ImplementerHost:
 
 
 IMPL_LABEL = "auto-implement"
+IMPL_AUTHOR = "alice"
 IMPL_URL_A = "https://github.com/acme/repo/issues/1"
 IMPL_URL_B = "https://github.com/acme/repo/issues/2"
 
 
 class TestIssueImplementerIsolation(TestCase):
+    def setUp(self) -> None:
+        # Public repo: the strict, author-gated intake path (#3235).
+        patcher = patch("teatree.core.review.author_trust.repo_is_internal", return_value=False)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
     def _issue(self, url: str) -> RawAPIDict:
-        return {"web_url": url, "title": "do it", "labels": [IMPL_LABEL], "state": "open"}
+        return {
+            "web_url": url,
+            "title": "do it",
+            "labels": [IMPL_LABEL],
+            "state": "open",
+            "user": {"login": IMPL_AUTHOR},
+        }
 
     def test_failing_first_issue_does_not_suppress_second_issue_signal(self) -> None:
         host = _ImplementerHost(issues=[self._issue(IMPL_URL_A), self._issue(IMPL_URL_B)])
-        scanner = IssueImplementerScanner(host=host, label=IMPL_LABEL, overlay_name="acme")
+        scanner = IssueImplementerScanner(
+            host=host,
+            label=IMPL_LABEL,
+            overlay_name="acme",
+            trusted_authors=(IMPL_AUTHOR,),
+        )
 
         call_count = [0]
         original_claim = ImplementedIssueMarker.objects.claim

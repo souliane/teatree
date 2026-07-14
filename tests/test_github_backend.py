@@ -685,6 +685,35 @@ class TestGitHubCodeHost:
         argv = mock_run.call_args_list[0].args
         assert "--paginate" in argv
 
+    def test_list_authored_issues_searches_by_author(self) -> None:
+        """#3235 — the author-scoped intake query: issues the trusted human FILED."""
+        items = [{"number": 11, "title": "feature request"}]
+        with patch.object(github_mod, "_gh_api_search_paginated", return_value=items) as mock_search:
+            host = GitHubCodeHost(token="tok")
+            result = host.list_authored_issues(author="souliane")
+        assert len(result) == 1
+        mock_search.assert_called_once_with(
+            "search/issues?q=is%3Aissue+is%3Aopen+author%3Asouliane&per_page=100",
+            token="tok",
+        )
+
+    def test_list_authored_issues_returns_empty_when_no_results(self) -> None:
+        with patch.object(github_mod, "_gh_api_search_paginated", return_value=[]):
+            host = GitHubCodeHost()
+            assert host.list_authored_issues(author="souliane") == []
+
+    def test_list_authored_issues_paginates_beyond_first_page(self) -> None:
+        page_one = [{"number": i} for i in range(100)]
+        page_two = [{"number": 100}]
+        slurped = json.dumps([{"items": page_one}, {"items": page_two}])
+        with patch.object(github_api_mod, "_run_gh") as mock_run:
+            mock_run.return_value = MagicMock(stdout=slurped)
+            host = GitHubCodeHost()
+            result = host.list_authored_issues(author="souliane")
+        assert len(result) == 101
+        assert {"number": 100} in result
+        assert "--paginate" in mock_run.call_args_list[0].args
+
     def test_create_issue_posts_payload_with_labels(self) -> None:
         created = {"html_url": "https://github.com/org/repo/issues/9", "number": 9}
         with patch.object(github_mod, "_gh_api_post", return_value=created) as mock_post:

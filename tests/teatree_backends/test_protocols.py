@@ -147,6 +147,10 @@ class _FakeCodeHost:
         _ = assignee
         return []
 
+    def list_authored_issues(self, *, author: str) -> list[dict[str, object]]:
+        _ = author
+        return []
+
     def create_issue(
         self,
         *,

@@ -263,6 +263,18 @@ def test_list_assigned_issues_delegates_to_client() -> None:
     client.list_open_issues_for_assignee.assert_called_once_with("adrien")
 
 
+def test_list_authored_issues_delegates_to_client() -> None:
+    """#3235 — the author-scoped intake query: issues the trusted human FILED."""
+    client = MagicMock(spec=GitLabAPI)
+    client.list_open_issues_for_author.return_value = [{"iid": 4, "title": "Issue 4"}]
+    host = GitLabCodeHost(client=client)
+
+    result = host.list_authored_issues(author="adrien-oper")
+
+    assert result == [{"iid": 4, "title": "Issue 4"}]
+    client.list_open_issues_for_author.assert_called_once_with("adrien-oper")
+
+
 def test_post_pr_comment_returns_error_when_project_not_resolved() -> None:
     """post_pr_comment returns error when project cannot be resolved."""
     client = MagicMock(spec=GitLabAPI)

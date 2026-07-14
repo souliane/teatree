@@ -138,3 +138,44 @@ class TestPreMigrationTolerance(TestCase):
             ):
                 mock_settings.return_value.user_identity_aliases = ["souliane"]
                 assert author_trust.trusted_handles() == {"souliane"}
+
+
+class TestExtraTrustedUnion(TestCase):
+    """``extra_trusted`` unions caller-supplied handles into the trust set (#3235).
+
+    The issue-implementer's intake set is a UNION of three sources — the owner's
+    ``user_identity_aliases``, the ``trusted_issue_authors`` allowlist, and the
+    ``TrustedIdentity`` rows. The first two live in config (which cannot reach the
+    DB), so the caller resolves them and hands them to this seam. Default-empty, so
+    every existing consumer (the keystone, the four reviewing scanners) is byte-for-byte
+    unchanged.
+    """
+
+    def test_extra_trusted_defaults_to_empty_so_existing_callers_are_unchanged(self) -> None:
+        _seed_known()
+        with _public():
+            assert author_trust.classify_author(_PUBLIC, "adrien-oper").untrusted is True
+
+    def test_extra_trusted_handle_is_trusted(self) -> None:
+        _seed_known()
+        with _public():
+            classification = author_trust.classify_author(
+                _PUBLIC, "adrien-oper", extra_trusted=frozenset({"adrien-oper"})
+            )
+        assert classification.trusted is True
+        assert classification.untrusted is False
+
+    def test_extra_trusted_is_a_union_not_a_replacement(self) -> None:
+        """A DB-trusted handle stays trusted when the caller supplies its own extras."""
+        _seed_known()
+        with _public():
+            assert author_trust.classify_author(_PUBLIC, "souliane", extra_trusted=frozenset({"adrien-oper"})).trusted
+
+    def test_extra_trusted_match_is_case_insensitive(self) -> None:
+        assert author_trust.is_trusted_author("Adrien-Oper", extra_trusted=frozenset({"adrien-oper"})) is True
+
+    def test_extra_trusted_never_admits_an_unlisted_author(self) -> None:
+        assert author_trust.is_trusted_author("evilhacker", extra_trusted=frozenset({"adrien-oper"})) is False
+
+    def test_empty_author_is_untrusted_even_with_extras(self) -> None:
+        assert author_trust.is_trusted_author("", extra_trusted=frozenset({"adrien-oper"})) is False
