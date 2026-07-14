@@ -13,6 +13,7 @@ from teatree.backends.github import GitHubCodeHost
 from teatree.backends.gitlab import GitLabCodeHost
 from teatree.backends.gitlab.ci import GitLabCIService
 from teatree.backends.loader import (
+    _host_backend,
     get_ci_service,
     get_code_host,
     get_code_host_for_repo,
@@ -63,7 +64,8 @@ def _stub_token(overlay: OverlayBase, *, github: str = "", gitlab: str = "", sla
     overlay.config.get_slack_token = lambda: slack  # type: ignore[method-assign]
 
 
-def test_get_code_host_returns_none_when_no_token() -> None:
+def test_get_code_host_returns_none_when_no_token(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("teatree.backends.loader.gh_ambient_auth_available", lambda: False)
     overlay = _build_overlay()
     _stub_token(overlay)
     assert get_code_host(overlay) is None
@@ -118,14 +120,16 @@ def test_get_code_hosts_honours_explicit_gitlab_choice() -> None:
     assert [type(h).__name__ for h in hosts] == [GitLabCodeHost.__name__]
 
 
-def test_get_code_hosts_returns_empty_when_no_tokens_resolve() -> None:
+def test_get_code_hosts_returns_empty_when_no_tokens_resolve(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("teatree.backends.loader.gh_ambient_auth_available", lambda: False)
     overlay = _build_overlay()
     _stub_token(overlay)
     assert get_code_hosts(overlay) == []
 
 
-def test_get_code_hosts_explicit_choice_returns_empty_without_token() -> None:
+def test_get_code_hosts_explicit_choice_returns_empty_without_token(monkeypatch: pytest.MonkeyPatch) -> None:
     """Pinning a platform but having no token for it surfaces as an empty list."""
+    monkeypatch.setattr("teatree.backends.loader.gh_ambient_auth_available", lambda: False)
     overlay = _build_overlay(code_host="github")
     _stub_token(overlay)
     assert get_code_hosts(overlay) == []
@@ -139,6 +143,76 @@ def test_get_code_hosts_raises_on_unknown_choice() -> None:
     _stub_token(overlay)
     with pytest.raises(ValueError, match="Unknown code_host"):
         get_code_hosts(overlay)
+
+
+class TestOverlayScopedAmbientGithub:
+    """A gh-CLI-only box builds a GitHub host for the overlay-scoped resolvers.
+
+    ``get_github_token()`` returns ``""`` when auth lives purely in the ``gh``
+    CLI login (no PAT wired into the overlay). Pre-fix, ``get_code_hosts``
+    returned ``[]``, ``OverlayBackends.host`` was ``None``, and every
+    host-dependent loop scanner was silently disabled. The overlay-scoped
+    resolvers now mirror the ``_github_host_for_repo`` ambient carve-out: an
+    empty-token ``GitHubCodeHost`` backs the logged-in ``gh`` account.
+    """
+
+    def test_get_code_hosts_builds_ambient_github_when_no_token(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr("teatree.backends.loader.gh_ambient_auth_available", lambda: True)
+        overlay = _build_overlay()
+        _stub_token(overlay)
+        hosts = get_code_hosts(overlay)
+        assert [type(h).__name__ for h in hosts] == [GitHubCodeHost.__name__]
+
+    def test_get_code_host_builds_ambient_github_when_no_token(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr("teatree.backends.loader.gh_ambient_auth_available", lambda: True)
+        overlay = _build_overlay()
+        _stub_token(overlay)
+        host = get_code_host(overlay)
+        assert isinstance(host, GitHubCodeHost)
+
+    def test_host_backend_builds_ambient_github_when_no_token(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr("teatree.backends.loader.gh_ambient_auth_available", lambda: True)
+        overlay = _build_overlay()
+        _stub_token(overlay)
+        assert isinstance(_host_backend(overlay, "github"), GitHubCodeHost)
+
+    def test_no_ambient_and_no_token_stays_none(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Regression guard: the no-auth path is unchanged when ambient gh is absent."""
+        monkeypatch.setattr("teatree.backends.loader.gh_ambient_auth_available", lambda: False)
+        overlay = _build_overlay()
+        _stub_token(overlay)
+        assert get_code_hosts(overlay) == []
+        assert get_code_host(overlay) is None
+        assert _host_backend(overlay, "github") is None
+
+    def test_explicit_token_builds_single_host_not_duplicated_by_ambient(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """An explicit token authors the sole host — the ambient path never duplicates it."""
+        monkeypatch.setattr("teatree.backends.loader.gh_ambient_auth_available", lambda: True)
+        overlay = _build_overlay()
+        _stub_token(overlay, github="gh-explicit")
+        hosts = get_code_hosts(overlay)
+        assert [type(h).__name__ for h in hosts] == [GitHubCodeHost.__name__]
+        assert cast("GitHubCodeHost", hosts[0])._token == "gh-explicit"
+        assert cast("GitHubCodeHost", get_code_host(overlay))._token == "gh-explicit"
+
+    def test_explicit_gitlab_keeps_primary_over_ambient_github(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """An explicit GitLab token outranks an ambient-only GitHub host for hosts[0]."""
+        monkeypatch.setattr("teatree.backends.loader.gh_ambient_auth_available", lambda: True)
+        overlay = _build_overlay()
+        _stub_token(overlay, gitlab="gl-explicit")
+        hosts = get_code_hosts(overlay)
+        assert isinstance(hosts[0], GitLabCodeHost)
+        assert [type(h).__name__ for h in hosts] == [GitLabCodeHost.__name__, GitHubCodeHost.__name__]
+        # Singular resolver stays consistent: explicit gitlab wins.
+        assert isinstance(get_code_host(overlay), GitLabCodeHost)
+
+    def test_pinned_gitlab_never_builds_ambient_github(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr("teatree.backends.loader.gh_ambient_auth_available", lambda: True)
+        overlay = _build_overlay(code_host="gitlab")
+        _stub_token(overlay, gitlab="gl-explicit")
+        hosts = get_code_hosts(overlay)
+        assert all(not isinstance(h, GitHubCodeHost) for h in hosts)
+        assert not isinstance(get_code_host(overlay), GitHubCodeHost)
 
 
 def test_get_messaging_default_is_noop() -> None:
@@ -287,7 +361,8 @@ def test_get_code_host_for_url_falls_back_to_default_for_unknown_domain() -> Non
     assert isinstance(result, GitHubCodeHost)
 
 
-def test_get_code_host_for_url_returns_none_when_no_matching_token() -> None:
+def test_get_code_host_for_url_returns_none_when_no_matching_token(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("teatree.backends.loader.gh_ambient_auth_available", lambda: False)
     overlay = _build_overlay()
     _stub_token(overlay)
     assert get_code_host_for_url(overlay, "https://github.com/org/repo/issues/1") is None
