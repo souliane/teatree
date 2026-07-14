@@ -100,6 +100,8 @@ def agent(
     skill: list[str] = AGENT_SKILL_OPTION,
 ) -> None:
     """Launch Claude Code with auto-detected project context."""
+    ensure_django()
+
     from teatree.cli import _find_project_root  # noqa: PLC0415 — deferred: breaks agent ↔ cli cycle
     from teatree.config import discover_active_overlay  # noqa: PLC0415 — deferred: keeps CLI startup light
     from teatree.core.overlay_loader import get_overlay  # noqa: PLC0415 — deferred: keeps CLI startup light
