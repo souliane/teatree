@@ -14,6 +14,7 @@ an unchanged module's stale docstring is main's/CI's concern, so the changed
 module is the only doctest target and no import graph is needed.
 """
 
+import sys
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -31,6 +32,7 @@ from teatree.quality.push_gate import (
     run_push_gate,
 )
 from teatree.quality.regression_scan import AstGrepUnavailableError
+from teatree.utils.django_db.runner import runner_prefix
 
 
 def _changed(*entries: tuple[str, str]) -> ChangedSet:
@@ -227,6 +229,18 @@ class TestResolvePlanAndDoctestRunner:
         cmd = run.call_args.args[0]
         assert "--doctest-modules" in cmd
         assert "src/teatree/x.py" in cmd
+
+    def test_run_doctests_uses_project_interpreter_not_sys_executable(self) -> None:
+        # #3205: under `uv tool install`, sys.executable is the tool venv (no pytest),
+        # so the gate exit-1'd on every diff. It must invoke repo_root's own pytest via
+        # the runner-prefix chokepoint (#1973), never sys.executable and never a
+        # hand-rolled prefix.
+        with patch.object(push_gate_mod, "run_allowed_to_fail", return_value=SimpleNamespace(returncode=0)) as run:
+            _run_doctests((Path("src/teatree/x.py"),), Path.cwd())
+        cmd = run.call_args.args[0]
+        expected_prefix = [*runner_prefix(Path.cwd()), "-m", "pytest"]
+        assert cmd[: len(expected_prefix)] == expected_prefix
+        assert sys.executable not in cmd
 
     def test_run_doctests_reports_failure_on_real_doctest_failure(self) -> None:
         with patch.object(push_gate_mod, "run_allowed_to_fail", return_value=SimpleNamespace(returncode=1)):
