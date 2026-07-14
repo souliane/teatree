@@ -5,6 +5,8 @@ stays under the module-health LOC cap. Functions are kept private (``_``
 prefix) because the only public surface is the ``clean-all`` subcommand.
 """
 
+import logging
+import shutil
 from contextlib import suppress
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -24,6 +26,9 @@ if TYPE_CHECKING:
     from collections.abc import Callable
 
     from teatree.core.worktree.reconcile import Drift
+
+
+logger = logging.getLogger(__name__)
 
 
 # Regenerable artifacts a clean-working-tree probe must ignore: provisioning
@@ -338,8 +343,53 @@ def prune_branches(repo: str) -> list[str]:
     return cleaned
 
 
+# The Postgres client binaries the orphan-DB prune shells out to. A deployment
+# whose worktree databases are NOT Postgres (a SQLite-only box) has neither, and
+# ``subprocess`` answers a missing binary with ``FileNotFoundError`` — NOT a
+# non-zero return code — which is precisely why the prune's ``returncode != 0``
+# check below could not absorb it.
+_PG_CLIENT_BINARIES = ("psql", "dropdb")
+
+
+def _postgres_client_installed() -> bool:
+    """Whether this deployment can talk to Postgres at all — the orphan-DB prune's gate.
+
+    The ``wt_*`` databases the prune targets exist only where the worktree DB
+    backend IS Postgres; such a deployment necessarily has the Postgres client on
+    PATH, because the prune's own ``psql`` listing and ``dropdb`` removal are how
+    those databases are managed. Their ABSENCE is therefore the signal that this
+    box provisions no Postgres worktree databases and there is nothing to prune.
+    Probing PATH (rather than shelling the binary and catching the crash) keeps
+    the skip cheap and silent.
+    """
+    missing = [binary for binary in _PG_CLIENT_BINARIES if shutil.which(binary) is None]
+    if not missing:
+        return True
+    logger.debug(
+        "Skipping the Postgres orphan-database prune: %s not on PATH — this deployment provisions no "
+        "Postgres worktree databases, so there are no orphan wt_* databases to drop. Every other "
+        "clean-all pass is unaffected.",
+        ", ".join(missing),
+    )
+    return False
+
+
 def drop_orphan_databases() -> list[str]:
-    """Drop Postgres databases matching wt_* that don't belong to any worktree."""
+    """Drop Postgres databases matching wt_* that don't belong to any worktree.
+
+    A no-op — never a crash — on a deployment with no Postgres client
+    (souliane/teatree#3234). This is the FIRST destructive pass ``clean-all`` runs
+    after the done-worktree reaper, and it used to shell ``psql`` unconditionally.
+    On a SQLite-only box that raised ``FileNotFoundError``, which
+    :func:`run_allowed_to_fail` does not convert into a non-zero exit, so the
+    exception escaped and aborted the ENTIRE reaper: merged worktrees, stale
+    branches, orphan stashes and dangling registrations were all left behind. A
+    missing Postgres client must never abort clean-all — the pass is skipped with
+    a debug line and the remaining passes run to completion.
+    """
+    if not _postgres_client_installed():
+        return []
+
     from teatree.utils.db import pg_env, pg_host, pg_user  # noqa: PLC0415 — deferred: keeps command import light
 
     result = run_allowed_to_fail(

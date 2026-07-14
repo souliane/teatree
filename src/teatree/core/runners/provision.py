@@ -1,5 +1,7 @@
 import logging
+import shutil
 from contextlib import suppress
+from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, cast
 
@@ -8,9 +10,10 @@ from teatree.core.models import Ticket, Worktree
 from teatree.core.public_identity import is_public_github_remote, set_local_noreply_identity
 from teatree.core.runners.base import RunnerBase, RunnerResult
 from teatree.core.worktree.clone_paths import find_clone_path
-from teatree.core.worktree.worktree_paths import ticket_dir_for
+from teatree.core.worktree.worktree_paths import paths_match, ticket_dir_for
 from teatree.utils import git
 from teatree.utils.git_guard import guard_repo_remote_slug, is_github_slug
+from teatree.utils.run import CommandFailedError
 
 if TYPE_CHECKING:
     from teatree.core.models.types import TicketExtra
@@ -34,6 +37,164 @@ def _clone_dir_from_worktree(worktree_path: str) -> Path | None:
     if not common_path.is_absolute():
         common_path = (Path(worktree_path) / common_path).resolve()
     return common_path.parent
+
+
+@dataclass(frozen=True, slots=True)
+class _RegisteredWorktree:
+    """One entry from ``git worktree list --porcelain`` — what git believes exists."""
+
+    path: str
+    branch: str
+
+    @property
+    def on_disk(self) -> bool:
+        return Path(self.path).is_dir()
+
+
+def _registered_worktrees(clone: str) -> list[_RegisteredWorktree]:
+    """Every worktree git has REGISTERED for *clone*, including the main checkout.
+
+    Git's registration — not the filesystem — is what refuses a ``git worktree
+    add``: a branch is "already checked out" while any registration claims it, even
+    one whose directory was deleted. Reading the registrations is therefore the only
+    way to see the leftover that blocks provisioning. A detached entry has no
+    ``branch`` line and yields an empty ``branch``.
+    """
+    entries: list[_RegisteredWorktree] = []
+    path = ""
+    branch = ""
+    for line in git.run(repo=clone, args=["worktree", "list", "--porcelain"]).splitlines():
+        if line.startswith("worktree "):
+            if path:
+                entries.append(_RegisteredWorktree(path=path, branch=branch))
+            path, branch = line.removeprefix("worktree "), ""
+        elif line.startswith("branch refs/heads/"):
+            branch = line.removeprefix("branch refs/heads/")
+    if path:
+        entries.append(_RegisteredWorktree(path=path, branch=branch))
+    return entries
+
+
+def _holds_unsalvageable_work(wt_path: str) -> bool:
+    """Whether tearing down *wt_path* would destroy the only copy of some work.
+
+    The #706 data-loss guard, mirroring
+    :func:`teatree.core.worktree.reconcile._unpushed_work_for_worktree` and the
+    ``recover`` sweeps: a worktree is protected when it holds uncommitted changes,
+    or when its HEAD carries commits reachable from NO remote. ``--not --remotes``
+    is empty as soon as the tip was pushed anywhere, so a pushed-but-unmerged branch
+    is correctly reapable while a genuinely-local tip is not.
+
+    **Fails closed.** An inconclusive probe (``CommandFailedError`` — corrupt repo,
+    dangling ref, no commits yet) is treated as "carries work": for a destructive
+    decision, "we could not prove this is safe to delete" must protect the worktree,
+    never sacrifice it.
+    """
+    if not Path(wt_path).is_dir():
+        return False
+    if git.status_porcelain(wt_path).strip():
+        return True
+    try:
+        return bool(git.commits_absent_from_all_remotes(wt_path, "HEAD"))
+    except CommandFailedError:
+        return True
+
+
+def _tear_down_worktree(clone: str, wt_path: str, branch: str) -> None:
+    """Force-remove a work-free worktree, prune the registration, drop a dangling branch.
+
+    Only ever reached once the checkout has been PROVEN free of unpushed work (see
+    :func:`_holds_unsalvageable_work`) or its directory is already gone, so nothing
+    recoverable is lost. ``git worktree prune`` is what actually frees the branch —
+    a registration whose dir was deleted still makes git refuse the branch as
+    "already checked out".
+
+    The branch ref is dropped with ``git branch -d`` (never ``-D``): git's own
+    unmerged-branch guard is the unmerged-and-unreferenced check, so a branch still
+    carrying commits is KEPT and the caller's recreate simply reuses it via the
+    existing no-``-b`` retry. Deleting it when it IS merged is what lets a retry
+    branch cleanly off the current default instead of resurrecting a stale tip.
+    """
+    if Path(wt_path).is_dir():
+        git.worktree_remove(clone, wt_path)
+    git.run(repo=clone, args=["worktree", "prune"])
+    if branch:
+        git.check(repo=clone, args=["branch", "-d", branch])
+
+
+def _reconcile_leftover_worktree(clone: Path, wt_path: Path, branch: str) -> str | None:
+    """Make the scope's worktree slot creatable, or ADOPT what is already there (#3234).
+
+    Provisioning must be idempotent. A prior attempt that failed DOWNSTREAM of
+    ``git worktree add`` leaves the worktree and/or the branch behind; ``git worktree
+    add`` then refuses the path (it exists) AND the branch (it is "already checked
+    out"), so provision failed with "failed to create worktrees for: <repo>" and the
+    ticket stayed at ``started`` forever — every retry hitting the identical wall.
+
+    Returns the path to ADOPT (provisioning is then a no-op over an existing
+    checkout), or ``None`` when the slot is now clear for ``git worktree add``:
+
+    - a healthy registration at the expected path on the CORRECT branch → adopt it;
+    - a registration whose directory is GONE → stale git admin; pruned, then recreate;
+    - a leftover holding the branch at ANOTHER path, or one sitting at the expected
+        path on the WRONG branch → torn down (guarded) and recreated;
+    - a leftover carrying work absent from every remote → NEVER destroyed: adopted in
+        place when it is on the scope's branch, and otherwise left alone so the caller
+        fails loudly rather than silently deleting the only copy of that work.
+    """
+    clone_str, wt_str = str(clone), str(wt_path)
+
+    # A registration whose dir was deleted still holds its branch hostage. Prune
+    # first so the survey below sees only registrations git will really enforce.
+    if any(not entry.on_disk for entry in _registered_worktrees(clone_str)):
+        git.run(repo=clone_str, args=["worktree", "prune"])
+
+    leftovers = [entry for entry in _registered_worktrees(clone_str) if not paths_match(entry.path, clone_str)]
+    at_path = next((entry for entry in leftovers if paths_match(entry.path, wt_str)), None)
+    on_branch = next((entry for entry in leftovers if entry.branch == branch), None)
+
+    if at_path is not None and at_path.branch == branch:
+        logger.info("Adopting the existing worktree for %s at %s (idempotent re-provision)", branch, wt_str)
+        return wt_str
+
+    for leftover in (at_path, on_branch):
+        if leftover is None:
+            continue
+        if _holds_unsalvageable_work(leftover.path):
+            if leftover.branch == branch:
+                logger.warning(
+                    "Leftover worktree for %s at %s carries work that exists on no remote — adopting it "
+                    "in place instead of recreating at %s. Push or salvage it to move the worktree.",
+                    branch,
+                    leftover.path,
+                    wt_str,
+                )
+                return leftover.path
+            logger.error(
+                "Cannot provision %s at %s: a worktree on branch %s is in the way and carries work that "
+                "exists on no remote. Refusing to destroy it — push or salvage that work, then retry.",
+                branch,
+                wt_str,
+                leftover.branch,
+            )
+            return None
+        logger.warning(
+            "Cleaning up a broken leftover worktree at %s (branch %s) before provisioning %s at %s",
+            leftover.path,
+            leftover.branch or "(detached)",
+            branch,
+            wt_str,
+        )
+        _tear_down_worktree(clone_str, leftover.path, leftover.branch)
+
+    # A directory git does not know about — a prior ``git worktree add`` that died
+    # mid-checkout — still blocks the add. It holds no git history (git has no
+    # registration for it), so removing it cannot lose committed work.
+    if wt_path.is_dir():
+        logger.warning("Removing a partial non-worktree directory left at %s before provisioning", wt_str)
+        shutil.rmtree(wt_path, ignore_errors=True)
+
+    return None
 
 
 class WorktreeProvisioner(RunnerBase):
@@ -225,8 +386,13 @@ class WorktreeProvisioner(RunnerBase):
             guard_repo_remote_slug(str(repo_path), repo_name)
 
         wt_path = ticket_dir / Path(repo_name).name
-        if wt_path.exists():
-            return str(wt_path), repo_path
+
+        # #3234: reconcile whatever a prior failed attempt left behind BEFORE adding.
+        # A leftover worktree/branch makes ``git worktree add`` refuse both the path
+        # and the branch, which stranded the ticket at ``started`` forever.
+        adopted = _reconcile_leftover_worktree(repo_path, wt_path, branch)
+        if adopted is not None:
+            return adopted, repo_path
 
         git.pull_ff_only(str(repo_path))
 
@@ -237,6 +403,33 @@ class WorktreeProvisioner(RunnerBase):
             logger.warning("Failed to create worktree for %s at %s", repo_name, wt_path)
             return None
 
+        try:
+            WorktreeProvisioner._finalize(repo_path, wt_path)
+        except Exception:
+            # #3234: a step that fails AFTER the worktree exists must not strand it —
+            # the leftover is exactly what refuses the next ``git worktree add``. The
+            # checkout was created moments ago and carries no work, so tearing it down
+            # is free and leaves the retry a clean slate. Fail the provision loudly:
+            # a half-provisioned worktree is not a usable one.
+            logger.exception(
+                "Provision step failed after creating the worktree for %s at %s — tearing it down so the "
+                "retry starts clean (#3234).",
+                repo_name,
+                wt_path,
+            )
+            _tear_down_worktree(str(repo_path), str(wt_path), branch)
+            return None
+
+        return str(wt_path), repo_path
+
+    @staticmethod
+    def _finalize(repo_path: Path, wt_path: Path) -> None:
+        """The post-``worktree add`` steps. Raising here tears the new worktree back down.
+
+        Kept separate from :meth:`_create` so every step that runs AFTER the checkout
+        exists sits behind one rollback boundary — a new step cannot be added without
+        inheriting the teardown-on-failure contract (#3234).
+        """
         pv = repo_path / ".python-version"
         pv_dest = wt_path / ".python-version"
         if pv.is_file() and not pv_dest.exists():
@@ -251,21 +444,11 @@ class WorktreeProvisioner(RunnerBase):
         # host-stripped slug — ``is_public_github_remote`` must see the
         # host to refuse a non-github (e.g. gitlab) remote whose bare
         # ``owner/repo`` would otherwise be resolved against github.com.
+        #
+        # #3234: a failure here now ROLLS THE WORKTREE BACK rather than logging and
+        # carrying on. The old fail-open left a worktree with the inherited identity
+        # in place (the #755 lesson said "surface it loudly"), but a surfaced warning
+        # on a worktree that still gets committed from is the same leak by a slower
+        # route — and the stranded checkout then blocked its own re-provision.
         if is_public_github_remote(git.remote_url(str(repo_path))):
-            try:
-                set_local_noreply_identity(str(wt_path))
-            except Exception:
-                # Do NOT silently swallow — if this fails the worktree
-                # keeps the inherited identity and the condition recurs
-                # invisibly (the #755 fail-open lesson). Surface it
-                # loudly; the worktree is still usable but this needs
-                # action, not a soft warning.
-                logger.exception(
-                    "Failed to set the configured noreply git identity on public "
-                    "souliane worktree %s — commits here may use the inherited "
-                    "identity (#762). Set the clone-local git identity before "
-                    "committing.",
-                    wt_path,
-                )
-
-        return str(wt_path), repo_path
+            set_local_noreply_identity(str(wt_path))
