@@ -42,20 +42,51 @@ def _rollup_names(rollup: list[dict[str, object]]) -> list[str]:
     return names
 
 
+def _rules_payload(*contexts: str) -> str:
+    """A ``repos/<slug>/rules/branches/<base>`` body with one ``required_status_checks`` rule.
+
+    Mirrors the effective-rules endpoint the fine-grained PAT CAN read: a JSON list
+    of rules, each with a ``type``; the ``required_status_checks`` rule carries the
+    required contexts under ``parameters.required_status_checks[].context``.
+    """
+    return json.dumps(
+        [
+            {"type": "pull_request", "parameters": {}},
+            {
+                "type": "required_status_checks",
+                "parameters": {
+                    "required_status_checks": [{"context": ctx} for ctx in contexts],
+                    "strict_required_status_checks_policy": True,
+                },
+            },
+        ],
+    )
+
+
+# The default rules-endpoint response for the legacy stubs: an INDETERMINATE read
+# (5xx) so a failing protection endpoint reproduces the pre-fix "both sources
+# unreadable → fail closed" behaviour instead of being rescued by a readable
+# rules endpoint. Tests that exercise the rules-endpoint rescue script it explicitly.
+_RULES_UNREADABLE: tuple[int, str, str] = (1, "", "HTTP 500: server error")
+
+
 def _gh_stub(
     rollup: list[dict[str, object]],
     *,
     required: list[str] | None = None,
     protection_rc: int = 0,
     protection_body: str | None = None,
+    rules: tuple[int, str, str] = _RULES_UNREADABLE,
 ) -> Callable[[list[str]], tuple[int, str, str]]:
-    """A ``gh`` runner answering the statusCheckRollup AND branch-protection queries.
+    """A ``gh`` runner answering the statusCheckRollup, rules, AND branch-protection queries.
 
     *required* is the branch-protection ``required_status_checks`` context set the
     repo reports. When ``None`` it defaults to every name present in *rollup* — so
     the dedupe tests, which treat all checks as required, keep their semantics.
     *protection_rc* / *protection_body* simulate a failed (or "no protection")
-    branch-protection fetch — the fail-closed / no-gate paths.
+    branch-protection fetch — the fail-closed / no-gate paths. *rules* scripts the
+    PAT-readable effective-rules endpoint; it defaults to an indeterminate read so a
+    failing protection endpoint alone still fails closed.
     """
     contexts = _rollup_names(rollup) if required is None else required
 
@@ -65,6 +96,8 @@ def _gh_stub(
             return (0, json.dumps(rollup), "")
         if "baseRefName" in joined:
             return (0, "main", "")
+        if "rules/branches" in joined:
+            return rules
         if "required_status_checks" in joined:
             if protection_rc != 0:
                 return (protection_rc, "", protection_body or "api error")
@@ -80,8 +113,15 @@ def _verdict(
     required: list[str] | None = None,
     protection_rc: int = 0,
     protection_body: str | None = None,
+    rules: tuple[int, str, str] = _RULES_UNREADABLE,
 ) -> str:
-    stub = _gh_stub(rollup, required=required, protection_rc=protection_rc, protection_body=protection_body)
+    stub = _gh_stub(
+        rollup,
+        required=required,
+        protection_rc=protection_rc,
+        protection_body=protection_body,
+        rules=rules,
+    )
     with patch("teatree.backends.forge_merge_rpc.gh_runner", return_value=stub):
         return CodeHostQuery.for_ref(PrRef(slug=_SLUG, pr_id=_PR_ID)).required_checks_status()
 
@@ -198,6 +238,69 @@ class TestRequiredContextsGate:
         # means no required-status-check gate exists, so the merge is allowed.
         rollup = [_failed("eval")]
         assert _verdict(rollup, protection_rc=1, protection_body="HTTP 404: Branch not protected") == "green"
+
+
+class TestRulesEndpointRequiredSetResolution:
+    """The §17.4.3-step-3 required set resolves from the PAT-readable rules endpoint.
+
+    A fine-grained PAT WITHOUT "Administration" gets HTTP 403 on the legacy
+    ``branches/<base>/protection/required_status_checks`` endpoint, but CAN read
+    ``repos/<slug>/rules/branches/<base>``. The verdict must resolve the required
+    set from the readable rules endpoint so an all-green PR merges — while a
+    genuinely indeterminate required set (NEITHER endpoint readable) still fails
+    closed (souliane/teatree merge-gate 403 bug).
+    """
+
+    _PAT_403 = "HTTP 403: Resource not accessible by personal access token"
+
+    def test_403_protection_rescued_by_rules_all_green(self) -> None:
+        # Protection 403s (no Admin); the rules endpoint IS readable and lists the
+        # required contexts. Every required context is green → the merge is ALLOWED.
+        rollup = [_green("lint"), _green("test (3.13)"), _failed("eval")]
+        verdict = _verdict(
+            rollup,
+            protection_rc=1,
+            protection_body=self._PAT_403,
+            rules=(0, _rules_payload("lint", "test (3.13)"), ""),
+        )
+        assert verdict == "green"
+
+    def test_403_protection_rescued_by_rules_failed_required_still_blocks(self) -> None:
+        # The real-failure path must not regress: protection 403, rules readable and
+        # requiring ``test (3.13)``, whose live check is FAILURE → still REFUSED.
+        rollup = [_green("lint"), _failed("test (3.13)")]
+        verdict = _verdict(
+            rollup,
+            protection_rc=1,
+            protection_body=self._PAT_403,
+            rules=(0, _rules_payload("lint", "test (3.13)"), ""),
+        )
+        assert verdict == "failed"
+
+    def test_403_protection_and_rules_have_no_required_rule_is_green(self) -> None:
+        # Protection 403, and the readable rules endpoint has NO required_status_checks
+        # rule → determinate "no gate" → green (mergeable), NOT fail-closed.
+        rollup = [_failed("eval")]
+        verdict = _verdict(
+            rollup,
+            protection_rc=1,
+            protection_body=self._PAT_403,
+            rules=(0, json.dumps([{"type": "pull_request", "parameters": {}}]), ""),
+        )
+        assert verdict == "green"
+
+    def test_both_endpoints_unreadable_fails_closed(self) -> None:
+        # The fail-closed invariant: NEITHER the rules endpoint NOR the protection
+        # endpoint could be read (both 5xx / non-deterministic) → the required set
+        # is genuinely indeterminate → the merge is REFUSED.
+        rollup = _all_required_green()
+        verdict = _verdict(
+            rollup,
+            protection_rc=1,
+            protection_body=self._PAT_403,
+            rules=(1, "", "HTTP 500: server error"),
+        )
+        assert verdict == "failed"
 
 
 class TestDedupeNewestPerName:
@@ -413,13 +516,20 @@ def _contexts_runner(
     base: str = "main",
     base_rc: int = 0,
     protection: tuple[int, str, str],
+    rules: tuple[int, str, str] = _RULES_UNREADABLE,
 ) -> Callable[[list[str]], tuple[int, str, str]]:
-    """A ``gh`` runner scripting the base-branch then branch-protection calls."""
+    """A ``gh`` runner scripting the base-branch, rules, then branch-protection calls.
+
+    *rules* defaults to an indeterminate read so a protection-only failure still
+    fails closed; the rules-endpoint rescue paths script it explicitly.
+    """
 
     def run(argv: list[str]) -> tuple[int, str, str]:
         joined = " ".join(argv)
         if "baseRefName" in joined:
             return (base_rc, base, "")
+        if "rules/branches" in joined:
+            return rules
         if "required_status_checks" in joined:
             return protection
         return (0, "", "")
@@ -558,3 +668,72 @@ class TestRequiredStatusCheckContextsTransport:
         # rc==0 with an empty body → no required-status-check rule → no gate.
         result = self._contexts(_contexts_runner(protection=(0, "", "")))
         assert result == []
+
+    _PAT_403 = "HTTP 403: Resource not accessible by personal access token"
+
+    def test_403_protection_rescued_by_rules_endpoint_contexts(self) -> None:
+        # The fine-grained-PAT bug: protection 403s, but the rules endpoint IS
+        # readable and lists the required contexts — the required set resolves from
+        # it (NOT ROLLUP_QUERY_FAILED).
+        result = self._contexts(
+            _contexts_runner(
+                protection=(1, "", self._PAT_403),
+                rules=(0, _rules_payload("lint", "sbom"), ""),
+            ),
+        )
+        assert sorted(str(entry["context"]) for entry in result) == ["lint", "sbom"]
+
+    def test_403_protection_and_rules_no_required_rule_is_empty_no_gate(self) -> None:
+        # Protection 403, and the readable rules endpoint has NO required_status_checks
+        # rule → determinate "no gate" → empty required set (green), not fail-closed.
+        result = self._contexts(
+            _contexts_runner(
+                protection=(1, "", self._PAT_403),
+                rules=(0, json.dumps([{"type": "pull_request", "parameters": {}}]), ""),
+            ),
+        )
+        assert result == []
+
+    def test_protection_404_and_no_rules_is_empty_no_gate(self) -> None:
+        # Protection determinately unprotected (404) AND the rules endpoint readable
+        # with no required rule → determinate no gate → empty required set.
+        result = self._contexts(
+            _contexts_runner(
+                protection=(1, "", "HTTP 404: Branch not protected"),
+                rules=(0, "[]", ""),
+            ),
+        )
+        assert result == []
+
+    def test_rules_and_protection_contexts_are_unioned(self) -> None:
+        # Both sources readable — the required set is the UNION (each source may
+        # carry a name the other omits: classic protection vs a ruleset).
+        result = self._contexts(
+            _contexts_runner(
+                protection=(0, json.dumps({"contexts": ["lint"]}), ""),
+                rules=(0, _rules_payload("sbom", "test (3.13)"), ""),
+            ),
+        )
+        assert sorted(str(entry["context"]) for entry in result) == ["lint", "sbom", "test (3.13)"]
+
+    def test_both_endpoints_unreadable_fails_closed(self) -> None:
+        # The fail-closed invariant: NEITHER endpoint readable (both 5xx / 403 with
+        # no determinate no-gate body) → genuinely indeterminate → refuse.
+        result = self._contexts(
+            _contexts_runner(
+                protection=(1, "", self._PAT_403),
+                rules=(1, "", "HTTP 500: server error"),
+            ),
+        )
+        assert rollup_query_failed(result)
+
+    def test_unparseable_rules_falls_back_to_protection(self) -> None:
+        # The rules endpoint returns garbage (indeterminate for that source), but
+        # protection is readable → the required set still resolves from protection.
+        result = self._contexts(
+            _contexts_runner(
+                protection=(0, json.dumps({"contexts": ["lint"]}), ""),
+                rules=(0, "{not json", ""),
+            ),
+        )
+        assert sorted(str(entry["context"]) for entry in result) == ["lint"]
