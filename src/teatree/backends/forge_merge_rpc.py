@@ -65,6 +65,82 @@ def glab_project_path(slug: str) -> str:
     return slug.replace("/", "%2F")
 
 
+def _github_rules_required_contexts(rc: int, out: str, err: str) -> set[str] | None:
+    """Required contexts from the effective-rules endpoint, or ``None`` when unreadable.
+
+    ``repos/<slug>/rules/branches/<base>`` is readable with a fine-grained PAT's
+    ``contents``/``metadata`` read and returns the effective required checks from
+    BOTH classic branch protection AND rulesets — the PAT-readable source the
+    §17.4.3 step-3 required set should prefer. Unions
+    ``parameters.required_status_checks[].context`` across every
+    ``required_status_checks`` rule.
+
+    A determinate ``set()`` (possibly empty) is returned for any readable,
+    parseable list — an empty set means the branch has no ``required_status_checks``
+    rule (no gate). ``None`` signals an INDETERMINATE read (non-zero rc, unparsable
+    body, or a non-list payload) so the caller can fall back to the legacy
+    protection endpoint before deciding whether to fail closed.
+    """
+    del err  # the caller distinguishes readable/unreadable via rc + body parseability
+    if rc != 0:
+        return None
+    try:
+        data = json.loads(out) if out.strip() else []
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(data, list):
+        return None
+    contexts: set[str] = set()
+    for rule in data:
+        if not isinstance(rule, dict) or rule.get("type") != "required_status_checks":
+            continue
+        params = rule.get("parameters")
+        if not isinstance(params, dict):
+            continue
+        for check in params.get("required_status_checks") or []:
+            if isinstance(check, dict) and isinstance(check.get("context"), str) and check["context"]:
+                contexts.add(check["context"])
+    return contexts
+
+
+def _github_protection_required_contexts(rc: int, out: str, err: str) -> set[str] | None:
+    """Required contexts from the legacy branch-protection endpoint, or ``None`` if unreadable.
+
+    ``None`` signals an INDETERMINATE read — a fine-grained PAT WITHOUT the
+    "Administration" permission gets HTTP 403 ("Resource not accessible by personal
+    access token" / "must have admin") on this endpoint, and a 5xx / network /
+    unparsable body is equally unreadable. On ``None`` the caller falls back to the
+    rules-endpoint result rather than failing closed on this source alone.
+
+    A determinate ``set()`` is returned for a genuine "no classic protection" 404
+    (``Branch not protected`` / ``Required status checks not enabled`` / ``Not
+    Found``); otherwise the UNION of the legacy ``contexts`` array and the newer
+    ``checks[].context`` array (GitHub returns both; either may carry a name).
+    """
+    if rc != 0:
+        body = f"{out}\n{err}".lower()
+        # ``base`` is already confirmed a real branch, so a 404 here can only mean
+        # "no protection configured" — never "no such branch". A 403 (no Admin
+        # permission), 5xx, or network error is NOT determinate → ``None``.
+        if "branch not protected" in body or "required status checks not enabled" in body or "not found" in body:
+            return set()
+        return None
+    try:
+        data = json.loads(out) if out.strip() else {}
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(data, dict):
+        return None
+    contexts: set[str] = set()
+    for ctx in data.get("contexts") or []:
+        if isinstance(ctx, str) and ctx:
+            contexts.add(ctx)
+    for check in data.get("checks") or []:
+        if isinstance(check, dict) and isinstance(check.get("context"), str) and check["context"]:
+            contexts.add(check["context"])
+    return contexts
+
+
 class GhMergeRpc:
     """GitHub ``gh`` merge-RPC argv + payload parsing — raw I/O for one host."""
 
@@ -135,22 +211,30 @@ class GhMergeRpc:
         return [entry for entry in rollup if isinstance(entry, dict)]
 
     def fetch_required_status_check_contexts(self, *, slug: str, pr_id: int) -> list[RawAPIDict]:
-        """Branch-protection required-status-check contexts for the PR's base branch.
+        """Required-status-check contexts for the PR's base branch — §17.4.3 step 3.
 
-        The AUTHORITATIVE required set for §17.4.3 step 3: only a context the
-        repo's branch protection lists as a required status check may block the
-        merge. A check NOT in this set (``eval``, advisory lanes, …) never blocks
-        regardless of its conclusion.
+        The AUTHORITATIVE required set: only a context the repo requires as a status
+        check may block the merge. A check NOT in this set (``eval``, advisory lanes,
+        …) never blocks regardless of its conclusion.
 
-        Returns ``[ROLLUP_QUERY_FAILED]`` (fail CLOSED) when the base branch or
-        the ``branches/<base>/protection/required_status_checks`` endpoint cannot
-        be read — an indeterminate required set must refuse the merge, never fall
-        open. Returns ``[]`` when the base branch genuinely has no required-status-
-        check protection (the determinate "no required gate" 404 the forge raises
-        with a ``Branch not protected`` / ``Required status checks not enabled``
-        body — no gate → green). Otherwise one ``{"context": <name>}`` entry per
-        required context, the UNION of the legacy ``contexts`` array and the newer
-        ``checks[].context`` array (GitHub returns both; either may carry a name).
+        Resolved from TWO sources and unioned so a fine-grained PAT still gets a
+        determinate answer. The preferred source is the effective-rules endpoint
+        ``repos/<slug>/rules/branches/<base>``, readable with a fine-grained PAT's
+        ``contents``/``metadata`` read, which returns the effective required checks
+        from BOTH classic branch protection AND rulesets. The legacy endpoint
+        ``branches/<base>/protection/required_status_checks`` is the union fallback,
+        but a fine-grained PAT WITHOUT "Administration" gets HTTP 403 on it; a 403
+        here is treated as INDETERMINATE for this source, NOT a hard failure — the
+        rules-endpoint result stands.
+
+        Returns one ``{"context": <name>}`` entry per required context (the union of
+        the two readable sources), or ``[]`` when at least one source is readable and
+        determinately reports NO required gate (no gate → green, mergeable).
+
+        Returns ``[ROLLUP_QUERY_FAILED]`` (fail CLOSED) STRICTLY when the required
+        set is genuinely indeterminate: the base branch cannot be read, or NEITHER
+        endpoint could be read (both error non-deterministically / unparsable). A
+        real inability to determine the required set must still refuse the merge.
         """
         rc, out, _ = self._run(
             ["pr", "view", str(pr_id), "--repo", slug, "--json", "baseRefName", "--jq", ".baseRefName"],
@@ -158,28 +242,21 @@ class GhMergeRpc:
         base = out.strip()
         if rc != 0 or not base:
             return [ROLLUP_QUERY_FAILED]
-        rc, out, err = self._run(["api", f"repos/{slug}/branches/{base}/protection/required_status_checks"])
-        if rc != 0:
-            body = f"{out}\n{err}".lower()
-            # `base` was already confirmed a real branch above, so a 404 here
-            # can only mean "no protection configured" — never "no such branch".
-            if "branch not protected" in body or "required status checks not enabled" in body or "not found" in body:
-                return []
+        rules_rc, rules_out, rules_err = self._run(["api", f"repos/{slug}/rules/branches/{base}"])
+        rules_contexts = _github_rules_required_contexts(rules_rc, rules_out, rules_err)
+        prot_rc, prot_out, prot_err = self._run(
+            ["api", f"repos/{slug}/branches/{base}/protection/required_status_checks"],
+        )
+        protection_contexts = _github_protection_required_contexts(prot_rc, prot_out, prot_err)
+        determinate = [contexts for contexts in (rules_contexts, protection_contexts) if contexts is not None]
+        if not determinate:
+            # Neither the rules endpoint nor the legacy protection endpoint could be
+            # read — the required set is genuinely indeterminate → fail CLOSED.
             return [ROLLUP_QUERY_FAILED]
-        try:
-            data = json.loads(out) if out.strip() else {}
-        except json.JSONDecodeError:
-            return [ROLLUP_QUERY_FAILED]
-        if not isinstance(data, dict):
-            return [ROLLUP_QUERY_FAILED]
-        contexts: set[str] = set()
-        for ctx in data.get("contexts") or []:
-            if isinstance(ctx, str) and ctx:
-                contexts.add(ctx)
-        for check in data.get("checks") or []:
-            if isinstance(check, dict) and isinstance(check.get("context"), str) and check["context"]:
-                contexts.add(check["context"])
-        return [{"context": ctx} for ctx in sorted(contexts)]
+        union: set[str] = set()
+        for contexts in determinate:
+            union |= contexts
+        return [{"context": ctx} for ctx in sorted(union)]
 
     def fetch_pr_changed_paths(self, *, slug: str, pr_id: int) -> list[str]:
         rc, out, _ = self._run(
