@@ -146,7 +146,20 @@ def _canonical_active_overlay_name(directory_name: str) -> str:
         return directory_name
     if directory_name in ep_names:
         return directory_name
-    return _match_canonical_ep(directory_name, ep_names) or directory_name
+    canonical = _match_canonical_ep(directory_name, ep_names)
+    if canonical is not None:
+        return canonical
+    # A clone/deploy dir whose basename matches NO registered entry point —
+    # e.g. a ``teatree-deploy`` deploy dir against the sole ``t3-teatree``
+    # entry point — would otherwise leak the raw basename as the overlay
+    # anchor and stamp an undispatchable name onto every scanner ticket
+    # (souliane/teatree deploy-dirname leak). When exactly one overlay is
+    # installed there is no ambiguity: fold onto that single entry point.
+    # More than one installed overlay stays ambiguous, so the basename is
+    # preserved (multi-overlay behaviour intact).
+    if len(ep_names) == 1:
+        return next(iter(ep_names))
+    return directory_name
 
 
 def _resolve_ep_project_path(overlay_class: str) -> Path | None:

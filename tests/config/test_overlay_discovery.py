@@ -117,6 +117,60 @@ def test_discover_active_overlay_canonicalizes_clone_dir_name(tmp_path: Path, mo
     assert result.project_path == project
 
 
+def test_discover_active_overlay_folds_deploy_dirname_to_sole_overlay(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A deploy dir named ``teatree-deploy`` folds onto the sole registered overlay.
+
+    The basename ``teatree-deploy`` matches neither ``t3-teatree`` exactly nor
+    the ``-teatree-deploy`` dash-suffix alias rule, so pre-fix it leaked through
+    unchanged and stamped an undispatchable overlay onto every scanner ticket
+    (tickets 6/7/8 stuck ``not_started``). With exactly one overlay installed
+    there is no ambiguity — resolve to that overlay's canonical entry-point name.
+    """
+    project = tmp_path / "teatree-deploy"
+    _write_manage_py(project, "active.settings")
+    monkeypatch.chdir(project)
+
+    ep = MagicMock()
+    ep.name = "t3-teatree"
+    ep.value = "t3_teatree.overlay:TeatreeOverlay"
+
+    with patch("importlib.metadata.entry_points", return_value=[ep]):
+        result = discover_active_overlay()
+
+    assert result is not None
+    assert result.name == "t3-teatree"
+    assert result.project_path == project
+
+
+def test_discover_active_overlay_dirname_kept_raw_when_multiple_overlays(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """With >1 overlay installed an ambiguous basename is NOT force-folded.
+
+    The single-overlay fallback only fires when there is exactly one registered
+    entry point; multiple installed overlays make the choice ambiguous, so the
+    directory basename is preserved (existing multi-overlay behaviour intact).
+    """
+    project = tmp_path / "teatree-deploy"
+    _write_manage_py(project, "active.settings")
+    monkeypatch.chdir(project)
+
+    ep_a = MagicMock()
+    ep_a.name = "t3-teatree"
+    ep_a.value = "t3_teatree.overlay:TeatreeOverlay"
+    ep_b = MagicMock()
+    ep_b.name = "t3-acme"
+    ep_b.value = "acme_pkg.overlay:AcmeOverlay"
+
+    with patch("importlib.metadata.entry_points", return_value=[ep_a, ep_b]):
+        result = discover_active_overlay()
+
+    assert result is not None
+    assert result.name == "teatree-deploy"
+
+
 def test_discover_active_overlay_single_declared(
     config_db: Path,
     elsewhere: Path,

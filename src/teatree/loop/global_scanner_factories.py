@@ -36,6 +36,26 @@ from teatree.loop.scanners.notion_view import NotionLike
 from teatree.loop.scanners.self_update_ci import GhMainCiStatus
 
 
+def _active_overlay_anchor() -> str:
+    """Resolve the dispatchable overlay-anchor name for global per-overlay scanners.
+
+    Reads the active overlay via :func:`discover_active_overlay` and
+    canonicalizes the result through
+    :func:`teatree.core.overlay_loader.resolve_overlay_name` so a clone- or
+    deploy-directory basename that no registered overlay can dispatch (the
+    ``teatree-deploy`` deploy-dirname leak) is never stamped onto a scanner
+    ticket. Falls back to the canonical core overlay both when no overlay is
+    discovered AND when the discovered name is undispatchable — closing the
+    poison-pill seam (souliane/teatree#1959) at the write-site rather than
+    only at the drain guard.
+    """
+    from teatree.core.overlay_loader import resolve_overlay_name  # noqa: PLC0415 — tick-time import
+
+    active = discover_active_overlay()
+    raw = active.name if active is not None else _CANONICAL_CORE_OVERLAY
+    return resolve_overlay_name(raw) or _CANONICAL_CORE_OVERLAY
+
+
 def _dogfood_smoke_scanner() -> Scanner | None:
     """Wire the global provision-smoke scanner (#1308)."""
     from teatree.loop.scanners.provision_smoke import build_provision_smoke_scanner  # noqa: PLC0415 — tick-time import
@@ -195,8 +215,7 @@ def _idle_stack_reaper_scanner() -> IdleStackReaperScanner | None:
     settings = load_config().user
     if settings.idle_stack_reaper_disabled:
         return None
-    active = discover_active_overlay()
-    overlay_name = active.name if active is not None else _CANONICAL_CORE_OVERLAY
+    overlay_name = _active_overlay_anchor()
     return IdleStackReaperScanner(
         overlay=overlay_name,
         idle_minutes=settings.idle_stack_idle_minutes,
@@ -219,8 +238,7 @@ def _snapshot_warmer_scanner() -> SnapshotWarmerScanner | None:
         return None
     from teatree.core.overlay_loader import get_overlay  # noqa: PLC0415 — deferred: loaded at tick time, not import
 
-    active = discover_active_overlay()
-    overlay_name = active.name if active is not None else _CANONICAL_CORE_OVERLAY
+    overlay_name = _active_overlay_anchor()
     try:
         overlay = get_overlay(overlay_name)
     except Exception:  # noqa: BLE001 — an unresolvable overlay means nothing to warm, not a tick crash
@@ -261,8 +279,7 @@ def _local_stack_queue_drainer_scanner() -> LocalStackQueueDrainerScanner | None
     settings = load_config().user
     if settings.local_stack_queue_disabled:
         return None
-    active = discover_active_overlay()
-    overlay_name = active.name if active is not None else _CANONICAL_CORE_OVERLAY
+    overlay_name = _active_overlay_anchor()
     return LocalStackQueueDrainerScanner(overlay=overlay_name)
 
 
@@ -310,8 +327,7 @@ def _scanning_news_scanner() -> ScanningNewsScanner | None:
     settings = load_config().user
     if settings.scanning_news_disabled:
         return None
-    active = discover_active_overlay()
-    overlay_name = active.name if active is not None else _CANONICAL_CORE_OVERLAY
+    overlay_name = _active_overlay_anchor()
     return ScanningNewsScanner(
         overlay_name=overlay_name,
         skill=settings.scanning_news_skill,
@@ -339,8 +355,7 @@ def _eval_local_scanner() -> EvalLocalScanner | None:
     settings = load_config().user
     if settings.eval_local_disabled:
         return None
-    active = discover_active_overlay()
-    overlay_name = active.name if active is not None else _CANONICAL_CORE_OVERLAY
+    overlay_name = _active_overlay_anchor()
     return EvalLocalScanner(
         overlay_name=overlay_name,
         skill=settings.eval_local_skill,
@@ -368,8 +383,7 @@ def _backlog_sweep_scanner() -> BacklogSweepScanner | None:
     settings = load_config().user
     if settings.backlog_sweep_disabled:
         return None
-    active = discover_active_overlay()
-    overlay_name = active.name if active is not None else _CANONICAL_CORE_OVERLAY
+    overlay_name = _active_overlay_anchor()
     return BacklogSweepScanner(
         overlay_name=overlay_name,
         skill=settings.backlog_sweep_skill,

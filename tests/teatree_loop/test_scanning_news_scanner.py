@@ -349,6 +349,44 @@ class ScanningNewsWiringTests(TestCase):
         assert scanner is not None
         assert scanner.overlay_name == "t3-teatree"
 
+    def test_undispatchable_deploy_dirname_never_reaches_ticket(self) -> None:
+        """Deploy-dirname leak — an undispatchable discovered overlay is canonicalized before persistence.
+
+        On a box whose deploy dir is ``teatree-deploy`` (matching no registered
+        entry point), ``discover_active_overlay`` pre-fix returned that raw name
+        and the wiring stamped it onto the scanning-news ticket, creating the
+        poison-pill ``scanning-news://teatree-deploy`` row (ticket 6, stuck
+        ``not_started``). The write-site now canonicalizes through
+        ``resolve_overlay_name`` and falls back to the sole registered overlay,
+        so the undispatchable name is never persisted onto a ticket.
+        """
+        from teatree.config import OverlayEntry  # noqa: PLC0415
+        from teatree.core.models.ticket import Ticket  # noqa: PLC0415
+        from teatree.loop.global_scanner_factories import _scanning_news_scanner  # noqa: PLC0415
+
+        leaked = OverlayEntry(name="teatree-deploy", overlay_class="")
+        with (
+            patch(
+                "teatree.loop.global_scanner_factories.load_config",
+                return_value=type("Cfg", (), {"user": self._patched_settings()})(),
+            ),
+            patch(
+                "teatree.loop.global_scanner_factories.discover_active_overlay",
+                return_value=leaked,
+            ),
+        ):
+            scanner = _scanning_news_scanner()
+            assert scanner is not None
+            signals = scanner.scan()
+
+        assert scanner.overlay_name == "t3-teatree"
+        assert len(signals) == 1
+        assert signals[0].payload["overlay"] == "t3-teatree"
+        # The undispatchable deploy dirname must never be persisted onto a ticket.
+        assert not Ticket.objects.filter(overlay="teatree-deploy").exists()
+        assert not Ticket.objects.filter(issue_url="scanning-news://teatree-deploy").exists()
+        assert Ticket.objects.filter(issue_url="scanning-news://t3-teatree").exists()
+
     def test_wiring_falls_back_to_canonical_when_no_overlay_discovered(self) -> None:
         """Defensive default — no installed overlay still queues against the canonical name."""
         from teatree.loop.global_scanner_factories import _scanning_news_scanner  # noqa: PLC0415
