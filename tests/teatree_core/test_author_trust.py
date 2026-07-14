@@ -17,6 +17,11 @@ from django.test import TestCase
 from teatree.core.models import TrustedIdentity
 from teatree.core.review import author_trust
 
+# Imported by NAME (not merely module-qualified) so a revert of either production
+# symbol turns TestExtraTrustedUnion red — the anti-vacuity contract the per-diff
+# coverage gate enforces (BLUEPRINT §17.6.3).
+from teatree.core.review.author_trust import classify_author, is_trusted_author
+
 # ast-grep-ignore: ac-django-no-pytest-django-db
 pytestmark = pytest.mark.django_db
 
@@ -154,14 +159,12 @@ class TestExtraTrustedUnion(TestCase):
     def test_extra_trusted_defaults_to_empty_so_existing_callers_are_unchanged(self) -> None:
         _seed_known()
         with _public():
-            assert author_trust.classify_author(_PUBLIC, "adrien-oper").untrusted is True
+            assert classify_author(_PUBLIC, "adrien-oper").untrusted is True
 
     def test_extra_trusted_handle_is_trusted(self) -> None:
         _seed_known()
         with _public():
-            classification = author_trust.classify_author(
-                _PUBLIC, "adrien-oper", extra_trusted=frozenset({"adrien-oper"})
-            )
+            classification = classify_author(_PUBLIC, "adrien-oper", extra_trusted=frozenset({"adrien-oper"}))
         assert classification.trusted is True
         assert classification.untrusted is False
 
@@ -169,13 +172,13 @@ class TestExtraTrustedUnion(TestCase):
         """A DB-trusted handle stays trusted when the caller supplies its own extras."""
         _seed_known()
         with _public():
-            assert author_trust.classify_author(_PUBLIC, "souliane", extra_trusted=frozenset({"adrien-oper"})).trusted
+            assert classify_author(_PUBLIC, "souliane", extra_trusted=frozenset({"adrien-oper"})).trusted
 
     def test_extra_trusted_match_is_case_insensitive(self) -> None:
-        assert author_trust.is_trusted_author("Adrien-Oper", extra_trusted=frozenset({"adrien-oper"})) is True
+        assert is_trusted_author("Adrien-Oper", extra_trusted=frozenset({"adrien-oper"})) is True
 
     def test_extra_trusted_never_admits_an_unlisted_author(self) -> None:
-        assert author_trust.is_trusted_author("evilhacker", extra_trusted=frozenset({"adrien-oper"})) is False
+        assert is_trusted_author("evilhacker", extra_trusted=frozenset({"adrien-oper"})) is False
 
     def test_empty_author_is_untrusted_even_with_extras(self) -> None:
-        assert author_trust.is_trusted_author("", extra_trusted=frozenset({"adrien-oper"})) is False
+        assert is_trusted_author("", extra_trusted=frozenset({"adrien-oper"})) is False
