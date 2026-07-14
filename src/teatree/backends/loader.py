@@ -34,30 +34,60 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
+def _github_host(overlay: "OverlayBase") -> GitHubCodeHost | None:
+    """Return a GitHub code host for *overlay*, or ``None`` when unauthenticated.
+
+    An explicit ``get_github_token()`` authors requests; failing that, the
+    ambient ``gh`` CLI login (:func:`gh_ambient_auth_available`) backs an
+    empty-token host so a gh-CLI-only box still surfaces GitHub PRs/issues/
+    reviews — the same carve-out :func:`_github_host_for_repo` already applies
+    on the ship path (#2946). Only a box with neither returns ``None``.
+
+    The ambient probe shells out to ``gh auth status``, so it runs lazily —
+    only when no explicit token is present. No memoization here: the
+    ``backend_factory`` registry already caches resolved backends per process.
+    """
+    github_token = overlay.config.get_github_token()
+    if github_token:
+        return GitHubCodeHost(token=github_token)
+    if gh_ambient_auth_available():
+        return GitHubCodeHost(token="")
+    return None
+
+
 def get_code_host(overlay: "OverlayBase") -> CodeHostBackend | None:
     """Return the configured CodeHostBackend for *overlay*, or ``None``.
 
     Selection follows ``overlay.config.code_host``; falls back to inspecting
-    the available tokens when the field is unset.
+    the available tokens when the field is unset. An ambient ``gh`` login backs
+    a tokenless GitHub host, but only after every explicitly-configured host —
+    an explicit GitLab token outranks it (see :func:`_github_host`).
 
     Pre-#976 single-platform callers — anything that wires a single host
     into a Django view or CLI command — keep calling this. The multi-host
     loop scanner stack calls :func:`get_code_hosts` instead.
     """
     choice = overlay.config.code_host
-    github_token = overlay.config.get_github_token()
+    if choice not in {"", "github", "gitlab"}:
+        msg = f"Unknown code_host: {choice!r}"
+        raise ValueError(msg)
+
+    if choice == "github":
+        return _github_host(overlay)
+
     gitlab_token = overlay.config.get_gitlab_token()
-
-    if choice == "github" or (not choice and github_token):
-        return GitHubCodeHost(token=github_token) if github_token else None
-
-    if choice == "gitlab" or (not choice and gitlab_token):
+    if choice == "gitlab":
         return GitLabCodeHost(token=gitlab_token, base_url=overlay.config.gitlab_url) if gitlab_token else None
 
-    if choice in {"", "github", "gitlab"}:
-        return None
-    msg = f"Unknown code_host: {choice!r}"
-    raise ValueError(msg)
+    # Auto mode: an explicit GitHub token wins, then an explicit GitLab token,
+    # then — only when no explicit host resolved — an ambient gh login (or
+    # ``None``). Ambient GitHub must rank below ANY explicitly-configured host.
+    github_token = overlay.config.get_github_token()
+    if github_token:
+        return GitHubCodeHost(token=github_token)
+    if gitlab_token:
+        return GitLabCodeHost(token=gitlab_token, base_url=overlay.config.gitlab_url)
+    return _github_host(overlay)
 
 
 def get_code_hosts(overlay: "OverlayBase") -> list[CodeHostBackend]:
@@ -74,38 +104,51 @@ def get_code_hosts(overlay: "OverlayBase") -> list[CodeHostBackend]:
     other token resolves. Empty / auto picks both whenever tokens resolve.
     """
     choice = overlay.config.code_host
+    if choice not in {"", "github", "gitlab"}:
+        msg = f"Unknown code_host: {choice!r}"
+        raise ValueError(msg)
+
     hosts: list[CodeHostBackend] = []
-    github_token = overlay.config.get_github_token()
     gitlab_token = overlay.config.get_gitlab_token()
 
     if choice == "github":
-        if github_token:
-            hosts.append(GitHubCodeHost(token=github_token))
+        github_host = _github_host(overlay)
+        if github_host is not None:
+            hosts.append(github_host)
         return hosts
     if choice == "gitlab":
         if gitlab_token:
             hosts.append(GitLabCodeHost(token=gitlab_token, base_url=overlay.config.gitlab_url))
         return hosts
-    if choice not in {"", "github", "gitlab"}:
-        msg = f"Unknown code_host: {choice!r}"
-        raise ValueError(msg)
 
-    # Auto mode: build one host per token that resolves. GitHub first so
-    # ``OverlayBackends.host`` (= ``hosts[0]``) preserves the legacy
-    # GitHub-wins-when-both-set precedence that single-platform callers
-    # downstream depend on.
+    # Auto mode: build one host per token that resolves. An explicit GitHub
+    # token goes first so ``OverlayBackends.host`` (= ``hosts[0]``) preserves
+    # the legacy GitHub-wins-when-both-set precedence single-platform callers
+    # depend on. Then GitLab. Then — only when NO explicit GitHub token — an
+    # ambient gh login is appended LAST, so an ambient-only GitHub host is
+    # primary solely when it is the sole host and never usurps an explicitly
+    # configured GitLab host.
+    github_token = overlay.config.get_github_token()
     if github_token:
         hosts.append(GitHubCodeHost(token=github_token))
     if gitlab_token:
         hosts.append(GitLabCodeHost(token=gitlab_token, base_url=overlay.config.gitlab_url))
+    if not github_token:
+        ambient_github = _github_host(overlay)
+        if ambient_github is not None:
+            hosts.append(ambient_github)
     return hosts
 
 
 def _host_backend(overlay: "OverlayBase", forge: Literal["github", "gitlab"]) -> CodeHostBackend | None:
-    """Build the backend for a resolved *forge* token, or ``None`` if no token."""
+    """Build the backend for a resolved *forge*, or ``None`` when unauthenticated.
+
+    GitHub falls back to the ambient ``gh`` login when no token is wired (see
+    :func:`_github_host`); GitLab's REST transport has no ambient path, so it
+    stays token-gated.
+    """
     if forge == "github":
-        token = overlay.config.get_github_token()
-        return GitHubCodeHost(token=token) if token else None
+        return _github_host(overlay)
     token = overlay.config.get_gitlab_token()
     return GitLabCodeHost(token=token, base_url=overlay.config.gitlab_url) if token else None
 
