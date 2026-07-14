@@ -12,14 +12,14 @@ issue, so the trusted-author set is the only thing between a stranger and the
 autonomous factory — and the gate is therefore FAIL-CLOSED in every direction:
 
 * Candidate selection queries the forge author-scoped, once per trusted author, so
-  a stranger's issue is never even fetched.
+    a stranger's issue is never even fetched.
 * :func:`_author_is_trusted` then RE-CHECKS every issue at claim time.
-  Selection narrows; the gate decides. An issue that surfaces by any
-  other route — a forge query that over-returns, a payload naming a different
-  author than the query it arrived under, a future backend that widens the scope —
-  is refused outright: no signal, no marker, no dispatch.
-* An unresolvable author, an unparseable issue URL, and an empty trusted set all
-  resolve to REFUSE, never to "allow".
+    Selection narrows; the gate decides. An issue that surfaces by any
+    other route — a forge query that over-returns, a payload naming a different
+    author than the query it arrived under, a future backend that widens the scope —
+    is refused outright: no signal, no marker, no dispatch.
+* An unresolvable author, an unparsable issue URL, and an empty trusted set all
+    resolve to REFUSE, never to "allow".
 
 Trust resolution reuses :func:`~teatree.core.review.author_trust.classify_author` —
 the same seam the merge keystone and the reviewing scanners consume — so the
@@ -131,14 +131,14 @@ def _author_is_trusted(issue: RawAPIDict, trusted: frozenset[str]) -> bool:
     because intake is strictly stricter than merge:
 
     * :func:`classify_author` is the seam the merge keystone and the reviewing scanners
-      share, so the factory holds ONE opinion of who is trusted. On a public repo it is
-      the decision.
+        share, so the factory holds ONE opinion of who is trusted. On a public repo it is
+        the decision.
     * :func:`is_trusted_author` additionally requires EXPLICIT membership of the trusted
-      set. This is what closes the internal-repo bypass: ``classify_author`` calls every
-      author on a PRIVATE repo trusted (the user owns access control there) — the right
-      call for judging a merge, far too loose for INTAKE, where it would let any repo
-      collaborator command the autonomous factory just by filing an issue. Membership is
-      required no matter the repo's visibility.
+        set. This is what closes the internal-repo bypass: ``classify_author`` calls every
+        author on a PRIVATE repo trusted (the user owns access control there) — the right
+        call for judging a merge, far too loose for INTAKE, where it would let any repo
+        collaborator command the autonomous factory just by filing an issue. Membership is
+        required no matter the repo's visibility.
 
     An issue with no resolvable author, or no resolvable repo slug, is refused: an
     unclassifiable issue is never claimable.

@@ -90,7 +90,7 @@ class _PublicRepoTestCase(TestCase):
             "identities": (OWNER,),
         }
         kwargs.update(overrides)
-        return IssueImplementerScanner(**kwargs)  # type: ignore[arg-type]
+        return IssueImplementerScanner(**kwargs)
 
 
 class IssueImplementerAuthorTrustIntakeTests(_PublicRepoTestCase):

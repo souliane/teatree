@@ -8,7 +8,7 @@ as an explicit UNION of three named sources, never a fallback chain:
 
 1. ``user_identity_aliases`` — the owner's own handles across forges (#976).
 2. ``trusted_issue_authors`` — the allowlist of OTHER humans whose issues the
-   factory may act on (a colleague, an operator account).
+    factory may act on (a colleague, an operator account).
 3. The ``TrustedIdentity`` rows — the canonical DB trust table (#1773).
 
 This module owns the union of (1) and (2). Source (3) lives in the DB, which :mod:`teatree.config`

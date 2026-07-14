@@ -17,6 +17,12 @@ from typing import cast
 import httpx
 
 type RawMR = dict[str, object]
+"""One raw GitLab JSON object as the REST API returns it (MR, issue, note, upload...).
+
+The transport cannot know the shape of an arbitrary endpoint's payload, so the named
+alias IS the typed contract here: "an untyped JSON object straight off the wire".
+Callers narrow it at the domain layer (``api.GitLabAPI``) or at the host boundary.
+"""
 
 # Upper bound on pages walked for an offset-paginated list endpoint. GitLab
 # serves at most 100 items per page; this cap stops a runaway loop if the API
@@ -73,7 +79,7 @@ class GitLabHTTPClient:
     def clear_response_cache(self) -> None:
         self._response_cache.clear()
 
-    def get_json(self, endpoint: str) -> dict[str, object] | list[dict[str, object]] | None:
+    def get_json(self, endpoint: str) -> RawMR | list[RawMR] | None:
         if not self.token:
             return None
         response = httpx.get(
@@ -82,7 +88,7 @@ class GitLabHTTPClient:
             timeout=10.0,
         )
         response.raise_for_status()
-        return cast("dict[str, object] | list[dict[str, object]]", response.json())
+        return cast("RawMR | list[RawMR]", response.json())
 
     def get_json_paginated(self, endpoint: str) -> list[RawMR]:
         """Fetch every page of an offset-paginated GitLab list endpoint.
@@ -117,7 +123,7 @@ class GitLabHTTPClient:
             page = int(next_page)
         return items
 
-    def post_json(self, endpoint: str, payload: dict[str, object] | None = None) -> dict[str, object] | None:
+    def post_json(self, endpoint: str, payload: RawMR | None = None) -> RawMR | None:
         if not self.token:
             return None
         response = httpx.post(
@@ -127,7 +133,7 @@ class GitLabHTTPClient:
             timeout=10.0,
         )
         response.raise_for_status()
-        return cast("dict[str, object]", response.json())
+        return cast("RawMR", response.json())
 
     def post_status(self, endpoint: str, payload: Mapping[str, object] | None = None) -> int:
         if not self.token:
@@ -140,7 +146,7 @@ class GitLabHTTPClient:
         )
         return response.status_code
 
-    def put_json(self, endpoint: str, payload: dict[str, object] | None = None) -> dict[str, object] | None:
+    def put_json(self, endpoint: str, payload: RawMR | None = None) -> RawMR | None:
         if not self.token:
             return None
         response = httpx.put(
@@ -150,7 +156,7 @@ class GitLabHTTPClient:
             timeout=10.0,
         )
         response.raise_for_status()
-        return cast("dict[str, object]", response.json())
+        return cast("RawMR", response.json())
 
     def put_status(self, endpoint: str, payload: Mapping[str, object] | None = None) -> int:
         if not self.token:
@@ -173,7 +179,7 @@ class GitLabHTTPClient:
         )
         return response.status_code
 
-    def upload_file(self, project_id: int, filepath: str) -> dict[str, object] | None:
+    def upload_file(self, project_id: int, filepath: str) -> RawMR | None:
         if not self.token:
             return None
         with Path(filepath).open("rb") as f:
@@ -184,7 +190,7 @@ class GitLabHTTPClient:
                 timeout=30.0,
             )
         response.raise_for_status()
-        return cast("dict[str, object]", response.json())
+        return cast("RawMR", response.json())
 
     def fetch_upload(self, project_id: int, secret: str, filename: str) -> tuple[int, bytes]:
         """Fetch an uploaded file's bytes through the token-authenticated API route.
@@ -209,7 +215,7 @@ class GitLabHTTPClient:
         )
         return response.status_code, response.content
 
-    def graphql(self, query: str, variables: dict[str, object] | None = None) -> dict[str, object] | None:
+    def graphql(self, query: str, variables: RawMR | None = None) -> RawMR | None:
         if not self.token:
             return None
         graphql_url = self.base_url.replace("/api/v4", "/api/graphql")
@@ -220,4 +226,4 @@ class GitLabHTTPClient:
             timeout=10.0,
         )
         response.raise_for_status()
-        return cast("dict[str, object]", response.json())
+        return cast("RawMR", response.json())

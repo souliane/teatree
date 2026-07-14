@@ -414,7 +414,7 @@ class GitLabCodeHost:  # noqa: PLR0904 — method count reflects the CodeHostBac
         """Close a GitLab issue, optionally leaving an audit-trail note first.
 
         The note is posted here (not in the delegate) so the delegate stays a
-        single-purpose state transition; an unparseable URL still short-circuits
+        single-purpose state transition; an unparsable URL still short-circuits
         there, before any write.
         """
         if comment:
