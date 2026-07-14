@@ -1505,3 +1505,130 @@ class TestStatuslineRendersOnAutoloadWithoutMarker:
         result = self._run(tmp_path, autoload=False, marker=True)
         assert result.returncode == 0, result.stderr
         assert result.stdout == ""
+
+
+# A dangling escape is an ESC byte that does NOT open a recognised, complete
+# sequence — a CSI (``\x1b[…<final>``) or an OSC 8 wrapper (``\x1b]8;…\x1b\\``).
+# The width cap must never cut a line in the middle of an escape, so a capped
+# line's raw bytes must contain no such fragment.
+_DANGLING_ESC_RE = re.compile(r"\x1b(?![\[\]])|\x1b\[[0-9;?]*(?![0-9;?@-~])|\x1b\][^\x1b\x07]*\Z")
+
+
+class TestWidthCap:
+    """Every emitted line is capped to the visible terminal width (souliane/teatree).
+
+    Claude Code's statusline docs warn that long, multi-line ANSI output gets
+    truncated / wraps / renders blank. ``statusline.sh`` therefore bounds every
+    emitted line — header, zones, badge, and chain-script output — to the
+    visible terminal width at one choke point. The cap is ANSI-aware: it counts
+    only visible characters (ignoring SGR and OSC 8 sequences), never splits an
+    escape, terminates a truncated line with a reset so colour never bleeds, and
+    marks the cut with a single ``…``. Lines already within width pass through
+    byte-for-byte. The width comes from ``COLUMNS`` when set and > 0.
+    """
+
+    def _run(
+        self,
+        tmp_path: Path,
+        *,
+        columns: int,
+        zones: str,
+        session_id: str = "cap-sess",
+    ) -> subprocess.CompletedProcess:
+        state_dir = tmp_path / "state"
+        state_dir.mkdir(exist_ok=True)
+        (state_dir / f"{session_id}.teatree-active").touch()
+        sl = tmp_path / "statusline.txt"
+        sl.write_text(zones, encoding="utf-8")
+        env = os.environ.copy()
+        env["T3_AUTOLOAD"] = "1"
+        env["TEATREE_CLAUDE_STATUSLINE_STATE_DIR"] = str(state_dir)
+        env["CLAUDE_CONFIG_DIR"] = str(state_dir)
+        env["CLAUDE_TASKS_DIR"] = str(_harness_tasks_dir(state_dir))
+        env["TEATREE_STATUSLINE_FILE"] = str(sl)
+        env["COLUMNS"] = str(columns)
+        return subprocess.run(
+            [str(SCRIPT)],
+            input=json.dumps({"session_id": session_id, "model": {"display_name": "Claude Opus"}}),
+            capture_output=True,
+            text=True,
+            env=env,
+            check=False,
+            cwd=REPO_ROOT,
+        )
+
+    def test_long_loop_line_truncated_to_visible_width(self, tmp_path: Path) -> None:
+        # The ~900-char per-loop ANSI line that renders blank on some Claude Code
+        # surfaces. Each loop name is individually SGR-coloured, so the raw line
+        # is dense with escapes while its VISIBLE width is what must be bounded.
+        loops = " · ".join(f"\033[1;32mloop{i:02d} {i}m\033[0m" for i in range(90))
+        assert len(_strip_ansi(loops)) > 900, "fixture must exceed 900 visible chars"
+
+        result = self._run(tmp_path, columns=120, zones=loops + "\n")
+
+        assert result.returncode == 0, result.stderr
+        lines = result.stdout.splitlines()
+        # EVERY emitted line — header included — is within the width cap.
+        for line in lines:
+            assert len(_strip_ansi(line)) <= 120, (len(_strip_ansi(line)), line)
+        # The header still renders (the fix must not drop it).
+        assert any("model=Claude Opus" in _strip_ansi(line) for line in lines)
+        # The loop line was truncated: it ends with an ellipsis marker + reset so
+        # colour never bleeds past the cut.
+        loop_line = next(line for line in lines if "loop00" in _strip_ansi(line))
+        # The contract is "no line exceeds the width", NOT "every line is exactly
+        # the width": an ANSI-aware cut lands on a character boundary at or before
+        # the cap, and an awk that measures bytes rather than characters over the
+        # multibyte ``·`` separators lands a little short — both ≤ cap. Assert
+        # bounded-and-meaningfully-truncated, never an exact fill.
+        loop_vis = len(_strip_ansi(loop_line))
+        assert 60 < loop_vis <= 120, loop_vis
+        assert loop_line.endswith("…\033[0m"), repr(loop_line)
+
+    def test_embedded_sgr_never_split_mid_escape(self, tmp_path: Path) -> None:
+        # The cut lands exactly where an embedded SGR sequence sits: the escape
+        # must be emitted whole (or wholly dropped), never bisected.
+        line = "x" * 49 + "\033[1;31m" + "y" * 100
+        result = self._run(tmp_path, columns=50, zones=line + "\n")
+
+        assert result.returncode == 0, result.stderr
+        capped = next(ln for ln in result.stdout.splitlines() if ln.startswith("x"))
+        # Visible width honoured (49 x's + the ellipsis marker == 50).
+        assert len(_strip_ansi(capped)) == 50, capped
+        # The boundary SGR is present intact, and no dangling escape fragment
+        # survives anywhere on the line.
+        assert "\033[1;31m" in capped, repr(capped)
+        assert _DANGLING_ESC_RE.search(capped) is None, repr(capped)
+        # Colour is closed off with a trailing reset.
+        assert capped.endswith("…\033[0m"), repr(capped)
+
+    def test_short_colored_line_passes_through_byte_for_byte(self, tmp_path: Path) -> None:
+        colored = "\033[1;32mtick 5m\033[0m"
+        result = self._run(tmp_path, columns=200, zones=colored + "\n")
+
+        assert result.returncode == 0, result.stderr
+        # A line within width is emitted unchanged, escapes and all.
+        assert colored in result.stdout, repr(result.stdout)
+
+    def test_multiline_input_stays_multiline(self, tmp_path: Path) -> None:
+        rows = ["\033[38;5;244m[acme] row one\033[0m", "[acme] row two", "→ statusline: three"]
+        result = self._run(tmp_path, columns=200, zones="\n".join(rows) + "\n")
+
+        assert result.returncode == 0, result.stderr
+        out_lines = result.stdout.splitlines()
+        # Each source row stays on its own row (none merged, none dropped).
+        for raw in rows:
+            visible = _strip_ansi(raw)
+            matches = [ln for ln in out_lines if _strip_ansi(ln) == visible]
+            assert len(matches) == 1, (visible, out_lines)
+
+    def test_osc8_hyperlink_within_width_preserved_intact(self, tmp_path: Path) -> None:
+        # OSC 8 hyperlink: ``\x1b]8;;<uri>\x1b\\<text>\x1b]8;;\x1b\\``. Its visible
+        # width is only the link text, so a short linked row passes through with
+        # the hyperlink wrapper byte-for-byte intact.
+        osc8 = "\033]8;;https://example.com/ticket/42\033\\ticket #42\033]8;;\033\\"
+        assert len(_strip_ansi(osc8)) < 20
+        result = self._run(tmp_path, columns=200, zones=osc8 + "\n")
+
+        assert result.returncode == 0, result.stderr
+        assert osc8 in result.stdout, repr(result.stdout)
