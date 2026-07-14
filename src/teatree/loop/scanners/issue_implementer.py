@@ -149,6 +149,17 @@ class IssueImplementerScanner:
                             "url": url,
                             "raw": issue,
                             "overlay": self.overlay_name,
+                            # A claim IS an unconditional maker-side kickoff: the
+                            # triple gate (_issue_implementer_scanner_for) already
+                            # enforced enablement + concurrency budget, and the
+                            # TOCTOU-safe marker claim just committed this issue. The
+                            # shared t3:orchestrator persistence handler
+                            # (_handle_orchestrator) creates the Ticket + coding Task
+                            # only when auto_start is True, so a claimed issue that
+                            # omitted this flag dispatched an agent action that was
+                            # then silently dropped at persist time — the claim
+                            # stranded with no task (#3100/#3213).
+                            "auto_start": True,
                         },
                     )
                 )
