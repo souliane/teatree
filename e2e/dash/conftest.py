@@ -56,3 +56,16 @@ def console_guard(page: Page) -> ConsoleGuard:
     page.on("requestfailed", guard.on_request_failed)
     page.on("response", guard.on_response)
     return guard
+
+
+@pytest.fixture
+def accept_dialogs(page: Page) -> None:
+    """Auto-accept native JS dialogs (drawer ``confirm()`` / htmx ``hx-confirm``).
+
+    Playwright dismisses every native dialog by default (#3264/#3265 guard the
+    state-changing dashboard actions behind such a dialog), which would cancel the
+    guarded action before its request ever fires. A spec that must exercise the
+    accepted path registers this handler so the guarded POST proceeds. Specs that
+    assert the prompt itself register their own recording handler instead.
+    """
+    page.on("dialog", lambda dialog: dialog.accept())
