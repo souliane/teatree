@@ -331,12 +331,22 @@ def _check_teatree_mcp_registration() -> bool:
         statuses = probe_mcp_servers()
     except Exception:  # noqa: BLE001 — live probe is best-effort; claude may be absent
         return True
-    for status in statuses:
-        if status.name == TEATREE_MCP_SERVER_NAME and not status.connected:
-            typer.echo(
-                f"WARN  MCP server '{TEATREE_MCP_SERVER_NAME}' is registered but reports NOT "
-                "connected in `claude mcp list` — it may not have started for this session yet.",
-            )
+    # #3255: the same shipped ``.mcp.json`` surfaces under two CC scopes on a
+    # dogfooding box — ``plugin:t3:teatree`` (plugin scope, the live one) and a
+    # separate ``teatree`` (project scope, often Pending approval). Treat any
+    # ``:teatree``-suffixed or bare ``teatree`` entry as the same server; WARN
+    # only when NONE of them is connected (a genuine disconnection), never when
+    # the plugin-scoped one is up beside a pending project entry.
+    teatree_statuses = [
+        status
+        for status in statuses
+        if status.name == TEATREE_MCP_SERVER_NAME or status.name.endswith(f":{TEATREE_MCP_SERVER_NAME}")
+    ]
+    if teatree_statuses and not any(status.connected for status in teatree_statuses):
+        typer.echo(
+            f"WARN  MCP server '{TEATREE_MCP_SERVER_NAME}' is registered but reports NOT "
+            "connected in `claude mcp list` — it may not have started for this session yet.",
+        )
     return True
 
 
