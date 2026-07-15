@@ -122,4 +122,9 @@
 "src/teatree/loop/scanners/slack_mentions.py" = 1
 "src/teatree/loop/sweep_on_demand.py" = 2
 "src/teatree/loop/tick_freshness.py" = 2
-"src/teatree/loop/tick_recovery.py" = 2
+# The tick-time transient auto-requeue (`from teatree.loop.transient_requeue import
+# requeue_transient_failed`) is deferred for the same reason as the sibling
+# `run_boot_sweeps` import beside it — loaded at tick time so importing
+# `tick_recovery` never pulls the Django-model-touching sweep into the loop
+# module-load path.
+"src/teatree/loop/tick_recovery.py" = 3

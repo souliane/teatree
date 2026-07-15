@@ -1,5 +1,6 @@
 """Shared result-envelope recorder used by both dispatch backends."""
 
+from pathlib import Path
 from unittest.mock import patch
 
 import pytest
@@ -21,8 +22,10 @@ from teatree.core.models import (
     Task,
     TaskAttempt,
     Ticket,
+    Worktree,
 )
 from teatree.verification.url_check import UrlCheckResult, UrlCheckStatus
+from tests.teatree_core.models._shared import _init_repo_with_branch
 
 
 def _valid_sketch(**overrides: object) -> dict[str, object]:
@@ -133,6 +136,58 @@ class TestRecordResultEnvelope(TestCase):
         record_result_envelope(task, {"summary": "x", "bogus": True})
         task.refresh_from_db()
         assert task.status == Task.Status.FAILED
+
+
+class TestLandingVerifiedCompletion(TestCase):
+    """A coding result completes only when a commit actually landed (root-cause gate)."""
+
+    @pytest.fixture(autouse=True)
+    def _inject_tmp_path(self, tmp_path: Path) -> None:
+        self._tmp_path = tmp_path
+
+    def _claimed(self, *, phase: str = "coding") -> Task:
+        ticket = Ticket.objects.create(role=Ticket.Role.AUTHOR, state=Ticket.State.STARTED)
+        session = Session.objects.create(ticket=ticket, agent_id=phase)
+        task = Task.objects.create(ticket=ticket, session=session, phase=phase)
+        task.claim(claimed_by="loop-slot")
+        return task
+
+    def _attach_worktree(self, ticket: Ticket, *, commits_ahead: int) -> Path:
+        repo_dir = self._tmp_path / f"repo-{ticket.pk}"
+        branch = f"feature-{ticket.pk}"
+        _init_repo_with_branch(repo_dir, branch=branch, commits_ahead=commits_ahead)
+        Worktree.objects.create(
+            ticket=ticket,
+            repo_path=str(repo_dir),
+            branch=branch,
+            extra={"worktree_path": str(repo_dir)},
+        )
+        return repo_dir
+
+    def test_files_modified_without_commit_is_refused(self) -> None:
+        task = self._claimed()
+        self._attach_worktree(task.ticket, commits_ahead=0)
+        record_result_envelope(
+            task,
+            {"summary": "done", "files_modified": [{"path": "a.py", "action": "modified"}]},
+        )
+        task.refresh_from_db()
+        task.ticket.refresh_from_db()
+        latest = task.attempts.order_by("-pk").first()
+        assert task.status == Task.Status.FAILED
+        assert task.ticket.state == Ticket.State.STARTED  # FSM did NOT advance
+        assert latest is not None
+        assert latest.error.startswith("landing_unverified:")
+
+    def test_files_modified_with_real_commit_completes(self) -> None:
+        task = self._claimed()
+        self._attach_worktree(task.ticket, commits_ahead=1)
+        record_result_envelope(
+            task,
+            {"summary": "done", "files_modified": [{"path": "f0.txt", "action": "created"}]},
+        )
+        task.refresh_from_db()
+        assert task.status == Task.Status.COMPLETED
 
 
 class TestScanningNewsEnvelopeChannel(TestCase):

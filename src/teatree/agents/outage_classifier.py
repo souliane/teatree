@@ -78,3 +78,44 @@ def outage_signature(result: AgentResultBlob, *, error: str = "") -> str:
             if phrase in haystack:
                 return f"{_API_ERROR_PHRASE} + {phrase}"
     return ""
+
+
+# Namespaced markers a FAILED attempt's ``error`` carries when the death was an
+# infrastructure interruption rather than a deterministic defect. Each is emitted
+# by exactly one recording seam: ``outage_death:`` by the recorder (#1764),
+# ``result_error:`` by the headless driver for the #1764 "genuine FAILED run"
+# class (a missing terminal ResultMessage OR an ``is_error`` result — both
+# transient), ``provision_failed:`` by a worktree/provisioning step, and
+# ``landing_unverified:`` by the completion chokepoint when a coder yielded
+# without committing. A deterministic refusal (evidence gate, schema, review
+# verdict, a real assertion/test failure, a ``stuck_loop`` runaway) matches none.
+_TRANSIENT_MARKERS = (
+    "outage_death:",
+    "result_error:",
+    "provision_failed:",
+    "landing_unverified:",
+)
+
+
+def transient_failure_signature(error: str) -> str:
+    """Return the transient signature of a FAILED attempt's *error*, or ``""``.
+
+    A non-empty return means the failure was an infrastructure interruption the
+    bounded auto-requeue sweep MAY reopen; ``""`` means a deterministic failure
+    that must stay terminal FAILED. Keys on the namespaced markers above, plus a
+    raw connection / "API Error + connection" signature in the error text (an
+    outage death whose envelope was never stamped with the ``outage_death:``
+    prefix). Case-insensitive.
+    """
+    haystack = error.casefold()
+    if not haystack.strip():
+        return ""
+    for marker in _TRANSIENT_MARKERS:
+        if marker in haystack:
+            return marker.rstrip(": ")
+    return outage_signature({}, error=error)
+
+
+def is_transient_failure(error: str) -> bool:
+    """Whether a FAILED attempt's *error* classifies as a transient interruption."""
+    return bool(transient_failure_signature(error))

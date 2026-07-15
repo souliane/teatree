@@ -20,6 +20,7 @@ from typing import TYPE_CHECKING, cast
 
 from django.utils import timezone
 
+from teatree.agents.landing_verification import landing_verification_error
 from teatree.agents.outage_classifier import outage_signature
 from teatree.agents.result_schema import (
     RESULT_JSON_SCHEMA,
@@ -124,8 +125,14 @@ def record_result_envelope(
     """Record *result* as a ``TaskAttempt`` and drive the ``Task`` to terminal.
 
     Validation order: schema-key check → OUTAGE check (#1764) → per-phase
-    evidence gate (#1284) — a failure on any records a FAILED attempt and fails
-    the task (``exit_code=0`` so it reads as a clean refusal, not a crash). The
+    evidence gate (#1284) → LANDING check (coding/debugging must have committed) —
+    a failure on any records a FAILED attempt and fails the task (``exit_code=0``
+    so it reads as a clean refusal, not a crash). The landing check re-reads the
+    ticket worktree's git state so a coder that reported ``files_modified`` while
+    nothing was committed (the yield-without-landing stall) lands FAILED with a
+    ``landing_unverified`` diagnostic — which the bounded auto-requeue sweep then
+    retries-if-transient / escalates, instead of the ticket FSM silently
+    advancing over unlanded work. The
     outage check runs BEFORE the evidence gate so an outage death that happens
     to carry evidence (the "API error laundered as a completion" class) still
     lands FAILED with the diagnostic signature, never COMPLETED — the ticket FSM
@@ -147,6 +154,10 @@ def record_result_envelope(
     evidence_error = check_evidence(result, phase or task.phase)
     if evidence_error:
         return _record_failure(task, error=evidence_error)
+
+    landing_error = landing_verification_error(task, phase=phase)
+    if landing_error:
+        return _record_failure(task, error=landing_error)
 
     server_side_error = _record_returned_envelopes(task, result, phase=phase)
     if server_side_error:
