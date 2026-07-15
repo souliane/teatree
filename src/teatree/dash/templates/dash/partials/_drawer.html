@@ -17,7 +17,7 @@
     <form class="toolbar" method="post" action="{% url 'dash:ticket_transition' detail.ticket_id %}">
       {% csrf_token %}
       {% for name in detail.available_transitions %}
-        <button class="dash-btn primary" name="action" value="{{ name }}">{{ name }}</button>
+        <button class="dash-btn primary" name="action" value="{{ name }}" onclick="return confirm('Transition #{{ detail.number|escapejs }} to {{ name|escapejs }}?')">{{ name }}</button>
       {% endfor %}
     </form>
   {% else %}
@@ -79,7 +79,7 @@
   <h3>Debug session</h3>
   <form method="post" action="{% url 'dash:debug_session' %}" hx-post="{% url 'dash:debug_session' %}" hx-target="#debug-session-result" hx-swap="innerHTML">
     {% csrf_token %}
-    <button class="dash-btn" type="submit">Debug session (loopback ttyd)</button>
+    <button class="dash-btn" type="submit" hx-confirm="Start a loopback debug session?">Debug session (loopback ttyd)</button>
   </form>
   <div id="debug-session-result"></div>
 </div>

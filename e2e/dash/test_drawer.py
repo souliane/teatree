@@ -4,7 +4,7 @@ Card-click opens it, only legal FSM transitions render, executing one moves the
 card, history rows show, and Esc / the close button dismiss it (#3162).
 """
 
-from playwright.sync_api import Page, expect
+from playwright.sync_api import Dialog, Page, expect
 from pytest_django.live_server_helper import LiveServer
 
 from e2e.dash.pom import BoardPage, SeededBoard
@@ -33,14 +33,54 @@ def test_only_legal_transitions_render(live_server: LiveServer, page: Page, seed
     expect(drawer.root.get_by_role("button", name="ship", exact=True)).to_have_count(0)
 
 
-def test_executing_a_transition_moves_the_card(live_server: LiveServer, page: Page, seeded_board: SeededBoard) -> None:
+def test_confirming_the_transition_moves_the_card(
+    live_server: LiveServer, page: Page, seeded_board: SeededBoard
+) -> None:
     board = BoardPage(page, live_server.url)
     board.open()
     drawer = board.open_drawer_for(seeded_board.backlog.pk)
+    # The transition button is guarded by a native confirm() (#3264/#3265). Record
+    # + accept the prompt explicitly (Playwright dismisses dialogs by default) to
+    # prove BOTH that the prompt appears AND that accepting fires the guarded POST.
+    prompts: list[str] = []
+
+    def _accept(dialog: Dialog) -> None:
+        prompts.append(dialog.message)
+        dialog.accept()
+
+    page.on("dialog", _accept)
     drawer.transition_buttons.filter(has_text="scope").click()
-    # The POST redirects to the board; the card is now in the SCOPED column.
+    expected = f"Transition #{seeded_board.backlog.ticket_number} to scope?"
+    if prompts != [expected]:
+        msg = f"confirm prompt was {prompts!r}, expected [{expected!r}]"
+        raise AssertionError(msg)
+    # The accepted POST redirects to the board; the card is now in the SCOPED column.
     expect(board.card_in_column(State.SCOPED, seeded_board.backlog.pk)).to_be_visible()
     expect(board.card_in_column(State.NOT_STARTED, seeded_board.backlog.pk)).to_have_count(0)
+
+
+def test_dismissing_the_transition_confirm_keeps_the_card(
+    live_server: LiveServer, page: Page, seeded_board: SeededBoard
+) -> None:
+    board = BoardPage(page, live_server.url)
+    board.open()
+    drawer = board.open_drawer_for(seeded_board.backlog.pk)
+    # Dismissing the confirm() must cancel the transition — the guard's whole point.
+    prompts: list[str] = []
+
+    def _dismiss(dialog: Dialog) -> None:
+        prompts.append(dialog.message)
+        dialog.dismiss()
+
+    page.on("dialog", _dismiss)
+    drawer.transition_buttons.filter(has_text="scope").click()
+    expected = f"Transition #{seeded_board.backlog.ticket_number} to scope?"
+    if prompts != [expected]:
+        msg = f"confirm prompt was {prompts!r}, expected [{expected!r}]"
+        raise AssertionError(msg)
+    # No POST fired: the card stays put in its original column.
+    expect(board.card_in_column(State.NOT_STARTED, seeded_board.backlog.pk)).to_be_visible()
+    expect(board.card_in_column(State.SCOPED, seeded_board.backlog.pk)).to_have_count(0)
 
 
 def test_transition_history_rows_render(live_server: LiveServer, page: Page, seeded_board: SeededBoard) -> None:
