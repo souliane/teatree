@@ -472,7 +472,12 @@ class TestGateKillSwitch:
 
 
 class TestMainAgentForegroundAgentIsBlocked1442:
-    """#1442 — main-agent Agent dispatch must pass ``run_in_background``.
+    """#1442 — a main-agent Agent dispatch with ``run_in_background: False`` is blocked.
+
+    Only an EXPLICIT foreground request is denied: the current Claude Code Agent
+    tool dispatches asynchronously and omits ``run_in_background`` altogether, so
+    an absent field is a background dispatch and passes (see
+    ``test_agent_absent_run_in_background_is_allowed``).
 
     Detection uses ``agent_id`` (the #115 fix) instead of the transcript
     ``isSidechain`` read. Since #1733 the Agent-arm deny is default-ON (an
@@ -499,12 +504,14 @@ class TestMainAgentForegroundAgentIsBlocked1442:
         assert "run_in_background" in out["permissionDecisionReason"]
         assert self._RULE_CITATION in out["permissionDecisionReason"]
 
-    def test_agent_foreground_blocked_when_field_absent(self, capsys: pytest.CaptureFixture[str]) -> None:
+    def test_agent_absent_run_in_background_is_allowed(self, capsys: pytest.CaptureFixture[str]) -> None:
+        # The current Claude Code Agent tool dispatches asynchronously and omits
+        # ``run_in_background`` entirely; an absent field is a background dispatch
+        # (nothing to prevent), so it must be ALLOWED, not false-blocked. Only an
+        # EXPLICIT ``run_in_background: False`` is the foreground case this gate stops.
         data = {"tool_name": "Agent", "tool_input": {"description": "implement X"}}
-        assert handle_enforce_orchestrator_boundary(data) is True
-        out = json.loads(capsys.readouterr().out)
-        assert out["permissionDecision"] == "deny"
-        assert self._RULE_CITATION in out["permissionDecisionReason"]
+        assert handle_enforce_orchestrator_boundary(data) is False
+        assert capsys.readouterr().out.strip() == ""
 
     def test_agent_foreground_allowed_when_kill_switch_set(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]

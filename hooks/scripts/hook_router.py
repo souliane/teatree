@@ -2753,9 +2753,9 @@ def _orchestrator_boundary_agent_gate_enabled() -> bool:
     """Whether the foreground-Agent-dispatch deny is enabled (default ON, #1733).
 
     The ``Agent`` arm of the orchestrator-boundary gate (#1442) is now LIVE: an
-    ``Agent`` PreToolUse matcher is wired in ``hooks.json`` (#1646) so a
-    foreground Agent dispatch (which fires ``PreToolUse`` with
-    ``run_in_background`` in the tool_input) reaches this deny. The gate flipped
+    ``Agent`` PreToolUse matcher is wired in ``hooks.json`` (#1646) so an Agent
+    dispatch reaches this deny. Only an EXPLICIT ``run_in_background: False`` is
+    denied (current CC omits the field ⇒ absent = background). The gate flipped
     to default-ON (#1733) after the attended dry-run that #1646 asks for; that
     dry-run is the user's pre-INSTALL gate, not a blocker to the code (hooks run
     from the INSTALLED plugin, so a worktree change cannot lock out the live
@@ -2790,17 +2790,17 @@ def _deny_foreground_agent_dispatch(data: dict) -> bool:
     may pick foreground.
 
     Default-ON behind :func:`_orchestrator_boundary_agent_gate_enabled` (#1733)
-    now that an ``Agent`` PreToolUse matcher is wired (#1646). The off-ramps are:
-    the kill-switch flag, a sub-agent context, ``run_in_background: true``, and a
-    per-call ``[fg-ok: <reason>]`` token in the prompt (mirroring the heavy-Bash
-    arm's escape). The deny itself routes through :func:`_fail_open_or_deny`
-    (#1692) so the self-rescue allowlist and the master
-    ``danger_gate_fail_open`` switch relax it exactly like every other over-deny
-    gate — never a bare :func:`emit_pretooluse_deny` lockout.
+    now that an ``Agent`` PreToolUse matcher is wired (#1646). Only an EXPLICIT
+    ``run_in_background: False`` denies (current CC dispatches async and OMITS
+    the field, so an absent field is background, allowed). The off-ramps are:
+    the kill-switch flag, a sub-agent context, absent-or-``True`` background,
+    a per-call ``[fg-ok: <reason>]`` token. The deny routes through
+    :func:`_fail_open_or_deny` (#1692) so the self-rescue allowlist and the
+    master ``danger_gate_fail_open`` switch relax it — never a bare lockout.
     """
     if not _orchestrator_boundary_agent_gate_enabled():
         return False
-    if _call_is_from_subagent(data) or data.get("tool_input", {}).get("run_in_background") is True:
+    if _call_is_from_subagent(data) or data.get("tool_input", {}).get("run_in_background") is not False:
         return False
     prompt = data.get("tool_input", {}).get("prompt", "")
     if isinstance(prompt, str) and _FG_OK_RE.search(prompt[:512]):
@@ -2809,9 +2809,9 @@ def _deny_foreground_agent_dispatch(data: dict) -> bool:
         data,
         "[main-agent-orchestration-guard] Foreground Agent dispatch "
         "DENIED in main agent context.\n"
-        "Pass `run_in_background: true` to every Agent invocation "
-        "from the main agent, add an explicit `[fg-ok: <reason>]` marker to the "
-        "prompt if you truly need a foreground dispatch, or disable this "
+        "Dispatch in the background (omit run_in_background or pass true) so the "
+        "main agent is not blocked; add an explicit `[fg-ok: <reason>]` marker "
+        "to the prompt for a genuine foreground dispatch, or disable this "
         "gate by setting the DB-home `orchestrator_boundary_agent_gate_enabled` to "
         "false (`t3 <overlay> config_setting set orchestrator_boundary_agent_gate_enabled false`).\n"
         "Memory rule: "
