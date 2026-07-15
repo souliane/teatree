@@ -39,10 +39,16 @@ RUN mkdir -p \
         /home/teatree/workspace/t3-workspaces \
         /opt/teatree/uv && \
     # clone_root() resolves clones under ~/workspace, but the runtime clone
-    # lives on the teatree_src volume at ~/teatree — without this link the
-    # fleet-claim wire finds no local clone for the repo and fails safe
-    # (never claims), silently disabling the issue-implementer intake.
-    ln -s /home/teatree/teatree /home/teatree/workspace/teatree && \
+    # lives on the teatree_src volume at ~/teatree. Provisioning discovers the
+    # base clone with find_clone_path(clone_root, "souliane/teatree"), which
+    # matches the ORG-PREFIXED path ~/workspace/souliane/teatree (the slug's
+    # literal), NOT a bare ~/workspace/teatree — so the link must carry the
+    # owner segment. Without the org-prefixed link, `workspace ticket` fails at
+    # worktree provisioning ("No git clone found for souliane/teatree") and the
+    # issue-implementer intake is silently disabled. This mirrors the host
+    # layout (~/workspace/souliane/teatree -> the teatree clone).
+    mkdir -p /home/teatree/workspace/souliane && \
+    ln -s /home/teatree/teatree /home/teatree/workspace/souliane/teatree && \
     chown -R teatree:teatree /home/teatree /opt/teatree
 
 COPY --chmod=0755 deploy/entrypoint.sh /usr/local/bin/entrypoint.sh
