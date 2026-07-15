@@ -107,6 +107,22 @@ def health_chip(*, colorize: bool = False) -> list[str]:
     return [f"health: {dot}{count}"]
 
 
+def dashboard_head_anchor(*, colorize: bool = False) -> list[str]:
+    """Return the single consolidated dashboard head line, or ``[]``.
+
+    Folds the live-loops line (which already carries the availability segment,
+    #1678), the configured-overlays summary, and the global-health chip onto
+    ONE line joined by the loop line's own `` · `` separator — so overlays and
+    health stop each wasting a whole row. Every source is individually
+    fail-open, so a broken read drops only its own segment; the line is ``[]``
+    only when all three are empty.
+    """
+    parts = [*live_loops_anchor(colorize=colorize), *overlays_anchor(), *health_chip(colorize=colorize)]
+    if not parts:
+        return []
+    return [" · ".join(parts)]
+
+
 def _live_loop_leases() -> list[tuple[str, datetime | None]]:
     """Return ``(loop_name, acquired_at)`` for every currently-live LoopLease.
 

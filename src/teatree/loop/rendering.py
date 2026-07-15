@@ -24,15 +24,7 @@ from teatree.loop.rendering_classification import _ClassifiedActions, _classify_
 from teatree.loop.rendering_items import _IssueRef, _OverlayActionRefs, _PRRef
 from teatree.loop.rendering_permalinks import build_review_post_permalinks, enrich_pr_refs_with_permalinks
 from teatree.loop.rendering_zones import _MAX_PER_STATE, _populate_overlay_zones, _render_action_line, _render_pr_group
-from teatree.loop.statusline import (
-    StatuslineEntry,
-    StatuslineZones,
-    ZoneItem,
-    colorize_enabled,
-    health_chip,
-    live_loops_anchor,
-    overlays_anchor,
-)
+from teatree.loop.statusline import StatuslineEntry, StatuslineZones, ZoneItem, colorize_enabled, dashboard_head_anchor
 
 __all__ = [
     "_ClassifiedActions",
@@ -42,8 +34,7 @@ __all__ = [
     "_classify_actions",
     "_issue_ref_from",
     "_overlay_search_base",
-    "_populate_health_chip",
-    "_populate_overlays_anchor",
+    "_populate_dashboard_head",
     "_render_action_line",
     "_render_pr_group",
     "cost_chip_lines",
@@ -71,12 +62,11 @@ def zones_for(
     """
     colorize = colorize_enabled(colorize=colorize)
     zones = StatuslineZones()
-    # The dedicated loop line must stay line 1 (#130/#1400) — statusline.sh
-    # prepends the per-session t3-master badge to it; the live availability
-    # segment rides on that line too (#1678).
-    _populate_live_loops_anchor(zones, colorize=colorize)
-    _populate_overlays_anchor(zones)
-    _populate_health_chip(zones, colorize=colorize)
+    # The consolidated dashboard head must stay line 1 (#130/#1400) —
+    # statusline.sh prepends the per-session t3-master badge to it. It folds the
+    # loop line (which carries the availability segment, #1678) with the
+    # overlays summary and the health chip onto that one line.
+    _populate_dashboard_head(zones, colorize=colorize)
     c = _classify_actions(actions, identity_aliases)
     ticket_index = build_ticket_index(actions)
     enrich_pr_refs_with_permalinks(c, build_review_post_permalinks(actions))
@@ -117,26 +107,15 @@ def _overlay_search_base(overlay: str) -> str:
     return "https://github.com/search?type=issues&q="
 
 
-def _populate_overlays_anchor(zones: StatuslineZones) -> None:
-    """Append the ``overlays: a · b · c`` configured-overlays summary line (#1663).
+def _populate_dashboard_head(zones: StatuslineZones, *, colorize: bool | None = None) -> None:
+    """Append the consolidated dashboard head line — loops + overlays + health.
 
-    :func:`~teatree.loop.statusline.overlays_anchor` is itself fail-open, so
-    this wrapper exists only to do the append. Surfaces the multi-overlay
-    context directly instead of only when a ticket/PR happens to carry an
-    ``[ov]`` prefix.
+    :func:`~teatree.loop.statusline.dashboard_head_anchor` folds the loop line
+    (carrying availability, #1678), the configured-overlays summary, and the
+    health chip onto ONE line and is itself fail-open, so this wrapper only
+    resolves the ``NO_COLOR`` decision and does the append.
     """
-    zones.anchors.extend(overlays_anchor())
-
-
-def _populate_health_chip(zones: StatuslineZones, *, colorize: bool | None = None) -> None:
-    """Append the global-health chip (``health: ● N``) to the anchors zone (PR-17).
-
-    :func:`~teatree.loop.statusline.health_chip` reads the persisted verdict
-    read-only and is itself fail-open, so this wrapper only resolves the
-    ``NO_COLOR`` decision (matching the empty-jobs render path's ``bool | None``)
-    and does the append.
-    """
-    zones.anchors.extend(health_chip(colorize=colorize_enabled(colorize=colorize)))
+    zones.anchors.extend(dashboard_head_anchor(colorize=colorize_enabled(colorize=colorize)))
 
 
 def _append_capped_other(zones: StatuslineZones, other: list[tuple[str, StatuslineEntry]]) -> None:
@@ -161,21 +140,6 @@ def _append_capped_other(zones: StatuslineZones, other: list[tuple[str, Statusli
         overflow = len(entries) - _MAX_PER_STATE
         if overflow > 0:
             zone_list.append(f"(+{overflow} more)")
-
-
-def _populate_live_loops_anchor(zones: StatuslineZones, *, colorize: bool = False) -> None:
-    """Append one anchor line per live :class:`LoopLease` row (#1163).
-
-    Multi-loop visibility: the user runs ``loop-tick``, ``t3-master``,
-    ``loop-self-improve``, ``loop-slack-answer``, ``loop-slot`` in parallel
-    — surfacing each gives the at-a-glance count the prior single
-    ``t3-master=…`` anchor hid. *colorize* threads the per-loop recency
-    coloring into :func:`~teatree.loop.statusline.live_loops_anchor`.
-
-    :func:`~teatree.loop.statusline.live_loops_anchor` is itself fail-open,
-    so this wrapper exists only to do the append.
-    """
-    zones.anchors.extend(live_loops_anchor(colorize=colorize))
 
 
 def cost_chip_lines() -> list[str]:

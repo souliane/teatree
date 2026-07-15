@@ -22,7 +22,7 @@ from teatree.loop.domain_jobs import _identity_groups_for_overlay
 from teatree.loop.job_identity import _ScannerJob
 from teatree.loop.manual_pr_reconcile import reconcile_manual_prs
 from teatree.loop.phases.orchestrate import orchestrate_phase
-from teatree.loop.rendering import _populate_health_chip, _populate_overlays_anchor, zones_for
+from teatree.loop.rendering import _populate_dashboard_head, zones_for
 from teatree.loop.statusline import StatuslineZones, render
 from teatree.loop.tick_freshness import _write_tick_meta
 
@@ -57,9 +57,7 @@ def render_phase(
         _orchestrate(request, statusline_path=statusline_path)
     else:
         zones = StatuslineZones()
-        _populate_live_loops_in_anchors(zones, colorize=colorize)
-        _populate_overlays_anchor(zones)
-        _populate_health_chip(zones, colorize=colorize)
+        _populate_dashboard_head(zones, colorize=colorize)
     _write_open_prs_cache(report.signals, target=statusline_path)
     _reconcile_manual_prs(report.signals)
     _populate_open_prs_in_anchors(zones, target=statusline_path, colorize=colorize)
@@ -167,27 +165,6 @@ def _identity_aliases_for_request(request: "TickRequest") -> tuple[tuple[str, ..
     return tuple(groups)
 
 
-def _populate_live_loops_in_anchors(zones: StatuslineZones, *, colorize: bool | None = None) -> None:
-    """Append one anchor line per live LoopLease row.
-
-    Used by the idle (empty-jobs) render so even an idle tick still surfaces
-    the running loops. The active path goes through
-    :func:`teatree.loop.rendering._populate_live_loops_anchor` via
-    :func:`teatree.loop.rendering.zones_for` and must not double-populate.
-    *colorize* threads the per-loop recency coloring through.
-
-    Fails open: any import/query error degrades to a no-op.
-    """
-    try:
-        from teatree.loop.statusline import colorize_enabled, live_loops_anchor  # noqa: PLC0415 — tick-time import
-    except Exception:  # noqa: BLE001 — the statusline import is best-effort; a failure degrades to no anchor
-        return
-    try:
-        zones.anchors.extend(live_loops_anchor(colorize=colorize_enabled(colorize=colorize)))
-    except Exception:  # noqa: BLE001 — rendering is best-effort; a failure degrades to no anchor
-        return
-
-
 def _write_open_prs_cache(signals: "list[ScanSignal]", *, target: Path | None) -> None:
     """Snapshot the tick's open PRs to the ``open-prs.json`` sidecar.
 
@@ -247,11 +224,11 @@ def _populate_open_prs_in_anchors(zones: StatuslineZones, *, target: Path | None
 def _populate_loop_owner_anchor(zones: StatuslineZones) -> None:
     """Append the foreign-hijack t3-master RED line.
 
-    The live-loops anchor (the single dedicated loop line folding all live
-    LoopLease rows) is populated separately by
-    :func:`teatree.loop.rendering._populate_live_loops_anchor`. This function
-    is responsible only for the foreign-hijack RED line surfaced when a
-    different live session holds ``t3-master``.
+    The dashboard head line (the single dedicated line folding the live loops,
+    overlays, and health) is populated separately by
+    :func:`teatree.loop.rendering._populate_dashboard_head`. This function is
+    responsible only for the foreign-hijack RED line surfaced when a different
+    live session holds ``t3-master``.
 
     Fails open: any import/query error degrades to a no-op so a broken
     t3-master read can never blank the statusline.
@@ -289,7 +266,7 @@ def rerender_statusline(target: Path | None = None, *, colorize: bool | None = N
     PR a real scan had recorded, blanking the anchor until the next full tick.
     """
     zones = StatuslineZones()
-    _populate_live_loops_in_anchors(zones, colorize=colorize)
+    _populate_dashboard_head(zones, colorize=colorize)
     _populate_open_prs_in_anchors(zones, target=target, colorize=colorize)
     _populate_loop_owner_anchor(zones)
     return render(zones, target=target, colorize=colorize)

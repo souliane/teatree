@@ -116,7 +116,7 @@
 "src/teatree/loop/domain_jobs.py" = 2
 "src/teatree/loop/global_scanner_factories.py" = 1
 "src/teatree/loop/loop_scoping.py" = 1
-"src/teatree/loop/phases/render.py" = 9
+"src/teatree/loop/phases/render.py" = 8
 "src/teatree/loop/scanners/failed_e2e_posts.py" = 1
 "src/teatree/loop/scanners/outbound_audit_overlay_verifiers.py" = 5
 "src/teatree/loop/scanners/slack_mentions.py" = 1
