@@ -498,6 +498,48 @@ class TestReviewRequestPostHappyPath(_DataDirMixin, TestCase):
         assert data[_MR_URL]["channel"] == "C_REVIEW"
         assert data[_MR_URL]["permalink"].startswith("https://team.slack.com/archives/C_REVIEW/")
 
+    def test_draft_mr_refused_before_claim(self) -> None:
+        """A draft MR refuses ``draft_mr`` (exit 2) BEFORE any dedup claim row is taken."""
+        OnBehalfApproval.record(target=_MR_URL, action="review_request_post", approver_id="souliane")
+        backend = _FakeBackend()
+        with (
+            patch(f"{_CMD}.resolve_guard_target", return_value=_TARGET),
+            patch(f"{_CMD}.is_draft_mr", return_value=True),
+            patch(f"{_CMD}.should_post_review_request", return_value=GuardDecision(action="post")),
+            patch(f"{_CMD}.messaging_from_overlay", return_value=backend),
+        ):
+            code, payload = _run("--title", "t")
+
+        assert code == 2, payload
+        assert payload["action"] == "refused"
+        assert payload["reason"] == "draft_mr"
+        assert backend.posts == []
+        assert ReviewRequestPost.objects.filter(mr_url=_MR_URL).count() == 0
+
+    def test_permalink_filed_under_ticket_iid_not_mr_iid(self) -> None:
+        """The review-message cache is keyed by the TICKET iid, never the MR iid (#1084 follow-up).
+
+        ``_MR_URL`` ends in ``/385`` (the MR iid); the owning ticket is issue
+        ``17``. The permalink must land under ``tickets/17/``, not ``tickets/385/``.
+        """
+        from teatree.core.models import PullRequest  # noqa: PLC0415
+
+        ticket = Ticket.objects.create(overlay="t3-teatree", issue_url="https://gitlab.com/org/repo/-/issues/17")
+        assert ticket.issue_number == "17"
+        PullRequest.objects.create(ticket=ticket, url=_MR_URL, repo="org/repo", iid="385")
+        OnBehalfApproval.record(target=_MR_URL, action="review_request_post", approver_id="souliane")
+        backend = _FakeBackend()
+        with (
+            patch(f"{_CMD}.resolve_guard_target", return_value=_TARGET),
+            patch(f"{_CMD}.should_post_review_request", return_value=GuardDecision(action="post")),
+            patch(f"{_CMD}.messaging_from_overlay", return_value=backend),
+        ):
+            code, payload = _run("--title", "t")
+
+        assert code == 0, payload
+        assert (self._tmp / "tickets" / "17" / "mr_review_messages.json").exists()
+        assert not (self._tmp / "tickets" / "385" / "mr_review_messages.json").exists()
+
     def test_second_call_with_consumed_approval_refuses(self) -> None:
         OnBehalfApproval.record(
             target=_MR_URL,

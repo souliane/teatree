@@ -60,3 +60,23 @@ class TestBackendProviderRegistry:
             assert read.matches == []
         finally:
             backend_registry.register_backend_provider(original)
+
+    def test_unconfigured_thread_activity_is_not_ok(self) -> None:
+        """Fail-SAFE: an unconfigured thread-activity read reports not-ok, thread absent."""
+        original = backend_registry._provider
+        backend_registry._provider = None
+        try:
+            spec = backend_registry.ThreadActivitySpec(
+                token="t",
+                channel_id="C1",
+                thread_ts="1700000000.000100",
+                timeout=1.0,
+            )
+            read = backend_registry.get_backend_provider().read_thread_activity(spec)
+            assert read.ok is False
+            assert read.exists is False
+            assert read.parent_ts == ""
+            assert read.latest_reply_ts == ""
+            assert read.has_reaction is False
+        finally:
+            backend_registry.register_backend_provider(original)

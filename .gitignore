@@ -1,5 +1,7 @@
 .DS_Store
 .t3/
+# Worktree-local PR body passed to `gh pr create --body-file`; never tracked.
+.pr-body.md
 __pycache__/
 *.pyc
 .venv/

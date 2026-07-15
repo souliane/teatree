@@ -15,7 +15,12 @@ from teatree.backends.gitlab import GitLabCodeHost
 from teatree.backends.gitlab import sync as gitlab_sync
 from teatree.backends.notion import NotionClient
 from teatree.backends.sentry import SentryClient
-from teatree.backends.slack import SlackReviewSearchRequest, read_recent_review_matches
+from teatree.backends.slack import (
+    SlackReviewSearchRequest,
+    SlackThreadActivityRequest,
+    read_recent_review_matches,
+    read_thread_activity,
+)
 from teatree.backends.slack.bot import SlackBotBackend
 from teatree.core.backend_registry import register_backend_provider
 
@@ -26,6 +31,8 @@ if TYPE_CHECKING:
         ReviewHistoryReadLike,
         ReviewSearchSpec,
         SentryReadClient,
+        ThreadActivityReadLike,
+        ThreadActivitySpec,
     )
     from teatree.core.overlay import OverlayBase
     from teatree.types import SyncBackend
@@ -92,6 +99,16 @@ class ConcreteBackendProvider:
                 pr_urls=spec.pr_urls,
                 max_pages=spec.max_pages,
                 oldest_ts=spec.oldest_ts,
+                timeout=spec.timeout,
+            ),
+        )
+
+    def read_thread_activity(self, spec: "ThreadActivitySpec") -> "ThreadActivityReadLike":  # noqa: PLR6301 — fail-safe provider seam: instance method by Protocol contract
+        return read_thread_activity(
+            SlackThreadActivityRequest(
+                token=spec.token,
+                channel_id=spec.channel_id,
+                thread_ts=spec.thread_ts,
                 timeout=spec.timeout,
             ),
         )

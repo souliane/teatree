@@ -51,12 +51,14 @@ class FakeClient:
         self,
         *,
         pages: list[dict] | None = None,
+        replies: dict | None = None,
         headers: dict[str, str] | None = None,
         raises: BaseException | None = None,
         **_kw: object,
     ) -> None:
         self.pages = pages or []
         self._page_idx = 0
+        self.replies = replies
         self.headers = headers or {}
         self._raises = raises
         self.get_calls: list[dict[str, object]] = []
@@ -81,6 +83,9 @@ class FakeClient:
             page = self.pages[self._page_idx] if self._page_idx < len(self.pages) else {"ok": False}
             self._page_idx += 1
             return httpx.Response(200, json=page, request=httpx.Request("GET", url))
+        if "conversations.replies" in url:
+            payload = self.replies if self.replies is not None else {"ok": False, "error": "thread_not_found"}
+            return httpx.Response(200, json=payload, request=httpx.Request("GET", url))
         return httpx.Response(404, request=httpx.Request("GET", url))
 
 
@@ -533,7 +538,7 @@ class TestReconcileOutOfBand(TestCase):
         assert pr.state == PullRequest.State.REVIEW_REQUESTED
 
     def test_old_window_post_excluded(self) -> None:
-        old_ts = f"{(timezone.now() - dt.timedelta(days=30)).timestamp():.6f}"
+        old_ts = f"{(timezone.now() - dt.timedelta(days=40)).timestamp():.6f}"
         fake = FakeClient(pages=[{"ok": True, "messages": [{"text": _MR_URL, "ts": old_ts}], "has_more": False}])
         with pytest.MonkeyPatch.context() as mp:
             mp.setattr(slack_client.httpx, "Client", lambda **kw: _bind(fake, kw))
@@ -629,16 +634,24 @@ class TestStaleOrphanReclaim(TestCase):
         assert decision.action == "suppress"
         assert decision.reason == "already_claimed"
 
-    def test_stale_but_posted_row_still_suppresses(self) -> None:
-        """A stale row that DID post (slack_thread_ts set) is not an orphan."""
+    def test_posted_row_with_live_thread_beyond_window_suppresses(self) -> None:
+        """A posted row whose thread is still LIVE (verified) suppresses (#1084 follow-up).
+
+        The channel-history window read is empty (the post is older than the
+        window), so the DB alone used to decide. Now the exact thread is
+        live-verified: present ⇒ SUPPRESS ``already_claimed``.
+        """
         ReviewRequestPost.objects.create(
             mr_url=_MR_URL,
             slack_channel_id=_CHANNEL_ID,
             slack_thread_ts="1700000000.000100",
             done_at=None,
-            created_at=timezone.now() - dt.timedelta(minutes=5),
+            created_at=timezone.now() - dt.timedelta(days=40),
         )
-        fake = FakeClient(pages=[{"ok": True, "messages": [], "has_more": False}])
+        fake = FakeClient(
+            pages=[{"ok": True, "messages": [], "has_more": False}],
+            replies={"ok": True, "messages": [{"ts": "1700000000.000100", "text": f"review {_MR_URL}"}]},
+        )
         with pytest.MonkeyPatch.context() as mp:
             mp.setattr(slack_client.httpx, "Client", lambda **kw: _bind(fake, kw))
             decision = should_post_review_request(
@@ -647,6 +660,106 @@ class TestStaleOrphanReclaim(TestCase):
             )
         assert decision.action == "suppress"
         assert decision.reason == "already_claimed"
+
+    def test_posted_row_with_deleted_thread_reclaims_and_posts(self) -> None:
+        """A posted row whose thread is GONE (deleted) is reclaimed → POST.
+
+        Live Slack, not the DB row, is the authority: an empty
+        ``conversations.replies`` means the message is gone, so the row is
+        atomically reclaimed and the guard POSTs a fresh request.
+        """
+        ReviewRequestPost.objects.create(
+            mr_url=_MR_URL,
+            slack_channel_id=_CHANNEL_ID,
+            slack_thread_ts="1700000000.000100",
+            done_at=timezone.now(),
+            created_at=timezone.now() - dt.timedelta(days=40),
+        )
+        fake = FakeClient(
+            pages=[{"ok": True, "messages": [], "has_more": False}],
+            replies={"ok": True, "messages": []},
+        )
+        with pytest.MonkeyPatch.context() as mp:
+            mp.setattr(slack_client.httpx, "Client", lambda **kw: _bind(fake, kw))
+            decision = should_post_review_request(
+                mr_url=_MR_URL,
+                target=GuardTarget(channel_id=_CHANNEL_ID, channel_name=_CHANNEL_NAME, token="xoxb-bot"),
+            )
+        assert decision.action == "post"
+        post = ReviewRequestPost.objects.get(mr_url=_MR_URL)
+        assert post.slack_thread_ts == ""
+        assert post.done_at is None
+        assert ReviewRequestPost.objects.filter(mr_url=_MR_URL).count() == 1
+
+    def test_posted_row_thread_read_failure_suppresses_failsafe(self) -> None:
+        """ANY failure reading the posted row's thread fails safe to SUPPRESS."""
+        ReviewRequestPost.objects.create(
+            mr_url=_MR_URL,
+            slack_channel_id=_CHANNEL_ID,
+            slack_thread_ts="1700000000.000100",
+            done_at=None,
+            created_at=timezone.now() - dt.timedelta(days=40),
+        )
+        fake = FakeClient(
+            pages=[{"ok": True, "messages": [], "has_more": False}],
+            replies={"ok": False, "error": "ratelimited"},
+        )
+        with pytest.MonkeyPatch.context() as mp:
+            mp.setattr(slack_client.httpx, "Client", lambda **kw: _bind(fake, kw))
+            decision = should_post_review_request(
+                mr_url=_MR_URL,
+                target=GuardTarget(channel_id=_CHANNEL_ID, channel_name=_CHANNEL_NAME, token="xoxb-bot"),
+            )
+        assert decision.action == "suppress"
+        assert decision.reason == "read_failed_failsafe"
+
+
+class TestPeekPostedRowVerification(TestCase):
+    """``check`` (peek) gets the SAME live posted-row verification, but writes nothing (#1084 follow-up)."""
+
+    def test_peek_live_thread_suppresses_without_mutating(self) -> None:
+        ReviewRequestPost.objects.create(
+            mr_url=_MR_URL,
+            slack_channel_id=_CHANNEL_ID,
+            slack_thread_ts="1700000000.000100",
+            done_at=None,
+            created_at=timezone.now() - dt.timedelta(days=40),
+        )
+        fake = FakeClient(
+            pages=[{"ok": True, "messages": [], "has_more": False}],
+            replies={"ok": True, "messages": [{"ts": "1700000000.000100", "text": _MR_URL}]},
+        )
+        with pytest.MonkeyPatch.context() as mp:
+            mp.setattr(slack_client.httpx, "Client", lambda **kw: _bind(fake, kw))
+            decision = peek_should_post_review_request(
+                mr_url=_MR_URL,
+                target=GuardTarget(channel_id=_CHANNEL_ID, channel_name=_CHANNEL_NAME, token="xoxb-bot"),
+            )
+        assert decision.action == "suppress"
+        post = ReviewRequestPost.objects.get(mr_url=_MR_URL)
+        assert post.done_at is None  # peek never mutates
+
+    def test_peek_deleted_thread_reports_post_without_reclaiming(self) -> None:
+        ReviewRequestPost.objects.create(
+            mr_url=_MR_URL,
+            slack_channel_id=_CHANNEL_ID,
+            slack_thread_ts="1700000000.000100",
+            done_at=timezone.now(),
+            created_at=timezone.now() - dt.timedelta(days=40),
+        )
+        fake = FakeClient(
+            pages=[{"ok": True, "messages": [], "has_more": False}],
+            replies={"ok": True, "messages": []},
+        )
+        with pytest.MonkeyPatch.context() as mp:
+            mp.setattr(slack_client.httpx, "Client", lambda **kw: _bind(fake, kw))
+            decision = peek_should_post_review_request(
+                mr_url=_MR_URL,
+                target=GuardTarget(channel_id=_CHANNEL_ID, channel_name=_CHANNEL_NAME, token="xoxb-bot"),
+            )
+        assert decision.action == "post"
+        post = ReviewRequestPost.objects.get(mr_url=_MR_URL)
+        assert post.slack_thread_ts == "1700000000.000100"  # unchanged — peek writes nothing
 
 
 class TestPeekTakesNoClaim(TestCase):

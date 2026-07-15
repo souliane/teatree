@@ -1,7 +1,7 @@
 """TeaTree config dataclasses + the per-overlay / env override registries.
 
 ``UserSettings`` (the ``[teatree]`` table), ``TeaTreeConfig``, ``OverlayEntry``,
-``E2ERepo``, the field ``_parse_*`` coercers, and the two override registries
+the field ``_parse_*`` coercers, and the two override registries
 (``OVERLAY_OVERRIDABLE_SETTINGS`` / ``ENV_SETTING_OVERRIDES``). Split out of the
 package module for the module-health LOC cap; re-exported from
 ``teatree.config`` so every ``teatree.config.<name>`` path stays valid.
@@ -48,17 +48,6 @@ from teatree.config.setting_parsers import (
 )
 from teatree.config.speak import parse_speak_setting
 from teatree.types import DEFAULT_MR_TITLE_REGEX, SlackVoiceClassifierMode, SpeakConfig
-
-
-@dataclass
-class E2ERepo:
-    """An external git repository containing Playwright E2E tests."""
-
-    name: str
-    url: str
-    branch: str
-    e2e_dir: str = "e2e"
-
 
 # The DB-home parser registry (#1775 hard partition). Every DB-home
 # ``UserSettings`` field (see ``config/homes.py``) has an entry here: the parser
@@ -183,6 +172,7 @@ OVERLAY_OVERRIDABLE_SETTINGS: dict[str, Callable[[Any], Any]] = {
     "pull_main_clone_disabled": _parse_strict_bool,
     "pull_main_clone_cadence_hours": _parse_strict_int,
     "review_nag_enabled": _parse_strict_bool,
+    "review_request_dedup_window_days": _parse_overridable_positive_int(30),
     "mr_title_regex": _parse_strict_str,
     "issue_implementer_enabled": _parse_strict_bool,
     "issue_implementer_label": _parse_strict_str,
@@ -1188,6 +1178,14 @@ class _PrePublishGateSettings:
     # ``[overlays.<name>].review_nag_enabled = true`` only after the
     # concurrency + merged-MR fixes are validated.
     review_nag_enabled: bool = False
+    # Live-Slack dedup window for the review-request guard (#1084 follow-up).
+    # The guard reads the review channel's recent history bounded to this many
+    # days when deciding POST vs SUPPRESS; a posted ``ReviewRequestPost`` row is
+    # NOT trusted on its own beyond this window — the guard live-verifies the
+    # exact thread. Default 30 days (>= the previous hard-coded 24h) so live
+    # Slack, not the DB row's age, decides. Fail-safe positive int: a
+    # non-positive / mistyped value degrades to 30. Per-overlay overridable.
+    review_request_dedup_window_days: int = 30
     # Orchestrator-execution-boundary gate (#115, §17.6 gate 2). When
     # enabled (default), the main agent is blocked from running a HEAVY /
     # long-running foreground Bash command (test suite, build, dev

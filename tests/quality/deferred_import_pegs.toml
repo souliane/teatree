@@ -30,7 +30,8 @@
 "src/teatree/core/gates/local_stack_gate.py" = 2
 "src/teatree/core/gates/owned_repo_guard.py" = 2
 "src/teatree/core/gates/plan_gate.py" = 2
-"src/teatree/core/gates/review_request_guard.py" = 5
+"src/teatree/core/gates/review_request_draft_gate.py" = 1
+"src/teatree/core/gates/review_request_guard.py" = 6
 "src/teatree/core/gates/rubric_gate.py" = 2
 "src/teatree/core/handover.py" = 2
 "src/teatree/core/headless_dispatch.py" = 1
@@ -58,7 +59,7 @@
 "src/teatree/core/management/commands/pr.py" = 1
 "src/teatree/core/management/commands/retro.py" = 1
 "src/teatree/core/management/commands/review.py" = 2
-"src/teatree/core/management/commands/review_request_post.py" = 3
+"src/teatree/core/management/commands/review_request_post.py" = 4
 "src/teatree/core/management/commands/speak.py" = 1
 "src/teatree/core/management/commands/standing_goal.py" = 3
 "src/teatree/core/management/commands/tasks.py" = 2

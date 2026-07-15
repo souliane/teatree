@@ -25,7 +25,8 @@ from contextlib import suppress
 from pathlib import Path
 
 import teatree.config as _facade
-from teatree.config.settings import E2ERepo, TeaTreeConfig, UserSettings
+from teatree.config.e2e_repo import E2ERepo
+from teatree.config.settings import TeaTreeConfig, UserSettings
 from teatree.paths import get_data_dir
 from teatree.update_check import run_update_check
 
