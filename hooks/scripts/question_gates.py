@@ -196,6 +196,50 @@ _SEQUENCING_OFFER_RE = re.compile(
 )
 
 
+# A '?' that survives ONLY inside a quoted span or a blockquote line is an
+# ECHOED question, not a live ask (#3261): the agent is quoting an earlier
+# question back — e.g. answering the user's meta-question "what was the last
+# question you asked me?" by reproducing the prior question verbatim. Single-quote
+# spans are deliberately NOT stripped (an apostrophe in a contraction has no close
+# and a two-contraction line would eat the span between them); a quoted question
+# is virtually always double-quoted or backticked.
+_QUOTED_SPAN_RE = re.compile(r'"[^"\n]*"|`[^`\n]*`')
+_BLOCKQUOTE_LINE_RE = re.compile(r"^[ \t]*>[^\n]*", re.MULTILINE)
+
+# A PAST-tense attribution that introduces a HISTORICAL question the turn merely
+# recounts ("the last question I asked was …", "you asked whether …") rather than
+# a live decision (#3261). The clause is bounded to its own sentence (``[^.!?\n]*``
+# up to the ``?``) so only the attributed interrogative is neutralised — a genuine
+# live question elsewhere in the same turn survives and still fires the gate.
+_HISTORICAL_QUESTION_RE = re.compile(
+    r"\b(?:"
+    r"the\s+(?:last|previous|earlier|prior)\s+question\s+(?:i|we)\s+(?:asked|posed|raised)"
+    r"|(?:the\s+)?question\s+(?:i|we)\s+(?:asked|posed|raised)"
+    r"|you\s+(?:previously|earlier|already|just)?\s*asked"
+    r"|(?:i|we)\s+(?:previously|earlier|already|just)\s+asked"
+    r"|(?:my|our)\s+(?:last|previous|earlier|prior)\s+question"
+    r")\b[^.!?\n]*\?",
+    re.IGNORECASE,
+)
+
+
+def _question_is_only_quoted_or_historical(prose: str) -> bool:
+    """True when every live-question signal is quoted or attributed to the past (#3261).
+
+    Strips quoted spans, blockquote lines, and historical-attribution clauses,
+    then re-checks for a surviving user-directed ``?``. When none survives, the
+    turn merely quotes/recounts a prior question — not a live decision — so the
+    gate must not force a spurious ``AskUserQuestion``. A genuine live question
+    survives the strip and keeps firing.
+    """
+    cleaned = _QUOTED_SPAN_RE.sub(" ", prose)
+    cleaned = _BLOCKQUOTE_LINE_RE.sub(" ", cleaned)
+    cleaned = _HISTORICAL_QUESTION_RE.sub(" ", cleaned)
+    if "?" not in cleaned:
+        return True
+    return not _USER_DIRECTED_CUE_RE.search(cleaned)
+
+
 def is_user_directed_question(text: str) -> bool:
     """True when ``text`` poses a decision question directed at the user.
 
@@ -209,6 +253,14 @@ def is_user_directed_question(text: str) -> bool:
     write X now or react first?") does NOT fire — it asks only the order of the
     agent's own work, which it resolves autonomously. A genuine go/no-go or a
     real choice between substantive options still fires.
+
+    A QUOTED or HISTORICAL question does NOT fire (#3261): when the only
+    user-directed ``?`` survives inside a quoted span / blockquote (the agent
+    quoting an earlier question back — e.g. answering "what was the last question
+    you asked me?") or inside a past-attribution clause ("the last question I
+    asked was …", "you asked whether …"), there is no live decision to route, so
+    forcing an ``AskUserQuestion`` would manufacture a spurious round-trip. A
+    genuine live question outside such spans still fires.
 
     An ANNOUNCED ask ("**Action:** Ask about the first PR", "I'll ask the user
     which branch" — a bounded filler run between the head and "ask" included:
@@ -230,11 +282,11 @@ def is_user_directed_question(text: str) -> bool:
         return True
     if _ANNOUNCED_ASK_RE.search(prose) and not _pending_answer_disposition(prose):
         return True
-    if "?" not in prose:
+    if "?" not in prose or not _USER_DIRECTED_CUE_RE.search(prose):
         return False
-    if not _USER_DIRECTED_CUE_RE.search(prose):
+    if _SEQUENCING_OFFER_RE.search(prose):
         return False
-    return not _SEQUENCING_OFFER_RE.search(prose)
+    return not _question_is_only_quoted_or_historical(prose)
 
 
 # A user CLARIFICATION request — they did not pick an option, they asked the
