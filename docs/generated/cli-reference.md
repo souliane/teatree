@@ -2740,12 +2740,15 @@ Usage: t3 tool validate-mr [OPTIONS]
      create/update (the lockout this fix closes).
 
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
-│ --title              TEXT  MR/PR title                                       │
-│ --description        TEXT  MR/PR description                                 │
-│ --repo               TEXT  MR TARGET repo (owner/repo slug, path, or URL);   │
-│                            keys overlay resolution to the target, not the    │
-│                            cwd.                                              │
-│ --help                     Show this message and exit.                       │
+│ --title                    TEXT  MR/PR title                                 │
+│ --description              TEXT  MR/PR description                           │
+│ --repo                     TEXT  MR TARGET repo (owner/repo slug, path, or   │
+│                                  URL); keys overlay resolution to the        │
+│                                  target, not the cwd.                        │
+│ --sections-optional              Skip the required-description-sections      │
+│                                  check (a title-only update touches no       │
+│                                  description). #3254                         │
+│ --help                           Show this message and exit.                 │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
