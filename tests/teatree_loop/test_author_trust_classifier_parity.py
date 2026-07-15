@@ -16,7 +16,8 @@ from django.test import TestCase
 from teatree.core.models import ScannedBroadcast, TrustedIdentity
 from teatree.core.review import author_trust
 from teatree.loop.mechanical import payload_author_untrusted_public
-from teatree.loop.scanners import codex_review, pr_sweep, pr_sweep_decision, slack_broadcasts
+from teatree.loop.scanners import codex_review, pr_sweep, slack_broadcasts
+from teatree.loop.scanners.pr_sweep_decision import untrusted_merge_provenance
 
 # ast-grep-ignore: ac-django-no-pytest-django-db
 pytestmark = pytest.mark.django_db
@@ -63,7 +64,7 @@ class TestClassifierParity(TestCase):
         broadcast = ScannedBroadcast.objects.create(channel="C1", slack_ts="1.1", classification="pending")
         with patch.object(author_trust, "repo_is_internal", return_value=False):
             keystone = author_trust.classify_author(_SLUG, author).untrusted
-            sweep = pr_sweep_decision.untrusted_merge_provenance(_pr_sweep_summary(author))
+            sweep = untrusted_merge_provenance(_pr_sweep_summary(author))
             codex = codex_review._classify_variant(("README.md",), slug=_SLUG, author=author) == (
                 codex_review.ADVERSARIAL_REVIEW_VARIANT
             )
@@ -90,7 +91,7 @@ class TestClassifierParity(TestCase):
         broadcast = ScannedBroadcast.objects.create(channel="C1", slack_ts="2.2", classification="pending")
         with patch.object(author_trust, "repo_is_internal", return_value=True):
             assert author_trust.classify_author(_SLUG, "evilhacker").untrusted is False
-            assert pr_sweep_decision.untrusted_merge_provenance(_pr_sweep_summary("evilhacker")) is False
+            assert untrusted_merge_provenance(_pr_sweep_summary("evilhacker")) is False
             variant = codex_review._classify_variant(("README.md",), slug=_SLUG, author="evilhacker")
             assert variant == codex_review.STANDARD_REVIEW_VARIANT
             signal = slack_broadcasts._signal_for_pending_mr(_mr_state("evilhacker"), broadcast, overlay="")
