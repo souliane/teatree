@@ -45,6 +45,9 @@ class ConcreteBackendProvider:
     def get_code_host_for_repo(self, overlay: "OverlayBase", repo_path: str) -> "CodeHostBackend | None":  # noqa: PLR6301 — fail-safe provider seam: instance method by Protocol contract
         return loader.get_code_host_for_repo(overlay, repo_path)
 
+    def get_code_host_for_url(self, overlay: "OverlayBase", issue_url: str) -> "CodeHostBackend | None":  # noqa: PLR6301 — fail-safe provider seam: instance method by Protocol contract
+        return loader.get_code_host_for_url(overlay, issue_url)
+
     def get_code_hosts(self, overlay: "OverlayBase") -> "list[CodeHostBackend]":  # noqa: PLR6301 — fail-safe provider seam: instance method by Protocol contract
         return loader.get_code_hosts(overlay)
 

@@ -76,7 +76,10 @@ class DebugSessionViewTestCase(TestCase):
         ) as launch:
             resp = self.client.post(self.url, {})
         launch.assert_called_once_with("")
-        assert "http://127.0.0.1:54321" in resp.content.decode()
+        body = resp.content.decode()
+        assert "http://127.0.0.1:54321" in body
+        # The auto-open hook: the global htmx:afterSwap listener reads this attr.
+        assert 'data-ttyd-launch="http://127.0.0.1:54321"' in body
 
     def test_missing_claude_returns_400(self) -> None:
         with patch(

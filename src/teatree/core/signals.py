@@ -5,6 +5,7 @@ from django.db.models.signals import post_save
 from django_fsm.signals import post_transition
 
 from teatree.core.headless_dispatch import runs_in_session
+from teatree.core.issue_title import fetch_issue_title
 from teatree.core.models.implemented_issue_marker import ImplementedIssueMarker
 from teatree.core.models.pull_request import PullRequest
 from teatree.core.models.task import Task
@@ -186,6 +187,46 @@ def _runs_in_session(instance: Task) -> bool:
     return runs_in_session(role=instance.ticket.role, phase=instance.phase)
 
 
+def _stamp_issue_title_on_create(
+    sender: type,  # noqa: ARG001 — Django signal receiver signature requires sender even when unused
+    instance: Ticket,
+    *,
+    created: bool,
+    **_kwargs: object,
+) -> None:
+    """Seed a new forge ticket's dashboard label from its issue title (#3205).
+
+    The loop creates a ticket with a blank ``short_description``, so its card
+    shows only a number. The reference stamped the title from the scanner's
+    already-fetched payload inside ``_handle_orchestrator``; this hook does the
+    equivalent without touching that ticket-creation seam — on create it defers
+    a best-effort forge fetch to after commit (off the create path, and inert in
+    ``TestCase`` where ``on_commit`` never fires). Guarded so it only runs for a
+    titleless http(s) ticket; a forge failure logs and drops silently — the card
+    just keeps showing the number, exactly as before.
+    """
+    if not created:
+        return
+    if not instance.issue_url.startswith(("http://", "https://")):
+        return
+    extra = instance.extra if isinstance(instance.extra, dict) else {}
+    if extra.get("issue_title"):
+        return
+    ticket_pk = int(instance.pk)
+    transaction.on_commit(lambda: _fetch_and_stamp_issue_title(ticket_pk))
+
+
+def _fetch_and_stamp_issue_title(ticket_pk: int) -> None:
+    try:
+        ticket = Ticket.objects.get(pk=ticket_pk)
+        title = fetch_issue_title(ticket)
+    except Exception:
+        logger.exception("Failed to stamp issue title for ticket %s", ticket_pk)
+        return
+    if title:
+        ticket.stamp_issue_title(title)
+
+
 def _auto_enqueue_headless_task(
     sender: type,  # noqa: ARG001 — Django signal receiver signature requires sender even when unused
     instance: Task,
@@ -352,3 +393,4 @@ def register_signals() -> None:
         dispatch_uid="ticket_completion_release_issue_markers",
     )
     post_save.connect(_auto_enqueue_headless_task, sender=Task, dispatch_uid="auto_enqueue_headless")
+    post_save.connect(_stamp_issue_title_on_create, sender=Ticket, dispatch_uid="ticket_stamp_issue_title")

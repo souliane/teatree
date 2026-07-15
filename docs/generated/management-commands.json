@@ -1118,6 +1118,11 @@
       ]
     },
     {
+      "help": "Backfill Ticket.extra['issue_title'] from the forge for existing tickets.",
+      "name": "ticket_backfill_titles",
+      "subcommands": []
+    },
+    {
       "help": "Generate Ticket.short_description (#1156).",
       "name": "ticket_short_describe",
       "subcommands": []

@@ -266,6 +266,13 @@
           if (drawer && drawer.innerHTML.trim()) drawer.innerHTML = "";
         }
       });
+      // A freshly-launched loopback ttyd terminal auto-opens in a new tab; the
+      // htmx swap traces to the button click, so the pop-up is user-initiated.
+      document.body.addEventListener("htmx:afterSwap", function (evt) {
+        var el = evt.target.querySelector("[data-ttyd-launch]");
+        var url = el && el.getAttribute("data-ttyd-launch");
+        if (url) window.open(url, "_blank", "noopener");
+      });
     })();
   </script>
 </body>

@@ -36,6 +36,20 @@ class BuildKanbanColumnsTestCase(TestCase):
         assert [c.ticket_id for c in by_state[State.STARTED]] == [started.pk]
         assert [c.ticket_id for c in by_state[State.MERGED]] == [merged.pk]
 
+    def test_card_carries_clickable_issue_link_for_forge_url(self) -> None:
+        ticket = TicketFactory(state=State.STARTED, issue_url="https://github.com/souliane/teatree/issues/3205")
+        card = _find_card(build_kanban_columns(), ticket.pk)
+        assert card is not None
+        assert card.issue_href == "https://github.com/souliane/teatree/issues/3205"
+        assert card.issue_ref == "#3205"
+
+    def test_card_has_no_link_for_synthetic_loop_key(self) -> None:
+        ticket = TicketFactory(state=State.NOT_STARTED, issue_url="scanning-news://t3-teatree")
+        card = _find_card(build_kanban_columns(), ticket.pk)
+        assert card is not None
+        assert card.issue_href == ""
+        assert card.issue_ref == ""
+
     def test_ignored_hidden_by_default_and_shown_on_toggle(self) -> None:
         ignored = TicketFactory(state=State.IGNORED)
         assert _find_card(build_kanban_columns(), ignored.pk) is None
