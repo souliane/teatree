@@ -5,6 +5,7 @@ from django.db.models.signals import post_save
 from django_fsm.signals import post_transition
 
 from teatree.core.headless_dispatch import runs_in_session
+from teatree.core.models.implemented_issue_marker import ImplementedIssueMarker
 from teatree.core.models.pull_request import PullRequest
 from teatree.core.models.task import Task
 from teatree.core.models.ticket import Ticket
@@ -34,6 +35,12 @@ _WORKTREE_TRANSITION_TASKS: dict[str, str] = {
     "verify": "execute_worktree_verify",
     "stop_services": "execute_worktree_stop",
 }
+
+# A ticket reaching one of these frees its issue-implementer marker from the
+# single-ticket in-flight budget — the release-on-completion the lifecycle lacked.
+_MARKER_RELEASE_TARGET_STATES: frozenset[str] = frozenset(
+    {Ticket.State.MERGED, Ticket.State.DELIVERED, Ticket.State.IGNORED}
+)
 
 
 def _log_ticket_transition(
@@ -287,6 +294,31 @@ def _enqueue_worktree_teardown_task(
     transaction.on_commit(lambda: executor.enqueue(worktree_pk, snapshot_db_name, snapshot_extra))
 
 
+def _release_issue_markers_on_completion(
+    sender: type,  # noqa: ARG001 — Django signal receiver signature requires sender even when unused
+    instance: Ticket,
+    target: str,
+    **_kwargs: object,
+) -> None:
+    """Free the issue-implementer marker(s) when the ticket completes.
+
+    Keyed on the ticket reaching a terminal state (MERGED / DELIVERED /
+    IGNORED): a DISPATCHED/TICKET_CREATED marker held its budget slot for its
+    whole life, so without this the first claim locked the single-ticket budget
+    permanently. ABANDONED (give-up / fleet-claim-steal) is left untouched — it
+    is already terminal and carries distinct semantics. Best-effort: the FSM
+    transition must never block on the marker update.
+    """
+    if target not in _MARKER_RELEASE_TARGET_STATES or not instance.issue_url:
+        return
+    try:
+        ImplementedIssueMarker.objects.filter(issue_url=instance.issue_url).exclude(
+            state=ImplementedIssueMarker.State.ABANDONED
+        ).update(state=ImplementedIssueMarker.State.COMPLETED)
+    except Exception:
+        logger.exception("Failed to release issue markers for ticket %s (%s)", instance.pk, instance.issue_url)
+
+
 def register_signals() -> None:
     post_transition.connect(_log_ticket_transition, sender=Ticket, dispatch_uid="ticket_transition_audit")
     post_transition.connect(
@@ -313,5 +345,10 @@ def register_signals() -> None:
         _add_approval_reaction_on_transition,
         sender=PullRequest,
         dispatch_uid="pull_request_approval_reaction",
+    )
+    post_transition.connect(
+        _release_issue_markers_on_completion,
+        sender=Ticket,
+        dispatch_uid="ticket_completion_release_issue_markers",
     )
     post_save.connect(_auto_enqueue_headless_task, sender=Task, dispatch_uid="auto_enqueue_headless")

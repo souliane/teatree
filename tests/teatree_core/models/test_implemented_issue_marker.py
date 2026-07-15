@@ -59,10 +59,11 @@ class TestClaim(TestCase):
 
 
 class TestInFlightCount(TestCase):
-    def test_counts_dispatched_and_ticket_created_excludes_abandoned(self) -> None:
+    def test_counts_dispatched_and_ticket_created_excludes_terminal(self) -> None:
         ImplementedIssueMarkerFactory(overlay="acme")
         ImplementedIssueMarkerFactory(overlay="acme", ticket_created=True)
         ImplementedIssueMarkerFactory(overlay="acme", abandoned=True)
+        ImplementedIssueMarkerFactory(overlay="acme", completed=True)
 
         assert ImplementedIssueMarker.objects.in_flight_count("acme") == 2
 

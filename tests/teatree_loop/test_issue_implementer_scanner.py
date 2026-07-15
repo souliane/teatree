@@ -371,6 +371,45 @@ class IssueImplementerClaimLifecycleTests(_PublicRepoTestCase):
         assert ImplementedIssueMarker.objects.filter(issue_url=self.URL_A).count() == 1
 
 
+class IssueImplementerBudgetCapTests(_PublicRepoTestCase):
+    """A single ``scan()`` claims at most ``max_concurrent - in_flight`` NEW issues.
+
+    The factory only gates whether the scanner runs; without an in-loop cap the
+    scan claims EVERY candidate in one tick, bursting the whole open backlog past
+    the single-ticket budget. The cap stops the candidate loop the moment the
+    live in-flight count reaches ``max_concurrent``.
+    """
+
+    def _n_owner_issues(self, count: int) -> _Host:
+        issues = [_issue(f"https://github.com/souliane/teatree/issues/{200 + i}", author=OWNER) for i in range(count)]
+        return _Host(authored={OWNER: issues})
+
+    def test_max_concurrent_one_claims_a_single_issue(self) -> None:
+        host = self._n_owner_issues(5)
+
+        signals = self._scanner(host, max_concurrent=1).scan()
+
+        assert len(signals) == 1
+        assert ImplementedIssueMarker.objects.in_flight_count(self.OVERLAY) == 1
+
+    def test_remaining_budget_accounts_for_already_in_flight(self) -> None:
+        ImplementedIssueMarker.objects.claim("https://github.com/souliane/teatree/issues/1", overlay=self.OVERLAY)
+        assert ImplementedIssueMarker.objects.in_flight_count(self.OVERLAY) == 1
+        host = self._n_owner_issues(5)
+
+        signals = self._scanner(host, max_concurrent=3).scan()
+
+        assert len(signals) == 2
+        assert ImplementedIssueMarker.objects.in_flight_count(self.OVERLAY) == 3
+
+    def test_zero_cap_is_uncapped_and_claims_all_candidates(self) -> None:
+        host = self._n_owner_issues(4)
+
+        signals = self._scanner(host, max_concurrent=0).scan()
+
+        assert len(signals) == 4
+
+
 class IssueImplementerReadbackTests(_PublicRepoTestCase):
     """Pre-dispatch forge read-back: an already-PR'd trusted-author issue is NOT re-claimed.
 
