@@ -57,14 +57,14 @@ class TestOpenImChannel:
         return fake
 
     def test_returns_channel_id_on_ok(self) -> None:
-        got = open_im_channel(self._post({"ok": True, "channel": {"id": "D42"}}), "U1")  # type: ignore[arg-type]
+        got = open_im_channel(self._post({"ok": True, "channel": {"id": "D42"}}), "U1")
         assert got == "D42"
 
     def test_empty_on_not_ok(self) -> None:
-        assert open_im_channel(self._post({"ok": False, "error": "user_not_found"}), "U1") == ""  # type: ignore[arg-type]
+        assert open_im_channel(self._post({"ok": False, "error": "user_not_found"}), "U1") == ""
 
     def test_empty_when_channel_id_missing(self) -> None:
-        assert open_im_channel(self._post({"ok": True, "channel": {}}), "U1") == ""  # type: ignore[arg-type]
+        assert open_im_channel(self._post({"ok": True, "channel": {}}), "U1") == ""
 
     def test_open_dm_delegates_to_open_im_channel(self, monkeypatch: pytest.MonkeyPatch) -> None:
         captured: list[dict[str, object]] = []
