@@ -9240,7 +9240,10 @@ Usage: t3 teatree review record [OPTIONS] PR_ID SLUG
 
 ╭─ Arguments ──────────────────────────────────────────────────────────────────╮
 │ *    pr_id      INTEGER  [required]                                          │
-│ *    slug       TEXT     [required]                                          │
+│ *    slug       TEXT     repo slug owner/repo (e.g. acme/widgets), NEVER a   │
+│                          branch name — the merge verdict lookup keys by the  │
+│                          resolved repo slug                                  │
+│                          [required]                                          │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --reviewed-sha             TEXT     Full 40-char hex commit id of the        │
