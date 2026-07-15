@@ -19,10 +19,10 @@ from typing import TYPE_CHECKING
 
 from teatree.core.modelkit.phases import normalize_phase
 from teatree.core.models.ticket_worktree_checks import worktree_has_commits_ahead, worktree_tracked_dirty_path
+from teatree.core.models.worktree import Worktree
 
 if TYPE_CHECKING:
     from teatree.core.models.task import Task
-    from teatree.core.models.worktree import Worktree
 
 _LANDING_VERIFIED_PHASES = frozenset({"coding", "debugging"})
 
@@ -39,7 +39,7 @@ def landing_verification_error(task: "Task", *, phase: str = "") -> str:
     """
     if normalize_phase(phase or task.phase) not in _LANDING_VERIFIED_PHASES:
         return ""
-    checkable = [wt for wt in task.ticket.worktrees.all() if _on_disk_repo(wt)]
+    checkable = [wt for wt in Worktree.objects.filter(ticket=task.ticket) if _on_disk_repo(wt)]
     if not checkable:
         return ""
     for wt in checkable:

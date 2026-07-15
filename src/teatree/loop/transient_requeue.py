@@ -56,7 +56,7 @@ def _transient_failed_candidates() -> list[Task]:
         .select_related("ticket")
     )
     for task in failed:
-        last = task.attempts.order_by("-pk").first()  # ty: ignore[unresolved-attribute]
+        last = task.attempts.order_by("-pk").first()
         if last is not None and is_transient_failure(last.error):
             candidates.append(task)
     return candidates
@@ -75,7 +75,7 @@ def _budget_halt_reason(task: Task) -> str | None:
     last_two = [a.error_fingerprint for a in attempts[-2:] if a.error_fingerprint]
     try:
         requeue_verdict(
-            ticket_id=task.ticket_id,  # ty: ignore[unresolved-attribute]
+            ticket_id=task.ticket.pk,
             phase=normalize_phase(task.phase),
             iteration_count=len(attempts),
             last_two_fingerprints=last_two,
@@ -119,7 +119,7 @@ def _escalate_once(task: Task, *, reason: str) -> None:
     ).exists()
     if already:
         return
-    where = task.ticket.issue_url or f"ticket {task.ticket_id}"
+    where = task.ticket.issue_url or f"ticket {task.ticket.pk}"
     question = (
         f"{marker} Auto-retry halted on {where} (phase {normalize_phase(task.phase)!r}): {reason} "
         "Re-queueing is stopped so it does not retry a doomed failure forever. "
