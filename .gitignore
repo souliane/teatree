@@ -83,3 +83,4 @@ deploy/teatree.env
 # target can never shadow a committed fixture. (#privacy: real transcripts stay
 # uncommitted; the synthetic corpus_gen pipeline is the only committed source.)
 /*.jsonl
+.pr-body.md
