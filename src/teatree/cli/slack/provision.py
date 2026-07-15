@@ -284,7 +284,7 @@ def slack_provision(
             raise typer.Exit(code=1)
         if dm_only is not None:
             # Persist the profile so the manifest push, channel-join skip, and the
-            # loader's OwnerRestrictedMessaging wrap all read one source of truth.
+            # loader's owner_dm_only backend guard all read one source of truth.
             profile = "dm_only" if dm_only else "full"
             write_overlay_fields(overlay, {"slack_scope_profile": profile})
             note = "bot restricted to the owner's DM" if dm_only else "read/write-everywhere bot"

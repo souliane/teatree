@@ -90,7 +90,7 @@ _BOT_EVENTS = ["app_mention", "message.im", "reaction_added"]
 # in that 1:1 IM — NO channel/group/mpim scopes, NO ``app_mentions:read`` (there
 # are no channels to be mentioned in), and NO ``user`` (xoxp) section at all.
 # ``files:write`` is kept for voice/audio DMs (``post_audio_dm``); drop it if the
-# overlay never sends audio. The runtime ``OwnerRestrictedMessaging`` wrapper
+# overlay never sends audio. The ``SlackBotBackend`` built with ``owner_dm_only=True``
 # enforces the same restriction in-process.
 _DM_ONLY_BOT_SCOPES = [
     "chat:write",

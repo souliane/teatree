@@ -23,8 +23,8 @@ from teatree.backends.loader import (
     reset_backend_caches,
 )
 from teatree.backends.messaging_noop import NoopMessagingBackend
-from teatree.backends.messaging_owner_restricted import OwnerDmOnlyError, OwnerRestrictedMessaging
 from teatree.backends.slack.bot import SlackBotBackend
+from teatree.backends.slack.routing import OwnerDmOnlyError
 from teatree.core.backend_protocols import BackendResolutionError
 from teatree.core.overlay import OverlayBase, OverlayConfig
 
@@ -228,14 +228,16 @@ def test_get_messaging_returns_slack_when_chosen() -> None:
     assert isinstance(get_messaging(overlay), SlackBotBackend)
 
 
-def test_get_messaging_full_profile_is_bare_slack() -> None:
-    # The default "full" profile must NOT wrap — customer overlays post everywhere.
+def test_get_messaging_full_profile_leaves_owner_dm_only_off() -> None:
+    # The default "full" profile must NOT restrict — customer overlays post everywhere.
     overlay = _build_overlay(messaging_backend="slack", slack_scope_profile="full")
     _stub_token(overlay, slack="xoxb-fake")
-    assert isinstance(get_messaging(overlay), SlackBotBackend)
+    backend = get_messaging(overlay)
+    assert isinstance(backend, SlackBotBackend)
+    assert backend._owner_dm_only is False
 
 
-def test_get_messaging_dm_only_wraps_in_owner_restricted() -> None:
+def test_get_messaging_dm_only_sets_owner_dm_only() -> None:
     overlay = _build_overlay(
         messaging_backend="slack",
         slack_scope_profile="dm_only",
@@ -244,11 +246,8 @@ def test_get_messaging_dm_only_wraps_in_owner_restricted() -> None:
     )
     _stub_token(overlay, slack="xoxb-fake")
     backend = get_messaging(overlay)
-    assert isinstance(backend, OwnerRestrictedMessaging)
-    assert isinstance(backend._inner, SlackBotBackend)
-    # The owner identity is threaded so the guard can recognise the self-DM.
-    assert backend._dm_channel_id == "D-owner"
-    assert backend._user_id == "U-owner"
+    assert isinstance(backend, SlackBotBackend)
+    assert backend._owner_dm_only is True
 
 
 def test_get_messaging_dm_only_refuses_non_owner_channel() -> None:
@@ -260,6 +259,7 @@ def test_get_messaging_dm_only_refuses_non_owner_channel() -> None:
     )
     _stub_token(overlay, slack="xoxb-fake")
     backend = get_messaging(overlay)
+    # The guard raises before any HTTP call for a non-owner destination.
     with pytest.raises(OwnerDmOnlyError):
         backend.post_message(channel="C-public", text="leak")
 
