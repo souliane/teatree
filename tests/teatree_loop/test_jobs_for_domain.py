@@ -149,6 +149,44 @@ class JobsForDomainTaskSweepTestCase(TestCase):
         assert "task_sweep" in tickets_names
 
 
+class PrSweepShipDomainTestCase(TestCase):
+    """The auto-merge PR-sweep is owned by SHIP, not REVIEW (#3244).
+
+    The review loop is ``colleague_facing`` and is skipped under
+    ``autonomous_away``; ship is not. Moving the sweep to ship keeps the merge
+    path alive when the operator is away. A REVIEW-domain sweep would starve it.
+    """
+
+    @staticmethod
+    def _backend_with_sweep() -> OverlayBackends:
+        overlay = MagicMock()
+        overlay.config.get_review_broadcast_channels.return_value = []
+        overlay.config.get_review_channel.return_value = ("", "")
+        overlay.metadata.get_followup_repos.return_value = ["souliane/teatree"]
+        overlay.get_workspace_repos.return_value = []
+        return OverlayBackends(
+            name="t3-teatree",
+            hosts=(MagicMock(spec=CodeHostBackend),),
+            messaging=None,
+            ready_labels=("ready",),
+            overlay=overlay,
+        )
+
+    @staticmethod
+    def _scanner_type_names(jobs: list[Any]) -> set[str]:
+        return {type(job.scanner).__name__ for job in jobs}
+
+    def test_ship_domain_owns_the_pr_sweep(self) -> None:
+        backend = self._backend_with_sweep()
+        ship = self._scanner_type_names(jobs_for_domain(Domain.SHIP, backend, all_backends=(backend,)))
+        assert "PrSweepScanner" in ship
+
+    def test_review_domain_does_not_own_the_pr_sweep(self) -> None:
+        backend = self._backend_with_sweep()
+        review = self._scanner_type_names(jobs_for_domain(Domain.REVIEW, backend, all_backends=(backend,)))
+        assert "PrSweepScanner" not in review
+
+
 _SETTINGS_PATCH_TARGET = "teatree.loop.scanner_factories._effective_settings_for_overlay"
 
 

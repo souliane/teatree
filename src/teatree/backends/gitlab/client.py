@@ -513,6 +513,9 @@ class GitLabCodeHost:  # noqa: PLR0904 — method count reflects the CodeHostBac
     def fetch_pr_author(self, *, slug: str, pr_id: int) -> str:
         return self._merge_rpc().fetch_pr_author(slug=slug, pr_id=pr_id)
 
+    def fetch_pr_same_repo(self, *, slug: str, pr_id: int) -> bool | None:
+        return self._merge_rpc().fetch_pr_same_repo(slug=slug, pr_id=pr_id)
+
     def fetch_required_checks_rollup(self, *, slug: str, pr_id: int) -> list[RawAPIDict]:
         return self._merge_rpc().fetch_required_checks_rollup(slug=slug, pr_id=pr_id)
 

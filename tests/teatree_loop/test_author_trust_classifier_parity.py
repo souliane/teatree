@@ -63,7 +63,7 @@ class TestClassifierParity(TestCase):
         broadcast = ScannedBroadcast.objects.create(channel="C1", slack_ts="1.1", classification="pending")
         with patch.object(author_trust, "repo_is_internal", return_value=False):
             keystone = author_trust.classify_author(_SLUG, author).untrusted
-            sweep = pr_sweep_decision.untrusted_public_author(_pr_sweep_summary(author))
+            sweep = pr_sweep_decision.untrusted_merge_provenance(_pr_sweep_summary(author))
             codex = codex_review._classify_variant(("README.md",), slug=_SLUG, author=author) == (
                 codex_review.ADVERSARIAL_REVIEW_VARIANT
             )
@@ -90,7 +90,7 @@ class TestClassifierParity(TestCase):
         broadcast = ScannedBroadcast.objects.create(channel="C1", slack_ts="2.2", classification="pending")
         with patch.object(author_trust, "repo_is_internal", return_value=True):
             assert author_trust.classify_author(_SLUG, "evilhacker").untrusted is False
-            assert pr_sweep_decision.untrusted_public_author(_pr_sweep_summary("evilhacker")) is False
+            assert pr_sweep_decision.untrusted_merge_provenance(_pr_sweep_summary("evilhacker")) is False
             variant = codex_review._classify_variant(("README.md",), slug=_SLUG, author="evilhacker")
             assert variant == codex_review.STANDARD_REVIEW_VARIANT
             signal = slack_broadcasts._signal_for_pending_mr(_mr_state("evilhacker"), broadcast, overlay="")

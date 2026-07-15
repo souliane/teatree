@@ -112,6 +112,16 @@ class CodeHostQuery:
         """
         return self.backend.fetch_pr_author(slug=self.ref.slug, pr_id=self.ref.pr_id)
 
+    def pr_same_repo(self) -> bool | None:
+        """Tri-state head-branch provenance — the §17.4.3 fork gate input (#3244).
+
+        GitHub reads ``isCrossRepository`` and GitLab compares source/target project
+        ids inside the backend. ``True`` = same-repo head (trusted), ``False`` =
+        fork / cross-repo (holds for human approval), ``None`` = the forge did not
+        report it so the provenance gate fails closed to the author check.
+        """
+        return self.backend.fetch_pr_same_repo(slug=self.ref.slug, pr_id=self.ref.pr_id)
+
     def pr_changed_paths(self) -> list[str]:
         """The PR/MR's changed file paths — feeds the path-based substrate detector.
 

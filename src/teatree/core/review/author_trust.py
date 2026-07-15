@@ -166,3 +166,33 @@ def classify_author(
     if is_trusted_author(author, extra_trusted=extra_trusted):
         return AuthorClassification(trusted=True, untrusted=False, internal_repo=False)
     return AuthorClassification(trusted=False, untrusted=True, internal_repo=False)
+
+
+def classify_pr_provenance(
+    slug: str,
+    author: str,
+    *,
+    same_repo: bool | None,
+    host_kind: str = "github",
+) -> AuthorClassification:
+    """Classify a merge by the PR head branch's PROVENANCE — the two merge gates' seam.
+
+    Owner decision (BLUEPRINT §17.4.3): a PR whose head branch lives in a FORK /
+    cross-repo ALWAYS requires a human, even when the author is a trusted
+    identity — a fork PR is attacker-controllable code proposing itself for
+    auto-merge. A same-repo head branch is the operator's own push and is
+    trusted. Provenance the forge could not report (*same_repo* is ``None`` — a
+    transient read error) fails closed to the identity+visibility author check
+    :func:`classify_author`.
+
+    STRICT: ``same_repo=False`` returns ``untrusted`` regardless of author, so a
+    trusted-author fork still holds for human approval. Only the two MERGE gates
+    (the sweep rung + the keystone) adopt this; :func:`classify_author`'s other
+    consumers (the reviewing scanners, the issue-implementer) keep the pure
+    identity model.
+    """
+    if same_repo is True:
+        return AuthorClassification(trusted=True, untrusted=False, internal_repo=False)
+    if same_repo is False:
+        return AuthorClassification(trusted=False, untrusted=True, internal_repo=False)
+    return classify_author(slug, author, host_kind=host_kind)

@@ -169,6 +169,7 @@ def _open_pr(  # noqa: PLR0913 — test helper: each kwarg maps 1:1 to a PrSumma
     checks: tuple[RawAPIDict, ...] = (),
     behind_main: bool = False,
     author: str = SELF_LOGIN,
+    same_repo: bool | None = None,
 ) -> PrSummary:
     return PrSummary(
         slug=SLUG,
@@ -181,6 +182,7 @@ def _open_pr(  # noqa: PLR0913 — test helper: each kwarg maps 1:1 to a PrSumma
         title=f"PR {pr_id}",
         behind_main=behind_main,
         author=author,
+        same_repo=same_repo,
     )
 
 
@@ -379,6 +381,65 @@ class TestUntrustedAuthorPublicRepo:
 
         assert keystone.calls == [int(clear.pk)]
         assert signals[0].payload["reason"] == "all_green"
+
+
+class TestForkAlwaysHolds:
+    """The #3244 rung: a FORK PR always holds for a human, even a trusted author."""
+
+    def test_trusted_author_fork_skips_before_clear_and_never_merges(self) -> None:
+        from teatree.core.models import TrustedIdentity  # noqa: PLC0415
+
+        # The author IS trusted and an actionable CLEAR exists — yet the fork
+        # provenance rung fires first, so the keystone is never called. This is
+        # the model change: on the old author gate this same PR would merge.
+        TrustedIdentity.objects.get_or_create(platform="github", handle=SELF_LOGIN)
+        _issue_clear()
+        api = FakePrApiClient(prs_by_slug={SLUG: [_open_pr(author=SELF_LOGIN, same_repo=False)]})
+        keystone = FakeKeystone()
+        scanner, notifier = _scanner(api=api, keystone=keystone, solo_overlay=True)
+
+        with patch("teatree.core.review.author_trust.repo_is_internal", return_value=False):
+            signals = scanner.scan()
+
+        assert keystone.calls == []
+        assert api.merge_pr_calls == []
+        assert notifier.calls == []
+        assert signals[0].payload["reason"] == "fork_requires_human_approval"
+
+    def test_same_repo_bot_passes_the_rung_and_arms_review(self) -> None:
+        # A same-repo bot PR (not an operator identity) is trusted provenance, so
+        # the solo cold-review arm covers it — else it never gains the merge_safe
+        # verdict the sweep merges on.
+        dispatcher = FakeReviewDispatcher()
+        api = FakePrApiClient(prs_by_slug={SLUG: [_open_pr(author="app/github-actions", same_repo=True)]})
+        keystone = FakeKeystone()
+        scanner, _ = _scanner(
+            api=api,
+            keystone=keystone,
+            solo_overlay=True,
+            auto_review_dispatch=True,
+            dispatcher=dispatcher,
+        )
+
+        signals = scanner.scan()
+
+        assert dispatcher.calls == [(SLUG, 6230, HEAD, f"https://github.com/{SLUG}/pull/6230", "teatree")]
+        assert signals[0].payload["reason"] == "solo_overlay_no_review"
+        assert signals[0].payload["review_dispatched"] is True
+
+    def test_same_repo_bot_with_merge_safe_verdict_merges(self) -> None:
+        # Provenance trusted (same-repo) + a recorded independent merge_safe verdict
+        # at the live head ⇒ the solo bypass merges the bot PR.
+        _record_cold_review()
+        api = FakePrApiClient(prs_by_slug={SLUG: [_open_pr(author="app/github-actions", same_repo=True)]})
+        keystone = FakeKeystone()
+        scanner, _ = _scanner(api=api, keystone=keystone, solo_overlay=True)
+
+        signals = scanner.scan()
+
+        assert api.merge_pr_calls == [(SLUG, 6230, HEAD)]
+        assert [s.kind for s in signals] == ["pr_sweep.merged"]
+        assert signals[0].payload["reason"] == "solo_overlay_no_clear"
 
 
 class TestSkipPaths:

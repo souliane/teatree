@@ -12,7 +12,7 @@ from teatree.core.merge.ci_rollup import CodeHostQuery
 from teatree.core.merge.errors import MergePreconditionError
 from teatree.core.models.mr_review_lock import MRReviewLock
 from teatree.core.models.review_verdict import HeadVerdictState, ReviewVerdict
-from teatree.core.review.author_trust import classify_author
+from teatree.core.review.author_trust import classify_pr_provenance
 from teatree.utils.pr_ref import PrRef
 
 if TYPE_CHECKING:
@@ -424,27 +424,36 @@ def assert_no_active_review_lock(*, slug: str, pr_id: int) -> None:
     raise MergePreconditionError(msg)
 
 
-def assert_public_repo_author_trusted(*, slug: str, pr_id: int, host_kind: str = "github") -> None:
-    """Refuse the merge when *slug* is PUBLIC and the PR author is not trusted (#1773).
+def assert_merge_provenance_trusted(*, slug: str, pr_id: int, host_kind: str = "github") -> None:
+    """Refuse the merge unless the PR head-branch provenance is trusted (#3244).
 
-    The authoritative, load-bearing author gate (BLUEPRINT §17.4.3 step 6 /
-    invariant 8): every sanctioned merge funnels through ``merge_ticket_pr``, so
-    even a future scanner that forgets the author still cannot auto-merge an
-    untrusted public-repo PR. The overlay merge-guard sits in FRONT of this
-    keystone, so relaxing an overlay over-block can never relax this gate.
+    The authoritative, load-bearing provenance gate (BLUEPRINT §17.4.3 step 6 /
+    invariant 8): every sanctioned merge funnels through ``merge_ticket_pr`` and
+    the shared ``execute_bound_merge`` chokepoint, so even a future scanner that
+    forgets provenance still cannot auto-merge a fork PR. The overlay merge-guard
+    sits in FRONT of this keystone, so relaxing an overlay over-block can never
+    relax this gate.
 
-    PRIVATE / internal repo -> no author check (the user owns access control).
-    PUBLIC repo -> the author must be a trusted identity; an untrusted, unknown,
-    empty, or unfetchable author is refused (fail-closed).
+    STRICT fork model — a FORK / cross-repo head branch ALWAYS requires human
+    approval, even from a trusted author; a same-repo head is trusted; unreported
+    provenance falls back to the identity+visibility author check (fail-closed on
+    an untrusted / unknown / empty / unfetchable author on a public repo). The
+    same-repo + author reads resolve through :class:`CodeHostQuery`, so GitLab
+    overlay MRs cross this gate identically.
     """
-    author = CodeHostQuery.for_ref(PrRef(slug=slug, pr_id=pr_id, host_kind=host_kind)).pr_author()
-    classification = classify_author(slug, author, host_kind=host_kind)
+    query = CodeHostQuery.for_ref(PrRef(slug=slug, pr_id=pr_id, host_kind=host_kind))
+    classification = classify_pr_provenance(
+        slug,
+        query.pr_author(),
+        same_repo=query.pr_same_repo(),
+        host_kind=host_kind,
+    )
     if classification.internal_repo or classification.trusted:
         return
     msg = (
-        f"{slug}#{pr_id} is on a PUBLIC repo and its author is not a trusted identity — refusing to "
-        f"auto-merge (§17.4.3 author gate / #1773). On a public repo anyone who is not the user is a "
-        f"potential malicious actor; add the handle via `t3 identities add <platform> <handle>` if it is "
-        f"genuinely the user, or merge it by hand after an adversarial review."
+        f"{slug}#{pr_id} is not trusted to auto-merge — a fork / cross-repo PR always requires a human, "
+        f"and an untrusted author on a public repo is refused (§17.4.3 provenance gate / #3244). Merge it "
+        f"by hand after an adversarial review, or (same-repo trusted-author fallback) add the handle via "
+        f"`t3 identities add <platform> <handle>` if it is genuinely the user."
     )
     raise MergePreconditionError(msg)

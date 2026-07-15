@@ -55,22 +55,37 @@ SHA_FULL_LEN = 40
 _COMPONENT_ROLE_WORDS = frozenset({"maker", "coding", "loop"})
 
 # A diff is substrate — independent of the reviewer's ``blast_class`` label —
-# when it touches the merge keystone, the architecture spec, or a governance
-# doc. The label defaults to ``logic`` (the orchestrator's judgment), so a
-# substrate change a human forgot to mark would otherwise auto-merge silently
-# under ``autonomy = full``. This path detector makes the substrate guarantee
-# label-independent (invariant 4): the change is substrate if its diff is.
-_SUBSTRATE_PATH_PREFIXES = ("src/teatree/core/merge/", "docs/blueprint/")
+# when it touches the merge keystone, the architecture spec, a governance doc,
+# or the factory's OWN self-governance seams (the trust classifier, the intake
+# gate, the PreToolUse/Stop safety hooks). The label defaults to ``logic`` (the
+# orchestrator's judgment), so a change a human forgot to mark would otherwise
+# auto-merge silently under ``autonomy = full``. This path detector makes the
+# substrate guarantee label-independent (invariant 4): the change is substrate
+# if its diff is. The self-governance seams (#3244) are held because an
+# autonomous PR that widened the trusted-author set, loosened the fork gate, or
+# disabled a safety hook must NEVER auto-merge itself on agent-only review — the
+# factory cannot loosen its own guardrails unattended.
+_SUBSTRATE_PATH_PREFIXES = (
+    "src/teatree/core/merge/",
+    "src/teatree/core/review/author_trust.py",
+    "src/teatree/loop/scanners/issue_implementer.py",
+    "src/teatree/loop/scanner_factories.py",
+    "hooks/",
+    "docs/blueprint/",
+)
 _SUBSTRATE_FILE_NAMES = frozenset({"BLUEPRINT.md", "CLAUDE.md", "AGENTS.md"})
 
 
 def diff_paths_are_substrate(paths: "Iterable[str]") -> bool:
-    """True iff any of *paths* is a substrate path (merge keystone / spec / governance).
+    """True iff any of *paths* is a substrate path (merge keystone / spec / governance / self-governance).
 
     Substrate paths are: anything under ``src/teatree/core/merge/`` (the merge
     keystone), the architecture spec (``BLUEPRINT.md`` and ``docs/blueprint/``),
-    and the governance docs (``CLAUDE.md`` / ``AGENTS.md`` at any depth). Matching
-    is on whole path components after stripping a leading ``./`` or ``/`` so a
+    the governance docs (``CLAUDE.md`` / ``AGENTS.md`` at any depth), and the
+    factory's self-governance seams (#3244) — the trust classifier
+    (``author_trust.py``), the intake gate (``issue_implementer.py`` /
+    ``scanner_factories.py``), and the safety hooks (``hooks/``). Matching is on
+    whole path components after stripping a leading ``./`` or ``/`` so a
     look-alike sibling (``BLUEPRINT.md.bak``, ``src/teatree/core/merger/``) is not
     misclassified.
     """

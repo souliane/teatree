@@ -39,6 +39,7 @@ class GhPrJson(TypedDict, total=False):
     mergeable: str
     mergeStateStatus: str
     author: "GhAuthorJson"
+    isCrossRepository: bool
 
 
 class GhAuthorJson(TypedDict, total=False):
@@ -76,6 +77,8 @@ def _decode_pr(*, slug: str, raw: GhPrJson) -> PrSummary:
     reviews: list[object] = list(reviews_raw) if isinstance(reviews_raw, list) else []
     rollup_raw = raw.get("statusCheckRollup")
     rollup: list[object] = list(rollup_raw) if isinstance(rollup_raw, list) else []
+    cross_repo = raw.get("isCrossRepository")
+    same_repo = (not cross_repo) if isinstance(cross_repo, bool) else None
     return PrSummary(
         slug=slug,
         number=number,
@@ -88,6 +91,7 @@ def _decode_pr(*, slug: str, raw: GhPrJson) -> PrSummary:
         is_conflicted=_gh_is_conflicted(raw),
         behind_main=_gh_is_behind_main(raw),
         author=_author_login(raw),
+        same_repo=same_repo,
     )
 
 
@@ -151,7 +155,7 @@ class GhPrApiClient:
             "--limit",
             "100",
             "--json",
-            "number,headRefOid,isDraft,url,title,reviews,statusCheckRollup,mergeable,mergeStateStatus,author",
+            "number,headRefOid,isDraft,url,title,reviews,statusCheckRollup,mergeable,mergeStateStatus,author,isCrossRepository",
         ]
         rc, out, err = self._run_gh(argv)
         if rc == _GH_NOT_INSTALLED_RC:

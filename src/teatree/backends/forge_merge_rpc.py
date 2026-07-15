@@ -186,6 +186,26 @@ class GhMergeRpc:
         )
         return out.strip() if rc == 0 else ""
 
+    def fetch_pr_same_repo(self, *, slug: str, pr_id: int) -> bool | None:
+        """Tri-state head-branch provenance — the §17.4.3 fork gate input (#3244).
+
+        ``isCrossRepository`` True ⇒ a fork head (returns ``False`` — NOT same repo);
+        False ⇒ a same-repo head (returns ``True``). Any forge error or a
+        non-boolean payload returns ``None`` so the provenance gate fails closed to
+        the identity+visibility author check rather than trusting an unknown head.
+        """
+        rc, out, _ = self._run(
+            ["pr", "view", str(pr_id), "--repo", slug, "--json", "isCrossRepository", "--jq", ".isCrossRepository"],
+        )
+        if rc != 0:
+            return None
+        answer = out.strip().lower()
+        if answer == "true":
+            return False
+        if answer == "false":
+            return True
+        return None
+
     def fetch_required_checks_rollup(self, *, slug: str, pr_id: int) -> list[RawAPIDict]:
         rc, out, _ = self._run(
             [
@@ -339,6 +359,23 @@ class GlabMergeRpc:
         if not isinstance(author, dict):
             return ""
         return str(cast("RawAPIDict", author).get("username") or "")
+
+    def fetch_pr_same_repo(self, *, slug: str, pr_id: int) -> bool | None:
+        """Tri-state head-branch provenance — the §17.4.3 fork gate input (#3244).
+
+        A same-repo MR has ``source_project_id == target_project_id``; a fork MR
+        crosses projects. Any forge error or a non-integer project id returns
+        ``None`` so the provenance gate fails closed to the identity+visibility
+        author check. This is what makes GitLab overlay MRs cross the same gate.
+        """
+        mr = self._fetch_mr(slug=slug, pr_id=pr_id)
+        if mr is None:
+            return None
+        source = mr.get("source_project_id")
+        target = mr.get("target_project_id")
+        if not isinstance(source, int) or not isinstance(target, int):
+            return None
+        return source == target
 
     def fetch_required_checks_rollup(self, *, slug: str, pr_id: int) -> list[RawAPIDict]:
         rc, out, _ = self._run(["api", f"projects/{glab_project_path(slug)}/merge_requests/{pr_id}/pipelines"])

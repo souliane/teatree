@@ -148,14 +148,15 @@ DEFAULT_LOOPS: tuple[LoopSeedSpec, ...] = (
         "review",
         300,
         "Reviews colleague-authored open PRs every 5m and posts inline findings (with the "
-        "PR-sweep, codex double-check and Slack-broadcast helpers).",
+        "codex double-check and Slack-broadcast helpers).",
         colleague_facing=True,
     ),
     LoopSeedSpec(
         "ship",
         300,
-        "Sweeps your own-authored open PRs every 5m: folds in approvals/CI and executes "
-        "the keystone merge of your PRs (consumes the orchestrator's MergeClear).",
+        "Sweeps your own-authored + same-repo open PRs every 5m: folds in approvals/CI, arms "
+        "the cold review, and executes the keystone merge (consumes the orchestrator's MergeClear). "
+        "Runs under autonomous_away so the merge path never starves.",
     ),
     LoopSeedSpec(
         "pane_reaper",

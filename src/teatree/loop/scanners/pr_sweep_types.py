@@ -77,6 +77,10 @@ class PrSummary:
     is_conflicted: bool = False
     behind_main: bool = False
     author: str = ""
+    # Tri-state head-branch provenance (#3244): True = same-repo branch (trusted),
+    # False = fork / cross-repo (holds for human approval), None = the forge did not
+    # report it ⇒ fail closed to the identity+visibility author check.
+    same_repo: bool | None = None
 
 
 @dataclass(frozen=True, slots=True)

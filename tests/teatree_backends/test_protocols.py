@@ -202,6 +202,10 @@ class _FakeCodeHost:
         _ = (slug, pr_id)
         return ""
 
+    def fetch_pr_same_repo(self, *, slug: str, pr_id: int) -> bool | None:
+        _ = (slug, pr_id)
+        return None
+
     def fetch_required_checks_rollup(self, *, slug: str, pr_id: int) -> list[dict[str, object]]:
         _ = (slug, pr_id)
         return []

@@ -100,7 +100,7 @@ def _gh_green(argv: list[str]) -> tuple[int, str, str]:
 def _skip_author_gate(monkeypatch: pytest.MonkeyPatch) -> None:
     # The #1773 public-repo author gate is orthogonal; neutralise it so these
     # tests isolate the #2829 review-verdict gate.
-    monkeypatch.setattr("teatree.core.merge.execution.assert_public_repo_author_trusted", lambda **_: None)
+    monkeypatch.setattr("teatree.core.merge.execution.assert_merge_provenance_trusted", lambda **_: None)
 
 
 def _merge(clear: MergeClear) -> MergeOutcome:

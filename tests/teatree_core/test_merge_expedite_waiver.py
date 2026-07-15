@@ -43,7 +43,7 @@ _FAILED = '[{"name": "lint", "status": "COMPLETED", "conclusion": "FAILURE"}]'
 @pytest.fixture(autouse=True)
 def _skip_author_gate(monkeypatch: pytest.MonkeyPatch) -> None:
     # The #1773 public-repo author gate is orthogonal to the expedite waiver.
-    monkeypatch.setattr("teatree.core.merge.execution.assert_public_repo_author_trusted", lambda **_: None)
+    monkeypatch.setattr("teatree.core.merge.execution.assert_merge_provenance_trusted", lambda **_: None)
 
 
 def _branch_protection_probe(joined: str, *, required: list[str]) -> tuple[int, str, str] | None:
