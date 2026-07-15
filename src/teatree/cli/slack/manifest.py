@@ -85,6 +85,25 @@ _USER_SCOPES = [
 ]
 _BOT_EVENTS = ["app_mention", "message.im", "reaction_added"]
 
+# ``dm_only`` scope profile (e.g. ``t3-teatree``): a bot that exists solely to
+# talk to its one owner's DM. Only the scopes needed to post to, read, and react
+# in that 1:1 IM — NO channel/group/mpim scopes, NO ``app_mentions:read`` (there
+# are no channels to be mentioned in), and NO ``user`` (xoxp) section at all.
+# ``files:write`` is kept for voice/audio DMs (``post_audio_dm``); drop it if the
+# overlay never sends audio. The runtime ``OwnerRestrictedMessaging`` wrapper
+# enforces the same restriction in-process.
+_DM_ONLY_BOT_SCOPES = [
+    "chat:write",
+    "files:write",
+    "im:history",
+    "im:read",
+    "im:write",
+    "reactions:read",
+    "reactions:write",
+    "users:read",
+]
+_DM_ONLY_BOT_EVENTS = ["message.im", "reaction_added"]
+
 
 def _user_scopes_carry_no_bot_only_scope() -> None:
     leaked = _BOT_ONLY_SCOPES.intersection(_USER_SCOPES)
@@ -97,13 +116,29 @@ def _user_scopes_carry_no_bot_only_scope() -> None:
 _user_scopes_carry_no_bot_only_scope()
 
 
-def build_manifest(*, overlay_name: str, display_name: str = "") -> SlackManifest:
+def build_manifest(*, overlay_name: str, display_name: str = "", scope_profile: str = "full") -> SlackManifest:
     """Build the Slack app manifest payload for *overlay_name*.
 
     The returned dict matches Slack's app-manifest schema. Display name
     defaults to ``teatree-<overlay>`` when not overridden.
+
+    *scope_profile* selects the OAuth scope set. ``"full"`` (default) is the
+    read/write-everywhere bot plus the shared ``user`` (xoxp) scopes. ``"dm_only"``
+    narrows the bot to its owner's 1:1 DM (:data:`_DM_ONLY_BOT_SCOPES`) and emits
+    NO ``user`` scope section — a reinstall then grants only DM capability and
+    revokes any channel/user scope the app previously held. An unknown profile
+    fails LOUD.
     """
     name = display_name or f"teatree-{overlay_name}"
+    if scope_profile not in {"full", "dm_only"}:
+        msg = f"Unknown slack scope_profile: {scope_profile!r} (expected 'full' or 'dm_only')."
+        raise ValueError(msg)
+    if scope_profile == "dm_only":
+        scopes: dict[str, list[str]] = {"bot": _DM_ONLY_BOT_SCOPES}
+        bot_events = _DM_ONLY_BOT_EVENTS
+    else:
+        scopes = {"bot": _BOT_SCOPES, "user": _USER_SCOPES}
+        bot_events = _BOT_EVENTS
     return {
         "display_information": {
             "name": name,
@@ -117,9 +152,9 @@ def build_manifest(*, overlay_name: str, display_name: str = "") -> SlackManifes
             },
             "bot_user": {"display_name": name, "always_online": True},
         },
-        "oauth_config": {"scopes": {"bot": _BOT_SCOPES, "user": _USER_SCOPES}},
+        "oauth_config": {"scopes": scopes},
         "settings": {
-            "event_subscriptions": {"bot_events": _BOT_EVENTS},
+            "event_subscriptions": {"bot_events": bot_events},
             "interactivity": {"is_enabled": False},
             "org_deploy_enabled": False,
             "socket_mode_enabled": True,

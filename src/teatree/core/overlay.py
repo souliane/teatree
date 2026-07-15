@@ -133,6 +133,12 @@ class OverlayConfig(BaseModel):
     github_project_number: int = 0
     code_host: str = ""
     messaging_backend: str = "noop"
+    # Slack scope profile: ``"full"`` (default) provisions the read/write-everywhere
+    # bot + shared xoxp user token — customer overlays that post across channels and
+    # Slack-Connect. ``"dm_only"`` provisions a minimal bot that may talk ONLY to its
+    # one owner's DM (no channel/group scopes, no user token); the loader wraps its
+    # backend in ``OwnerRestrictedMessaging`` so a non-owner destination fails LOUD.
+    slack_scope_profile: str = "full"
     slack_token_ref: str = ""
     # ``user_token_ref`` points at a ``pass`` entry holding the human user's
     # Slack OAuth token (``xoxp-…``).  Routed by ``SlackBotBackend`` for

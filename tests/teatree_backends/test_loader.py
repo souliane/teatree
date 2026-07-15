@@ -23,6 +23,7 @@ from teatree.backends.loader import (
     reset_backend_caches,
 )
 from teatree.backends.messaging_noop import NoopMessagingBackend
+from teatree.backends.messaging_owner_restricted import OwnerDmOnlyError, OwnerRestrictedMessaging
 from teatree.backends.slack.bot import SlackBotBackend
 from teatree.core.backend_protocols import BackendResolutionError
 from teatree.core.overlay import OverlayBase, OverlayConfig
@@ -225,6 +226,42 @@ def test_get_messaging_returns_slack_when_chosen() -> None:
     overlay = _build_overlay(messaging_backend="slack")
     _stub_token(overlay, slack="xoxb-fake")
     assert isinstance(get_messaging(overlay), SlackBotBackend)
+
+
+def test_get_messaging_full_profile_is_bare_slack() -> None:
+    # The default "full" profile must NOT wrap — customer overlays post everywhere.
+    overlay = _build_overlay(messaging_backend="slack", slack_scope_profile="full")
+    _stub_token(overlay, slack="xoxb-fake")
+    assert isinstance(get_messaging(overlay), SlackBotBackend)
+
+
+def test_get_messaging_dm_only_wraps_in_owner_restricted() -> None:
+    overlay = _build_overlay(
+        messaging_backend="slack",
+        slack_scope_profile="dm_only",
+        slack_user_id="U-owner",
+        slack_dm_channel_id="D-owner",
+    )
+    _stub_token(overlay, slack="xoxb-fake")
+    backend = get_messaging(overlay)
+    assert isinstance(backend, OwnerRestrictedMessaging)
+    assert isinstance(backend._inner, SlackBotBackend)
+    # The owner identity is threaded so the guard can recognise the self-DM.
+    assert backend._dm_channel_id == "D-owner"
+    assert backend._user_id == "U-owner"
+
+
+def test_get_messaging_dm_only_refuses_non_owner_channel() -> None:
+    overlay = _build_overlay(
+        messaging_backend="slack",
+        slack_scope_profile="dm_only",
+        slack_user_id="U-owner",
+        slack_dm_channel_id="D-owner",
+    )
+    _stub_token(overlay, slack="xoxb-fake")
+    backend = get_messaging(overlay)
+    with pytest.raises(OwnerDmOnlyError):
+        backend.post_message(channel="C-public", text="leak")
 
 
 def test_get_messaging_raises_on_unknown_choice() -> None:

@@ -16,6 +16,7 @@ from teatree.backends.gitlab import GitLabCodeHost
 from teatree.backends.gitlab.api import GitLabAPI
 from teatree.backends.gitlab.ci import GitLabCIService
 from teatree.backends.messaging_noop import NoopMessagingBackend
+from teatree.backends.messaging_owner_restricted import OwnerRestrictedMessaging
 from teatree.backends.slack.bot import SlackBotBackend
 from teatree.core.backend_protocols import (
     BackendResolutionError,
@@ -301,7 +302,7 @@ def get_messaging(overlay: "OverlayBase") -> MessagingBackend:
     choice = overlay.config.messaging_backend or "noop"
     if choice == "slack":
         token_ref = overlay.config.slack_token_ref
-        return SlackBotBackend(
+        backend = SlackBotBackend(
             bot_token=read_posting_credential(f"{token_ref}-bot") if token_ref else overlay.config.get_slack_token(),
             app_token=read_posting_credential(f"{token_ref}-app") if token_ref else "",
             user_token=read_posting_credential(overlay.config.user_token_ref),
@@ -311,6 +312,17 @@ def get_messaging(overlay: "OverlayBase") -> MessagingBackend:
             dm_channel_id=overlay.config.slack_dm_channel_id,
             degrade_bad_user_token=True,
         )
+        if overlay.config.slack_scope_profile == "dm_only":
+            # Hard constraint: a dm_only overlay's bot may reach ONLY its owner's
+            # own DM. Wrap so any non-owner destination raises before the API call
+            # (see ``OwnerRestrictedMessaging``); the narrowed manifest is the
+            # second line of defence.
+            return OwnerRestrictedMessaging(
+                backend,
+                dm_channel_id=overlay.config.slack_dm_channel_id,
+                user_id=overlay.config.slack_user_id,
+            )
+        return backend
     if choice == "noop":
         return NoopMessagingBackend()
     msg = f"Unknown messaging_backend: {choice!r}"

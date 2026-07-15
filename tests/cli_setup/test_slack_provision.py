@@ -25,6 +25,7 @@ from teatree.cli.slack.provision import (
     _slack_overlays,
     _verify_user_token,
     manifest_json,
+    overlay_scope_profile,
     provision_overlay,
 )
 from teatree.cli.slack.setup import SlackManifestError
@@ -37,6 +38,14 @@ _T3_OVERLAY = {
     "slack_token_ref": "teatree/t3/slack",
     "slack_app_id": "A_T3",
     "slack_user_id": "U1",
+}
+
+_DM_OVERLAY = {
+    "messaging_backend": "slack",
+    "slack_token_ref": "teatree/t3/slack",
+    "slack_app_id": "A_T3",
+    "slack_user_id": "U1",
+    "slack_scope_profile": "dm_only",
 }
 
 
@@ -104,8 +113,54 @@ class TestProvisionOverlay:
         assert any("boom" in note for note in report.notes)
 
 
+# ast-grep-ignore: ac-django-no-pytest-django-db
+@pytest.mark.django_db
+class TestDmOnlyProvision:
+    def test_scope_profile_helper(self) -> None:
+        _seed({"full1": dict(_T3_OVERLAY), "dm1": dict(_DM_OVERLAY), "bare": {"slack_app_id": "A9"}})
+        assert overlay_scope_profile("full1") == "full"
+        assert overlay_scope_profile("dm1") == "dm_only"
+        assert overlay_scope_profile("bare") == "full"  # unset defaults to full
+
+    def test_unknown_profile_fails_loud(self) -> None:
+        _seed({"weird": {"slack_scope_profile": "bogus"}})
+        with pytest.raises(ValueError, match="slack_scope_profile"):
+            overlay_scope_profile("weird")
+
+    def test_provision_skips_channels_and_passes_dm_profile(self) -> None:
+        _seed({"t3": dict(_DM_OVERLAY)})
+        lines: list[str] = []
+        dm = ProvisionResult(status=ProvisionResult.PROVISIONED, overlay_name="t3", channel_id="D1")
+        with (
+            patch("teatree.cli.slack.provision._push_manifest", return_value="updated") as push,
+            patch("teatree.cli.slack.provision._provision_channels") as channels,
+            patch("teatree.cli.slack.provision.provision_overlay_dm_channel", return_value=dm),
+            patch("teatree.cli.slack.provision.webbrowser.open"),
+        ):
+            report = provision_overlay(overlay="t3", echo=lines.append, open_browser=False)
+        # dm_only never joins review channels — the join helper is never invoked.
+        channels.assert_not_called()
+        assert report.channel_results == []
+        assert any("skipped review-channel join" in note for note in report.notes)
+        # the profile is threaded into the manifest push.
+        assert push.call_args.kwargs["scope_profile"] == "dm_only"
+
+    def test_push_manifest_dm_only_degraded_advises_bot_scopes_not_user(self) -> None:
+        lines: list[str] = []
+        with patch("teatree.cli.slack.provision.read_pass", return_value=""):
+            action = _push_manifest(overlay="t3", app_id="A1", echo=lines.append, scope_profile="dm_only")
+        assert action == "degraded"
+        blob = "\n".join(lines)
+        assert "oauth_config.scopes.bot" in blob  # advises the bot-scope section
+        assert "oauth_config.scopes.user" not in blob  # never the xoxp user-scope section
+        assert "personal xoxp" not in blob  # no user-token nag for a DM-only bot
+
+
+# ast-grep-ignore: ac-django-no-pytest-django-db
+@pytest.mark.django_db
 class TestManifestJson:
     def test_includes_reactions_write_in_user_scopes(self) -> None:
+        # An unseeded overlay resolves to the "full" profile (user scopes present).
         body = manifest_json("t3")
         assert "reactions:write" in body
 

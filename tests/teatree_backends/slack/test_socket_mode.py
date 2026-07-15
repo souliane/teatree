@@ -3,6 +3,8 @@
 from unittest.mock import MagicMock, patch
 
 from teatree.backends.slack.socket_mode import (
+    DM_ONLY_SOCKET_BOT_SCOPES,
+    DM_ONLY_SOCKET_EVENTS,
     REQUIRED_SOCKET_BOT_SCOPES,
     REQUIRED_SOCKET_EVENTS,
     SOCKET_MODE_APP_SCOPE,
@@ -59,6 +61,21 @@ class TestManifestSocketGaps:
         assert gaps.socket_mode_disabled is True
         assert gaps.missing_events == REQUIRED_SOCKET_EVENTS
         assert gaps.missing_bot_scopes == REQUIRED_SOCKET_BOT_SCOPES
+
+    def test_dm_only_manifest_not_flagged_under_dm_requirements(self) -> None:
+        # A dm_only manifest legitimately omits app_mention / app_mentions:read.
+        # Checked against the full set it looks broken; against the dm_only set it
+        # is ready — so the socket doctor never re-pushes the full manifest.
+        dm_manifest = build_manifest(overlay_name="t3-teatree", scope_profile="dm_only")
+        assert not manifest_socket_gaps(dm_manifest).ok  # full set flags a false gap
+        gaps = manifest_socket_gaps(
+            dm_manifest,
+            required_events=DM_ONLY_SOCKET_EVENTS,
+            required_bot_scopes=DM_ONLY_SOCKET_BOT_SCOPES,
+        )
+        assert gaps.ok
+        assert gaps.missing_events == frozenset()
+        assert gaps.missing_bot_scopes == frozenset()
 
 
 class TestProbeAppConnections:

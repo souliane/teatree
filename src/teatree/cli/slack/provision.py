@@ -34,9 +34,15 @@ from dataclasses import dataclass, field
 import httpx
 import typer
 
-from teatree.cli.slack.app_resolve import read_overlay_registry, resolve_overlay_app_id
+from teatree.cli.slack.app_resolve import (
+    overlay_scope_profile,
+    read_overlay_field,
+    read_overlay_registry,
+    resolve_overlay_app_id,
+)
 from teatree.cli.slack.channel_provisioning import ChannelJoinResult, join_review_channels, render_join_result
 from teatree.cli.slack.dm_provisioning import ProvisionResult, provision_overlay_dm_channel
+from teatree.cli.slack.manifest import _DM_ONLY_BOT_SCOPES
 from teatree.cli.slack.setup import (
     _APP_ID_RE,
     _CONFIG_TOKEN_REF,
@@ -83,9 +89,18 @@ def _resolve_app_id(*, overlay: str, echo: Callable[[str], None]) -> str:
     return value
 
 
-def _push_manifest(*, overlay: str, app_id: str, echo: Callable[[str], None]) -> str:
+def _push_manifest(*, overlay: str, app_id: str, echo: Callable[[str], None], scope_profile: str = "full") -> str:
     """Push the desired manifest; return the action taken ("updated"/"current"/"degraded")."""
     if not read_pass(_CONFIG_TOKEN_REF):
+        if scope_profile == "dm_only":
+            echo("!! DEGRADED — manifest NOT pushed.")
+            echo(f"   No Slack app-config token in `pass {_CONFIG_TOKEN_REF}` — cannot auto-update the manifest.")
+            echo(f"   FIX NOW (manual): open {app_manifest_editor_url(app_id)}")
+            echo("   and set the bot scopes under oauth_config.scopes.bot (no user scopes), then reinstall:")
+            echo(f"        {', '.join(_DM_ONLY_BOT_SCOPES)}")
+            echo("   To automate next time, store a config token:")
+            echo(f"        pass insert {_CONFIG_TOKEN_REF}")
+            return "degraded"
         echo("!! DEGRADED — manifest NOT pushed; user scopes are NOT set on the app.")
         echo("!! Until you add them, the app has ZERO user scopes — the personal xoxp")
         echo("!! token cannot post or react in Slack-Connect channels.")
@@ -96,7 +111,7 @@ def _push_manifest(*, overlay: str, app_id: str, echo: Callable[[str], None]) ->
         echo("   To automate next time, store a config token:")
         echo(f"        pass insert {_CONFIG_TOKEN_REF}")
         return "degraded"
-    desired = build_manifest(overlay_name=overlay)
+    desired = build_manifest(overlay_name=overlay, scope_profile=scope_profile)
     current = _export_with_rotation(app_id=app_id)
     if manifests_equivalent(current, desired):
         echo("OK    Manifest already current (all scopes present).")
@@ -131,8 +146,6 @@ def _provision_channels(
     overlay: str,
     echo: Callable[[str], None],
 ) -> list[ChannelJoinResult]:
-    from teatree.cli.slack.app_resolve import read_overlay_field  # noqa: PLC0415 — avoids a slack-package cycle
-
     channels = _broadcast_channels(overlay)
     if not channels:
         return []
@@ -160,12 +173,16 @@ def provision_overlay(
     echo(f"── Provisioning Slack for overlay `{overlay}` ──")
     report = OverlayProvisionReport(overlay_name=overlay)
 
+    scope_profile = overlay_scope_profile(overlay)
+    if scope_profile == "dm_only":
+        echo("      Profile: dm_only — minimal DM-scoped bot, no user token, no channel joins.")
+
     app_id = _resolve_app_id(overlay=overlay, echo=echo)
     report.app_id = app_id
     echo(f"OK    App id: {app_id} (manifest editor: {app_manifest_editor_url(app_id)})")
 
     try:
-        report.manifest_action = _push_manifest(overlay=overlay, app_id=app_id, echo=echo)
+        report.manifest_action = _push_manifest(overlay=overlay, app_id=app_id, echo=echo, scope_profile=scope_profile)
     except SlackManifestError as exc:
         echo(f"ERROR Slack manifest API failed: {exc}")
         report.notes.append(f"manifest_error: {exc}")
@@ -175,7 +192,12 @@ def provision_overlay(
     if open_browser:
         webbrowser.open(report.install_url)
 
-    report.channel_results = _provision_channels(overlay=overlay, echo=echo)
+    # A dm_only bot has no channel/group scopes and joins no review channels —
+    # skip the broadcast-channel join entirely (it would only fail not_in_channel).
+    if scope_profile == "dm_only":
+        report.notes.append("dm_only: skipped review-channel join")
+    else:
+        report.channel_results = _provision_channels(overlay=overlay, echo=echo)
 
     dm_result = provision_overlay_dm_channel(overlay_name=overlay)
     report.dm_result = dm_result
@@ -262,9 +284,13 @@ def slack_provision(
 
     reports = [provision_overlay(overlay=name, echo=typer.echo, open_browser=open_browser) for name in overlays]
 
-    typer.echo("")
-    typer.echo("── Shared personal xoxp user token ──")
-    _verify_user_token(typer.echo)
+    # The shared xoxp user token backs full overlays' Slack-Connect posting/reacting.
+    # A run that provisioned ONLY dm_only overlays needs no user token at all — skip
+    # the nag so a DM-only box is not told to run `slack-user-token` it must never run.
+    if any(overlay_scope_profile(name) != "dm_only" for name in overlays):
+        typer.echo("")
+        typer.echo("── Shared personal xoxp user token ──")
+        _verify_user_token(typer.echo)
 
     typer.echo("")
     typer.echo("── Summary ──")
@@ -275,18 +301,23 @@ def slack_provision(
             f"{joined}/{len(report.channel_results)} review channels ready."
         )
     typer.echo("")
-    typer.echo("Remaining manual step: click Allow on each OAuth (re)install URL above, then")
-    typer.echo("run `t3 setup slack-user-token` if any token scope is still missing.")
+    if any(overlay_scope_profile(name) != "dm_only" for name in overlays):
+        typer.echo("Remaining manual step: click Allow on each OAuth (re)install URL above, then")
+        typer.echo("run `t3 setup slack-user-token` if any token scope is still missing.")
+    else:
+        typer.echo("Remaining manual step: click Allow on the OAuth (re)install URL above.")
+        typer.echo("dm_only overlay — no user (xoxp) token needed.")
 
 
 def manifest_json(overlay: str) -> str:
     """Return the desired manifest JSON for *overlay* (debugging / docs aid)."""
-    return json.dumps(build_manifest(overlay_name=overlay), indent=2)
+    return json.dumps(build_manifest(overlay_name=overlay, scope_profile=overlay_scope_profile(overlay)), indent=2)
 
 
 __all__ = [
     "OverlayProvisionReport",
     "manifest_json",
+    "overlay_scope_profile",
     "provision_overlay",
     "slack_provision",
 ]
