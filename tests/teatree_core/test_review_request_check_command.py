@@ -20,6 +20,19 @@ _MR_URL = "https://gitlab.com/org/repo/-/merge_requests/385"
 
 
 class TestReviewRequestCheckCommand(TestCase):
+    def test_refuses_a_draft_mr_before_the_dedup_gate(self) -> None:
+        with patch(
+            "teatree.core.management.commands.review_request_check.is_draft_mr",
+            return_value=True,
+        ):
+            result = cast(
+                "dict[str, object]",
+                call_command("review_request_check", "--mr-url", _MR_URL),
+            )
+        assert result["action"] == "refused"
+        assert result["reason"] == "draft_mr"
+        assert result["mr_url"] == _MR_URL
+
     def test_suppresses_when_no_review_channel_or_token(self) -> None:
         with patch(
             "teatree.core.management.commands.review_request_check.resolve_guard_target",

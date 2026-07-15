@@ -24,6 +24,10 @@ class ReviewRequestPost(models.Model):
     slack_thread_ts = models.CharField(max_length=64)
     bot_id = models.CharField(max_length=64, blank=True)
     last_nag_step = models.PositiveSmallIntegerField(default=0)
+    # When the 2-day ``@engineers :pray:`` re-ping last fired (#1084 follow-up).
+    # Null ⇒ never re-pinged. The nag scanner uses it to enforce "no double-ping
+    # within 2 days" independently of the retired fibonacci ``last_nag_step``.
+    last_nag_at = models.DateTimeField(null=True, blank=True)
     created_at = models.DateTimeField(default=timezone.now)
     done_at = models.DateTimeField(null=True, blank=True)
 

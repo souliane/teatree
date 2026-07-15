@@ -215,3 +215,71 @@ def read_recent_review_matches(request: SlackReviewSearchRequest) -> ReviewHisto
                 break
 
     return ReviewHistoryRead(ok=read_ok, matches=matches)
+
+
+@dataclass(frozen=True, slots=True)
+class SlackThreadActivityRequest:
+    token: str
+    channel_id: str
+    thread_ts: str
+    timeout: float = 15.0
+
+
+@dataclass(frozen=True, slots=True)
+class ThreadActivityRead:
+    """Outcome of a single-thread ``conversations.replies`` read (#1084 follow-up).
+
+    ``ok`` distinguishes a completed read from one that could not run
+    (``ok=False`` ⇒ the guard fails safe to SUPPRESS). ``exists`` is False
+    when the thread parent is gone (deleted). Slack carries no per-reaction
+    timestamp, so ``has_reaction`` reports only presence — the caller treats
+    a present reaction as fresh engagement.
+    """
+
+    ok: bool
+    exists: bool
+    parent_ts: str = ""
+    latest_reply_ts: str = ""
+    has_reaction: bool = False
+
+
+def _ts_key(ts: str) -> float:
+    try:
+        return float(ts)
+    except ValueError:
+        return 0.0
+
+
+def read_thread_activity(request: SlackThreadActivityRequest) -> ThreadActivityRead:
+    """Read one thread's liveness + latest activity via ``conversations.replies``.
+
+    Returns the thread parent's presence (``exists``), the parent ``ts``, the
+    newest reply ``ts``, and whether the parent carries any reaction. An httpx
+    transport error propagates so the caller can fail safe. ``ok=False`` on a
+    non-ok API body; ``exists=False`` when the parent message is gone.
+    """
+    if not request.token or not request.channel_id or not request.thread_ts:
+        return ThreadActivityRead(ok=True, exists=False)
+
+    with httpx.Client(headers={"Authorization": f"Bearer {request.token}"}, timeout=request.timeout) as client:
+        response = client.get(
+            "https://slack.com/api/conversations.replies",
+            params={"channel": request.channel_id, "ts": request.thread_ts, "limit": 200},
+        )
+        response.raise_for_status()
+        data = response.json()
+
+    if not data.get("ok"):
+        return ThreadActivityRead(ok=False, exists=False)
+    messages = data.get("messages")
+    if not isinstance(messages, list) or not messages:
+        return ThreadActivityRead(ok=True, exists=False)
+    parent = messages[0] if isinstance(messages[0], dict) else {}
+    reply_tss = [str(m.get("ts", "")) for m in messages[1:] if isinstance(m, dict) and m.get("ts")]
+    return ThreadActivityRead(
+        ok=True,
+        exists=True,
+        parent_ts=str(parent.get("ts", "")),
+        latest_reply_ts=max(reply_tss, key=_ts_key, default=""),
+        has_reaction=bool(parent.get("reactions")),
+    )

@@ -154,6 +154,7 @@ GOLDEN_USER_SETTINGS_FIELDS: frozenset[str] = frozenset(
         "resource_pressure_disabled",
         "resource_pressure_min_free_interval_minutes",
         "review_nag_enabled",
+        "review_request_dedup_window_days",
         "review_request_post_disabled",
         "review_skill",
         "scanning_news_cadence_hours",

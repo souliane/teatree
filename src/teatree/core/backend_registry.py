@@ -49,6 +49,38 @@ class ReviewMatchLike(Protocol):
     permalink: str
 
 
+@dataclass(frozen=True, slots=True)
+class ThreadActivitySpec:
+    """A single-thread ``conversations.replies`` read (core-owned shape).
+
+    ``token`` is the routed post-token so a Slack-Connect review channel is
+    read with the same token an outbound post would use (read-token ==
+    post-token, mirroring :class:`ReviewSearchSpec`).
+    """
+
+    token: str
+    channel_id: str
+    thread_ts: str
+    timeout: float
+
+
+class ThreadActivityReadLike(Protocol):
+    @property
+    def ok(self) -> bool: ...  # pragma: no branch
+
+    @property
+    def exists(self) -> bool: ...  # pragma: no branch
+
+    @property
+    def parent_ts(self) -> str: ...  # pragma: no branch
+
+    @property
+    def latest_reply_ts(self) -> str: ...  # pragma: no branch
+
+    @property
+    def has_reaction(self) -> bool: ...  # pragma: no branch
+
+
 class NotionPageClient(Protocol):
     """Core-owned view of the direct Notion API client the backends app builds.
 
@@ -120,6 +152,8 @@ class BackendProvider(Protocol):
 
     def read_recent_review_matches(self, spec: ReviewSearchSpec) -> ReviewHistoryReadLike: ...  # pragma: no branch
 
+    def read_thread_activity(self, spec: ThreadActivitySpec) -> ThreadActivityReadLike: ...  # pragma: no branch
+
 
 class _UnconfiguredProvider:
     """Fail-safe provider used before the backends app registers the real one."""
@@ -174,10 +208,21 @@ class _UnconfiguredProvider:
     def read_recent_review_matches(self, spec: ReviewSearchSpec) -> ReviewHistoryReadLike:  # noqa: ARG002, PLR6301 — fail-safe provider seam: instance method by Protocol contract; args used by real overrides
         return _EmptyReviewHistoryRead()
 
+    def read_thread_activity(self, spec: ThreadActivitySpec) -> ThreadActivityReadLike:  # noqa: ARG002, PLR6301 — fail-safe provider seam: instance method by Protocol contract; args used by real overrides
+        return _EmptyThreadActivityRead()
+
 
 class _EmptyReviewHistoryRead:
     ok = False
     matches: list[ReviewMatchLike] = []  # noqa: RUF012 — fail-safe empty default, never a shared mutable class attribute
+
+
+class _EmptyThreadActivityRead:
+    ok = False
+    exists = False
+    parent_ts = ""
+    latest_reply_ts = ""
+    has_reaction = False
 
 
 _UNCONFIGURED: BackendProvider = _UnconfiguredProvider()

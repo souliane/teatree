@@ -29,6 +29,7 @@ import typer
 from django_typer.management import TyperCommand, command
 
 from teatree.core.backend_factory import messaging_from_overlay
+from teatree.core.gates.review_request_draft_gate import is_draft_mr
 from teatree.core.gates.review_request_guard import canonical_mr_url, resolve_guard_target, should_post_review_request
 from teatree.core.gates.review_request_state_gate import check_reviewed_state, reviewed_state_required
 from teatree.core.models import Ticket
@@ -52,11 +53,42 @@ _DEFAULT_TITLE = "Please review"
 
 
 def _iid_from_mr(canonical: str) -> str:
-    """Last numeric path segment of the canonical MR URL (the ticket dir key)."""
+    """Last numeric path segment of the canonical MR URL — the MR iid, fallback only."""
     for segment in reversed(canonical.split("/")):
         if segment.isdigit():
             return segment
     return canonical.rsplit("/", 1)[-1]
+
+
+def _ticket_iid_for(canonical: str, ticket_id: str) -> str:
+    """The TICKET iid the review-message cache is keyed by — never the MR iid.
+
+    ``mr_review_messages.json`` lives under ``tickets/<ticket-iid>/``; keying it
+    on the MR URL's numeric segment (the MR iid) filed it under the wrong ticket
+    dir. Resolve the owning ticket's ``issue_number`` from ``--ticket-id`` first,
+    then from the ``PullRequest`` row that links the MR URL to its ticket. Only
+    when no ticket link exists does it fall back to the MR-URL segment.
+    """
+    ticket = _resolve_ticket(ticket_id) or _ticket_from_pr(canonical)
+    if ticket is not None:
+        return ticket.issue_number or str(ticket.pk)
+    return _iid_from_mr(canonical)
+
+
+def _resolve_ticket(ticket_id: str) -> "Ticket | None":
+    if not ticket_id.strip():
+        return None
+    try:
+        return Ticket.objects.resolve(ticket_id)
+    except Ticket.DoesNotExist:
+        return None
+
+
+def _ticket_from_pr(canonical: str) -> "Ticket | None":
+    from teatree.core.models import PullRequest  # noqa: PLC0415 — deferred: ORM import needs the app registry
+
+    pr = PullRequest.objects.filter(url=canonical).select_related("ticket").first()
+    return pr.ticket if pr is not None else None
 
 
 class Command(TyperCommand):
@@ -125,6 +157,15 @@ class Command(TyperCommand):
             )
 
         canonical = canonical_mr_url(mr_url)
+
+        # Draft gate: a draft MR is not ready for review — refuse BEFORE the
+        # dedup claim so no orphan ``ReviewRequestPost`` row is left to roll back.
+        if is_draft_mr(canonical):
+            self._emit(
+                {"action": "refused", "reason": "draft_mr", "mr_url": canonical},
+                exit_code=2,
+            )
+
         decision = should_post_review_request(mr_url=canonical, target=target)
         if not decision.should_post:
             self._emit(
@@ -192,7 +233,7 @@ class Command(TyperCommand):
 
         persist_review_message(
             mr_url=canonical,
-            iid=_iid_from_mr(canonical),
+            iid=_ticket_iid_for(canonical, ticket_id),
             permalink=permalink,
             channel=target.channel_id,
             when=timezone.now(),

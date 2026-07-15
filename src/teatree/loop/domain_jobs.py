@@ -259,7 +259,6 @@ def _followup_jobs_for_overlay(backend: OverlayBackends) -> list[_ScannerJob]:
                 _ScannerJob(
                     scanner=ReviewNagScanner(
                         messaging=backend.messaging,
-                        user_slack_id=_user_slack_id_for_overlay(tag),
                         host=backend.host,
                         identities=backend.identities,
                     ),
@@ -553,7 +552,6 @@ def _messaging_jobs_for_backend(
     if include_review_nag:
         nag = ReviewNagScanner(
             messaging=messaging,
-            user_slack_id=_user_slack_id_for_overlay(tag),
             host=backend.host,
             identities=backend.identities,
         )

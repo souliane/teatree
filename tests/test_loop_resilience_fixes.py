@@ -5,9 +5,7 @@ class is self-contained and targets a single finding. Run these against
 the unfixed code to see them go RED, then apply the fix and confirm GREEN.
 """
 
-import datetime as dt
 import tempfile
-from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 from unittest.mock import patch
@@ -15,10 +13,7 @@ from unittest.mock import patch
 import pytest
 from django.db import OperationalError
 from django.test import TestCase
-from django.utils import timezone
 
-from teatree.config import TeaTreeConfig, UserSettings
-from teatree.core.models import ReviewRequestPost
 from teatree.messaging.notify_with_fallback import notify_with_fallback
 
 # ---------------------------------------------------------------------------
@@ -102,107 +97,6 @@ class TestF1NeverRaiseDatabaseError(TestCase):
                 user_id="U_ME",
             )
         assert result.delivered is False
-
-
-# ---------------------------------------------------------------------------
-# F2: review_nag DM failure must NOT silently close the train
-# ---------------------------------------------------------------------------
-
-
-class _EnableReviewNagMixin:
-    def setUp(self) -> None:
-        super().setUp()
-        enabled = TeaTreeConfig(user=UserSettings(review_nag_enabled=True))
-        patcher = patch("teatree.config.load_config", return_value=enabled)
-        patcher.start()
-        self.addCleanup(patcher.stop)
-
-
-@dataclass
-class _FakeSlack:
-    posts: list[dict[str, Any]] = field(default_factory=list)
-    raise_on_post: Exception | None = None
-    raise_on_open_dm: Exception | None = None
-    usergroup_id: str = ""
-    dm_channel: str = "D-USER"
-
-    def fetch_mentions(self, *, since: str = "") -> list[Any]:
-        return []
-
-    def fetch_dms(self, *, since: str = "") -> list[Any]:
-        return []
-
-    def post_message(self, *, channel: str, text: str, thread_ts: str = "") -> dict[str, Any]:
-        if self.raise_on_post is not None:
-            raise self.raise_on_post
-        self.posts.append({"channel": channel, "text": text, "thread_ts": thread_ts})
-        return {"ok": True, "ts": f"reply.{len(self.posts)}"}
-
-    def open_dm(self, user_id: str) -> str:
-        if self.raise_on_open_dm is not None:
-            raise self.raise_on_open_dm
-        return self.dm_channel
-
-    def get_permalink(self, *, channel: str, ts: str) -> str:
-        return f"https://slack.example/archives/{channel}/p{ts}"
-
-    def react(self, *, channel: str, ts: str, emoji: str) -> dict[str, Any]:
-        return {}
-
-    def resolve_user_id(self, handle: str) -> str:
-        if handle == "engineers":
-            return self.usergroup_id
-        return ""
-
-
-class TestF2ReviewNagDmFailureDoesNotCloseTrain(_EnableReviewNagMixin, TestCase):
-    """F2 — _dm_user_and_close sets done_at OUTSIDE the try block.
-
-    A DM send failure permanently closes the nag train and the returned
-    ScanSignal kind ('review_nag.stale_dm') falsely claims delivery.
-
-    Fix: only set done_at/save on the SUCCESS path; on the except path
-    emit 'review_nag.stale_no_dm' and do NOT close the train.
-    """
-
-    def _seed_stale_post(self) -> ReviewRequestPost:
-        return ReviewRequestPost.objects.create(
-            mr_url="https://gitlab.example/x/-/merge_requests/99",
-            slack_channel_id="C0STALE",
-            slack_thread_ts="ts.stale",
-            created_at=timezone.now() - dt.timedelta(days=6),
-            last_nag_step=4,
-        )
-
-    def test_dm_failure_does_not_close_train(self) -> None:
-        """post_message raises → done_at must stay None and train must stay open."""
-        from teatree.loop.scanners.review_nag import ReviewNagScanner  # noqa: PLC0415
-
-        post = self._seed_stale_post()
-        slack = _FakeSlack(raise_on_post=RuntimeError("slack channel not found"))
-        ReviewNagScanner(messaging=slack, user_slack_id="U_ME").scan()
-
-        post.refresh_from_db()
-        # Bug: done_at is set even though the DM failed.
-        # Fix: done_at must stay None.
-        assert post.done_at is None, (
-            "done_at was set even though the DM send raised — the nag train was permanently closed on a failed delivery"
-        )
-
-    def test_dm_failure_emits_no_dm_kind_not_stale_dm(self) -> None:
-        """Signal kind must reflect no-delivery, not false 'stale_dm'."""
-        from teatree.loop.scanners.review_nag import ReviewNagScanner  # noqa: PLC0415
-
-        self._seed_stale_post()
-        slack = _FakeSlack(raise_on_post=RuntimeError("channel_not_found"))
-        signals = ReviewNagScanner(messaging=slack, user_slack_id="U_ME").scan()
-
-        kinds = [s.kind for s in signals]
-        assert "review_nag.stale_dm" not in kinds, (
-            "Signal claimed 'stale_dm' (delivery) even though post_message raised"
-        )
-        # The fix should emit review_nag.stale_no_dm on failure
-        assert any("stale_no_dm" in k or "no_dm" in k for k in kinds), f"Expected a no-dm kind in signals, got: {kinds}"
 
 
 # ---------------------------------------------------------------------------

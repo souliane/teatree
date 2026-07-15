@@ -75,6 +75,7 @@ def _make_alias(tmp_path: Path) -> str:
                 slack_thread_ts VARCHAR(64) NOT NULL,
                 bot_id VARCHAR(64) NOT NULL,
                 last_nag_step SMALLINT UNSIGNED NOT NULL,
+                last_nag_at DATETIME NULL,
                 created_at DATETIME NOT NULL,
                 done_at DATETIME NULL
             )

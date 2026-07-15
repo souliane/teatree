@@ -10,8 +10,11 @@ from teatree.backends.slack.client import (
     ReviewHistoryRead,
     SlackReviewMatch,
     SlackReviewSearchRequest,
+    SlackThreadActivityRequest,
+    ThreadActivityRead,
     post_webhook_message,
     read_recent_review_matches,
+    read_thread_activity,
     search_review_permalinks,
 )
 
@@ -19,7 +22,10 @@ __all__ = [
     "ReviewHistoryRead",
     "SlackReviewMatch",
     "SlackReviewSearchRequest",
+    "SlackThreadActivityRequest",
+    "ThreadActivityRead",
     "post_webhook_message",
     "read_recent_review_matches",
+    "read_thread_activity",
     "search_review_permalinks",
 ]
