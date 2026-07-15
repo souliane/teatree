@@ -69,3 +69,17 @@ class TicketDrawerGetTestCase(TestCase):
     def test_drawer_404_for_missing_ticket(self) -> None:
         resp = self.client.get(reverse("dash:ticket_drawer", args=[999999]))
         assert resp.status_code == 404
+
+    def test_transition_buttons_carry_confirmation_naming_state(self) -> None:
+        # #3264: a transition button must prompt before firing the FSM POST, and the
+        # prompt must name the ticket + the target action so an accidental click is caught.
+        ticket = TicketFactory(state=State.NOT_STARTED)
+        body = self.client.get(reverse("dash:ticket_drawer", args=[ticket.pk])).content.decode()
+        assert "return confirm(" in body
+        assert f"Transition #{ticket.ticket_number} to scope?" in body
+
+    def test_debug_session_button_carries_confirmation(self) -> None:
+        ticket = TicketFactory(state=State.STARTED)
+        body = self.client.get(reverse("dash:ticket_drawer", args=[ticket.pk])).content.decode()
+        assert "hx-confirm=" in body
+        assert "Start a loopback debug session?" in body

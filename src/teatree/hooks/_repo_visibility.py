@@ -25,7 +25,7 @@ from typing import Final, TypedDict
 
 from teatree.config import cold_reader
 from teatree.hooks import git_config_offline
-from teatree.utils.run import CommandFailedError, run_allowed_to_fail
+from teatree.utils.run import CommandFailedError, TimeoutExpired, run_allowed_to_fail
 
 
 class _VisibilityEntry(TypedDict):
@@ -171,7 +171,7 @@ def _origin_url_via_git(cwd: Path) -> str:
             env=_probe_env(),
             timeout=_PROBE_TIMEOUT_S,
         )
-    except (CommandFailedError, OSError):
+    except (CommandFailedError, OSError, TimeoutExpired):
         return ""
     return result.stdout.strip()
 
@@ -281,7 +281,7 @@ def _probe_gh(repo_path: str) -> str | None:
             env=_probe_env(),
             timeout=_PROBE_TIMEOUT_S,
         )
-    except (CommandFailedError, OSError):
+    except (CommandFailedError, OSError, TimeoutExpired):
         return None
     verdict = result.stdout.strip().upper()
     return verdict or None
@@ -302,7 +302,7 @@ def _probe_glab(repo_path: str) -> str | None:
             env=_probe_env(),
             timeout=_PROBE_TIMEOUT_S,
         )
-    except (CommandFailedError, OSError):
+    except (CommandFailedError, OSError, TimeoutExpired):
         return None
     try:
         project = json.loads(result.stdout)

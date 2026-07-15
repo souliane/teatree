@@ -13,13 +13,35 @@ x-teatree-common: &teatree-common
     dockerfile: deploy/Dockerfile
   env_file:
     - teatree.env
-  # All services mount all volumes so admin and worker share ONE db.sqlite3
-  # (WAL — safe concurrent reads) and one editable install.
+  # All services mount all state so admin and worker share ONE db.sqlite3
+  # (WAL — safe concurrent reads) and one editable install. The DB, worktrees,
+  # and workspaces are HOST bind mounts at their canonical absolute paths, so the
+  # container and the host see the same files (path identity — no XDG knob). This
+  # puts the factory's DB on the same daily-backed-up host disk as the operator's
+  # real DB instead of a Docker-internal named volume.
   volumes:
     - teatree_src:/home/teatree/teatree
-    - teatree_data:/home/teatree/.local/share/teatree
-    - teatree_worktrees:/home/teatree/.local/share/teatree-worktrees
-    - teatree_workspaces:/home/teatree/workspace/t3-workspaces
+    - type: bind
+      source: /home/teatree/.local/share/teatree
+      target: /home/teatree/.local/share/teatree
+    - type: bind
+      source: /home/teatree/.local/share/teatree-worktrees
+      target: /home/teatree/.local/share/teatree-worktrees
+    - type: bind
+      source: /home/teatree/workspace/t3-workspaces
+      target: /home/teatree/workspace/t3-workspaces
+    # Credential plane: the host-provisioned pass store + its GPG home, as
+    # DEDICATED mounts decoupled from the data dir (a data-dir change must never
+    # orphan credentials again, as #3262 did). Path identity; rw — gpg-agent
+    # binds its socket and lock files inside GNUPGHOME on a headless box, and the
+    # slack/postgres secret writers insert into pass at runtime. Secrets stay
+    # gpg-encrypted on the host disk, OUTSIDE the backed-up data dir.
+    - type: bind
+      source: /home/teatree/.password-store
+      target: /home/teatree/.password-store
+    - type: bind
+      source: /home/teatree/.gnupg
+      target: /home/teatree/.gnupg
     - teatree_uv:/opt/teatree/uv
   init: true
 
@@ -69,7 +91,4 @@ services:
 
 volumes:
   teatree_src:
-  teatree_data:
-  teatree_worktrees:
-  teatree_workspaces:
   teatree_uv:

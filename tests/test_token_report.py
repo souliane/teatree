@@ -147,8 +147,10 @@ class TestTokenAccountPayloadShape:
         assert payload["utilization_5h"] == pytest.approx(0.1)
         assert payload["requests_remaining"] is None
 
-    def test_weekly_reset_local_is_a_dash_when_absent(self) -> None:
-        assert self._row(weekly_reset=None).weekly_reset_local == "—"
+    def test_reset_cells_are_a_dash_when_absent(self) -> None:
+        row = self._row(weekly_reset=None, next_window_reset=None)
+        assert row.col_reset == "—"
+        assert row.col_next_window == "—"
 
 
 class TokenReportRowsTest(TestCase):
@@ -356,6 +358,66 @@ class TokenReportRenderTest(TestCase):
         assert "! MISSING" in out
         assert "—" in out
         assert rows[0].as_dict()["utilization_5h"] is None
+
+
+class ResetWindowColumnsTest(TestCase):
+    """Both window resets flow probe → cache → row, and both cells render local time.
+
+    Regression for the ``t3 tokens`` weekly-reset ``—`` bug (#3258): the 7d reset was
+    already persisted but the row also carries the 5h next-window reset now, and both
+    render as a local datetime for an OAuth account while an API-key row shows ``—``.
+    """
+
+    _RESET_5H = dt.datetime(2026, 7, 15, 9, 0, tzinfo=dt.UTC)
+    _RESET_7D = dt.datetime(2026, 7, 20, 18, 0, tzinfo=dt.UTC)
+
+    def _oauth_rows(self) -> list[TokenAccountRow]:
+        _configure(TokenKind.OAUTH, ["anthropic/oauth/live"])
+        secrets = RecordingSecretReader({"anthropic/oauth/live": "TOK-live"})
+        snapshot = RateLimitSnapshot(
+            organization_id="org-live",
+            unified_5h_status="allowed",
+            unified_5h_utilization=0.28,
+            unified_5h_reset=self._RESET_5H,
+            unified_7d_status="allowed",
+            unified_7d_utilization=0.96,
+            unified_7d_reset=self._RESET_7D,
+            retry_after=None,
+        )
+        return TokenReport(reader=FakeReader({"TOK-live": snapshot}), secret_reader=secrets).rows()
+
+    def test_probe_persists_both_window_resets_non_null(self) -> None:
+        self._oauth_rows()
+        cached = AnthropicTokenUsage.objects.get(pass_path="anthropic/oauth/live")
+        assert cached.reset_5h == self._RESET_5H
+        assert cached.reset_7d == self._RESET_7D
+
+    def test_oauth_row_renders_both_reset_cells_as_local_time(self) -> None:
+        row = self._oauth_rows()[0]
+        assert row.col_reset == self._RESET_7D.astimezone().strftime("%Y-%m-%d %H:%M %Z")
+        assert row.col_next_window == self._RESET_5H.astimezone().strftime("%Y-%m-%d %H:%M %Z")
+        assert row.col_reset != "—"
+        assert row.col_next_window != "—"
+
+    def test_table_shows_the_5h_reset_column_and_both_local_times(self) -> None:
+        out = render_table(self._oauth_rows())
+        assert "5h reset" in out
+        assert self._RESET_5H.astimezone().strftime("%Y-%m-%d %H:%M") in out
+        assert self._RESET_7D.astimezone().strftime("%Y-%m-%d %H:%M") in out
+
+    def test_json_payload_carries_both_window_resets(self) -> None:
+        payload = self._oauth_rows()[0].as_dict()
+        assert payload["weekly_reset"] == self._RESET_7D.astimezone().isoformat()
+        assert payload["next_window_reset"] == self._RESET_5H.astimezone().isoformat()
+
+    def test_api_key_row_shows_a_dash_for_both_reset_cells(self) -> None:
+        _configure(TokenKind.API_KEY, ["anthropic/apikey/funded"])
+        secrets = RecordingSecretReader({"anthropic/apikey/funded": "TOK-funded"})
+        api_key_reader = FakeApiKeyReader({"TOK-funded": _metered(org="org-metered")})
+        row = TokenReport(reader=FakeReader({}), secret_reader=secrets, api_key_reader=api_key_reader).rows()[0]
+        assert row.col_reset == "—"
+        assert row.col_next_window == "—"
+        assert row.as_dict()["next_window_reset"] is None
 
 
 class TokensCommandTest(TestCase):

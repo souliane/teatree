@@ -4,7 +4,8 @@ Top-level diagnostic over the per-account routing state
 (``teatree.credential_config`` + the ``AnthropicTokenUsage`` health cache): it
 enumerates every configured ``pass`` entry (the per-overlay OAuth + API-key lists
 plus global) and reports each account's org id, unified 5h / weekly utilization,
-weekly reset, and health status. A fresh cache row is reused with no network; a
+the 5h next-window reset and weekly reset, and health status. A fresh cache row is
+reused with no network; a
 stale/absent one triggers one live probe (an explicit report, so a refresh is
 fine). The token that signs a probe is never rendered.
 

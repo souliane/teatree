@@ -6,34 +6,30 @@ entry — the per-overlay OAuth + API-key candidate lists across all scopes plus
 global — and reports each account's org id + health status, rendered per credential
 kind because Anthropic exposes their headroom differently:
 
-*   An **OAuth** row shows the account's unified 5h / weekly utilization + weekly
-    reset. For it the report reuses a FRESH cached :class:`AnthropicTokenUsage` row
-    with no network; on a cache miss / expiry it reads the token from ``pass`` and
-    probes once through :func:`~teatree.llm.rate_limits.read_rate_limits`, upserting the
-    same health cache the selector reads.
+*   An **OAuth** row shows the account's unified 5h / weekly utilization + the 5h
+    next-window reset and the weekly reset. It reuses a FRESH cached
+    :class:`AnthropicTokenUsage` row with no network; on a cache miss / expiry it reads
+    the token from ``pass`` and probes once through
+    :func:`~teatree.llm.rate_limits.read_rate_limits`, upserting the cache the selector reads.
 *   An **API-key** row shows the metered credit state (HEALTHY when funded /
     OUT_OF_CREDITS when depleted) + per-minute requests / tokens remaining — NOT weekly
     utilization, and NOT a dollar balance (unavailable via a standard key). A metered
-    key emits no unified windows and cannot be represented in the unified cache, so it
-    is probed fresh each run through :func:`~teatree.llm.rate_limits.read_api_key_status`.
+    key emits no unified windows and cannot be cached, so it is probed fresh each run
+    through :func:`~teatree.llm.rate_limits.read_api_key_status`.
 
 Alongside the configured ``pass`` rows, the ``--token`` option adds one row per ad-hoc
-token (``ad_hoc_tokens``), labelled ``token[1]``, ``token[2]``, … in the order given
-(deduped, first-seen order). This health-probes a freshly-minted token BEFORE it is
-written into ``pass`` — its recovery flow. An ad-hoc token has no ``pass`` entry, so it
-is probed FRESH and never reads from or writes to the :class:`AnthropicTokenUsage` cache;
-its kind is auto-detected from the token prefix (``sk-ant-oat01`` → OAuth,
-``sk-ant-api03`` → metered key). An empty token renders ``MISSING``; an unrecognised
-prefix renders ``UNREACHABLE`` WITHOUT transmitting the token anywhere (the auth scheme
-is unknowable, so no probe is attempted). The token value itself is never the account
-label — only the ``token[N]`` position is — so, like a ``pass`` row, it is never
-rendered, logged, or returned.
+token (``ad_hoc_tokens``), labelled ``token[1]``, ``token[2]``, … in first-seen order
+(deduped). This probes a freshly-minted token BEFORE it is written into ``pass`` (its
+recovery flow): probed FRESH, never touching the :class:`AnthropicTokenUsage` cache, its
+kind auto-detected from the prefix (``sk-ant-oat01`` → OAuth, ``sk-ant-api03`` → metered
+key). An empty token renders ``MISSING``; an unrecognised prefix renders ``UNREACHABLE``
+WITHOUT transmitting the token (the auth scheme is unknowable).
 
-The token that signs a probe is read only to sign it — it is never rendered, logged,
-or returned (a MISSING account is one whose ``pass`` entry is empty; an UNREACHABLE one
-is a transport/HTTP failure). The readers and secret reader are injected (defaults: the
-real ``read_rate_limits`` / ``read_api_key_status`` / ``read_pass``) so a test drives
-canned health + tokens with no network or ``pass``.
+The token that signs a probe is read only to sign it — never rendered, logged, or
+returned; only the ``token[N]`` position is ever the account label, never the token
+value. The readers and secret reader are injected (defaults: the real
+``read_rate_limits`` / ``read_api_key_status`` / ``read_pass``) so a test drives canned
+health + tokens with no network or ``pass``.
 """
 
 import datetime as dt
@@ -111,10 +107,11 @@ class TokenStatus(StrEnum):
 class TokenAccountPayload(TypedDict):
     """The token-free JSON shape of one account row (``t3 tokens --json``).
 
-    OAuth rows carry ``utilization_*`` / ``weekly_reset``; API-key rows carry the
-    per-minute ``requests_*`` / ``tokens_remaining`` instead — the inapplicable set is
-    ``None`` on each kind. ``account`` is the ``pass`` entry for a ``pass`` row and the
-    ``token[N]`` label for an ad-hoc ``--token`` row; ``source`` discriminates the two.
+    OAuth rows carry ``utilization_*`` / ``next_window_reset`` (5h) / ``weekly_reset``
+    (7d); API-key rows carry the per-minute ``requests_*`` / ``tokens_remaining``
+    instead — the inapplicable set is ``None`` on each kind. ``account`` is the ``pass``
+    entry for a ``pass`` row and the ``token[N]`` label for an ad-hoc ``--token`` row;
+    ``source`` discriminates the two.
     """
 
     account: str
@@ -124,6 +121,7 @@ class TokenAccountPayload(TypedDict):
     organization_id: str
     utilization_5h: float | None
     utilization_7d: float | None
+    next_window_reset: str | None
     weekly_reset: str | None
     requests_remaining: int | None
     requests_limit: int | None
@@ -146,11 +144,11 @@ _ROW_STYLE: dict[TokenStatus, str] = {
 class TokenAccountRow:
     """One configured account's health, ready to render — never carries the token.
 
-    OAuth rows populate ``utilization_*`` / ``weekly_reset``; API-key rows populate the
-    per-minute ``requests_*`` / ``tokens_remaining`` instead. The ``col_*`` cells render
-    the applicable set per kind so the shared table stays honest. ``account`` is the
-    ``pass`` entry for a ``pass`` row and the ``token[N]`` label for an ad-hoc row —
-    never a token value; ``source`` says which.
+    OAuth rows populate ``utilization_*`` / ``next_window_reset`` (5h) / ``weekly_reset``
+    (7d); API-key rows populate the per-minute ``requests_*`` / ``tokens_remaining``
+    instead. The ``col_*`` cells render the applicable set per kind so the shared table
+    stays honest. ``account`` is the ``pass`` entry for a ``pass`` row and the
+    ``token[N]`` label for an ad-hoc row — never a token value; ``source`` says which.
     """
 
     account: str
@@ -162,6 +160,7 @@ class TokenAccountRow:
     utilization_7d: float
     weekly_reset: dt.datetime | None
     status: TokenStatus
+    next_window_reset: dt.datetime | None = None
     requests_remaining: int | None = None
     requests_limit: int | None = None
     tokens_remaining: int | None = None
@@ -187,12 +186,6 @@ class TokenAccountRow:
         return _pct(self.utilization_7d) if self.status.is_measured else "—"
 
     @property
-    def weekly_reset_local(self) -> str:
-        if self.weekly_reset is None:
-            return "—"
-        return self.weekly_reset.astimezone().strftime("%Y-%m-%d %H:%M %Z")
-
-    @property
     def col_5h(self) -> str:
         """The "5h" cell: OAuth 5h utilization, or an API-key's requests-remaining."""
         if self.is_api_key:
@@ -207,9 +200,14 @@ class TokenAccountRow:
         return self.utilization_7d_pct
 
     @property
+    def col_next_window(self) -> str:
+        """The "5h reset" cell — the unified 5h window's next-window reset (OAuth only)."""
+        return "—" if self.is_api_key else _local_time(self.next_window_reset)
+
+    @property
     def col_reset(self) -> str:
         """The "weekly reset" cell — inapplicable to per-minute API-key limits."""
-        return "—" if self.is_api_key else self.weekly_reset_local
+        return "—" if self.is_api_key else _local_time(self.weekly_reset)
 
     def as_dict(self) -> TokenAccountPayload:
         oauth_measured = self.status.is_measured and not self.is_api_key
@@ -221,6 +219,7 @@ class TokenAccountRow:
             organization_id=self.organization_id,
             utilization_5h=self.utilization_5h if oauth_measured else None,
             utilization_7d=self.utilization_7d if oauth_measured else None,
+            next_window_reset=self.next_window_reset.astimezone().isoformat() if self.next_window_reset else None,
             weekly_reset=self.weekly_reset.astimezone().isoformat() if self.weekly_reset else None,
             requests_remaining=self.requests_remaining,
             requests_limit=self.requests_limit,
@@ -264,7 +263,7 @@ class TokenReport:
             return self._api_key_row(pass_path, scopes)
         cached = AnthropicTokenUsage.objects.filter(pass_path=pass_path).first()
         if cached is not None and cached.is_fresh(now):
-            return _row_from_usage(kind, pass_path, scopes, cached)
+            return _oauth_row(pass_path, kind, scopes, cached, source=TokenSource.STORE)
         token = self._secret_reader(pass_path)
         if not token:
             return _blank_row(kind, pass_path, scopes, TokenStatus.MISSING, source=TokenSource.STORE)
@@ -273,7 +272,7 @@ class TokenReport:
         except RateLimitProbeError:
             return _blank_row(kind, pass_path, scopes, TokenStatus.UNREACHABLE, source=TokenSource.STORE)
         probed = AnthropicTokenUsage.objects.record(pass_path, reading_from(snapshot), now=now)
-        return _row_from_usage(kind, pass_path, scopes, probed)
+        return _oauth_row(pass_path, kind, scopes, probed, source=TokenSource.STORE)
 
     def _api_key_row(self, pass_path: str, scopes: tuple[str, ...]) -> TokenAccountRow:
         """A metered API-key row: probe fresh (no unified cache) and render the credit signal.
@@ -315,7 +314,7 @@ class TokenReport:
             oauth_snapshot = self._reader(token, is_oauth=True)
         except RateLimitProbeError:
             return _blank_row(TokenKind.OAUTH, account, (), TokenStatus.UNREACHABLE, source=TokenSource.AD_HOC)
-        return _oauth_token_row(account, reading_from(oauth_snapshot))
+        return _oauth_row(account, TokenKind.OAUTH, (), reading_from(oauth_snapshot), source=TokenSource.AD_HOC)
 
 
 def _configured() -> dict[tuple[TokenKind, str], tuple[str, ...]]:
@@ -335,37 +334,29 @@ def _configured() -> dict[tuple[TokenKind, str], tuple[str, ...]]:
     return {account: tuple(sorted(scopes)) for account, scopes in scopes_by_account.items()}
 
 
-def _row_from_usage(
-    kind: TokenKind, account: str, scopes: tuple[str, ...], usage: AnthropicTokenUsage
+def _oauth_row(
+    account: str,
+    kind: TokenKind,
+    scopes: tuple[str, ...],
+    reading: AnthropicTokenUsage | TokenHealthReading,
+    *,
+    source: TokenSource,
 ) -> TokenAccountRow:
-    return TokenAccountRow(
-        account=account,
-        kind=kind,
-        source=TokenSource.STORE,
-        scopes=scopes,
-        organization_id=usage.organization_id,
-        utilization_5h=usage.utilization_5h,
-        utilization_7d=usage.utilization_7d,
-        weekly_reset=usage.reset_7d,
-        status=_status_for(usage.utilization_5h, usage.utilization_7d, exhausted=usage.is_exhausted),
-    )
+    """An OAuth row from a cached ``pass`` usage row OR a live ad-hoc reading.
 
-
-def _oauth_token_row(account: str, reading: TokenHealthReading) -> TokenAccountRow:
-    """An ad-hoc OAuth row built from a live reading — no ``AnthropicTokenUsage`` touch.
-
-    Uses the same exhaustion rule and status mapping as a cached ``pass`` row (via the
-    shared :class:`TokenHealthReading`), so an ad-hoc OAuth token classifies identically
-    to a configured one while never reading or writing the health cache.
+    Both sources expose the same utilization / reset / exhaustion interface, so a
+    cached account and an ad-hoc token classify identically through one builder — the
+    ad-hoc path just passes a ``TokenHealthReading`` and never touches the cache.
     """
     return TokenAccountRow(
         account=account,
-        kind=TokenKind.OAUTH,
-        source=TokenSource.AD_HOC,
-        scopes=(),
+        kind=kind,
+        source=source,
+        scopes=scopes,
         organization_id=reading.organization_id,
         utilization_5h=reading.utilization_5h,
         utilization_7d=reading.utilization_7d,
+        next_window_reset=reading.reset_5h,
         weekly_reset=reading.reset_7d,
         status=_status_for(reading.utilization_5h, reading.utilization_7d, exhausted=reading.is_exhausted),
     )
@@ -445,6 +436,13 @@ def _pct(fraction: float) -> str:
     return f"{fraction * 100:.0f}%"
 
 
+def _local_time(moment: dt.datetime | None) -> str:
+    """A reset instant rendered in the local zone, or ``—`` when unknown."""
+    if moment is None:
+        return "—"
+    return moment.astimezone().strftime("%Y-%m-%d %H:%M %Z")
+
+
 def _remaining_cell(label: str, remaining: int | None, limit: int | None) -> str:
     """A metered per-minute cell: ``label remaining/limit`` (or ``label remaining``), else ``—``."""
     if remaining is None:
@@ -465,7 +463,7 @@ def _as_path_list(stored: object) -> list[str]:
     return list(seen)
 
 
-_COLUMNS: tuple[str, ...] = ("account", "kind", "overlays", "org", "5h", "7d", "weekly reset", "status")
+_COLUMNS: tuple[str, ...] = ("account", "kind", "overlays", "org", "5h", "7d", "5h reset", "weekly reset", "status")
 
 #: Rendered below the table only when an api_key row is present, so the shared 5h/7d
 #: columns and the missing dollar balance are not misread.
@@ -490,6 +488,7 @@ def render_table(rows: list[TokenAccountRow]) -> str:
             row.organization_id or "—",
             row.col_5h,
             row.col_7d,
+            row.col_next_window,
             row.col_reset,
             _status_cell(row.status),
             style=_ROW_STYLE.get(row.status),
