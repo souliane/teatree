@@ -73,7 +73,7 @@ class TestExternalizedBindMounts:
         # The pass store + GPG home must be their own mounts (not nested under the
         # data dir), so externalizing/moving the data dir never orphans them again.
         binds = self._bind_mounts()
-        assert CREDENTIAL_PLANE <= set(binds), "pass store + GPG home must be host bind mounts"
+        assert set(binds) >= CREDENTIAL_PLANE, "pass store + GPG home must be host bind mounts"
         for source in CREDENTIAL_PLANE:
             assert not source.startswith("/home/teatree/.local/share/teatree"), (
                 f"{source}: credential plane must be decoupled from the data dir"
