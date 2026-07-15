@@ -550,6 +550,10 @@ The ``ticket rubric-set`` / ``rubric-grade`` commands, mounted via MRO inheritan
 | `create-sub` | Create a child work item nested under a parent issue/work item |
 | `list` | List tickets, optionally filtered by state and/or overlay |
 
+## `ticket_backfill_titles`
+
+Backfill Ticket.extra['issue_title'] from the forge for existing tickets.
+
 ## `ticket_short_describe`
 
 Generate Ticket.short_description (#1156).

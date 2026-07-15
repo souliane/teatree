@@ -476,6 +476,7 @@ class TicketSiblingFields(TypedDict, total=False):
     state: str
     repos: list[str]
     variant: str
+    short_description: str
 
 
 _TICKET_EXTRA_KEYS = frozenset(TicketExtra.__annotations__)

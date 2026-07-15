@@ -39,7 +39,12 @@ _CORE_DIR = Path(__file__).resolve().parents[2] / "src" / "teatree" / "core"
 # 66: -reply_retry.py (U24 hygiene) — the failed-dispatch retry sweep, an unwired
 # leaf whose loop-tick integration was a deferred follow-up that never landed, so no
 # production caller reached it; removed, returning the flat-core count to 66.
-PINNED_FLAT_CORE_MODULES = 66
+# 67: +issue_title.py (directive #3) — the forge issue-title resolution seam
+# bridging the dashboard/new-ticket signal + the backfill command to the backend
+# registry (read_issue_title + fetch_issue_title). A genuine shared root leaf: it
+# must import backend_registry + overlay_loader (which core/models/ may not), so it
+# cannot live under models/, and no cleanup/intake/review/… subpackage owns it.
+PINNED_FLAT_CORE_MODULES = 67
 
 
 def _flat_core_modules() -> list[str]:

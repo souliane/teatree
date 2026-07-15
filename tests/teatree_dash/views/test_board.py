@@ -50,6 +50,31 @@ class BoardPageTestCase(TestCase):
         assert "drop me" not in body
 
 
+class BoardCardIssueLinkTestCase(TestCase):
+    """A card renders a clickable forge link next to the number, none for a sentinel."""
+
+    def test_forge_ticket_renders_clickable_issue_anchor(self) -> None:
+        ticket = TicketFactory(state=State.STARTED, issue_url="https://github.com/souliane/teatree/issues/3205")
+        body = self.client.get(reverse("dash:board_columns")).content.decode()
+        card = _card_fragment(body, ticket.pk)
+        assert 'class="card-issue mono"' in card
+        assert 'href="https://github.com/souliane/teatree/issues/3205"' in card
+        assert ">#3205</a>" in card
+
+    def test_sentinel_ticket_renders_no_issue_anchor(self) -> None:
+        ticket = TicketFactory(state=State.NOT_STARTED, issue_url="scanning-news://t3-teatree")
+        body = self.client.get(reverse("dash:board_columns")).content.decode()
+        card = _card_fragment(body, ticket.pk)
+        assert "card-issue" not in card
+
+
+def _card_fragment(body: str, ticket_id: int) -> str:
+    """The ``<article>…</article>`` markup for one ticket's card."""
+    start = body.index(f'data-ticket="{ticket_id}"')
+    open_tag = body.rindex("<article", 0, start)
+    return body[open_tag : body.index("</article>", start)]
+
+
 class BoardPollUrlEncodingTestCase(TestCase):
     """DASH-5: the htmx poll URL URL-encodes filter values.
 

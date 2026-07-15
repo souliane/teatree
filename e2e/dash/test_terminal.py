@@ -32,5 +32,8 @@ def test_terminal_button_click_renders_launch_url(live_server: LiveServer, page:
     board.open()
     page.get_by_role("button", name=_TERMINAL).click()
     result = page.locator("#terminal-result")
-    expect(result).to_contain_text("Terminal ready")
+    # The result auto-opens a new tab; the link + data-ttyd-launch attr are the
+    # popup-blocked fallback / auto-open source (directive #3).
+    expect(result).to_contain_text("Opening terminal in a new tab")
+    expect(result.locator("[data-ttyd-launch]")).to_have_attribute("data-ttyd-launch", _LOOPBACK_URL)
     expect(result.get_by_role("link")).to_have_attribute("href", _LOOPBACK_URL)

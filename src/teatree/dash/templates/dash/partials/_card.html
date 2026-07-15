@@ -4,6 +4,7 @@
   <div class="card-top">
     {% if card.active %}<span class="dot active" title="active work: {{ card.active_phase }} {{ card.claimed_by }}"></span>{% endif %}
     <span class="card-num mono">#{{ card.number }}</span>
+    {% if card.issue_href %}<a class="card-issue mono" href="{{ card.issue_href }}" target="_blank" rel="noopener" onclick="event.stopPropagation()">{{ card.issue_ref }}</a>{% endif %}
     {% if card.expedited %}<span class="chip expedited">expedited</span>{% endif %}
     {% if card.remote_missing %}<span class="chip warn">remote 404</span>{% endif %}
   </div>
