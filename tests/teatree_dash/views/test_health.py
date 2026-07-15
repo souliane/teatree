@@ -44,6 +44,17 @@ class HealthPageTestCase(TestCase):
         body = resp.content.decode()
         assert "t3 doctor check" in body
 
+    def test_command_buttons_carry_confirmation(self) -> None:
+        # #3264: allowlisted commands run a shell action — confirm before firing.
+        body = self.client.get(reverse("dash:health")).content.decode()
+        assert "hx-confirm=" in body
+        assert "Run t3 doctor check?" in body
+
+    def test_terminal_button_carries_confirmation(self) -> None:
+        # #3264: the always-visible loopback terminal spawns a session — confirm first.
+        body = self.client.get(reverse("dash:health")).content.decode()
+        assert "Start a loopback debug session?" in body
+
 
 class HealthAccessGateTestCase(TestCase):
     """DASH-2: the health page + its bands poll partial carry the same loopback gate.
