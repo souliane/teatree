@@ -116,13 +116,13 @@ class TestPopulateLoopsAnchorIntegration:
     """The rendering layer emits the consolidated line for live LoopLease rows."""
 
     def test_emits_consolidated_line_when_loops_live(self) -> None:
-        from teatree.loop.rendering import _populate_live_loops_anchor  # noqa: PLC0415
+        from teatree.loop.rendering import _populate_dashboard_head  # noqa: PLC0415
 
         _make_lease("loop-tick", expires_in=timedelta(minutes=30))
         _make_lease("loop-self-improve", expires_in=timedelta(minutes=30))
 
         zones = StatuslineZones()
-        _populate_live_loops_anchor(zones)
+        _populate_dashboard_head(zones)
 
         joined = "\n".join(item if isinstance(item, str) else item.text for item in zones.anchors)
         assert "tick" in joined, repr(joined)
