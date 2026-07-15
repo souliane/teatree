@@ -572,8 +572,8 @@ class _OverlayMeta(OverlayMetadata):
     def __init__(self, errors: list[str]) -> None:
         self._errors = errors
 
-    def validate_pr(self, title: str, description: str):
-        del title, description
+    def validate_pr(self, title: str, description: str, *, require_sections: bool = True):
+        del title, description, require_sections
         return {"errors": list(self._errors), "warnings": []}
 
 
@@ -699,8 +699,8 @@ class _CrashingOverlay(OverlayBase):
 
 
 class _CrashingMeta(OverlayMetadata):
-    def validate_pr(self, title: str, description: str):
-        del title, description
+    def validate_pr(self, title: str, description: str, *, require_sections: bool = True):
+        del title, description, require_sections
         msg = "validator import boom"
         raise RuntimeError(msg)
 

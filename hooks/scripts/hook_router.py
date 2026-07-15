@@ -120,7 +120,12 @@ from hooks.scripts.managed_repo import teatree_src_on_path as _teatree_src_on_pa
 from hooks.scripts.mcp_slack_write_guard import handle_block_mcp_slack_write
 from hooks.scripts.mcp_slack_write_guard import is_slack_mcp_tool as _is_slack_mcp_tool
 from hooks.scripts.memory_recall import handle_recall_cold_memory
-from hooks.scripts.mr_cli_fields import extract_cli_mr_fields, extract_mr_target_repo, merge_target_is_managed
+from hooks.scripts.mr_cli_fields import (
+    cli_update_is_title_only,
+    extract_cli_mr_fields,
+    extract_mr_target_repo,
+    merge_target_is_managed,
+)
 from hooks.scripts.no_self_reviewer_assign import handle_block_self_reviewer_assign
 from hooks.scripts.orchestration_boundary_signals import PYTEST_VERB_FINDER as _PYTEST_VERB_FINDER
 from hooks.scripts.orchestration_boundary_signals import PYTEST_VERB_RE as _PYTEST_VERB_RE
@@ -1715,18 +1720,20 @@ def _handle_broken_validate_env(data: dict) -> bool:
 
 
 def _run_mr_validator(
-    argv: list[str], title: str, description: str, target_repo: str | None = None
+    argv: list[str], title: str, description: str, target_repo: str | None = None, *, sections_optional: bool = False
 ) -> "subprocess.CompletedProcess[str] | None":
     """Run the validator, or ``None`` if the env is broken (timeout/missing).
 
-    ``target_repo`` (when parseable from the command) is forwarded as
-    ``--repo <slug>`` so the validator keys overlay resolution to the MR's
-    TARGET, not the agent's cwd — the whole point of the target-keyed gate.
+    ``target_repo`` (when parseable) is forwarded as ``--repo <slug>`` so the
+    validator keys overlay resolution to the MR's TARGET, not the agent's cwd.
+    ``sections_optional`` forwards ``--sections-optional`` for a title-only
+    update whose description is untouched (#3254).
     """
     repo_args = ["--repo", target_repo] if target_repo else []
+    section_args = ["--sections-optional"] if sections_optional else []
     try:
         return subprocess.run(  # noqa: S603 — trusted internal subprocess; fixed argv, no shell
-            [*argv, "--title", title, "--description", description, *repo_args],
+            [*argv, "--title", title, "--description", description, *repo_args, *section_args],
             capture_output=True,
             text=True,
             check=False,
@@ -1741,33 +1748,27 @@ def handle_validate_mr_metadata(data: dict) -> bool:
 
     Validates by default via the TARGET overlay's ``validate_pr`` (no env-var
     opt-in) so the pre-push gate is always live (#119 Part 3). The MR's TARGET
-    repo is parsed from the command (``-R``/``--repo``, the ``glab api``
-    namespace, the ``gh api repos/<o>/<r>`` path) and threaded as ``--repo`` so
-    an MR targeting a stricter-rule overlay, created with cwd in a repo owned by
-    a more-lenient overlay, is graded against the TARGET overlay's rules — not
-    the cwd overlay's weaker ones. A validator that RAN but crashed (a traceback,
-    not a clean verdict) is CANNOT_EVALUATE — crash ≠ deny (#1528): it warns and
-    allows, with the remote MR-title/description CI job as the backstop. Only the
-    unresolvable/timed-out validator (the ``None`` broken-env path — no verdict at
-    all) FAILS CLOSED, so a non-compliant title never slips onto the forge on a
-    genuinely-absent validator; the explicit ``T3_MR_VALIDATE_ALLOW_BROKEN_ENV``
-    opt-in restores fail-open there as a deliberate self-rescue.
+    repo is parsed from the command and threaded as ``--repo`` so an MR is graded
+    against the TARGET overlay's rules, not the cwd overlay's weaker ones. A
+    validator that RAN but crashed is CANNOT_EVALUATE — crash ≠ deny (#1528): it
+    warns and allows, with the remote CI job as backstop. Only the
+    unresolvable/timed-out validator (the ``None`` broken-env path) FAILS CLOSED;
+    the ``T3_MR_VALIDATE_ALLOW_BROKEN_ENV`` opt-in restores fail-open there.
     """
     fields = _extract_mr_fields(data)
     if fields is None:
         return False
     title, description = fields
-    target_repo = (
-        extract_mr_target_repo(data.get("tool_input", {}).get("command", ""))
-        if data.get("tool_name") == "Bash"
-        else None
-    )
+    command = data.get("tool_input", {}).get("command", "") if data.get("tool_name") == "Bash" else ""
+    target_repo = extract_mr_target_repo(command) if command else None
+    # Title-only update: no description touched → skip required-section check (#3254).
+    sections_optional = bool(command) and cli_update_is_title_only(command)
 
     argv = _mr_validate_argv()
     if argv is None:
         return _handle_broken_validate_env(data)
 
-    result = _run_mr_validator(argv, title, description, target_repo)
+    result = _run_mr_validator(argv, title, description, target_repo, sections_optional=sections_optional)
     if result is None:
         return _handle_broken_validate_env(data)
 
