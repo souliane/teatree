@@ -28,7 +28,7 @@ dependencies = [
   # ``**AskUserQuestion**`` chip instead of a ``tool_use`` block — breaking the
   # eval AskUserQuestion flow and the question-drain. 0.2.94 is the known-green
   # build; any bump must be deliberate and re-verified (souliane/teatree#3125).
-  "claude-agent-sdk==0.2.94",
+  "claude-agent-sdk==0.2.119",
   # ``t3 tool diff-coverage`` and ``t3 ci coverage`` are RUNTIME commands
   # that import ``coverage`` (utils/diff_coverage.py, utils/coverage_floor.py).
   # It must be present in the installed tool env, not only the dev group —
