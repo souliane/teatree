@@ -39,6 +39,7 @@ from teatree.cli.slack.app_resolve import (
     read_overlay_field,
     read_overlay_registry,
     resolve_overlay_app_id,
+    write_overlay_fields,
 )
 from teatree.cli.slack.channel_provisioning import ChannelJoinResult, join_review_channels, render_join_result
 from teatree.cli.slack.dm_provisioning import ProvisionResult, provision_overlay_dm_channel
@@ -83,8 +84,6 @@ def _resolve_app_id(*, overlay: str, echo: Callable[[str], None]) -> str:
     if not _APP_ID_RE.match(value):
         echo("ERROR Invalid Slack app id format.")
         raise typer.Exit(code=1)
-    from teatree.cli.slack.app_resolve import write_overlay_fields  # noqa: PLC0415 — avoids a slack-package cycle
-
     write_overlay_fields(overlay, {"slack_app_id": value})
     return value
 
@@ -259,6 +258,13 @@ def slack_provision(
         "--overlay",
         help="Overlay to provision (default: every Slack-backed overlay in the DB registry).",
     ),
+    dm_only: bool | None = typer.Option(
+        None,
+        "--dm-only/--full",
+        help="Persist this overlay's scope profile before provisioning: --dm-only restricts the bot to "
+        "the owner's DM (minimal scopes, no user token); --full is the read/write-everywhere default. "
+        "Requires --overlay. Omit both to leave the stored profile unchanged.",
+    ),
     open_browser: bool = typer.Option(
         True,
         "--open-browser/--no-open-browser",
@@ -267,12 +273,22 @@ def slack_provision(
 ) -> None:
     """Run the full Slack app lifecycle (manifest, scopes, channels, tokens) idempotently."""
     ensure_django()
+    if dm_only is not None and not overlay:
+        typer.echo("ERROR --dm-only/--full sets one overlay's profile and requires --overlay.")
+        raise typer.Exit(code=1)
     if overlay:
         registered = {entry.name for entry in discover_overlays()}
         if overlay not in registered:
             known = ", ".join(sorted(registered)) or "(none registered)"
             typer.echo(f"ERROR Overlay {overlay!r} is not registered. Known overlays: {known}")
             raise typer.Exit(code=1)
+        if dm_only is not None:
+            # Persist the profile so the manifest push, channel-join skip, and the
+            # loader's OwnerRestrictedMessaging wrap all read one source of truth.
+            profile = "dm_only" if dm_only else "full"
+            write_overlay_fields(overlay, {"slack_scope_profile": profile})
+            note = "bot restricted to the owner's DM" if dm_only else "read/write-everywhere bot"
+            typer.echo(f"OK    Set slack_scope_profile={profile} for `{overlay}` ({note}).")
         overlays = [overlay]
     else:
         overlays = _slack_overlays()

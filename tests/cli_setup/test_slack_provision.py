@@ -407,3 +407,32 @@ class TestCommandSingleOverlay:
         assert result.exit_code == 0
         prov.assert_called_once()
         assert "t3: app A_T3" in result.stdout
+
+    def test_dm_only_flag_persists_profile_before_provisioning(self) -> None:
+        _seed({"t3": dict(_T3_OVERLAY)})  # starts as full (no profile field)
+        report = OverlayProvisionReport(overlay_name="t3", app_id="A_T3", manifest_action="current")
+        with (
+            patch(
+                "teatree.cli.slack.provision.discover_overlays",
+                return_value=[OverlayEntry(name="t3", overlay_class="x:Y")],
+            ),
+            patch("teatree.cli.slack.provision.provision_overlay", return_value=report),
+            patch("teatree.cli.slack.provision._verify_user_token"),
+        ):
+            result = CliRunner().invoke(
+                setup_app,
+                ["slack-provision", "--overlay", "t3", "--dm-only", "--no-open-browser"],
+            )
+        assert result.exit_code == 0
+        assert _overlays()["t3"]["slack_scope_profile"] == "dm_only"
+        assert "slack_scope_profile=dm_only" in result.stdout
+
+    def test_dm_only_without_overlay_is_an_error(self) -> None:
+        _seed({"t3": dict(_T3_OVERLAY)})
+        with patch(
+            "teatree.cli.slack.provision.discover_overlays",
+            return_value=[OverlayEntry(name="t3", overlay_class="x:Y")],
+        ):
+            result = CliRunner().invoke(setup_app, ["slack-provision", "--dm-only", "--no-open-browser"])
+        assert result.exit_code == 1
+        assert "requires --overlay" in result.stdout
