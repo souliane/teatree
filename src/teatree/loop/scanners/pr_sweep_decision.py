@@ -55,6 +55,17 @@ def pr_authored_by_self(*, author: str, self_identities: Iterable[str]) -> bool:
     return author_is_self(author, current_user=identities[0], self_identities=identities)
 
 
+def own_or_same_repo(pr: PrSummary, *, self_identities: tuple[str, ...]) -> bool:
+    """True iff *pr* is the operator's own PR OR on a same-repo head branch (#3244).
+
+    A same-repo bot PR (e.g. ``app/github-actions``) is not authored by an operator
+    identity yet IS trusted provenance, so the solo cold-review arm covers it too —
+    otherwise it never gains the ``merge_safe`` verdict the sweep merges on. A fork
+    (``same_repo is False`` / ``None``) is excluded, matching the strict fork-holds rung.
+    """
+    return pr_authored_by_self(author=pr.author, self_identities=self_identities) or pr.same_repo is True
+
+
 def classify_sweep_ci(
     rollup: "list[RawAPIDict]",
     required_names: set[str] | None,

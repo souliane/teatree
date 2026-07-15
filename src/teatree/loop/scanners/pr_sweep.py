@@ -56,7 +56,7 @@ from teatree.loop.scanners.pr_sweep_decision import (
     classify_sweep_ci,
     find_actionable_clear,
     has_independent_cold_review,
-    pr_authored_by_self,
+    own_or_same_repo,
     pr_ticket_under_external_delivery,
     record_mergeable_notified,
     red_required_all_repo_state,
@@ -432,7 +432,7 @@ class PrSweepScanner:
         ci_skip, _fallback, failing = self._ci_gate(pr)
         if ci_skip is not None:
             return self._ci_block(pr, reason=ci_skip, failing=failing)
-        if not _own_or_same_repo(pr, self_identities=self.self_identities) or pr.behind_main:
+        if not own_or_same_repo(pr, self_identities=self.self_identities) or pr.behind_main:
             return _skip(pr, reason="no_clear_for_head")
         if not record_mergeable_notified(pr=pr, overlay=self.overlay):
             return _skip(pr, reason="no_clear_for_head")
@@ -489,7 +489,7 @@ class PrSweepScanner:
         """
         if not self.auto_review_dispatch or self.review_dispatcher is None:
             return False
-        if not _own_or_same_repo(pr, self_identities=self.self_identities):
+        if not own_or_same_repo(pr, self_identities=self.self_identities):
             return False
         if pr_ticket_under_external_delivery(slug=pr.slug, pr_id=pr.number, pr_url=pr.url):
             return False
@@ -570,17 +570,6 @@ class PrSweepScanner:
 
 def _skip(pr: PrSummary, *, reason: str) -> MergeAttempt:
     return MergeAttempt(slug=pr.slug, pr_id=pr.number, decision="skip", reason=reason)
-
-
-def _own_or_same_repo(pr: PrSummary, *, self_identities: tuple[str, ...]) -> bool:
-    """True iff *pr* is the operator's own PR OR on a same-repo head branch (#3244).
-
-    A same-repo bot PR (e.g. ``app/github-actions``) is not authored by an operator
-    identity yet IS trusted provenance, so the solo cold-review arm covers it too —
-    otherwise it never gains the ``merge_safe`` verdict the sweep merges on. A fork
-    (``same_repo is False`` / ``None``) is excluded, matching the strict fork-holds rung.
-    """
-    return pr_authored_by_self(author=pr.author, self_identities=self_identities) or pr.same_repo is True
 
 
 def _precondition_skip_reason(pr: PrSummary) -> str | None:

@@ -27,7 +27,7 @@ from teatree.core.merge.sha_bind import verify_sha_bound
 _MERGE_KEYSTONE = "merge_keystone"
 _EXPECTED_MERGE_GATES = frozenset(
     {
-        "public_repo_author_trusted",
+        "merge_provenance_trusted",
         "clear_authorized",
         "sha_bind",
         "anti_vacuity",

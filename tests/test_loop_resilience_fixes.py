@@ -363,6 +363,7 @@ class TestF7PrSweepBoundSquashSurfacesSha(TestCase):
             patch("teatree.backends.forge_merge_rpc.gh_runner", return_value=_gh),
             patch("teatree.core.merge.ci_rollup.CodeHostQuery.pr_is_draft", return_value=False),
             patch("teatree.core.merge.ci_rollup.CodeHostQuery.required_checks_status", return_value="green"),
+            patch("teatree.core.merge.ci_rollup.CodeHostQuery.pr_same_repo", return_value=True),
         ):
             ok, sha = client.merge_pr_squash_bound(slug="owner/repo", pr_id=42, expected_head_oid=expected)
 
