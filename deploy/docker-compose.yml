@@ -30,6 +30,18 @@ x-teatree-common: &teatree-common
     - type: bind
       source: /home/teatree/workspace/t3-workspaces
       target: /home/teatree/workspace/t3-workspaces
+    # Credential plane: the host-provisioned pass store + its GPG home, as
+    # DEDICATED mounts decoupled from the data dir (a data-dir change must never
+    # orphan credentials again, as #3262 did). Path identity; rw — gpg-agent
+    # binds its socket and lock files inside GNUPGHOME on a headless box, and the
+    # slack/postgres secret writers insert into pass at runtime. Secrets stay
+    # gpg-encrypted on the host disk, OUTSIDE the backed-up data dir.
+    - type: bind
+      source: /home/teatree/.password-store
+      target: /home/teatree/.password-store
+    - type: bind
+      source: /home/teatree/.gnupg
+      target: /home/teatree/.gnupg
     - teatree_uv:/opt/teatree/uv
   init: true
 
