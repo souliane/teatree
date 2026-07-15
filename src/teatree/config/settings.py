@@ -1,7 +1,7 @@
 """TeaTree config dataclasses + the per-overlay / env override registries.
 
 ``UserSettings`` (the ``[teatree]`` table), ``TeaTreeConfig``, ``OverlayEntry``,
-``E2ERepo``, the field ``_parse_*`` coercers, and the two override registries
+the field ``_parse_*`` coercers, and the two override registries
 (``OVERLAY_OVERRIDABLE_SETTINGS`` / ``ENV_SETTING_OVERRIDES``). Split out of the
 package module for the module-health LOC cap; re-exported from
 ``teatree.config`` so every ``teatree.config.<name>`` path stays valid.
@@ -48,17 +48,6 @@ from teatree.config.setting_parsers import (
 )
 from teatree.config.speak import parse_speak_setting
 from teatree.types import DEFAULT_MR_TITLE_REGEX, SlackVoiceClassifierMode, SpeakConfig
-
-
-@dataclass
-class E2ERepo:
-    """An external git repository containing Playwright E2E tests."""
-
-    name: str
-    url: str
-    branch: str
-    e2e_dir: str = "e2e"
-
 
 # The DB-home parser registry (#1775 hard partition). Every DB-home
 # ``UserSettings`` field (see ``config/homes.py``) has an entry here: the parser

@@ -23,6 +23,7 @@ from teatree.config.discovery import (
     discover_active_overlay,
     discover_overlays,
 )
+from teatree.config.e2e_repo import E2ERepo
 from teatree.config.enums import (
     Autonomy,
     CriticGateMode,
@@ -64,7 +65,6 @@ from teatree.config.settings import (
     ENV_SETTING_OVERRIDES,
     OVERLAY_OVERRIDABLE_SETTINGS,
     TOML_OVERLAY_OVERRIDABLE_SETTINGS,
-    E2ERepo,
     OverlayEntry,
     TeaTreeConfig,
     UserSettings,
