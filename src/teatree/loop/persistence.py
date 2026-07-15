@@ -19,7 +19,7 @@ from typing import TYPE_CHECKING
 from django.db import transaction
 
 from teatree.core.intake.ticket_kind_classification import TicketOrigin, classify_ticket_kind
-from teatree.core.models import Task, Ticket
+from teatree.core.models import ImplementedIssueMarker, Task, Ticket
 from teatree.core.models.ticket_external_review import schedule_external_review
 from teatree.loop.dispatch import DispatchAction
 from teatree.loop.dispatch_gates import claim_red_mr_fix
@@ -229,6 +229,7 @@ def _handle_orchestrator(action: DispatchAction) -> Task | None:
         defaults={"overlay": _owning_overlay(issue_url, scan_tag), "role": Ticket.Role.AUTHOR},
     )
     _reconcile_existing_overlay(ticket, created=created)
+    _link_claimed_marker(ticket, issue_url)
     # #748: a loop/coordinator-built ticket must have a durable phase-
     # attestation session even when scheduling below is skipped (role
     # mismatch / not NOT_STARTED / open task), so the shipping gate can
@@ -245,6 +246,19 @@ def _handle_orchestrator(action: DispatchAction) -> Task | None:
     if _has_open_task(ticket, phase="coding") or ticket.state != Ticket.State.NOT_STARTED:
         return None
     return ticket.schedule_coding()
+
+
+def _link_claimed_marker(ticket: Ticket, issue_url: str) -> None:
+    """Link the claimed marker to its new Ticket and advance it to ``TICKET_CREATED``.
+
+    This handler is the intended (and, before now, the only) writer of the
+    ``TICKET_CREATED`` state — the claim path leaves the marker ``DISPATCHED``.
+    Terminal markers (``ABANDONED`` / ``COMPLETED``) are excluded so a re-tick
+    on an already-completed issue can never resurrect a marker into the budget.
+    """
+    ImplementedIssueMarker.objects.filter(issue_url=issue_url).exclude(
+        state__in=ImplementedIssueMarker.State.terminal()
+    ).update(ticket=ticket, state=ImplementedIssueMarker.State.TICKET_CREATED)
 
 
 def _has_open_task(ticket: Ticket, *, phase: str) -> bool:

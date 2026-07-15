@@ -170,6 +170,7 @@ class ImplementedIssueMarkerFactory(DjangoModelFactory[ImplementedIssueMarker]):
 
     class Params:
         ticket_created = factory.Trait(state=ImplementedIssueMarker.State.TICKET_CREATED)
+        completed = factory.Trait(state=ImplementedIssueMarker.State.COMPLETED)
         abandoned = factory.Trait(state=ImplementedIssueMarker.State.ABANDONED)
 
 

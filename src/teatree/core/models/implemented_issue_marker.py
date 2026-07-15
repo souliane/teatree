@@ -54,14 +54,24 @@ class ImplementedIssueMarkerManager(models.Manager["ImplementedIssueMarker"]):
         return row
 
     def in_flight_count(self, overlay: str) -> int:
-        return self.filter(overlay=overlay).exclude(state=ImplementedIssueMarker.State.ABANDONED).count()
+        return self.filter(overlay=overlay).exclude(state__in=ImplementedIssueMarker.State.terminal()).count()
 
 
 class ImplementedIssueMarker(models.Model):
     class State(models.TextChoices):
         DISPATCHED = "dispatched", "Dispatched"
         TICKET_CREATED = "ticket_created", "Ticket created"
+        #: The ticket shipped and merged/delivered (or was ignored) — released
+        #: from the in-flight budget on ticket completion (the release-on-completion
+        #: the lifecycle previously lacked). Distinct from ABANDONED, which stays
+        #: reserved for give-up / fleet-claim-steal semantics.
+        COMPLETED = "completed", "Completed"
         ABANDONED = "abandoned", "Abandoned"
+
+        @classmethod
+        def terminal(cls) -> tuple[str, ...]:
+            """States that no longer consume the max-concurrent budget."""
+            return (cls.COMPLETED, cls.ABANDONED)
 
     issue_url = models.URLField(max_length=512)
     overlay = models.CharField(max_length=64, blank=True, default="")

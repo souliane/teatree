@@ -195,6 +195,11 @@ class IssueImplementerScanner:
     identities: tuple[str, ...] = field(default_factory=tuple)
     name: str = "issue_implementer"
     readback_enabled: bool = True
+    #: The single-ticket in-flight budget. The factory gate decides whether the
+    #: scanner runs; this caps how many NEW issues one tick may claim, so a full
+    #: backlog is not claimed all at once. 0 means uncapped (the loop claims every
+    #: candidate) — the safe default for a directly-constructed scanner.
+    max_concurrent: int = 0
     #: When False (budget full, or require_label with no label) this tick only
     #: HEARTBEATS in-flight fleet claims and claims no new issue — the heartbeat must
     #: run even at full budget or an in-flight claim would expire mid-dispatch
@@ -224,6 +229,8 @@ class IssueImplementerScanner:
         merged_prs = fetch_merged_prs(self.host, authors=operators) if self.readback_enabled else []
         signals: list[ScanSignal] = []
         for issue in candidates:
+            if self._budget_exhausted():
+                break
             url = _issue_url(issue)
             try:
                 hit = existing_work_for_issue(
@@ -270,6 +277,17 @@ class IssueImplementerScanner:
                 logger.exception("IssueImplementerScanner failed on issue %s", url)
                 continue
         return signals
+
+    def _budget_exhausted(self) -> bool:
+        """True once the live in-flight count has reached ``max_concurrent``.
+
+        Re-read per candidate rather than pre-computed: each successful claim
+        records a new in-flight marker, so the live count is the authority — a
+        read-back skip or an already-claimed issue consumes no budget.
+        """
+        if self.max_concurrent <= 0:
+            return False
+        return ImplementedIssueMarker.objects.in_flight_count(self.overlay_name) >= self.max_concurrent
 
     def _claim(self, url: str) -> ImplementedIssueMarker | None:
         """Claim *url*, cross-instance mutex first when the kill-switch is on.

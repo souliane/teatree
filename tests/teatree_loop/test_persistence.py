@@ -5,9 +5,10 @@ from unittest.mock import patch
 from django.test import TestCase
 
 from teatree.core.backend_protocols import ReviewState
-from teatree.core.models import Task, Ticket
+from teatree.core.models import ImplementedIssueMarker, Task, Ticket
 from teatree.loop.dispatch import DispatchAction
 from teatree.loop.persistence import persist_agent_actions
+from tests.factories import ImplementedIssueMarkerFactory
 
 
 class TestPersistReviewer(TestCase):
@@ -236,6 +237,30 @@ class TestPersistOrchestrator(TestCase):
         ticket = task.ticket
         assert ticket.role == Ticket.Role.AUTHOR
         assert ticket.issue_url == "https://example.com/owner/repo/issues/99"
+
+    def test_links_claimed_marker_to_ticket_and_moves_it_to_ticket_created(self) -> None:
+        """The dispatch handler is the intended writer of ``TICKET_CREATED`` (previously unwritten)."""
+        url = "https://example.com/owner/repo/issues/77"
+        marker = ImplementedIssueMarkerFactory(overlay="acme", issue_url=url)
+        assert marker.state == ImplementedIssueMarker.State.DISPATCHED
+
+        created = persist_agent_actions([self._action(issue_url=url)])
+
+        assert len(created) == 1
+        ticket = created[0].ticket
+        marker.refresh_from_db()
+        assert marker.state == ImplementedIssueMarker.State.TICKET_CREATED
+        assert marker.ticket_id == ticket.pk
+
+    def test_completed_marker_is_not_resurrected_on_reruns(self) -> None:
+        """A terminal marker must never be dragged back into the in-flight budget."""
+        url = "https://example.com/owner/repo/issues/78"
+        marker = ImplementedIssueMarkerFactory(overlay="acme", issue_url=url, completed=True)
+
+        persist_agent_actions([self._action(issue_url=url)])
+
+        marker.refresh_from_db()
+        assert marker.state == ImplementedIssueMarker.State.COMPLETED
 
     def test_skips_when_auto_start_is_false(self) -> None:
         result = persist_agent_actions([self._action(auto_start=False)])

@@ -370,6 +370,7 @@ def _issue_implementer_scanner_for(backend: OverlayBackends) -> IssueImplementer
         require_label=settings.issue_implementer_require_label,
         identities=backend.identities,
         can_claim=can_claim,
+        max_concurrent=settings.issue_implementer_max_concurrent,
     )
 
 
