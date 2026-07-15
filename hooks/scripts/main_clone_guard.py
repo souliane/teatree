@@ -9,12 +9,15 @@ self-update could not fast-forward the dirty/detached tree — teatree went
 silently stale.
 
 This gate denies a working-tree mutation of any REGISTERED (teatree-managed)
-main clone — an ``Edit``/``Write`` to a path under it, or a ``git
-checkout``/``switch`` to a non-default branch / ``reset --hard`` / ``restore``
-/ ``stash pop`` in a main-clone cwd — while ALLOWING ``git fetch``, ``git pull
---ff-only``, ``git checkout <default>``, ``git worktree add/remove/prune/list``,
-and all read-only git, so ``t3 update`` and worktree creation keep working. The
-verdict is UNIVERSAL — even the repo owner must branch a worktree.
+main clone — an ``Edit``/``Write`` to a path under a clone on the DEFAULT branch
+(or a detached HEAD), or a ``git checkout``/``switch`` to a non-default branch /
+``reset --hard`` / ``restore`` / ``stash pop`` in a main-clone cwd — while
+ALLOWING ``git fetch``, ``git pull --ff-only``, ``git checkout <default>``, ``git
+worktree add/remove/prune/list``, and all read-only git, so ``t3 update`` and
+worktree creation keep working. An ``Edit``/``Write`` to a clone checked out on a
+non-default FEATURE branch is ALLOWED (#3256): the risk it guards — dirtying the
+pristine default checkout — applies on the default branch, not a feature branch
+a bootstrap workflow deliberately accumulates on.
 
 The managed-repo / worktree-vs-clone resolution reuses the shared
 ``managed_repo`` toolkit (``running_from_worktree`` distinguishes a linked
@@ -33,6 +36,7 @@ circuit breaker) all keep this gate from wedging a session.
 
 import contextlib
 import re
+import subprocess  # noqa: S404 — hook code legitimately shells `git` (mirrors managed_repo).
 import sys
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -136,16 +140,68 @@ def _is_managed_main_clone(repo_root: str) -> bool:
     return repo_root_is_teatree_managed(str(root))
 
 
+def _remote_default_branch(repo_root: str) -> str | None:
+    """The remote default branch (``origin/HEAD`` target), with NO current-branch fallback.
+
+    ``managed_repo.default_branch`` falls back to the branch the clone is
+    currently ON when ``origin/HEAD`` is unset — which would report the feature
+    branch itself as the default and defeat the #3256 check. This resolver uses
+    only the remote default pointer, so a clone genuinely sitting on a feature
+    branch reports that branch as non-default. ``None`` when the pointer is unset
+    or git errors.
+    """
+    try:
+        out = subprocess.check_output(  # noqa: S603 — trusted internal subprocess; fixed argv, no shell
+            ["git", "-C", repo_root, "--no-optional-locks", "symbolic-ref", "refs/remotes/origin/HEAD"],  # noqa: S607
+            text=True,
+            timeout=3,
+            stderr=subprocess.DEVNULL,
+        ).strip()
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return out.rsplit("/", 1)[-1] or None
+
+
+def _on_non_default_branch(repo_root: str, branch: str) -> bool:
+    """True when the main clone sits on a NAMED non-default feature branch (#3256).
+
+    The gate guards the pristine DEFAULT checkout — a dirty/detached main clone
+    on ``main`` makes the editable ``t3`` run stale code (#2836). Editing a
+    feature branch checked out in the clone is a sanctioned workflow (a long-lived
+    bootstrap MR that accumulates on one branch), so it is allowed. The safe set
+    is the protected branches plus the remote default (``origin/HEAD``, resolved
+    WITHOUT ``default_branch``'s current-branch fallback so the feature branch is
+    not misread as the default). A detached HEAD (``branch == "HEAD"``) or an
+    empty branch is NOT a feature branch — it is the dangerous stale state the
+    gate exists to catch — so it still blocks.
+    """
+    name = branch.strip()
+    if not name or name == "HEAD":
+        return False
+    safe = set(load_protected_branches())
+    if default := _remote_default_branch(repo_root):
+        safe.add(default)
+    return name not in safe
+
+
 def _edit_finding(core, data: dict) -> "MainCloneFinding | None":  # noqa: ANN001 — untyped by design: a duck-typed handle passed positionally
-    """Resolve an Edit/Write landing on a path under a managed main clone, else None."""
+    """Resolve an Edit/Write landing on a path under a managed main clone, else None.
+
+    A managed main clone checked out on a non-default FEATURE branch is a
+    sanctioned edit target (#3256); only an edit to the pristine default checkout
+    (or a detached HEAD) blocks. The switch that lands the clone on a feature
+    branch is still governed by :func:`_git_finding`.
+    """
     file_path = data.get("tool_input", {}).get("file_path", "")
     if not isinstance(file_path, str) or not file_path or is_agent_state_path(file_path):
         return None
     resolved = resolve_branch_and_root(str(Path(file_path).expanduser().parent))
     if resolved is None:
         return None
-    _branch, repo_root = resolved
+    branch, repo_root = resolved
     if not _is_managed_main_clone(repo_root) or not file_is_inside_worktree(repo_root, file_path):
+        return None
+    if _on_non_default_branch(repo_root, branch):
         return None
     return core.edit_finding(file_path)
 

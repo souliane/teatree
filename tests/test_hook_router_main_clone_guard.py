@@ -134,6 +134,30 @@ class TestAllowsWorktreeAndHygiene:
         assert router.handle_block_main_clone_mutation(event) is False
         assert _deny(capsys) is None
 
+    def test_edit_in_main_clone_on_a_feature_branch_is_allowed(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        # A bootstrap workflow that accumulates on one branch IN the main clone
+        # is sanctioned (#3256): editing a non-default feature branch there is
+        # the intended operation, not the pristine-default dirtying #2836 guards.
+        clone = _managed_main_clone(tmp_path / "teatree")
+        _git(clone, "checkout", "-b", "feat-bootstrap")
+        event = _edit_event(clone / "app.py", "sess-feat-edit")
+        assert router.handle_block_main_clone_mutation(event) is False
+        assert _deny(capsys) is None
+
+    def test_edit_in_main_clone_on_default_branch_is_still_denied(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        # The true-positive protection is intact: an edit to the pristine default
+        # checkout still blocks (the anti-vacuous companion to the feature-branch allow).
+        clone = _managed_main_clone(tmp_path / "teatree")
+        event = _edit_event(clone / "app.py", "sess-default-edit")
+        assert router.handle_block_main_clone_mutation(event) is True
+        deny = _deny(capsys)
+        assert deny is not None
+        assert deny["permissionDecision"] == "deny"
+
     def test_git_checkout_feature_inside_a_worktree_is_allowed(
         self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
     ) -> None:
