@@ -2753,9 +2753,10 @@ def _orchestrator_boundary_agent_gate_enabled() -> bool:
     """Whether the foreground-Agent-dispatch deny is enabled (default ON, #1733).
 
     The ``Agent`` arm of the orchestrator-boundary gate (#1442) is now LIVE: an
-    ``Agent`` PreToolUse matcher is wired in ``hooks.json`` (#1646) so a
-    foreground Agent dispatch (which fires ``PreToolUse`` with
-    ``run_in_background`` in the tool_input) reaches this deny. The gate flipped
+    ``Agent`` PreToolUse matcher is wired in ``hooks.json`` (#1646) so an Agent
+    dispatch reaches this deny. Only an EXPLICIT ``run_in_background: False`` is
+    denied — the current CC Agent tool dispatches async and omits the field, so
+    an absent field is background (allowed), not foreground. The gate flipped
     to default-ON (#1733) after the attended dry-run that #1646 asks for; that
     dry-run is the user's pre-INSTALL gate, not a blocker to the code (hooks run
     from the INSTALLED plugin, so a worktree change cannot lock out the live
@@ -2790,17 +2791,30 @@ def _deny_foreground_agent_dispatch(data: dict) -> bool:
     may pick foreground.
 
     Default-ON behind :func:`_orchestrator_boundary_agent_gate_enabled` (#1733)
-    now that an ``Agent`` PreToolUse matcher is wired (#1646). The off-ramps are:
-    the kill-switch flag, a sub-agent context, ``run_in_background: true``, and a
-    per-call ``[fg-ok: <reason>]`` token in the prompt (mirroring the heavy-Bash
-    arm's escape). The deny itself routes through :func:`_fail_open_or_deny`
-    (#1692) so the self-rescue allowlist and the master
-    ``danger_gate_fail_open`` switch relax it exactly like every other over-deny
-    gate — never a bare :func:`emit_pretooluse_deny` lockout.
+    now that an ``Agent`` PreToolUse matcher is wired (#1646). Only an EXPLICIT
+    ``run_in_background: False`` is denied: the current Claude Code Agent tool
+    dispatches asynchronously and OMITS ``run_in_background`` entirely, so an
+    absent field is a background dispatch (allowed), and treating absence as
+    foreground false-blocked every main-agent Agent dispatch. The off-ramps are:
+    the kill-switch flag, a sub-agent context, an absent-or-``True``
+    ``run_in_background``, and a per-call ``[fg-ok: <reason>]`` token in the
+    prompt (mirroring the heavy-Bash arm's escape). The deny itself routes
+    through :func:`_fail_open_or_deny` (#1692) so the self-rescue allowlist and
+    the master ``danger_gate_fail_open`` switch relax it exactly like every other
+    over-deny gate — never a bare :func:`emit_pretooluse_deny` lockout.
     """
     if not _orchestrator_boundary_agent_gate_enabled():
         return False
-    if _call_is_from_subagent(data) or data.get("tool_input", {}).get("run_in_background") is True:
+    # The current Claude Code Agent tool dispatches ASYNCHRONOUSLY and no longer
+    # carries ``run_in_background`` in its tool_input (the #1646 "verified against
+    # the installed binary" foreground signal was removed in a later CC release).
+    # An ABSENT field is therefore a background dispatch — nothing to prevent —
+    # not a foreground one, so it must NOT be denied (else EVERY main-agent Agent
+    # dispatch is a false-positive block). Only an EXPLICIT ``run_in_background:
+    # False`` — a harness that genuinely offers a blocking foreground dispatch —
+    # is the foreground case this gate exists to stop.
+    run_in_background = data.get("tool_input", {}).get("run_in_background")
+    if _call_is_from_subagent(data) or run_in_background is not False:
         return False
     prompt = data.get("tool_input", {}).get("prompt", "")
     if isinstance(prompt, str) and _FG_OK_RE.search(prompt[:512]):
@@ -2808,11 +2822,12 @@ def _deny_foreground_agent_dispatch(data: dict) -> bool:
     return _fail_open_or_deny(
         data,
         "[main-agent-orchestration-guard] Foreground Agent dispatch "
-        "DENIED in main agent context.\n"
-        "Pass `run_in_background: true` to every Agent invocation "
-        "from the main agent, add an explicit `[fg-ok: <reason>]` marker to the "
-        "prompt if you truly need a foreground dispatch, or disable this "
-        "gate by setting the DB-home `orchestrator_boundary_agent_gate_enabled` to "
+        "(run_in_background=False) DENIED in main agent context.\n"
+        "Dispatch in the background instead (omit run_in_background, or pass "
+        "true) so the main agent is not blocked for the sub-agent's runtime. "
+        "If you truly need a blocking foreground dispatch, add an explicit "
+        "`[fg-ok: <reason>]` marker to the prompt, or disable this gate by "
+        "setting the DB-home `orchestrator_boundary_agent_gate_enabled` to "
         "false (`t3 <overlay> config_setting set orchestrator_boundary_agent_gate_enabled false`).\n"
         "Memory rule: "
         "feedback_always_run_in_background_for_sub_agent_dispatch "
