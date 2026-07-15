@@ -246,6 +246,26 @@ def test_list_open_issues_for_author_returns_empty_on_no_pages(monkeypatch: pyte
     assert client.list_open_issues_for_author("trusted-colleague") == []
 
 
+def test_list_open_issues_for_author_scopes_to_projects(monkeypatch: pytest.MonkeyPatch) -> None:
+    """project_slugs query each project's issues endpoint — the cross-repo firehose fix."""
+    client = gitlab_api.GitLabAPI(token="test-token")
+    captured_endpoints: list[str] = []
+
+    def _capture(endpoint: str) -> list[dict[str, object]]:
+        captured_endpoints.append(endpoint)
+        return [{"iid": len(captured_endpoints)}]
+
+    monkeypatch.setattr(client, "get_json_paginated", _capture)
+
+    result = client.list_open_issues_for_author("trusted-colleague", project_slugs=("org/repo", "org/other"))
+
+    assert result == [{"iid": 1}, {"iid": 2}]
+    assert captured_endpoints[0].startswith("projects/org%2Frepo/issues?")
+    assert captured_endpoints[1].startswith("projects/org%2Fother/issues?")
+    assert "author_username=trusted-colleague" in captured_endpoints[0]
+    assert "state=opened" in captured_endpoints[0]
+
+
 def test_list_recently_merged_mrs_returns_data(monkeypatch: pytest.MonkeyPatch) -> None:
     client = gitlab_api.GitLabAPI(token="test-token")
     monkeypatch.setattr(

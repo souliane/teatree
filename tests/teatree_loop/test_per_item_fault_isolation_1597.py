@@ -670,8 +670,8 @@ class _ImplementerHost:
     def current_user(self) -> str:
         return self.user
 
-    def list_authored_issues(self, *, author: str) -> list[RawAPIDict]:
-        _ = author
+    def list_authored_issues(self, *, author: str, repo_slugs: tuple[str, ...] = ()) -> list[RawAPIDict]:
+        _ = author, repo_slugs
         return self.issues
 
     def list_my_prs(self, *, author: str, updated_after: str | None = None) -> list[RawAPIDict]:

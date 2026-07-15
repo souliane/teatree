@@ -152,6 +152,7 @@ _ISSUE_SCOPED_READ_SIGNATURES: dict[str, list[tuple[str, inspect._ParameterKind]
     ],
     "list_authored_issues": [
         ("author", inspect.Parameter.KEYWORD_ONLY),
+        ("repo_slugs", inspect.Parameter.KEYWORD_ONLY),
     ],
 }
 

@@ -193,6 +193,11 @@ class IssueImplementerScanner:
     trusted_authors: tuple[str, ...] = field(default_factory=tuple)
     require_label: bool = False
     identities: tuple[str, ...] = field(default_factory=tuple)
+    #: The overlay's OWN repo slugs (``owner/name``). Every author query is scoped to
+    #: them, so a trusted human's issue on a repo the factory does not own is never
+    #: fetched — closing both the cross-repo firehose and the cross-repo claim hole.
+    #: Empty keeps the pre-scope global author search (back-compat).
+    repo_slugs: tuple[str, ...] = field(default_factory=tuple)
     name: str = "issue_implementer"
     readback_enabled: bool = True
     #: The single-ticket in-flight budget. The factory gate decides whether the
@@ -358,15 +363,23 @@ class IssueImplementerScanner:
     def _collect_unique_issues(self, trusted: frozenset[str]) -> list[RawAPIDict]:
         """Union each TRUSTED author's open issues, deduped by URL.
 
-        Author-scoped by construction: the forge is asked ONLY about the humans in the
-        trusted union, so a stranger's issue is not merely rejected downstream — it is
-        never fetched at all. Sorted so the query fan-out (and hence the claim order
-        under a tight concurrency budget) is deterministic across ticks.
+        Author- AND repo-scoped by construction: the forge is asked ONLY about the humans
+        in the trusted union, each query bound to :attr:`repo_slugs` (the overlay's own
+        repos), so a stranger's issue — and a trusted human's issue on a repo the factory
+        does not own — is never fetched at all. An app handle (``app/github-actions``, any
+        ``/``-containing handle) is skipped outright: it can never author a real intake, so
+        its query is pure waste (and, unscoped, the 1000-result cross-repo firehose). Sorted
+        so the query fan-out (and hence the claim order under a tight concurrency budget) is
+        deterministic across ticks.
         """
         seen_urls: set[str] = set()
         issues: list[RawAPIDict] = []
         for author in sorted(trusted):
-            for issue in self.host.list_authored_issues(author=author):
+            # An app handle (``app/github-actions``) can never author a real intake —
+            # its ``author:`` query is pure waste (and, unscoped, a firehose). Skip it.
+            if "/" in author:
+                continue
+            for issue in self.host.list_authored_issues(author=author, repo_slugs=self.repo_slugs):
                 url = _issue_url(issue)
                 if url and url in seen_urls:
                     continue

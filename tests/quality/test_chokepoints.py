@@ -251,6 +251,7 @@ _NON_CONTENT_PARAMS = frozenset(
         "self",
         "issue_url",
         "repo",
+        "repo_slugs",
         "parent_url",
         "comment_id",
         "slug",
