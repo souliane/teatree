@@ -46,7 +46,7 @@ pytestmark = pytest.mark.django_db
 def _skip_author_gate(monkeypatch: pytest.MonkeyPatch) -> None:
     # #1773 public-repo author gate — exercised by test_merge_execution_author_gate;
     # these pre-date it and target other concerns, so it is a no-op here.
-    monkeypatch.setattr("teatree.core.merge.execution.assert_public_repo_author_trusted", lambda **_: None)
+    monkeypatch.setattr("teatree.core.merge.execution.assert_merge_provenance_trusted", lambda **_: None)
 
 
 _SHA = "c" * 40

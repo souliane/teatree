@@ -74,7 +74,7 @@ def _gh_green(argv: list[str]) -> tuple[int, str, str]:
 
 @pytest.fixture(autouse=True)
 def _skip_author_gate(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr("teatree.core.merge.execution.assert_public_repo_author_trusted", lambda **_: None)
+    monkeypatch.setattr("teatree.core.merge.execution.assert_merge_provenance_trusted", lambda **_: None)
 
 
 def _merge(clear: MergeClear) -> MergeOutcome:

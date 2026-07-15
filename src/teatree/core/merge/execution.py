@@ -30,8 +30,8 @@ from teatree.core.merge.authorization import (
     _assert_anti_vacuity,
     _assert_clear_authorized,
     _assert_rubric_satisfied,
+    assert_merge_provenance_trusted,
     assert_no_active_review_lock,
-    assert_public_repo_author_trusted,
     assert_review_verdict_gate,
 )
 from teatree.core.merge.ci_rollup import CodeHostQuery, attach_touched_paths
@@ -285,6 +285,11 @@ def execute_bound_merge(
     """
     query = CodeHostQuery.for_ref(ref)
     slug, pr_id = ref.slug, ref.pr_id
+    # #3244 defence-in-depth: the solo-overlay bypass (``merge_pr_squash_bound`` →
+    # here) reaches this shared chokepoint with NO keystone preconditions run, so
+    # the provenance gate must fire HERE too — otherwise a fork PR could auto-merge
+    # via the bypass path even though the keystone (below) refuses it.
+    assert_merge_provenance_trusted(slug=slug, pr_id=pr_id, host_kind=ref.host_kind)
     assert_review_verdict_gate(slug=slug, pr_id=pr_id, head_sha=expected_head_oid)
     assert_no_active_review_lock(slug=slug, pr_id=pr_id)
     # north-star PR-4: merely-green-but-not-well-engineered does not merge. A
@@ -561,7 +566,7 @@ def _merge_ticket_pr_inner(
         host_kind=host_kind,
     )
     ref = PrRef(slug=slug, pr_id=pr_id, host_kind=host_kind)
-    assert_public_repo_author_trusted(slug=slug, pr_id=pr_id, host_kind=host_kind)
+    assert_merge_provenance_trusted(slug=slug, pr_id=pr_id, host_kind=host_kind)
     precheck = assert_merge_preconditions(
         clear=clear,
         executing_loop_identity=executing_loop_identity,

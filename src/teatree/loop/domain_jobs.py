@@ -164,7 +164,14 @@ def _ship_jobs_for_overlay(
     *,
     all_backends: tuple[OverlayBackends, ...],
 ) -> list[_ScannerJob]:
-    """Own-author PR scanner + (opt-in) GitLab-approvals poll, per host."""
+    """Own-author PR scanner + the auto-merge PR sweep + (opt-in) GitLab-approvals poll, per host.
+
+    #3244: the ``pr_sweep`` auto-merge engine lives HERE, in the ship domain, not
+    the review domain. The review loop is ``colleague_facing`` and is SKIPPED under
+    ``autonomous_away`` (loop_table gates it on availability), which starved the
+    merge path exactly when the operator was away. Ship is enabled and ticks every
+    5m, and its seed already claims the keystone merge, so the sweep belongs with it.
+    """
     tag = backend.name
     gitlab_approvals_enabled = _gitlab_approvals_enabled()
     jobs: list[_ScannerJob] = []
@@ -193,6 +200,9 @@ def _ship_jobs_for_overlay(
                     overlay=tag,
                 ),
             )
+    sweep_scanner = _pr_sweep_scanner_for(backend, slack_user_id=_user_slack_id_for_overlay(tag))
+    if sweep_scanner is not None:
+        jobs.append(_ScannerJob(scanner=sweep_scanner, overlay=tag))
     return jobs
 
 
@@ -201,7 +211,12 @@ def _review_jobs_for_overlay(
     *,
     all_backends: tuple[OverlayBackends, ...],
 ) -> list[_ScannerJob]:
-    """Reviewer-PR (per host) + broadcast / codex / PR-sweep helpers."""
+    """Reviewer-PR (per host) + broadcast / codex helpers.
+
+    #3244: the ``pr_sweep`` auto-merge engine moved OUT of here into the ship
+    domain (:func:`_ship_jobs_for_overlay`) so it keeps ticking under
+    ``autonomous_away`` — this ``colleague_facing`` review loop is skipped then.
+    """
     tag = backend.name
     jobs: list[_ScannerJob] = []
     for code_host in backend.hosts:
@@ -223,9 +238,6 @@ def _review_jobs_for_overlay(
                 overlay=tag,
             ),
         )
-    sweep_scanner = _pr_sweep_scanner_for(backend, slack_user_id=_user_slack_id_for_overlay(tag))
-    if sweep_scanner is not None:
-        jobs.append(_ScannerJob(scanner=sweep_scanner, overlay=tag))
     codex_scanner = _codex_review_scanner_for(backend)
     if codex_scanner is not None:
         jobs.append(_ScannerJob(scanner=codex_scanner, overlay=tag))

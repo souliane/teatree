@@ -114,9 +114,10 @@ MERGE_KEYSTONE = GuardedChokepoint(
     ),
     required_gates=(
         GateSpec(
-            name="public_repo_author_trusted",
-            callable_path="teatree.core.merge.authorization.assert_public_repo_author_trusted",
-            purpose="On a public repo the PR author must be a trusted identity (§17.4.3 author gate).",
+            name="merge_provenance_trusted",
+            callable_path="teatree.core.merge.authorization.assert_merge_provenance_trusted",
+            purpose="A fork / cross-repo PR always holds for a human; a same-repo head is trusted; "
+            "unreported provenance falls back to the public-repo author check (§17.4.3 provenance gate).",
         ),
         GateSpec(
             name="clear_authorized",

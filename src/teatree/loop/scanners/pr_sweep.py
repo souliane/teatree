@@ -56,11 +56,11 @@ from teatree.loop.scanners.pr_sweep_decision import (
     classify_sweep_ci,
     find_actionable_clear,
     has_independent_cold_review,
-    pr_authored_by_self,
+    own_or_same_repo,
     pr_ticket_under_external_delivery,
     record_mergeable_notified,
     red_required_all_repo_state,
-    untrusted_public_author,
+    untrusted_merge_provenance,
 )
 from teatree.loop.scanners.pr_sweep_types import (
     GH_CONFLICT_MERGE_STATE,
@@ -432,7 +432,7 @@ class PrSweepScanner:
         ci_skip, _fallback, failing = self._ci_gate(pr)
         if ci_skip is not None:
             return self._ci_block(pr, reason=ci_skip, failing=failing)
-        if not pr_authored_by_self(author=pr.author, self_identities=self.self_identities) or pr.behind_main:
+        if not own_or_same_repo(pr, self_identities=self.self_identities) or pr.behind_main:
             return _skip(pr, reason="no_clear_for_head")
         if not record_mergeable_notified(pr=pr, overlay=self.overlay):
             return _skip(pr, reason="no_clear_for_head")
@@ -489,7 +489,7 @@ class PrSweepScanner:
         """
         if not self.auto_review_dispatch or self.review_dispatcher is None:
             return False
-        if not pr_authored_by_self(author=pr.author, self_identities=self.self_identities):
+        if not own_or_same_repo(pr, self_identities=self.self_identities):
             return False
         if pr_ticket_under_external_delivery(slug=pr.slug, pr_id=pr.number, pr_url=pr.url):
             return False
@@ -577,12 +577,13 @@ def _precondition_skip_reason(pr: PrSummary) -> str | None:
         return "draft"
     if pr.has_changes_requested:
         return "changes_requested"
-    # #1773: on a PUBLIC repo an untrusted author is a potential malicious actor.
-    # This rung fires AHEAD of the CLEAR lookup and the solo-overlay
+    # #3244: a FORK / cross-repo PR always holds for a human, even from a trusted
+    # author; unreported provenance fails closed to the identity+visibility author
+    # check. This rung fires AHEAD of the CLEAR lookup and the solo-overlay
     # ``merge_pr_squash_bound`` fallback (which would otherwise auto-merge OUTSIDE
-    # the keystone author gate). The keystone refuses this same merge too.
-    if untrusted_public_author(pr):
-        return "untrusted_author_public_repo"
+    # the keystone provenance gate). The keystone refuses this same merge too.
+    if untrusted_merge_provenance(pr):
+        return "fork_requires_human_approval" if pr.same_repo is False else "untrusted_author_public_repo"
     return None
 
 

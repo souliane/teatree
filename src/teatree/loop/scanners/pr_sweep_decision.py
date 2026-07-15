@@ -14,7 +14,7 @@ from typing import TYPE_CHECKING
 
 from teatree.core.merge import classify_required_rollup, failing_required_names
 from teatree.core.models.merge_clear import MergeClear
-from teatree.core.review.author_trust import classify_author
+from teatree.core.review.author_trust import classify_pr_provenance
 from teatree.core.review.review_candidate import author_is_self
 from teatree.loop.pr_ticket_index import resolve_author_ticket
 from teatree.loop.scanners.pr_sweep_types import REPO_STATE_CHECK_NAMES, UV_AUDIT_CHECK_NAME, PrSummary
@@ -25,15 +25,16 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
-def untrusted_public_author(pr: PrSummary) -> bool:
-    """True iff *pr* is on a PUBLIC repo authored by an untrusted identity (#1773).
+def untrusted_merge_provenance(pr: PrSummary) -> bool:
+    """True iff *pr*'s head-branch provenance is not trusted to auto-merge (#3244).
 
-    PRIVATE / internal repos return False (no author check — the user owns
-    access control). An empty / unknown author on a public repo is untrusted
-    (fail-closed). Delegates to the shared :func:`classify_author` so the
-    scanners and the merge keystone cannot drift.
+    A FORK / cross-repo head (``same_repo is False``) is untrusted even when the
+    author is a trusted identity — the strict fork-holds model. A same-repo head
+    (``same_repo is True``) is trusted. Unreported provenance (``None``) fails
+    closed to the identity+visibility author check. Delegates to the shared
+    :func:`classify_pr_provenance` so this rung and the merge keystone cannot drift.
     """
-    return classify_author(pr.slug, pr.author).untrusted
+    return classify_pr_provenance(pr.slug, pr.author, same_repo=pr.same_repo).untrusted
 
 
 def pr_authored_by_self(*, author: str, self_identities: Iterable[str]) -> bool:
@@ -52,6 +53,17 @@ def pr_authored_by_self(*, author: str, self_identities: Iterable[str]) -> bool:
     if not author or not identities:
         return False
     return author_is_self(author, current_user=identities[0], self_identities=identities)
+
+
+def own_or_same_repo(pr: PrSummary, *, self_identities: tuple[str, ...]) -> bool:
+    """True iff *pr* is the operator's own PR OR on a same-repo head branch (#3244).
+
+    A same-repo bot PR (e.g. ``app/github-actions``) is not authored by an operator
+    identity yet IS trusted provenance, so the solo cold-review arm covers it too —
+    otherwise it never gains the ``merge_safe`` verdict the sweep merges on. A fork
+    (``same_repo is False`` / ``None``) is excluded, matching the strict fork-holds rung.
+    """
+    return pr_authored_by_self(author=pr.author, self_identities=self_identities) or pr.same_repo is True
 
 
 def classify_sweep_ci(

@@ -44,6 +44,21 @@ class TestDiffPathsAreSubstrate:
     def test_nested_governance_doc_is_substrate(self) -> None:
         assert diff_paths_are_substrate(["src/teatree/core/CLAUDE.md"]) is True
 
+    def test_trust_seam_is_substrate(self) -> None:
+        assert diff_paths_are_substrate(["src/teatree/core/review/author_trust.py"]) is True
+
+    def test_intake_gate_seams_are_substrate(self) -> None:
+        assert diff_paths_are_substrate(["src/teatree/loop/scanners/issue_implementer.py"]) is True
+        assert diff_paths_are_substrate(["src/teatree/loop/scanner_factories.py"]) is True
+
+    def test_safety_hooks_are_substrate(self) -> None:
+        assert diff_paths_are_substrate(["hooks/scripts/question_gates.py"]) is True
+
+    def test_trust_seam_lookalike_is_not_substrate(self) -> None:
+        # ``author_trust.py`` is pinned exactly — a sibling helper is not the seam.
+        assert diff_paths_are_substrate(["src/teatree/core/review/author_trust_helpers.py"]) is False
+        assert diff_paths_are_substrate(["hooksmith/x.py"]) is False
+
     def test_ordinary_logic_path_is_not_substrate(self) -> None:
         assert diff_paths_are_substrate(["src/teatree/loop/scanners/pr_sweep.py"]) is False
 
@@ -94,6 +109,14 @@ class TestIsSubstrateConsultsTouchedPaths(TestCase):
         clear = self._logic_clear()
         clear.touched_paths = ("src/teatree/loop/scanners/pr_sweep.py",)
         assert clear.is_substrate() is False
+
+    def test_self_governance_seam_holds_even_with_logic_label(self) -> None:
+        # #3244: an autonomous PR that touches the trust seam is substrate
+        # regardless of the 'logic' default — the factory cannot loosen its own
+        # guardrails unattended; the CLEAR ping-and-holds for the owner.
+        clear = self._logic_clear()
+        clear.touched_paths = ("src/teatree/core/review/author_trust.py",)
+        assert clear.is_substrate() is True
 
     def test_substrate_label_is_substrate_even_with_logic_paths(self) -> None:
         clear = MergeClear.objects.create(
