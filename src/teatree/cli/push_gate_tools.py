@@ -10,13 +10,12 @@ human report) or executes the two scoped sweeps (``--run``, the driver
 """
 
 import json
-import sys
 from pathlib import Path
 
 import typer
 
 from teatree.config import get_effective_settings
-from teatree.quality.push_gate import PushGatePlan, resolve_plan, run_push_gate
+from teatree.quality.push_gate import PushGatePlan, pytest_prefix, resolve_plan, run_push_gate
 from teatree.utils.django_bootstrap import ensure_django
 
 
@@ -34,10 +33,11 @@ def _resolve_flag() -> bool:
         return False
 
 
-def _emit_cmd(plan: PushGatePlan) -> str:
+def _emit_cmd(plan: PushGatePlan, repo_root: Path) -> str:
     doctest = " ".join(str(t) for t in plan.doctest_targets) or "(none)"
     scope = "WHOLE-TREE" if plan.astgrep_scope is None else (" ".join(str(p) for p in plan.astgrep_scope) or "(none)")
-    return f"{sys.executable} -m pytest --doctest-modules {doctest}\nast-grep scope: {scope}"
+    invocation = " ".join(pytest_prefix(repo_root))
+    return f"{invocation} --doctest-modules {doctest}\nast-grep scope: {scope}"
 
 
 def _plan_as_dict(plan: PushGatePlan) -> dict:
@@ -72,7 +72,7 @@ def push_gate_command(
         typer.echo(json.dumps(_plan_as_dict(plan), indent=2))
         return
     if emit_cmd:
-        typer.echo(_emit_cmd(plan))
+        typer.echo(_emit_cmd(plan, cwd))
         return
     if run:
         result = run_push_gate(plan, repo_root=cwd)

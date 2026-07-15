@@ -18,13 +18,13 @@ wedged push; CI's whole-tree scan is the guarantor. The whole-tree CI backstop i
 never on the push path alone.
 """
 
-import sys
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
 from teatree.quality.changed_set import ChangedSet, ChangedSetError, changed_paths, classify
 from teatree.quality.regression_scan import AstGrepUnavailableError, scan_findings
+from teatree.utils.django_db.runner import runner_prefix
 from teatree.utils.run import run_allowed_to_fail
 
 # The whole-tree doctest target — the FULL branch's ``--doctest-modules`` argument,
@@ -118,10 +118,22 @@ def resolve_plan(base_ref: str, *, enabled: bool, cwd: Path | None = None) -> Pu
     return plan_push_gate(changed, enabled=enabled)
 
 
+def pytest_prefix(repo_root: Path) -> list[str]:
+    """The pytest command prefix that runs from *repo_root*'s own environment.
+
+    ``sys.executable`` was WRONG here: under ``t3``'s ``uv tool install`` venv (the
+    local dev default) that interpreter has no pytest, so the gate exit-1'd on every
+    diff (#3205). Routing through :func:`runner_prefix` runs *repo_root*'s interpreter
+    (which carries pytest) and keeps the pipenv-vs-uv detection in its one chokepoint
+    (#1973), never a hand-rolled second ``uv run python`` prefix here.
+    """
+    return [*runner_prefix(repo_root), "-m", "pytest"]
+
+
 def _run_doctests(targets: Sequence[Path], repo_root: Path) -> bool:
     if not targets:
         return True
-    cmd = [sys.executable, "-m", "pytest", "--no-header", "-q", "--doctest-modules", *[str(t) for t in targets]]
+    cmd = [*pytest_prefix(repo_root), "--no-header", "-q", "--doctest-modules", *[str(t) for t in targets]]
     result = run_allowed_to_fail(cmd, expected_codes=None, cwd=repo_root)
     return result.returncode in {0, _PYTEST_NO_TESTS_COLLECTED}
 
