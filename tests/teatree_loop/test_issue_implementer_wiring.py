@@ -37,14 +37,23 @@ from tests.factories import ImplementedIssueMarkerFactory
 _PATCH_TARGET = "teatree.loop.scanner_factories._effective_settings_for_overlay"
 
 
-def _backend(name: str = "acme") -> OverlayBackends:
+def _backend(name: str = "acme", overlay: object = None) -> OverlayBackends:
     return OverlayBackends(
         name=name,
         hosts=(MagicMock(spec=CodeHostBackend),),
         messaging=None,
         ready_labels=(),
         identities=("alice",),
+        overlay=overlay,
     )
+
+
+def _overlay_with_repos(*, followup: list[str], merge_candidates: list[str] | None = None) -> MagicMock:
+    """A minimal overlay stub exposing the repo-slug hooks the factory resolves."""
+    overlay = MagicMock()
+    overlay.metadata.get_followup_repos.return_value = followup
+    overlay.review.merge_candidate_repo_slugs.return_value = merge_candidates or []
+    return overlay
 
 
 def _authored_host(*urls: str, author: str = "alice") -> CodeHostBackend:
@@ -104,6 +113,21 @@ class IssueImplementerGateTests(TestCase):
             scanner = _issue_implementer_scanner_for(_backend())
         assert isinstance(scanner, IssueImplementerScanner)
         assert set(scanner.trusted_authors) == {"souliane", "trusted-colleague"}
+
+    def test_owned_repo_slugs_are_resolved_from_the_overlay(self) -> None:
+        """The builder scopes intake to the overlay's own repos — the cross-repo firehose fix."""
+        overlay = _overlay_with_repos(followup=["souliane/teatree"], merge_candidates=["souliane/teatree-e2e"])
+        with patch(_PATCH_TARGET, return_value=_enabled()):
+            scanner = _issue_implementer_scanner_for(_backend(overlay=overlay))
+        assert isinstance(scanner, IssueImplementerScanner)
+        assert set(scanner.repo_slugs) == {"souliane/teatree", "souliane/teatree-e2e"}
+
+    def test_no_overlay_leaves_repo_slugs_empty(self) -> None:
+        """A backend with no overlay keeps intake unscoped (back-compat, no crash)."""
+        with patch(_PATCH_TARGET, return_value=_enabled()):
+            scanner = _issue_implementer_scanner_for(_backend())
+        assert isinstance(scanner, IssueImplementerScanner)
+        assert scanner.repo_slugs == ()
 
     def test_require_label_flag_is_plumbed_to_the_scanner(self) -> None:
         with patch(

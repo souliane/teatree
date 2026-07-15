@@ -697,6 +697,27 @@ class TestGitHubCodeHost:
             token="tok",
         )
 
+    def test_list_authored_issues_scopes_search_to_repo_slugs(self) -> None:
+        """repo_slugs AND OR-ed ``repo:owner/name`` qualifiers into the search — the cross-repo firehose fix."""
+        with patch.object(github_mod, "_gh_api_search_paginated", return_value=[]) as mock_search:
+            host = GitHubCodeHost(token="tok")
+            host.list_authored_issues(
+                author="souliane",
+                repo_slugs=("souliane/teatree", "souliane/other"),
+            )
+        query = mock_search.call_args.args[0]
+        assert "repo%3Asouliane%2Fteatree" in query
+        assert "repo%3Asouliane%2Fother" in query
+        assert "author%3Asouliane" in query
+
+    def test_list_authored_issues_without_repo_slugs_is_unscoped(self) -> None:
+        """Empty repo_slugs keeps today's global author query (back-compat)."""
+        with patch.object(github_mod, "_gh_api_search_paginated", return_value=[]) as mock_search:
+            host = GitHubCodeHost(token="tok")
+            host.list_authored_issues(author="souliane")
+        query = mock_search.call_args.args[0]
+        assert "repo%3A" not in query
+
     def test_list_authored_issues_returns_empty_when_no_results(self) -> None:
         with patch.object(github_mod, "_gh_api_search_paginated", return_value=[]):
             host = GitHubCodeHost()

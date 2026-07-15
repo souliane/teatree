@@ -179,9 +179,9 @@ class GitLabCodeHost:  # noqa: PLR0904 — method count reflects the CodeHostBac
     def list_assigned_issues(self, *, assignee: str) -> list[RawAPIDict]:
         return self._client.list_open_issues_for_assignee(assignee)
 
-    def list_authored_issues(self, *, author: str) -> list[RawAPIDict]:
-        """Open issues *author* FILED — the issue-implementer's trusted-author intake query (#3235)."""
-        return self._client.list_open_issues_for_author(author)
+    def list_authored_issues(self, *, author: str, repo_slugs: tuple[str, ...] = ()) -> list[RawAPIDict]:
+        """Open issues *author* FILED, scoped to *repo_slugs* (empty = global) — intake query (#3235)."""
+        return self._client.list_open_issues_for_author(author, project_slugs=repo_slugs)
 
     def list_prs(self, *, repo: str, state: str = "", author: str = "") -> list[RawAPIDict]:
         return _pr_reads.list_project_prs(self._client, self._resolve_project(repo), state=state, author=author)

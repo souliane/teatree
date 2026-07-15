@@ -236,14 +236,14 @@ class GitHubCodeHost:  # noqa: PLR0904 — method count reflects the CodeHostBac
         query = quote_plus(f"is:issue is:open assignee:{assignee}")
         return _gh_api_search_paginated(f"search/issues?q={query}&per_page=100", token=self._token)
 
-    def list_authored_issues(self, *, author: str) -> list[RawAPIDict]:
-        """Open issues *author* FILED — the issue-implementer's trusted-author intake query (#3235).
+    def list_authored_issues(self, *, author: str, repo_slugs: tuple[str, ...] = ()) -> list[RawAPIDict]:
+        """Open issues *author* FILED — the trusted-author intake query (#3235).
 
-        Distinct from :meth:`list_assigned_issues`: intake is decided by who WROTE
-        the issue, not by who it landed on, so the factory can pick up an untriaged,
-        unassigned, unlabelled issue the moment a trusted human files it.
+        *repo_slugs* AND OR-ed ``repo:owner/name`` qualifiers in, scoping intake to the
+        factory's own repos; empty keeps GitHub's cross-repo author search (the pre-scope
+        firehose + cross-repo claim hole this closes — see the commit body).
         """
-        query = quote_plus(f"is:issue is:open author:{author}")
+        query = quote_plus(f"is:issue is:open author:{author}" + "".join(f" repo:{s}" for s in repo_slugs))
         return _gh_api_search_paginated(f"search/issues?q={query}&per_page=100", token=self._token)
 
     def create_issue(

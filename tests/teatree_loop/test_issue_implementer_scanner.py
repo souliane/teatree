@@ -41,13 +41,21 @@ class _Host:
     merged_prs: list[RawAPIDict] = field(default_factory=list)
     #: Every author handle the scanner asked the forge about — the intake surface.
     queried_authors: list[str] = field(default_factory=list)
+    #: The ``repo_slugs`` passed with each query — the repo-scope surface.
+    queried_repo_slugs: list[tuple[str, ...]] = field(default_factory=list)
 
     def current_user(self) -> str:
         return self.user
 
-    def list_authored_issues(self, *, author: str) -> list[RawAPIDict]:
+    def list_authored_issues(self, *, author: str, repo_slugs: tuple[str, ...] = ()) -> list[RawAPIDict]:
         self.queried_authors.append(author)
-        return list(self.authored.get(author, []))
+        self.queried_repo_slugs.append(repo_slugs)
+        issues = list(self.authored.get(author, []))
+        # Model the forge's ``repo:`` qualifier: a scoped query returns only issues
+        # whose repo slug is in the requested set (an unscoped query returns all).
+        if repo_slugs:
+            issues = [issue for issue in issues if _issue_repo_slug(issue) in repo_slugs]
+        return issues
 
     def list_my_prs(self, *, author: str) -> list[RawAPIDict]:
         _ = author
@@ -61,6 +69,12 @@ class _Host:
 def _issue(url: str, *, author: str, labels: list[str] | None = None, state: str = "open") -> RawAPIDict:
     """A GitHub-shaped issue payload (``user.login`` is the author)."""
     return {"web_url": url, "title": "do it", "labels": labels or [], "state": state, "user": {"login": author}}
+
+
+def _issue_repo_slug(issue: RawAPIDict) -> str:
+    """``owner/repo`` parsed from a GitHub issue web URL (``.../owner/repo/issues/N``)."""
+    parts = str(issue.get("web_url", "")).split("/")
+    return "/".join(parts[3:5]) if len(parts) >= 6 else ""
 
 
 class _PublicRepoTestCase(TestCase):
@@ -429,3 +443,53 @@ class IssueImplementerReadbackTests(_PublicRepoTestCase):
         signals = self._scanner(host, readback_enabled=False).scan()
 
         assert [s.payload["url"] for s in signals] == [self.URL_A]
+
+
+class IssueImplementerRepoScopeTests(_PublicRepoTestCase):
+    """Repo-scoped intake — app handles skipped, cross-repo issues refused (the firehose fix).
+
+    Two failures the pre-fix scanner had: (1) it queried EVERY trusted handle,
+    including the ``app/github-actions`` CI-bot row, whose ``author:`` search
+    returns a 1000-result firehose of bot issues from all of GitHub; (2) it never
+    scoped the query to the overlay's own repos, so a trusted human's issue filed
+    on SOMEONE ELSE's public repo passed the author gate and got claimed — a
+    cross-repo safety hole, not just noise.
+    """
+
+    OVERLAY_REPO = "souliane/teatree"
+    FOREIGN_URL = "https://github.com/stranger/other-repo/issues/7"
+
+    def test_app_handle_is_never_queried(self) -> None:
+        """A ``/``-containing handle (app/github-actions) can't author issues — skipped, no wasted query."""
+        TrustedIdentity.objects.create(platform=TrustedIdentity.Platform.GITHUB, handle="app/github-actions")
+        host = _Host(authored={OWNER: [_issue(self.URL_A, author=OWNER)]})
+
+        self._scanner(host, repo_slugs=(self.OVERLAY_REPO,)).scan()
+
+        assert not any("/" in handle for handle in host.queried_authors)
+
+    def test_repo_slugs_are_plumbed_into_every_query(self) -> None:
+        host = _Host(authored={OWNER: [_issue(self.URL_A, author=OWNER)]})
+
+        self._scanner(host, repo_slugs=(self.OVERLAY_REPO,)).scan()
+
+        assert host.queried_repo_slugs
+        assert all(slugs == (self.OVERLAY_REPO,) for slugs in host.queried_repo_slugs)
+
+    def test_trusted_author_issue_on_foreign_repo_is_not_claimed(self) -> None:
+        """The cross-repo SAFETY pin: an owner issue on someone else's repo is never claimed."""
+        host = _Host(authored={OWNER: [_issue(self.FOREIGN_URL, author=OWNER)]})
+
+        signals = self._scanner(host, repo_slugs=(self.OVERLAY_REPO,)).scan()
+
+        assert signals == []
+        assert not ImplementedIssueMarker.objects.filter(issue_url=self.FOREIGN_URL).exists()
+
+    def test_trusted_author_issue_on_own_repo_is_still_claimed(self) -> None:
+        """Regression: an owner issue on the overlay's OWN repo is claimed as before."""
+        host = _Host(authored={OWNER: [_issue(self.URL_A, author=OWNER)]})
+
+        signals = self._scanner(host, repo_slugs=(self.OVERLAY_REPO,)).scan()
+
+        assert [s.payload["url"] for s in signals] == [self.URL_A]
+        assert ImplementedIssueMarker.objects.filter(issue_url=self.URL_A, overlay=self.OVERLAY).exists()
