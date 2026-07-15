@@ -18,17 +18,25 @@ logger = logging.getLogger(__name__)
 
 
 def _reap_stale_task_claims() -> None:
-    """Run the boot sweeps from the loop tick, swallowing a DB-blocked harness.
+    """Run the boot sweeps + transient auto-requeue from the loop tick, swallowing a DB-blocked harness.
 
     Best-effort wrapper over :func:`teatree.core.worktree.recovery_sweeps.run_boot_sweeps`
-    (the single SSOT, shared with ``t3 recover``): if the test harness blocks DB
-    access (pytest-django without a ``db`` marker), the loop tick should still
-    render scanners and signals.
+    (the single SSOT, shared with ``t3 recover``) plus
+    :func:`teatree.loop.transient_requeue.requeue_transient_failed` — the bounded
+    reopen of transient-FAILED tasks (an outage/provision-fail/coder-yield that
+    RETURNED a failure, which the crashed-session boot sweeps never rescue). The
+    transient requeue lives in the loop layer (it composes the ``agents``
+    classifier with the ``core`` model), so it is called here rather than folded
+    into the core-only ``run_boot_sweeps``. If the test harness blocks DB access
+    (pytest-django without a ``db`` marker), the loop tick should still render
+    scanners and signals.
     """
     from teatree.core.worktree.recovery_sweeps import run_boot_sweeps  # noqa: PLC0415 — deferred: loaded at tick time
+    from teatree.loop.transient_requeue import requeue_transient_failed  # noqa: PLC0415 — deferred: loaded at tick time
 
     with contextlib.suppress(RuntimeError):
         run_boot_sweeps()
+        requeue_transient_failed()
 
 
 def _persist_agent_dispatches(report: "TickReport") -> None:
