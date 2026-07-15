@@ -31,18 +31,49 @@ The stack is three services from one image (`deploy/Dockerfile`), selected by
 | `teatree-admin` | `t3 admin` | `unless-stopped` | Django admin under gunicorn on the box loopback `127.0.0.1:8000` (host networking); `DEBUG` off |
 
 `worker` and `admin` wait for `init` to complete, so the editable install on the
-shared clone happens exactly once. All three share named volumes, so the admin and
+shared clone happens exactly once. All three mount the same state, so the admin and
 the worker read the **same** `db.sqlite3` (WAL — safe concurrent reads):
 
-| Volume | Mount | Holds |
-| --- | --- | --- |
-| `teatree_src` | `/home/teatree/teatree` | the teatree clone (source) |
-| `teatree_data` | `/home/teatree/.local/share/teatree` | the canonical DB (`db.sqlite3`) |
-| `teatree_worktrees` | `/home/teatree/.local/share/teatree-worktrees` | per-worktree isolated DBs |
-| `teatree_workspaces` | `/home/teatree/workspace/t3-workspaces` | ticket worktrees |
-| `teatree_uv` | `/opt/teatree/uv` | the runtime teatree Python + venv + `t3` shims |
+| Mount | Path | Kind | Holds |
+| --- | --- | --- | --- |
+| `teatree_src` | `/home/teatree/teatree` | named volume | the teatree clone (source) |
+| DB dir | `/home/teatree/.local/share/teatree` | **host bind mount** | the canonical DB (`db.sqlite3`) + credentials + backups |
+| worktrees | `/home/teatree/.local/share/teatree-worktrees` | **host bind mount** | per-worktree isolated DBs |
+| workspaces | `/home/teatree/workspace/t3-workspaces` | **host bind mount** | ticket worktrees |
+| `teatree_uv` | `/opt/teatree/uv` | named volume | the runtime teatree Python + venv + `t3` shims |
 
-Re-running the workflow is **idempotent** — it converges the same stack.
+### External DB — one DB on the host disk
+
+The DB, worktrees, and workspaces are **host bind mounts at their canonical
+absolute paths**, not Docker-internal named volumes. The bind source and the
+container target are the identical path (path identity — `deploy/Dockerfile` sets
+no `XDG_DATA_HOME` and HOME is `/home/teatree` in both the container and the box),
+so the container and the host converge on **one** `db.sqlite3` on the host's
+daily-backed-up disk. There is no separate Docker-internal factory DB to drift
+from the operator's real DB.
+
+`teatree_src` and `teatree_uv` stay Docker-managed named volumes for now (later
+PRs handle code-mount modes).
+
+### One-time volume migration (operator step)
+
+A box that ran an older deploy has its state in Docker named volumes
+(`teatree_teatree_data`, `teatree_teatree_worktrees`, `teatree_teatree_workspaces`).
+`deploy/migrate-volume-data.sh` is a **one-time, idempotent, operator-run** step
+that moves that real factory state onto the host bind paths before the stack
+switches to bind mounts. Run it once, with the stack stopped:
+
+```bash
+docker compose -f deploy/docker-compose.yml down   # the script refuses while up
+sudo deploy/migrate-volume-data.sh                 # sudo: reads /var/lib/docker/volumes
+```
+
+It archives the existing host DB + backups (timestamped, never deleted) before
+overwriting them with the container volume's copy (the real factory state), then
+copies the credentials, worktrees, and workspaces across and brings the stack up.
+A fresh box with no prior volumes does not need this step.
+
+Re-running the deploy workflow is **idempotent** — it converges the same stack.
 
 ## Fleet role split — which loops run where
 
