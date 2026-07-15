@@ -4,8 +4,11 @@ PR-1 of the Docker unification: the factory's DB, worktrees, and workspaces
 must live on the host at their canonical absolute paths (not in Docker named
 volumes), so the container and the host converge on ONE db.sqlite3 via path
 identity (`deploy/Dockerfile` sets no `XDG_DATA_HOME`, HOME is `/home/teatree`
-in both). These tests pin the compose file to bind mounts at those exact host
-paths and confirm the now-unused named-volume declarations are gone.
+in both). The credential plane (the host pass store + its GPG home) is a further
+dedicated bind mount, decoupled from the data dir so a data-dir change can never
+orphan the provisioned credential store again (the #3262 regression). These tests
+pin the compose file to bind mounts at those exact host paths and confirm the
+now-unused named-volume declarations are gone.
 
 Structure is parsed from the YAML directly (the source of truth); a golden
 `docker compose config` assertion runs too when a usable docker is present.
@@ -21,12 +24,21 @@ import yaml
 
 COMPOSE_FILE = Path(__file__).resolve().parents[1] / "deploy" / "docker-compose.yml"
 
-# The three externalized mounts: canonical host path == container path (identity).
+# The three externalized state mounts: canonical host path == container path.
 EXTERNALIZED = {
     "/home/teatree/.local/share/teatree",
     "/home/teatree/.local/share/teatree-worktrees",
     "/home/teatree/workspace/t3-workspaces",
 }
+# The credential plane: the host pass store + its GPG home, DEDICATED bind mounts
+# decoupled from the data dir so a data-dir change can never orphan the
+# provisioned credential store again (#3262 regression). Also path identity.
+CREDENTIAL_PLANE = {
+    "/home/teatree/.password-store",
+    "/home/teatree/.gnupg",
+}
+# Every host bind mount the shared list must carry, by canonical source path.
+ALL_BIND_SOURCES = EXTERNALIZED | CREDENTIAL_PLANE
 # The two mounts that stay Docker-managed named volumes (later PRs handle these).
 KEPT_NAMED_VOLUMES = {"teatree_src", "teatree_uv"}
 REMOVED_NAMED_VOLUMES = {"teatree_data", "teatree_worktrees", "teatree_workspaces"}
@@ -42,17 +54,30 @@ def _common_volumes() -> list:
 
 
 class TestExternalizedBindMounts:
-    def test_state_dirs_are_bind_mounts_at_canonical_host_paths(self) -> None:
-        binds = {
+    def _bind_mounts(self) -> dict:
+        return {
             entry["source"]: entry
             for entry in _common_volumes()
             if isinstance(entry, dict) and entry.get("type") == "bind"
         }
-        assert set(binds) == EXTERNALIZED, "each externalized dir must be a host bind mount"
+
+    def test_state_dirs_are_bind_mounts_at_canonical_host_paths(self) -> None:
+        binds = self._bind_mounts()
+        assert set(binds) == ALL_BIND_SOURCES, "every state + credential dir must be a host bind mount"
         for source, entry in binds.items():
             # Path identity: the host source and the container target are the same
             # absolute path, so both see the same files with no XDG knob.
             assert entry["target"] == source, f"{source}: bind target must equal host source"
+
+    def test_credential_plane_is_a_dedicated_bind_mount(self) -> None:
+        # The pass store + GPG home must be their own mounts (not nested under the
+        # data dir), so externalizing/moving the data dir never orphans them again.
+        binds = self._bind_mounts()
+        assert CREDENTIAL_PLANE <= set(binds), "pass store + GPG home must be host bind mounts"
+        for source in CREDENTIAL_PLANE:
+            assert not source.startswith("/home/teatree/.local/share/teatree"), (
+                f"{source}: credential plane must be decoupled from the data dir"
+            )
 
     def test_kept_named_volume_mounts_still_present(self) -> None:
         named = {entry.split(":", 1)[0] for entry in _common_volumes() if isinstance(entry, str)}
@@ -93,7 +118,7 @@ class TestDockerComposeConfigGolden:
             pytest.skip(f"docker compose config unusable here: {proc.stderr.strip()[:200]}")
         rendered = json.loads(proc.stdout)
         mounts = {m["source"]: m for svc in rendered["services"].values() for m in svc.get("volumes", [])}
-        for path in EXTERNALIZED:
+        for path in ALL_BIND_SOURCES:
             assert path in mounts, f"{path} missing from rendered config"
             assert mounts[path]["type"] == "bind"
             assert mounts[path]["target"] == path

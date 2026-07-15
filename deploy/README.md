@@ -37,10 +37,21 @@ the worker read the **same** `db.sqlite3` (WAL — safe concurrent reads):
 | Mount | Path | Kind | Holds |
 | --- | --- | --- | --- |
 | `teatree_src` | `/home/teatree/teatree` | named volume | the teatree clone (source) |
-| DB dir | `/home/teatree/.local/share/teatree` | **host bind mount** | the canonical DB (`db.sqlite3`) + credentials + backups |
+| DB dir | `/home/teatree/.local/share/teatree` | **host bind mount** | the canonical DB (`db.sqlite3`) + backups |
 | worktrees | `/home/teatree/.local/share/teatree-worktrees` | **host bind mount** | per-worktree isolated DBs |
 | workspaces | `/home/teatree/workspace/t3-workspaces` | **host bind mount** | ticket worktrees |
+| pass store | `/home/teatree/.password-store` | **host bind mount** | the gpg-encrypted secret store (Anthropic OAuth token, …) |
+| GPG home | `/home/teatree/.gnupg` | **host bind mount** | the private key that decrypts the pass store |
 | `teatree_uv` | `/opt/teatree/uv` | named volume | the runtime teatree Python + venv + `t3` shims |
+
+The **credential plane** (`~/.password-store` + `~/.gnupg`) is a dedicated pair of
+bind mounts, deliberately decoupled from the data dir: the container's
+`PASSWORD_STORE_DIR`/`GNUPGHOME` point at these canonical host paths, so a future
+change to the data-dir mount can never orphan the provisioned credential store (as
+happened when #3262 moved the data dir to a bind mount while these paths still
+pointed inside it). Secrets stay gpg-encrypted on the host disk, outside the
+backed-up data dir. A box using the `CLAUDE_CODE_OAUTH_TOKEN` env path instead just
+leaves these dirs empty (`deploy.sh` pre-creates them owned by the deploy user).
 
 ### External DB — one DB on the host disk
 

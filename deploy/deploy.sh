@@ -50,6 +50,12 @@ git -C "$REPO_ROOT" fetch --prune origin
 git -C "$REPO_ROOT" pull --ff-only
 echo "deploy: deploying $(git -C "$REPO_ROOT" rev-parse --abbrev-ref HEAD) @ $(git -C "$REPO_ROOT" rev-parse --short HEAD)"
 
+# The credential-plane bind sources must pre-exist owned by the deploy user —
+# dockerd would otherwise create a missing source ROOT-owned, locking the user
+# out of later `pass insert` provisioning. Empty dirs are the sane degradation
+# for an env-token box (init's preflight then falls through to CLAUDE_CODE_OAUTH_TOKEN).
+install -d -m 700 "$HOME/.password-store" "$HOME/.gnupg"
+
 # Surface the WHY on a build/up failure — `set -e` would otherwise exit before
 # the Action log sees anything but "exited (1)".
 docker compose -f "$COMPOSE_FILE" up -d --build || {
