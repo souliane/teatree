@@ -210,15 +210,17 @@ def _check_worker_running() -> bool:
 def _check_editable_sanity() -> bool:
     from teatree.cli.doctor import DoctorService  # noqa: PLC0415 — deferred: breaks checks ↔ doctor cycle
 
-    ok = True
+    # A contribute/editable mismatch is an advisory WARN, not a hard FAIL — it is
+    # surfacing-only and must not redden the run (the watchdog DM extracts only
+    # FAIL lines, so a WARN-reddened run pages the owner with no detail). Only a
+    # genuine crash gates the exit code (#3313).
     try:
         for problem in DoctorService.check_editable_sanity():
             typer.echo(f"WARN  {problem}")
-            ok = False
     except Exception as exc:  # noqa: BLE001 — overlay loading can fail in many ways
         typer.echo(f"FAIL  Editable sanity check crashed: {exc.__class__.__name__}: {exc}")
-        ok = False
-    return ok
+        return False
+    return True
 
 
 def _check_ttyd_for_dashboard(env: dict[str, str] | None = None) -> bool:

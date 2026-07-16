@@ -108,16 +108,11 @@ class TestDoctorCheckCommand:
             patch.object(IntrospectionHelpers, "editable_info", return_value=(True, "file:///src")),
             patch.object(teatree_overlay_loader, "get_all_overlays", return_value={}),
             patch("teatree.core.gates.schema_guard.pending_migrations", return_value=[]),
-            # Isolate the editable-vs-contribute WARN under test from the sibling
-            # editable-install gates (shim receipt / dangling .pth), which the
-            # fake `file:///src` source would trip as a real FAIL now that the
-            # exit code reflects the true verdict (#3313).
-            patch.object(teatree_cli_doctor, "_check_t3_shim_receipt", return_value=True),
-            patch.object(teatree_cli_doctor, "_check_dangling_editable_pth", return_value=True),
-            patch.object(teatree_cli_doctor, "_check_entrypoint_is_primary_clone", return_value=True),
         ):
             result = runner.invoke(app, ["doctor", "check"])
 
+        # The editable/contribute mismatch is an advisory WARN — it must NOT
+        # redden the run now that the exit code is real (#3313).
         assert result.exit_code == 0, result.output
         assert "WARN" in result.output
 
