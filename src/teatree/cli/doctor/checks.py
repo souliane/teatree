@@ -598,9 +598,7 @@ def _check_dream_transcript_visibility() -> bool:
 
     try:
         root = default_projects_dir()
-        if root.is_dir() and (
-            any(root.glob("*/*.jsonl")) or any(root.glob("*/*/subagents/agent-*.jsonl"))
-        ):
+        if root.is_dir() and (any(root.glob("*/*.jsonl")) or any(root.glob("*/*/subagents/agent-*.jsonl"))):
             return True
     except Exception as exc:  # noqa: BLE001 — doctor check must never crash the run
         typer.echo(f"WARN  Dream-transcript-visibility check crashed: {exc.__class__.__name__}: {exc}")
