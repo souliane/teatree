@@ -121,6 +121,48 @@ class TestTranscriptRunner:
         path = TranscriptRunner(transcript_dir=tmp_path).transcript_path(spec)
         assert path == tmp_path / "my_scenario.jsonl"
 
+    def test_provenance_mismatch_skips_instead_of_grading(self, tmp_path: Path) -> None:
+        # A transcript whose provenance sidecar records a DIFFERENT prompt (a
+        # cross-contaminated / stale capture) must be refused as a skip, never
+        # graded as this scenario's (#3313).
+        from teatree.eval import transcript_manifest  # noqa: PLC0415
+
+        spec = _spec(tmp_path)
+        transcript = tmp_path / f"{spec.name}.jsonl"
+        transcript.write_text(
+            (FIXTURES / "worktree_first_subagent.session.jsonl").read_text(encoding="utf-8"), encoding="utf-8"
+        )
+        transcript_manifest.write(
+            transcript, scenario=spec.name, prompt="a DIFFERENT prompt", head_sha="", source=tmp_path / "src.jsonl"
+        )
+
+        run = TranscriptRunner(transcript_dir=tmp_path).run(spec)
+
+        assert run.terminal_reason.startswith("skipped")
+        assert "provenance" in run.terminal_reason
+        assert run.tool_calls == ()
+
+    def test_matching_provenance_grades_normally(self, tmp_path: Path) -> None:
+        from teatree.eval import transcript_manifest  # noqa: PLC0415
+
+        spec = _spec(tmp_path, match_value="git worktree add")
+        transcript = tmp_path / f"{spec.name}.jsonl"
+        transcript.write_text(
+            (FIXTURES / "worktree_first_subagent.session.jsonl").read_text(encoding="utf-8"), encoding="utf-8"
+        )
+        transcript_manifest.write(
+            transcript,
+            scenario=spec.name,
+            prompt=spec.prompt,
+            head_sha=transcript_manifest.current_head_sha(),
+            source=tmp_path / "src.jsonl",
+        )
+
+        run = TranscriptRunner(transcript_dir=tmp_path).run(spec)
+
+        assert not run.terminal_reason.startswith("skipped")
+        assert any("git worktree add" in call.input.get("command", "") for call in run.tool_calls)
+
 
 class TestSubscriptionRunnerGradesSessionSchemaSubagent:
     """A genuinely-produced in-session sub-agent JSONL grades on its matchers.

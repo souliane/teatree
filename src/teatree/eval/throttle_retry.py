@@ -35,6 +35,12 @@ from teatree.llm.anthropic_limits import CreditExhaustedError
 #: cap) plus jitter to de-correlate the concurrent retries on the shared token;
 #: override the attempt count via ``T3_EVAL_THROTTLE_RETRIES`` (0 disables retry).
 THROTTLE_RETRY_MAX_ATTEMPTS = 5
+#: Watchdog ``TimeoutError`` retries are capped SEPARATELY and much lower than a
+#: rate-limit throttle: a genuine hang re-hangs for the FULL watchdog on each
+#: retry, so riding a timeout out on the large throttle budget would burn up to
+#: ``(1 + THROTTLE_RETRY_MAX_ATTEMPTS)`` watchdog windows per scenario (~6x900s).
+#: A timeout gets a few retries, then surfaces loud.
+TIMEOUT_RETRY_MAX_ATTEMPTS = 2
 _THROTTLE_RETRIES_ENV_VAR = "T3_EVAL_THROTTLE_RETRIES"
 THROTTLE_BACKOFF_BASE_SECONDS = 1.0
 THROTTLE_BACKOFF_CAP_SECONDS = 30.0
@@ -82,6 +88,13 @@ def throttle_reason(signal: ThrottleSignal, attempts: int) -> str:
     return f"{THROTTLE_TERMINAL_PREFIX} {label} (exhausted {attempts} retries)"
 
 
+#: The terminal reason surfaced when a watchdog timeout outlasts its own retry
+#: cap. Kept as the bare ``"timeout"`` (a member of ``CAP_TERMINAL_REASONS``) so a
+#: hung run classifies exactly as before — #9 caps the retry COUNT, it does not
+#: change how an exhausted timeout is graded.
+_TIMEOUT_TERMINAL_REASON = "timeout"
+
+
 @dataclasses.dataclass(frozen=True)
 class ThrottleRetryHandlers:
     """The caller's per-terminus graders — how each outcome becomes an ``EvalRun``.
@@ -103,15 +116,19 @@ class ThrottleRetryDriver:
     """Drive an attempt-producing callable with bounded transient-throttle retry.
 
     ``sleep`` and ``rand`` are injectable so the backoff schedule is testable
-    without real time or a real RNG.
+    without real time or a real RNG. ``timeout_max_attempts`` bounds watchdog
+    timeouts on their OWN small budget, separate from the rate-limit throttle
+    budget ``max_attempts``.
     """
 
     max_attempts: int
+    timeout_max_attempts: int = TIMEOUT_RETRY_MAX_ATTEMPTS
     sleep: Callable[[float], None] = time.sleep
     rand: Callable[[], float] = _JITTER_RNG.random
 
     def run(self, drive: Callable[[], list[Message]], handlers: ThrottleRetryHandlers) -> EvalRun:
         attempt = 0
+        timeout_attempt = 0
         while True:
             try:
                 messages = drive()
@@ -125,20 +142,27 @@ class ThrottleRetryDriver:
                 return handlers.grade_cap(cap)
             except SuccessMislabelResultError as mislabel:
                 return handlers.grade_mislabel(mislabel)
+            except TimeoutError:
+                # A watchdog timeout leaves an EMPTY trajectory (asyncio.wait_for
+                # discards the partial run on cancel). Ride it out on its OWN small
+                # budget — a genuine hang re-hangs for the full watchdog each retry,
+                # so it must NOT share the large rate-limit budget.
+                if timeout_attempt >= self.timeout_max_attempts:
+                    return handlers.surface_throttled(_TIMEOUT_TERMINAL_REASON, attempt + timeout_attempt)
+                self.sleep(self._delay(_TIMEOUT_THROTTLE, timeout_attempt))
+                timeout_attempt += 1
+                continue
             except Exception as exc:
-                if isinstance(exc, TimeoutError):
-                    signal, reason = _TIMEOUT_THROTTLE, "timeout"
-                else:
-                    signal = classify_transient_throttle(str(exc))
-                    if signal is None:
-                        raise  # a non-throttle is a genuine crash — preserve its red
-                    reason = throttle_reason(signal, attempt)
+                signal = classify_transient_throttle(str(exc))
+                if signal is None:
+                    raise  # a non-throttle is a genuine crash — preserve its red
+                reason = throttle_reason(signal, attempt)
                 next_attempt = self._next_attempt(signal, attempt)
                 if next_attempt is None:
                     return handlers.surface_throttled(reason, attempt)
                 attempt = next_attempt
                 continue
-            return handlers.grade_success(messages, attempt)
+            return handlers.grade_success(messages, attempt + timeout_attempt)
 
     def _next_attempt(self, signal: ThrottleSignal, attempt: int) -> int | None:
         """Sleep the backoff and return the next attempt index, or ``None`` when the budget is spent."""

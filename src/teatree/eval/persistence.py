@@ -190,18 +190,11 @@ def persist_matrix(
             git_sha=current_git_sha() if git_sha is None else git_sha,
         )
         for row in rows:
-            if row.errored:
-                # An errored cell (the runner raised even after the matrix loop's
-                # bounded retries) is a transient infra blip, not a graded
-                # verdict. Persisting it as a `fail` row would unfairly lower the
-                # baseline pass-rate and the `--gate-regressions` diff — so it is
-                # excluded from the ledger entirely (no row written).
-                continue
             run.record_scenario(
                 scenario_name=row.scenario,
                 verdict=_matrix_verdict(row),
                 model=row.model,
-                score=0.0 if row.skipped else row.score,
+                score=0.0 if (row.skipped or row.errored) else row.score,
                 trials=row.trials,
                 cost_usd=row.cost_usd,
                 main_cost_usd=row.main_cost_usd,
@@ -218,6 +211,12 @@ def _pass_at_k_verdict(result: PassAtKResult) -> str:
 
 
 def _matrix_verdict(row: MatrixRow) -> str:
+    # An errored cell is recorded as its own `error` verdict — VISIBLE in the
+    # ledger and the baseline diff (a chronically-errored scenario no longer
+    # vanishes from history), yet EvalScenarioResultQuerySet.graded() excludes it
+    # from pass-rate math so a transient blip never counts as a pass or a fail.
+    if row.errored:
+        return "error"
     if row.skipped:
         return "skip"
     return "pass" if row.passed else "fail"

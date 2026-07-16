@@ -109,15 +109,40 @@ def _synthesize_spec(label: CorpusLabel) -> EvalSpec:
     )
 
 
+def _has_closing_text(message: dict) -> bool:
+    """True when *message* carries a non-empty ``text`` content block.
+
+    The completeness signal for a null-``stop_reason`` session capture: a finished
+    turn ends with the agent's closing narration. A mid-write copy cut off during a
+    tool call has no trailing text, so this separates a finished capture from a
+    truncated one.
+    """
+    content = message.get("content")
+    if not isinstance(content, list):
+        return False
+    return any(
+        isinstance(block, dict) and block.get("type") == "text" and str(block.get("text", "")).strip()
+        for block in content
+    )
+
+
 def _terminal_reason(events: list[SessionEvent]) -> tuple[str, bool]:
+    # A null/absent stop_reason is a clean completion ONLY when the final assistant
+    # turn carries closing text; without it the session capture is truncated /
+    # mid-write, so it grades as an error rather than a silent clean completion (a
+    # negative-matcher label must not pass on half a transcript).
     for event in reversed(events):
         if event.type != "assistant":
             continue
         message = event.raw.get("message")
-        stop_reason = message.get("stop_reason") if isinstance(message, dict) else None
-        if not isinstance(stop_reason, str):
+        if not isinstance(message, dict):
+            return "incomplete", True
+        stop_reason = message.get("stop_reason")
+        if isinstance(stop_reason, str):
+            return stop_reason, stop_reason in _DIRTY_STOP_REASONS
+        if _has_closing_text(message):
             return "completed", False
-        return stop_reason, stop_reason in _DIRTY_STOP_REASONS
+        return "incomplete", True
     return "aborted", True
 
 

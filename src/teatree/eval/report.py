@@ -75,6 +75,13 @@ class ScenarioResult:
         # the gate — otherwise raising the caps (#19) masks real failures.
         if self.run.terminal_reason in CAP_TERMINAL_REASONS:
             return False
+        # A judge-only spec (a judge block, zero matchers) whose judge was never
+        # graded has NO gating evidence — every matcher vacuously passes and the
+        # judge verdict is absent, so it would read a permanent green. That is not
+        # a pass, it is an ungraded scenario; it must never satisfy the gate (the
+        # default lanes inject no grader, so this is the common state, not an edge).
+        if not self.matcher_results and self.spec.judge is not None and self.judge is None:
+            return False
         if not all(m.passed for m in self.matcher_results):
             return False
         return self.judge is None or self.judge.skipped or self.judge.passed
@@ -109,6 +116,16 @@ def evaluate(spec: EvalSpec, run: EvalRun, *, judge: "JudgeGrader | None" = None
     skipped = run.terminal_reason.startswith("skipped:")
     if skipped:
         return ScenarioResult(spec=spec, run=run, matcher_results=(), skipped=True)
+    # A judge-only spec (a judge block, zero matchers) has no deterministic teeth;
+    # without an injected grader there is nothing to grade, so it is SKIPPED for
+    # setup reasons (surfaced as needs-setup by the AI lane) rather than read as a
+    # vacuous green. A spec that also carries matchers still grades them here — only
+    # the pure judge-only case is ungradable without a grader.
+    if not spec.matchers and spec.judge is not None and judge is None:
+        ungraded = dataclasses.replace(
+            run, terminal_reason="skipped: judge-only spec, no judge grader injected on this lane"
+        )
+        return ScenarioResult(spec=spec, run=ungraded, matcher_results=(), skipped=True)
     results: list[MatcherResult] = []
     for matcher in spec.matchers:
         try:

@@ -39,6 +39,7 @@ import dataclasses
 from pathlib import Path
 from typing import Protocol
 
+from teatree.eval import transcript_manifest
 from teatree.eval.api_runner import ApiInProcessRunner, ApiRunnerParams
 from teatree.eval.model_resolution import resolve_eval_model
 from teatree.eval.models import EvalRun, EvalSpec
@@ -181,15 +182,10 @@ class TranscriptRunner:
         spec = dataclasses.replace(spec, model=resolve_eval_model(spec))
         path = self.transcript_path(spec)
         if not path.is_file():
-            return EvalRun(
-                spec_name=spec.name,
-                tool_calls=(),
-                text_blocks=(),
-                terminal_reason=f"skipped: no transcript at {path}",
-                is_error=False,
-                raw_stdout="",
-                raw_stderr="",
-            )
+            return self._skip_run(spec, f"no transcript at {path}")
+        provenance = self._verify_provenance(spec, path)
+        if provenance is not None:
+            return provenance
         raw = path.read_text(encoding="utf-8", errors="replace")
         if is_subagent_transcript(raw):
             return subagent_run(spec, raw)
@@ -202,5 +198,33 @@ class TranscriptRunner:
             terminal_reason=terminal_reason,
             is_error=is_error,
             raw_stdout=raw,
+            raw_stderr="",
+        )
+
+    def _verify_provenance(self, spec: EvalSpec, path: Path) -> EvalRun | None:
+        """Refuse a transcript whose provenance sidecar no longer matches the scenario.
+
+        Returns a skip-shaped :class:`EvalRun` when a manifest is present but
+        stale/foreign (a since-changed skill, a drifted prompt, a different
+        scenario), so a cross-contaminated or regression-hiding transcript surfaces
+        as a skip rather than a silent pass. ``None`` means "grade it": either the
+        provenance matched, or there is no manifest (a curated fixture).
+        """
+        result = transcript_manifest.verify(
+            path, scenario=spec.name, prompt=spec.prompt, head_sha=transcript_manifest.current_head_sha()
+        )
+        if result.present and not result.ok:
+            return self._skip_run(spec, f"transcript provenance failed: {result.reason}")
+        return None
+
+    @staticmethod
+    def _skip_run(spec: EvalSpec, reason: str) -> EvalRun:
+        return EvalRun(
+            spec_name=spec.name,
+            tool_calls=(),
+            text_blocks=(),
+            terminal_reason=f"skipped: {reason}",
+            is_error=False,
+            raw_stdout="",
             raw_stderr="",
         )

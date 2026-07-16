@@ -394,7 +394,9 @@ class TestApiInProcessRunnerCapture:
         with (
             patch("teatree.eval.api_runner.shutil.which", return_value="/usr/local/bin/claude"),
             patch("teatree.eval.api_runner.query", query),
-            patch("teatree.eval.api_runner.WATCHDOG_SECONDS", 12.5),
+            # The runner resolves its watchdog at construction (#3313 — env override
+            # honored, not frozen at import), so patch the resolver, not the constant.
+            patch("teatree.eval.api_runner.resolve_watchdog_seconds", return_value=12.5),
             patch("teatree.eval.api_runner.asyncio.wait_for", _spy),
         ):
             ApiInProcessRunner(ApiRunnerParams(workspace=tmp_path)).run(spec)
@@ -460,11 +462,15 @@ class TestApiInProcessRunnerCapture:
         with (
             patch("teatree.eval.api_runner.shutil.which", return_value="/usr/local/bin/claude"),
             patch("teatree.eval.api_runner.query", _slow_query),
-            patch("teatree.eval.api_runner.WATCHDOG_SECONDS", 0.01),
+            patch("teatree.eval.api_runner.resolve_watchdog_seconds", return_value=0.01),
         ):
-            # throttle_max_attempts=0 disables the transient-throttle retry so a
-            # persistently-timing-out query surfaces the timeout run immediately.
-            run = ApiInProcessRunner(ApiRunnerParams(workspace=tmp_path, throttle_max_attempts=0)).run(spec)
+            # A persistently-timing-out query rides out its SEPARATE, small timeout
+            # budget (#3313 §9) then surfaces the "timeout" run; the injected no-op
+            # sleep keeps the bounded backoff instant. throttle_max_attempts=0 only
+            # disables the rate-limit-throttle budget, which is orthogonal to timeouts.
+            run = ApiInProcessRunner(
+                ApiRunnerParams(workspace=tmp_path, throttle_max_attempts=0, sleep=lambda _s: None)
+            ).run(spec)
         assert run.terminal_reason == "timeout"
         assert run.is_error is True
 

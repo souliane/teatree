@@ -579,6 +579,30 @@ class TestJudgeIntegration:
         assert result.judge is not None
         assert result.judge.passed is False
 
+    def test_judge_only_spec_without_grader_is_skipped_not_a_vacuous_pass(self) -> None:
+        # A judge-only spec (a judge block, NO matchers) graded on a lane that
+        # injects no grader has no gating evidence — it must SKIP (needs-setup),
+        # never read a permanent green (#3313).
+        spec = dataclasses.replace(_spec(matchers=()), judge=JudgeSpec(rubric="faithful"))
+        result = evaluate(spec, _run(tool_calls=_PASS_CALL))
+        assert result.skipped is True
+        assert "judge-only spec" in result.run.terminal_reason
+
+    def test_judge_only_result_never_reads_pass_when_ungraded(self) -> None:
+        # Defense in depth: even a directly-built non-skipped judge-only result
+        # with no judge outcome must not pass.
+        spec = dataclasses.replace(_spec(matchers=()), judge=JudgeSpec(rubric="faithful"))
+        result = ScenarioResult(spec=spec, run=_run(tool_calls=_PASS_CALL), matcher_results=(), skipped=False)
+        assert result.passed is False
+
+    def test_matchers_still_gate_a_judge_spec_on_a_grader_less_lane(self) -> None:
+        # A spec with BOTH matchers and a judge still grades its matchers when no
+        # grader is injected (only the pure judge-only case skips).
+        spec = _judged_spec()
+        result = evaluate(spec, _run(tool_calls=_PASS_CALL))
+        assert result.skipped is False
+        assert result.passed is True
+
     def test_judge_pass_with_matchers_pass_is_pass(self) -> None:
         spec = _judged_spec()
 

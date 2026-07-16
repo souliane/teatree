@@ -72,23 +72,48 @@ def _as_stream_events(raw: str) -> list[StreamJsonEvent]:
     return events
 
 
+def _has_closing_text(message: dict) -> bool:
+    """True when *message* carries a non-empty ``text`` content block.
+
+    The completeness signal for a null-``stop_reason`` capture: a genuinely
+    finished sub-agent turn ends with the agent's closing narration (a text
+    block). A mid-write copy cut off during a tool call has no trailing text, so
+    this distinguishes a finished transcript from a truncated one.
+    """
+    content = message.get("content")
+    if not isinstance(content, list):
+        return False
+    return any(
+        isinstance(block, dict) and block.get("type") == "text" and str(block.get("text", "")).strip()
+        for block in content
+    )
+
+
 def _terminal_reason(events: list[StreamJsonEvent]) -> tuple[str, bool]:
     """Return ``(terminal_reason, is_error)`` from the final ``assistant`` message.
 
     A sub-agent JSONL has no ``result`` event; the run's outcome is the last
     assistant turn's ``stop_reason``. On disk that field is commonly ``null`` (the
-    streamed reason is not persisted), which is a clean finish — only an
-    explicitly dirty reason (``max_tokens`` / ``refusal`` / ``error`` /
-    ``aborted``) marks an errored run. No assistant event at all is an abort.
+    streamed reason is not persisted). An explicit string reason is authoritative —
+    only a dirty one (``max_tokens`` / ``refusal`` / ``error`` / ``aborted``) is an
+    error. A ``null`` reason is a clean finish ONLY when the final assistant turn
+    carries closing text; a ``null`` reason with no trailing text is a truncated /
+    mid-write capture (``incomplete``, an error) — never a silent clean completion,
+    so a negative-matcher scenario cannot pass on half a transcript. No assistant
+    event at all is an abort.
     """
     for event in reversed(events):
         if event.type != "assistant":
             continue
         message = event.raw.get("message")
-        stop_reason = message.get("stop_reason") if isinstance(message, dict) else None
-        if not isinstance(stop_reason, str):
+        if not isinstance(message, dict):
+            return "incomplete", True
+        stop_reason = message.get("stop_reason")
+        if isinstance(stop_reason, str):
+            return stop_reason, stop_reason in _DIRTY_STOP_REASONS
+        if _has_closing_text(message):
             return "completed", False
-        return stop_reason, stop_reason in _DIRTY_STOP_REASONS
+        return "incomplete", True
     return "aborted", True
 
 

@@ -69,7 +69,7 @@ from teatree.eval.models import CLEAN_ROOM_LANE, CLEAN_ROOM_MIN_TURNS, EvalRun, 
 from teatree.eval.production_hooks import has_hook_events, hooked_env, t3_plugin, teatree_root
 from teatree.eval.prompt_framing import LIVE_ENV_FRAMING
 from teatree.eval.system_prompt_file import spill_system_prompt
-from teatree.eval.throttle_retry import THROTTLE_MAX_ATTEMPTS, ThrottleRetryDriver, ThrottleRetryHandlers
+from teatree.eval.throttle_retry import ThrottleRetryDriver, ThrottleRetryHandlers, resolve_throttle_retries
 from teatree.eval.toolset import (
     build_delegation_agents,
     compute_available_tools,
@@ -196,8 +196,10 @@ def resolve_metered_effort() -> EffortLevel:
     return raw if raw in EFFORT_LEVELS else METERED_DEFAULT_EFFORT  # type: ignore[return-value]
 
 
-#: Resolved at import so the existing ``patch("…WATCHDOG_SECONDS", 0.01)`` test seam
-#: keeps working; the env override is read here once, generous by default.
+#: The import-time watchdog default (generous). The RUNNER resolves its own
+#: watchdog FRESH at construction via :func:`resolve_watchdog_seconds` (so a
+#: post-import ``T3_EVAL_WATCHDOG_SECONDS`` override is honored, not frozen); this
+#: module constant is the public default other callers may read.
 WATCHDOG_SECONDS = resolve_watchdog_seconds()
 #: Per-run budget for the cheap lane (``t3 eval run`` internal/runner default). Only
 #: the DEFAULT — the metered ``t3 eval run --backend api`` lane and the benchmark
@@ -474,8 +476,12 @@ class ApiInProcessRunner:
         self._max_budget_usd = params.max_budget_usd
         self._effort = params.effort
         self._conflicting_vars = params.conflicting_vars
+        # Resolve the env-overridable knobs at CONSTRUCTION, not module import, so a
+        # T3_EVAL_* override set after ``import teatree.eval.api_runner`` (a test, a
+        # runtime reconfigure) is honored rather than frozen to its import-time value.
+        self._watchdog_seconds = resolve_watchdog_seconds()
         max_attempts = (
-            params.throttle_max_attempts if params.throttle_max_attempts is not None else THROTTLE_MAX_ATTEMPTS
+            params.throttle_max_attempts if params.throttle_max_attempts is not None else resolve_throttle_retries()
         )
         driver = ThrottleRetryDriver(max_attempts=max_attempts)
         if params.sleep is not None:
@@ -591,7 +597,7 @@ class ApiInProcessRunner:
         # a reason unrelated to behaviour. The run-level values apply when a scenario
         # declares none. The matchers are unchanged; this caps the RUN, not the teeth.
         max_budget_usd = spec.max_budget_usd if spec.max_budget_usd is not None else self._max_budget_usd
-        watchdog = spec.watchdog_seconds if spec.watchdog_seconds is not None else WATCHDOG_SECONDS
+        watchdog = spec.watchdog_seconds if spec.watchdog_seconds is not None else self._watchdog_seconds
         with self._resolve_eval_target(spec) as (workspace, cwd, env):
             options = build_sdk_options(
                 CleanRoomConfig(
