@@ -47,10 +47,32 @@ def _find_skill_md(name: str, skills_dir: Path | None = None) -> Path | None:
     return candidate if candidate.is_file() else None
 
 
-def _find_skill_md_in_dirs(name: str, skills_dirs: Sequence[Path]) -> Path | None:
-    """First ``<dir>/<name>/SKILL.md`` across *skills_dirs*, in order."""
+def _bare_skill_name(name: str) -> str:
+    """Reduce a skill reference to its on-disk directory name.
+
+    A reference reaches this helper qualified (``t3:rules``), as a bare name
+    (``rules``), or as an explicit path (``skills/rules/SKILL.md``). Each maps
+    to the ``skills/<dir>/SKILL.md`` directory that holds the body, so the
+    namespace qualifier and any path prefix are dropped to the directory name —
+    the filesystem key both the embed and the unresolvable-warning check resolve
+    against.
+    """
+    tail = name.rsplit(":", 1)[-1]
+    if tail.endswith("/SKILL.md"):
+        return Path(tail).parent.name
+    return Path(tail).name
+
+
+def _resolve_skill_md(name: str, skills_dirs: Sequence[Path]) -> Path | None:
+    """Find the first ``<dir>/<skill>/SKILL.md`` across *skills_dirs*, in order.
+
+    The single skill-reference resolver: the embed, the sub-agent preamble, and
+    the stage-skill unresolvable-warning check all route through it, so the
+    warning and the actual embed can never disagree on a skill's path (#3206).
+    """
+    bare = _bare_skill_name(name)
     for sd in skills_dirs:
-        found = _find_skill_md(name, sd)
+        found = _find_skill_md(bare, sd)
         if found is not None:
             return found
     return None
@@ -66,9 +88,9 @@ def _read_skill_contents(skills: list[str], *, skills_dir: Path | None = None) -
     dirs = _resolve_dirs(skills_dir)
     sections: list[str] = []
     for name in skills:
-        skill_md = _find_skill_md_in_dirs(name, dirs)
+        skill_md = _resolve_skill_md(name, dirs)
         if skill_md is not None:
-            sections.append(_skill_section(name, skill_md.read_text(encoding="utf-8")))
+            sections.append(_skill_section(_bare_skill_name(name), skill_md.read_text(encoding="utf-8")))
     return "\n\n".join(sections)
 
 
@@ -112,9 +134,9 @@ def _read_skill_contents_scoped(
     explicit_names: list[str] = []
     for name in skills:
         if _is_primary(name, primary_skills):
-            skill_md = _find_skill_md_in_dirs(name, dirs)
+            skill_md = _resolve_skill_md(name, dirs)
             if skill_md is not None:
-                sections.append(_skill_section(name, skill_md.read_text(encoding="utf-8")))
+                sections.append(_skill_section(_bare_skill_name(name), skill_md.read_text(encoding="utf-8")))
         elif name in explicit or _explicit_load_name(name) in explicit:
             explicit_names.append(name)
         elif name in suppress or _explicit_load_name(name) in suppress:
@@ -132,31 +154,6 @@ def _read_skill_contents_scoped(
         summary += "\n".join(f"- {name}: available — load if needed" for name in companion_names)
         sections.append(summary)
     return "\n\n".join(sections)
-
-
-def _bare_skill_name(name: str) -> str:
-    """Reduce a skill reference to its on-disk directory name.
-
-    A reference reaches this helper qualified (``t3:rules``), as a bare name
-    (``rules``), or as an explicit path (``skills/rules/SKILL.md``). Each maps
-    to the ``skills/<dir>/SKILL.md`` directory that holds the body, so the
-    namespace qualifier and any path prefix are dropped to the directory name —
-    the filesystem key the preamble resolves against.
-    """
-    tail = name.rsplit(":", 1)[-1]
-    if tail.endswith("/SKILL.md"):
-        return Path(tail).parent.name
-    return Path(tail).name
-
-
-def _resolve_skill_md(name: str, skills_dirs: Sequence[Path]) -> Path | None:
-    """Find the first ``<dir>/<skill>/SKILL.md`` across *skills_dirs*, in order."""
-    bare = _bare_skill_name(name)
-    for sd in skills_dirs:
-        found = _find_skill_md(bare, sd)
-        if found is not None:
-            return found
-    return None
 
 
 _SUBAGENT_PREAMBLE_HEADER = (
