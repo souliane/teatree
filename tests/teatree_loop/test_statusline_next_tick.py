@@ -135,7 +135,7 @@ class TestMiniLoopsAnchor:
     it counts down across renders rather than freezing on a constant.
     """
 
-    def test_one_chunk_per_enabled_mini_loop_with_own_countdown(self) -> None:
+    def test_only_due_soon_loops_appear_each_with_own_countdown(self) -> None:
         now = datetime.now(UTC)
         schedules = [
             ("dispatch", now + timedelta(seconds=120), 600),
@@ -144,8 +144,9 @@ class TestMiniLoopsAnchor:
         ]
         with patch("teatree.loop.statusline_loops._mini_loop_schedules", return_value=schedules):
             chunks = mini_loops_anchor()
-        # Each loop carries its OWN countdown, not a shared value.
-        assert chunks == ["dispatch 2m", "tickets 4m", "news 18m"], chunks
+        # #3248: only DUE-SOON loops appear (news at 18m is filtered out — no
+        # full loop list), each with its OWN countdown.
+        assert chunks == ["dispatch 2m", "tickets 4m"], chunks
 
     def test_never_fired_loop_reads_due(self) -> None:
         with patch("teatree.loop.statusline_loops._mini_loop_schedules", return_value=[("inbox", None, 300)]):
@@ -167,11 +168,11 @@ class TestMiniLoopsAnchor:
     def test_chunk_countdown_is_relative_to_now_not_static(self) -> None:
         # A nearer next-fire instant renders a SMALLER countdown than a
         # farther one — proving the value is derived from (next_fire - now),
-        # not a cached constant.
+        # not a cached constant. Both instants are within the due-soon horizon.
         now = datetime.now(UTC)
         with patch(
             "teatree.loop.statusline_loops._mini_loop_schedules",
-            return_value=[("ship", now + timedelta(seconds=600), 1200)],
+            return_value=[("ship", now + timedelta(seconds=300), 1200)],
         ):
             far = mini_loops_anchor()
         with patch(
@@ -179,7 +180,7 @@ class TestMiniLoopsAnchor:
             return_value=[("ship", now + timedelta(seconds=120), 1200)],
         ):
             near = mini_loops_anchor()
-        assert far == ["ship 10m"], far
+        assert far == ["ship 5m"], far
         assert near == ["ship 2m"], near
 
 
@@ -198,7 +199,8 @@ class TestLoopLineComposesLeasesAndMiniLoops:
             patch("teatree.loop.statusline_loops._availability_segment", return_value=""),
         ):
             lines = live_loops_anchor(colorize=False)
-        assert lines == ["tick 10m · dispatch 2m"], lines
+        # #3248: due-soon mini-loops ride the ``due:`` section; leases lead.
+        assert lines == ["tick 10m · due: dispatch 2m"], lines
 
     def test_line_renders_for_mini_loops_even_with_no_live_lease(self) -> None:
         # The user's complaint: crons were invisible when no infra lease was
@@ -212,7 +214,7 @@ class TestLoopLineComposesLeasesAndMiniLoops:
             patch("teatree.loop.statusline_loops._availability_segment", return_value=""),
         ):
             lines = live_loops_anchor(colorize=False)
-        assert lines == ["resource_pressure 1m"], lines
+        assert lines == ["due: resource_pressure 1m"], lines
 
 
 class TestMiniLoopChunk:

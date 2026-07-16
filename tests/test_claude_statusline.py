@@ -8,6 +8,7 @@ action_needed, in_flight) and live per-session info from Claude's stdin JSON
 import json
 import os
 import re
+import shutil
 import subprocess
 import time
 from pathlib import Path
@@ -139,8 +140,10 @@ class TestStatuslineHook:
         state_dir.mkdir()
         statusline_file = tmp_path / "statusline.txt"
         statusline_file.write_text("tick 5m\n", encoding="utf-8")
+        # The cost chip is now the first ``usage``-placed contributed segment
+        # (souliane/teatree#3237) — the retired dedicated ``cost_chip`` key.
         (tmp_path / "tick-meta.json").write_text(
-            json.dumps({"cost_chip": "SDK mtd ≈$48/$200"}),
+            json.dumps({"segments": [{"id": "cost_chip", "text": "SDK mtd ≈$48/$200", "placement": "usage"}]}),
             encoding="utf-8",
         )
 
@@ -171,6 +174,62 @@ class TestStatuslineHook:
 
         assert result.returncode == 0, result.stderr
         assert "SDK mtd" not in _strip_ansi(result.stdout)
+
+    def _run_with_segments(self, tmp_path: Path, segments: list[dict], payload: dict) -> subprocess.CompletedProcess:
+        state_dir = tmp_path / "state"
+        state_dir.mkdir()
+        statusline_file = tmp_path / "statusline.txt"
+        statusline_file.write_text("tick 5m\n", encoding="utf-8")
+        (tmp_path / "tick-meta.json").write_text(json.dumps({"segments": segments}), encoding="utf-8")
+        return _run(payload, state_dir=state_dir, statusline_file=statusline_file)
+
+    def test_header_segment_renders_next_to_freshness(self, tmp_path: Path) -> None:
+        seg = {"id": "upstream-behind", "text": "⇡12", "color": "yellow", "placement": "header"}
+        result = self._run_with_segments(
+            tmp_path, [seg], {"session_id": "s-hdr", "model": {"display_name": "Claude Opus"}}
+        )
+        assert result.returncode == 0, result.stderr
+        assert "⇡12" in _strip_ansi(result.stdout), result.stdout
+
+    def test_after_segment_lands_right_after_its_anchor(self, tmp_path: Path) -> None:
+        segments = [
+            {"id": "cost_chip", "text": "SDK mtd ≈$48/$200", "placement": "usage"},
+            {"id": "burn", "text": "burn↑", "placement": "after:cost_chip"},
+        ]
+        result = self._run_with_segments(
+            tmp_path,
+            segments,
+            {
+                "session_id": "s-after",
+                "model": {"display_name": "Claude Opus"},
+                "rate_limits": {"seven_day": {"used_percentage": 85}},
+            },
+        )
+        assert result.returncode == 0, result.stderr
+        plain = _strip_ansi(result.stdout)
+        # ``after:cost_chip`` resolves to the usage group and lands right after
+        # the chip it follows.
+        assert plain.index("SDK mtd") < plain.index("burn↑"), plain
+
+    def test_unknown_placement_degrades_to_end_of_line(self, tmp_path: Path) -> None:
+        segments = [{"id": "mystery", "text": "END-SEG", "placement": "nowhere"}]
+        result = self._run_with_segments(
+            tmp_path, segments, {"session_id": "s-end", "model": {"display_name": "Claude Opus"}}
+        )
+        assert result.returncode == 0, result.stderr
+        plain = _strip_ansi(result.stdout)
+        # Degrades to the end-of-line group, never errored or dropped.
+        assert "END-SEG" in plain, plain
+        assert plain.rstrip().index("END-SEG") > plain.index("model="), plain
+
+    def test_segment_color_applies_the_palette(self, tmp_path: Path) -> None:
+        seg = {"id": "warn", "text": "warnval", "color": "red", "placement": "header"}
+        result = self._run_with_segments(
+            tmp_path, [seg], {"session_id": "s-col", "model": {"display_name": "Claude Opus"}}
+        )
+        assert result.returncode == 0, result.stderr
+        # The red SGR (1;31m) wraps the segment text.
+        assert "\033[1;31mwarnval" in result.stdout, repr(result.stdout)
 
     def test_renders_model_and_context_window_from_stdin(self, tmp_path: Path) -> None:
         state_dir = tmp_path / "state"
@@ -1683,3 +1742,112 @@ class TestAutoloadOffHint:
         result = self._run_gated(tmp_path, session_id="")
         assert result.returncode == 0, result.stderr
         assert "autoload" not in result.stdout
+
+
+class TestMultibyteAwkSafety:
+    """The width-capping / badge awk must not blank the bar on multibyte input (#3286).
+
+    macOS's ``/usr/bin/awk`` (onetrueawk) aborts with ``towc: multibyte
+    conversion failure`` on multibyte characters (the ``·``/``│`` separators,
+    the ``⚠``/``—`` stale banner, the ``…`` ellipsis). When that awk aborts the
+    whole ``_cap_line_widths`` pipeline emits nothing, so the entire statusline
+    disappears. The fix runs those awk invocations under ``LC_ALL=C`` (byte
+    mode), where the awk never calls ``towc``. This test reproduces the crash on
+    Linux by shadowing ``awk`` with a wrapper that mimics onetrueawk: it aborts
+    on multibyte input unless invoked in the ``C`` locale.
+    """
+
+    _FAKE_AWK = (
+        "#!/usr/bin/env bash\n"
+        "# Simulates macOS onetrueawk's towc multibyte crash (#3286).\n"
+        "data=$(cat)\n"
+        'if [ "${LC_ALL:-}" != "C" ] && '
+        '[ -n "$(printf %s "$data" | LC_ALL=C tr -d \'\\000-\\177\')" ]; then\n'
+        "    printf 'awk: towc: multibyte conversion failure\\n' >&2\n"
+        "    exit 2\n"
+        "fi\n"
+        'printf %s "$data" | "$REAL_AWK" "$@"\n'
+    )
+
+    def _run_with_fake_awk(self, tmp_path: Path, payload: dict) -> subprocess.CompletedProcess:
+        awk_path = shutil.which("awk") or "/usr/bin/awk"
+        fake_bin = tmp_path / "fakebin"
+        fake_bin.mkdir()
+        fake_awk = fake_bin / "awk"
+        fake_awk.write_text(self._FAKE_AWK, encoding="utf-8")
+        fake_awk.chmod(0o755)
+
+        state_dir = tmp_path / "state"
+        state_dir.mkdir()
+        session_id = payload["session_id"]
+        (state_dir / f"{session_id}.teatree-active").touch()
+        env = os.environ.copy()
+        env["T3_AUTOLOAD"] = "1"
+        env["TEATREE_CLAUDE_STATUSLINE_STATE_DIR"] = str(state_dir)
+        env["CLAUDE_CONFIG_DIR"] = str(state_dir)
+        env["CLAUDE_TASKS_DIR"] = str(_harness_tasks_dir(state_dir))
+        env["REAL_AWK"] = awk_path
+        env["PATH"] = f"{fake_bin}{os.pathsep}{env.get('PATH', '')}"
+        return subprocess.run(
+            [str(SCRIPT)],
+            input=json.dumps(payload),
+            capture_output=True,
+            text=True,
+            env=env,
+            check=False,
+            cwd=REPO_ROOT,
+        )
+
+    def test_multibyte_separators_do_not_blank_the_bar(self, tmp_path: Path) -> None:
+        # model + rate limits render the multibyte group (``│``) and inline
+        # (``·``) separators, which feed multibyte bytes into _cap_line_widths.
+        payload = {
+            "session_id": "s-mb",
+            "model": {"display_name": "Claude Opus"},
+            "rate_limits": {
+                "five_hour": {"used_percentage": 42},
+                "seven_day": {"used_percentage": 85},
+            },
+        }
+        result = self._run_with_fake_awk(tmp_path, payload)
+
+        assert result.returncode == 0, result.stderr
+        # The crash makes the whole bar vanish; the fix keeps it rendering.
+        assert result.stdout.strip() != "", "multibyte content must not blank the statusline"
+        plain = _strip_ansi(result.stdout)
+        assert "model=Claude Opus" in plain, plain
+        assert "5h=42%" in plain, plain
+        assert "7d=85%" in plain, plain
+
+    def test_fake_awk_actually_crashes_without_lc_all_c(self, tmp_path: Path) -> None:
+        # Guard the reproduction itself: the fake awk must abort on multibyte
+        # input outside the C locale (so the test above is not vacuous).
+        fake_bin = tmp_path / "fakebin"
+        fake_bin.mkdir()
+        fake_awk = fake_bin / "awk"
+        fake_awk.write_text(self._FAKE_AWK, encoding="utf-8")
+        fake_awk.chmod(0o755)
+        env = os.environ.copy()
+        env["REAL_AWK"] = "/usr/bin/awk"
+        env.pop("LC_ALL", None)
+        crashed = subprocess.run(
+            [str(fake_awk), "{print}"],
+            input="a · b\n",
+            capture_output=True,
+            text=True,
+            env=env,
+            check=False,
+        )
+        assert crashed.returncode == 2, crashed
+        assert "towc" in crashed.stderr
+        env["LC_ALL"] = "C"
+        ok = subprocess.run(
+            [str(fake_awk), "{print}"],
+            input="a · b\n",
+            capture_output=True,
+            text=True,
+            env=env,
+            check=False,
+        )
+        assert ok.returncode == 0, ok.stderr
+        assert "a · b" in ok.stdout

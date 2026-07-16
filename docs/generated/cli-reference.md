@@ -3593,14 +3593,16 @@ Usage: t3 loop [OPTIONS] COMMAND [ARGS]...
 │                  last fire, and next tick.                                   │
 │ reclaim-markers  Release orphaned non-terminal markers whose ticket is       │
 │                  terminal/gone, freeing intake budget.                       │
-│ pause            Pause a mini-loop durably (#1913) — survives restart,       │
-│                  honoured by tick + self-pump.                               │
-│ resume           Resume a paused OR disabled mini-loop — return it to the    │
-│                  ENABLED state.                                              │
-│ disable          Disable a mini-loop durably — the restart-surviving         │
-│                  kill-switch.                                                │
-│ enable           Enable a disabled mini-loop — return it to the ENABLED      │
-│                  state (alias of resume).                                    │
+│ pause            Pause a mini-loop durably (#1913) — EMERGENCY-only; prefer  │
+│                  presets/schedules or `loop override`.                       │
+│ resume           Resume a paused OR disabled mini-loop — EMERGENCY-only;     │
+│                  prefer presets/schedules or `loop override`.                │
+│ disable          Disable a mini-loop durably — EMERGENCY-only; prefer        │
+│                  presets/schedules or `loop override`.                       │
+│ enable           Enable a disabled mini-loop — EMERGENCY-only; prefer        │
+│                  presets/schedules or `loop override`.                       │
+│ override         Emergency per-loop force (on/off/clear) — the handle that   │
+│                  beats a preset force-off (#3248).                           │
 │ loop-state       Read a known mini-loop's durable state, read-only (ENABLED  │
 │                  when never touched; refuses an unknown name).               │
 │ self-improve     Self-improving monitor — scheduled smell detection with a   │
@@ -3888,16 +3890,17 @@ Usage: t3 loop reclaim-markers [OPTIONS]
 ```
 Usage: t3 loop pause [OPTIONS] NAME
 
- Pause a mini-loop durably (#1913) — survives restart, honoured by tick +
- self-pump.
+ Pause a mini-loop durably (#1913) — EMERGENCY-only; prefer presets/schedules
+ or `loop override`.
 
 ╭─ Arguments ──────────────────────────────────────────────────────────────────╮
 │ *    name      TEXT  Mini-loop name (e.g. review, ship, dispatch).           │
 │                      [required]                                              │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
-│ --json          Emit JSON.                                                   │
-│ --help          Show this message and exit.                                  │
+│ --emergency          Required: this per-loop verb is emergency-only.         │
+│ --json               Emit JSON.                                              │
+│ --help               Show this message and exit.                             │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -3906,14 +3909,16 @@ Usage: t3 loop pause [OPTIONS] NAME
 ```
 Usage: t3 loop resume [OPTIONS] NAME
 
- Resume a paused OR disabled mini-loop — return it to the ENABLED state.
+ Resume a paused OR disabled mini-loop — EMERGENCY-only; prefer
+ presets/schedules or `loop override`.
 
 ╭─ Arguments ──────────────────────────────────────────────────────────────────╮
 │ *    name      TEXT  Mini-loop name. [required]                              │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
-│ --json          Emit JSON.                                                   │
-│ --help          Show this message and exit.                                  │
+│ --emergency          Required: this per-loop verb is emergency-only.         │
+│ --json               Emit JSON.                                              │
+│ --help               Show this message and exit.                             │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -3922,14 +3927,16 @@ Usage: t3 loop resume [OPTIONS] NAME
 ```
 Usage: t3 loop disable [OPTIONS] NAME
 
- Disable a mini-loop durably — the restart-surviving kill-switch.
+ Disable a mini-loop durably — EMERGENCY-only; prefer presets/schedules or
+ `loop override`.
 
 ╭─ Arguments ──────────────────────────────────────────────────────────────────╮
 │ *    name      TEXT  Mini-loop name. [required]                              │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
-│ --json          Emit JSON.                                                   │
-│ --help          Show this message and exit.                                  │
+│ --emergency          Required: this per-loop verb is emergency-only.         │
+│ --json               Emit JSON.                                              │
+│ --help               Show this message and exit.                             │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -3938,15 +3945,36 @@ Usage: t3 loop disable [OPTIONS] NAME
 ```
 Usage: t3 loop enable [OPTIONS] NAME
 
- Enable a disabled mini-loop — return it to the ENABLED state (alias of
- resume).
+ Enable a disabled mini-loop — EMERGENCY-only; prefer presets/schedules or
+ `loop override`.
 
 ╭─ Arguments ──────────────────────────────────────────────────────────────────╮
 │ *    name      TEXT  Mini-loop name. [required]                              │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
-│ --json          Emit JSON.                                                   │
-│ --help          Show this message and exit.                                  │
+│ --emergency          Required: this per-loop verb is emergency-only.         │
+│ --json               Emit JSON.                                              │
+│ --help               Show this message and exit.                             │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+#### `t3 loop override`
+
+```
+Usage: t3 loop override [OPTIONS] NAME STATE
+
+ Emergency per-loop force (on/off/clear) — the handle that beats a preset
+ force-off (#3248).
+
+╭─ Arguments ──────────────────────────────────────────────────────────────────╮
+│ *    name       TEXT  Mini-loop name. [required]                             │
+│ *    state      TEXT  on | off | clear. [required]                           │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --for           TEXT  TTL for the override (2h/30m/1d).                      │
+│ --reason        TEXT  Why the override is in force.                          │
+│ --json                Emit JSON.                                             │
+│ --help                Show this message and exit.                            │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
