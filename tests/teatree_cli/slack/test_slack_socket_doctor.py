@@ -143,6 +143,23 @@ class TestManifestAutoFix:
         upd.assert_not_called()
         assert any(f.level is Level.OK and "current" in f.message for f in outcome.findings)
 
+    def test_dm_only_manifest_is_not_rewidened(self) -> None:
+        # The footgun guard: a dm_only overlay whose live manifest is already the
+        # narrow dm_only set must report OK — the doctor must NOT push the full
+        # manifest and re-grant the channel scopes the operator dropped.
+        _seed({"t3": {**_T3_FULL, "slack_scope_profile": "dm_only"}})
+        dm_current = build_manifest(overlay_name="t3", scope_profile="dm_only")
+        mapping = {_CONFIG_TOKEN_REF: "cfg", _APP_SLOT: "xapp-a"}
+        with (
+            patch("teatree.cli.slack.socket_doctor.read_pass", side_effect=_pass(mapping)),
+            patch("teatree.cli.slack.socket_doctor.probe_app_connections", return_value=AppTokenProbe.valid()),
+            patch("teatree.cli.slack.socket_doctor._export_with_rotation", return_value=dm_current),
+            patch("teatree.cli.slack.socket_doctor.update_manifest") as upd,
+        ):
+            outcome = check_slack_socket_mode()
+        upd.assert_not_called()
+        assert any(f.level is Level.OK and "current" in f.message for f in outcome.findings)
+
 
 # ast-grep-ignore: ac-django-no-pytest-django-db
 @pytest.mark.django_db

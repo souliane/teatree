@@ -36,7 +36,7 @@ from typing import NoReturn
 import typer
 
 from teatree.backends.slack.bot import SlackBotBackend
-from teatree.cli.slack.app_resolve import read_overlay_field, write_overlay_fields
+from teatree.cli.slack.app_resolve import overlay_scope_profile, read_overlay_field, write_overlay_fields
 from teatree.cli.slack.manifest import (
     _BOT_ONLY_SCOPES,
     _CONFIG_REFRESH_REF,
@@ -182,7 +182,7 @@ def _prompt_app_id() -> str:
 
 def _run_degraded_path(*, overlay: str, app_id: str, token_ref: str, skip_smoke_test: bool) -> None:
     """No config token stored — print the manifest + editor deep link, then smoke-test."""
-    manifest = build_manifest(overlay_name=overlay)
+    manifest = build_manifest(overlay_name=overlay, scope_profile=overlay_scope_profile(overlay))
     editor_url = app_manifest_editor_url(app_id)
     typer.echo("WARN  No Slack app-config token stored — can't auto-update the manifest.")
     typer.echo("")
@@ -241,7 +241,7 @@ def _run_update_path(*, overlay: str, app_id: str, token_ref: str, skip_smoke_te
         _run_degraded_path(overlay=overlay, app_id=app_id, token_ref=token_ref, skip_smoke_test=skip_smoke_test)
         return
 
-    desired = build_manifest(overlay_name=overlay)
+    desired = build_manifest(overlay_name=overlay, scope_profile=overlay_scope_profile(overlay))
     current = _export_with_rotation(app_id=app_id)
     if manifests_equivalent(current, desired):
         typer.echo("OK    Manifest already current — nothing to update.")
@@ -257,7 +257,7 @@ def _run_update_path(*, overlay: str, app_id: str, token_ref: str, skip_smoke_te
 
 
 def _print_create_instructions(overlay: str) -> None:
-    manifest = build_manifest(overlay_name=overlay)
+    manifest = build_manifest(overlay_name=overlay, scope_profile=overlay_scope_profile(overlay))
     typer.echo("Step 1/4 — Create the Slack app.")
     typer.echo("")
     typer.echo("      Opening https://api.slack.com/apps …")

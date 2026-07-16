@@ -11,6 +11,31 @@ colleague DM from the self DM — exactly the distinction #1750 turns on.
 """
 
 
+class OwnerDmOnlyError(RuntimeError):
+    """A ``dm_only`` (owner-restricted) bot attempted an outbound to a non-owner surface.
+
+    Raised by :func:`assert_owner_dm` before the send so a bot deliberately scoped
+    to its one owner's DM can never leak a message or reaction into a colleague DM
+    or a channel, even when a caller passes the wrong destination.
+    """
+
+    def __init__(self, channel: str) -> None:
+        super().__init__(
+            f"owner-restricted bot refused an outbound to {channel!r}: this bot may only reach its owner's own DM.",
+        )
+
+
+def assert_owner_dm(channel: str, *, owner_dm_only: bool, dm_channel_id: str, user_id: str) -> None:
+    """Raise :class:`OwnerDmOnlyError` when an owner-restricted bot targets a non-owner surface.
+
+    A no-op unless *owner_dm_only* is set. Fail-closed: with no owner identity
+    (*dm_channel_id* and *user_id* both empty) :func:`is_self_dm` is never true, so
+    every destination is refused rather than falling open.
+    """
+    if owner_dm_only and not is_self_dm(channel, dm_channel_id=dm_channel_id, user_id=user_id):
+        raise OwnerDmOnlyError(channel)
+
+
 def is_self_dm(channel: str, *, dm_channel_id: str, user_id: str) -> bool:
     """True when *channel* is the configured user's own DM (#1750).
 

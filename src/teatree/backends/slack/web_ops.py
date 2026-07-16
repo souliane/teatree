@@ -7,7 +7,7 @@ functions taking the backend's http client or ``get`` / ``post`` callable so
 empty-credential guard, so these assume a usable token/channel.
 """
 
-from typing import Protocol
+from typing import Protocol, cast
 
 from teatree.backends.slack.http import SlackHttpClient
 from teatree.backends.slack.scopes import OAUTH_SCOPES_HEADER, attach_granted_scopes
@@ -42,6 +42,16 @@ def read_permalink(get: Getter, channel: str, ts: str) -> str:
         return ""
     permalink = data.get("permalink", "")
     return permalink if isinstance(permalink, str) else ""
+
+
+def open_im_channel(post: Poster, user_id: str) -> str:
+    """Open (or resolve) the IM channel id for *user_id* via ``conversations.open``; ``""`` on failure."""
+    data = post("conversations.open", {"users": user_id})
+    if not data.get("ok"):
+        return ""
+    channel = cast("RawAPIDict", data.get("channel") or {})
+    channel_id = channel.get("id")
+    return channel_id if isinstance(channel_id, str) else ""
 
 
 def join_conversation(post: Poster, channel: str) -> RawAPIDict:

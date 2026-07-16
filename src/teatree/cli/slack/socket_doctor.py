@@ -25,6 +25,8 @@ from enum import Enum
 import httpx
 
 from teatree.backends.slack.socket_mode import (
+    DM_ONLY_SOCKET_BOT_SCOPES,
+    DM_ONLY_SOCKET_EVENTS,
     SOCKET_MODE_APP_SCOPE,
     AppTokenProbe,
     ManifestSocketGaps,
@@ -32,7 +34,7 @@ from teatree.backends.slack.socket_mode import (
     probe_app_connections,
 )
 from teatree.backends.slack.token_validation import APP_TOKEN_RE
-from teatree.cli.slack.app_resolve import read_overlay_field, resolve_overlay_app_id
+from teatree.cli.slack.app_resolve import overlay_scope_profile, read_overlay_field, resolve_overlay_app_id
 from teatree.cli.slack.manifest import (
     _CONFIG_TOKEN_REF,
     SlackManifestError,
@@ -162,13 +164,19 @@ def _check_manifest(overlay: str) -> list[SocketModeFinding]:
         current = _export_with_rotation(app_id=app_id)
     except SlackManifestError as exc:
         return [SocketModeFinding(overlay, Level.WARN, f"could not export the manifest: {exc}.")]
-    gaps = manifest_socket_gaps(current)
+    profile = overlay_scope_profile(overlay)
+    if profile == "dm_only":
+        gaps = manifest_socket_gaps(
+            current, required_events=DM_ONLY_SOCKET_EVENTS, required_bot_scopes=DM_ONLY_SOCKET_BOT_SCOPES
+        )
+    else:
+        gaps = manifest_socket_gaps(current)
     if gaps.ok:
         message = "manifest Socket Mode config current (socket mode on, events + scopes present)."
         return [SocketModeFinding(overlay, Level.OK, message)]
     if not read_pass(_CONFIG_TOKEN_REF):
         return [SocketModeFinding(overlay, Level.ACTION, _no_config_token_message(app_id, gaps))]
-    desired = build_manifest(overlay_name=overlay)
+    desired = build_manifest(overlay_name=overlay, scope_profile=profile)
     try:
         update_manifest(app_id=app_id, manifest=desired, config_token=read_pass(_CONFIG_TOKEN_REF))
     except SlackManifestError as exc:

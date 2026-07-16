@@ -310,6 +310,9 @@ def get_messaging(overlay: "OverlayBase") -> MessagingBackend:
             # ``OverlayConfig.slack_dm_channel_id``.
             dm_channel_id=overlay.config.slack_dm_channel_id,
             degrade_bad_user_token=True,
+            # dm_only scope profile: the backend refuses every outbound but the
+            # owner's own DM (``assert_owner_dm`` at its token funnels).
+            owner_dm_only=overlay.config.slack_scope_profile == "dm_only",
         )
     if choice == "noop":
         return NoopMessagingBackend()
