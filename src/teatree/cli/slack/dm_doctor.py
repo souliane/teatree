@@ -14,12 +14,15 @@ For every Slack-backed overlay in the DB ``overlays`` registry this reports:
 4. OK when the backend resolves, the owner id is recorded, and the DM channel id
     is cached.
 
-The doctor renderer (``_doctor_checks._check_slack_dm_ready``) consumes the
-structured :class:`DmReadinessOutcome` this returns; it is surfacing-only, so a
-FAIL here never gates the overall doctor exit code (Slack is optional).
+The doctor renderer (:func:`check_and_render_dm_ready`) consumes the structured
+:class:`DmReadinessOutcome` this returns; it is surfacing-only, so a FAIL here
+never gates the overall doctor exit code (Slack is optional).
 """
 
+from collections.abc import Callable
 from dataclasses import dataclass
+
+import typer
 
 from teatree.backends.messaging_noop import NoopMessagingBackend
 from teatree.cli.slack.app_resolve import read_overlay_field
@@ -97,8 +100,31 @@ def check_slack_dm_ready() -> DmReadinessOutcome:
     return DmReadinessOutcome(findings=tuple(findings))
 
 
+def check_and_render_dm_ready(echo: Callable[[str], object] = typer.echo) -> bool:
+    """Report Slack DM-readiness per overlay — fail-loud diagnosis of DM/read gaps.
+
+    For every overlay declaring ``messaging_backend = "slack"`` it surfaces the
+    exact gaps that leave a DM-only bot unable to message or read its owner: a
+    no-op backend (bot tokens missing), an empty ``slack_user_id``, or an
+    unprovisioned DM channel. Consumes the structured :class:`DmReadinessOutcome`.
+
+    Surfacing-only: always returns ``True`` so it never gates the overall doctor
+    exit code (Slack is optional — it must never become mandatory). Crash-proof:
+    any error degrades to a WARN so a doctor run never aborts on this check.
+    """
+    try:
+        outcome = check_slack_dm_ready()
+    except Exception as exc:  # noqa: BLE001 — doctor check must never crash the run
+        echo(f"WARN  Slack DM-readiness check crashed: {exc.__class__.__name__}: {exc}")
+        return True
+    for finding in outcome.findings:
+        echo(f"{finding.level.value:<5} [{finding.overlay}] {finding.message}")
+    return True
+
+
 __all__ = [
     "DmReadinessFinding",
     "DmReadinessOutcome",
+    "check_and_render_dm_ready",
     "check_slack_dm_ready",
 ]

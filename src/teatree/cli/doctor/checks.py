@@ -525,31 +525,6 @@ def _check_slack_socket_mode() -> bool:
     return True
 
 
-def _check_slack_dm_ready() -> bool:
-    """Report Slack DM-readiness per overlay — fail-loud diagnosis of DM/read gaps.
-
-    For every overlay declaring ``messaging_backend = "slack"`` it surfaces the
-    exact gaps that leave a DM-only bot unable to message or read its owner: a
-    no-op backend (bot tokens missing), an empty ``slack_user_id``, or an
-    unprovisioned DM channel. Consumes the structured
-    :class:`~teatree.cli.slack.dm_doctor.DmReadinessOutcome`.
-
-    Surfacing-only: always returns ``True`` so it never gates the overall doctor
-    exit code (Slack is optional — it must never become mandatory). Crash-proof:
-    any error degrades to a WARN so a doctor run never aborts on this check.
-    """
-    try:
-        from teatree.cli.slack.dm_doctor import check_slack_dm_ready  # noqa: PLC0415 — only when probe runs
-
-        outcome = check_slack_dm_ready()
-    except Exception as exc:  # noqa: BLE001 — doctor check must never crash the run
-        typer.echo(f"WARN  Slack DM-readiness check crashed: {exc.__class__.__name__}: {exc}")
-        return True
-    for finding in outcome.findings:
-        typer.echo(f"{finding.level.value:<5} [{finding.overlay}] {finding.message}")
-    return True
-
-
 def _check_loop_presets() -> bool:
     """Warn on a dangling loop-preset reference (#3159): deleted preset / loop / schedule.
 

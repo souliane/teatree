@@ -34,7 +34,6 @@ from teatree.cli.doctor.checks import (
     _check_single_db,
     _check_singletons,
     _check_skills,
-    _check_slack_dm_ready,
     _check_slack_socket_mode,
     _check_stale_path_t3,
     _check_stale_uv_venv,
@@ -52,6 +51,7 @@ from teatree.cli.doctor.plugin_repair import (
 )
 from teatree.cli.doctor.statusline import check_statusline
 from teatree.cli.recommended_authorizations import authorizations, report_missing_authorizations
+from teatree.cli.slack.dm_doctor import check_and_render_dm_ready
 from teatree.utils.django_bootstrap import ensure_django
 from teatree.utils.run import run_allowed_to_fail
 
@@ -86,7 +86,6 @@ __all__ = (
     "_check_single_db",
     "_check_singletons",
     "_check_skills",
-    "_check_slack_dm_ready",
     "_check_slack_socket_mode",
     "_check_stale_path_t3",
     "_check_stale_uv_venv",
@@ -618,7 +617,7 @@ def check() -> bool:
     # channel. Runs after ``ensure_django`` because it builds messaging backends
     # via the overlay factory. Surfacing-only (never gates the exit code): Slack
     # is optional and must never become mandatory.
-    _check_slack_dm_ready()
+    check_and_render_dm_ready()
 
     # In-session `/login` account-switch recovery (#1916). Runs after
     # ``ensure_django`` because it builds messaging backends via the overlay
