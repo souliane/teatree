@@ -537,14 +537,14 @@ class TestFinishSelfHealsUserId:
         from teatree.cli.slack.setup import _finish_with_smoke_test  # noqa: PLC0415 — scoped import
 
         _seed_overlays({"acme": {"slack_app_id": "A123456", "slack_user_id": ""}})
-        with patch("teatree.cli.slack.setup.read_pass", return_value="U0OWNER1234"):
+        with patch("teatree.cli.slack.setup.read_pass", return_value="U0OWNERTEST"):
             _finish_with_smoke_test(
                 overlay="acme",
                 app_id="A123456",
                 token_ref="teatree/acme/slack",
                 skip_smoke_test=True,
             )
-        assert read_overlay_field("acme", "slack_user_id") == "U0OWNER1234"
+        assert read_overlay_field("acme", "slack_user_id") == "U0OWNERTEST"
 
     def test_empty_pass_leaves_user_id_empty(self) -> None:
         # No canonical pass id — self-heal must NOT invent a bogus (bot) id.
@@ -566,7 +566,7 @@ class TestFinishSelfHealsUserId:
         from teatree.cli.slack.setup import _finish_with_smoke_test  # noqa: PLC0415 — scoped import
 
         _seed_overlays({"acme": {"slack_app_id": "A123456", "slack_user_id": "U_RECORDED"}})
-        with patch("teatree.cli.slack.setup.read_pass", return_value="U0OWNER1234") as read:
+        with patch("teatree.cli.slack.setup.read_pass", return_value="U0OWNERTEST") as read:
             _finish_with_smoke_test(
                 overlay="acme",
                 app_id="A123456",
