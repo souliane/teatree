@@ -607,14 +607,16 @@ class TestStatuslineGating:
         out = self._run_statusline("no-teatree-sess", state_dir, extra_env={"T3_AUTOLOAD": "1"})
         assert out != ""
 
-    def test_marker_present_but_auto_load_off_produces_no_output(self, tmp_path: Path) -> None:
-        # The #256 colleague case: a session that loaded teatree (marker
-        # present) but never enabled autoload stays silent.
+    def test_marker_present_but_auto_load_off_shows_hint(self, tmp_path: Path) -> None:
+        # The #256 colleague case: a session that loaded teatree (marker present)
+        # but never enabled autoload gets NO loop statusline — only a one-line
+        # how-to hint (#3233), never a blank bar (CC discards zero bytes).
         state_dir = tmp_path / "state"
         state_dir.mkdir(parents=True, exist_ok=True)
         (state_dir / "teatree-sess.teatree-active").touch()
         out = self._run_statusline("teatree-sess", state_dir, home=tmp_path / "fresh-home")
-        assert out == ""
+        assert "autoload" in out
+        assert "model=" not in out
 
     def test_marker_and_env_opt_in_produces_output(self, tmp_path: Path) -> None:
         state_dir = tmp_path / "state"
