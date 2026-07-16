@@ -22,13 +22,50 @@ from collections.abc import Callable
 from unittest.mock import patch
 
 from teatree.backends.forge_merge_rpc import GhMergeRpc
-from teatree.core.backend_protocols import rollup_query_failed
+from teatree.core.backend_protocols import CHANGED_PATHS_UNAVAILABLE, changed_paths_unavailable, rollup_query_failed
 from teatree.core.merge import CodeHostQuery, classify_required_rollup, failing_required_names
-from teatree.core.merge.ci_rollup import _check_name, _dedupe_newest_per_name, _required_contexts_verdict
+from teatree.core.merge.ci_rollup import (
+    _check_name,
+    _dedupe_newest_per_name,
+    _required_contexts_verdict,
+    attach_touched_paths,
+)
+from teatree.core.models import MergeClear
 from teatree.utils.pr_ref import PrRef
 
 _SLUG = "souliane/teatree"
 _PR_ID = 2580
+
+
+class _SeqRunner:
+    """A ``Runner`` that returns queued ``(rc, out, err)`` triples and records calls."""
+
+    def __init__(self, results: list[tuple[int, str, str]]) -> None:
+        self._results = list(results)
+        self.calls: list[list[str]] = []
+
+    def __call__(self, argv: list[str]) -> tuple[int, str, str]:
+        self.calls.append(argv)
+        return self._results.pop(0)
+
+
+def _seq_runner(results: list[tuple[int, str, str]]) -> _SeqRunner:
+    return _SeqRunner(results)
+
+
+class _StubQuery:
+    """A minimal stand-in for ``CodeHostQuery`` — only ``ref`` + ``pr_changed_paths``."""
+
+    def __init__(self, paths: list[str], *, raises: bool = False) -> None:
+        self.ref = PrRef(slug=_SLUG, pr_id=_PR_ID)
+        self._paths = paths
+        self._raises = raises
+
+    def pr_changed_paths(self) -> list[str]:
+        if self._raises:
+            msg = "diff fetch boom"
+            raise RuntimeError(msg)
+        return self._paths
 
 
 def _rollup_names(rollup: list[dict[str, object]]) -> list[str]:
@@ -737,3 +774,54 @@ class TestRequiredStatusCheckContextsTransport:
             ),
         )
         assert sorted(str(entry["context"]) for entry in result) == ["lint"]
+
+
+class TestChangedPathsTransport:
+    """``GhMergeRpc.fetch_pr_changed_paths`` — paginated diff read, fail-closed sentinel."""
+
+    def test_paginated_files_are_returned(self) -> None:
+        # ``--paginate`` follows every page; the jq emits one filename per line.
+        runner = _seq_runner([(0, "a.py\nsrc/teatree/core/merge/x.py\n", "")])
+        assert GhMergeRpc(runner).fetch_pr_changed_paths(slug=_SLUG, pr_id=_PR_ID) == [
+            "a.py",
+            "src/teatree/core/merge/x.py",
+        ]
+        assert runner.calls[0] == ["api", "--paginate", f"repos/{_SLUG}/pulls/{_PR_ID}/files", "--jq", ".[].filename"]
+
+    def test_fetch_error_returns_unavailable_sentinel(self) -> None:
+        runner = _seq_runner([(1, "", "HTTP 502")])
+        result = GhMergeRpc(runner).fetch_pr_changed_paths(slug=_SLUG, pr_id=_PR_ID)
+        assert changed_paths_unavailable(result)
+
+
+class TestAttachTouchedPaths:
+    """``attach_touched_paths`` fails CLOSED to substrate on an unreadable/truncated diff."""
+
+    def _logic_clear(self) -> MergeClear:
+        return MergeClear(
+            pr_id=_PR_ID,
+            slug=_SLUG,
+            reviewed_sha="a" * 40,
+            reviewer_identity="cold-reviewer",
+            gh_verify_result=MergeClear.VerifyResult.GREEN,
+            blast_class=MergeClear.BlastClass.LOGIC,
+        )
+
+    def test_complete_paths_populate_touched_paths(self) -> None:
+        clear = self._logic_clear()
+        attach_touched_paths(clear, _StubQuery(["a.py", "b.py"]))
+        assert clear.touched_paths == ("a.py", "b.py")
+        assert clear.substrate_paths_indeterminate is False
+        assert clear.is_substrate() is False
+
+    def test_unavailable_sentinel_holds_as_substrate(self) -> None:
+        clear = self._logic_clear()
+        attach_touched_paths(clear, _StubQuery([CHANGED_PATHS_UNAVAILABLE]))
+        assert clear.substrate_paths_indeterminate is True
+        assert clear.is_substrate() is True
+
+    def test_fetch_exception_holds_as_substrate(self) -> None:
+        clear = self._logic_clear()
+        attach_touched_paths(clear, _StubQuery([], raises=True))
+        assert clear.substrate_paths_indeterminate is True
+        assert clear.is_substrate() is True

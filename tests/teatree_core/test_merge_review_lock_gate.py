@@ -140,7 +140,11 @@ class TestMergeProceedsWhenLockIsNotHeld(TestCase):
         assert outcome.merged_sha
         assert ticket.state == Ticket.State.MERGED
 
-    def test_proceeds_once_the_lock_has_gone_stale(self) -> None:
+    def test_expired_unresolved_lock_escalates_then_proceeds(self) -> None:
+        # Low finding: an expired-but-unresolved dispatch lock (a slow/crashed
+        # reviewer that never recorded a verdict) is NOT silently treated as
+        # "no review in flight" — the first attempt refuses (escalation) and
+        # reconciles; a subsequent attempt proceeds (bounded, never a lockout).
         import datetime as dt  # noqa: PLC0415
 
         ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.IN_REVIEW)
@@ -148,8 +152,14 @@ class TestMergeProceedsWhenLockIsNotHeld(TestCase):
         _seed_merge_safe_verdict()
         MRReviewLock.acquire(slug=_SLUG, pr_id=_PR, holder="t3:reviewer-agent-b", ttl=dt.timedelta(seconds=-1))
 
-        outcome = _merge(clear)
+        with pytest.raises(MergePreconditionError, match="expired without recording a verdict"):
+            _merge(clear)
+        ticket.refresh_from_db()
+        assert ticket.state == Ticket.State.IN_REVIEW
+        # The escalation reconciled the stale row → the next attempt proceeds.
+        assert MRReviewLock.expired_unresolved_lock_for(slug=_SLUG, pr_id=_PR) is None
 
+        outcome = _merge(clear)
         ticket.refresh_from_db()
         assert outcome.merged_sha
         assert ticket.state == Ticket.State.MERGED

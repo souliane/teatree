@@ -43,6 +43,20 @@ _NOQA_MARKER_RE: Final[re.Pattern[str]] = re.compile(r"#\s*noqa\b")
 # these tokens comma-separated; the first non-code text is the justification.
 _NOQA_CODE_TOKEN_RE: Final[re.Pattern[str]] = re.compile(r"[A-Z]+[0-9]+")
 
+# A justification is meaningful only when it says WHY — a single trailing token
+# is not a reason, so ANY trailing text no longer passes. It must reference an
+# issue id (``#3313``) OR carry enough word-characters to be a real explanation.
+_MIN_JUSTIFICATION_WORD_CHARS: Final[int] = 8
+_ISSUE_REF_RE: Final[re.Pattern[str]] = re.compile(r"#\d+")
+
+
+def _is_meaningful_justification(text: str) -> bool:
+    stripped = text.strip()
+    if _ISSUE_REF_RE.search(stripped):
+        return True
+    return sum(char.isalnum() for char in stripped) >= _MIN_JUSTIFICATION_WORD_CHARS
+
+
 # A complexity-suppression code: McCabe C901 or the too-many-* Pylint refactor
 # family PLR09xx (PLR0911 return-count, PLR0912 branch-count, PLR0913 arg-count,
 # PLR0915 statement-count, PLR0916 boolean-expr-count, PLR0917 positional-count).
@@ -190,7 +204,8 @@ class _NoqaOnLine:
     ``stem`` is the code text preceding the ``#`` (stripped) — the line's symbol
     identity, used to pair an added suppression with its base-ref version across
     a diff. ``codes`` is the parsed suppression-code set; ``justified`` is whether
-    non-code justification text follows the codes.
+    a MEANINGFUL justification follows the codes (:func:`_is_meaningful_justification`
+    — an issue ref or enough word-characters, not a single trailing token).
     """
 
     stem: str
@@ -229,7 +244,7 @@ def _parse_noqa_line(line: str) -> _NoqaOnLine | None:
                 rest = rest.lstrip()[1:]
             else:
                 break
-    return _NoqaOnLine(stem=stem, codes=frozenset(codes), justified=bool(rest.strip()))
+    return _NoqaOnLine(stem=stem, codes=frozenset(codes), justified=_is_meaningful_justification(rest))
 
 
 def _base_noqa_by_stem(removed: list[str]) -> dict[str, _NoqaOnLine]:
@@ -281,7 +296,10 @@ def _noqa_findings(fd: _FileDiff) -> list[RelaxationFinding]:
                     kind="noqa_without_justification",
                     path=fd.path,
                     severity=BLOCK,
-                    message="new `noqa` with no inline justification — say why suppression is correct here",
+                    message=(
+                        "new `noqa` with no adequate justification — a bare token is not a reason; "
+                        "explain WHY (reference an issue id, e.g. #NNNN, or a real explanation)"
+                    ),
                     line=line.strip(),
                 )
             )

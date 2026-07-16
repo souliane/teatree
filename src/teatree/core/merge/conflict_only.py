@@ -83,6 +83,61 @@ def _auto_merge(repo_root: str, p1: str, p2: str) -> "tuple[str, frozenset[str]]
     return records[0].strip(), frozenset(conflicted)
 
 
+def _resolve_default_branch(repo_root: str) -> str:
+    """The repo's default branch name (``origin/HEAD`` target), falling back to ``main``."""
+    result = _git(repo_root, ["rev-parse", "--abbrev-ref", "origin/HEAD"])
+    ref = result.stdout.strip()
+    if result.returncode == 0 and "/" in ref:
+        return ref.split("/", 1)[1]
+    return "main"
+
+
+def _fresh_base_ref(repo_root: str, base_branch: str) -> "str | None":
+    """The base ref ``parents[1]`` must be an ancestor of, or ``None`` when unverifiable.
+
+    When an ``origin`` remote exists, fetch ``base_branch`` FRESH and return
+    ``origin/<base>`` so a moved base is current (a stale local copy can never
+    launder an attacker's second parent past the ancestry check). Refuse
+    (``None``) if the fresh fetch fails or the fetched ref does not resolve — a
+    base we cannot re-read fresh is unverifiable, so the rebind fails safe. For
+    an origin-less clone (no forge to verify against) fall back to the local
+    branch; ``None`` when even that does not resolve.
+    """
+    has_origin = _git(repo_root, ["remote", "get-url", "origin"]).returncode == 0
+    if has_origin:
+        if _git(repo_root, ["fetch", "--quiet", "origin", base_branch]).returncode != 0:
+            return None
+        remote_ref = f"origin/{base_branch}"
+        if _git(repo_root, ["rev-parse", "--verify", "--quiet", f"{remote_ref}^{{commit}}"]).returncode == 0:
+            return remote_ref
+        return None
+    if _git(repo_root, ["rev-parse", "--verify", "--quiet", f"{base_branch}^{{commit}}"]).returncode == 0:
+        return base_branch
+    return None
+
+
+def _second_parent_is_trusted_base(repo_root: str, second_parent: str, base_branch: str) -> bool:
+    """True iff ``second_parent`` is a forge-verified ancestor of the PR base (§17.4).
+
+    The conflict-resolution merge git rebinds a clearance across is ``merge
+    origin/<base> INTO <reviewed-branch>`` — so its SECOND parent must be a commit
+    reachable from the PR's base branch. An attacker who instead merges an ARBITRARY
+    unreviewed branch (even one that auto-merges cleanly, so the deviation set is
+    empty and :func:`is_conflict_only_merge_commit` returns ``True``) would otherwise
+    carry the original reviewer's verdict forward onto code that base never saw. This
+    check refuses that: ``second_parent`` must be an ancestor of the FRESH base ref
+    (:func:`_fresh_base_ref`). Any uncertainty (base unresolvable, ancestry check
+    errors) fails SAFE — force a fresh review.
+    """
+    base = base_branch.strip() or _resolve_default_branch(repo_root)
+    if not base:
+        return False
+    base_ref = _fresh_base_ref(repo_root, base)
+    if base_ref is None:
+        return False
+    return _git(repo_root, ["merge-base", "--is-ancestor", second_parent, base_ref]).returncode == 0
+
+
 def is_conflict_only_merge_commit(repo_root: str, merge_sha: str) -> bool:
     r"""True iff ``merge_sha`` is a two-parent merge that only resolves conflicts.
 
@@ -115,22 +170,37 @@ def is_conflict_only_merge_commit(repo_root: str, merge_sha: str) -> bool:
     return all(path in conflicted_paths for path in deviations)
 
 
-def _carry_forward_candidates(*, clear: "MergeClear", merge: str, repo_root: str) -> "list[ReviewVerdict] | None":
+def _merge_is_trusted_conflict_only(repo_root: str, merge: str, reviewed: str, base_branch: str) -> bool:
+    """True iff ``merge`` is a conflict-only merge of the reviewed tree with a trusted base.
+
+    ALL must hold: the merge commit's FIRST parent is exactly ``reviewed`` (the
+    reviewed tree origin/base was merged INTO); its SECOND parent is a forge-verified
+    ancestor of the PR base (:func:`_second_parent_is_trusted_base` — never an
+    arbitrary unreviewed branch); and it is conflict-resolution-only.
+    """
+    parents = merge_commit_parents(repo_root, merge)
+    if len(parents) != _MERGE_PARENT_COUNT or parents[0].strip().lower() != reviewed:
+        return False
+    if not _second_parent_is_trusted_base(repo_root, parents[1], base_branch):
+        return False
+    return is_conflict_only_merge_commit(repo_root, merge)
+
+
+def _carry_forward_candidates(
+    *, clear: "MergeClear", merge: str, repo_root: str, base_branch: str
+) -> "list[ReviewVerdict] | None":
     """The merge_safe verdicts to carry forward, or ``None`` when re-bind is refused.
 
-    Returns ``None`` (no re-bind) unless ALL hold: (a) the merge commit's FIRST
-    parent is exactly the SHA the clearance was reviewed at, (b) the merge commit
-    is conflict-resolution-only, (c) at least one independent ``merge_safe``
-    verdict vouches for the reviewed tree and no unresolved HOLD supersedes it.
+    Returns ``None`` (no re-bind) unless BOTH hold:
+    (a) :func:`_merge_is_trusted_conflict_only` (first parent is the reviewed SHA,
+    second parent is a trusted base, and the merge is conflict-resolution-only), and
+    (b) at least one independent ``merge_safe`` verdict vouches for the reviewed tree
+    and no unresolved HOLD supersedes it.
     """
     reviewed = str(getattr(clear, "reviewed_sha", "") or "").strip().lower()
     if not is_commit_sha(reviewed) or not is_commit_sha(merge):
         return None
-
-    parents = merge_commit_parents(repo_root, merge)
-    if len(parents) != _MERGE_PARENT_COUNT or parents[0].strip().lower() != reviewed:
-        return None
-    if not is_conflict_only_merge_commit(repo_root, merge):
+    if not _merge_is_trusted_conflict_only(repo_root, merge, reviewed, base_branch):
         return None
 
     verdicts_at_reviewed = list(ReviewVerdict.objects.filter(pr_id=clear.pr_id, reviewed_sha=reviewed))
@@ -151,14 +221,18 @@ def rebind_clearance_after_conflict_only_merge(
     clear: "MergeClear",
     merge_sha: str,
     repo_root: str,
+    base_branch: str = "",
 ) -> bool:
     """Re-bind an existing clearance to a conflict-only merge commit (no re-review).
 
     Returns ``True`` and re-binds iff ALL hold: (a) the merge commit's FIRST
     parent is exactly the SHA the clearance was reviewed at (the reviewed tree is
-    literally the branch tip origin/main was merged INTO), (b) the merge commit is
-    conflict-resolution-only, (c) an independent ``merge_safe`` verdict vouches
-    for the reviewed tree and no unresolved HOLD supersedes it. On re-bind, every
+    literally the branch tip origin/main was merged INTO), (b) the merge commit's
+    SECOND parent is a forge-verified ancestor of the PR base branch (``base_branch``,
+    default the repo's resolved default branch — the merged-in side must be base, not
+    an arbitrary unreviewed branch), (c) the merge commit is conflict-resolution-only,
+    (d) an independent ``merge_safe`` verdict vouches for the reviewed tree and no
+    unresolved HOLD supersedes it. On re-bind, every
     such verdict is carried forward to the merge SHA via
     :meth:`ReviewVerdict.carry_forward` (fresh rows keeping the ORIGINAL
     independent reviewer identity — NOT a new self-review — and preserving the
@@ -171,7 +245,7 @@ def rebind_clearance_after_conflict_only_merge(
     atomic rollback), never a CLI traceback.
     """
     merge = merge_sha.strip().lower()
-    merge_safe = _carry_forward_candidates(clear=clear, merge=merge, repo_root=repo_root)
+    merge_safe = _carry_forward_candidates(clear=clear, merge=merge, repo_root=repo_root, base_branch=base_branch)
     if merge_safe is None:
         return False
 

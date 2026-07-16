@@ -28,6 +28,7 @@ from teatree.config import UserSettings
 from teatree.core.gates import merge_quality_gate
 from teatree.core.gates.merge_quality_gate import (
     MergeQualityVerdictError,
+    assert_merge_quality_verdict,
     build_merge_quality_contract,
     check_merge_quality_verdict,
     is_directive_ticket,
@@ -397,3 +398,49 @@ class TestKeystoneWiring(TestCase):
         ticket.refresh_from_db()
         assert outcome.merged_sha
         assert ticket.state == Ticket.State.MERGED
+
+
+class TestResolveGatedTicketFailsClosed(TestCase):
+    """A directive PR with a missing/mis-cased PR-ledger row must NOT skip the PR-4 gate.
+
+    The Medium finding: ``assert_merge_quality_verdict`` resolved the ticket ONLY via
+    ``PullRequest.filter(repo=slug, iid=...)`` and returned pass on no match, so a
+    directive PR whose ledger row was never recorded (or mis-cased vs a case-insensitive
+    GitHub slug) silently bypassed the gate. Now the CLEAR's ticket FK is the fallback
+    handle and the fail-closed gate runs.
+    """
+
+    def _clear_only(self, ticket: Ticket, *, slug: str = _SLUG) -> MergeClear:
+        return MergeClear.objects.create(
+            ticket=ticket,
+            pr_id=_PR,
+            slug=slug,
+            reviewed_sha=_FORTY_HEX,
+            reviewer_identity="cold-reviewer",
+            gh_verify_result=MergeClear.VerifyResult.GREEN,
+            blast_class=MergeClear.BlastClass.DOCS,
+        )
+
+    def test_directive_with_no_pr_row_is_gated_via_clear(self) -> None:
+        ticket = _directive_ticket()
+        self._clear_only(ticket)  # NO PullRequest ledger row
+        with pytest.raises(MergeQualityVerdictError, match="no recorded merge-quality CriticVerdict"):
+            assert_merge_quality_verdict(slug=_SLUG, pr_id=_PR, head_sha=_FORTY_HEX)
+
+    def test_directive_with_miscased_pr_slug_still_resolves(self) -> None:
+        ticket = _directive_ticket()
+        # PR ledger row recorded with a different slug CASE than the merge slug.
+        PullRequest.objects.create(
+            ticket=ticket, overlay="t3-teatree", repo="Souliane/Teatree", iid=str(_PR), url="https://x/y"
+        )
+        with pytest.raises(MergeQualityVerdictError, match="no recorded merge-quality CriticVerdict"):
+            assert_merge_quality_verdict(slug=_SLUG, pr_id=_PR, head_sha=_FORTY_HEX)
+
+    def test_directive_with_clean_verdict_passes(self) -> None:
+        ticket = _directive_ticket()
+        self._clear_only(ticket)
+        _record_merge_verdict(ticket, items=_clean_verdict_items())
+        assert_merge_quality_verdict(slug=_SLUG, pr_id=_PR, head_sha=_FORTY_HEX)  # no raise
+
+    def test_no_pr_and_no_clear_is_a_noop(self) -> None:
+        assert_merge_quality_verdict(slug=_SLUG, pr_id=_PR, head_sha=_FORTY_HEX)  # nothing to gate

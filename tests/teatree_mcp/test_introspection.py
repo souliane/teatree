@@ -101,3 +101,20 @@ class TestGateStatus(TestCase):
         report = introspection.gate_status()
 
         assert report["review_gate"]["require_human_approval_to_merge"] is False
+
+    def test_dark_gates_surface_default_off_deep_merge_gates(self) -> None:
+        # Low finding: the deep merge gates ship DARK — gate_status names the off set
+        # so a fresh overlay can see which strong protections are not yet armed.
+        report = introspection.gate_status()
+
+        assert "require_merge_quality_verdict" in report["deep_merge_gates"]
+        # Default-off deep gate → appears in the dark set.
+        assert "require_merge_quality_verdict" in report["dark_gates"]
+
+    def test_dark_gates_drops_an_armed_gate(self) -> None:
+        call_command("config_setting", "set", "require_merge_quality_verdict", "true")
+
+        report = introspection.gate_status()
+
+        assert report["deep_merge_gates"]["require_merge_quality_verdict"] is True
+        assert "require_merge_quality_verdict" not in report["dark_gates"]

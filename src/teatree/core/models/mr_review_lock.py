@@ -197,6 +197,24 @@ class MRReviewLock(models.Model):
         )
 
     @classmethod
+    def expired_unresolved_lock_for(
+        cls, *, slug: str, pr_id: int, at: "dt.datetime | None" = None
+    ) -> "MRReviewLock | None":
+        """A lock DISPATCHED but never resolved whose deadline has PASSED, or ``None``.
+
+        Distinct from :meth:`active_lock_for` (which returns ``None`` for an expired
+        row, treating it as "no review in flight"): this returns the row when it is
+        in an ACTIVE state (``review_dispatched`` / ``verdict_pending``) yet its
+        deadline is in the past — a reviewer that was dispatched and never recorded a
+        verdict (slow or crashed). The merge-time consult uses this to ESCALATE rather
+        than silently merge ahead of a slow reviewer's about-to-land HOLD (#1405).
+        """
+        now = at or timezone.now()
+        return cls.objects.filter(
+            slug=slug.strip(), pr_id=pr_id, state__in=cls._ACTIVE_STATES, deadline__lt=now
+        ).first()
+
+    @classmethod
     def active_lock_for(cls, *, slug: str, pr_id: int) -> "MRReviewLock | None":
         """The currently-held (non-stale) lock row for ``(slug, pr_id)``, or ``None``.
 

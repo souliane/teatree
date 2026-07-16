@@ -58,6 +58,19 @@ _REVIEW_GATE_KEYS = (
     "require_merge_evidence",
     "e2e_mandatory_gate_enabled",
 )
+# The deep merge gates that ship DARK (default off) — surfaced so a fresh overlay
+# can see, at a glance, which of the strongest merge protections are not yet armed
+# (the finding: five deep gates default-OFF leave only CLEAR/verdict/provenance/CI
+# on a fresh overlay). ``dark_gates`` in the report lists whichever of these are off.
+_DEEP_MERGE_GATE_KEYS = (
+    "require_merge_quality_verdict",
+    "require_integration_review",
+    "require_plan_adequacy",
+    "require_executed_repro",
+    "require_debt_delta",
+    "require_rubric_verification",
+    "require_spec_coverage",
+)
 # The raw/out-of-band merge gate is a cold-hook key (no ``UserSettings`` field),
 # resolved from the canonical config DB with its registered fail-open default.
 _RAW_MERGE_GATE_KEY = "out_of_band_merge_gate_enabled"
@@ -121,18 +134,28 @@ def gate_status(*, overlay: str | None = None) -> dict[str, Any]:
     all resolved through the effective settings so a per-``overlay`` override is
     reflected. ``raw_merge_gate`` reports whether raw ``gh``/``glab`` merges are
     blocked (``out_of_band_merge_gate_enabled``), resolved from the canonical
-    config DB with its registered fail-open default. Read-only: flip a gate with
-    ``t3 <overlay> config_setting set`` / ``t3 <overlay> gate``.
+    config DB with its registered fail-open default. ``deep_merge_gates`` reports
+    each deep merge gate's on/off state, and ``dark_gates`` names the ones that are
+    OFF — the default-dark protections a fresh overlay has not yet armed. Read-only:
+    flip a gate with ``t3 <overlay> config_setting set`` / ``t3 <overlay> gate``.
     """
     settings = get_effective_settings(overlay or None)
     review_gate = {key: bool(getattr(settings, key)) for key in _REVIEW_GATE_KEYS}
+    deep_merge_gates = {key: bool(getattr(settings, key)) for key in _DEEP_MERGE_GATE_KEYS}
+    dark_gates = sorted(key for key, on in deep_merge_gates.items() if not on)
     raw_merge_gate = {
         _RAW_MERGE_GATE_KEY: cold_reader.bool_setting(
             _RAW_MERGE_GATE_KEY,
             default=bool(COLD_HOOK_SETTINGS[_RAW_MERGE_GATE_KEY].default),
         ),
     }
-    return {"overlay": overlay or "", "review_gate": review_gate, "raw_merge_gate": raw_merge_gate}
+    return {
+        "overlay": overlay or "",
+        "review_gate": review_gate,
+        "raw_merge_gate": raw_merge_gate,
+        "deep_merge_gates": deep_merge_gates,
+        "dark_gates": dark_gates,
+    }
 
 
 def command_search(*, query: str, limit: int = _DEFAULT_COMMAND_LIMIT) -> list[dict[str, Any]]:

@@ -236,6 +236,41 @@ class TestNonAsciiConflictedPathEncoding:
         assert is_conflict_only_merge_commit(str(repo), merge_sha) is False
 
 
+def _side_branch_adding_file(repo: Path, branch: str, filename: str) -> str:
+    """A branch off the ``main`` tip that ADDS a new file — a clean, non-base branch.
+
+    Merging it into the reviewed branch auto-merges cleanly (empty deviation set →
+    :func:`is_conflict_only_merge_commit` returns ``True``), modelling the keystone
+    attack: an arbitrary unreviewed branch that classifies conflict-only.
+    """
+    _git(repo, "checkout", "-q", "-b", branch, "main~1")
+    (repo / filename).write_text("attacker payload\n")
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-q", "-m", f"{branch} edit")
+    tip = _git(repo, "rev-parse", branch)
+    _git(repo, "checkout", "-q", "feature")
+    return tip
+
+
+def _merge_branch_into_feature(repo: Path, branch: str) -> str:
+    subprocess.run(
+        ["git", "-C", str(repo), "merge", "--no-edit", branch],  # noqa: S607
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    return _git(repo, "rev-parse", "HEAD")
+
+
+def _add_bare_origin(repo: Path, cleanup: "list[Path]", *, push_main: bool) -> None:
+    origin = Path(tempfile.mkdtemp()) / "origin.git"
+    cleanup.append(origin.parent)
+    subprocess.run(["git", "init", "--bare", "-q", str(origin)], check=False)  # noqa: S607
+    _git(repo, "remote", "add", "origin", str(origin))
+    if push_main:
+        _git(repo, "push", "-q", "origin", "main")
+
+
 def _clear_with_verdict(repo: Path, feature_tip: str) -> MergeClear:
     ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.IN_REVIEW)
     clear = MergeClear.issue(
@@ -370,6 +405,63 @@ class TestRebindClearance(TestCase):
             )
         assert result["rebound"] is False
         assert result["reviewed_sha"] == feature_tip.lower()
+
+    def test_merge_of_non_base_branch_does_not_rebind(self) -> None:
+        # The keystone attack (Critical finding): an attacker merges an ARBITRARY
+        # unreviewed branch into the reviewed branch. It auto-merges cleanly so the
+        # conflict-only classifier says True, and its first parent IS the reviewed
+        # SHA — only the second-parent trusted-base check refuses it.
+        repo = Path(self._repo())
+        _diverge(repo, "feature")
+        feature_tip = _git(repo, "rev-parse", "feature")
+        clear = _clear_with_verdict(repo, feature_tip)
+        _side_branch_adding_file(repo, "evil", "evil.txt")
+        merge_sha = _merge_branch_into_feature(repo, "evil")
+
+        # Guard rails: without the fix this is a clean conflict-only merge whose
+        # first parent is the reviewed SHA — i.e. it WOULD rebind.
+        assert is_conflict_only_merge_commit(str(repo), merge_sha) is True
+        assert merge_commit_parents(str(repo), merge_sha)[0].lower() == feature_tip.lower()
+
+        rebound = rebind_clearance_after_conflict_only_merge(clear=clear, merge_sha=merge_sha, repo_root=str(repo))
+        assert rebound is False
+        clear.refresh_from_db()
+        assert clear.reviewed_sha == feature_tip.lower()
+        assert not ReviewVerdict.objects.filter(reviewed_sha=merge_sha.lower()).exists()
+
+    def test_conflict_only_merge_verified_against_fresh_origin(self) -> None:
+        # With an origin remote the trusted-base check fetches origin/main FRESH and
+        # verifies the merged-in second parent descends from it.
+        repo = Path(self._repo())
+        cleanup: list[Path] = []
+        self.addCleanup(lambda: [subprocess.run(["rm", "-rf", str(p)], check=False) for p in cleanup])  # noqa: S607
+        _diverge(repo, "feature")
+        feature_tip = _git(repo, "rev-parse", "feature")
+        _add_bare_origin(repo, cleanup, push_main=True)
+        clear = _clear_with_verdict(repo, feature_tip)
+        merge_sha = _merge_main_resolving(repo, extra_edit=False)
+
+        rebound = rebind_clearance_after_conflict_only_merge(clear=clear, merge_sha=merge_sha, repo_root=str(repo))
+        assert rebound is True
+        clear.refresh_from_db()
+        assert clear.reviewed_sha == merge_sha.lower()
+
+    def test_origin_base_unfetchable_refuses_rebind(self) -> None:
+        # An origin remote exists but the base was never pushed — the fresh fetch
+        # fails, the base is unverifiable, and the rebind fails safe.
+        repo = Path(self._repo())
+        cleanup: list[Path] = []
+        self.addCleanup(lambda: [subprocess.run(["rm", "-rf", str(p)], check=False) for p in cleanup])  # noqa: S607
+        _diverge(repo, "feature")
+        feature_tip = _git(repo, "rev-parse", "feature")
+        _add_bare_origin(repo, cleanup, push_main=False)
+        clear = _clear_with_verdict(repo, feature_tip)
+        merge_sha = _merge_main_resolving(repo, extra_edit=False)
+
+        rebound = rebind_clearance_after_conflict_only_merge(clear=clear, merge_sha=merge_sha, repo_root=str(repo))
+        assert rebound is False
+        clear.refresh_from_db()
+        assert clear.reviewed_sha == feature_tip.lower()
 
     def test_substantive_merge_does_not_rebind(self) -> None:
         repo = Path(self._repo())

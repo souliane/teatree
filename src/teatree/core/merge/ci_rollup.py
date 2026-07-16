@@ -13,7 +13,7 @@ import logging
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, TypedDict, cast
 
-from teatree.core.backend_protocols import PrMergeState, rollup_query_failed
+from teatree.core.backend_protocols import PrMergeState, changed_paths_unavailable, rollup_query_failed
 from teatree.core.backend_registry import get_backend_provider
 from teatree.core.models import MergeClear
 from teatree.utils.pr_ref import PrRef
@@ -181,23 +181,35 @@ class CodeHostQuery:
 def attach_touched_paths(clear: object, query: CodeHostQuery) -> None:
     """Populate ``clear.touched_paths`` from the forge's live changed-file list.
 
-    Best-effort: a non-``MergeClear`` *clear* (the gate handles that refusal) or a
-    forge error degrades to leaving ``touched_paths`` empty. The path detector can
-    only WIDEN substrate over the recorded ``blast_class``, never narrow it, so a
-    missing diff never weakens the existing label-based substrate gate.
+    A non-``MergeClear`` *clear* (the gate handles that refusal) is a no-op. When the
+    changed-path list cannot be read to completion — a forge error (exception) or the
+    ``CHANGED_PATHS_UNAVAILABLE`` sentinel from a truncated/paginated diff — the diff
+    can no longer be PROVEN non-substrate, so ``substrate_paths_indeterminate`` is set
+    and ``is_substrate()`` fails CLOSED (holds the merge). A complete list populates
+    ``touched_paths`` for the path detector and clears the indeterminate flag.
     """
     if not isinstance(clear, MergeClear):
         return
     try:
         paths = query.pr_changed_paths()
     except Exception:  # noqa: BLE001 — a diff-fetch failure must never wedge the merge gate.
-        logger.debug(
-            "ci_rollup: changed-paths fetch failed for %s#%s — substrate label stands",
+        logger.warning(
+            "ci_rollup: changed-paths fetch failed for %s#%s — holding as substrate (fail closed)",
             query.ref.slug,
             query.ref.pr_id,
         )
+        clear.substrate_paths_indeterminate = True
+        return
+    if changed_paths_unavailable(paths):
+        logger.warning(
+            "ci_rollup: changed-paths list truncated/unavailable for %s#%s — holding as substrate (fail closed)",
+            query.ref.slug,
+            query.ref.pr_id,
+        )
+        clear.substrate_paths_indeterminate = True
         return
     clear.touched_paths = tuple(paths)
+    clear.substrate_paths_indeterminate = False
 
 
 class _RollupEntry(TypedDict, total=False):
@@ -396,7 +408,12 @@ def _gitlab_pipeline_verdict(
 ) -> str:
     """GitLab §17.4.3 verdict: the head pipeline's overall status (aggregates required jobs)."""
     if not rollup:
-        return "green"
+        # No pipeline ran for this MR — that is NOT proof the required jobs passed
+        # (a project could have CI disabled, or the head pipeline is not created
+        # yet). Fail closed to ``pending`` so an empty pipeline list never merges as
+        # "all checks passed"; a genuinely CI-less project is unblocked by the same
+        # required-context floor the GitHub path uses.
+        return "pending"
     head_sha = backend.fetch_live_head_sha(slug=slug, pr_id=pr_id)
     head = _select_gitlab_head_pipeline(list(rollup), head_sha, slug=slug, pr_id=pr_id)
     if head is None:

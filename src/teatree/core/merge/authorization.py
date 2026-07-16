@@ -5,6 +5,7 @@ The result type :class:`MergePrecheck` and the guard functions
 :mod:`execution` runs before it binds the irreversible merge.
 """
 
+import logging
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
@@ -17,6 +18,8 @@ from teatree.utils.pr_ref import PrRef
 
 if TYPE_CHECKING:
     from teatree.core.models import MergeClear
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True, slots=True)
@@ -414,19 +417,44 @@ def assert_no_active_review_lock(*, slug: str, pr_id: int) -> None:
     ``verdict_pending``, not yet stale) for the SAME MR — that in-flight
     review could still be about to record a HOLD, and a merge racing ahead of
     it would land before the hold ever lands. No row, an ``idle``/``resolved``
-    row, or a stale (deadline-passed) row all mean "no review in flight" and
-    the merge proceeds.
+    row, or an ``idle``/``resolved`` row mean "no review in flight" and the merge
+    proceeds. An EXPIRED-but-unresolved lock (dispatched, deadline passed, no verdict
+    ever recorded — a slow or crashed reviewer) is NOT silently treated as
+    no-review: it is ESCALATED (a one-cycle refuse + a warning) and reconciled so a
+    subsequent attempt proceeds, giving a slow reviewer's about-to-land HOLD a chance
+    to be recorded (and caught by the verdict gate) rather than landing post-merge.
     """
     lock = MRReviewLock.active_lock_for(slug=slug, pr_id=pr_id)
-    if lock is None:
-        return
-    msg = (
-        f"a review is in flight for {slug}#{pr_id} — MRReviewLock state={lock.state!r} "
-        f"holder={lock.holder!r} — refusing to merge until the lock resolves (#1405). "
-        f"The lock clears when the in-flight review records its verdict, or expires on "
-        f"its own once its dispatch deadline passes."
-    )
-    raise MergePreconditionError(msg)
+    if lock is not None:
+        msg = (
+            f"a review is in flight for {slug}#{pr_id} — MRReviewLock state={lock.state!r} "
+            f"holder={lock.holder!r} — refusing to merge until the lock resolves (#1405). "
+            f"The lock clears when the in-flight review records its verdict, or expires on "
+            f"its own once its dispatch deadline passes."
+        )
+        raise MergePreconditionError(msg)
+
+    expired = MRReviewLock.expired_unresolved_lock_for(slug=slug, pr_id=pr_id)
+    if expired is not None:
+        logger.warning(
+            "merge gate: expired-but-unresolved review lock for %s#%s (state=%r holder=%r) — "
+            "escalating: refusing this attempt and reconciling so a slow reviewer's HOLD is not lost",
+            slug,
+            pr_id,
+            expired.state,
+            expired.holder,
+        )
+        # Reconcile now so the refuse is bounded to one cycle (never a permanent
+        # lockout on the safety-critical merge path): the next attempt sees an
+        # ``idle`` row and proceeds if no HOLD was recorded in the meantime.
+        MRReviewLock.reconcile_stale()
+        msg = (
+            f"a dispatched review for {slug}#{pr_id} expired without recording a verdict "
+            f"(state={expired.state!r} holder={expired.holder!r}) — refusing this merge attempt and "
+            f"escalating (#1405). If the reviewer is slow, its HOLD can still land before the next "
+            f"attempt; if it crashed, the lock has been reconciled and the next attempt proceeds."
+        )
+        raise MergePreconditionError(msg)
 
 
 def assert_merge_provenance_trusted(*, slug: str, pr_id: int, host_kind: str = "github") -> None:

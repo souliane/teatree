@@ -16,7 +16,12 @@ import shutil
 from collections.abc import Callable
 from typing import cast
 
-from teatree.core.backend_protocols import ROLLUP_QUERY_FAILED, ForgeMergeResult, PrMergeState
+from teatree.core.backend_protocols import (
+    CHANGED_PATHS_UNAVAILABLE,
+    ROLLUP_QUERY_FAILED,
+    ForgeMergeResult,
+    PrMergeState,
+)
 from teatree.types import RawAPIDict
 from teatree.utils.run import run_allowed_to_fail
 
@@ -279,11 +284,21 @@ class GhMergeRpc:
         return [{"context": ctx} for ctx in sorted(union)]
 
     def fetch_pr_changed_paths(self, *, slug: str, pr_id: int) -> list[str]:
+        """Every changed path on the PR — PAGINATED to completion (§17.4.3, substrate detector).
+
+        ``gh pr view --json files`` caps the file list at 100 with NO pagination, so
+        a >100-file PR silently truncated its diff and a substrate change past the cap
+        went undetected. The ``repos/<slug>/pulls/<n>/files`` REST endpoint with
+        ``--paginate`` follows every page, so the returned list is complete. A non-zero
+        rc means the diff could not be read to completion → return the
+        ``CHANGED_PATHS_UNAVAILABLE`` sentinel so the caller fails CLOSED (holds the
+        merge), never a silently-empty/partial list.
+        """
         rc, out, _ = self._run(
-            ["pr", "view", str(pr_id), "--repo", slug, "--json", "files", "--jq", ".files[].path"],
+            ["api", "--paginate", f"repos/{slug}/pulls/{pr_id}/files", "--jq", ".[].filename"],
         )
         if rc != 0:
-            return []
+            return [CHANGED_PATHS_UNAVAILABLE]
         return [line.strip() for line in out.splitlines() if line.strip()]
 
     def merge_pr_squash_bound(self, *, slug: str, pr_id: int, expected_head_oid: str) -> ForgeMergeResult:
@@ -403,23 +418,27 @@ class GlabMergeRpc:
         return []
 
     def fetch_pr_changed_paths(self, *, slug: str, pr_id: int) -> list[str]:
-        rc, out, _ = self._run(["api", f"projects/{glab_project_path(slug)}/merge_requests/{pr_id}/diffs"])
-        if rc != 0 or not out.strip():
-            return []
-        try:
-            diffs = json.loads(out)
-        except json.JSONDecodeError:
-            return []
-        if not isinstance(diffs, list):
-            return []
-        paths: list[str] = []
-        for entry in diffs:
-            if not isinstance(entry, dict):
-                continue
-            new_path = str(entry.get("new_path") or entry.get("old_path") or "").strip()
-            if new_path:
-                paths.append(new_path)
-        return paths
+        """Every changed path on the MR — PAGINATED to completion (§17.4.3, substrate detector).
+
+        The ``merge_requests/<iid>/diffs`` endpoint is paginated; a single un-paginated
+        call truncated a large MR's diff and a substrate change past the first page went
+        undetected. ``--paginate`` with a per-entry ``--jq`` follows every page and emits
+        one path per line (``new_path`` falling back to ``old_path``). A non-zero rc means
+        the diff could not be read to completion → return the ``CHANGED_PATHS_UNAVAILABLE``
+        sentinel so the caller fails CLOSED (holds the merge), never a partial list.
+        """
+        rc, out, _ = self._run(
+            [
+                "api",
+                "--paginate",
+                f"projects/{glab_project_path(slug)}/merge_requests/{pr_id}/diffs?per_page=100",
+                "--jq",
+                ".[] | (.new_path // .old_path)",
+            ],
+        )
+        if rc != 0:
+            return [CHANGED_PATHS_UNAVAILABLE]
+        return [line.strip() for line in out.splitlines() if line.strip()]
 
     def merge_pr_squash_bound(self, *, slug: str, pr_id: int, expected_head_oid: str) -> ForgeMergeResult:
         endpoint = f"projects/{glab_project_path(slug)}/merge_requests/{pr_id}/merge"

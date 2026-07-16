@@ -114,34 +114,42 @@ class DbApproval(models.Model):
         with transaction.atomic():
             return cls.objects.create(op=clean_op, tenant=clean_tenant, approver_id=approver)
 
-    def matches(self, op: str, tenant: str) -> bool:
-        """True iff this row is unconsumed and scoped to exactly *op* + *tenant*.
+    def matches(self, op: str, tenant: str, approver_id: str) -> bool:
+        """True iff this row is unconsumed and scoped to exactly *op* + *tenant* + *approver_id*.
 
         A consumed approval is single-use and no longer matches (reusing it
         would let a replay slip a second unapproved op through). The scope
         is exact: an approval for ``tenant-b``+``fresh-dump`` never
-        satisfies any other op or tenant.
+        satisfies any other op or tenant, and the PRESENTED approver must
+        equal the recorded one — a non-empty ``--user-authorized <token>``
+        that is NOT the recorded approver can no longer consume it.
         """
         if self.consumed_at is not None:
             return False
         norm_op, norm_tenant = canonical_db_scope(op, tenant)
-        return self.op == norm_op and self.tenant == norm_tenant
+        return self.op == norm_op and self.tenant == norm_tenant and self.approver_id == approver_id.strip()
 
     @classmethod
-    def consume(cls, op: str, tenant: str) -> "DbApproval | None":
+    def consume(cls, op: str, tenant: str, approver_id: str) -> "DbApproval | None":
         """Atomically claim and consume the matching unconsumed approval, if any.
 
         Returns the consumed row (so the caller can write the audit) or
         ``None`` when no valid recorded approval exists for this exact
-        op+tenant — the caller then falls back to the interactive-TTY path.
+        op+tenant+approver — the caller then falls back to the interactive-TTY
+        path. The claim filters on ``approver_id`` so a non-empty
+        ``--user-authorized <token>`` that is NOT the recorded approver never
+        consumes the approval (an empty presented approver matches nothing).
         The ``consumed_at`` stamp + ``select_for_update`` make the claim
         single-use even under a concurrent second invocation.
         """
+        presented = approver_id.strip()
+        if not presented:
+            return None
         clean_op, clean_tenant = canonical_db_scope(op, tenant)
         with transaction.atomic():
             row = (
                 cls.objects.select_for_update()
-                .filter(op=clean_op, tenant=clean_tenant, consumed_at__isnull=True)
+                .filter(op=clean_op, tenant=clean_tenant, approver_id=presented, consumed_at__isnull=True)
                 .order_by("created_at")
                 .first()
             )
