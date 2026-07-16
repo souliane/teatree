@@ -12,8 +12,8 @@ from collections.abc import Callable
 
 from teatree.core.backend_factory import OverlayBackends, messaging_from_overlay
 from teatree.core.backend_protocols import MessagingBackend
-from teatree.core.notify import NotifyKind, resolve_user_id
 from teatree.core.modelkit.notify_policy import NotifyAudience
+from teatree.core.notify import NotifyKind, resolve_user_id
 from teatree.loop.job_identity import PER_OVERLAY_DOMAINS, Domain, _ScannerJob
 from teatree.loop.scanner_factories import (
     _architectural_review_scanner_for,

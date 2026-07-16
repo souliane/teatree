@@ -16,9 +16,9 @@ import pytest
 from django.test import TestCase
 
 from teatree.config.enums import SendProxyMode
+from teatree.core.modelkit.notify_policy import NotifyAudience
 from teatree.core.models import ConfigSetting, SendAudit
 from teatree.core.notify import NotifyKind, notify_user
-from teatree.core.modelkit.notify_policy import NotifyAudience
 from teatree.core.on_behalf_egress import OnBehalfSlackEgress
 from teatree.core.send_proxy import SendBlockedError
 from teatree.types import RawAPIDict

@@ -21,8 +21,8 @@ import enum
 import logging
 from dataclasses import dataclass
 
-from teatree.core.notify import NotifyKind, notify_user
 from teatree.core.modelkit.notify_policy import NotifyAudience
+from teatree.core.notify import NotifyKind, notify_user
 
 logger = logging.getLogger(__name__)
 

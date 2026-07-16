@@ -277,8 +277,8 @@ class SlackMergeNotifier:
     user_id: str = ""
 
     def announce(self, *, slug: str, pr_id: int, merged_sha: str, fallback: bool) -> None:
-        from teatree.core.notify import NotifyKind, notify_user  # noqa: PLC0415 — tick-time import, kept lazy
         from teatree.core.modelkit.notify_policy import NotifyAudience  # noqa: PLC0415 — tick-time import, kept lazy
+        from teatree.core.notify import NotifyKind, notify_user  # noqa: PLC0415 — tick-time import, kept lazy
 
         prefix = "merged (uv-audit fallback)" if fallback else "merged"
         sha_short = merged_sha[:8] if merged_sha else "?"
@@ -292,8 +292,8 @@ class SlackMergeNotifier:
         )
 
     def flag(self, *, slug: str, pr_id: int, reason: str, url: str) -> None:  # noqa: PLR6301 — instance method satisfies the injected MergeNotifier Protocol (mirrors sibling adapters).
-        from teatree.core.notify import NotifyKind, notify_user  # noqa: PLC0415 — tick-time import, kept lazy
         from teatree.core.modelkit.notify_policy import NotifyAudience  # noqa: PLC0415 — tick-time import, kept lazy
+        from teatree.core.notify import NotifyKind, notify_user  # noqa: PLC0415 — tick-time import, kept lazy
 
         target = url or f"{slug}#{pr_id}"
         if reason == _MERGEABLE_AWAITING_REVIEW_REASON:

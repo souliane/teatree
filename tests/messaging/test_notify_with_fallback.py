@@ -15,8 +15,8 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from teatree.core.models import BotPing
 from teatree.core.modelkit.notify_policy import NotifyAudience
+from teatree.core.models import BotPing
 from teatree.messaging.notify_with_fallback import NotifyTransport, notify_with_fallback
 
 # ast-grep-ignore: ac-django-no-pytest-django-db

@@ -11,9 +11,9 @@ from django.db import OperationalError
 from django.test import TestCase
 
 from teatree.core import notify as notify_module
+from teatree.core.modelkit.notify_policy import NotifyAudience
 from teatree.core.models import BotPing, IncomingEvent
 from teatree.core.notify import NotifyKind, notify_user
-from teatree.core.modelkit.notify_policy import NotifyAudience
 
 _DB_LOCKED = OperationalError("database is locked")
 

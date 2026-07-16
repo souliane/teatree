@@ -33,8 +33,8 @@ from django_typer.management import TyperCommand, command, initialize
 from teatree.backends.slack.table_format import render_table_message
 from teatree.core.checking import DEFAULT_CAP, CheckGroup, gather_all_overlays_report, gather_checking_report
 from teatree.core.checkpoint import advance_checkpoint_monotonic, checkpoint_path, resolve_window_start
-from teatree.core.notify import NotifyKind, notify_user
 from teatree.core.modelkit.notify_policy import NotifyAudience
+from teatree.core.notify import NotifyKind, notify_user
 from teatree.core.ref_render import render_ref
 from teatree.core.table_output import print_table
 from teatree.types import RawAPIDict

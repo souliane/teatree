@@ -18,9 +18,9 @@ from unittest.mock import MagicMock, patch
 
 from django.test import TestCase
 
+from teatree.core.modelkit.notify_policy import NotifyAudience
 from teatree.core.models import PendingChatInjection
 from teatree.core.notify import NotifyKind, notify_user
-from teatree.core.modelkit.notify_policy import NotifyAudience
 
 
 def _backend() -> MagicMock:

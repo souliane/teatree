@@ -45,8 +45,8 @@ from django_typer.management import TyperCommand, command, initialize
 
 from teatree.core.backend_factory import messaging_from_overlay
 from teatree.core.backend_protocols import MessagingBackend
-from teatree.core.notify import NotifyKind, notify_user
 from teatree.core.modelkit.notify_policy import NotifyAudience
+from teatree.core.notify import NotifyKind, notify_user
 from teatree.core.on_behalf_egress import OnBehalfPostBlockedError, OnBehalfSlackEgress
 from teatree.types import RawAPIDict
 

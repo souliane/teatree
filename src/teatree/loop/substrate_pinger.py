@@ -10,8 +10,8 @@ boundary forbids importing ``teatree.messaging`` / ``teatree.core.notify``
 concrete notify egress is injected at the loop edge, mirroring ``domain_jobs``'s use.
 """
 
-from teatree.core.notify import NotifyKind
 from teatree.core.modelkit.notify_policy import NotifyAudience
+from teatree.core.notify import NotifyKind
 from teatree.messaging import notify_with_fallback
 
 

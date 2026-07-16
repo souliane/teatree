@@ -22,9 +22,9 @@ import logging
 import os
 from typing import TYPE_CHECKING
 
+from teatree.core.modelkit.notify_policy import NotifyAudience
 from teatree.core.models import BotPing, DeferredQuestion
 from teatree.core.notify import NotifyKind, notify_user
-from teatree.core.modelkit.notify_policy import NotifyAudience
 
 if TYPE_CHECKING:
     from teatree.core.backend_protocols import MessagingBackend

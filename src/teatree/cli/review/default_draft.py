@@ -85,8 +85,8 @@ def notify_draft_created(*, repo: str, mr: int, mr_url: str, reviewed_head_sha: 
     ``:information_source:`` marker. No per-comment breakdown, no
     publish/discard instructions.
     """
-    from teatree.core.notify import NotifyKind  # noqa: PLC0415 — deferred: keeps CLI startup light
     from teatree.core.modelkit.notify_policy import NotifyAudience  # noqa: PLC0415 — deferred: keeps CLI startup light
+    from teatree.core.notify import NotifyKind  # noqa: PLC0415 — deferred: keeps CLI startup light
     from teatree.messaging import notify_with_fallback  # noqa: PLC0415 — deferred: keeps CLI startup light
 
     discriminator = reviewed_head_sha or datetime.now(tz=UTC).strftime("%Y-%m-%d")

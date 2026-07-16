@@ -38,8 +38,8 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from teatree.config import get_effective_settings
-from teatree.core.notify import NotifyKind, notify_user
 from teatree.core.modelkit.notify_policy import NotifyAudience
+from teatree.core.notify import NotifyKind, notify_user
 from teatree.core.provision.provision_report import StepResult
 from teatree.core.provision.step_runner import run_callable_step
 from teatree.utils.run import run_allowed_to_fail

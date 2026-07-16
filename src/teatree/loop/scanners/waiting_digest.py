@@ -22,8 +22,8 @@ from dataclasses import dataclass
 from django.db import OperationalError, ProgrammingError
 
 from teatree.backends.slack.table_format import render_table_message
-from teatree.core.notify import NotifyKind, notify_user
 from teatree.core.modelkit.notify_policy import NotifyAudience
+from teatree.core.notify import NotifyKind, notify_user
 from teatree.loop.scanners.base import ScanSignal
 
 logger = logging.getLogger(__name__)

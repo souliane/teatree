@@ -34,8 +34,8 @@ from django.db import DatabaseError, IntegrityError, transaction
 from teatree.config import get_effective_settings, load_config
 from teatree.core.backend_factory import messaging_from_overlay
 from teatree.core.backend_protocols import MessagingBackend
-from teatree.core.models import BotPing, DeliveryClaim, OutboundClaim
 from teatree.core.modelkit.notify_policy import NotifyAudience
+from teatree.core.models import BotPing, DeliveryClaim, OutboundClaim
 from teatree.core.send_proxy import SendChannel, SendRequest, route_send
 from teatree.core.session_identity import current_session_id
 from teatree.slack_mrkdwn import normalize_slack_message, slack_linkify
@@ -597,7 +597,7 @@ def drain_undelivered_notifies(
     try:
         for row in rows:
             # ``recoverable_info`` only returns owner-audience rows, so the
-            # stored audience is always one the owner reads — re-declare it so
+            # stored audience is always one the owner reads — redeclare it so
             # the re-delivery does not fall foul of the deny-by-default gate.
             if notify_user(
                 row.text,

@@ -132,8 +132,8 @@ def _wake_loops(now: dt.datetime) -> None:
 
 def _notify_recovered(*, cleared_pks: list[int], released: int, now: dt.datetime) -> None:
     """Post ONE bot→user Slack line that the window(s) recovered — no-op-safe, never raises."""
+    from teatree.core.modelkit.notify_policy import NotifyAudience  # noqa: PLC0415 — deferred (cycle-safe)
     from teatree.core.notify import NotifyKind, notify_user  # noqa: PLC0415 — deferred import (cycle-safe / task-body)
-    from teatree.core.modelkit.notify_policy import NotifyAudience  # noqa: PLC0415 — deferred: call-time import, kept lazy
 
     key = "usage_window_recovered:" + "-".join(str(pk) for pk in sorted(cleared_pks))
     text = (

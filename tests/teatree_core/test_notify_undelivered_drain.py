@@ -6,9 +6,9 @@ from unittest.mock import MagicMock, patch
 from django.test import TestCase
 from django.utils import timezone
 
+from teatree.core.modelkit.notify_policy import NotifyAudience
 from teatree.core.models import BotPing
 from teatree.core.notify import drain_undelivered_notifies
-from teatree.core.modelkit.notify_policy import NotifyAudience
 
 
 def _backend() -> MagicMock:

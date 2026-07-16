@@ -38,9 +38,9 @@ from mcp.types import ToolAnnotations
 from teatree.config.cold_hook_settings import COLD_HOOK_SETTINGS
 from teatree.config.feature_flags import is_feature_flag
 from teatree.config.registries import COLD_SETTINGS, REGISTRY_KEYS
+from teatree.core.modelkit.notify_policy import NotifyAudience
 from teatree.core.models import Task
 from teatree.core.notify import NotifyKind, notify_user
-from teatree.core.modelkit.notify_policy import NotifyAudience
 from teatree.mcp.review_seam import review_post_seam
 
 _READ_ONLY = ToolAnnotations(readOnlyHint=True)

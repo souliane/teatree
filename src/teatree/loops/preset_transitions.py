@@ -32,9 +32,9 @@ from django_tasks.base import TaskResultStatus
 from django_tasks_db.models import DBTaskResult
 
 from teatree.core import availability
+from teatree.core.modelkit.notify_policy import NotifyAudience
 from teatree.core.models import ConfigSetting, LoopPresetOverride
 from teatree.core.notify import NotifyKind, notify_user
-from teatree.core.modelkit.notify_policy import NotifyAudience
 from teatree.loop.preset_resolution import ActivePreset, resolve_active_preset
 from teatree.loops.timer_chains import LOOPS_QUEUE
 

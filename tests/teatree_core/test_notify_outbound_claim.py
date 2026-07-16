@@ -4,9 +4,9 @@ from unittest.mock import MagicMock
 
 from django.test import TestCase
 
+from teatree.core.modelkit.notify_policy import NotifyAudience
 from teatree.core.models import OutboundClaim
 from teatree.core.notify import NotifyKind, notify_user
-from teatree.core.modelkit.notify_policy import NotifyAudience
 
 
 def _backend(*, permalink: str = "https://acme.slack.com/archives/D-USER/p1700000000000000") -> MagicMock:

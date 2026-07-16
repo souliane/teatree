@@ -29,9 +29,9 @@ from django.db import DatabaseError, IntegrityError, transaction
 
 from teatree.core.backend_factory import messaging_from_overlay
 from teatree.core.backend_protocols import MessagingBackend
+from teatree.core.modelkit.notify_policy import NotifyAudience
 from teatree.core.models import BotPing
 from teatree.core.notify import NotifyKind, format_notification, maybe_linkify, notify_user, resolve_user_id
-from teatree.core.modelkit.notify_policy import NotifyAudience
 
 logger = logging.getLogger(__name__)
 
@@ -66,7 +66,24 @@ class _DeliveredSend:
     permalink: str
 
 
-def notify_with_fallback(  # noqa: PLR0913 — verified-delivery egress; each kwarg is a documented field mirroring notify_user.
+@dataclass(frozen=True, slots=True)
+class _Egress:
+    """The bot→user DM fields threaded from the public entry through the fallback path.
+
+    Bundling them keeps the internal fallback helpers under the argument-count cap
+    while mirroring the field set :func:`notify_user` accepts.
+    """
+
+    text: str
+    kind: NotifyKind
+    idempotency_key: str
+    audience: NotifyAudience
+    user_id: str | None = None
+    linkify: bool = True
+
+
+# ast-grep-ignore: ac-django-no-complexity-suppressions
+def notify_with_fallback(  # noqa: PLR0913 — verified-delivery egress mirroring notify_user; each kwarg is a documented field.
     text: str,
     *,
     kind: NotifyKind | str,
@@ -120,12 +137,14 @@ def notify_with_fallback(  # noqa: PLR0913 — verified-delivery egress; each kw
         idempotency_key,
     )
     return _deliver_via_fallback(
-        text,
-        kind=kind_value,
-        idempotency_key=idempotency_key,
-        audience=audience,
-        user_id=user_id,
-        linkify=linkify,
+        _Egress(
+            text=text,
+            kind=kind_value,
+            idempotency_key=idempotency_key,
+            audience=audience,
+            user_id=user_id,
+            linkify=linkify,
+        )
     )
 
 
@@ -151,48 +170,31 @@ def _primary_failure_is_recoverable(idempotency_key: str) -> bool:
     return row.status == BotPing.Status.FAILED or BotPing.is_stale_sending(row.status, row.posted_at)
 
 
-def _deliver_via_fallback(  # noqa: PLR0913 — threads the same explicit egress fields; each is documented.
-    text: str,
-    *,
-    kind: NotifyKind,
-    idempotency_key: str,
-    audience: NotifyAudience,
-    user_id: str | None,
-    linkify: bool,
-) -> NotifyResult:
+def _deliver_via_fallback(egress: _Egress) -> NotifyResult:
     """Direct, round-trip-verified send used when the primary path fails."""
     primary_failure = "primary notify_user did not deliver"
 
     backend = messaging_from_overlay()
-    resolved_user_id = user_id if user_id is not None else resolve_user_id()
+    resolved_user_id = egress.user_id if egress.user_id is not None else resolve_user_id()
     if backend is None or not resolved_user_id:
         _record_fallback_failure(
-            idempotency_key=idempotency_key,
-            kind=kind,
-            text=text,
-            audience=audience,
+            egress,
             error=f"{primary_failure}; fallback unavailable (no messaging backend or user_id)",
         )
         return NotifyResult(delivered=False, transport=NotifyTransport.NONE)
 
-    payload_text = format_notification(maybe_linkify(text) if linkify else text, kind)
+    payload_text = format_notification(maybe_linkify(egress.text) if egress.linkify else egress.text, egress.kind)
     channel, posted_ts, send_failure = _direct_send(backend, user_id=resolved_user_id, text=payload_text)
     if send_failure:
         _record_fallback_failure(
-            idempotency_key=idempotency_key,
-            kind=kind,
-            text=text,
-            audience=audience,
+            egress,
             error=f"{primary_failure}; fallback send failed: {send_failure}",
         )
         return NotifyResult(delivered=False, transport=NotifyTransport.NONE)
 
     if not _round_trip_verified(backend, channel=channel, posted_ts=posted_ts):
         _record_fallback_failure(
-            idempotency_key=idempotency_key,
-            kind=kind,
-            text=text,
-            audience=audience,
+            egress,
             error=f"{primary_failure}; fallback send unverified (round-trip read found no message at ts={posted_ts})",
         )
         return NotifyResult(delivered=False, transport=NotifyTransport.NONE)
@@ -202,14 +204,7 @@ def _deliver_via_fallback(  # noqa: PLR0913 — threads the same explicit egress
         posted_ts=posted_ts,
         permalink=_safe_permalink(backend, channel=channel, posted_ts=posted_ts),
     )
-    _record_fallback_success(
-        idempotency_key=idempotency_key,
-        kind=kind,
-        text=text,
-        audience=audience,
-        send=send,
-        primary_failure=primary_failure,
-    )
+    _record_fallback_success(egress, send=send, primary_failure=primary_failure)
     return NotifyResult(delivered=True, transport=NotifyTransport.FALLBACK)
 
 
@@ -271,15 +266,7 @@ def _safe_permalink(backend: MessagingBackend, *, channel: str, posted_ts: str) 
         return ""
 
 
-def _record_fallback_success(  # noqa: PLR0913 — one typed write site for the fallback audit row; each field is explicit.
-    *,
-    idempotency_key: str,
-    kind: NotifyKind,
-    text: str,
-    audience: NotifyAudience,
-    send: _DeliveredSend,
-    primary_failure: str,
-) -> None:
+def _record_fallback_success(egress: _Egress, *, send: _DeliveredSend, primary_failure: str) -> None:
     """Upsert the BotPing row to SENT via the FALLBACK transport.
 
     ``notify_user`` already wrote a recoverable FAILED/NOOP row for this
@@ -288,11 +275,11 @@ def _record_fallback_success(  # noqa: PLR0913 — one typed write site for the 
     #1173 stays diagnosable.
     """
     _upsert_botping(
-        idempotency_key=idempotency_key,
-        kind=kind,
+        idempotency_key=egress.idempotency_key,
+        kind=egress.kind,
         status=BotPing.Status.SENT,
-        text=text,
-        audience=audience,
+        text=egress.text,
+        audience=egress.audience,
         channel_ref=send.channel,
         posted_ts=send.posted_ts,
         permalink=send.permalink,
@@ -301,20 +288,13 @@ def _record_fallback_success(  # noqa: PLR0913 — one typed write site for the 
     )
 
 
-def _record_fallback_failure(
-    *,
-    idempotency_key: str,
-    kind: NotifyKind,
-    text: str,
-    audience: NotifyAudience,
-    error: str,
-) -> None:
+def _record_fallback_failure(egress: _Egress, *, error: str) -> None:
     _upsert_botping(
-        idempotency_key=idempotency_key,
-        kind=kind,
+        idempotency_key=egress.idempotency_key,
+        kind=egress.kind,
         status=BotPing.Status.FAILED,
-        text=text,
-        audience=audience,
+        text=egress.text,
+        audience=egress.audience,
         error_message=error,
     )
 
