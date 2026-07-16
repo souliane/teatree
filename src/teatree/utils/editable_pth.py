@@ -150,6 +150,51 @@ def canonical_src_dir() -> Path | None:
     return src if src.is_dir() else None
 
 
+def expected_checkout() -> Path | None:
+    """Return the checkout the active ``t3`` editable install SHOULD point at (#3231).
+
+    The canonical clone is ``$T3_REPO`` (a repo root — the same value
+    ``uv tool install --editable .`` records in the receipt's
+    ``requirements[].editable``). Returns the resolved path when ``$T3_REPO`` is
+    set and exists, else ``None`` — with no known expected checkout there is
+    nothing to compare the receipt against, so the shim-receipt check skips
+    rather than guess.
+    """
+    repo = os.environ.get("T3_REPO", "")
+    if not repo:
+        return None
+    path = Path(repo).expanduser()
+    return path.resolve() if path.is_dir() else None
+
+
+def repair_receipt_to_checkout(checkout: Path) -> bool:
+    """Re-point the ``t3`` editable uv-tool install at *checkout*; return success (#3231).
+
+    Runs ``uv tool install --editable <checkout> --force`` — the supported way
+    to re-anchor a relocated or same-name-hijacked editable install at its
+    correct source, rewriting the shim, ``.pth``, and receipt in one step. Fails
+    safe to ``False`` when ``uv`` is absent or the install errors, so the caller
+    still reports the problem rather than claiming a repair.
+    """
+    import shutil  # noqa: PLC0415 — deferred: keeps the stdlib-only detection path light
+    import subprocess  # noqa: PLC0415 — deferred: only the repair path shells out
+
+    uv = shutil.which("uv")
+    if uv is None:
+        return False
+    try:
+        result = subprocess.run(
+            [uv, "tool", "install", "--editable", str(checkout), "--force"],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=300,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return result.returncode == 0
+
+
 def _is_path_entry(line: str) -> bool:
     """Whether a ``.pth`` line is a ``sys.path`` entry (not blank/comment/import).
 

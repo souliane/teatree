@@ -211,6 +211,42 @@ class TestDoctorCheckCommand:
         assert order.index("ensure_django") < order.index("self_db_check")
         assert "Could not inspect self-DB migrations: ImproperlyConfigured" not in result.output
 
+    def test_configures_django_before_editable_sanity(self, tmp_path, monkeypatch):
+        """Django must be configured before the editable-vs-contribute check (#3213).
+
+        The editable-sanity check reads the DB-home ``contribute`` setting via
+        ``get_effective_settings()``. That read reaches the ``ConfigSetting``
+        store through Django's app registry — which fails safe to ``{}`` (→ the
+        ``False`` dataclass default) when Django is not yet configured. Running
+        the check before ``ensure_django`` therefore resolved ``contribute`` as
+        ``False`` even with a stored ``contribute=true`` row, so every editable
+        install saw the spurious "editable but contribute=false" WARN. The
+        canonical ``ensure_django`` step must run first.
+        """
+        _stage_home(tmp_path, monkeypatch)
+
+        order: list[str] = []
+
+        def _record_setup() -> None:
+            order.append("ensure_django")
+
+        def _record_editable() -> bool:
+            order.append("editable_sanity")
+            return True
+
+        with (
+            patch.object(teatree_cli_doctor.shutil, "which", side_effect=lambda t: f"/usr/bin/{t}"),
+            patch.object(IntrospectionHelpers, "editable_info", return_value=(False, "")),
+            patch.object(teatree_overlay_loader, "get_all_overlays", return_value={}),
+            patch.object(teatree_cli_doctor, "ensure_django", side_effect=_record_setup),
+            patch.object(teatree_cli_doctor, "_check_editable_sanity", side_effect=_record_editable),
+        ):
+            result = runner.invoke(app, ["doctor", "check"])
+
+        assert result.exit_code == 0, result.output
+        assert "ensure_django" in order, "doctor check must call ensure_django (#3213)"
+        assert order.index("ensure_django") < order.index("editable_sanity")
+
     def test_fails_on_import_error(self):
         import builtins  # noqa: PLC0415
 
