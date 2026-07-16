@@ -9,6 +9,7 @@ app builder attaches via :func:`teatree.cli.wip.register_wip_commands`.
 """
 
 import os
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -194,6 +195,26 @@ class TestWipSetBootstrapsDjangoInRealProcess:
             check=True,
         )
 
+    @pytest.fixture(scope="class")
+    def migrated_xdg_template(self, tmp_path_factory: pytest.TempPathFactory) -> Path:
+        """A migrated control DB built ONCE for the class; each test copies it.
+
+        The subprocess ``teatree migrate`` replay is the whole cost of this class.
+        Paying it once and copying the result per test keeps the two independent
+        cases (set persists, show reads the persisted value) as separate,
+        order-independent shard nodes without a full migrate each — so the split
+        halves the hard shard floor this class was (#3160 item 5).
+        """
+        template = tmp_path_factory.mktemp("wip-migrated") / "xdg"
+        self._migrate(self._clean_env(template))
+        return template
+
+    def _copied_env(self, template: Path, dest: Path) -> dict[str, str]:
+        """A clean env over a per-test COPY of the migrated template DB."""
+        data_home = dest / "xdg"
+        shutil.copytree(template, data_home)
+        return self._clean_env(data_home)
+
     def _wip(self, env: dict[str, str], *args: str) -> subprocess.CompletedProcess[str]:
         """Invoke the ``wip`` typer subgroup in an UNbootstrapped subprocess."""
         return subprocess.run(
@@ -205,14 +226,17 @@ class TestWipSetBootstrapsDjangoInRealProcess:
             check=False,
         )
 
-    def test_set_then_show_round_trips_without_improperly_configured(self, tmp_path: Path) -> None:
-        env = self._clean_env(tmp_path / "xdg")
-        self._migrate(env)
+    def test_set_persists_without_improperly_configured(self, migrated_xdg_template: Path, tmp_path: Path) -> None:
+        env = self._copied_env(migrated_xdg_template, tmp_path)
         result = self._wip(env, "set", "boost")
         combined = result.stdout + result.stderr
         assert "ImproperlyConfigured" not in combined, combined
         assert "settings are not configured" not in combined, combined
         assert result.returncode == 0, combined
+
+    def test_show_reads_the_persisted_dial(self, migrated_xdg_template: Path, tmp_path: Path) -> None:
+        env = self._copied_env(migrated_xdg_template, tmp_path)
+        assert self._wip(env, "set", "boost").returncode == 0
         # ``show`` must read the persisted dial, not silently fall back to the default.
         shown = self._wip(env, "show")
         assert shown.stdout.strip() == Wip.BOOST.value, shown.stdout + shown.stderr

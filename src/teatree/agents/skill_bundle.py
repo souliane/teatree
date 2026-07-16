@@ -158,7 +158,17 @@ def resolve_skill_bundle(
     overlay_skill_metadata: SkillMetadata,
     skill_index: SkillIndex | None = None,
     worktree_path: str | Path | None = None,
+    stage_skills: list[str] | None = None,
 ) -> list[str]:
+    """Resolve the phase's skill bundle for a dispatch.
+
+    *stage_skills* threads the dispatch's single ``active_overlay_stage_skills``
+    resolution (#3206) so a dispatch that also builds the prompts does not
+    re-resolve (re-warn / re-read SKILL.md) per builder; when absent it is
+    resolved here.
+    """
+    if stage_skills is None:
+        stage_skills = active_overlay_stage_skills(phase)
     policy = SkillLoadingPolicy()
     result = policy.select_for_runtime_phase(
         cwd=_dispatch_cwd(worktree_path),
@@ -168,6 +178,6 @@ def resolve_skill_bundle(
         companion_skills=active_overlay_companion_skills(),
         pr_review_companion=active_overlay_pr_review_companion(),
         review_skills=active_overlay_review_skills(),
-        stage_skills=active_overlay_stage_skills(phase),
+        stage_skills=stage_skills,
     )
     return result.skills

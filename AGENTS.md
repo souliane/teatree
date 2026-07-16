@@ -335,6 +335,14 @@ After modifying skills: `t3 tool verify-gates` (commit AND push-stage hooks — 
 - User preferences belong in memory/config files, not skills.
 - Use extension points or DB config settings for project context.
 
+### teatree never reads assistant memory as a functional input (Non-Negotiable)
+
+teatree resolves ALL required state from its own stores; an assistant's memory is never a source of truth for the factory (BLUEPRINT §17.1 invariant 14, [#3277](https://github.com/souliane/teatree/issues/3277)).
+
+- Every piece of state teatree needs to *function* — config, gate enablement, publishing/merge doctrine, factory settings, loop state, trusted identities, credential routing — resolves from teatree's OWN stores: the DB-home `ConfigSetting` / `LoopState` tables (`teatree.config.cold_reader` / `cold_db`, or the ORM), `pass`, repo config. Never from `MEMORY.md`, `~/.claude/**/memory`, or a per-project memory file — those are per-assistant, per-machine, and not portable, so a memory dependency would make the factory behave differently on another machine / agent / fresh session.
+- The only teatree paths that read the memory dir treat it as *product data teatree maintains or surfaces* (the `teatree.loops.dream` consolidation pass, the cold-tier recall injector's *advisory* context), each degrading to a no-op when the dir is absent. A memory-reading feature must NEVER gate a decision or resolve a required state value — even the recall injector's own `memory_recall_enabled` toggle reads from the DB, not from memory.
+- The invariant is pinned by `tests/test_no_agent_memory_dependency.py` (identical runtime state with the memory dir absent vs. populated with contradicting bait). When adding any state resolver, read from teatree's own stores; do not introduce a new read of the assistant memory dir on a functional path.
+
 ## Things That Catch People
 
 - The package is `teatree` (double-e) but the repo/CLI is `teatree`/`t3`.

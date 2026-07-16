@@ -18,7 +18,9 @@ cd "$(dirname "$0")/.."
 export SKIP="${SKIP:-uv-audit,cyclonedx-sbom}"
 
 echo "=== [1/5] prek (all hooks, all files) -- CI lint job ==="
-prek run --all-files
+# `uv run` so the prek RUNNER is the lockfile-pinned version (prek==0.3.13), the
+# exact one CI's lint job runs — not whatever standalone prek is on PATH (#3236).
+uv run prek run --all-files
 
 echo "=== [2/5] makemigrations --check --dry-run -- migration-graph linearity ==="
 uv run python manage.py makemigrations --check --dry-run

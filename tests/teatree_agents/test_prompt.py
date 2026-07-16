@@ -28,6 +28,16 @@ class TestBuildTaskPrompt(TestCase):
         assert "42" in prompt
         assert "https://example.com/issues/42" in prompt
 
+    def test_threaded_stage_skills_not_reresolved(self) -> None:
+        # #3206: build_task_prompt reuses the dispatch-resolved stage skills.
+        ticket = Ticket.objects.create()
+        session = Session.objects.create(ticket=ticket)
+        task = Task.objects.create(ticket=ticket, session=session, phase="coding")
+
+        with patch("teatree.agents.skill_bundle.active_overlay_stage_skills") as resolver:
+            build_task_prompt(task, skills=["code"], stage_skills=[])
+        resolver.assert_not_called()
+
     def test_includes_title_and_labels(self) -> None:
         ticket = Ticket.objects.create(
             issue_url="https://example.com/issues/1",
@@ -143,6 +153,17 @@ class TestBuildSystemContext(TestCase):
         # skill content is read from default skills_dir, not tmp_dir — so skill will not be found.
         # The test verifies the code path is exercised (lines 78-81).
         assert "TeaTree headless agent" in ctx
+
+    def test_threaded_stage_skills_not_reresolved(self) -> None:
+        # #3206: the dispatch resolves the overlay stage skills once and threads
+        # them in; build_system_context must reuse that list, not re-resolve.
+        ticket = Ticket.objects.create()
+        session = Session.objects.create(ticket=ticket)
+        task = Task.objects.create(ticket=ticket, session=session, phase="coding")
+
+        with patch("teatree.agents.skill_bundle.active_overlay_stage_skills") as resolver:
+            build_system_context(task, skills=["code"], lifecycle_skill="code", stage_skills=[])
+        resolver.assert_not_called()
 
     def test_reviewing_phase(self) -> None:
         ticket = Ticket.objects.create()

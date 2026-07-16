@@ -45,7 +45,11 @@ from teatree.core.models import (
     ReviewVerdictError,
     Task,
     TaskAttempt,
+    Worktree,
 )
+from teatree.core.models.ticket_worktree_checks import worktree_has_commits_ahead
+from teatree.utils import git
+from teatree.utils.run import CommandFailedError
 from teatree.utils.url_slug import pr_ref_from_url
 
 if TYPE_CHECKING:
@@ -145,23 +149,26 @@ def record_result_envelope(
     usage = usage or AttemptUsage()
     schema_error = validate_result_keys(result)
     if schema_error:
-        return _record_failure(task, error=schema_error)
+        return _record_failure(task, error=schema_error, result=result)
 
     signature = outage_signature(result)
     if signature:
-        return _record_failure(task, error=f"outage_death: {signature}")
+        return _record_failure(task, error=f"outage_death: {signature}", result=result)
 
     evidence_error = check_evidence(result, phase or task.phase)
     if evidence_error:
-        return _record_failure(task, error=evidence_error)
+        salvaged = _salvage_coding_result(task, result, phase=phase)
+        if salvaged is None:
+            return _record_failure(task, error=evidence_error, result=result)
+        result = salvaged
 
     landing_error = landing_verification_error(task, phase=phase)
     if landing_error:
-        return _record_failure(task, error=landing_error)
+        return _record_failure(task, error=landing_error, result=result)
 
     server_side_error = _record_returned_envelopes(task, result, phase=phase)
     if server_side_error:
-        return _record_failure(task, error=server_side_error)
+        return _record_failure(task, error=server_side_error, result=result)
 
     _maybe_record_plan_artifact(task, result, phase=phase)
     _maybe_record_article_suggestions(task, result, phase=phase)
@@ -404,13 +411,71 @@ def _maybe_record_answer_draft(task: Task, result: AgentResultBlob, *, phase: st
     )
 
 
-def _record_failure(task: Task, *, error: str) -> TaskAttempt:
+#: Phases whose landed commit can back-fill a missing ``files_modified`` envelope.
+_SALVAGEABLE_PHASES = frozenset({"coding", "debugging"})
+
+
+def _salvage_coding_result(task: Task, result: AgentResultBlob, *, phase: str) -> AgentResultBlob | None:
+    """Return *result* with ``files_modified`` synthesized from the landed commit, or ``None``.
+
+    The #3263 recovery: a coder committed real work but omitted the trailing
+    ``files_modified`` envelope, so the evidence gate refuses and the branch is
+    stranded. When the ticket worktree has a NEW commit ahead of its base AND is
+    clean (``landing_verification_error`` passes — so this never salvages dirty or
+    commit-less work), the committed diff's file paths ARE the evidence: synthesize
+    ``files_modified`` from them so the task COMPLETES on the real landed work.
+    ``None`` for a non-coding phase, or when there is nothing clean to salvage —
+    the caller then records the honest evidence refusal.
+    """
+    if normalize_phase(phase or task.phase) not in _SALVAGEABLE_PHASES:
+        return None
+    if landing_verification_error(task, phase=phase):
+        return None
+    files = _committed_file_changes(task)
+    if not files:
+        return None
+    salvaged = dict(result)
+    salvaged["files_modified"] = files
+    return salvaged
+
+
+def _committed_file_changes(task: Task) -> list[dict[str, str]]:
+    """``files_modified`` entries for the first ticket worktree with a commit ahead, else ``[]``."""
+    for worktree in Worktree.objects.filter(ticket=task.ticket):
+        if not worktree_has_commits_ahead(worktree):
+            continue
+        paths = _committed_paths(worktree)
+        if paths:
+            return [{"path": path, "action": "modified"} for path in paths]
+    return []
+
+
+def _committed_paths(worktree: Worktree) -> list[str]:
+    # Reached only after ``worktree_has_commits_ahead`` proved a valid path + branch.
+    repo_path = (worktree.extra or {}).get("worktree_path") or worktree.repo_path
+    base = _base_ref(repo_path)
+    try:
+        out = git.run(repo=repo_path, args=["diff", "--name-only", f"{base}..{worktree.branch}"])
+    except (CommandFailedError, OSError):
+        return []
+    return [line.strip() for line in out.splitlines() if line.strip()]
+
+
+def _base_ref(repo_path: str) -> str:
+    try:
+        return f"origin/{git.default_branch(repo_path)}"
+    except (CommandFailedError, RuntimeError):
+        return "main"
+
+
+def _record_failure(task: Task, *, error: str, result: AgentResultBlob | None = None) -> TaskAttempt:
     attempt = TaskAttempt.objects.create(
         task=task,
         execution_target=task.execution_target,
         ended_at=timezone.now(),
         exit_code=0,
         error=error,
+        result=result or {},
     )
     task.fail()
     return attempt

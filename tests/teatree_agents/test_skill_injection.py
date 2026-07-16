@@ -7,6 +7,7 @@ from teatree.agents.skill_injection import (
     _is_primary,
     _read_skill_contents,
     _read_skill_contents_scoped,
+    _resolve_skill_md,
     build_subagent_skill_preamble,
     harness_skills_dirs,
 )
@@ -38,6 +39,44 @@ def test_read_skill_contents_multiple_skills(tmp_path: Path) -> None:
     result = _read_skill_contents(["skill-a", "skill-b"], skills_dir=tmp_path)
     assert "--- SKILL: skill-a ---" in result
     assert "--- SKILL: skill-b ---" in result
+
+
+# --- embed path agrees with the warn/resolve path (#3206) ---
+# The unresolvable-warning check resolves via ``_resolve_skill_md`` (bare-name
+# strip); the embed must resolve the same reference forms, or a namespaced /
+# path-form stage skill warns as "resolvable" yet is silently dropped from the
+# embed (or vice versa). Every case below asserts warn-resolution and embed agree.
+
+
+def test_read_skill_contents_embeds_namespaced_name_like_the_resolver(tmp_path: Path) -> None:
+    _write_skill(tmp_path, "backend-dev", "# backend-dev body")
+
+    assert _resolve_skill_md("t3:backend-dev", [tmp_path]) is not None
+    result = _read_skill_contents(["t3:backend-dev"], skills_dir=tmp_path)
+    assert "--- SKILL: backend-dev ---" in result
+    assert "# backend-dev body" in result
+
+
+def test_read_skill_contents_embeds_path_form_name_like_the_resolver(tmp_path: Path) -> None:
+    _write_skill(tmp_path, "rules", "# rules body")
+
+    assert _resolve_skill_md("skills/rules/SKILL.md", [tmp_path]) is not None
+    result = _read_skill_contents(["skills/rules/SKILL.md"], skills_dir=tmp_path)
+    assert "--- SKILL: rules ---" in result
+    assert "# rules body" in result
+
+
+def test_read_scoped_embeds_namespaced_primary_like_the_resolver(tmp_path: Path) -> None:
+    _write_skill(tmp_path, "backend-dev", "# backend-dev body")
+
+    assert _resolve_skill_md("t3:backend-dev", [tmp_path]) is not None
+    result = _read_skill_contents_scoped(
+        ["t3:backend-dev"],
+        primary_skills={"t3:backend-dev"},
+        skills_dir=tmp_path,
+    )
+    assert "--- SKILL: backend-dev ---" in result
+    assert "# backend-dev body" in result
 
 
 # --- _is_primary ---
