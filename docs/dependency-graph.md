@@ -124,6 +124,7 @@ graph TD
     teatree.cli --> teatree.project
     teatree.cli --> teatree.config
     teatree.cli --> teatree.core
+    teatree.cli --> teatree.core.modelkit
     teatree.cli --> teatree.agents
     teatree.cli --> teatree.backends
     teatree.cli --> teatree.backends.gitlab
@@ -240,6 +241,7 @@ graph TD
     teatree.loop.scanners --> teatree.utils
     teatree.loop.scanners --> teatree.url_classify
     teatree.loop.scanners --> teatree.core
+    teatree.loop.scanners --> teatree.core.modelkit
     teatree.loop.scanners --> teatree.core.models
     teatree.loop.scanners --> teatree.backends
     teatree.loop.scanners --> teatree.backends.errors
@@ -304,6 +306,7 @@ graph TD
     teatree.loops --> teatree.agents
     teatree.loops --> teatree.config
     teatree.loops --> teatree.core
+    teatree.loops --> teatree.core.modelkit
     teatree.loops --> teatree.loop
     teatree.loops --> teatree.loop.loop_state_db
     teatree.loops --> teatree.loop.preset_resolution
@@ -323,6 +326,7 @@ graph TD
     teatree.on_behalf_gate --> teatree.config
     teatree.missing_issue_policy --> teatree.config
     teatree.messaging --> teatree.core
+    teatree.messaging --> teatree.core.modelkit
     teatree.messaging --> teatree.backends
     teatree.outbound_claim --> teatree.core.models
     teatree.outbound_claim --> teatree.core.session_identity

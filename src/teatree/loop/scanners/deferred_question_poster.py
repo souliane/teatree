@@ -17,10 +17,14 @@ when it actually mirrors something.
 
 import logging
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
 
 from django.db import OperationalError, ProgrammingError
 
 from teatree.loop.scanners.base import ScanSignal
+
+if TYPE_CHECKING:
+    from teatree.core.backend_protocols import MessagingBackend
 
 logger = logging.getLogger(__name__)
 
@@ -28,6 +32,12 @@ logger = logging.getLogger(__name__)
 @dataclass(slots=True)
 class DeferredQuestionPosterScanner:
     overlay: str = ""
+    # An explicit messaging backend + user id so the GLOBAL dispatch tick (which
+    # runs with no ``T3_OVERLAY_NAME``) can actually DELIVER the mirror DM instead
+    # of no-opping on an unresolved overlay backend (F2). ``None``/empty falls
+    # back to ``notify_user``'s overlay resolution, unchanged.
+    backend: "MessagingBackend | None" = None
+    user_id: str = ""
     name: str = "deferred_question_poster"
 
     def scan(self) -> list[ScanSignal]:
@@ -36,7 +46,9 @@ class DeferredQuestionPosterScanner:
         )
 
         try:
-            mirrored, total = drain_unmirrored_deferred_questions(overlay=self.overlay)
+            mirrored, total = drain_unmirrored_deferred_questions(
+                overlay=self.overlay, backend=self.backend, user_id=self.user_id
+            )
         except (OperationalError, ProgrammingError):
             logger.info("DeferredQuestionPosterScanner: DeferredQuestion unavailable (DB not migrated yet) — skipping")
             return []
