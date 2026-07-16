@@ -12,6 +12,7 @@ from django.core.management import call_command
 from django.test import TestCase, override_settings
 from django.utils.module_loading import import_string
 
+import teatree.core.gates.local_stack_gate as local_stack_gate_mod
 import teatree.core.management.commands.worktree as worktree_mod
 import teatree.core.overlay_loader as overlay_loader_mod
 import teatree.utils.db as db_mod
@@ -461,6 +462,16 @@ class TestLifecycleSetupHelpers(TestCase):
 
 
 class TestLifecycleStart(TestCase):
+    def setUp(self) -> None:
+        # These tests exercise the default (unbounded) overlay's start path, where
+        # #2949's resource-aware admission never consults RAM. The shared test DB
+        # carries a bounded cap, so pin it to 0 to keep the normal-path assertions
+        # (SERVICES_UP + compose up) deterministic.
+        super().setUp()
+        patcher = patch.object(local_stack_gate_mod, "resolve_max_concurrent_local_stacks", return_value=0)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
     @_patch_overlays(FULL_OVERLAY)
     @override_settings(**SETTINGS)
     def test_starts_docker_compose_and_transitions(self) -> None:
@@ -621,6 +632,14 @@ class TestImagePreflight(TestCase):
     Tests assert the call sequence on the patched subprocess so we don't need
     a real Docker daemon.
     """
+
+    def setUp(self) -> None:
+        # Default (unbounded) overlay path — pin the cap to 0 so #2949's RAM
+        # admission never holds the start in the shared bounded test DB.
+        super().setUp()
+        patcher = patch.object(local_stack_gate_mod, "resolve_max_concurrent_local_stacks", return_value=0)
+        patcher.start()
+        self.addCleanup(patcher.stop)
 
     def _setup(self, tmp_path: Path) -> tuple[Path, "MagicMock", "MagicMock"]:
         wt_path = tmp_path / "worktree"

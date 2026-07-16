@@ -83,6 +83,12 @@
       "signature": "() -> list[str]"
     },
     {
+      "description": "Contribute named inline segments (id/text/color/placement) spliced onto the statusline at tick cadence.",
+      "name": "get_statusline_segments",
+      "required": false,
+      "signature": "() -> list[teatree.core.statusline_segment.StatuslineSegment]"
+    },
+    {
       "description": "Return PR validation problems for this overlay.",
       "name": "metadata.validate_pr",
       "required": false,

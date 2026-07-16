@@ -29,17 +29,36 @@ written, so a typo can never report success and pause nothing, and
 that does not exist.
 """
 
+import datetime as dt
 import json
 import logging
+import re
 from collections.abc import Callable
 from typing import Annotated
 
 import typer
+from django.utils import timezone
 from django_typer.management import TyperCommand, command
 
 from teatree.core.models import Loop, LoopState
 
 logger = logging.getLogger(__name__)
+
+_DURATION_RE = re.compile(r"^(\d+)([smhd])$")
+_DURATION_UNIT_SECONDS = {"s": 1, "m": 60, "h": 3600, "d": 86400}
+_OVERRIDE_STATES = {"on", "off", "clear"}
+
+
+def _parse_for(raw: str) -> dt.datetime | None:
+    """Resolve a ``--for`` TTL (``2h``/``30m``/``1d``) to an absolute instant, or ``None`` when empty."""
+    raw = raw.strip()
+    if not raw:
+        return None
+    match = _DURATION_RE.match(raw)
+    if match is None:
+        msg = f"invalid --for duration {raw!r}; use forms like 2h, 30m, 1d"
+        raise ValueError(msg)
+    return timezone.now() + dt.timedelta(seconds=int(match.group(1)) * _DURATION_UNIT_SECONDS[match.group(2)])
 
 
 def _reconcile_timers() -> None:
@@ -106,6 +125,16 @@ def _report_status(name: str, *, json_output: bool, stdout_write: Callable[[str]
         stdout_write(f"loop {name!r} status: {status.value.upper()}")
 
 
+def _report_forced(name: str, *, json_output: bool, stdout_write: Callable[[str], object]) -> None:
+    """Re-read and report the LANDED forced plane after an override."""
+    forced = LoopState.objects.forced_of(name)
+    word = "neutral" if forced is None else ("on" if forced else "off")
+    if json_output:
+        stdout_write(json.dumps({"name": name, "forced": word}, indent=2))
+    else:
+        stdout_write(f"OK    loop {name!r} override is now {word}.")
+
+
 class Command(TyperCommand):
     help = "Pause, resume, disable, enable, or inspect a mini-loop's durable state (#1913)."
 
@@ -159,6 +188,34 @@ class Command(TyperCommand):
         Loop.objects.enable(name)
         _reconcile_timers()
         _report(name, json_output=json_output, stdout_write=self.stdout.write)
+
+    @command(name="override")
+    def override(
+        self,
+        name: Annotated[str, typer.Argument(help="Mini-loop name.")],
+        state: Annotated[str, typer.Argument(help="on | off | clear.")],
+        *,
+        for_ttl: Annotated[str, typer.Option("--for", help="TTL for the override (2h/30m/1d).")] = "",
+        reason: Annotated[str, typer.Option("--reason", help="Why the override is in force.")] = "",
+        json_output: Annotated[bool, typer.Option("--json", help="Emit JSON.")] = False,
+    ) -> None:
+        """Set the emergency FORCED plane for *name* — on/off beats a preset, clear returns to neutral."""
+        _require_known_loop(name, json_output=json_output, stdout_write=self.stdout.write)
+        normalized = state.strip().lower()
+        if normalized not in _OVERRIDE_STATES:
+            msg = f"invalid override state {state!r}; use on, off, or clear"
+            self.stdout.write(json.dumps({"name": name, "error": msg}) if json_output else f"ERROR  {msg}")
+            raise SystemExit(2)
+        if normalized == "clear":
+            LoopState.objects.clear_override(name)
+        else:
+            try:
+                until = _parse_for(for_ttl)
+            except ValueError as exc:
+                self.stdout.write(json.dumps({"name": name, "error": str(exc)}) if json_output else f"ERROR  {exc}")
+                raise SystemExit(2) from exc
+            LoopState.objects.override(name, on=normalized == "on", until=until, reason=reason)
+        _report_forced(name, json_output=json_output, stdout_write=self.stdout.write)
 
     @command(name="status")
     def status(

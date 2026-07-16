@@ -4518,7 +4518,7 @@ def handle_session_start_bootstrap(data: dict) -> None:
         return
     source = data.get("source", "")
     if _autoload_enabled():
-        engage(session_id)
+        engage(session_id, seed_skills=True)
     elif not _teatree_active(session_id):
         advisory = "" if source in {"compact", "resume"} else _TEATREE_NOT_ACTIVE_ADVISORY
         _emit_session_start_context(_merge_session_start_context(advisory, session_id, source))

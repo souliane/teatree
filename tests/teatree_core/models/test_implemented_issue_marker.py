@@ -7,9 +7,12 @@ reads (``in_flight_count`` over non-terminal rows). FK to ``Ticket`` is
 dedup record.
 """
 
-from django.test import TestCase
+from datetime import timedelta
 
-from teatree.core.models import ImplementedIssueMarker
+from django.test import TestCase
+from django.utils import timezone
+
+from teatree.core.models import ImplementedIssueMarker, Ticket
 from teatree.instance_id import instance_id
 from tests.factories import ImplementedIssueMarkerFactory, TicketFactory
 
@@ -92,3 +95,136 @@ class TestStr(TestCase):
         assert "impl-issue" in rendered
         assert "https://github.com/o/r/issues/9" in rendered
         assert "ticket_created" in rendered
+
+
+class TestReconcileStale(TestCase):
+    """#3275 — retroactively free markers whose ticket went terminal/gone.
+
+    The release-on-completion signal only fires on the LIVE transition event;
+    a marker orphaned while the pipeline was down never leaves ``dispatched``
+    and permanently exhausts the in-flight budget. ``reconcile_stale`` is the
+    retroactive path that heals it.
+    """
+
+    def _terminal_ticket(self, issue_url: str):
+        return TicketFactory(overlay="acme", issue_url=issue_url, state=Ticket.State.MERGED)
+
+    def test_releases_dispatched_marker_with_merged_ticket(self) -> None:
+        url = "https://github.com/o/r/issues/100"
+        self._terminal_ticket(url)
+        marker = ImplementedIssueMarkerFactory(overlay="acme", issue_url=url)  # DISPATCHED
+
+        result = ImplementedIssueMarker.objects.reconcile_stale("acme")
+
+        marker.refresh_from_db()
+        assert marker.state == ImplementedIssueMarker.State.COMPLETED
+        assert result.completed == (marker.pk,)
+        assert result.released == 1
+
+    def test_frees_the_in_flight_budget(self) -> None:
+        url = "https://github.com/o/r/issues/101"
+        self._terminal_ticket(url)
+        ImplementedIssueMarkerFactory(overlay="acme", issue_url=url)
+        assert ImplementedIssueMarker.objects.in_flight_count("acme") == 1
+
+        ImplementedIssueMarker.objects.reconcile_stale("acme")
+
+        assert ImplementedIssueMarker.objects.in_flight_count("acme") == 0
+
+    def test_keeps_marker_whose_ticket_is_still_live(self) -> None:
+        url = "https://github.com/o/r/issues/102"
+        TicketFactory(overlay="acme", issue_url=url, state=Ticket.State.CODED)
+        marker = ImplementedIssueMarkerFactory(overlay="acme", issue_url=url)
+
+        result = ImplementedIssueMarker.objects.reconcile_stale("acme")
+
+        marker.refresh_from_db()
+        assert marker.state == ImplementedIssueMarker.State.DISPATCHED
+        assert result.released == 0
+
+    def test_releases_ticket_created_marker_with_delivered_ticket(self) -> None:
+        url = "https://github.com/o/r/issues/103"
+        TicketFactory(overlay="acme", issue_url=url, state=Ticket.State.DELIVERED)
+        marker = ImplementedIssueMarkerFactory(overlay="acme", issue_url=url, ticket_created=True)
+
+        ImplementedIssueMarker.objects.reconcile_stale("acme")
+
+        marker.refresh_from_db()
+        assert marker.state == ImplementedIssueMarker.State.COMPLETED
+
+    def test_abandons_orphan_with_gone_ticket_past_grace(self) -> None:
+        marker = ImplementedIssueMarkerFactory(overlay="acme", issue_url="https://github.com/o/r/issues/104")
+        ImplementedIssueMarker.objects.filter(pk=marker.pk).update(dispatched_at=timezone.now() - timedelta(hours=48))
+
+        result = ImplementedIssueMarker.objects.reconcile_stale("acme")
+
+        marker.refresh_from_db()
+        assert marker.state == ImplementedIssueMarker.State.ABANDONED
+        assert result.abandoned == (marker.pk,)
+
+    def test_keeps_fresh_orphan_within_grace(self) -> None:
+        marker = ImplementedIssueMarkerFactory(overlay="acme", issue_url="https://github.com/o/r/issues/105")
+
+        result = ImplementedIssueMarker.objects.reconcile_stale("acme")
+
+        marker.refresh_from_db()
+        assert marker.state == ImplementedIssueMarker.State.DISPATCHED
+        assert result.released == 0
+
+    def test_leaves_already_terminal_markers_untouched(self) -> None:
+        url = "https://github.com/o/r/issues/106"
+        self._terminal_ticket(url)
+        completed = ImplementedIssueMarkerFactory(overlay="acme", issue_url=url, completed=True)
+        abandoned = ImplementedIssueMarkerFactory(
+            overlay="acme", issue_url="https://github.com/o/r/issues/107", abandoned=True
+        )
+
+        result = ImplementedIssueMarker.objects.reconcile_stale("acme")
+
+        completed.refresh_from_db()
+        abandoned.refresh_from_db()
+        assert completed.state == ImplementedIssueMarker.State.COMPLETED
+        assert abandoned.state == ImplementedIssueMarker.State.ABANDONED
+        assert result.released == 0
+
+    def test_scoped_to_overlay(self) -> None:
+        url_a = "https://github.com/o/r/issues/108"
+        url_b = "https://github.com/o/r/issues/109"
+        self._terminal_ticket(url_a)
+        TicketFactory(overlay="widgets", issue_url=url_b, state=Ticket.State.MERGED)
+        acme_marker = ImplementedIssueMarkerFactory(overlay="acme", issue_url=url_a)
+        widgets_marker = ImplementedIssueMarkerFactory(overlay="widgets", issue_url=url_b)
+
+        ImplementedIssueMarker.objects.reconcile_stale("acme")
+
+        acme_marker.refresh_from_db()
+        widgets_marker.refresh_from_db()
+        assert acme_marker.state == ImplementedIssueMarker.State.COMPLETED
+        assert widgets_marker.state == ImplementedIssueMarker.State.DISPATCHED
+
+    def test_empty_overlay_reconciles_every_overlay(self) -> None:
+        url_a = "https://github.com/o/r/issues/110"
+        url_b = "https://github.com/o/r/issues/111"
+        self._terminal_ticket(url_a)
+        TicketFactory(overlay="widgets", issue_url=url_b, state=Ticket.State.MERGED)
+        acme_marker = ImplementedIssueMarkerFactory(overlay="acme", issue_url=url_a)
+        widgets_marker = ImplementedIssueMarkerFactory(overlay="widgets", issue_url=url_b)
+
+        result = ImplementedIssueMarker.objects.reconcile_stale()
+
+        acme_marker.refresh_from_db()
+        widgets_marker.refresh_from_db()
+        assert acme_marker.state == ImplementedIssueMarker.State.COMPLETED
+        assert widgets_marker.state == ImplementedIssueMarker.State.COMPLETED
+        assert result.released == 2
+
+    def test_find_stale_previews_without_mutating(self) -> None:
+        url = "https://github.com/o/r/issues/112"
+        self._terminal_ticket(url)
+        marker = ImplementedIssueMarkerFactory(overlay="acme", issue_url=url)
+
+        result = ImplementedIssueMarker.objects.find_stale("acme")
+
+        marker.refresh_from_db()
+        assert marker.state == ImplementedIssueMarker.State.DISPATCHED
+        assert result.completed == (marker.pk,)
