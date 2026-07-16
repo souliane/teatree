@@ -24,6 +24,7 @@ from teatree.backends.loader import (
 )
 from teatree.backends.messaging_noop import NoopMessagingBackend
 from teatree.backends.slack.bot import SlackBotBackend
+from teatree.backends.slack.routing import OwnerDmOnlyError
 from teatree.core.backend_protocols import BackendResolutionError
 from teatree.core.overlay import OverlayBase, OverlayConfig
 
@@ -225,6 +226,42 @@ def test_get_messaging_returns_slack_when_chosen() -> None:
     overlay = _build_overlay(messaging_backend="slack")
     _stub_token(overlay, slack="xoxb-fake")
     assert isinstance(get_messaging(overlay), SlackBotBackend)
+
+
+def test_get_messaging_full_profile_leaves_owner_dm_only_off() -> None:
+    # The default "full" profile must NOT restrict — customer overlays post everywhere.
+    overlay = _build_overlay(messaging_backend="slack", slack_scope_profile="full")
+    _stub_token(overlay, slack="xoxb-fake")
+    backend = get_messaging(overlay)
+    assert isinstance(backend, SlackBotBackend)
+    assert backend._owner_dm_only is False
+
+
+def test_get_messaging_dm_only_sets_owner_dm_only() -> None:
+    overlay = _build_overlay(
+        messaging_backend="slack",
+        slack_scope_profile="dm_only",
+        slack_user_id="U-owner",
+        slack_dm_channel_id="D-owner",
+    )
+    _stub_token(overlay, slack="xoxb-fake")
+    backend = get_messaging(overlay)
+    assert isinstance(backend, SlackBotBackend)
+    assert backend._owner_dm_only is True
+
+
+def test_get_messaging_dm_only_refuses_non_owner_channel() -> None:
+    overlay = _build_overlay(
+        messaging_backend="slack",
+        slack_scope_profile="dm_only",
+        slack_user_id="U-owner",
+        slack_dm_channel_id="D-owner",
+    )
+    _stub_token(overlay, slack="xoxb-fake")
+    backend = get_messaging(overlay)
+    # The guard raises before any HTTP call for a non-owner destination.
+    with pytest.raises(OwnerDmOnlyError):
+        backend.post_message(channel="C-public", text="leak")
 
 
 def test_get_messaging_raises_on_unknown_choice() -> None:

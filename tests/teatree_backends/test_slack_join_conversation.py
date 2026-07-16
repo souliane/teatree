@@ -7,6 +7,8 @@ import pytest
 
 from teatree.backends.slack import http as slack_http
 from teatree.backends.slack.bot import SlackBotBackend
+from teatree.backends.slack.web_ops import open_im_channel
+from teatree.types import RawAPIDict
 
 
 def _post_returning(body: dict, captured: list[dict[str, object]]) -> object:
@@ -41,3 +43,32 @@ class TestJoinConversation:
         monkeypatch.setattr(slack_http.httpx, "post", failing_post)
         body = SlackBotBackend(bot_token="xoxb-bot").join_conversation("C1")
         assert body["error"] == "missing_scope"
+
+
+class TestOpenImChannel:
+    """``open_im_channel`` — the ``conversations.open`` id extraction (split from ``open_dm``)."""
+
+    @staticmethod
+    def _post(body: RawAPIDict) -> object:
+        def fake(method: str, payload: RawAPIDict, *, token: str = "", idempotent: bool = True) -> RawAPIDict:
+            _ = method, payload, token, idempotent
+            return body
+
+        return fake
+
+    def test_returns_channel_id_on_ok(self) -> None:
+        got = open_im_channel(self._post({"ok": True, "channel": {"id": "D42"}}), "U1")
+        assert got == "D42"
+
+    def test_empty_on_not_ok(self) -> None:
+        assert open_im_channel(self._post({"ok": False, "error": "user_not_found"}), "U1") == ""
+
+    def test_empty_when_channel_id_missing(self) -> None:
+        assert open_im_channel(self._post({"ok": True, "channel": {}}), "U1") == ""
+
+    def test_open_dm_delegates_to_open_im_channel(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        captured: list[dict[str, object]] = []
+        monkeypatch.setattr(slack_http.httpx, "post", _post_returning({"ok": True, "channel": {"id": "D9"}}, captured))
+        # No cached dm_channel_id ⇒ open_dm falls through to open_im_channel's conversations.open.
+        assert SlackBotBackend(bot_token="xoxb-bot").open_dm("U-someone") == "D9"
+        assert cast("str", captured[0]["url"]).endswith("/conversations.open")

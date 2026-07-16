@@ -125,6 +125,13 @@ autoload_enabled() {
 }
 
 if [ -n "$session_id" ] && ! autoload_enabled; then
+    # #3233: CC discards zero-byte statusline output, so a silent ``exit 0``
+    # here renders a mysteriously BLANK bar under the non-TTY CC invocation
+    # (session_id set) — invisible to every run-the-script-by-hand debug pass.
+    # Emit one neutral hint line instead so the bar is never empty; the #256
+    # colleague guarantee still holds (the loop statusline stays suppressed —
+    # only this one-line how-to shows).
+    printf 'teatree: statusline off (autoload disabled) · enable: t3 <overlay> config_setting set autoload true\n'
     exit 0
 fi
 

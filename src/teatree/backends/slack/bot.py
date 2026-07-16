@@ -48,7 +48,7 @@ from teatree.backends.slack.dm_history import read_single_message, read_thread_r
 from teatree.backends.slack.http import SlackHttpClient
 from teatree.backends.slack.inbound import SlackInbound
 from teatree.backends.slack.react_errors import SingleEmojiBodyRefusedError, is_single_emoji_body
-from teatree.backends.slack.routing import is_self_dm, select_routed_token
+from teatree.backends.slack.routing import assert_owner_dm, is_self_dm, select_routed_token
 from teatree.backends.slack.self_identity import OwnSlackIdentity, resolve_own_identity, strip_self_audio_attachments
 from teatree.backends.slack.token_policy import SlackOp, channel_token
 from teatree.backends.slack.token_validation import (
@@ -61,7 +61,7 @@ from teatree.backends.slack.token_validation import (
 from teatree.backends.slack.voice_classifier import ClassifierMode as VoiceClassifierMode
 from teatree.backends.slack.voice_classifier import SlackVoiceMismatchError, VoiceTokenGate
 from teatree.backends.slack.web_ops import join_conversation as join_slack_conversation
-from teatree.backends.slack.web_ops import read_permalink, run_auth_test
+from teatree.backends.slack.web_ops import open_im_channel, read_permalink, run_auth_test
 from teatree.backends.slack.web_reads import read_channel_history, read_reactions
 from teatree.backends.slack.web_reads import resolve_user_id as resolve_slack_user_id
 from teatree.types import RawAPIDict
@@ -112,6 +112,7 @@ class SlackBotBackend:  # noqa: PLR0904 — method count reflects the MessagingB
         user_id: str = "",
         dm_channel_id: str = "",
         degrade_bad_user_token: bool = False,
+        owner_dm_only: bool = False,
     ) -> None:
         # Construction-chokepoint prefix validation (codex #1282 item 5):
         # bot/app strict; user token degrades per ``degrade_bad_user_token``.
@@ -135,6 +136,9 @@ class SlackBotBackend:  # noqa: PLR0904 — method count reflects the MessagingB
         # fallback through whichever bot already had an IM with the user —
         # the per-overlay attribution leak the issue reports).
         self._dm_channel_id = dm_channel_id
+        # dm_only profile: refuse every outbound but the owner's own DM (enforced
+        # at the ``_channel_token`` / ``_route_token`` funnels).
+        self._owner_dm_only = owner_dm_only
         self._http = SlackHttpClient()
         # #1395 voice/token gate; factory overrides via set_voice_classifier_mode.
         self._voice_gate = VoiceTokenGate(mode=VoiceClassifierMode.WARN, dm_channel_id=dm_channel_id)
@@ -270,6 +274,9 @@ class SlackBotBackend:  # noqa: PLR0904 — method count reflects the MessagingB
         fails toward the user ``xoxp`` token (the bot token is rejected
         on a Connect channel and the partner write is silently dropped).
         """
+        assert_owner_dm(
+            channel, owner_dm_only=self._owner_dm_only, dm_channel_id=self._dm_channel_id, user_id=self._user_id
+        )
         if not self._user_token or not self._bot_token or channel.startswith("D"):
             return channel_token(
                 channel,
@@ -470,6 +477,9 @@ class SlackBotBackend:  # noqa: PLR0904 — method count reflects the MessagingB
 
     def _route_token(self, channel: str) -> str:
         """The token a #1750-routed post/react to *channel* goes out under (self-DM→bot, else→xoxp)."""
+        assert_owner_dm(
+            channel, owner_dm_only=self._owner_dm_only, dm_channel_id=self._dm_channel_id, user_id=self._user_id
+        )
         return select_routed_token(
             channel,
             dm_channel_id=self._dm_channel_id,
@@ -481,11 +491,10 @@ class SlackBotBackend:  # noqa: PLR0904 — method count reflects the MessagingB
     def route_token(self, channel: str) -> str:
         """Public accessor over the #1750 destination router (self-DM→bot, else→xoxp).
 
-        The deterministic classifier ``post_routed`` / ``react_routed`` and
-        :class:`~teatree.core.on_behalf_egress.OnBehalfSlackEgress` consult to
-        choose the outbound token by destination (and as the self-DM carve-out
-        presence probe). Distinct from :meth:`resolve_channel_token`, the
-        Connect-membership policy that cannot tell the user's own DM from a
+        The classifier ``post_routed`` / ``react_routed`` and
+        :class:`~teatree.core.on_behalf_egress.OnBehalfSlackEgress` consult to choose
+        the outbound token by destination. Distinct from :meth:`resolve_channel_token`,
+        the Connect-membership policy that cannot tell the owner's own DM from a
         colleague's.
         """
         return self._route_token(channel)
@@ -526,12 +535,7 @@ class SlackBotBackend:  # noqa: PLR0904 — method count reflects the MessagingB
         """Return the IM channel id for *user_id*; short-circuit to the cached id when set (#1342)."""
         if user_id and user_id == self._user_id and self._dm_channel_id:
             return self._dm_channel_id
-        data = self._post("conversations.open", {"users": user_id})
-        if not data.get("ok"):
-            return ""
-        channel = cast("RawAPIDict", data.get("channel") or {})
-        channel_id = channel.get("id")
-        return channel_id if isinstance(channel_id, str) else ""
+        return open_im_channel(self._post, user_id)
 
     def join_conversation(self, channel: str) -> RawAPIDict:
         """Join the bot to a public channel via ``conversations.join`` (bot token)."""
@@ -552,17 +556,11 @@ class SlackBotBackend:  # noqa: PLR0904 — method count reflects the MessagingB
     ) -> RawAPIDict:
         """Post ONE DM to ``channel`` carrying ``text`` + an inline audio attachment (#2050).
 
-        The modern three-step upload (``files.upload`` is deprecated):
-        ``getUploadURLExternal`` reserves an off-Slack ``upload_url`` + file
-        ``id``; the bytes are POSTed there; ``completeUploadExternal`` shares
-        the file into ``channel_id`` with ``text`` as the ``initial_comment``
-        and, when set, ``thread_ts`` — a SINGLE DM (text + inline player).
-
-        Finalising requires the token's ``files:write`` scope; without it the
-        reserve step returns ``ok:false`` / ``missing_scope`` (surfaced
-        verbatim so the caller degrades to a text-only post). Routes under
-        :meth:`_route_token`. Returns the raw ``completeUploadExternal`` body
-        (``{}`` when no token is configured or the file is unreadable).
+        Uses the modern three-step upload (``getUploadURLExternal`` → PUT bytes →
+        ``completeUploadExternal`` with ``text`` as ``initial_comment``). Needs the
+        token's ``files:write`` scope; without it the reserve step returns
+        ``missing_scope`` (surfaced verbatim so the caller degrades to text-only).
+        Routes under :meth:`_route_token`; ``{}`` when no token / unreadable file.
         """
         token = self._route_token(channel)
         if not token or not channel:

@@ -3382,6 +3382,15 @@ Usage: t3 setup slack-provision [OPTIONS]
 │ --overlay                              TEXT  Overlay to provision (default:  │
 │                                              every Slack-backed overlay in   │
 │                                              the DB registry).               │
+│ --dm-only         --full                     Persist this overlay's scope    │
+│                                              profile before provisioning:    │
+│                                              --dm-only restricts the bot to  │
+│                                              the owner's DM (minimal scopes, │
+│                                              no user token); --full is the   │
+│                                              read/write-everywhere default.  │
+│                                              Requires --overlay. Omit both   │
+│                                              to leave the stored profile     │
+│                                              unchanged.                      │
 │ --open-browser    --no-open-browser          Open the OAuth (re)install URL  │
 │                                              in the browser.                 │
 │                                              [default: open-browser]         │

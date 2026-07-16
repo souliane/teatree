@@ -39,10 +39,16 @@ RUN mkdir -p \
         /home/teatree/workspace/t3-workspaces \
         /opt/teatree/uv && \
     # clone_root() resolves clones under ~/workspace, but the runtime clone
-    # lives on the teatree_src volume at ~/teatree — without this link the
-    # fleet-claim wire finds no local clone for the repo and fails safe
-    # (never claims), silently disabling the issue-implementer intake.
-    ln -s /home/teatree/teatree /home/teatree/workspace/teatree && \
+    # lives on the teatree_src volume at ~/teatree. Provisioning discovers the
+    # base clone with find_clone_path(clone_root, "souliane/teatree"), which
+    # matches the ORG-PREFIXED path ~/workspace/souliane/teatree (the slug's
+    # literal), NOT a bare ~/workspace/teatree — so the link must carry the
+    # owner segment. Without the org-prefixed link, `workspace ticket` fails at
+    # worktree provisioning ("No git clone found for souliane/teatree") and the
+    # issue-implementer intake is silently disabled. This mirrors the host
+    # layout (~/workspace/souliane/teatree -> the teatree clone).
+    mkdir -p /home/teatree/workspace/souliane && \
+    ln -s /home/teatree/teatree /home/teatree/workspace/souliane/teatree && \
     chown -R teatree:teatree /home/teatree /opt/teatree
 
 COPY --chmod=0755 deploy/entrypoint.sh /usr/local/bin/entrypoint.sh
@@ -59,16 +65,19 @@ RUN curl -LsSf https://astral.sh/uv/install.sh | sh
 # it explicitly to that same canonical value would make paths.py refuse every
 # loop-provisioned worktree (CanonicalDBFromWorktreeError) and defeat the
 # teatree_worktrees auto-isolation volume.
-# The pass store and its GPG home live under the teatree_data volume so a
-# provisioned multi-account credential store survives container recreation
-# (the container HOME itself is image-backed and reset on every deploy).
+# The pass store and its GPG home are a DEDICATED credential-plane bind mount
+# (compose), decoupled from the data dir at their canonical host paths — so a
+# data-dir change can never orphan the provisioned credential store again (#3262
+# did exactly that by moving the data dir to a bind mount while these ENV paths
+# still pointed inside it). These now equal pass/gpg defaults for this HOME; kept
+# explicit for grep-ability and so a mountless standalone run still resolves.
 ENV PATH="/opt/teatree/uv/bin:/home/teatree/.local/bin:${PATH}" \
     UV_TOOL_DIR=/opt/teatree/uv/tools \
     UV_TOOL_BIN_DIR=/opt/teatree/uv/bin \
     UV_PYTHON_INSTALL_DIR=/opt/teatree/uv/python \
     TEATREE_CLONE_DIR=/home/teatree/teatree \
     TEATREE_REPO_URL=https://github.com/souliane/teatree.git \
-    PASSWORD_STORE_DIR=/home/teatree/.local/share/teatree/.password-store \
-    GNUPGHOME=/home/teatree/.local/share/teatree/.gnupg
+    PASSWORD_STORE_DIR=/home/teatree/.password-store \
+    GNUPGHOME=/home/teatree/.gnupg
 
 ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]

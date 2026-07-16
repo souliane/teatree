@@ -37,6 +37,7 @@
       carries the CSRF token. #}
       <button type="button" class="dash-btn" data-terminal
         hx-post="{% url 'dash:debug_session' %}" hx-target="#terminal-result" hx-swap="innerHTML"
+        hx-confirm="Start a loopback debug session?"
         aria-label="Open a loopback terminal session">
         <svg width="14" height="14" viewBox="0 0 16 16" aria-hidden="true">
           <path fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" d="M2 3h12v10H2zM4.5 6.5l2 1.5-2 1.5M8.5 10h3"/>

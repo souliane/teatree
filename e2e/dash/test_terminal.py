@@ -26,7 +26,7 @@ def test_terminal_button_visible_on_board(live_server: LiveServer, page: Page) -
     expect(page.get_by_role("button", name=_TERMINAL)).to_be_visible()
 
 
-@pytest.mark.usefixtures("seeded_board")
+@pytest.mark.usefixtures("seeded_board", "accept_dialogs")
 def test_terminal_button_click_renders_launch_url(live_server: LiveServer, page: Page) -> None:
     board = BoardPage(page, live_server.url)
     board.open()

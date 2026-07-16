@@ -35,6 +35,13 @@ REQUIRED_SOCKET_EVENTS: frozenset[str] = frozenset({"app_mention", "message.im",
 # The bot scopes those events require to be delivered / readable.
 REQUIRED_SOCKET_BOT_SCOPES: frozenset[str] = frozenset({"app_mentions:read", "im:history", "reactions:read"})
 
+# The dm_only profile consumes only its owner's DM and reactions — no @-mentions,
+# so ``app_mention`` / ``app_mentions:read`` are legitimately absent and MUST NOT
+# be reported as gaps (else the socket doctor would re-push the full manifest and
+# re-widen a bot the operator deliberately narrowed).
+DM_ONLY_SOCKET_EVENTS: frozenset[str] = frozenset({"message.im", "reaction_added"})
+DM_ONLY_SOCKET_BOT_SCOPES: frozenset[str] = frozenset({"im:history", "reactions:read"})
+
 
 @dataclass(frozen=True, slots=True)
 class ManifestSocketGaps:
@@ -49,15 +56,26 @@ class ManifestSocketGaps:
         return not (self.socket_mode_disabled or self.missing_events or self.missing_bot_scopes)
 
 
-def manifest_socket_gaps(manifest: SlackManifest) -> ManifestSocketGaps:
-    """Compare *manifest* against the Socket Mode requirements (pure)."""
+def manifest_socket_gaps(
+    manifest: SlackManifest,
+    *,
+    required_events: frozenset[str] = REQUIRED_SOCKET_EVENTS,
+    required_bot_scopes: frozenset[str] = REQUIRED_SOCKET_BOT_SCOPES,
+) -> ManifestSocketGaps:
+    """Compare *manifest* against the Socket Mode requirements (pure).
+
+    *required_events* / *required_bot_scopes* default to the full-profile set;
+    a dm_only overlay passes :data:`DM_ONLY_SOCKET_EVENTS` /
+    :data:`DM_ONLY_SOCKET_BOT_SCOPES` so its deliberately-narrow manifest is not
+    flagged as missing @-mention capability.
+    """
     settings = manifest.get("settings", {})
     events = set(settings.get("event_subscriptions", {}).get("bot_events", []))
     bot_scopes = set(manifest.get("oauth_config", {}).get("scopes", {}).get("bot", []))
     return ManifestSocketGaps(
         socket_mode_disabled=not bool(settings.get("socket_mode_enabled")),
-        missing_events=frozenset(REQUIRED_SOCKET_EVENTS - events),
-        missing_bot_scopes=frozenset(REQUIRED_SOCKET_BOT_SCOPES - bot_scopes),
+        missing_events=frozenset(required_events - events),
+        missing_bot_scopes=frozenset(required_bot_scopes - bot_scopes),
     )
 
 

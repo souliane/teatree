@@ -138,6 +138,45 @@ class TestBuildManifest:
         assert "chat:write" in scopes["bot"]
 
 
+class TestDmOnlyManifest:
+    """The ``dm_only`` profile narrows the app to its owner's 1:1 DM."""
+
+    def test_no_user_scope_section(self) -> None:
+        # A DM-only bot needs no xoxp token, so the manifest must omit the whole
+        # user section — a reinstall then revokes any user scope the app held.
+        manifest = build_manifest(overlay_name="t3-teatree", scope_profile="dm_only")
+        assert "user" not in manifest["oauth_config"]["scopes"]
+
+    def test_bot_scopes_are_dm_minimal(self) -> None:
+        scopes = manifest_bot_scopes("dm_only")
+        # Present: everything needed to post/read/react in the owner DM.
+        for required in ("chat:write", "im:write", "im:history", "im:read", "reactions:write", "users:read"):
+            assert required in scopes
+        # Absent: no channel/group/mpim reach, no channel mentions.
+        for forbidden in ("channels:history", "channels:read", "groups:read", "mpim:read", "app_mentions:read"):
+            assert forbidden not in scopes
+
+    def test_events_drop_app_mention(self) -> None:
+        events = build_manifest(overlay_name="t3-teatree", scope_profile="dm_only")
+        bot_events = events["settings"]["event_subscriptions"]["bot_events"]
+        assert "app_mention" not in bot_events
+        assert "message.im" in bot_events
+
+    def test_full_profile_still_has_channel_scopes(self) -> None:
+        # Regression guard: narrowing dm_only must not narrow the default.
+        scopes = manifest_bot_scopes("full")
+        assert "channels:history" in scopes
+        assert "user" in build_manifest(overlay_name="acme")["oauth_config"]["scopes"]
+
+    def test_unknown_profile_fails_loud(self) -> None:
+        with pytest.raises(ValueError, match="scope_profile"):
+            build_manifest(overlay_name="acme", scope_profile="bogus")
+
+
+def manifest_bot_scopes(profile: str) -> list[str]:
+    return build_manifest(overlay_name="x", scope_profile=profile)["oauth_config"]["scopes"]["bot"]
+
+
 class TestUserScopesExcludeBotOnly:
     """``_USER_SCOPES`` must list only scopes Slack grants on a *user* token.
 

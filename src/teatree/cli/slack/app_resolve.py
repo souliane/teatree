@@ -58,6 +58,26 @@ def read_overlay_field(overlay: str, field: str) -> str:
     return str(block.get(field, ""))
 
 
+_SCOPE_PROFILES = frozenset({"full", "dm_only"})
+
+
+def overlay_scope_profile(overlay: str) -> str:
+    """Return *overlay*'s Slack scope profile from the DB registry ("full" default).
+
+    ``"dm_only"`` marks a bot restricted to its one owner's DM (minimal scopes, no
+    xoxp user token, no channel joins); anything unset is the read/write-everywhere
+    ``"full"`` profile. An explicit unknown value fails LOUD rather than silently
+    falling to full — the single resolver every Slack surface (loader, manifest
+    push, provision, socket doctor) consults so a dm_only bot cannot be re-widened
+    on one path while narrowed on another.
+    """
+    value = read_overlay_field(overlay, "slack_scope_profile") or "full"
+    if value not in _SCOPE_PROFILES:
+        msg = f"Overlay {overlay!r} has an unknown slack_scope_profile {value!r} (expected 'full' or 'dm_only')."
+        raise ValueError(msg)
+    return value
+
+
 def persist_overlay_field(overlay: str, field: str, value: str) -> None:
     """Set *overlay*'s *field* in the DB ``overlays`` registry, updating an existing entry only.
 

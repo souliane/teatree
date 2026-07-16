@@ -30,11 +30,11 @@ git config --global user.email "${GIT_AUTHOR_EMAIL:-teatree@localhost}"
 git config --global init.defaultBranch main
 git config --global --add safe.directory "$CLONE_DIR"
 
-# The pass store's GPG home rides the teatree_data volume (see Dockerfile ENV);
-# gpg refuses a home directory that is readable by group/other, and volume
-# copy-up does not preserve the mode a provisioning run set. Every role fixes
-# the mode before anything reads a credential.
-if [ -n "${GNUPGHOME:-}" ] && [ -d "$GNUPGHOME" ]; then
+# The GPG home is a dedicated bind mount of the host ~/.gnupg (see Dockerfile ENV
+# + docker-compose credential plane); gpg refuses a home directory readable by
+# group/other. Fix the mode before anything reads a credential — but only when
+# the mount is writable (a hardened read-only mount would EROFS here under -e).
+if [ -n "${GNUPGHOME:-}" ] && [ -d "$GNUPGHOME" ] && [ -w "$GNUPGHOME" ]; then
     chmod 700 "$GNUPGHOME"
 fi
 
@@ -44,12 +44,29 @@ pass_store_has_anthropic() {
     pass ls anthropic >/dev/null 2>&1
 }
 
+# True when an anthropic/ entry actually DECRYPTS — `pass ls` only proves the
+# .gpg files exist, not that gpg can read them (the private key may be absent or
+# gpg-agent unable to start). Exit-code only; the plaintext never leaves gpg.
+anthropic_credential_decrypts() {
+    local store="${PASSWORD_STORE_DIR:-$HOME/.password-store}" entry
+    entry="$(find "$store/anthropic" -type f -name '*.gpg' 2>/dev/null | head -1)"
+    [ -n "$entry" ] || return 1
+    entry="${entry#"$store/"}"
+    pass show "${entry%.gpg}" >/dev/null 2>&1
+}
+
 # Fail loud, early, and actionably when a required runtime token is missing or
 # does not authenticate — otherwise a green deploy hides a dead loop.
 init_preflight() {
-    if [ -z "${CLAUDE_CODE_OAUTH_TOKEN:-}" ] && ! pass_store_has_anthropic; then
-        echo "entrypoint: no Anthropic credential - set the CLAUDE_CODE_OAUTH_TOKEN repo secret, OR provision the box pass store (anthropic/<account>/oauth-token entries) and set anthropic_oauth_pass_paths - then re-run Deploy" >&2
-        exit 1
+    if [ -z "${CLAUDE_CODE_OAUTH_TOKEN:-}" ]; then
+        if ! pass_store_has_anthropic; then
+            echo "entrypoint: no Anthropic credential - no CLAUDE_CODE_OAUTH_TOKEN and the pass store has no anthropic/ entries. Is host ~/.password-store bind-mounted and provisioned (anthropic/<account>/oauth-token)? See deploy/README.md - then re-run Deploy" >&2
+            exit 1
+        fi
+        if ! anthropic_credential_decrypts; then
+            echo "entrypoint: the pass store lists anthropic/ entries but gpg cannot DECRYPT them - the GPG private key is missing from $GNUPGHOME or gpg-agent cannot start (is host ~/.gnupg bind-mounted with the decryption key?) - then re-run Deploy" >&2
+            exit 1
+        fi
     fi
     : "${TEATREE_GH_TOKEN:?MISSING TEATREE_GH_TOKEN - set the repo secret and re-run Deploy}"
     : "${GIT_AUTHOR_NAME:?MISSING GIT_AUTHOR_NAME - set the repo secret and re-run Deploy}"
