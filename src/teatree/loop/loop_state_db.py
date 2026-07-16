@@ -35,27 +35,36 @@ from teatree.loop.preset_resolution import resolve_preset_state
 logger = logging.getLogger(__name__)
 
 
-def loop_state_admits(*, configured_enabled: bool, held: bool, preset_state: bool | None) -> bool:
-    """The combined enable verdict: NOT runtime-HELD, then the preset mask over base config.
+def loop_state_admits(*, configured_enabled: bool, held: bool, preset_state: bool | None, forced: bool | None) -> bool:
+    """The combined enable verdict: hold > forced > preset > base config.
 
-    Resolution: a durable ``LoopState`` hold (``held``) always wins (the L4
-    emergency brake). Otherwise the read-time preset mask decides — ``preset_state``
-    is the L3/L2 opinion from :func:`teatree.loop.preset_resolution.resolve_preset_state`
-    (``True`` forces on, ``False`` forces off), and ``None`` means "no preset opinion",
-    falling through to L1 ``configured_enabled`` (``Loop.enabled``).
+    Resolution, first opinion wins:
 
-    ``preset_state`` is REQUIRED at every call site — there is no neutral default,
-    so the type checker structurally catches any observability surface that resolves
-    a loop without the preset opinion (the #3159 drift class). The **empty-table
-    no-op** is guaranteed instead by the resolver: with no preset, no override, and
-    no active schedule every loop resolves ``preset_state=None``, making this
-    ``not held and configured_enabled`` — byte-for-byte the pre-#3159 two-plane verdict.
+    * a durable ``LoopState`` hold (``held``) always wins (the L4 emergency
+      brake / 'pause everything') — a held loop never runs.
+    * the emergency FORCED plane (``forced``, #3248) — ``True`` force-runs even
+      against a preset that forces the loop off, ``False`` force-skips; ``None``
+      is neutral (no emergency opinion).
+    * the read-time preset mask (``preset_state``, the L3/L2 opinion — ``True``
+      forces on, ``False`` off, ``None`` no opinion).
+    * L1 ``configured_enabled`` (``Loop.enabled``), the fallback.
 
-    The single predicate both :func:`loop_enabled` (single-lookup) and the live
-    loop-table tick apply, so the layers are combined identically everywhere and
-    can never drift into a tier-subset verdict.
+    ``preset_state`` and ``forced`` are REQUIRED at every call site — there is no
+    neutral default, so the type checker structurally catches any observability
+    surface that resolves a loop without both opinions (the #3159/#3248 drift
+    class). The **empty-table no-op** is guaranteed by the resolvers: with no
+    hold, no override, no preset, and no active schedule every loop resolves
+    ``held=False``, ``forced=None``, ``preset_state=None`` — making this
+    ``configured_enabled``, byte-for-byte the pre-#3159 two-plane verdict.
+
+    The single predicate every enable-decision site applies, so the layers are
+    combined identically everywhere and can never drift into a tier-subset verdict.
     """
-    return not held and (preset_state if preset_state is not None else configured_enabled)
+    if held:
+        return False
+    if forced is not None:
+        return forced
+    return preset_state if preset_state is not None else configured_enabled
 
 
 def loop_held_in_db(name: str) -> bool:
@@ -102,6 +111,52 @@ def held_loop_names() -> set[str]:
         return set()
 
 
+def loop_forced_in_db(name: str) -> bool | None:
+    """The live emergency FORCED verdict for *name*: ``True``/``False``/``None`` (neutral).
+
+    FAIL SAFE: any error resolves to ``None`` (no emergency opinion) so an
+    unreadable DB can never silently force a loop on/off — symmetric with
+    :func:`loop_held_in_db`, warning so the degraded read is observable.
+    """
+    try:
+        from teatree.core.models import LoopState  # noqa: PLC0415 — deferred import (cycle-safe / pre-app-registry)
+
+        return LoopState.objects.forced_of(name)
+    except Exception:
+        logger.warning("LoopState forced read failed for %r — failing safe to neutral", name, exc_info=True)
+        return None
+
+
+def forced_loop_map() -> dict[str, bool]:
+    """Every loop name with a LIVE forced value — the tick's bulk forced read.
+
+    The bulk form of :func:`loop_forced_in_db` (mirroring :func:`held_loop_names`).
+    FAIL SAFE: any read error resolves to the empty map (no forced opinions).
+    """
+    try:
+        from teatree.core.models import LoopState  # noqa: PLC0415 (deferred, pre-app-registry — as held_loop_names)
+
+        return LoopState.objects.forced_map()
+    except Exception:
+        logger.warning("LoopState bulk forced read failed — failing safe to no forced opinions", exc_info=True)
+        return {}
+
+
+def control_planes_in_db() -> tuple[set[str], dict[str, bool]]:
+    """The (held names, live forced map) pair in ONE bulk read — the tick's single control read.
+
+    FAIL SAFE: any read error resolves to ``(set(), {})`` (no holds, no forced
+    opinions) so an unreadable DB never silently disables/forces the fleet.
+    """
+    try:
+        from teatree.core.models import LoopState  # noqa: PLC0415 (deferred, pre-app-registry — as held_loop_names)
+
+        return LoopState.objects.control_planes()
+    except Exception:
+        logger.warning("LoopState bulk control-plane read failed — failing safe to no holds/forced", exc_info=True)
+        return set(), {}
+
+
 def loop_enabled(name: str) -> bool:
     """The single-lookup combined enable verdict: ``Loop.enabled`` AND not ``LoopState``-held.
 
@@ -132,8 +187,18 @@ def loop_enabled(name: str) -> bool:
     if row is None:
         return False
     return loop_state_admits(
-        configured_enabled=row.enabled, held=loop_held_in_db(name), preset_state=resolve_preset_state(name)
+        configured_enabled=row.enabled,
+        held=loop_held_in_db(name),
+        preset_state=resolve_preset_state(name),
+        forced=loop_forced_in_db(name),
     )
 
 
-__all__ = ["held_loop_names", "loop_enabled", "loop_held_in_db", "loop_state_admits"]
+__all__ = [
+    "forced_loop_map",
+    "held_loop_names",
+    "loop_enabled",
+    "loop_forced_in_db",
+    "loop_held_in_db",
+    "loop_state_admits",
+]

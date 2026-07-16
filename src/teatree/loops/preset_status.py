@@ -17,7 +17,7 @@ from dataclasses import dataclass
 
 from django.utils import timezone
 
-from teatree.loop.loop_state_db import held_loop_names, loop_state_admits
+from teatree.loop.loop_state_db import control_planes_in_db, loop_state_admits
 from teatree.loop.preset_resolution import ActivePreset, preset_state_for, resolve_active_preset
 
 
@@ -62,8 +62,11 @@ def effective_verdicts(now: dt.datetime | None = None) -> list[LoopVerdict]:
 
     moment = now or timezone.now()
     active = resolve_active_preset(moment)
-    held = held_loop_names()
-    verdicts = [_verdict_for(loop, held=loop.name in held, active=active) for loop in Loop.objects.all()]
+    held, forced = control_planes_in_db()
+    verdicts = [
+        _verdict_for(loop, held=loop.name in held, forced=forced.get(loop.name), active=active)
+        for loop in Loop.objects.all()
+    ]
     return sorted(verdicts, key=lambda verdict: verdict.name)
 
 
@@ -79,13 +82,15 @@ def statusline_chunk(now: dt.datetime | None = None) -> str:
     return f"preset {summary.name}{boundary}"
 
 
-def _verdict_for(loop: object, *, held: bool, active: ActivePreset | None) -> LoopVerdict:
+def _verdict_for(loop: object, *, held: bool, forced: bool | None, active: ActivePreset | None) -> LoopVerdict:
     name: str = loop.name  # ty: ignore[unresolved-attribute]
     configured: bool = loop.enabled  # ty: ignore[unresolved-attribute]
     opinion = preset_state_for(active, name)
-    admitted = loop_state_admits(configured_enabled=configured, held=held, preset_state=opinion)
+    admitted = loop_state_admits(configured_enabled=configured, held=held, preset_state=opinion, forced=forced)
     if held:
         return LoopVerdict(name=name, admitted=admitted, layer="hold", detail="LoopState hold")
+    if forced is not None:
+        return LoopVerdict(name=name, admitted=admitted, layer="forced", detail=f"override {'on' if forced else 'off'}")
     if opinion is not None and active is not None:
         return LoopVerdict(name=name, admitted=admitted, layer=active.layer, detail=active.reason)
     return LoopVerdict(name=name, admitted=admitted, layer="base", detail="Loop.enabled")
