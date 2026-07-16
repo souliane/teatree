@@ -115,6 +115,7 @@ from teatree.core.models.self_update_marker import SelfUpdateMarker
 from teatree.core.models.send_audit import SendAudit
 from teatree.core.models.session import Session
 from teatree.core.models.session_handover import SessionHandover
+from teatree.core.models.slack_self_ack import SlackSelfAckReaction
 from teatree.core.models.standing_goal import StandingGoal, StandingGoalError, StandingGoalManager
 from teatree.core.models.task import Task
 from teatree.core.models.task_attempt import TaskAttempt
@@ -293,6 +294,7 @@ __all__ = [
     "SessionAuditRecord",
     "SessionHandover",
     "Severity",
+    "SlackSelfAckReaction",
     "StandingGoal",
     "StandingGoalError",
     "StandingGoalManager",

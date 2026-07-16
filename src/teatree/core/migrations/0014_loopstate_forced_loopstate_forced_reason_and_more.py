@@ -5,7 +5,7 @@ from django.db import migrations, models
 
 class Migration(migrations.Migration):
     dependencies = [
-        ("core", "0012_cievalhealsession"),
+        ("core", "0013_slackselfackreaction"),
     ]
 
     operations = [

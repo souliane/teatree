@@ -14,13 +14,20 @@ newly-enabled loop gets its head at once and a disabled one is pruned at once. A
 daily :func:`prune_task_results` chain caps DBTaskResult table growth, and an hourly
 :func:`expire_stale_jobs` chain keeps the ``default``-queue backlog swept for a
 long-lived worker (so it never blind-fires days-old provision/ship jobs even without
-the front-end drain loop). The three maintenance chains are seeded by
+the front-end drain loop). A :func:`drain_headless_queue` chain keeps the headless
+backlog draining and re-enqueues runs a dead worker abandoned. A tight-cadence
+:func:`run_slack_answer` chain drives the reactive Slack-answer cycle headless (the
+👀-receipt + reply/delegate machinery that only ran in an interactive owner
+session's ``/loop`` slot before), guarded by the SAME ``loop-slack-answer``
+:class:`LoopLease` the ``loop_slack_answer`` mgmt command takes so the worker and an
+interactive owner session can never double-post. The maintenance chains are seeded by
 :func:`ensure_maintenance_chains` at worker startup and self-perpetuate, so a worker
 restart re-arms them.
 """
 
 import datetime as dt
 import logging
+import os
 
 from django.tasks import task
 from django.utils import timezone
@@ -53,6 +60,10 @@ DRAIN_INTERVAL_SECONDS = 300
 #: whose ``Task`` lease has lapsed past this window has a dead worker — its
 #: heartbeat stopped — so the ``DBTaskResult`` is stranded and must be reaped.
 HEADLESS_LEASE_SECONDS = 300
+#: The machine-wide lease name the reactive Slack-answer cycle runs under — the
+#: SAME slot the ``loop_slack_answer`` mgmt command / interactive ``/loop`` slot
+#: acquires, so the headless worker can never double-post against an owner session.
+SLACK_ANSWER_LEASE = "loop-slack-answer"
 
 
 def timer_chain_loop_names() -> set[str]:
@@ -320,8 +331,54 @@ def drain_headless_chain() -> dict[str, int]:
     }
 
 
+@task(queue_name=LOOPS_QUEUE)
+def run_slack_answer() -> dict[str, int]:
+    """Run one reactive Slack-answer cycle headless, then re-schedule at its cadence.
+
+    Self-dedups first (another pending run carries the chain), mirroring the
+    reconcile/prune/expire contract, so an at-least-once redelivery collapses to
+    one. Acquires the SAME ``loop-slack-answer`` :class:`LoopLease` the mgmt
+    command / interactive ``/loop`` slot takes: if the lease is held (an owner
+    session is already running the cycle) this tick SKIPS the cycle rather than
+    double-post, but still re-arms the chain. On a win it runs
+    :func:`run_slack_answer_cycle`, releases the lease in a ``finally``, and
+    re-schedules itself at :func:`slack_answer_cadence_seconds`.
+    """
+    from teatree.core.models import LoopLease  # noqa: PLC0415 — deferred: ORM import needs the app registry
+    from teatree.loop.loop_cadences import slack_answer_cadence_seconds  # noqa: PLC0415 — deferred: tick-time import
+    from teatree.loop.slack_answer.cycle import run_slack_answer_cycle  # noqa: PLC0415 — deferred: task-body import
+
+    if _pending_for_path(run_slack_answer.module_path):
+        return {"deduped": 1}
+
+    owner = f"worker-{os.getpid()}"
+    if not LoopLease.objects.acquire(SLACK_ANSWER_LEASE, owner=owner):
+        # An interactive owner session holds the slot — skip this tick's cycle so
+        # the two can never double-post, but still re-arm the chain below.
+        result: dict[str, int] = {"skipped_lease_held": 1}
+    else:
+        try:
+            report = run_slack_answer_cycle()
+            result = {
+                "processed": report.processed,
+                "eyes_reacted": report.eyes_reacted,
+                "acked": report.acked,
+                "answered_simple": report.answered_simple,
+                "delegated": report.delegated,
+                "errors": report.errors,
+            }
+        finally:
+            LoopLease.objects.release(SLACK_ANSWER_LEASE, owner=owner)
+
+    run_slack_answer.using(
+        run_after=timezone.now() + dt.timedelta(seconds=slack_answer_cadence_seconds()),
+    ).enqueue()
+    return result
+
+
 def ensure_maintenance_chains() -> None:
-    """Seed the reconcile + prune + expire + drain + usage-window-recovery + preset chains if absent."""
+    """Seed reconcile / prune / expire / drain / slack-answer / usage-window / preset chains if absent."""
+    from teatree.loop.loop_cadences import slack_answer_cadence_seconds  # noqa: PLC0415 — deferred: tick-time import
     from teatree.loops.preset_transitions import ensure_preset_transitions_chain  # noqa: PLC0415 — cycle-safe
     from teatree.loops.usage_window_recovery import ensure_usage_window_recovery_chain  # noqa: PLC0415 — cycle-safe
 
@@ -338,6 +395,11 @@ def ensure_maintenance_chains() -> None:
     # never re-dispatched. Seeding it here is the "actually run the drain" fix.
     if not _pending_for_path(drain_headless_chain.module_path):
         drain_headless_chain.using(run_after=now + dt.timedelta(seconds=DRAIN_INTERVAL_SECONDS)).enqueue()
+    # The reactive Slack-answer cycle, armed headless so the worker drains the
+    # 👀-receipt + reply/delegate machinery that only ran in an interactive owner
+    # session's ``/loop`` slot before. Lease-guarded against the owner session.
+    if not _pending_for_path(run_slack_answer.module_path):
+        run_slack_answer.using(run_after=now + dt.timedelta(seconds=slack_answer_cadence_seconds())).enqueue()
     # Directive #3: the self-rescheduling usage-window re-arm chain. Its body is inert while
     # ``limit_autorecovery_enabled`` is OFF, so seeding it unconditionally is dark-safe.
     ensure_usage_window_recovery_chain()
