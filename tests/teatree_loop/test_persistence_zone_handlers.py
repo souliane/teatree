@@ -198,6 +198,29 @@ class TestRedCardZoneRevived(TestCase):
         assert second == []
 
 
+class TestAutoStartOrchestratorMarksAutoImplement(TestCase):
+    """#10: the auto-start orchestrator stamps the auto_implement marker before coding."""
+
+    def _signal(self, *, url: str = "https://x/issue/900") -> ScanSignal:
+        return ScanSignal(
+            kind="assigned_issue.ready",
+            summary=f"Ready to start: {url}",
+            payload={"url": url, "auto_start": True, "overlay": "acme"},
+        )
+
+    def test_auto_start_ticket_is_marked_auto_implement(self) -> None:
+        from teatree.core.models.auto_implement import is_auto_implement  # noqa: PLC0415
+
+        created = persist_agent_actions(_agent_actions(self._signal()))
+
+        assert len(created) == 1
+        task = created[0]
+        assert task.phase == "coding"
+        assert task.ticket.role == Ticket.Role.AUTHOR
+        task.ticket.refresh_from_db()
+        assert is_auto_implement(task.ticket) is True, "the orchestrator must mark the direct-coding path"
+
+
 class TestE2eFixZoneRevived(TestCase):
     def _signal(self, *, spec: str = "e2e/specs/login.spec.ts") -> ScanSignal:
         return ScanSignal(
