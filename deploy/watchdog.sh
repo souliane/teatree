@@ -1,12 +1,20 @@
 #!/usr/bin/env bash
-# teatree external self-heal watchdog (owner directive #10).
+# teatree in-daemon self-heal watchdog (owner directive #10).
 #
-# Runs OUTSIDE the compose stack on a fixed cadence (systemd timer), so a FULL
-# stack outage — the init crash-loop that froze the factory for 7h, where the
-# worker WAS the monitor and died with the alerting — is detected and repaired
-# by something that is still alive. Each pass:
+# Runs as a sidecar CONTAINER inside the compose stack (service teatree-watchdog,
+# restart: always, no depends_on) so a FULL stack outage — the init crash-loop
+# that froze the factory for 7h, where the worker WAS the monitor and died with
+# the alerting — is detected and repaired by something the Docker daemon keeps
+# alive independently. The daemon is the only supervisor present on BOTH Linux
+# and macOS, so this replaces the Linux-only systemd timer (#3289) with a
+# cross-platform mechanism. With `--loop` the container drives its own cadence;
+# the default single pass is on-demand/test-friendly. Each pass:
 #
-#   1. `docker compose -p teatree up -d`  — restart anything that went down.
+#   1. `docker compose -p teatree up -d --no-recreate` — restart anything that
+#      went down. Gated on init state: a completed one-shot init (exited 0) is
+#      EXCLUDED (an empirical fact — `up -d --no-recreate` re-runs a completed
+#      init every pass, which would replay the heavy ~minute init on every tick),
+#      while a missing/failed init IS included so the init-failure outage recovers.
 #   2. `t3 doctor check --json` inside a live container — read the factory health,
 #      including the H24 self-heal detectors (dead containers, a free worker flock
 #      over overdue loop work, stranded headless tasks, stale timers, unrunnable
@@ -14,20 +22,51 @@
 #   3. On any red finding, DM the owner via `t3 teatree notify send`, keyed on the
 #      finding set so an ongoing outage does not re-spam every pass.
 #
-# Safe by construction: the ONLY mutating docker op is `up -d` (idempotent, never
-# destructive). The watchdog never prunes, removes, stops, or recreates anything.
+# Safe by construction: the ONLY mutating docker op is `up -d --no-recreate`
+# (idempotent, never destructive, never recreates a running container). The
+# watchdog never prunes, removes, stops, or recreates anything.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SELF="${BASH_SOURCE[0]}"
 COMPOSE_FILE="${TEATREE_WATCHDOG_COMPOSE_FILE:-$SCRIPT_DIR/docker-compose.yml}"
 PROJECT="${TEATREE_WATCHDOG_PROJECT:-teatree}"
 OVERLAY="${TEATREE_WATCHDOG_OVERLAY:-teatree}"
+INTERVAL="${TEATREE_WATCHDOG_INTERVAL:-300}"
+PASS_TIMEOUT="${TEATREE_WATCHDOG_PASS_TIMEOUT:-300}"
+INIT_SERVICE="${TEATREE_WATCHDOG_INIT_SERVICE:-teatree-init}"
 # Services to `exec` the read commands in (first reachable one wins).
 EXEC_SERVICES="${TEATREE_WATCHDOG_EXEC_SERVICES:-teatree-admin teatree-worker}"
+# Services restarted when init has already completed (init excluded — see header).
+read -ra APP_SERVICES <<<"${TEATREE_WATCHDOG_APP_SERVICES:-teatree-worker teatree-admin teatree-slack-listener teatree-watchdog}"
 
 log() { printf '%s watchdog: %s\n' "$(date -uIseconds)" "$*" >&2; }
 
 compose() { docker compose -p "$PROJECT" -f "$COMPOSE_FILE" "$@"; }
+
+# Echo the init service's compose state as "<State> <ExitCode>" (e.g. "exited 0"),
+# or empty when it cannot be determined (never created, docker unreachable, jq
+# absent). An empty result routes to the full `up -d` — the safe default that
+# creates or re-runs init.
+init_state() {
+  local json
+  json="$(compose ps -a --format json "$INIT_SERVICE" 2>/dev/null)" || return 0
+  [ -n "$json" ] || return 0
+  printf '%s\n' "$json" | jq -rs 'if length > 0 then "\(.[0].State) \(.[0].ExitCode)" else empty end' 2>/dev/null
+}
+
+# Restart anything that went down, gated on init state (see header rationale).
+restart_down_services() {
+  local state
+  state="$(init_state)"
+  if [ "$state" = "exited 0" ]; then
+    log "init complete (exited 0) — restarting app services only: ${APP_SERVICES[*]}"
+    compose up -d --no-recreate --no-deps "${APP_SERVICES[@]}"
+  else
+    log "init not complete (state='${state:-unknown}') — full up -d --no-recreate"
+    compose up -d --no-recreate
+  fi
+}
 
 # Run a command inside the first reachable exec service. Echoes its stdout; returns
 # the command's exit status, or 125 when no service could be reached.
@@ -52,9 +91,9 @@ notify_owner() {
   fi
 }
 
-main() {
-  log "restarting any down services: docker compose -p $PROJECT up -d"
-  if ! compose up -d; then
+run_pass() {
+  log "restarting any down services (gated on init state)"
+  if ! restart_down_services; then
     # The stack could not even be brought up — the strongest outage signal.
     printf 'teatree watchdog: `docker compose up -d` FAILED on the box — the stack is DOWN and could not be restarted. SSH in and inspect `docker compose -p %s logs`.' "$PROJECT" \
       | notify_owner "watchdog:compose-up-failed:$(date -u +%Y%m%d%H)"
@@ -92,6 +131,18 @@ main() {
     | notify_owner "$key"
 }
 
+# Drive the cadence in-container: one bounded pass per interval, forever. A failed
+# or timed-out pass must never kill the loop (that would silently retire the only
+# supervisor), so the pass is wrapped in `timeout` and its failure is logged, not
+# fatal. Each pass re-invokes this script in its default single-pass mode.
+run_loop() {
+  log "watchdog loop starting (interval=${INTERVAL}s, pass timeout=${PASS_TIMEOUT}s)"
+  while :; do
+    timeout "$PASS_TIMEOUT" bash "$SELF" || log "pass failed or timed out (rc=$?)"
+    sleep "$INTERVAL"
+  done
+}
+
 # Extract the FAIL messages from the doctor JSON. Uses python3 (present on the box)
 # and degrades to a generic body when it is absent.
 _extract_fail_body() {
@@ -119,4 +170,8 @@ _stable_key() {
   fi
 }
 
-main "$@"
+if [ "${1:-}" = "--loop" ]; then
+  run_loop
+else
+  run_pass
+fi
