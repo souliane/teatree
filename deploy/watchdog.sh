@@ -110,7 +110,7 @@ PY
   fi
 }
 
-# A short, stable digest of the body so an unchanged outage re-uses one key.
+# A short, stable digest of the body so an unchanged outage reuses one key.
 _stable_key() {
   if command -v sha1sum >/dev/null 2>&1; then
     sha1sum | cut -c1-16
