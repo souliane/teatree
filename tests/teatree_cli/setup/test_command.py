@@ -19,6 +19,12 @@ import os
 import subprocess
 import sys
 from pathlib import Path
+from unittest.mock import patch
+
+import pytest
+
+from teatree.cli.setup import command as setup_command
+from teatree.cli.setup.statusline_installer import StatuslineInstall
 
 _RUN_SETUP_PROBE = """
 from pathlib import Path
@@ -77,6 +83,25 @@ def _pre_bootstrap_env(home: Path) -> dict[str, str]:
     env.pop("XDG_DATA_HOME", None)
     env["HOME"] = str(home)
     return env
+
+
+class TestReportStatuslineInstallUnwritable:
+    """An unwritable settings.json warns and continues — it never aborts setup.
+
+    In the headless container the ``teatree`` user cannot write the root-owned
+    ``~/.claude/settings.json``; the installer degrades to
+    :attr:`StatuslineInstall.UNWRITABLE`, and the command must echo a WARN and
+    return normally so ``t3 setup`` (under ``set -euo pipefail``) exits 0.
+    """
+
+    def test_unwritable_warns_and_does_not_raise(self, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+        settings = tmp_path / "settings.json"
+        repo = tmp_path / "repo"
+        with patch.object(setup_command, "install_statusline", return_value=StatuslineInstall.UNWRITABLE):
+            setup_command._report_statusline_install(settings, repo)
+        out = capsys.readouterr().out
+        assert "WARN" in out
+        assert "settings.json" in out
 
 
 class TestSetupBootstrapsDjangoBeforeDmProvisioning:
