@@ -146,6 +146,7 @@ class TestLoopTimerBody(django.test.TestCase):
     def test_held_loop_is_a_free_noop_with_idle_poll_successor(self) -> None:
         self._enable_inbox(enabled=False)  # disabled → not admitted
         ran: list[str] = []
+        before = timezone.now()  # capture BEFORE the fire — the floor is anchored on fire-time, not assert-time
         with pytest.MonkeyPatch.context() as mp:
             mp.setattr(timer_chains, "run_deadlined_tick", lambda name, *, deadline: ran.append(name) or {})
             result = _fire("inbox")
@@ -154,7 +155,7 @@ class TestLoopTimerBody(django.test.TestCase):
         pending = timer_chains.pending_loop_timers("inbox")
         assert len(pending) == 1
         # Idle floor: a disabled interval loop polls no sooner than 60s out, never busy-spins.
-        assert pending[0].run_after >= timezone.now() + dt.timedelta(seconds=timer_chains.IDLE_POLL_FLOOR_SECONDS - 2)
+        assert pending[0].run_after >= before + dt.timedelta(seconds=timer_chains.IDLE_POLL_FLOOR_SECONDS - 2)
 
     def test_unknown_loop_does_not_chain(self) -> None:
         result = _fire("no-such-loop")
