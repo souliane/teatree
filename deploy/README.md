@@ -21,7 +21,7 @@ overlay is the built-in `t3-teatree`.
 4. Runs `deploy/deploy.sh` on the box, which brings the checkout current and runs
    `docker compose up -d --build`.
 
-The stack is three services from one image (`deploy/Dockerfile`), selected by
+The stack is five services from one image (`deploy/Dockerfile`), selected by
 `TEATREE_ROLE`:
 
 | Service | Role | Restart | Notes |
@@ -29,6 +29,8 @@ The stack is three services from one image (`deploy/Dockerfile`), selected by
 | `teatree-init` | one-shot prep | `no` | clone + editable install + `t3 setup` + DB config; exits 0 |
 | `teatree-worker` | `t3 worker` | `unless-stopped` | the loop cadence owner; `DEBUG` off |
 | `teatree-admin` | `t3 admin` | `unless-stopped` | Django admin under gunicorn on the box loopback `127.0.0.1:8000` (host networking); `DEBUG` off |
+| `teatree-slack-listener` | `t3 slack listen` | `unless-stopped` | Socket-Mode receiver; harmless no-op-retry on a box with no Slack overlay |
+| `teatree-watchdog` | `watchdog.sh --loop` | `always` | the in-daemon self-heal sidecar (docker socket + read-only checkout; no secrets); see [Self-heal watchdog](#self-heal-watchdog-h24-owner-directive-10) |
 
 `worker` and `admin` wait for `init` to complete, so the editable install on the
 shared clone happens exactly once. All three mount the same state, so the admin and
@@ -211,6 +213,112 @@ verify the fingerprint out of band).
 - **Updates:** teatree self-updates in-loop via `t3 update` (deferred reinstall on
   the editable clone). There is **no** second workflow and no quiescence probe — a
   re-run of the deploy workflow is only needed for infra/compose/image changes.
+
+## Self-heal watchdog (H24, owner directive #10)
+
+The factory once froze for ~7 hours and nobody noticed because **the worker was
+the monitor** — when the init/worker died, the thing that would have alerted died
+with it. The fix is a watchdog that lives **outside** the thing it watches, kept
+alive by a supervisor that survives a full stack outage. The **Docker daemon** is
+the only supervisor present on both Linux and macOS, so the watchdog is an
+**in-daemon sidecar container** (`teatree-watchdog`), not a host-level OS timer.
+This supersedes the Linux-only systemd timer of #3289 with a single mechanism
+that works identically on a Linux box and a macOS Docker Desktop host.
+
+The watchdog is just another compose service — **the deploy installs it; there is
+nothing to enable.** It has `restart: always` and **no** `depends_on`, so the
+daemon (re)starts it even when `teatree-init` is crash-looping and every app
+service is down — exactly the outage it exists to repair.
+
+`deploy/watchdog.sh --loop` runs a pass every `TEATREE_WATCHDOG_INTERVAL` seconds
+(default 300) and, each pass:
+
+1. `docker compose -p teatree up -d --no-recreate` — restarts anything that went
+   down (a full stack outage, like the init crash-loop, is auto-repaired here).
+   This is the **only** mutating docker op — the watchdog never prunes, stops,
+   recreates, or removes anything, so it is safe to run unattended. The pass is
+   **gated on init state**: a completed one-shot init (`exited 0`) is *excluded*
+   from the `up -d`, because `up -d --no-recreate` re-runs a completed one-shot
+   init on every pass (verified empirically) and that would replay the heavy
+   ~minute init every 5 minutes; a *missing or failed* init is included, so the
+   init-failure outage still recovers.
+2. `t3 doctor check --json` inside a live container — reads the factory health,
+   including the H24 self-heal detectors: a compose init container that exited
+   non-zero / a worker stuck `Created`, a free worker flock over overdue loop
+   work, an `execute_headless_task` stranded RUNNING with no live worker, a READY
+   loop timer stale past 2× its cadence, a PENDING `interactive` task under
+   `agent_runtime=headless`, a FAILED task on a still-live ticket, and a runtime
+   clone drifted off its default branch.
+3. On any **red** finding it DMs the owner via `t3 teatree notify send`, keyed on
+   the finding set so an ongoing outage does not re-spam every pass. (The default
+   deploy wires no Slack credential; until you add one the DM step no-ops and the
+   findings are visible in the watchdog's own container logs and `t3 doctor check`.)
+
+The DM leaves the box via a `docker compose exec` inside a *live app container*,
+not from the watchdog itself — the watchdog runs `network_mode: none`, so the
+docker socket is its only channel.
+
+### What it does — and does not — survive
+
+Being a container the daemon supervises, the watchdog covers the outages that a
+same-daemon supervisor can cover, and is honest about the two it cannot:
+
+| Failure | Recovered? | How |
+| --- | --- | --- |
+| `teatree-init` crash-loop (the recorded 7h freeze) | ✅ | next pass's gated `up -d --no-recreate` re-runs the failed init; while the root cause persists the doctor step reddens and DMs the owner |
+| an app service crashed / exited | ✅ | `up -d --no-recreate` restarts it |
+| the **watchdog itself** crashed | ✅ | `restart: always` — the daemon relaunches it in seconds |
+| the daemon restarted (e.g. host reboot with Docker enabled on boot) | ✅ | `restart: always` brings it back with the stack |
+| `docker compose down` (deliberate teardown) | ❌ (intentional) | the operator took the stack down on purpose; nothing should fight that |
+| the Docker **daemon** is dead | ❌ | its supervisor is gone; an external uptime check is the backstop |
+| the **host** is dead / unreachable | ❌ | out of scope for any in-host mechanism; use an external ping |
+
+### Observe it
+
+The watchdog is a normal compose service, so its passes are in its container logs:
+
+```bash
+docker compose -p teatree logs -f teatree-watchdog
+```
+
+### Knobs (compose `environment:` on the `teatree-watchdog` service)
+
+| Env var | Default | Purpose |
+| --- | --- | --- |
+| `TEATREE_WATCHDOG_INTERVAL` | `300` | seconds between passes in `--loop` mode |
+| `TEATREE_WATCHDOG_PASS_TIMEOUT` | `300` | hard cap on a single pass; a wedged pass is killed and the loop continues |
+| `TEATREE_WATCHDOG_PROJECT` | `teatree` | the compose project the watchdog drives |
+| `TEATREE_WATCHDOG_OVERLAY` | `teatree` | the overlay used for the owner DM |
+| `TEATREE_WATCHDOG_EXEC_SERVICES` | `teatree-admin teatree-worker` | services (first reachable wins) to run the doctor/DM commands in |
+| `TEATREE_WATCHDOG_APP_SERVICES` | `teatree-worker teatree-admin teatree-slack-listener teatree-watchdog` | services restarted when init has already completed (init excluded) |
+| `TEATREE_WATCHDOG_INIT_SERVICE` | `teatree-init` | the one-shot init service the pass gates on |
+
+It needs `python3` in the image for the richest DM body (baked into the image);
+without it the DM degrades to a generic "red findings" body.
+
+### macOS (Docker Desktop) notes
+
+The same compose service runs unchanged on a macOS Docker Desktop host. Two
+Docker Desktop settings matter:
+
+- **Docker socket:** enable *Settings → Advanced → "Allow the default Docker
+  socket to be used"* so `/var/run/docker.sock` is present for the socket mount.
+- **File sharing:** the read-only checkout bind mount (`/home/teatree/teatree-deploy`)
+  must be under a path Docker Desktop is allowed to share (*Settings → Resources →
+  File sharing*). Adjust the bind source in `deploy/docker-compose.yml` if your
+  checkout lives elsewhere on the Mac.
+- **Start at login:** enable *Settings → General → "Start Docker Desktop when you
+  sign in"* so the daemon — and therefore the watchdog — comes back after a
+  reboot, the macOS analogue of "Docker enabled on boot" on Linux.
+
+### Decommissioning the old systemd timer (#3289)
+
+If a box previously installed the Linux-only systemd watchdog, remove it (the
+in-daemon watchdog replaces it):
+
+```bash
+sudo systemctl disable --now teatree-watchdog.timer && sudo rm -f /etc/systemd/system/teatree-watchdog.{service,timer}
+```
 
 ## Caveats
 

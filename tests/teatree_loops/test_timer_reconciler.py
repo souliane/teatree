@@ -12,8 +12,10 @@ from django.utils import timezone
 from django_tasks.base import TaskResultStatus
 from django_tasks_db.models import DBTaskResult, get_date_max
 
-from teatree.core.models import Loop
+from teatree.core.models import Loop, Session, Task, Ticket
+from teatree.core.tasks import execute_headless_task
 from teatree.loops import timer_chains, timer_reconciler
+from teatree.loops.timer_reconciler import reap_stuck_headless_runs
 
 _DB_TASKS = {"default": {"BACKEND": "django_tasks_db.DatabaseBackend", "QUEUES": ["default", "loops"]}}
 
@@ -105,10 +107,26 @@ class TestMaintenanceChains(django.test.TestCase):
         assert DBTaskResult.objects.filter(task_path=timer_reconciler.reconcile_timers.module_path).count() == 1
         assert DBTaskResult.objects.filter(task_path=timer_reconciler.prune_task_results.module_path).count() == 1
         assert DBTaskResult.objects.filter(task_path=timer_reconciler.expire_stale_jobs.module_path).count() == 1
+        # #10: the headless-queue drain chain is seeded too (it had no other home).
+        assert DBTaskResult.objects.filter(task_path=timer_reconciler.drain_headless_chain.module_path).count() == 1
         # Idempotent: a second call adds no duplicates.
         timer_reconciler.ensure_maintenance_chains()
         assert DBTaskResult.objects.filter(task_path=timer_reconciler.reconcile_timers.module_path).count() == 1
         assert DBTaskResult.objects.filter(task_path=timer_reconciler.expire_stale_jobs.module_path).count() == 1
+        assert DBTaskResult.objects.filter(task_path=timer_reconciler.drain_headless_chain.module_path).count() == 1
+
+    def test_drain_headless_chain_reschedules_itself(self) -> None:
+        result = timer_reconciler.drain_headless_chain.func()
+        assert "deduped" not in result
+        pending = DBTaskResult.objects.filter(
+            task_path=timer_reconciler.drain_headless_chain.module_path, status=TaskResultStatus.READY
+        )
+        assert pending.count() == 1  # a successor drain chain is queued
+
+    def test_drain_headless_chain_self_dedups(self) -> None:
+        timer_reconciler.drain_headless_chain.using(run_after=timezone.now()).enqueue()
+        result = timer_reconciler.drain_headless_chain.func()
+        assert result == {"deduped": 1}
 
     def test_expire_stale_jobs_reschedules_itself(self) -> None:
         result = timer_reconciler.expire_stale_jobs.func()
@@ -157,3 +175,117 @@ class TestMaintenanceChains(django.test.TestCase):
         assert result["pruned"] == 1
         assert not DBTaskResult.objects.filter(id=old.id).exists()
         assert DBTaskResult.objects.filter(id=recent.id).exists()
+
+
+@django.test.override_settings(USE_TZ=True, TASKS=_DB_TASKS)
+class TestReapStuckHeadlessRuns(django.test.TestCase):
+    """#10: a ``execute_headless_task`` left RUNNING by a dead worker is reaped + re-enqueued."""
+
+    def setUp(self) -> None:
+        DBTaskResult.objects.all().delete()
+
+    def _claimed_task(self, *, lease_delta_seconds: int, status: str = Task.Status.CLAIMED) -> Task:
+        ticket = Ticket.objects.create(overlay="test", role=Ticket.Role.AUTHOR)
+        session = Session.objects.create(ticket=ticket, overlay="test")
+        return Task.objects.create(
+            ticket=ticket,
+            session=session,
+            phase="architectural_review",
+            status=status,
+            claimed_by="headless-worker",
+            lease_expires_at=timezone.now() + dt.timedelta(seconds=lease_delta_seconds),
+        )
+
+    def _running_headless_row(self, task: Task, *, age_seconds: int) -> DBTaskResult:
+        result = execute_headless_task.enqueue(task.pk, task.phase)
+        DBTaskResult.objects.filter(id=result.id).update(
+            status=TaskResultStatus.RUNNING,
+            started_at=timezone.now() - dt.timedelta(seconds=age_seconds),
+        )
+        return DBTaskResult.objects.get(id=result.id)
+
+    def _dead_age(self) -> int:
+        return timer_reconciler.HEADLESS_LEASE_SECONDS + timer_reconciler.STUCK_GRACE_SECONDS + 60
+
+    def test_dead_run_is_failed_and_task_reenqueued(self) -> None:
+        task = self._claimed_task(lease_delta_seconds=-120)  # heartbeat stopped: lease lapsed
+        row = self._running_headless_row(task, age_seconds=self._dead_age())
+
+        counts = reap_stuck_headless_runs()
+
+        assert counts == {"failed": 1, "reenqueued": 1}
+        row.refresh_from_db()
+        assert row.status == TaskResultStatus.FAILED
+        ready = DBTaskResult.objects.filter(task_path=execute_headless_task.module_path, status=TaskResultStatus.READY)
+        assert ready.count() == 1, "the non-terminal task must be re-enqueued for a fresh run"
+
+    def test_live_run_with_fresh_lease_is_not_reaped(self) -> None:
+        # Old RUNNING row, but the heartbeat is still renewing the lease → alive.
+        task = self._claimed_task(lease_delta_seconds=+200)
+        row = self._running_headless_row(task, age_seconds=self._dead_age())
+
+        counts = reap_stuck_headless_runs()
+
+        assert counts == {"failed": 0, "reenqueued": 0}
+        row.refresh_from_db()
+        assert row.status == TaskResultStatus.RUNNING
+
+    def test_recently_started_run_within_floor_is_not_reaped(self) -> None:
+        # A just-claimed run whose lease is briefly unset is protected by the floor.
+        task = self._claimed_task(lease_delta_seconds=-10)
+        row = self._running_headless_row(task, age_seconds=30)
+
+        counts = reap_stuck_headless_runs()
+
+        assert counts == {"failed": 0, "reenqueued": 0}
+        row.refresh_from_db()
+        assert row.status == TaskResultStatus.RUNNING
+
+    def test_dead_run_with_terminal_task_is_failed_but_not_reenqueued(self) -> None:
+        task = self._claimed_task(lease_delta_seconds=-120, status=Task.Status.COMPLETED)
+        self._running_headless_row(task, age_seconds=self._dead_age())
+
+        counts = reap_stuck_headless_runs()
+
+        assert counts == {"failed": 1, "reenqueued": 0}
+        assert not DBTaskResult.objects.filter(
+            task_path=execute_headless_task.module_path, status=TaskResultStatus.READY
+        ).exists()
+
+    def test_running_row_with_no_started_at_is_not_reaped(self) -> None:
+        # A row claimed-but-not-yet-started has no started_at → never a dead run.
+        task = self._claimed_task(lease_delta_seconds=-120)
+        result = execute_headless_task.enqueue(task.pk, task.phase)
+        DBTaskResult.objects.filter(id=result.id).update(status=TaskResultStatus.RUNNING, started_at=None)
+
+        counts = reap_stuck_headless_runs()
+
+        assert counts == {"failed": 0, "reenqueued": 0}
+
+    def test_orphaned_run_whose_task_is_gone_is_failed_not_reenqueued(self) -> None:
+        # The Task row vanished (cascade delete) but its RUNNING DBTaskResult
+        # lingers — an orphan: fail it, nothing to re-enqueue.
+        task = self._claimed_task(lease_delta_seconds=-120)
+        row = self._running_headless_row(task, age_seconds=self._dead_age())
+        task.delete()
+
+        counts = reap_stuck_headless_runs()
+
+        assert counts == {"failed": 1, "reenqueued": 0}
+        row.refresh_from_db()
+        assert row.status == TaskResultStatus.FAILED
+
+    def test_headless_run_with_no_args_is_skipped(self) -> None:
+        # A malformed row carrying no args resolves to no task id and is left alone.
+        DBTaskResult.objects.create(
+            task_path=execute_headless_task.module_path,
+            args_kwargs={"args": [], "kwargs": {}},
+            backend_name="default",
+            status=TaskResultStatus.RUNNING,
+            started_at=timezone.now() - dt.timedelta(seconds=self._dead_age()),
+            run_after=get_date_max(),
+        )
+
+        counts = reap_stuck_headless_runs()
+
+        assert counts == {"failed": 0, "reenqueued": 0}

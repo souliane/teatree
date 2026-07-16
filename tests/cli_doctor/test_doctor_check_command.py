@@ -41,6 +41,11 @@ def _isolate_environment_dependent_gates(monkeypatch):
     """
     monkeypatch.setattr(teatree_cli_update, "_collect_repos", list)
     monkeypatch.setattr(teatree_paths, "DATA_DIR_AUTO_ISOLATED", False)
+    # The H24 self-heal detectors read live host state (`docker ps` of the
+    # `teatree` compose project, the loop ORM, the box's runtime clone); they
+    # are exercised in tests/teatree_cli/doctor/test_self_heal.py and pinned to
+    # a pass here so this command-aggregation smoke test stays deterministic.
+    monkeypatch.setattr("teatree.cli.doctor.self_heal.run_self_heal_checks", lambda: True)
 
 
 class TestDoctorCheckCommand:

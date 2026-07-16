@@ -14,6 +14,7 @@ import pytest
 from django.db import OperationalError
 from django.test import TestCase
 
+from teatree.core.modelkit.notify_policy import NotifyAudience
 from teatree.messaging.notify_with_fallback import notify_with_fallback
 
 # ---------------------------------------------------------------------------
@@ -71,6 +72,7 @@ class TestF1NeverRaiseDatabaseError(TestCase):
                 "hello",
                 kind="info",
                 idempotency_key="f1-stamp-opererr",
+                audience=NotifyAudience.OWNER_DELIVERY,
                 user_id="U_ME",
             )
         # Primary DID deliver; the key is no exception was raised.
@@ -94,6 +96,7 @@ class TestF1NeverRaiseDatabaseError(TestCase):
                 "hello",
                 kind="info",
                 idempotency_key="f1-upsert-opererr",
+                audience=NotifyAudience.OWNER_DELIVERY,
                 user_id="U_ME",
             )
         assert result.delivered is False

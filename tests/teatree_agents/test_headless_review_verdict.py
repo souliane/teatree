@@ -1,18 +1,14 @@
-"""Headless reviewer records its verdict via the result envelope — no Bash (corr-11).
+"""Headless reviewer records its verdict via the result envelope (corr-11).
 
-The regression this pins: PR-11 denies the shell to a reviewing-phase headless
-dispatch, but a ``ReviewVerdict`` was only recordable via the ``t3 review
-record`` CLI (a Bash call). So the #68 auto-review dispatch — which acquires the
-per-MR :class:`MRReviewLock` before dispatching — stalled: the reviewer could
-form a verdict but had no un-Bash way to record it, so the lock stayed held and
-the auto-review→auto-merge chain never advanced (#1405).
-
-The fix routes the verdict through the RESULT ENVELOPE: the reviewer RETURNS a
-typed ``review_verdict`` and the orchestrator (``record_result_envelope`` — a
-different actor, so maker≠checker holds) records the ``ReviewVerdict`` server-
-side, which resolves the lock and advances any open review loop. These tests
-drive the orchestrator path directly with a returned envelope and assert the
-verdict lands + the lock releases, without any shell call.
+The verdict is recorded through the RESULT ENVELOPE by maker≠checker design: the
+reviewer RETURNS a typed ``review_verdict`` and the orchestrator
+(``record_result_envelope`` — a DIFFERENT actor) records the ``ReviewVerdict``
+server-side, resolving the per-MR :class:`MRReviewLock` and advancing any open
+review loop. Routing the recording through the orchestrator (never a reviewer-side
+``t3 review record``) is what keeps the maker (the review sub-agent) from also
+being the checker (the actor that persists the verdict). These tests drive the
+orchestrator path directly with a returned envelope and assert the verdict lands
+and the lock releases.
 """
 
 import pytest

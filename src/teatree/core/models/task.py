@@ -9,6 +9,7 @@ from django_fsm import FSMField, TransitionNotAllowed
 
 from teatree.core.managers import TaskManager
 from teatree.core.modelkit.phases import SUBAGENT_BY_PHASE, phase_spellings
+from teatree.core.models.auto_implement import is_auto_implement
 from teatree.core.models.errors import InvalidTransitionError
 from teatree.core.models.external_delivery import not_under_external_delivery_q
 from teatree.core.models.session import Session
@@ -16,6 +17,35 @@ from teatree.core.models.ticket import Ticket
 
 if TYPE_CHECKING:
     from teatree.core.models.task_attempt import TaskAttempt
+
+#: The lifecycle-FSM target state each phase's completion should reach. A
+#: completed phase task whose ticket sits BEHIND its target with no matching
+#: guard is a genuine wedge (escalate); at-or-past is an idempotent replay
+#: (no-op). A phase absent here is free-form work with no FSM transition.
+_PHASE_TARGET_STATE: dict[str, str] = {
+    "scoping": Ticket.State.STARTED,
+    "planning": Ticket.State.PLANNED,
+    "coding": Ticket.State.CODED,
+    "testing": Ticket.State.TESTED,
+    "reviewing": Ticket.State.REVIEWED,
+    "shipping": Ticket.State.SHIPPED,
+}
+#: Lifecycle order used to compare a ticket's position to a phase's target.
+#: Terminal/abandoned IGNORED is intentionally absent — it is never a wedge.
+_STATE_ORDER: list[str] = [
+    Ticket.State.NOT_STARTED,
+    Ticket.State.SCOPED,
+    Ticket.State.STARTED,
+    Ticket.State.PLANNED,
+    Ticket.State.CODED,
+    Ticket.State.TESTED,
+    Ticket.State.REVIEWED,
+    Ticket.State.SHIPPED,
+    Ticket.State.IN_REVIEW,
+    Ticket.State.MERGED,
+    Ticket.State.RETROSPECTED,
+    Ticket.State.DELIVERED,
+]
 
 
 class Task(models.Model):
@@ -414,6 +444,18 @@ class Task(models.Model):
             elif phase == "coding" and ticket.state == Ticket.State.PLANNED:
                 ticket.code(parent_task=self)
                 ticket.save()
+            elif (
+                phase == "coding"
+                and ticket.state in {Ticket.State.NOT_STARTED, Ticket.State.SCOPED, Ticket.State.STARTED}
+                and is_auto_implement(ticket)
+            ):
+                # The issue-implementer auto-start path schedules coding directly
+                # on a fresh NOT_STARTED author ticket (no scope/plan phase), so
+                # the coding-completion cannot match the PLANNED-source ``code()``
+                # guard above. ``code_direct`` is the plan-skipped sibling, gated
+                # on the auto-implement marker, so the normal flow is untouched.
+                ticket.code_direct(parent_task=self)
+                ticket.save()
             elif phase == "testing" and ticket.state == Ticket.State.CODED:
                 ticket.test(passed=True, parent_task=self)
                 ticket.save()
@@ -436,8 +478,66 @@ class Task(models.Model):
                 ticket.ship()
                 ticket.save()
             else:
+                self._escalate_unmatched_phase_transition(phase=phase, ticket=ticket)
                 return False
         return True
+
+    def _escalate_unmatched_phase_transition(self, *, phase: str, ticket: Ticket) -> None:
+        """Escalate a genuine FSM wedge instead of the silent ``return False`` (#10).
+
+        The FSM invariant: a lifecycle phase transition must never fail silently.
+        When a completed phase task matches NO guard in
+        :meth:`_apply_phase_transition`, the no-op is one of two things — an
+        idempotent replay (the ticket has ALREADY advanced past this phase's
+        target — a parallel child task, or a replay of an already-applied
+        transition — expected, must NOT escalate), or a genuine wedge (the
+        phase's work completed but the ticket is BEHIND the phase's target with
+        no guard able to advance it — the class that left tickets 35/36 with
+        completed coding yet zero transitions — must escalate, never drop).
+
+        The two are told apart by comparing the ticket's state position to the
+        phase's target state: at-or-past target is an idempotent replay; behind
+        target is a wedge. A free-form (non-lifecycle) phase has no target and
+        is expected to no-op. A terminal/abandoned ticket is never a wedge.
+        """
+        target = _PHASE_TARGET_STATE.get(phase)
+        # IGNORED is the one state absent from _STATE_ORDER (terminal/abandoned,
+        # never a wedge); excluding it here means ticket.state is always in the
+        # order below, so the index lookups cannot raise.
+        if target is None or ticket.state == Ticket.State.IGNORED:
+            return
+        if _STATE_ORDER.index(ticket.state) >= _STATE_ORDER.index(target):
+            return  # idempotent replay — the ticket already advanced past this phase's target
+        self._record_stuck_transition_question(phase=phase, ticket=ticket)
+
+    def _record_stuck_transition_question(self, *, phase: str, ticket: Ticket) -> None:
+        """Record a durable, deduped ``DeferredQuestion`` for an FSM wedge (§17.1 inv 9).
+
+        Reuses the away-mode escalation queue (statusline / ``t3 teatree
+        questions list`` / Slack DM drain) rather than a new surface — the same
+        channel ``task_repair._escalate_stall`` uses. Deduped per (ticket,
+        phase) on ``tool_use_id`` so an at-least-once replay of the same wedge
+        does not flood the queue.
+        """
+        from teatree.core.models.deferred_question import DeferredQuestion  # noqa: PLC0415 — ORM/app-registry
+
+        dedup_key = f"fsm-wedge:{ticket.pk}:{phase}"
+        already = DeferredQuestion.objects.filter(
+            tool_use_id=dedup_key,
+            answered_at__isnull=True,
+            dismissed_at__isnull=True,
+        ).exists()
+        if already:
+            return
+        where = ticket.issue_url or f"ticket {ticket.pk}"
+        question = (
+            f"FSM wedge on {where}: the {phase!r} phase completed (task {self.pk}) but no "
+            f"lifecycle transition matched from state {ticket.state!r}, so the ticket cannot "
+            f"advance and is stuck before {phase!r}. How should it proceed — rework the "
+            f"earlier phases, or ignore?"
+        )
+        session_id: int | None = self.session_id  # ty: ignore[unresolved-attribute]
+        DeferredQuestion.record(question, session_id=str(session_id or ""), tool_use_id=dedup_key)
 
     def _record_phase_visit(self) -> None:
         """Record this task's phase on its session as completion happens (#694).

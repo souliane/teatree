@@ -2614,6 +2614,7 @@ Usage: t3 doctor check [OPTIONS]
  Verify imports, required tools, and editable-install sanity.
 
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --json          Emit findings as JSON for the watchdog container.            │
 │ --help          Show this message and exit.                                  │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
