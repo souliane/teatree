@@ -25,6 +25,7 @@ _OVERLAY_HOOK_ORDER: tuple[tuple[type, str, str], ...] = (
     (OverlayProvisioning, "docker_services", "provisioning.docker_services"),
     (OverlayProvisioning, "reap_external_resources", "provisioning.reap_external_resources"),
     (OverlayBase, "get_checking_sources", "get_checking_sources"),
+    (OverlayBase, "get_statusline_segments", "get_statusline_segments"),
 )
 
 _METADATA_HOOK_ORDER = (
@@ -55,6 +56,9 @@ _OVERLAY_HOOK_DESCRIPTIONS = {
         "Reap a reaped worktree's out-of-band resources (e.g. its docker compose containers + images)."
     ),
     "get_checking_sources": "Return extra 'needs you' source identifiers for the `t3 <overlay> checking show` report.",
+    "get_statusline_segments": (
+        "Contribute named inline segments (id/text/color/placement) spliced onto the statusline at tick cadence."
+    ),
 }
 
 _METADATA_HOOK_DESCRIPTIONS = {

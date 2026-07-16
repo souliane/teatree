@@ -47,7 +47,11 @@ from teatree.core.models.eval_run import (
 )
 from teatree.core.models.factory_score_snapshot import FactoryScoreSnapshot, FactoryScoreSnapshotManager
 from teatree.core.models.honesty_escalation import HonestyEscalation
-from teatree.core.models.implemented_issue_marker import NEEDS_TRIAGE_LABEL, ImplementedIssueMarker
+from teatree.core.models.implemented_issue_marker import (
+    NEEDS_TRIAGE_LABEL,
+    ImplementedIssueMarker,
+    MarkerReconcileResult,
+)
 from teatree.core.models.incoming_event import IncomingEvent
 from teatree.core.models.intent_classification import IntentClassification
 from teatree.core.models.known_issue import KnownIssue, KnownIssueManager
@@ -111,6 +115,7 @@ from teatree.core.models.self_update_marker import SelfUpdateMarker
 from teatree.core.models.send_audit import SendAudit
 from teatree.core.models.session import Session
 from teatree.core.models.session_handover import SessionHandover
+from teatree.core.models.slack_self_ack import SlackSelfAckReaction
 from teatree.core.models.standing_goal import StandingGoal, StandingGoalError, StandingGoalManager
 from teatree.core.models.task import Task
 from teatree.core.models.task_attempt import TaskAttempt
@@ -222,6 +227,7 @@ __all__ = [
     "LoopStateManager",
     "LoopStatus",
     "MRReviewLock",
+    "MarkerReconcileResult",
     "MatcherDetail",
     "MechanismSketch",
     "MechanismSketchError",
@@ -288,6 +294,7 @@ __all__ = [
     "SessionAuditRecord",
     "SessionHandover",
     "Severity",
+    "SlackSelfAckReaction",
     "StandingGoal",
     "StandingGoalError",
     "StandingGoalManager",

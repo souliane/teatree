@@ -59,7 +59,7 @@ from teatree.core.models import LoopLease
 from teatree.loop.loop_cadences import loop_owner_ttl_seconds
 from teatree.loop.preset_resolution import active_overlay_scope
 from teatree.loop.statusline import set_preset_segment_reader
-from teatree.loops.preset_status import statusline_chunk
+from teatree.loops.preset_status import preset_line_chunk
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -321,7 +321,7 @@ class Command(TyperCommand):
         # the live DB-backed readers so this per-loop tick's render keeps the full
         # loop line, then reset after the tick so the process-global seams never leak.
         set_mini_loop_schedules_reader(mini_loop_schedules)
-        set_preset_segment_reader(statusline_chunk)
+        set_preset_segment_reader(preset_line_chunk)
         try:
             request = self._build_request(overlay)
             report = run_tick(request, statusline_path=statusline_file, jobs_builder=_scoped_jobs_builder(loop))

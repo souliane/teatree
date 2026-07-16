@@ -114,6 +114,7 @@ EXPECTED_BASE_SIGNATURES: dict[str, str] = {
     "get_issue_title": "(self, url: str) -> str",
     "get_provision_steps": "(self, worktree: 'Worktree') -> list[teatree.types.ProvisionStep]",
     "get_repos": "(self) -> list[str]",
+    "get_statusline_segments": "(self) -> list[teatree.core.statusline_segment.StatuslineSegment]",
     "get_timeouts": "(self) -> dict[str, int]",
     "get_workspace_repos": "(self) -> list[str]",
     "is_issue_done": "(self, issue_data: 'RawAPIDict') -> bool",
