@@ -143,7 +143,14 @@ jobs:
           # Fail-safe: if the diff command errors, feed an empty list,
           # which the classifier maps to all=true (run everything).
           git diff --name-only "origin/$BASE_REF...HEAD" > changed_paths.txt || true
-          uv run python scripts/ci/changed_lanes.py < changed_paths.txt
+          # The classifier heads EVERY heavy lane serially (test-shard, test,
+          # test-shuffle, mutation-diff all `needs: preflight`), so it must be
+          # cheap. It imports only teatree.quality.changed_set (stdlib + PyYAML),
+          # so run it with `--no-project --with pyyaml` (PYTHONPATH=src) instead
+          # of the implicit full dev-group `uv sync` a plain `uv run` triggers.
+          # If that import chain ever grows a heavier dep the ImportError reds
+          # this job (blocks, never skips) — the fail-safe direction (#132).
+          PYTHONPATH=src uv run --no-project --with pyyaml python scripts/ci/changed_lanes.py < changed_paths.txt
 
   # ── 2. Fast static checks ──────────────────────────────────────────────────
 
@@ -946,7 +953,11 @@ jobs:
       - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405  # v6
         with:
           python-version: "3.13"
-      - run: uv sync --group mutation
+      # Decide FIRST, sync only if we will actually run: almost every PR is not
+      # the first of the ISO week, so the expensive `uv sync --group mutation`
+      # (below) and the mutation run are skipped for it. The gate script imports
+      # only stdlib, so it runs with `--no-project` — no dependency install to
+      # reach the decision.
       - name: Decide whether this is the first PR of the ISO week
         id: gate
         env:
@@ -962,11 +973,14 @@ jobs:
               --jq '[.[] | {number: .number, created_at: .created_at}]' > prs.json; then
             echo "WARNING: could not fetch the PR list — running mutation (run-when-uncertain)." >&2
             echo "run_mutation=true" >> "$GITHUB_OUTPUT"
-          elif uv run python scripts/eval/first_pr_of_week.py --mrs-file prs.json --current-iid "$PR_NUMBER" --skip-code 1; then
+          elif uv run --no-project python scripts/eval/first_pr_of_week.py --mrs-file prs.json --current-iid "$PR_NUMBER" --skip-code 1; then
             echo "run_mutation=true" >> "$GITHUB_OUTPUT"
           else
             echo "run_mutation=false" >> "$GITHUB_OUTPUT"
           fi
+      - name: Install the mutation toolchain (only when this run will mutate)
+        if: steps.gate.outputs.run_mutation == 'true'
+        run: uv sync --group mutation
       - name: Full-scope mutation run (warn-first)
         if: steps.gate.outputs.run_mutation == 'true'
         run: uv run t3 mutation run --all
