@@ -84,9 +84,7 @@ class TestHardDenyReason:
         # A HIGH body to a CONFIRMED-PUBLIC egress is a real public leak → denied,
         # matching Lane A's ``resolve_high_verdict`` (public-egress protection intact).
         self._isolate_visibility(tmp_path, monkeypatch, "PUBLIC")
-        args = {
-            "command": 'gh pr comment 5 --repo souliane/teatree --body "**User directive (verbatim):** go"'
-        }
+        args = {"command": 'gh pr comment 5 --repo souliane/teatree --body "**User directive (verbatim):** go"'}
         reason = hard_deny_reason("shell", args, cwd=tmp_path)
         assert reason is not None
         assert "privacy/banned-term gate" in reason
@@ -97,9 +95,7 @@ class TestHardDenyReason:
         # RED before the destination fix: Lane B denied ANY HIGH finding. Lane A
         # SKIPS an unresolvable target (bias to not firing), so Lane B must too.
         self._isolate_visibility(tmp_path, monkeypatch, None)
-        args = {
-            "command": 'gh pr comment 5 --repo someowner/mystery --body "**User directive (verbatim):** go"'
-        }
+        args = {"command": 'gh pr comment 5 --repo someowner/mystery --body "**User directive (verbatim):** go"'}
         assert hard_deny_reason("shell", args, cwd=tmp_path) is None
 
     def test_publish_high_finding_to_a_private_target_is_allowed(
@@ -108,9 +104,7 @@ class TestHardDenyReason:
         # A HIGH body to a probe-CONFIRMED-PRIVATE repo cannot leak to the public —
         # Lane A downgrades it, so Lane B allows it (no over-deny of a private post).
         self._isolate_visibility(tmp_path, monkeypatch, "PRIVATE")
-        args = {
-            "command": 'gh pr comment 5 --repo someowner/private-svc --body "**User directive (verbatim):** go"'
-        }
+        args = {"command": 'gh pr comment 5 --repo someowner/private-svc --body "**User directive (verbatim):** go"'}
         assert hard_deny_reason("shell", args, cwd=tmp_path) is None
 
     def test_full_gate_parity_with_lane_a_across_clone_and_worktree(self, tmp_path: Path) -> None:
