@@ -38,6 +38,7 @@ def populate_model_registries() -> None:
         critic_gate,
         design_critic_gate,
         dod_gate,
+        eval_heal_anticheat_gate,
         fix_dod_gate,
         integration_review_gate,
         merge_evidence_gate,

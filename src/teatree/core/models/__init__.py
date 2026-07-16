@@ -5,6 +5,7 @@ from teatree.core.models.attachment_manifest import AttachmentManifest
 from teatree.core.models.audit_run import InvariantOutcome, SessionAuditRecord
 from teatree.core.models.auto_review_dispatch import AutoReviewDispatch, build_review_contract
 from teatree.core.models.bot_ping import BotPing, DeliveryClaim
+from teatree.core.models.ci_eval_heal_session import CiEvalHealSession, CiEvalHealSessionManager
 from teatree.core.models.codex_review_marker import CodexReviewMarker
 from teatree.core.models.compliance_snapshot import (
     InstructionComplianceRecord,
@@ -145,6 +146,8 @@ __all__ = [
     "BindingFeedbackError",
     "BotPing",
     "BroadcastObservation",
+    "CiEvalHealSession",
+    "CiEvalHealSessionManager",
     "ClearIssuanceError",
     "ClearRequest",
     "CodexReviewMarker",
