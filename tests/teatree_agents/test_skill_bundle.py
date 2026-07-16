@@ -8,6 +8,7 @@ fall-back.
 
 import tempfile
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 from django.test import TestCase
@@ -79,3 +80,34 @@ class TestResolveSkillBundleWorktreeScoping(TestCase):
             assert skill_bundle._dispatch_cwd(tmp) == Path(tmp)
         assert skill_bundle._dispatch_cwd(None) == Path.cwd()
         assert skill_bundle._dispatch_cwd("") == Path.cwd()
+
+
+class TestResolveSkillBundleStageSkillThreading(TestCase):
+    def test_threaded_stage_skills_bypass_internal_resolution(self) -> None:
+        # #3206: when the dispatch pre-resolves the overlay stage skills and
+        # threads them in, resolve_skill_bundle must not re-resolve them.
+        captured: dict[str, object] = {}
+
+        def _spy(self: SkillLoadingPolicy, *, stage_skills: object, **kwargs: object) -> object:
+            captured["stage_skills"] = stage_skills
+            return SimpleNamespace(skills=[])
+
+        with (
+            patch("teatree.agents.skill_bundle.active_overlay_stage_skills") as resolver,
+            patch.object(SkillLoadingPolicy, "select_for_runtime_phase", _spy),
+        ):
+            resolve_skill_bundle(
+                phase="coding",
+                overlay_skill_metadata={},
+                stage_skills=["backend-dev"],
+            )
+        resolver.assert_not_called()
+        assert captured["stage_skills"] == ["backend-dev"]
+
+    def test_resolves_internally_when_not_threaded(self) -> None:
+        with (
+            patch("teatree.agents.skill_bundle.active_overlay_stage_skills", return_value=["x"]) as resolver,
+            patch.object(SkillLoadingPolicy, "select_for_runtime_phase", return_value=SimpleNamespace(skills=[])),
+        ):
+            resolve_skill_bundle(phase="coding", overlay_skill_metadata={})
+        resolver.assert_called_once_with("coding")

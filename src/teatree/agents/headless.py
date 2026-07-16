@@ -40,7 +40,7 @@ from teatree.agents.headless_usage import _attempt_usage
 from teatree.agents.pydantic_ai_resume import maybe_persist_on_park
 from teatree.agents.reader_profile import is_reader_phase, reader_child_env, reader_env_hermetic
 from teatree.agents.result_schema import RESULT_JSON_SCHEMA
-from teatree.agents.skill_bundle import resolve_skill_bundle
+from teatree.agents.skill_bundle import active_overlay_stage_skills, resolve_skill_bundle
 from teatree.agents.usage_window import maybe_park_for_active_window, park_task_on_limit
 from teatree.config import AgentHarnessProvider, get_effective_settings
 from teatree.core.models import Task, TaskAttempt
@@ -231,10 +231,15 @@ def run_headless(
         return backend
     harness = backend
 
+    # Resolve the overlay's stage skills ONCE and thread the list into every
+    # consumer (#3206). Re-resolving per prompt builder re-warns on a
+    # misconfigured skill and re-reads its SKILL.md path for nothing.
+    stage_skills = active_overlay_stage_skills(phase)
     skills = resolve_skill_bundle(
         phase=phase,
         overlay_skill_metadata=overlay_skill_metadata,
         worktree_path=dispatch_worktree_path(task.ticket),
+        stage_skills=stage_skills,
     )
 
     provider = get_effective_settings().agent_harness_provider
@@ -245,9 +250,13 @@ def run_headless(
         return child_env_result
     child_env = child_env_result
 
-    prompt = build_task_prompt(task, skills=skills)
-    lifecycle_skill = SkillLoadingPolicy.lifecycle_for_phase(phase)
-    system_context = build_system_context(task, skills=skills, lifecycle_skill=lifecycle_skill)
+    prompt = build_task_prompt(task, skills=skills, stage_skills=stage_skills)
+    system_context = build_system_context(
+        task,
+        skills=skills,
+        lifecycle_skill=SkillLoadingPolicy.lifecycle_for_phase(phase),
+        stage_skills=stage_skills,
+    )
     options = _build_options(task, system_context, phase=phase, skills=skills, env=child_env)
 
     try:
