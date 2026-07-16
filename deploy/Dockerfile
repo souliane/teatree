@@ -7,12 +7,13 @@ FROM ubuntu:24.04
 # Toolchain layer — ca-certificates, curl, git, jq, sqlite3, direnv, node 24, the
 # claude CLI (as in dev/Dockerfile.test) plus gh, plus pass/gnupg so the box can
 # route the Anthropic credential through a per-account pass store
-# (anthropic_oauth_pass_paths) instead of a single env token, plus the Docker CLI
-# + compose plugin (CLI only, NO engine) so the watchdog role can drive the host
+# (anthropic_oauth_pass_paths) instead of a single env token. ttyd backs the
+# admin dashboard's loopback "Debug session" terminal (#3263). The Docker CLI
+# + compose plugin (CLI only, NO engine) let the watchdog role drive the host
 # daemon over the mounted socket.
 RUN apt-get update -qq && \
     apt-get install -y -qq --no-install-recommends \
-        ca-certificates curl direnv git gnupg jq pass sqlite3 && \
+        ca-certificates curl direnv git gnupg jq pass sqlite3 ttyd && \
     curl -fsSL https://deb.nodesource.com/setup_24.x | bash - && \
     apt-get install -y -qq --no-install-recommends nodejs && \
     install -m 0755 -d /etc/apt/keyrings && \

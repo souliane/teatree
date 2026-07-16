@@ -250,13 +250,21 @@ def _ts_key(ts: str) -> float:
         return 0.0
 
 
+# Slack ``conversations.replies`` errors that PROVE the thread/root is gone
+# (deleted), as opposed to a transient read failure — see #3292.
+_DELETION_ERRORS = frozenset({"thread_not_found", "message_not_found"})
+
+
 def read_thread_activity(request: SlackThreadActivityRequest) -> ThreadActivityRead:
     """Read one thread's liveness + latest activity via ``conversations.replies``.
 
     Returns the thread parent's presence (``exists``), the parent ``ts``, the
     newest reply ``ts``, and whether the parent carries any reaction. An httpx
-    transport error propagates so the caller can fail safe. ``ok=False`` on a
-    non-ok API body; ``exists=False`` when the parent message is gone.
+    transport error propagates so the caller can fail safe. A deletion API error
+    (``thread_not_found`` / ``message_not_found``) and a ``subtype:"tombstone"``
+    root are both proof of deletion → ``ok=True, exists=False``; every other
+    ``ok:false`` body (ratelimited, auth) stays ``ok=False`` so the caller
+    suppresses rather than re-posts on an uncertain read (#3292).
     """
     if not request.token or not request.channel_id or not request.thread_ts:
         return ThreadActivityRead(ok=True, exists=False)
@@ -270,11 +278,23 @@ def read_thread_activity(request: SlackThreadActivityRequest) -> ThreadActivityR
         data = response.json()
 
     if not data.get("ok"):
+        # A deleted root/thread comes back as an ``ok:false`` API error
+        # (``thread_not_found`` / ``message_not_found``) — that is proof of
+        # DELETION, not a read failure, so it must read as ``ok=True,
+        # exists=False`` and let the reclaim → re-post branch fire (#3292).
+        # Every other ``ok:false`` (ratelimited, auth) stays fail-safe:
+        # ``ok=False`` ⇒ the guard suppresses rather than re-posting on doubt.
+        if data.get("error") in _DELETION_ERRORS:
+            return ThreadActivityRead(ok=True, exists=False)
         return ThreadActivityRead(ok=False, exists=False)
     messages = data.get("messages")
     if not isinstance(messages, list) or not messages:
         return ThreadActivityRead(ok=True, exists=False)
     parent = messages[0] if isinstance(messages[0], dict) else {}
+    # A tombstone root (parent deleted, replies survive) is gone — do not count
+    # ``messages[0]`` as "exists" just because the array is non-empty (#3292).
+    if parent.get("subtype") == "tombstone":
+        return ThreadActivityRead(ok=True, exists=False)
     reply_tss = [str(m.get("ts", "")) for m in messages[1:] if isinstance(m, dict) and m.get("ts")]
     return ThreadActivityRead(
         ok=True,

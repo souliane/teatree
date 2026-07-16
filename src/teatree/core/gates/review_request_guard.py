@@ -69,6 +69,8 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 _DEFAULT_READ_TIMEOUT = 8.0
+# Static fallback page cap; the live default is config-driven — see
+# :func:`_default_options` (``review_request_dedup_max_pages``, default 5).
 _MAX_PAGES = 5
 # Static fallback only; the live default window is config-driven — see
 # :func:`_default_options` (``review_request_dedup_window_days``, default 30).
@@ -145,6 +147,7 @@ class GuardOptions:
     recency_window: dt.timedelta = _FALLBACK_RECENCY_WINDOW
     read_timeout: float = _DEFAULT_READ_TIMEOUT
     now: dt.datetime | None = None
+    max_pages: int = _MAX_PAGES
 
 
 def _default_options() -> GuardOptions:
@@ -152,11 +155,17 @@ def _default_options() -> GuardOptions:
 
     ``review_request_dedup_window_days`` (default 30) replaces the old
     hard-coded 24h — so live Slack, not the DB row's age, decides.
+    ``review_request_dedup_max_pages`` (default 5) makes the channel-scan page
+    cap configurable so a ~30-day window is actually reachable on a busy
+    channel (#3292 part 4).
     """
     from teatree.config import get_effective_settings  # noqa: PLC0415 — deferred: Django settings at call time
 
-    days = get_effective_settings().review_request_dedup_window_days
-    return GuardOptions(recency_window=dt.timedelta(days=days))
+    settings = get_effective_settings()
+    return GuardOptions(
+        recency_window=dt.timedelta(days=settings.review_request_dedup_window_days),
+        max_pages=settings.review_request_dedup_max_pages,
+    )
 
 
 def _live_matches(
@@ -178,7 +187,7 @@ def _live_matches(
         channel_id=target.channel_id,
         channel_name=target.channel_name,
         pr_urls=[canonical],
-        max_pages=_MAX_PAGES,
+        max_pages=opts.max_pages,
         oldest_ts=f"{oldest.timestamp():.6f}",
         timeout=opts.read_timeout,
     )
@@ -224,13 +233,18 @@ def _live_decision(
     return None
 
 
-def _read_thread_activity(target: GuardTarget, thread_ts: str, opts: GuardOptions):  # noqa: ANN202 — provider-owned ThreadActivityReadLike; a return annotation would force a core→backends type import
-    """Routed-token ``conversations.replies`` read for one thread; ``None`` on transport failure."""
+def _read_thread_activity(target: GuardTarget, thread_ts: str, opts: GuardOptions, *, channel_id: str = ""):  # noqa: ANN202 — provider-owned ThreadActivityReadLike; a return annotation would force a core→backends type import
+    """Routed-token ``conversations.replies`` read for one thread; ``None`` on transport failure.
+
+    Reads in *channel_id* when supplied — the channel the post was RECORDED
+    under (#3292 part 3) — so a review-channel change since the post does not
+    read the wrong channel and mis-decide; falls back to the target channel.
+    """
     from teatree.core.backend_registry import ThreadActivitySpec, get_backend_provider  # noqa: PLC0415 — lazy import
 
     spec = ThreadActivitySpec(
         token=target.token,
-        channel_id=target.channel_id,
+        channel_id=channel_id or target.channel_id,
         thread_ts=thread_ts,
         timeout=opts.read_timeout,
     )
@@ -263,7 +277,7 @@ def _posted_row_terminal(
     post = ReviewRequestPost.objects.filter(mr_url=canonical).first()
     if post is None or not post.slack_thread_ts:
         return None
-    read = _read_thread_activity(target, post.slack_thread_ts, opts)
+    read = _read_thread_activity(target, post.slack_thread_ts, opts, channel_id=post.slack_channel_id)
     if read is None or not read.ok:
         return GuardDecision(action="suppress", reason="read_failed_failsafe")
     if read.exists:
