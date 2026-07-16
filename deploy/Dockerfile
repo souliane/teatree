@@ -32,11 +32,16 @@ RUN useradd -m -d /home/teatree -s /bin/bash teatree
 # inherits teatree ownership (Docker seeds an empty volume from the image dir).
 # /opt/teatree/uv carries the runtime-installed teatree python + venv + shims so
 # all three services see the same t3.
+# ~/.claude/projects is pre-created (and so chowned to teatree below) BEFORE it is
+# used as the projects bind-mount target: without it, Docker creates the mount's
+# parent ~/.claude as ROOT at container start, so `t3 setup` cannot write
+# ~/.claude/settings.json and the init container crash-loops (whole factory down).
 RUN mkdir -p \
         /home/teatree/teatree \
         /home/teatree/.local/share/teatree \
         /home/teatree/.local/share/teatree-worktrees \
         /home/teatree/workspace/t3-workspaces \
+        /home/teatree/.claude/projects \
         /opt/teatree/uv && \
     # clone_root() resolves clones under ~/workspace, but the runtime clone
     # lives on the teatree_src volume at ~/teatree. Provisioning discovers the
