@@ -104,18 +104,29 @@ the laptop's. The split:
 | **Laptop** | `review` (colleague PR review → Slack), `directive_loop` (asks the human via Slack) | `tickets` — the operator disables it by hand |
 | **Box** (this deploy) | `inbox` (DM-only owner Slack loop), `tickets` (issue scanning/dispatch) + all machine-local loops | `review`, `directive_loop` |
 
-The box enforces its side in `deploy/entrypoint.sh` (init role): after seeding
-config it calls `t3 loop disable <name>` — the single DB-backed per-loop control
-plane (`Loop.enabled` AND not `LoopState`-held, via `loop_state_admits`) — for each fleet-scoped loop.
-The disable is idempotent, so re-running the deploy converges.
+The box enforces its side in `deploy/entrypoint.sh` (init role) via
+`apply_fleet_loop_policy`, after seeding config. Per-loop enable/disable is now
+EMERGENCY-only (#3248) and, more importantly, admission resolves
+`hold > forced > preset > base` — so no preset, schedule, or `t3 loop override`
+can revive a loop a prior deploy left in a durable `LoopState` **hold** (older
+images ran `t3 loop disable inbox`). The step therefore drives the two
+authoritative planes:
 
-`TEATREE_DISABLED_LOOPS` (comma-separated) overrides the set the box disables. It
-defaults to `review,directive_loop` when unset, so a fresh deploy is safe
-with no configuration; an **empty** value disables nothing (every loop runs
-here). Set it in the box env file (`teatree.env`) to change the set. Because the
-deploy workflow rewrites `teatree.env` from repository secrets on every run, a
-persistent override belongs in that workflow's env-file writer (add a
-`TEATREE_DISABLED_LOOPS` line beside the others), not a hand-edit on the box.
+- **ENABLED set** (default `inbox`) → `t3 loop enable <name> --emergency`, the one
+  handle that clears a stale hold and sets `Loop.enabled=True`, so a box whose
+  `inbox` an older image disabled recovers. Idempotent.
+- **DISABLED set** (default `review,directive_loop`) → `t3 loop override <name> off`,
+  the sanctioned NON-emergency forced-off that replaces the deprecated
+  `t3 loop disable`. Forced-off beats the preset mask and the base config, so the
+  colleague/human-facing loops stay off here under any mode. Idempotent.
+
+`TEATREE_ENABLED_LOOPS` / `TEATREE_DISABLED_LOOPS` (comma-separated) override the
+defaults; an **empty** value acts on nothing. Every name in both lists is
+validated against the registered mini-loops first, so a typo fails the deploy
+loudly. Set them in the box env file (`teatree.env`) to change the split. Because
+the deploy workflow rewrites `teatree.env` from repository variables on every run,
+a persistent override belongs in that workflow's env-file writer (the
+`TEATREE_ENABLED_LOOPS` / `TEATREE_DISABLED_LOOPS` lines), not a hand-edit on the box.
 
 ## One-time bootstrap (on the box)
 
