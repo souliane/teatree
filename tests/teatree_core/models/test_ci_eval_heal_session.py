@@ -25,9 +25,7 @@ def _session(**kwargs: object) -> CiEvalHealSession:
     return CiEvalHealSession.objects.create(**defaults)
 
 
-class TestManager:
-    pytestmark = pytest.mark.django_db
-
+class TestManager(TestCase):
     def test_default_manager_is_the_typed_manager(self) -> None:
         assert isinstance(CiEvalHealSession.objects, CiEvalHealSessionManager)
 
