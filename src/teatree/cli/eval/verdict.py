@@ -78,9 +78,12 @@ def build_verdict(lanes: list[LaneResult]) -> str:
     ran = len(lanes) - len(not_validated)
     if not_validated:
         names = ", ".join(lane.name for lane in not_validated)
+        # A fully-skipped setup lane was NOT RUN; a partially-graded one DID grade
+        # some scenarios but not all, so it is NOT FULLY VALIDATED rather than "not run".
+        phrase = "NOT RUN — SKIPPED" if all(lane.skipped for lane in not_validated) else "NOT FULLY VALIDATED"
         return (
             f"✅ Deterministic checks: ALL GOOD ({ran} lanes). "
-            f"⚠️ {names}: NOT FULLY VALIDATED, needs setup: {not_validated[0].setup_hint} "
+            f"⚠️ {names}: {phrase}, needs setup: {not_validated[0].setup_hint} "
             "(not yet validated)."
         )
     return f"✅ ALL GOOD — every check passed ({len(lanes)} lanes)."

@@ -201,7 +201,7 @@ class TestPersistMainAuxCost(TestCase):
 
 
 class TestPersistMatrixErroredCells(TestCase):
-    def test_errored_cell_is_not_persisted_as_a_fail_row(self) -> None:
+    def test_errored_cell_persists_as_error_verdict_excluded_from_pass_rate(self) -> None:
         rows = [
             MatrixRow(scenario="alpha", model="m", passed=True, score=1.0, trials=1, skipped=False, cost_usd=0.10),
             MatrixRow(scenario="beta", model="m", passed=False, score=0.0, trials=1, skipped=False, errored=True),
@@ -210,9 +210,14 @@ class TestPersistMatrixErroredCells(TestCase):
         record = persist_matrix(rows, models=["m"])
 
         persisted = {(r.scenario_name, r.verdict) for r in record.scenario_results.all()}
-        # The errored cell is a transient infra blip, not a graded FAIL — it must
-        # not land in the ledger as a fail row that would lower the baseline pass-rate.
+        # The errored cell is recorded with its own `error` verdict — VISIBLE in the
+        # ledger and the baseline diff (a chronically-errored scenario no longer
+        # vanishes from history), yet excluded from pass-rate math (neither a pass
+        # nor a fail that would move the baseline).
         assert ("alpha", "pass") in persisted
-        assert not any(name == "beta" for name, _ in persisted)
+        assert ("beta", "error") in persisted
         assert record.failed == 0
         assert record.passed == 1
+        assert record.errored == 1
+        # The errored cell drops out of graded pass-rate rows entirely.
+        assert {rate.scenario_name for rate in record.pass_rates()} == {"alpha"}
