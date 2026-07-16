@@ -314,8 +314,8 @@ jobs:
       # ships the Claude CLI) — "all fresh-run eval in Docker" holds in CI too. The runner has
       # Docker, so the run builds (cached) and runs the suite in-container; the host's
       # SELECTED credential (below) is forwarded in via docker's `-e` pass-through.
-      # `--backend api` keeps CI on the in-process Agent-SDK path explicitly; `EVAL_TRIALS`
-      # (default 2, below) drives `--trials`, so there is intentionally no backend input.
+      # `--backend "$EVAL_BACKEND"` threads the selected backend (DEFAULT 'api' — the
+      # in-process Agent-SDK path); `EVAL_TRIALS` (default 2, below) drives `--trials`.
       # Auth rides the `eval_credential` knob (`T3_EVAL_CREDENTIAL`, below) — DEFAULT the
       # subscription OAuth token (reverses #2707; no per-token bill, right-sized fan-out
       # to fit the plan's usage window), with the metered ANTHROPIC_API_KEY still
