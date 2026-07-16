@@ -154,14 +154,16 @@ Usage: t3 loop [OPTIONS] COMMAND [ARGS]...
 │                  last fire, and next tick.                                   │
 │ reclaim-markers  Release orphaned non-terminal markers whose ticket is       │
 │                  terminal/gone, freeing intake budget.                       │
-│ pause            Pause a mini-loop durably (#1913) — survives restart,       │
-│                  honoured by tick + self-pump.                               │
-│ resume           Resume a paused OR disabled mini-loop — return it to the    │
-│                  ENABLED state.                                              │
-│ disable          Disable a mini-loop durably — the restart-surviving         │
-│                  kill-switch.                                                │
-│ enable           Enable a disabled mini-loop — return it to the ENABLED      │
-│                  state (alias of resume).                                    │
+│ pause            Pause a mini-loop durably (#1913) — EMERGENCY-only; prefer  │
+│                  presets/schedules or `loop override`.                       │
+│ resume           Resume a paused OR disabled mini-loop — EMERGENCY-only;     │
+│                  prefer presets/schedules or `loop override`.                │
+│ disable          Disable a mini-loop durably — EMERGENCY-only; prefer        │
+│                  presets/schedules or `loop override`.                       │
+│ enable           Enable a disabled mini-loop — EMERGENCY-only; prefer        │
+│                  presets/schedules or `loop override`.                       │
+│ override         Emergency per-loop force (on/off/clear) — the handle that   │
+│                  beats a preset force-off (#3248).                           │
 │ loop-state       Read a known mini-loop's durable state, read-only (ENABLED  │
 │                  when never touched; refuses an unknown name).               │
 │ self-improve     Self-improving monitor — scheduled smell detection with a   │
