@@ -42,6 +42,8 @@ t3 mcp browser-diagnosis   # prints the `claude mcp add` line; the flag ships ON
 
 The registration is `claude mcp add chrome-devtools -- npx -y chrome-devtools-mcp@latest`, so the tools surface as `mcp__chrome-devtools__*` — `navigate_page`, `click`, `fill` / `fill_form`, `type_text`, `upload_file`, `wait_for`, `take_snapshot`, `take_screenshot`, `list_console_messages`, `list_network_requests`, `evaluate_script`. Browser-visible breakage (a blank render, a failed XHR, a console error, a wrong DOM state) is diagnosed **in the browser** with these before any root-cause claim, not guessed from the server side.
 
+**Optional aid for authoring/debugging Playwright specs, never required (#3271).** The same live DOM/console/network view makes *writing* a Playwright spec (finding the right selector, confirming the expected DOM state) and *debugging* a red one far more tractable than working blind. It is purely a developer-experience aid — teatree's runtime requires **zero** MCP, so its absence gates nothing: `t3 doctor` only ever emits an INFO suggestion for it, never a WARN/FAIL. Prerequisite: a Chrome/Chromium executable on the host (the server launches its own Chrome over the DevTools Protocol).
+
 **Pre-authorize the tools for an unattended run.** So the tool never prompts mid-run, allow the server in `~/.claude/settings.json`:
 
 ```jsonc
