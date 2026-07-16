@@ -10,7 +10,8 @@ cd "$(dirname "$0")/.."
 export SKIP="${SKIP:-uv-audit,cyclonedx-sbom}"
 
 echo "=== [1/3] prek on changed files (fast, not --all-files) ==="
-prek run
+# `uv run` so the prek runner is the lockfile-pinned prek CI runs (#3236).
+uv run prek run
 
 echo "=== [2/3] makemigrations --check --dry-run -- migration-graph linearity ==="
 uv run python manage.py makemigrations --check --dry-run

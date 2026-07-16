@@ -47,7 +47,9 @@ class TestDurableNoticeRecorded:
     def test_dirty_skip_records_durable_botping_naming_path_and_remediation(self) -> None:
         notify_stale_clone_skip(_skip(StaleCloneReason.DIRTY, detail="dirty_tracked:src/app.py"))
         row = BotPing.objects.get(idempotency_key__startswith="stale_clone_skip:teatree:dirty:")
-        assert row.status == BotPing.Status.NOOP
+        # A stale-clone skip is INTERNAL: durably recorded (LOGGED) but never DM'd.
+        assert row.status == BotPing.Status.LOGGED
+        assert row.audience == "internal"
         assert "/clones/teatree" in row.text
         assert "re-run `t3 update`" in row.text
 

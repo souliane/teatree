@@ -122,3 +122,107 @@ class TestApplyPhaseTransitionChainsParentTask(TestCase):
         assert ticket.state == Ticket.State.TESTED
         review = Task.objects.get(ticket=ticket, phase="reviewing")
         assert review.parent_task_id == testing_task.pk
+
+
+class TestApplyPhaseTransitionAutoImplement(TestCase):
+    """#10: an auto-implement author ticket advances on coding completion.
+
+    ``persistence._handle_orchestrator`` schedules a ``coding`` task directly on
+    a fresh NOT_STARTED author ticket, so the completion cannot match the
+    PLANNED-source ``code()`` guard. Before ``code_direct`` this no-opped
+    silently — tickets 35/36 spent budget on coding yet advanced NOTHING.
+    """
+
+    def _completed_coding_task(self, ticket: Ticket) -> Task:
+        session = Session.objects.create(ticket=ticket, agent_id="coding")
+        return Task.objects.create(ticket=ticket, session=session, phase="coding", status=Task.Status.COMPLETED)
+
+    def test_coding_completion_on_not_started_auto_implement_advances_to_coded(self) -> None:
+        from teatree.core.models.auto_implement import mark_auto_implement  # noqa: PLC0415
+
+        ticket = Ticket.objects.create(overlay="test", role=Ticket.Role.AUTHOR, state=Ticket.State.NOT_STARTED)
+        mark_auto_implement(ticket)
+        coding_task = self._completed_coding_task(ticket)
+
+        fired = coding_task._apply_phase_transition()
+
+        ticket.refresh_from_db()
+        assert fired is True, "an auto-implement ticket must advance on coding completion, not silently no-op"
+        assert ticket.state == Ticket.State.CODED
+        testing = Task.objects.get(ticket=ticket, phase="testing")
+        assert testing.parent_task_id == coding_task.pk
+
+    def test_coding_completion_on_unmarked_early_ticket_does_not_advance(self) -> None:
+        # Behavior preservation: without the marker, code_direct is unreachable —
+        # a plain NOT_STARTED author ticket's coding completion must NOT advance
+        # (it escalates instead; see TestApplyPhaseTransitionEscalation).
+        ticket = Ticket.objects.create(overlay="test", role=Ticket.Role.AUTHOR, state=Ticket.State.NOT_STARTED)
+        coding_task = self._completed_coding_task(ticket)
+
+        fired = coding_task._apply_phase_transition()
+
+        ticket.refresh_from_db()
+        assert fired is False
+        assert ticket.state == Ticket.State.NOT_STARTED
+
+
+class TestApplyPhaseTransitionEscalation(TestCase):
+    """#10 invariant: an FSM lifecycle transition must never fail silently.
+
+    When no guard matches AND the ticket is behind the phase's target (a genuine
+    wedge, not an idempotent replay), a durable ``DeferredQuestion`` is recorded
+    so the operator is told, instead of the old silent ``return False``.
+    """
+
+    def _completed_task(self, ticket: Ticket, phase: str) -> Task:
+        session = Session.objects.create(ticket=ticket, agent_id=phase)
+        return Task.objects.create(ticket=ticket, session=session, phase=phase, status=Task.Status.COMPLETED)
+
+    def test_wedged_coding_completion_records_a_deferred_question(self) -> None:
+        from teatree.core.models.deferred_question import DeferredQuestion  # noqa: PLC0415
+
+        ticket = Ticket.objects.create(overlay="test", role=Ticket.Role.AUTHOR, state=Ticket.State.NOT_STARTED)
+        coding_task = self._completed_task(ticket, "coding")
+
+        fired = coding_task._apply_phase_transition()
+
+        assert fired is False
+        pending = DeferredQuestion.pending()
+        assert pending.count() == 1, "a genuine FSM wedge must escalate, never silently drop"
+        assert "FSM wedge" in pending.first().question
+
+    def test_wedge_escalation_is_deduped_across_replays(self) -> None:
+        from teatree.core.models.deferred_question import DeferredQuestion  # noqa: PLC0415
+
+        ticket = Ticket.objects.create(overlay="test", role=Ticket.Role.AUTHOR, state=Ticket.State.NOT_STARTED)
+        coding_task = self._completed_task(ticket, "coding")
+
+        coding_task._apply_phase_transition()
+        coding_task._apply_phase_transition()
+
+        assert DeferredQuestion.pending().count() == 1, "an at-least-once replay must not flood the question queue"
+
+    def test_idempotent_replay_past_target_does_not_escalate(self) -> None:
+        from teatree.core.models.deferred_question import DeferredQuestion  # noqa: PLC0415
+
+        # A coding task completing on a ticket already advanced to TESTED (past
+        # coding's CODED target) is an idempotent replay, not a wedge.
+        ticket = Ticket.objects.create(overlay="test", role=Ticket.Role.AUTHOR, state=Ticket.State.TESTED)
+        coding_task = self._completed_task(ticket, "coding")
+
+        fired = coding_task._apply_phase_transition()
+
+        assert fired is False
+        assert DeferredQuestion.pending().count() == 0, "an idempotent replay must not escalate"
+
+    def test_free_form_phase_does_not_escalate(self) -> None:
+        from teatree.core.models.deferred_question import DeferredQuestion  # noqa: PLC0415
+
+        # A non-lifecycle phase (no FSM target) legitimately no-ops.
+        ticket = Ticket.objects.create(overlay="test", role=Ticket.Role.AUTHOR, state=Ticket.State.NOT_STARTED)
+        task = self._completed_task(ticket, "architectural_review")
+
+        fired = task._apply_phase_transition()
+
+        assert fired is False
+        assert DeferredQuestion.pending().count() == 0

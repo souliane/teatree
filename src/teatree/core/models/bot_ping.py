@@ -18,9 +18,11 @@ import enum
 from datetime import datetime, timedelta
 from typing import ClassVar
 
-from django.db import models, transaction
+from django.db import IntegrityError, models, transaction
 from django.db.models import Q
 from django.utils import timezone
+
+from teatree.core.modelkit.notify_policy import OWNER_AUDIENCE_VALUES
 
 
 class DeliveryClaim(enum.StrEnum):
@@ -45,6 +47,9 @@ class BotPing(models.Model):
         NOOP = "noop", "Noop (no backend)"
         FAILED = "failed", "Failed"
         EXPIRED = "expired", "Expired (re-delivery abandoned)"
+        # An INTERNAL-audience notification: logged + terminally recorded, never
+        # DM'd and never re-delivered. The deny-by-default counterpart to SENT.
+        LOGGED = "logged", "Logged (internal audience, never DM'd)"
 
     class Transport(models.TextChoices):
         """Which delivery path actually landed the DM (#1181).
@@ -90,6 +95,10 @@ class BotPing(models.Model):
     idempotency_key = models.CharField(max_length=255, unique=True)
     kind = models.CharField(max_length=16, choices=Kind.choices)
     status = models.CharField(max_length=16, choices=Status.choices)
+    # Notification-relevance audience (:mod:`teatree.core.modelkit.notify_policy`). Only
+    # owner-audience rows are re-delivered; INTERNAL / empty (pre-migration) rows
+    # are terminally expired. Blank for rows written before the policy landed.
+    audience = models.CharField(max_length=32, blank=True, default="")
     text = models.TextField()
     channel_ref = models.CharField(max_length=255, blank=True)
     posted_ts = models.CharField(max_length=64, blank=True)
@@ -148,6 +157,13 @@ class BotPing(models.Model):
         are terminally EXPIRED by :meth:`expire_stale_info` rather than retried
         forever. A terminal EXPIRED/SENT row is excluded by status. A fresh
         SENDING row is a genuine in-flight delivery and is excluded.
+
+        Only rows whose :attr:`audience` the owner actually reads (the
+        :data:`~teatree.core.modelkit.notify_policy.OWNER_AUDIENCE_VALUES` set) are
+        re-deliverable: an INTERNAL row is a log-only notification and a
+        pre-migration row (blank ``audience``) is unclassified, so both are
+        excluded here and terminally expired by :meth:`expire_stale_info`
+        rather than surfacing late in the owner's DM.
         """
         moment = timezone.now()
         stale_before = moment - cls.SENDING_STALE_AFTER
@@ -155,7 +171,7 @@ class BotPing(models.Model):
         terminal = Q(status__in=tuple(cls._RECOVERABLE))
         stale_claim = Q(status=cls.Status.SENDING, posted_at__lte=stale_before)
         return (
-            cls.objects.filter(kind=cls.Kind.INFO)
+            cls.objects.filter(kind=cls.Kind.INFO, audience__in=OWNER_AUDIENCE_VALUES)
             .filter(terminal | stale_claim)
             .filter(posted_at__gt=age_cutoff, attempts__lt=cls.MAX_REDELIVERY_ATTEMPTS)
             .order_by("posted_at", "pk")[:limit]
@@ -165,11 +181,14 @@ class BotPing(models.Model):
     def expire_stale_info(cls, *, now: datetime | None = None) -> int:
         """Terminally EXPIRE recoverable INFO rows that must never re-deliver.
 
-        Two cases, both abandoned WITHOUT a delivery attempt (#2064): a row
-        older than :attr:`REDELIVERY_AGE_CUTOFF` (a weeks-stale operator
-        notification that must never reach the user's DM late), and a row whose
-        :attr:`attempts` reached :attr:`MAX_REDELIVERY_ATTEMPTS` (the bound that
-        stops unbounded per-tick grinding when the backend never resolves).
+        Three cases, all abandoned WITHOUT a delivery attempt: a row older than
+        :attr:`REDELIVERY_AGE_CUTOFF` (a weeks-stale operator notification that
+        must never reach the user's DM late), a row whose :attr:`attempts`
+        reached :attr:`MAX_REDELIVERY_ATTEMPTS` (the bound that stops unbounded
+        per-tick grinding when the backend never resolves, #2064), and a
+        NON-owner-audience row — an INTERNAL notification or a pre-migration row
+        with a blank ``audience`` — which is log-only and must never be
+        re-delivered regardless of age.
 
         Idempotent: only rows in the recoverable set (NOOP/FAILED/stale-SENDING,
         INFO kind) are touched, and the update is a single conditional write, so
@@ -183,10 +202,11 @@ class BotPing(models.Model):
         stale_claim = Q(status=cls.Status.SENDING, posted_at__lte=stale_before)
         too_old = Q(posted_at__lte=age_cutoff)
         too_many = Q(attempts__gte=cls.MAX_REDELIVERY_ATTEMPTS)
+        not_owner = ~Q(audience__in=OWNER_AUDIENCE_VALUES)
         return (
             cls.objects.filter(kind=cls.Kind.INFO)
             .filter(terminal | stale_claim)
-            .filter(too_old | too_many)
+            .filter(too_old | too_many | not_owner)
             .update(status=cls.Status.EXPIRED)
         )
 
@@ -210,12 +230,37 @@ class BotPing(models.Model):
         cls.objects.filter(idempotency_key=idempotency_key).update(attempts=models.F("attempts") + 1)
 
     @classmethod
+    def record_logged(cls, idempotency_key: str, *, kind: str, text: str, audience: str) -> None:
+        """Terminally record an INTERNAL-audience notification — logged, never DM'd.
+
+        The deny-by-default sink for :attr:`~teatree.core.modelkit.notify_policy.NotifyAudience.INTERNAL`
+        notifications: :func:`teatree.core.notify.notify_user` short-circuits BEFORE
+        any backend resolution and calls this so a durable LOGGED audit row exists
+        without a DM. Idempotent on ``idempotency_key`` (``get_or_create``) so a
+        per-tick re-flag of the same signal never accumulates rows.
+        """
+        try:
+            with transaction.atomic():
+                cls.objects.get_or_create(
+                    idempotency_key=idempotency_key,
+                    defaults={
+                        "kind": kind,
+                        "status": cls.Status.LOGGED,
+                        "text": text,
+                        "audience": audience,
+                    },
+                )
+        except IntegrityError:
+            pass
+
+    @classmethod
     def claim_delivery(
         cls,
         idempotency_key: str,
         *,
         kind: str,
         text: str,
+        audience: str = "",
         using: str | None = None,
     ) -> DeliveryClaim:
         """Atomically claim the right to deliver one DM for ``idempotency_key``.
@@ -258,6 +303,7 @@ class BotPing(models.Model):
                 kind=kind,
                 status=cls.Status.SENDING,
                 text=text,
+                audience=audience,
                 attempts=prior_attempts,
             )
         return DeliveryClaim.CLAIMED

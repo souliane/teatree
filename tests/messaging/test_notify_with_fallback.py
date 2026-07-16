@@ -15,6 +15,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from teatree.core.modelkit.notify_policy import NotifyAudience
 from teatree.core.models import BotPing
 from teatree.messaging.notify_with_fallback import NotifyTransport, notify_with_fallback
 
@@ -46,6 +47,7 @@ class TestPrimaryDelivers:
                 "the body",
                 kind="info",
                 idempotency_key="k-primary-ok",
+                audience=NotifyAudience.OWNER_DELIVERY,
                 user_id="U_ME",
             )
 
@@ -67,6 +69,7 @@ class TestFallbackFires:
                 "the body",
                 kind="info",
                 idempotency_key="k-fallback",
+                audience=NotifyAudience.OWNER_DELIVERY,
                 user_id="U_ME",
             )
 
@@ -94,6 +97,7 @@ class TestFallbackFires:
                 "the body",
                 kind="info",
                 idempotency_key="k-observe",
+                audience=NotifyAudience.OWNER_DELIVERY,
                 user_id="U_ME",
             )
 
@@ -115,6 +119,7 @@ class TestFallbackVerificationGuards:
                 "the body",
                 kind="info",
                 idempotency_key="k-unverified",
+                audience=NotifyAudience.OWNER_DELIVERY,
                 user_id="U_ME",
             )
 
@@ -134,6 +139,7 @@ class TestFallbackVerificationGuards:
                 "the body",
                 kind="info",
                 idempotency_key="k-postfail",
+                audience=NotifyAudience.OWNER_DELIVERY,
                 user_id="U_ME",
             )
 
@@ -151,6 +157,7 @@ class TestFallbackVerificationGuards:
                 "the body",
                 kind="info",
                 idempotency_key="k-nobackend",
+                audience=NotifyAudience.OWNER_DELIVERY,
                 user_id="U_ME",
             )
 
@@ -185,6 +192,7 @@ class TestNoopDoesNotFallBack:
                 "the body",
                 kind="info",
                 idempotency_key="k-noop",
+                audience=NotifyAudience.OWNER_DELIVERY,
                 user_id="U_ME",
             )
 
@@ -215,6 +223,7 @@ class TestNoopDoesNotFallBack:
                 "the body",
                 kind="info",
                 idempotency_key="k-failed-transport",
+                audience=NotifyAudience.OWNER_DELIVERY,
                 user_id="U_ME",
             )
 

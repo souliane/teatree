@@ -29,7 +29,7 @@ from teatree.hooks.publish_destination import resolve_publish_destination
 
 _BANNED_TERM = "acmecorp"
 _BANNED_LEAK = f"rolling out {_BANNED_TERM} integration"
-_QUOTE_LEAK = "## User mandate\nplease ship now"
+_QUOTE_LEAK = "## User ask (verbatim, 2026-05-20)\nplease ship now"
 
 # (handler, leak body, deny-reason token) for each leak gate under test.
 _GATES = [

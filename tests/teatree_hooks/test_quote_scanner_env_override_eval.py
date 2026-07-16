@@ -58,7 +58,7 @@ class TestQuoteOkEnvReachesWrapper:
         self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
     ) -> None:
         monkeypatch.setenv("QUOTE_OK", "1")
-        data = _bash('gh pr create --title t --body "## User mandate\nfoo"')
+        data = _bash('gh pr create --title t --body "## User ask (verbatim, 2026-05-20)\nfoo"')
         blocked = handle_quote_scanner_pretool(data)
         assert blocked is False
         assert capsys.readouterr().out == ""
@@ -85,7 +85,9 @@ class TestQuoteScannerGenuineGuardsIntact:
         # the genuine-violation guard posts to the public teatree repo with the
         # probe confirming it public.
         monkeypatch.setattr(_repo_visibility, "probe_visibility", lambda _slug: "PUBLIC")
-        data = _bash('gh pr create -R souliane/teatree --title t --body "## User mandate\nplease ship now"')
+        data = _bash(
+            'gh pr create -R souliane/teatree --title t --body "## User ask (verbatim, 2026-05-20)\nplease ship now"'
+        )
         assert handle_quote_scanner_pretool(data) is True
         out = json.loads(capsys.readouterr().out)
         assert out["permissionDecision"] == "deny"
@@ -120,7 +122,7 @@ class TestUnreadableBodyFileIsNotAutoDenied:
         # The carve-out is ONLY for an unreadable file — a readable
         # body-file carrying a verbatim quote still trips the gate.
         body_path = tmp_path / "pr.md"
-        body_path.write_text("## User directive\nbody\n", encoding="utf-8")
+        body_path.write_text("## User ask (verbatim, 2026-05-20)\nbody\n", encoding="utf-8")
         cmd = f"gh pr create --title t --body-file {body_path}"
         payload = extract_publish_payload("Bash", {"command": cmd})
         assert payload is not None

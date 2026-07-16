@@ -10,7 +10,7 @@ LOC cap) — the thin ``Task`` call sites delegate here. The functions take a
 """
 
 from teatree.config import AgentRuntime, get_effective_settings
-from teatree.core.models.deferred_question import DeferredQuestion
+from teatree.core.models.deferred_question import DeferredQuestion, question_fingerprint
 from teatree.core.models.session import Session
 from teatree.core.models.task import Task
 
@@ -61,10 +61,13 @@ def record_deferred_question(task: Task) -> DeferredQuestion:
     last = task.attempts.order_by("-pk").first()  # ty: ignore[unresolved-attribute]
     reason = str(last.result.get("user_input_reason", _DEFAULT_REASON)) if last else "Agent needs input"
     agent_session_id = last.agent_session_id if last else ""
+    # Collapse identical needs-input reasons (e.g. the eight "I lack tools" review
+    # failures) to one queued question via a normalized-text fingerprint.
     return DeferredQuestion.record(
         reason,
         session_id=str(task.session_id or ""),  # ty: ignore[unresolved-attribute]
         run_id=agent_session_id or "",
+        dedupe_marker=f"needs-input:{question_fingerprint(reason)}",
         parked_task=task,
     )
 

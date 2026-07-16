@@ -7,11 +7,49 @@ single-use consume, scope of queryset, audit row).
 
 import pytest
 
-from teatree.core.models.deferred_question import DeferredQuestion, DeferredQuestionAudit, DeferredQuestionError
+from teatree.core.models.deferred_question import (
+    DeferredQuestion,
+    DeferredQuestionAudit,
+    DeferredQuestionError,
+    question_fingerprint,
+)
 from teatree.instance_id import instance_id
 
 # ast-grep-ignore: ac-django-no-pytest-django-db
 pytestmark = pytest.mark.django_db
+
+
+class TestDedupeMarker:
+    def test_repeat_marker_collapses_to_one_pending_row(self) -> None:
+        first = DeferredQuestion.record("stall on ticket 1", dedupe_marker="repair-stall:1:coding")
+        second = DeferredQuestion.record("stall on ticket 1", dedupe_marker="repair-stall:1:coding")
+        assert first.pk == second.pk
+        assert DeferredQuestion.objects.filter(dedupe_marker="repair-stall:1:coding").count() == 1
+
+    def test_eight_identical_reason_clones_collapse_via_fingerprint(self) -> None:
+        marker = f"needs-input:{question_fingerprint('I lack the tools to review this PR')}"
+        for _ in range(8):
+            DeferredQuestion.record("I lack the tools to review this PR", dedupe_marker=marker)
+        assert DeferredQuestion.pending().count() == 1
+
+    def test_fingerprint_ignores_whitespace_and_case(self) -> None:
+        assert question_fingerprint("I  lack   TOOLS ") == question_fingerprint("i lack tools")
+
+    def test_distinct_markers_do_not_collapse(self) -> None:
+        DeferredQuestion.record("q", dedupe_marker="a")
+        DeferredQuestion.record("q", dedupe_marker="b")
+        assert DeferredQuestion.pending().count() == 2
+
+    def test_empty_marker_never_dedupes(self) -> None:
+        DeferredQuestion.record("q")
+        DeferredQuestion.record("q")
+        assert DeferredQuestion.pending().count() == 2
+
+    def test_resolved_marker_row_does_not_block_a_new_record(self) -> None:
+        first = DeferredQuestion.record("stall", dedupe_marker="m")
+        DeferredQuestion.consume(first.pk, answer="handled")
+        second = DeferredQuestion.record("stall again", dedupe_marker="m")
+        assert second.pk != first.pk
 
 
 class TestDeferredQuestionRecord:

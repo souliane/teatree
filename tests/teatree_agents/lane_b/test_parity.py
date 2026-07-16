@@ -265,7 +265,9 @@ class TestPrivacyGateParity:
     confirmed-PUBLIC target on BOTH (the hard anti-leak constraint).
     """
 
-    _HIGH_BODY = "the user said: do it now"  # trips the ``the-user-said-colon`` HIGH pattern
+    _HIGH_BODY = (
+        "**User directive (verbatim, today):** do it now"  # trips the ``bold-user-directive-verbatim`` HIGH pattern
+    )
 
     @pytest.fixture(autouse=True)
     def _hermetic_visibility(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

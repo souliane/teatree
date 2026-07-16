@@ -14,6 +14,7 @@ hook and when imported as ``hooks.scripts.hook_router`` in tests.
 """
 
 import re
+import shlex
 from pathlib import Path
 from urllib.parse import unquote
 
@@ -99,6 +100,47 @@ def _looks_dynamic_value(match: "re.Match[str] | None") -> bool:
     return bool(_DYNAMIC_VALUE_RE.search(match.group("val")))
 
 
+def _shlex_flag_value(command: str, flag: str) -> tuple[bool, str | None]:
+    """Return ``(parsed, value)`` for *flag*'s value via a shlex split of *command*.
+
+    ``parsed`` is ``False`` when the command cannot be shlex-split (unbalanced
+    quotes, an unterminated construct) — the caller then keeps the
+    truncation-prone regex value, preserving today's behaviour for those
+    commands. ``value`` is ``None`` when the flag is absent; otherwise it is the
+    flag's value with all internal quoting resolved correctly — a body mixing an
+    apostrophe and a double-quoted phrase, single-quote escaping, backslash-
+    escaped inner quotes — for both the ``--flag value`` and ``--flag=value``
+    spellings. shlex reads the raw command exactly as bash would tokenize it, so
+    the value no longer truncates at the first inner quote char (#3300).
+    """
+    try:
+        tokens = shlex.split(command, comments=False, posix=True)
+    except ValueError:
+        return False, None
+    prefix = f"{flag}="
+    for i, token in enumerate(tokens):
+        if token == flag:
+            return True, tokens[i + 1] if i + 1 < len(tokens) else ""
+        if token.startswith(prefix):
+            return True, token[len(prefix) :]
+    return True, None
+
+
+def _resolved_literal_value(command: str, flag: str, regex_match: "re.Match[str]") -> str:
+    """Return the full literal value of *flag*, un-truncated via shlex (#3300).
+
+    The caller has already cleared the value as non-dynamic (a literal, not an
+    unexpanded ``$(…)``/``$VAR``), so the shlex-resolved argument is the real
+    body. Falls back to the regex capture when the command cannot be shlex-split
+    or shlex does not see the flag (the regex matched a looser span), so no
+    command that parses today changes verdict beyond gaining the full body.
+    """
+    parsed, value = _shlex_flag_value(command, flag)
+    if parsed and value is not None:
+        return value
+    return regex_match.group("val")
+
+
 def _read_message_file(command: str) -> str | None:
     """Read a file-based message arg (``-F``/``--description-file``/etc.).
 
@@ -137,7 +179,7 @@ def _extract_inline_or_file_desc(command: str) -> str | None:
     if inline is not None and inline.group("val"):
         if _looks_dynamic_value(inline):
             return None
-        return inline.group("val")
+        return _resolved_literal_value(command, "--description", inline)
     if _MR_DESC_FLAG_PRESENT_RE.search(command):
         from_file = _read_message_file(command)
         if from_file is not None:
@@ -173,7 +215,7 @@ def extract_cli_mr_fields(command: str) -> tuple[str, str] | None:
     description = _extract_inline_or_file_desc(command)
     if description is None:
         return None
-    title = title_match.group("val") if title_match else ""
+    title = _resolved_literal_value(command, "--title", title_match) if title_match else ""
     if operation == "update":
         desc_present = bool(_MR_DESC_FLAG_PRESENT_RE.search(command))
         if title_match is None and not desc_present:

@@ -66,6 +66,7 @@ from typing import IO
 from teatree.config import get_effective_settings
 from teatree.core import presence
 from teatree.core.backend_protocols import MessagingBackend
+from teatree.core.modelkit.notify_policy import NotifyAudience
 from teatree.paths import get_data_dir
 from teatree.types import RawAPIDict, SpeakConfig
 from teatree.utils.run import CommandFailedError, TimeoutExpired, run_allowed_to_fail, run_checked
@@ -619,6 +620,7 @@ def _surface_upload_failure(error: str) -> None:
             message,
             kind=NotifyKind.INFO,
             idempotency_key=f"speak-upload-failed-{error}",
+            audience=NotifyAudience.OWNER_ESCALATION,
         )
     except Exception as exc:  # noqa: BLE001 — surfacing must never break the speak seam
         logger.debug("speak upload-failure surface failed: %s", exc)

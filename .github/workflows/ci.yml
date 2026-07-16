@@ -11,7 +11,7 @@
 # LOAD-BEARING NAMES (do NOT rename without a coordinated change)
 #   `test (3.13)` — The REQUIRED check context. Produced by the `test`
 #       COMBINER job (matrix python-version="3.13"), which aggregates the
-#       4-way `test-shard` matrix: it fails if any shard failed, asserts the
+#       6-way `test-shard` matrix: it fails if any shard failed, asserts the
 #       shards partition the suite exactly once
 #       (scripts/ci/check_shard_completeness.py), then combines their coverage
 #       and enforces the 93% branch floor ONCE over the whole tree. The job KEY
@@ -59,7 +59,7 @@
 #                              comment-density-warning, docs-drift
 #   4. Signal & ratchet      — test-shape (advisory),
 #                              test-path-mirror (ratchet gate)
-#   5. Test suite            — test-shard (4-way coverage matrix),
+#   5. Test suite            — test-shard (6-way coverage matrix),
 #                              test (combiner = required `test (3.13)`),
 #                              test-shim
 #   6. Architecture / quality fitness gates — mutation-diff, mutation-full,
@@ -159,7 +159,13 @@ jobs:
         with:
           python-version: "3.13"
       - run: uv sync
-      - uses: j178/prek-action@e98a699c41eb69ab013a45817a0406469a748f8d  # v2
+      # Run prek from the locked project venv (`uv run`) so the prek RUNNER
+      # version is exactly the one the lockfile pins (prek==0.3.13) — identical
+      # to the documented local gate, which also runs `uv run prek`
+      # (dev/ci-parity.sh). This closes the runner-version gap that let a hook
+      # pass locally and fail here (or the reverse); a lockfile bump moves local
+      # and CI together in one step (#3236).
+      - name: prek (all hooks, all files) — locked runner
         env:
           SKIP: pytest,uv-audit,cyclonedx-sbom
           # Dual-env during the banned-term-registry transition: the legacy
@@ -168,6 +174,7 @@ jobs:
           # cutover (empty until then ⇒ no behaviour change).
           T3_BANNED_TERMS: ${{ secrets.TEATREE_BANNED_TERMS }}
           TEATREE_TERM_REGISTRY: ${{ secrets.TEATREE_TERM_REGISTRY }}
+        run: uv run prek run --all-files
       # Migration-graph linearity gate. Two PRs branching a migration off
       # the same parent each pass locally and pass their own CI, then merge
       # into a forked graph with multiple leaf nodes that ``migrate`` refuses
@@ -500,8 +507,8 @@ jobs:
 
   # ── 5. Test suite ──────────────────────────────────────────────────────────
 
-  # GATE (heavy lane): one of the 4 coverage SHARDS. Each shard runs a
-  # duration-balanced quarter of the suite (pytest-split `--splits 4 --group N`)
+  # GATE (heavy lane): one of the 6 coverage SHARDS. Each shard runs a
+  # duration-balanced sixth of the suite (pytest-split `--splits 6 --group N`)
   # in Docker WITH `--cov --cov-branch --doctest-modules` but NO floor and NO
   # report — partial coverage data must never be floor-judged. The `test`
   # combiner below aggregates all four and enforces the 93% floor once over the
@@ -525,7 +532,7 @@ jobs:
       fail-fast: false
       matrix:
         python-version: ["3.13"]
-        group: [1, 2, 3, 4]
+        group: [1, 2, 3, 4, 5, 6]
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
       - uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c  # v4
@@ -537,12 +544,12 @@ jobs:
           tags: teatree-test-${{ matrix.python-version }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
-      # Shard N/4: pytest-split slices collection by `dev/.test_durations`;
+      # Shard N/6: pytest-split slices collection by `dev/.test_durations`;
       # `-n auto` parallelises WITHIN the shard. `--cov --cov-branch --doctest-modules`
       # measure exactly what the old monolithic lane did, but `--cov-report=`
       # (empty) suppresses any report and `--cov-fail-under=0` NEUTRALISES the
       # `[tool.coverage.report] fail_under=93` config floor — a shard measures
-      # only a QUARTER of the tree, so floor-judging its partial data would fail
+      # only a SIXTH of the tree, so floor-judging its partial data would fail
       # every shard; the combiner owns the real floor over the combined data.
       # The `shard_stats_plugin` records the collected-vs-selected counts so the
       # combiner can prove the shards partition the suite exactly once
@@ -551,12 +558,12 @@ jobs:
       # `--splitting-algorithm least_duration` bin-packs the recorded durations
       # tighter than the default chunk split (#3160). `leak_sentinel_plugin` runs
       # WARN-ONLY here so a process-global env/cwd polluter is NAMED suite-wide
-      # (across the four shards) without ever failing the required context —
+      # (across the six shards) without ever failing the required context —
       # the #3160 rollout mode. On the daily `schedule` only, `--store-durations
       # --clean-durations` records THIS shard's fresh, tests-that-ran durations
       # (each group's clean slice) for the `refresh-durations` merge job below;
       # PR/push runs never pay the store write.
-      - name: Test shard ${{ matrix.group }}/4 (coverage, no floor — partial data)
+      - name: Test shard ${{ matrix.group }}/6 (coverage, no floor — partial data)
         run: >
           docker run --rm
           -v "$PWD":/app
@@ -567,7 +574,7 @@ jobs:
           uv run --group shard -p ${{ matrix.python-version }} pytest --no-header -q -n auto
           -o cache_dir=/tmp/.pytest_cache
           --doctest-modules --cov --cov-branch --cov-report= --cov-fail-under=0
-          --splits 4 --group ${{ matrix.group }} --durations-path dev/.test_durations
+          --splits 6 --group ${{ matrix.group }} --durations-path dev/.test_durations
           --splitting-algorithm least_duration
           -p scripts.ci.shard_stats_plugin
           --shard-stats-out=/app/shard-stats.${{ matrix.group }}.json
@@ -581,7 +588,7 @@ jobs:
             coverage.shard${{ matrix.group }}
             shard-stats.${{ matrix.group }}.json
       # Scheduled run only: the fresh durations this shard just recorded, so the
-      # `refresh-durations` job can merge the four groups into one balanced file.
+      # `refresh-durations` job can merge the six groups into one balanced file.
       - name: Upload this shard's recorded durations (scheduled refresh source)
         if: github.event_name == 'schedule'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7
@@ -590,7 +597,7 @@ jobs:
           path: dev/.test_durations
 
   # MAINTENANCE (scheduled only): keep `dev/.test_durations` from rotting (#3160).
-  # The four shards on the daily cron each recorded their group's fresh, clean
+  # The six shards on the daily cron each recorded their group's fresh, clean
   # durations (`--store-durations --clean-durations` above, including the
   # previously-unrecorded `tests/quality` + doctest items). This job unions them
   # back into one complete file and, ONLY when the drift gate fires (test set
@@ -637,6 +644,8 @@ jobs:
           /tmp/durations-shards/durations-shard-2/.test_durations
           /tmp/durations-shards/durations-shard-3/.test_durations
           /tmp/durations-shards/durations-shard-4/.test_durations
+          /tmp/durations-shards/durations-shard-5/.test_durations
+          /tmp/durations-shards/durations-shard-6/.test_durations
       - name: Open or update the durations-refresh PR
         if: steps.merge.outputs.refresh == 'true' && !cancelled()
         env:
@@ -678,10 +687,15 @@ jobs:
   # GATE (heavy lane): the COMBINER. Its job key + matrix produce the EXACT
   # required `test (3.13)` check context (unchanged from the old monolithic job).
   # It (1) fails if ANY shard failed, (2) asserts the shards partition the suite
-  # exactly once (no dropped/duplicated tests), then (3) combines the four
+  # exactly once (no dropped/duplicated tests), then (3) combines the six
   # shards' coverage and enforces the 93% branch floor + per-module floors ONCE
   # over the whole tree — identical floor semantics to the old single-process
   # lane, just computed over combined shards.
+  # The combine/partition/floor steps run on the HOST runner (uv), not inside the
+  # test docker image: coverage data is stored relative (`[tool.coverage.run]
+  # relative_files=true`) so the shard-produced `.coverage` files remap cleanly to
+  # the host checkout, and skipping the ~1-min image build/cache-load here shaves
+  # the combiner's critical path (#3160 item 5).
   # LOAD-BEARING: the job key `test` + matrix python-version "3.13" produce
   # `test (3.13)` — do NOT rename without updating branch protection.
   test:
@@ -698,7 +712,7 @@ jobs:
         python-version: ["3.13"]
     steps:
       # A FAILED shard (real test failure) must red the required context. The
-      # shards only ran a QUARTER of the suite each, so a green combiner without
+      # shards only ran a SIXTH of the suite each, so a green combiner without
       # this guard could pass on combined coverage while a test failed in a shard.
       - name: Require every test shard to have passed
         run: |
@@ -708,15 +722,13 @@ jobs:
             exit 1
           fi
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
-      - uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c  # v4
-      - uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a  # v7
+      - uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78  # v7
         with:
-          context: .
-          file: dev/Dockerfile.test
-          load: true
-          tags: teatree-test-${{ matrix.python-version }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          enable-cache: true
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405  # v6
+        with:
+          python-version: "3.13"
+      - run: uv sync
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8.0.1
         with:
           pattern: shard-artifacts-*
@@ -726,32 +738,27 @@ jobs:
       # duplicated group (sum>total) fails LOUD here, not by riding a green floor.
       - name: Assert the shards partition the suite exactly once
         run: >
-          docker run --rm
-          -v "$PWD":/app
-          -e UV_PROJECT_ENVIRONMENT=/tmp/.venv
-          teatree-test-${{ matrix.python-version }}
           uv run -p ${{ matrix.python-version }} python scripts/ci/check_shard_completeness.py
           shard-stats.1.json shard-stats.2.json shard-stats.3.json shard-stats.4.json
-      # Combine the four shards' data and enforce the whole-tree 93% branch floor
+          shard-stats.5.json shard-stats.6.json
+      # Combine the six shards' data and enforce the whole-tree 93% branch floor
       # ONCE — same data, same floor as the old single-process lane. `coverage
       # report --fail-under=93` is the explicit invocation-site floor
       # (tests/test_coverage_floor_guard.py locks it here + in dev/test-cov.sh).
+      # relative_files=true makes the shard-produced (in-docker) data portable to
+      # this host checkout, so the combine runs on the runner without the image.
       - name: Combine shard coverage and enforce the 93% floor
+        env:
+          COVERAGE_FILE: .coverage
         run: >
-          docker run --rm
-          -v "$PWD":/app
-          -e UV_PROJECT_ENVIRONMENT=/tmp/.venv
-          -e COVERAGE_FILE=/app/.coverage
-          teatree-test-${{ matrix.python-version }}
-          bash -c "uv run -p ${{ matrix.python-version }} coverage combine coverage.shard1 coverage.shard2 coverage.shard3 coverage.shard4 && uv run -p ${{ matrix.python-version }} coverage report --fail-under=93 && uv run -p ${{ matrix.python-version }} coverage xml -o coverage.xml"
+          uv run -p ${{ matrix.python-version }} coverage combine
+          coverage.shard1 coverage.shard2 coverage.shard3 coverage.shard4 coverage.shard5 coverage.shard6
+          && uv run -p ${{ matrix.python-version }} coverage report --fail-under=93
+          && uv run -p ${{ matrix.python-version }} coverage xml -o coverage.xml
       - name: Enforce per-module coverage floors
-        run: >
-          docker run --rm
-          -v "$PWD":/app
-          -e UV_PROJECT_ENVIRONMENT=/tmp/.venv
-          -e COVERAGE_FILE=/app/.coverage
-          teatree-test-${{ matrix.python-version }}
-          uv run -p ${{ matrix.python-version }} t3 ci coverage
+        env:
+          COVERAGE_FILE: .coverage
+        run: uv run -p ${{ matrix.python-version }} t3 ci coverage
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7
         if: always()
         with:

@@ -2616,6 +2616,7 @@ Usage: t3 doctor check [OPTIONS]
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --repair          Re-point a relocated/hijacked t3 editable install at the   │
 │                   expected checkout (#3231).                                 │
+│ --json            Emit findings as JSON for the watchdog container.          │
 │ --help            Show this message and exit.                                │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```

@@ -12,6 +12,7 @@ from unittest.mock import MagicMock, patch
 
 from django.test import TestCase
 
+from teatree.core.modelkit.notify_policy import NotifyAudience
 from teatree.core.notify import NotifyKind, notify_user
 from teatree.types import SpeakConfig
 
@@ -33,6 +34,7 @@ class TestNotifyUserSpeaks(TestCase):
                 "tests are green",
                 kind=NotifyKind.INFO,
                 idempotency_key="speak-off",
+                audience=NotifyAudience.OWNER_DELIVERY,
                 backend=backend,
                 user_id="U_ME",
             )
@@ -69,6 +71,7 @@ class TestNotifyUserSpeaks(TestCase):
                 "tests are green",
                 kind=NotifyKind.INFO,
                 idempotency_key="notify-audio-ts-regression",
+                audience=NotifyAudience.OWNER_DELIVERY,
                 backend=backend,
                 user_id="U_ME",
             )
@@ -88,6 +91,7 @@ class TestNotifyUserSpeaks(TestCase):
                 "tests are green",
                 kind=NotifyKind.INFO,
                 idempotency_key="speak-audio",
+                audience=NotifyAudience.OWNER_DELIVERY,
                 backend=backend,
                 user_id="U_ME",
             )
@@ -105,6 +109,7 @@ class TestNotifyUserSpeaks(TestCase):
                 "tests are green",
                 kind=NotifyKind.INFO,
                 idempotency_key="speak-on-failure",
+                audience=NotifyAudience.OWNER_DELIVERY,
                 backend=backend,
                 user_id="U_ME",
             )
@@ -117,6 +122,7 @@ class TestNotifyUserSpeaks(TestCase):
                 "tests are green",
                 kind=NotifyKind.INFO,
                 idempotency_key="speak-raises",
+                audience=NotifyAudience.OWNER_DELIVERY,
                 backend=backend,
                 user_id="U_ME",
             )
