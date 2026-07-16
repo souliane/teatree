@@ -23,6 +23,8 @@ from teatree.core.gates.review_request_guard import (
     GuardDecision,
     GuardOptions,
     GuardTarget,
+    _default_options,
+    _live_matches,
     peek_should_post_review_request,
     reconcile_out_of_band,
     resolve_guard_target,
@@ -712,6 +714,68 @@ class TestStaleOrphanReclaim(TestCase):
             )
         assert decision.action == "suppress"
         assert decision.reason == "read_failed_failsafe"
+
+
+class TestPostedRowProbesRecordedChannel(TestCase):
+    """The posted-row verify reads the thread in the channel the post was RECORDED under (#3292 part 3)."""
+
+    def test_thread_read_uses_recorded_channel_not_current_target(self) -> None:
+        recorded_channel = "C_RECORDED"
+        ReviewRequestPost.objects.create(
+            mr_url=_MR_URL,
+            slack_channel_id=recorded_channel,
+            slack_thread_ts="1700000000.000100",
+            done_at=None,
+            created_at=timezone.now() - dt.timedelta(days=40),
+        )
+        fake = FakeClient(
+            pages=[{"ok": True, "messages": [], "has_more": False}],
+            replies={"ok": True, "messages": [{"ts": "1700000000.000100", "text": _MR_URL}]},
+        )
+        with pytest.MonkeyPatch.context() as mp:
+            mp.setattr(slack_client.httpx, "Client", lambda **kw: _bind(fake, kw))
+            # The review channel changed since the post — the current target is a
+            # different channel than the one recorded on the row.
+            decision = should_post_review_request(
+                mr_url=_MR_URL,
+                target=GuardTarget(channel_id="C_NEW_TARGET", channel_name=_CHANNEL_NAME, token="xoxb-bot"),
+            )
+        assert decision.action == "suppress"
+        replies_calls = [c for c in fake.get_calls if "conversations.replies" in str(c["url"])]
+        assert replies_calls, "the posted-row verify must live-read the thread"
+        params = replies_calls[0]["params"]
+        assert isinstance(params, dict)
+        assert params["channel"] == recorded_channel
+
+
+class TestConfigurableMaxPages(TestCase):
+    """The channel-scan page cap is configurable so a ~30-day window is reachable (#3292 part 4)."""
+
+    def test_default_options_reads_the_configured_page_cap(self) -> None:
+        with patch(
+            "teatree.config.get_effective_settings",
+            return_value=type(
+                "S", (), {"review_request_dedup_window_days": 30, "review_request_dedup_max_pages": 42}
+            )(),
+        ):
+            assert _default_options().max_pages == 42
+
+    def test_live_matches_passes_the_options_page_cap_to_the_scan(self) -> None:
+        captured: dict[str, object] = {}
+
+        class _Provider:
+            @staticmethod
+            def read_recent_review_matches(spec):
+                captured["max_pages"] = spec.max_pages
+                return type("R", (), {"ok": True, "matches": []})()
+
+        with patch("teatree.core.backend_registry.get_backend_provider", return_value=_Provider()):
+            _live_matches(
+                _MR_URL,
+                GuardTarget(channel_id=_CHANNEL_ID, channel_name=_CHANNEL_NAME, token="xoxb-bot"),
+                GuardOptions(max_pages=17),
+            )
+        assert captured["max_pages"] == 17
 
 
 class TestPeekPostedRowVerification(TestCase):

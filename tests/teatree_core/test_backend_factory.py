@@ -16,11 +16,13 @@ from teatree.backends.gitlab.ci import GitLabCIService
 from teatree.backends.notion import NotionClient
 from teatree.backends.sentry import SentryClient
 from teatree.backends.slack.bot import SlackBotBackend
+from teatree.backends.types import Service
 from teatree.core import backend_factory
 from teatree.core.backend_factory import (
     ci_service_from_overlay,
     code_host_for_repo_from_overlay,
     code_host_from_overlay,
+    configured_messaging_from_overlay,
     messaging_from_overlay,
     notion_client_from_overlay,
     reset_backend_caches,
@@ -28,6 +30,7 @@ from teatree.core.backend_factory import (
 )
 from teatree.core.backend_protocols import BackendResolutionError
 from teatree.core.overlay import OverlayBase, OverlayConfig
+from teatree.mcp.service_resolver import resolve_declaring_overlay_client
 
 
 @pytest.fixture(autouse=True)
@@ -185,6 +188,59 @@ def test_messaging_from_overlay_delegates_to_loader() -> None:
 
     assert result == "sentinel"
     get_messaging_mock.assert_called_once()
+
+
+class _SlackOverlay(OverlayBase):
+    config = OverlayConfig(messaging_backend="slack", required_third_party_services=frozenset({Service.SLACK}))
+
+    def get_repos(self):
+        return []
+
+    def get_provision_steps(self, worktree):
+        return []
+
+
+class _NoopSlackOverlay(OverlayBase):
+    """Declares Service.SLACK but defaults ``messaging_backend`` to noop (#3299)."""
+
+    config = OverlayConfig(required_third_party_services=frozenset({Service.SLACK}))
+
+    def get_repos(self):
+        return []
+
+    def get_provision_steps(self, worktree):
+        return []
+
+
+class TestConfiguredMessagingFromOverlay:
+    """`configured_messaging_from_overlay` honours the MCP resolver contract (#3299).
+
+    ``messaging_from_overlay`` returns a truthy ``NoopMessagingBackend`` for a
+    noop overlay, which the declaring-overlay resolver wrongly accepts; the
+    configured seam returns ``None`` there so the resolver keeps searching.
+    """
+
+    def test_returns_none_when_overlay_messaging_is_noop(self) -> None:
+        with _patch_overlay(_NoopSlackOverlay):
+            assert configured_messaging_from_overlay("test") is None
+
+    def test_returns_backend_when_overlay_declares_slack(self) -> None:
+        with (
+            _patch_overlay(_SlackOverlay),
+            patch("teatree.backends.loader.get_messaging", return_value="sentinel"),
+        ):
+            assert configured_messaging_from_overlay("test") == "sentinel"
+
+    def test_resolver_reaches_second_overlay_past_a_noop_slack_declarer(self) -> None:
+        overlays = {"noop-first": _NoopSlackOverlay(), "real-second": _SlackOverlay()}
+        with (
+            patch.object(overlay_loader_mod, "_discover_overlays", return_value=overlays),
+            patch("teatree.backends.loader.get_messaging", return_value="real-slack"),
+        ):
+            client = resolve_declaring_overlay_client(
+                Service.SLACK, configured_messaging_from_overlay, description="Slack messaging backend"
+            )
+        assert client == "real-slack"
 
 
 def test_reset_backend_caches_clears_all_caches() -> None:

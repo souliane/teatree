@@ -2,9 +2,10 @@
 
 Registered only when a registered overlay declares ``Service.SLACK``. The
 messaging client is resolved through
-:func:`teatree.core.backend_factory.messaging_from_overlay` (a core seam), never
-a direct ``teatree.backends.slack`` import, so the transport-boundary fitness
-test holds. The reads stay read-only; the one write (``slack_react``) routes
+:func:`teatree.core.backend_factory.configured_messaging_from_overlay` (a core
+seam that returns ``None`` for a noop-messaging declarer so the resolver reaches
+the credentialed overlay — #3299), never a direct ``teatree.backends.slack``
+import, so the transport-boundary fitness test holds. The reads stay read-only; the one write (``slack_react``) routes
 through :class:`~teatree.core.on_behalf_egress.OnBehalfSlackEgress` — the single
 colleague-surface Slack egress owner — so the #117 send-proxy, the on-behalf
 approval gate, and the after-post notify receipt all fire (a self-DM reaction is
@@ -19,7 +20,7 @@ from mcp.server.fastmcp import FastMCP
 from mcp.types import ToolAnnotations
 
 from teatree.backends.types import Service
-from teatree.core.backend_factory import messaging_from_overlay
+from teatree.core.backend_factory import configured_messaging_from_overlay
 from teatree.core.backend_protocols import MessagingBackend
 from teatree.core.on_behalf_egress import OnBehalfPostBlockedError, OnBehalfSlackEgress
 from teatree.mcp.service_resolver import resolve_declaring_overlay_client
@@ -39,8 +40,11 @@ INSTRUCTIONS = (
 
 
 def _client() -> MessagingBackend:
+    # ``configured_messaging_from_overlay`` (not ``messaging_from_overlay``) so a
+    # noop-messaging overlay that declares ``Service.SLACK`` without credentials
+    # is skipped and the resolver reaches the overlay that has them (#3299).
     return resolve_declaring_overlay_client(
-        Service.SLACK, messaging_from_overlay, description="Slack messaging backend"
+        Service.SLACK, configured_messaging_from_overlay, description="Slack messaging backend"
     )
 
 
