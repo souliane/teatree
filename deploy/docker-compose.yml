@@ -77,6 +77,24 @@ services:
     mem_limit: 512m
     cpus: "0.5"
 
+  # The Slack Socket-Mode receiver. Runs `t3 slack listen` for every
+  # Slack-enabled overlay, writing inbound DMs/mentions/reactions to the JSONL
+  # queue on the shared data mount that the worker's drain-queue slot drains.
+  # Separate from the worker so a WebSocket reconnect never disturbs the loop
+  # cadence, and vice-versa. Harmless on a box with no Slack overlay: the
+  # process exits and `restart: unless-stopped` retries.
+  teatree-slack-listener:
+    <<: *teatree-common
+    environment:
+      TEATREE_ROLE: slack-listener
+      T3_DEBUG: "0"
+    depends_on:
+      teatree-init:
+        condition: service_completed_successfully
+    restart: unless-stopped
+    mem_limit: 512m
+    cpus: "0.5"
+
 volumes:
   teatree_src:
   teatree_uv:
