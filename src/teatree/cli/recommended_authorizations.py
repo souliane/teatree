@@ -109,6 +109,36 @@ RECOMMENDED_AUTHORIZATIONS: tuple[RecommendedAuthorization, ...] = (
         ),
         keyphrases=("ticket clear", "ticket merge"),
     ),
+    RecommendedAuthorization(
+        key="docker-exec-provisioning",
+        sentence=(
+            "Allow `docker exec` into teatree deployment containers and installing the "
+            "teatree editable package with extras via uv (e.g. "
+            "`uv tool install --editable '<clone>[slack]'`) as part of Slack/deploy "
+            "setup and runtime provisioning in Docker."
+        ),
+        keyphrases=("docker exec", "uv tool install"),
+    ),
+    RecommendedAuthorization(
+        key="slack-owner-id-lookup",
+        sentence=(
+            "Allow reading an overlay's own Slack workspace data via its bot token "
+            "(including `users.list` / `users.lookupByEmail`) STRICTLY to resolve or "
+            "verify the owner's own Slack user id for DM-only provisioning — never "
+            "bulk member-PII export."
+        ),
+        keyphrases=("users.list", "dm-only provisioning"),
+    ),
+    RecommendedAuthorization(
+        key="provision-config-writes",
+        sentence=(
+            "Allow teatree provisioning to write overlay config state in the DB "
+            "overlays registry (messaging backend, token references, user id, DM "
+            "channel) via `t3 setup` or `t3 <overlay> config_setting set` during "
+            "Slack or deploy setup."
+        ),
+        keyphrases=("config_setting set", "overlays registry"),
+    ),
 )
 
 

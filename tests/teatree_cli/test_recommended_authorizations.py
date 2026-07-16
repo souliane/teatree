@@ -173,6 +173,34 @@ class TestFindMissingAuthorizations:
         missing_keys = {r.key for r in find_missing_authorizations(path)}
         assert "gh-pr-merge-green-only" not in missing_keys
 
+    def test_new_provisioning_rules_absent_on_empty_settings(self, tmp_path):
+        path = tmp_path / "settings.json"
+        path.write_text(json.dumps({"autoMode": {"allow": []}}), encoding="utf-8")
+        missing_keys = {r.key for r in find_missing_authorizations(path)}
+        assert {
+            "docker-exec-provisioning",
+            "slack-owner-id-lookup",
+            "provision-config-writes",
+        } <= missing_keys
+
+    def test_new_provisioning_rules_covered_when_present(self, tmp_path):
+        covering = [
+            r.sentence
+            for r in RECOMMENDED_AUTHORIZATIONS
+            if r.key
+            in {
+                "docker-exec-provisioning",
+                "slack-owner-id-lookup",
+                "provision-config-writes",
+            }
+        ]
+        path = tmp_path / "settings.json"
+        path.write_text(json.dumps({"autoMode": {"allow": covering}}), encoding="utf-8")
+        missing_keys = {r.key for r in find_missing_authorizations(path)}
+        assert "docker-exec-provisioning" not in missing_keys
+        assert "slack-owner-id-lookup" not in missing_keys
+        assert "provision-config-writes" not in missing_keys
+
     def test_does_not_modify_the_settings_file(self, tmp_path):
         path = tmp_path / "settings.json"
         original = json.dumps({"autoMode": {"allow": ["something unrelated"]}})
@@ -191,6 +219,15 @@ class TestRecommendedSetIntegrity:
             assert rec.sentence.strip()
             assert rec.keyphrases
             assert all(p == p.lower() for p in rec.keyphrases)
+
+    def test_every_keyphrase_is_a_substring_of_its_own_lowered_sentence(self):
+        # The load-bearing invariant behind is_covered_by: pasting a rec's own
+        # sentence verbatim must cover that rec, which only holds when every
+        # keyphrase is a literal lowercase substring of the lowered sentence.
+        for rec in RECOMMENDED_AUTHORIZATIONS:
+            lowered = rec.sentence.lower()
+            for phrase in rec.keyphrases:
+                assert phrase in lowered, (rec.key, phrase)
 
     def test_no_user_specific_tokens_leak_into_generic_set(self):
         # The recommended set must stay teatree-generic — structural check
