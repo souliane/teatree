@@ -25,7 +25,7 @@ from django.utils import timezone
 
 from teatree.core.loop_lease_manager import T3_MASTER_SLOT, is_per_loop_owner_slot
 from teatree.core.models.loop_lease import LoopLease
-from teatree.loop.loop_state_db import held_loop_names, loop_state_admits
+from teatree.loop.loop_state_db import control_planes_in_db, loop_state_admits
 from teatree.loop.preset_resolution import preset_state_for, resolve_active_preset
 from teatree.loop.statusline_loops import _cadence_for_loop as cadence_for_loop
 from teatree.utils.singleton import pid_alive
@@ -190,7 +190,7 @@ def _mini_entries() -> tuple[LoopStatusEntry, ...]:
     (``loop_enabled`` = ``Loop.enabled`` AND not held), so a PAUSED loop — which
     keeps ``Loop.enabled=True`` and a live cadence anchor — is surfaced as held
     rather than masquerading as a running, counting-down loop. The hold set is
-    bulk-resolved ONCE via :func:`held_loop_names` (the tick's #2584 bulk read),
+    bulk-resolved ONCE via :func:`teatree.loop.loop_state_db.control_planes_in_db`,
     not per loop — the live report must not re-introduce the N+1 the tick removed.
 
     ``admitted`` folds in the #3159 preset mask on top of held+enabled — the SAME
@@ -201,12 +201,14 @@ def _mini_entries() -> tuple[LoopStatusEntry, ...]:
     from teatree.core.models import Loop  # noqa: PLC0415 — deferred: ORM import needs the app registry
 
     active = resolve_active_preset()
-    held = held_loop_names()
-    entries = [_mini_entry(loop, active, held) for loop in Loop.objects.all()]
+    held, forced = control_planes_in_db()
+    entries = [_mini_entry(loop, active, held, forced) for loop in Loop.objects.all()]
     return tuple(sorted(entries, key=operator.attrgetter("name")))
 
 
-def _mini_entry(loop: "Loop", active: "ActivePreset | None", held_names: set[str]) -> LoopStatusEntry:
+def _mini_entry(
+    loop: "Loop", active: "ActivePreset | None", held_names: set[str], forced: dict[str, bool]
+) -> LoopStatusEntry:
     held = loop.name in held_names
     return LoopStatusEntry(
         name=loop.name,
@@ -216,7 +218,10 @@ def _mini_entry(loop: "Loop", active: "ActivePreset | None", held_names: set[str
         last_fired_at=loop.last_run_at,
         next_fire_at=loop.next_run_at(),
         admitted=loop_state_admits(
-            configured_enabled=loop.enabled, held=held, preset_state=preset_state_for(active, loop.name)
+            configured_enabled=loop.enabled,
+            held=held,
+            preset_state=preset_state_for(active, loop.name),
+            forced=forced.get(loop.name),
         ),
         held=held,
     )

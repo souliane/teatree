@@ -20,16 +20,16 @@ class TestLoopStateAdmits(django.test.SimpleTestCase):
     """The pure combined verdict: configured-enabled AND not runtime-held."""
 
     def test_configured_and_unheld_admits(self) -> None:
-        assert loop_state_admits(configured_enabled=True, held=False, preset_state=None) is True
+        assert loop_state_admits(configured_enabled=True, held=False, preset_state=None, forced=None) is True
 
     def test_held_is_not_admitted_even_when_configured(self) -> None:
-        assert loop_state_admits(configured_enabled=True, held=True, preset_state=None) is False
+        assert loop_state_admits(configured_enabled=True, held=True, preset_state=None, forced=None) is False
 
     def test_not_configured_is_not_admitted_even_when_unheld(self) -> None:
-        assert loop_state_admits(configured_enabled=False, held=False, preset_state=None) is False
+        assert loop_state_admits(configured_enabled=False, held=False, preset_state=None, forced=None) is False
 
     def test_not_configured_and_held_is_not_admitted(self) -> None:
-        assert loop_state_admits(configured_enabled=False, held=True, preset_state=None) is False
+        assert loop_state_admits(configured_enabled=False, held=True, preset_state=None, forced=None) is False
 
     def test_none_preset_is_byte_for_byte_the_two_plane_verdict(self) -> None:
         # The #3159 empty-table no-op: an explicit `preset_state=None` (what the
@@ -38,18 +38,18 @@ class TestLoopStateAdmits(django.test.SimpleTestCase):
         # preset_state is required at every call site (the LP-3 structural guard).
         for configured in (True, False):
             for held in (True, False):
-                assert loop_state_admits(configured_enabled=configured, held=held, preset_state=None) == (
+                assert loop_state_admits(configured_enabled=configured, held=held, preset_state=None, forced=None) == (
                     configured and not held
                 )
 
     def test_preset_force_on_overrides_disabled_base(self) -> None:
-        assert loop_state_admits(configured_enabled=False, held=False, preset_state=True) is True
+        assert loop_state_admits(configured_enabled=False, held=False, preset_state=True, forced=None) is True
 
     def test_preset_force_off_overrides_enabled_base(self) -> None:
-        assert loop_state_admits(configured_enabled=True, held=False, preset_state=False) is False
+        assert loop_state_admits(configured_enabled=True, held=False, preset_state=False, forced=None) is False
 
     def test_hold_still_wins_over_a_force_on_preset(self) -> None:
-        assert loop_state_admits(configured_enabled=True, held=True, preset_state=True) is False
+        assert loop_state_admits(configured_enabled=True, held=True, preset_state=True, forced=None) is False
 
 
 @django.test.override_settings(USE_TZ=True)

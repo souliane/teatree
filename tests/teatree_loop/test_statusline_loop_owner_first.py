@@ -51,7 +51,7 @@ class TestLoopRunningTokenDropped:
             patch("teatree.loop.statusline_loops._waiting_count", return_value=0),
         ):
             lines = live_loops_anchor()
-        assert lines == ["dispatch 2m"], lines
+        assert lines == ["due: dispatch 2m"], lines
 
     def test_waiting_clause_still_appended(self) -> None:
         acquired_at = datetime.now(UTC) - timedelta(seconds=120)
