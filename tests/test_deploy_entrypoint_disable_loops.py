@@ -7,12 +7,12 @@ and admission resolves ``hold > forced > preset > base`` — so no preset, sched
 or ``t3 loop override`` can revive a loop a prior deploy left in a durable
 ``LoopState`` hold (older images ran ``t3 loop disable inbox``). The step therefore:
 
-* force-enables the ENABLED set (default ``inbox``) with
-  ``t3 loop enable <name> --emergency`` — the ONE handle that clears a stale hold —
-  so the DM-only box's inbox recovers even from a prior durable disable, and
-* forces the DISABLED set (default ``review,directive_loop``) off with
-  ``t3 loop override <name> off`` — the sanctioned NON-emergency successor to the
-  now-refused ``t3 loop disable``.
+It force-enables the ENABLED set (default ``inbox``) with
+``t3 loop enable <name> --emergency`` — the ONE handle that clears a stale hold, so
+the DM-only box's inbox recovers even from a prior durable disable. It forces the
+DISABLED set (default ``review,directive_loop``) off with
+``t3 loop override <name> off`` — the sanctioned NON-emergency successor to the
+now-refused ``t3 loop disable``.
 
 It never calls the deprecated ``t3 loop disable``. Because a typo in either list
 would silently mis-configure the box, the step validates the whole requested set
