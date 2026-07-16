@@ -540,9 +540,7 @@ def check(
         "--repair",
         help="Re-point a relocated/hijacked t3 editable install at the expected checkout (#3231).",
     ),
-    json_output: bool = typer.Option(
-        False, "--json", help="Emit findings as JSON for the watchdog container."
-    ),
+    json_output: bool = typer.Option(False, "--json", help="Emit findings as JSON for the watchdog container."),
 ) -> bool:
     """Verify imports, required tools, and editable-install sanity."""
     # ``is True`` (not truthiness): direct Python callers — the ``_doctor_default``
