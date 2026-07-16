@@ -166,3 +166,36 @@ class TestGateSkipsForVisibilityPolarity:
         monkeypatch.setattr(_repo_visibility, "probe_visibility", lambda _slug: None)
         unknown_dest = resolve_publish_destination("gh issue create --repo owner/mystery --body x")
         assert public_visibility.is_affirmatively_public(unknown_dest) is False
+
+
+class TestApiWriteUnresolvableDoesNotSkip:
+    """A raw ``gh``/``glab api`` WRITE with an unresolvable endpoint must SCAN, not skip.
+
+    A raw REST POST is an immediate public egress with no pre-push backstop, so
+    the module contract makes an unresolvable / ``$``-carrying api WRITE
+    non-skippable. The old ``return True`` treated an unresolvable endpoint as
+    non-public (skip-eligible), routing a ``gh api "repos/$OWNER/repo/issues"``
+    POST around the leak gate. A CONFIRMED-private api WRITE still skips.
+    """
+
+    @staticmethod
+    def _skips(command: str, monkeypatch: pytest.MonkeyPatch, verdict: str | None) -> bool:
+        monkeypatch.setattr(_repo_visibility, "probe_visibility", lambda _slug: verdict)
+        return public_visibility.gate_skips_for_visibility(command, cwd=None)
+
+    def test_dollar_slug_api_write_does_not_skip(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        cmd = 'gh api "repos/$OWNER/repo/issues" -f body=x'
+        assert self._skips(cmd, monkeypatch, None) is False
+
+    def test_flagless_unresolvable_api_write_does_not_skip(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        # A non-repo / unresolvable endpoint on a WRITE method scans, never skips.
+        cmd = "gh api graphql -f query=x --method POST"
+        assert self._skips(cmd, monkeypatch, None) is False
+
+    def test_confirmed_private_api_write_still_skips(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        cmd = "glab api projects/owner%2Fprivate-svc/merge_requests/5 -X PUT -f description=x"
+        assert self._skips(cmd, monkeypatch, "PRIVATE") is True
+
+    def test_confirmed_public_api_write_does_not_skip(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        cmd = "gh api repos/souliane/teatree/issues -f body=x"
+        assert self._skips(cmd, monkeypatch, "PUBLIC") is False

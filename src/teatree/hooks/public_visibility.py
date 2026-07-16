@@ -78,24 +78,34 @@ def is_affirmatively_public(dest: Destination | None, *, config_path: Path | Non
 
 
 def _api_write_targets_non_public(words: list[str], *, config_path: Path | None = None) -> bool:
-    """Return True iff a raw ``api`` WRITE segment targets a NON-public repo.
+    """Return True iff a raw ``api`` WRITE segment RESOLVES to a NON-public repo.
 
     A ``gh``/``glab api`` write carries its body only to the endpoint its URL
-    path names. When that path resolves to a repo slug that is NOT affirmatively
-    public (private/internal/unknown), the write cannot leak to a public surface
-    -- e.g. a private customer MR-description PUT -- so it is skip-eligible. The
-    slug must come from the URL path itself (``via="api"``): an ``-R`` flag does
-    not constrain a raw endpoint. An unresolvable path (a shell variable, a
-    flagless call, an ambiguous unknown flag, a non-repo endpoint) resolves to no
-    ``api`` destination and is treated NON-public -> skip-eligible (bias to not
-    firing). A path that resolves to an affirmatively-public repo is NOT
-    skip-eligible.
+    path names. When that path resolves to a repo slug that is affirmatively NOT
+    public (a probe-confirmed private/internal repo, or an allowlisted-private /
+    internal-namespace slug), the write cannot leak to a public surface -- e.g. a
+    private customer MR-description PUT -- so it is skip-eligible. The slug must
+    come from the URL path itself (``via="api"``): an ``-R`` flag does not
+    constrain a raw endpoint.
+
+    An UNRESOLVABLE endpoint is NOT skip-eligible (returns False -> the caller
+    forces a SCAN). Per this module's ALL-SEGMENTS anti-leak contract a raw api
+    WRITE with an unresolvable URL is non-skippable, because it is an immediate
+    public egress with no pre-push backstop and a leading non-public segment must
+    never route it around the leak scan. Unresolvable means: no ``api``
+    destination at all (a flagless call, an ambiguous unknown flag, a non-repo
+    endpoint), OR a slug carrying an unexpanded ``$`` (a ``$OWNER``/``$VAR`` that
+    could expand to a PUBLIC repo at run time -- e.g. ``gh api
+    "repos/$OWNER/repo/issues" -f body=...``). Only a slug that resolves to an
+    affirmatively non-public repo returns True.
     """
     if not words or words[0] not in {"gh", "glab"}:
         return False
     dest = _destination_from_api(words, words[0])
     if dest is None or dest.via != "api":
-        return True
+        return False
+    if "$" in dest.slug:
+        return False
     return not is_affirmatively_public(dest, config_path=config_path)
 
 

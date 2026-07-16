@@ -145,11 +145,41 @@ class TestBlocklistFile:
         assert result.has_high
         assert any(f.name.startswith("blocklist:") for f in result.high)
 
-    def test_invalid_regex_raises_clear_error(self, tmp_path: Path) -> None:
+    def test_invalid_regex_is_skipped_not_raised(self, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+        # A single malformed line must NOT raise — the sole caller fails OPEN on
+        # any exception, so a raise would silently disable the whole leak gate.
+        # The bad line is skipped with a stderr NOTE; the good line still fires.
+        blocklist = tmp_path / "blocklist.txt"
+        blocklist.write_text("[unterminated\n^Operation\\s+Greenlight\\b\n", encoding="utf-8")
+        result = scan_text("Operation Greenlight begins tomorrow.", blocklist_path=blocklist)
+        assert result.has_high
+        assert any(f.name.startswith("blocklist:") for f in result.high)
+        assert "skipped invalid blocklist regex" in capsys.readouterr().err
+
+    def test_invalid_regex_alone_does_not_disable_builtin_patterns(self, tmp_path: Path) -> None:
+        # A blocklist that is ENTIRELY a bad regex must not fail the gate open —
+        # the built-in verbatim-quote patterns must still fire.
         blocklist = tmp_path / "blocklist.txt"
         blocklist.write_text("[unterminated\n", encoding="utf-8")
-        with pytest.raises(ValueError, match="invalid regex"):
-            scan_text("anything", blocklist_path=blocklist)
+        result = scan_text('_"ship the release right now please"_', blocklist_path=blocklist)
+        assert result.has_high
+
+    def test_blocklist_is_mtime_cached(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        # An unchanged file compiles once; a rewrite (new mtime/size) recompiles.
+        blocklist = tmp_path / "blocklist.txt"
+        blocklist.write_text("^Operation\\s+Greenlight\\b\n", encoding="utf-8")
+        quote_scanner._BLOCKLIST_CACHE.clear()
+        calls = {"n": 0}
+        real_compile = quote_scanner._compile_blocklist
+
+        def _counting(target: Path) -> list[quote_scanner.Pattern]:
+            calls["n"] += 1
+            return real_compile(target)
+
+        monkeypatch.setattr(quote_scanner, "_compile_blocklist", _counting)
+        quote_scanner._load_blocklist_patterns(blocklist)
+        quote_scanner._load_blocklist_patterns(blocklist)
+        assert calls["n"] == 1
 
 
 class TestExtractPublishPayloadBash:
