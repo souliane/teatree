@@ -129,6 +129,13 @@ class TicketExtra(TypedDict, total=False):
     # PlanArtifact) and ``execute_provision`` (skips the auto-planner). See
     # ``TrivialPlanSkip``.
     trivial_plan_skip: "TrivialPlanSkip"
+    # Plan-skipped issue-implementer direct-coding marker: stamped by
+    # ``persistence._handle_orchestrator`` when it schedules a ``coding`` task
+    # directly on a fresh NOT_STARTED author ticket (no scope/plan phase). Read
+    # by ``auto_implement.is_auto_implement`` — the ``Ticket.code_direct``
+    # condition that lets a coding-completion advance the FSM from an early
+    # state without weakening the normal author flow's plan gate.
+    auto_implement: bool
     # #2663 dream-promote = fix-and-merge: a Ticket scheduled to fix a grounded
     # dream gap. ``dream_gap_key`` is the stable gap identity (also the umbrella
     # checkbox marker); ``dream_memory_cluster_key`` links back to the
