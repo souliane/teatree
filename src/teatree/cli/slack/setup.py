@@ -198,8 +198,23 @@ def _run_degraded_path(*, overlay: str, app_id: str, token_ref: str, skip_smoke_
     _finish_with_smoke_test(overlay=overlay, app_id=app_id, token_ref=token_ref, skip_smoke_test=skip_smoke_test)
 
 
+def _resolve_owner_user_id() -> str:
+    """Owner's Slack id from the canonical ``pass slack/user-id`` source.
+
+    The update path (app id already recorded) skips the walkthrough's
+    "record your user id" step, leaving ``slack_user_id`` empty — the runtime
+    backend then cannot DM or read the owner. Reading the canonical pass entry
+    lets setup self-heal the id with no extra prompt. Only the human's own
+    stored id is used — never the bot's ``auth.test`` identity, which would
+    silently target the wrong user on a DM-only bot.
+    """
+    from teatree.cli.slack.dm_provisioning import SLACK_USER_ID_PASS_KEY  # noqa: PLC0415 — avoids a slack cycle
+
+    return read_pass(SLACK_USER_ID_PASS_KEY)
+
+
 def _finish_with_smoke_test(*, overlay: str, app_id: str, token_ref: str, skip_smoke_test: bool) -> None:
-    user_id = read_overlay_field(overlay, "slack_user_id")
+    user_id = read_overlay_field(overlay, "slack_user_id") or _resolve_owner_user_id()
     write_overlay_settings(
         overlay,
         slack_user_id=user_id,

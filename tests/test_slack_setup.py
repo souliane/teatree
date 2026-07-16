@@ -522,6 +522,61 @@ class TestSmokeTestInvocation:
         assert result.exit_code == 1
 
 
+# ast-grep-ignore: ac-django-no-pytest-django-db
+@pytest.mark.django_db
+class TestFinishSelfHealsUserId:
+    """The update path (app id recorded) skips the "record your user id" prompt.
+
+    Without self-healing, ``slack_user_id`` stays ``""`` and the runtime
+    ``SlackBotBackend`` can neither DM nor read the owner. ``_finish_with_smoke_test``
+    resolves the empty id from the canonical ``pass slack/user-id`` entry.
+    """
+
+    def test_empty_registry_user_id_is_healed_from_pass(self) -> None:
+        from teatree.cli.slack.app_resolve import read_overlay_field  # noqa: PLC0415 — scoped import
+        from teatree.cli.slack.setup import _finish_with_smoke_test  # noqa: PLC0415 — scoped import
+
+        _seed_overlays({"acme": {"slack_app_id": "A123456", "slack_user_id": ""}})
+        with patch("teatree.cli.slack.setup.read_pass", return_value="U0OWNER1234"):
+            _finish_with_smoke_test(
+                overlay="acme",
+                app_id="A123456",
+                token_ref="teatree/acme/slack",
+                skip_smoke_test=True,
+            )
+        assert read_overlay_field("acme", "slack_user_id") == "U0OWNER1234"
+
+    def test_empty_pass_leaves_user_id_empty(self) -> None:
+        # No canonical pass id — self-heal must NOT invent a bogus (bot) id.
+        from teatree.cli.slack.app_resolve import read_overlay_field  # noqa: PLC0415 — scoped import
+        from teatree.cli.slack.setup import _finish_with_smoke_test  # noqa: PLC0415 — scoped import
+
+        _seed_overlays({"acme": {"slack_app_id": "A123456", "slack_user_id": ""}})
+        with patch("teatree.cli.slack.setup.read_pass", return_value=""):
+            _finish_with_smoke_test(
+                overlay="acme",
+                app_id="A123456",
+                token_ref="teatree/acme/slack",
+                skip_smoke_test=True,
+            )
+        assert read_overlay_field("acme", "slack_user_id") == ""
+
+    def test_recorded_user_id_is_not_overwritten_by_pass(self) -> None:
+        from teatree.cli.slack.app_resolve import read_overlay_field  # noqa: PLC0415 — scoped import
+        from teatree.cli.slack.setup import _finish_with_smoke_test  # noqa: PLC0415 — scoped import
+
+        _seed_overlays({"acme": {"slack_app_id": "A123456", "slack_user_id": "U_RECORDED"}})
+        with patch("teatree.cli.slack.setup.read_pass", return_value="U0OWNER1234") as read:
+            _finish_with_smoke_test(
+                overlay="acme",
+                app_id="A123456",
+                token_ref="teatree/acme/slack",
+                skip_smoke_test=True,
+            )
+        assert read_overlay_field("acme", "slack_user_id") == "U_RECORDED"
+        read.assert_not_called()
+
+
 class TestManifestsEquivalent:
     """Normalised compare of only the teatree-owned manifest fields."""
 
