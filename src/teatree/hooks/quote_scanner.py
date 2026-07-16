@@ -262,6 +262,58 @@ def _normalize_quotes(text: str) -> str:
     return text.translate(_SMART_QUOTE_TRANSLATIONS)
 
 
+# ── HIGH shape patterns that require adjacent quote evidence (#3240) ──
+
+# The two attribution SHAPES that fire on agent paraphrase as readily as on a
+# verbatim quote: ``## User mandate`` / ``the user said:`` announce that a user
+# spoke, but say nothing about whether what follows is word-for-word. They stay
+# HIGH only when a verbatim quotation of meaningful length sits in the adjacent
+# paragraph; otherwise they downgrade to MEDIUM warn-allow like the rest of
+# ``_ATTRIBUTION_PATTERNS`` (a motivation heading or a requirement summary is
+# author-voice paraphrase, not the verbatim leak #1213 blocks). The explicit
+# ``(verbatim`` heading/bold patterns and the real quote shapes
+# (``blockquote-attributed``/``italic-quote-long``/blocklist/fail-closed
+# sentinel) keep HIGH unconditionally — they structurally announce word-for-word
+# content.
+_QUOTE_EVIDENCE_REQUIRED: Final[frozenset[str]] = frozenset({"the-user-said-colon", "heading-user-mandate"})
+
+# A double-quoted span of 20+ chars — the same length threshold
+# ``italic-quote-long`` uses to distinguish a real verbatim block from an
+# incidental short quote.
+_LONG_QUOTE_RE: Final[re.Pattern[str]] = re.compile(r'"[^"]{20,}"')
+
+
+def _adjacent_region(text: str, match: re.Match[str]) -> str:
+    r"""Return the match's own paragraph plus the paragraph immediately after it.
+
+    Paragraphs are blank-line (``\n\n``) separated. A ``the user said:`` colon
+    attribution carries its quote on the same line (its own paragraph); a
+    ``## User mandate`` heading carries the verbatim block in the section right
+    below it (the next paragraph) — so the adjacency window spans both. A quote
+    two or more paragraphs away is NOT adjacent and does not keep the shape HIGH.
+    """
+    para_start = text.rfind("\n\n", 0, match.start())
+    start = 0 if para_start == -1 else para_start + 2
+    first_break = text.find("\n\n", match.end())
+    if first_break == -1:
+        return text[start:]
+    second_break = text.find("\n\n", first_break + 2)
+    return text[start:] if second_break == -1 else text[start:second_break]
+
+
+def _resolved_severity(pattern: Pattern, text: str, match: re.Match[str]) -> Severity:
+    """Return ``pattern``'s severity for ``match``, downgrading a shape-only attribution.
+
+    A pattern in :data:`_QUOTE_EVIDENCE_REQUIRED` stays HIGH only when a 20+-char
+    double-quoted span sits in the adjacent paragraph (:func:`_adjacent_region`);
+    absent that evidence it downgrades to :data:`MEDIUM` (#3240). Every other
+    pattern keeps its declared severity.
+    """
+    if pattern.name in _QUOTE_EVIDENCE_REQUIRED and _LONG_QUOTE_RE.search(_adjacent_region(text, match)) is None:
+        return MEDIUM
+    return pattern.severity
+
+
 def scan_text(text: str, *, blocklist_path: Path | None = None) -> ScanResult:
     """Match every built-in pattern and every blocklist regex against ``text``.
 
@@ -294,7 +346,8 @@ def scan_text(text: str, *, blocklist_path: Path | None = None) -> ScanResult:
         if match is None:
             continue
         excerpt = match.group(0)[:120]
-        result.findings.append(Finding(name=pattern.name, severity=pattern.severity, excerpt=excerpt))
+        severity = _resolved_severity(pattern, normalized, match)
+        result.findings.append(Finding(name=pattern.name, severity=severity, excerpt=excerpt))
     return result
 
 

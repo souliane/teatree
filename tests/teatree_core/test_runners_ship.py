@@ -347,7 +347,11 @@ class TestShipExecutor(TestCase):
         # #312: an empty commit body still gets the standard What/Why scaffold.
         assert spec.description == "feat: x\n\n## What\n\n## Why"
 
-    def test_assignee_falls_back_to_git_user_name_when_host_returns_empty(self) -> None:
+    def test_assignee_empty_when_host_login_empty_and_no_registry_identity(self) -> None:
+        # #3100: git user.name is a display name, not a forge login, so it is not
+        # an assignee candidate. With an empty host login and no trusted-identity
+        # registry handle, the PR is created UNASSIGNED rather than with a login
+        # the forge would reject (which would fail the whole create).
         ticket = self._ticket_with_worktree()
         host = MagicMock()
         host.create_pr.return_value = {"web_url": "https://example.com/mr/u"}
@@ -358,12 +362,11 @@ class TestShipExecutor(TestCase):
             patch("teatree.core.runners.ship.code_host_for_repo_from_overlay", return_value=host),
             patch("teatree.core.runners.ship.git.push"),
             patch("teatree.core.runners.ship.git.last_commit_message", return_value=("feat", "")),
-            patch("teatree.core.runners.ship.git.config_value", return_value="dev"),
         ):
             ShipExecutor(ticket).run()
 
         (spec,) = host.create_pr.call_args.args
-        assert spec.assignee == "dev"
+        assert spec.assignee == ""
 
 
 class TestShipResolvesBranchFromInvokingWorktree(TestCase):

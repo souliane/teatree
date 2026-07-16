@@ -20,14 +20,18 @@ the DB. Set the list with
 
     python -m teatree.hooks.banned_terms_cli <file> [<file> ...]
 
-- exit 0: no file contains a banned term (or an explicit empty list ⇒ no-op).
+- exit 0: no file contains a banned term (or an explicit empty list ⇒ no-op), OR
+the term list is genuinely UNSET and ``banned_terms_required`` is False (the
+default) — an unset list WARNS loud on stderr but ALLOWS the commit, since an
+unset list is not a banned-term violation on a dev/solo box (#3247).
 - exit 1: at least one file contains a banned term. The same
 ``BANNED TERM in <file>:`` report the shell hook printed is emitted, so the
 ``banned_terms_scanner`` report parser keeps working unchanged.
 - exit 2: the term list is genuinely UNSET (no ``banned_terms`` row AND no env
-value) — fail LOUD rather than silently scan as empty, since an unset list is
-indistinguishable from a load bug. An explicit ``banned_terms = []`` is the
-deliberate no-op (exit 0), not an unset.
+value) AND ``banned_terms_required`` is True — a deployment that MUST scrub
+customer names keeps the fail-LOUD behaviour (an unset list is indistinguishable
+from a load bug). An explicit ``banned_terms = []`` is the deliberate no-op
+(exit 0), not an unset.
 
 The email carve-out lives in ``term_match`` so it, too, is shared rather than
 duplicated.
@@ -51,7 +55,7 @@ from pathlib import Path
 from teatree.config import cold_reader
 from teatree.hooks.banned_terms_tree_scan import BannedTermsUnsetError
 from teatree.hooks.term_match import file_matches as _file_matches
-from teatree.hooks.term_match import line_matches, strip_emails
+from teatree.hooks.term_match import line_matches, matched_term, strip_emails
 from teatree.utils.run import CommandFailedError, TimeoutExpired, run_allowed_to_fail
 
 # How long to wait for ``git diff`` before treating the staged diff as
@@ -66,6 +70,16 @@ _TERMS_KEY = "banned_terms"
 # The env override (comma-separated) that WINS over the DB — the
 # secret-from-CI-secret path where the DB row is not populated.
 _TERMS_ENV = "T3_BANNED_TERMS"
+
+# Whether an UNSET term list must FAIL CLOSED (exit 2) rather than WARN-and-allow
+# (exit 0). Default False: an unset list is not a banned-term violation on a
+# dev/solo box, so the clean diff proceeds (#3247). A deployment that MUST scrub
+# customer names sets ``banned_terms_required`` true (DB) / the env override to
+# keep the fail-closed behaviour. The env override WINS over the DB, mirroring
+# the term list's own ``T3_BANNED_TERMS`` precedence.
+_TERMS_REQUIRED_KEY = "banned_terms_required"
+_TERMS_REQUIRED_ENV = "T3_BANNED_TERMS_REQUIRED"
+_TRUTHY_ENV = frozenset({"1", "true", "yes", "on"})
 
 
 def _db_array(key: str, db_path: Path | None) -> tuple[str, ...] | None:
@@ -121,6 +135,50 @@ def resolve_banned_terms(
     if terms is None:
         raise BannedTermsUnsetError.for_key(_TERMS_KEY, _TERMS_ENV)
     return terms
+
+
+def banned_terms_required(*, db_path: Path | None = None) -> bool:
+    """Return True iff an UNSET banned-terms list must FAIL CLOSED rather than warn-allow.
+
+    Default False: an unset ``banned_terms`` list on a plain dev/solo box is a
+    FALSE POSITIVE, not a leak — the clean diff proceeds with a loud warning
+    (#3247). A deployment that MUST scrub customer names opts back into the
+    fail-closed exit 2 by setting ``banned_terms_required`` true in the DB-home
+    ``ConfigSetting`` store, or ``T3_BANNED_TERMS_REQUIRED=1`` in the env (the env
+    WINS, mirroring the ``T3_BANNED_TERMS`` term-list precedence). *db_path*
+    overrides the DB path (else the canonical DB / ``T3_CONFIG_DB``).
+    """
+    env_val = os.environ.get(_TERMS_REQUIRED_ENV, "").strip().lower()
+    if env_val:
+        return env_val in _TRUTHY_ENV
+    return cold_reader.bool_setting(_TERMS_REQUIRED_KEY, default=False, db_path=db_path)
+
+
+def _unset_warning() -> str:
+    """Render the loud stderr warning for an UNSET, not-required banned-terms list (#3247)."""
+    return (
+        "WARNING: banned_terms is UNSET (no banned_terms row in the DB and no T3_BANNED_TERMS env). "
+        "Allowing the commit (exit 0) — an unset list is not a banned-term violation on a dev/solo box. "
+        "Configure the list with `t3 <overlay> config_setting set banned_terms '[\"term1\"]'`, or make an "
+        "unset list fail closed on a deployment that MUST scrub with "
+        "`t3 <overlay> config_setting set banned_terms_required true`.\n"
+    )
+
+
+def report_unset(exc: BannedTermsUnsetError, *, db_path: Path | None = None) -> int:
+    """Write the unset-list message and return the process exit code (#3247).
+
+    An unset ``banned_terms`` list warns LOUD and returns 0 (the clean diff
+    proceeds) UNLESS :func:`banned_terms_required` — then it keeps the fail-loud
+    exit 2 (the ``exc`` message, indistinguishable from a load bug on a
+    deployment that must scrub). A CONFIGURED list is never routed here; it always
+    enforces (a real term still exits 1).
+    """
+    if banned_terms_required(db_path=db_path):
+        sys.stderr.write(f"{exc}\n")
+        return 2
+    sys.stderr.write(_unset_warning())
+    return 0
 
 
 def _load_allowlist(db_path: Path | None = None) -> tuple[str, ...]:
@@ -184,15 +242,58 @@ def staged_added_lines(repo: Path, file: str) -> list[str] | None:
     return added
 
 
+def _line_is_own_repo_url_only(
+    line: str, terms: tuple[str, ...], allowlist: tuple[str, ...], config_path: Path | None
+) -> bool:
+    """Return True iff every banned term on ``line`` sits ONLY inside an own private-repo URL.
+
+    A forge work-item URL naming one of the overlay's OWN configured
+    ``private_repos`` (``https://host/<org>/<repo>/-/issues/N``) is the
+    structurally-required address of that repo's work item, not a customer leak —
+    so a line whose banned-term occurrences all sit inside such URLs is
+    allow-listed (#3251). The own-repo-URL definition is the SINGLE canonical one
+    shared with the posting gate
+    (:func:`own_repo_url_carve_out.term_only_inside_own_repo_urls`): a matching
+    term whose every occurrence disappears once own-repo URLs are blanked is
+    URL-only; the FIRST matching term that survives blanking (a bare term, or a
+    term in a FOREIGN URL) short-circuits to False so the line still flags.
+    Fail-safe-to-block: with no ``private_repos`` configured no term is URL-only,
+    so the line still flags.
+    """
+    from teatree.hooks.own_repo_url_carve_out import term_only_inside_own_repo_urls  # noqa: PLC0415 — import cycle
+
+    candidate = strip_emails(line)
+    matched_any = False
+    for term in terms:
+        if matched_term(candidate, (term,), allowlist) is None:
+            continue
+        matched_any = True
+        if not term_only_inside_own_repo_urls(candidate, term, config_path=config_path):
+            return False
+    return matched_any
+
+
+def _drop_own_repo_url_hits(
+    hits: list[tuple[int, str, str]], terms: tuple[str, ...], allowlist: tuple[str, ...], config_path: Path | None
+) -> list[tuple[int, str, str]]:
+    """Drop every hit whose line's banned terms sit only inside an own private-repo URL (#3251)."""
+    return [hit for hit in hits if not _line_is_own_repo_url_only(hit[2], terms, allowlist, config_path)]
+
+
 def _diff_only_report(
-    files: list[str], terms: tuple[str, ...], repo: Path, allowlist: tuple[str, ...] = ()
+    files: list[str],
+    terms: tuple[str, ...],
+    repo: Path,
+    allowlist: tuple[str, ...] = (),
+    config_path: Path | None = None,
 ) -> list[str]:
     """Build the BANNED TERM report scanning only each file's staged ADDED lines.
 
     When the staged diff cannot be resolved for a file (``staged_added_lines``
     returns ``None``), fall back to that file's FULL-file scan — failing closed,
     never open. The added-line scan applies the same per-line email carve-out,
-    the company-identifier *allowlist* carve-out, and whole-token matcher
+    the company-identifier *allowlist* carve-out, the own-private-repo-URL
+    carve-out (:func:`_line_is_own_repo_url_only`, #3251), and whole-token matcher
     (:mod:`teatree.hooks.term_match`) the full scan uses, so the two paths agree
     on every line they both see.
     """
@@ -203,13 +304,20 @@ def _diff_only_report(
         if added is None:
             if not path.is_file():
                 continue
-            hits = _file_matches(str(path), terms, allowlist=allowlist)
+            hits = _drop_own_repo_url_hits(
+                _file_matches(str(path), terms, allowlist=allowlist), terms, allowlist, config_path
+            )
             if not hits:
                 continue
             report.append(f"BANNED TERM in {file}:")
             report.extend(f"  {line_number}:{line}" for line_number, _term, line in hits)
             continue
-        flagged = [line for line in added if line_matches(strip_emails(line), terms, allowlist)]
+        flagged = [
+            line
+            for line in added
+            if line_matches(strip_emails(line), terms, allowlist)
+            and not _line_is_own_repo_url_only(line, terms, allowlist, config_path)
+        ]
         if not flagged:
             continue
         report.append(f"BANNED TERM in {file}:")
@@ -218,7 +326,15 @@ def _diff_only_report(
 
 
 def _full_file_report(files: list[str], terms: tuple[str, ...], allowlist: tuple[str, ...] = ()) -> list[str]:
-    """Build the BANNED TERM report scanning each staged file in full."""
+    """Build the BANNED TERM report scanning each staged file in full.
+
+    The own-private-repo-URL carve-out is applied only on the pre-commit
+    ``--diff-only`` path (:func:`_diff_only_report`), NOT here: this full-file
+    scan is also the surface the #1415 posting gate shells out to, and that gate
+    already applies the SAME own-repo-URL carve-out downstream in
+    ``banned_terms/deny.py`` with its own informative "own configured repo" warn —
+    carving it out here too would silently suppress that warn (#3251).
+    """
     report: list[str] = []
     for file in files:
         path = Path(file)
@@ -246,12 +362,12 @@ def main(argv: list[str]) -> int:  # pragma: no cover — CLI entry point (orche
     try:
         terms = resolve_banned_terms()
     except BannedTermsUnsetError as exc:
-        # The term list is genuinely UNSET (no banned_terms row AND no env) —
-        # fail LOUD (exit 2, the scanner's "could not run" code) rather than
-        # silently scan as empty: an unset list is indistinguishable from a load
-        # bug. An explicit ``banned_terms = []`` does not raise and is a no-op.
-        sys.stderr.write(f"{exc}\n")
-        return 2
+        # The term list is genuinely UNSET (no banned_terms row AND no env). By
+        # default this WARNS loud and allows the commit (exit 0) — an unset list
+        # is not a banned-term violation on a dev/solo box (#3247). Only a
+        # deployment that set ``banned_terms_required`` keeps the fail-loud exit
+        # 2. An explicit ``banned_terms = []`` does not raise and is a no-op.
+        return report_unset(exc)
     if not terms:
         return 0  # explicit empty list ⇒ deliberate no-op
     allowlist = _load_allowlist()

@@ -66,7 +66,7 @@ class TestQuoteScannerLeakGateIgnoresFailOpen:
         # A PUBLIC posting surface (gh pr create) carrying a verbatim
         # user-quote pattern. Even with the master fail-open switch ON, the
         # leak gate must DENY.
-        data = _bash('gh pr create --repo souliane/teatree --title t --body "## User mandate\nplease ship now"')
+        data = _bash('gh pr create --repo souliane/teatree --title t --body "## User ask (verbatim)\nplease ship now"')
         blocked = handle_quote_scanner_pretool(data)
         assert blocked is True, "PUBLIC quote leak must stay fail-closed even with danger_gate_fail_open=true"
         decision = json.loads(capsys.readouterr().out)
@@ -109,7 +109,7 @@ class TestLeakGateNeverReadsFailOpen:
 
         monkeypatch.setattr(router, "_danger_gate_fail_open_enabled", _spy)
         handle_quote_scanner_pretool(
-            _bash('gh pr create --repo souliane/teatree --title t --body "## User mandate\nship"')
+            _bash('gh pr create --repo souliane/teatree --title t --body "## User ask (verbatim)\nship"')
         )
         capsys.readouterr()
         assert calls == [], "the PUBLIC leak gate must NEVER read danger_gate_fail_open"
