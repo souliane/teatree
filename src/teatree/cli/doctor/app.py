@@ -51,6 +51,7 @@ from teatree.cli.doctor.plugin_repair import (
 )
 from teatree.cli.doctor.statusline import check_statusline
 from teatree.cli.recommended_authorizations import authorizations, report_missing_authorizations
+from teatree.cli.slack.dm_doctor import check_and_render_dm_ready
 from teatree.utils.django_bootstrap import ensure_django
 from teatree.utils.run import run_allowed_to_fail
 
@@ -609,6 +610,14 @@ def check() -> bool:
     # self-provision — minting the app-level token. Surfacing-only (never gates the
     # exit code): Slack is optional and must never become mandatory.
     _check_slack_socket_mode()
+
+    # Slack DM-readiness. Fail-loud diagnosis of an overlay declaring
+    # messaging_backend=slack that still cannot message/read its owner: a no-op
+    # backend (tokens missing), an empty slack_user_id, or an unprovisioned DM
+    # channel. Runs after ``ensure_django`` because it builds messaging backends
+    # via the overlay factory. Surfacing-only (never gates the exit code): Slack
+    # is optional and must never become mandatory.
+    check_and_render_dm_ready()
 
     # In-session `/login` account-switch recovery (#1916). Runs after
     # ``ensure_django`` because it builds messaging backends via the overlay
