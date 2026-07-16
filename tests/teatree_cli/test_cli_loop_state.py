@@ -26,33 +26,60 @@ def _seed_loop(name: str) -> Loop:
 class TestLoopStateCli:
     def test_pause_delegates_with_name(self) -> None:
         with patch("django.setup"), patch("django.core.management.call_command") as call:
-            result = runner.invoke(loop_app, ["pause", "review"])
+            result = runner.invoke(loop_app, ["pause", "review", "--emergency"])
         assert result.exit_code == 0, result.stdout
         call.assert_called_once_with("loop_state", "pause", "review")
 
     def test_resume_delegates_with_name(self) -> None:
         with patch("django.setup"), patch("django.core.management.call_command") as call:
-            result = runner.invoke(loop_app, ["resume", "review"])
+            result = runner.invoke(loop_app, ["resume", "review", "--emergency"])
         assert result.exit_code == 0, result.stdout
         call.assert_called_once_with("loop_state", "resume", "review")
 
     def test_disable_delegates_with_name(self) -> None:
         with patch("django.setup"), patch("django.core.management.call_command") as call:
-            result = runner.invoke(loop_app, ["disable", "ship"])
+            result = runner.invoke(loop_app, ["disable", "ship", "--emergency"])
         assert result.exit_code == 0, result.stdout
         call.assert_called_once_with("loop_state", "disable", "ship")
 
     def test_enable_delegates_with_name(self) -> None:
         with patch("django.setup"), patch("django.core.management.call_command") as call:
-            result = runner.invoke(loop_app, ["enable", "ship"])
+            result = runner.invoke(loop_app, ["enable", "ship", "--emergency"])
         assert result.exit_code == 0, result.stdout
         call.assert_called_once_with("loop_state", "enable", "ship")
 
     def test_pause_passes_json_flag(self) -> None:
         with patch("django.setup"), patch("django.core.management.call_command") as call:
-            result = runner.invoke(loop_app, ["pause", "review", "--json"])
+            result = runner.invoke(loop_app, ["pause", "review", "--emergency", "--json"])
         assert result.exit_code == 0, result.stdout
         call.assert_called_once_with("loop_state", "pause", "review", json_output=True)
+
+    def test_pause_without_emergency_refused_no_delegate(self) -> None:
+        with patch("django.setup"), patch("django.core.management.call_command") as call:
+            result = runner.invoke(loop_app, ["pause", "review"])
+        assert result.exit_code == 2, result.stdout
+        call.assert_not_called()
+
+    def test_disable_without_emergency_refusal_points_at_presets(self) -> None:
+        with patch("django.setup"), patch("django.core.management.call_command") as call:
+            result = runner.invoke(loop_app, ["disable", "ship"])
+        assert result.exit_code == 2, result.stdout
+        # The refusal guides the operator to the normal + emergency handles.
+        assert "preset" in result.output
+        assert "override" in result.output
+        call.assert_not_called()
+
+    def test_override_on_delegates(self) -> None:
+        with patch("django.setup"), patch("django.core.management.call_command") as call:
+            result = runner.invoke(loop_app, ["override", "review", "on"])
+        assert result.exit_code == 0, result.stdout
+        call.assert_called_once_with("loop_state", "override", "review", "on")
+
+    def test_override_passes_ttl_and_reason(self) -> None:
+        with patch("django.setup"), patch("django.core.management.call_command") as call:
+            result = runner.invoke(loop_app, ["override", "news", "off", "--for", "2h", "--reason", "noisy"])
+        assert result.exit_code == 0, result.stdout
+        call.assert_called_once_with("loop_state", "override", "news", "off", for_ttl="2h", reason="noisy")
 
     def test_loop_state_status_delegates(self) -> None:
         with patch("django.setup"), patch("django.core.management.call_command") as call:
@@ -96,7 +123,7 @@ class TestUnknownLoopNameRefused(TestCase):
     _BOGUS = "totally_bogus_loop_xyz"
 
     def test_pause_unknown_name_exits_nonzero_and_writes_no_state(self) -> None:
-        result = runner.invoke(loop_app, ["pause", self._BOGUS])
+        result = runner.invoke(loop_app, ["pause", self._BOGUS, "--emergency"])
         assert result.exit_code != 0, result.stdout
         assert not LoopState.objects.filter(name=self._BOGUS).exists()
 
@@ -106,6 +133,6 @@ class TestUnknownLoopNameRefused(TestCase):
         assert "ENABLED" not in result.stdout
 
     def test_refusal_names_the_loop_and_suggests_loops_list(self) -> None:
-        result = runner.invoke(loop_app, ["pause", self._BOGUS])
+        result = runner.invoke(loop_app, ["pause", self._BOGUS, "--emergency"])
         assert self._BOGUS in result.stdout
         assert "t3 loops list" in result.stdout

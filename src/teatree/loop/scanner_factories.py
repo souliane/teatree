@@ -369,6 +369,13 @@ def _issue_implementer_scanner_for(backend: OverlayBackends) -> IssueImplementer
     code_host = backend.host
     if code_host is None:
         return None
+    # #3275: self-heal the in-flight budget BEFORE reading it. A marker orphaned
+    # while the pipeline was down never leaves ``dispatched``/``ticket_created``
+    # (release-on-completion only fires on the live transition event), so it
+    # strands its slot and ``has_budget`` reads false forever. Reconciling each
+    # tick releases terminal-ticket / gone-ticket markers so the gate below sees
+    # a current count and intake never permanently jams.
+    ImplementedIssueMarker.objects.reconcile_stale(backend.name)
     label_satisfiable = bool(settings.issue_implementer_label) or not settings.issue_implementer_require_label
     if not label_satisfiable:
         logger.warning(

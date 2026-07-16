@@ -267,6 +267,45 @@ class TestExecuteHeadlessUnknownOverlay(TestCase):
         assert "ghost-overlay" in attempt.error
 
     @override_settings(**IMMEDIATE_BACKEND)
+    def test_headless_subprocess_stderr_is_recorded_on_the_attempt(self) -> None:
+        # A claude-agent-sdk ``ProcessError`` stringifies to "Check stderr output
+        # for details" and hides the real cause on ``.stderr``. The recorded
+        # attempt must carry that stderr so a headless failure is diagnosable.
+        from teatree.core import headless_dispatch as headless_dispatch_mod  # noqa: PLC0415
+        from teatree.core.tasks import execute_headless_task  # noqa: PLC0415
+
+        ticket = Ticket.objects.create()
+        session = Session.objects.create(ticket=ticket)
+        task = Task.objects.create(
+            ticket=ticket,
+            session=session,
+            execution_target=Task.ExecutionTarget.HEADLESS,
+            status=Task.Status.PENDING,
+            phase="architectural_review",
+        )
+
+        class _FakeProcessError(RuntimeError):
+            def __init__(self) -> None:
+                super().__init__("Command failed with exit code 1. Check stderr output for details")
+                self.stderr = "claude: error: OAuth token expired -- run `claude login`"
+
+        def _boom(*_args: object, **_kwargs: object) -> object:
+            raise _FakeProcessError
+
+        with (
+            patch.object(overlay_loader_mod, "_discover_overlays", return_value=_MOCK_OVERLAY),
+            patch.object(headless_dispatch_mod, "loop_dispatch_refusal", return_value=None),
+            patch.object(headless_dispatch_mod, "get_headless_runner", return_value=_boom),
+            pytest.raises(_FakeProcessError),
+        ):
+            execute_headless_task.func(task.pk, task.phase)
+
+        attempt = TaskAttempt.objects.get(task=task)
+        assert attempt.exit_code == 1
+        assert "claude subprocess stderr" in attempt.error
+        assert "OAuth token expired" in attempt.error
+
+    @override_settings(**IMMEDIATE_BACKEND)
     def test_failed_unknown_overlay_task_is_not_re_enqueued_next_drain(self) -> None:
         from teatree.core.tasks import execute_headless_task  # noqa: PLC0415
 

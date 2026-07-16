@@ -64,7 +64,7 @@ from typing import TYPE_CHECKING
 
 from teatree.core import availability
 from teatree.loop.job_identity import _ScannerJob
-from teatree.loop.loop_state_db import held_loop_names, loop_state_admits
+from teatree.loop.loop_state_db import control_planes_in_db, loop_state_admits
 from teatree.loop.preset_resolution import preset_state_for, resolve_active_preset
 from teatree.loops.base import BuildJobsContext, MiniLoop
 from teatree.loops.registry import iter_loops
@@ -90,14 +90,17 @@ class _TickAdmission:
     resolution: "Resolution"
     active_preset: "ActivePreset | None"
     held: set[str]
+    forced: dict[str, bool]
 
     @classmethod
     def resolve(cls, now: dt.datetime) -> "_TickAdmission":
+        held, forced = control_planes_in_db()
         return cls(
             now=now,
             resolution=availability.resolve_mode(),
             active_preset=resolve_active_preset(now),
-            held=held_loop_names(),
+            held=held,
+            forced=forced,
         )
 
 
@@ -143,6 +146,7 @@ def _loop_admitted(row: "Loop | None", loop: MiniLoop, ctx: _TickAdmission) -> b
         configured_enabled=row.enabled,
         held=loop.name in ctx.held,
         preset_state=preset_state_for(ctx.active_preset, loop.name),
+        forced=ctx.forced.get(loop.name),
     )
 
 

@@ -36,6 +36,7 @@ from django.db import transaction
 from django_fsm import can_proceed
 
 from teatree.config import get_effective_settings
+from teatree.core.gates.provision_admission_gate import check_provision_admission
 from teatree.core.models import Worktree
 from teatree.core.worktree.worktree_env import compose_project
 from teatree.utils.run import run_allowed_to_fail
@@ -220,6 +221,24 @@ def reap_idle_stacks(*, overlay: str, write_out: Callable[[str], object] | None 
     return reaped
 
 
+def _ram_admission_holds(candidate: Worktree, *, write_out: Callable[[str], object]) -> bool:
+    """Enqueue *candidate* and return ``True`` when host RAM is at/above the ceiling (#2949).
+
+    Reuses the parallel-provision admission gate so the START path and the
+    ``workspace provision`` path share one RAM ceiling. A hold enqueues to the
+    existing durable queue (idempotently) — the drainer re-checks and starts it
+    once RAM frees, so nothing is lost.
+    """
+    verdict = check_provision_admission()
+    if verdict.ok:
+        return False
+    from teatree.core.models import LocalStackQueueItem  # noqa: PLC0415 — deferred: ORM/app-registry
+
+    LocalStackQueueItem.objects.enqueue(candidate)
+    write_out(f"  Host RAM over ceiling — queued {_blocker_label(candidate)} for retry ({verdict.reason}).")
+    return True
+
+
 def acquire_or_enqueue(candidate: Worktree | None, *, write_out: Callable[[str], object]) -> bool:
     """Acquire a local-stack slot for *candidate*, or enqueue when none is free (#2190, #44).
 
@@ -238,6 +257,14 @@ def acquire_or_enqueue(candidate: Worktree | None, *, write_out: Callable[[str],
     """
     if candidate is None:
         return True
+    # #2949 resource-aware admission: on an overlay that has opted into a bounded
+    # local-stack cap (the memory-constrained hosts the gate exists for), also
+    # HOLD a new stack when host RAM is over the ceiling — even when a count slot
+    # is free. The request is not lost: it is enqueued to the SAME durable queue
+    # the count-full path uses, so the loop's drainer starts it once RAM frees.
+    # The default (unbounded) overlay is untouched — RAM is not consulted there.
+    if resolve_max_concurrent_local_stacks() > 0 and _ram_admission_holds(candidate, write_out=write_out):
+        return False
     try:
         check_local_stack_limit(candidate)
     except LocalStackLimitExceededError:

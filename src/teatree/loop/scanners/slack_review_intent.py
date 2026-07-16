@@ -30,13 +30,14 @@ The ``:white_check_mark:`` Slack reaction itself is posted by
 """
 
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import cast
 
 from teatree.core.backend_protocols import MessagingBackend
 from teatree.core.models import ReviewAssignment, ReviewIntent
 from teatree.loop.review_claim_signals import filter_review_intent_signals
 from teatree.loop.scanners.base import ScanSignal
+from teatree.loop.scanners.slack_self_ack import SlackSelfAckReactor
 from teatree.types import RawAPIDict
 from teatree.url_classify import first_pr_url
 
@@ -78,6 +79,19 @@ class SlackReviewIntentScanner:
     backend: MessagingBackend
     overlay: str = ""
     name: str = "slack_review_intent"
+    _self_ack: SlackSelfAckReactor | None = field(default=None, init=False, repr=False)
+
+    def _self_ack_reactor(self) -> SlackSelfAckReactor:
+        """The composed 👀-back self-ack collaborator (built once, lazily).
+
+        Rides inside THIS scanner because it must consume the same reaction
+        snapshot: the ``slack-reactions.jsonl`` drain is single-consumer and
+        owned here, so a second draining scanner would race the atomic rename
+        (#1047). See :mod:`teatree.loop.scanners.slack_self_ack`.
+        """
+        if self._self_ack is None:
+            self._self_ack = SlackSelfAckReactor(backend=self.backend, overlay=self.overlay)
+        return self._self_ack
 
     def scan(self) -> list[ScanSignal]:
         target_user = getattr(self.backend, "user_id", "")
@@ -93,6 +107,11 @@ class SlackReviewIntentScanner:
                 continue
             if signal is not None:
                 signals.append(signal)
+        # 👀-back on the owner's reaction to a bot-authored message, consuming the
+        # SAME drained snapshot (never a second JSONL drain). Runs before the
+        # commit below so its idempotency rows persist alongside the review rows;
+        # a crash before commit leaves the file for the next drain to recover.
+        self._self_ack_reactor().ack_owner_reactions(reactions)
         if drained_file:
             # Discard the backing file only after the reactions above are
             # handled (rows persisted) — a crash before this point leaves it

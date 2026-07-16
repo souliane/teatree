@@ -27,7 +27,7 @@
 "src/teatree/core/gates/e2e_mandatory_gate.py" = 3
 "src/teatree/core/gates/fix_dod_gate.py" = 1
 "src/teatree/core/gates/live_post_gate.py" = 1
-"src/teatree/core/gates/local_stack_gate.py" = 2
+"src/teatree/core/gates/local_stack_gate.py" = 3
 "src/teatree/core/gates/owned_repo_guard.py" = 2
 "src/teatree/core/gates/plan_gate.py" = 2
 "src/teatree/core/gates/review_request_draft_gate.py" = 1
@@ -75,6 +75,7 @@
 "src/teatree/core/merge/execution.py" = 4
 "src/teatree/core/model_registries.py" = 5
 "src/teatree/core/models/auto_review_dispatch.py" = 3
+"src/teatree/core/models/implemented_issue_marker.py" = 1
 "src/teatree/core/models/review_loop.py" = 3
 "src/teatree/core/models/task.py" = 8
 # artifacts() defers `from teatree.core.models.ticket_artifacts import
