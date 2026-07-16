@@ -34,6 +34,7 @@ from teatree.cli.loop.drain_queue import drain_queue_app
 from teatree.cli.loop.listing import list_command
 from teatree.cli.loop.owner import register as register_loop_owner
 from teatree.cli.loop.preset import register as register_loop_preset
+from teatree.cli.loop.reclaim_markers import reclaim_markers_command
 from teatree.cli.loop.schedule import register as register_loop_schedule
 from teatree.cli.loop.slack_answer import slack_answer_app
 from teatree.cli.loop.state import register as register_loop_state
@@ -378,6 +379,10 @@ loop_app.command("claim-next")(claim_next_command)
 # #1744 — the read-only live loop-status view. Split off (same module-health
 # reason) and registered as a flat ``t3 loop list``.
 loop_app.command("list")(list_command)
+
+# #3275 — the on-demand issue-marker reconciler: flat ``t3 loop reclaim-markers``.
+# The sanctioned way to unjam stranded intake budget (raw SQL is classifier-blocked).
+loop_app.command("reclaim-markers")(reclaim_markers_command)
 
 # #1913 — the DB-backed per-loop control plane: flat ``t3 loop
 # pause/resume/disable/enable <name>`` + ``t3 loop loop-state <name>``. Split
