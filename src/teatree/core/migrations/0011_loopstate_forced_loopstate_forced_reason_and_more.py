@@ -4,25 +4,28 @@ from django.db import migrations, models
 
 
 class Migration(migrations.Migration):
-
     dependencies = [
-        ('core', '0010_alter_implementedissuemarker_state'),
+        ("core", "0010_alter_implementedissuemarker_state"),
     ]
 
     operations = [
         migrations.AddField(
-            model_name='loopstate',
-            name='forced',
-            field=models.CharField(choices=[('neutral', 'Neutral'), ('on', 'Forced on'), ('off', 'Forced off')], default='neutral', max_length=16),
+            model_name="loopstate",
+            name="forced",
+            field=models.CharField(
+                choices=[("neutral", "Neutral"), ("on", "Forced on"), ("off", "Forced off")],
+                default="neutral",
+                max_length=16,
+            ),
         ),
         migrations.AddField(
-            model_name='loopstate',
-            name='forced_reason',
-            field=models.CharField(blank=True, default='', max_length=200),
+            model_name="loopstate",
+            name="forced_reason",
+            field=models.CharField(blank=True, default="", max_length=200),
         ),
         migrations.AddField(
-            model_name='loopstate',
-            name='forced_until',
+            model_name="loopstate",
+            name="forced_until",
             field=models.DateTimeField(blank=True, null=True),
         ),
     ]
