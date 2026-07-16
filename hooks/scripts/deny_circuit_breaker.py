@@ -61,7 +61,38 @@ sys.modules.setdefault("hooks.scripts.deny_circuit_breaker", sys.modules[__name_
 
 _DENY_STREAK_SUFFIX = "deny-streak"
 _CIRCUIT_BROKEN_SUFFIX = "circuit-broken"
+_FP_GRANT_SUFFIX = "fp-grants"
 _DENY_CIRCUIT_BREAKER_DEFAULT_THRESHOLD = 3
+
+# ``[fp-confirmed: <non-empty-reason>]`` in the CURRENT tool call is the agent's
+# confirmation that a repeated deny is a false positive (#3252). It suppresses
+# THIS deny and records a session-scoped, per-fingerprint grant so the IDENTICAL
+# false positive stops re-prompting on every subsequent identical action —
+# without re-authorising a *different* gated action. An empty reason does not
+# confirm.
+_FP_CONFIRMED_RE = re.compile(r"\[fp-confirmed:\s*\S[^\]]*?\s*\]")
+
+# Escape / override tokens stripped from a call signature before fingerprinting,
+# so the SAME command with-and-without an escape token maps to ONE fingerprint.
+# The confirm-once-then-reuse contract (#3252) needs the tokened confirming call
+# and the later tokenless call to share a fingerprint; the other tokens are
+# folded in so an escape marker never splits a genuine retry loop into two.
+_SIGNATURE_STRIP_RE = re.compile(
+    r"\[(?:fp-confirmed|fg-ok|skip-skill-gate|skill-load-ok|skip-plan-gate|quote-ok|reviewer-ok|config-overwrite-ok):[^\]]*\]"
+    r"|\b(?:ALLOW_BANNED_TERM|QUOTE_OK|T3_MR_VALIDATE_ALLOW_BROKEN_ENV)=\S+"
+)
+
+# The PUBLIC-egress leak gate is fail-CLOSED always (BLUEPRINT §17 hard
+# invariant): its deny is NEVER suppressible by a confirmed-FP grant. A denied
+# leak can only be a privacy regression, not a false positive worth granting.
+_LEAK_GATE_MARKERS: tuple[str, ...] = ("banned-terms", "quote-scanner", "leak")
+
+# Tool-input fields a call may carry the ``[fp-confirmed:]`` token in, mirroring
+# the skill-loading gate's per-call token surface (command for Bash;
+# new_string / content / file_path for Edit / Write). Each is capped so a huge
+# pasted body cannot slow the fast hook.
+_TOKEN_FIELDS: tuple[str, ...] = ("command", "new_string", "content", "file_path")
+_TOKEN_SCAN_CAP = 512
 
 # Reason-prefix markers identifying UX / non-safety gates that MAY auto-relax
 # when looped. Conservative allow-list: a deny whose reason does not start with
@@ -146,20 +177,114 @@ def deny_is_ux_gate(reason: str) -> bool:
     return any(stripped.startswith(prefix) for prefix in _DENY_CIRCUIT_UX_GATE_PREFIXES)
 
 
-def _deny_fingerprint(gate_id: str, reason: str) -> str:
-    """Stable short hash of gate identity + a volatility-normalised reason.
+def _call_signature(data: dict) -> str:
+    """Verbatim-ish identity of the CURRENT tool call, distinguishing commands (#3252).
 
-    Volatile substrings (SHAs, paths, bare counts) are stripped so the same
-    logical denial fingerprints identically across retries, while a genuinely
-    different denial (different gate, different unloaded-skill set) fingerprints
-    apart. Returns a short hex digest; never raises.
+    A deny reason alone is NOT enough to tell a genuine retry loop (the SAME
+    command re-issued) from a batch of DISTINCT commands that happen to trip one
+    command-independent gate (``--no-verify`` on three different commits, or a
+    denied self-bypass followed by unrelated calls) — the latter shares a reason
+    and, on a reason-only fingerprint, falsely accumulates a streak that poisons
+    the distinct later commands. Folding this signature into the fingerprint
+    keeps distinct commands apart while a real retry (identical call) still
+    matches. Bash keys on the command, Edit / Write on the file path, everything
+    else on the tool name — with escape/override tokens stripped so a call
+    with-and-without a token shares one fingerprint. Never raises.
     """
-    normalised = reason
+    tool_input = data.get("tool_input") if isinstance(data, dict) else None
+    tool_input = tool_input if isinstance(tool_input, dict) else {}
+    tool_name = data.get("tool_name", "") if isinstance(data, dict) else ""
+    if tool_name == "Bash":
+        identity = str(tool_input.get("command", ""))
+    elif tool_name in {"Edit", "Write"}:
+        identity = str(tool_input.get("file_path", ""))
+    else:
+        identity = tool_name
+    # ALL whitespace is removed (not collapsed) so a stripped token can never
+    # leave a stray gap that splits the tokened-vs-tokenless fingerprint.
+    stripped = _SIGNATURE_STRIP_RE.sub(" ", identity)
+    return re.sub(r"\s+", "", stripped).lower()
+
+
+def _deny_fingerprint(gate_id: str, reason: str, signature: str) -> str:
+    """Stable short hash of gate identity + a volatility-normalised reason + call signature.
+
+    Volatile substrings (SHAs, paths, bare counts) are stripped from the REASON
+    so the same logical denial fingerprints identically across retries, while a
+    genuinely different denial (different gate, different unloaded-skill set)
+    fingerprints apart. The call *signature* is folded in verbatim (#3252) so two
+    DISTINCT commands that trip one command-independent gate never share a
+    streak — a denied self-bypass no longer poisons unrelated later commands.
+    Returns a short hex digest; never raises.
+    """
+    # Strip escape/override tokens from the reason FIRST — a gate that echoes the
+    # offending command into its reason (the heavy-Bash gate) would otherwise let
+    # the ``[fp-confirmed:]`` token split the tokened confirming call and the
+    # later tokenless call into two fingerprints, breaking confirm-once-reuse.
+    normalised = _SIGNATURE_STRIP_RE.sub(" ", reason)
     for pattern in _DENY_FP_VOLATILE_RES:
         normalised = pattern.sub(" ", normalised)
-    normalised = re.sub(r"\s+", " ", normalised).strip().lower()
-    digest = hashlib.sha256(f"{gate_id}\x00{normalised}".encode()).hexdigest()
+    # ALL whitespace is removed (not collapsed) so a stripped escape token that
+    # was echoed into the reason leaves no boundary gap — the tokened confirming
+    # call and the later tokenless call normalise to one fingerprint.
+    normalised = re.sub(r"\s+", "", normalised).lower()
+    digest = hashlib.sha256(f"{gate_id}\x00{normalised}\x00{signature}".encode()).hexdigest()
     return digest[:16]
+
+
+def _deny_is_leak_gate(reason: str) -> bool:
+    """True iff *reason* is a PUBLIC-egress leak deny (never grantable, #3252).
+
+    The banned-terms / quote-scanner public-egress path is fail-CLOSED always;
+    a confirmed-FP grant must never suppress it.
+    """
+    low = reason.lower()
+    return any(marker in low for marker in _LEAK_GATE_MARKERS)
+
+
+def _fp_confirmed(data: dict) -> bool:
+    """True when the current call carries a non-empty ``[fp-confirmed:]`` token."""
+    tool_input = data.get("tool_input") if isinstance(data, dict) else None
+    tool_input = tool_input if isinstance(tool_input, dict) else {}
+    for field in _TOKEN_FIELDS:
+        value = tool_input.get(field)
+        if isinstance(value, str) and _FP_CONFIRMED_RE.search(value[:_TOKEN_SCAN_CAP]):
+            return True
+    return False
+
+
+def _fp_grant_exists(session_id: str, fingerprint: str) -> bool:
+    """True when *fingerprint* has a recorded session-scoped confirmed-FP grant.
+
+    Crash-proof: any IO error reads as "no grant" so a state fault can never
+    manufacture a suppression of a genuine deny.
+    """
+    from hooks.scripts.hook_router import _state_file  # noqa: PLC0415 deferred back-import
+
+    if not session_id:
+        return False
+    try:
+        path = _state_file(session_id, _FP_GRANT_SUFFIX)
+        return any(line == fingerprint for line in _read_lines(path))
+    except OSError:
+        return False
+
+
+def _record_fp_grant(session_id: str, fingerprint: str) -> None:
+    """Persist a session-scoped confirmed-FP grant for *fingerprint* (deduped).
+
+    Best-effort: a record failure must never propagate out of the deny path.
+    """
+    from hooks.scripts.hook_router import _ensure_state_dir, _state_file  # noqa: PLC0415 deferred back-import
+
+    if not session_id:
+        return
+    with contextlib.suppress(OSError):
+        _ensure_state_dir()
+        path = _state_file(session_id, _FP_GRANT_SUFFIX)
+        if any(line == fingerprint for line in _read_lines(path)):
+            return
+        _append_line(path, fingerprint)
 
 
 def _bump_deny_streak(session_id: str, fingerprint: str) -> int:
@@ -227,12 +352,44 @@ def _record_circuit_broken_signal(session_id: str, gate_id: str, fingerprint: st
         _append_line(path, f"{fingerprint}\t{gate_id}\t{count}")
 
 
+def _confirmed_fp_decision(data: dict, reason: str, session_id: str, fingerprint: str) -> _BreakerDecision | None:
+    """Suppress a deny when *fingerprint* is a confirmed false positive, else ``None``.
+
+    A previously-granted identical FP is suppressed WITHOUT re-prompting; a fresh
+    ``[fp-confirmed:]`` token confirms this call and records the grant. The
+    PUBLIC-egress leak gate is never grantable (fail-closed always) — ``None`` so
+    the breaker keeps denying it. ``None`` means "no grant applies" and the caller
+    proceeds to normal streak accounting.
+    """
+    if _deny_is_leak_gate(reason):
+        return None
+    if _fp_grant_exists(session_id, fingerprint):
+        return _BreakerDecision(allow=True, reason=reason)
+    if _fp_confirmed(data):
+        _record_fp_grant(session_id, fingerprint)
+        sys.stderr.write(
+            f"CONFIRMED FALSE POSITIVE: gate '{_deny_gate_id(reason)}' deny suppressed and granted "
+            "for this session — the identical false positive will not re-prompt.\n"
+        )
+        return _BreakerDecision(allow=True, reason=reason)
+    return None
+
+
 def apply_deny_circuit_breaker(reason: str) -> _BreakerDecision:
     """Route one PreToolUse deny through the repeated-denial circuit breaker.
 
     Returns a :class:`_BreakerDecision`: ``allow=True`` means SUPPRESS the deny
-    (a looped UX gate auto-relaxed this call); otherwise ``reason`` is the deny
-    reason to emit (escalation-augmented for a looped safety gate).
+    (a confirmed false-positive grant, or a looped UX gate auto-relaxed this
+    call); otherwise ``reason`` is the deny reason to emit (escalation-augmented
+    for a looped safety gate).
+
+    The fingerprint folds in the CURRENT call's signature (#3252) so two DISTINCT
+    commands that trip one command-independent gate never share a streak — a
+    denied self-bypass cannot poison unrelated later commands. A session-scoped
+    confirmed-FP grant (a ``[fp-confirmed:]`` token, or a UX gate the breaker
+    concluded is an unsatisfiable false positive) suppresses the IDENTICAL FP
+    thereafter without re-prompting; the PUBLIC-egress leak gate is never
+    grantable (fail-closed always).
 
     Crash-proof: on a disabled breaker, a non-PreToolUse invocation, or ANY
     internal error, the original deny is preserved unchanged (fall back to the
@@ -248,7 +405,17 @@ def apply_deny_circuit_breaker(reason: str) -> _BreakerDecision:
         session_id = data.get("session_id", "") if isinstance(data, dict) else ""
         threshold = deny_circuit_breaker_threshold()
         gate_id = _deny_gate_id(reason)
-        fingerprint = _deny_fingerprint(gate_id, reason)
+        signature = _call_signature(data) if isinstance(data, dict) else ""
+        fingerprint = _deny_fingerprint(gate_id, reason, signature)
+
+        # Confirmed false-positive grant (session-scoped, per-fingerprint, #3252)
+        # — a previously-confirmed or freshly-``[fp-confirmed:]``-tokened identical
+        # FP is suppressed without re-prompting; never a leak deny.
+        if isinstance(data, dict):
+            granted = _confirmed_fp_decision(data, reason, session_id, fingerprint)
+            if granted is not None:
+                return granted
+
         count = _bump_deny_streak(session_id, fingerprint)
         if count < threshold:
             return _BreakerDecision(allow=False, reason=reason)
@@ -260,6 +427,10 @@ def apply_deny_circuit_breaker(reason: str) -> _BreakerDecision:
                 "— auto-relaxing this call to break the loop; root cause is likely a "
                 "false or unsatisfiable demand. Investigate the gate, do not just retry.\n"
             )
+            # The breaker has concluded this identical UX demand is an
+            # unsatisfiable false positive; grant it so it stops re-prompting on
+            # every subsequent identical action (#3252), not just this one call.
+            _record_fp_grant(session_id, fingerprint)
             reset_deny_streak(session_id)
             return _BreakerDecision(allow=True, reason=reason)
 
