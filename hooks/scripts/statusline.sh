@@ -676,8 +676,17 @@ fi
 # line is cut on a character boundary (never mid-escape), marked with a single
 # `…` ellipsis, and terminated with a reset so colour never bleeds past the cut.
 # One awk process for the whole stream keeps the hook fast (<10ms).
+#
+# Scoped to `LC_ALL=C` (byte mode) so it never calls `towc`: macOS's onetrueawk
+# aborts with a `towc: multibyte conversion failure` on the statusline's own
+# multibyte furniture (`·` `│` `⚠` `—` `…`), and that abort blanks the WHOLE bar
+# (souliane/teatree#3286). In byte mode visible-width counting is byte-based (a
+# multibyte glyph counts as its UTF-8 byte length — harmless for a trim-only
+# cap), the ASCII-only escape regexes are unaffected, and multibyte content
+# passes through unchanged. Scoped to this one invocation so date/sort elsewhere
+# keep their locale.
 _cap_line_widths() {
-    awk -v cap="$_cap_cols" '
+    LC_ALL=C awk -v cap="$_cap_cols" '
     function viswidth(s,   n, i, rest, vis) {
         n = length(s); i = 1; vis = 0
         while (i <= n) {
@@ -685,6 +694,10 @@ _cap_line_widths() {
             if (match(rest, /^\033\[[0-9;?]*[ -\/]*[@-~]/)) { i += RLENGTH; continue }
             if (match(rest, /^\033\][^\033\007]*(\033\\|\007)/)) { i += RLENGTH; continue }
             if (match(rest, /^\033./)) { i += RLENGTH; continue }
+            # Byte-mode (LC_ALL=C) UTF-8 grouping: a lead byte and its
+            # continuation bytes count as ONE visible glyph, so a multibyte
+            # separator/ellipsis is width 1 rather than its byte length.
+            if (match(rest, /^[\300-\377][\200-\277]*/)) { vis++; i += RLENGTH; continue }
             vis++; i++
         }
         return vis
@@ -697,6 +710,8 @@ _cap_line_widths() {
             if (match(rest, /^\033\][^\033\007]*(\033\\|\007)/)) { out = out substr(rest, 1, RLENGTH); i += RLENGTH; continue }
             if (match(rest, /^\033./)) { out = out substr(rest, 1, RLENGTH); i += RLENGTH; continue }
             if (vis >= limit) break
+            # Emit a whole UTF-8 sequence so the cut never bisects a glyph.
+            if (match(rest, /^[\300-\377][\200-\277]*/)) { out = out substr(rest, 1, RLENGTH); vis++; i += RLENGTH; continue }
             out = out substr(rest, 1, 1); vis++; i++
         }
         return out "\342\200\246" "\033[0m"
@@ -733,7 +748,7 @@ _zones_body=""
 # NO_COLOR paths, and exits non-zero when line 1 is not a loop line (an overlay
 # anchor, no loop currently live) so the shell falls back to a trailing badge.
 if [ -n "$_loop_owner_badge" ] && [ -n "$_zones_body" ]; then
-    if ! printf '%s\n' "$_zones_body" | awk -v badge="${_loop_owner_badge}${isep}" '
+    if ! printf '%s\n' "$_zones_body" | LC_ALL=C awk -v badge="${_loop_owner_badge}${isep}" '
         function esc() { return sprintf("%c", 27) }
         NR == 1 && $0 ~ "[^[:space:]]" && $0 !~ ("^(" esc() "\\[[0-9;]*m)?\\[") {
             csi = "^" esc() "\\[[0-9;]*m"
