@@ -7,10 +7,16 @@ from django.test import TestCase
 from typer.testing import CliRunner
 
 from teatree.cli.loop import loop_app
+from teatree.cli.loop.reclaim_markers import reclaim_markers_command
 from teatree.core.models import ImplementedIssueMarker, Ticket
 from tests.factories import ImplementedIssueMarkerFactory, TicketFactory
 
 runner = CliRunner()
+
+
+def test_command_is_registered_flat_on_loop_app() -> None:
+    registered = {cmd.callback for cmd in loop_app.registered_commands}
+    assert reclaim_markers_command in registered
 
 
 class TestReclaimMarkersCommand(TestCase):
