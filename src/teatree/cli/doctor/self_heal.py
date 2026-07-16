@@ -4,8 +4,9 @@ The recorded 2026 seven-hour silent freeze: the worker WAS the monitor, so when
 the worker/init container died the thing that would alert died with it, and
 NOBODY noticed. These crash-proof ``_check_*`` detectors surface the
 silent-failure classes that froze the factory as loud red findings so the
-EXTERNAL watchdog (``deploy/watchdog.sh``, which runs OUTSIDE the compose stack)
-can restart the stack and DM the owner:
+in-daemon watchdog (the ``deploy/watchdog.sh`` sidecar container, kept alive by
+the Docker daemon independently of the stack it watches) can restart the stack
+and DM the owner:
 
 - a compose init container that exited non-zero / a worker stuck ``Created``,
 - a free worker flock while the loop machinery has queued, overdue work,
@@ -410,7 +411,7 @@ def run_self_heal_checks() -> bool:
     """Run every self-heal detector; return ``False`` if any hard FAILs.
 
     The single entry point ``t3 doctor`` wires into its check sequence, so the
-    silent-freeze classes flip the doctor exit code the external watchdog keys on.
+    silent-freeze classes flip the doctor exit code the watchdog container keys on.
     """
     checks: tuple[Callable[[], bool], ...] = (
         _check_compose_stack,
@@ -430,7 +431,7 @@ def run_self_heal_checks() -> bool:
 def check_as_json(check_fn: Callable[..., bool]) -> bool:
     """Run *check_fn* capturing its echoes and emit ``{"ok", "findings"}`` JSON.
 
-    The ``t3 doctor --json`` surface the external watchdog consumes: it inspects
+    The ``t3 doctor --json`` surface the watchdog container consumes: it inspects
     ``ok`` for the exit verdict and ``findings`` (level-tagged) for the DM body.
     """
     import contextlib  # noqa: PLC0415 — deferred: loaded only on the --json path
