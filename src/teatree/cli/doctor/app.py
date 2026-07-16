@@ -22,6 +22,7 @@ import typer
 from teatree.cli.doctor.checks import (
     _check_account_switch,
     _check_agent_session_pins,
+    _check_chrome_devtools_mcp_suggestion,
     _check_connector_manifest,
     _check_dangling_editable_pth,
     _check_dream_staleness,
@@ -38,7 +39,9 @@ from teatree.cli.doctor.checks import (
     _check_slack_socket_mode,
     _check_stale_path_t3,
     _check_stale_uv_venv,
+    _check_t3_shim_receipt,
     _check_teatree_mcp_registration,
+    _check_ttyd_for_dashboard,
     _check_worker_running,
 )
 from teatree.cli.doctor.plugin_repair import (
@@ -75,6 +78,7 @@ __all__ = (
     "PackageNotFoundError",
     "_check_account_switch",
     "_check_agent_session_pins",
+    "_check_chrome_devtools_mcp_suggestion",
     "_check_connector_manifest",
     "_check_dangling_editable_pth",
     "_check_dream_staleness",
@@ -91,7 +95,9 @@ __all__ = (
     "_check_slack_socket_mode",
     "_check_stale_path_t3",
     "_check_stale_uv_venv",
+    "_check_t3_shim_receipt",
     "_check_teatree_mcp_registration",
+    "_check_ttyd_for_dashboard",
     "_check_worker_running",
     "_do_ensure_plugin_registered",
     "_ensure_plugin_registered",
@@ -530,9 +536,13 @@ class IntrospectionHelpers:
 
 @doctor_app.command()
 def check(
-    json_output: bool = typer.Option(  # noqa: FBT001 — typer CLI boolean flag; the bool parameter is typer's option idiom
-        False, "--json", help="Emit findings as JSON for the watchdog container."
+    *,
+    repair: bool = typer.Option(
+        False,
+        "--repair",
+        help="Re-point a relocated/hijacked t3 editable install at the expected checkout (#3231).",
     ),
+    json_output: bool = typer.Option(False, "--json", help="Emit findings as JSON for the watchdog container."),
 ) -> bool:
     """Verify imports, required tools, and editable-install sanity."""
     # ``is True`` (not truthiness): direct Python callers — the ``_doctor_default``
@@ -564,6 +574,19 @@ def check(
     # Detect/repair a dangling editable .pth (or uv-receipt source) pointing at a
     # reaped worktree before it wedges t3 machine-wide with ModuleNotFoundError.
     ok = _check_dangling_editable_pth() and ok
+    # Detect a relocated/same-name-hijacked editable install: the active t3 shim's
+    # uv receipt editable source no longer matches the expected checkout ($T3_REPO).
+    # Unlike the dangling check, this catches a target that EXISTS but is wrong.
+    # `--repair` re-points it via `uv tool install --editable <checkout> --force`.
+    ok = _check_t3_shim_receipt(repair=repair) and ok
+    # ``check`` is a plain Typer command in the Django-free CLI group, so Django is
+    # not configured on entry. The editable-vs-contribute check reads the DB-home
+    # ``contribute`` setting via ``get_effective_settings()``, whose DB tier fails
+    # safe to empty (→ the ``False`` default) when Django is unconfigured — so
+    # without this every editable install saw a spurious "editable but
+    # contribute=false" WARN despite a stored ``contribute=true`` row (#3213).
+    # Configure Django before any check that reads the ConfigSetting store.
+    ensure_django()
     ok = _check_editable_sanity() and ok
     ok = _check_skills() and ok
     ok = _check_single_db() and ok
@@ -575,13 +598,10 @@ def check(
     # (`t3 setup` installs it); a relative/non-executable one is a hard FAIL.
     ok = check_statusline() and ok
 
-    # ``check`` is a plain Typer command in the Django-free CLI group, so
-    # Django is not configured by the time the self-DB schema guard runs.
-    # Without this the inspection hit ``ImproperlyConfigured`` and silently
-    # WARNed, masking a stale runtime self-DB that locks out the merge path
-    # (#126). Configure Django first so the guard reports the REAL state.
-    ensure_django()
-
+    # Django was configured above (before the editable-sanity check) so the
+    # self-DB schema guard reports the REAL pending-migration state rather than
+    # silently WARNing on ``ImproperlyConfigured`` and masking a stale runtime
+    # self-DB that locks out the merge path (#126).
     from teatree.core.gates.schema_guard import doctor_check_self_db_migrations  # noqa: PLC0415 — lazy CLI import
 
     ok = doctor_check_self_db_migrations() and ok
@@ -589,6 +609,14 @@ def check(
     # PR-28: warn when the loop worker is enabled but no worker holds the flock —
     # the default-ON loops are silently dead until `t3 worker ensure` spawns one.
     ok = _check_worker_running() and ok
+
+    # #3263: the admin dashboard's loopback "Debug session" terminal needs ttyd;
+    # WARN when this box serves the dashboard but ttyd is missing. Surfacing-only.
+    _check_ttyd_for_dashboard()
+
+    # #3271: INFO-suggest the OPTIONAL chrome-devtools MCP e2e/debug aid when it is
+    # absent. Never a WARN/FAIL and never gates — teatree's runtime requires zero MCP.
+    _check_chrome_devtools_mcp_suggestion()
 
     # H24 self-heal (owner directive #10): the hard-FAIL silent-freeze detectors —
     # dead compose containers, a free worker flock over overdue loop work, a
@@ -687,4 +715,4 @@ def check(
 def _doctor_default(ctx: typer.Context) -> None:
     """Run ``check`` when ``t3 doctor`` is invoked with no subcommand (#2065)."""
     if ctx.invoked_subcommand is None:
-        raise typer.Exit(code=0 if check() else 1)
+        raise typer.Exit(code=0 if check(repair=False) else 1)
