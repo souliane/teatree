@@ -15,3 +15,20 @@ USER testuser
 RUN curl -LsSf https://astral.sh/uv/install.sh | sh -s -- -q 2>/dev/null
 ENV PATH="/home/testuser/.local/bin:$PATH"
 WORKDIR /app
+
+# Bake the interpreter + LOCKED third-party dependencies INTO the image so each
+# CI shard no longer resolves + installs the whole dependency set cold from PyPI
+# at `docker run` time — that per-shard cold sync (6x every run) was the bulk of
+# the ~485s test-shard critical path. Only pyproject.toml + uv.lock are needed to
+# resolve the graph; `--no-install-project` bakes third-party deps but NOT the
+# teatree project itself, which is installed editable from the bind-mounted /app
+# at runtime (seconds). CI tags this image `hash(dev/Dockerfile.test, uv.lock)`,
+# so this baked layer and the lockfile can never drift — a lock bump mints a new
+# tag and rebuilds. The baked venv lives OUTSIDE /app so the runtime
+# `-v "$PWD":/app` bind mount does not shadow it. `dev/docker-compose.yml`,
+# `dev/test-matrix.sh`, and src/teatree/cli/eval/docker.py override
+# UV_PROJECT_ENVIRONMENT for their own flows and are unaffected.
+ENV UV_PROJECT_ENVIRONMENT=/home/testuser/venv \
+    UV_PYTHON_INSTALL_DIR=/home/testuser/.local/uv-python
+COPY --chown=testuser:testuser pyproject.toml uv.lock ./
+RUN uv sync --locked --no-install-project --group shard -p 3.13
