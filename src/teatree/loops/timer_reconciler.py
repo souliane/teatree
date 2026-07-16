@@ -44,6 +44,15 @@ PRUNE_RETENTION_SECONDS = 86400
 EXPIRE_INTERVAL_SECONDS = 3600
 #: Grace past a tick's deadline before its still-RUNNING timer is deemed stranded.
 STUCK_GRACE_SECONDS = 60
+#: The headless-queue drain + stuck-run reaper cadence — the safety net that
+#: keeps the headless backlog draining (``drain_headless_queue`` was previously
+#: never scheduled from anywhere) and re-enqueues runs a dead worker abandoned.
+DRAIN_INTERVAL_SECONDS = 300
+#: A live headless run renews its ``Task`` lease from the heartbeat thread every
+#: few seconds; the default claim lease is 300s. A RUNNING ``execute_headless_task``
+#: whose ``Task`` lease has lapsed past this window has a dead worker — its
+#: heartbeat stopped — so the ``DBTaskResult`` is stranded and must be reaped.
+HEADLESS_LEASE_SECONDS = 300
 
 
 def timer_chain_loop_names() -> set[str]:
@@ -201,8 +210,118 @@ def expire_stale_jobs() -> dict[str, int]:
     return {"retired": sum(retired.values())}
 
 
+class _StuckHeadlessRunError(RuntimeError):
+    """Recorded on a stranded ``execute_headless_task`` DBTaskResult reaped by the reconciler."""
+
+
+def _headless_task_id(row) -> int | None:  # noqa: ANN001 — duck-typed DBTaskResult handle
+    """The ``Task`` pk a ``execute_headless_task`` DBTaskResult carries as its first arg."""
+    args = row.args_kwargs.get("args") or []
+    if not args:
+        return None
+    first = args[0]
+    return first if isinstance(first, int) else None
+
+
+def _headless_run_is_dead(task, row, now: dt.datetime) -> bool:  # noqa: ANN001 — duck-typed handles
+    """Whether a RUNNING ``execute_headless_task`` row is a dead-worker orphan.
+
+    The per-run liveness signal is the ``Task`` lease: the headless runner's
+    heartbeat thread renews it every few seconds, so a live run always keeps
+    ``lease_expires_at`` in the future. A run is dead when its heartbeat has
+    stopped — the lease is absent (the claim was lease-reclaimed back to PENDING)
+    or lapsed into the past. The ``started_at`` floor rules out the brief window
+    between the row going RUNNING and the worker claiming + setting the lease, so
+    a just-started healthy run is never reaped. A vanished ``Task`` row leaves an
+    orphaned DBTaskResult that is likewise dead (and un-re-enqueueable).
+    """
+    from teatree.core.models import Task  # noqa: PLC0415 — deferred: ORM import needs the app registry
+
+    if row.started_at is None:
+        return False
+    if row.started_at > now - dt.timedelta(seconds=HEADLESS_LEASE_SECONDS + STUCK_GRACE_SECONDS):
+        return False
+    if task is None:
+        return True
+    lease = task.lease_expires_at
+    heartbeat_live = task.status == Task.Status.CLAIMED and lease is not None and lease > now
+    return not heartbeat_live
+
+
+def reap_stuck_headless_runs() -> dict[str, int]:
+    """Fail dead-worker ``execute_headless_task`` runs and re-enqueue their live tasks (#10).
+
+    ``timer_reconciler`` recovers only stranded ``loop_timer`` rows, and
+    ``expire_stale_ready_jobs`` touches only READY rows — so a ``DBTaskResult``
+    left RUNNING when a worker died mid-run wedges forever: the Task's lease is
+    reclaimed back to PENDING but ``execute_headless_task``'s auto-enqueue fires
+    only on post_save creation, so it is never re-run. This reaper closes that
+    gap: each RUNNING ``execute_headless_task`` past its lease+grace with a dead
+    heartbeat is marked FAILED (reversible, inspectable — no hard delete), and
+    when its ``Task`` row is still non-terminal a fresh ``execute_headless_task``
+    is enqueued so the work resumes. The claim CAS in ``execute_headless_task``
+    makes a redundant re-enqueue safe (a second run loses the claim and fails
+    cleanly, never double-executes).
+    """
+    from django_tasks.base import TaskResultStatus  # noqa: PLC0415 — deferred: heavy/optional dep at call site
+    from django_tasks_db.models import DBTaskResult  # noqa: PLC0415 — deferred: heavy/optional dep at call site
+
+    from teatree.core.models import Task  # noqa: PLC0415 — deferred: ORM import needs the app registry
+    from teatree.core.tasks import execute_headless_task  # noqa: PLC0415 — deferred: task-body import
+
+    now = timezone.now()
+    running = DBTaskResult.objects.filter(
+        task_path=execute_headless_task.module_path,
+        status=TaskResultStatus.RUNNING,
+    )
+    counts = {"failed": 0, "reenqueued": 0}
+    for row in running:
+        task_id = _headless_task_id(row)
+        if task_id is None:
+            continue  # a malformed row with no identifiable Task — leave it untouched.
+        task = Task.objects.filter(pk=task_id).first()
+        if not _headless_run_is_dead(task, row, now):
+            continue
+        row.set_failed(_StuckHeadlessRunError(f"execute_headless_task {row.id} RUNNING past lease+grace; worker dead"))
+        counts["failed"] += 1
+        if task is not None and task.status not in Task.Status.terminal():
+            execute_headless_task.enqueue(task.pk, task.phase)
+            counts["reenqueued"] += 1
+    if any(counts.values()):
+        logger.info("reap_stuck_headless_runs: %s", counts)
+    return counts
+
+
+@task(queue_name=LOOPS_QUEUE)
+def drain_headless_chain() -> dict[str, int]:
+    """Reap dead headless runs, drain the pending headless backlog, re-schedule ~5min out.
+
+    The scheduled home of ``drain_headless_queue`` — it was defined but NEVER
+    scheduled from anywhere, so the pending headless backlog only drained on the
+    post_save auto-enqueue (missed on a lease-reclaim / stale interactive row).
+    Seeded by :func:`ensure_maintenance_chains` at worker startup and
+    self-perpetuating, like its sibling reconcile/prune/expire chains. Runs on
+    the ``loops`` queue and enqueues onto ``default`` (it never runs the heavy
+    headless work itself). Self-dedups first so an at-least-once redelivery
+    collapses to one.
+    """
+    from teatree.core.tasks import drain_headless_queue_body  # noqa: PLC0415 — deferred: task-body import
+
+    if _pending_for_path(drain_headless_chain.module_path):
+        return {"deduped": 1}
+    reaped = reap_stuck_headless_runs()
+    drained = drain_headless_queue_body()
+    drain_headless_chain.using(run_after=timezone.now() + dt.timedelta(seconds=DRAIN_INTERVAL_SECONDS)).enqueue()
+    return {
+        "reaped_failed": reaped["failed"],
+        "reaped_reenqueued": reaped["reenqueued"],
+        "drained": len(drained["enqueued"]),
+        "rerouted": len(drained["rerouted"]),
+    }
+
+
 def ensure_maintenance_chains() -> None:
-    """Seed the reconcile + prune + stale-job-expiry + usage-window-recovery + preset chains if absent."""
+    """Seed the reconcile + prune + expire + drain + usage-window-recovery + preset chains if absent."""
     from teatree.loops.preset_transitions import ensure_preset_transitions_chain  # noqa: PLC0415 — cycle-safe
     from teatree.loops.usage_window_recovery import ensure_usage_window_recovery_chain  # noqa: PLC0415 — cycle-safe
 
@@ -213,6 +332,12 @@ def ensure_maintenance_chains() -> None:
         prune_task_results.using(run_after=now + dt.timedelta(seconds=PRUNE_INTERVAL_SECONDS)).enqueue()
     if not _pending_for_path(expire_stale_jobs.module_path):
         expire_stale_jobs.using(run_after=now + dt.timedelta(seconds=EXPIRE_INTERVAL_SECONDS)).enqueue()
+    # #10: the headless-queue drain + dead-run reaper. ``drain_headless_queue``
+    # had zero call sites, so the pending headless backlog only drained on the
+    # post_save auto-enqueue — a lease-reclaimed or stale-interactive row was
+    # never re-dispatched. Seeding it here is the "actually run the drain" fix.
+    if not _pending_for_path(drain_headless_chain.module_path):
+        drain_headless_chain.using(run_after=now + dt.timedelta(seconds=DRAIN_INTERVAL_SECONDS)).enqueue()
     # Directive #3: the self-rescheduling usage-window re-arm chain. Its body is inert while
     # ``limit_autorecovery_enabled`` is OFF, so seeding it unconditionally is dark-safe.
     ensure_usage_window_recovery_chain()

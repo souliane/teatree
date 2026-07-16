@@ -12,15 +12,19 @@ from teatree.core.modelkit.phase_tools import ALL_TOOLS
 from teatree.eval.toolset import KNOWN_BUILTIN_TOOLS
 
 
-class TestReviewPhaseDeniesGitWrite:
-    def test_reviewing_disallows_bash_write_edit(self) -> None:
-        # git-write runs through the shell -> Bash; file mutation via Write/Edit.
+class TestReviewPhaseKeepsShellDeniesWrite:
+    def test_reviewing_disallows_write_edit_but_allows_shell(self) -> None:
+        # F4: the reviewer needs the shell (Bash) for the cold-review checkout,
+        # `t3 tool verify-gates`, and `t3 review post-comment`; it never mutates
+        # source, so Write/Edit stay denied.
         disallowed = set(sdk_disallowed_tools_for_phase("reviewing"))
-        assert {"Bash", "Write", "Edit"} <= disallowed
+        assert {"Write", "Edit"} <= disallowed
+        assert "Bash" not in disallowed
 
-    def test_reviewing_disallows_shell_family_and_spawn(self) -> None:
+    def test_reviewing_allows_the_shell_family_and_denies_only_spawn(self) -> None:
         disallowed = set(sdk_disallowed_tools_for_phase("reviewing"))
-        assert {"Bash", "BashOutput", "KillBash", "KillShell"} <= disallowed
+        assert disallowed.isdisjoint({"Bash", "BashOutput", "KillBash", "KillShell"})
+        # A cold reviewer never spawns further sub-agents.
         assert {"Agent", "Task"} <= disallowed
 
     def test_reviewing_keeps_read_tools(self) -> None:

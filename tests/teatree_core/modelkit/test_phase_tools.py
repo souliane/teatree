@@ -6,12 +6,15 @@ class TestToolsForPhase:
         coding = tools_for_phase("coding")
         assert {"shell", "write_file", "edit_file", "read_file"} <= coding
 
-    def test_review_phase_is_read_only_no_write_no_shell(self) -> None:
+    def test_review_phase_has_shell_and_read_but_never_write(self) -> None:
+        # F4: the reviewer skill requires the shell (cold-review checkout,
+        # `t3 tool verify-gates`, `git log -S`, `t3 review post-comment`) to
+        # produce a merge_safe/hold verdict — but never mutates source, so it
+        # keeps the read-mostly-with-shell shape (no write/edit).
         reviewing = tools_for_phase("reviewing")
-        assert "read_file" in reviewing
+        assert {"read_file", "search_files", "shell"} <= reviewing
         assert "write_file" not in reviewing
         assert "edit_file" not in reviewing
-        assert "shell" not in reviewing
 
     def test_short_verb_spelling_resolves_same_as_gerund(self) -> None:
         assert tools_for_phase("review") == tools_for_phase("reviewing")
@@ -30,8 +33,10 @@ class TestToolsForPhase:
             assert allowed | disallowed == ALL_TOOLS
             assert allowed & disallowed == frozenset()
 
-    def test_review_phase_disallows_write_tools(self) -> None:
-        assert {"write_file", "edit_file", "shell"} <= disallowed_tools_for_phase("reviewing")
+    def test_review_phase_disallows_write_but_allows_shell(self) -> None:
+        disallowed = disallowed_tools_for_phase("reviewing")
+        assert {"write_file", "edit_file"} <= disallowed
+        assert "shell" not in disallowed
 
 
 class TestDispatchablePhaseTotality:
@@ -47,10 +52,17 @@ class TestDispatchablePhaseTotality:
         debugging = tools_for_phase("debugging")
         assert {"shell", "write_file", "edit_file", "read_file"} <= debugging
 
-    def test_codex_review_phases_are_read_only_no_write_no_shell(self) -> None:
-        for phase in ("codex_reviewing", "codex_adversarial_reviewing"):
+    def test_codex_review_has_shell_but_never_writes(self) -> None:
+        # codex_reviewing runs the same shell-backed review flow as reviewing.
+        tools = tools_for_phase("codex_reviewing")
+        assert {"read_file", "shell"} <= tools
+        assert "write_file" not in tools
+        assert "edit_file" not in tools
+
+    def test_adversarial_and_e2e_review_stay_read_mostly_no_shell(self) -> None:
+        # The adversarial/e2e review phases are pure diff-read audits — no shell.
+        for phase in ("codex_adversarial_reviewing", "e2e_reviewing"):
             tools = tools_for_phase(phase)
             assert "read_file" in tools, phase
             assert "write_file" not in tools, phase
-            assert "edit_file" not in tools, phase
             assert "shell" not in tools, phase

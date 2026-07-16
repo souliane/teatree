@@ -32,6 +32,7 @@ from django_tasks.base import TaskResultStatus
 from django_tasks_db.models import DBTaskResult
 
 from teatree.core import availability
+from teatree.core.modelkit.notify_policy import NotifyAudience
 from teatree.core.models import ConfigSetting, LoopPresetOverride
 from teatree.core.notify import NotifyKind, notify_user
 from teatree.loop.preset_resolution import ActivePreset, resolve_active_preset
@@ -104,7 +105,7 @@ def _post_switch_line(active: ActivePreset | None, now: dt.datetime) -> None:
         text = f"Loop preset → {active.preset.name} ({active.reason}{boundary})."
         key = f"loop_preset_switch:{active.preset.name}:{now:%Y%m%d%H%M}"
     try:
-        notify_user(text, kind=NotifyKind.INFO, idempotency_key=key)
+        notify_user(text, kind=NotifyKind.INFO, idempotency_key=key, audience=NotifyAudience.INTERNAL)
     except Exception:
         logger.debug("preset transition notify failed for key=%s", key, exc_info=True)
 

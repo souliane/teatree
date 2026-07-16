@@ -62,6 +62,7 @@ def _make_alias(tmp_path: Path) -> str:
                 kind VARCHAR(16) NOT NULL,
                 status VARCHAR(16) NOT NULL,
                 text TEXT NOT NULL,
+                audience VARCHAR(32) NOT NULL DEFAULT '',
                 channel_ref VARCHAR(255) NOT NULL DEFAULT '',
                 posted_ts VARCHAR(64) NOT NULL DEFAULT '',
                 permalink VARCHAR(512) NOT NULL DEFAULT '',

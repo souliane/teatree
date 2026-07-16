@@ -32,6 +32,7 @@ from teatree.core.backend_factory import messaging_from_overlay
 from teatree.core.gates.review_request_draft_gate import is_draft_mr
 from teatree.core.gates.review_request_guard import canonical_mr_url, resolve_guard_target, should_post_review_request
 from teatree.core.gates.review_request_state_gate import check_reviewed_state, reviewed_state_required
+from teatree.core.modelkit.notify_policy import NotifyAudience
 from teatree.core.models import Ticket
 from teatree.core.on_behalf_gate_recorded import (
     OnBehalfPostBlockedError,
@@ -279,6 +280,7 @@ class Command(TyperCommand):
             text,
             kind=NotifyKind.INFO,
             idempotency_key=f"review_request_draft:{canonical}",
+            audience=NotifyAudience.COLLEAGUE_ACTION,
         )
 
     @staticmethod
