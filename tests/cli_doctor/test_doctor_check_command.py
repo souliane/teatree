@@ -107,10 +107,18 @@ class TestDoctorCheckCommand:
             patch.object(teatree_cli_doctor.shutil, "which", side_effect=lambda t: f"/usr/bin/{t}"),
             patch.object(IntrospectionHelpers, "editable_info", return_value=(True, "file:///src")),
             patch.object(teatree_overlay_loader, "get_all_overlays", return_value={}),
+            patch("teatree.core.gates.schema_guard.pending_migrations", return_value=[]),
+            # Isolate the editable-vs-contribute WARN under test from the sibling
+            # editable-install gates (shim receipt / dangling .pth), which the
+            # fake `file:///src` source would trip as a real FAIL now that the
+            # exit code reflects the true verdict (#3313).
+            patch.object(teatree_cli_doctor, "_check_t3_shim_receipt", return_value=True),
+            patch.object(teatree_cli_doctor, "_check_dangling_editable_pth", return_value=True),
+            patch.object(teatree_cli_doctor, "_check_entrypoint_is_primary_clone", return_value=True),
         ):
             result = runner.invoke(app, ["doctor", "check"])
 
-        assert result.exit_code == 0
+        assert result.exit_code == 0, result.output
         assert "WARN" in result.output
 
     def test_fails_when_required_tool_missing(self, tmp_path, monkeypatch):
@@ -127,6 +135,9 @@ class TestDoctorCheckCommand:
         ):
             result = runner.invoke(app, ["doctor", "check"])
 
+        # The Critical exit-code contract (#3313): a hard FAIL must exit non-zero
+        # so `t3 doctor check && …` in CI/hooks does not get silent success.
+        assert result.exit_code == 1
         assert "FAIL  Required tool not found: direnv" in result.output
 
     def test_validates_skills_in_claude_dir(self, tmp_path, monkeypatch):
@@ -139,6 +150,7 @@ class TestDoctorCheckCommand:
             patch.object(teatree_cli_doctor.shutil, "which", side_effect=lambda t: f"/usr/bin/{t}"),
             patch.object(IntrospectionHelpers, "editable_info", return_value=(False, "")),
             patch.object(teatree_overlay_loader, "get_all_overlays", return_value={}),
+            patch("teatree.core.gates.schema_guard.pending_migrations", return_value=[]),
         ):
             result = runner.invoke(app, ["doctor", "check"])
 
@@ -245,6 +257,7 @@ class TestDoctorCheckCommand:
             patch.object(teatree_overlay_loader, "get_all_overlays", return_value={}),
             patch.object(teatree_cli_doctor, "ensure_django", side_effect=_record_setup),
             patch.object(teatree_cli_doctor, "_check_editable_sanity", side_effect=_record_editable),
+            patch("teatree.core.gates.schema_guard.pending_migrations", return_value=[]),
         ):
             result = runner.invoke(app, ["doctor", "check"])
 

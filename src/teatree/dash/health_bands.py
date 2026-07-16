@@ -21,11 +21,11 @@ from teatree.core.availability import resolve_mode
 from teatree.core.cost import CostReport, cycle_start, cycle_start_datetime
 from teatree.core.factory.operational_health import read_health
 from teatree.core.models.anthropic_token_usage import AnthropicTokenUsage
-from teatree.core.models.config_setting import ConfigSetting
 from teatree.core.models.known_issue import KnownIssue
 from teatree.core.models.task_attempt import TaskAttempt
 from teatree.core.models.usage_window_state import UsageWindowState
 from teatree.core.selectors import build_headless_queue, build_interactive_queue
+from teatree.dash.gate_state import dash_gate_fail_open
 from teatree.loops.live import LoopStatusReport, build_report
 
 logger = logging.getLogger(__name__)
@@ -216,20 +216,4 @@ def _queue_depth() -> QueueDepth:
 
 def _mode_band() -> ModeBand:
     resolution = resolve_mode()
-    return ModeBand(mode=resolution.mode, source=resolution.source, gate_fail_open=_gate_fail_open())
-
-
-def _gate_fail_open() -> bool:
-    """Whether the master ``danger_gate_fail_open`` switch is on (a red banner when it is).
-
-    Reads the DB-home value through the ORM — the same store the dashboard's own
-    gate toggle writes to, and the same canonical DB the over-deny gates' cold
-    reader consults in the admin process. Fail-closed to ``False`` on a broken
-    read so the banner never falsely alarms.
-    """
-    try:
-        stored = ConfigSetting.objects.get_effective("danger_gate_fail_open")
-    except Exception:
-        logger.warning("dash danger_gate_fail_open read failed — treating as closed", exc_info=True)
-        return False
-    return bool(stored)
+    return ModeBand(mode=resolution.mode, source=resolution.source, gate_fail_open=dash_gate_fail_open())

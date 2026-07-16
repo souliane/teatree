@@ -103,12 +103,15 @@ def _derived() -> list[dict[str, Any]]:
             "path": str(CANONICAL_DB),
             "exists": CANONICAL_DB.is_file(),
             "worktree_isolated": DATA_DIR_AUTO_ISOLATED,
-            "regenerable": True,
+            # The canonical store holds tickets, sessions, merge approvals, and the
+            # ConfigSetting rows themselves — user intent, NOT regenerable cache.
+            # Deleting it destroys durable state, so it must never read "deletable".
+            "regenerable": False,
         }
     ]
     counts = _ticket_session_counts()
     if counts is not None:
-        entries.append({"name": "DB row counts", "value": counts, "regenerable": True})
+        entries.append({"name": "DB row counts", "value": counts, "regenerable": False})
     for filename in _REGENERABLE_CACHE_FILES:
         cache_file = DATA_DIR / filename
         entries.append(
@@ -132,11 +135,12 @@ def build_config_view() -> ConfigView:
 
 def _render_derived_entry(entry: dict[str, Any]) -> str:
     name = entry["name"]
+    tag = "[regenerable cache]" if entry.get("regenerable", True) else "[canonical store — NOT regenerable]"
     if "value" in entry:
-        return f"  {name}: {entry['value']}  [regenerable cache]"
+        return f"  {name}: {entry['value']}  {tag}"
     extra = " (worktree-isolated)" if entry.get("worktree_isolated") else ""
     present = "exists" if entry.get("exists") else "not yet created"
-    return f"  {name}: {entry['path']} — {present}{extra}  [regenerable cache]"
+    return f"  {name}: {entry['path']} — {present}{extra}  {tag}"
 
 
 def _render_flag_entry(entry: dict[str, Any]) -> str:
@@ -154,7 +158,10 @@ def render_config_view(view: ConfigView) -> str:
         "Flags — governed feature toggles (stage-labelled lifecycle; born and removed with the code they gate):",
         *(_render_flag_entry(entry) for entry in sorted(view.flags, key=operator.itemgetter("name"))),
         "",
-        "Derived — DB / data-dir regenerable cache (deletable, rebuilt from intent + repo):",
+        (
+            "Derived — DB / data-dir artifacts (regenerable cache rebuilt from intent + repo; "
+            "the canonical store is NOT regenerable — deleting it destroys durable state):"
+        ),
         *(_render_derived_entry(entry) for entry in view.derived),
     ]
     return "\n".join(lines)

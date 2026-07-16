@@ -459,9 +459,11 @@ def _check_stale_uv_venv() -> bool:
     by uv with nothing installed is a wrong-toolchain artifact — it shadows
     pipenv's managed venvs and poisons both ``uv run`` and ``pipenv run``. Walks
     every repo the other repo-scoped doctor gates audit (:func:`_collect_repos`),
-    removes each offending ``.venv``, and WARNs. Removal makes the next run a
-    no-op (idempotent). Crash-proof: any error degrades to a WARN so the doctor
-    run never aborts on this check.
+    removes each offending ``.venv``, and WARNs. A *successful* removal is a WARN
+    that keeps the run GREEN (the problem is fixed; a WARN is surfacing-only and
+    is not extracted into the watchdog's FAIL-line DM). A removal that FAILS is a
+    hard FAIL — the poisoned venv persists, so it must not be silent success
+    (#3313). Removal makes the next run a no-op (idempotent).
     """
     import shutil  # noqa: PLC0415 — deferred: loaded only when this command runs
 
@@ -479,10 +481,9 @@ def _check_stale_uv_venv() -> bool:
                 f"WARN  Removed empty uv-built .venv shadowing pipenv in {repo} ({stale.name}). "
                 "It poisoned both `uv run` and `pipenv run`; pipenv will rebuild its own venv."
             )
-            ok = False
         except OSError as exc:
             typer.echo(
-                f"WARN  Could not remove empty uv-built .venv in {repo}: {exc}. "
+                f"FAIL  Could not remove empty uv-built .venv in {repo}: {exc}. "
                 "Delete it manually (`rm -rf .venv`), then re-run `t3 doctor check`."
             )
             ok = False
@@ -640,7 +641,7 @@ def _check_loop_presets() -> bool:
         findings = consistency_findings()
     except Exception as exc:  # noqa: BLE001  # doctor check must never crash the run
         typer.echo(f"WARN  Loop-preset consistency check crashed: {exc.__class__.__name__}: {exc}")
-        return False
+        return True  # degrades to OK: a crashed advisory read never reddens the run
     if not findings:
         return True
     for finding in findings:
@@ -672,7 +673,7 @@ def _check_dream_staleness() -> bool:
         stale = DreamRunMarker.objects.is_stale(timezone.now())
     except Exception as exc:  # noqa: BLE001 — doctor check must never crash the run
         typer.echo(f"WARN  Dream-staleness check crashed: {exc.__class__.__name__}: {exc}")
-        return False
+        return True  # degrades to OK: a crashed advisory read never reddens the run
     if not stale:
         return True
     typer.echo(
@@ -704,7 +705,7 @@ def _check_dream_transcript_visibility() -> bool:
             return True
     except Exception as exc:  # noqa: BLE001 — doctor check must never crash the run
         typer.echo(f"WARN  Dream-transcript-visibility check crashed: {exc.__class__.__name__}: {exc}")
-        return False
+        return True  # degrades to OK: a crashed advisory read never reddens the run
     typer.echo(
         f"WARN  Dream sees 0 session transcripts under {root} (any age). In the "
         "Docker factory this means the `~/.claude/projects` bind mount is missing "

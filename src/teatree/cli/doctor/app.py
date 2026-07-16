@@ -543,16 +543,27 @@ def check(
         help="Re-point a relocated/hijacked t3 editable install at the expected checkout (#3231).",
     ),
     json_output: bool = typer.Option(False, "--json", help="Emit findings as JSON for the watchdog container."),
-) -> bool:
+) -> None:
     """Verify imports, required tools, and editable-install sanity."""
-    # ``is True`` (not truthiness): direct Python callers — the ``_doctor_default``
-    # callback and tests calling ``check()`` — receive the typer ``OptionInfo``
-    # sentinel as the default, which is truthy; only a CLI-resolved ``--json`` is
-    # the real ``True`` that routes to the JSON surface.
-    if json_output is True:
+    if json_output:
         from teatree.cli.doctor.self_heal import check_as_json  # noqa: PLC0415 — deferred: --json path only
 
-        return check_as_json(check)
+        ok = check_as_json(lambda: run_doctor_checks(repair=repair))
+    else:
+        ok = run_doctor_checks(repair=repair)
+    # Standalone Click discards a command's return value, so the pass/fail bool
+    # must be turned into the process exit code here — a `t3 doctor check && …`
+    # in CI/hooks and the watchdog's non-JSON path both key on it (#3313).
+    raise typer.Exit(code=0 if ok else 1)
+
+
+def run_doctor_checks(*, repair: bool = False) -> bool:
+    """Run every doctor check; return ``False`` if any hard-FAILs.
+
+    The pure-boolean core the ``check`` command turns into the process exit code.
+    Direct callers — ``_doctor_default`` and the ``--json`` surface — reuse it so
+    the pass/fail verdict is computed in exactly one place.
+    """
     try:
         import django  # noqa: PLC0415, F401 — deferred: Django import at call time; re-export
 
@@ -714,4 +725,4 @@ def check(
 def _doctor_default(ctx: typer.Context) -> None:
     """Run ``check`` when ``t3 doctor`` is invoked with no subcommand (#2065)."""
     if ctx.invoked_subcommand is None:
-        raise typer.Exit(code=0 if check(repair=False) else 1)
+        raise typer.Exit(code=0 if run_doctor_checks(repair=False) else 1)

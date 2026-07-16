@@ -57,7 +57,9 @@ class DreamStalenessOutputTestCase(TestCase):
 
 
 class DreamStalenessCrashTestCase(TestCase):
-    def test_is_stale_crash_returns_false_with_warn(self) -> None:
+    def test_is_stale_crash_degrades_to_ok_with_warn(self) -> None:
+        # A crashed advisory read degrades to OK (True), matching the docstring —
+        # a DB-offline read must WARN, never redden the run (#3313).
         buf = io.StringIO()
         with (
             patch.object(
@@ -68,7 +70,7 @@ class DreamStalenessCrashTestCase(TestCase):
             redirect_stdout(buf),
         ):
             result = _check_dream_staleness()
-        assert result is False
+        assert result is True
         out = buf.getvalue()
         assert "WARN" in out
         assert "RuntimeError" in out

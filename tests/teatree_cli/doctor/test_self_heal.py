@@ -265,8 +265,7 @@ class RunAllAndJsonTest(TestCase):
             assert run_self_heal_checks() is True
 
     def test_check_as_json_emits_ok_and_findings(self) -> None:
-        def fake_check(*, json_output: bool = False) -> bool:
-            assert json_output is False
+        def fake_check() -> bool:
             print("FAIL  the worker is down")  # noqa: T201 — the doctor echo the JSON surface parses
             print("OK    everything else")  # noqa: T201 — the doctor echo the JSON surface parses
             return False
@@ -283,10 +282,10 @@ class RunAllAndJsonTest(TestCase):
 
 
 class DoctorJsonSurfaceTest(TestCase):
-    """`--json` routes to the JSON surface; a subcommand-only call never does (typer sentinel guard)."""
+    """`--json` routes to the JSON surface; a subcommand-only call never does."""
 
     def test_json_flag_routes_to_check_as_json(self) -> None:
-        def _emit(_fn) -> bool:
+        def _emit(_run) -> bool:
             print('{"ok": true, "findings": []}')  # noqa: T201 — the JSON surface under test
             return True
 
@@ -294,6 +293,41 @@ class DoctorJsonSurfaceTest(TestCase):
             result = CliRunner().invoke(cli_app, ["doctor", "check", "--json"])
         assert spy.called
         assert '"ok": true' in result.output
+
+    def test_json_without_repair_threads_repair_false(self) -> None:
+        """`--json` alone must not run the checks with repair implicitly enabled (#3313).
+
+        The watchdog's unattended `t3 doctor check --json` re-pointed the global
+        editable install because the JSON path re-invoked the checks with the
+        `--repair` OptionInfo sentinel (truthy). The JSON callable now threads the
+        resolved `repair=False`.
+        """
+        import teatree.cli.doctor.app as doctor_app_mod  # noqa: PLC0415
+
+        captured: dict[str, bool] = {}
+
+        def _run_checks(*, repair: bool = False) -> bool:
+            captured["repair"] = repair
+            return True
+
+        with mock.patch.object(doctor_app_mod, "run_doctor_checks", side_effect=_run_checks):
+            result = CliRunner().invoke(cli_app, ["doctor", "check", "--json"])
+        assert captured["repair"] is False
+        assert result.exit_code == 0
+
+    def test_json_with_repair_threads_repair_true(self) -> None:
+        """`--json --repair` threads the resolved `repair=True` through the JSON path."""
+        import teatree.cli.doctor.app as doctor_app_mod  # noqa: PLC0415
+
+        captured: dict[str, bool] = {}
+
+        def _run_checks(*, repair: bool = False) -> bool:
+            captured["repair"] = repair
+            return True
+
+        with mock.patch.object(doctor_app_mod, "run_doctor_checks", side_effect=_run_checks):
+            CliRunner().invoke(cli_app, ["doctor", "check", "--json", "--repair"])
+        assert captured["repair"] is True
 
     def test_check_without_json_does_not_route_to_json(self) -> None:
         with (
