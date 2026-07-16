@@ -52,20 +52,27 @@ _WRITE: Final[frozenset[str]] = frozenset({"write_file", "edit_file"})
 _FULL: Final[frozenset[str]] = ALL_TOOLS
 
 #: Canonical phase -> the exact set of capability tool names it may call.
-#: A read-only phase (reviewing, e2e_reviewing, requesting_review, scanning_news,
-#: answering, codex_reviewing) has NO write/edit/shell — the cold-review
-#: least-privilege PR-11 enforces on Lane A. A write phase (coding, testing, e2e,
-#: debugging) gets the full set. ``bughunt`` executes to reproduce a candidate
-#: but never writes (shell + dispatch, no write/edit). ``planning`` gets the
-#: shell (no write/edit) so the planner can do honest git archaeology — fetch,
-#: log, base_sha capture — the same shell-in-a-read-mostly-phase shape bughunt
-#: and shipping already carry. An unknown phase falls back to read-only
-#: (:func:`tools_for_phase`) — deny-by-default, so a new phase never silently
-#: inherits shell/write until it is added here. TOTALITY: every dispatchable
-#: ``SUBAGENT_BY_PHASE`` phase MUST have an explicit entry here (the
-#: ``test_registry_parity`` totality lane), so the read-only fallback is
-#: defense-in-depth for a genuinely unregistered phase, never the silent
-#: resolution for a dispatchable one (#10).
+#: A read-mostly phase (e2e_reviewing, requesting_review, scanning_news, answering)
+#: has NO write/edit/shell — the cold-review least-privilege PR-11 enforces on Lane
+#: A. A write phase (coding, testing, e2e, debugging) gets the full set. ``bughunt``
+#: executes to reproduce a candidate but never writes (shell + dispatch, no
+#: write/edit). ``planning`` gets the shell (no write/edit) so the planner can do
+#: honest git archaeology — fetch, log, base_sha capture. ``reviewing`` /
+#: ``codex_reviewing`` get the SAME read-mostly-with-shell shape: the reviewer skill
+#: requires the shell to fetch the exact pushed head (the ``git worktree add
+#: --detach`` cold-review checkout), run ``t3 tool verify-gates`` / ``git`` / ``git
+#: log -S`` archaeology, and post the verdict via ``t3 review post-comment`` — with
+#: NO write/edit (a review never mutates source), so it stays least-privilege while
+#: being ABLE to produce a merge_safe/hold verdict (F4). The teatree MCP review
+#: tools (``mcp__teatree__github_pr_diff`` / ``review_post_comment`` /
+#: ``task_complete``) are MCP-server tools, not built-in capabilities, so they are
+#: never in the disallow complement and reach the spawn independently of this table.
+#: An unknown phase falls back to read-only (:func:`tools_for_phase`) —
+#: deny-by-default, so a new phase never silently inherits shell/write until it is
+#: added here. TOTALITY: every dispatchable ``SUBAGENT_BY_PHASE`` phase MUST have an
+#: explicit entry here (the ``test_registry_parity`` totality lane), so the
+#: read-only fallback is defense-in-depth for a genuinely unregistered phase, never
+#: the silent resolution for a dispatchable one (#10).
 _TOOLS_BY_PHASE: Final[dict[str, frozenset[str]]] = {
     "planning": _READ_ONLY | _WEB | {"dispatch_subtask", "shell"},
     "scoping": _READ_ONLY | _WEB,
@@ -73,9 +80,9 @@ _TOOLS_BY_PHASE: Final[dict[str, frozenset[str]]] = {
     "testing": _FULL,
     "e2e": _FULL,
     "debugging": _FULL,
-    "reviewing": _READ_ONLY | _WEB,
+    "reviewing": _READ_ONLY | _WEB | {"shell"},
     "e2e_reviewing": _READ_ONLY | _WEB,
-    "codex_reviewing": _READ_ONLY | _WEB,
+    "codex_reviewing": _READ_ONLY | _WEB | {"shell"},
     "codex_adversarial_reviewing": _READ_ONLY | _WEB,
     "requesting_review": _READ_ONLY,
     "scanning_news": _READ_ONLY | _WEB,
