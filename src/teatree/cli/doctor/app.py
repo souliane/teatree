@@ -25,6 +25,7 @@ from teatree.cli.doctor.checks import (
     _check_connector_manifest,
     _check_dangling_editable_pth,
     _check_dream_staleness,
+    _check_dream_transcript_visibility,
     _check_editable_sanity,
     _check_entrypoint_is_primary_clone,
     _check_legacy_overlay_alias,
@@ -75,6 +76,7 @@ __all__ = (
     "_check_connector_manifest",
     "_check_dangling_editable_pth",
     "_check_dream_staleness",
+    "_check_dream_transcript_visibility",
     "_check_editable_sanity",
     "_check_entrypoint_is_primary_clone",
     "_check_legacy_overlay_alias",
@@ -619,6 +621,7 @@ def check(
     # (not a hard FAIL): a stale dream cron means memories pile up unpromoted,
     # which the operator should fix, but it must not red the whole doctor run.
     _check_dream_staleness()
+    _check_dream_transcript_visibility()
 
     # Slack Socket Mode readiness (#106 / BLUEPRINT § B5). Extends the Slack scope
     # auto-management to the app-level (xapp-) token + socket-mode manifest: it

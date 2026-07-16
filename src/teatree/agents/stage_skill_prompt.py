@@ -11,18 +11,25 @@ from teatree.agents.skill_injection import _explicit_load_name
 from teatree.core.models import Task
 
 
-def stage_skills_present(task: Task, skills: list[str]) -> list[str]:
+def stage_skills_present(task: Task, skills: list[str], *, configured: list[str] | None = None) -> list[str]:
     """The overlay's configured stage skills for *task*'s phase, present in *skills*.
 
     Only stage skills actually in the resolved bundle are scoped, so an
-    unresolvable one is not falsely surfaced as embedded.
+    unresolvable one is not falsely surfaced as embedded. *configured* threads
+    the dispatch's single ``active_overlay_stage_skills`` resolution (#3206) so
+    the prompt builders reuse it instead of re-resolving (which re-warns and
+    re-reads SKILL.md); when absent, it is resolved here.
     """
-    from teatree.agents.skill_bundle import active_overlay_stage_skills  # noqa: PLC0415 — deferred: call-time import
+    if configured is None:
+        from teatree.agents.skill_bundle import (  # noqa: PLC0415 — deferred: call-time import
+            active_overlay_stage_skills,
+        )
 
-    configured = set(active_overlay_stage_skills(task.phase))
-    if not configured:
+        configured = active_overlay_stage_skills(task.phase)
+    configured_set = set(configured)
+    if not configured_set:
         return []
-    return [s for s in skills if _explicit_load_name(s) in configured]
+    return [s for s in skills if _explicit_load_name(s) in configured_set]
 
 
 def stage_precedence_line(stage_skills: list[str]) -> str:
