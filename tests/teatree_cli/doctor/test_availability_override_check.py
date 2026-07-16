@@ -30,11 +30,13 @@ def _run() -> str:
 
 class AvailabilityOverrideDoctorCheckTestCase(TestCase):
     def test_old_no_expiry_override_warns_and_names_loops(self) -> None:
-        Loop.objects.create(
+        Loop.objects.get_or_create(
             name="review",
-            delay_seconds=60,
-            colleague_facing=True,
-            script="src/teatree/loops/review/loop.py",
+            defaults={
+                "delay_seconds": 60,
+                "colleague_facing": True,
+                "script": "src/teatree/loops/review/loop.py",
+            },
         )
         old = datetime.now(tz=UTC) - timedelta(hours=30)
         with (
