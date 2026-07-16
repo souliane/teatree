@@ -58,10 +58,12 @@ def _ledger_lines(tmp_path: Path) -> list[dict[str, object]]:
     return [json.loads(line) for line in ledger.read_text(encoding="utf-8").splitlines()]
 
 
-# A HIGH user-voice shape — a heading announcing a verbatim user block.
-# Neutral synthetic content; trips the existing ``heading-user-mandate``
-# pattern without quoting any real person.
-_HIGH_VOICE_PROMPT = "## User mandate\n\nImplement the export endpoint and wire it to the dashboard."
+# A HIGH user-voice shape — a heading that explicitly announces a verbatim user
+# block. Neutral synthetic content; trips the unconditional
+# ``heading-user-ask-verbatim`` pattern (a bare ``## User mandate`` shape now
+# downgrades to MEDIUM without adjacent quote evidence, #3240) without quoting any
+# real person.
+_HIGH_VOICE_PROMPT = "## User ask (verbatim, 2026-05-20)\n\nImplement the export endpoint and wire it to the dashboard."
 
 
 class TestExtractDispatchPayload:
@@ -126,7 +128,7 @@ class TestHandlerDeny:
         self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
     ) -> None:
         # The subject field is scanned too — a quote pasted there is caught.
-        data = _agent("ordinary brief body", description="## User mandate")
+        data = _agent("ordinary brief body", description="## User ask (verbatim, 2026-05-20)")
         blocked = handle_dispatch_prompt_quote_scanner(data)
         assert blocked is True
         capsys.readouterr()
@@ -259,7 +261,7 @@ class TestOnTaskCreateGate:
 
     def test_high_quote_in_subject_denies(self, tmp_path: Path) -> None:
         _enable_task_gate()
-        blocked, payload = _run_task("ordinary brief", subject="## User mandate")
+        blocked, payload = _run_task("ordinary brief", subject="## User ask (verbatim, 2026-05-20)")
         assert blocked is True
         assert payload is not None
         assert payload["continue"] is False
