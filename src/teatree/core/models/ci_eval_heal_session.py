@@ -9,12 +9,12 @@ when a red cannot be greened.
 Two invariants are enforced structurally on the model, not left to the loop:
 
 * **Never suppress a red.** ``mark_green`` is guarded by :func:`_no_reds` — a
-  session carrying any red scenario cannot transition to ``GREEN``. The only
-  terminal states are ``GREEN`` (genuinely clean) and ``HALTED`` (escalated).
+    session carrying any red scenario cannot transition to ``GREEN``. The only
+    terminal states are ``GREEN`` (genuinely clean) and ``HALTED`` (escalated).
 * **Fix the code, never the test.** ``record_fix`` runs the anti-cheat gate
-  (``eval_heal_anticheat``, fetched from the gate registry so the model → gate
-  edge stays inverted); a fix diff touching the scenario tree or the red matcher
-  raises :class:`EvalHealCheatError` and the transition rolls back to ``FIXING``.
+    (``eval_heal_anticheat``, fetched from the gate registry so the model → gate
+    edge stays inverted); a fix diff touching the scenario tree or the red matcher
+    raises :class:`EvalHealCheatError` and the transition rolls back to ``FIXING``.
 
 The bounded fix budget (``max_fix_attempts``) makes "un-greenable" decidable:
 once :attr:`fix_budget_exhausted`, the loop halts and escalates rather than
