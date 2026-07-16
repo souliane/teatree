@@ -7,7 +7,14 @@ the *execution* is swappable behind one ``EvalRunner`` protocol. Three backends:
 *   ``api`` (:class:`~teatree.eval.api_runner.ApiInProcessRunner`) RUNS a Claude
     model fresh in-process via ``claude-agent-sdk`` (the SDK spawns the ``claude``
     CLI child), bounded by the ``max_budget_usd`` circuit breaker. The CI Claude
-    lane.
+    lane, and teatree's default fresh-run transport.
+*   ``anthropic_api``
+    (:class:`~teatree.eval.anthropic_api_runner.AnthropicApiRunner`) RUNS the SAME
+    Claude model fresh, but through the Anthropic Messages API DIRECTLY (the
+    ``anthropic`` package behind a ``pydantic_ai`` ``AnthropicModel``) — NO ``claude``
+    CLI child. The CLI-free Claude lane, so a downstream harness that forbids the
+    Claude Code CLI can adopt these eval scenarios
+    ([#3222](https://github.com/souliane/teatree/issues/3222)).
 *   ``transcript`` (:class:`TranscriptRunner`) REUSES an already-recorded Claude
     Code run — it grades an on-disk transcript a prior subscription-covered turn
     produced, so it runs no model and costs ``$0`` extra. A standalone ``t3 eval
@@ -47,9 +54,18 @@ from teatree.eval.subagent_transcript import is_subagent_transcript, subagent_ru
 from teatree.eval.transcript import extract_terminal_reason, extract_text_blocks, extract_tool_calls, parse_stream_json
 
 API_BACKEND = "api"
+ANTHROPIC_API_BACKEND = "anthropic_api"
 TRANSCRIPT_BACKEND = "transcript"
 PYDANTIC_AI_BACKEND = "pydantic_ai"
-KNOWN_BACKENDS = (API_BACKEND, TRANSCRIPT_BACKEND, PYDANTIC_AI_BACKEND)
+KNOWN_BACKENDS = (API_BACKEND, ANTHROPIC_API_BACKEND, TRANSCRIPT_BACKEND, PYDANTIC_AI_BACKEND)
+
+#: The backends that RUN a Claude model FRESH and bill the Anthropic account: ``api``
+#: (CLI-backed SDK) and ``anthropic_api`` (CLI-free, direct Messages API). Both arm
+#: the require-executed / all-skipped enforcement, both accept the fresh-run-only
+#: ``--trials`` / ``--models`` shapes, and both forward the metered credential into
+#: the ``--docker`` container. The ``transcript`` ($0 replay) and ``pydantic_ai``
+#: (non-Claude, OrcaRouter BYOK) lanes are neither.
+FRESH_CLAUDE_BACKENDS = (API_BACKEND, ANTHROPIC_API_BACKEND)
 
 
 class EvalRunner(Protocol):
@@ -86,6 +102,11 @@ def make_runner(
     missing credential fails loud with
     :class:`~teatree.llm.credentials.CredentialError` rather than authenticating as
     nothing.
+    ``"anthropic_api"`` → the CLI-free Claude runner that RUNS the same model fresh
+    through the Anthropic Messages API directly (no ``claude`` binary). The
+    ``ANTHROPIC_API_KEY`` credential is resolved LAZILY inside the runner, so this
+    branch exports nothing; ``max_turns_override`` / ``effort`` / ``require_executed``
+    thread through, the CLI-only ``max_budget_usd`` knob does not apply.
     ``"transcript"`` → the transcript-ingest runner that REUSES an
     already-recorded run; it runs no model, so it resolves no credential.
     ``"pydantic_ai"`` → the non-Claude runner that RUNS a model through the
@@ -124,6 +145,23 @@ def make_runner(
         credential = resolve_eval_credential()
         credential.export()
         return ApiInProcessRunner(dataclasses.replace(params, conflicting_vars=credential.spec.conflicting_vars))
+    if backend == ANTHROPIC_API_BACKEND:
+        # The CLI-free Claude lane: runs the model through the Anthropic Messages API
+        # directly, no ``claude`` binary. The ``ANTHROPIC_API_KEY`` credential is
+        # resolved LAZILY inside the runner (a missing key skips, or fails loud under
+        # ``require_executed``), so make_runner exports nothing here. Imported at call
+        # time (not module top) to keep the eval CLI import chain Django-free AND
+        # ``anthropic``-free until an anthropic_api run is requested — mirroring the
+        # ``pydantic_ai`` branch below.
+        from teatree.eval.anthropic_api_runner import (  # noqa: PLC0415 — lazy: keeps the eval CLI import chain Django-/anthropic-free until an anthropic_api run is requested.
+            build_anthropic_api_eval_runner,
+        )
+
+        return build_anthropic_api_eval_runner(
+            max_turns_override=params.max_turns_override,
+            effort=params.effort,
+            require_executed=params.require_executed,
+        )
     if backend == TRANSCRIPT_BACKEND:
         return TranscriptRunner(transcript_dir=transcript_dir or Path.cwd())
     if backend == PYDANTIC_AI_BACKEND:

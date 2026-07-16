@@ -1,10 +1,11 @@
 """Integration tests for the deploy entrypoint's fleet-loop disable step.
 
 `deploy/entrypoint.sh` (init role) disables the loops the headless box must
-not run — the Slack-facing `inbox` / `review` / `directive_loop` — through
-`t3 loop disable`, driven by `TEATREE_DISABLED_LOOPS`. Because `t3 loop
-disable` exits 0 even on an unregistered name (it only flips a real `Loop`
-row), a typo in `TEATREE_DISABLED_LOOPS` would silently disable nothing and
+not run — the COLLEAGUE-facing `review` / `directive_loop` — through
+`t3 loop disable`, driven by `TEATREE_DISABLED_LOOPS`. The box now hosts the
+DM-only Slack conversational loop, so `inbox` is NOT disabled by default. Because
+`t3 loop disable` exits 0 even on an unregistered name (it only flips a real
+`Loop` row), a typo in `TEATREE_DISABLED_LOOPS` would silently disable nothing and
 leave the real loop running — a double-run against the operator's laptop. The
 step therefore validates the whole requested list against the registered
 mini-loops (`t3 loop list --json`) and fails loudly, before disabling
@@ -133,9 +134,12 @@ def _run(tmp_path: Path, disabled: str | None, **stub_env: str) -> tuple[subproc
 
 class TestDisableFleetScopedLoops:
     def test_unset_disables_the_default_fleet_loops(self, tmp_path: Path) -> None:
+        # The box hosts the DM-only Slack conversational loop, so `inbox` runs
+        # here and is NOT in the default disabled set — only the colleague-facing
+        # `review` / `directive_loop` are.
         result, disabled = _run(tmp_path, None)
         assert result.returncode == 0, result.stderr
-        assert disabled == ["inbox", "review", "directive_loop"]
+        assert disabled == ["review", "directive_loop"]
 
     def test_explicit_subset_disables_only_those(self, tmp_path: Path) -> None:
         result, disabled = _run(tmp_path, "inbox,review")
