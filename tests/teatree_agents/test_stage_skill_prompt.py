@@ -21,6 +21,17 @@ def test_stage_skills_present_empty_when_none_configured() -> None:
         assert stage_skills_present(_task("coding"), ["rules", "code"]) == []
 
 
+def test_stage_skills_present_uses_threaded_configured_without_reresolving() -> None:
+    # A pre-resolved list threaded from the dispatch (#3206) is used as-is; the
+    # per-dispatch resolver must not run a second time inside this call.
+    with patch("teatree.agents.skill_bundle.active_overlay_stage_skills") as resolver:
+        present = stage_skills_present(
+            _task("coding"), ["rules", "backend-dev", "code"], configured=["backend-dev", "absent"]
+        )
+    assert present == ["backend-dev"]
+    resolver.assert_not_called()
+
+
 def test_stage_precedence_line_names_the_skills_and_is_additive() -> None:
     line = stage_precedence_line(["backend-dev", "frontend-dev"])
     assert "backend-dev" in line

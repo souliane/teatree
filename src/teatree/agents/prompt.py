@@ -213,12 +213,14 @@ def _task_header_lines(task: Task, extra: dict) -> list[str]:
     return lines
 
 
-def build_task_prompt(task: Task, *, skills: list[str] | None = None) -> str:
+def build_task_prompt(task: Task, *, skills: list[str] | None = None, stage_skills: list[str] | None = None) -> str:
     """Build a work prompt for a headless agent.
 
     *skills* is the resolved skill bundle for the dispatch; on the coding phase
     its framework + overlay entries are injected as an explicit skill-load
     block so a code-touching dispatch never relies on auto-detect (#1368).
+    *stage_skills* threads the dispatch's single overlay stage-skill resolution
+    (#3206) so this builder reuses it rather than re-resolving.
     """
     ticket: Ticket = task.ticket
     extra = ticket.extra if isinstance(ticket.extra, dict) else {}
@@ -243,7 +245,8 @@ def build_task_prompt(task: Task, *, skills: list[str] | None = None) -> str:
     )
 
     if normalize_phase(task.phase) == "coding":
-        stage_exclude = frozenset(_explicit_load_name(s) for s in stage_skills_present(task, skills or []))
+        present = stage_skills_present(task, skills or [], configured=stage_skills)
+        stage_exclude = frozenset(_explicit_load_name(s) for s in present)
         lines.extend(
             (
                 "",
@@ -440,7 +443,9 @@ def _phase_specific_lines(
     return ()
 
 
-def build_system_context(task: Task, *, skills: list[str], lifecycle_skill: str = "") -> str:
+def build_system_context(
+    task: Task, *, skills: list[str], lifecycle_skill: str = "", stage_skills: list[str] | None = None
+) -> str:
     """Build the system context for headless (SDK) execution.
 
     When *lifecycle_skill* is provided, only the lifecycle skill and rules
@@ -449,6 +454,8 @@ def build_system_context(task: Task, *, skills: list[str], lifecycle_skill: str 
     and ``code-review`` are additionally embedded in full, and any remaining
     overlay review companion skills get a verbatim "load before reviewing"
     instruction, so a headless reviewer reviews WITH the overlay's conventions.
+    *stage_skills* threads the dispatch's single overlay stage-skill resolution
+    (#3206) so this builder reuses it rather than re-resolving.
     """
     lines = ["You are a TeaTree headless agent executing a task."]
     lines.extend((f"Task ID: {task.pk}", f"Ticket: {task.ticket.ticket_number}"))
@@ -459,7 +466,7 @@ def build_system_context(task: Task, *, skills: list[str], lifecycle_skill: str 
     if parent_summary:
         lines.extend(("", "# Prior Task Result", "", parent_summary))
 
-    stage_present = stage_skills_present(task, skills)
+    stage_present = stage_skills_present(task, skills, configured=stage_skills)
     stage_exclude = frozenset(_explicit_load_name(s) for s in stage_present)
 
     if skills:
