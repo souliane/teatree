@@ -21,6 +21,9 @@ import json
 from collections.abc import Callable
 from unittest.mock import patch
 
+from django.core.management import call_command
+from django.test import TestCase
+
 from teatree.backends.forge_merge_rpc import GhMergeRpc
 from teatree.core.backend_protocols import CHANGED_PATHS_UNAVAILABLE, changed_paths_unavailable, rollup_query_failed
 from teatree.core.merge import CodeHostQuery, classify_required_rollup, failing_required_names
@@ -825,3 +828,23 @@ class TestAttachTouchedPaths:
         attach_touched_paths(clear, _StubQuery([], raises=True))
         assert clear.substrate_paths_indeterminate is True
         assert clear.is_substrate() is True
+
+
+class TestExpectedRequiredContextsFloor(TestCase):
+    """The operator floor fails a DETERMINATE-EMPTY required set closed (Medium finding)."""
+
+    def test_empty_required_with_no_floor_is_green(self) -> None:
+        # No floor configured (default): a gate-less repo still merges green.
+        assert _verdict([_failed("eval")], required=[]) == "green"
+
+    def test_empty_required_with_floor_fails_closed(self) -> None:
+        # A floor is configured but the forge reports NO required checks (branch
+        # protection removed/absent) → fail closed, never "all checks passed".
+        call_command("config_setting", "set", "expected_required_contexts", '["test (3.13)"]')
+        assert _verdict([_failed("eval")], required=[]) == "failed"
+
+    def test_present_required_set_is_unaffected_by_floor(self) -> None:
+        # The floor only bites the empty case; a determinate non-empty required set
+        # classifies normally.
+        call_command("config_setting", "set", "expected_required_contexts", '["test (3.13)"]')
+        assert _verdict(_all_required_green(), required=_REQUIRED) == "green"

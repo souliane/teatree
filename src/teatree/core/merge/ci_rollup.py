@@ -421,6 +421,17 @@ def _gitlab_pipeline_verdict(
     return _classify_gitlab_pipeline(str(head.get("status") or ""))
 
 
+def _expected_required_contexts_floor() -> set[str]:
+    """The operator-configured required-context floor (empty = no floor). Fail-safe to empty."""
+    try:
+        from teatree.config import get_effective_settings  # noqa: PLC0415 — deferred: keep core.merge import-light
+
+        return {name.strip() for name in get_effective_settings(None).expected_required_contexts if name.strip()}
+    except Exception:  # noqa: BLE001 — a config-read failure must never wedge the merge gate; treat as no floor.
+        logger.debug("ci_rollup: expected_required_contexts floor unresolved — treating as no floor")
+        return set()
+
+
 def _github_required_checks_verdict(
     backend: "CodeHostBackend",
     rollup: "list[RawAPIDict]",
@@ -430,13 +441,23 @@ def _github_required_checks_verdict(
 ) -> str:
     """GitHub §17.4.3 verdict: scope the rollup to the branch-protection required contexts.
 
-    Fail CLOSED when the required set is indeterminate; otherwise the shared
+    Fail CLOSED when the required set is indeterminate. When the required set is a
+    DETERMINATE-EMPTY set (branch protection removed/never configured) AND the
+    operator configured an ``expected_required_contexts`` floor, fail CLOSED too — a
+    removed branch-protection gate must not classify as green. Otherwise the shared
     :func:`classify_required_rollup` verdict over only the required contexts (an
-    empty required set → ``green``, a non-required check never blocks).
+    empty required set with no floor → ``green``, a non-required check never blocks).
     """
     required_names = _required_context_names(backend, slug=slug, pr_id=pr_id)
     if required_names is None:
         return "failed"  # fail CLOSED — the branch-protection required set is indeterminate
+    if not required_names and _expected_required_contexts_floor():
+        logger.warning(
+            "ci_rollup: %s#%s reports NO required checks but a floor is configured — failing closed",
+            slug,
+            pr_id,
+        )
+        return "failed"
     return classify_required_rollup(rollup, required_names)
 
 

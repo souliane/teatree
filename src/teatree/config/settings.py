@@ -118,6 +118,7 @@ OVERLAY_OVERRIDABLE_SETTINGS: dict[str, Callable[[Any], Any]] = {
     "require_executed_repro": _parse_strict_bool,
     "require_debt_delta": _parse_strict_bool,
     "require_merge_quality_verdict": _parse_strict_bool,
+    "expected_required_contexts": _parse_str_list,
     "critic_gate_mode": CriticGateMode.parse,
     "send_proxy_mode": SendProxyMode.parse,
     "send_proxy_allowlist": _parse_str_list,
@@ -856,6 +857,15 @@ class _QualityGateSettings:
     # never-lockout escape. A feature flag (governed in ``FEATURE_FLAGS``).
     # Per-overlay overridable.
     require_merge_quality_verdict: bool = False
+    # The branch-protection required-status-check contexts the operator KNOWS must
+    # gate a merge on this overlay's repos (e.g. ``["test (3.13)"]``). A fail-closed
+    # floor: when the forge reports a DETERMINATE-EMPTY required set (branch
+    # protection removed or never configured) while this floor is non-empty, the
+    # keystone CI verdict fails closed to ``failed`` — a removed branch-protection
+    # gate can no longer classify as "all checks passed / green". Default empty =
+    # NO-OP (a genuinely gate-less repo still merges); the operator opts in per
+    # overlay once their repos carry required checks. Per-overlay overridable.
+    expected_required_contexts: list[str] = field(default_factory=list)
     # SELFCATCH-5 / #104 The autonomous user-proxy critic's ENFORCEMENT posture on
     # ``mark_delivered`` (``critic_gate``), re-typed from the former boolean
     # enforcement flag. The critic ALWAYS records the cheap deterministic
