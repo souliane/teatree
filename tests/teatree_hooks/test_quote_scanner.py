@@ -51,14 +51,17 @@ class TestScanTextHighPatterns:
     @pytest.mark.parametrize(
         ("body", "expected_name"),
         [
-            ("## User mandate\n\nplease ship it", "heading-user-mandate"),
-            ("### User feedback (paraphrased): xyz", "heading-user-mandate"),
+            # The two shape-only attribution patterns stay HIGH only with an
+            # adjacent 20+-char double-quoted verbatim span (#3240); a bare shape
+            # downgrades to MEDIUM (see ``TestAttributionShapeQuoteEvidence``).
+            ('## User mandate\n\n"ship the export endpoint to production now"', "heading-user-mandate"),
+            ('### User feedback\n\n"ship the export endpoint to production now"', "heading-user-mandate"),
             ("## User ask (verbatim, 2026-05-20)\nbody", "heading-user-ask-verbatim"),
             ("**User directive (verbatim, today):** body", "bold-user-directive-verbatim"),
             ('> "An imperative sentence the user spoke."', "blockquote-attributed"),
             ('A direct phrase like _"this is a long enough sentence to trip the gate"_.', "italic-quote-long"),
             ('Per user feedback "ship it now"', "per-user-feedback-quoted"),
-            ("Per the user said: ship it now", "the-user-said-colon"),
+            ('the user said: "ship the export endpoint to production now"', "the-user-said-colon"),
         ],
     )
     def test_each_high_pattern_is_flagged(self, body: str, expected_name: str) -> None:
@@ -81,6 +84,54 @@ class TestScanTextMediumPatterns:
         assert result.has_medium
         assert not result.has_high
         assert any(f.name == expected_name for f in result.medium)
+
+
+class TestAttributionShapeQuoteEvidence:
+    """The two shape-only attribution patterns require adjacent quote evidence (#3240).
+
+    ``heading-user-mandate`` / ``the-user-said-colon`` fire on agent paraphrase as
+    readily as on a verbatim quote, so they stay HIGH only when a 20+-char
+    double-quoted span sits in the adjacent paragraph; a bare shape downgrades to
+    MEDIUM warn-allow. The explicit ``(verbatim`` heading and the real quote
+    shapes keep HIGH unconditionally.
+    """
+
+    @pytest.mark.parametrize(
+        ("body", "name"),
+        [
+            ("## User mandate\n\nplease ship the export endpoint", "heading-user-mandate"),
+            ("### User motivation\n\nwe want faster dashboards", "heading-user-mandate"),
+            ("Per the user said: ship it now", "the-user-said-colon"),
+            # A short (<20 char) quote is not meaningful verbatim evidence.
+            ('the user said: "ship it"', "the-user-said-colon"),
+            # A long quote two paragraphs away is NOT adjacent.
+            ('## User mandate\n\nplease ship\n\n"an unrelated long quoted snippet here"', "heading-user-mandate"),
+        ],
+    )
+    def test_bare_shape_downgrades_to_medium(self, body: str, name: str) -> None:
+        result = scan_text(body)
+        assert not result.has_high, f"bare attribution shape must not be HIGH; findings={result.findings!r}"
+        assert result.has_medium
+        assert any(f.name == name and f.severity == quote_scanner.MEDIUM for f in result.medium)
+
+    @pytest.mark.parametrize(
+        ("body", "name"),
+        [
+            ('## User mandate\n\n"ship the export endpoint to production now"', "heading-user-mandate"),
+            ('the user said: "ship the export endpoint to production now"', "the-user-said-colon"),
+        ],
+    )
+    def test_shape_with_adjacent_long_quote_stays_high(self, body: str, name: str) -> None:
+        result = scan_text(body)
+        assert result.has_high, f"attribution shape WITH an adjacent verbatim quote must stay HIGH; got {result!r}"
+        assert any(f.name == name and f.severity == quote_scanner.HIGH for f in result.high)
+
+    def test_explicit_verbatim_heading_stays_high_without_quote(self) -> None:
+        # ``heading-user-ask-verbatim`` structurally announces word-for-word
+        # content, so it keeps HIGH with no adjacent quote — it is NOT downgraded.
+        result = scan_text("## User ask (verbatim, 2026-05-20)\nbody")
+        assert result.has_high
+        assert any(f.name == "heading-user-ask-verbatim" for f in result.high)
 
 
 class TestBlocklistFile:
@@ -398,7 +449,10 @@ class TestHookHandlerEndToEnd:
         # deny row posts to the genuinely-public ``souliane/teatree`` with the probe
         # confirming it public.
         monkeypatch.setattr(_repo_visibility, "probe_visibility", lambda _slug: "PUBLIC")
-        data = _bash('gh pr create --repo souliane/teatree --title t --body "## User mandate\nplease ship now"')
+        data = _bash(
+            "gh pr create --repo souliane/teatree --title t "
+            '--body "## User ask (verbatim, 2026-05-20)\nplease ship now"'
+        )
         blocked = handle_quote_scanner_pretool(data)
         assert blocked is True
         decision = json.loads(capsys.readouterr().out)
@@ -463,7 +517,7 @@ class TestHookHandlerEndToEnd:
     def test_slack_mcp_send_message_is_scanned(self, capsys: pytest.CaptureFixture[str]) -> None:
         data = {
             "tool_name": "mcp__claude_ai_Slack__slack_send_message",
-            "tool_input": {"text": "## User mandate\nplease ship"},
+            "tool_input": {"text": "## User ask (verbatim, 2026-05-20)\nplease ship"},
         }
         blocked = handle_quote_scanner_pretool(data)
         assert blocked is True
@@ -623,7 +677,7 @@ class TestRound2BypassClosures:
     ) -> None:
         # End-to-end: the gate must DENY when the only override token
         # was smuggled past a literal newline.
-        cmd = 'gh issue comment 1 --body "## User mandate\nbody"\n--quote-ok'
+        cmd = 'gh issue comment 1 --body "## User ask (verbatim, 2026-05-20)\nbody"\n--quote-ok'
         blocked = handle_quote_scanner_pretool(_bash(cmd))
         assert blocked is True
         decision = json.loads(capsys.readouterr().out)
@@ -794,7 +848,7 @@ class TestRound2BypassClosures:
     def test_slack_schedule_message_high_match_blocks(self, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
         data = {
             "tool_name": "mcp__claude_ai_Slack__slack_schedule_message",
-            "tool_input": {"text": "## User mandate\nfoo"},
+            "tool_input": {"text": "## User ask (verbatim, 2026-05-20)\nfoo"},
         }
         blocked = handle_quote_scanner_pretool(data)
         assert blocked is True
@@ -901,7 +955,10 @@ class TestRound3BypassClosures:
         # Affirmatively-public target so the leak gate fires (#1213); the point is
         # that the ``--quote-ok`` after the unspaced ``;`` does NOT bypass the deny.
         monkeypatch.setattr(_repo_visibility, "probe_visibility", lambda _slug: "PUBLIC")
-        cmd = 'gh issue comment 1 --repo souliane/teatree --body "## User mandate\nbody";echo --quote-ok'
+        cmd = (
+            'gh issue comment 1 --repo souliane/teatree --body "## User ask (verbatim, 2026-05-20)\nbody"'
+            ";echo --quote-ok"
+        )
         blocked = handle_quote_scanner_pretool(_bash(cmd))
         assert blocked is True
         decision = json.loads(capsys.readouterr().out)
@@ -968,7 +1025,7 @@ class TestRound3BypassClosures:
     def test_slack_edit_message_high_match_blocks(self, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
         data = {
             "tool_name": "mcp__claude_ai_Slack__slack_edit_message",
-            "tool_input": {"text": "## User mandate\nfoo"},
+            "tool_input": {"text": "## User ask (verbatim, 2026-05-20)\nfoo"},
         }
         blocked = handle_quote_scanner_pretool(data)
         assert blocked is True
@@ -1113,7 +1170,7 @@ class TestHeredocToFileDashF:
         # heredoc-written commit message still trips the gate.
         cmd = (
             "cat > /tmp/commit-msg-126b.txt <<'EOF'\n"
-            "the user said: ship it now\n"
+            'the user said: "ship it now without any further review"\n'
             "EOF\n"
             "git commit -F /tmp/commit-msg-126b.txt"
         )
@@ -1156,7 +1213,7 @@ class TestHeredocBodyPairing:
     def test_posted_heredoc_path_body_is_scanned(self) -> None:
         cmd = (
             "cat > /tmp/posted-pair-2.txt <<EOF\n"
-            "the user said: ship it now\n"
+            'the user said: "ship it now without any further review"\n'
             "EOF\n"
             "gh pr create --title t --body-file /tmp/posted-pair-2.txt"
         )
@@ -1176,7 +1233,7 @@ class TestHeredocBodyPairing:
         assert payload.count("UNIQUEPAYLOADTOKEN") == 1
 
     def test_stdin_heredoc_body_is_still_scanned(self) -> None:
-        cmd = "gh pr create --title t --body-file - <<EOF\nthe user said: ship it now\nEOF"
+        cmd = 'gh pr create --title t --body-file - <<EOF\nthe user said: "ship it now without review"\nEOF'
         payload = extract_publish_payload("Bash", {"command": cmd})
         assert payload is not None
         assert scan_text(payload).has_high
@@ -1236,7 +1293,7 @@ class TestPrivateRepoCarveOut:
         _git_init_remote(repo, "git@gitlab.com:acmecorp-engineering/product.git")
         data = {
             "tool_name": "Bash",
-            "tool_input": {"command": 'git commit -m "the user said: ship it now"'},
+            "tool_input": {"command": 'git commit -m "the user said: \\"ship it now without review\\""'},
             "cwd": str(repo),
         }
         blocked = handle_quote_scanner_pretool(data)
@@ -1259,7 +1316,9 @@ class TestPrivateRepoCarveOut:
         monkeypatch.setattr(_repo_visibility, "probe_visibility", lambda _slug: "PRIVATE")
         data = {
             "tool_name": "Bash",
-            "tool_input": {"command": 'gh issue create --title t --body "the user said: ship it now"'},
+            "tool_input": {
+                "command": 'gh issue create --title t --body "the user said: \\"ship it now without review\\""'
+            },
             "cwd": str(repo),
         }
         blocked = handle_quote_scanner_pretool(data)
@@ -1279,7 +1338,10 @@ class TestPrivateRepoCarveOut:
         data = {
             "tool_name": "Bash",
             "tool_input": {
-                "command": 'gh pr create --repo souliane/teatree --title t --body "the user said: ship it now"'
+                "command": (
+                    "gh pr create --repo souliane/teatree --title t "
+                    '--body "the user said: \\"ship it now without review\\""'
+                )
             },
             "cwd": str(repo),
         }
@@ -1336,7 +1398,7 @@ class TestUnreadableCommitBodyQuoteGateVisibilityScoped:
         repo.mkdir()
         _git_init_remote(repo, "git@github.com:souliane/teatree.git")
         monkeypatch.setattr(_repo_visibility, "probe_visibility", lambda _slug: "PUBLIC")
-        cmd = "git commit -F - <<'EOF'\nthe user said: ship it now without review\nEOF"
+        cmd = "git commit -F - <<'EOF'\n**User directive (verbatim, today):** ship it now\nEOF"
         data = {"tool_name": "Bash", "tool_input": {"command": cmd}, "cwd": str(repo)}
         assert handle_quote_scanner_pretool(data) is True
         assert json.loads(capsys.readouterr().out)["permissionDecision"] == "deny"
@@ -1366,7 +1428,7 @@ class TestUnreadableCommitBodyQuoteGateVisibilityScoped:
         repo.mkdir()
         _git_init_remote(repo, "git@github.com:souliane/teatree.git")
         monkeypatch.setattr(_repo_visibility, "probe_visibility", lambda _slug: "PUBLIC")
-        cmd = "git commit -m \"$(cat <<'EOF'\nthe user said: ship it now without review\nEOF\n)\""
+        cmd = "git commit -m \"$(cat <<'EOF'\n**User directive (verbatim, today):** ship it now\nEOF\n)\""
         data = {"tool_name": "Bash", "tool_input": {"command": cmd}, "cwd": str(repo)}
         assert handle_quote_scanner_pretool(data) is True
         assert json.loads(capsys.readouterr().out)["permissionDecision"] == "deny"
@@ -1402,7 +1464,7 @@ class TestUnreadableCommitBodyQuoteGateVisibilityScoped:
         repo.mkdir()
         _git_init_remote(repo, "git@github.com:souliane/teatree.git")
         monkeypatch.setattr(_repo_visibility, "probe_visibility", lambda _slug: "PUBLIC")
-        cmd = "git commit -m \"$(cat <<-'EOF'\n\tthe user said: ship it now without review\nEOF\n)\""
+        cmd = "git commit -m \"$(cat <<-'EOF'\n\t**User directive (verbatim, today):** ship it now\nEOF\n)\""
         data = {"tool_name": "Bash", "tool_input": {"command": cmd}, "cwd": str(repo)}
         assert handle_quote_scanner_pretool(data) is True
         assert json.loads(capsys.readouterr().out)["permissionDecision"] == "deny"
@@ -1496,7 +1558,10 @@ class TestChainedRawRestPostDefeatsPrivateDowngrade:
         repo = tmp_path / "repo"
         repo.mkdir()
         _git_init_remote(repo, "git@gitlab.com:acmecorp-engineering/product.git")
-        cmd = 'git commit -m clean && gh api repos/souliane/teatree/issues -X POST -f body="the user said: ship it now"'
+        cmd = (
+            "git commit -m clean && gh api repos/souliane/teatree/issues -X POST "
+            '-f body="**User directive (verbatim, today):** ship it now"'
+        )
         data = {"tool_name": "Bash", "tool_input": {"command": cmd}, "cwd": str(repo)}
         assert handle_quote_scanner_pretool(data) is True
         assert json.loads(capsys.readouterr().out)["permissionDecision"] == "deny"
@@ -1526,7 +1591,7 @@ class TestChainedRawRestPostDefeatsPrivateDowngrade:
         repo.mkdir()
         _git_init_remote(repo, "git@gitlab.com:acmecorp-engineering/product.git")
         cmd = (
-            'git commit -m "the user said: ship it now" '
+            'git commit -m "**User directive (verbatim, today):** ship it now" '
             "&& gh pr create --repo acmecorp-engineering/product --title t --body ok"
         )
         data = {"tool_name": "Bash", "tool_input": {"command": cmd}, "cwd": str(repo)}

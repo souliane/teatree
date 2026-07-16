@@ -35,6 +35,13 @@ jobs:
         with:
           # Full history so the PR branch can be force-pushed cleanly on reruns.
           fetch-depth: 0
+          # Persist a PAT (not the default GITHUB_TOKEN) as the git credential so
+          # the branch push is attributed to a real identity and TRIGGERS the
+          # required `test (3.13)` check. A push authenticated with GITHUB_TOKEN
+          # never fires downstream workflows (GitHub's recursion guard), so the
+          # bot PR would sit with 0 check runs and could never merge (#3245). The
+          # guard in the PR step below fails loud if the secret is unset.
+          token: ${{ secrets.TEATREE_GH_TOKEN }}
       - uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78  # v7
         with:
           enable-cache: true
@@ -54,8 +61,20 @@ jobs:
       - name: Open or update the lock-refresh PR
         if: steps.diff.outputs.changed == 'true'
         env:
-          GH_TOKEN: ${{ github.token }}
+          # A PAT (TEATREE_GH_TOKEN), NOT the default GITHUB_TOKEN: a branch pushed
+          # / a PR opened with GITHUB_TOKEN never triggers the required
+          # `test (3.13)` check (GitHub suppresses workflow-triggered workflows),
+          # so the bot PR could never go green and never merge (#3245).
+          GH_TOKEN: ${{ secrets.TEATREE_GH_TOKEN }}
         run: |
+          set -euo pipefail
+          # Fail LOUD, never silently open an un-mergeable PR: without a
+          # CI-triggering token the required check never fires and the refresh
+          # stalls forever with 0 check runs (the exact #3245 backlog).
+          if [ -z "${GH_TOKEN:-}" ]; then
+            echo "::error::TEATREE_GH_TOKEN is unset. The weekly uv.lock PR must be opened with a PAT that triggers the required 'test (3.13)' check — the default GITHUB_TOKEN does not, so the PR could never merge. Set the TEATREE_GH_TOKEN secret." >&2
+            exit 1
+          fi
           BRANCH="chore/uv-lock-upgrade-$(date +%Y-%W)"
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
@@ -65,10 +84,18 @@ jobs:
           git push --force-with-lease origin "$BRANCH"
           # Open a PR if one does not already exist for this branch.
           if ! gh pr view "$BRANCH" --json number -q .number 2>/dev/null; then
-            PR_BODY="Automated weekly lockfile refresh via \`uv lock --upgrade\`.\n\nDependabot's \`pip\` ecosystem updates \`pyproject.toml\` constraints but does not regenerate \`uv.lock\`. This PR closes that gap by re-resolving all hashes after any constraint bumps that landed during the week.\n\nReview the diff, run CI, and merge when green."
+            PR_BODY="Automated weekly lockfile refresh via \`uv lock --upgrade\`.\n\nDependabot's \`pip\` ecosystem updates \`pyproject.toml\` constraints but does not regenerate \`uv.lock\`. This PR closes that gap by re-resolving all hashes after any constraint bumps that landed during the week.\n\nOpened with a PAT so CI runs; GitHub auto-merge is enabled so it self-merges once green (#3245)."
             gh pr create \
               --title "chore(deps): weekly uv.lock upgrade" \
               --body "$PR_BODY" \
               --base main \
               --label "dependencies"
           fi
+          # Self-merge once green with NO human step: enable GitHub-native
+          # auto-merge (squash) on the PR — the PAT-triggered required check
+          # gates it, so it merges the moment `test (3.13)` passes and never
+          # accumulates in the backlog (#3245). Best-effort: if the repo has not
+          # enabled auto-merge, warn (the PR still carries CI + the loop's
+          # same-repo trusted-merge path can land it) rather than fail the run.
+          gh pr merge "$BRANCH" --auto --squash --delete-branch \
+            || echo "::warning::Could not enable auto-merge on $BRANCH — enable 'Allow auto-merge' in the repo settings, or let the ship loop merge it once green."

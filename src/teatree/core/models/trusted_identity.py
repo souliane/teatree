@@ -52,6 +52,25 @@ class TrustedIdentityManager(models.Manager["TrustedIdentity"]):
         """The union of every trusted handle (lower-cased) for scanner wiring."""
         return {h.strip().lower() for h in self.values_list("handle", flat=True) if h.strip()}
 
+    def ordered_handles(self) -> list[str]:
+        """Distinct trusted handles in ``(platform, handle)`` order, original case.
+
+        The PR-assignee resolver (#3100) probes these as assignee candidates
+        ahead of the raw token login, so it preserves the stored case (forge
+        logins are case-tolerant, but the sanctioned handle is what to send)
+        and de-duplicates case-insensitively across forges — the same handle on
+        two platforms is one person, worth one probe.
+        """
+        seen: set[str] = set()
+        result: list[str] = []
+        for handle in self.values_list("handle", flat=True):
+            cleaned = handle.strip()
+            key = cleaned.lower()
+            if cleaned and key not in seen:
+                seen.add(key)
+                result.append(cleaned)
+        return result
+
 
 class TrustedIdentity(models.Model):
     """One trusted forge handle owned by the user (#1773).

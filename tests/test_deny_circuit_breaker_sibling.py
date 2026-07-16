@@ -62,6 +62,112 @@ class TestRouterReExportReachable:
         assert decision.reason == "LOOP REGISTRATION: x"
 
 
+class TestLeakGateNeverGranted:
+    """#3252 — the PUBLIC-egress leak deny is never suppressible by a confirmed-FP grant.
+
+    The banned-terms / quote-scanner leak path is fail-CLOSED always. Even with a
+    ``[fp-confirmed:]`` token on the call, the breaker keeps denying it — while a
+    non-leak deny carrying the same token is suppressed.
+    """
+
+    def _ctx(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, command: str) -> None:
+        monkeypatch.setattr(router, "STATE_DIR", tmp_path)  # module constant, resolved at import
+        monkeypatch.setattr(router, "_CURRENT_EVENT", "PreToolUse")
+        monkeypatch.setattr(
+            router,
+            "_CURRENT_DATA",
+            {"session_id": "leak", "tool_name": "Bash", "tool_input": {"command": command}},
+        )
+
+    def test_leak_deny_with_fp_confirmed_token_still_denies(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        self._ctx(monkeypatch, tmp_path, "glab mr note 1 -m body [fp-confirmed: not a leak]")
+        reason = "BLOCKED: banned-terms posting gate (#1415). The body carries the banned term 'acme'."
+        decision = dcb.apply_deny_circuit_breaker(reason)
+        assert decision.allow is False, "a leak deny is never grantable, token or not"
+
+    def test_non_leak_deny_with_fp_confirmed_token_is_suppressed(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        self._ctx(monkeypatch, tmp_path, "uv run pytest --no-cov -q [fp-confirmed: known quick]")
+        decision = dcb.apply_deny_circuit_breaker("BLOCKED: the orchestrator ran a heavy command.")
+        assert decision.allow is True, "a confirmed non-leak FP is suppressed"
+
+
+class TestCallSignatureDiscrimination:
+    """#3252 — the call signature distinguishes commands and folds out escape tokens."""
+
+    def test_bash_signature_strips_fp_confirmed_token(self) -> None:
+        tokened = dcb._call_signature(
+            {"tool_name": "Bash", "tool_input": {"command": "uv run pytest -q [fp-confirmed: known]"}}
+        )
+        plain = dcb._call_signature({"tool_name": "Bash", "tool_input": {"command": "uv run pytest -q"}})
+        assert tokened == plain, "an escape token must not split a command's signature"
+
+    def test_bash_signature_strips_allow_banned_term_prefix(self) -> None:
+        prefixed = dcb._call_signature(
+            {"tool_name": "Bash", "tool_input": {"command": "ALLOW_BANNED_TERM=1 git commit -m x"}}
+        )
+        plain = dcb._call_signature({"tool_name": "Bash", "tool_input": {"command": "git commit -m x"}})
+        assert prefixed == plain
+
+    def test_distinct_commands_have_distinct_signatures(self) -> None:
+        a = dcb._call_signature({"tool_name": "Bash", "tool_input": {"command": "git commit --no-verify -m first"}})
+        b = dcb._call_signature({"tool_name": "Bash", "tool_input": {"command": "git commit --no-verify -m second"}})
+        assert a != b
+
+    def test_edit_signature_keys_on_file_path(self) -> None:
+        sig = dcb._call_signature({"tool_name": "Edit", "tool_input": {"file_path": "/repo/src/a.py"}})
+        assert sig == "/repo/src/a.py"
+
+    def test_non_bash_edit_tool_signature_is_tool_name(self) -> None:
+        assert dcb._call_signature({"tool_name": "Task", "tool_input": {"prompt": "x"}}) == "task"
+
+    def test_malformed_data_yields_empty_signature(self) -> None:
+        assert dcb._call_signature({"tool_name": "Bash", "tool_input": None}) == ""
+
+
+class TestFpConfirmedTokenSurfaces:
+    """#3252 — the ``[fp-confirmed:]`` token is honoured across the token fields."""
+
+    def test_token_in_edit_new_string_is_confirmed(self) -> None:
+        assert dcb._fp_confirmed({"tool_name": "Edit", "tool_input": {"new_string": "x [fp-confirmed: fine]"}}) is True
+
+    def test_empty_reason_token_does_not_confirm(self) -> None:
+        assert dcb._fp_confirmed({"tool_name": "Bash", "tool_input": {"command": "x [fp-confirmed: ]"}}) is False
+
+    def test_no_token_is_not_confirmed(self) -> None:
+        assert dcb._fp_confirmed({"tool_name": "Bash", "tool_input": {"command": "git status"}}) is False
+
+
+class TestGrantStoreEdgeCases:
+    """#3252 — the grant store is crash-proof and idempotent."""
+
+    def test_empty_session_never_grants(self) -> None:
+        assert dcb._fp_grant_exists("", "fp") is False
+        dcb._record_fp_grant("", "fp")  # no-op, must not raise
+
+    def test_record_is_idempotent(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+        monkeypatch.setattr(router, "STATE_DIR", tmp_path)  # module constant, resolved at import
+        dcb._record_fp_grant("s", "fp-abc")
+        dcb._record_fp_grant("s", "fp-abc")
+        grants = (tmp_path / "s.fp-grants").read_text(encoding="utf-8").splitlines()
+        assert grants.count("fp-abc") == 1, "a repeated grant is deduped, not appended twice"
+        assert dcb._fp_grant_exists("s", "fp-abc") is True
+
+    def test_prerecorded_grant_suppresses_matching_deny(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+        """A grant recorded earlier suppresses the identical FP without re-prompting."""
+        monkeypatch.setattr(router, "STATE_DIR", tmp_path)
+        data = {"session_id": "s", "tool_name": "Bash", "tool_input": {"command": "npm run build"}}
+        reason = "BLOCKED: the orchestrator ran a heavy command: `npm run build`."
+        monkeypatch.setattr(router, "_CURRENT_EVENT", "PreToolUse")
+        monkeypatch.setattr(router, "_CURRENT_DATA", data)
+        fingerprint = dcb._deny_fingerprint(dcb._deny_gate_id(reason), reason, dcb._call_signature(data))
+        dcb._record_fp_grant("s", fingerprint)
+        assert dcb.apply_deny_circuit_breaker(reason).allow is True
+
+
 class TestColdImport:
     def test_imports_with_stdlib_only_no_django(self) -> None:
         """A fresh interpreter imports the sibling without Django configured or teatree loaded."""
