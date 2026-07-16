@@ -1421,18 +1421,21 @@ class TestStatuslineAutoloadDbFlip:
         assert result.returncode == 0, result.stderr
         assert "model=" in _strip_ansi(result.stdout)
 
-    def test_db_autoload_false_is_off(self, tmp_path: Path) -> None:
+    def test_db_autoload_false_shows_hint_not_blank(self, tmp_path: Path) -> None:
         db = tmp_path / "db.sqlite3"
         _make_config_db(db, autoload=False)
         result = self._run_gate(tmp_path, config_db=db)
         assert result.returncode == 0, result.stderr
-        assert result.stdout == ""
+        # #3233: gated OFF emits a single how-to hint, never zero bytes.
+        assert "autoload" in result.stdout
+        assert "model=" not in _strip_ansi(result.stdout)
 
-    def test_missing_db_falls_back_to_off(self, tmp_path: Path) -> None:
-        # No DB row -> the gate falls through to OFF (blank statusline).
+    def test_missing_db_falls_back_to_off_hint(self, tmp_path: Path) -> None:
+        # No DB row -> the gate falls through to OFF: one-line hint, not blank (#3233).
         result = self._run_gate(tmp_path, config_db=tmp_path / "absent.sqlite3")
         assert result.returncode == 0, result.stderr
-        assert result.stdout == ""
+        assert "autoload" in result.stdout
+        assert "model=" not in _strip_ansi(result.stdout)
 
 
 class TestStatuslineRendersOnAutoloadWithoutMarker:
@@ -1449,8 +1452,8 @@ class TestStatuslineRendersOnAutoloadWithoutMarker:
     session", so it alone gates whether the statusline renders. Loop *arming* keeps
     its stricter ``marker AND autoload`` gate (``_loop_auto_load_active``); this is
     display *visibility*, which the owner wants in every one of their sessions. The
-    #256 colleague guarantee is preserved: ``autoload`` off is blank regardless of
-    the marker.
+    #256 colleague guarantee is preserved: ``autoload`` off shows only a one-line
+    how-to hint (#3233), never the loop statusline, regardless of the marker.
     """
 
     def _run(self, tmp_path: Path, *, autoload: bool, marker: bool) -> subprocess.CompletedProcess:
@@ -1492,19 +1495,23 @@ class TestStatuslineRendersOnAutoloadWithoutMarker:
         assert result.returncode == 0, result.stderr
         assert "model=" in _strip_ansi(result.stdout)
 
-    def test_autoload_off_without_marker_is_blank(self, tmp_path: Path) -> None:
-        # Colleague who merely cloned the repo: autoload off, no marker -> blank (#256).
+    def test_autoload_off_without_marker_shows_hint(self, tmp_path: Path) -> None:
+        # Colleague who merely cloned the repo: autoload off, no marker -> the loop
+        # statusline stays suppressed (#256), but a one-line how-to hint shows
+        # instead of a blank bar (#3233).
         result = self._run(tmp_path, autoload=False, marker=False)
         assert result.returncode == 0, result.stderr
-        assert result.stdout == ""
+        assert "autoload" in result.stdout
+        assert "model=" not in _strip_ansi(result.stdout)
 
-    def test_autoload_off_with_marker_is_blank(self, tmp_path: Path) -> None:
+    def test_autoload_off_with_marker_shows_hint(self, tmp_path: Path) -> None:
         # #256: a colleague who even loaded a teatree skill (marker present) but did
-        # NOT enable autoload is still not shown the statusline — autoload is the
-        # authoritative owner opt-in, so it alone can turn the statusline on.
+        # NOT enable autoload is still not shown the loop statusline — autoload is the
+        # authoritative owner opt-in. Only the one-line hint shows (#3233).
         result = self._run(tmp_path, autoload=False, marker=True)
         assert result.returncode == 0, result.stderr
-        assert result.stdout == ""
+        assert "autoload" in result.stdout
+        assert "model=" not in _strip_ansi(result.stdout)
 
 
 # A dangling escape is an ESC byte that does NOT open a recognised, complete
@@ -1632,3 +1639,47 @@ class TestWidthCap:
 
         assert result.returncode == 0, result.stderr
         assert osc8 in result.stdout, repr(result.stdout)
+
+
+class TestAutoloadOffHint:
+    """Autoload-off gate emits a one-line hint, never a blank bar (#3233).
+
+    When the opt-in (#256) gate suppresses the statusline under a non-TTY CC
+    invocation, it must emit a one-line hint — never zero bytes, which CC
+    discards, leaving a mysteriously blank bar.
+    """
+
+    def _run_gated(self, tmp_path: Path, *, session_id: str) -> subprocess.CompletedProcess:
+        env = os.environ.copy()
+        env.pop("T3_AUTOLOAD", None)  # autoload OFF: no env override
+        # Point the config DB at a path that does not exist so the DB read
+        # resolves autoload to OFF as well (fails silent → gate fires).
+        env["T3_CONFIG_DB"] = str(tmp_path / "no-such-db.sqlite3")
+        env["TEATREE_CLAUDE_STATUSLINE_STATE_DIR"] = str(tmp_path / "state")
+        (tmp_path / "state").mkdir(parents=True, exist_ok=True)
+        return subprocess.run(
+            [str(SCRIPT)],
+            input=json.dumps({"session_id": session_id, "model": {"display_name": "Claude Opus"}}),
+            capture_output=True,
+            text=True,
+            env=env,
+            check=False,
+            cwd=REPO_ROOT,
+        )
+
+    def test_autoload_off_emits_one_line_hint_not_blank(self, tmp_path: Path) -> None:
+        result = self._run_gated(tmp_path, session_id="s-gated")
+
+        assert result.returncode == 0, result.stderr
+        # Never zero bytes — CC discards empty output and the bar goes blank.
+        assert result.stdout.strip() != "", "autoload-off must not emit an empty statusline"
+        # A single actionable line naming the enable knob.
+        assert len(result.stdout.splitlines()) == 1, repr(result.stdout)
+        assert "autoload" in result.stdout
+
+    def test_no_session_id_still_renders_full_bar(self, tmp_path: Path) -> None:
+        # TTY-style / no-session invocation is not gated: the hint must NOT
+        # replace the normal (multi-line) render.
+        result = self._run_gated(tmp_path, session_id="")
+        assert result.returncode == 0, result.stderr
+        assert "autoload" not in result.stdout

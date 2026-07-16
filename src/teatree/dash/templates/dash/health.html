@@ -14,9 +14,9 @@
       {% csrf_token %}
       {% for spec in command_buttons %}
         {% if spec.needs_loop %}
-          <span class="field-group"><input type="text" name="loop" placeholder="loop name"><button class="dash-btn" name="command" value="{{ spec.key }}">{{ spec.label }}</button></span>
+          <span class="field-group"><input type="text" name="loop" placeholder="loop name"><button class="dash-btn" name="command" value="{{ spec.key }}" hx-confirm="Run {{ spec.label }}?">{{ spec.label }}</button></span>
         {% else %}
-          <button class="dash-btn" name="command" value="{{ spec.key }}">{{ spec.label }}</button>
+          <button class="dash-btn" name="command" value="{{ spec.key }}" hx-confirm="Run {{ spec.label }}?">{{ spec.label }}</button>
         {% endif %}
       {% endfor %}
     </form>

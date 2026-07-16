@@ -185,6 +185,24 @@ def extract_cli_mr_fields(command: str) -> tuple[str, str] | None:
     return title, description
 
 
+def cli_update_is_title_only(command: str) -> bool:
+    """True for a ``glab mr update`` that sets a title but touches NO description (#3254).
+
+    A pure retitle carries no new description content, so the overlay's
+    required-section completeness check (``## Configuration`` / ``## Security &
+    privacy impact`` …) must not fire on the hook's back-filled placeholder body —
+    the existing MR description is not being changed. ``create`` is never
+    title-only (both fields are required), and an update that DOES set a
+    description is validated in full.
+    """
+    op = _MR_OP_RE.search(strip_quoted_and_heredoc(command))
+    if op is None or op.group(1) != "update":
+        return False
+    if _MR_DESC_FLAG_PRESENT_RE.search(command):
+        return False
+    return _MR_TITLE_FLAG_RE.search(command) is not None
+
+
 # The MR TARGET repo flag — ``-R <slug>`` / ``--repo <slug>`` on ``glab mr``
 # (owner/repo, optionally host-qualified). The slug runs to the next whitespace;
 # an optional surrounding quote is tolerated.

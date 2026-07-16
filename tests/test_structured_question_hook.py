@@ -427,6 +427,40 @@ class TestPassesWhenCompliantOrNoQuestion:
         assert result is not True
 
 
+class TestQuotedOrHistoricalQuestionDoesNotFire:
+    """A quoted / historical question is not a live ask (#3261).
+
+    The gate must not force a spurious ``AskUserQuestion`` when the turn merely
+    quotes an earlier question back (answering "what was the last question you
+    asked me?") or recounts a past question — while a genuine live question,
+    including one that follows historical prose, still fires.
+    """
+
+    @pytest.mark.parametrize(
+        "prose",
+        [
+            'The last question I asked you was: "Should I merge PR #1 or wait for review?"',
+            "To recap, my earlier question was `Do you want me to proceed with the rollback?`",
+            "You asked whether to merge or wait — that was the last question I posed.",
+            "The question I asked earlier was whether you wanted me to deploy or hold?",
+            "> Should I open the PR now?\n\nThat was what I asked before; it is already resolved.",
+        ],
+    )
+    def test_quoted_or_historical_question_does_not_fire(self, prose: str) -> None:
+        assert is_user_directed_question(prose) is False
+
+    @pytest.mark.parametrize(
+        "prose",
+        [
+            "Should I merge PR #1 or wait for review?",
+            "You asked me to ship it. Now, do you want me to open the PR or hold?",
+            "The last question I asked was answered. Should I proceed with the deploy now?",
+        ],
+    )
+    def test_genuine_live_question_still_fires(self, prose: str) -> None:
+        assert is_user_directed_question(prose) is True
+
+
 class TestFailSafeAndEdgeInputs:
     def test_missing_transcript_path_is_noop(self, capsys: pytest.CaptureFixture[str]) -> None:
         result = handle_enforce_structured_question({})

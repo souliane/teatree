@@ -30,6 +30,30 @@ x-teatree-common: &teatree-common
     - type: bind
       source: /home/teatree/workspace/t3-workspaces
       target: /home/teatree/workspace/t3-workspaces
+    # Credential plane: the host-provisioned pass store + its GPG home, as
+    # DEDICATED mounts decoupled from the data dir (a data-dir change must never
+    # orphan credentials again, as #3262 did). Path identity; rw — gpg-agent
+    # binds its socket and lock files inside GNUPGHOME on a headless box, and the
+    # slack/postgres secret writers insert into pass at runtime. Secrets stay
+    # gpg-encrypted on the host disk, OUTSIDE the backed-up data dir.
+    - type: bind
+      source: /home/teatree/.password-store
+      target: /home/teatree/.password-store
+    - type: bind
+      source: /home/teatree/.gnupg
+      target: /home/teatree/.gnupg
+    # Claude session plane: session transcripts + per-project memory corpus —
+    # the dream pass's input AND product (#3277 classifies dream's use as PRODUCT
+    # DATA: it reads transcripts and maintains */memory; runtime STATE still never
+    # resolves from assistant memory). Without this the containerized dream pass
+    # globs an empty ~/.claude/projects and every nightly consolidation is a
+    # permanent no-op (0 members). Path identity; rw — dream phases 4-6 write
+    # cross-links / MEMORY.md / decay archives, and container-run headless sessions
+    # persist their transcripts to the backed-up host disk. Scoped to projects/
+    # only, never the whole ~/.claude (credentials + settings stay host-only).
+    - type: bind
+      source: /home/teatree/.claude/projects
+      target: /home/teatree/.claude/projects
     - teatree_uv:/opt/teatree/uv
   init: true
 

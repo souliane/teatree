@@ -33,11 +33,11 @@ git config --global user.email "${GIT_AUTHOR_EMAIL:-teatree@localhost}"
 git config --global init.defaultBranch main
 git config --global --add safe.directory "$CLONE_DIR"
 
-# The pass store's GPG home rides the teatree_data volume (see Dockerfile ENV);
-# gpg refuses a home directory that is readable by group/other, and volume
-# copy-up does not preserve the mode a provisioning run set. Every role fixes
-# the mode before anything reads a credential.
-if [ -n "${GNUPGHOME:-}" ] && [ -d "$GNUPGHOME" ]; then
+# The GPG home is a dedicated bind mount of the host ~/.gnupg (see Dockerfile ENV
+# + docker-compose credential plane); gpg refuses a home directory readable by
+# group/other. Fix the mode before anything reads a credential — but only when
+# the mount is writable (a hardened read-only mount would EROFS here under -e).
+if [ -n "${GNUPGHOME:-}" ] && [ -d "$GNUPGHOME" ] && [ -w "$GNUPGHOME" ]; then
     chmod 700 "$GNUPGHOME"
 fi
 
@@ -47,12 +47,29 @@ pass_store_has_anthropic() {
     pass ls anthropic >/dev/null 2>&1
 }
 
+# True when an anthropic/ entry actually DECRYPTS — `pass ls` only proves the
+# .gpg files exist, not that gpg can read them (the private key may be absent or
+# gpg-agent unable to start). Exit-code only; the plaintext never leaves gpg.
+anthropic_credential_decrypts() {
+    local store="${PASSWORD_STORE_DIR:-$HOME/.password-store}" entry
+    entry="$(find "$store/anthropic" -type f -name '*.gpg' 2>/dev/null | head -1)"
+    [ -n "$entry" ] || return 1
+    entry="${entry#"$store/"}"
+    pass show "${entry%.gpg}" >/dev/null 2>&1
+}
+
 # Fail loud, early, and actionably when a required runtime token is missing or
 # does not authenticate — otherwise a green deploy hides a dead loop.
 init_preflight() {
-    if [ -z "${CLAUDE_CODE_OAUTH_TOKEN:-}" ] && ! pass_store_has_anthropic; then
-        echo "entrypoint: no Anthropic credential - set the CLAUDE_CODE_OAUTH_TOKEN repo secret, OR provision the box pass store (anthropic/<account>/oauth-token entries) and set anthropic_oauth_pass_paths - then re-run Deploy" >&2
-        exit 1
+    if [ -z "${CLAUDE_CODE_OAUTH_TOKEN:-}" ]; then
+        if ! pass_store_has_anthropic; then
+            echo "entrypoint: no Anthropic credential - no CLAUDE_CODE_OAUTH_TOKEN and the pass store has no anthropic/ entries. Is host ~/.password-store bind-mounted and provisioned (anthropic/<account>/oauth-token)? See deploy/README.md - then re-run Deploy" >&2
+            exit 1
+        fi
+        if ! anthropic_credential_decrypts; then
+            echo "entrypoint: the pass store lists anthropic/ entries but gpg cannot DECRYPT them - the GPG private key is missing from $GNUPGHOME or gpg-agent cannot start (is host ~/.gnupg bind-mounted with the decryption key?) - then re-run Deploy" >&2
+            exit 1
+        fi
     fi
     : "${TEATREE_GH_TOKEN:?MISSING TEATREE_GH_TOKEN - set the repo secret and re-run Deploy}"
     : "${GIT_AUTHOR_NAME:?MISSING GIT_AUTHOR_NAME - set the repo secret and re-run Deploy}"
@@ -119,11 +136,22 @@ ensure_clone() {
     if [ -e "$CLONE_DIR/.git" ]; then
         # The clone lives in a shared volume that outlives the image, so a
         # redeploy must bring it current or the stack keeps serving the code
-        # from the first boot. Fast-forward only, and fail loud on divergence —
-        # silently serving stale code is worse than a red deploy.
+        # from the first boot. SELF-HEAL: a stray feature branch checked out on
+        # the runtime clone (or one whose upstream was deleted after its PR
+        # merged) must never brick the H24 deploy — recover to the default
+        # branch automatically; only a genuinely diverged default branch (local
+        # commits that cannot fast-forward) still fails loud.
         git -C "$CLONE_DIR" fetch --prune origin
-        git -C "$CLONE_DIR" merge --ff-only "@{upstream}" || {
-            echo "entrypoint: $CLONE_DIR cannot fast-forward to its upstream - the runtime clone has local commits or a diverged branch; reconcile it on the box and re-run Deploy" >&2
+        local default_branch current
+        default_branch="$(git -C "$CLONE_DIR" symbolic-ref --short refs/remotes/origin/HEAD 2>/dev/null | sed 's|^origin/||')"
+        default_branch="${default_branch:-main}"
+        current="$(git -C "$CLONE_DIR" symbolic-ref --short HEAD 2>/dev/null || echo DETACHED)"
+        if [ "$current" != "$default_branch" ]; then
+            echo "entrypoint: runtime clone was on '$current' (not '$default_branch') - self-healing to the default branch (any stray work stays on its branch)" >&2
+            git -C "$CLONE_DIR" checkout --force "$default_branch"
+        fi
+        git -C "$CLONE_DIR" merge --ff-only "origin/$default_branch" || {
+            echo "entrypoint: $CLONE_DIR default branch '$default_branch' has diverged (local commits that cannot fast-forward) - reconcile it on the box and re-run Deploy" >&2
             exit 1
         }
         return 0
