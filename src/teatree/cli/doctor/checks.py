@@ -648,40 +648,6 @@ def _check_loop_presets() -> bool:
     return False
 
 
-def _check_availability_override_staleness() -> None:
-    """Warn on a no-expiry deferring availability override active past the threshold (#3274).
-
-    A manual ``away`` / ``autonomous_away`` override with no ``until`` silently
-    suppresses the colleague-facing loops (and, for holiday-``away``, pauses the
-    self-pump) for as long as it sits — the incident that motivated the finding
-    left one active for ~30h. Surfacing-only (never gates the exit code), like the
-    sibling ORM-reading advisories; reads the ``Loop`` table for the deferred loop
-    names, so it runs post-``ensure_django``. Crash-proof: any error degrades to a
-    silent pass so a doctor run never aborts.
-    """
-    from datetime import UTC, datetime  # noqa: PLC0415 — deferred: keeps CLI startup light
-
-    from teatree.core import availability  # noqa: PLC0415 — deferred: keeps CLI startup light
-    from teatree.core.models import Loop  # noqa: PLC0415 — deferred: ORM import needs the app registry
-
-    try:
-        override = availability.load_override()
-        if override is None:
-            return
-        colleague_facing = list(Loop.objects.filter(colleague_facing=True).values_list("name", flat=True))
-        message = availability.stale_override_finding(
-            override=override,
-            set_at=availability.override_set_at(),
-            now=datetime.now(tz=UTC),
-            colleague_facing_loops=colleague_facing,
-        )
-    except Exception as exc:  # noqa: BLE001 — doctor check must never crash the run
-        typer.echo(f"WARN  Availability-override check crashed: {exc.__class__.__name__}: {exc}")
-        return
-    if message:
-        typer.echo(message)
-
-
 def _check_dream_staleness() -> bool:
     """Warn when the idle-time dream consolidation cron is stale (#1933).
 

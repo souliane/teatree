@@ -6,7 +6,7 @@ an unattended operator). ``autonomous_away`` splits the two behaviours — defer
 questions like ``away``, keep self-pumping like ``present``.
 """
 
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
@@ -18,9 +18,7 @@ from teatree.core.availability import (
     MODE_PRESENT,
     Override,
     Resolution,
-    override_set_at,
     resolve_mode,
-    stale_override_finding,
     write_override,
 )
 
@@ -57,6 +55,25 @@ class TestModePredicates:
     def test_unknown_mode_neither(self) -> None:
         assert not _defers("garbage")
         assert not _pauses("garbage")
+
+
+class TestOverridePredicates:
+    """``Override`` carries the same defer/pause semantics as ``Resolution`` (the #3274 finding keys on them)."""
+
+    def test_present_neither(self) -> None:
+        override = Override(mode=MODE_PRESENT, until=None)
+        assert not override.defers_questions
+        assert not override.pauses_self_pump
+
+    def test_away_defers_and_pauses(self) -> None:
+        override = Override(mode=MODE_AWAY, until=None)
+        assert override.defers_questions
+        assert override.pauses_self_pump
+
+    def test_autonomous_away_defers_but_does_not_pause(self) -> None:
+        override = Override(mode=MODE_AUTONOMOUS_AWAY, until=None)
+        assert override.defers_questions
+        assert not override.pauses_self_pump
 
 
 class TestAutonomousAwayOverride:
@@ -100,64 +117,3 @@ class TestReturnFromAutonomousAwayDrains:
         )
         write_override(MODE_PRESENT)
         assert drained == []
-
-
-class TestOverrideSetAt:
-    """`override_set_at` reads the override file mtime — the "how long active" signal (#3274)."""
-
-    def test_returns_the_file_mtime_when_present(self, override_file: Path) -> None:
-        write_override(MODE_AUTONOMOUS_AWAY)
-        set_at = override_set_at()
-        assert set_at is not None
-        assert abs((datetime.now(tz=UTC) - set_at).total_seconds()) < 60
-
-    def test_returns_none_when_absent(self, override_file: Path) -> None:
-        assert override_set_at() is None
-
-
-class TestStaleOverrideFinding:
-    """#3274: `t3 doctor` flags a no-expiry deferring override that has outlived the threshold."""
-
-    _NOW = datetime(2026, 7, 16, 12, 0, tzinfo=UTC)
-    _LOOPS = ("review", "followup")
-
-    def _finding(self, override: Override | None, *, set_at: datetime | None) -> str | None:
-        return stale_override_finding(
-            override=override,
-            set_at=set_at,
-            now=self._NOW,
-            colleague_facing_loops=self._LOOPS,
-        )
-
-    def test_old_no_expiry_autonomous_away_is_flagged(self) -> None:
-        override = Override(mode=MODE_AUTONOMOUS_AWAY, until=None)
-        msg = self._finding(override, set_at=self._NOW - timedelta(hours=30))
-        assert msg is not None
-        assert "autonomous_away" in msg
-        assert "followup, review" in msg
-        assert "t3 teatree availability auto" in msg
-
-    def test_old_no_expiry_away_notes_self_pump_pause(self) -> None:
-        override = Override(mode=MODE_AWAY, until=None)
-        msg = self._finding(override, set_at=self._NOW - timedelta(hours=30))
-        assert msg is not None
-        assert "self-pump" in msg
-
-    def test_recent_override_is_not_flagged(self) -> None:
-        override = Override(mode=MODE_AUTONOMOUS_AWAY, until=None)
-        assert self._finding(override, set_at=self._NOW - timedelta(hours=1)) is None
-
-    def test_bounded_override_is_not_flagged(self) -> None:
-        override = Override(mode=MODE_AUTONOMOUS_AWAY, until=self._NOW + timedelta(hours=48))
-        assert self._finding(override, set_at=self._NOW - timedelta(hours=30)) is None
-
-    def test_present_override_is_not_flagged(self) -> None:
-        override = Override(mode=MODE_PRESENT, until=None)
-        assert self._finding(override, set_at=self._NOW - timedelta(hours=30)) is None
-
-    def test_no_override_is_not_flagged(self) -> None:
-        assert self._finding(None, set_at=self._NOW - timedelta(hours=30)) is None
-
-    def test_missing_set_at_is_not_flagged(self) -> None:
-        override = Override(mode=MODE_AUTONOMOUS_AWAY, until=None)
-        assert self._finding(override, set_at=None) is None
