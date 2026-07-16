@@ -68,6 +68,24 @@ def _overlay_autonomy(overlay: str, autonomy: str) -> Iterator[None]:
 
 
 @contextmanager
+def _overlay_substrate_signoff(overlay: str, *, autonomy: str, substrate_self_signoff: bool) -> Iterator[None]:
+    """Stage ``overlay``'s ``autonomy`` AND the #3223 ``substrate_self_signoff`` opt-in.
+
+    Both are DB-home (#1775) ``ConfigSetting`` rows scoped to the overlay, so a
+    test pins the exact owner statement: e.g. ``autonomy = full`` +
+    ``substrate_self_signoff = true`` (the owner's explicit "self-authorize my own
+    substrate merges" grant).
+    """
+    autonomy_row = ConfigSetting.objects.set_value("autonomy", autonomy, scope=overlay)
+    signoff_row = ConfigSetting.objects.set_value("substrate_self_signoff", substrate_self_signoff, scope=overlay)
+    try:
+        yield
+    finally:
+        signoff_row.delete()
+        autonomy_row.delete()
+
+
+@contextmanager
 def _overlay_standing_signoff(overlay: str, *, autonomy: str, require_human_approval_to_merge: bool) -> Iterator[None]:
     """Stage ``overlay``'s ``autonomy`` AND ``require_human_approval_to_merge`` together.
 
@@ -1036,6 +1054,102 @@ class TestMergeGateResolvesOverlayByRepoIdentity(TestCase):
         with _teatree_owns("souliane/teatree", _OWNED_TOOLING_REPO), _overlay_autonomy("t3-teatree", "full"):
             granted = _overlay_grants_standing_substrate_signoff(clear, resolved_slug=_OWNED_TOOLING_REPO)
         assert granted is False
+
+
+class TestSubstrateSelfSignoffIsConfigGated(TestCase):
+    """#3223: ``substrate_self_signoff`` is the explicit, default-off substrate opt-in.
+
+    Today's safety posture (#2727) is that a substrate CLEAR PINGS-and-HOLDS for
+    the owner even at ``autonomy = full``. Turning on the DB-home
+    ``substrate_self_signoff`` setting lets the standing grant cover a substrate
+    CLEAR on a ``full`` (solo-owned) overlay — changing only WHO authorizes the
+    per-PR sign-off, never whether the quality/safety floor runs. The `full` tier
+    gate is retained: a below-full overlay never self-merges substrate even with
+    the setting on.
+    """
+
+    def test_substrate_signoff_on_at_full_grants_the_signoff(self) -> None:
+        """MUST-ALLOW: setting on + autonomy=full covers a substrate CLEAR's sign-off."""
+        from teatree.core.merge.authorization import _overlay_grants_standing_substrate_signoff  # noqa: PLC0415
+
+        ticket = Ticket.objects.create(
+            overlay="some-other-overlay",
+            issue_url=f"https://github.com/{_OWNED_TOOLING_REPO}/pull/32230",
+            state=Ticket.State.IN_REVIEW,
+        )
+        clear = _substrate_clear(ticket, pr_id=32230, slug=_OWNED_TOOLING_REPO)
+        with (
+            _teatree_owns("souliane/teatree", _OWNED_TOOLING_REPO),
+            _overlay_substrate_signoff("t3-teatree", autonomy="full", substrate_self_signoff=True),
+        ):
+            granted = _overlay_grants_standing_substrate_signoff(clear, resolved_slug=_OWNED_TOOLING_REPO)
+        assert granted is True
+
+    def test_substrate_signoff_off_at_full_still_holds(self) -> None:
+        """MUST-DENY (default): setting off keeps substrate held even at autonomy=full."""
+        from teatree.core.merge.authorization import _overlay_grants_standing_substrate_signoff  # noqa: PLC0415
+
+        ticket = Ticket.objects.create(
+            overlay="some-other-overlay",
+            issue_url=f"https://github.com/{_OWNED_TOOLING_REPO}/pull/32231",
+            state=Ticket.State.IN_REVIEW,
+        )
+        clear = _substrate_clear(ticket, pr_id=32231, slug=_OWNED_TOOLING_REPO)
+        with (
+            _teatree_owns("souliane/teatree", _OWNED_TOOLING_REPO),
+            _overlay_substrate_signoff("t3-teatree", autonomy="full", substrate_self_signoff=False),
+        ):
+            granted = _overlay_grants_standing_substrate_signoff(clear, resolved_slug=_OWNED_TOOLING_REPO)
+        assert granted is False
+
+    def test_substrate_signoff_on_below_full_still_holds(self) -> None:
+        """MUST-DENY: the setting alone does not self-merge substrate below the full tier."""
+        from teatree.core.merge.authorization import _overlay_grants_standing_substrate_signoff  # noqa: PLC0415
+
+        ticket = Ticket.objects.create(
+            overlay="some-other-overlay",
+            issue_url=f"https://github.com/{_OWNED_TOOLING_REPO}/pull/32232",
+            state=Ticket.State.IN_REVIEW,
+        )
+        clear = _substrate_clear(ticket, pr_id=32232, slug=_OWNED_TOOLING_REPO)
+        with (
+            _teatree_owns("souliane/teatree", _OWNED_TOOLING_REPO),
+            _overlay_substrate_signoff("t3-teatree", autonomy="babysit", substrate_self_signoff=True),
+        ):
+            granted = _overlay_grants_standing_substrate_signoff(clear, resolved_slug=_OWNED_TOOLING_REPO)
+        assert granted is False
+
+    def test_substrate_signoff_on_merges_end_to_end(self) -> None:
+        """MUST-ALLOW end-to-end: with the opt-in on + full, the substrate CLEAR passes preconditions."""
+        ticket = Ticket.objects.create(
+            overlay="some-other-overlay",
+            issue_url=f"https://github.com/{_OWNED_TOOLING_REPO}/pull/32233",
+            state=Ticket.State.IN_REVIEW,
+        )
+        clear = _substrate_clear(ticket, pr_id=32233, slug=_OWNED_TOOLING_REPO)
+        with (
+            _teatree_owns("souliane/teatree", _OWNED_TOOLING_REPO),
+            _overlay_substrate_signoff("t3-teatree", autonomy="full", substrate_self_signoff=True),
+        ):
+            precheck = _assert_preconditions(clear, slug=_OWNED_TOOLING_REPO)
+        assert precheck is not None
+
+    def test_substrate_signoff_off_holds_end_to_end(self) -> None:
+        """MUST-DENY end-to-end (default off): the substrate CLEAR still raises and holds."""
+        ticket = Ticket.objects.create(
+            overlay="some-other-overlay",
+            issue_url=f"https://github.com/{_OWNED_TOOLING_REPO}/pull/32234",
+            state=Ticket.State.IN_REVIEW,
+        )
+        clear = _substrate_clear(ticket, pr_id=32234, slug=_OWNED_TOOLING_REPO)
+        with (
+            _teatree_owns("souliane/teatree", _OWNED_TOOLING_REPO),
+            _overlay_substrate_signoff("t3-teatree", autonomy="full", substrate_self_signoff=False),
+            pytest.raises(MergePreconditionError, match="substrate"),
+        ):
+            _assert_preconditions(clear, slug=_OWNED_TOOLING_REPO)
+        ticket.refresh_from_db()
+        assert ticket.state == Ticket.State.IN_REVIEW
 
 
 class TestRequireHumanApprovalFalseStandingGrantNonSubstrate(TestCase):

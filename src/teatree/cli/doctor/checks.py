@@ -127,6 +127,52 @@ def _check_dangling_editable_pth() -> bool:
     return False
 
 
+def _check_t3_shim_receipt(*, repair: bool = False) -> bool:
+    """FAIL when the active ``t3`` shim serves an editable install from the wrong checkout (#3231).
+
+    A second, unrelated ``uv tool install --editable <other-checkout>`` under the
+    same ``teatree`` package/entrypoint name silently steals the global ``t3``
+    shim — and a moved/renamed checkout re-points the receipt at a stale path.
+    Either way the receipt's ``requirements[].editable`` no longer matches the
+    expected checkout (``$T3_REPO``), yet ``t3`` keeps resolving against the
+    wrong source until a command fails deep inside. Unlike the dangling-``.pth``
+    check (which fires only when the target is GONE), this catches a target that
+    EXISTS but is the wrong clone.
+
+    Only meaningful with a known expected checkout: when ``$T3_REPO`` is unset,
+    or the install is not an editable uv-tool install (no receipt editable
+    source), the check skips (returns ``True``). On a mismatch it FAILs with the
+    remediation; with ``repair=True`` it re-points the install via
+    ``uv tool install --editable <checkout> --force`` and passes. Crash-proof:
+    any inspection failure degrades to a pass so it never aborts the doctor run.
+    """
+    from teatree.utils.editable_pth import (  # noqa: PLC0415 — deferred: keeps CLI startup light
+        expected_checkout,
+        receipt_editable_source,
+        repair_receipt_to_checkout,
+    )
+
+    try:
+        expected = expected_checkout()
+        source = receipt_editable_source()
+    except Exception as exc:  # noqa: BLE001 — an inspection failure warns and passes, never blocks doctor
+        typer.echo(f"WARN  Could not inspect the t3 shim's uv receipt: {exc}")
+        return True
+    if expected is None or source is None or source.resolve() == expected:
+        return True
+
+    if repair and repair_receipt_to_checkout(expected):
+        typer.echo(f"WARN  Re-pointed the t3 editable install at {expected} (uv receipt recorded {source}).")
+        return True
+    typer.echo(
+        f"FAIL  The active t3 shim's uv receipt records an editable source {source} that does not "
+        f"match the expected checkout {expected} — a relocated or same-name-hijacked editable install "
+        f"is serving t3 from the wrong path. Re-point it: `t3 doctor check --repair` "
+        f"(or `uv tool install --editable {expected} --force`)."
+    )
+    return False
+
+
 def _check_singletons() -> bool:
     """Clean up stale pid files for known singleton processes."""
     from teatree.utils.singleton import (  # noqa: PLC0415 (deferred: keeps the doctor-check import light)
@@ -173,6 +219,62 @@ def _check_editable_sanity() -> bool:
         typer.echo(f"FAIL  Editable sanity check crashed: {exc.__class__.__name__}: {exc}")
         ok = False
     return ok
+
+
+def _check_ttyd_for_dashboard(env: dict[str, str] | None = None) -> bool:
+    """WARN when the admin box serves the dashboard but ``ttyd`` is missing (#3263).
+
+    The dashboard's loopback "Debug session" button spawns a ``ttyd`` terminal
+    (``teatree.agents.terminal_launcher.launch_ttyd``, resolved via
+    ``shutil.which("ttyd")``). Only the ``admin`` role serves the dashboard, so
+    the check flags a missing ``ttyd`` solely when ``TEATREE_ROLE == "admin"`` —
+    a worker/init box (or a plain host that never opens the dashboard) is not
+    affected. Surfacing-only: always returns ``True`` so it never gates the
+    doctor exit code.
+    """
+    import os  # noqa: PLC0415 — deferred: loaded only when this command runs
+    import shutil  # noqa: PLC0415 — deferred: loaded only when this command runs
+
+    resolved_env = env if env is not None else dict(os.environ)
+    if resolved_env.get("TEATREE_ROLE") != "admin":
+        return True
+    if shutil.which("ttyd") is not None:
+        return True
+    typer.echo(
+        "WARN  ttyd is not installed but this box serves the admin dashboard — the "
+        "'Debug session' loopback terminal will fail. Install it (`apt install ttyd`)."
+    )
+    return True
+
+
+_CHROME_DEVTOOLS_MCP_NAME = "chrome-devtools"
+
+
+def _check_chrome_devtools_mcp_suggestion(*, home: Path | None = None, cwd: Path | None = None) -> bool:
+    """INFO-suggest the OPTIONAL chrome-devtools MCP e2e aid when it is absent (#3271).
+
+    chrome-devtools MCP gives an interactive DOM/console/network view that makes
+    authoring and debugging Playwright e2e specs far more tractable. It is a
+    pure developer-experience recommendation — teatree's runtime requires zero
+    MCP — so this is an ``INFO`` suggestion, never a ``WARN``/``FAIL``, and its
+    absence gates nothing (always returns ``True``). Silent when it is already
+    configured. Crash-proof: any read error degrades to a silent pass.
+    """
+    try:
+        from teatree.core.mcp_connectivity import read_enabled_mcp_servers  # noqa: PLC0415 — deferred: light import
+
+        names = {server.name for server in read_enabled_mcp_servers(home=home, cwd=cwd)}
+    except Exception:  # noqa: BLE001 — an optional suggestion must never crash or gate the doctor run
+        return True
+    if _CHROME_DEVTOOLS_MCP_NAME in names:
+        return True
+    typer.echo(
+        "INFO  chrome-devtools MCP is an OPTIONAL aid for authoring/debugging Playwright "
+        "e2e specs (live DOM, console, network, screenshots). Enable it with "
+        "`claude mcp add chrome-devtools -- npx -y chrome-devtools-mcp@latest` (needs a "
+        "Chrome executable). It is never required — its absence gates nothing."
+    )
+    return True
 
 
 def _check_skills() -> bool:

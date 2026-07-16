@@ -168,6 +168,16 @@ class Override:
             return True
         return now < self.until
 
+    @property
+    def defers_questions(self) -> bool:
+        """``AskUserQuestion`` defers to the durable backlog — away + autonomous-away (#2544)."""
+        return self.mode in _DEFERRING_MODES
+
+    @property
+    def pauses_self_pump(self) -> bool:
+        """The Stop self-pump is suppressed — holiday-``away`` only (#2544)."""
+        return self.mode in _PAUSING_MODES
+
 
 @dataclass(frozen=True, slots=True)
 class Schedule:

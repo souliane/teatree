@@ -181,6 +181,17 @@ class TestSeedDefaultLoops(django.test.TestCase):
         assert Loop.objects.get(name="review").colleague_facing is True
         assert Loop.objects.get(name="followup").colleague_facing is True
 
+    def test_ship_merge_loop_is_not_colleague_facing(self) -> None:
+        """#3274: the auto-merge path (`ship`) is NOT colleague_facing.
+
+        A non-colleague-facing loop is NOT deferred under `autonomous_away`. The
+        internal merge-verdict + keystone merge sweep lives here (moved off the
+        colleague-facing `review` loop in #3244), so a green own-PR still gets its
+        verdict and auto-merges while the owner is away.
+        """
+        seed_default_loops_and_prompts()
+        assert Loop.objects.get(name="ship").colleague_facing is False
+
     def test_seed_preserves_operator_edited_colleague_facing_flag(self) -> None:
         seed_default_loops_and_prompts()
         # Operator flips inbox (default False) to colleague-facing; re-seeding

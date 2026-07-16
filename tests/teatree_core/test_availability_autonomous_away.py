@@ -16,6 +16,7 @@ from teatree.core.availability import (
     MODE_AUTONOMOUS_AWAY,
     MODE_AWAY,
     MODE_PRESENT,
+    Override,
     Resolution,
     resolve_mode,
     write_override,
@@ -54,6 +55,25 @@ class TestModePredicates:
     def test_unknown_mode_neither(self) -> None:
         assert not _defers("garbage")
         assert not _pauses("garbage")
+
+
+class TestOverridePredicates:
+    """``Override`` carries the same defer/pause semantics as ``Resolution`` (the #3274 finding keys on them)."""
+
+    def test_present_neither(self) -> None:
+        override = Override(mode=MODE_PRESENT, until=None)
+        assert not override.defers_questions
+        assert not override.pauses_self_pump
+
+    def test_away_defers_and_pauses(self) -> None:
+        override = Override(mode=MODE_AWAY, until=None)
+        assert override.defers_questions
+        assert override.pauses_self_pump
+
+    def test_autonomous_away_defers_but_does_not_pause(self) -> None:
+        override = Override(mode=MODE_AUTONOMOUS_AWAY, until=None)
+        assert override.defers_questions
+        assert not override.pauses_self_pump
 
 
 class TestAutonomousAwayOverride:
