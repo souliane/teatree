@@ -101,6 +101,8 @@ The statusline is the **only persistent UI surface** — written to a file by th
 
 **Header line segments:** `model=Opus 4.8 · ctx=42% │ 5h=18% (until 14:30) · 7d=63% │ t3=0(30m) acme=3(2h) │ ram=71% 51/64G · disk=22% 410G free │ skills: code review`. Segments are grouped (context · usage · freshness · resource · skills) and color-coded (green < 80%, yellow 80–94%, red ≥ 95% for percentages; light-grey for labels). Repo freshness is derived from `tick-meta.json` (`freshness`): commits behind `origin/main` and fetch age for `$T3_REPO` and each overlay with a `path` in the DB `overlays` registry row (green = 0, yellow = 1–5, red = 6+).
 
+**Contributed inline segments (#3237).** Loops and overlays contribute named inline segments — core assembles the line. `tick-meta.json` carries a `segments` list (`teatree.core.statusline_segment.StatuslineSegment`: `id`/`text`/`color`/`placement`), assembled at tick cadence by `teatree.loop.tick_freshness._statusline_segments` from core's own producers plus each overlay's `OverlayBase.get_statusline_segments()` (each producer fails open to no segment, so a broken one can never blank the line). The hook reads `.segments[]` and colors + splices each at its `placement` anchor — `usage` (the group the SDK cost chip sits in), `header` (next to the repo-freshness segments), or `after:<id>` (resolved in jq to the referenced segment's group); an unknown placement degrades to end-of-line. The SDK cost chip is the first, core-produced `usage` segment — the dedicated `cost_chip` key is retired into this one mechanism. `statusline_chain` remains valid for genuinely line-shaped extensions.
+
 **Zones (three, fixed order):**
 
 1. **Anchors** — always shown: active overlay, current ticket (if any), branch, context-window usage.

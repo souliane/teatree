@@ -320,20 +320,54 @@ if [ -n "$seven_day_pct" ] && [ "$seven_day_pct" != "empty" ]; then
     g_usage="${g_usage}${_LBL}7d=${_RST}$(color_pct "$seven_day_pct")"
 fi
 
-# SDK-equivalent month-to-date spend, rendered immediately after the weekly
-# (7d) rate-limit segment so the two usage windows read together. The dollar
-# figure is computed Python-side and handed over via tick-meta.json's
-# ``cost_chip`` (e.g. ``SDK mtd ≈$48/$200``); this hook only places it. Empty
-# when no headless cost is captured this cycle or the sidecar is unreadable.
-_cost_chip=""
+# Contributed inline segments (souliane/teatree#3237). Loops/overlays generate
+# named segments (id/text/color/placement); core assembles them here. Each is
+# computed Python-side at tick cadence and handed over via tick-meta.json's
+# ``segments`` list; this hook only colors and places them. Placement anchors:
+#   usage  → the usage group (where the SDK cost chip sits — it is the first,
+#            core-produced ``usage`` segment, the retired dedicated ``cost_chip``
+#            key generalized into this one mechanism)
+#   header → next to the repo-freshness segments (the updates group)
+#   after:<id> → resolved (in jq) to the referenced segment's own placement, so
+#                it lands in that group right after the segment it follows
+# An unknown/dangling placement degrades to end-of-line, never an error.
+# ``LC_ALL`` is untouched — a mid-dot/ellipsis in a segment's text passes
+# through the byte-mode width awk downstream unchanged.
+_seg_usage=""
+_seg_header=""
+_seg_end=""
 _cost_meta="${target%.txt}-meta.json"
 [ ! -r "$_cost_meta" ] && _cost_meta="$(dirname "$target")/tick-meta.json"
 if [ -r "$_cost_meta" ] && command -v jq >/dev/null 2>&1; then
-    _cost_chip=$(jq -r '.cost_chip // empty' "$_cost_meta" 2>/dev/null)
+    while IFS=$'\t' read -r _splace _scolor _stext; do
+        [ -z "$_stext" ] && continue
+        case "$_scolor" in
+            green)  _sc="$_GRN" ;;
+            yellow) _sc="$_YLW" ;;
+            red)    _sc="$_RED" ;;
+            *)      _sc="$_BLU" ;;
+        esac
+        _rendered="${_sc}${_stext}${_RST}"
+        case "$_splace" in
+            usage)  [ -n "$_seg_usage" ]  && _seg_usage="${_seg_usage}${isep}";   _seg_usage="${_seg_usage}${_rendered}" ;;
+            header) [ -n "$_seg_header" ] && _seg_header="${_seg_header}${isep}"; _seg_header="${_seg_header}${_rendered}" ;;
+            *)      [ -n "$_seg_end" ]    && _seg_end="${_seg_end}${isep}";       _seg_end="${_seg_end}${_rendered}" ;;
+        esac
+    done < <(jq -r '
+        (.segments // []) as $segs
+        | $segs[]
+        | . as $s
+        | (($s.placement // "header")) as $p
+        | (if ($p | startswith("after:"))
+             then (($p[6:]) as $ref
+                   | ([$segs[] | select((.id // "") == $ref) | (.placement // "header")] | .[0] // "end"))
+             else $p end) as $resolved
+        | [$resolved, ($s.color // "-"), ($s.text // "")] | @tsv
+    ' "$_cost_meta" 2>/dev/null)
 fi
-if [ -n "$_cost_chip" ]; then
+if [ -n "$_seg_usage" ]; then
     [ -n "$g_usage" ] && g_usage="${g_usage}${isep}"
-    g_usage="${g_usage}${_BLU}${_cost_chip}${_RST}"
+    g_usage="${g_usage}${_seg_usage}"
 fi
 
 # Skills are kept aside and tacked on last (or on their own line — see below)
@@ -548,6 +582,11 @@ if [ -r "$_tick_meta" ] && command -v jq >/dev/null 2>&1; then
 fi
 
 g_updates="$_freshness_segment"
+# ``header``-placed contributed segments sit next to the repo-freshness segments.
+if [ -n "$_seg_header" ]; then
+    [ -n "$g_updates" ] && g_updates="${g_updates}${isep}"
+    g_updates="${g_updates}${_seg_header}"
+fi
 
 # Agent-Teams roster: the live mates of the team THIS session leads, rendered
 # compactly so the lead sees who is on the bench without the harness's inline
@@ -607,13 +646,16 @@ if command -v jq >/dev/null 2>&1 && [ -n "${session_id:-}" ]; then
     fi
 fi
 g_team="$_team_segment"
+# Contributed segments with an unknown/dangling placement land end-of-line as
+# their own trailing group (souliane/teatree#3237), never dropped or errored.
+g_segend="$_seg_end"
 
 # Join all groups with the between-group separator. There is no loop group
 # (#130) — loop/tick info has exactly one home, the dedicated loop line in
 # the zones file cat'd below. The mates roster (g_team) rides the header as its
 # own group, after resource, so it never crowds out model/ctx/usage.
 header=""
-for _g in g_context g_usage g_updates g_resource g_team; do
+for _g in g_context g_usage g_updates g_resource g_team g_segend; do
     _val=$(eval "printf '%s' \"\${$_g}\"")
     [ -z "$_val" ] && continue
     if [ -z "$header" ]; then

@@ -109,6 +109,48 @@ def _collect_repo_freshness() -> dict[str, dict[str, int | str]]:
     }
 
 
+def _registered_overlays() -> list[object]:
+    """Every registered overlay instance, or ``[]`` on any discovery failure.
+
+    Fail-open so a broken overlay registry never blanks the statusline.
+    """
+    try:
+        from teatree.core.overlay_loader import get_all_overlays  # noqa: PLC0415 — deferred: loaded at tick time
+
+        return list(get_all_overlays().values())
+    except Exception:  # noqa: BLE001 — discovery failure degrades to no overlay segments
+        logger.warning("overlay discovery failed for statusline segments — no overlay segments", exc_info=True)
+        return []
+
+
+def _statusline_segments() -> list[dict[str, str]]:
+    """Assemble the contributed inline statusline segments (core + overlays).
+
+    Core contributes the cost chip as the first ``usage``-placed segment; each
+    registered overlay then contributes zero or more via
+    ``get_statusline_segments``. Every producer fails open to no segment (the
+    ``_cost_chip`` contract, extended per overlay), so a broken producer can
+    never blank the line. Returns the segments as plain dicts for
+    ``tick-meta.json``.
+    """
+    from teatree.core.statusline_segment import StatuslineSegment  # noqa: PLC0415 — deferred: loaded at tick time
+
+    segments: list[StatuslineSegment] = []
+    chip = _cost_chip()
+    if chip:
+        # The cost chip keeps its neutral (blue) render: color ``None`` falls to
+        # the shell's default palette arm, so the migration is byte-for-byte.
+        segments.append(StatuslineSegment(id="cost_chip", text=chip, placement="usage"))
+    for overlay in _registered_overlays():
+        try:
+            contributed = overlay.get_statusline_segments()  # ty: ignore[unresolved-attribute]
+        except Exception:  # noqa: BLE001 — a broken producer must never blank the line
+            logger.warning("overlay statusline segments producer failed — skipping", exc_info=True)
+            continue
+        segments.extend(seg for seg in contributed if isinstance(seg, StatuslineSegment))
+    return [seg.as_meta() for seg in segments]
+
+
 def _cost_chip() -> str:
     """The SDK-equivalent cost chip for the sidecar, or ``""`` when silent.
 
@@ -150,7 +192,7 @@ def _write_tick_meta(started_at: dt.datetime, *, target: Path | None = None) -> 
                 "cadence": cadence,
                 "rendered_at": int(started_at.timestamp()),
                 "freshness": freshness,
-                "cost_chip": _cost_chip(),
+                "segments": _statusline_segments(),
             }
         )
         + "\n",

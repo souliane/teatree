@@ -16,6 +16,7 @@ from teatree.core.gates.merge_guard import MergeGuard
 from teatree.core.modelkit.phases import canonicalize_stage_skill_keys, normalize_phase
 from teatree.core.overlay_metadata import OverlayMetadata
 from teatree.core.provision.variant import Variant
+from teatree.core.statusline_segment import StatuslineSegment
 from teatree.core.worktree.health import HealthCheck
 from teatree.core.worktree.health import default_health_checks as _default_health_checks
 from teatree.types import (
@@ -677,6 +678,20 @@ class OverlayBase(ABC):
         if self.config.workspace_repos:
             return list(self.config.workspace_repos)
         return self.get_repos()
+
+    # ── Statusline contribution ──────────────────────────────────────
+
+    def get_statusline_segments(self) -> list[StatuslineSegment]:
+        """Inline statusline segments this overlay contributes (#3237).
+
+        Called at loop-tick cadence by the ``tick-meta.json`` writer; each
+        returned segment is spliced inline on the statusline. Producers must be
+        CHEAP — read a local cache primed out-of-band by the overlay's own
+        loop/watcher, never fetch or shell out inline. The default contributes
+        nothing; a broken producer is caught by the caller and fails open to no
+        segment, so it can never blank the statusline.
+        """
+        return []
 
     # ── Issue / reference resolution ─────────────────────────────────
 

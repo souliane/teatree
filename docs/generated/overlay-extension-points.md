@@ -18,6 +18,7 @@ Base class: `teatree.core.overlay.OverlayBase`
 | `provisioning.docker_services` | No | `(worktree: 'Worktree') -> set[str]` | Declare service names that MUST run in Docker — enforced at `worktree provision`. |
 | `provisioning.reap_external_resources` | No | `(worktree: 'Worktree') -> list[str]` | Reap a reaped worktree's out-of-band resources (e.g. its docker compose containers + images). |
 | `get_checking_sources` | No | `() -> list[str]` | Return extra 'needs you' source identifiers for the `t3 <overlay> checking show` report. |
+| `get_statusline_segments` | No | `() -> list[teatree.core.statusline_segment.StatuslineSegment]` | Contribute named inline segments (id/text/color/placement) spliced onto the statusline at tick cadence. |
 | `metadata.validate_pr` | No | `(title: str, description: str, *, require_sections: bool = True) -> teatree.types.ValidationResult` | Return PR validation problems for this overlay. |
 | `metadata.build_pr_title` | No | `(*, branch: str, subject: str, body: str, issue_url: str) -> str` | Produce the PR title from structured ticket data (default: the commit subject). |
 | `metadata.get_required_description_sections` | No | `() -> list[str]` | Declare MR-description sections (beyond What/Why) the gate requires and the generator emits. |
