@@ -177,20 +177,23 @@ def repair_receipt_to_checkout(checkout: Path) -> bool:
     still reports the problem rather than claiming a repair.
     """
     import shutil  # noqa: PLC0415 — deferred: keeps the stdlib-only detection path light
-    import subprocess  # noqa: PLC0415 — deferred: only the repair path shells out
+
+    from teatree.utils.run import (  # noqa: PLC0415 — deferred: only the repair path shells out
+        CommandFailedError,
+        TimeoutExpired,
+        run_allowed_to_fail,
+    )
 
     uv = shutil.which("uv")
     if uv is None:
         return False
     try:
-        result = subprocess.run(
+        result = run_allowed_to_fail(
             [uv, "tool", "install", "--editable", str(checkout), "--force"],
-            check=False,
-            capture_output=True,
-            text=True,
+            expected_codes=None,
             timeout=300,
         )
-    except (OSError, subprocess.SubprocessError):
+    except (OSError, TimeoutExpired, CommandFailedError):
         return False
     return result.returncode == 0
 
