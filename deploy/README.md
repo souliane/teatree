@@ -212,6 +212,57 @@ verify the fingerprint out of band).
   the editable clone). There is **no** second workflow and no quiescence probe — a
   re-run of the deploy workflow is only needed for infra/compose/image changes.
 
+## Self-heal watchdog (H24, owner directive #10)
+
+The factory once froze for ~7 hours and nobody noticed because **the worker was
+the monitor** — when the init/worker died, the thing that would have alerted died
+with it. The fix is a watchdog that lives **outside** the thing it watches: a
+host-level systemd timer, decoupled from the compose stack, so a full stack outage
+cannot take the watchdog down too.
+
+`deploy/watchdog.sh` runs every few minutes and, each pass:
+
+1. `docker compose -p teatree up -d` — restarts anything that went down (a full
+   stack outage, like the init crash-loop, is auto-repaired here). This is the
+   **only** mutating docker op — the watchdog never prunes, stops, or removes
+   anything, so it is safe to run unattended.
+2. `t3 doctor check --json` inside a live container — reads the factory health,
+   including the H24 self-heal detectors added alongside this watchdog: a compose
+   init container that exited non-zero / a worker stuck `Created`, a free worker
+   flock over overdue loop work, an `execute_headless_task` stranded RUNNING with
+   no live worker, a READY loop timer stale past 2× its cadence, a PENDING
+   `interactive` task under `agent_runtime=headless`, a FAILED task on a still-live
+   ticket, and a runtime clone drifted off its default branch.
+3. On any **red** finding it DMs the owner via `t3 teatree notify send`, keyed on
+   the finding set so an ongoing outage does not re-spam every pass. (The default
+   deploy wires no Slack credential; until you add one the DM step no-ops and the
+   findings are visible via `journalctl -u teatree-watchdog` and `t3 doctor check`.)
+
+Because the doctor runs *inside* a container (no docker socket), its own
+container-state check degrades to a pass there — the watchdog's `up -d` is the
+real container-restart repair, and the two are complementary.
+
+### Install (one-time, on the box)
+
+```bash
+# From the build-context checkout the deploy keeps current:
+sudo cp /home/teatree/teatree-deploy/deploy/teatree-watchdog.service /etc/systemd/system/
+sudo cp /home/teatree/teatree-deploy/deploy/teatree-watchdog.timer   /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now teatree-watchdog.timer
+
+# Verify it is scheduled and inspect a pass:
+systemctl list-timers teatree-watchdog.timer
+journalctl -u teatree-watchdog -n 50
+```
+
+The service runs `watchdog.sh` as the `teatree` deploy user (a docker-group
+member). Overridable via env in the service unit if your paths differ:
+`TEATREE_WATCHDOG_COMPOSE_FILE`, `TEATREE_WATCHDOG_PROJECT`,
+`TEATREE_WATCHDOG_OVERLAY`, `TEATREE_WATCHDOG_EXEC_SERVICES`. It needs `python3`
+on the box for the richest DM body (present on the stock Ubuntu image); without it
+the DM degrades to a generic "red findings" body.
+
 ## Caveats
 
 - **Headless orchestration is still maturing** — expect to babysit early runs via

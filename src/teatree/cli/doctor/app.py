@@ -527,8 +527,20 @@ class IntrospectionHelpers:
 
 
 @doctor_app.command()
-def check() -> bool:
+def check(
+    json_output: bool = typer.Option(  # noqa: FBT001 — typer CLI boolean flag; the bool parameter is typer's option idiom
+        False, "--json", help="Emit findings as JSON for the external watchdog."
+    ),
+) -> bool:
     """Verify imports, required tools, and editable-install sanity."""
+    # ``is True`` (not truthiness): direct Python callers — the ``_doctor_default``
+    # callback and tests calling ``check()`` — receive the typer ``OptionInfo``
+    # sentinel as the default, which is truthy; only a CLI-resolved ``--json`` is
+    # the real ``True`` that routes to the JSON surface.
+    if json_output is True:
+        from teatree.cli.doctor.self_heal import check_as_json  # noqa: PLC0415 — deferred: --json path only
+
+        return check_as_json(check)
     try:
         import django  # noqa: PLC0415, F401 — deferred: Django import at call time; re-export
 
@@ -575,6 +587,15 @@ def check() -> bool:
     # PR-28: warn when the loop worker is enabled but no worker holds the flock —
     # the default-ON loops are silently dead until `t3 worker ensure` spawns one.
     ok = _check_worker_running() and ok
+
+    # H24 self-heal (owner directive #10): the hard-FAIL silent-freeze detectors —
+    # dead compose containers, a free worker flock over overdue loop work, a
+    # stranded headless task, a stale loop timer, an unrunnable interactive task
+    # under headless runtime, a failed task on a live ticket, a drifted runtime
+    # clone. These flip the exit code the external watchdog (deploy/watchdog.sh) keys on.
+    from teatree.cli.doctor.self_heal import run_self_heal_checks  # noqa: PLC0415 — deferred: keeps CLI startup light
+
+    ok = run_self_heal_checks() and ok
 
     # #3159: warn on a dangling loop-preset reference (deleted preset / loop /
     # schedule). Surfacing-only (never gates the exit code), like the sibling

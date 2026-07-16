@@ -11,6 +11,7 @@ from django_typer.management import TyperCommand, command
 
 from teatree.config import worktree_root as _config_worktree_root
 from teatree.core.gates.local_stack_gate import acquire_or_enqueue
+from teatree.core.intake.issue_ref import InvalidIssueRefError, canonicalize_issue_ref
 from teatree.core.intake.resolve import WorktreeNotFoundError, _get_user_cwd, resolve_worktree, workspace_owner_ticket
 from teatree.core.management.commands._workspace import helpers as _wh
 from teatree.core.management.commands._workspace.clean_all import CleanAllIO, run_clean_all
@@ -151,6 +152,14 @@ class Command(TyperCommand):
         # Infer from the issue URL whose workspace repos own it; the
         # default ``get_overlay()`` env-var path still wins when set.
         overlay = get_overlay(_wh.resolve_overlay_name_for_url(issue_url))
+        # Refuse/canonicalize a non-URL arg (a bare ``3274``) BEFORE it can be
+        # persisted as a malformed ``issue_url`` — resolve it to the overlay's
+        # full issue URL or reject it.
+        try:
+            issue_url = canonicalize_issue_ref(overlay, issue_url)
+        except InvalidIssueRefError as exc:
+            self.stderr.write(f"  Refused: {exc}")
+            return 0
         adopt_ctx = resolve_adopt_context(adopt=adopt, adopt_branch=adopt_branch)
         adopt_refusal = adopt_preflight_refusal(overlay, issue_url, adopt_ctx, allow_closed=adopt_closed)
         if adopt_refusal is not None:
