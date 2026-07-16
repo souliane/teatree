@@ -192,6 +192,16 @@ slack-listener)
     # drains, acks with 👀, and dispatches. `t3 slack listen` exits non-zero
     # when no overlay is Slack-enabled; `restart: unless-stopped` then simply
     # keeps a harmless retry loop on a box that has no Slack overlay yet.
+    #
+    # Drain + 👀-ack captured DMs on a cadence: the reactive loop-drain-queue
+    # slot is not bootstrapped under `t3 worker` in headless, so the listener's
+    # captures would never reach an observable state without this. `t3 slack
+    # check` drains the JSONL queue and, unlike the drain-queue loop, is NOT
+    # gated by the worker singleton. Failure-tolerant (`|| true`) and
+    # backgrounded so a non-zero check never trips `set -e` or crashes the
+    # foreground listener.
+    SLACK_CHECK_INTERVAL_SECONDS=15
+    ( while true; do t3 slack check >/dev/null 2>&1 || true; sleep "$SLACK_CHECK_INTERVAL_SECONDS"; done ) &
     exec t3 slack listen
     ;;
 admin)
