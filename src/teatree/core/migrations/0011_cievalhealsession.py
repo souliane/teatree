@@ -6,33 +6,47 @@ from django.db import migrations, models
 
 
 class Migration(migrations.Migration):
-
     dependencies = [
-        ('core', '0010_alter_implementedissuemarker_state'),
+        ("core", "0010_alter_implementedissuemarker_state"),
     ]
 
     operations = [
         migrations.CreateModel(
-            name='CiEvalHealSession',
+            name="CiEvalHealSession",
             fields=[
-                ('id', models.BigAutoField(auto_created=True, primary_key=True, serialize=False, verbose_name='ID')),
-                ('overlay', models.CharField(max_length=64)),
-                ('pr_ref', models.CharField(max_length=255)),
-                ('head_sha', models.CharField(blank=True, default='', max_length=64)),
-                ('state', django_fsm.FSMField(choices=[('pending', 'Pending'), ('awaiting_ci', 'Awaiting CI'), ('triaging', 'Triaging'), ('fixing', 'Fixing'), ('pushed', 'Pushed'), ('green', 'Green'), ('halted', 'Halted')], default='pending', max_length=16)),
-                ('ci_run_id', models.CharField(blank=True, default='', max_length=64)),
-                ('red_scenarios', models.JSONField(blank=True, default=list)),
-                ('fix_attempts', models.PositiveSmallIntegerField(default=0)),
-                ('max_fix_attempts', models.PositiveSmallIntegerField(default=3)),
-                ('last_fix_paths', models.JSONField(blank=True, default=list)),
-                ('halt_reason', models.TextField(blank=True, default='')),
-                ('created_at', models.DateTimeField(default=django.utils.timezone.now)),
-                ('updated_at', models.DateTimeField(auto_now=True)),
+                ("id", models.BigAutoField(auto_created=True, primary_key=True, serialize=False, verbose_name="ID")),
+                ("overlay", models.CharField(max_length=64)),
+                ("pr_ref", models.CharField(max_length=255)),
+                ("head_sha", models.CharField(blank=True, default="", max_length=64)),
+                (
+                    "state",
+                    django_fsm.FSMField(
+                        choices=[
+                            ("pending", "Pending"),
+                            ("awaiting_ci", "Awaiting CI"),
+                            ("triaging", "Triaging"),
+                            ("fixing", "Fixing"),
+                            ("pushed", "Pushed"),
+                            ("green", "Green"),
+                            ("halted", "Halted"),
+                        ],
+                        default="pending",
+                        max_length=16,
+                    ),
+                ),
+                ("ci_run_id", models.CharField(blank=True, default="", max_length=64)),
+                ("red_scenarios", models.JSONField(blank=True, default=list)),
+                ("fix_attempts", models.PositiveSmallIntegerField(default=0)),
+                ("max_fix_attempts", models.PositiveSmallIntegerField(default=3)),
+                ("last_fix_paths", models.JSONField(blank=True, default=list)),
+                ("halt_reason", models.TextField(blank=True, default="")),
+                ("created_at", models.DateTimeField(default=django.utils.timezone.now)),
+                ("updated_at", models.DateTimeField(auto_now=True)),
             ],
             options={
-                'db_table': 'teatree_ci_eval_heal_session',
-                'ordering': ['-created_at'],
-                'indexes': [models.Index(fields=['overlay', 'state'], name='ci_eval_heal_overlay_state_idx')],
+                "db_table": "teatree_ci_eval_heal_session",
+                "ordering": ["-created_at"],
+                "indexes": [models.Index(fields=["overlay", "state"], name="ci_eval_heal_overlay_state_idx")],
             },
         ),
     ]
