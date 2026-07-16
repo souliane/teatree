@@ -3,6 +3,8 @@
 import json
 from pathlib import Path
 
+import pytest
+
 from teatree.cli.setup.statusline_installer import StatuslineInstall, install_statusline, statusline_command_path
 
 
@@ -53,3 +55,23 @@ class TestInstallStatusline:
         settings.write_text("{ not json", encoding="utf-8")
         assert install_statusline(settings, repo) is StatuslineInstall.UNREADABLE
         assert settings.read_text(encoding="utf-8") == "{ not json"
+
+    def test_unwritable_target_returns_unwritable_without_raising(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A settings.json the user cannot write must not crash setup (headless init).
+
+        In the headless container ``~/.claude`` is created root-owned by the
+        Docker bind-mount, so the ``teatree`` user cannot write ``settings.json``.
+        The statusline convenience write must degrade to
+        :attr:`StatuslineInstall.UNWRITABLE`, never propagate ``PermissionError``.
+        """
+        repo = _repo(tmp_path)
+        settings = tmp_path / "cfg" / "settings.json"
+
+        def _deny_write(self: Path, *args: object, **kwargs: object) -> int:
+            raise PermissionError(13, "Permission denied", str(self))
+
+        monkeypatch.setattr(Path, "write_text", _deny_write)
+
+        assert install_statusline(settings, repo) is StatuslineInstall.UNWRITABLE

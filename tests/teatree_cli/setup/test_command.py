@@ -20,6 +20,11 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
+
+from teatree.cli.setup import command as setup_command
+from teatree.cli.setup.statusline_installer import StatuslineInstall
+
 _RUN_SETUP_PROBE = """
 from pathlib import Path
 from types import SimpleNamespace
@@ -131,3 +136,27 @@ class TestSetupCommandIsImportSafePreBootstrap:
         )
         assert result.returncode == 0, f"stdout={result.stdout!r}\nstderr={result.stderr!r}"
         assert "setup-import-ok" in result.stdout
+
+
+class TestReportStatuslineInstallSurvivesUnwritable:
+    """A statusline write the user cannot perform must never abort ``t3 setup``.
+
+    In the headless container ``~/.claude`` is created root-owned by the Docker
+    bind-mount, so the ``teatree`` user cannot write ``settings.json``. When
+    :func:`install_statusline` reports :attr:`StatuslineInstall.UNWRITABLE`,
+    ``_report_statusline_install`` must emit a WARN line and return normally so
+    the surrounding ``run()`` still exits 0 — otherwise headless init fails and
+    the whole stack stays down.
+    """
+
+    def test_unwritable_emits_warn_and_does_not_raise(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        monkeypatch.setattr(
+            setup_command, "install_statusline", lambda *_a, **_k: StatuslineInstall.UNWRITABLE
+        )
+
+        setup_command._report_statusline_install(tmp_path / "settings.json", tmp_path)
+
+        out = capsys.readouterr().out
+        assert "WARN" in out

@@ -42,6 +42,8 @@ def _report_statusline_install(settings_json: Path, repo: Path) -> None:
         typer.echo("OK    Installed statusLine block into settings.json.")
     elif result is StatuslineInstall.ALREADY_PRESENT:
         typer.echo("OK    statusLine already configured — left untouched.")
+    elif result is StatuslineInstall.UNWRITABLE:
+        typer.echo("WARN  settings.json not writable — skipped statusLine install; setup continues.")
     else:
         typer.echo("WARN  settings.json unparsable — skipped statusLine install.")
 
