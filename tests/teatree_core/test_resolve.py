@@ -947,6 +947,22 @@ class TestTicketByNumberFailsLoudOnCollision(TestCase):
 
         assert _ticket_by_number("5", overlay="ov-b") == ticket_b
 
+    def test_resolved_overlay_with_only_foreign_match_returns_none(self) -> None:
+        """A resolved overlay with no same-overlay ticket must NOT cross-attach a foreign one.
+
+        Only ``ov-a`` has ticket number 5; resolving under ``ov-b`` must return
+        None rather than silently binding the worktree to ``ov-a``'s ticket.
+        """
+        Ticket.objects.create(issue_url="https://a.example.com/x/issues/5", overlay="ov-a")
+
+        assert _ticket_by_number("5", overlay="ov-b") is None
+
+    def test_blank_overlay_ticket_still_matches_under_resolved_overlay(self) -> None:
+        """A blank-overlay (ambient single-overlay default) ticket resolves under any named overlay."""
+        ticket = Ticket.objects.create(issue_url="https://a.example.com/x/issues/5", overlay="")
+
+        assert _ticket_by_number("5", overlay="ov-b") == ticket
+
     def test_branch_lookup_raises_on_collision(self) -> None:
         Ticket.objects.create(issue_url="https://a.example.com/x/issues/5")
         Ticket.objects.create(issue_url="https://b.example.com/y/issues/5")

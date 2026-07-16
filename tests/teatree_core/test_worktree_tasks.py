@@ -4,7 +4,8 @@ from collections.abc import Iterator
 from unittest.mock import patch
 
 import pytest
-from django.test import TestCase
+from django.db import connection
+from django.test import TestCase, TransactionTestCase
 
 from teatree.core.models import Ticket, Worktree
 from teatree.core.runners.base import RunnerResult
@@ -230,3 +231,72 @@ class TestExecuteWorktreeStop(_WorktreeTaskTest):
             execute_worktree_stop.call(wt.pk)
         wt.refresh_from_db()
         assert wt.db_name == "wt_keepme"
+
+
+class TestWorkerRunsRunnerOutsideClaimLock(TransactionTestCase):
+    """The heavy runner runs OUTSIDE the short claim transaction (SQLite lock fix).
+
+    The FSM workers used to wrap the minutes-long runner (``uv sync`` / DB import
+    / ``docker compose up`` / health checks) inside ``atomic() +
+    select_for_update``. On the SQLite control DB that held the connection-level
+    write lock for the whole duration, freezing every other worker ("database is
+    locked"). The claim now holds a SHORT lock (state re-check) and releases it
+    before the runner runs — proven here by the runner observing that it is NOT
+    inside an open transaction (``TransactionTestCase`` so there is no outer
+    atomic wrapper to confound the probe).
+    """
+
+    def _worktree(self, *, state: Worktree.State) -> Worktree:
+        # Blank overlay = ambient single-overlay default, dispatchable with no
+        # overlay registration (skips the unknown-overlay poison guard).
+        ticket = Ticket.objects.create(overlay="", issue_url="https://example.com/lock")
+        return Worktree.objects.create(
+            ticket=ticket,
+            overlay="",
+            repo_path="repo",
+            branch="feat-lock",
+            state=state,
+            extra={"worktree_path": "/tmp/wt"},
+        )
+
+    def _spy_runner(self, seen: dict[str, bool]) -> type:
+        class _Spy:
+            def __init__(self, worktree: Worktree) -> None:
+                self.worktree = worktree
+
+            def run(self) -> RunnerResult:
+                seen["in_atomic"] = connection.in_atomic_block
+                return RunnerResult(ok=True, detail="done")
+
+        return _Spy
+
+    def test_provision_runner_runs_outside_transaction(self) -> None:
+        wt = self._worktree(state=Worktree.State.PROVISIONED)
+        seen: dict[str, bool] = {}
+        with patch(
+            "teatree.core.worktree.worktree_tasks.WorktreeProvisionRunner",
+            self._spy_runner(seen),
+        ):
+            result = execute_worktree_provision.call(wt.pk)
+        assert result == {"worktree_id": wt.pk, "ok": True, "detail": "done"}
+        assert seen["in_atomic"] is False
+
+    def test_start_runner_runs_outside_transaction(self) -> None:
+        wt = self._worktree(state=Worktree.State.SERVICES_UP)
+        seen: dict[str, bool] = {}
+        with patch(
+            "teatree.core.worktree.worktree_tasks.WorktreeStartRunner",
+            self._spy_runner(seen),
+        ):
+            execute_worktree_start.call(wt.pk)
+        assert seen["in_atomic"] is False
+
+    def test_verify_runner_runs_outside_transaction(self) -> None:
+        wt = self._worktree(state=Worktree.State.READY)
+        seen: dict[str, bool] = {}
+        with patch(
+            "teatree.core.worktree.worktree_tasks.WorktreeVerifyRunner",
+            self._spy_runner(seen),
+        ):
+            execute_worktree_verify.call(wt.pk)
+        assert seen["in_atomic"] is False

@@ -357,59 +357,65 @@ def _resolve_worktree_path(workspace: Path, worktree: Worktree) -> str:
     return str(worktree_dir_for(workspace, worktree.branch, worktree.repo_path))
 
 
-def _remove_git_worktree(
+def _run_data_loss_guards(
     repo_main: Path,
     wt_path: str,
     worktree: Worktree,
     *,
     force: bool,
     strict_hygiene: bool,
-) -> list[str]:
+) -> None:
+    """Run the #706 unpushed guard + optional origin/main hygiene gate, raising to refuse.
+
+    Hoisted ahead of every DESTRUCTIVE teardown step (``docker_compose_down``
+    with ``remove_volumes=True``, overlay cleanup, git worktree removal): a
+    refused teardown must raise BEFORE anything is destroyed, else a "kept"
+    worktree is left with its per-worktree Postgres volume and overlay resources
+    already gone — a partially-destroyed worktree the operator asked to keep.
+
+    ``force`` bypasses every guard (the proven-redundant reaper / explicit
+    abandon). A missing source repo skips the guards — there is no repo to run
+    the origin-relative probe in and nothing to remove.
+
+    #706 — the data-loss guard is the seam every Worktree-row-driven teardown
+    caller funnels through (execute_teardown / WorktreeTeardown,
+    WorktreeTeardownRunner, clean-merged, clean-all, sync-backend merge cleanup,
+    abandon); it blocks removal of commits that exist on no remote at all. The
+    squash-merge-aware origin/main hygiene gate is stricter — it also blocks
+    pushed-but-unmerged branches; sync backends and interactive clean-all want
+    it, the automated FSM teardown path passes ``strict_hygiene=False``.
+
+    One narrower path is NOT routed here: ``_workspace.cleanup._prune_squash_merged``
+    deletes a branch+worktree directly via ``git.worktree_remove/branch_delete``,
+    but only AFTER ``is_squash_merged()`` confirmed the content is on a remote,
+    so it is low risk.
+    """
+    if force or not repo_main.is_dir():
+        return
+    target = _effective_target(str(repo_main), wt_path, worktree)
+    _raise_if_unpushed(str(repo_main), worktree, target)
+    if strict_hygiene:
+        _raise_if_genuinely_ahead(str(repo_main), worktree, target)
+
+
+def _remove_git_worktree(repo_main: Path, wt_path: str, worktree: Worktree) -> list[str]:
     """Remove the git worktree + branch from the source repo, returning any error messages.
 
     Returns an empty list on success. The source repo missing, the git worktree
     remove failing, or the branch delete failing each yield one entry. Failures
-    are surfaced (not raised) so unrelated cleanup steps still run.
+    are surfaced (not raised) so unrelated cleanup steps still run. The data-loss
+    guards (:func:`_run_data_loss_guards`) already ran ahead of this step, so
+    removal is unconditional here.
     """
     if not repo_main.is_dir():
         return [f"source repo missing at {repo_main}"]
     # Resolve the teardown target from git ONCE, then operate on it throughout.
     # ``Worktree.branch`` (the DB slug) can drift from the branch actually
-    # checked out in the worktree; trusting it makes the data-loss probe
-    # interrogate the wrong branch and makes ``branch -D`` no-op on a phantom
-    # slug, leaving the real branch dangling after its worktree is removed.
+    # checked out in the worktree; trusting it makes ``branch -D`` no-op on a
+    # phantom slug, leaving the real branch dangling after its worktree is
+    # removed.
     target = _effective_target(str(repo_main), wt_path, worktree)
-    if not force:
-        # #706 — the data-loss guard runs first. It is the seam every
-        # Worktree-row-driven teardown caller funnels through (execute_teardown
-        # / WorktreeTeardown, WorktreeTeardownRunner, clean-merged, clean-all,
-        # sync-backend merge cleanup, abandon) and blocks removal of commits
-        # that exist on no remote at all (the bug that destroyed worktrees).
-        # It is never skipped except by an explicit force override.
-        #
-        # One narrower path is NOT routed here: _workspace.cleanup.
-        # _prune_squash_merged() deletes a branch+worktree directly via
-        # git.worktree_remove/branch_delete, but only AFTER is_squash_merged()
-        # has confirmed the content is on a remote (merged PR or empty diff vs
-        # origin/<default>), so it is low risk. Routing it through this guard
-        # would require synthesising a Worktree row and would risk false-
-        # blocking legitimately squash-merged branches whose local SHAs differ
-        # from the squash commit. Unifying that path is tracked as follow-up
-        # (see #706 review) rather than forced here.
-        _raise_if_unpushed(str(repo_main), worktree, target)
-        # The squash-merge-aware origin/main hygiene gate is stricter: it also
-        # blocks pushed-but-unmerged branches. Sync backends and interactive
-        # clean-all want it (they clean only on detected merge / orphan reap);
-        # the automated FSM teardown path does not (the ticket is MERGED and
-        # the work is already preserved on the remote).
-        if strict_hygiene:
-            _raise_if_genuinely_ahead(str(repo_main), worktree, target)
     errors: list[str] = []
-    # The data-loss guards above (the #706 unpushed guard, plus the explicit
-    # analyze-before-wipe step in ``worktree_done`` that fronts the reaper) are the
-    # only protection: there is no recovery snapshot. ``force=True`` reaches here
-    # only after redundancy was PROVEN (the done-worktree reaper) or a human chose
-    # to abandon (the interactive abandon path) — both deliberate destroys.
     if not git.worktree_remove(str(repo_main), wt_path):
         errors.append(f"git worktree remove failed for {wt_path}")
     # Delete the REAL checked-out branch, not the possibly-phantom DB slug. A
@@ -428,17 +434,15 @@ def _remove_git_worktree(
 
 
 def _guard_or_warn_dirty_worktree(worktree: Worktree, wt_path: str, *, keep_if_dirty: bool, force: bool) -> None:
-    """KEEP a dirty worktree when ``keep_if_dirty`` (clean-all, #2243), else warn-and-proceed.
+    """KEEP a dirty worktree when ``keep_if_dirty`` (the fail-closed default), else warn-and-proceed.
 
-    A worktree with uncommitted changes may be a live one an agent is mid-task in.
-    The unattended ``clean-all`` path passes ``keep_if_dirty=True`` so such a
-    worktree is never reaped on a merged signal: this raises ``RuntimeError``
-    before any destructive step, which the reaper routes to a KEEP-with-warning.
-    ``force=True`` (explicit abandon) overrides the guard. The automated FSM
-    teardown of a genuinely-MERGED ticket leaves ``keep_if_dirty`` off and
-    warn-then-reaps — there is no recovery bundle or snapshot and nothing is ever
-    serialized to a file; the work was already preserved on the remote by the
-    merge.
+    A worktree with uncommitted changes may be a live one an agent is mid-task
+    in, and those edits are on no remote — a board "Done" event or an unattended
+    teardown would wipe them with no salvage. ``keep_if_dirty`` defaults ``True``
+    (fail-closed): a dirty worktree raises ``RuntimeError`` before any destructive
+    step, which the reaper / sync backend routes to a KEEP-with-warning. Only an
+    explicit ``keep_if_dirty=False`` caller warns-and-proceeds, and ``force=True``
+    (the proven-redundant reaper / explicit abandon) overrides the guard entirely.
     """
     if not (Path(wt_path).is_dir() and git.status_porcelain(wt_path)):
         return
@@ -514,7 +518,7 @@ def cleanup_worktree(
     *,
     force: bool = False,
     strict_hygiene: bool = True,
-    keep_if_dirty: bool = False,
+    keep_if_dirty: bool = True,
     respect_liveness: bool = True,
 ) -> CleanupResult:
     """Remove a single worktree: git worktree, branch, DB, overlay cleanup.
@@ -538,12 +542,14 @@ def cleanup_worktree(
     :func:`_raise_if_genuinely_ahead`. Sync backends and interactive
     ``clean-all`` keep it on; the FSM teardown path passes ``strict_hygiene=False``.
 
-    Dirty-worktree guard (``keep_if_dirty``, default off): when set, a worktree
-    with uncommitted changes is KEPT — ``RuntimeError`` is raised before any
-    destructive step rather than reaping it — see
-    :func:`_guard_or_warn_dirty_worktree`. ``clean-all`` passes this so a live
-    worktree an agent is mid-task in is never deleted on a merged signal (#2243).
-    ``force=True`` overrides it.
+    Dirty-worktree guard (``keep_if_dirty``, default ON — fail-closed): a
+    worktree with uncommitted changes is KEPT — ``RuntimeError`` is raised before
+    any destructive step rather than reaping it — see
+    :func:`_guard_or_warn_dirty_worktree`. Uncommitted edits are on no remote, so
+    an unattended teardown (sync-backend "Done" cleanup, FSM teardown) must never
+    wipe them by default. Only an explicit ``keep_if_dirty=False`` caller
+    warns-and-proceeds; ``force=True`` (the proven-redundant reaper / explicit
+    abandon) overrides it.
 
     There is NO recovery snapshot: ``force=True`` hard-deletes. It is reached only
     from a deliberate destroy — the done-worktree reaper after the
@@ -565,15 +571,23 @@ def cleanup_worktree(
     workspace = clone_root()
     wt_path = _resolve_worktree_path(workspace, worktree)
     overlay = _resolve_overlay_or_none(worktree)
+    repo_main = resolve_clone_path(workspace, worktree) or workspace / worktree.repo_path
 
+    # Refuse-before-destroy: the dirty-worktree guard and the #706/#2609 git
+    # data-loss guards run BEFORE any destructive step (docker volume removal,
+    # overlay cleanup, git worktree removal). A refused teardown must leave the
+    # worktree fully intact — a guard that fired only after `docker compose down
+    # --volumes` would have already deleted the per-worktree Postgres volume of a
+    # worktree it then "kept".
     _guard_or_warn_dirty_worktree(worktree, wt_path, keep_if_dirty=keep_if_dirty, force=force)
+    _run_data_loss_guards(repo_main, wt_path, worktree, force=force, strict_hygiene=strict_hygiene)
 
-    # Stop the docker compose project FIRST so containers don't leak when this
-    # path is reached outside the WorktreeTeardownRunner (#1306) — the FSM
-    # teardown, `clean-all`, and sync backends all funnel through here. The
-    # done-wipe owns the worktree's docker resources, so it removes the VOLUMES
-    # too (a reaped worktree's volumes are a slow disk leak). Idempotent: down on
-    # a project with no containers is a no-op.
+    # Stop the docker compose project so containers don't leak when this path is
+    # reached outside the WorktreeTeardownRunner (#1306) — the FSM teardown,
+    # `clean-all`, and sync backends all funnel through here. The done-wipe owns
+    # the worktree's docker resources, so it removes the VOLUMES too (a reaped
+    # worktree's volumes are a slow disk leak). Idempotent: down on a project with
+    # no containers is a no-op.
     from teatree.core.runners.worktree_start import docker_compose_down  # noqa: PLC0415 — deferred: call-time import
 
     docker_compose_down(compose_project(worktree), remove_volumes=True)
@@ -581,8 +595,7 @@ def cleanup_worktree(
     step_errors: list[str] = []
     run_overlay_cleanup_steps(overlay, worktree, step_errors)
 
-    repo_main = resolve_clone_path(workspace, worktree) or workspace / worktree.repo_path
-    step_errors.extend(_remove_git_worktree(repo_main, wt_path, worktree, force=force, strict_hygiene=strict_hygiene))
+    step_errors.extend(_remove_git_worktree(repo_main, wt_path, worktree))
 
     _drop_worktree_db(overlay, worktree, step_errors)
     _remove_overlay_pass_entry(overlay, worktree, step_errors)

@@ -203,25 +203,45 @@ def analyze_worktree_changes(worktree: Worktree, *, workspace: Path) -> ChangeAn
     default_target = _effective_default_target(Path(repo_main))
 
     reasons: list[str] = []
-    reasons.extend(_uncommitted_reasons(wt_path))
+    reasons.extend(_uncommitted_reasons(wt_path, target))
     reasons.extend(_unpushed_commit_reasons(Path(repo_main), target, default_target=default_target))
     return ChangeAnalysis(proven_redundant=not reasons, kept_reasons=reasons)
 
 
-def _uncommitted_reasons(wt_path: str) -> list[str]:
+def _current_head_sha(worktree: Worktree, *, workspace: Path) -> str | None:
+    """The worktree's current tip SHA, or the recovered last-HEAD SHA when the ref is gone.
+
+    The TOCTOU bracket for :func:`reap_done_worktree`: sampled before the
+    redundancy analysis and again just before the force-wipe, so a commit that
+    lands in the window changes the value and the wipe is refused. A present ref
+    resolves via ``rev-parse``; a dangling HEAD (post-merge ref deletion) falls
+    back to the reflog-recovered SHA so a moving dangling ref is still detected.
+    """
+    wt_path = _resolve_worktree_path(workspace, worktree)
+    repo_main = resolve_clone_path(workspace, worktree) or workspace / worktree.repo_path
+    target = _effective_target(str(repo_main), wt_path, worktree)
+    resolved = git.run(repo=target.probe_repo, args=["rev-parse", "--verify", "--quiet", target.ref])
+    if resolved:
+        return resolved
+    return classify_orphan_ref(target).recovered_sha
+
+
+def _uncommitted_reasons(wt_path: str, target: _EffectiveTarget) -> list[str]:
     """Kept-reasons for real (non-regenerable) uncommitted changes; empty when clean.
 
     Fails CLOSED: an inconclusive ``git status`` (corrupt index, lock contention)
     is treated as dirty so the worktree is kept. A dangling-HEAD worktree (its
-    branch ref deleted post-merge) is the exception: with no resolvable HEAD to
-    diff against, ``git status`` reports EVERY tracked file as a staged addition —
-    not real uncommitted work — so the dirty check is skipped and the recovered-HEAD
-    commit analysis (:func:`_unpushed_commit_reasons`) decides that worktree instead.
+    branch ref deleted post-merge) has no resolvable HEAD, so ``git status``
+    reports EVERY tracked file as a staged addition — noise, not real uncommitted
+    work. Rather than skipping the dirt check entirely there (which would let a
+    force-wipe destroy genuine uncommitted follow-up edits), the working tree is
+    diffed against the RECOVERED last-HEAD SHA plus an untracked-file scan —
+    :func:`_dangling_head_dirty_reasons`.
     """
     if not Path(wt_path).is_dir():
         return []
     if not git.check(repo=wt_path, args=["rev-parse", "--verify", "--quiet", "HEAD"]):
-        return []
+        return _dangling_head_dirty_reasons(wt_path, target)
     try:
         porcelain = git.status_porcelain(wt_path)
     except CommandFailedError as exc:
@@ -232,6 +252,38 @@ def _uncommitted_reasons(wt_path: str) -> list[str]:
         if (entry := line[_PORCELAIN_STATUS_PREFIX_WIDTH:].strip())
         and not entry.startswith(_REGENERABLE_WORKTREE_PATHS)
     ]
+    return _dirt_reasons(dirty)
+
+
+def _dangling_head_dirty_reasons(wt_path: str, target: _EffectiveTarget) -> list[str]:
+    """Kept-reasons for real uncommitted edits in a dangling-HEAD worktree; empty when clean.
+
+    A post-merge branch-ref deletion leaves HEAD unresolvable, so ``git status``
+    is useless (everything reads as a staged add). The recovered last-HEAD SHA is
+    the real comparison base: the working tree is diffed against it
+    (``git diff --name-only <sha>`` — tracked modifications) plus an untracked-file
+    scan (``git ls-files --others --exclude-standard``), ignoring the regenerable
+    env cache. Fails CLOSED: an unrecoverable HEAD or an erroring diff keeps the
+    worktree rather than letting a force-wipe destroy unexamined edits.
+    """
+    sha = classify_orphan_ref(target).recovered_sha
+    if sha is None:
+        return ["could not recover HEAD to check working-tree changes — keeping"]
+    try:
+        changed = git.run(repo=wt_path, args=["diff", "--name-only", sha])
+        untracked = git.run(repo=wt_path, args=["ls-files", "--others", "--exclude-standard"])
+    except CommandFailedError as exc:
+        return [f"could not diff working tree against recovered HEAD ({exc}) — keeping"]
+    dirty = [
+        stripped
+        for raw in (*changed.splitlines(), *untracked.splitlines())
+        if (stripped := raw.strip()) and not stripped.startswith(_REGENERABLE_WORKTREE_PATHS)
+    ]
+    return _dirt_reasons(dirty)
+
+
+def _dirt_reasons(dirty: list[str]) -> list[str]:
+    """Format a single kept-reason for a non-empty ``dirty`` file list; empty when clean."""
     if not dirty:
         return []
     preview = ", ".join(dirty[:_PREVIEW_LIMIT]) + (", …" if len(dirty) > _PREVIEW_LIMIT else "")
@@ -409,6 +461,7 @@ def reap_done_worktree(
             emit=_build_emit_record(worktree, workspace=workspace, liveness=""),
         )
 
+    head_at_analysis = _current_head_sha(worktree, workspace=workspace)
     analysis = analyze_worktree_changes(worktree, workspace=workspace)
     if not analysis.proven_redundant:
         return ReapOutcome(
@@ -418,12 +471,40 @@ def reap_done_worktree(
             emit=_build_emit_record(worktree, workspace=workspace, liveness=""),
         )
 
+    return _wipe_proven_redundant(
+        worktree, workspace=workspace, signal=signal, head_at_analysis=head_at_analysis, dry_run=dry_run
+    )
+
+
+def _wipe_proven_redundant(
+    worktree: Worktree,
+    *,
+    workspace: Path,
+    signal: DoneSignal,
+    head_at_analysis: str | None,
+    dry_run: bool,
+) -> ReapOutcome:
+    """Wipe a proven-redundant worktree, with a TOCTOU re-check of HEAD before the force-wipe.
+
+    The redundancy analysis proved the tip captured at ``head_at_analysis`` is
+    fully upstream, but ``cleanup_worktree(force=True)`` bypasses every data-loss
+    guard. A commit landing between the analysis and the wipe would be destroyed
+    unexamined — so HEAD is re-read here and the wipe refused (KEEP) if it moved,
+    leaving the worktree for the next sweep to re-analyse.
+    """
     if dry_run:
         return ReapOutcome(
             "would-wipe",
             f"WOULD WIPE '{worktree.branch}': done ({signal.source}), all changes proven redundant",
         )
-
+    head_before_wipe = _current_head_sha(worktree, workspace=workspace)
+    if head_before_wipe != head_at_analysis:
+        return ReapOutcome(
+            "kept",
+            f"KEPT '{worktree.branch}': HEAD moved during analysis "
+            f"({head_at_analysis} → {head_before_wipe}) — re-run cleanup to re-analyse",
+            emit=_build_emit_record(worktree, workspace=workspace, liveness=""),
+        )
     result = cleanup_worktree(worktree, force=True, strict_hygiene=False)
     return ReapOutcome("wiped", f"Wiped '{worktree.branch}' ({signal.source}): {result.label}", errors=result.errors)
 

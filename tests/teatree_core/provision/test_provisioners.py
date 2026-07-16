@@ -147,6 +147,63 @@ class TestApplySymlinks(TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             assert apply_symlinks([{}], tmp) == []
 
+    def test_refuses_absolute_path_escaping_the_worktree(self) -> None:
+        """An absolute spec path escapes ``base`` (``base / '/etc'`` is ``/etc``) — refused, never rmtree'd."""
+        with tempfile.TemporaryDirectory() as tmp:
+            outside = Path(tmp) / "outside_dir"
+            outside.mkdir()
+            (outside / "keep.txt").write_text("must survive", encoding="utf-8")
+            source_dir = Path(tmp) / "src"
+            source_dir.mkdir()
+
+            with patch.object(provisioners_mod.logger, "warning") as mock_warn:
+                created = apply_symlinks(
+                    [{"path": str(outside), "source": str(source_dir), "mode": "copy"}],
+                    str(Path(tmp) / "worktree"),
+                )
+
+            assert created == []
+            assert (outside / "keep.txt").read_text() == "must survive", "rmtree must never reach outside the worktree"
+            assert mock_warn.call_count == 1
+
+    def test_refuses_dotdot_traversal_escaping_the_worktree(self) -> None:
+        """A ``../`` traversal that resolves outside ``base`` is refused."""
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp) / "worktree"
+            base.mkdir()
+            outside = Path(tmp) / "sibling"
+            outside.mkdir()
+            (outside / "keep.txt").write_text("must survive", encoding="utf-8")
+            source_dir = Path(tmp) / "src"
+            source_dir.mkdir()
+
+            with patch.object(provisioners_mod.logger, "warning") as mock_warn:
+                created = apply_symlinks(
+                    [{"path": "../sibling", "source": str(source_dir), "mode": "copy"}],
+                    str(base),
+                )
+
+            assert created == []
+            assert (outside / "keep.txt").read_text() == "must survive"
+            assert mock_warn.call_count == 1
+
+    def test_allows_nested_relative_path_inside_the_worktree(self) -> None:
+        """A normal nested relative path stays inside the worktree and is applied."""
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp) / "worktree"
+            base.mkdir()
+            source = Path(tmp) / "source.txt"
+            source.write_text("content", encoding="utf-8")
+
+            created = apply_symlinks(
+                [{"path": "config/nested/link.txt", "source": str(source), "mode": "symlink"}],
+                str(base),
+            )
+
+            link = base / "config" / "nested" / "link.txt"
+            assert str(link) in created
+            assert link.read_text() == "content"
+
 
 class TestStartServices(TestCase):
     def test_runs_explicit_start_command(self) -> None:

@@ -11,6 +11,7 @@ primary consumer; ``recover`` surfaces the drifted ticket pks via
 """
 
 import re
+import shutil
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -479,13 +480,61 @@ def reconcile_ticket(ticket: Ticket) -> Drift:
     return drift
 
 
+# Prefix of every per-worktree Postgres database teatree provisions. A ``wt_*``
+# database with no backing Worktree row is a leaked DB (a teardown whose drop
+# failed still deleted the row) — the OrphanDB drift class.
+_WT_DB_PREFIX = "wt_"
+
+# Global bucket for drift that belongs to no single ticket (orphan DBs whose
+# owning row is already gone). ``0`` is never a real ticket pk.
+_GLOBAL_DRIFT_KEY = 0
+
+
+def find_orphan_dbs() -> list[OrphanDB]:
+    """Postgres ``wt_*`` databases that no Worktree row references — the OrphanDB producer.
+
+    Gives :class:`OrphanDB` / ``Drift.orphan_dbs`` a producer so ``workspace
+    doctor`` surfaces (and ``--fix`` drops) a leaked per-worktree database. When a
+    teardown's DB drop fails the Worktree row is still deleted, so the database is
+    left referenced by nothing and would otherwise leak forever. Lists ``wt_*``
+    databases and subtracts every ``db_name`` a Worktree row records.
+
+    A box with no ``psql`` on PATH — or a server the probe cannot reach — yields
+    no findings rather than raising, so the reconcile sweep never aborts on a
+    SQLite-only deployment.
+    """
+    if shutil.which("psql") is None:
+        return []
+    from teatree.utils.db import pg_env, pg_host, pg_user  # noqa: PLC0415 — deferred: keeps import light
+
+    result = run_allowed_to_fail(
+        ["psql", "-h", pg_host(), "-U", pg_user(), "-l", "-t", "-A"],
+        env=pg_env(),
+        expected_codes=None,
+    )
+    if result.returncode != 0:
+        return []
+    all_dbs = {line.split("|")[0] for line in result.stdout.splitlines() if line}
+    wt_dbs = {db for db in all_dbs if db.startswith(_WT_DB_PREFIX)}
+    known = set(Worktree.objects.exclude(db_name="").values_list("db_name", flat=True))
+    return [OrphanDB(db_name=db) for db in sorted(wt_dbs - known)]
+
+
 def reconcile_all() -> dict[int, Drift]:
-    """Return a ``{ticket.pk: Drift}`` map for every ticket with drift."""
+    """Return a ``{ticket.pk: Drift}`` map for every ticket with drift.
+
+    Orphan ``wt_*`` databases (no owning Worktree row) belong to no single ticket,
+    so they are collected once and reported under the global sentinel key
+    :data:`_GLOBAL_DRIFT_KEY`.
+    """
     drifts: dict[int, Drift] = {}
     for ticket in Ticket.objects.all():
         drift = reconcile_ticket(ticket)
         if drift.has_drift:
             drifts[ticket.pk] = drift
+    orphan_dbs = find_orphan_dbs()
+    if orphan_dbs:
+        drifts[_GLOBAL_DRIFT_KEY] = Drift(ticket_pk=_GLOBAL_DRIFT_KEY, orphan_dbs=orphan_dbs)
     return drifts
 
 

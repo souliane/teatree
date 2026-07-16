@@ -8,11 +8,13 @@ session/task, not the CWD) is NOT live.
 import subprocess
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 from django.test import TestCase
 from django.utils import timezone
 
+import teatree.core.cleanup.cleanup_liveness as cl
 from teatree.core.cleanup.cleanup_liveness import worktree_liveness
 from teatree.core.models import Session, Task, Ticket, Worktree
 from teatree.core.models.external_delivery import mark_external_delivery
@@ -199,3 +201,51 @@ class TestActiveDeliveryGuards(_LivenessFixture):
         verdict = worktree_liveness(worktree, wt_path=self.wt_path, fsm_terminal=True)
         assert verdict.active is True, "an explicit reaper_pinned must survive the post-merge teardown"
         assert "pinned" in verdict.reason
+
+
+class TestCwdScanSeesOtherProcesses(TestCase):
+    """The CWD liveness signal sees ANY process working inside the worktree, not just the reaper's own.
+
+    An ad-hoc agent (a shell, editor, dev server) with its CWD inside a worktree
+    is live work. Checking only ``Path.cwd()`` — the reaper's own process — missed
+    it; the signal now scans ``/proc/*/cwd`` too.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _tmp(self, tmp_path: Path) -> None:
+        self._tmp_path = tmp_path
+
+    def _fake_proc_with_cwd(self, pid: str, cwd_target: Path) -> Path:
+        proc = self._tmp_path / "proc"
+        (proc / pid).mkdir(parents=True)
+        (proc / pid / "cwd").symlink_to(cwd_target)
+        (proc / "nonpid").mkdir()  # a non-numeric entry the scan must skip
+        return proc
+
+    def test_scans_proc_for_foreign_process_cwd_inside_worktree(self) -> None:
+        wt = self._tmp_path / "wt"
+        wt.mkdir()
+        proc = self._fake_proc_with_cwd("1234", wt)
+        with patch.object(cl, "_PROC_ROOT", proc):
+            assert cl._any_process_cwd_within(wt.resolve()) is True
+
+    def test_proc_scan_ignores_process_cwd_outside_worktree(self) -> None:
+        wt = self._tmp_path / "wt"
+        wt.mkdir()
+        other = self._tmp_path / "other"
+        other.mkdir()
+        proc = self._fake_proc_with_cwd("1234", other)
+        with patch.object(cl, "_PROC_ROOT", proc):
+            assert cl._any_process_cwd_within(wt.resolve()) is False
+
+    def test_worktree_liveness_marks_active_on_foreign_process_cwd(self) -> None:
+        wt = self._tmp_path / "wt"
+        wt.mkdir()
+        ticket = Ticket.objects.create(issue_url="https://example.com/issues/cwd", state=Ticket.State.STARTED)
+        worktree = Worktree.objects.create(
+            overlay="test", ticket=ticket, repo_path="repo", branch="feature", extra={"worktree_path": str(wt)}
+        )
+        with patch.object(cl, "_any_process_cwd_within", return_value=True):
+            verdict = worktree_liveness(worktree, wt_path=wt)
+        assert verdict.active is True
+        assert "CWD" in verdict.reason

@@ -68,39 +68,30 @@ def run_step(
     cmd: list[str],
     *,
     cwd: str | Path | None = None,
-    check: bool = True,
     timeout: int | None = 300,
 ) -> StepResult:
     """Execute a subprocess command and return a structured result.
 
     Unlike raw ``subprocess.run(..., check=False)``, this always captures
-    output and reports duration, making failures diagnosable.
+    output and reports duration, making failures diagnosable. ``success``
+    faithfully reflects the exit code — a non-zero exit is ``success=False``,
+    never rewritten to a fabricated success (which would print OK for a step
+    that actually failed). A caller that treats a failure as non-fatal reads
+    ``result.success`` itself, or expresses non-fatality via a
+    ``ProvisionStep``'s ``required`` flag in :func:`run_provision_steps`.
 
     Routed through :func:`teatree.core.provision.provision_timebox.run_timeboxed_step`
     so a timeout, or a non-zero exit whose output shows a forked migration
     graph, fires a loud out-of-band user alert and names the diagnosed cause —
     a long provisioning step that cannot complete must alert, never hang
-    silently (souliane/teatree#2220). With ``check=False`` a non-zero exit
-    stays benign (the historical contract), while a timeout / command-not-found
-    is still surfaced as a failure.
+    silently (souliane/teatree#2220).
 
     The time-box enhancement is *optional* (:func:`_optional_timebox`): when the
     ``provision_timebox`` module is absent on a stale base (souliane/teatree#2664)
     this degrades to a plain time-box-free subprocess run that keeps the same
     ``StepResult`` contract, never aborting the caller.
     """
-    result = _timeboxed_step(name, cmd, cwd=cwd, timeout=timeout)
-    if result.success or check:
-        return result
-    if result.error.startswith(("timed out", "command not found")):
-        return result
-    return StepResult(
-        name=result.name,
-        success=True,
-        duration=result.duration,
-        stdout=result.stdout,
-        stderr=result.stderr,
-    )
+    return _timeboxed_step(name, cmd, cwd=cwd, timeout=timeout)
 
 
 def _timeboxed_step(

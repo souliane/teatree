@@ -18,7 +18,6 @@ def _shared_hooks_dir(wt_path: str) -> Path | None:
         "git-hooks-path",
         ["git", "rev-parse", "--git-path", "hooks"],
         cwd=wt_path,
-        check=False,
     )
     if not result.success or not result.stdout.strip():
         return None
@@ -39,7 +38,6 @@ def _local_hooks_path(wt_path: str) -> str | None:
         "git-hookspath-get",
         ["git", "config", "--local", "--get", "core.hooksPath"],
         cwd=wt_path,
-        check=False,
     )
     value = result.stdout.strip()
     return value or None
@@ -56,7 +54,6 @@ def _default_hooks_dir(wt_path: str) -> Path | None:
         "git-common-dir",
         ["git", "rev-parse", "--git-common-dir"],
         cwd=wt_path,
-        check=False,
     )
     if not result.success or not result.stdout.strip():
         return None
@@ -91,7 +88,6 @@ def _clear_redundant_hooks_path(wt_path: str) -> bool:
         "git-hookspath-unset",
         ["git", "config", "--local", "--unset", "core.hooksPath"],
         cwd=wt_path,
-        check=False,
     )
     if result.success:
         logger.info("Unset redundant local core.hooksPath (== default hooks dir) so prek can install")
@@ -116,7 +112,7 @@ def _baked_prek_path(body: str) -> str | None:
 
 def install(wt_path: str) -> StepResult:
     _clear_redundant_hooks_path(wt_path)
-    result = run_step("prek-install", ["prek", "install", "-f"], cwd=wt_path, check=False)
+    result = run_step("prek-install", ["prek", "install", "-f"], cwd=wt_path)
     if result.success:
         harden_hooks(wt_path)
     return result

@@ -23,6 +23,7 @@ from teatree.core.cleanup.cleanup_liveness import LivenessVerdict
 from teatree.core.models import Ticket, Worktree
 from teatree.core.runners import worktree_start
 from teatree.core.worktree.worktree_done import (
+    ChangeAnalysis,
     _effective_default_target,
     analyze_worktree_changes,
     reap_done_worktree,
@@ -170,6 +171,60 @@ class TestDoneButUncommittedKept(_ReaperFixture):
         assert outcome.action == "kept", outcome.label
         assert "uncommitted change" in outcome.label
         assert self.wt_path.exists()
+
+
+class TestDanglingHeadUncommittedKept(_ReaperFixture):
+    """A dangling-HEAD worktree (branch ref deleted post-merge) with real uncommitted edits is KEPT.
+
+    With no resolvable HEAD, ``git status`` reports every tracked file as a staged
+    add — noise. The pre-fix code SKIPPED the dirt check entirely there and let the
+    recovered-HEAD commit analysis (all commits redundant on origin) decide WIPE,
+    destroying the unexamined uncommitted follow-up edit. The working tree is now
+    diffed against the recovered last-HEAD SHA + an untracked scan, so genuine
+    uncommitted work keeps the worktree.
+    """
+
+    def test_dangling_head_with_uncommitted_edit_is_kept(self) -> None:
+        self._push_branch()  # every commit is redundant on origin/feat-x…
+        self._drop_local_branch_ref()  # …and HEAD is now a dangling symref (rc=128)
+        (self.wt_path / "wip.txt").write_text("uncommitted follow-up, on no remote\n", encoding="utf-8")
+        worktree = self._make_worktree(Ticket.State.MERGED)
+
+        outcome = self._reap(worktree)
+
+        assert outcome.action == "kept", outcome.label
+        assert "uncommitted change" in outcome.label
+        assert self.wt_path.exists(), "a dangling-HEAD worktree with real uncommitted edits must not be wiped"
+
+
+class TestReapTocTouGuard(_ReaperFixture):
+    """A commit landing between the redundancy analysis and the force-wipe is not destroyed.
+
+    ``reap_done_worktree`` proves redundancy, then ``cleanup_worktree(force=True)``
+    bypasses every data-loss guard. HEAD is re-read just before the wipe and the
+    wipe refused if it moved, so a commit that lands in the TOCTOU window survives.
+    """
+
+    def test_commit_landing_in_the_window_keeps_worktree(self) -> None:
+        self._push_branch()
+        worktree = self._make_worktree(Ticket.State.MERGED)
+
+        def racing_analyze(wt: Worktree, *, workspace: Path) -> ChangeAnalysis:
+            # A new commit lands AFTER head_at_analysis was captured, BEFORE the wipe.
+            (self.wt_path / "late.txt").write_text("late-landing work\n", encoding="utf-8")
+            _run_git("add", "-A", cwd=self.wt_path)
+            _run_git("commit", "-q", "-m", "feat: late landing", cwd=self.wt_path)
+            return ChangeAnalysis(proven_redundant=True)
+
+        with patch(
+            "teatree.core.worktree.worktree_done.analyze_worktree_changes",
+            side_effect=racing_analyze,
+        ):
+            outcome = self._reap(worktree)
+
+        assert outcome.action == "kept", outcome.label
+        assert "HEAD moved" in outcome.label
+        assert self.wt_path.exists(), "a commit landing during analysis must not be force-wiped"
 
 
 class TestShippedIsNotDone(_ReaperFixture):
