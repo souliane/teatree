@@ -157,6 +157,48 @@ def _build_messaging(overlay_name: str) -> MessagingBackend | None:
     return backend
 
 
+def configured_messaging_from_overlay(overlay_name: str | None = None) -> MessagingBackend | None:
+    """Like :func:`messaging_from_overlay`, but honours the MCP resolver contract (#3299).
+
+    Returns ``None`` when the overlay's ``messaging_backend`` resolves to
+    ``"noop"``/empty — i.e. the overlay declares ``Service.SLACK`` but has no
+    real messaging transport. ``messaging_from_overlay`` returns a *truthy*
+    :class:`~teatree.backends.messaging_noop.NoopMessagingBackend` there, which
+    :func:`~teatree.mcp.service_resolver.resolve_declaring_overlay_client` would
+    wrongly accept — stopping the search before it reaches the overlay that
+    actually carries the Slack credentials. The MCP Slack group passes THIS seam
+    to the resolver so the noop declarer is skipped, restoring the resolver's
+    documented "``None`` when unconfigured" contract at the source. Every other
+    caller keeps the no-``None``-guard :func:`messaging_from_overlay`.
+    """
+    if _resolved_messaging_backend(overlay_name) in {"", "noop"}:
+        return None
+    return messaging_from_overlay(overlay_name)
+
+
+def _resolved_messaging_backend(overlay_name: str | None) -> str:
+    """The overlay's effective ``messaging_backend`` choice (``""`` when unresolvable)."""
+    key = _active_overlay_name(overlay_name)
+    try:
+        overlay = get_overlay(key or None)
+    except ImproperlyConfigured:
+        return _toml_messaging_backend(key)
+    return overlay.config.messaging_backend or ""
+
+
+def _toml_messaging_backend(overlay_name: str) -> str:
+    """The ``messaging_backend`` value of a path-only TOML overlay entry (``""`` when absent)."""
+    if not overlay_name:
+        return ""
+    from teatree.config import load_config  # noqa: PLC0415 — deferred: call-time import, kept lazy
+
+    overlays = load_config().raw.get("overlays") or {}
+    cfg = overlays.get(overlay_name)
+    if not isinstance(cfg, dict):
+        return ""
+    return str(cfg.get("messaging_backend", "") or "")
+
+
 def ci_service_from_overlay(overlay_name: str | None = None) -> CIService | None:
     """Build a CI-service backend using the active overlay's credentials."""
     key = _active_overlay_name(overlay_name)
@@ -510,6 +552,7 @@ __all__ = [
     "ci_service_from_overlay",
     "code_host_for_repo_from_overlay",
     "code_host_from_overlay",
+    "configured_messaging_from_overlay",
     "iter_overlay_backends",
     "messaging_from_overlay",
     "notion_client_from_overlay",

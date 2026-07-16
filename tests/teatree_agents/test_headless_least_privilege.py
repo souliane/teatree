@@ -100,3 +100,19 @@ class TestBuildOptionsHarnessPin(TestCase):
         coding = self._options_for("coding")
         assert coding.setting_sources is None
         assert coding.strict_mcp_config is False
+
+    def test_lifecycle_dispatch_wires_the_teatree_mcp_server(self) -> None:
+        # #3242: plugin sub-agents ignore the mcpServers frontmatter, so the
+        # headless lifecycle dispatch must inject the teatree local-stdio server
+        # itself — otherwise coder/reviewer/shipper come up without mcp__teatree__*
+        # and fall back to shelling out to the CLI for every structured read.
+        for phase in ("coding", "reviewing", "testing", "shipping"):
+            server = self._options_for(phase).mcp_servers.get("teatree")
+            assert server is not None, phase
+            assert server["command"] == "t3"
+            assert list(server["args"]) == ["mcp", "serve"]
+
+    def test_reader_dispatch_never_wires_the_teatree_mcp_server(self) -> None:
+        # The quarantined reader stays hermetic: no MCP config of any origin,
+        # including teatree's own server.
+        assert self._options_for("directive_reading").mcp_servers == {}

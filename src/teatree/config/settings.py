@@ -174,6 +174,7 @@ OVERLAY_OVERRIDABLE_SETTINGS: dict[str, Callable[[Any], Any]] = {
     "pull_main_clone_cadence_hours": _parse_strict_int,
     "review_nag_enabled": _parse_strict_bool,
     "review_request_dedup_window_days": _parse_overridable_positive_int(30),
+    "review_request_dedup_max_pages": _parse_overridable_positive_int(5),
     "mr_title_regex": _parse_strict_str,
     "issue_implementer_enabled": _parse_strict_bool,
     "issue_implementer_label": _parse_strict_str,
@@ -1200,6 +1201,13 @@ class _PrePublishGateSettings:
     # Slack, not the DB row's age, decides. Fail-safe positive int: a
     # non-positive / mistyped value degrades to 30. Per-overlay overridable.
     review_request_dedup_window_days: int = 30
+    # Channel-scan page cap for the review-request live dedup read (#3292 part 4).
+    # The guard pages ``conversations.history`` up to this many times when
+    # deciding POST vs SUPPRESS; the old hard-coded 5 could leave a ~30-day
+    # window unreachable on a busy channel, so an old MANUAL user post fell
+    # outside the scan and the request was duplicated. Fail-safe positive int:
+    # a non-positive / mistyped value degrades to 5. Per-overlay overridable.
+    review_request_dedup_max_pages: int = 5
     # Orchestrator-execution-boundary gate (#115, §17.6 gate 2). When
     # enabled (default), the main agent is blocked from running a HEAVY /
     # long-running foreground Bash command (test suite, build, dev
