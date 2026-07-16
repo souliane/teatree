@@ -22,7 +22,6 @@ import typer
 from teatree.cli.doctor.checks import (
     _check_account_switch,
     _check_agent_session_pins,
-    _check_availability_override_staleness,
     _check_connector_manifest,
     _check_dangling_editable_pth,
     _check_dream_staleness,
@@ -41,6 +40,7 @@ from teatree.cli.doctor.checks import (
     _check_teatree_mcp_registration,
     _check_worker_running,
 )
+from teatree.cli.doctor.checks_availability import _check_availability_override_staleness
 from teatree.cli.doctor.plugin_repair import (
     _do_ensure_plugin_registered,
     _ensure_plugin_registered,
