@@ -195,6 +195,54 @@ class TestRunHeadless(TestCase):
         assert "Need design decision" in followup.execution_reason
 
 
+class _UnresolvableStageConfig:
+    """An overlay config declaring one stage skill with no SKILL.md on disk."""
+
+    def get_stage_skills(self, phase: str) -> list[str]:
+        return ["ghost-stage-skill-xyz"]
+
+
+class TestRunHeadlessStageSkillResolution(TestCase):
+    """#3206: the overlay stage skills resolve exactly once per dispatch.
+
+    ``run_headless`` builds the bundle plus both prompts; before the fix each of
+    those three re-ran ``active_overlay_stage_skills`` — three warning lines and
+    three SKILL.md-lookup passes for one misconfigured skill.
+    """
+
+    @classmethod
+    def setUpTestData(cls) -> None:
+        cls.ticket = Ticket.objects.create()
+
+    def test_stage_skills_resolved_once_per_dispatch(self) -> None:
+        result = {"summary": "Done", "files_modified": [{"path": "src/x.py", "action": "modified"}]}
+        with (
+            _fake_sdk(_success_stream(result)),
+            patch("teatree.agents.headless.active_overlay_stage_skills", return_value=[]) as dispatch_resolve,
+            # The bundle + both prompt builders reach this binding only when they
+            # re-resolve; a threaded dispatch must leave it untouched.
+            patch("teatree.agents.skill_bundle.active_overlay_stage_skills") as reresolve,
+        ):
+            session = Session.objects.create(ticket=self.ticket)
+            task = Task.objects.create(ticket=self.ticket, session=session, phase="coding")
+            run_headless(task, phase="coding", overlay_skill_metadata={})
+        assert dispatch_resolve.call_count == 1
+        reresolve.assert_not_called()
+
+    def test_unresolvable_stage_skill_warns_once_per_dispatch(self) -> None:
+        result = {"summary": "Done", "files_modified": [{"path": "src/x.py", "action": "modified"}]}
+        with (
+            _fake_sdk(_success_stream(result)),
+            patch("teatree.agents.skill_bundle._active_overlay_config", return_value=_UnresolvableStageConfig()),
+            self.assertLogs("teatree.agents.skill_bundle", level="WARNING") as logs,
+        ):
+            session = Session.objects.create(ticket=self.ticket)
+            task = Task.objects.create(ticket=self.ticket, session=session, phase="coding")
+            run_headless(task, phase="coding", overlay_skill_metadata={})
+        ghost_warnings = [line for line in logs.output if "ghost-stage-skill-xyz" in line]
+        assert len(ghost_warnings) == 1
+
+
 class TestRunHeadlessRoutingRefusal(TestCase):
     """The loop-dispatch billing guard refuses a registered phase before any SDK call.
 

@@ -678,6 +678,39 @@ def _check_dream_staleness() -> bool:
     typer.echo(
         "WARN  Dream consolidation is stale — no successful pass in 48h. "
         "Memories pile up unpromoted; schedule `t3 dream tick` (~04:00 cron) so "
-        "the cadence ledger advances, not just a one-off `t3 dream run` (#1933).",
+        "the cadence ledger advances, not just a one-off `t3 dream run` (#1933). "
+        "If `t3 dream run` reports 0 members, see the transcript-visibility check.",
+    )
+    return False
+
+
+def _check_dream_transcript_visibility() -> bool:
+    """Warn when the dream pass can see NO session transcripts at any age.
+
+    Keys on STRUCTURAL absence (projects dir missing, or zero ``*/*.jsonl`` /
+    subagent transcripts regardless of mtime) — not the 48h recency window — so a
+    genuinely quiet couple of days never false-alarms. In the Docker factory a
+    structurally empty projects dir means the ``~/.claude/projects`` bind mount is
+    missing from ``deploy/docker-compose.yml``: every dream pass then finds 0
+    members and is a permanent no-op (the marker is never stamped succeeded).
+    Complements :func:`_check_dream_staleness` (cadence) — this one names the
+    mount as the remedy. Crash-proof: any error degrades to OK.
+    """
+    from teatree.loops.dream.engine import default_projects_dir  # noqa: PLC0415 — deferred import
+
+    try:
+        root = default_projects_dir()
+        if root.is_dir() and (
+            any(root.glob("*/*.jsonl")) or any(root.glob("*/*/subagents/agent-*.jsonl"))
+        ):
+            return True
+    except Exception as exc:  # noqa: BLE001 — doctor check must never crash the run
+        typer.echo(f"WARN  Dream-transcript-visibility check crashed: {exc.__class__.__name__}: {exc}")
+        return False
+    typer.echo(
+        f"WARN  Dream sees 0 session transcripts under {root} (any age). In the "
+        "Docker factory this means the `~/.claude/projects` bind mount is missing "
+        "from deploy/docker-compose.yml — every dream pass finds 0 members and is "
+        "a permanent no-op (marker never stamped succeeded).",
     )
     return False
