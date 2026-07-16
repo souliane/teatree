@@ -504,6 +504,61 @@ class TestDynamicValueIsSkipped:
         assert self._fields_for("glab mr create --description 'x'") == ("", "x")
 
 
+class TestMixedQuoteDescriptionCapturedInFull:
+    """A ``--description`` mixing ``'`` and ``"`` is captured whole, not truncated (#3300).
+
+    The old non-greedy regex ended the capture at the next occurrence of the
+    OPENING quote char, so a body carrying both an apostrophe (``doesn't``) and a
+    double-quoted phrase truncated — the gate then validated only the leading
+    fragment and rejected a compliant description for a required section present
+    past the first quote. shlex yields the true argument value regardless of the
+    body's internal quoting.
+    """
+
+    def test_apostrophe_and_double_quoted_phrase_body_is_captured_whole(self):
+        # A single-quoted description whose body contains an apostrophe (shell-
+        # escaped ``'\''``) AND a double-quoted phrase, with a required section
+        # placed AFTER the first inner quote so truncation would drop it.
+        desc = (
+            "fix(x): mixed quotes (proj#1)\n\n"
+            "## What\n"
+            "GitLab'\\''s handling of a \"quoted phrase\" doesn'\\''t truncate the body.\n\n"
+            "## Security & privacy impact\nnone"
+        )
+        cmd = f"glab mr create --title 'fix(x): mixed quotes (proj#1)' --description '{desc}'"
+        _title, description = _fields(cmd)
+        assert '"quoted phrase"' in description
+        assert description.count("doesn't") == 1
+        assert "## Security & privacy impact" in description
+
+    def test_double_quoted_body_with_escaped_quotes_and_apostrophe_is_whole(self):
+        # The mirror case: a double-quoted description whose body carries escaped
+        # ``\"`` double quotes and a bare apostrophe.
+        cmd = (
+            "glab mr create --title 'fix(x): quoting (proj#1)' "
+            '--description "fix(x): quoting (proj#1)\n\n## What\n'
+            'It doesn\'t drop the \\"quoted\\" tail.\n\n## Security & privacy impact\nnone"'
+        )
+        _title, description = _fields(cmd)
+        assert '"quoted"' in description
+        assert "## Security & privacy impact" in description
+
+    def test_equals_spelling_mixed_quote_title_is_whole(self):
+        # The ``--title=<value>`` equals spelling resolves the full value too.
+        cmd = "glab mr create --title='fix(x): a \"quoted\" title (proj#1)' --description 'fix(x): a (proj#1)'"
+        title, _description = _fields(cmd)
+        assert title == 'fix(x): a "quoted" title (proj#1)'
+
+    def test_unparseable_command_falls_back_to_regex_capture(self):
+        # An unbalanced quote ELSEWHERE in the command makes shlex raise; the gate
+        # must not crash — it falls back to the regex capture of the (locally
+        # balanced) --description value rather than skipping validation.
+        cmd = "glab mr create --title 'fix(x): t (proj#1)' --description 'clean body' && echo \"dangling"
+        title, description = _fields(cmd)
+        assert title == "fix(x): t (proj#1)"
+        assert description == "clean body"
+
+
 class TestEmbeddedTriggerIsNotAnMrMutation:
     """The trigger phrase inside a quoted arg / heredoc body is NOT a mutation.
 

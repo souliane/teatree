@@ -172,6 +172,18 @@ class TestCheckRequeueAllowed(TestCase):
         assert pending.count() == 1
         assert "stall" in pending.first().question.lower()
 
+    def test_two_consecutive_stalls_record_a_single_deferred_question(self) -> None:
+        # F2 dedupe: re-stalling on the same ticket-phase escalates once, not once
+        # per tick — the escalate-once dedupe_marker collapses both to one row.
+        ticket = Ticket.objects.create(issue_url="https://example.com/issues/7")
+        task = self._phase_task(ticket)
+        _failed_attempt(task, error="the identical failure")
+        _failed_attempt(task, error="the identical failure")
+        for _ in range(2):
+            with pytest.raises(IterationStalled):
+                task.check_requeue_allowed()
+        assert DeferredQuestion.pending().count() == 1
+
     def test_non_consecutive_identical_does_not_stall(self) -> None:
         ticket = Ticket.objects.create()
         task = self._phase_task(ticket)

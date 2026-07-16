@@ -81,6 +81,7 @@ eager ORM import here would defeat the lazy chain and crash the CLI with
 
 from collections.abc import Callable
 
+from teatree.core.modelkit.notify_policy import NotifyAudience
 from teatree.on_behalf_gate import OnBehalfVerdict, resolve_on_behalf_verdict
 
 
@@ -274,4 +275,5 @@ def _notify_on_behalf_autodraft(*, target: str, action: str) -> None:
         text,
         kind=NotifyKind.INFO,
         idempotency_key=f"on_behalf_autodraft:{target}:{action}",
+        audience=NotifyAudience.COLLEAGUE_ACTION,
     )

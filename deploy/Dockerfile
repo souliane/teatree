@@ -7,7 +7,9 @@ FROM ubuntu:24.04
 # Toolchain layer — ca-certificates, curl, git, jq, sqlite3, direnv, node 24, the
 # claude CLI (as in dev/Dockerfile.test) plus gh, plus pass/gnupg so the box can
 # route the Anthropic credential through a per-account pass store
-# (anthropic_oauth_pass_paths) instead of a single env token.
+# (anthropic_oauth_pass_paths) instead of a single env token, plus the Docker CLI
+# + compose plugin (CLI only, NO engine) so the watchdog role can drive the host
+# daemon over the mounted socket.
 RUN apt-get update -qq && \
     apt-get install -y -qq --no-install-recommends \
         ca-certificates curl direnv git gnupg jq pass sqlite3 && \
@@ -19,8 +21,13 @@ RUN apt-get update -qq && \
     chmod go+r /etc/apt/keyrings/githubcli-archive-keyring.gpg && \
     echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" \
         > /etc/apt/sources.list.d/github-cli.list && \
+    curl -fsSL https://download.docker.com/linux/ubuntu/gpg \
+        -o /etc/apt/keyrings/docker.asc && \
+    chmod go+r /etc/apt/keyrings/docker.asc && \
+    echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/ubuntu $(. /etc/os-release && echo "$VERSION_CODENAME") stable" \
+        > /etc/apt/sources.list.d/docker.list && \
     apt-get update -qq && \
-    apt-get install -y -qq --no-install-recommends gh && \
+    apt-get install -y -qq --no-install-recommends gh docker-ce-cli docker-compose-plugin && \
     npm install -g @anthropic-ai/claude-code && \
     npm cache clean --force && \
     rm -rf /var/lib/apt/lists/*

@@ -38,6 +38,7 @@ from mcp.types import ToolAnnotations
 from teatree.config.cold_hook_settings import COLD_HOOK_SETTINGS
 from teatree.config.feature_flags import is_feature_flag
 from teatree.config.registries import COLD_SETTINGS, REGISTRY_KEYS
+from teatree.core.modelkit.notify_policy import NotifyAudience
 from teatree.core.models import Task
 from teatree.core.notify import NotifyKind, notify_user
 from teatree.mcp.review_seam import review_post_seam
@@ -260,8 +261,10 @@ async def _notify_user(text: str, *, kind: str = "info", idempotency_key: str) -
     the same key is a no-op rather than a duplicate DM. Returns ``sent=false``
     when the feature is disabled or no messaging backend / user id is configured.
     """
+    kind_value = NotifyKind(kind)
+    audience = NotifyAudience.OWNER_QUESTION if kind_value == NotifyKind.QUESTION else NotifyAudience.OWNER_DELIVERY
     sent = await sync_to_async(
-        lambda: notify_user(text, kind=NotifyKind(kind), idempotency_key=idempotency_key),
+        lambda: notify_user(text, kind=kind_value, idempotency_key=idempotency_key, audience=audience),
         thread_sensitive=True,
     )()
     return {"ok": bool(sent), "sent": bool(sent), "idempotency_key": idempotency_key}

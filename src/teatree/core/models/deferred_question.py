@@ -25,6 +25,8 @@ audited — so the team can reason about all four (DB, on-behalf, merge,
 question) as the same primitive.
 """
 
+import hashlib
+import re
 from typing import TYPE_CHECKING, ClassVar
 
 from django.db import models, transaction
@@ -33,6 +35,20 @@ from django.utils import timezone
 
 if TYPE_CHECKING:
     from teatree.core.models.task import Task
+
+_WHITESPACE_RE = re.compile(r"\s+")
+
+
+def question_fingerprint(text: str) -> str:
+    """A normalized-text fingerprint that collapses cosmetically-different clones.
+
+    Lowercases, strips, and collapses runs of whitespace before hashing, so eight
+    "I lack the tools to review" review-failure clones — differing only in
+    trailing whitespace or casing — map to one marker and dedup to a single
+    :class:`DeferredQuestion` instead of eight identical rows.
+    """
+    normalized = _WHITESPACE_RE.sub(" ", text.strip().lower())
+    return hashlib.sha256(normalized.encode("utf-8")).hexdigest()[:32]
 
 
 class DeferredQuestionError(ValueError):
@@ -74,6 +90,10 @@ class DeferredQuestion(models.Model):
     slack_ts = models.CharField(max_length=64, blank=True, default="")
     slack_channel = models.CharField(max_length=64, blank=True, default="")
     options_hash = models.CharField(max_length=64, blank=True, default="")
+    # Idempotency marker for escalation-once callers (repair-loop stalls, headless
+    # needs-input parks): a non-empty marker collapses repeat records of the same
+    # underlying signal to one PENDING row. Blank for the ordinary capture path.
+    dedupe_marker = models.CharField(max_length=64, blank=True, default="", db_index=True)
     generation = models.PositiveIntegerField(default=0)
     run_id = models.CharField(max_length=255, blank=True, default="")
     parked_task = models.ForeignKey(
@@ -142,6 +162,7 @@ class DeferredQuestion(models.Model):
         options_hash: str = "",
         generation: int = 0,
         run_id: str = "",
+        dedupe_marker: str = "",
         parked_task: "Task | None" = None,
     ) -> "DeferredQuestion":
         """The single guarded factory for a queued question.
@@ -157,6 +178,12 @@ class DeferredQuestion(models.Model):
         task that emitted ``needs_user_input`` so the reply re-queues a
         headless resume of that task (the SDK lane has no Slack DM yet — the
         tick-level poster scanner mirrors it later).
+
+        ``dedupe_marker`` is the escalate-once guard: when non-empty, an existing
+        PENDING row already carrying that marker is returned instead of writing a
+        duplicate — so two consecutive repair-loop stalls, or eight identical
+        "I lack tools" review-failure parks, collapse to a single queued question
+        rather than flooding the backlog.
         """
         clean_question = question.strip()
         if not clean_question:
@@ -164,6 +191,14 @@ class DeferredQuestion(models.Model):
             raise DeferredQuestionError(msg)
 
         with transaction.atomic():
+            if dedupe_marker:
+                existing = (
+                    cls.objects.select_for_update()
+                    .filter(dedupe_marker=dedupe_marker, answered_at__isnull=True, dismissed_at__isnull=True)
+                    .first()
+                )
+                if existing is not None:
+                    return existing
             return cls.objects.create(
                 question=clean_question,
                 options_json=options_json or "",
@@ -174,6 +209,7 @@ class DeferredQuestion(models.Model):
                 options_hash=options_hash or "",
                 generation=generation,
                 run_id=run_id or "",
+                dedupe_marker=dedupe_marker or "",
                 parked_task=parked_task,
             )
 

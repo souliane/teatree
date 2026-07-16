@@ -1465,53 +1465,61 @@ class TestGhConflictDecode:
 class TestSlackMergeNotifier:
     """The Slack DM notifier posts on a merge and on a flag-level signal."""
 
-    @dataclass(slots=True)
-    class _Backend:
-        posts: list[tuple[str, str]] = field(default_factory=list)
+    @staticmethod
+    def _backend() -> MagicMock:
+        b = MagicMock()
+        b.open_dm.return_value = "D-USER"
+        b.post_message.return_value = {"ok": True, "ts": "1700000000.000000"}
+        b.get_permalink.return_value = "https://acme.slack.com/archives/D-USER/p1700000000000000"
+        return b
 
-        def post_dm(self, *, channel: str, text: str) -> None:
-            self.posts.append((channel, text))
+    def test_announce_dms_the_owner_once_per_merge(self) -> None:
+        backend = self._backend()
+        notifier = SlackMergeNotifier(backend=backend, user_id="U1")
+        notifier.announce(slug=SLUG, pr_id=42, merged_sha=MAIN_SHA, fallback=False)
+        # A second announce of the SAME merge is an idempotent no-op (once per SHA).
+        notifier.announce(slug=SLUG, pr_id=42, merged_sha=MAIN_SHA, fallback=False)
 
-    def test_announce_posts_merge_dm(self) -> None:
-        backend = self._Backend()
-        SlackMergeNotifier(backend=backend, user_id="U1").announce(
-            slug=SLUG, pr_id=42, merged_sha=MAIN_SHA, fallback=False
-        )
-        assert backend.posts == [("U1", f"merged {SLUG}#42 @ {MAIN_SHA[:8]}")]
+        backend.post_message.assert_called_once()
+        assert f"merged {SLUG}#42 @ {MAIN_SHA[:8]}" in backend.post_message.call_args.kwargs["text"]
+        row = BotPing.objects.get(idempotency_key=f"merge-announce:{SLUG}#42:{MAIN_SHA}")
+        assert row.status == BotPing.Status.SENT
+        assert row.audience == "owner_delivery"
 
     def test_announce_marks_uv_audit_fallback(self) -> None:
-        backend = self._Backend()
+        backend = self._backend()
         SlackMergeNotifier(backend=backend, user_id="U1").announce(slug=SLUG, pr_id=42, merged_sha="", fallback=True)
-        assert backend.posts == [("U1", f"merged (uv-audit fallback) {SLUG}#42 @ ?")]
+        assert f"merged (uv-audit fallback) {SLUG}#42 @ ?" in backend.post_message.call_args.kwargs["text"]
 
-    def test_flag_posts_clickable_url(self) -> None:
-        backend = self._Backend()
-        SlackMergeNotifier(backend=backend, user_id="U1").flag(
+    def test_two_flag_calls_send_zero_owner_dms(self) -> None:
+        backend = self._backend()
+        notifier = SlackMergeNotifier(backend=backend, user_id="U1")
+        notifier.flag(slug=SLUG, pr_id=42, reason="no_independent_review", url="")
+        notifier.flag(slug=SLUG, pr_id=42, reason="no_independent_review", url="")
+
+        backend.open_dm.assert_not_called()
+        backend.post_message.assert_not_called()
+        # The flag is INTERNAL: logged once (idempotent), never DM'd.
+        rows = BotPing.objects.filter(idempotency_key=f"pr-sweep-flag:{SLUG}#42:no_independent_review")
+        assert rows.count() == 1
+        assert rows.first().status == BotPing.Status.LOGGED
+        assert rows.first().audience == "internal"
+
+    def test_flag_records_a_logged_row_never_a_dm(self) -> None:
+        SlackMergeNotifier(backend=self._backend(), user_id="U1").flag(
             slug=SLUG, pr_id=42, reason="conflict", url="https://github.com/x/pull/42"
         )
-        assert backend.posts == [("U1", "flag (conflict) https://github.com/x/pull/42")]
+        row = BotPing.objects.get(idempotency_key=f"pr-sweep-flag:{SLUG}#42:conflict")
+        assert row.status == BotPing.Status.LOGGED
+        assert "flag (conflict) https://github.com/x/pull/42" in row.text
 
-    def test_flag_falls_back_to_slug_when_url_missing(self) -> None:
-        backend = self._Backend()
-        SlackMergeNotifier(backend=backend, user_id="U1").flag(
-            slug=SLUG, pr_id=42, reason="no_independent_review", url=""
-        )
-        assert backend.posts == [("U1", f"flag (no_independent_review) {SLUG}#42")]
-
-    def test_mergeable_flag_posts_ready_to_request_review_message(self) -> None:
-        backend = self._Backend()
-        SlackMergeNotifier(backend=backend, user_id="U1").flag(
+    def test_mergeable_flag_is_internal_log_only(self) -> None:
+        SlackMergeNotifier(backend=self._backend(), user_id="U1").flag(
             slug=SLUG, pr_id=42, reason="mergeable_awaiting_review", url="https://github.com/x/pull/42"
         )
-        assert backend.posts == [("U1", "mergeable, ready to request review https://github.com/x/pull/42")]
-
-    def test_no_user_id_posts_nothing(self) -> None:
-        backend = self._Backend()
-        SlackMergeNotifier(backend=backend, user_id="").flag(slug=SLUG, pr_id=42, reason="conflict", url="")
-        assert backend.posts == []
-
-    def test_backend_without_post_method_is_silent(self) -> None:
-        SlackMergeNotifier(backend=object(), user_id="U1").flag(slug=SLUG, pr_id=42, reason="conflict", url="")
+        row = BotPing.objects.get(idempotency_key=f"pr-sweep-flag:{SLUG}#42:mergeable_awaiting_review")
+        assert row.status == BotPing.Status.LOGGED
+        assert "mergeable, ready to request review https://github.com/x/pull/42" in row.text
 
 
 class TestErrorIsolation:
@@ -1775,11 +1783,11 @@ class TestSubstrateHoldPing:
         assert signals[0].payload["reason"] == "fallback_uv_audit_gh"
         assert pinger.calls == []
 
-    def test_re_tick_does_not_double_ping_real_notify_dedupe(self) -> None:
-        # The anti-vacuity test (d): re-running the sweep on the SAME held head
-        # does not double-ping. Uses the REAL NotifyWithFallbackSubstratePinger so
-        # the BotPing idempotency ledger genuinely dedupes across two ticks; only
-        # the unstoppable Slack HTTP boundary is faked.
+    def test_substrate_hold_sends_no_owner_dm_and_logs_once(self) -> None:
+        # F3: a substrate hold is INTERNAL — logged, NEVER DM'd — so a held diff
+        # can never redeliver a stale merge DM to the owner. Uses the REAL
+        # NotifyWithFallbackSubstratePinger; the (unused) Slack boundary is faked
+        # to prove no post is attempted across two ticks.
         clear = _issue_clear()
         api = FakePrApiClient(prs_by_slug={SLUG: [_open_pr()]})
         keystone = FakeKeystone(merged=False, error="held: substrate", escalation_kind="substrate")
@@ -1788,8 +1796,6 @@ class TestSubstrateHoldPing:
         backend = MagicMock()
         backend.open_dm.return_value = "D-USER"
         backend.post_message.return_value = {"ok": True, "ts": "1700000000.000100"}
-        backend.get_permalink.return_value = "https://x.slack.com/p1"
-        backend.fetch_message.return_value = {"ts": "1700000000.000100", "text": "held"}
 
         with (
             patch("teatree.core.notify.messaging_from_overlay", return_value=backend),
@@ -1799,9 +1805,9 @@ class TestSubstrateHoldPing:
             scanner.scan()
 
         key = f"substrate-hold:{SLUG}#6230:{clear.reviewed_sha}"
-        assert BotPing.objects.filter(idempotency_key=key, status=BotPing.Status.SENT).count() == 1
-        # Exactly one Slack post landed despite two ticks — the ledger deduped.
-        assert backend.post_message.call_count == 1
+        # No owner DM at all, and the internal signal is logged exactly once.
+        backend.post_message.assert_not_called()
+        assert BotPing.objects.filter(idempotency_key=key, status=BotPing.Status.LOGGED).count() == 1
 
 
 class TestSoloOverlaySubstrateHold:

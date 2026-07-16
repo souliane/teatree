@@ -18,6 +18,7 @@ from unittest.mock import MagicMock, patch
 
 from django.test import TestCase
 
+from teatree.core.modelkit.notify_policy import NotifyAudience
 from teatree.core.models import PendingChatInjection
 from teatree.core.notify import NotifyKind, notify_user
 
@@ -40,6 +41,7 @@ class TestExplicitAnsweringSlackTs(TestCase):
             "Because we removed the legacy test runner; details in PR #123.",
             kind=NotifyKind.ANSWER,
             idempotency_key="explicit-kwarg-A",
+            audience=NotifyAudience.OWNER_DELIVERY,
             backend=_backend(),
             user_id="U_ME",
             answering_slack_ts="1700000000.0001",
@@ -57,6 +59,7 @@ class TestExplicitAnsweringSlackTs(TestCase):
             "explanation",
             kind=NotifyKind.ANSWER,
             idempotency_key="explicit-B",
+            audience=NotifyAudience.OWNER_DELIVERY,
             backend=_backend(),
             user_id="U_ME",
             answering_slack_ts="1700000000.0001",
@@ -72,6 +75,7 @@ class TestExplicitAnsweringSlackTs(TestCase):
             "ack",
             kind=NotifyKind.INFO,
             idempotency_key="empty-ts",
+            audience=NotifyAudience.OWNER_DELIVERY,
             backend=_backend(),
             user_id="U_ME",
             answering_slack_ts="",
@@ -96,6 +100,7 @@ class TestExplicitAnsweringSlackTs(TestCase):
             "Because the migration ran out of order.",
             kind=NotifyKind.ANSWER,
             idempotency_key="cross-overlay-answer",
+            audience=NotifyAudience.OWNER_DELIVERY,
             backend=_backend(),
             user_id="U_ME",
             answering_slack_ts="1700000000.0001",
@@ -115,6 +120,7 @@ class TestIdempotencyKeyPattern(TestCase):
             "Because…",
             kind=NotifyKind.ANSWER,
             idempotency_key="answer-q1-1700000000.0001",
+            audience=NotifyAudience.OWNER_DELIVERY,
             backend=_backend(),
             user_id="U_ME",
         )
@@ -128,6 +134,7 @@ class TestIdempotencyKeyPattern(TestCase):
             "Because…",
             kind=NotifyKind.ANSWER,
             idempotency_key="answer-session=abc;turn=12;q=why-1700000000.0001",
+            audience=NotifyAudience.OWNER_DELIVERY,
             backend=_backend(),
             user_id="U_ME",
         )
@@ -141,6 +148,7 @@ class TestIdempotencyKeyPattern(TestCase):
             "unrelated info",
             kind=NotifyKind.INFO,
             idempotency_key="info-something-unrelated",
+            audience=NotifyAudience.OWNER_DELIVERY,
             backend=_backend(),
             user_id="U_ME",
         )
@@ -157,6 +165,7 @@ class TestIdempotencyKeyPattern(TestCase):
             kind=NotifyKind.ANSWER,
             # Key has a different ts to the kwarg.
             idempotency_key="answer-q-2700000000.0002",
+            audience=NotifyAudience.OWNER_DELIVERY,
             backend=_backend(),
             user_id="U_ME",
             answering_slack_ts="1700000000.0001",
@@ -176,6 +185,7 @@ class TestIdempotency(TestCase):
             "first reply",
             kind=NotifyKind.ANSWER,
             idempotency_key="dup-key",
+            audience=NotifyAudience.OWNER_DELIVERY,
             backend=_backend(),
             user_id="U_ME",
             answering_slack_ts="1700000000.0001",
@@ -186,6 +196,7 @@ class TestIdempotency(TestCase):
             "second reply",
             kind=NotifyKind.ANSWER,
             idempotency_key="dup-key",
+            audience=NotifyAudience.OWNER_DELIVERY,
             backend=_backend(),
             user_id="U_ME",
             answering_slack_ts="1700000000.0001",
@@ -204,6 +215,7 @@ class TestNoMatchingRow(TestCase):
             "ack to nothing",
             kind=NotifyKind.ANSWER,
             idempotency_key="answer-x-9999999999.9999",
+            audience=NotifyAudience.OWNER_DELIVERY,
             backend=_backend(),
             user_id="U_ME",
         )
@@ -227,6 +239,7 @@ class TestStampFailureIsBestEffort(TestCase):
                 "Because…",
                 kind=NotifyKind.ANSWER,
                 idempotency_key="best-effort-key",
+                audience=NotifyAudience.OWNER_DELIVERY,
                 backend=_backend(),
                 user_id="U_ME",
                 answering_slack_ts="1700000000.0001",

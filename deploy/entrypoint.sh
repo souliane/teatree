@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# teatree headless deployment entrypoint. One image, four roles selected by
+# teatree headless deployment entrypoint. One image, five roles selected by
 # $TEATREE_ROLE:
 #   init           — one-shot prep (clone + editable install + t3 setup + DB config),
 #                    exits 0. worker/admin/slack-listener depend on its successful
@@ -9,9 +9,21 @@
 #   slack-listener — runs `t3 slack listen` (the Socket-Mode receiver feeding the
 #                    worker's drain-queue slot). Only meaningful when an overlay is
 #                    Slack-enabled; a no-op-and-exit when none are.
+#   watchdog       — runs `deploy/watchdog.sh --loop` (the in-daemon self-heal
+#                    sidecar). Dispatched BEFORE the common preamble below: it has
+#                    no env_file/GH token/gnupg mount and runs as root, so the
+#                    gh-auth / git-config / chmod-GNUPGHOME preamble is noise or a
+#                    crash for it.
 set -euo pipefail
 
-ROLE="${TEATREE_ROLE:?TEATREE_ROLE must be one of: init, worker, admin, slack-listener}"
+ROLE="${TEATREE_ROLE:?TEATREE_ROLE must be one of: init, worker, admin, slack-listener, watchdog}"
+
+# Dispatch the watchdog role FIRST — before the credential/git preamble that the
+# other roles need but the watchdog neither has nor wants (root, no secrets).
+if [ "$ROLE" = watchdog ]; then
+    exec bash /home/teatree/teatree-deploy/deploy/watchdog.sh --loop
+fi
+
 CLONE_DIR="${TEATREE_CLONE_DIR:-/home/teatree/teatree}"
 REPO_URL="${TEATREE_REPO_URL:-https://github.com/souliane/teatree.git}"
 
@@ -210,7 +222,7 @@ admin)
     exec t3 admin --host 127.0.0.1 --port 8000 --no-browser
     ;;
 *)
-    echo "entrypoint: unknown TEATREE_ROLE '$ROLE' (expected init|worker|admin|slack-listener)" >&2
+    echo "entrypoint: unknown TEATREE_ROLE '$ROLE' (expected init|worker|admin|slack-listener|watchdog)" >&2
     exit 64
     ;;
 esac
