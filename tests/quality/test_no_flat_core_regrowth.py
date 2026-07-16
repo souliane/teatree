@@ -44,7 +44,7 @@ _CORE_DIR = Path(__file__).resolve().parents[2] / "src" / "teatree" / "core"
 # registry (read_issue_title + fetch_issue_title). A genuine shared root leaf: it
 # must import backend_registry + overlay_loader (which core/models/ may not), so it
 # cannot live under models/, and no cleanup/intake/review/… subpackage owns it.
-PINNED_FLAT_CORE_MODULES = 67
+PINNED_FLAT_CORE_MODULES = 68
 
 
 def _flat_core_modules() -> list[str]:

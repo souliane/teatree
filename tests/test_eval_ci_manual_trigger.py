@@ -4,8 +4,8 @@ The metered ``claude -p`` suite lives in a standalone workflow
 (``.github/workflows/eval.yml`` / a GitLab schedule + manual job) so a PR
 pipeline neither runs nor displays a metered-eval check. These tests pin the
 weekly schedule and the on-demand manual trigger on both mirrors: GitHub
-``schedule`` + ``workflow_dispatch`` (with the SDK backend fixed in the
-workflow command), and a GitLab schedule + ``when: manual`` eval job.
+``schedule`` + ``workflow_dispatch`` (with a ``backend`` input defaulting to
+the SDK ``api`` backend), and a GitLab schedule + ``when: manual`` eval job.
 """
 
 from pathlib import Path
@@ -58,9 +58,11 @@ class TestGitHubEvalTriggers:
             f"The metered eval must run weekly (a pinned day-of-week), not daily; got {crons}."
         )
 
-    def test_backend_is_fixed_to_api_for_trials(self) -> None:
+    def test_backend_input_defaults_to_api_and_command_threads_it(self) -> None:
+        # #3222 exposes a `backend` dispatch input so a CLI-free lane can be selected;
+        # its DEFAULT is 'api', so the scheduled weekly run (empty input) is unchanged.
         inputs = cast("dict[str, Any]", _gh_on()["workflow_dispatch"]["inputs"])
-        assert "backend" not in inputs, "`--trials` is always a fresh SDK run — the backend is never an input."
+        assert inputs["backend"]["default"] == "api"
 
         commands = "\n".join(
             step.get("with", {}).get("command", "") for step in cast("list[dict[str, Any]]", _gh_eval_job()["steps"])
@@ -68,7 +70,7 @@ class TestGitHubEvalTriggers:
         # Trials is now a right-sizing input (default 2, was a hard-coded 3) threaded
         # via the EVAL_TRIALS env var so the subscription lane stays inside the window.
         assert '--trials "$EVAL_TRIALS"' in commands
-        assert "--backend api" in commands
+        assert '--backend "$EVAL_BACKEND"' in commands
 
     def test_eval_job_runs_the_suite(self) -> None:
         for step in cast("list[dict[str, Any]]", _gh_eval_job()["steps"]):

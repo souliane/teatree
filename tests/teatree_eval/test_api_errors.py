@@ -80,6 +80,16 @@ class TestClassifyTransientThrottle:
         assert classify_transient_throttle(max_turns) is None
         assert classify_transient_throttle(budget) is None
 
+    def test_result_event_carrying_a_transport_marker_is_not_retriable(self) -> None:
+        # Belt-and-braces cap-safety: a "returned an error result:" message is a
+        # result-event terminus the CLI emitted (error_during_execution-class), so
+        # a transport marker (`command failed with exit code`) appearing INSIDE its
+        # errors text must NEVER launder the graded terminus into a retry. The bare
+        # ProcessError transport crash (no result-event wrapper) still rides out —
+        # only the wrapped, synthetic case is pinned non-retriable here.
+        wrapped = "Claude Code returned an error result: error_during_execution: command failed with exit code 1"
+        assert classify_transient_throttle(wrapped) is None
+
     def test_session_limit_is_sustained_with_window_wait(self) -> None:
         signal = classify_transient_throttle("session limit reached")
         assert signal is not None
