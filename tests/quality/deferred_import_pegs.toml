@@ -76,7 +76,7 @@
 "src/teatree/core/model_registries.py" = 5
 "src/teatree/core/models/auto_review_dispatch.py" = 3
 "src/teatree/core/models/review_loop.py" = 3
-"src/teatree/core/models/task.py" = 7
+"src/teatree/core/models/task.py" = 8
 # artifacts() defers `from teatree.core.models.ticket_artifacts import
 # collect_ticket_artifacts` (a real import cycle: ticket_artifacts imports the
 # ticket models back). The method — and its deferral — moved here from

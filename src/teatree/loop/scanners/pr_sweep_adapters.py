@@ -21,6 +21,7 @@ from teatree.utils.pr_ref import PrRef
 from teatree.utils.run import run_allowed_to_fail
 
 if TYPE_CHECKING:
+    from teatree.core.backend_protocols import MessagingBackend
     from teatree.types import RawAPIDict
 
 _GH_NOT_INSTALLED_RC = 127
@@ -262,30 +263,49 @@ class AutoReviewTaskDispatcher:
 
 @dataclass(slots=True)
 class SlackMergeNotifier:
-    """Post a one-line DM on every actual merge, and on a flag-level signal."""
+    """Route merge announcements + flag signals through the notify-relevance policy.
+
+    :meth:`announce` is an OWNER_DELIVERY (a PR merged) — DM'd exactly once per
+    merge via the :class:`~teatree.core.models.BotPing` idempotency ledger keyed
+    on the merged SHA. :meth:`flag` is INTERNAL (the loop re-flags every
+    un-reviewed PR each ~5-minute tick) — logged only, never DM'd, so re-flagging
+    the same stuck PR forever can never spam the owner. This replaces the former
+    raw ``backend.post_message`` bypass that DM'd on every tick per open PR (F1).
+    """
 
     backend: object
     user_id: str = ""
 
     def announce(self, *, slug: str, pr_id: int, merged_sha: str, fallback: bool) -> None:
+        from teatree.core.modelkit.notify_policy import NotifyAudience  # noqa: PLC0415 — tick-time import, kept lazy
+        from teatree.core.notify import NotifyKind, notify_user  # noqa: PLC0415 — tick-time import, kept lazy
+
         prefix = "merged (uv-audit fallback)" if fallback else "merged"
         sha_short = merged_sha[:8] if merged_sha else "?"
-        self._post(f"{prefix} {slug}#{pr_id} @ {sha_short}")
+        notify_user(
+            f"{prefix} {slug}#{pr_id} @ {sha_short}",
+            kind=NotifyKind.INFO,
+            idempotency_key=f"merge-announce:{slug}#{pr_id}:{merged_sha}",
+            audience=NotifyAudience.OWNER_DELIVERY,
+            backend=cast("MessagingBackend", self.backend) if self.backend is not None else None,
+            user_id=self.user_id or None,
+        )
 
-    def flag(self, *, slug: str, pr_id: int, reason: str, url: str) -> None:
+    def flag(self, *, slug: str, pr_id: int, reason: str, url: str) -> None:  # noqa: PLR6301 — instance method satisfies the injected MergeNotifier Protocol (mirrors sibling adapters).
+        from teatree.core.modelkit.notify_policy import NotifyAudience  # noqa: PLC0415 — tick-time import, kept lazy
+        from teatree.core.notify import NotifyKind, notify_user  # noqa: PLC0415 — tick-time import, kept lazy
+
         target = url or f"{slug}#{pr_id}"
         if reason == _MERGEABLE_AWAITING_REVIEW_REASON:
-            self._post(f"mergeable, ready to request review {target}")
-            return
-        self._post(f"flag ({reason}) {target}")
-
-    def _post(self, text: str) -> None:
-        if not self.user_id:
-            return
-        post = getattr(self.backend, "post_dm", None) or getattr(self.backend, "post_message", None)
-        if not callable(post):
-            return
-        post(channel=self.user_id, text=text)
+            text = f"mergeable, ready to request review {target}"
+        else:
+            text = f"flag ({reason}) {target}"
+        notify_user(
+            text,
+            kind=NotifyKind.INFO,
+            idempotency_key=f"pr-sweep-flag:{slug}#{pr_id}:{reason}",
+            audience=NotifyAudience.INTERNAL,
+        )
 
 
 @dataclass(slots=True)

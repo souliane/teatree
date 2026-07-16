@@ -1,5 +1,6 @@
-# teatree headless deployment — one image, three services (init/worker/admin)
-# sharing named volumes so init installs teatree once and worker/admin run it.
+# teatree headless deployment — one image, five services
+# (init/worker/admin/slack-listener/watchdog) sharing named volumes so init
+# installs teatree once and worker/admin run it.
 #
 # The box-side secrets file `teatree.env` (next to this file, gitignored, written
 # by the deploy workflow) supplies every credential. Non-secret runtime config
@@ -42,6 +43,18 @@ x-teatree-common: &teatree-common
     - type: bind
       source: /home/teatree/.gnupg
       target: /home/teatree/.gnupg
+    # Claude session plane: session transcripts + per-project memory corpus —
+    # the dream pass's input AND product (#3277 classifies dream's use as PRODUCT
+    # DATA: it reads transcripts and maintains */memory; runtime STATE still never
+    # resolves from assistant memory). Without this the containerized dream pass
+    # globs an empty ~/.claude/projects and every nightly consolidation is a
+    # permanent no-op (0 members). Path identity; rw — dream phases 4-6 write
+    # cross-links / MEMORY.md / decay archives, and container-run headless sessions
+    # persist their transcripts to the backed-up host disk. Scoped to projects/
+    # only, never the whole ~/.claude (credentials + settings stay host-only).
+    - type: bind
+      source: /home/teatree/.claude/projects
+      target: /home/teatree/.claude/projects
     - teatree_uv:/opt/teatree/uv
   init: true
 
@@ -88,6 +101,65 @@ services:
     network_mode: host
     mem_limit: 512m
     cpus: "0.5"
+
+  # The Slack Socket-Mode receiver. Runs `t3 slack listen` for every
+  # Slack-enabled overlay, writing inbound DMs/mentions/reactions to the JSONL
+  # queue on the shared data mount that the worker's drain-queue slot drains.
+  # Separate from the worker so a WebSocket reconnect never disturbs the loop
+  # cadence, and vice-versa. Harmless on a box with no Slack overlay: the
+  # process exits and `restart: unless-stopped` retries.
+  teatree-slack-listener:
+    <<: *teatree-common
+    environment:
+      TEATREE_ROLE: slack-listener
+      T3_DEBUG: "0"
+    depends_on:
+      teatree-init:
+        condition: service_completed_successfully
+    restart: unless-stopped
+    mem_limit: 512m
+    cpus: "0.5"
+
+  # In-daemon self-heal watchdog — the cross-platform (Linux + macOS) replacement
+  # for the Linux-only systemd timer (#3289). The Docker daemon is the only
+  # supervisor present on both platforms, so the watchdog lives in the daemon as a
+  # sidecar container the daemon keeps alive independently of the stack it watches.
+  #
+  # Deliberately a STANDALONE block (NOT the x-teatree-common anchor): the anchor
+  # would drag in the DB/credential/session bind mounts, the teatree.env secrets,
+  # and a depends_on on init — all of which the watchdog must NOT have. It needs
+  # only the docker socket + a read-only view of this checkout.
+  teatree-watchdog:
+    image: teatree-headless:latest
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+    environment:
+      TEATREE_ROLE: watchdog
+      TEATREE_WATCHDOG_INTERVAL: "300"
+    # root so /var/run/docker.sock is readable regardless of the host docker gid
+    # (the socket is root-equivalent anyway; see README § security posture).
+    user: "0:0"
+    volumes:
+      # The daemon control channel — the watchdog's only mutating capability.
+      - /var/run/docker.sock:/var/run/docker.sock
+      # This checkout, READ-ONLY, at PATH IDENTITY (source == target). Path
+      # identity keeps the inner `docker compose ... up -d` config hash identical
+      # to the host's, so the watchdog never recreates itself or the app services.
+      - type: bind
+        source: /home/teatree/teatree-deploy
+        target: /home/teatree/teatree-deploy
+        read_only: true
+    # NO depends_on — it must start even when init crash-loops (the whole point).
+    # restart: always (NOT unless-stopped) — it must resurrect even after a manual
+    # stop followed by a daemon restart, so the supervisor is never silently gone.
+    restart: always
+    # The socket is the only channel it needs; the owner DM goes out via a
+    # `compose exec` inside an app container, not from this container's network.
+    network_mode: "none"
+    init: true
+    mem_limit: 128m
+    cpus: "0.25"
 
 volumes:
   teatree_src:

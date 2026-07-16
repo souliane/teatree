@@ -233,11 +233,48 @@ class TestHelpAndVersionQueriesAllowed:
             "find . -type f -exec chmod -h {} +",  # chmod -h = no-dereference
             r"find / -name '*.log' -exec rm -h {} \;",
             "find . -exec du -h {} +",  # du -h = human-readable
-            "git push --help",  # opens a blocking pager — a worse wedge
-            "git push -h",
         ],
     )
     def test_genuinely_heavy_still_denied(self, command: str) -> None:
+        assert handle_enforce_orchestrator_boundary(_main_agent_bash(command)) is True
+
+
+class TestFastBoundedOpsAllowed:
+    """#3253 — fast, bounded network/discovery ops are NOT heavy.
+
+    A ``--help`` query, ``git fetch``, and ``git push`` (a small branch push is
+    seconds, not a test suite) tie up the session only trivially. The gate must
+    target genuinely long/unbounded work (builds, full test suites, servers),
+    never these bounded ops. Anti-vacuous: the genuinely-heavy shapes in
+    :class:`TestMainAgentHeavyBashDenied` still deny.
+    """
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "git push",
+            "git push origin HEAD",
+            "git push -u origin feature",
+            "git push --force-with-lease origin feature",
+            "git push --force",
+            "git push --help",
+            "git push -h",
+            "git fetch",
+            "git fetch origin",
+            "git fetch --all --prune",
+        ],
+    )
+    def test_fast_bounded_op_is_allowed(self, command: str) -> None:
+        assert handle_enforce_orchestrator_boundary(_main_agent_bash(command)) is False
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "git push && uv run pytest",  # bounded push chained to a genuinely heavy arm
+            "git fetch origin && npm run build",
+        ],
+    )
+    def test_bounded_op_chained_to_heavy_arm_still_denies(self, command: str) -> None:
         assert handle_enforce_orchestrator_boundary(_main_agent_bash(command)) is True
 
 

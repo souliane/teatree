@@ -3161,7 +3161,7 @@ dev = [
     { name = "import-linter", specifier = ">=2.3" },
     { name = "inline-snapshot", specifier = ">=0.13" },
     { name = "patchy", specifier = ">=2.7" },
-    { name = "prek", specifier = ">=0.2.12" },
+    { name = "prek", specifier = "==0.3.13" },
     { name = "pytest", specifier = ">=9.0.2" },
     { name = "pytest-cov", specifier = ">=7" },
     { name = "pytest-django", specifier = ">=4.11.1" },

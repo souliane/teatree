@@ -450,22 +450,39 @@ def test_load_allowlist_stays_empty_when_unset(tmp_path: Path) -> None:
 
 
 class TestMainUnsetVsEmpty:
-    """``main`` fails LOUD on an unset banned_terms but is a no-op on empty.
+    """``main`` WARNS-and-allows on an unset banned_terms by default; empty is a no-op.
 
     With the DB-home store, "unset" is no ``banned_terms`` row AND no
-    ``T3_BANNED_TERMS`` env — an absent list is refused (exit 2) so a load bug
-    never reads as a clean scan. An explicit empty list is the deliberate no-op.
+    ``T3_BANNED_TERMS`` env. By default this WARNS loud and exits 0 — an unset
+    list is not a banned-term violation on a dev/solo box (#3247). Only a
+    deployment that sets ``banned_terms_required`` keeps the fail-loud exit 2. An
+    explicit empty list is the deliberate no-op.
     """
 
-    def test_unset_db_exits_misconfigured(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
-    ) -> None:
+    @staticmethod
+    def _empty_db(tmp_path: Path) -> Path:
         empty_db = tmp_path / "empty.sqlite3"
         conn = sqlite3.connect(str(empty_db))
         conn.execute("CREATE TABLE teatree_config_setting (id INTEGER PRIMARY KEY, scope TEXT, key TEXT, value TEXT)")
         conn.commit()
         conn.close()
-        monkeypatch.setenv("T3_CONFIG_DB", str(empty_db))
+        return empty_db
+
+    def test_unset_db_warns_and_allows_by_default(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        monkeypatch.delenv("T3_BANNED_TERMS_REQUIRED", raising=False)
+        monkeypatch.setenv("T3_CONFIG_DB", str(self._empty_db(tmp_path)))
+        clean = tmp_path / "clean.md"
+        clean.write_text("nothing\n", encoding="utf-8")
+        assert main([str(clean)]) == 0
+        assert "UNSET" in capsys.readouterr().err
+
+    def test_unset_db_fails_closed_when_required(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        monkeypatch.setenv("T3_BANNED_TERMS_REQUIRED", "1")
+        monkeypatch.setenv("T3_CONFIG_DB", str(self._empty_db(tmp_path)))
         clean = tmp_path / "clean.md"
         clean.write_text("nothing\n", encoding="utf-8")
         assert main([str(clean)]) == 2

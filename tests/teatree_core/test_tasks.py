@@ -13,6 +13,7 @@ from teatree.core.models import AttachmentManifest, Session, Task, TaskAttempt, 
 from teatree.core.runners.base import RunnerResult
 from teatree.core.tasks import (
     drain_headless_queue,
+    drain_headless_queue_body,
     execute_provision,
     execute_retrospect,
     execute_ship,
@@ -138,14 +139,22 @@ class TestDrainHeadlessQueue(TestCase):
         with patch.object(overlay_loader_mod, "_discover_overlays", return_value=_MOCK_OVERLAY):
             result = drain_headless_queue.enqueue()
 
-        assert result.return_value == {"enqueued": [pending.pk], "failed_unknown_overlay": []}
+        assert result.return_value == {"enqueued": [pending.pk], "rerouted": [], "failed_unknown_overlay": []}
 
     @override_settings(**IMMEDIATE_BACKEND)
     def test_skips_when_no_pending_tasks(self) -> None:
         with patch.object(overlay_loader_mod, "_discover_overlays", return_value=_MOCK_OVERLAY):
             result = drain_headless_queue.enqueue()
 
-        assert result.return_value == {"enqueued": [], "failed_unknown_overlay": []}
+        assert result.return_value == {"enqueued": [], "rerouted": [], "failed_unknown_overlay": []}
+
+    @override_settings(**IMMEDIATE_BACKEND)
+    def test_body_returns_empty_result_on_empty_queue(self) -> None:
+        # The shared body the @task wrapper and the maintenance chain both call.
+        with patch.object(overlay_loader_mod, "_discover_overlays", return_value=_MOCK_OVERLAY):
+            result = drain_headless_queue_body()
+
+        assert result == {"enqueued": [], "rerouted": [], "failed_unknown_overlay": []}
 
     @override_settings(**IMMEDIATE_BACKEND)
     def test_unknown_overlay_task_is_failed_not_enqueued(self) -> None:
@@ -162,9 +171,59 @@ class TestDrainHeadlessQueue(TestCase):
         with patch.object(overlay_loader_mod, "_discover_overlays", return_value=_MOCK_OVERLAY):
             result = drain_headless_queue.enqueue()
 
-        assert result.return_value == {"enqueued": [], "failed_unknown_overlay": [poison.pk]}
+        assert result.return_value == {"enqueued": [], "rerouted": [], "failed_unknown_overlay": [poison.pk]}
         poison.refresh_from_db()
         assert poison.status == Task.Status.FAILED
+
+    @override_settings(**IMMEDIATE_BACKEND)
+    def test_stale_interactive_row_is_rerouted_and_dispatched_under_headless_runtime(self) -> None:
+        # A phase task created during the laptop /loop era: a loop-dispatched
+        # (author, coding) pair routed INTERACTIVE, orphaned once the box moved
+        # to the headless lane with no interactive session to dispatch it. Under
+        # agent_runtime=headless the drain adopts it: route_to_headless + dispatch.
+        from teatree.config import AgentRuntime  # noqa: PLC0415
+
+        ticket = Ticket.objects.create(overlay="test", role=Ticket.Role.AUTHOR)
+        session = Session.objects.create(ticket=ticket, overlay="test")
+        stale = Task.objects.create(
+            ticket=ticket,
+            session=session,
+            execution_target=Task.ExecutionTarget.INTERACTIVE,
+            status=Task.Status.PENDING,
+            phase="coding",
+        )
+
+        with (
+            patch.object(overlay_loader_mod, "_discover_overlays", return_value=_MOCK_OVERLAY),
+            patch("teatree.config.get_effective_settings") as mock_settings,
+        ):
+            mock_settings.return_value.agent_runtime = AgentRuntime.HEADLESS
+            result = drain_headless_queue.enqueue()
+
+        assert result.return_value == {"enqueued": [stale.pk], "rerouted": [stale.pk], "failed_unknown_overlay": []}
+        stale.refresh_from_db()
+        assert stale.execution_target == Task.ExecutionTarget.HEADLESS
+
+    @override_settings(**IMMEDIATE_BACKEND)
+    def test_interactive_row_is_left_untouched_under_interactive_runtime(self) -> None:
+        # Under the default interactive runtime the /loop slot owns interactive
+        # rows — the drain must not adopt them (that would double-dispatch).
+        ticket = Ticket.objects.create(overlay="test", role=Ticket.Role.AUTHOR)
+        session = Session.objects.create(ticket=ticket, overlay="test")
+        interactive = Task.objects.create(
+            ticket=ticket,
+            session=session,
+            execution_target=Task.ExecutionTarget.INTERACTIVE,
+            status=Task.Status.PENDING,
+            phase="coding",
+        )
+
+        with patch.object(overlay_loader_mod, "_discover_overlays", return_value=_MOCK_OVERLAY):
+            result = drain_headless_queue.enqueue()
+
+        assert result.return_value == {"enqueued": [], "rerouted": [], "failed_unknown_overlay": []}
+        interactive.refresh_from_db()
+        assert interactive.execution_target == Task.ExecutionTarget.INTERACTIVE
 
 
 class TestExecuteHeadlessUnknownOverlay(TestCase):

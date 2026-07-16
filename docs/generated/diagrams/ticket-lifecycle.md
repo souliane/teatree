@@ -5,12 +5,14 @@
 stateDiagram-v2
     [*] --> not_started
     not_started --> scoped : scope
+    not_started --> coded : code_direct
     not_started --> reviewed : reconcile_reviewed
     not_started --> merged : reconcile_merged
     not_started --> delivered : mark_review_no_action
     not_started --> delivered : mark_reviewed_externally
     not_started --> ignored : ignore
     scoped --> started : start
+    scoped --> coded : code_direct
     scoped --> reviewed : reconcile_reviewed
     scoped --> merged : reconcile_merged
     scoped --> delivered : mark_review_no_action
@@ -18,6 +20,7 @@ stateDiagram-v2
     scoped --> ignored : ignore
     started --> started : start
     started --> planned : plan
+    started --> coded : code_direct
     started --> reviewed : reconcile_reviewed
     started --> merged : reconcile_merged
     started --> delivered : mark_review_no_action

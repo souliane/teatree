@@ -27,6 +27,8 @@ import hashlib
 import logging
 from collections.abc import Callable
 
+from teatree.core.modelkit.notify_policy import NotifyAudience
+
 logger = logging.getLogger(__name__)
 
 type Notifier = Callable[..., bool]
@@ -50,7 +52,7 @@ def _notify_user_deferred(text: str, *, kind: str, idempotency_key: str) -> bool
     """
     from teatree.core.notify import notify_user  # noqa: PLC0415 — Django-free import graph; see docstring.
 
-    return notify_user(text, kind=kind, idempotency_key=idempotency_key)
+    return notify_user(text, kind=kind, idempotency_key=idempotency_key, audience=NotifyAudience.INTERNAL)
 
 
 class ScopeMissingError(RuntimeError):

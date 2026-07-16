@@ -7,7 +7,9 @@ FROM ubuntu:24.04
 # Toolchain layer — ca-certificates, curl, git, jq, sqlite3, direnv, node 24, the
 # claude CLI (as in dev/Dockerfile.test) plus gh, plus pass/gnupg so the box can
 # route the Anthropic credential through a per-account pass store
-# (anthropic_oauth_pass_paths) instead of a single env token.
+# (anthropic_oauth_pass_paths) instead of a single env token, plus the Docker CLI
+# + compose plugin (CLI only, NO engine) so the watchdog role can drive the host
+# daemon over the mounted socket.
 RUN apt-get update -qq && \
     apt-get install -y -qq --no-install-recommends \
         ca-certificates curl direnv git gnupg jq pass sqlite3 && \
@@ -19,8 +21,13 @@ RUN apt-get update -qq && \
     chmod go+r /etc/apt/keyrings/githubcli-archive-keyring.gpg && \
     echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" \
         > /etc/apt/sources.list.d/github-cli.list && \
+    curl -fsSL https://download.docker.com/linux/ubuntu/gpg \
+        -o /etc/apt/keyrings/docker.asc && \
+    chmod go+r /etc/apt/keyrings/docker.asc && \
+    echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/ubuntu $(. /etc/os-release && echo "$VERSION_CODENAME") stable" \
+        > /etc/apt/sources.list.d/docker.list && \
     apt-get update -qq && \
-    apt-get install -y -qq --no-install-recommends gh && \
+    apt-get install -y -qq --no-install-recommends gh docker-ce-cli docker-compose-plugin && \
     npm install -g @anthropic-ai/claude-code && \
     npm cache clean --force && \
     rm -rf /var/lib/apt/lists/*
@@ -32,11 +39,16 @@ RUN useradd -m -d /home/teatree -s /bin/bash teatree
 # inherits teatree ownership (Docker seeds an empty volume from the image dir).
 # /opt/teatree/uv carries the runtime-installed teatree python + venv + shims so
 # all three services see the same t3.
+# ~/.claude/projects is pre-created (and so chowned to teatree below) BEFORE it is
+# used as the projects bind-mount target: without it, Docker creates the mount's
+# parent ~/.claude as ROOT at container start, so `t3 setup` cannot write
+# ~/.claude/settings.json and the init container crash-loops (whole factory down).
 RUN mkdir -p \
         /home/teatree/teatree \
         /home/teatree/.local/share/teatree \
         /home/teatree/.local/share/teatree-worktrees \
         /home/teatree/workspace/t3-workspaces \
+        /home/teatree/.claude/projects \
         /opt/teatree/uv && \
     # clone_root() resolves clones under ~/workspace, but the runtime clone
     # lives on the teatree_src volume at ~/teatree. Provisioning discovers the

@@ -25,6 +25,7 @@ from teatree.cli.doctor.checks import (
     _check_connector_manifest,
     _check_dangling_editable_pth,
     _check_dream_staleness,
+    _check_dream_transcript_visibility,
     _check_editable_sanity,
     _check_entrypoint_is_primary_clone,
     _check_legacy_overlay_alias,
@@ -50,6 +51,7 @@ from teatree.cli.doctor.plugin_repair import (
 )
 from teatree.cli.doctor.statusline import check_statusline
 from teatree.cli.recommended_authorizations import authorizations, report_missing_authorizations
+from teatree.cli.slack.dm_doctor import check_and_render_dm_ready
 from teatree.utils.django_bootstrap import ensure_django
 from teatree.utils.run import run_allowed_to_fail
 
@@ -75,6 +77,7 @@ __all__ = (
     "_check_connector_manifest",
     "_check_dangling_editable_pth",
     "_check_dream_staleness",
+    "_check_dream_transcript_visibility",
     "_check_editable_sanity",
     "_check_entrypoint_is_primary_clone",
     "_check_legacy_overlay_alias",
@@ -524,8 +527,20 @@ class IntrospectionHelpers:
 
 
 @doctor_app.command()
-def check() -> bool:
+def check(
+    json_output: bool = typer.Option(  # noqa: FBT001 — typer CLI boolean flag; the bool parameter is typer's option idiom
+        False, "--json", help="Emit findings as JSON for the watchdog container."
+    ),
+) -> bool:
     """Verify imports, required tools, and editable-install sanity."""
+    # ``is True`` (not truthiness): direct Python callers — the ``_doctor_default``
+    # callback and tests calling ``check()`` — receive the typer ``OptionInfo``
+    # sentinel as the default, which is truthy; only a CLI-resolved ``--json`` is
+    # the real ``True`` that routes to the JSON surface.
+    if json_output is True:
+        from teatree.cli.doctor.self_heal import check_as_json  # noqa: PLC0415 — deferred: --json path only
+
+        return check_as_json(check)
     try:
         import django  # noqa: PLC0415, F401 — deferred: Django import at call time; re-export
 
@@ -573,6 +588,15 @@ def check() -> bool:
     # the default-ON loops are silently dead until `t3 worker ensure` spawns one.
     ok = _check_worker_running() and ok
 
+    # H24 self-heal (owner directive #10): the hard-FAIL silent-freeze detectors —
+    # dead compose containers, a free worker flock over overdue loop work, a
+    # stranded headless task, a stale loop timer, an unrunnable interactive task
+    # under headless runtime, a failed task on a live ticket, a drifted runtime
+    # clone. These flip the exit code the watchdog container (deploy/watchdog.sh) keys on.
+    from teatree.cli.doctor.self_heal import run_self_heal_checks  # noqa: PLC0415 — deferred: keeps CLI startup light
+
+    ok = run_self_heal_checks() and ok
+
     # #3159: warn on a dangling loop-preset reference (deleted preset / loop /
     # schedule). Surfacing-only (never gates the exit code), like the sibling
     # ORM-reading advisories below: the by-name references fail OPEN at read time
@@ -598,6 +622,7 @@ def check() -> bool:
     # (not a hard FAIL): a stale dream cron means memories pile up unpromoted,
     # which the operator should fix, but it must not red the whole doctor run.
     _check_dream_staleness()
+    _check_dream_transcript_visibility()
 
     # Slack Socket Mode readiness (#106 / BLUEPRINT § B5). Extends the Slack scope
     # auto-management to the app-level (xapp-) token + socket-mode manifest: it
@@ -606,6 +631,14 @@ def check() -> bool:
     # self-provision — minting the app-level token. Surfacing-only (never gates the
     # exit code): Slack is optional and must never become mandatory.
     _check_slack_socket_mode()
+
+    # Slack DM-readiness. Fail-loud diagnosis of an overlay declaring
+    # messaging_backend=slack that still cannot message/read its owner: a no-op
+    # backend (tokens missing), an empty slack_user_id, or an unprovisioned DM
+    # channel. Runs after ``ensure_django`` because it builds messaging backends
+    # via the overlay factory. Surfacing-only (never gates the exit code): Slack
+    # is optional and must never become mandatory.
+    check_and_render_dm_ready()
 
     # In-session `/login` account-switch recovery (#1916). Runs after
     # ``ensure_django`` because it builds messaging backends via the overlay

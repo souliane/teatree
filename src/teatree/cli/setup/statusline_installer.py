@@ -26,6 +26,7 @@ class StatuslineInstall(StrEnum):
     INSTALLED = "installed"
     ALREADY_PRESENT = "already-present"
     UNREADABLE = "unreadable"
+    UNWRITABLE = "unwritable"
 
 
 def statusline_command_path(repo: Path) -> str:
@@ -40,7 +41,11 @@ def install_statusline(settings_path: Path, repo: Path) -> StatuslineInstall:
     (:attr:`StatuslineInstall.ALREADY_PRESENT`) — the user's own choice wins.
     A missing file is created with just the block. An unparsable file is left
     alone (:attr:`StatuslineInstall.UNREADABLE`) so setup never corrupts hand-
-    edited JSON. The block is ``{"type": "command", "command": <abs path>}``.
+    edited JSON. A target the process cannot write — e.g. a root-owned
+    ``~/.claude`` in the headless container — degrades to
+    (:attr:`StatuslineInstall.UNWRITABLE`) instead of raising, so this
+    convenience write never aborts ``t3 setup``. The block is
+    ``{"type": "command", "command": <abs path>}``.
     """
     data: dict[str, Any] = {}
     if settings_path.is_file():
@@ -55,6 +60,9 @@ def install_statusline(settings_path: Path, repo: Path) -> StatuslineInstall:
             return StatuslineInstall.ALREADY_PRESENT
 
     data["statusLine"] = {"type": "command", "command": statusline_command_path(repo)}
-    settings_path.parent.mkdir(parents=True, exist_ok=True)
-    settings_path.write_text(json.dumps(data, indent=4) + "\n", encoding="utf-8")
+    try:
+        settings_path.parent.mkdir(parents=True, exist_ok=True)
+        settings_path.write_text(json.dumps(data, indent=4) + "\n", encoding="utf-8")
+    except OSError:
+        return StatuslineInstall.UNWRITABLE
     return StatuslineInstall.INSTALLED

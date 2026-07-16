@@ -1,14 +1,29 @@
 #!/usr/bin/env bash
-# teatree headless deployment entrypoint. One image, three roles selected by
+# teatree headless deployment entrypoint. One image, five roles selected by
 # $TEATREE_ROLE:
-#   init   — one-shot prep (clone + editable install + t3 setup + DB config),
-#            exits 0. worker/admin depend on its successful completion, so the
-#            editable-install-on-the-shared-clone happens exactly once.
-#   worker — runs `t3 worker` (the loop cadence owner), DEBUG off.
-#   admin  — runs `t3 admin` (Django admin under gunicorn, DEBUG off) on the box loopback.
+#   init           — one-shot prep (clone + editable install + t3 setup + DB config),
+#                    exits 0. worker/admin/slack-listener depend on its successful
+#                    completion, so the editable-install-on-the-shared-clone happens once.
+#   worker         — runs `t3 worker` (the loop cadence owner), DEBUG off.
+#   admin          — runs `t3 admin` (Django admin under gunicorn, DEBUG off) on the box loopback.
+#   slack-listener — runs `t3 slack listen` (the Socket-Mode receiver feeding the
+#                    worker's drain-queue slot). Only meaningful when an overlay is
+#                    Slack-enabled; a no-op-and-exit when none are.
+#   watchdog       — runs `deploy/watchdog.sh --loop` (the in-daemon self-heal
+#                    sidecar). Dispatched BEFORE the common preamble below: it has
+#                    no env_file/GH token/gnupg mount and runs as root, so the
+#                    gh-auth / git-config / chmod-GNUPGHOME preamble is noise or a
+#                    crash for it.
 set -euo pipefail
 
-ROLE="${TEATREE_ROLE:?TEATREE_ROLE must be one of: init, worker, admin}"
+ROLE="${TEATREE_ROLE:?TEATREE_ROLE must be one of: init, worker, admin, slack-listener, watchdog}"
+
+# Dispatch the watchdog role FIRST — before the credential/git preamble that the
+# other roles need but the watchdog neither has nor wants (root, no secrets).
+if [ "$ROLE" = watchdog ]; then
+    exec bash /home/teatree/teatree-deploy/deploy/watchdog.sh --loop
+fi
+
 CLONE_DIR="${TEATREE_CLONE_DIR:-/home/teatree/teatree}"
 REPO_URL="${TEATREE_REPO_URL:-https://github.com/souliane/teatree.git}"
 
@@ -133,11 +148,22 @@ ensure_clone() {
     if [ -e "$CLONE_DIR/.git" ]; then
         # The clone lives in a shared volume that outlives the image, so a
         # redeploy must bring it current or the stack keeps serving the code
-        # from the first boot. Fast-forward only, and fail loud on divergence —
-        # silently serving stale code is worse than a red deploy.
+        # from the first boot. SELF-HEAL: a stray feature branch checked out on
+        # the runtime clone (or one whose upstream was deleted after its PR
+        # merged) must never brick the H24 deploy — recover to the default
+        # branch automatically; only a genuinely diverged default branch (local
+        # commits that cannot fast-forward) still fails loud.
         git -C "$CLONE_DIR" fetch --prune origin
-        git -C "$CLONE_DIR" merge --ff-only "@{upstream}" || {
-            echo "entrypoint: $CLONE_DIR cannot fast-forward to its upstream - the runtime clone has local commits or a diverged branch; reconcile it on the box and re-run Deploy" >&2
+        local default_branch current
+        default_branch="$(git -C "$CLONE_DIR" symbolic-ref --short refs/remotes/origin/HEAD 2>/dev/null | sed 's|^origin/||')"
+        default_branch="${default_branch:-main}"
+        current="$(git -C "$CLONE_DIR" symbolic-ref --short HEAD 2>/dev/null || echo DETACHED)"
+        if [ "$current" != "$default_branch" ]; then
+            echo "entrypoint: runtime clone was on '$current' (not '$default_branch') - self-healing to the default branch (any stray work stays on its branch)" >&2
+            git -C "$CLONE_DIR" checkout --force "$default_branch"
+        fi
+        git -C "$CLONE_DIR" merge --ff-only "origin/$default_branch" || {
+            echo "entrypoint: $CLONE_DIR default branch '$default_branch' has diverged (local commits that cannot fast-forward) - reconcile it on the box and re-run Deploy" >&2
             exit 1
         }
         return 0
@@ -150,7 +176,10 @@ init)
     init_preflight
     ensure_clone
     uv python install 3.13
-    uv tool install --editable "$CLONE_DIR" --reinstall --python 3.13
+    # The [slack] extra pulls slack_sdk so the slack-listener role's Socket-Mode
+    # receiver can open its WebSocket. Without it `t3 slack listen` degrades to a
+    # no-op ("slack_sdk not installed") and inbound Slack never reaches the loop.
+    uv tool install --editable "$CLONE_DIR[slack]" --reinstall --python 3.13
     t3 setup
     t3 teatree db migrate
     # Values are JSON: enum strings are quoted, booleans and ints are bare.
@@ -169,13 +198,31 @@ init)
 worker)
     exec t3 worker
     ;;
+slack-listener)
+    # Socket-Mode receiver: one WebSocket per slack-enabled overlay, writing
+    # inbound events to the JSONL queue that the worker's drain-queue slot
+    # drains, acks with 👀, and dispatches. `t3 slack listen` exits non-zero
+    # when no overlay is Slack-enabled; `restart: unless-stopped` then simply
+    # keeps a harmless retry loop on a box that has no Slack overlay yet.
+    #
+    # Drain + 👀-ack captured DMs on a cadence: the reactive loop-drain-queue
+    # slot is not bootstrapped under `t3 worker` in headless, so the listener's
+    # captures would never reach an observable state without this. `t3 slack
+    # check` drains the JSONL queue and, unlike the drain-queue loop, is NOT
+    # gated by the worker singleton. Failure-tolerant (`|| true`) and
+    # backgrounded so a non-zero check never trips `set -e` or crashes the
+    # foreground listener.
+    SLACK_CHECK_INTERVAL_SECONDS=15
+    ( while true; do t3 slack check >/dev/null 2>&1 || true; sleep "$SLACK_CHECK_INTERVAL_SECONDS"; done ) &
+    exec t3 slack listen
+    ;;
 admin)
     # Bind the box loopback (the service uses host networking) so the SSH-tunnel
     # request arrives as 127.0.0.1 and clears the middleware's loopback check.
     exec t3 admin --host 127.0.0.1 --port 8000 --no-browser
     ;;
 *)
-    echo "entrypoint: unknown TEATREE_ROLE '$ROLE' (expected init|worker|admin)" >&2
+    echo "entrypoint: unknown TEATREE_ROLE '$ROLE' (expected init|worker|admin|slack-listener|watchdog)" >&2
     exit 64
     ;;
 esac

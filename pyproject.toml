@@ -105,7 +105,11 @@ dev = [
   "import-linter>=2.3",
   "inline-snapshot>=0.13",
   "patchy>=2.7",
-  "prek>=0.2.12",
+  # Pinned EXACT (not a floating floor) so the prek runner version is identical
+  # locally and in CI — CI runs this same locked prek via `uv run prek run
+  # --all-files`, closing the runner version gap (#3236). Bump in lockstep with
+  # the lockfile.
+  "prek==0.3.13",
   "pytest>=9.0.2",
   "pytest-cov>=7",
   "pytest-django>=4.11.1",
@@ -339,6 +343,13 @@ partial_branches = [
 
 [tool.coverage.run]
 branch = true
+# Store file paths relative to the repo root so the shard `.coverage` files
+# produced inside the test docker image (cwd /app) remap cleanly onto the host
+# checkout, letting the `test` combiner run `coverage combine`/`report` on the
+# runner instead of inside the image (#3160 item 5). The single-process
+# `dev/test-cov.sh` lane runs from the repo root too, so the relative paths are
+# identical there — no change to the measured percentage.
+relative_files = true
 source = [
   "src/teatree",
 ]

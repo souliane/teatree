@@ -104,6 +104,99 @@ class TestTransientRequeue(TestCase):
         task.refresh_from_db()
         assert task.status == Task.Status.PENDING
 
+    def test_deterministic_evidence_refusal_gets_one_corrective_retry(self) -> None:
+        # A coding task that landed FAILED on a missing files_modified envelope,
+        # with NO committed work to salvage, gets ONE bounded corrective retry:
+        # reopened PENDING with the envelope-emit instruction appended to the
+        # prompt (execution_reason). A terminal FAILED on a non-terminal ticket
+        # must never sit silent.
+        task = _failed_task()
+        _add_failed_attempt(
+            task,
+            error="missing required evidence for phase 'coding': result must include one of [files_modified]",
+        )
+
+        reopened = requeue_transient_failed()
+
+        task.refresh_from_db()
+        assert reopened == 1
+        assert task.status == Task.Status.PENDING
+        assert "files_modified" in task.execution_reason
+        assert "envelope" in task.execution_reason.lower()
+
+    def test_deterministic_refusal_after_corrective_retry_is_escalated(self) -> None:
+        task = _failed_task()
+        _add_failed_attempt(
+            task,
+            error="missing required evidence for phase 'coding': result must include one of [files_modified]",
+        )
+        # First sweep: the corrective retry reopens it.
+        assert requeue_transient_failed() == 1
+        task.refresh_from_db()
+        assert task.status == Task.Status.PENDING
+
+        # It fails AGAIN with a different deterministic error (no stall) — the
+        # corrective retry was already spent, so it must escalate, not retry.
+        _add_failed_attempt(task, error="AssertionError: still no envelope emitted")
+
+        reopened = requeue_transient_failed()
+
+        task.refresh_from_db()
+        assert reopened == 0
+        assert task.status == Task.Status.FAILED
+        assert DeferredQuestion.objects.filter(answered_at__isnull=True).count() == 1
+
+    def test_non_envelope_deterministic_failure_is_escalated_not_retried(self) -> None:
+        # A real test failure is not an omitted-envelope class: no corrective
+        # retry (the envelope note would be misleading) — escalate so it never
+        # sits silent.
+        task = _failed_task()
+        _add_failed_attempt(task, error="AssertionError: expected 3 got 4")
+
+        reopened = requeue_transient_failed()
+
+        task.refresh_from_db()
+        assert reopened == 0
+        assert task.status == Task.Status.FAILED
+        assert DeferredQuestion.objects.filter(answered_at__isnull=True).count() == 1
+
+    def test_deterministic_non_coding_failure_is_escalated_not_retried(self) -> None:
+        # A planning evidence refusal is not a coder-envelope class: the coder
+        # note would be wrong, so no corrective retry — escalate instead.
+        task = _failed_task(phase="planning")
+        _add_failed_attempt(task, error="missing required evidence for phase 'planning'")
+
+        reopened = requeue_transient_failed()
+
+        task.refresh_from_db()
+        assert reopened == 0
+        assert task.status == Task.Status.FAILED
+        assert "[auto-corrective-retry]" not in task.execution_reason
+        assert DeferredQuestion.objects.filter(answered_at__isnull=True).count() == 1
+
+    def test_deterministic_failure_over_budget_is_escalated(self) -> None:
+        cap = max_phase_iterations()
+        task = _failed_task()
+        for i in range(cap):
+            _add_failed_attempt(task, error=f"AssertionError variant {'x' * (i + 1)}")
+
+        reopened = requeue_transient_failed()
+
+        task.refresh_from_db()
+        assert reopened == 0
+        assert task.status == Task.Status.FAILED
+        assert DeferredQuestion.objects.filter(answered_at__isnull=True).count() == 1
+
+    def test_deterministic_failure_on_terminal_ticket_is_left_alone(self) -> None:
+        task = _failed_task(state=Ticket.State.SHIPPED)
+        _add_failed_attempt(task, error="AssertionError: expected 3 got 4")
+
+        assert requeue_transient_failed() == 0
+
+        task.refresh_from_db()
+        assert task.status == Task.Status.FAILED
+        assert DeferredQuestion.objects.filter(answered_at__isnull=True).count() == 0
+
     def test_bounded_never_retries_endlessly(self) -> None:
         cap = max_phase_iterations()
         task = _failed_task()

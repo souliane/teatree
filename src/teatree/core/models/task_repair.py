@@ -77,4 +77,10 @@ def _escalate_stall(task: Task, *, phase: str, iterations: int) -> None:
         f"identically after {iterations} iteration(s). Re-queueing is paused so it does not "
         f"burn more attempts on the same failure. How should it proceed — investigate, rework, or ignore?"
     )
-    DeferredQuestion.record(question, session_id=str(session_id or ""))
+    # Escalate-once per (ticket, phase): two consecutive stalls on the same
+    # ticket-phase collapse to a single queued question rather than one per tick.
+    DeferredQuestion.record(
+        question,
+        session_id=str(session_id or ""),
+        dedupe_marker=f"repair-stall:{ticket.pk}:{phase}",
+    )

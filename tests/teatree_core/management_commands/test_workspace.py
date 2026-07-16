@@ -7,6 +7,7 @@ import subprocess
 import tempfile
 from contextlib import AbstractContextManager
 from dataclasses import replace
+from io import StringIO
 from pathlib import Path
 from typing import cast
 from unittest.mock import MagicMock, patch
@@ -235,6 +236,27 @@ class TestWorktreeRootHelper(TestCase):
 
 
 # ── Workspace commands ──────────────────────────────────────────────
+
+
+@_patch_overlays(FULL_OVERLAY)
+@override_settings(**SETTINGS)
+class TestWorkspaceTicketInputValidation(TestCase):
+    """``workspace ticket <arg>`` refuses/canonicalizes a non-URL argument.
+
+    The recorded bug: a bare ``3274`` was stored as ``issue_url='3274'`` and
+    produced malformed duplicate tickets. A bare number the overlay cannot
+    resolve to a full URL must be refused, leaving no ticket behind.
+    """
+
+    def test_unresolvable_bare_number_is_refused_and_creates_no_ticket(self) -> None:
+        out = StringIO()
+        with patch.object(FullOverlay, "resolve_issue_token", return_value=None):
+            rc = call_command("workspace", "ticket", "3274", stderr=out)
+
+        assert rc == 0
+        assert "Refused" in out.getvalue()
+        assert Ticket.objects.filter(issue_url="3274").count() == 0
+        assert Ticket.objects.count() == 0
 
 
 class TestProvisionSplitsCloneRootFromWorktreeRoot(TestCase):

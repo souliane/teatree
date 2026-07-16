@@ -17,10 +17,14 @@ statusline only when it actually re-delivers something.
 
 import logging
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
 
 from django.db import OperationalError, ProgrammingError
 
 from teatree.loop.scanners.base import ScanSignal
+
+if TYPE_CHECKING:
+    from teatree.core.backend_protocols import MessagingBackend
 
 logger = logging.getLogger(__name__)
 
@@ -28,13 +32,18 @@ logger = logging.getLogger(__name__)
 @dataclass(slots=True)
 class UndeliveredNotifyScanner:
     limit: int = 50
+    # An explicit messaging backend + user id so the GLOBAL dispatch tick can
+    # re-deliver a stranded owner-audience DM even with no ``T3_OVERLAY_NAME`` set;
+    # ``None``/empty falls back to ``notify_user``'s overlay resolution.
+    backend: "MessagingBackend | None" = None
+    user_id: str = ""
     name: str = "undelivered_notify"
 
     def scan(self) -> list[ScanSignal]:
         from teatree.core.notify import drain_undelivered_notifies  # noqa: PLC0415 — deferred: loaded at tick time
 
         try:
-            delivered, total = drain_undelivered_notifies(limit=self.limit)
+            delivered, total = drain_undelivered_notifies(limit=self.limit, backend=self.backend, user_id=self.user_id)
         except (OperationalError, ProgrammingError):
             logger.info("UndeliveredNotifyScanner: BotPing unavailable (DB not migrated yet) — skipping")
             return []

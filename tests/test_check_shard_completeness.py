@@ -1,7 +1,7 @@
 """Anti-vacuity guard for the CI shard partition checker.
 
 ``scripts/ci/check_shard_completeness.py`` is the load-bearing proof that the
-4-way ``test-shard`` matrix runs every test exactly once before the combiner
+6-way ``test-shard`` matrix runs every test exactly once before the combiner
 enforces the whole-tree 93% floor. If it could pass on a dropped or duplicated
 shard, the required ``test (3.13)`` gate would go green while part of the suite
 never ran. These tests pin that it fails LOUD on every such class and is GREEN
