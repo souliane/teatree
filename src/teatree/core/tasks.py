@@ -123,8 +123,18 @@ def execute_headless_task(task_id: int, phase: str) -> dict[str, object]:
             phase=phase,
             overlay_skill_metadata=overlay.metadata.get_skill_metadata(),
         )
-    except Exception:
-        task_obj.complete_with_attempt(exit_code=1, error=traceback.format_exc())
+    except Exception as exc:
+        error = traceback.format_exc()
+        # Surface the ``claude`` CLI subprocess stderr. The claude-agent-sdk
+        # ``ProcessError`` stringifies to "Check stderr output for details" and
+        # carries the real cause on its ``.stderr`` attribute, which was being
+        # discarded — leaving every headless subprocess failure undiagnosable in
+        # the recorded attempt and the worker log. Fold it into both.
+        subprocess_stderr = getattr(exc, "stderr", None) or getattr(getattr(exc, "__cause__", None), "stderr", None)
+        if subprocess_stderr:
+            logger.exception("Task %s headless subprocess stderr:\n%s", task_obj.pk, subprocess_stderr)
+            error = f"{error}\n--- claude subprocess stderr ---\n{subprocess_stderr}"
+        task_obj.complete_with_attempt(exit_code=1, error=error)
         raise
     else:
         return {"attempt_id": attempt.pk, "exit_code": attempt.exit_code, "result": attempt.result}
