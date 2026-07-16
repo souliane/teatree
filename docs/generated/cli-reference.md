@@ -1488,10 +1488,14 @@ Usage: t3 eval [OPTIONS] COMMAND [ARGS]...
 │                                  credential the eval_credential knob selects │
 │                                  — default subscription OAuth (#2707         │
 │                                  reversal), or the metered API key; the      │
-│                                  explicit opt-in), or 'pydantic_ai' (RUN a   │
-│                                  non-Claude model through the                │
-│                                  provider-agnostic harness seam, OrcaRouter  │
-│                                  BYOK).                                      │
+│                                  explicit opt-in), 'anthropic_api' (RUN the  │
+│                                  same Claude model fresh through the         │
+│                                  Anthropic Messages API DIRECTLY, no         │
+│                                  `claude` CLI child — the CLI-free lane,     │
+│                                  metered on ANTHROPIC_API_KEY), or           │
+│                                  'pydantic_ai' (RUN a non-Claude model       │
+│                                  through the provider-agnostic harness seam, │
+│                                  OrcaRouter BYOK).                           │
 │                                  [default: transcript]                       │
 │ --transcript-dir        PATH     Directory of <scenario>.jsonl transcripts   │
 │                                  for the AI lane (default: cwd).             │
@@ -2232,6 +2236,15 @@ Usage: t3 eval run [OPTIONS] [NAME]
 │                                                     in-container by default  │
 │                                                     or directly on the host  │
 │                                                     with --local) or         │
+│                                                     'anthropic_api' (RUN the │
+│                                                     same Claude model fresh  │
+│                                                     through the Anthropic    │
+│                                                     Messages API DIRECTLY,   │
+│                                                     no `claude` CLI child —  │
+│                                                     the CLI-free lane for a  │
+│                                                     harness that forbids the │
+│                                                     Claude Code CLI, metered │
+│                                                     on ANTHROPIC_API_KEY) or │
 │                                                     'pydantic_ai' (RUN a     │
 │                                                     non-Claude model through │
 │                                                     the provider-agnostic    │

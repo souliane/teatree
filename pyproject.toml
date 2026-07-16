@@ -61,8 +61,14 @@ dependencies = [
   # class as the ``coverage`` / ``pyyaml`` runtime deps above — it must be in
   # the installed tool env, not only the dev group. The ``[openai]`` extra is
   # OrcaRouter's BYOK provider: an OpenAI-compatible endpoint behind
-  # ``pydantic_ai.models.openai.OpenAIChatModel``.
-  "pydantic-ai-slim[openai]>=2.3",
+  # ``pydantic_ai.models.openai.OpenAIChatModel``. The ``[anthropic]`` extra backs
+  # the CLI-free ``--backend anthropic_api`` eval runner
+  # (:mod:`teatree.eval.anthropic_api_runner`), which drives Claude over the
+  # Anthropic Messages API DIRECTLY (``pydantic_ai.models.anthropic.AnthropicModel``,
+  # the ``anthropic`` package) — no ``claude`` CLI child, so a downstream harness
+  # that forbids the Claude Code CLI can adopt these eval lanes
+  # ([#3222](https://github.com/souliane/teatree/issues/3222)).
+  "pydantic-ai-slim[anthropic,openai]>=2.3",
   # ``teatree.eval.loader`` imports ``yaml`` at module load, and that module
   # is reached from ``teatree.cli.__init__`` — so a missing ``pyyaml`` crashes
   # EVERY ``t3`` invocation, which in turn makes the §17.6 gate-15
