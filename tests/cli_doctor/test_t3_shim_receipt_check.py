@@ -20,6 +20,7 @@ import pytest
 
 from teatree.cli.doctor.checks import _check_t3_shim_receipt
 from teatree.utils import editable_pth
+from teatree.utils.editable_pth import expected_checkout, repair_receipt_to_checkout
 
 
 def _make_receipt(tmp_path: Path, editable: Path) -> Path:
@@ -155,21 +156,21 @@ class TestExpectedCheckout:
         repo = tmp_path / "clone"
         repo.mkdir()
         monkeypatch.setenv("T3_REPO", str(repo))
-        assert editable_pth.expected_checkout() == repo.resolve()
+        assert expected_checkout() == repo.resolve()
 
     def test_returns_none_when_unset(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.delenv("T3_REPO", raising=False)
-        assert editable_pth.expected_checkout() is None
+        assert expected_checkout() is None
 
     def test_returns_none_when_repo_missing(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv("T3_REPO", str(tmp_path / "does-not-exist"))
-        assert editable_pth.expected_checkout() is None
+        assert expected_checkout() is None
 
 
 class TestRepairReceiptToCheckout:
     def test_returns_false_when_uv_absent(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setattr("shutil.which", lambda _tool: None)
-        assert editable_pth.repair_receipt_to_checkout(tmp_path) is False
+        assert repair_receipt_to_checkout(tmp_path) is False
 
     def test_runs_force_editable_install_and_reports_success(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -183,7 +184,7 @@ class TestRepairReceiptToCheckout:
         monkeypatch.setattr("shutil.which", lambda _tool: "/usr/bin/uv")
         monkeypatch.setattr("subprocess.run", _fake_run)
 
-        assert editable_pth.repair_receipt_to_checkout(tmp_path) is True
+        assert repair_receipt_to_checkout(tmp_path) is True
         assert calls == [["/usr/bin/uv", "tool", "install", "--editable", str(tmp_path), "--force"]]
 
     def test_returns_false_on_nonzero_exit(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -193,7 +194,7 @@ class TestRepairReceiptToCheckout:
         monkeypatch.setattr("shutil.which", lambda _tool: "/usr/bin/uv")
         monkeypatch.setattr("subprocess.run", _fake_run)
 
-        assert editable_pth.repair_receipt_to_checkout(tmp_path) is False
+        assert repair_receipt_to_checkout(tmp_path) is False
 
     def test_returns_false_when_subprocess_raises(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         def _boom(_argv: list[str], **_kwargs: object) -> object:
@@ -203,4 +204,4 @@ class TestRepairReceiptToCheckout:
         monkeypatch.setattr("shutil.which", lambda _tool: "/usr/bin/uv")
         monkeypatch.setattr("subprocess.run", _boom)
 
-        assert editable_pth.repair_receipt_to_checkout(tmp_path) is False
+        assert repair_receipt_to_checkout(tmp_path) is False
