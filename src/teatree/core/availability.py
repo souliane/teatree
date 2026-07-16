@@ -423,6 +423,64 @@ def clear_override(path: Path | None = None) -> bool:
     return True
 
 
+# How long a no-expiry DEFERRING override may sit before `t3 doctor` flags it as a
+# likely-forgotten footgun (#3274). The incident that motivated the finding left
+# an `autonomous_away` override with no `until` active for ~30h, silently
+# suppressing the colleague-facing loops the whole time.
+STALE_OVERRIDE_AGE = timedelta(hours=12)
+
+
+def override_set_at(path: Path | None = None) -> datetime | None:
+    """When the durable override file was last written (its mtime), or ``None``.
+
+    The override payload carries no created-at timestamp, so the file mtime is
+    the signal for "how long has this override been active" the staleness finding
+    keys on.
+    """
+    target = path or override_path()
+    try:
+        return datetime.fromtimestamp(target.stat().st_mtime, tz=UTC)
+    except OSError:
+        return None
+
+
+def stale_override_finding(
+    *,
+    override: Override | None,
+    set_at: datetime | None,
+    now: datetime,
+    colleague_facing_loops: Iterable[str],
+    max_age: timedelta = STALE_OVERRIDE_AGE,
+) -> str | None:
+    """A `t3 doctor` warning when a no-expiry DEFERRING override outlives *max_age* (#3274).
+
+    Returns ``None`` (no finding) unless every footgun condition holds: the
+    override is active, has NO ``until`` (a bounded override self-clears, so it is
+    not the silent-forever footgun), is a DEFERRING mode (a ``present`` override
+    suppresses nothing), and was set more than *max_age* ago. The message names
+    the colleague-facing loops the mode defers and, for holiday-``away``, that the
+    self-pump is paused too (every loop stalls).
+    """
+    if override is None or not override.is_active(now):
+        return None
+    if override.until is not None or override.mode not in _DEFERRING_MODES:
+        return None
+    if set_at is None or now - set_at < max_age:
+        return None
+    hours = int((now - set_at) / timedelta(hours=1))
+    loops = ", ".join(sorted(colleague_facing_loops)) or "the review/followup loops"
+    pausing = (
+        " It ALSO pauses the self-pump — every loop stalls, not just colleague-facing ones."
+        if override.mode in _PAUSING_MODES
+        else ""
+    )
+    return (
+        f"WARN  availability override mode={override.mode!r} has had NO expiry for ~{hours}h — it "
+        f"silently defers questions and suppresses the colleague-facing loops ({loops}).{pausing} "
+        f"If unintended, clear it with `t3 teatree availability auto`. (#3274)"
+    )
+
+
 @dataclass(frozen=True, slots=True)
 class UserTurn:
     """A recorded ``UserPromptSubmit`` — when it landed and in which session.

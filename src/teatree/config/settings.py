@@ -86,6 +86,7 @@ OVERLAY_OVERRIDABLE_SETTINGS: dict[str, Callable[[Any], Any]] = {
     "teams_idle_minutes": _parse_overridable_positive_int(30),
     "teams_display": TeamsDisplay.parse,
     "require_human_approval_to_merge": _parse_strict_bool,
+    "substrate_self_signoff": _parse_strict_bool,
     "max_open_prs_per_repo_per_ticket": _parse_strict_int,
     "require_human_approval_to_answer": _parse_strict_bool,
     "on_behalf_post_mode": OnBehalfPostMode.parse,
@@ -581,6 +582,19 @@ class _OnBehalfSettings:
     # comfortable (BLUEPRINT § 5.6.2). No effect in `interactive` mode,
     # where every publishing action prompts regardless.
     require_human_approval_to_merge: bool = True
+    # Whether the standing grant may sign off a SUBSTRATE merge (#3223). Default
+    # off: a substrate CLEAR (merge keystone, architecture spec, governance doc,
+    # self-guardrail seam) PINGS-and-HOLDS for the owner's per-PR sign-off even at
+    # `autonomy = full` — the #2727 safety posture. Turning this on lets
+    # `_overlay_grants_standing_substrate_signoff` cover a substrate CLEAR on an
+    # overlay standing at `autonomy = full` (the solo-owned tier), so the owner's
+    # own green PRs self-authorize substrate merges the same way non-substrate
+    # clears already do. This changes only WHO authorizes the sign-off; the
+    # quality/safety floor (independent cold review, reviewed-SHA bind, CI-green,
+    # not-draft, maker≠checker, anti-vacuity) is untouched and still runs. The
+    # `full` tier gate is kept so a below-full overlay never self-merges substrate
+    # even with this on. DB-home (#1775), per-overlay overridable.
+    substrate_self_signoff: bool = False
     # Per-(repo, ticket) open-PR budget: the max number of concurrently-open
     # (not-merged) PRs a single ticket may have in one repo. Enforced at the
     # core PR-creation seam by ``pr_budget_gate`` before a PR is opened. The

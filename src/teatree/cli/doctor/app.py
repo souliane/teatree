@@ -22,6 +22,7 @@ import typer
 from teatree.cli.doctor.checks import (
     _check_account_switch,
     _check_agent_session_pins,
+    _check_availability_override_staleness,
     _check_connector_manifest,
     _check_dangling_editable_pth,
     _check_dream_staleness,
@@ -74,6 +75,7 @@ __all__ = (
     "PackageNotFoundError",
     "_check_account_switch",
     "_check_agent_session_pins",
+    "_check_availability_override_staleness",
     "_check_connector_manifest",
     "_check_dangling_editable_pth",
     "_check_dream_staleness",
@@ -623,6 +625,13 @@ def check(
     # which the operator should fix, but it must not red the whole doctor run.
     _check_dream_staleness()
     _check_dream_transcript_visibility()
+
+    # #3274: WARN on a no-expiry away / autonomous_away availability override that
+    # has sat past the staleness threshold — it silently suppresses the
+    # colleague-facing loops (and pauses the self-pump under holiday-away) the
+    # whole time. Surfacing-only (never gates the exit code); reads the Loop table
+    # for the deferred loop names, so it runs post-ensure_django.
+    _check_availability_override_staleness()
 
     # Slack Socket Mode readiness (#106 / BLUEPRINT § B5). Extends the Slack scope
     # auto-management to the app-level (xapp-) token + socket-mode manifest: it
