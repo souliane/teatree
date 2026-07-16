@@ -21,6 +21,7 @@ import enum
 import logging
 from dataclasses import dataclass
 
+from teatree.core.modelkit.notify_policy import NotifyAudience
 from teatree.core.notify import NotifyKind, notify_user
 
 logger = logging.getLogger(__name__)
@@ -82,6 +83,7 @@ def notify_stale_clone_skip(skip: StaleCloneSkip) -> bool:
             stale_clone_message(skip),
             kind=NotifyKind.INFO,
             idempotency_key=_idempotency_key(skip),
+            audience=NotifyAudience.INTERNAL,
         )
     except Exception:
         logger.exception("notify_stale_clone_skip failed for %s (%s)", skip.label, skip.repo_path)

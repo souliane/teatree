@@ -140,7 +140,35 @@ def _build_options(
         options.env = env
     if is_reader_phase(phase):
         _apply_reader_tool_lockdown(options)
+    else:
+        _wire_teatree_mcp_server(options)
     return options
+
+
+def _wire_teatree_mcp_server(options: ClaudeAgentOptions) -> None:
+    """Inject teatree's own local-stdio MCP server so lifecycle sub-agents reach it (#3242).
+
+    Claude Code does not forward a local-stdio server (``t3 mcp serve``) to a
+    sub-agent, and it ignores the ``mcpServers`` frontmatter on a plugin-provided
+    sub-agent definition — so the shipped ``.mcp.json`` alone never gives the
+    dispatched coder/reviewer/shipper the ``mcp__teatree__*`` structured-read
+    tools; they fall back to shelling out to the ``t3`` CLI. The headless
+    dispatch owns its options, so it wires the server explicitly here. The
+    launch command mirrors ``.mcp.json`` (:mod:`teatree.core.mcp_registration`
+    is the single source of truth). Skipped for the #116 reader, which stays
+    hermetic (:func:`_apply_reader_tool_lockdown`).
+    """
+    from teatree.core.mcp_registration import (  # noqa: PLC0415 — deferred: keeps the option-build import light
+        EXPECTED_ARGS,
+        EXPECTED_COMMAND,
+        TEATREE_MCP_SERVER_NAME,
+    )
+
+    existing = options.mcp_servers if isinstance(options.mcp_servers, dict) else {}
+    options.mcp_servers = {
+        **existing,
+        TEATREE_MCP_SERVER_NAME: {"type": "stdio", "command": EXPECTED_COMMAND, "args": list(EXPECTED_ARGS)},
+    }
 
 
 def _apply_reader_tool_lockdown(options: ClaudeAgentOptions) -> None:

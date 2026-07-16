@@ -7,6 +7,7 @@ from django_fsm import FSMField, transition
 from teatree.core.managers import TicketManager
 from teatree.core.modelkit.gate_registry import get_gate
 from teatree.core.modelkit.review_state import ReviewState
+from teatree.core.models.auto_implement import is_auto_implement
 from teatree.core.models.ticket_evidence import TicketEvidenceModel
 from teatree.core.models.ticket_introspection import TicketIntrospectionModel
 from teatree.core.models.ticket_ledger import retire_phase_ledger
@@ -268,6 +269,32 @@ class Ticket(
     @transition(field=state, source=State.PLANNED, target=State.CODED)
     def code(self, *, parent_task: "Task | None" = None) -> None:
         get_gate("plan_currency")(self)  # SELFCATCH-3: refuse a thin/stale plan (NO-OP unless flag on).
+        self._refuse_if_worktree_dirty("coding")
+        self._consume_pending_phase_tasks("coding")
+        self.schedule_testing(parent_task=parent_task)
+
+    @transition(
+        field=state,
+        source=[State.NOT_STARTED, State.SCOPED, State.STARTED],
+        target=State.CODED,
+        conditions=[is_auto_implement],
+    )
+    def code_direct(self, *, parent_task: "Task | None" = None) -> None:
+        """Advance a plan-skipped auto-implement ticket straight to CODED.
+
+        The issue-implementer auto-start path
+        (``persistence._handle_orchestrator``) schedules a ``coding`` task
+        directly, skipping the scope/plan phases, so the normal ``code()`` guard
+        (``source=PLANNED``) can never fire when that task completes — the wedge
+        that left tickets with completed coding yet zero transitions and no PR.
+        This is the plan-skipped sibling of ``code()``, reachable ONLY for a
+        ticket carrying the ``auto_implement`` marker (the ``is_auto_implement``
+        condition), so the normal author flow's plan gate is untouched. Unlike
+        ``code()`` it runs no ``plan_currency`` gate (there is no plan to check),
+        but it keeps the same dirty-worktree preflight and schedules testing, so
+        the FSM proceeds coding -> testing -> reviewing -> shipping instead of
+        silently no-opping.
+        """
         self._refuse_if_worktree_dirty("coding")
         self._consume_pending_phase_tasks("coding")
         self.schedule_testing(parent_task=parent_task)

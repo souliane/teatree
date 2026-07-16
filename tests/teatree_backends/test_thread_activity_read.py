@@ -92,10 +92,43 @@ class TestThreadGone:
         assert read.ok is True
         assert read.exists is False
 
+    def test_thread_not_found_error_is_proof_of_deletion(self) -> None:
+        # #3292 part 1: Slack returns ``ok:false thread_not_found`` for a deleted
+        # root — that is DELETION, not a read failure. It must read as
+        # ``ok=True, exists=False`` so the reclaim → re-post branch fires.
+        fake = FakeClient(payload={"ok": False, "error": "thread_not_found"})
+        read = _read(fake)
+        assert read.ok is True
+        assert read.exists is False
+
+    def test_message_not_found_error_is_proof_of_deletion(self) -> None:
+        fake = FakeClient(payload={"ok": False, "error": "message_not_found"})
+        read = _read(fake)
+        assert read.ok is True
+        assert read.exists is False
+
+    def test_tombstone_root_counts_as_gone(self) -> None:
+        # #3292 part 2: a tombstone root (parent deleted, replies survive) must
+        # NOT count as "exists" just because ``messages[0]`` is present.
+        fake = FakeClient(
+            payload={"ok": True, "messages": [{"ts": _THREAD_TS, "subtype": "tombstone"}, {"ts": "1700000500.000200"}]}
+        )
+        read = _read(fake)
+        assert read.ok is True
+        assert read.exists is False
+
 
 class TestReadFailure:
     def test_api_not_ok_reports_not_ok(self) -> None:
         fake = FakeClient(payload={"ok": False, "error": "channel_not_found"})
+        read = _read(fake)
+        assert read.ok is False
+        assert read.exists is False
+
+    def test_ratelimited_is_a_read_failure_not_deletion(self) -> None:
+        # #3292 part 1: every non-deletion ``ok:false`` (rate limit, auth) stays
+        # fail-safe (read failure ⇒ suppress) — never mistaken for "gone".
+        fake = FakeClient(payload={"ok": False, "error": "ratelimited"})
         read = _read(fake)
         assert read.ok is False
         assert read.exists is False

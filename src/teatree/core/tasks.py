@@ -130,8 +130,7 @@ def execute_headless_task(task_id: int, phase: str) -> dict[str, object]:
         return {"attempt_id": attempt.pk, "exit_code": attempt.exit_code, "result": attempt.result}
 
 
-@task()
-def drain_headless_queue() -> dict[str, list[int]]:
+def drain_headless_queue_body() -> dict[str, list[int]]:
     """Auto-enqueue pending headless tasks for execution (safety net), failing poison rows.
 
     Tasks the in-session ``/loop`` owns (``runs_in_session`` — a loop-dispatched
@@ -141,23 +140,43 @@ def drain_headless_queue() -> dict[str, list[int]]:
     ``agent_runtime`` those phase tasks are headless and ``runs_in_session`` is
     ``False``, so they drain like any other headless work.
 
+    Under ``agent_runtime=headless`` the drain ALSO adopts stale
+    ``execution_target=interactive`` pending rows — phase tasks created during a
+    laptop ``/loop`` era whose target was routed INTERACTIVE, then orphaned when
+    the box moved to the headless lane with no interactive session ever alive to
+    dispatch them (the undispatchable-forever class the "codex_reviewing"
+    backlog was in). Each is ``route_to_headless``-d before dispatch, permanently
+    closing the laptop->box orphan. Under ``agent_runtime=interactive`` the
+    interactive rows are the ``/loop`` slot's job and are left untouched.
+
     A task whose ticket names a non-empty unknown overlay is failed permanently
     rather than re-enqueued (souliane/teatree#1959): re-enqueuing it would crash
     ``execute_headless_task`` on every tick forever — the poison pill this drain
     must not keep feeding. A blank overlay is the ambient single-overlay default
     and stays dispatchable.
+
+    This is the plain body shared by the ``@task drain_headless_queue`` (the
+    default-queue safety net) and the loops-queue maintenance chain
+    (:func:`teatree.loops.timer_reconciler.drain_headless_chain`) that schedules
+    it, so the two call sites can never drift.
     """
+    from teatree.config import AgentRuntime, get_effective_settings  # noqa: PLC0415 — deferred: call-time import
     from teatree.core.headless_dispatch import runs_in_session  # noqa: PLC0415 — deferred: call-time import, kept lazy
 
+    headless_runtime = get_effective_settings().agent_runtime is AgentRuntime.HEADLESS
+    targets = [Task.ExecutionTarget.HEADLESS]
+    if headless_runtime:
+        targets.append(Task.ExecutionTarget.INTERACTIVE)
     pending = (
         Task.objects.filter(
-            execution_target=Task.ExecutionTarget.HEADLESS,
+            execution_target__in=targets,
             status=Task.Status.PENDING,
         )
         .select_related("ticket")
-        .only("pk", "phase", "ticket__role", "ticket__overlay")
+        .only("pk", "phase", "execution_target", "ticket__role", "ticket__overlay")
     )
     enqueued: list[int] = []
+    rerouted: list[int] = []
     failed_unknown_overlay: list[int] = []
     for task_obj in pending:
         if runs_in_session(role=task_obj.ticket.role, phase=task_obj.phase):
@@ -169,9 +188,20 @@ def drain_headless_queue() -> dict[str, list[int]]:
             task_obj.complete_with_attempt(exit_code=1, error=reason, result={"unknown_overlay": reason})
             failed_unknown_overlay.append(task_obj.pk)
             continue
+        if task_obj.execution_target == Task.ExecutionTarget.INTERACTIVE:
+            task_obj.route_to_headless(
+                reason="Stale interactive row adopted by headless drain (laptop->box orphan, agent_runtime=headless)"
+            )
+            rerouted.append(task_obj.pk)
         execute_headless_task.enqueue(task_obj.pk, task_obj.phase)
         enqueued.append(task_obj.pk)
-    return {"enqueued": enqueued, "failed_unknown_overlay": failed_unknown_overlay}
+    return {"enqueued": enqueued, "rerouted": rerouted, "failed_unknown_overlay": failed_unknown_overlay}
+
+
+@task()
+def drain_headless_queue() -> dict[str, list[int]]:
+    """The default-queue ``@task`` wrapper around :func:`drain_headless_queue_body`."""
+    return drain_headless_queue_body()
 
 
 @task()

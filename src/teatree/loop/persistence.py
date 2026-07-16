@@ -20,6 +20,7 @@ from django.db import transaction
 
 from teatree.core.intake.ticket_kind_classification import TicketOrigin, classify_ticket_kind
 from teatree.core.models import ImplementedIssueMarker, Task, Ticket
+from teatree.core.models.auto_implement import mark_auto_implement
 from teatree.core.models.ticket_external_review import schedule_external_review
 from teatree.loop.dispatch import DispatchAction
 from teatree.loop.dispatch_gates import claim_red_mr_fix
@@ -245,6 +246,11 @@ def _handle_orchestrator(action: DispatchAction) -> Task | None:
         return None
     if _has_open_task(ticket, phase="coding") or ticket.state != Ticket.State.NOT_STARTED:
         return None
+    # Mark the plan-skipped direct-coding path BEFORE scheduling coding, so the
+    # coding-completion transition (``Task._apply_phase_transition`` ->
+    # ``Ticket.code_direct``) can advance this NOT_STARTED ticket instead of
+    # silently no-opping the way it did for tickets 35/36 (#10).
+    mark_auto_implement(ticket)
     return ticket.schedule_coding()
 
 

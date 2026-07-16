@@ -29,6 +29,7 @@ from typing import Annotated
 import typer
 from django_typer.management import TyperCommand, command, initialize
 
+from teatree.core.modelkit.notify_policy import NotifyAudience
 from teatree.loop.dogfood_smoke import SmokeOutcomeKind, default_steps, report_summary, run_smoke, run_t3_command
 
 
@@ -58,7 +59,7 @@ def _notify_failure(*, summary_text: str, failing_step: str, command_str: str, s
     body = _dm_failure_body(summary_text, failing_step=failing_step, command_str=command_str, stderr=stderr)
     key = f"dogfood_smoke:{failing_step}"
     try:
-        notify_with_fallback(body, kind=NotifyKind.INFO, idempotency_key=key)
+        notify_with_fallback(body, kind=NotifyKind.INFO, idempotency_key=key, audience=NotifyAudience.OWNER_ESCALATION)
     except Exception:
         import logging  # noqa: PLC0415 — deferred: loaded only when this command runs
 

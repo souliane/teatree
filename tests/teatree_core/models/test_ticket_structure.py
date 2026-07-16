@@ -70,6 +70,7 @@ _PUBLIC_API: frozenset[str] = frozenset(
 # Behaviour-preserving means this map is byte-identical afterwards.
 _FSM_GRAPH: dict[str, tuple[tuple[str, ...], tuple[str, ...]]] = {
     "code": (("planned",), ("coded",)),
+    "code_direct": (("not_started", "scoped", "started"), ("coded",)),
     "ignore": (
         (
             "coded",

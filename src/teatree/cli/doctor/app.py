@@ -531,7 +531,7 @@ class IntrospectionHelpers:
 @doctor_app.command()
 def check(
     json_output: bool = typer.Option(  # noqa: FBT001 — typer CLI boolean flag; the bool parameter is typer's option idiom
-        False, "--json", help="Emit findings as JSON for the external watchdog."
+        False, "--json", help="Emit findings as JSON for the watchdog container."
     ),
 ) -> bool:
     """Verify imports, required tools, and editable-install sanity."""
@@ -594,7 +594,7 @@ def check(
     # dead compose containers, a free worker flock over overdue loop work, a
     # stranded headless task, a stale loop timer, an unrunnable interactive task
     # under headless runtime, a failed task on a live ticket, a drifted runtime
-    # clone. These flip the exit code the external watchdog (deploy/watchdog.sh) keys on.
+    # clone. These flip the exit code the watchdog container (deploy/watchdog.sh) keys on.
     from teatree.cli.doctor.self_heal import run_self_heal_checks  # noqa: PLC0415 — deferred: keeps CLI startup light
 
     ok = run_self_heal_checks() and ok

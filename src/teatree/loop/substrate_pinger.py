@@ -1,13 +1,16 @@
 """Loop-edge substrate-hold pinger (orchestration layer).
 
-A held SUBSTRATE merge DMs the owner once (ping-and-hold) via the existing
-``notify_with_fallback`` egress. Lives at the ``teatree.loop`` orchestration
-layer — NOT in ``teatree.loop.scanners`` (domain), where the tach boundary
-forbids importing ``teatree.messaging`` / ``teatree.core.notify`` (integration). The
-scanner depends only on the ``SubstratePinger`` Protocol; this concrete notify
-egress is injected at the loop edge, mirroring ``domain_jobs``'s use.
+A held SUBSTRATE merge is an INTERNAL notification — logged, never DM'd — routed
+through the ``notify_with_fallback`` egress so the deny-by-default notify policy
+records it without spamming the owner (a hold that stays held re-fires every
+tick, so a DM would recur stale for hours, #F3). Lives at the ``teatree.loop``
+orchestration layer — NOT in ``teatree.loop.scanners`` (domain), where the tach
+boundary forbids importing ``teatree.messaging`` / ``teatree.core.notify``
+(integration). The scanner depends only on the ``SubstratePinger`` Protocol; this
+concrete notify egress is injected at the loop edge, mirroring ``domain_jobs``'s use.
 """
 
+from teatree.core.modelkit.notify_policy import NotifyAudience
 from teatree.core.notify import NotifyKind
 from teatree.messaging import notify_with_fallback
 
@@ -15,9 +18,12 @@ from teatree.messaging import notify_with_fallback
 class NotifyWithFallbackSubstratePinger:
     """Production :class:`~teatree.loop.scanners.pr_sweep.SubstratePinger` (ping-and-hold).
 
-    The per-diff idempotency key dedupes across re-ticks through the BotPing
-    ledger, so the owner is pinged exactly once per held substrate diff.
+    The substrate-hold signal is INTERNAL (log-only) — recorded through the
+    BotPing ledger under the per-diff idempotency key but never DM'd, so a hold
+    that stays held can never surface a stale merge DM to the owner.
     """
 
     def ping(self, *, text: str, idempotency_key: str) -> None:  # noqa: PLR6301 — instance method satisfies the injected SubstratePinger Protocol.
-        notify_with_fallback(text=text, kind=NotifyKind.INFO, idempotency_key=idempotency_key)
+        notify_with_fallback(
+            text=text, kind=NotifyKind.INFO, idempotency_key=idempotency_key, audience=NotifyAudience.INTERNAL
+        )
