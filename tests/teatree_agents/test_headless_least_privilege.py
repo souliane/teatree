@@ -71,7 +71,11 @@ class TestBuildOptionsHarnessPin(TestCase):
         options = self._options_for("reviewing")
         assert options.setting_sources is None
         assert options.strict_mcp_config is False
-        for tool in ("mcp__teatree__github_pr_diff", "mcp__teatree__review_post_comment", "mcp__teatree__task_complete"):
+        for tool in (
+            "mcp__teatree__github_pr_diff",
+            "mcp__teatree__review_post_comment",
+            "mcp__teatree__task_complete",
+        ):
             assert tool not in options.disallowed_tools, tool
 
     def test_e2e_review_dispatch_cannot_invoke_git_write(self) -> None:
