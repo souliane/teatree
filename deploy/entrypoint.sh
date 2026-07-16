@@ -133,11 +133,22 @@ ensure_clone() {
     if [ -e "$CLONE_DIR/.git" ]; then
         # The clone lives in a shared volume that outlives the image, so a
         # redeploy must bring it current or the stack keeps serving the code
-        # from the first boot. Fast-forward only, and fail loud on divergence —
-        # silently serving stale code is worse than a red deploy.
+        # from the first boot. SELF-HEAL: a stray feature branch checked out on
+        # the runtime clone (or one whose upstream was deleted after its PR
+        # merged) must never brick the H24 deploy — recover to the default
+        # branch automatically; only a genuinely diverged default branch (local
+        # commits that cannot fast-forward) still fails loud.
         git -C "$CLONE_DIR" fetch --prune origin
-        git -C "$CLONE_DIR" merge --ff-only "@{upstream}" || {
-            echo "entrypoint: $CLONE_DIR cannot fast-forward to its upstream - the runtime clone has local commits or a diverged branch; reconcile it on the box and re-run Deploy" >&2
+        local default_branch current
+        default_branch="$(git -C "$CLONE_DIR" symbolic-ref --short refs/remotes/origin/HEAD 2>/dev/null | sed 's|^origin/||')"
+        default_branch="${default_branch:-main}"
+        current="$(git -C "$CLONE_DIR" symbolic-ref --short HEAD 2>/dev/null || echo DETACHED)"
+        if [ "$current" != "$default_branch" ]; then
+            echo "entrypoint: runtime clone was on '$current' (not '$default_branch') - self-healing to the default branch (any stray work stays on its branch)" >&2
+            git -C "$CLONE_DIR" checkout --force "$default_branch"
+        fi
+        git -C "$CLONE_DIR" merge --ff-only "origin/$default_branch" || {
+            echo "entrypoint: $CLONE_DIR default branch '$default_branch' has diverged (local commits that cannot fast-forward) - reconcile it on the box and re-run Deploy" >&2
             exit 1
         }
         return 0
