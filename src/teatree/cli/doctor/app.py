@@ -540,7 +540,7 @@ def check(
         "--repair",
         help="Re-point a relocated/hijacked t3 editable install at the expected checkout (#3231).",
     ),
-    json_output: bool = typer.Option(  # noqa: FBT001 — typer CLI boolean flag; the bool parameter is typer's option idiom
+    json_output: bool = typer.Option(
         False, "--json", help="Emit findings as JSON for the watchdog container."
     ),
 ) -> bool:
