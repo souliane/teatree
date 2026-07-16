@@ -21,6 +21,7 @@ from typer.testing import CliRunner
 
 from teatree.cli import app as cli_app
 from teatree.cli.doctor import self_heal
+from teatree.cli.doctor.self_heal import check_as_json, run_self_heal_checks
 from teatree.config.agent_enums import AgentRuntime
 from teatree.core.models import Ticket
 from tests.factories import TaskFactory, TicketFactory
@@ -246,7 +247,7 @@ class RuntimeCloneBranchCheckTest(TestCase):
 class RunAllAndJsonTest(TestCase):
     def test_run_self_heal_checks_false_when_one_fails(self) -> None:
         with mock.patch(f"{_MOD}._check_stale_loop_timer", return_value=False), redirect_stdout(io.StringIO()):
-            assert self_heal.run_self_heal_checks() is False
+            assert run_self_heal_checks() is False
 
     def test_run_self_heal_checks_true_when_all_pass(self) -> None:
         names = (
@@ -261,7 +262,7 @@ class RunAllAndJsonTest(TestCase):
         with mock.patch.multiple(_MOD, **dict.fromkeys(names, mock.DEFAULT)) as mocks:
             for m in mocks.values():
                 m.return_value = True
-            assert self_heal.run_self_heal_checks() is True
+            assert run_self_heal_checks() is True
 
     def test_check_as_json_emits_ok_and_findings(self) -> None:
         def fake_check(*, json_output: bool = False) -> bool:
@@ -272,7 +273,7 @@ class RunAllAndJsonTest(TestCase):
 
         buf = io.StringIO()
         with redirect_stdout(buf):
-            ok = self_heal.check_as_json(fake_check)
+            ok = check_as_json(fake_check)
         payload = _json.loads(buf.getvalue())
         assert ok is False
         assert payload["ok"] is False
