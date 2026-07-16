@@ -75,16 +75,24 @@ class TestRecordResultEnvelope(TestCase):
 
     def test_outage_death_fails_task_without_advancing_ticket(self) -> None:
         task = self._claimed()
-        attempt = record_result_envelope(
-            task,
-            {"summary": "Unable to connect to API", "files_modified": [{"path": "a.py", "action": "modified"}]},
-        )
+        blob = {"summary": "Unable to connect to API", "files_modified": [{"path": "a.py", "action": "modified"}]}
+        attempt = record_result_envelope(task, blob)
         task.refresh_from_db()
         task.ticket.refresh_from_db()
         assert task.status == Task.Status.FAILED
         assert task.ticket.state == Ticket.State.STARTED
-        assert attempt.result == {}
+        # The offending blob is persisted on the FAILED attempt for debuggability,
+        # not discarded (PR-3): a failure the operator cannot inspect is a dead end.
+        assert attempt.result == blob
         assert attempt.error.startswith("outage_death:")
+
+    def test_failed_attempt_persists_the_offending_result_blob(self) -> None:
+        task = self._claimed()
+        blob = {"summary": "nothing changed"}  # coding evidence refusal, no files_modified
+        attempt = record_result_envelope(task, blob)
+        task.refresh_from_db()
+        assert task.status == Task.Status.FAILED
+        assert attempt.result == blob
 
     def test_outage_death_takes_precedence_over_evidence_gate(self) -> None:
         task = self._claimed()
@@ -152,9 +160,9 @@ class TestLandingVerifiedCompletion(TestCase):
         task.claim(claimed_by="loop-slot")
         return task
 
-    def _attach_worktree(self, ticket: Ticket, *, commits_ahead: int) -> Path:
-        repo_dir = self._tmp_path / f"repo-{ticket.pk}"
-        branch = f"feature-{ticket.pk}"
+    def _attach_worktree(self, ticket: Ticket, *, commits_ahead: int, suffix: str = "") -> Path:
+        repo_dir = self._tmp_path / f"repo-{ticket.pk}{suffix}"
+        branch = f"feature-{ticket.pk}{suffix}"
         _init_repo_with_branch(repo_dir, branch=branch, commits_ahead=commits_ahead)
         Worktree.objects.create(
             ticket=ticket,
@@ -188,6 +196,58 @@ class TestLandingVerifiedCompletion(TestCase):
         )
         task.refresh_from_db()
         assert task.status == Task.Status.COMPLETED
+
+    def test_evidence_refusal_with_committed_work_is_salvaged_and_completed(self) -> None:
+        # #3263: the coder committed real work but omitted the files_modified
+        # envelope. Rather than refuse and strand the branch, the recorder
+        # synthesizes files_modified from the committed diff and COMPLETES.
+        task = self._claimed()
+        self._attach_worktree(task.ticket, commits_ahead=1)
+        attempt = record_result_envelope(task, {"summary": "implemented but forgot the envelope"})
+        task.refresh_from_db()
+        assert task.status == Task.Status.COMPLETED
+        salvaged = attempt.result.get("files_modified")
+        assert salvaged == [{"path": "f0.txt", "action": "modified"}]
+
+    def test_evidence_refusal_without_commit_still_fails(self) -> None:
+        # No committed work to salvage — the refusal stands (the transient
+        # requeue sweep then gives the bounded corrective retry / escalates).
+        task = self._claimed()
+        self._attach_worktree(task.ticket, commits_ahead=0)
+        record_result_envelope(task, {"summary": "did nothing, no envelope"})
+        task.refresh_from_db()
+        assert task.status == Task.Status.FAILED
+
+    def test_evidence_refusal_with_dirty_uncommitted_work_is_not_salvaged(self) -> None:
+        # A commit exists but tracked changes are uncommitted: landing would
+        # refuse, so there is nothing clean to salvage — the task fails.
+        task = self._claimed()
+        repo_dir = self._attach_worktree(task.ticket, commits_ahead=1)
+        (repo_dir / "f0.txt").write_text("edited but not committed\n")
+        record_result_envelope(task, {"summary": "half done"})
+        task.refresh_from_db()
+        assert task.status == Task.Status.FAILED
+
+    def test_salvage_skips_commitless_worktree_and_uses_the_committed_one(self) -> None:
+        # A ticket with two clean worktrees, only one carrying a commit: the
+        # salvage skips the commit-less one and synthesizes from the committed one.
+        task = self._claimed()
+        self._attach_worktree(task.ticket, commits_ahead=0)
+        self._attach_worktree(task.ticket, commits_ahead=1, suffix="b")
+        attempt = record_result_envelope(task, {"summary": "committed in one repo, no envelope"})
+        task.refresh_from_db()
+        assert task.status == Task.Status.COMPLETED
+        assert attempt.result.get("files_modified") == [{"path": "f0.txt", "action": "modified"}]
+
+    def test_salvage_fails_closed_when_the_diff_read_errors(self) -> None:
+        # A commit landed (landing passes) but the name-only diff read errors —
+        # the salvage yields nothing rather than completing on unknowable work.
+        task = self._claimed()
+        self._attach_worktree(task.ticket, commits_ahead=1)
+        with patch("teatree.agents.attempt_recorder.git.run", side_effect=OSError("boom")):
+            record_result_envelope(task, {"summary": "committed but diff read broke"})
+        task.refresh_from_db()
+        assert task.status == Task.Status.FAILED
 
 
 class TestScanningNewsEnvelopeChannel(TestCase):
