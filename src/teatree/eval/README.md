@@ -25,4 +25,7 @@ The short version of the split:
   (reversing #2707; no per-token bill, so the CI lane is right-sized — single
   effort tier, smaller trial count, per-account OAuth routing — to stay inside the
   plan's usage window), with the metered `ANTHROPIC_API_KEY` still selectable; the
-  `transcript` backend REUSES a recorded run and authenticates nothing.
+  `anthropic_api` backend runs the SAME Claude model through the Anthropic Messages
+  API DIRECTLY (no `claude` CLI child, #3222 — the CLI-free lane, metered on
+  `ANTHROPIC_API_KEY`); the `transcript` backend REUSES a recorded run and
+  authenticates nothing.

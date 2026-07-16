@@ -33,7 +33,7 @@ import os
 import shutil
 from pathlib import Path
 
-from teatree.eval.backends import API_BACKEND
+from teatree.eval.backends import FRESH_CLAUDE_BACKENDS
 from teatree.utils.django_bootstrap import ensure_django
 from teatree.utils.eval_container import IN_CONTAINER_ENV_VAR
 from teatree.utils.run import run_allowed_to_fail, run_streamed
@@ -83,15 +83,18 @@ def _head_sha_passthrough_flags() -> list[str]:
 
 
 def _requests_api_lane(eval_args: list[str]) -> bool:
-    """Whether *eval_args* drives the metered/api lane, so the credential pre-export must fire.
+    """Whether *eval_args* drives a metered fresh-Claude lane, so the credential pre-export must fire.
 
-    True for an explicit ``--backend api`` run AND for an always-metered
-    subcommand (``benchmark``) that bills the API by construction without ever
-    passing ``--backend``. Keying on :data:`API_BACKEND` plus the metered
-    subcommand — never a stray literal token — means the credential resolves (and
-    fails loud when absent) BEFORE any Docker build/run on every metered path.
+    True for an explicit ``--backend api`` OR ``--backend anthropic_api`` run (both
+    RUN a Claude model and bill the Anthropic account — the CLI-free ``anthropic_api``
+    lane authenticates on ``ANTHROPIC_API_KEY`` and must have it forwarded into the
+    container too) AND for an always-metered subcommand (``benchmark``) that bills the
+    API by construction without ever passing ``--backend``. Keying on the exact
+    :data:`FRESH_CLAUDE_BACKENDS` tokens plus the metered subcommand — never a stray
+    literal — means the credential resolves (and fails loud when absent) BEFORE any
+    Docker build/run on every metered path.
     """
-    if API_BACKEND in eval_args:
+    if any(backend in eval_args for backend in FRESH_CLAUDE_BACKENDS):
         return True
     return bool(eval_args) and eval_args[0] in _ALWAYS_METERED_SUBCOMMANDS
 

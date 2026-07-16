@@ -47,7 +47,11 @@ from teatree.core.models.eval_run import (
 )
 from teatree.core.models.factory_score_snapshot import FactoryScoreSnapshot, FactoryScoreSnapshotManager
 from teatree.core.models.honesty_escalation import HonestyEscalation
-from teatree.core.models.implemented_issue_marker import NEEDS_TRIAGE_LABEL, ImplementedIssueMarker
+from teatree.core.models.implemented_issue_marker import (
+    NEEDS_TRIAGE_LABEL,
+    ImplementedIssueMarker,
+    MarkerReconcileResult,
+)
 from teatree.core.models.incoming_event import IncomingEvent
 from teatree.core.models.intent_classification import IntentClassification
 from teatree.core.models.known_issue import KnownIssue, KnownIssueManager
@@ -222,6 +226,7 @@ __all__ = [
     "LoopStateManager",
     "LoopStatus",
     "MRReviewLock",
+    "MarkerReconcileResult",
     "MatcherDetail",
     "MechanismSketch",
     "MechanismSketchError",
