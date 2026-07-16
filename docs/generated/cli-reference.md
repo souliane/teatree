@@ -3556,56 +3556,58 @@ Usage: t3 loop [OPTIONS] COMMAND [ARGS]...
 │ --help          Show this message and exit.                                  │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ╭─ Commands ───────────────────────────────────────────────────────────────────╮
-│ tick           Run one user-manual full-scan tick by hand: scan every        │
-│                overlay, dispatch, render.                                    │
-│ status         Show the loop's last-rendered statusline.                     │
-│ pending-spawn  List pending Tasks (read-only probe; legacy — prefer          │
-│                ``claim-next``).                                              │
-│ spawn-claim    Claim a Task by id (legacy — prefer atomic ``claim-next``).   │
-│ start          Spawn a Claude Code session; the t3-master registers each     │
-│                enabled loop's ``/loop``.                                     │
-│ stop           Print the slot id to stop in the Claude Code session.         │
-│ claim          Claim the session-scoped t3-master slot for this Claude       │
-│                session (#1073).                                              │
-│ owner          Show which session owns the t3-master slot AND this session's │
-│                own id (#1073).                                               │
-│ whoami         Print this Claude session's own id — what a hand-off ``--to`` │
-│                targets.                                                      │
-│ release        Release this session's t3-master claim (#1073).               │
-│ claim-next     Atomically claim the oldest pending dispatchable Task, then   │
-│                emit it.                                                      │
-│ list           Print LIVE loop status: each loop's enabled state, cadence,   │
-│                last fire, and next tick.                                     │
-│ pause          Pause a mini-loop durably (#1913) — survives restart,         │
-│                honoured by tick + self-pump.                                 │
-│ resume         Resume a paused OR disabled mini-loop — return it to the      │
-│                ENABLED state.                                                │
-│ disable        Disable a mini-loop durably — the restart-surviving           │
-│                kill-switch.                                                  │
-│ enable         Enable a disabled mini-loop — return it to the ENABLED state  │
-│                (alias of resume).                                            │
-│ loop-state     Read a known mini-loop's durable state, read-only (ENABLED    │
-│                when never touched; refuses an unknown name).                 │
-│ self-improve   Self-improving monitor — scheduled smell detection with a     │
-│                tiered action ladder. Runs as its own dedicated `/loop` slot  │
-│                on a separate `loop-self-improve` LoopLease so a long         │
-│                self-improve cycle never blocks a fast per-loop tick          │
-│                (BLUEPRINT § 5.7).                                            │
-│ slack-answer   Reactive, token-cheap Slack-answer loop — the third `/loop`   │
-│                slot. Runs on a tight cadence (default 20s) in the same       │
-│                t3-master session as `t3 loop tick`, on a separate LoopLease  │
-│                so a long answer cycle never blocks a fast regular tick.      │
-│                Complementary to the inbound prompt-drain, never a            │
-│                double-answer (#1014).                                        │
-│ drain-queue    Reactive DB-queue drain loop — a `/loop` slot that keeps the  │
-│                django-tasks DB queue advancing without an always-on          │
-│                `db_worker`. Runs on a tight cadence (default 30s) on the     │
-│                `loop-drain-queue` LoopLease: it retires stale READY jobs,    │
-│                then drains a bounded batch of the fresh remainder, and       │
-│                stands down while a live worker holds either worker           │
-│                singleton.                                                    │
-│ preset         Named loop-state presets — mode switching (#3159).            │
-│ schedule       Weekly preset schedules — the L2 calendar (#3159).            │
+│ tick             Run one user-manual full-scan tick by hand: scan every      │
+│                  overlay, dispatch, render.                                  │
+│ status           Show the loop's last-rendered statusline.                   │
+│ pending-spawn    List pending Tasks (read-only probe; legacy — prefer        │
+│                  ``claim-next``).                                            │
+│ spawn-claim      Claim a Task by id (legacy — prefer atomic ``claim-next``). │
+│ start            Spawn a Claude Code session; the t3-master registers each   │
+│                  enabled loop's ``/loop``.                                   │
+│ stop             Print the slot id to stop in the Claude Code session.       │
+│ claim            Claim the session-scoped t3-master slot for this Claude     │
+│                  session (#1073).                                            │
+│ owner            Show which session owns the t3-master slot AND this         │
+│                  session's own id (#1073).                                   │
+│ whoami           Print this Claude session's own id — what a hand-off        │
+│                  ``--to`` targets.                                           │
+│ release          Release this session's t3-master claim (#1073).             │
+│ claim-next       Atomically claim the oldest pending dispatchable Task, then │
+│                  emit it.                                                    │
+│ list             Print LIVE loop status: each loop's enabled state, cadence, │
+│                  last fire, and next tick.                                   │
+│ reclaim-markers  Release orphaned non-terminal markers whose ticket is       │
+│                  terminal/gone, freeing intake budget.                       │
+│ pause            Pause a mini-loop durably (#1913) — survives restart,       │
+│                  honoured by tick + self-pump.                               │
+│ resume           Resume a paused OR disabled mini-loop — return it to the    │
+│                  ENABLED state.                                              │
+│ disable          Disable a mini-loop durably — the restart-surviving         │
+│                  kill-switch.                                                │
+│ enable           Enable a disabled mini-loop — return it to the ENABLED      │
+│                  state (alias of resume).                                    │
+│ loop-state       Read a known mini-loop's durable state, read-only (ENABLED  │
+│                  when never touched; refuses an unknown name).               │
+│ self-improve     Self-improving monitor — scheduled smell detection with a   │
+│                  tiered action ladder. Runs as its own dedicated `/loop`     │
+│                  slot on a separate `loop-self-improve` LoopLease so a long  │
+│                  self-improve cycle never blocks a fast per-loop tick        │
+│                  (BLUEPRINT § 5.7).                                          │
+│ slack-answer     Reactive, token-cheap Slack-answer loop — the third `/loop` │
+│                  slot. Runs on a tight cadence (default 20s) in the same     │
+│                  t3-master session as `t3 loop tick`, on a separate          │
+│                  LoopLease so a long answer cycle never blocks a fast        │
+│                  regular tick. Complementary to the inbound prompt-drain,    │
+│                  never a double-answer (#1014).                              │
+│ drain-queue      Reactive DB-queue drain loop — a `/loop` slot that keeps    │
+│                  the django-tasks DB queue advancing without an always-on    │
+│                  `db_worker`. Runs on a tight cadence (default 30s) on the   │
+│                  `loop-drain-queue` LoopLease: it retires stale READY jobs,  │
+│                  then drains a bounded batch of the fresh remainder, and     │
+│                  stands down while a live worker holds either worker         │
+│                  singleton.                                                  │
+│ preset           Named loop-state presets — mode switching (#3159).          │
+│ schedule         Weekly preset schedules — the L2 calendar (#3159).          │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -3847,6 +3849,22 @@ Usage: t3 loop list [OPTIONS]
 │ --all           Also show the per-loop owning sessions (cross-session health │
 │                 view, #1834).                                                │
 │ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+#### `t3 loop reclaim-markers`
+
+```
+Usage: t3 loop reclaim-markers [OPTIONS]
+
+ Release orphaned non-terminal markers whose ticket is terminal/gone, freeing
+ intake budget.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --overlay        TEXT  Restrict to one overlay (default: reconcile every     │
+│                        overlay's markers).                                   │
+│ --json                 Emit the reconcile result as JSON.                    │
+│ --help                 Show this message and exit.                           │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 

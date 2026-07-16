@@ -163,6 +163,18 @@ class Ticket(
             ),
         ]
 
+    @classmethod
+    def marker_release_states(cls) -> frozenset[str]:
+        """Terminal states that free an issue-implementer marker's in-flight budget.
+
+        The single source of truth shared by the on-transition release signal
+        (``_release_issue_markers_on_completion``) and the retroactive
+        reconciler (``ImplementedIssueMarker.objects.reconcile_stale``, #3275).
+        SHIPPED is excluded on purpose — its PR is open but unmerged, so the
+        marker still legitimately holds its slot.
+        """
+        return frozenset({cls.State.MERGED, cls.State.DELIVERED, cls.State.IGNORED})
+
     def __str__(self) -> str:
         return str(self.issue_url or f"ticket-{self.pk}")
 

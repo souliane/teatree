@@ -39,9 +39,9 @@ _WORKTREE_TRANSITION_TASKS: dict[str, str] = {
 
 # A ticket reaching one of these frees its issue-implementer marker from the
 # single-ticket in-flight budget — the release-on-completion the lifecycle lacked.
-_MARKER_RELEASE_TARGET_STATES: frozenset[str] = frozenset(
-    {Ticket.State.MERGED, Ticket.State.DELIVERED, Ticket.State.IGNORED}
-)
+# Sourced from the model so the on-transition signal and the retroactive
+# reconciler (#3275) can never diverge on which states are terminal.
+_MARKER_RELEASE_TARGET_STATES: frozenset[str] = Ticket.marker_release_states()
 
 
 def _log_ticket_transition(
