@@ -174,6 +174,7 @@ GOLDEN_USER_SETTINGS_FIELDS: frozenset[str] = frozenset(
         "speak",
         "stale_stack_min_age_minutes",
         "statusline_chain",
+        "substrate_self_signoff",
         "task_sweep_disabled",
         "task_sweep_recheck_interval_hours",
         "teams_display",

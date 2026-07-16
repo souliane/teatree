@@ -19,6 +19,7 @@ from teatree.core.availability import Resolution
 from teatree.core.models import Loop, LoopState, Prompt
 from teatree.loops.base import MiniLoop
 from teatree.loops.loop_table import admitted_loop_names, build_loop_table_jobs
+from teatree.loops.seed import seed_default_loops_and_prompts
 
 if TYPE_CHECKING:
     from teatree.loop.job_identity import _ScannerJob
@@ -541,3 +542,23 @@ class TestColleagueFacingAvailabilityGate(django.test.TestCase):
         ):
             names = admitted_loop_names(now)
         assert names == []
+
+
+@django.test.override_settings(USE_TZ=True)
+class TestAutoMergePathAdmittedUnderAutonomousAway(django.test.TestCase):
+    """#3274: the seeded merge path (`ship`) is admitted under `autonomous_away`.
+
+    End-to-end over the REAL seed + registry (no `iter_loops` stub): a green own-PR
+    still gets its review verdict and auto-merges while the owner is away, because
+    the merge sweep lives on the non-colleague-facing `ship` loop (#3244). The
+    colleague-facing `review` loop stays deferred in the same tick.
+    """
+
+    def test_ship_admitted_review_deferred_under_autonomous_away(self) -> None:
+        seed_default_loops_and_prompts()
+        Loop.objects.filter(name__in=["ship", "review"]).update(enabled=True, last_run_at=None)
+        resolution = Resolution(mode="autonomous_away", source="override")
+        with patch("teatree.core.availability.resolve_mode", return_value=resolution):
+            admitted = admitted_loop_names(timezone.now())
+        assert "ship" in admitted
+        assert "review" not in admitted

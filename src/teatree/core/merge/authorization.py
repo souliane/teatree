@@ -147,16 +147,17 @@ def _assert_substrate_authorized(clear: "MergeClear", *, slug: str, pr_id: int, 
     ``--human-authorized`` against a non-substrate CLEAR is refused outright so it
     can never short-circuit independent loop review of a logic/docs PR (invariant 8
     / §17.4.1). Second: a substrate-class PR is draft-locked and requires a recorded
-    PER-PR human sign-off (invariant 4 / §17.4.3 step 5). Substrate is NEVER covered
-    by the overlay's standing grant — not even at ``autonomy = full``: the owner's
-    directive is that substrate (merge keystone, architecture spec, governance doc)
-    PINGS-and-HOLDS. ``_overlay_grants_standing_substrate_signoff`` returns ``False``
-    for any substrate clear, so the ONLY unlock is a per-CLEAR ``human_authorizer``
-    matching the value re-presented at merge time. When unsatisfied the held clear
-    raises below, which the loop edge routes to the substrate-hold Slack ping; the
-    AGENT still executes the authorized merge through this same SHA-bound, audited
-    transition. The quality/safety floor is untouched; non-substrate changes
-    self-merge unchanged.
+    PER-PR human sign-off (invariant 4 / §17.4.3 step 5). By default substrate is
+    NOT covered by the overlay's standing grant — not even at ``autonomy = full``:
+    the owner's directive is that substrate (merge keystone, architecture spec,
+    governance doc) PINGS-and-HOLDS. The one opt-in that lifts the hold is the
+    explicit, default-off ``substrate_self_signoff`` config setting (#3223), which
+    lets ``_overlay_grants_standing_substrate_signoff`` cover a substrate clear on a
+    ``full`` (solo-owned) overlay. When neither the per-CLEAR ``human_authorizer``
+    nor that standing grant is satisfied the held clear raises below, which the loop
+    edge routes to the substrate-hold Slack ping; the AGENT still executes the
+    authorized merge through this same SHA-bound, audited transition. The
+    quality/safety floor is untouched; non-substrate changes self-merge unchanged.
     """
     presented = human.strip()
     if presented and not clear.is_substrate():
@@ -270,13 +271,18 @@ def _resolve_clear_overlay_name(clear: "MergeClear", *, resolved_slug: str = "")
 def _overlay_grants_standing_substrate_signoff(clear: "MergeClear", *, resolved_slug: str = "") -> bool:
     """Whether the overlay's standing grant covers this per-PR sign-off (invariant 4 carve-out).
 
-    A SUBSTRATE clear is NEVER covered — it returns ``False`` immediately. The
-    owner's directive is that substrate must PING-and-HOLD, never auto-merge: a
-    substrate change (merge keystone, architecture spec, governance doc) is the
-    one class the owner sees and authorizes every time, so even at
-    ``autonomy = full`` the standing grant does not remove its per-PR human
-    sign-off. The held substrate CLEAR raises the same MergePreconditionError,
-    which the loop edge routes to the substrate-hold Slack ping.
+    A SUBSTRATE clear is held for the owner by default (the #2727 posture): even
+    at ``autonomy = full`` the standing grant does not remove its per-PR human
+    sign-off, so the held CLEAR raises the same MergePreconditionError the loop
+    edge routes to the substrate-hold Slack ping. The one config seam that lifts
+    that hold is the explicit, default-off ``substrate_self_signoff`` setting
+    (#3223): on an overlay standing at ``autonomy = full`` (the solo-owned tier)
+    with the setting on, a substrate CLEAR self-authorizes exactly as a
+    non-substrate clear does. This changes only WHO authorizes the sign-off — the
+    quality/safety floor (independent cold review, reviewed-SHA bind, CI-green,
+    not-draft, maker≠checker, anti-vacuity) still runs. The ``full`` tier gate is
+    kept so a below-full overlay never self-merges substrate even with the setting
+    on.
 
     The remaining resolution (the standing grant for a NON-substrate clear —
     ``autonomy = full`` OR an explicit ``require_human_approval_to_merge = false``
@@ -290,15 +296,14 @@ def _overlay_grants_standing_substrate_signoff(clear: "MergeClear", *, resolved_
     """
     from teatree.config import Autonomy, get_effective_settings  # noqa: PLC0415 — deferred: call-time import, kept lazy
 
-    # Substrate is excluded from the standing grant entirely (the §3.2 gate):
-    # substrate PINGS-and-HOLDS for the owner, so the standing grant never removes
-    # its per-PR human sign-off, not even at ``autonomy = full``.
-    if clear.is_substrate():
-        return False
     overlay_name = _resolve_clear_overlay_name(clear, resolved_slug=resolved_slug)
     if not overlay_name:
         return False
     settings = get_effective_settings(overlay_name=overlay_name)
+    # Substrate holds for the owner by default (#2727); the config seam is the
+    # only opt-in that lifts it, and only on a solo-owned (``full``) overlay.
+    if clear.is_substrate():
+        return settings.substrate_self_signoff and settings.autonomy is Autonomy.FULL
     if settings.autonomy is Autonomy.FULL:
         return True
     # The collaborative ``notify`` tier collapses the merge-approval gate to

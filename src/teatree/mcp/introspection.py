@@ -51,6 +51,7 @@ def question_list(*, limit: int = _DEFAULT_QUESTION_LIMIT) -> list[dict[str, Any
 # settings, so a per-overlay override is reflected.
 _REVIEW_GATE_KEYS = (
     "require_human_approval_to_merge",
+    "substrate_self_signoff",
     "require_reviewed_state_for_review_request",
     "require_review_context",
     "require_anti_vacuity_attestation",
