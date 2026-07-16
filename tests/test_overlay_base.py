@@ -3,6 +3,7 @@
 from unittest.mock import MagicMock
 
 from teatree.core.overlay import MergeGuard, OverlayBase, OverlayProvisioning, ProvisionStep
+from teatree.core.overlay_metadata import OverlayMetadata
 from teatree.core.provision.variant import Variant
 from teatree.core.runners.base import RunnerBase, RunnerResult
 
@@ -198,6 +199,33 @@ def test_validate_pr_rejects_non_conforming_title_first_line_and_missing_what_wh
     result = overlay.metadata.validate_pr("Add the gate", "no headers here")
     assert result["warnings"] == []
     assert len(result["errors"]) == 3
+
+
+class _SectionMetadata(OverlayMetadata):
+    """Overlay metadata that mandates extra description sections (#312)."""
+
+    def get_required_description_sections(self):
+        return ["Configuration", "Security & privacy impact"]
+
+
+# A back-filled placeholder body the hook synthesises for a title-only update:
+# valid title/first-line/What-Why, but none of the overlay's required sections.
+_TITLE_ONLY_BODY = "feat(ship): rename the widget (#3254)\n\n## What\n-"
+
+
+def test_validate_pr_flags_missing_required_sections_by_default():
+    # A description-modifying edit must still enforce required sections (#3254 true positive).
+    result = _SectionMetadata().validate_pr("feat(ship): rename the widget (#3254)", _TITLE_ONLY_BODY)
+    missing = [e for e in result["errors"] if "Configuration" in e or "Security & privacy impact" in e]
+    assert len(missing) == 2
+
+
+def test_validate_pr_skips_required_sections_when_optional():
+    # A title-only update touches no description — sections must not be demanded (#3254 fix).
+    result = _SectionMetadata().validate_pr(
+        "feat(ship): rename the widget (#3254)", _TITLE_ONLY_BODY, require_sections=False
+    )
+    assert result == {"errors": [], "warnings": []}
 
 
 def test_get_followup_repos_returns_empty_list():

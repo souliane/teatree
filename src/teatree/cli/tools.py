@@ -72,6 +72,12 @@ def validate_mr(
         "--repo",
         help="MR TARGET repo (owner/repo slug, path, or URL); keys overlay resolution to the target, not the cwd.",
     ),
+    *,
+    sections_optional: bool = typer.Option(
+        False,
+        "--sections-optional",
+        help="Skip the required-description-sections check (a title-only update touches no description). #3254",
+    ),
 ) -> None:
     """Validate MR/PR title+description against the active overlay's rules.
 
@@ -112,10 +118,13 @@ def validate_mr(
     ensure_django()
     from django.core.exceptions import ImproperlyConfigured  # noqa: PLC0415 — deferred: Django import at call time
 
+    require_sections = not sections_optional
     if repo:
         target_overlay = get_overlay_for_repo(repo)
         if target_overlay is not None:
-            errors = _validation_errors_fail_closed(target_overlay, title, description)
+            errors = _validation_errors_fail_closed(
+                target_overlay, title, description, require_sections=require_sections
+            )
             if errors:
                 _deny_with_errors(errors)
         return
@@ -126,7 +135,7 @@ def validate_mr(
         overlay = get_overlay_for_repo(".")
 
     if overlay is not None:
-        errors = _validation_errors(overlay, title, description)
+        errors = _validation_errors(overlay, title, description, require_sections=require_sections)
         if errors:
             _deny_with_errors(errors)
         return
@@ -136,20 +145,32 @@ def validate_mr(
         typer.echo("validate-mr: no overlay resolvable for this repo; skipping metadata check.", err=True)
         return
 
-    per_overlay_errors = [_validation_errors(ov, title, description) for ov in overlays.values()]
+    per_overlay_errors = [
+        _validation_errors(ov, title, description, require_sections=require_sections) for ov in overlays.values()
+    ]
     if any(not errs for errs in per_overlay_errors):
         return
     # Every overlay rejected — surface the first overlay's errors.
     _deny_with_errors(per_overlay_errors[0])
 
 
-def _validation_errors(overlay: "OverlayBase", title: str, description: str) -> list[str]:
-    """Return the overlay's ``validate_pr`` errors for ``title``/``description``."""
-    result = overlay.metadata.validate_pr(title, description)
+def _validation_errors(
+    overlay: "OverlayBase", title: str, description: str, *, require_sections: bool = True
+) -> list[str]:
+    """Return the overlay's ``validate_pr`` errors for ``title``/``description``.
+
+    ``require_sections`` is forwarded only when it deviates from the default, so
+    an overlay whose ``validate_pr`` predates the #3254 keyword still validates
+    the common (sections-required) path unchanged.
+    """
+    kwargs = {} if require_sections else {"require_sections": False}
+    result = overlay.metadata.validate_pr(title, description, **kwargs)
     return list(result.get("errors", []))
 
 
-def _validation_errors_fail_closed(overlay: "OverlayBase", title: str, description: str) -> list[str]:
+def _validation_errors_fail_closed(
+    overlay: "OverlayBase", title: str, description: str, *, require_sections: bool = True
+) -> list[str]:
     """Target-keyed verdict that FAILS CLOSED when the overlay's validator crashes.
 
     Once the MR's target maps to exactly one known overlay, that overlay's
@@ -159,7 +180,7 @@ def _validation_errors_fail_closed(overlay: "OverlayBase", title: str, descripti
     lockout-inverse this gate exists to prevent.
     """
     try:
-        return _validation_errors(overlay, title, description)
+        return _validation_errors(overlay, title, description, require_sections=require_sections)
     except Exception as exc:  # noqa: BLE001 — fail closed on any validator fault.
         return [f"validate-mr: target overlay validator failed ({exc}); denying (fail closed)."]
 

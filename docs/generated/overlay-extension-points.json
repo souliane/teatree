@@ -86,7 +86,7 @@
       "description": "Return PR validation problems for this overlay.",
       "name": "metadata.validate_pr",
       "required": false,
-      "signature": "(title: str, description: str) -> teatree.types.ValidationResult"
+      "signature": "(title: str, description: str, *, require_sections: bool = True) -> teatree.types.ValidationResult"
     },
     {
       "description": "Produce the PR title from structured ticket data (default: the commit subject).",

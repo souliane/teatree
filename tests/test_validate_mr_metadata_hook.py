@@ -332,6 +332,40 @@ class TestMrTargetRepoIsThreadedToValidator:
         assert "--repo" not in argv
 
 
+class TestTitleOnlyUpdateSkipsRequiredSections:
+    """A title-only ``glab mr update`` threads ``--sections-optional`` (#3254).
+
+    A pure retitle touches no description, so the overlay's required-section
+    completeness check (``## Configuration`` / ``## Security & privacy impact``)
+    must not fire on the hook's back-filled placeholder body — the true retitle
+    passes. An update that DOES set a description still validates in full.
+    """
+
+    def _argv_for(self, monkeypatch, command: str) -> list[str]:
+        monkeypatch.delenv("T3_MR_VALIDATE_SCRIPT", raising=False)
+        monkeypatch.setattr(router.shutil, "which", lambda _: "/usr/local/bin/t3")
+        ok = subprocess.CompletedProcess(args=[], returncode=0, stdout="", stderr="")
+        with patch.object(router.subprocess, "run", return_value=ok) as run:
+            handle_validate_mr_metadata({"tool_name": "Bash", "tool_input": {"command": command}})
+        return list(run.call_args[0][0])
+
+    def test_title_only_update_threads_sections_optional(self, monkeypatch):
+        argv = self._argv_for(monkeypatch, "glab mr update 7 --title 'fix(x): rename widget (proj#1)'")
+        assert "--sections-optional" in argv
+
+    def test_description_modifying_update_does_not_skip_sections(self, monkeypatch):
+        argv = self._argv_for(
+            monkeypatch,
+            "glab mr update 7 --title 'fix(x): t (proj#1)' --description 'fix(x): t (proj#1)\n\n## What\n- x'",
+        )
+        assert "--sections-optional" not in argv
+
+    def test_create_never_skips_sections(self, monkeypatch):
+        # `create` is never title-only — both fields are required, sections enforced.
+        argv = self._argv_for(monkeypatch, "glab mr create --title 'fix(x): t' --description 'fix(x): t'")
+        assert "--sections-optional" not in argv
+
+
 class TestIssueCommandsAreNeverMrMutations:
     """``gh issue`` / ``glab issue`` commands are not MR mutations — the gate must never fire.
 

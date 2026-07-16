@@ -19,12 +19,16 @@ __all__ = ["OverlayMetadata"]
 
 
 class OverlayMetadata:
-    def validate_pr(self, title: str, description: str) -> ValidationResult:
+    def validate_pr(self, title: str, description: str, *, require_sections: bool = True) -> ValidationResult:
         """Reject a non-conforming MR title/description (#1540, #312).
 
         Title and first line must match the effective ``mr_title_regex``; the
         description must carry a What/Why header plus every section declared in
         :meth:`get_required_description_sections`. A real gate, not a no-op.
+
+        ``require_sections=False`` skips the required-section check for a
+        title-only update, whose description is not being modified (#3254) — the
+        title/first-line/What-Why checks still run.
         """
         from teatree.config import get_effective_settings  # noqa: PLC0415 — deferred: call-time import, kept lazy
         from teatree.core.review.mr_metadata import validate_mr_metadata  # noqa: PLC0415 — deferred: call-time import
@@ -33,7 +37,7 @@ class OverlayMetadata:
             title,
             description,
             get_effective_settings().mr_title_regex,
-            required_sections=self.get_required_description_sections(),
+            required_sections=self.get_required_description_sections() if require_sections else None,
         )
         return {"errors": errors, "warnings": []}
 
