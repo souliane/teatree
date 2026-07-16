@@ -54,6 +54,20 @@ class TestDrainUnmirroredDeferredQuestions(TestCase):
         assert total == 0
         assert backend.post_message.call_count == 1
 
+    def test_injected_backend_delivers_without_overlay_resolution(self) -> None:
+        # F2: the global-tick poster is handed an explicit backend so it delivers
+        # even with no ``T3_OVERLAY_NAME`` — no overlay resolution needed.
+        question = DeferredQuestion.record("Which DB host?", session_id="s")
+        backend = _backend()
+
+        with patch.object(notify_module, "messaging_from_overlay", return_value=None):
+            delivered, total = drain_unmirrored_deferred_questions(user_id="U_ME", backend=backend)
+
+        assert (delivered, total) == (1, 1)
+        backend.post_message.assert_called_once()
+        question.refresh_from_db()
+        assert question.slack_ts == "1700000000.000000"
+
     def test_answered_row_is_not_posted(self) -> None:
         question = DeferredQuestion.record("Which DB host?", session_id="s")
         question.apply_answer("postgres-1", resolved_via="local")

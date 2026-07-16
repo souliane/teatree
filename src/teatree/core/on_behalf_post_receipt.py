@@ -25,6 +25,7 @@ both already legal ``teatree.core`` edges, so no new tach edge.
 """
 
 from teatree.config import get_effective_settings
+from teatree.core.modelkit.notify_policy import NotifyAudience
 
 
 def notify_user_on_behalf_post(
@@ -72,4 +73,5 @@ def notify_user_on_behalf_post(
         text,
         kind=NotifyKind.INFO,
         idempotency_key=f"on_behalf_post:{target}:{action}",
+        audience=NotifyAudience.COLLEAGUE_ACTION,
     )

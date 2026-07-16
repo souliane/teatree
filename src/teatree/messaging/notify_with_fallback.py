@@ -31,6 +31,7 @@ from teatree.core.backend_factory import messaging_from_overlay
 from teatree.core.backend_protocols import MessagingBackend
 from teatree.core.models import BotPing
 from teatree.core.notify import NotifyKind, format_notification, maybe_linkify, notify_user, resolve_user_id
+from teatree.core.modelkit.notify_policy import NotifyAudience
 
 logger = logging.getLogger(__name__)
 
@@ -65,11 +66,12 @@ class _DeliveredSend:
     permalink: str
 
 
-def notify_with_fallback(
+def notify_with_fallback(  # noqa: PLR0913 — verified-delivery egress; each kwarg is a documented field mirroring notify_user.
     text: str,
     *,
     kind: NotifyKind | str,
     idempotency_key: str,
+    audience: NotifyAudience,
     user_id: str | None = None,
     linkify: bool = True,
 ) -> NotifyResult:
@@ -78,6 +80,12 @@ def notify_with_fallback(
     Returns a :class:`NotifyResult` recording delivery and the transport
     that landed it. Never raises into the calling turn — a delivery failure
     is reported via ``delivered=False`` and a FAILED :class:`BotPing` row.
+
+    ``audience`` is threaded to :func:`notify_user` unchanged, so an
+    :attr:`~teatree.core.modelkit.notify_policy.NotifyAudience.INTERNAL` notification
+    is logged-only (the primary returns ``False`` with a terminal LOGGED row)
+    and the fallback transport is NOT attempted — a log-only DM has nothing to
+    verify-deliver.
     """
     kind_value = NotifyKind(kind) if not isinstance(kind, NotifyKind) else kind
 
@@ -85,12 +93,19 @@ def notify_with_fallback(
         text,
         kind=kind_value,
         idempotency_key=idempotency_key,
+        audience=audience,
         user_id=user_id,
         linkify=linkify,
     )
     if primary_delivered:
         _stamp_transport(idempotency_key, NotifyTransport.PRIMARY)
         return NotifyResult(delivered=True, transport=NotifyTransport.PRIMARY)
+
+    if audience == NotifyAudience.INTERNAL:
+        # A log-only notification did not "fail" — it was never meant to leave
+        # the machine. The primary already recorded a terminal LOGGED row; do
+        # not fall back to a direct send.
+        return NotifyResult(delivered=False, transport=NotifyTransport.NONE)
 
     if not _primary_failure_is_recoverable(idempotency_key):
         # A NOOP (no messaging backend / user_id configured) is not a
@@ -108,6 +123,7 @@ def notify_with_fallback(
         text,
         kind=kind_value,
         idempotency_key=idempotency_key,
+        audience=audience,
         user_id=user_id,
         linkify=linkify,
     )
@@ -135,11 +151,12 @@ def _primary_failure_is_recoverable(idempotency_key: str) -> bool:
     return row.status == BotPing.Status.FAILED or BotPing.is_stale_sending(row.status, row.posted_at)
 
 
-def _deliver_via_fallback(
+def _deliver_via_fallback(  # noqa: PLR0913 — threads the same explicit egress fields; each is documented.
     text: str,
     *,
     kind: NotifyKind,
     idempotency_key: str,
+    audience: NotifyAudience,
     user_id: str | None,
     linkify: bool,
 ) -> NotifyResult:
@@ -153,6 +170,7 @@ def _deliver_via_fallback(
             idempotency_key=idempotency_key,
             kind=kind,
             text=text,
+            audience=audience,
             error=f"{primary_failure}; fallback unavailable (no messaging backend or user_id)",
         )
         return NotifyResult(delivered=False, transport=NotifyTransport.NONE)
@@ -164,6 +182,7 @@ def _deliver_via_fallback(
             idempotency_key=idempotency_key,
             kind=kind,
             text=text,
+            audience=audience,
             error=f"{primary_failure}; fallback send failed: {send_failure}",
         )
         return NotifyResult(delivered=False, transport=NotifyTransport.NONE)
@@ -173,6 +192,7 @@ def _deliver_via_fallback(
             idempotency_key=idempotency_key,
             kind=kind,
             text=text,
+            audience=audience,
             error=f"{primary_failure}; fallback send unverified (round-trip read found no message at ts={posted_ts})",
         )
         return NotifyResult(delivered=False, transport=NotifyTransport.NONE)
@@ -186,6 +206,7 @@ def _deliver_via_fallback(
         idempotency_key=idempotency_key,
         kind=kind,
         text=text,
+        audience=audience,
         send=send,
         primary_failure=primary_failure,
     )
@@ -250,11 +271,12 @@ def _safe_permalink(backend: MessagingBackend, *, channel: str, posted_ts: str) 
         return ""
 
 
-def _record_fallback_success(
+def _record_fallback_success(  # noqa: PLR0913 — one typed write site for the fallback audit row; each field is explicit.
     *,
     idempotency_key: str,
     kind: NotifyKind,
     text: str,
+    audience: NotifyAudience,
     send: _DeliveredSend,
     primary_failure: str,
 ) -> None:
@@ -270,6 +292,7 @@ def _record_fallback_success(
         kind=kind,
         status=BotPing.Status.SENT,
         text=text,
+        audience=audience,
         channel_ref=send.channel,
         posted_ts=send.posted_ts,
         permalink=send.permalink,
@@ -283,6 +306,7 @@ def _record_fallback_failure(
     idempotency_key: str,
     kind: NotifyKind,
     text: str,
+    audience: NotifyAudience,
     error: str,
 ) -> None:
     _upsert_botping(
@@ -290,6 +314,7 @@ def _record_fallback_failure(
         kind=kind,
         status=BotPing.Status.FAILED,
         text=text,
+        audience=audience,
         error_message=error,
     )
 
@@ -302,6 +327,7 @@ def _upsert_botping(  # noqa: PLR0913 — one typed write site for the BotPing a
     status: BotPing.Status,
     text: str,
     error_message: str,
+    audience: NotifyAudience,
     channel_ref: str = "",
     posted_ts: str = "",
     permalink: str = "",
@@ -315,6 +341,7 @@ def _upsert_botping(  # noqa: PLR0913 — one typed write site for the BotPing a
                     "kind": kind.value,
                     "status": status,
                     "text": text,
+                    "audience": audience.value,
                     "channel_ref": channel_ref,
                     "posted_ts": posted_ts,
                     "permalink": permalink,

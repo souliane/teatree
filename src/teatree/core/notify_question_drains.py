@@ -20,9 +20,14 @@ time vs. no-mirror / away at ask time).
 import json
 import logging
 import os
+from typing import TYPE_CHECKING
 
 from teatree.core.models import BotPing, DeferredQuestion
 from teatree.core.notify import NotifyKind, notify_user
+from teatree.core.modelkit.notify_policy import NotifyAudience
+
+if TYPE_CHECKING:
+    from teatree.core.backend_protocols import MessagingBackend
 
 logger = logging.getLogger(__name__)
 
@@ -89,6 +94,7 @@ def drain_deferred_questions(*, user_id: str = "", overlay: str = "") -> tuple[i
                 _resurface_text(row),
                 kind=NotifyKind.QUESTION,
                 idempotency_key=f"resurface-deferred-question:{row.stable_notify_ref}",
+                audience=NotifyAudience.OWNER_QUESTION,
                 user_id=user_id or None,
             ):
                 delivered += 1
@@ -98,7 +104,9 @@ def drain_deferred_questions(*, user_id: str = "", overlay: str = "") -> tuple[i
     return delivered, len(rows)
 
 
-def drain_unmirrored_deferred_questions(*, user_id: str = "", overlay: str = "") -> tuple[int, int]:
+def drain_unmirrored_deferred_questions(
+    *, user_id: str = "", overlay: str = "", backend: "MessagingBackend | None" = None
+) -> tuple[int, int]:
     """Post the un-mirrored :class:`DeferredQuestion` backlog and stamp its mirror.
 
     The tick-level outbound poster for the headless ask-loop (peer of
@@ -127,6 +135,8 @@ def drain_unmirrored_deferred_questions(*, user_id: str = "", overlay: str = "")
                 _resurface_text(row),
                 kind=NotifyKind.QUESTION,
                 idempotency_key=key,
+                audience=NotifyAudience.OWNER_QUESTION,
+                backend=backend,
                 user_id=user_id or None,
             ):
                 continue

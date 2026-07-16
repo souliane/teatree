@@ -86,6 +86,7 @@ def notify_draft_created(*, repo: str, mr: int, mr_url: str, reviewed_head_sha: 
     publish/discard instructions.
     """
     from teatree.core.notify import NotifyKind  # noqa: PLC0415 — deferred: keeps CLI startup light
+    from teatree.core.modelkit.notify_policy import NotifyAudience  # noqa: PLC0415 — deferred: keeps CLI startup light
     from teatree.messaging import notify_with_fallback  # noqa: PLC0415 — deferred: keeps CLI startup light
 
     discriminator = reviewed_head_sha or datetime.now(tz=UTC).strftime("%Y-%m-%d")
@@ -93,6 +94,7 @@ def notify_draft_created(*, repo: str, mr: int, mr_url: str, reviewed_head_sha: 
         f"Posted draft comments on [{repo}!{mr}]({mr_url})",
         kind=NotifyKind.INFO,
         idempotency_key=f"post_comment_draft:{repo}!{mr}:{discriminator}",
+        audience=NotifyAudience.COLLEAGUE_ACTION,
     )
 
 

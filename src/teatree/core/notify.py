@@ -35,6 +35,7 @@ from teatree.config import get_effective_settings, load_config
 from teatree.core.backend_factory import messaging_from_overlay
 from teatree.core.backend_protocols import MessagingBackend
 from teatree.core.models import BotPing, DeliveryClaim, OutboundClaim
+from teatree.core.modelkit.notify_policy import NotifyAudience
 from teatree.core.send_proxy import SendChannel, SendRequest, route_send
 from teatree.core.session_identity import current_session_id
 from teatree.slack_mrkdwn import normalize_slack_message, slack_linkify
@@ -65,6 +66,7 @@ def notify_user(  # noqa: PLR0913 — single notification egress; each kwarg is 
     *,
     kind: NotifyKind | str,
     idempotency_key: str,
+    audience: NotifyAudience,
     backend: MessagingBackend | None = None,
     user_id: str | None = None,
     linkify: bool = True,
@@ -74,6 +76,13 @@ def notify_user(  # noqa: PLR0913 — single notification egress; each kwarg is 
     """Send a bot→user Slack DM and record an audit row.
 
     See this module's docstring for the bot→user egress contract.
+
+    ``audience`` (:mod:`teatree.core.modelkit.notify_policy`) is REQUIRED — every call
+    site declares who the DM is for (deny-by-default). An
+    :attr:`~teatree.core.modelkit.notify_policy.NotifyAudience.INTERNAL` notification
+    short-circuits BEFORE any backend resolution: it is logged, a terminal
+    :attr:`BotPing.Status.LOGGED` row is recorded, and ``False`` is returned —
+    no DM ever leaves the machine. Only the four owner audiences reach Slack.
 
     ``blocks`` (#1777): opaque Block Kit blocks (e.g. a native ``table`` block
     from :mod:`teatree.backends.slack.table_format`) posted alongside ``text``.
@@ -93,9 +102,9 @@ def notify_user(  # noqa: PLR0913 — single notification egress; each kwarg is 
     """
     kind_value = NotifyKind(kind) if not isinstance(kind, NotifyKind) else kind
 
-    if not _feature_enabled():
-        logger.debug("notify_user disabled by settings — %s skipped", idempotency_key)
-        return False
+    early = _preflight_result(audience, idempotency_key, kind=kind_value, text=text)
+    if early is not None:
+        return early
 
     already = _already_sent_noop(idempotency_key)
     if already is not None:
@@ -109,11 +118,12 @@ def notify_user(  # noqa: PLR0913 — single notification egress; each kwarg is 
             idempotency_key=idempotency_key,
             kind=kind_value,
             text=text,
+            audience=audience,
             reason="no messaging backend or user_id configured",
         )
         return False
 
-    gate = _claim_delivery_slot(idempotency_key, kind=kind_value.value, text=text)
+    gate = _claim_delivery_slot(idempotency_key, kind=kind_value.value, text=text, audience=audience.value)
     if gate is not None:
         return gate
 
@@ -163,6 +173,24 @@ def notify_user(  # noqa: PLR0913 — single notification egress; each kwarg is 
     return True
 
 
+def _preflight_result(audience: NotifyAudience, idempotency_key: str, *, kind: NotifyKind, text: str) -> bool | None:
+    """Resolve the pre-delivery short-circuits — ``False`` to stop, ``None`` to proceed.
+
+    An INTERNAL audience is logged and terminally recorded (never DM'd, deny-by-
+    default), and a settings-disabled feature is skipped — both return the
+    early-exit ``False``. ``None`` means the notification is owner-audience and
+    enabled, so delivery proceeds.
+    """
+    if audience == NotifyAudience.INTERNAL:
+        logger.info("notify_user INTERNAL (log-only, not DM'd) key=%s: %s", idempotency_key, text[:120])
+        BotPing.record_logged(idempotency_key, kind=kind.value, text=text, audience=audience.value)
+        return False
+    if not _feature_enabled():
+        logger.debug("notify_user disabled by settings — %s skipped", idempotency_key)
+        return False
+    return None
+
+
 def _already_sent_noop(idempotency_key: str) -> bool | None:
     """Fast SENT-idempotency no-op: ``True`` if already delivered, else ``None``.
 
@@ -183,7 +211,7 @@ def _already_sent_noop(idempotency_key: str) -> bool | None:
     return None
 
 
-def _claim_delivery_slot(idempotency_key: str, *, kind: str, text: str) -> bool | None:
+def _claim_delivery_slot(idempotency_key: str, *, kind: str, text: str, audience: str = "") -> bool | None:
     """Atomically claim the right to deliver — the double-DM TOCTOU gate.
 
     Returns ``None`` when this caller won the claim and must proceed to
@@ -201,7 +229,7 @@ def _claim_delivery_slot(idempotency_key: str, *, kind: str, text: str) -> bool 
     never-raise contract.
     """
     try:
-        claim = BotPing.claim_delivery(idempotency_key, kind=kind, text=text)
+        claim = BotPing.claim_delivery(idempotency_key, kind=kind, text=text, audience=audience)
     except DatabaseError as exc:
         logger.warning("notify_user delivery-claim access failed for key=%s: %s", idempotency_key, exc)
         return False
@@ -479,7 +507,7 @@ def format_notification(text: str, kind: NotifyKind) -> str:
     return f"{prefix}\n{normalize_slack_message(text)}"
 
 
-def _record_noop(*, idempotency_key: str, kind: NotifyKind, text: str, reason: str) -> None:
+def _record_noop(*, idempotency_key: str, kind: NotifyKind, text: str, audience: NotifyAudience, reason: str) -> None:
     try:
         with transaction.atomic():
             BotPing.objects.create(
@@ -487,6 +515,7 @@ def _record_noop(*, idempotency_key: str, kind: NotifyKind, text: str, reason: s
                 kind=kind.value,
                 status=BotPing.Status.NOOP,
                 text=text,
+                audience=audience.value,
                 error_message=reason,
             )
     except IntegrityError:
@@ -519,7 +548,9 @@ def _finalize_failed(*, idempotency_key: str, error: str) -> None:
         logger.warning("notify_user failed-finalize write failed for key=%s: %s", idempotency_key, exc)
 
 
-def drain_undelivered_notifies(*, user_id: str = "", overlay: str = "", limit: int = 50) -> tuple[int, int]:
+def drain_undelivered_notifies(
+    *, user_id: str = "", overlay: str = "", backend: MessagingBackend | None = None, limit: int = 50
+) -> tuple[int, int]:
     """Re-deliver INFO DMs that stranded with no reachable backend.
 
     The cross-tick re-delivery peer of the
@@ -565,10 +596,15 @@ def drain_undelivered_notifies(*, user_id: str = "", overlay: str = "", limit: i
     delivered = 0
     try:
         for row in rows:
+            # ``recoverable_info`` only returns owner-audience rows, so the
+            # stored audience is always one the owner reads — re-declare it so
+            # the re-delivery does not fall foul of the deny-by-default gate.
             if notify_user(
                 row.text,
                 kind=NotifyKind.INFO,
                 idempotency_key=row.idempotency_key,
+                audience=NotifyAudience(row.audience),
+                backend=backend,
                 user_id=user_id or None,
             ):
                 delivered += 1

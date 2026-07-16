@@ -1,30 +1,30 @@
-"""Scanner that DMs the owner a digest of everything waiting on them (PR-21).
+"""Scanner that records an INTERNAL digest of everything waiting on the owner (PR-21).
 
 Once per tick the global dispatch set gathers the durable waiting-on-you lane
-(:func:`teatree.core.waiting.gather_waiting`) and, when it is non-empty, posts a
+(:func:`teatree.core.waiting.gather_waiting`) and, when it is non-empty, records a
 monospace table (PR-18's :func:`~teatree.backends.slack.table_format.render_table_message`)
-to the owner DM via :func:`~teatree.core.notify.notify_user`.
+through :func:`~teatree.core.notify.notify_user` with an
+:attr:`~teatree.core.modelkit.notify_policy.NotifyAudience.INTERNAL` audience — the owner's
+allowlist classifies the waiting digest as internal, so it is logged (a terminal
+``BotPing.LOGGED`` row) and surfaced on the local loop statusline, but NEVER DM'd.
 
 The digest is deduped on the entries' content hash: the ``BotPing`` idempotency
-key is ``waiting_digest:<hash>``, so an unchanged lane never re-DMs, and a fresh
-:class:`ScanSignal` is emitted only when a genuinely new digest posts (a changed
-lane, or the first sighting) — the sibling convention of
+key is ``waiting_digest:<hash>``, so an unchanged lane records once, and a fresh
+:class:`ScanSignal` is emitted only for a genuinely new digest (a changed lane, or
+the first sighting) — the sibling convention of
 :class:`~teatree.loop.scanners.undelivered_notify.UndeliveredNotifyScanner`.
 """
 
 import hashlib
 import logging
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
 
 from django.db import OperationalError, ProgrammingError
 
 from teatree.backends.slack.table_format import render_table_message
 from teatree.core.notify import NotifyKind, notify_user
+from teatree.core.modelkit.notify_policy import NotifyAudience
 from teatree.loop.scanners.base import ScanSignal
-
-if TYPE_CHECKING:
-    from teatree.core.backend_protocols import MessagingBackend
 
 logger = logging.getLogger(__name__)
 
@@ -32,8 +32,6 @@ logger = logging.getLogger(__name__)
 @dataclass(slots=True)
 class WaitingDigestScanner:
     overlay: str = ""
-    backend: "MessagingBackend | None" = None
-    user_id: str | None = None
     name: str = "waiting_digest"
 
     def scan(self) -> list[ScanSignal]:
@@ -46,16 +44,18 @@ class WaitingDigestScanner:
                 return []
             content_hash = _content_hash([(entry.kind, entry.ref) for entry in entries])
             key = f"waiting_digest:{content_hash}"
-            already_posted = BotPing.objects.filter(idempotency_key=key, status=BotPing.Status.SENT).exists()
+            already_recorded = BotPing.objects.filter(
+                idempotency_key=key, status__in=[BotPing.Status.SENT, BotPing.Status.LOGGED]
+            ).exists()
             rows = [[entry.kind, format_age(entry.age), entry.ref] for entry in entries]
             message = render_table_message(["Kind", "Age", "Waiting on you"], rows, title="Waiting on you")
-            posted = notify_user(
+            # INTERNAL: logged terminally (never DM'd). ``notify_user`` short-circuits
+            # before backend resolution, so ``blocks``/``backend``/``user_id`` are unused.
+            notify_user(
                 message.fence,
                 kind=NotifyKind.INFO,
                 idempotency_key=key,
-                blocks=message.blocks,
-                backend=self.backend,
-                user_id=self.user_id,
+                audience=NotifyAudience.INTERNAL,
             )
         except (OperationalError, ProgrammingError):
             logger.info("WaitingDigestScanner: waiting-lane tables unavailable (DB not migrated yet) — skipping")
@@ -64,7 +64,7 @@ class WaitingDigestScanner:
             logger.exception("WaitingDigestScanner failed")
             return []
 
-        if already_posted or not posted:
+        if already_recorded:
             return []
         return [
             ScanSignal(

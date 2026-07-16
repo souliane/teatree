@@ -6,6 +6,7 @@ from django.test import TestCase
 
 from teatree.core.models import OutboundClaim
 from teatree.core.notify import NotifyKind, notify_user
+from teatree.core.modelkit.notify_policy import NotifyAudience
 
 
 def _backend(*, permalink: str = "https://acme.slack.com/archives/D-USER/p1700000000000000") -> MagicMock:
@@ -23,6 +24,7 @@ class NotifyUserRecordsOutboundClaimTests(TestCase):
             "tests passing on s-1019",
             kind=NotifyKind.INFO,
             idempotency_key="sess=a;turn=1",
+            audience=NotifyAudience.OWNER_DELIVERY,
             backend=backend,
             user_id="U_ME",
         )
@@ -43,6 +45,7 @@ class NotifyUserRecordsOutboundClaimTests(TestCase):
             "won't post",
             kind=NotifyKind.INFO,
             idempotency_key="failed-key",
+            audience=NotifyAudience.OWNER_DELIVERY,
             backend=backend,
             user_id="U_ME",
         )
@@ -62,6 +65,7 @@ class NotifyUserRecordsOutboundClaimTests(TestCase):
                 "shh",
                 kind=NotifyKind.INFO,
                 idempotency_key="disabled-key",
+                audience=NotifyAudience.OWNER_DELIVERY,
                 backend=backend,
                 user_id="U_ME",
             )
@@ -80,6 +84,7 @@ class NotifyUserRecordsOutboundClaimTests(TestCase):
                 "tests passing",
                 kind=NotifyKind.INFO,
                 idempotency_key="sess=z;turn=1",
+                audience=NotifyAudience.OWNER_DELIVERY,
                 backend=_backend(),
                 user_id="U_ME",
             )
@@ -104,6 +109,7 @@ class NotifyUserRecordsOutboundClaimTests(TestCase):
                 "tests passing",
                 kind=NotifyKind.INFO,
                 idempotency_key="db-error-key",
+                audience=NotifyAudience.OWNER_DELIVERY,
                 backend=_backend(),
                 user_id="U_ME",
             )

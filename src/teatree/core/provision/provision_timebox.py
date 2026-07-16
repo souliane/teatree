@@ -39,6 +39,7 @@ from pathlib import Path
 
 from teatree.config import get_effective_settings
 from teatree.core.notify import NotifyKind, notify_user
+from teatree.core.modelkit.notify_policy import NotifyAudience
 from teatree.core.provision.provision_report import StepResult
 from teatree.core.provision.step_runner import run_callable_step
 from teatree.utils.run import run_allowed_to_fail
@@ -163,7 +164,7 @@ def alert_provision_user(*, step: str, repo: str, detail: str) -> None:
     text = f"Worktree provisioning step `{step}`{where}: {detail}"
     key = f"provision-timeout:{step}:{repo or 'unknown'}"
     try:
-        notify_user(text, kind=NotifyKind.INFO, idempotency_key=key)
+        notify_user(text, kind=NotifyKind.INFO, idempotency_key=key, audience=NotifyAudience.INTERNAL)
     except Exception as exc:  # noqa: BLE001 — alert is best-effort; never crash provisioning
         logger.warning("provision-timebox alert failed for step=%s: %s", step, exc)
 

@@ -46,6 +46,7 @@ from django_typer.management import TyperCommand, command, initialize
 from teatree.core.backend_factory import messaging_from_overlay
 from teatree.core.backend_protocols import MessagingBackend
 from teatree.core.notify import NotifyKind, notify_user
+from teatree.core.modelkit.notify_policy import NotifyAudience
 from teatree.core.on_behalf_egress import OnBehalfPostBlockedError, OnBehalfSlackEgress
 from teatree.types import RawAPIDict
 
@@ -135,11 +136,13 @@ class Command(TyperCommand):
             self.stderr.write("notify body must not be empty")
             raise SystemExit(2)
 
+        audience = NotifyAudience.OWNER_QUESTION if kind_value == NotifyKind.QUESTION else NotifyAudience.OWNER_DELIVERY
         with _overlay_env(overlay):
             delivered = notify_user(
                 text,
                 kind=kind_value,
                 idempotency_key=idempotency_key,
+                audience=audience,
                 user_id=user_id or None,
             )
 

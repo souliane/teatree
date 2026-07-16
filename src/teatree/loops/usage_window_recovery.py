@@ -133,6 +133,7 @@ def _wake_loops(now: dt.datetime) -> None:
 def _notify_recovered(*, cleared_pks: list[int], released: int, now: dt.datetime) -> None:
     """Post ONE bot→user Slack line that the window(s) recovered — no-op-safe, never raises."""
     from teatree.core.notify import NotifyKind, notify_user  # noqa: PLC0415 — deferred import (cycle-safe / task-body)
+    from teatree.core.modelkit.notify_policy import NotifyAudience  # noqa: PLC0415 — deferred: call-time import, kept lazy
 
     key = "usage_window_recovered:" + "-".join(str(pk) for pk in sorted(cleared_pks))
     text = (
@@ -140,7 +141,7 @@ def _notify_recovered(*, cleared_pks: list[int], released: int, now: dt.datetime
         f"released {released} parked task(s), resumed the loop."
     )
     try:
-        notify_user(text, kind=NotifyKind.INFO, idempotency_key=key)
+        notify_user(text, kind=NotifyKind.INFO, idempotency_key=key, audience=NotifyAudience.OWNER_ESCALATION)
     except Exception:
         logger.debug("usage_window_recovery notify failed for key=%s", key, exc_info=True)
 

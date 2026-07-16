@@ -10,9 +10,10 @@ import datetime as _dt
 import logging
 from collections.abc import Callable
 
-from teatree.core.backend_factory import OverlayBackends
+from teatree.core.backend_factory import OverlayBackends, messaging_from_overlay
 from teatree.core.backend_protocols import MessagingBackend
-from teatree.core.notify import NotifyKind
+from teatree.core.notify import NotifyKind, resolve_user_id
+from teatree.core.modelkit.notify_policy import NotifyAudience
 from teatree.loop.job_identity import PER_OVERLAY_DOMAINS, Domain, _ScannerJob
 from teatree.loop.scanner_factories import (
     _architectural_review_scanner_for,
@@ -75,17 +76,30 @@ def default_drift_notifier(alert_text: str, idempotency_key: str) -> None:
     with no ``messaging``/``notify`` (``integration``) up-edge — it is
     injected into :class:`OutboundAuditScanner` at construction.
     """
-    notify_with_fallback(alert_text, kind=NotifyKind.INFO, idempotency_key=idempotency_key)
+    notify_with_fallback(
+        alert_text, kind=NotifyKind.INFO, idempotency_key=idempotency_key, audience=NotifyAudience.OWNER_ESCALATION
+    )
 
 
 def _global_dispatch_jobs() -> list[_ScannerJob]:
-    """The always-on global set ``build_default_jobs`` fans out once per tick."""
+    """The always-on global set ``build_default_jobs`` fans out once per tick.
+
+    The two owner-DM delivery scanners (``UndeliveredNotifyScanner`` and
+    ``DeferredQuestionPosterScanner``) are handed an explicit messaging backend +
+    user id resolved from the active overlay — the same source
+    ``_pr_sweep_scanner_for`` uses — so a global tick with no ``T3_OVERLAY_NAME``
+    can still DELIVER the allowed owner-audience DMs instead of no-opping on an
+    unresolved backend (F2). A ``None`` backend (no overlay configured) leaves the
+    scanners on ``notify_user``'s own resolution, unchanged.
+    """
+    backend = messaging_from_overlay()
+    user_id = resolve_user_id()
     return [
         _ScannerJob(scanner=PendingTasksScanner(), overlay=""),
         _ScannerJob(scanner=IncomingEventsScanner(), overlay=""),
         _ScannerJob(scanner=OutboundAuditScanner(notifier=default_drift_notifier), overlay=""),
-        _ScannerJob(scanner=UndeliveredNotifyScanner(), overlay=""),
-        _ScannerJob(scanner=DeferredQuestionPosterScanner(), overlay=""),
+        _ScannerJob(scanner=UndeliveredNotifyScanner(backend=backend, user_id=user_id), overlay=""),
+        _ScannerJob(scanner=DeferredQuestionPosterScanner(backend=backend, user_id=user_id), overlay=""),
         _ScannerJob(scanner=WaitingDigestScanner(), overlay=""),
         # SELFCATCH-1: global (walks every ticket across overlays via
         # ``reconcile_work_state_all``), so it runs once per tick here rather
@@ -480,7 +494,7 @@ def _notify_scanner_error(*, label: str, exc: ScannerError, overlay: str) -> Non
     if exc.detail:
         text = f"{text}\n_{exc.detail}_"
     try:
-        notify_with_fallback(text, kind=NotifyKind.INFO, idempotency_key=key)
+        notify_with_fallback(text, kind=NotifyKind.INFO, idempotency_key=key, audience=NotifyAudience.OWNER_ESCALATION)
     except Exception:
         logger.exception("Scanner-error notify_with_fallback failed for %s", label)
 

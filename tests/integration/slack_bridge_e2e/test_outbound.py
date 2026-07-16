@@ -15,6 +15,7 @@ from teatree.core import speak as core_speak
 from teatree.core.backend_factory import iter_overlay_backends, messaging_from_overlay
 from teatree.core.models import BotPing
 from teatree.core.notify import NotifyKind, notify_user
+from teatree.core.modelkit.notify_policy import NotifyAudience
 from teatree.types import SpeakConfig
 from tests.integration.slack_bridge_e2e.conftest import FakeSlackTransport, _FakeConfig
 
@@ -58,6 +59,7 @@ class TestOutboundBridgeEndToEnd:
             "tests green",
             kind=NotifyKind.INFO,
             idempotency_key="sess=1;turn=1",
+            audience=NotifyAudience.OWNER_DELIVERY,
             backend=backend,
             user_id="U_HUMAN",
         )
@@ -174,6 +176,7 @@ class TestOutboundBridgeEndToEnd:
             "first",
             kind=NotifyKind.INFO,
             idempotency_key="dup-key",
+            audience=NotifyAudience.OWNER_DELIVERY,
             backend=backend,
             user_id="U_HUMAN",
         )
@@ -182,6 +185,7 @@ class TestOutboundBridgeEndToEnd:
             "second-skip-me",
             kind=NotifyKind.INFO,
             idempotency_key="dup-key",
+            audience=NotifyAudience.OWNER_DELIVERY,
             backend=backend,
             user_id="U_HUMAN",
         )
@@ -192,7 +196,7 @@ class TestOutboundBridgeEndToEnd:
 
 
 class TestNotifyUserThroughOverlayFactory:
-    """``notify_user(backend=None)`` resolves via ``messaging_from_overlay``.
+    """``notify_user(backend=None, audience=NotifyAudience.OWNER_DELIVERY)`` resolves via ``messaging_from_overlay``.
 
     Closes a coverage gap left by ``test_notify.py``, which always
     passes ``backend=<MagicMock>``. This exercises the production
@@ -206,7 +210,7 @@ class TestNotifyUserThroughOverlayFactory:
 
         Guard: removing the ``backend if backend is not None else
         messaging_from_overlay()`` fallback in ``teatree.core.notify``
-        makes ``notify_user(backend=None)`` always NOOP, even with a
+        makes ``notify_user(backend=None, audience=NotifyAudience.OWNER_DELIVERY)`` always NOOP, even with a
         configured overlay.
         """
         real_backend = SlackBotBackend(bot_token="xoxb-bot", user_id="U_HUMAN")
@@ -222,6 +226,7 @@ class TestNotifyUserThroughOverlayFactory:
                 "fallback path",
                 kind=NotifyKind.INFO,
                 idempotency_key="fallback-1",
+                audience=NotifyAudience.OWNER_DELIVERY,
                 backend=None,
                 user_id="U_HUMAN",
             )
