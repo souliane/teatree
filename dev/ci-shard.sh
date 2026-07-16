@@ -2,10 +2,10 @@
 # Reproduce ONE CI test shard's EXACT slice locally, before pushing (#3160).
 #
 # A shard-only red ("green locally, red in shard 3") happens because the CI
-# `test-shard` matrix runs a duration-balanced QUARTER of the suite in the tree's
+# `test-shard` matrix runs a duration-balanced SIXTH of the suite in the tree's
 # committed order — a slice/adjacency no ordinary local run reproduces. This runs
 # the same pytest-split slice with the SAME flags the CI shard uses
-# (`--splits 4 --group N --durations-path dev/.test_durations
+# (`--splits 6 --group N --durations-path dev/.test_durations
 # --splitting-algorithm least_duration --doctest-modules`), so the failing shard
 # is reproducible on your box.
 #
@@ -15,7 +15,7 @@
 # faithfully reproduces an order-dependent shard red (xdist honours the last -n).
 #
 # Usage:
-#   dev/ci-shard.sh <group>                 # group of 4, e.g. dev/ci-shard.sh 3
+#   dev/ci-shard.sh <group>                 # group of 6, e.g. dev/ci-shard.sh 3
 #   dev/ci-shard.sh <group> --splits <N>    # a different split count
 #   dev/ci-shard.sh 3 -n0                    # serial, deterministic order
 #   LEAK_SENTINEL=error dev/ci-shard.sh 3    # fail the polluter locally
@@ -25,7 +25,7 @@ cd "$(dirname "$0")/.."
 GROUP="${1:?usage: dev/ci-shard.sh <group 1..N> [--splits N] [extra pytest args]}"
 shift
 
-SPLITS=4
+SPLITS=6
 if [ "${1:-}" = "--splits" ]; then
     SPLITS="${2:?--splits needs a value}"
     shift 2

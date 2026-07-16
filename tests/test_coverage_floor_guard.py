@@ -13,7 +13,7 @@ commits before anyone noticed — see PR #623 for the cleanup. Without a
 codified floor, the same drift would happen again. New uncovered code must
 ship with tests.
 
-The CI ``test (3.13)`` lane is sharded 4-way (``test-shard`` matrix) behind an
+The CI ``test (3.13)`` lane is sharded 6-way (``test-shard`` matrix) behind an
 unchanged ``test`` combiner context. This guard is the safety-critical piece of
 that change: the combiner floor is asserted LOAD-BEARING — the needs-edge to the
 shards, the >= 2 distinct shard groups, the partition check, and the shard-pass
@@ -70,10 +70,10 @@ REQUIRED_COVERAGE_LANE_FLAGS: frozenset[str] = frozenset(
 REQUIRED_SHARD_MEASURE_FLAGS: frozenset[str] = frozenset(
     {"--cov", "--cov-branch", "--doctest-modules", "--splits", "--group"},
 )
-# A shard measures only a QUARTER of the tree, so it must NOT enforce the 93%
+# A shard measures only a SIXTH of the tree, so it must NOT enforce the 93%
 # floor on its partial data (that is the combiner's job) — and it MUST explicitly
 # neutralise the pyproject ``[tool.coverage.report] fail_under=93``, which
-# pytest-cov auto-applies otherwise, failing every quarter-suite shard.
+# pytest-cov auto-applies otherwise, failing every partial-suite shard.
 FORBIDDEN_SHARD_FLAG = "--cov-fail-under=93"
 REQUIRED_SHARD_FLOOR_NEUTRALISER = "--cov-fail-under=0"
 
@@ -192,7 +192,7 @@ class TestShardedCoverageLane:
     """Lock the sharded CI coverage lane so the 93% floor stays load-bearing.
 
     The required ``test (3.13)`` context is produced by the ``test`` COMBINER,
-    which aggregates the 4-way ``test-shard`` matrix. Each assertion below pins
+    which aggregates the 6-way ``test-shard`` matrix. Each assertion below pins
     one property that, if quietly removed, would turn the floor into a no-op —
     the exact anti-vacuity the FIX-CIRUNTIME plan calls the safety-critical edit.
     """
@@ -209,7 +209,7 @@ class TestShardedCoverageLane:
             )
         assert FORBIDDEN_SHARD_FLAG not in command, (
             "the test-shard lane must NOT enforce --cov-fail-under=93: a shard measures only a "
-            "QUARTER of the tree, so floor-judging its partial data would be meaningless. "
+            "SIXTH of the tree, so floor-judging its partial data would be meaningless. "
             "The combiner enforces the floor once over the combined data."
         )
         assert REQUIRED_SHARD_FLOOR_NEUTRALISER in command, (
@@ -265,7 +265,7 @@ class TestShardedCoverageLane:
         )
 
     def test_combiner_fails_when_a_shard_failed(self) -> None:
-        # A real test failure in a shard only ran a quarter of the suite; combined
+        # A real test failure in a shard only ran a sixth of the suite; combined
         # coverage alone could pass, so the combiner must fail on any non-success shard.
         joined = " ".join(_job_run_texts(_ci_jobs()["test"]))
         assert "needs.test-shard.result" in joined, (
