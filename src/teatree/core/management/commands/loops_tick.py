@@ -331,3 +331,26 @@ class Command(TyperCommand):
             LoopLease.objects.release(tick_mutex, owner=owner)
 
         self._emit_report(report, json_output=json_output)
+        self._hard_exit_if_subprocess()
+
+    @staticmethod
+    def _hard_exit_if_subprocess() -> None:
+        """``os._exit`` right after render when this is the worker's deadlined subprocess.
+
+        A hung NON-daemon scanner thread blocks interpreter shutdown (the
+        ``ThreadPoolExecutor`` atexit join it left running), pinning this subprocess —
+        and one of the worker's scarce ``loops`` executor slots — until the outer
+        deadline SIGKILL. Once the report is rendered there is nothing left to do, so a
+        hard exit reclaims the slot immediately. Gated on the env marker the worker's
+        ``run_deadlined_tick`` sets, so an in-process ``call_command`` (tests) NEVER
+        hits it. Streams are flushed first because ``os._exit`` skips atexit flushing.
+        """
+        from teatree.loops.timer_chains import TICK_SUBPROCESS_ENV_MARKER  # noqa: PLC0415 — deferred: keep import light
+
+        if not os.environ.get(TICK_SUBPROCESS_ENV_MARKER):
+            return
+        import sys  # noqa: PLC0415 — deferred: only needed on the subprocess exit path
+
+        sys.stdout.flush()
+        sys.stderr.flush()
+        os._exit(0)

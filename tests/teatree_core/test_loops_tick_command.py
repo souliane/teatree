@@ -11,6 +11,7 @@ lease + ``loop-tick:<name>`` mutex, re-anchors a deferred reinstall behind the
 import datetime as dt
 import io
 import json
+import os
 from unittest.mock import patch
 
 import django.test
@@ -18,9 +19,39 @@ import pytest
 from django.core.management import call_command
 
 from teatree.core.availability import Resolution
+from teatree.core.management.commands.loops_tick import Command
 from teatree.core.models import Loop, LoopLease, Worktree
 from teatree.core.overlay import OverlayBase, OverlayConnectors, ProvisionStep
 from teatree.loop.tick import TickReport
+from teatree.loops.timer_chains import TICK_SUBPROCESS_ENV_MARKER
+
+
+class TestHardExitGuard:
+    """The post-render ``os._exit`` fires ONLY in the worker's deadlined subprocess (#7).
+
+    A hung non-daemon scanner thread blocks interpreter shutdown, pinning the subprocess
+    (and a scarce ``loops`` executor slot); the hard exit reclaims it right after render.
+    An in-process ``call_command`` (tests) must NEVER hit it — gated on the env marker
+    ``run_deadlined_tick`` sets only on the spawned subprocess.
+    """
+
+    def test_no_hard_exit_without_the_subprocess_marker(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        calls: list[int] = []
+        monkeypatch.setattr(os, "_exit", calls.append)
+        monkeypatch.delenv(TICK_SUBPROCESS_ENV_MARKER, raising=False)
+
+        Command._hard_exit_if_subprocess()
+
+        assert calls == []  # an in-process invocation returns normally, never os._exit
+
+    def test_hard_exit_when_the_subprocess_marker_is_set(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        calls: list[int] = []
+        monkeypatch.setattr(os, "_exit", calls.append)
+        monkeypatch.setenv(TICK_SUBPROCESS_ENV_MARKER, "1")
+
+        Command._hard_exit_if_subprocess()
+
+        assert calls == [0]  # the deadlined subprocess exits immediately after render
 
 
 def _run(**kwargs: object) -> str:
