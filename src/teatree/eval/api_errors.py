@@ -158,6 +158,17 @@ _TRANSPORT_CRASH_MARKERS: tuple[str, ...] = ("command failed with exit code",)
 #: failure is never a ``result`` event, so it can never collide with a behavioral cap.
 _PROVISION_TRANSIENT_MARKERS: tuple[str, ...] = ("cannot provision an isolated ephemeral checkout",)
 
+#: The wrapper the SDK stamps on ANY ``result`` event that exited non-zero
+#: (``claude_agent_sdk/_internal/query.py`` L342). Its presence means a ``result``
+#: event was emitted — a GRADED, error_during_execution-class terminus, NOT a
+#: subprocess/setup death with no trajectory. The transient markers below fire only
+#: for a crash that left no ``result`` event, so a transport/provision marker
+#: appearing INSIDE this wrapper (e.g. a synthetic ``errors``-array entry literally
+#: containing ``command failed with exit code``) must never launder the graded
+#: terminus into a retry — belt-and-braces cap-safety over the SDK-construction
+#: invariant the markers already rely on.
+_RESULT_EVENT_WRAPPER = "returned an error result:"
+
 #: Limit causes that are NEVER a retriable throttle: a $0 metered key has no
 #: time-based recovery (fail loud), and a 7-day weekly cap is never worth waiting
 #: out inside a single run (surface loud). The remaining causes ARE retriable —
@@ -184,8 +195,11 @@ def classify_transient_throttle(message: str) -> ThrottleSignal | None:
     (budget/max-turns — the anti-cheat boundary), a credit exhaustion or weekly
     cap (surface loud), a mislabeled success, or an opaque behavioral error the
     CLI reported via a ``result`` event. A matched limit phrase drives the
-    disposition (RATE_LIMIT -> TRANSIENT, SUBSCRIPTION_SESSION -> SUSTAINED);
-    otherwise a transient infra marker (:data:`_TRANSIENT_INFRA_MARKERS`), a
+    disposition (RATE_LIMIT -> TRANSIENT, SUBSCRIPTION_SESSION -> SUSTAINED); an
+    unmatched message carrying the ``result``-event wrapper
+    (:data:`_RESULT_EVENT_WRAPPER`) short-circuits to ``None`` — a graded terminus
+    is never ridden out even if a transport/provision marker appears inside its
+    text. Otherwise a transient infra marker (:data:`_TRANSIENT_INFRA_MARKERS`), a
     mid-stream transport crash (:data:`_TRANSPORT_CRASH_MARKERS`), or a
     provisioning transient (:data:`_PROVISION_TRANSIENT_MARKERS`) — each a
     subprocess/setup death with NO captured trajectory — grades as TRANSIENT.
@@ -195,6 +209,8 @@ def classify_transient_throttle(message: str) -> ThrottleSignal | None:
     limit = classify_limit(message)
     if limit is not None:
         return _throttle_from_limit(limit.cause)
+    if _RESULT_EVENT_WRAPPER in message:
+        return None
     haystack = message.casefold()
     transient_markers = (*_TRANSIENT_INFRA_MARKERS, *_TRANSPORT_CRASH_MARKERS, *_PROVISION_TRANSIENT_MARKERS)
     if any(marker in haystack for marker in transient_markers):

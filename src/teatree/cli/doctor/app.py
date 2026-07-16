@@ -31,6 +31,7 @@ from teatree.cli.doctor.checks import (
     _check_entrypoint_is_primary_clone,
     _check_legacy_overlay_alias,
     _check_loop_presets,
+    _check_marker_jam,
     _check_mcp_connectivity,
     _check_single_db,
     _check_singletons,
@@ -88,6 +89,7 @@ __all__ = (
     "_check_entrypoint_is_primary_clone",
     "_check_legacy_overlay_alias",
     "_check_loop_presets",
+    "_check_marker_jam",
     "_check_mcp_connectivity",
     "_check_single_db",
     "_check_singletons",
@@ -644,6 +646,14 @@ def run_doctor_checks(*, repair: bool = False) -> bool:
     # (resolve to base config), so a dangling target is a WARN to fix, not a hard
     # doctor failure. Reads the ORM, so it runs post-ensure_django.
     _check_loop_presets()
+
+    # #3275: warn when orphaned issue-markers strand the issue_implementer intake
+    # budget (their tickets are terminal/gone but the markers never left
+    # `dispatched`). Surfacing-only (never gates the exit code), like the sibling
+    # ORM-reading advisories: the loop self-heals each tick and the operator can
+    # force it with `t3 loop reclaim-markers`. Reads the ORM, so it runs
+    # post-ensure_django.
+    _check_marker_jam()
 
     # Pre-investigation stale-clone hard-fail gate (#948). Surfaces at
     # session start so a bug-investigation sub-agent cannot start root-

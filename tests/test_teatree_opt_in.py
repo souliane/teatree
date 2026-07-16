@@ -406,7 +406,7 @@ class TestEngageIsTheSingleSeam:
 
     def test_autoload_bootstrap_engages_through_the_seam(self, monkeypatch: pytest.MonkeyPatch) -> None:
         seen: list[str] = []
-        monkeypatch.setattr(router, "engage", seen.append)
+        monkeypatch.setattr(router, "engage", lambda sid, **_kw: seen.append(sid))
         handle_session_start_bootstrap({"session_id": "auto-sess"})
         assert seen == ["auto-sess"]
 

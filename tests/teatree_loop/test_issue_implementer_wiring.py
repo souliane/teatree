@@ -32,7 +32,7 @@ from teatree.loop.persistence import persist_agent_actions
 from teatree.loop.scanner_factories import _issue_implementer_scanner_for
 from teatree.loop.scanners.issue_implementer import IssueImplementerScanner
 from teatree.loops.issue_implementer.loop import MINI_LOOP
-from tests.factories import ImplementedIssueMarkerFactory
+from tests.factories import ImplementedIssueMarkerFactory, TicketFactory
 
 _PATCH_TARGET = "teatree.loop.scanner_factories._effective_settings_for_overlay"
 
@@ -163,6 +163,20 @@ class IssueImplementerGateTests(TestCase):
             scanner = _issue_implementer_scanner_for(_backend())
         assert isinstance(scanner, IssueImplementerScanner)
         assert scanner.can_claim is True
+
+    def test_orphaned_terminal_ticket_marker_is_reconciled_and_budget_frees(self) -> None:
+        """#3275 jam: a dispatched marker whose ticket already merged strands the budget.
+
+        Pre-fix the factory read a full ``in_flight_count`` and returned ``None``
+        forever (intake permanently jammed). The tick-time reconcile releases the
+        orphan to COMPLETED, so the budget frees and a scanner is built again.
+        """
+        url = "https://github.com/souliane/teatree/issues/42"
+        TicketFactory(overlay="acme", issue_url=url, state=Ticket.State.MERGED)
+        ImplementedIssueMarkerFactory(overlay="acme", issue_url=url)  # DISPATCHED, jams budget=1
+        with patch(_PATCH_TARGET, return_value=_enabled(issue_implementer_max_concurrent=1)):
+            scanner = _issue_implementer_scanner_for(_backend())
+        assert scanner is not None
 
     def test_abandoned_marker_does_not_consume_budget(self) -> None:
         ImplementedIssueMarkerFactory(overlay="acme", abandoned=True)
