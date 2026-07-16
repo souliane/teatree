@@ -44,6 +44,7 @@ from teatree.agents.skill_bundle import active_overlay_stage_skills, resolve_ski
 from teatree.agents.usage_window import maybe_park_for_active_window, park_task_on_limit
 from teatree.config import AgentHarnessProvider, get_effective_settings
 from teatree.core.models import Task, TaskAttempt
+from teatree.core.models.errors import LeaseLostError
 from teatree.core.models.ticket_worktree_checks import dispatch_worktree_path
 from teatree.llm.anthropic_limits import LimitMatch, classify_limit, classify_rate_limit_type
 from teatree.llm.credentials import CredentialError
@@ -510,7 +511,15 @@ async def _drive_with_heartbeat(
                     await asyncio.sleep(_HEARTBEAT_INTERVAL)
                     try:
                         await asyncio.to_thread(task.renew_lease)
-                    except Exception:  # noqa: BLE001 — a heartbeat failure is logged, never breaks the watchdog loop
+                    except LeaseLostError:
+                        # Another worker took over this task's claim (the lease
+                        # lapsed and was reclaimed). Abort THIS run — two workers
+                        # driving the same unit is the double-spend the CAS guards.
+                        breach.append(f"lease lost for task {task.pk}: re-claimed by another worker")
+                        logger.warning("Task %s lease lost; interrupting duplicate run", task.pk)
+                        await session.interrupt()
+                        return
+                    except Exception:  # noqa: BLE001 — a transient heartbeat failure is logged, never breaks the watchdog loop
                         logger.warning("Heartbeat failed for task %s", task.pk)
                     reason = watchdog.breach_reason(
                         task,
