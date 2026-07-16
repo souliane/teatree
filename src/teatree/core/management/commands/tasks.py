@@ -337,8 +337,14 @@ class Command(TyperCommand):
             typer.Option("--json", help="Emit the task rows as JSON on stdout instead of the human table."),
         ] = False,
     ) -> list[TaskRow]:
-        """List the teatree tasks queue (not your harness TODO list)."""
-        Task.objects.reap_stale_claims()
+        """List the teatree tasks queue (not your harness TODO list).
+
+        A pure READ: it never reaps or reclaims. Failing a stale CLAIMED task from
+        a read path (a bare ``reap_stale_claims`` with no preceding
+        ``reclaim_orphaned_claims``) would terminally FAIL a recoverable
+        crashed-session task on a mere ``tasks list``, bypassing the
+        rescue-before-fail ordering the boot/tick ``run_boot_sweeps`` owns.
+        """
         if session:
             return self._list_session_todos(status=status, execution_target=execution_target, json_output=json_output)
         qs = Task.objects.select_related("ticket").order_by("pk")
@@ -407,16 +413,13 @@ class Command(TyperCommand):
 
         It also surfaces this session's open teatree ``Task`` rows as
         completion anchors (work the loop tracked that the agent may need to
-        mark done). It makes no *reconciliation* writes — it never creates,
-        completes, or transitions a task on the agent's behalf (the live
-        harness list is unreachable from a subprocess). The one write it shares
-        with every ``tasks`` read is the standard stale-claim reaper
-        (``reap_stale_claims`` — a CLAIMED→FAILED compare-and-swap that only
-        touches a task whose lease is *already* expired); a healthy
-        PENDING/CLAIMED task is untouched, so running it twice prints the same
-        thing.
+        mark done). It makes NO writes of any kind — it never creates,
+        completes, transitions, reaps, or reclaims a task (the live harness list
+        is unreachable from a subprocess, and a read surface must not fail a
+        recoverable crashed-session task by reaping it without the
+        rescue-before-fail reclaim the boot/tick ``run_boot_sweeps`` owns).
+        Running it twice prints the same thing.
         """
-        Task.objects.reap_stale_claims()
         session_id = current_session_id()
         qs = (
             Task.objects.for_claude_session(session_id).filter(status__in=Task.Status.active()).select_related("ticket")

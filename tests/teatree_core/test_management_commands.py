@@ -631,11 +631,12 @@ class TestReconcileChecklist(TestCase):
         assert Task.objects.count() == 2
 
     @override_settings(**COMMAND_SETTINGS)
-    def test_shares_the_standard_stale_claim_reaper(self) -> None:
-        # The ONE write the command makes — shared with every `tasks` read — is
-        # the standard stale-claim reaper: a task whose lease is ALREADY expired
-        # is failed (CLAIMED→FAILED CAS). This pins that the softened docstring
-        # is accurate ("aside from the standard stale-claim reaper").
+    def test_makes_no_write_not_even_reaping_a_stale_claim(self) -> None:
+        # The command is a PURE READ — it makes no writes of any kind, not even
+        # reaping. A read surface reaping (CLAIMED→FAILED) with no preceding
+        # reclaim would terminally FAIL a recoverable crashed-session task on a
+        # mere `reconcile-checklist`, bypassing the rescue-before-fail ordering
+        # the boot/tick `run_boot_sweeps` owns. The stale claim stays CLAIMED.
         from datetime import timedelta  # noqa: PLC0415
 
         from django.utils import timezone  # noqa: PLC0415
@@ -653,7 +654,7 @@ class TestReconcileChecklist(TestCase):
             )
             call_command("tasks", "reconcile-checklist", stdout=io.StringIO())
             stale.refresh_from_db()
-        assert stale.status == Task.Status.FAILED
+        assert stale.status == Task.Status.CLAIMED
 
     @override_settings(**COMMAND_SETTINGS)
     def test_no_session_still_emits_the_discipline(self) -> None:

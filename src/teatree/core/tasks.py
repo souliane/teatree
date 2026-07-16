@@ -237,28 +237,46 @@ def execute_retrospect(ticket_id: int) -> TransitionResult:
 
     On success, advances ``RETROSPECTED → DELIVERED`` via ``mark_delivered()``.
 
+    ``RetroExecutor.run()`` (retrospection I/O — potentially minutes) runs
+    OUTSIDE the FSM-advance transaction (#1522 shape, mirroring ``execute_ship``):
+    a short atomic state-check, the executor as a top-level operation, then a
+    short atomic re-check + ``mark_delivered``. Running the executor inside the
+    ``select_for_update`` atomic held the SQLite global write lock (``BEGIN
+    IMMEDIATE``) for the whole run, stalling every other writer and expiring
+    live leases.
+
     When the SELFCATCH-5 critic gate blocks (enforcing mode), it raises
-    ``CriticGateError`` from inside this atomic, rolling back the ``CriticFinding``
-    rows it just wrote. We re-record them on a FRESH transaction (a sibling of the
-    rolled-back delivery atomic, so they survive) before reporting the refusal — the
-    operator sees the very findings the block tells them to resolve.
+    ``CriticGateError`` from inside the advance atomic, rolling back the
+    ``CriticFinding`` rows it just wrote. We re-record them on a FRESH transaction
+    (a sibling of the rolled-back delivery atomic, so they survive) before
+    reporting the refusal — the operator sees the very findings the block tells
+    them to resolve.
     """
+    with transaction.atomic():
+        ticket = Ticket.objects.select_for_update().get(pk=ticket_id)
+        if ticket.state != Ticket.State.RETROSPECTED:
+            logger.info(
+                "execute_retrospect skipped for ticket %s: state=%s (not RETROSPECTED)",
+                ticket_id,
+                ticket.state,
+            )
+            return {"ticket_id": ticket_id, "skipped": True, "state": str(ticket.state)}
+
+    result = RetroExecutor(ticket).run()
+    if not result.ok:
+        logger.warning("Retro failed for ticket %s: %s", ticket_id, result.detail)
+        return {"ticket_id": ticket_id, "ok": False, "detail": result.detail}
+
     try:
         with transaction.atomic():
             ticket = Ticket.objects.select_for_update().get(pk=ticket_id)
             if ticket.state != Ticket.State.RETROSPECTED:
                 logger.info(
-                    "execute_retrospect skipped for ticket %s: state=%s (not RETROSPECTED)",
+                    "execute_retrospect FSM advance skipped for ticket %s: state=%s (already delivered)",
                     ticket_id,
                     ticket.state,
                 )
-                return {"ticket_id": ticket_id, "skipped": True, "state": str(ticket.state)}
-
-            result = RetroExecutor(ticket).run()
-            if not result.ok:
-                logger.warning("Retro failed for ticket %s: %s", ticket_id, result.detail)
-                return {"ticket_id": ticket_id, "ok": False, "detail": result.detail}
-
+                return {"ticket_id": ticket_id, "ok": True, "detail": result.detail}
             ticket.mark_delivered()
             ticket.save()
     except CriticGateError as exc:
@@ -301,6 +319,14 @@ def execute_teardown(ticket_id: int) -> TransitionResult:
     landed a new SHA and deleted the source ref is proven redundant by patch-id and
     wiped; a branch with genuinely-unsynced work (an async ship that never drained,
     #707/#708) is KEPT and surfaced, never force-destroyed.
+
+    ``WorktreeTeardown.run()`` (docker down + DB drop + git worktree removal —
+    potentially minutes) runs OUTSIDE the state-check transaction (#1522 shape):
+    a short atomic guard, then the executor as a top-level operation. Teardown
+    does not advance the ticket (it stays MERGED), so there is no advance atomic.
+    Running the reaper inside the ``select_for_update`` atomic held the SQLite
+    global write lock (``BEGIN IMMEDIATE``) for the whole run, stalling every
+    other writer and expiring live leases.
     """
     with transaction.atomic():
         ticket = Ticket.objects.select_for_update().get(pk=ticket_id)
@@ -312,10 +338,10 @@ def execute_teardown(ticket_id: int) -> TransitionResult:
             )
             return {"ticket_id": ticket_id, "skipped": True, "state": str(ticket.state)}
 
-        result = WorktreeTeardown(ticket).run()
-        if not result.ok:
-            logger.warning("Teardown reported errors for ticket %s: %s", ticket_id, result.detail)
-            return {"ticket_id": ticket_id, "ok": False, "detail": result.detail}
+    result = WorktreeTeardown(ticket).run()
+    if not result.ok:
+        logger.warning("Teardown reported errors for ticket %s: %s", ticket_id, result.detail)
+        return {"ticket_id": ticket_id, "ok": False, "detail": result.detail}
 
     return {"ticket_id": ticket_id, "ok": True, "detail": result.detail}
 
@@ -340,6 +366,14 @@ def execute_provision(ticket_id: int) -> TransitionResult:
     explicitly opted out of planning, mirroring the external-delivery skip). The
     loop's own autonomous FSM never stamps either marker, so its flow is
     unchanged.
+
+    ``WorktreeProvisioner.run()`` (git clone / worktree materialise / DB import —
+    potentially minutes) runs OUTSIDE the FSM-advance transaction (#1522 shape,
+    mirroring ``execute_ship``): a short atomic state-check, the executor as a
+    top-level operation, then a short atomic re-check + ``schedule_planning``.
+    Running the provisioner inside the ``select_for_update`` atomic held the
+    SQLite global write lock (``BEGIN IMMEDIATE``) for the whole run, stalling
+    every other writer and expiring live leases.
     """
     with transaction.atomic():
         ticket = Ticket.objects.select_for_update().get(pk=ticket_id)
@@ -351,12 +385,22 @@ def execute_provision(ticket_id: int) -> TransitionResult:
             )
             return {"ticket_id": ticket_id, "skipped": True, "state": str(ticket.state)}
 
-        result = WorktreeProvisioner(ticket).run()
-        if not result.ok:
-            logger.warning("Provision failed for ticket %s: %s", ticket_id, result.detail)
-            return {"ticket_id": ticket_id, "ok": False, "detail": result.detail}
+    result = WorktreeProvisioner(ticket).run()
+    if not result.ok:
+        logger.warning("Provision failed for ticket %s: %s", ticket_id, result.detail)
+        return {"ticket_id": ticket_id, "ok": False, "detail": result.detail}
 
-        _persist_intake_landscape(ticket)
+    _persist_intake_landscape(ticket)
+
+    with transaction.atomic():
+        ticket = Ticket.objects.select_for_update().get(pk=ticket_id)
+        if ticket.state != Ticket.State.STARTED:
+            logger.info(
+                "execute_provision FSM advance skipped for ticket %s: state=%s (already advanced, not STARTED)",
+                ticket_id,
+                ticket.state,
+            )
+            return {"ticket_id": ticket_id, "ok": True, "detail": result.detail}
 
         if under_external_delivery(ticket):
             logger.info("Ticket %s under external delivery; skipping auto-planner (#2104)", ticket_id)
@@ -366,13 +410,34 @@ def execute_provision(ticket_id: int) -> TransitionResult:
             refusal = _attachment_gate_refusal(ticket)
             if refusal is not None:
                 # Attachments un-fetched: hold at STARTED (like the delivery /
-                # trivial skips, but transient). Re-running execute_provision
-                # after `ticket attachments --fetch` re-checks and hands off.
+                # trivial skips, but transient). Record a deduped DeferredQuestion
+                # so the hold is a SURFACED escalation, not a silent freeze behind
+                # a gate that reports ok. Running `ticket attachments --fetch`
+                # re-enqueues execute_provision, which re-checks and hands off.
                 logger.warning("Ticket %s intake held pending attachments: %s", ticket_id, refusal)
+                _record_attachment_hold_question(ticket, refusal)
                 return {"ticket_id": ticket_id, "ok": True, "detail": refusal}
             ticket.schedule_planning()
 
     return {"ticket_id": ticket_id, "ok": True, "detail": result.detail}
+
+
+def _record_attachment_hold_question(ticket: Ticket, refusal: str) -> None:
+    """Surface an attachment-gate hold as a durable, deduped ``DeferredQuestion``.
+
+    The intake gate holds a ticket at STARTED when referenced attachments are
+    un-fetched. Without an escalation the ticket silently freezes behind a gate
+    that returns ``ok=True``. Deduped per ticket on ``dedupe_marker`` so a
+    redelivered/re-run provision collapses to one queued question.
+    """
+    from teatree.core.models.deferred_question import DeferredQuestion  # noqa: PLC0415 — deferred: ORM/app-registry
+
+    where = ticket.issue_url or f"ticket {ticket.pk}"
+    question = (
+        f"Intake held on {where}: referenced attachments are not fetched, so the ticket "
+        f"cannot start planning. {refusal} Fetch them (the command above), or ignore the ticket?"
+    )
+    DeferredQuestion.record(question, dedupe_marker=f"attachment-hold:{ticket.pk}")
 
 
 @task()

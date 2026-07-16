@@ -291,7 +291,7 @@ class ShipExecutor(RunnerBase):
         if fence is not None:
             return fence
         spec = self._build_pr_spec(ticket, host, repo_path, branch, extra)
-        return self._open_pr_and_record(ticket, extra, host, spec, repo_path)
+        return self._open_pr_and_record(ticket, host, spec, repo_path)
 
     def _fleet_claim_lost(self, repo_path: str) -> "RunnerResult | None":
         """Refuse the outward write when this instance no longer holds the fleet claim.
@@ -336,7 +336,6 @@ class ShipExecutor(RunnerBase):
     def _open_pr_and_record(
         self,
         ticket: "Ticket",
-        extra: "TicketExtra",
         host: "CodeHostBackend",
         spec: PullRequestSpec,
         repo_path: str,
@@ -397,7 +396,7 @@ class ShipExecutor(RunnerBase):
                 ok=False,
                 detail=f"host.create_pr URL {url!r} failed verify-by-re-read: {verified.reason}",
             )
-        self._record_pr_url(ticket, extra, url, spec.branch)
+        self._record_pr_url(ticket, url, spec.branch)
         logger.info("Ship executor pushed %s and opened PR %s", spec.branch, url)
         return RunnerResult(ok=True, detail=url)
 
@@ -532,22 +531,17 @@ class ShipExecutor(RunnerBase):
         )
 
     @staticmethod
-    def _record_pr_url(ticket: "Ticket", extra: "TicketExtra", url: str, branch: str) -> None:
-        urls = list(extra.get("pr_urls") or [])
-        if url and url not in urls:
-            urls.append(url)
-        # #1263: also index by branch so a later workstream on the same
-        # ticket can tell whether its own PR exists, without relying on
-        # the truthiness of the shared ``pr_urls`` list.
-        by_branch_raw = extra.get("pr_url_by_branch")
-        by_branch: dict[str, str] = (
-            {str(k): str(v) for k, v in by_branch_raw.items()} if isinstance(by_branch_raw, Mapping) else {}
-        )
-        if url and branch:
-            by_branch[branch] = url
-        # #800 N3: canonical locked RMW — a concurrent visual_qa /
-        # reviewed_sha writer no longer clobbers pr_urls.
+    def _record_pr_url(ticket: "Ticket", url: str, branch: str) -> None:
+        # #800 N3 + list-append: derive ``pr_urls`` / ``pr_url_by_branch`` INSIDE
+        # the locked merge_extra from the re-read row, not from the run-start
+        # ``extra`` snapshot. Replacing the whole list from the stale snapshot
+        # dropped a concurrent ship's freshly-appended URL; appending only the
+        # new entry lets the other writer's URL survive. #1263: the per-branch
+        # index lets a later workstream tell whether its own PR exists.
+        append_lists: dict[str, list[object]] = {"pr_urls": [url]} if url else {}
+        merge_dicts: dict[str, dict[str, object]] = {"pr_url_by_branch": {branch: url}} if url and branch else {}
         ticket.merge_extra(
-            set_keys={"pr_urls": urls, "pr_url_by_branch": by_branch},
+            append_to_lists=append_lists,
+            merge_into_dicts=merge_dicts,
             pop_keys=["pr_title_override", "ship_invoking_branch"],
         )

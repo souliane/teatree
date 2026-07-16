@@ -35,6 +35,10 @@ _WORKTREE_TRANSITION_TASKS: dict[str, str] = {
     "start_services": "execute_worktree_start",
     "verify": "execute_worktree_verify",
     "stop_services": "execute_worktree_stop",
+    # teardown keeps db_name/extra on the row (they are the recovery pointers the
+    # worker reads), so it enqueues through the shared receiver like every other
+    # worktree transition — no pre-blank snapshot to carry.
+    "teardown": "execute_worktree_teardown",
 }
 
 # A ticket reaching one of these frees its issue-implementer marker from the
@@ -297,9 +301,9 @@ def _enqueue_worktree_transition_task(
 ) -> None:
     """Enqueue the per-worktree ``@task`` worker a worktree FSM body used to enqueue.
 
-    ``teardown`` is handled separately (``_enqueue_worktree_teardown_task``)
-    because its body BLANKS ``db_name`` / ``extra`` before this receiver fires,
-    so the worker needs the pre-blank snapshot, not the live (now-empty) row.
+    ``teardown`` rides this shared path too: it keeps ``db_name`` / ``extra`` on
+    the row (the recovery pointers the worker reads), so there is no pre-blank
+    snapshot to carry — the worker reads the live row.
     """
     executor_name = _WORKTREE_TRANSITION_TASKS.get(name)
     if executor_name is None:
@@ -309,30 +313,6 @@ def _enqueue_worktree_transition_task(
     executor = getattr(worktree_tasks_mod, executor_name)
     worktree_pk = int(instance.pk)
     transaction.on_commit(lambda: executor.enqueue(worktree_pk))
-
-
-def _enqueue_worktree_teardown_task(
-    sender: type,  # noqa: ARG001 — Django signal receiver signature requires sender even when unused
-    instance: Worktree,
-    name: str,
-    **_kwargs: object,
-) -> None:
-    """Enqueue ``execute_worktree_teardown`` with the PRE-BLANK snapshot (#2385 trap).
-
-    ``Worktree.teardown()`` blanks ``db_name`` / ``extra`` on the row in its
-    body, so reading them here would enqueue a teardown that never drops the
-    database. The body stashes the pre-blank ``(db_name, extra)`` on the
-    transient ``teardown_snapshot`` attribute; this receiver reads it and passes
-    the non-blank values to the worker.
-    """
-    if name != "teardown":
-        return
-    from teatree.core.worktree import worktree_tasks as worktree_tasks_mod  # noqa: PLC0415 — deferred: call-time import
-
-    worktree_pk = int(instance.pk)
-    snapshot_db_name, snapshot_extra = instance.teardown_snapshot
-    executor = worktree_tasks_mod.execute_worktree_teardown
-    transaction.on_commit(lambda: executor.enqueue(worktree_pk, snapshot_db_name, snapshot_extra))
 
 
 def _release_issue_markers_on_completion(
@@ -371,11 +351,6 @@ def register_signals() -> None:
         _enqueue_worktree_transition_task,
         sender=Worktree,
         dispatch_uid="worktree_transition_task_enqueue",
-    )
-    post_transition.connect(
-        _enqueue_worktree_teardown_task,
-        sender=Worktree,
-        dispatch_uid="worktree_teardown_task_enqueue",
     )
     post_transition.connect(
         _add_slack_reactions_on_transition,

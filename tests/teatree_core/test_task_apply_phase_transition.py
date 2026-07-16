@@ -6,6 +6,8 @@ guard on the ``phase == "reviewing" and role == REVIEWER`` branch the FSM
 raises ``TransitionNotAllowed`` and the loop tick crashes.
 """
 
+from unittest.mock import patch
+
 import pytest
 from django.test import TestCase
 from django_fsm import TransitionNotAllowed
@@ -226,3 +228,108 @@ class TestApplyPhaseTransitionEscalation(TestCase):
 
         assert fired is False
         assert DeferredQuestion.pending().count() == 0
+
+
+class TestApplyPhaseTransitionReReadsStateUnderLock(TestCase):
+    """The state read + guard + advance happen inside ONE atomic, re-reading under a lock.
+
+    Reading the ticket state OUTSIDE the write transaction (the previous
+    ``refresh_from_db`` before ``transaction.atomic()``) let two concurrent
+    completions both read the same stale state and both fire the transition —
+    two ``schedule_*`` tasks + two Sessions (double-fire). The fix re-reads the
+    ticket under ``select_for_update`` INSIDE the atomic, so on the production
+    BEGIN IMMEDIATE backend the second completion sees the first's committed
+    state and no-ops.
+    """
+
+    def _completed_coding_task(self, ticket: Ticket) -> Task:
+        session = Session.objects.create(ticket=ticket, agent_id="coding")
+        return Task.objects.create(ticket=ticket, session=session, phase="coding", status=Task.Status.COMPLETED)
+
+    def test_ticket_is_re_read_under_select_for_update_inside_atomic(self) -> None:
+        from django.db import connection  # noqa: PLC0415
+        from django.db.models.query import QuerySet  # noqa: PLC0415
+
+        ticket = Ticket.objects.create(overlay="test", role=Ticket.Role.AUTHOR, state=Ticket.State.PLANNED)
+        coding_task = self._completed_coding_task(ticket)
+
+        real_sfu = QuerySet.select_for_update
+        locked_reads: list[bool] = []
+
+        def sfu_spy(qs: QuerySet, *args: object, **kwargs: object) -> QuerySet:
+            if qs.model is Ticket:
+                locked_reads.append(connection.in_atomic_block)
+            return real_sfu(qs, *args, **kwargs)
+
+        with patch.object(QuerySet, "select_for_update", sfu_spy):
+            fired = coding_task._apply_phase_transition()
+
+        assert fired is True
+        # The ticket IS re-read under a row lock (the previous shape read state
+        # via a bare refresh_from_db OUTSIDE the atomic — zero Ticket
+        # select_for_update in this path), and every such read is inside the
+        # atomic block.
+        assert locked_reads, "the ticket must be re-read under select_for_update inside the transition"
+        assert all(locked_reads), "every ticket lock-read must happen inside the atomic block"
+
+
+class TestApplyPhaseTransitionUnshippableReviewDisposition(TestCase):
+    """A REVIEWED ticket with no shippable diff gets an explicit terminal disposition.
+
+    ``review()`` lands REVIEWED and stamps ``shipping_skipped`` when there is no
+    shippable diff. Without a disposition the ticket rests at REVIEWED forever,
+    holding its issue-implementer marker + WIP slot. It is now auto-ignored
+    (terminal → releases both), preserving the reason in ``extra``.
+    """
+
+    def _completed_reviewing_task(self, ticket: Ticket) -> Task:
+        session = Session.objects.create(ticket=ticket, agent_id="reviewing")
+        return Task.objects.create(ticket=ticket, session=session, phase="reviewing", status=Task.Status.COMPLETED)
+
+    def test_no_shippable_diff_auto_ignores(self) -> None:
+        ticket = Ticket.objects.create(overlay="test", role=Ticket.Role.AUTHOR, state=Ticket.State.TESTED)
+        review_task = self._completed_reviewing_task(ticket)
+
+        with patch.object(Ticket, "has_shippable_diff", return_value=False):
+            fired = review_task._apply_phase_transition()
+
+        ticket.refresh_from_db()
+        assert fired is True
+        assert ticket.state == Ticket.State.IGNORED, "a no-shippable-diff review must reach a terminal disposition"
+        assert ticket.extra.get("shipping_skipped")
+        assert ticket.extra.get("ignored_from") == Ticket.State.REVIEWED
+
+    def test_shippable_diff_stays_reviewed_and_schedules_shipping(self) -> None:
+        ticket = Ticket.objects.create(overlay="test", role=Ticket.Role.AUTHOR, state=Ticket.State.TESTED)
+        review_task = self._completed_reviewing_task(ticket)
+
+        with patch.object(Ticket, "has_shippable_diff", return_value=True):
+            fired = review_task._apply_phase_transition()
+
+        ticket.refresh_from_db()
+        assert fired is True
+        assert ticket.state == Ticket.State.REVIEWED, "a shippable review must NOT be auto-ignored"
+        assert Task.objects.filter(ticket=ticket, phase="shipping").exists()
+
+
+class TestTransitionSourceStatesDerivation(TestCase):
+    """The mark_reviewed_externally source set is DERIVED from the FSM, not hand-listed."""
+
+    def test_derives_declared_source_states(self) -> None:
+        from teatree.core.models.task import _transition_source_states  # noqa: PLC0415
+
+        assert _transition_source_states("mark_reviewed_externally") == {
+            Ticket.State.NOT_STARTED,
+            Ticket.State.SCOPED,
+            Ticket.State.STARTED,
+            Ticket.State.PLANNED,
+            Ticket.State.CODED,
+            Ticket.State.TESTED,
+            Ticket.State.REVIEWED,
+        }
+
+    def test_wildcard_transition_yields_empty_set(self) -> None:
+        from teatree.core.models.task import _transition_source_states  # noqa: PLC0415
+
+        # teardown is not a Ticket transition; an unknown name yields nothing.
+        assert _transition_source_states("no_such_transition") == set()

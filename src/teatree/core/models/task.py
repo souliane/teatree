@@ -1,3 +1,4 @@
+import logging
 from datetime import datetime, timedelta
 from typing import TYPE_CHECKING, cast
 
@@ -10,13 +11,15 @@ from django_fsm import FSMField, TransitionNotAllowed
 from teatree.core.managers import TaskManager
 from teatree.core.modelkit.phases import SUBAGENT_BY_PHASE, phase_spellings
 from teatree.core.models.auto_implement import is_auto_implement
-from teatree.core.models.errors import InvalidTransitionError
+from teatree.core.models.errors import InvalidTransitionError, LeaseLostError
 from teatree.core.models.external_delivery import not_under_external_delivery_q
 from teatree.core.models.session import Session
 from teatree.core.models.ticket import Ticket
 
 if TYPE_CHECKING:
     from teatree.core.models.task_attempt import TaskAttempt
+
+logger = logging.getLogger(__name__)
 
 #: The lifecycle-FSM target state each phase's completion should reach. A
 #: completed phase task whose ticket sits BEHIND its target with no matching
@@ -46,6 +49,19 @@ _STATE_ORDER: list[str] = [
     Ticket.State.RETROSPECTED,
     Ticket.State.DELIVERED,
 ]
+
+
+def _transition_source_states(name: str) -> set[str]:
+    """The declared source states of the Ticket FSM transition *name* (derived, not hand-listed).
+
+    Reads the ``@transition(source=[…])`` declaration straight off the FSM field
+    so a branch guard can never drift from the transition it mirrors (the #808
+    hand-duplication class). A ``source="*"`` wildcard is excluded — it carries
+    no specific source to mirror.
+    """
+    fsm_field = Ticket._meta.get_field("state")  # noqa: SLF001 — Django's documented Model._meta API
+    transitions = fsm_field.get_all_transitions(Ticket)  # ty: ignore[unresolved-attribute]  # django-fsm dynamic method
+    return {str(t.source) for t in transitions if t.source != "*" and t.name == name}
 
 
 class Task(models.Model):
@@ -260,10 +276,36 @@ class Task(models.Model):
         self.refresh_from_db()
 
     def renew_lease(self, *, lease_seconds: int = 300) -> None:
+        """Heartbeat this worker's claim — a compare-and-swap, not a blind write (#786 shape).
+
+        The renewal is guarded by the CLAIM GENERATION — ``status=CLAIMED`` AND
+        the ``(claimed_by, claimed_by_session, claimed_at)`` this worker took the
+        task under. ``claimed_at`` is re-stamped on every (re)claim, so once the
+        lease lapsed and another worker reclaimed the row (``reclaim_orphaned_claims``
+        → PENDING → a fresh ``claim`` with a new ``claimed_at``), this worker's
+        predicate matches ZERO rows and it must NOT re-stamp the lease. The
+        previous unconditional ``save(update_fields=…)`` re-stamped
+        ``lease_expires_at`` with no WHERE predicate, resurrecting an expired
+        claim after a rival had already taken over — two workers then drove the
+        same unit (double-spend, racing ``complete()``). Zero rows → raise
+        :class:`LeaseLostError` so the heartbeating worker aborts.
+        """
         now = timezone.now()
+        expires = now + timedelta(seconds=lease_seconds)
+        renewed = (
+            Task.objects.filter(pk=self.pk, status=self.Status.CLAIMED)
+            .filter(
+                claimed_by=self.claimed_by,
+                claimed_by_session=self.claimed_by_session,
+                claimed_at=self.claimed_at,
+            )
+            .update(heartbeat_at=now, lease_expires_at=expires)
+        )
+        if renewed != 1:
+            msg = f"lease lost for task {self.pk}: claim generation moved on (re-claimed or terminal)"
+            raise LeaseLostError(msg)
         self.heartbeat_at = now
-        self.lease_expires_at = now + timedelta(seconds=lease_seconds)
-        self.save(update_fields=["heartbeat_at", "lease_expires_at"])
+        self.lease_expires_at = expires
 
     def route_to_headless(self, *, reason: str = "") -> None:
         self._route(self.ExecutionTarget.HEADLESS, reason)
@@ -400,8 +442,6 @@ class Task(models.Model):
         """
         if self._needs_user_input_followup_pending():
             return False
-        ticket = self.ticket
-        ticket.refresh_from_db()
         # Normalize once, mirroring _record_phase_visit() — a task whose
         # phase is a short verb ("review"/"code"/...) must advance the
         # FSM too, not just record the session visit (#750). Raw
@@ -415,19 +455,19 @@ class Task(models.Model):
         # already advanced to DELIVERED (or any other terminal state), and an
         # unconditional FSM call then raises TransitionNotAllowed and crashes
         # the loop tick. Sibling branches below all guard on ``ticket.state``;
-        # this branch must too. The states enumerated here are exactly the
-        # ``source=[...]`` argument of ``mark_reviewed_externally`` — keep
-        # them in sync if that list ever changes.
-        mark_reviewed_externally_source_states = {
-            Ticket.State.NOT_STARTED,
-            Ticket.State.SCOPED,
-            Ticket.State.STARTED,
-            Ticket.State.PLANNED,
-            Ticket.State.CODED,
-            Ticket.State.TESTED,
-            Ticket.State.REVIEWED,
-        }
+        # this branch must too. The source set is DERIVED from the transition
+        # declaration (not hand-enumerated) so it can never drift (#808 class).
+        mark_reviewed_externally_source_states = _transition_source_states("mark_reviewed_externally")
+        # The state read + guard + FSM advance all happen inside ONE atomic
+        # block with the ticket re-read under ``select_for_update`` (#883/#804
+        # discipline). On the production BEGIN IMMEDIATE backend two concurrent
+        # completions serialize: the second's re-read sees the first's committed
+        # state, its guard no longer matches, and it no-ops — closing the
+        # read-then-transition double-fire window (two schedule_* tasks + two
+        # Sessions). Reading the state OUTSIDE the atomic (the previous shape)
+        # let both completions read the same stale state and both fire.
         with transaction.atomic():
+            ticket = Ticket.objects.select_for_update().get(pk=self.ticket_id)  # ty: ignore[unresolved-attribute]
             if (
                 phase == "reviewing"
                 and ticket.role == Ticket.Role.REVIEWER
@@ -462,6 +502,7 @@ class Task(models.Model):
             elif phase == "reviewing" and ticket.state == Ticket.State.TESTED:
                 ticket.review(parent_task=self)
                 ticket.save()
+                self._dispose_unshippable_review(ticket)
             elif phase == "shipping" and ticket.state == Ticket.State.REVIEWED:
                 # #1284 (codex #1282-2): the task-based completion path must
                 # enforce the same visited-phases gate the ``pr create`` path
@@ -481,6 +522,29 @@ class Task(models.Model):
                 self._escalate_unmatched_phase_transition(phase=phase, ticket=ticket)
                 return False
         return True
+
+    @staticmethod
+    def _dispose_unshippable_review(ticket: Ticket) -> None:
+        """Auto-ignore a REVIEWED ticket ``review()`` found had no shippable diff.
+
+        ``review()`` lands REVIEWED and stamps ``extra["shipping_skipped"]`` when
+        there is no shippable diff (meta / already-shipped work). Without a
+        disposition that ticket rests at REVIEWED forever — nothing consumes the
+        marker, it never reaches a terminal state, and it holds its
+        issue-implementer budget marker and its in-flight WIP slot indefinitely.
+        Ignoring it is the explicit disposition: IGNORED is terminal (releasing
+        the marker via the completion signal and freeing the WIP slot), and the
+        ``shipping_skipped`` reason stays recorded in ``extra`` alongside
+        ``ignored_from``.
+        """
+        if ticket.state != Ticket.State.REVIEWED:
+            return
+        extra = ticket.extra if isinstance(ticket.extra, dict) else {}
+        if not extra.get("shipping_skipped"):
+            return
+        logger.info("Ticket %s reviewed with no shippable diff; auto-ignoring (terminal disposition)", ticket.pk)
+        ticket.ignore()
+        ticket.save()
 
     def _escalate_unmatched_phase_transition(self, *, phase: str, ticket: Ticket) -> None:
         """Escalate a genuine FSM wedge instead of the silent ``return False`` (#10).
