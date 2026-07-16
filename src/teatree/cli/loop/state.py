@@ -27,7 +27,7 @@ _EMERGENCY_GUIDANCE = (
 )
 
 
-def _require_emergency(emergency: bool) -> None:
+def _require_emergency(*, emergency: bool) -> None:
     """Refuse a per-loop control verb unless the operator opted into --emergency."""
     if not emergency:
         typer.echo(_EMERGENCY_GUIDANCE, err=True)
@@ -76,7 +76,7 @@ def register(loop_app: typer.Typer) -> None:
         json_output: bool = typer.Option(False, "--json", help="Emit JSON."),
     ) -> None:
         """Pause a mini-loop durably (#1913) — EMERGENCY-only; prefer presets/schedules or `loop override`."""
-        _require_emergency(emergency)
+        _require_emergency(emergency=emergency)
         _delegate("pause", name, json_output=json_output)
 
     @loop_app.command("resume")
@@ -87,7 +87,7 @@ def register(loop_app: typer.Typer) -> None:
         json_output: bool = typer.Option(False, "--json", help="Emit JSON."),
     ) -> None:
         """Resume a paused OR disabled mini-loop — EMERGENCY-only; prefer presets/schedules or `loop override`."""
-        _require_emergency(emergency)
+        _require_emergency(emergency=emergency)
         _delegate("resume", name, json_output=json_output)
 
     @loop_app.command("disable")
@@ -98,7 +98,7 @@ def register(loop_app: typer.Typer) -> None:
         json_output: bool = typer.Option(False, "--json", help="Emit JSON."),
     ) -> None:
         """Disable a mini-loop durably — EMERGENCY-only; prefer presets/schedules or `loop override`."""
-        _require_emergency(emergency)
+        _require_emergency(emergency=emergency)
         _delegate("disable", name, json_output=json_output)
 
     @loop_app.command("enable")
@@ -109,7 +109,7 @@ def register(loop_app: typer.Typer) -> None:
         json_output: bool = typer.Option(False, "--json", help="Emit JSON."),
     ) -> None:
         """Enable a disabled mini-loop — EMERGENCY-only; prefer presets/schedules or `loop override`."""
-        _require_emergency(emergency)
+        _require_emergency(emergency=emergency)
         _delegate("enable", name, json_output=json_output)
 
     @loop_app.command("override")

@@ -118,7 +118,7 @@ def _registered_overlays() -> list[object]:
         from teatree.core.overlay_loader import get_all_overlays  # noqa: PLC0415 — deferred: loaded at tick time
 
         return list(get_all_overlays().values())
-    except Exception:  # noqa: BLE001 — discovery failure degrades to no overlay segments
+    except Exception:
         logger.warning("overlay discovery failed for statusline segments — no overlay segments", exc_info=True)
         return []
 
@@ -144,7 +144,7 @@ def _statusline_segments() -> list[dict[str, str]]:
     for overlay in _registered_overlays():
         try:
             contributed = overlay.get_statusline_segments()  # ty: ignore[unresolved-attribute]
-        except Exception:  # noqa: BLE001 — a broken producer must never blank the line
+        except Exception:
             logger.warning("overlay statusline segments producer failed — skipping", exc_info=True)
             continue
         segments.extend(seg for seg in contributed if isinstance(seg, StatuslineSegment))

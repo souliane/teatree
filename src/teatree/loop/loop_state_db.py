@@ -38,16 +38,13 @@ logger = logging.getLogger(__name__)
 def loop_state_admits(*, configured_enabled: bool, held: bool, preset_state: bool | None, forced: bool | None) -> bool:
     """The combined enable verdict: hold > forced > preset > base config.
 
-    Resolution, first opinion wins:
-
-    * a durable ``LoopState`` hold (``held``) always wins (the L4 emergency
-      brake / 'pause everything') — a held loop never runs.
-    * the emergency FORCED plane (``forced``, #3248) — ``True`` force-runs even
-      against a preset that forces the loop off, ``False`` force-skips; ``None``
-      is neutral (no emergency opinion).
-    * the read-time preset mask (``preset_state``, the L3/L2 opinion — ``True``
-      forces on, ``False`` off, ``None`` no opinion).
-    * L1 ``configured_enabled`` (``Loop.enabled``), the fallback.
+    Resolution, first opinion wins. A durable ``LoopState`` hold (``held``)
+    always wins (the L4 emergency brake / 'pause everything') — a held loop
+    never runs. Else the emergency FORCED plane (``forced``, #3248) — ``True``
+    force-runs even against a preset that forces the loop off, ``False``
+    force-skips, ``None`` is neutral. Else the read-time preset mask
+    (``preset_state``, the L3/L2 opinion — ``True`` forces on, ``False`` off,
+    ``None`` no opinion). Else L1 ``configured_enabled`` (``Loop.enabled``).
 
     ``preset_state`` and ``forced`` are REQUIRED at every call site — there is no
     neutral default, so the type checker structurally catches any observability

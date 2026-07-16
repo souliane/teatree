@@ -11,8 +11,25 @@ import datetime as dt
 import django.test
 from django.utils import timezone
 
-from teatree.core.models import Loop, LoopPreset, LoopPresetOverride, LoopState
-from teatree.loops.preset_status import active_summary, effective_verdicts, statusline_chunk
+from teatree.core.models import (
+    ConfigSetting,
+    Loop,
+    LoopPreset,
+    LoopPresetOverride,
+    LoopSchedule,
+    LoopScheduleSlot,
+    LoopState,
+)
+from teatree.loop.preset_resolution import ACTIVE_SCHEDULE_SETTING
+from teatree.loops.preset_status import (
+    active_summary,
+    effective_verdicts,
+    manual_override_chunk,
+    manual_override_entries,
+    preset_line_chunk,
+    schedule_chunk,
+    statusline_chunk,
+)
 
 
 def _loop(name: str, *, enabled: bool = True) -> Loop:
@@ -79,20 +96,15 @@ class TestStatuslineChunk(django.test.TestCase):
 @django.test.override_settings(USE_TZ=True, TIME_ZONE="UTC")
 class TestScheduleAndOverrideChunks(django.test.TestCase):
     def test_schedule_chunk_names_the_active_schedule(self) -> None:
-        from teatree.core.models import ConfigSetting
-        from teatree.loop.preset_resolution import ACTIVE_SCHEDULE_SETTING
-        from teatree.loops.preset_status import schedule_chunk
 
         ConfigSetting.objects.set_value(ACTIVE_SCHEDULE_SETTING, "standard")
         assert schedule_chunk() == "sched standard"
 
     def test_schedule_chunk_empty_without_active_schedule(self) -> None:
-        from teatree.loops.preset_status import schedule_chunk
 
         assert schedule_chunk() == ""
 
     def test_manual_override_entries_only_divergent_forced_loops(self) -> None:
-        from teatree.loops.preset_status import manual_override_entries
 
         _loop("ov-review", enabled=True)
         _loop("ov-news", enabled=True)
@@ -105,7 +117,6 @@ class TestScheduleAndOverrideChunks(django.test.TestCase):
         assert manual_override_entries() == [("ov-news", True), ("ov-review", False)]
 
     def test_manual_override_entries_excludes_non_divergent(self) -> None:
-        from teatree.loops.preset_status import manual_override_entries
 
         _loop("ov-same", enabled=True)
         # Forced ON matches the base ENABLED — not a divergence, so omitted.
@@ -113,27 +124,22 @@ class TestScheduleAndOverrideChunks(django.test.TestCase):
         assert manual_override_entries() == []
 
     def test_manual_override_chunk_renders_signs(self) -> None:
-        from teatree.loops.preset_status import manual_override_chunk
 
         _loop("ov-a", enabled=True)
         _loop("ov-b", enabled=True)
         LoopState.objects.override("ov-a", on=False)
         LoopState.objects.override("ov-b", on=True)
         # ov-b forced-on matches base → not divergent; only ov-a shows.
-        assert manual_override_chunk() == "ovr: ov-a−"
+        assert manual_override_chunk() == "ovr: ov-a-"
 
 
 @django.test.override_settings(USE_TZ=True, TIME_ZONE="UTC")
 class TestPresetLineChunk(django.test.TestCase):
     def test_empty_when_nothing_governs(self) -> None:
-        from teatree.loops.preset_status import preset_line_chunk
 
         assert preset_line_chunk() == ""
 
     def test_composes_schedule_preset_and_overrides(self) -> None:
-        from teatree.core.models import ConfigSetting
-        from teatree.loop.preset_resolution import ACTIVE_SCHEDULE_SETTING
-        from teatree.loops.preset_status import preset_line_chunk
 
         _loop("pl-review", enabled=True)
         ConfigSetting.objects.set_value(ACTIVE_SCHEDULE_SETTING, "standard")
@@ -141,22 +147,18 @@ class TestPresetLineChunk(django.test.TestCase):
         LoopPresetOverride.objects.set_override("heads-down")
         LoopState.objects.override("pl-review", on=False)
         chunk = preset_line_chunk()
-        assert chunk == "sched standard · preset ⚠heads-down (manual) · ovr: pl-review−"
+        assert chunk == "sched standard · preset ⚠heads-down (manual) · ovr: pl-review-"
 
     def test_schedule_governed_has_no_manual_marker(self) -> None:
-        import datetime as _dt
-
-        from teatree.core.models import ConfigSetting, LoopSchedule, LoopScheduleSlot
-        from teatree.loop.preset_resolution import ACTIVE_SCHEDULE_SETTING
-        from teatree.loops.preset_status import preset_line_chunk
 
         LoopPreset.objects.create(name="engaged", entries={})
         schedule = LoopSchedule.objects.create(name="standard", timezone="UTC")
         LoopScheduleSlot.objects.create(
-            schedule=schedule, days=[0, 1, 2, 3, 4, 5, 6], start_time=_dt.time(0, 0), preset_name="engaged"
+            schedule=schedule, days=[0, 1, 2, 3, 4, 5, 6], start_time=dt.time(0, 0), preset_name="engaged"
         )
         ConfigSetting.objects.set_value(ACTIVE_SCHEDULE_SETTING, "standard")
         chunk = preset_line_chunk()
         # Schedule-governed → no ⚠manual marker; sched + preset only.
         assert chunk.startswith("sched standard · preset engaged")
-        assert "⚠" not in chunk and "manual" not in chunk
+        assert "⚠" not in chunk
+        assert "manual" not in chunk

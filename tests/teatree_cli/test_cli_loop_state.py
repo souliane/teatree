@@ -65,7 +65,8 @@ class TestLoopStateCli:
             result = runner.invoke(loop_app, ["disable", "ship"])
         assert result.exit_code == 2, result.stdout
         # The refusal guides the operator to the normal + emergency handles.
-        assert "preset" in result.output and "override" in result.output
+        assert "preset" in result.output
+        assert "override" in result.output
         call.assert_not_called()
 
     def test_override_on_delegates(self) -> None:

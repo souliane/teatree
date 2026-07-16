@@ -1816,7 +1816,8 @@ class TestMultibyteAwkSafety:
         assert result.stdout.strip() != "", "multibyte content must not blank the statusline"
         plain = _strip_ansi(result.stdout)
         assert "model=Claude Opus" in plain, plain
-        assert "5h=42%" in plain and "7d=85%" in plain, plain
+        assert "5h=42%" in plain, plain
+        assert "7d=85%" in plain, plain
 
     def test_fake_awk_actually_crashes_without_lc_all_c(self, tmp_path: Path) -> None:
         # Guard the reproduction itself: the fake awk must abort on multibyte

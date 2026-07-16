@@ -359,9 +359,9 @@ if [ -r "$_cost_meta" ] && command -v jq >/dev/null 2>&1; then
         | . as $s
         | (($s.placement // "header")) as $p
         | (if ($p | startswith("after:"))
-             then (($p[6:]) as $ref
-                   | ([$segs[] | select((.id // "") == $ref) | (.placement // "header")] | .[0] // "end"))
-             else $p end) as $resolved
+          then (($p[6:]) as $ref
+          | ([$segs[] | select((.id // "") == $ref) | (.placement // "header")] | .[0] // "end"))
+          else $p end) as $resolved
         | [$resolved, ($s.color // "-"), ($s.text // "")] | @tsv
     ' "$_cost_meta" 2>/dev/null)
 fi

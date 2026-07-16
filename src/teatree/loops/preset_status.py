@@ -87,7 +87,7 @@ def statusline_chunk(now: dt.datetime | None = None) -> str:
     return f"preset {summary.name}{boundary}"
 
 
-def schedule_chunk(now: dt.datetime | None = None) -> str:
+def schedule_chunk() -> str:
     """The active-schedule segment ``sched standard``, or ``""`` when no schedule is active."""
     from teatree.core.models import ConfigSetting  # noqa: PLC0415 — deferred import (cycle-safe / pre-app-registry)
     from teatree.loop.preset_resolution import ACTIVE_SCHEDULE_SETTING  # noqa: PLC0415 — deferred: cycle-safe
@@ -103,7 +103,7 @@ def manual_override_entries(now: dt.datetime | None = None) -> list[tuple[str, b
     """Per-loop manual FORCED overrides that DIVERGE from the preset/base verdict (#3248).
 
     Returns ``(loop_name, forced_on)`` for every loop whose live FORCED value
-    differs from what the preset (else base ``Loop.enabled``) would decide — the
+    differs from what the preset (else base ``Loop.enabled``) would decide - the
     ``ovr:`` statusline section. A force that agrees with the underlying verdict
     is not surfaced (it changes nothing). Sorted by name; fails open to ``[]``.
     """
@@ -125,11 +125,11 @@ def manual_override_entries(now: dt.datetime | None = None) -> list[tuple[str, b
 
 
 def manual_override_chunk(now: dt.datetime | None = None) -> str:
-    """The ``ovr: review− news+`` per-loop manual-override segment, or ``""`` when none diverge."""
+    """The ``ovr: review- news+`` per-loop manual-override segment, or ``""`` when none diverge."""
     entries = manual_override_entries(now)
     if not entries:
         return ""
-    return "ovr: " + " ".join(f"{name}{'+' if on else '−'}" for name, on in entries)
+    return "ovr: " + " ".join(f"{name}{'+' if on else '-'}" for name, on in entries)
 
 
 def preset_line_chunk(now: dt.datetime | None = None) -> str:
@@ -139,7 +139,7 @@ def preset_line_chunk(now: dt.datetime | None = None) -> str:
     ``ovr:`` sub-segments with the mid-dot. The single injected preset-segment
     reader the loop line renders, replacing the bare ``statusline_chunk``.
     """
-    parts = [chunk for chunk in (schedule_chunk(now), statusline_chunk(now), manual_override_chunk(now)) if chunk]
+    parts = [chunk for chunk in (schedule_chunk(), statusline_chunk(now), manual_override_chunk(now)) if chunk]
     return " · ".join(parts)
 
 

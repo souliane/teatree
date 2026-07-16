@@ -57,7 +57,7 @@ def row_forced_value(
     ``None`` (expired). The one place the TTL-expiry rule lives, shared by the
     single-lookup and bulk reads.
     """
-    if forced == ForcedState.ON.value or forced == ForcedState.OFF.value:
+    if forced in {ForcedState.ON.value, ForcedState.OFF.value}:
         if forced_until is not None and forced_until <= (now or timezone.now()):
             return None
         return forced == ForcedState.ON.value
