@@ -2638,20 +2638,6 @@ _PYTEST_TARGETED_RE = re.compile(
     r"|::"  # a node-id (path::Class::test)
     r"|(?:^|\s)\S*\.py(?:::|\s|$)"  # a specific .py file path
 )
-# A foreground ``git push`` runs the full pre-push suite and wedges the
-# loop owner's session (#1825 motivating incident). Read-only git
-# (``status``/``log``/``diff``/``show``/``fetch``) is NOT here — only the
-# push verb (and its ``--force*`` variants) denies. Anchored to a command
-# head the same way the pytest verb is, so a ``git commit -m 'push fix'``
-# / ``git branch push-x`` mention is NOT a false-deny.
-_GIT_PUSH_RE = (
-    r"(?:^|[;&|\n(){}])"
-    r"\s*"
-    r"(?:\w+=\S+\s+)*"
-    r"(?:(?:command|exec|time|nice)\s+)*"
-    r"git\s+(?:-C\s+\S+\s+|--git-dir[=\s]\S+\s+)*push\b"
-)
-
 # HEAVY / long-running Bash shapes the main agent should not run inline.
 # This is a HEURISTIC denylist (anchored, case-sensitive on the verb);
 # the escape hatch is ``run_in_background: true`` (or, for a whole class
@@ -2663,17 +2649,18 @@ _GIT_PUSH_RE = (
 # dev servers, browser E2E (``playwright test``, ``nx run …:e2e`` AND bare
 # ``nx e2e <target>``), container image AND compose builds (``docker
 # build`` / ``docker compose build``), package installs/sync, long sleeps,
-# full-tree recursive sweeps (the shapes that actually wedge a session),
-# and a foreground ``git push`` (#1825 — its full pre-push suite blocks
-# the loop and the user's queued input). ``manage.py migrate`` is gated
-# elsewhere (the ``_BLOCKED_COMMANDS`` t3-CLI redirect); short ``t3 loop
-# tick``/``ci``/``doctor`` are NOT slow and are deliberately not listed.
-# Read-only git (``status``/``log``/``diff``/``show``/``fetch``) is never
-# matched, and a TARGETED ``pytest`` run is exempted in
-# :func:`_deny_heavy_main_agent_bash` (the verb still matches here; the
-# whole-suite-vs-targeted split is applied at deny time).
+# full-tree recursive sweeps (the shapes that actually wedge a session).
+# ``manage.py migrate`` is gated elsewhere (the ``_BLOCKED_COMMANDS``
+# t3-CLI redirect); short ``t3 loop tick``/``ci``/``doctor`` are NOT slow
+# and are deliberately not listed. Fast, BOUNDED ops are never matched
+# (#3253): read-only git (``status``/``log``/``diff``/``show``/``fetch``),
+# a bounded ``git push`` (a small-branch push is seconds — the pre-push
+# hook only ever runs the fast early signal, never the full suite), and a
+# bare ``--help``/``--version`` query of any verb. A TARGETED ``pytest``
+# run is exempted in :func:`_deny_heavy_main_agent_bash` (the verb still
+# matches here; the whole-suite-vs-targeted split is applied at deny time).
 _ORCHESTRATOR_HEAVY_BASH_RE = re.compile(
-    r"(?:" + _PYTEST_VERB_RE + r"|" + _GIT_PUSH_RE + r"|"
+    r"(?:" + _PYTEST_VERB_RE + r"|"
     r"\btox\b|"
     r"\bt3\s+\S+\s+(?:run|e2e|test)\b|"
     r"manage\.py\s+runserver|"
@@ -2714,10 +2701,8 @@ _HELP_OR_VERSION_RE = re.compile(r"(?:^|\s)(?:--help|-h|--version)(?=\s|$)")
 #     flag (``grep -h`` = suppress filename, ``rm -h`` / ``chmod -h``, ``du -h`` =
 #     human-readable), NOT a help query; the find-sweep itself is still heavy.
 #   * recursive ``ls …R…`` — its ``-h`` is the human-readable flag bundle.
-#   * ``git push`` — ``git push --help`` / ``-h`` opens a blocking pager (a worse
-#     session wedge than the push it guards), so it is never exempted.
 # Reuses the exact heavy sub-patterns so the two regexes can never drift.
-_NEVER_HELP_EXEMPT_RE = re.compile(r"\bfind\s+\S+.*-exec\b|\bls\s+-[a-zA-Z]*R[a-zA-Z]*\b|" + _GIT_PUSH_RE)
+_NEVER_HELP_EXEMPT_RE = re.compile(r"\bfind\s+\S+.*-exec\b|\bls\s+-[a-zA-Z]*R[a-zA-Z]*\b")
 
 
 def _is_orchestration_action(data: dict) -> bool:
