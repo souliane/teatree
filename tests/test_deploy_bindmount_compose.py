@@ -37,8 +37,14 @@ CREDENTIAL_PLANE = {
     "/home/teatree/.password-store",
     "/home/teatree/.gnupg",
 }
+# The Claude session plane: the dream pass's transcript input + memory-corpus
+# product. Without it the containerized dream pass globs an empty projects dir
+# and every nightly consolidation is a permanent no-op.
+SESSION_PLANE = {
+    "/home/teatree/.claude/projects",
+}
 # Every host bind mount the shared list must carry, by canonical source path.
-ALL_BIND_SOURCES = EXTERNALIZED | CREDENTIAL_PLANE
+ALL_BIND_SOURCES = EXTERNALIZED | CREDENTIAL_PLANE | SESSION_PLANE
 # The two mounts that stay Docker-managed named volumes (later PRs handle these).
 KEPT_NAMED_VOLUMES = {"teatree_src", "teatree_uv"}
 REMOVED_NAMED_VOLUMES = {"teatree_data", "teatree_worktrees", "teatree_workspaces"}
