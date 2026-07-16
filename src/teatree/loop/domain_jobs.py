@@ -517,7 +517,11 @@ def _inbound_messaging_jobs(messaging: MessagingBackend, tag: str) -> list[_Scan
 
     ``SlackMentionsScanner`` owns the JSONL drain and fans reaction events into
     the backend's reactions queue; ``SlackReviewIntentScanner`` must run after it
-    so the queue is populated for the same tick.
+    so the queue is populated for the same tick. ``SlackReviewIntentScanner`` is
+    also the SINGLE owner of the ``slack-reactions.jsonl`` atomic-rename drain, so
+    the 👀-back self-ack (owner reacts to teatree's OWN message → 👀 back) rides
+    INSIDE it — consuming the same drained snapshot rather than racing a second
+    drain (#1047).
     """
     return [
         _ScannerJob(scanner=SlackMentionsScanner(backend=messaging), overlay=tag),
@@ -525,6 +529,7 @@ def _inbound_messaging_jobs(messaging: MessagingBackend, tag: str) -> list[_Scan
         # #1174 applies each Slack reply to its live DeferredQuestion — the
         # scanner the two single-overlay builders had silently dropped (#23).
         _ScannerJob(scanner=AskUserQuestionReplyScanner(backend=messaging, overlay=tag), overlay=tag),
+        # Owns the reactions-JSONL drain; the 👀-back self-ack rides inside it.
         _ScannerJob(scanner=SlackReviewIntentScanner(backend=messaging, overlay=tag), overlay=tag),
         # #1130 RED CARD detection — user's structural "fix it upstream"
         # signal. Runs alongside the review-intent scanner because both

@@ -62,6 +62,7 @@
     - teatree.messaging.notify_with_fallback
     - teatree.loop.slack_answer.cycle
     - teatree.loop.scanners.red_card
+    - teatree.loop.scanners.slack_self_ack
     - teatree.loop.scanners.review_nag
     - teatree.loop.scanners.incoming_events
     - teatree.loop.self_improve.actions

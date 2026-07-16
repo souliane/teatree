@@ -7,7 +7,7 @@ from rich.console import Console
 
 from teatree.cli._format_opts import VALID_FORMATS, require_valid_format
 from teatree.cli.eval._registration import register_imported_commands
-from teatree.cli.eval.all import STRICT_HELP, build_scenarios_table, run_full_suite
+from teatree.cli.eval.all import build_scenarios_table
 from teatree.cli.eval.app_helpers import (
     RunReportPaths,
     reject_unsupported_run_output,
@@ -17,13 +17,14 @@ from teatree.cli.eval.app_helpers import (
     resolve_benchmark_selection,
     resolve_escalation,
 )
+from teatree.cli.eval.full_suite_command import register_full_suite_callback
 from teatree.cli.eval.lane_filter import filter_specs_by_lane
 from teatree.cli.eval.metered_routing import warn_local_metered
 from teatree.cli.eval.run_dispatch import ResolvedRun, dispatch_resolved_run
 from teatree.cli.eval.run_docker import RunDockerArgs, route_to_docker_if_needed
 from teatree.cli.eval.run_modes import DEFAULT_COST_REGRESSION_TOLERANCE, make_grader, require_persist_for_history_gates
 from teatree.eval.api_runner import resolve_max_turns_override, resolve_metered_budget_usd, resolve_metered_effort
-from teatree.eval.backends import API_BACKEND, TRANSCRIPT_BACKEND
+from teatree.eval.backends import API_BACKEND, FRESH_CLAUDE_BACKENDS, TRANSCRIPT_BACKEND
 from teatree.eval.discovery import discover_specs
 from teatree.eval.lane_shard import ShardSpecError, filter_specs_by_shard
 from teatree.eval.model_variant import EFFORT_LEVELS
@@ -193,9 +194,12 @@ def run(  # noqa: PLR0913, PLR0917 — typer command: each param maps 1:1 to a p
             "`t3 eval prepare-transcript`) or 'api' (RUN the model fresh in-process via the "
             "Agent SDK, on the credential the eval_credential knob selects — default "
             "subscription OAuth (#2707 reversal), or the metered API key; runs in-container "
-            "by default or directly on the host with --local) or 'pydantic_ai' (RUN a "
-            "non-Claude model through the provider-agnostic harness seam, OrcaRouter BYOK — "
-            "the model-evolution lane). --trials and --models require --backend api."
+            "by default or directly on the host with --local) or 'anthropic_api' (RUN the "
+            "same Claude model fresh through the Anthropic Messages API DIRECTLY, no `claude` "
+            "CLI child — the CLI-free lane for a harness that forbids the Claude Code CLI, "
+            "metered on ANTHROPIC_API_KEY) or 'pydantic_ai' (RUN a non-Claude model through "
+            "the provider-agnostic harness seam, OrcaRouter BYOK — the model-evolution lane). "
+            "--trials and --models require --backend api."
         ),
     ),
     transcript_dir: Path | None = typer.Option(
@@ -373,7 +377,9 @@ def run(  # noqa: PLR0913, PLR0917 — typer command: each param maps 1:1 to a p
     # drives the api matrix lane.
     if benchmark or selection.model_override is not None:
         backend = API_BACKEND
-    metered = backend == API_BACKEND or trials > 1 or models is not None or selection.model_override is not None
+    metered = (
+        backend in FRESH_CLAUDE_BACKENDS or trials > 1 or models is not None or selection.model_override is not None
+    )
     require_api_backend_for_fresh_run(backend=backend, trials=trials, models=models)
     escalation = resolve_escalation(
         escalate_on_fail=escalate_on_fail, escalate_trials=escalate_trials, trials=trials, models=models
@@ -446,12 +452,14 @@ def run(  # noqa: PLR0913, PLR0917 — typer command: each param maps 1:1 to a p
     else:
         specs = [require_spec(name)]
     grader = make_grader(enabled=judge, judge_budget=judge_budget)
-    # "If we run the fresh-run lane, of course we want it executed." The api
-    # backend (and the always-fresh-run --trials/--models lanes) arm the
-    # all-skipped gate unconditionally — a fresh run that executes nothing must
-    # fail loud, never pass. --require-executed stays only as the opt-in knob for
-    # the transcript backend's legitimate pre-transcript all-skip.
-    api_metered = backend == API_BACKEND or trials > 1 or models is not None or selection.model_override is not None
+    # "If we run the fresh-run lane, of course we want it executed." Both fresh
+    # Claude backends (api and the CLI-free anthropic_api — and the always-fresh-run
+    # --trials/--models lanes) arm the all-skipped gate unconditionally: a fresh run
+    # that executes nothing must fail loud, never pass. --require-executed stays only
+    # as the opt-in knob for the transcript backend's legitimate pre-transcript all-skip.
+    api_metered = (
+        backend in FRESH_CLAUDE_BACKENDS or trials > 1 or models is not None or selection.model_override is not None
+    )
     require_executed = require_executed or api_metered
     dispatch_resolved_run(
         specs,
@@ -487,65 +495,4 @@ def run(  # noqa: PLR0913, PLR0917 — typer command: each param maps 1:1 to a p
     )
 
 
-@eval_app.callback(invoke_without_command=True)
-# ast-grep-ignore: ac-django-no-complexity-suppressions
-def default(  # noqa: PLR0913, PLR0917 — typer callback: each param maps 1:1 to a public bare-``t3 eval`` flag. The arg list IS the CLI contract.
-    ctx: typer.Context,
-    backend: str = typer.Option(
-        TRANSCRIPT_BACKEND,
-        "--backend",
-        help=(
-            "AI-lane backend for the bare-`t3 eval` full suite: 'transcript' (default — REUSE "
-            "already-recorded in-session transcripts, $0 extra), 'api' (RUN the Claude model "
-            "fresh in-process via the Agent SDK, on the credential the eval_credential knob "
-            "selects — default subscription OAuth (#2707 reversal), or the metered API key; the "
-            "explicit opt-in), or 'pydantic_ai' (RUN a non-Claude model through the "
-            "provider-agnostic harness seam, OrcaRouter BYOK)."
-        ),
-    ),
-    transcript_dir: Path | None = typer.Option(
-        None,
-        "--transcript-dir",
-        help="Directory of <scenario>.jsonl transcripts for the AI lane (default: cwd).",
-    ),
-    free_only: bool = typer.Option(  # noqa: FBT001 — typer boolean flag, not a positional bool foot-gun.
-        False,
-        "--free-only",
-        help="Run only the free deterministic lanes (drop the AI lane) — the fast pre-push gate.",
-    ),
-    strict: bool = typer.Option(  # noqa: FBT001 — typer boolean flag, not a positional bool foot-gun.
-        False,
-        "--strict",
-        help=STRICT_HELP,
-    ),
-    docker: bool = typer.Option(  # noqa: FBT001 — typer boolean flag, not a positional bool foot-gun.
-        False,
-        "--docker",
-        help="Run inside the exact CI image (dev/Dockerfile.test) for parity; host-run is the default.",
-    ),
-    parallel: int = typer.Option(
-        DEFAULT_PARALLEL,
-        "--parallel",
-        help="Run this many AI-lane scenarios concurrently (wall-clock; default 1 = sequential).",
-    ),
-) -> None:
-    """Run the WHOLE eval suite. Pass a subcommand to target one lane instead.
-
-    Bare ``t3 eval`` runs every lane in one go and prints a single aggregated
-    summary table plus a plain-language verdict — the default. Subcommands are the
-    targeted path: ``run`` (a single AI scenario, the fresh-run ``--backend api``
-    path), one-free-lane (``pinned-regressions`` / ``negative-control`` / …), and
-    introspection (``history`` / ``list`` / ``prepare-transcript``). The process
-    exits non-zero if ANY lane fails (fail-loud); ``--strict`` also fails on a
-    setup-skipped lane.
-    """
-    if ctx.invoked_subcommand is not None:
-        return
-    run_full_suite(
-        backend=backend,
-        transcript_dir=transcript_dir,
-        free_only=free_only,
-        docker=docker,
-        strict=strict,
-        parallel=parallel,
-    )
+register_full_suite_callback(eval_app)

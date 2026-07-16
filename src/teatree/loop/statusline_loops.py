@@ -463,11 +463,16 @@ def live_loops_anchor(*, colorize: bool = False) -> list[str]:
     DB / import error degrades to ``[]`` (or, for an individual segment,
     drops just that segment) so a broken read can never blank the statusline.
     """
-    chunks = [*_live_lease_chunks(colorize=colorize), *_mini_loop_chunks(colorize=colorize)]
-    if not chunks:
+    leases = _live_lease_chunks(colorize=colorize)
+    due = _mini_loop_chunks(colorize=colorize)
+    if not leases and not due:
         return []
 
-    parts = [*chunks]
+    # Due-soon mini-loops ride a single ``due:`` section (#3248) rather than the
+    # old full per-loop dump; the infra leases keep leading the line.
+    parts = [*leases]
+    if due:
+        parts.append("due: " + " ".join(due))
     preset = _preset_segment()
     if preset:
         parts.append(preset)
@@ -579,21 +584,25 @@ def _mini_loop_chunk(name: str, next_fire_at: datetime | None) -> str:
     return f"{name} {tick}"
 
 
+# Only loops due now (never-fired / overdue) or within this horizon appear on
+# the loop line (#3248) — the ``due:`` section replaces the full ~25-loop dump;
+# presets/schedules are the handle, so the line shows only what is imminent.
+_DUE_SOON_SECONDS = 300
+
+
 def _mini_loop_chunks(*, colorize: bool = False) -> list[str]:
-    """Return one ``<name> <next-tick>`` chunk per enabled domain mini-loop.
+    """Return a ``<name> <next-tick>`` chunk per DUE-SOON domain mini-loop (#3248).
 
     Companion to :func:`_live_lease_chunks`: where that renders the infra
-    leases (``loop-tick`` and friends), this renders every enabled domain
-    cron from :func:`teatree.loops.registry.iter_loops` — ``dispatch``,
-    ``tickets``, ``review``, ``ship``, ``inbox``, ``resource_pressure``, … —
-    each with its own next-tick countdown derived from the cadence ledger
-    (:func:`_mini_loop_schedules`), never a shared constant, and (when
-    *colorize* is set) wrapped in its cadence-relative recency color. The two
-    chunk lists compose into the single dedicated loop line in
-    :func:`live_loops_anchor`.
+    leases (``loop-tick`` and friends), this renders the enabled domain crons
+    from the cadence ledger (:func:`_mini_loop_schedules`) that are due now
+    (never fired / overdue) or within :data:`_DUE_SOON_SECONDS` — NOT the full
+    loop list (presets/schedules are the handle). Each carries its own
+    next-tick countdown and (when *colorize* is set) its cadence-relative
+    recency color. Composed into the ``due:`` section of :func:`live_loops_anchor`.
 
-    Returns ``[]`` when no mini-loop is enabled, or fails open to ``[]`` on
-    any DB / config read error so a broken ledger never blanks the line.
+    Returns ``[]`` when no mini-loop is due soon, or fails open to ``[]`` on any
+    DB / config read error so a broken ledger never blanks the line.
     """
     try:
         schedules = _mini_loop_schedules()
@@ -606,6 +615,7 @@ def _mini_loop_chunks(*, colorize: bool = False) -> list[str]:
             colorize=colorize,
         )
         for name, next_fire_at, cadence in schedules
+        if next_fire_at is None or _seconds_until(next_fire_at) <= _DUE_SOON_SECONDS
     ]
 
 

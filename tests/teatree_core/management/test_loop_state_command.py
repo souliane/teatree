@@ -13,6 +13,7 @@ from io import StringIO
 import pytest
 from django.core.management import call_command
 from django.test import TestCase
+from django.utils import timezone
 
 from teatree.core.models import Loop, LoopState, LoopStatus, Prompt
 
@@ -198,3 +199,52 @@ class TestUnknownLoopNameRefused(TestCase):
         _loop("dispatch", enabled=True)
         _run("pause", "dispatch")
         assert LoopState.objects.status_of("dispatch") is LoopStatus.PAUSED
+
+
+class TestOverrideCommand(TestCase):
+    """``loop_state override`` — the emergency FORCED plane (#3248).
+
+    Sets the tri-state forced value (on/off/clear) with an optional TTL and
+    reason, orthogonal to the hold status. The CLI gates the pause/enable verbs
+    behind ``--emergency``; the override verb is the emergency handle itself.
+    """
+
+    def setUp(self) -> None:
+        _loop("review", enabled=True)
+        _loop("news", enabled=True)
+
+    def test_override_on_sets_forced_true(self) -> None:
+        _run("override", "review", "on")
+        assert LoopState.objects.forced_of("review") is True
+
+    def test_override_off_sets_forced_false(self) -> None:
+        _run("override", "news", "off")
+        assert LoopState.objects.forced_of("news") is False
+
+    def test_override_clear_returns_to_neutral(self) -> None:
+        _run("override", "review", "on")
+        _run("override", "review", "clear")
+        assert LoopState.objects.forced_of("review") is None
+
+    def test_override_with_ttl_expires(self) -> None:
+        _run("override", "review", "on", "--for", "2h")
+        row = LoopState.objects.get(name="review")
+        assert row.forced_until is not None
+        assert row.forced_until > timezone.now()
+
+    def test_override_records_reason(self) -> None:
+        _run("override", "review", "on", "--reason", "incident firefight")
+        assert LoopState.objects.get(name="review").forced_reason == "incident firefight"
+
+    def test_override_unknown_name_refused(self) -> None:
+        out = StringIO()
+        with pytest.raises(SystemExit) as caught:
+            call_command("loop_state", "override", "no_such_loop", "on", stdout=out)
+        assert caught.value.code == 2
+        assert not LoopState.objects.filter(name="no_such_loop").exists()
+
+    def test_override_invalid_state_refused(self) -> None:
+        out = StringIO()
+        with pytest.raises(SystemExit) as caught:
+            call_command("loop_state", "override", "review", "maybe", stdout=out)
+        assert caught.value.code == 2
