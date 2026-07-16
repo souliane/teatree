@@ -134,6 +134,11 @@ on:
         required: false
         default: "2"
         type: string
+      backend:
+        description: "Execution backend. Default 'api' — the in-process Agent SDK, which spawns the `claude` CLI child (teatree's default). 'anthropic_api' runs the SAME Claude model through the Anthropic Messages API DIRECTLY (no `claude` CLI child, #3222) — the CLI-free lane; it authenticates on ANTHROPIC_API_KEY, so pair it with `credential: metered_api_key`. The CLI install step is skipped for a non-'api' backend."
+        required: false
+        default: "api"
+        type: string
 
 jobs:
   # PREPARE: ONE place that (a) decides whether the eval runs at all (the weekly
@@ -290,11 +295,15 @@ jobs:
           max_attempts: 3
           retry_wait_seconds: 30
           command: uv sync
-      # Install the Claude CLI the metered api backend shells out to, then ASSERT
-      # it. A missing binary must FAIL the job (the runner would otherwise skip
-      # every scenario and report a decorative green). `claude --version` is the
-      # post-install assertion that turns an install failure into a red job.
+      # Install the Claude CLI the `api` backend shells out to, then ASSERT it. A
+      # missing binary must FAIL the job (the runner would otherwise skip every
+      # scenario and report a decorative green). `claude --version` is the
+      # post-install assertion that turns an install failure into a red job. SKIPPED
+      # for the CLI-free `anthropic_api` backend (#3222), which talks to the
+      # Anthropic Messages API directly and spawns no `claude` child — a scheduled
+      # run (empty input) keeps the default 'api' backend and still installs it.
       - name: Install and assert the Claude CLI
+        if: ${{ (inputs.backend || 'api') == 'api' }}
         run: |
           npm install -g @anthropic-ai/claude-code
           claude --version
@@ -367,6 +376,11 @@ jobs:
           # The matrix's reasoning-effort tier (model-tier axis); empty when no
           # effort axis is used, in which case the run keeps the lane-default effort.
           EVAL_EFFORT: ${{ matrix.effort }}
+          # Execution backend — DEFAULT 'api' (the CLI-backed Agent SDK, teatree's
+          # default). 'anthropic_api' runs the same Claude model through the Anthropic
+          # Messages API directly, no `claude` CLI child (#3222); it authenticates on
+          # ANTHROPIC_API_KEY, so pair it with `credential: metered_api_key`.
+          EVAL_BACKEND: ${{ inputs.backend || 'api' }}
         with:
           # A single shard is ≤ its lane's ceiling (clean_room ≤14, under_load ≤4 —
           # #2683) x 3 trials, each a real metered `claude` SDK call. Each retry
@@ -398,7 +412,7 @@ jobs:
           command: |
             EFFORT_FLAG=""
             [ -n "$EVAL_EFFORT" ] && EFFORT_FLAG="--effort $EVAL_EFFORT"
-            uv run t3 eval run --trials "$EVAL_TRIALS" --require any --backend api \
+            uv run t3 eval run --trials "$EVAL_TRIALS" --require any --backend "$EVAL_BACKEND" \
               --lane "$EVAL_LANE" --shard "$EVAL_SHARD" $EFFORT_FLAG \
               --require-executed --docker \
               --transcript-html "$RUNNER_TEMP/eval-transcripts.html" \

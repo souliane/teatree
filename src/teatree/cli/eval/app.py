@@ -23,7 +23,7 @@ from teatree.cli.eval.run_dispatch import ResolvedRun, dispatch_resolved_run
 from teatree.cli.eval.run_docker import RunDockerArgs, route_to_docker_if_needed
 from teatree.cli.eval.run_modes import DEFAULT_COST_REGRESSION_TOLERANCE, make_grader, require_persist_for_history_gates
 from teatree.eval.api_runner import resolve_max_turns_override, resolve_metered_budget_usd, resolve_metered_effort
-from teatree.eval.backends import API_BACKEND, TRANSCRIPT_BACKEND
+from teatree.eval.backends import API_BACKEND, FRESH_CLAUDE_BACKENDS, TRANSCRIPT_BACKEND
 from teatree.eval.discovery import discover_specs
 from teatree.eval.lane_shard import ShardSpecError, filter_specs_by_shard
 from teatree.eval.model_variant import EFFORT_LEVELS
@@ -193,9 +193,12 @@ def run(  # noqa: PLR0913, PLR0917 — typer command: each param maps 1:1 to a p
             "`t3 eval prepare-transcript`) or 'api' (RUN the model fresh in-process via the "
             "Agent SDK, on the credential the eval_credential knob selects — default "
             "subscription OAuth (#2707 reversal), or the metered API key; runs in-container "
-            "by default or directly on the host with --local) or 'pydantic_ai' (RUN a "
-            "non-Claude model through the provider-agnostic harness seam, OrcaRouter BYOK — "
-            "the model-evolution lane). --trials and --models require --backend api."
+            "by default or directly on the host with --local) or 'anthropic_api' (RUN the "
+            "same Claude model fresh through the Anthropic Messages API DIRECTLY, no `claude` "
+            "CLI child — the CLI-free lane for a harness that forbids the Claude Code CLI, "
+            "metered on ANTHROPIC_API_KEY) or 'pydantic_ai' (RUN a non-Claude model through "
+            "the provider-agnostic harness seam, OrcaRouter BYOK — the model-evolution lane). "
+            "--trials and --models require --backend api."
         ),
     ),
     transcript_dir: Path | None = typer.Option(
@@ -373,7 +376,9 @@ def run(  # noqa: PLR0913, PLR0917 — typer command: each param maps 1:1 to a p
     # drives the api matrix lane.
     if benchmark or selection.model_override is not None:
         backend = API_BACKEND
-    metered = backend == API_BACKEND or trials > 1 or models is not None or selection.model_override is not None
+    metered = (
+        backend in FRESH_CLAUDE_BACKENDS or trials > 1 or models is not None or selection.model_override is not None
+    )
     require_api_backend_for_fresh_run(backend=backend, trials=trials, models=models)
     escalation = resolve_escalation(
         escalate_on_fail=escalate_on_fail, escalate_trials=escalate_trials, trials=trials, models=models
@@ -446,12 +451,14 @@ def run(  # noqa: PLR0913, PLR0917 — typer command: each param maps 1:1 to a p
     else:
         specs = [require_spec(name)]
     grader = make_grader(enabled=judge, judge_budget=judge_budget)
-    # "If we run the fresh-run lane, of course we want it executed." The api
-    # backend (and the always-fresh-run --trials/--models lanes) arm the
-    # all-skipped gate unconditionally — a fresh run that executes nothing must
-    # fail loud, never pass. --require-executed stays only as the opt-in knob for
-    # the transcript backend's legitimate pre-transcript all-skip.
-    api_metered = backend == API_BACKEND or trials > 1 or models is not None or selection.model_override is not None
+    # "If we run the fresh-run lane, of course we want it executed." Both fresh
+    # Claude backends (api and the CLI-free anthropic_api — and the always-fresh-run
+    # --trials/--models lanes) arm the all-skipped gate unconditionally: a fresh run
+    # that executes nothing must fail loud, never pass. --require-executed stays only
+    # as the opt-in knob for the transcript backend's legitimate pre-transcript all-skip.
+    api_metered = (
+        backend in FRESH_CLAUDE_BACKENDS or trials > 1 or models is not None or selection.model_override is not None
+    )
     require_executed = require_executed or api_metered
     dispatch_resolved_run(
         specs,
@@ -499,7 +506,9 @@ def default(  # noqa: PLR0913, PLR0917 — typer callback: each param maps 1:1 t
             "already-recorded in-session transcripts, $0 extra), 'api' (RUN the Claude model "
             "fresh in-process via the Agent SDK, on the credential the eval_credential knob "
             "selects — default subscription OAuth (#2707 reversal), or the metered API key; the "
-            "explicit opt-in), or 'pydantic_ai' (RUN a non-Claude model through the "
+            "explicit opt-in), 'anthropic_api' (RUN the same Claude model fresh through the "
+            "Anthropic Messages API DIRECTLY, no `claude` CLI child — the CLI-free lane, metered "
+            "on ANTHROPIC_API_KEY), or 'pydantic_ai' (RUN a non-Claude model through the "
             "provider-agnostic harness seam, OrcaRouter BYOK)."
         ),
     ),
