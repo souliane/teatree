@@ -79,7 +79,7 @@ class TestStuckTicketRedispatch(TestCase):
         assert ticket.tasks.count() == 0
 
     def test_scheduling_refusal_is_escalated(self) -> None:
-        ticket = _stuck_ticket(state=Ticket.State.STARTED)
+        _stuck_ticket(state=Ticket.State.STARTED)
 
         with patch.object(Ticket, "schedule_planning", side_effect=InvalidTransitionError("gate refused")):
             scheduled = redispatch_stuck_tickets()
