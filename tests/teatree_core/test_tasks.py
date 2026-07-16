@@ -14,6 +14,7 @@ from teatree.core.runners.base import RunnerResult
 from teatree.core.tasks import (
     drain_headless_queue,
     drain_headless_queue_body,
+    enqueue_teardown_for_terminal_tickets,
     execute_provision,
     execute_retrospect,
     execute_ship,
@@ -351,18 +352,41 @@ class TestExecuteTeardown(TestCase):
         }
 
     @override_settings(**IMMEDIATE_BACKEND)
-    def test_skips_when_state_does_not_match(self) -> None:
-        ticket = Ticket.objects.create(overlay="test", state=Ticket.State.RETROSPECTED)
+    def test_skips_when_state_is_not_terminal(self) -> None:
+        # A non-terminal ticket (IN_REVIEW — PR still open) is never torn down:
+        # the guard is the done set (MERGED/DELIVERED/IGNORED), SHIPPED excluded.
+        ticket = Ticket.objects.create(overlay="test", state=Ticket.State.IN_REVIEW)
 
         result = execute_teardown.enqueue(ticket.pk)
 
         ticket.refresh_from_db()
-        assert ticket.state == Ticket.State.RETROSPECTED
+        assert ticket.state == Ticket.State.IN_REVIEW
         assert result.return_value == {
             "ticket_id": ticket.pk,
             "skipped": True,
-            "state": "retrospected",
+            "state": "in_review",
         }
+
+    @override_settings(**IMMEDIATE_BACKEND)
+    def test_does_not_skip_delivered_or_ignored(self) -> None:
+        # The guard relax (#): DELIVERED and IGNORED are terminal, so teardown
+        # runs (does not skip) — previously only MERGED passed the guard.
+        from teatree.core.runners.base import RunnerResult  # noqa: PLC0415
+
+        for state in (Ticket.State.DELIVERED, Ticket.State.IGNORED):
+            ticket = Ticket.objects.create(overlay="test")
+            ticket.state = state
+            ticket.save(update_fields=["state"])
+
+            with patch("teatree.core.tasks.WorktreeTeardown") as teardown:
+                teardown.return_value.run.return_value = RunnerResult(ok=True, detail="tore down 1 worktree(s)")
+                result = execute_teardown.enqueue(ticket.pk)
+
+            assert result.return_value == {
+                "ticket_id": ticket.pk,
+                "ok": True,
+                "detail": "tore down 1 worktree(s)",
+            }, state
 
     @override_settings(**IMMEDIATE_BACKEND)
     def test_reports_failure_without_advancing(self) -> None:
@@ -381,6 +405,152 @@ class TestExecuteTeardown(TestCase):
             "ok": False,
             "detail": "repo-0: branch ahead",
         }
+
+
+class TestEnqueueTeardownBacklogDrain(TestCase):
+    """The one-shot operational drain enqueues teardown for terminal tickets holding worktrees."""
+
+    def _terminal_ticket_with_worktree(self, state: Ticket.State) -> Ticket:
+        from teatree.core.models import Worktree  # noqa: PLC0415
+
+        ticket = Ticket.objects.create(overlay="test")
+        ticket.state = state
+        ticket.save(update_fields=["state"])
+        Worktree.objects.create(
+            ticket=ticket, overlay="test", repo_path="r", branch="b", extra={"worktree_path": "/tmp/wt"}
+        )
+        return ticket
+
+    @override_settings(**IMMEDIATE_BACKEND)
+    def test_enqueues_only_terminal_tickets_with_worktrees(self) -> None:
+        merged = self._terminal_ticket_with_worktree(Ticket.State.MERGED)
+        ignored = self._terminal_ticket_with_worktree(Ticket.State.IGNORED)
+        # A terminal ticket with NO worktree: nothing to reap.
+        Ticket.objects.create(overlay="test", state=Ticket.State.DELIVERED)
+        # A non-terminal ticket with a worktree: not eligible.
+        non_terminal = self._terminal_ticket_with_worktree(Ticket.State.IN_REVIEW)
+
+        with patch("teatree.core.tasks.execute_teardown") as teardown:
+            enqueued = enqueue_teardown_for_terminal_tickets()
+
+        assert sorted(enqueued) == sorted([merged.pk, ignored.pk])
+        assert non_terminal.pk not in enqueued
+        assert teardown.enqueue.call_count == 2
+
+
+def _run_git(*args: str, cwd: Path) -> None:
+    import shutil  # noqa: PLC0415
+    import subprocess  # noqa: PLC0415
+
+    git = shutil.which("git") or "git"
+    subprocess.run([git, "-C", str(cwd), *args], check=True, capture_output=True)
+
+
+class TestExecuteTeardownTerminalPurge(TestCase):
+    """The FSM-automatic teardown runs for non-MERGED terminal states, against real git.
+
+    Proves the guard relax end-to-end: ``execute_teardown`` purges an IGNORED
+    ticket's clean, fully-pushed worktree (previously it skipped anything not
+    MERGED), and the ``fsm_terminal=True`` carve-out means a stale never-ended
+    Session no longer pins the worktree ACTIVE forever. The #706 data-loss guard
+    still holds: a branch with unpushed-unique commits is KEPT on the new path.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _tmp_workspace(self, tmp_path: Path) -> None:
+        self.workspace = tmp_path / "workspace"
+        self.workspace.mkdir()
+        self.remote = tmp_path / "remote.git"
+        self.remote.mkdir()
+        _run_git("init", "-q", "--bare", "-b", "main", cwd=self.remote)
+
+        self.repo_main = self.workspace / "myrepo"
+        self.repo_main.mkdir()
+        _run_git("init", "-q", "-b", "main", cwd=self.repo_main)
+        _run_git("config", "user.email", "t@t", cwd=self.repo_main)
+        _run_git("config", "user.name", "t", cwd=self.repo_main)
+        _run_git("remote", "add", "origin", str(self.remote), cwd=self.repo_main)
+        _run_git("commit", "--allow-empty", "-q", "-m", "initial", cwd=self.repo_main)
+        _run_git("push", "-q", "origin", "main", cwd=self.repo_main)
+        _run_git("fetch", "-q", "origin", cwd=self.repo_main)
+
+        self.branch = "ac-myrepo-purge-x"
+        self.wt_path = self.workspace / self.branch / "myrepo"
+        _run_git("worktree", "add", "-q", "-b", self.branch, str(self.wt_path), cwd=self.repo_main)
+
+    def _commit_in_worktree(self, message: str) -> None:
+        (self.wt_path / "file.txt").write_text(message, encoding="utf-8")
+        _run_git("add", "file.txt", cwd=self.wt_path)
+        _run_git("config", "user.email", "t@t", cwd=self.wt_path)
+        _run_git("config", "user.name", "t", cwd=self.wt_path)
+        _run_git("commit", "-q", "-m", message, cwd=self.wt_path)
+
+    def _ignored_ticket_with_worktree(self) -> Ticket:
+        from teatree.core.models import Worktree  # noqa: PLC0415
+
+        ticket = Ticket.objects.create(
+            overlay="test",
+            issue_url="https://example.com/issues/purge",
+            state=Ticket.State.IGNORED,
+        )
+        Worktree.objects.create(
+            ticket=ticket,
+            overlay="test",
+            repo_path="myrepo",
+            branch=self.branch,
+            extra={"worktree_path": str(self.wt_path)},
+        )
+        return ticket
+
+    @contextmanager
+    def _patched_clone_root(self) -> Iterator[None]:
+        with ExitStack() as stack:
+            stack.enter_context(patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY))
+            for target in (
+                "teatree.core.runners.teardown.clone_root",
+                "teatree.core.worktree.worktree_done.clone_root",
+                "teatree.core.cleanup.cleanup.clone_root",
+            ):
+                stack.enter_context(patch(target, return_value=self.workspace))
+            mock_overlay = stack.enter_context(patch("teatree.core.cleanup.cleanup.get_overlay_for_worktree"))
+            mock_overlay.return_value.provisioning.cleanup_steps.return_value = []
+            yield
+
+    @override_settings(**IMMEDIATE_BACKEND)
+    def test_purges_clean_worktree_of_ignored_ticket(self) -> None:
+        from teatree.core.models import Worktree  # noqa: PLC0415
+
+        ticket = self._ignored_ticket_with_worktree()
+        # Fully push the branch so nothing is at risk.
+        self._commit_in_worktree("pushed work")
+        _run_git("push", "-q", "origin", self.branch, cwd=self.wt_path)
+        _run_git("fetch", "-q", "origin", cwd=self.repo_main)
+        # A stale, never-ended Session pins the ticket ACTIVE on the ad-hoc path.
+        Session.objects.create(overlay="test", ticket=ticket)
+
+        with self._patched_clone_root():
+            result = execute_teardown.enqueue(ticket.pk)
+
+        assert result.return_value["ok"] is True, result.return_value["detail"]
+        assert not self.wt_path.exists(), "clean pushed worktree of an IGNORED ticket was not purged"
+        assert not Worktree.objects.filter(branch=self.branch).exists()
+
+    @override_settings(**IMMEDIATE_BACKEND)
+    def test_keeps_unpushed_unique_commits_on_terminal_purge(self) -> None:
+        from teatree.core.models import Worktree  # noqa: PLC0415
+
+        ticket = self._ignored_ticket_with_worktree()
+        # A commit on NO remote, not patch-id-equivalent to origin/main.
+        self._commit_in_worktree("genuinely unsynced work")
+
+        with self._patched_clone_root():
+            result = execute_teardown.enqueue(ticket.pk)
+
+        assert result.return_value["ok"] is False
+        assert self.branch in result.return_value["detail"]
+        assert "salvage" in result.return_value["detail"]
+        assert self.wt_path.exists(), "#706 guard breached: worktree with unpushed commits was destroyed"
+        assert Worktree.objects.filter(branch=self.branch).exists()
 
 
 class TestExecuteProvision(TestCase):

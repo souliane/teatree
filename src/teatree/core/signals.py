@@ -21,12 +21,12 @@ logger = logging.getLogger(__name__)
 # body (#2385: the body's intra-core up-edge into ``teatree.core.tasks`` is
 # severed; the enqueue is keyed here, looked up + enqueued after commit by the
 # post_transition receiver so the state change and the queued work still land
-# atomically). ``reconcile_merged`` mirrors ``mark_merged`` — both tear down.
+# atomically). Teardown is NOT keyed here — it is keyed on the TARGET STATE
+# (``_TERMINAL_TARGET_STATES``) so EVERY terminal transition purges, not just the
+# two merge names.
 _TICKET_TRANSITION_TASKS: dict[str, str] = {
     "start": "execute_provision",
     "ship": "execute_ship",
-    "mark_merged": "execute_teardown",
-    "reconcile_merged": "execute_teardown",
     "retrospect": "execute_retrospect",
 }
 
@@ -37,11 +37,12 @@ _WORKTREE_TRANSITION_TASKS: dict[str, str] = {
     "stop_services": "execute_worktree_stop",
 }
 
-# A ticket reaching one of these frees its issue-implementer marker from the
-# single-ticket in-flight budget — the release-on-completion the lifecycle lacked.
-_MARKER_RELEASE_TARGET_STATES: frozenset[str] = frozenset(
-    {Ticket.State.MERGED, Ticket.State.DELIVERED, Ticket.State.IGNORED}
-)
+# The terminal target states that trigger completion-time side effects: freeing
+# the issue-implementer marker AND purging the ticket's worktrees. Mirrors
+# ``worktree_done._DONE_TICKET_STATES`` — SHIPPED is excluded (its PR is still
+# open, so the work is not finished), which is exactly ``Ticket`` terminal states
+# minus SHIPPED.
+_TERMINAL_TARGET_STATES: frozenset[str] = frozenset({Ticket.State.MERGED, Ticket.State.DELIVERED, Ticket.State.IGNORED})
 
 
 def _log_ticket_transition(
@@ -269,9 +270,20 @@ def _enqueue_ticket_transition_task(
     sender: type,  # noqa: ARG001 — Django signal receiver signature requires sender even when unused
     instance: Ticket,
     name: str,
+    target: str,
     **_kwargs: object,
 ) -> None:
     """Enqueue the ``@task`` worker a ticket FSM transition body used to enqueue.
+
+    Two keying strategies compose. The NAME map (``_TICKET_TRANSITION_TASKS``)
+    covers transition-specific workers (``start``→provision, ``ship``→ship,
+    ``retrospect``→retrospect). Teardown is keyed on the TARGET STATE instead
+    (#808 derive-don't-enumerate): every transition landing in a terminal state
+    purges the ticket's worktrees the instant it is done — ``ignore``→IGNORED,
+    ``mark_delivered``/``mark_review_no_action``/``mark_reviewed_externally``→DELIVERED,
+    and the ``mark_merged``/``reconcile_merged``→MERGED merge paths — so a
+    frozen/closed ticket's worktrees are reaped rather than piling up. The reaper's
+    own analyze-before-wipe (#706) keeps any unsynced work regardless.
 
     The deferred import of the executor is call-time (mirroring
     ``_auto_enqueue_headless_task``), so a test patching ``tasks_mod.execute_*``
@@ -279,14 +291,16 @@ def _enqueue_ticket_transition_task(
     "state change + queued work land atomically" guarantee — the worker fires
     only after the transition's save commits.
     """
-    executor_name = _TICKET_TRANSITION_TASKS.get(name)
-    if executor_name is None:
-        return
     from teatree.core import tasks as tasks_mod  # noqa: PLC0415 — deferred: call-time import, kept lazy
 
-    executor = getattr(tasks_mod, executor_name)
     ticket_pk = int(instance.pk)
-    transaction.on_commit(lambda: executor.enqueue(ticket_pk))
+    executor_name = _TICKET_TRANSITION_TASKS.get(name)
+    if executor_name is not None:
+        executor = getattr(tasks_mod, executor_name)
+        transaction.on_commit(lambda: executor.enqueue(ticket_pk))
+    if target in _TERMINAL_TARGET_STATES:
+        teardown = tasks_mod.execute_teardown
+        transaction.on_commit(lambda: teardown.enqueue(ticket_pk))
 
 
 def _enqueue_worktree_transition_task(
@@ -350,7 +364,7 @@ def _release_issue_markers_on_completion(
     is already terminal and carries distinct semantics. Best-effort: the FSM
     transition must never block on the marker update.
     """
-    if target not in _MARKER_RELEASE_TARGET_STATES or not instance.issue_url:
+    if target not in _TERMINAL_TARGET_STATES or not instance.issue_url:
         return
     try:
         ImplementedIssueMarker.objects.filter(issue_url=instance.issue_url).exclude(
