@@ -188,6 +188,12 @@ DEFAULT_LOOPS: tuple[LoopSeedSpec, ...] = (
         "maker pipeline; hourly, default-off behind a triple gate.",
     ),
     LoopSeedSpec(
+        "triage_assessor",
+        3600,
+        "Assesses OPEN needs-triage issues hourly and queues keep/close/needs-info recommendations "
+        "behind an ask-gate; default-off behind triage_assessor_enabled, never acts without per-item approval.",
+    ),
+    LoopSeedSpec(
         "housekeeping",
         3600,
         "Fast-forwards the editable teatree and overlay installs (self-update) and pulls "

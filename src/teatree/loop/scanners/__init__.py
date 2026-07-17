@@ -61,6 +61,7 @@ from teatree.loop.scanners.stale_tickets import StaleTicketsScanner
 from teatree.loop.scanners.task_sweep import TaskSweepScanner
 from teatree.loop.scanners.ticket_completion import TicketCompletionScanner
 from teatree.loop.scanners.ticket_dispositions import TicketDispositionScanner
+from teatree.loop.scanners.triage_assessor import TriageAssessorScanner
 from teatree.loop.scanners.undelivered_notify import UndeliveredNotifyScanner
 from teatree.loop.scanners.waiting_digest import WaitingDigestScanner
 from teatree.loop.scanners.work_state import WorkStateScanner
@@ -116,6 +117,7 @@ __all__ = [
     "TaskSweepScanner",
     "TicketCompletionScanner",
     "TicketDispositionScanner",
+    "TriageAssessorScanner",
     "UndeliveredNotifyScanner",
     "WaitingDigestScanner",
     "WorkStateScanner",

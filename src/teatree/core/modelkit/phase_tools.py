@@ -86,6 +86,10 @@ _TOOLS_BY_PHASE: Final[dict[str, frozenset[str]]] = {
     "codex_adversarial_reviewing": _READ_ONLY | _WEB,
     "requesting_review": _READ_ONLY,
     "scanning_news": _READ_ONLY | _WEB,
+    # The triage assessor reads local files/clone (Read/Grep) and WebFetches the
+    # public issue page; it is shell-denied and never acts — so read-only + web,
+    # NO shell/write. It hands recommendations back through the typed envelope.
+    "triage_assessing": _READ_ONLY | _WEB,
     "critic_reviewing": _READ_ONLY | _WEB,
     # North-star PR-6 directive interpreter: read-only + codebase search only — it
     # finds the real core seam and drafts a sketch, never edits or shells out.

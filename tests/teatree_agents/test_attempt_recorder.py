@@ -18,6 +18,7 @@ from teatree.core.models import (
     Directive,
     DirectiveDispatch,
     PendingArticleSuggestion,
+    PendingTriageRecommendation,
     Session,
     Task,
     TaskAttempt,
@@ -297,6 +298,69 @@ class TestScanningNewsEnvelopeChannel(TestCase):
         task.refresh_from_db()
         assert task.status == Task.Status.FAILED
         assert PendingArticleSuggestion.objects.count() == 0
+
+
+class TestTriageAssessingEnvelopeChannel(TestCase):
+    """A shell-denied triage_assessing agent hands recommendations back through the envelope (#9)."""
+
+    def _claimed(self) -> Task:
+        ticket = Ticket.objects.create(role=Ticket.Role.AUTHOR, state=Ticket.State.STARTED, overlay="acme")
+        session = Session.objects.create(ticket=ticket, agent_id="triage_assessing")
+        task = Task.objects.create(ticket=ticket, session=session, phase="triage_assessing")
+        task.claim(claimed_by="loop-slot")
+        return task
+
+    def test_recommendations_round_trip_to_pending_rows_and_one_question(self) -> None:
+        task = self._claimed()
+        record_result_envelope(
+            task,
+            {
+                "summary": "2 assessed",
+                "triage_recommendations": [
+                    {"issue_url": "https://ex.com/1", "verdict": "close", "rationale": "dupe"},
+                    {"issue_url": "https://ex.com/2", "verdict": "keep", "rationale": "still valid"},
+                ],
+            },
+        )
+        task.refresh_from_db()
+        assert task.status == Task.Status.COMPLETED
+        rows = PendingTriageRecommendation.objects.all()
+        assert rows.count() == 2
+        assert set(rows.values_list("issue_url", flat=True)) == {"https://ex.com/1", "https://ex.com/2"}
+        assert {row.overlay for row in rows} == {"acme"}
+        assert {row.status for row in rows} == {PendingTriageRecommendation.Status.PENDING}
+        # Exactly ONE DeferredQuestion DMs the batch, parked to the task.
+        question = DeferredQuestion.objects.get()
+        assert question.parked_task_id == task.pk
+        assert question.is_pending
+
+    def test_summary_only_triage_assessing_is_refused(self) -> None:
+        task = self._claimed()
+        record_result_envelope(task, {"summary": "assessed nothing"})
+        task.refresh_from_db()
+        assert task.status == Task.Status.FAILED
+        assert PendingTriageRecommendation.objects.count() == 0
+        assert DeferredQuestion.objects.count() == 0
+
+    def test_url_less_recommendations_fail_the_task_persisting_nothing(self) -> None:
+        task = self._claimed()
+        record_result_envelope(task, {"summary": "one", "triage_recommendations": [{"verdict": "close"}]})
+        task.refresh_from_db()
+        assert task.status == Task.Status.FAILED
+        assert PendingTriageRecommendation.objects.count() == 0
+        assert DeferredQuestion.objects.count() == 0
+
+    def test_unknown_verdict_recommendations_fail_the_task_persisting_nothing(self) -> None:
+        # The recorder drops an unknown verdict fail-closed; the gate matches, so a
+        # hand-back the recorder would drop entirely fails the task, not completes it.
+        task = self._claimed()
+        record_result_envelope(
+            task, {"summary": "one", "triage_recommendations": [{"issue_url": "https://ex.com/9", "verdict": "nuke"}]}
+        )
+        task.refresh_from_db()
+        assert task.status == Task.Status.FAILED
+        assert PendingTriageRecommendation.objects.count() == 0
+        assert DeferredQuestion.objects.count() == 0
 
 
 class TestAnsweringEnvelopeChannel(TestCase):

@@ -90,6 +90,7 @@ from teatree.core.models.outer_loop_experiment import (
 from teatree.core.models.pending_article_suggestion import PendingArticleSuggestion
 from teatree.core.models.pending_chat_injection import PendingChatInjection
 from teatree.core.models.pending_reinstall import PendingReinstall
+from teatree.core.models.pending_triage_recommendation import PendingTriageRecommendation
 from teatree.core.models.plan_artifact import PlanArtifact
 from teatree.core.models.project_learning import ProjectLearning, ProjectLearningManager
 from teatree.core.models.prompt import Prompt, PromptManager, PromptVersion, PromptVersionManager
@@ -245,6 +246,7 @@ __all__ = [
     "PendingArticleSuggestion",
     "PendingChatInjection",
     "PendingReinstall",
+    "PendingTriageRecommendation",
     "PlanArtifact",
     "PlanArtifactRef",
     "Ports",

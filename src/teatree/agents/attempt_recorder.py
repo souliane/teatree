@@ -28,8 +28,10 @@ from teatree.agents.result_schema import (
     AnswerEnvelope,
     ArticleSuggestion,
     ReviewVerdictEnvelope,
+    TriageRecommendation,
     answer_text,
     check_evidence,
+    recommendation_issue_url,
     suggestion_url,
 )
 from teatree.core.gates.critic_gate import record_returned_critic_verdict
@@ -39,6 +41,7 @@ from teatree.core.models import (
     DeferredQuestion,
     Finding,
     PendingArticleSuggestion,
+    PendingTriageRecommendation,
     ReviewLoop,
     ReviewLoopRound,
     ReviewVerdict,
@@ -172,6 +175,7 @@ def record_result_envelope(
 
     _maybe_record_plan_artifact(task, result, phase=phase)
     _maybe_record_article_suggestions(task, result, phase=phase)
+    _maybe_record_triage_recommendations(task, result, phase=phase)
     _maybe_record_answer_draft(task, result, phase=phase)
 
     attempt = TaskAttempt.objects.create(
@@ -355,6 +359,7 @@ def _maybe_record_plan_artifact(task: Task, result: AgentResultBlob, *, phase: s
 #: ``PHASE_REQUIRED_EVIDENCE`` gate has already refused a summary-only run before
 #: these fire, so the channel field is present and non-empty here.
 _SCANNING_NEWS_PHASE = "scanning_news"
+_TRIAGE_ASSESSING_PHASE = "triage_assessing"
 _ANSWERING_PHASE = "answering"
 
 
@@ -384,6 +389,58 @@ def _maybe_record_article_suggestions(task: Task, result: AgentResultBlob, *, ph
             summary=str(item.get("rationale") or ""),
             overlay=overlay,
         )
+
+
+def _maybe_record_triage_recommendations(task: Task, result: AgentResultBlob, *, phase: str) -> None:
+    """Persist a triage_assessing agent's returned ``triage_recommendations`` (corr-11, #9).
+
+    One ``PENDING`` :class:`PendingTriageRecommendation` per assessed issue, idempotent
+    by issue URL (a re-assessment never duplicates) and fail-closed on an unknown
+    verdict — the shell-denied assessor hands the batch back and the server persists
+    it. After at least one row is recorded, ONE
+    :class:`DeferredQuestion` DMs the user the batch summary (correlated to the task
+    via ``parked_task``, deduped per task so a resume never re-asks). **Nothing acts
+    autonomously**: the interactive ``t3:triaging-issues`` skill approves/acts. A
+    non-triage_assessing phase or a result with no ``triage_recommendations`` list is
+    a no-op.
+    """
+    if normalize_phase(phase or task.phase) != _TRIAGE_ASSESSING_PHASE:
+        return
+    recommendations = result.get("triage_recommendations")
+    if not isinstance(recommendations, list):
+        return
+    overlay = task.ticket.overlay
+    recorded = 0
+    for raw_item in recommendations:
+        issue_url = recommendation_issue_url(raw_item)
+        if not issue_url:
+            continue
+        item = cast("TriageRecommendation", raw_item)
+        raw_labels = item.get("suggested_labels")
+        labels = [s for s in raw_labels if isinstance(s, str)] if isinstance(raw_labels, list) else []
+        row = PendingTriageRecommendation.record_candidate(
+            issue_url=issue_url,
+            verdict=str(item.get("verdict") or ""),
+            title=str(item.get("title") or ""),
+            suggested_labels=labels,
+            priority=str(item.get("priority") or ""),
+            duplicate_of=str(item.get("duplicate_of") or ""),
+            rationale=str(item.get("rationale") or ""),
+            overlay=overlay,
+        )
+        if row is not None:
+            recorded += 1
+    if recorded == 0:
+        return
+    DeferredQuestion.record(
+        question=(
+            f"Triaged {recorded} open needs-triage issue(s). Review and approve/reject each "
+            f"recommendation with /t3:triaging-issues — nothing is acted on until you approve."
+        ),
+        session_id=task.claimed_by_session or "",
+        parked_task=task,
+        dedupe_marker=f"triage-batch-{task.pk}",
+    )
 
 
 def _maybe_record_answer_draft(task: Task, result: AgentResultBlob, *, phase: str) -> None:

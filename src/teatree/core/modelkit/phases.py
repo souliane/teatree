@@ -89,6 +89,13 @@ SUBAGENT_BY_PHASE: dict[tuple[str, str], str] = {
     ("author", "requesting_review"): "t3:review-request",
     ("author", "answering"): "t3:answerer",
     ("author", "scanning_news"): "t3:scanning-news",
+    # Orthogonal reactive phase (like ``scanning_news``): no FSM transition, so not
+    # in ``_PHASE_ALIASES``/``CANONICAL_PHASES``. The shell-denied triage assessor
+    # judges each OPEN needs-triage issue and RETURNS a typed
+    # ``triage_recommendations`` envelope the recorder persists behind the ask-gate;
+    # it never acts. Enters ``AGENT_ZONES`` via ``SUBAGENT_BY_PHASE.values()`` and is
+    # therefore auto in ``PERSISTED_AT_SOURCE_ZONES`` — there is no autonomous act path.
+    ("author", "triage_assessing"): "t3:triage-assessor",
     ("author", "e2e"): "t3:e2e",
     ("reviewer", "e2e_reviewing"): "t3:e2e-review",
     # Orthogonal reactive phase (like ``answering``/``scanning_news``): no FSM

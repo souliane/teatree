@@ -202,6 +202,9 @@ OVERLAY_OVERRIDABLE_SETTINGS: dict[str, Callable[[Any], Any]] = {
     "factory_score_enabled": _parse_strict_bool,
     "approved_recipe_sha": _parse_strict_str,
     "auto_disposition_max_closes_per_tick": _parse_strict_int,
+    "triage_assessor_enabled": _parse_strict_bool,
+    "triage_assessor_cadence_hours": _parse_strict_int,
+    "triage_assessor_max_issues_per_tick": _parse_strict_int,
     # Directive #2 DB-backup scanner knobs. Cadence / retention use the fail-SAFE
     # coercer (a non-positive or mistyped value degrades to the default), so the
     # "keep a week of backups" bound cannot be configured away to 0.
@@ -1416,6 +1419,17 @@ class _LoopFlagAndCredentialSettings:
     # Upper bound on close-candidate signals emitted per tick — keeps an
     # auto-close pass bounded and reviewable.
     auto_disposition_max_closes_per_tick: int = 5
+    # Opt-in, default-OFF gate for the needs-triage assessor loop. When False (the
+    # default) no scanner is built, so the loop emits nothing and never queues an
+    # assessment. When on, the scanner discovers OPEN needs-triage issues and queues
+    # ONE shell-denied assessment task behind an ask-gate — it performs ZERO host
+    # writes and NOTHING acts autonomously (per-item approval via t3:triaging-issues).
+    triage_assessor_enabled: bool = False
+    # Min interval between assessment passes (the scanner self-gates on this).
+    triage_assessor_cadence_hours: int = 24
+    # Upper bound on issues serialized into one queued assessment task — keeps the
+    # batch bounded and the DM reviewable.
+    triage_assessor_max_issues_per_tick: int = 10
     # Directive #2 — the periodic DB-backup scanner's config surface (the knobs
     # ship ahead of the Unit-18 scanner that reads them, so a later PR wires the
     # loop behind a governed, tested config seam rather than adding knobs and
