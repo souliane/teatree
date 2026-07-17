@@ -2372,6 +2372,23 @@ class TestPurityProofStructuralPrimitives:
         assert publish_surface._segment_is_publish_inert(["gh", "issue", "create"]) is False
         assert publish_surface._segment_is_publish_inert(["echo", "$(gh issue create)"]) is False
 
+    def test_filename_or_word_embedding_forge_letters_is_publish_inert(self) -> None:
+        # #3336: a token that merely EMBEDS the letters "gh"/"glab"/"curl" between
+        # alphanumerics (filenames, branches, English words) is not a forge call.
+        for token in ("insights.md", "feat/highlight", "lighthouse.config", "copyright.txt", "right", "tonight"):
+            assert publish_surface._segment_is_publish_inert(["git", "add", token]) is True, token
+        assert publish_surface._segment_is_publish_inert(["npx", "lighthouse", "ci"]) is True
+        assert publish_surface._segment_is_publish_inert(["git", "push", "origin", "feat/highlight"]) is True
+
+    def test_forge_marker_at_a_boundary_stays_non_inert(self) -> None:
+        # #3336: the boundary-delimited marker still catches a real forge call in
+        # any position -- bare, absolute path, transport string, underscore-glued
+        # (fail-closed toward the block) -- so the anti-hiding property survives.
+        assert publish_surface._segment_is_publish_inert(["/usr/bin/gh", "issue", "create"]) is False
+        assert publish_surface._segment_is_publish_inert(["sh", "-c", 'gh issue create --body "x"']) is False
+        assert publish_surface._segment_is_publish_inert(["curl", "-X", "POST", "https://h/x"]) is False
+        assert publish_surface._segment_is_publish_inert(["echo", "run_gh"]) is False
+
 
 class TestPurityProofIsTheDecisionPath:
     """Meta-test: the carve-out decides via the prove-pure ALLOWLIST predicate.
