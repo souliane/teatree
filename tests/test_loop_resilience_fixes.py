@@ -237,6 +237,7 @@ class TestF7PrSweepBoundSquashSurfacesSha(TestCase):
     def test_bound_merge_returns_non_empty_sha_on_success(self) -> None:
         from unittest.mock import patch  # noqa: PLC0415
 
+        from teatree.core.review import author_trust  # noqa: PLC0415
         from teatree.loop.scanners.pr_sweep_adapters import GhPrApiClient  # noqa: PLC0415
         from tests.teatree_core.conftest import seed_merge_safe_verdict  # noqa: PLC0415
 
@@ -255,12 +256,19 @@ class TestF7PrSweepBoundSquashSurfacesSha(TestCase):
         client = GhPrApiClient(token="")
         # The #18 floor re-reads the live not-draft + required-checks state at the
         # merge chokepoint; a non-draft, green head clears it so the bound merge's
-        # sha-fallback contract is what gets exercised here.
+        # sha-fallback contract is what gets exercised here. #3313 hardened the
+        # #3244 provenance gate so a same-repo head is no longer trusted
+        # unconditionally — it is conjoined with the identity+visibility author
+        # check (mirroring test_merge_execution_author_gate's
+        # test_same_repo_on_internal_repo_passes). This test is about the
+        # SHA-fallback contract, not provenance, so it takes the internal-repo
+        # bypass rather than asserting on a specific trusted author.
         with (
             patch("teatree.backends.forge_merge_rpc.gh_runner", return_value=_gh),
             patch("teatree.core.merge.ci_rollup.CodeHostQuery.pr_is_draft", return_value=False),
             patch("teatree.core.merge.ci_rollup.CodeHostQuery.required_checks_status", return_value="green"),
             patch("teatree.core.merge.ci_rollup.CodeHostQuery.pr_same_repo", return_value=True),
+            patch.object(author_trust, "repo_is_internal", return_value=True),
         ):
             ok, sha = client.merge_pr_squash_bound(slug="owner/repo", pr_id=42, expected_head_oid=expected)
 
