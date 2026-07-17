@@ -275,7 +275,7 @@ _AGENTS_DIR = Path(__file__).resolve().parents[2] / "agents"
 #: The shell-denied reactive phases whose headless agents hand work back through
 #: the result envelope (DIS-B, #9). Their briefs must not promise the shell the
 #: lane strips, or the article-ideas / approved-reply silent-drop class returns.
-_ENVELOPE_SHELL_DENIED_PHASES = ("scanning_news", "answering")
+_ENVELOPE_SHELL_DENIED_PHASES = ("scanning_news", "answering", "triage_assessing")
 
 
 def _agent_allowlist_tools(agent_file_stem: str) -> frozenset[str] | None:

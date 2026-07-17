@@ -14,15 +14,19 @@ from teatree.core.backend_factory import OverlayBackends, messaging_from_overlay
 from teatree.core.backend_protocols import MessagingBackend
 from teatree.core.modelkit.notify_policy import NotifyAudience
 from teatree.core.notify import NotifyKind, resolve_user_id
+from teatree.loop.domain_optional_scanner_jobs import (
+    _arch_review_jobs_for_overlay,
+    _audit_jobs_for_overlay,
+    _housekeeping_jobs_for_overlay,
+    _issue_disposition_jobs_for_overlay,
+    _issue_implementer_jobs_for_overlay,
+    _triage_assessor_jobs_for_overlay,
+)
 from teatree.loop.job_identity import PER_OVERLAY_DOMAINS, Domain, _ScannerJob
 from teatree.loop.scanner_factories import (
-    _architectural_review_scanner_for,
     _codex_review_scanner_for,
     _competing_url_prefixes,
-    _issue_disposition_scanner_for,
-    _issue_implementer_scanner_for,
     _pr_sweep_scanner_for,
-    _pull_main_clone_scanner_for,
     _slack_broadcasts_scanner_for,
     _task_sweep_scanner_for,
 )
@@ -46,7 +50,6 @@ from teatree.loop.scanners import (
     ReviewerPrsScanner,
     ReviewNagScanner,
     ReviewRequestMergeReactScanner,
-    Scanner,
     ScanSignal,
     SlackDmInboundScanner,
     SlackMentionsScanner,
@@ -310,58 +313,6 @@ def _inbox_jobs_for_overlay(backend: OverlayBackends) -> list[_ScannerJob]:
     return _messaging_jobs_for_backend(backend, backend.name, include_review_nag=False)
 
 
-def _arch_review_jobs_for_overlay(backend: OverlayBackends) -> list[_ScannerJob]:
-    """Periodic architectural-review scanner (core platform cadence)."""
-    scanner = _architectural_review_scanner_for(backend)
-    if scanner is None:
-        return []
-    return [_ScannerJob(scanner=scanner, overlay=backend.name)]
-
-
-def _audit_jobs_for_overlay(backend: OverlayBackends) -> list[_ScannerJob]:
-    """Failed-E2E Slack-post scanner driven by overlay watchers (#1295 cap E)."""
-    scanner = _failed_e2e_scanner_for(backend)
-    if scanner is None:
-        return []
-    return [_ScannerJob(scanner=scanner, overlay=backend.name)]
-
-
-def _housekeeping_jobs_for_overlay(backend: OverlayBackends) -> list[_ScannerJob]:
-    """Per-overlay pull-main-clone scanner (workspace-repo fast-forward)."""
-    scanner = _pull_main_clone_scanner_for(backend)
-    if scanner is None:
-        return []
-    return [_ScannerJob(scanner=scanner, overlay=backend.name)]
-
-
-def _issue_implementer_jobs_for_overlay(backend: OverlayBackends) -> list[_ScannerJob]:
-    """Per-overlay issue-implementer scanner behind the default-OFF triple gate (#1553).
-
-    Empty by default — :func:`_issue_implementer_scanner_for` returns
-    ``None`` unless the overlay opts in and has in-flight budget — so this
-    domain slice contributes nothing to either fan-out path until an overlay
-    enables the loop, keeping the registry/legacy parity green.
-    """
-    scanner = _issue_implementer_scanner_for(backend)
-    if scanner is None:
-        return []
-    return [_ScannerJob(scanner=scanner, overlay=backend.name)]
-
-
-def _issue_disposition_jobs_for_overlay(backend: OverlayBackends) -> list[_ScannerJob]:
-    """Per-overlay issue-disposition scanner behind the default-OFF gate (#2122).
-
-    Empty by default — :func:`_issue_disposition_scanner_for` returns ``None``
-    unless the overlay opts in (``auto_disposition_enabled``) — so this domain
-    slice contributes nothing to either fan-out path until an overlay enables
-    the triage scanner, keeping the registry/legacy parity green.
-    """
-    scanner = _issue_disposition_scanner_for(backend)
-    if scanner is None:
-        return []
-    return [_ScannerJob(scanner=scanner, overlay=backend.name)]
-
-
 def _identity_groups_for_overlay(backend: OverlayBackends) -> tuple[tuple[str, ...], ...]:
     """Resolve disposition identity-alias groups with the multi-identity self-group fallback (#1113)."""
     groups = _identity_alias_groups_for_overlay(backend.name, backend)
@@ -391,6 +342,7 @@ _PER_OVERLAY_DOMAIN_BUILDERS: dict[Domain, _OverlayDomainBuilder] = {
     Domain.HOUSEKEEPING: _housekeeping_jobs_for_overlay,
     Domain.ISSUE_IMPLEMENTER: _issue_implementer_jobs_for_overlay,
     Domain.ISSUE_DISPOSITION: _issue_disposition_jobs_for_overlay,
+    Domain.TRIAGE_ASSESSOR: _triage_assessor_jobs_for_overlay,
 }
 
 
@@ -497,13 +449,6 @@ def _notify_scanner_error(*, label: str, exc: ScannerError, overlay: str) -> Non
         notify_with_fallback(text, kind=NotifyKind.INFO, idempotency_key=key, audience=NotifyAudience.OWNER_ESCALATION)
     except Exception:
         logger.exception("Scanner-error notify_with_fallback failed for %s", label)
-
-
-def _failed_e2e_scanner_for(backend: OverlayBackends) -> Scanner | None:
-    """Build a per-overlay failed-E2E scanner from overlay watchers (#1295 cap E)."""
-    from teatree.loop.scanners.failed_e2e_posts import failed_e2e_scanner_for  # noqa: PLC0415 — tick-time import
-
-    return failed_e2e_scanner_for(backend)
 
 
 def _inbound_messaging_jobs(messaging: MessagingBackend, tag: str) -> list[_ScannerJob]:

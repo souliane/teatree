@@ -40,6 +40,7 @@ from teatree.loop.scanners import (
     SlackBroadcastsScanner,
     SlackMergeNotifier,
     TaskSweepScanner,
+    TriageAssessorScanner,
 )
 from teatree.loop.substrate_pinger import NotifyWithFallbackSubstratePinger
 
@@ -440,6 +441,34 @@ def _issue_disposition_scanner_for(backend: OverlayBackends) -> IssueDisposition
         identities=backend.identities,
         max_closes_per_tick=settings.auto_disposition_max_closes_per_tick,
         path_exists=path_exists,
+    )
+
+
+def _triage_assessor_scanner_for(backend: OverlayBackends) -> TriageAssessorScanner | None:
+    """Build a per-overlay triage-assessor scanner behind the default-OFF gate.
+
+    Returns a scanner ONLY when ``triage_assessor_enabled`` is flipped on for this
+    overlay. With the default-OFF config no scanner is built, so neither
+    ``build_loop_table_jobs`` nor ``build_default_jobs`` emits anything for this
+    domain — the fan-out stays byte-for-byte unchanged until an overlay opts in.
+
+    ``None`` also when the overlay has no code host (nothing to list issues on).
+    The cadence / per-tick bound / operator identities are threaded from effective
+    settings; the scanner never writes to the host — it only queues an assessment
+    task behind the ask-gate.
+    """
+    settings = _effective_settings_for_overlay(backend.name)
+    if not settings.triage_assessor_enabled:
+        return None
+    code_host = backend.host
+    if code_host is None:
+        return None
+    return TriageAssessorScanner(
+        host=code_host,
+        overlay_name=backend.name,
+        identities=backend.identities,
+        cadence_hours=settings.triage_assessor_cadence_hours,
+        max_issues_per_tick=settings.triage_assessor_max_issues_per_tick,
     )
 
 

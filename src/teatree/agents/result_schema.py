@@ -56,6 +56,27 @@ class ArticleSuggestion(TypedDict, total=False):
     rationale: str
 
 
+class TriageRecommendation(TypedDict, total=False):
+    """One assessed ``needs-triage`` issue a shell-denied triage_assessing agent hands back.
+
+    The headless ``triage_assessing`` phase cannot run ``gh`` to act on an issue, so
+    it RETURNS these instead: the recorder creates one
+    :class:`~teatree.core.models.pending_triage_recommendation.PendingTriageRecommendation`
+    per item behind the ask-gate (idempotent by ``issue_url``) plus one
+    :class:`~teatree.core.models.deferred_question.DeferredQuestion` DMing the user.
+    Nothing acts autonomously. ``verdict`` is ``keep`` / ``close`` / ``needs_info``;
+    ``rationale`` is the one-line why. ``duplicate_of`` names the superseding issue
+    when the verdict is a duplicate-close.
+    """
+
+    issue_url: str
+    verdict: str
+    suggested_labels: list[str]
+    priority: str
+    duplicate_of: str
+    rationale: str
+
+
 class AnswerEnvelope(TypedDict, total=False):
     """A shell-denied answering agent's drafted reply, handed back for approval (#9).
 
@@ -168,6 +189,7 @@ class AgentResult(TypedDict, total=False):
     directive_interpretation: "DirectiveInterpretationEnvelope"
     directive_candidate: "DirectiveCandidateEnvelope"
     article_suggestions: list[ArticleSuggestion]
+    triage_recommendations: list[TriageRecommendation]
     answer: AnswerEnvelope
     needs_user_input: bool
     user_input_reason: str
@@ -306,6 +328,22 @@ RESULT_JSON_SCHEMA: dict[str, object] = {
                 "required": ["url"],
             },
         },
+        "triage_recommendations": {
+            "type": "array",
+            "description": "Assessed needs-triage issues a shell-denied assessor hands back for approval.",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "issue_url": {"type": "string"},
+                    "verdict": {"type": "string", "enum": ["keep", "close", "needs_info"]},
+                    "suggested_labels": {"type": "array", "items": {"type": "string"}},
+                    "priority": {"type": "string"},
+                    "duplicate_of": {"type": "string"},
+                    "rationale": {"type": "string"},
+                },
+                "required": ["issue_url", "verdict"],
+            },
+        },
         "answer": {
             "type": "object",
             "description": "A shell-denied answering agent's drafted reply, handed back for approval-gated posting.",
@@ -366,6 +404,7 @@ PHASE_REQUIRED_EVIDENCE: dict[str, tuple[str, ...]] = {
     "directive_reading": ("directive_candidate",),
     "shipping": ("commands_executed",),
     "scanning_news": ("article_suggestions",),
+    "triage_assessing": ("triage_recommendations",),
     "answering": ("answer",),
 }
 
@@ -395,6 +434,36 @@ def answer_text(answer: object) -> str:
     if not isinstance(answer, dict):
         return ""
     return str(cast("AnswerEnvelope", answer).get("text") or "").strip()
+
+
+def recommendation_issue_url(item: object) -> str:
+    """The persistable issue URL of one triage recommendation, or ``""`` if absent.
+
+    The single URL extractor BOTH the evidence gate and ``record_result_envelope``
+    call, so "the gate passed" and "the recorder wrote a row" cannot disagree on
+    what counts as a real recommendation — the #9 gate/recorder-drift hardening.
+    """
+    if not isinstance(item, dict):
+        return ""
+    return str(cast("TriageRecommendation", item).get("issue_url") or "").strip()
+
+
+def recommendation_persists(item: object) -> bool:
+    """Whether one triage recommendation carries what the recorder actually PERSISTS.
+
+    The recorder writes a row ONLY for an item with a non-empty ``issue_url`` AND a
+    verdict in :data:`~teatree.core.models.pending_triage_recommendation.VALID_TRIAGE_VERDICTS`
+    (an unknown verdict is dropped fail-closed). This predicate matches that exactly
+    so the evidence gate can never pass an envelope the recorder would drop entirely.
+    """
+    from teatree.core.models.pending_triage_recommendation import (  # noqa: PLC0415 — ORM/app-registry
+        VALID_TRIAGE_VERDICTS,
+    )
+
+    if not recommendation_issue_url(item):
+        return False
+    verdict = str(cast("TriageRecommendation", item).get("verdict") or "").strip().lower()
+    return verdict in VALID_TRIAGE_VERDICTS
 
 
 def candidate_carries_payload(envelope: object) -> bool:
@@ -438,6 +507,7 @@ def interpretation_carries_payload(envelope: object) -> bool:
 #: persisted work — the exact silent-drop class #9 closes.
 _FIELD_PERSISTS: dict[str, Callable[[object], bool]] = {
     "article_suggestions": lambda v: isinstance(v, list) and any(suggestion_url(item) for item in v),
+    "triage_recommendations": lambda v: isinstance(v, list) and any(recommendation_persists(item) for item in v),
     "answer": lambda v: bool(answer_text(v)),
     "directive_interpretation": interpretation_carries_payload,
     "directive_candidate": candidate_carries_payload,

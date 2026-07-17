@@ -192,6 +192,17 @@ class TestSeedDefaultLoops(django.test.TestCase):
         seed_default_loops_and_prompts()
         assert Loop.objects.get(name="ship").colleague_facing is False
 
+    def test_triage_assessor_seed_is_paused_and_not_colleague_facing(self) -> None:
+        # The needs-triage assessor loop is opt-in (default-off behind
+        # triage_assessor_enabled) and reads no colleague surface, so it seeds
+        # paused, script-backed, and colleague_facing=False.
+        seed_default_loops_and_prompts()
+        loop = Loop.objects.get(name="triage_assessor")
+        assert loop.enabled is False
+        assert loop.colleague_facing is False
+        assert loop.script == "src/teatree/loops/triage_assessor/loop.py"
+        assert loop.prompt_id is None
+
     def test_seed_preserves_operator_edited_colleague_facing_flag(self) -> None:
         seed_default_loops_and_prompts()
         # Operator flips inbox (default False) to colleague-facing; re-seeding

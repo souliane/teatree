@@ -40,6 +40,7 @@ Source: `skills/*/SKILL.md` frontmatter
 | `test` | Testing, QA, and CI — running tests, analyzing failures, quality checks, CI interaction, test plans, and posting testing evidence |
 | `ticket` | Ticket intake and kickoff — from zero to ready-to-code |
 | `todos` | List the current session's tasks/todos — terse, grouped pending / in_progress / completed, with clickable refs |
+| `triaging-issues` | Review and act on the needs-triage assessor's queued recommendations — list PENDING PendingTriageRecommendation rows, approve or reject each, and on approval run `gh issue close/edit/comment` then stamp the row |
 | `update` | WHEN to bring teatree core and registered overlays up to date with their default branch, and the safety guarantees of doing so |
 | `wip` | The bounded-WIP throughput dial — slow / medium / full / boost. `boost` keeps `boost_concurrency = N` workers live, refilling the pool each tick; `full` arms a self-sustaining boost loop; `medium` (baseline) and `slow` cap concurrency |
 | `workspace` | Environment and workspace lifecycle — worktree creation, setup, DB provisioning, dev servers, cleanup |

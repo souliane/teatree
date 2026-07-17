@@ -250,3 +250,47 @@ class IssueImplementerDomainPartitionTestCase(TestCase):
                 for job in jobs_for_domain(domain, backend, all_backends=(backend,)):
                     counts[_signature(job)] += 1
         assert not {sig for sig, n in counts.items() if n > 1}
+
+
+class TriageAssessorDomainPartitionTestCase(TestCase):
+    """``TRIAGE_ASSESSOR`` joins the partition without breaking it.
+
+    Default-OFF: :func:`_triage_assessor_scanner_for` returns ``None`` unless an
+    overlay opts in, so the per-overlay sum stays byte-for-byte equal to the legacy
+    builder by default. When enabled it owns exactly the one scanner the partition
+    seam emits — the single source both fan-out paths consume.
+    """
+
+    @staticmethod
+    def _backend() -> OverlayBackends:
+        host = MagicMock(spec=CodeHostBackend)
+        return OverlayBackends(
+            name="teatree",
+            hosts=(host,),
+            messaging=MagicMock(spec=MessagingBackend),
+            ready_labels=("ready",),
+            identities=("alice",),
+        )
+
+    def test_member_of_per_overlay_partition(self) -> None:
+        assert Domain.TRIAGE_ASSESSOR in PER_OVERLAY_DOMAINS
+
+    def test_disabled_slice_is_empty_so_partition_sum_is_unchanged(self) -> None:
+        backend = self._backend()
+        with patch(_SETTINGS_PATCH_TARGET, return_value=UserSettings()):
+            assert jobs_for_domain(Domain.TRIAGE_ASSESSOR, backend) == []
+            partitioned: list[Any] = []
+            for domain in PER_OVERLAY_DOMAINS:
+                partitioned.extend(jobs_for_domain(domain, backend, all_backends=(backend,)))
+            legacy = _jobs_for_overlay_backend(backend, all_backends=(backend,))
+        assert sorted(map(_signature, partitioned), key=repr) == sorted(map(_signature, legacy), key=repr)
+
+    def test_enabled_slice_owns_exactly_the_triage_assessor_scanner(self) -> None:
+        backend = self._backend()
+        with patch(_SETTINGS_PATCH_TARGET, return_value=UserSettings(triage_assessor_enabled=True)):
+            slice_jobs = jobs_for_domain(Domain.TRIAGE_ASSESSOR, backend)
+            legacy = _jobs_for_overlay_backend(backend, all_backends=(backend,))
+        assert [job.scanner.name for job in slice_jobs] == ["triage_assessor"]
+        legacy_ta = [j for j in legacy if j.scanner.name == "triage_assessor"]
+        assert len(legacy_ta) == 1
+        assert _signature(legacy_ta[0]) == _signature(slice_jobs[0])

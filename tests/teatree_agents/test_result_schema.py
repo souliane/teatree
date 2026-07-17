@@ -35,6 +35,62 @@ class TestEnvelopeChannelSchema:
         assert answer["required"] == ["text"]
 
 
+class TestTriageRecommendationSchema:
+    def test_triage_recommendations_is_a_schema_key(self) -> None:
+        assert "triage_recommendations" in _PROPERTIES
+
+    def test_triage_recommendation_items_carry_the_typed_shape(self) -> None:
+        item = _PROPERTIES["triage_recommendations"]["items"]
+        assert set(item["properties"]) == {
+            "issue_url",
+            "verdict",
+            "suggested_labels",
+            "priority",
+            "duplicate_of",
+            "rationale",
+        }
+        assert item["required"] == ["issue_url", "verdict"]
+        assert item["properties"]["verdict"]["enum"] == ["keep", "close", "needs_info"]
+
+
+class TestTriageAssessingEvidenceGate:
+    def test_triage_assessing_requires_its_envelope_channel(self) -> None:
+        assert required_evidence_for_phase("triage_assessing") == ("triage_recommendations",)
+
+    def test_summary_only_is_missing_evidence(self) -> None:
+        assert check_evidence({"summary": "assessed 3"}, "triage_assessing")
+        satisfied = check_evidence(
+            {"summary": "x", "triage_recommendations": [{"issue_url": "https://e/1", "verdict": "close"}]},
+            "triage_assessing",
+        )
+        assert satisfied == ""
+
+    def test_empty_channel_does_not_satisfy_the_gate(self) -> None:
+        assert check_evidence({"triage_recommendations": []}, "triage_assessing")
+
+    def test_url_less_recommendations_do_not_satisfy_the_gate(self) -> None:
+        # The recorder skips any item with no issue_url, so a run that would persist
+        # ZERO rows is refused, not greened.
+        assert check_evidence({"triage_recommendations": [{"verdict": "close"}]}, "triage_assessing")
+
+    def test_unknown_verdict_recommendations_do_not_satisfy_the_gate(self) -> None:
+        # The recorder drops an unknown verdict fail-closed, so the gate must match:
+        # a nonempty-but-bad-verdict hand-back the recorder would drop is refused.
+        assert check_evidence(
+            {"triage_recommendations": [{"issue_url": "https://e/1", "verdict": "nuke"}]}, "triage_assessing"
+        )
+        mixed = check_evidence(
+            {
+                "triage_recommendations": [
+                    {"issue_url": "https://e/1", "verdict": "nuke"},
+                    {"issue_url": "https://e/2", "verdict": "keep"},
+                ]
+            },
+            "triage_assessing",
+        )
+        assert mixed == ""
+
+
 class TestShellDeniedPhaseEvidenceGate:
     def test_reactive_phases_require_their_envelope_channel(self) -> None:
         assert required_evidence_for_phase("scanning_news") == ("article_suggestions",)

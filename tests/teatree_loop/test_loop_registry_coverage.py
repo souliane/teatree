@@ -219,6 +219,6 @@ class TestRevivedLoopsDefaultOff:
         backend = self._stub_backend()
         fake = MagicMock()
         fake.name = "issue_disposition"
-        with patch("teatree.loop.domain_jobs._issue_disposition_scanner_for", return_value=fake):
+        with patch("teatree.loop.domain_optional_scanner_jobs._issue_disposition_scanner_for", return_value=fake):
             jobs = ISSUE_DISPOSITION_LOOP.build_jobs(backends=[backend])
         assert [job.scanner for job in jobs] == [fake]
