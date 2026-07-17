@@ -7,6 +7,7 @@ those belong to later phases.
 """
 
 import os
+import time
 from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass, field
 
@@ -29,12 +30,16 @@ def scan_phase(
     *,
     per_job_timeout: float = _DEFAULT_PER_JOB_TIMEOUT,
 ) -> ScanOutcome:
-    """Fan out scanner jobs across a bounded thread pool.
+    """Fan out scanner jobs across a bounded thread pool under ONE shared deadline.
 
-    Each job is given at most *per_job_timeout* seconds.  A job that exceeds
-    its budget is recorded as a timed-out error for that scanner label; the
-    tick continues with the remaining results.  The pool is shut down without
-    waiting for still-running threads so a hung scanner cannot freeze the tick.
+    The whole scan phase is bounded by a single *per_job_timeout*-second ABSOLUTE
+    deadline, not a fresh per-job timeout applied sequentially: waiting on each future
+    with its own full timeout charged N x *per_job_timeout* in the worst case, so a few
+    hung scanners could pin the tick subprocess (and one of the worker's scarce pinned
+    executor slots) for minutes. Each future is now waited on for only the time REMAINING
+    until the shared deadline; a job past it is recorded as a timed-out error for that
+    scanner label and the tick continues.  The pool is shut down without waiting for
+    still-running threads so a hung scanner cannot freeze the tick.
     """
     outcome = ScanOutcome()
     if not jobs:
@@ -45,10 +50,12 @@ def scan_phase(
     future_to_label: dict[Future[tuple[str, list[ScanSignal], str]], str] = {
         pool.submit(_run_job, job): job.scanner.name for job in jobs
     }
+    deadline = time.monotonic() + per_job_timeout
     try:
         for future, label in future_to_label.items():
             try:
-                job_label, signals, error = future.result(timeout=per_job_timeout)
+                remaining = max(0.0, deadline - time.monotonic())
+                job_label, signals, error = future.result(timeout=remaining)
                 outcome.signals.extend(signals)
                 if error:
                     outcome.errors[job_label] = error

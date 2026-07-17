@@ -152,9 +152,11 @@ def run_tick(
     """
     request = request or TickRequest()
     started_at = now or dt.datetime.now(dt.UTC)
-    _reap_stale_task_claims()
-    jobs = _resolve_jobs(request, started_at, jobs_builder)
     report = TickReport(started_at=started_at)
+    # Recover BEFORE scanners fan out, recording any sweep failure into the report so a
+    # broken recovery surfaces in action_needed instead of freezing the factory silently.
+    _reap_stale_task_claims(report.errors)
+    jobs = _resolve_jobs(request, started_at, jobs_builder)
     if jobs:
         split = sweep_phase(jobs)
         outcome = scan_phase(split.scan_jobs + split.sweep_jobs)

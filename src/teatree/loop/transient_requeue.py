@@ -20,8 +20,16 @@ refusal (the coder emitted no trailing ``files_modified`` JSON) gets exactly ONE
 bounded corrective retry — reopened with the emit-the-envelope instruction
 appended to its prompt. Any other deterministic failure, and any envelope refusal
 that already spent its one corrective retry, is escalated via the SAME
-:class:`DeferredQuestion` path. The invariant: a terminal FAILED task on a
-non-terminal ticket ALWAYS escalates or retries-once, never freezes silently.
+:class:`DeferredQuestion` path. An EMPTY-error FAILED task (no recorded error at
+all — neither transient nor deterministic) would otherwise match no branch and
+freeze silently; it is routed straight to the escalation path. The invariant: a
+terminal FAILED task on a non-terminal ticket ALWAYS escalates or retries-once,
+never freezes silently.
+
+A once-escalated task is stamped (:data:`_HALT_STAMP` in ``execution_reason``) and
+excluded from every subsequent scan, so the dead-letter set never grows the per-tick
+work unboundedly and an answered/dismissed question can never resurrect a fresh
+escalation for the same halted row.
 
 Lives in ``teatree.loop`` (orchestration): it needs both the transient classifier
 (``teatree.agents``) and the ``Task`` model (``teatree.core.models``), which sit
@@ -41,6 +49,10 @@ from teatree.core.repair_loop import IterationStalled, MaxIterationsExceeded, re
 logger = logging.getLogger(__name__)
 
 _ESCALATION_MARKER = "[repair-halt task={pk}]"
+#: Stamped onto ``execution_reason`` when a task is escalated (dead-lettered), so it
+#: is excluded from every future scan — bounds per-tick work and makes the escalation
+#: durably once-per-task regardless of whether the question is later answered.
+_HALT_STAMP = "[repair-halt-parked]"
 
 #: Phases whose omitted-envelope refusal earns the one-shot corrective retry.
 _CORRECTIVE_PHASES = frozenset({"coding", "debugging"})
@@ -61,21 +73,31 @@ _ENVELOPE_REFUSAL_MARKERS = (
 
 
 def requeue_transient_failed() -> int:
-    """Reopen transient-FAILED tasks within budget; corrective-retry-or-escalate deterministic ones.
+    """Reopen transient-FAILED tasks within budget; corrective-retry-or-escalate the rest.
 
     Returns the count of tasks reopened (transient reopens + corrective retries).
     A terminal FAILED task on a non-terminal ticket is NEVER left silent: it is
-    reopened, corrective-retried once, or escalated via ``DeferredQuestion``.
+    reopened, corrective-retried once, or escalated via ``DeferredQuestion`` — an
+    empty-error task (no recorded error) escalates rather than freezing.
+
+    The FAILED set is loaded ONCE with its attempts prefetched (no per-task N+1) and
+    already-parked rows excluded, so the per-tick cost stays bounded as dead letters
+    accumulate.
     """
     reopened = 0
-    for task in _transient_failed_candidates():
-        halt = _budget_halt_reason(task)
-        if halt is None:
-            reopened += _reopen(task)
+    for task in _non_terminal_failed_tasks():
+        error = _latest_error(task)
+        if not error:
+            # No recorded error → neither transient nor deterministic; must not freeze.
+            _escalate_once(task, reason="failed with no recorded error")
+        elif is_transient_failure(error):
+            halt = _budget_halt_reason(task)
+            if halt is None:
+                reopened += _reopen(task)
+            else:
+                _escalate_once(task, reason=halt)
         else:
-            _escalate_once(task, reason=halt)
-    for task in _deterministic_failed_candidates():
-        reopened += _handle_deterministic(task)
+            reopened += _handle_deterministic(task)
     return reopened
 
 
@@ -122,29 +144,25 @@ def _corrective_reopen(task: Task) -> int:
 
 
 def _latest_error(task: Task) -> str:
-    last = task.attempts.order_by("-pk").first()  # ty: ignore[unresolved-attribute]  # Django reverse FK
-    return last.error if last is not None else ""
-
-
-def _transient_failed_candidates() -> list[Task]:
-    """FAILED tasks on a non-terminal ticket whose LATEST attempt is a transient failure."""
-    return [task for task in _non_terminal_failed_tasks() if is_transient_failure(_latest_error(task))]
-
-
-def _deterministic_failed_candidates() -> list[Task]:
-    """FAILED tasks on a non-terminal ticket whose LATEST attempt is a DETERMINISTIC failure."""
-    return [
-        task
-        for task in _non_terminal_failed_tasks()
-        if _latest_error(task) and not is_transient_failure(_latest_error(task))
-    ]
+    """The newest attempt's error, read from the prefetched ``attempts`` (no extra query)."""
+    attempts = sorted(task.attempts.all(), key=lambda a: a.pk)  # ty: ignore[unresolved-attribute]  # Django reverse FK
+    return attempts[-1].error if attempts else ""
 
 
 def _non_terminal_failed_tasks() -> list[Task]:
+    """FAILED tasks on a non-terminal ticket, minus already-parked rows, attempts prefetched.
+
+    Excluding :data:`_HALT_STAMP`-stamped rows keeps the per-tick scan bounded as
+    dead letters pile up (a monotonically growing FAILED set would otherwise degrade
+    tick latency linearly); prefetching ``attempts`` removes the per-task N+1 that
+    :func:`_latest_error` would otherwise issue for every FAILED row.
+    """
     return list(
         Task.objects.filter(status=Task.Status.FAILED)
         .exclude(ticket__state__in=Ticket._TERMINAL_STATES)  # noqa: SLF001 — the model's SSOT terminal set
-        .select_related("ticket"),
+        .exclude(execution_reason__contains=_HALT_STAMP)
+        .select_related("ticket")
+        .prefetch_related("attempts"),
     )
 
 
@@ -189,20 +207,31 @@ def _reopen(task: Task) -> int:
     )
 
 
-def _escalate_once(task: Task, *, reason: str) -> None:
-    """Record a durable escalation for a budget-halted task, once per task.
+def _stamp_halt(task: Task) -> None:
+    """Park *task* out of future scans by stamping :data:`_HALT_STAMP` onto ``execution_reason``.
 
-    Idempotent: a per-task marker in the question text dedups so a halted FAILED
-    row re-scanned every tick escalates exactly once rather than spamming the
-    away-mode question queue. Reuses the §17.1 invariant 9 surface (statusline /
+    Idempotent — a no-op once the stamp is present. This is the durable dedup: an
+    escalated row is excluded from :func:`_non_terminal_failed_tasks`, so answering
+    or dismissing the question can never resurrect a fresh escalation for it.
+    """
+    if _HALT_STAMP in task.execution_reason:
+        return
+    reason = f"{task.execution_reason}\n{_HALT_STAMP}".strip() if task.execution_reason else _HALT_STAMP
+    Task.objects.filter(pk=task.pk).update(execution_reason=reason)
+
+
+def _escalate_once(task: Task, *, reason: str) -> None:
+    """Record a durable escalation for a halted task, exactly once per task, then park it.
+
+    The row is stamped so it drops out of every future scan; the DeferredQuestion is
+    deduped across ALL questions (answered or not) by a per-task marker, so a halted
+    FAILED row can never spam the away-mode queue nor re-escalate once its question is
+    answered/dismissed. Reuses the §17.1 invariant 9 surface (statusline /
     ``t3 teatree questions list`` / the Slack DM drain).
     """
     marker = _ESCALATION_MARKER.format(pk=task.pk)
-    already = DeferredQuestion.objects.filter(
-        answered_at__isnull=True,
-        dismissed_at__isnull=True,
-        question__contains=marker,
-    ).exists()
+    already = DeferredQuestion.objects.filter(question__contains=marker).exists()
+    _stamp_halt(task)
     if already:
         return
     where = task.ticket.issue_url or f"ticket {task.ticket.pk}"

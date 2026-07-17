@@ -144,6 +144,32 @@ class TestStuckTicketRedispatch(TestCase):
         assert redispatch_stuck_tickets() == 0
         assert DeferredQuestion.objects.filter(answered_at__isnull=True).count() == 1
 
+    def _burn_planning_budget(self, ticket: Ticket) -> None:
+        for i in range(max_phase_iterations()):
+            session = Session.objects.create(ticket=ticket, agent_id="planning")
+            task = Task.objects.create(ticket=ticket, session=session, phase="planning", status=Task.Status.FAILED)
+            attempt = TaskAttempt.objects.create(
+                task=task,
+                execution_target=task.execution_target,
+                ended_at=timezone.now(),
+                exit_code=1,
+                error=f"planning failed run {'x' * (i + 1)}",
+            )
+            TaskAttempt.objects.filter(pk=attempt.pk).update(started_at=timezone.now() - timedelta(hours=48))
+
+    def test_answered_escalation_does_not_re_escalate(self) -> None:
+        # #6: an escalated stuck ticket is parked. Answering the question must NOT spawn
+        # a fresh escalation on the next tick (the old open-only dedup re-fired here).
+        ticket = _stuck_ticket(state=Ticket.State.STARTED)
+        self._burn_planning_budget(ticket)
+        assert redispatch_stuck_tickets() == 0
+        question = DeferredQuestion.objects.get()
+        question.answered_at = timezone.now()
+        question.save(update_fields=["answered_at"])
+
+        assert redispatch_stuck_tickets() == 0
+        assert DeferredQuestion.objects.count() == 1  # no re-escalation after the answer
+
     def test_wired_into_tick_recovery(self) -> None:
         ticket = _stuck_ticket(state=Ticket.State.STARTED)
 
