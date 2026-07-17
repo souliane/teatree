@@ -207,7 +207,7 @@ def expire_stale_ready_jobs(*, threshold_hours: int | None = None, queue_name: s
     return retired
 
 
-def expire_stale_default_jobs() -> dict[str, int]:
+def expire_stale_default_jobs(*, threshold_hours: int | None = None) -> dict[str, int]:
     """Retire stale READY jobs on the ``default`` queue only — the heavy FSM/headless backlog.
 
     The worker's startup expiry (before it spawns executors) and its hourly
@@ -215,11 +215,12 @@ def expire_stale_default_jobs() -> dict[str, int]:
     provision/ship/teardown jobs while no worker ran does NOT blind-fire them the
     instant the worker spawns (the default-ON flip's load-jam class). Scoped to the
     ``default`` queue so the reconciler stays the sole owner of ``loops``-queue timer
-    staleness.
+    staleness — a shared cutoff sweep would mark a ``daily_at`` successor timer FAILED
+    the instant it crosses the 24 h threshold, retiring a live chain just before it fires.
     """
     from django_tasks import DEFAULT_TASK_QUEUE_NAME  # noqa: PLC0415 — deferred: needs the app registry ready
 
-    return expire_stale_ready_jobs(queue_name=DEFAULT_TASK_QUEUE_NAME)
+    return expire_stale_ready_jobs(threshold_hours=threshold_hours, queue_name=DEFAULT_TASK_QUEUE_NAME)
 
 
 def _run_one_ready_job() -> bool:
@@ -258,7 +259,10 @@ def _run_one_ready_job() -> bool:
         try:
             job = ready.get_locked()
         except OperationalError as exc:
-            if "is locked" in exc.args[0]:
+            # SQLite raises a bare, args-less/non-string OperationalError on some lock
+            # contention paths — guard the args before indexing so a locked-row probe
+            # never itself crashes the drain batch.
+            if exc.args and "is locked" in str(exc.args[0]):
                 return False
             raise
         if job is None:
@@ -317,7 +321,12 @@ def expire_then_drain() -> dict[str, int | dict[str, int]]:
     The expiry runs *first* so a stale heavy job (a 12-day-old provision/ship/
     teardown) is retired to ``FAILED`` before the drain can ever claim and run
     it. Only jobs newer than the stale threshold survive to be drained.
+
+    Scoped to the ``default`` queue: the reactive ``loops``-queue ``loop_timer``
+    chains are owned by the reconciler's own staleness repair, so a shared cutoff
+    sweep here would mark a due ``daily_at`` successor timer FAILED the instant it
+    crosses the 24 h threshold and retire the live chain just before it fires.
     """
-    retired = expire_stale_ready_jobs()
+    retired = expire_stale_default_jobs()
     drained = drain_ready_batch()
     return {"retired": retired, "drained": drained}

@@ -50,6 +50,31 @@ class TestTransientRequeue(TestCase):
         # A second pass finds it PENDING (no longer FAILED) — no double reopen.
         assert requeue_transient_failed() == 0
 
+    def test_empty_error_failed_task_is_escalated_not_frozen(self) -> None:
+        # A FAILED task with NO recorded error matches neither the transient nor the
+        # deterministic branch; without a route it froze silently — it must escalate.
+        task = _failed_task()  # no attempt → empty latest error
+
+        reopened = requeue_transient_failed()
+
+        task.refresh_from_db()
+        assert reopened == 0
+        assert task.status == Task.Status.FAILED
+        assert DeferredQuestion.objects.filter(answered_at__isnull=True).count() == 1
+
+    def test_answered_escalation_does_not_re_escalate(self) -> None:
+        # #6: once escalated and parked, answering the question must NOT spawn a fresh
+        # escalation on the next tick — the row stamp is the durable, once-per-task dedup.
+        task = _failed_task()
+        _add_failed_attempt(task, error="AssertionError: expected 3 got 4")
+        assert requeue_transient_failed() == 0
+        question = DeferredQuestion.objects.get()
+        question.answered_at = timezone.now()
+        question.save(update_fields=["answered_at"])
+
+        assert requeue_transient_failed() == 0  # the parked row is excluded from the scan
+        assert DeferredQuestion.objects.count() == 1  # no second question after the answer
+
     def test_deterministic_failed_task_is_not_reopened(self) -> None:
         task = _failed_task()
         _add_failed_attempt(task, error="AssertionError: expected 3 got 4")

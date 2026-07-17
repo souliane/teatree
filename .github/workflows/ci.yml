@@ -507,6 +507,62 @@ jobs:
 
   # ── 5. Test suite ──────────────────────────────────────────────────────────
 
+  # Build the shared test image ONCE per (dev/Dockerfile.test + uv.lock) hash and
+  # push it to ghcr, so the 6 `test-shard` jobs PULL one prebuilt, deps-baked
+  # image instead of each rebuilding the image AND cold-resolving the whole
+  # dependency set from PyPI at `docker run` time — that per-shard cold work
+  # (6x every run) was the bulk of the ~485s test-shard critical path. The build
+  # is SKIPPED entirely when the tag already exists (a run whose Dockerfile+lock
+  # are unchanged), so steady-state cost is one manifest check. Fork PRs cannot
+  # push to ghcr (read-only token, no secrets), so they set `mode=local` and each
+  # shard builds the image in-job — the package can stay PRIVATE (same-repo runs
+  # pull it with the job's `packages: read` token; forks never touch it).
+  # Same heavy-lane gating as test-shard: PR-only skip on a provably pure-docs
+  # diff; always runs on push/schedule (fail-safe-unknown, #132).
+  build-image:
+    needs: preflight
+    if: >
+      always() &&
+      (github.event_name != 'pull_request' ||
+      needs.preflight.outputs.run_heavy_python == 'true')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      image: ${{ steps.meta.outputs.image }}
+      mode: ${{ steps.meta.outputs.mode }}
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
+      - name: Resolve the image ref (tag = hash of Dockerfile + lockfile) and push mode
+        id: meta
+        env:
+          # Empty on push/schedule and same-repo PRs; 'true' only for a fork PR.
+          IS_FORK: ${{ github.event.pull_request.head.repo.fork }}
+        run: |
+          KEY="${{ hashFiles('dev/Dockerfile.test', 'uv.lock') }}"
+          REPO_LC="$(echo '${{ github.repository }}' | tr '[:upper:]' '[:lower:]')"
+          echo "image=ghcr.io/${REPO_LC}-test:${KEY}" >> "$GITHUB_OUTPUT"
+          if [ "$IS_FORK" = "true" ]; then
+            echo "mode=local" >> "$GITHUB_OUTPUT"
+          else
+            echo "mode=registry" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Log in to ghcr
+        if: steps.meta.outputs.mode == 'registry'
+        run: echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+      - name: Build and push the test image (skipped when the tag already exists)
+        if: steps.meta.outputs.mode == 'registry'
+        env:
+          IMAGE: ${{ steps.meta.outputs.image }}
+        run: |
+          if docker manifest inspect "$IMAGE" >/dev/null 2>&1; then
+            echo "Image $IMAGE already exists — skipping build (Dockerfile + uv.lock unchanged)."
+            exit 0
+          fi
+          docker build -f dev/Dockerfile.test -t "$IMAGE" .
+          docker push "$IMAGE"
+
   # GATE (heavy lane): one of the 6 coverage SHARDS. Each shard runs a
   # duration-balanced sixth of the suite (pytest-split `--splits 6 --group N`)
   # in Docker WITH `--cov --cov-branch --doctest-modules` but NO floor and NO
@@ -521,13 +577,17 @@ jobs:
     # (preflight ``run_heavy_python=false``). On push-to-main and on the
     # schedule (no PR diff to classify) and on any non-pure-docs PR it
     # runs unconditionally — fail-safe-unknown. (#132)
-    needs: preflight
+    needs: [preflight, build-image]
     if: >
       always() &&
+      needs.build-image.result == 'success' &&
       (github.event_name != 'pull_request' ||
       needs.preflight.outputs.run_heavy_python == 'true')
     timeout-minutes: 15
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: read
     strategy:
       fail-fast: false
       matrix:
@@ -535,15 +595,21 @@ jobs:
         group: [1, 2, 3, 4, 5, 6]
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
-      - uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c  # v4
-      - uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a  # v7
-        with:
-          context: .
-          file: dev/Dockerfile.test
-          load: true
-          tags: teatree-test-${{ matrix.python-version }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+      # Pull the prebuilt, deps-baked image that `build-image` produced (one
+      # manifest fetch + layer pull), instead of rebuilding + cold-syncing it in
+      # every shard. Fork PRs (mode=local) build it in-job — the ghcr package can
+      # stay private since forks never pull it.
+      - name: Obtain the prebuilt test image
+        env:
+          IMAGE: ${{ needs.build-image.outputs.image }}
+          MODE: ${{ needs.build-image.outputs.mode }}
+        run: |
+          if [ "$MODE" = "registry" ]; then
+            echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+            docker pull "$IMAGE"
+          else
+            docker build -f dev/Dockerfile.test -t "$IMAGE" .
+          fi
       # Shard N/6: pytest-split slices collection by `dev/.test_durations`;
       # `-n auto` parallelises WITHIN the shard. `--cov --cov-branch --doctest-modules`
       # measure exactly what the old monolithic lane did, but `--cov-report=`
@@ -567,10 +633,9 @@ jobs:
         run: >
           docker run --rm
           -v "$PWD":/app
-          -e UV_PROJECT_ENVIRONMENT=/tmp/.venv
           -e COVERAGE_FILE=/app/coverage.shard${{ matrix.group }}
           -e PYTHONPATH=/app
-          teatree-test-${{ matrix.python-version }}
+          ${{ needs.build-image.outputs.image }}
           uv run --group shard -p ${{ matrix.python-version }} pytest --no-header -q -n auto
           -o cache_dir=/tmp/.pytest_cache
           --doctest-modules --cov --cov-branch --cov-report= --cov-fail-under=0
