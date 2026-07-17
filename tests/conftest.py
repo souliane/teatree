@@ -1,16 +1,29 @@
 """Shared fixtures for teatree script tests."""
 
+import contextlib
 import importlib.util
 import json
 import os
 import tempfile
 import time
 import types
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from pathlib import Path
+from typing import TYPE_CHECKING, Any
 from unittest.mock import MagicMock
 
 import pytest
+
+from tests._db_template import (
+    publish_from_connection,
+    restore_into_connection,
+    schema_hash,
+    template_build_lock,
+    template_path,
+)
+
+if TYPE_CHECKING:
+    from pytest_django import DjangoDbBlocker
 
 # Ensure unit tests use the settings declared in pyproject.toml, not a stale
 # DJANGO_SETTINGS_MODULE from the shell. pytest-django falls back to
@@ -60,6 +73,126 @@ def _strip_git_hook_env() -> None:
 
 
 _strip_git_hook_env()
+
+
+# --- django_db_setup override: restore a migrated-DB template (W7-PR2) ---
+#
+# The stock pytest-django ``django_db_setup`` (session-scoped) re-runs a full
+# ``migrate`` — DDL + the squashed ``0001_initial`` seed ``RunPython`` — in
+# EVERY xdist worker process that needs the DB. ``tests/_db_template.py``
+# snapshots the first worker's freshly-migrated in-memory DB to an on-disk,
+# schema-content-addressed template file; every later worker restores that
+# exact byte-for-byte state via ``sqlite3.Connection.backup()`` instead of
+# re-migrating. See ``tests/_db_template.py``'s module docstring for the full
+# design and ``tests/teatree_core/test_db_template_equivalence.py`` for the
+# proof that a restored DB is indistinguishable from a fresh migrate.
+_DbConfig = list[tuple[Any, str, bool]]
+
+
+def _fast_lane_eligible(*, django_db_use_migrations: bool, aliases: set[str], serialized_aliases: set[str]) -> bool:
+    """Restore-from-template is only sound for the single-default-alias, migrations-backed, non-serialized case.
+
+    Any other case (``--no-migrations``, ``serialized_rollback``, or a
+    non-default alias — none of which this repo's suite currently uses) falls
+    back to the stock ``setup_databases`` path untouched.
+    """
+    return django_db_use_migrations and not serialized_aliases and aliases == {"default"}
+
+
+def _build_and_publish_template(tpl: Path, stock_setup: "Callable[[], _DbConfig]", connection: Any) -> "_DbConfig":
+    db_cfg = stock_setup()
+    connection.ensure_connection()
+    # A losing race with a sibling worker's publish is harmless — this worker's own DB is already correct.
+    with contextlib.suppress(OSError):
+        publish_from_connection(connection.connection, tpl)
+    return db_cfg
+
+
+def _restore_from_template(tpl: Path, stock_setup: "Callable[[], _DbConfig]", connection: Any) -> "_DbConfig":
+    # TEST["MIGRATE"] = False is documented Django behavior (BaseDatabaseCreation.create_test_db):
+    # it nulls MIGRATION_MODULES and runs `migrate --run-syncdb` — tables only, no RunPython
+    # seed, empty django_migrations. The subsequent backup() below REPLACES EVERY PAGE of the
+    # destination, so the final state is byte-identical to the template regardless.
+    connection.settings_dict["TEST"]["MIGRATE"] = False
+    try:
+        db_cfg = stock_setup()
+    finally:
+        connection.settings_dict["TEST"]["MIGRATE"] = True
+    connection.ensure_connection()
+    restore_into_connection(tpl, connection.connection)
+    return db_cfg
+
+
+def _setup_fast_lane(
+    tpl: Path, stock_setup: "Callable[[], _DbConfig]", connection: Any, *, force_rebuild: bool
+) -> "_DbConfig":
+    built = False
+    db_cfg: _DbConfig = []
+    with template_build_lock():
+        if force_rebuild or not tpl.exists():
+            db_cfg = _build_and_publish_template(tpl, stock_setup, connection)
+            built = True
+    if not built:
+        db_cfg = _restore_from_template(tpl, stock_setup, connection)
+    return db_cfg
+
+
+@pytest.fixture(scope="session")
+def django_db_setup(  # noqa: PLR0913 — mirrors pytest_django.fixtures.django_db_setup's own fixture-injection signature; trimming params breaks the override contract
+    request: pytest.FixtureRequest,
+    *,
+    django_test_environment: None,
+    django_db_blocker: "DjangoDbBlocker",
+    django_db_use_migrations: bool,
+    django_db_keepdb: bool,
+    django_db_createdb: bool,
+    django_db_modify_db_settings: None,
+) -> Iterator[None]:
+    """Override pytest-django's stock fixture to restore a migrated-DB template instead of re-migrating.
+
+    Same signature and dependency graph as ``pytest_django.fixtures.django_db_setup``
+    (pytest-django 4.12.0) — this IS that fixture, plus the template fast lane.
+    """
+    from django.db import connection  # noqa: PLC0415
+    from django.test.utils import setup_databases, teardown_databases  # noqa: PLC0415
+    from pytest_django.fixtures import _disable_migrations, _get_databases_for_setup  # noqa: PLC0415
+
+    if not django_db_use_migrations:
+        _disable_migrations()
+
+    aliases, serialized_aliases = _get_databases_for_setup(request.session.items)
+    verbosity = request.config.option.verbose
+    stock_kwargs = {"keepdb": True} if (django_db_keepdb and not django_db_createdb) else {}
+
+    def _stock_setup() -> _DbConfig:
+        return setup_databases(
+            verbosity=verbosity,
+            interactive=False,
+            aliases=aliases,
+            serialized_aliases=serialized_aliases,
+            **stock_kwargs,
+        )
+
+    fast_lane = _fast_lane_eligible(
+        django_db_use_migrations=django_db_use_migrations, aliases=aliases, serialized_aliases=serialized_aliases
+    )
+
+    with django_db_blocker.unblock():
+        if fast_lane:
+            db_cfg = _setup_fast_lane(
+                template_path(schema_hash()), _stock_setup, connection, force_rebuild=django_db_createdb
+            )
+        else:
+            db_cfg = _stock_setup()
+
+    yield
+
+    if not django_db_keepdb:
+        with django_db_blocker.unblock():
+            try:
+                teardown_databases(db_cfg, verbosity=verbosity)
+            except Exception as exc:  # noqa: BLE001 — never fail the session over a teardown error (matches the stock fixture)
+                request.node.warn(pytest.PytestWarning(f"teardown error: {exc!r}"))
 
 
 def load_script(name: str) -> types.ModuleType:

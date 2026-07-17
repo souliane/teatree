@@ -599,6 +599,17 @@ jobs:
         group: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
+      # Restore the migrated-DB template (tests/_db_template.py, W7-PR2): the FIRST
+      # xdist worker of a fresh runner that hits a cache miss builds it via a real
+      # migrate and publishes it (no riskier than the pre-existing status quo);
+      # every worker after that restores it via sqlite3 backup() instead of
+      # re-migrating. Content-addressed key, NO restore-keys — a hash miss is a
+      # clean rebuild, never a fuzzy restore of a stale schema.
+      - name: Restore the migrated test-DB template
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
+        with:
+          path: .pytest-db-template
+          key: test-db-template-${{ hashFiles('src/**/migrations/*.py', 'uv.lock', 'tests/django_settings.py', 'dev/Dockerfile.test') }}
       # Pull the prebuilt, deps-baked image that `build-image` produced (one
       # manifest fetch + layer pull), instead of rebuilding + cold-syncing it in
       # every shard. Fork PRs (mode=local) build it in-job — the ghcr package can
