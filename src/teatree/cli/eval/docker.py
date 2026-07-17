@@ -116,7 +116,12 @@ def _build_image(root: Path) -> int:
     # No ``-q``: a quiet build emits NOTHING until it finishes, so a slow/hung
     # image build is indistinguishable from a wedged runner. Streaming the build
     # log makes the build's progress (and any stall) visible in the CI log.
-    return run_streamed(["docker", "build", "-t", DOCKER_IMAGE, "-f", _DOCKERFILE, "."], cwd=root, check=False)
+    # ``--target base``: the Dockerfile is multi-stage (a ``lint`` stage bakes
+    # prek's hook envs FROM base), so the target must be pinned explicitly — an
+    # untargeted build would silently produce the LAST stage instead.
+    return run_streamed(
+        ["docker", "build", "-t", DOCKER_IMAGE, "-f", _DOCKERFILE, "--target", "base", "."], cwd=root, check=False
+    )
 
 
 def _artifacts_mount_flags(artifacts_dir: Path | None) -> list[str]:

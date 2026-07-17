@@ -17,10 +17,25 @@ cd "$(dirname "$0")/.."
 # else runs exactly as CI's `lint` job does. Override with SKIP=... if needed.
 export SKIP="${SKIP:-uv-audit,cyclonedx-sbom}"
 
-echo "=== [1/5] prek (all hooks, all files) -- CI lint job ==="
-# `uv run` so the prek RUNNER is the lockfile-pinned version (prek==0.3.13), the
-# exact one CI's lint job runs — not whatever standalone prek is on PATH (#3236).
-uv run prek run --all-files
+if [ "${LINT_DOCKER:-0}" = "1" ]; then
+  echo "=== [1/5] prek (all hooks, all files) -- CI lint job, IN DOCKER (LINT_DOCKER=1) ==="
+  # Exact CI-lint reproduction: build the same `lint` Dockerfile stage CI's
+  # `build-image` job bakes (prek's hook environments pre-installed) and run
+  # the identical `prek run --all-files` inside it, bind-mounting the working
+  # tree the same way the CI `lint` job does. Builds locally rather than
+  # pulling the ghcr-pushed tag, so this stays a zero-setup opt-in (no
+  # registry auth needed) — a genuine environment-only lint difference (a
+  # baked hook env vs whatever `uv run prek` resolves on the host) surfaces
+  # here that the plain host-native invocation below can never catch.
+  docker build -q -f dev/Dockerfile.test --target lint -t teatree-lint-local . >/dev/null
+  docker run --rm -v "$PWD":/app -e SKIP -e T3_BANNED_TERMS -e TEATREE_TERM_REGISTRY teatree-lint-local \
+    bash -c "uv run prek run --all-files"
+else
+  echo "=== [1/5] prek (all hooks, all files) -- CI lint job ==="
+  # `uv run` so the prek RUNNER is the lockfile-pinned version (prek==0.3.13), the
+  # exact one CI's lint job runs — not whatever standalone prek is on PATH (#3236).
+  uv run prek run --all-files
+fi
 
 echo "=== [2/5] makemigrations --check --dry-run -- migration-graph linearity ==="
 uv run python manage.py makemigrations --check --dry-run

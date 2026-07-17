@@ -54,12 +54,18 @@
 #
 # JOB GROUPS (in order of appearance below)
 #   1. Lane routing          — preflight
-#   2. Fast static checks    — lint, blueprint-cross-pr
+#   2. Fast static checks    — lint (runs prek INSIDE the prebuilt `-lint`
+#                              Docker image built by `build-image` in group 5
+#                              below — `needs: build-image`, UNCONDITIONAL, so
+#                              lint runs even on pure-docs PRs), blueprint-cross-pr
 #   3. Docs integrity        — doc-update-gate, module-health-gate,
 #                              comment-density-warning, docs-drift
 #   4. Signal & ratchet      — test-shape (advisory),
 #                              test-path-mirror (ratchet gate)
-#   5. Test suite            — test-shard (12-way coverage matrix),
+#   5. Test suite            — build-image (builds/pushes BOTH the `-test` and
+#                              `-lint` tags; unconditional, feeds group 2's
+#                              `lint` job as well as this group), test-shard
+#                              (12-way coverage matrix),
 #                              test (combiner = required `test (3.13)`),
 #                              test-shim
 #   6. Architecture / quality fitness gates — mutation-diff, mutation-full,
@@ -147,25 +153,47 @@ jobs:
 
   # ── 2. Fast static checks ──────────────────────────────────────────────────
 
-  # GATE: ruff/prek lint + migration-graph linearity; runs on every push and PR.
+  # GATE: ruff/prek lint + migration-graph linearity; runs on every push and PR,
+  # INCLUDING pure-docs PRs (prek covers markdownlint/codespell/doc generators —
+  # its whole point). Runs INSIDE the prebuilt `-lint` image (`needs:
+  # build-image`) so prek's hook environments are already baked instead of
+  # cold-installed at run time — CI lint/Docker convergence (souliane/teatree
+  # CI-speedup). SAME hooks, SAME SKIP list as before: this is a venue-only
+  # change, `check_gate_relaxation.py`/`check_quality_gates.py` semantics are
+  # untouched. Obtain-image step matches the `test-shard` pattern: pull for a
+  # same-repo run, in-job local build for a fork PR (`mode=local`).
   lint:
+    needs: build-image
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: read
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
-      - uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78  # v7
-        with:
-          enable-cache: true
-      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405  # v6
-        with:
-          python-version: "3.13"
-      - run: uv sync
-      # Run prek from the locked project venv (`uv run`) so the prek RUNNER
+      - name: Obtain the prebuilt lint image
+        env:
+          IMAGE: ${{ needs.build-image.outputs.image_lint }}
+          MODE: ${{ needs.build-image.outputs.mode }}
+        run: |
+          if [ "$MODE" = "registry" ]; then
+            echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+            docker pull "$IMAGE"
+          else
+            docker build -f dev/Dockerfile.test --target lint -t "$IMAGE" .
+          fi
+      # Run prek from the image's locked venv (`uv run`) so the prek RUNNER
       # version is exactly the one the lockfile pins (prek==0.3.13) — identical
       # to the documented local gate, which also runs `uv run prek`
       # (dev/ci-parity.sh). This closes the runner-version gap that let a hook
       # pass locally and fail here (or the reverse); a lockfile bump moves local
-      # and CI together in one step (#3236).
-      - name: prek (all hooks, all files) — locked runner
+      # and CI together in one step (#3236). Chained with the migration-graph
+      # linearity check in ONE `docker run` (a second invocation would just
+      # re-start the container for no benefit): two PRs branching a migration
+      # off the same parent each pass locally and pass their own CI, then merge
+      # into a forked graph with multiple leaf nodes that ``migrate`` refuses to
+      # run. ``makemigrations --check`` raises ``Conflicting migrations
+      # detected`` (exit 1) on a forked graph, failing the PR before it lands.
+      - name: prek (all hooks, all files) + makemigrations --check — locked runner, in Docker
         env:
           SKIP: pytest,uv-audit,cyclonedx-sbom
           # Dual-env during the banned-term-registry transition: the legacy
@@ -174,13 +202,14 @@ jobs:
           # cutover (empty until then ⇒ no behaviour change).
           T3_BANNED_TERMS: ${{ secrets.TEATREE_BANNED_TERMS }}
           TEATREE_TERM_REGISTRY: ${{ secrets.TEATREE_TERM_REGISTRY }}
-        run: uv run prek run --all-files
-      # Migration-graph linearity gate. Two PRs branching a migration off
-      # the same parent each pass locally and pass their own CI, then merge
-      # into a forked graph with multiple leaf nodes that ``migrate`` refuses
-      # to run. ``makemigrations --check`` raises ``Conflicting migrations
-      # detected`` (exit 1) on a forked graph, failing the PR before it lands.
-      - run: uv run python manage.py makemigrations --check --dry-run
+        run: >
+          docker run --rm
+          -v "$PWD":/app
+          -e SKIP
+          -e T3_BANNED_TERMS
+          -e TEATREE_TERM_REGISTRY
+          ${{ needs.build-image.outputs.image_lint }}
+          bash -c "uv run prek run --all-files && uv run python manage.py makemigrations --check --dry-run"
 
   # GATE (PR-only): catches two concurrent PRs both adding the same §17.N
   # invariant number — local pre-commit can't see sibling PRs.
@@ -511,38 +540,47 @@ jobs:
   # push it to ghcr, so the 12 `test-shard` jobs PULL one prebuilt, deps-baked
   # image instead of each rebuilding the image AND cold-resolving the whole
   # dependency set from PyPI at `docker run` time — that per-shard cold work
-  # (6x every run) was the bulk of the ~485s test-shard critical path. The build
-  # is SKIPPED entirely when the tag already exists (a run whose Dockerfile+lock
-  # are unchanged), so steady-state cost is one manifest check. Fork PRs cannot
-  # push to ghcr (read-only token, no secrets), so they set `mode=local` and each
-  # shard builds the image in-job — the package can stay PRIVATE (same-repo runs
-  # pull it with the job's `packages: read` token; forks never touch it).
-  # Same heavy-lane gating as test-shard: PR-only skip on a provably pure-docs
-  # diff; always runs on push/schedule (fail-safe-unknown, #132).
+  # (6x every run) was the bulk of the ~485s test-shard critical path. Also
+  # builds and pushes a second `-lint:${KEY_LINT}` tag from the Dockerfile's
+  # `lint` stage (`FROM base`, bakes prek's hook environments) so the `lint`
+  # job below can pull a ready image instead of cold-installing every hook env
+  # at `prek run` time — CI lint/Docker convergence (souliane/teatree
+  # CI-speedup). Both builds are SKIPPED entirely when their tag already
+  # exists, so steady-state cost is two manifest checks. Fork PRs cannot push
+  # to ghcr (read-only token, no secrets), so they set `mode=local` and each
+  # downstream job (test-shard, lint) builds the image IT needs in-job — the
+  # packages can stay PRIVATE (same-repo runs pull them with the job's
+  # `packages: read` token; forks never touch them).
+  # UNCONDITIONAL — no preflight gating, no `needs: preflight`. The `lint` job
+  # below always needs an image (lint must run on pure-docs PRs too:
+  # markdownlint/codespell/doc generators are its whole point), and steady-state
+  # cost here is a manifest check either way.
   build-image:
-    needs: preflight
-    if: >
-      always() &&
-      (github.event_name != 'pull_request' ||
-      needs.preflight.outputs.run_heavy_python == 'true')
     runs-on: ubuntu-latest
     permissions:
       contents: read
       packages: write
     outputs:
       image: ${{ steps.meta.outputs.image }}
+      image_lint: ${{ steps.meta.outputs.image_lint }}
       mode: ${{ steps.meta.outputs.mode }}
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
-      - name: Resolve the image ref (tag = hash of Dockerfile + lockfile) and push mode
+      - name: Resolve the image refs (tag = hash of inputs) and push mode
         id: meta
         env:
           # Empty on push/schedule and same-repo PRs; 'true' only for a fork PR.
           IS_FORK: ${{ github.event.pull_request.head.repo.fork }}
         run: |
           KEY="${{ hashFiles('dev/Dockerfile.test', 'uv.lock') }}"
+          # Widened key (adds .pre-commit-config.yaml): a hook-rev bump alone
+          # must mint a fresh lint tag so baked hook envs can never silently go
+          # stale. A tag MISS degrades gracefully — prek just cold-installs
+          # whichever repo changed.
+          KEY_LINT="${{ hashFiles('dev/Dockerfile.test', 'uv.lock', '.pre-commit-config.yaml') }}"
           REPO_LC="$(echo '${{ github.repository }}' | tr '[:upper:]' '[:lower:]')"
           echo "image=ghcr.io/${REPO_LC}-test:${KEY}" >> "$GITHUB_OUTPUT"
+          echo "image_lint=ghcr.io/${REPO_LC}-lint:${KEY_LINT}" >> "$GITHUB_OUTPUT"
           if [ "$IS_FORK" = "true" ]; then
             echo "mode=local" >> "$GITHUB_OUTPUT"
           else
@@ -560,8 +598,19 @@ jobs:
             echo "Image $IMAGE already exists — skipping build (Dockerfile + uv.lock unchanged)."
             exit 0
           fi
-          docker build -f dev/Dockerfile.test -t "$IMAGE" .
+          docker build -f dev/Dockerfile.test --target base -t "$IMAGE" .
           docker push "$IMAGE"
+      - name: Build and push the lint image (skipped when the tag already exists)
+        if: steps.meta.outputs.mode == 'registry'
+        env:
+          IMAGE_LINT: ${{ steps.meta.outputs.image_lint }}
+        run: |
+          if docker manifest inspect "$IMAGE_LINT" >/dev/null 2>&1; then
+            echo "Image $IMAGE_LINT already exists — skipping build (Dockerfile + uv.lock + pre-commit config unchanged)."
+            exit 0
+          fi
+          docker build -f dev/Dockerfile.test --target lint -t "$IMAGE_LINT" .
+          docker push "$IMAGE_LINT"
 
   # GATE (heavy lane): one of the 12 coverage SHARDS. Each shard runs a
   # duration-balanced twelfth of the suite (pytest-split `--splits 12 --group N`)
@@ -612,7 +661,10 @@ jobs:
             echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
             docker pull "$IMAGE"
           else
-            docker build -f dev/Dockerfile.test -t "$IMAGE" .
+            # --target base: the Dockerfile is multi-stage (a `lint` stage now
+            # follows `base`), so the target must be pinned explicitly — an
+            # untargeted build would silently produce the LAST stage instead.
+            docker build -f dev/Dockerfile.test --target base -t "$IMAGE" .
           fi
       # Shard N/12: pytest-split slices collection by `dev/.test_durations`;
       # `-n auto` parallelises WITHIN the shard. `--cov --cov-branch --doctest-modules`

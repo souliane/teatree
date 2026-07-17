@@ -20,10 +20,13 @@ fi
 total=${#versions[@]}
 current=0
 
-# Build (or reuse cached) test image
+# Build (or reuse cached) test image. --target base: the Dockerfile is
+# multi-stage (a `lint` stage bakes prek's hook envs FROM base), so the target
+# must be pinned explicitly — an untargeted build would silently produce the
+# LAST stage instead.
 if ! docker image inspect "$IMAGE" >/dev/null 2>&1; then
     echo "=== Building test image (first run only) ==="
-    docker build -q -t "$IMAGE" -f dev/Dockerfile.test . >/dev/null
+    docker build -q -t "$IMAGE" -f dev/Dockerfile.test --target base . >/dev/null
     echo
 fi
 
