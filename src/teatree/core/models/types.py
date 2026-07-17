@@ -2,6 +2,10 @@ from typing import TypedDict
 
 type Ports = dict[str, int]
 
+# An arbitrary JSON object stored under a ``extra`` key (heterogeneous, open
+# shape — e.g. ``pr_url_by_branch``), so a fixed TypedDict does not fit.
+type JSONObject = dict[str, object]
+
 
 class VisualQAPageError(TypedDict):
     kind: str

@@ -10,6 +10,7 @@ from teatree.core.models.types import validated_ticket_extra
 if TYPE_CHECKING:
     from teatree.core.models.types import (
         AntiVacuityAttestation,
+        JSONObject,
         ReviewContext,
         ReviewSkillRun,
         TicketExtra,
@@ -33,7 +34,7 @@ class TicketEvidenceModel(TicketFacet):
         pop_keys: "list[str] | None" = None,
         also_set: "TicketSiblingFields | None" = None,
         append_to_lists: "dict[str, list[object]] | None" = None,
-        merge_into_dicts: "dict[str, dict[str, object]] | None" = None,
+        merge_into_dicts: "dict[str, JSONObject] | None" = None,
     ) -> None:
         """Canonical locked read-modify-write of ``extra`` (#800 N3).
 

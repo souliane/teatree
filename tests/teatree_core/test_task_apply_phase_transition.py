@@ -316,9 +316,9 @@ class TestTransitionSourceStatesDerivation(TestCase):
     """The mark_reviewed_externally source set is DERIVED from the FSM, not hand-listed."""
 
     def test_derives_declared_source_states(self) -> None:
-        from teatree.core.models.task import _transition_source_states  # noqa: PLC0415
+        from teatree.core.models.task_phase_disposition import transition_source_states  # noqa: PLC0415
 
-        assert _transition_source_states("mark_reviewed_externally") == {
+        assert transition_source_states("mark_reviewed_externally") == {
             Ticket.State.NOT_STARTED,
             Ticket.State.SCOPED,
             Ticket.State.STARTED,
@@ -329,7 +329,7 @@ class TestTransitionSourceStatesDerivation(TestCase):
         }
 
     def test_wildcard_transition_yields_empty_set(self) -> None:
-        from teatree.core.models.task import _transition_source_states  # noqa: PLC0415
+        from teatree.core.models.task_phase_disposition import transition_source_states  # noqa: PLC0415
 
         # teardown is not a Ticket transition; an unknown name yields nothing.
-        assert _transition_source_states("no_such_transition") == set()
+        assert transition_source_states("no_such_transition") == set()

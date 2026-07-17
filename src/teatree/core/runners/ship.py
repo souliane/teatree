@@ -22,7 +22,7 @@ from teatree.utils import git
 if TYPE_CHECKING:
     from teatree.core.backend_protocols import CodeHostBackend
     from teatree.core.models.ticket import Ticket
-    from teatree.core.models.types import TicketExtra
+    from teatree.core.models.types import JSONObject, TicketExtra
     from teatree.core.models.worktree import Worktree
 
 logger = logging.getLogger(__name__)
@@ -539,7 +539,7 @@ class ShipExecutor(RunnerBase):
         # new entry lets the other writer's URL survive. #1263: the per-branch
         # index lets a later workstream tell whether its own PR exists.
         append_lists: dict[str, list[object]] = {"pr_urls": [url]} if url else {}
-        merge_dicts: dict[str, dict[str, object]] = {"pr_url_by_branch": {branch: url}} if url and branch else {}
+        merge_dicts: dict[str, JSONObject] = {"pr_url_by_branch": {branch: url}} if url and branch else {}
         ticket.merge_extra(
             append_to_lists=append_lists,
             merge_into_dicts=merge_dicts,

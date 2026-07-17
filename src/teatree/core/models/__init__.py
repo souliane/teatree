@@ -32,6 +32,7 @@ from teatree.core.models.errors import (
     CriticGateError,
     DirtyWorktreeError,
     InvalidTransitionError,
+    LeaseLostError,
     NoPlanArtifactError,
     QualityGateError,
 )
@@ -209,6 +210,7 @@ __all__ = [
     "KnownIssueManager",
     "LandscapeArtifact",
     "LandscapeArtifactRef",
+    "LeaseLostError",
     "LivePostApproval",
     "LivePostApprovalError",
     "LocalStackQueueItem",
