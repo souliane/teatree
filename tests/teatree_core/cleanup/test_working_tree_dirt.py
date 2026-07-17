@@ -19,7 +19,7 @@ from teatree.core.cleanup.cleanup_orphan_ref import OrphanRefDecision
 from teatree.core.cleanup.working_tree_dirt import real_uncommitted_reasons
 from teatree.utils import git
 from teatree.utils.run import CommandFailedError
-from tests.teatree_core.cleanup._shared import _run_git
+from tests.teatree_core.cleanup._shared import _GIT, _run_git
 
 
 def _corrupt_index(wt_dir: Path) -> None:
@@ -31,7 +31,7 @@ def _corrupt_index(wt_dir: Path) -> None:
     ``<wt_dir>/.git/index``. Resolve the real git-dir via ``rev-parse`` first.
     """
     result = subprocess.run(
-        ["git", "-C", str(wt_dir), "rev-parse", "--git-dir"],
+        [_GIT, "-C", str(wt_dir), "rev-parse", "--git-dir"],
         check=True,
         capture_output=True,
         text=True,
