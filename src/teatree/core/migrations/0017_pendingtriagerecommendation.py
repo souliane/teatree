@@ -6,7 +6,7 @@ from django.db import migrations, models
 
 class Migration(migrations.Migration):
     dependencies = [
-        ("core", "0015_dreamqaprobe_scope"),
+        ("core", "0016_alter_evalscenarioresult_verdict_and_more"),
     ]
 
     operations = [
