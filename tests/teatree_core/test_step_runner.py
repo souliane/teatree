@@ -80,19 +80,27 @@ class TestRunStep(TestCase):
         assert result.duration > 0
 
     @patch("teatree.utils.run.subprocess")
-    def test_failure_with_check(self, mock_sp: MagicMock) -> None:
+    def test_failure_reports_success_false(self, mock_sp: MagicMock) -> None:
         mock_sp.run.return_value = MagicMock(returncode=1, stdout="", stderr="bad thing")
         mock_sp.TimeoutExpired = subprocess.TimeoutExpired
-        result = run_step("fail-step", ["false"], check=True)
+        result = run_step("fail-step", ["false"])
         assert result.success is False
         assert "bad thing" in result.error
 
     @patch("teatree.utils.run.subprocess")
-    def test_failure_without_check(self, mock_sp: MagicMock) -> None:
-        mock_sp.run.return_value = MagicMock(returncode=1, stdout="", stderr="ignored")
+    def test_nonzero_exit_is_never_rewritten_to_success(self, mock_sp: MagicMock) -> None:
+        """A non-zero exit is always ``success=False`` — never fabricated as OK.
+
+        The pre-fix ``check=False`` contract rewrote a genuine failure to
+        ``success=True``, so a report printed OK for a step that actually failed.
+        ``run_step`` now faithfully reflects the exit code; a caller that treats
+        the failure as non-fatal inspects ``result.success`` itself.
+        """
+        mock_sp.run.return_value = MagicMock(returncode=1, stdout="", stderr="real failure")
         mock_sp.TimeoutExpired = subprocess.TimeoutExpired
-        result = run_step("soft-fail", ["false"], check=False)
-        assert result.success is True  # check=False means non-zero is OK
+        result = run_step("soft-fail", ["false"])
+        assert result.success is False
+        assert "real failure" in result.error
 
     @patch("teatree.utils.run.subprocess")
     def test_timeout(self, mock_sp: MagicMock) -> None:
@@ -128,21 +136,22 @@ class TestRunStepSurvivesMissingProvisionTimebox(TestCase):
         mock_sp.TimeoutExpired = subprocess.TimeoutExpired
 
         with provision_timebox_unimportable():
-            result = run_step("git-hooks-path", ["git", "rev-parse", "--git-path", "hooks"], check=False)
+            result = run_step("git-hooks-path", ["git", "rev-parse", "--git-path", "hooks"])
 
         assert result.success is True
         assert result.name == "git-hooks-path"
         assert "hooks" in result.stdout
 
     @patch("teatree.utils.run.subprocess")
-    def test_run_step_soft_fail_stays_benign_when_module_absent(self, mock_sp: MagicMock) -> None:
-        mock_sp.run.return_value = MagicMock(returncode=1, stdout="", stderr="ignored")
+    def test_run_step_nonzero_exit_reports_failure_when_module_absent(self, mock_sp: MagicMock) -> None:
+        mock_sp.run.return_value = MagicMock(returncode=1, stdout="", stderr="real failure")
         mock_sp.TimeoutExpired = subprocess.TimeoutExpired
 
         with provision_timebox_unimportable():
-            result = run_step("soft-fail", ["false"], check=False)
+            result = run_step("soft-fail", ["false"])
 
-        assert result.success is True
+        assert result.success is False
+        assert "real failure" in result.error
 
     @patch("teatree.utils.run.subprocess")
     def test_run_step_command_not_found_surfaced_when_module_absent(self, mock_sp: MagicMock) -> None:
@@ -150,7 +159,7 @@ class TestRunStepSurvivesMissingProvisionTimebox(TestCase):
         mock_sp.TimeoutExpired = subprocess.TimeoutExpired
 
         with provision_timebox_unimportable():
-            result = run_step("missing", ["nope"], check=False)
+            result = run_step("missing", ["nope"])
 
         assert result.success is False
         assert "command not found" in result.error
@@ -161,7 +170,7 @@ class TestRunStepSurvivesMissingProvisionTimebox(TestCase):
         mock_sp.TimeoutExpired = subprocess.TimeoutExpired
 
         with provision_timebox_unimportable():
-            result = run_step("slow", ["sleep", "999"], timeout=1, check=False)
+            result = run_step("slow", ["sleep", "999"], timeout=1)
 
         assert result.success is False
         assert "timed out" in result.error
@@ -176,7 +185,7 @@ class TestRunStepSurvivesMissingProvisionTimebox(TestCase):
         timeout/heartbeat/alert for every healthy install and mask the real bug.
         """
         with provision_timebox_internally_broken(), pytest.raises(ModuleNotFoundError) as exc_info:
-            run_step("probe", ["true"], check=False)
+            run_step("probe", ["true"])
 
         assert exc_info.value.name == BROKEN_DEPENDENCY_NAME
 

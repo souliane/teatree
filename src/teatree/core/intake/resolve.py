@@ -158,8 +158,12 @@ def _ticket_by_number(number: str, *, overlay: str | None = None) -> Ticket | No
     O(all tickets) Python scan as an indexed lookup.
 
     When *overlay* is known (inferred from the resolving repo's remote) the
-    candidates are narrowed to that overlay first, so a same-number ticket in a
-    different overlay never competes. More than one surviving candidate raises
+    candidates are narrowed to that overlay (plus blank-overlay ambient-default
+    tickets), so a same-number ticket in a DIFFERENT overlay never competes.
+    Critically, a resolved overlay with NO same-overlay candidate is treated as
+    NO MATCH — the branch number belongs to a foreign overlay's ticket, so
+    returning that foreign ticket would silently cross-attach the worktree to the
+    wrong overlay. More than one surviving candidate raises
     :class:`TicketIdentityCollisionError` (fail loud) rather than returning an
     arbitrary ``.first()`` that would cross-attach the worktree to the wrong
     ticket.
@@ -177,9 +181,11 @@ def _ticket_by_number(number: str, *, overlay: str | None = None) -> Ticket | No
         # a row already matched above, whose ``issue_number`` is non-blank).
         matches += list(real.filter(issue_number="", pk=int(number)))
     if overlay:
-        scoped = [ticket for ticket in matches if ticket.overlay == overlay]
-        if scoped:
-            matches = scoped
+        # Narrow to this overlay (plus blank-overlay ambient-default tickets) and
+        # NEVER fall back to the global list: a resolved overlay whose scoped set
+        # is empty means only foreign-overlay tickets share the number, so no
+        # match is the correct answer — never a silent cross-overlay attach.
+        matches = [ticket for ticket in matches if ticket.overlay in {overlay, ""}]
     if len(matches) > 1:
         msg = (
             f"ticket_number {number!r} resolves to {len(matches)} tickets "

@@ -8,6 +8,7 @@ mock; the shared module-level ``_patch_*`` decorators and the
 """
 
 from collections.abc import Iterator
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -20,6 +21,7 @@ from teatree.core.models.external_delivery import mark_external_delivery
 from teatree.core.overlay import OverlayBase, OverlayRuntime, ProvisionStep, RunCommands
 from teatree.utils.run import CommandFailedError
 from tests.teatree_core._provision_timebox_stub import provision_timebox_unimportable
+from tests.teatree_core.cleanup._shared import _run_git
 
 _patch_config = patch("teatree.core.cleanup.cleanup.clone_root")
 _patch_git = patch("teatree.core.cleanup.cleanup.git")
@@ -1240,3 +1242,128 @@ class TestCleanupWorktreeLivenessGuard(TestCase):
         self._tear_down(wt)
 
         assert not Worktree.objects.filter(pk=wt.pk).exists(), "idle worktree should still reap"
+
+
+class TestCleanupWorktreeRefuseBeforeDestroy(TestCase):
+    """Guards refuse BEFORE any destructive step, and a dirty worktree is kept by default.
+
+    Two data-loss regressions: (1) uncommitted changes must not be wiped by
+    default on an unattended teardown — ``keep_if_dirty`` defaults ``True`` so a
+    dirty worktree raises and is kept; (2) a refused teardown must not have
+    already destroyed the per-worktree docker volume — the git data-loss guards
+    run ahead of ``docker_compose_down(remove_volumes=True)``.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _inject_tmp(self, tmp_path: Path) -> None:
+        self._tmp = tmp_path
+
+    def _make_worktree(self, *, wt_path: str) -> Worktree:
+        ticket = Ticket.objects.create(
+            issue_url="https://gitlab.com/org/repo/-/issues/99",
+            state=Ticket.State.MERGED,
+        )
+        return Worktree.objects.create(
+            overlay="test",
+            ticket=ticket,
+            repo_path="org/repo",
+            branch="fix-99",
+            extra={"worktree_path": wt_path},
+        )
+
+    def _dirty_worktree(self) -> tuple[Path, Path, Worktree]:
+        """A REAL git worktree on a pushed branch carrying an uncommitted edit.
+
+        The dirt is a genuine tracked-file modification detected by
+        :func:`real_uncommitted_reasons` (a raw mock cannot exercise the shared
+        probe, which reads the working tree directly). The branch is pushed so the
+        #706 data-loss guard has nothing to lose — the DIRTY guard is the only
+        thing that can refuse, isolating the behaviour under test.
+        """
+        workspace = self._tmp / "workspace"
+        workspace.mkdir()
+        remote = self._tmp / "remote.git"
+        _run_git("init", "-q", "--bare", "-b", "main", str(remote), cwd=self._tmp)
+
+        repo_main = workspace / "org" / "repo"
+        repo_main.mkdir(parents=True)
+        _run_git("init", "-q", "-b", "main", cwd=repo_main)
+        _run_git("config", "user.email", "t@t", cwd=repo_main)
+        _run_git("config", "user.name", "t", cwd=repo_main)
+        _run_git("remote", "add", "origin", str(remote), cwd=repo_main)
+        (repo_main / "app").mkdir()
+        (repo_main / "app" / "models.py").write_text("x = 1\n", encoding="utf-8")
+        _run_git("add", "-A", cwd=repo_main)
+        _run_git("commit", "-q", "-m", "initial", cwd=repo_main)
+        _run_git("push", "-q", "origin", "main", cwd=repo_main)
+
+        wt_dir = workspace / "fix-99" / "org" / "repo"
+        _run_git("worktree", "add", "-q", "-b", "fix-99", str(wt_dir), cwd=repo_main)
+        _run_git("config", "user.email", "t@t", cwd=wt_dir)
+        _run_git("config", "user.name", "t", cwd=wt_dir)
+        _run_git("push", "-q", "origin", "fix-99", cwd=wt_dir)
+        # A genuine uncommitted edit to a tracked file — the real "dirty" signal.
+        (wt_dir / "app" / "models.py").write_text("x = 2\n", encoding="utf-8")
+
+        return workspace, wt_dir, self._make_worktree(wt_path=str(wt_dir))
+
+    @_patch_overlay
+    def test_dirty_worktree_is_kept_by_default(self, mock_overlay: MagicMock) -> None:
+        mock_overlay.return_value.provisioning.cleanup_steps.return_value = []
+        workspace, wt_dir, wt = self._dirty_worktree()
+        wt_id = wt.pk
+        with (
+            patch("teatree.core.cleanup.cleanup.clone_root", return_value=workspace),
+            patch("teatree.core.runners.worktree_start.docker_compose_down") as mock_down,
+            pytest.raises(RuntimeError, match="uncommitted changes"),
+        ):
+            cleanup_worktree(wt)
+
+        # Refuse-before-destroy: neither docker nor the git worktree was touched.
+        mock_down.assert_not_called()
+        assert wt_dir.is_dir(), "a dirty worktree must be left intact on disk"
+        assert Worktree.objects.filter(pk=wt_id).exists()
+
+    @_patch_overlay
+    def test_force_overrides_dirty_guard(self, mock_overlay: MagicMock) -> None:
+        mock_overlay.return_value.provisioning.cleanup_steps.return_value = []
+        workspace, wt_dir, wt = self._dirty_worktree()
+        wt_id = wt.pk
+        with (
+            patch("teatree.core.cleanup.cleanup.clone_root", return_value=workspace),
+            patch("teatree.core.runners.worktree_start.docker_compose_down"),
+        ):
+            cleanup_worktree(wt, force=True)
+
+        assert not wt_dir.exists(), "force must reap the dirty worktree from disk"
+        assert not Worktree.objects.filter(pk=wt_id).exists()
+
+    @_patch_ref_tree
+    @_patch_overlay
+    @_patch_git
+    @_patch_config
+    def test_unpushed_refusal_never_reaches_docker(
+        self,
+        mock_config: MagicMock,
+        mock_git: MagicMock,
+        mock_overlay: MagicMock,
+        mock_ref_tree: MagicMock,
+    ) -> None:
+        """The #706 guard raises before `docker compose down --volumes` destroys the DB volume."""
+        _mock_workspace(mock_config)
+        mock_overlay.return_value.provisioning.cleanup_steps.return_value = []
+        mock_git.status_porcelain.return_value = ""
+        mock_git.current_branch.return_value = "fix-99"
+        mock_git.commits_absent_from_all_remotes.return_value = ["abc123 feat: unpushed work"]
+
+        wt = self._make_worktree(wt_path="/tmp/wt/org/repo")
+        wt_id = wt.pk
+        with (
+            patch("teatree.core.runners.worktree_start.docker_compose_down") as mock_down,
+            pytest.raises(RuntimeError, match="on NO remote"),
+        ):
+            cleanup_worktree(wt)
+
+        mock_down.assert_not_called()
+        mock_git.worktree_remove.assert_not_called()
+        assert Worktree.objects.filter(pk=wt_id).exists()

@@ -101,7 +101,7 @@ def _setup_worktree_dir(wt_path: str, worktree: Worktree, overlay: OverlayBase) 
     repo_name = Path(wt_path).name
     core_lines = [f"dotenv ../{CACHE_DIRNAME}/{repo_name}/{CACHE_FILENAME}"]
     _append_envrc_lines(wt_path, core_lines + overlay.provisioning.envrc_lines(worktree))
-    result = run_step("direnv-allow", ["direnv", "allow", wt_path], check=False)
+    result = run_step("direnv-allow", ["direnv", "allow", wt_path])
     if not result.success:
         logger.warning("direnv allow failed: %s", result.error)
     if (Path(wt_path) / ".pre-commit-config.yaml").is_file():

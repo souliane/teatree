@@ -2,8 +2,12 @@
 
 These four ``@task`` functions back the
 ``Worktree.provision/start_services/verify/teardown`` transitions
-(BLUEPRINT §4). Each worker takes a row lock and re-checks state before
-running so at-least-once delivery is safe.
+(BLUEPRINT §4). Each worker takes a SHORT row lock ONLY to claim (re-check
+state), then releases it and runs the heavy runner OUTSIDE the transaction.
+The control DB is SQLite, whose connection-level write lock would otherwise
+freeze the WHOLE control plane ("database is locked") for the minutes a
+``uv sync`` / DB import / ``docker compose up`` / health-check pass takes.
+At-least-once delivery stays safe because every runner step is idempotent.
 
 Lives in its own module so ``teatree.core.tasks`` stays under the
 module-health function-count cap. Workers are kept as module-level
@@ -39,6 +43,36 @@ class WorktreeTransitionResult(TypedDict, total=False):
     detail: str
 
 
+def _claim_worktree(
+    worktree_id: int, expected_state: Worktree.State, *, verb: str, label: str
+) -> "Worktree | WorktreeTransitionResult":
+    """Claim a worktree under a SHORT row lock, then release it before the heavy runner.
+
+    Re-checks the FSM state and overlay resolvability while holding the row lock,
+    then RETURNS the row (lock released the instant the atomic block exits) so the
+    caller runs the minutes-long runner OUTSIDE the transaction — the SQLite write
+    lock is never held across provisioning, so the control plane never wedges on
+    "database is locked". A stale-state read or an unresolvable overlay short-
+    circuits with the result dict to return directly.
+    """
+    with transaction.atomic():
+        worktree = Worktree.objects.select_for_update().select_related("ticket").get(pk=worktree_id)
+        if worktree.state != expected_state:
+            logger.info(
+                "execute_worktree_%s skipped for worktree %s: state=%s (not %s)",
+                label,
+                worktree_id,
+                worktree.state,
+                expected_state.name,
+            )
+            return {"worktree_id": worktree_id, "skipped": True, "state": str(worktree.state)}
+        reason = _unknown_overlay_reason(worktree, verb=verb)
+        if reason is not None:
+            logger.warning("execute_worktree_%s: %s", label, reason)
+            return {"worktree_id": worktree_id, "ok": False, "detail": reason}
+    return worktree
+
+
 def _unknown_overlay_reason(worktree: Worktree, *, verb: str) -> str | None:
     """Return why *worktree*'s overlay is unresolvable, or ``None`` when it resolves.
 
@@ -70,7 +104,10 @@ def execute_worktree_provision(worktree_id: int) -> WorktreeTransitionResult:
 
     At-least-once delivery is safe: every step is idempotent (env cache
     rewrites cleanly, ``db_import`` no-ops when the DB exists, overlay
-    steps are expected to be re-runnable).
+    steps are expected to be re-runnable). The claim (state re-check) holds
+    a SHORT row lock; the heavy runner runs OUTSIDE the transaction so the
+    minutes-long provisioning never holds the SQLite write lock (see the
+    module docstring).
 
     Poison-pill guard (souliane/teatree#1975, mirroring #1959/#1969): a
     worktree whose effective overlay (its own field, falling back to the
@@ -80,26 +117,14 @@ def execute_worktree_provision(worktree_id: int) -> WorktreeTransitionResult:
     raising forever (:func:`_unknown_overlay_reason`). A blank overlay is the
     ambient single-overlay default and stays dispatchable.
     """
-    with transaction.atomic():
-        worktree = Worktree.objects.select_for_update().select_related("ticket").get(pk=worktree_id)
-        if worktree.state != Worktree.State.PROVISIONED:
-            logger.info(
-                "execute_worktree_provision skipped for worktree %s: state=%s (not PROVISIONED)",
-                worktree_id,
-                worktree.state,
-            )
-            return {"worktree_id": worktree_id, "skipped": True, "state": str(worktree.state)}
+    claim = _claim_worktree(worktree_id, Worktree.State.PROVISIONED, verb="provisioned", label="provision")
+    if not isinstance(claim, Worktree):
+        return claim
 
-        reason = _unknown_overlay_reason(worktree, verb="provisioned")
-        if reason is not None:
-            logger.warning("execute_worktree_provision: %s", reason)
-            return {"worktree_id": worktree_id, "ok": False, "detail": reason}
-
-        result = WorktreeProvisionRunner(worktree).run()
-        if not result.ok:
-            logger.warning("Worktree provision failed for %s: %s", worktree_id, result.detail)
-            return {"worktree_id": worktree_id, "ok": False, "detail": result.detail}
-
+    result = WorktreeProvisionRunner(claim).run()
+    if not result.ok:
+        logger.warning("Worktree provision failed for %s: %s", worktree_id, result.detail)
+        return {"worktree_id": worktree_id, "ok": False, "detail": result.detail}
     return {"worktree_id": worktree_id, "ok": True, "detail": result.detail}
 
 
@@ -119,27 +144,19 @@ def execute_worktree_start(worktree_id: int) -> WorktreeTransitionResult:
     whose overlay was uninstalled would raise ``Overlay not found`` on every
     re-fire. Short-circuit to a recorded ``ok=False`` before constructing the
     runner so one bad worktree never crashes its FSM worker forever.
+
+    The claim (state re-check) holds a SHORT row lock; ``docker compose up`` +
+    overlay pre-run steps run OUTSIDE the transaction so the SQLite write lock is
+    never held across them (see the module docstring).
     """
-    with transaction.atomic():
-        worktree = Worktree.objects.select_for_update().select_related("ticket").get(pk=worktree_id)
-        if worktree.state != Worktree.State.SERVICES_UP:
-            logger.info(
-                "execute_worktree_start skipped for worktree %s: state=%s (not SERVICES_UP)",
-                worktree_id,
-                worktree.state,
-            )
-            return {"worktree_id": worktree_id, "skipped": True, "state": str(worktree.state)}
+    claim = _claim_worktree(worktree_id, Worktree.State.SERVICES_UP, verb="started", label="start")
+    if not isinstance(claim, Worktree):
+        return claim
 
-        reason = _unknown_overlay_reason(worktree, verb="started")
-        if reason is not None:
-            logger.warning("execute_worktree_start: %s", reason)
-            return {"worktree_id": worktree_id, "ok": False, "detail": reason}
-
-        result = WorktreeStartRunner(worktree).run()
-        if not result.ok:
-            logger.warning("Worktree start failed for %s: %s", worktree_id, result.detail)
-            return {"worktree_id": worktree_id, "ok": False, "detail": result.detail}
-
+    result = WorktreeStartRunner(claim).run()
+    if not result.ok:
+        logger.warning("Worktree start failed for %s: %s", worktree_id, result.detail)
+        return {"worktree_id": worktree_id, "ok": False, "detail": result.detail}
     return {"worktree_id": worktree_id, "ok": True, "detail": result.detail}
 
 
@@ -197,27 +214,19 @@ def execute_worktree_verify(worktree_id: int) -> WorktreeTransitionResult:
     whose overlay was uninstalled would raise ``Overlay not found`` on every
     re-fire. Short-circuit to a recorded ``ok=False`` before constructing the
     runner.
+
+    The claim (state re-check) holds a SHORT row lock; the overlay health checks
+    run OUTSIDE the transaction so the SQLite write lock is never held across them
+    (see the module docstring).
     """
-    with transaction.atomic():
-        worktree = Worktree.objects.select_for_update().select_related("ticket").get(pk=worktree_id)
-        if worktree.state != Worktree.State.READY:
-            logger.info(
-                "execute_worktree_verify skipped for worktree %s: state=%s (not READY)",
-                worktree_id,
-                worktree.state,
-            )
-            return {"worktree_id": worktree_id, "skipped": True, "state": str(worktree.state)}
+    claim = _claim_worktree(worktree_id, Worktree.State.READY, verb="verified", label="verify")
+    if not isinstance(claim, Worktree):
+        return claim
 
-        reason = _unknown_overlay_reason(worktree, verb="verified")
-        if reason is not None:
-            logger.warning("execute_worktree_verify: %s", reason)
-            return {"worktree_id": worktree_id, "ok": False, "detail": reason}
-
-        result = WorktreeVerifyRunner(worktree).run()
-        if not result.ok:
-            logger.warning("Worktree verify reported failures for %s: %s", worktree_id, result.detail)
-            return {"worktree_id": worktree_id, "ok": False, "detail": result.detail}
-
+    result = WorktreeVerifyRunner(claim).run()
+    if not result.ok:
+        logger.warning("Worktree verify reported failures for %s: %s", worktree_id, result.detail)
+        return {"worktree_id": worktree_id, "ok": False, "detail": result.detail}
     return {"worktree_id": worktree_id, "ok": True, "detail": result.detail}
 
 

@@ -20,10 +20,30 @@ logger = logging.getLogger(__name__)
 # ── Symlink Engine ──────────────────────────────────────────────────
 
 
+def _contained_target(base: Path, path_str: str) -> Path | None:
+    """Resolve ``base / path_str`` and refuse a target that escapes ``base``.
+
+    ``_apply_copy`` runs ``shutil.rmtree(target)`` — an UNGATED recursive delete
+    on overlay-supplied spec input. An absolute ``path_str`` (``Path('/a') /
+    '/etc'`` is ``/etc``) or a ``../`` traversal would place that delete OUTSIDE
+    the worktree. ``os.path.normpath`` collapses ``..`` lexically so the
+    containment check catches both without touching the filesystem; a target not
+    under the resolved ``base`` returns ``None`` and the caller skips the spec.
+    """
+    base_resolved = base.resolve()
+    candidate = Path(os.path.normpath(base_resolved / path_str))
+    if not candidate.is_relative_to(base_resolved):
+        logger.warning("Refusing symlink/copy target %r — escapes worktree base %s", path_str, base_resolved)
+        return None
+    return candidate
+
+
 def apply_symlinks(specs: list[SymlinkSpec], base_dir: str | Path) -> list[str]:
     """Apply symlink/copy specs relative to *base_dir*.
 
-    Returns a list of paths that were created or updated.
+    Returns a list of paths that were created or updated. A spec whose resolved
+    target escapes ``base_dir`` (absolute path or ``../`` traversal) is refused —
+    the copy engine's ``shutil.rmtree`` must never reach outside the worktree.
     """
     base = Path(base_dir)
     created: list[str] = []
@@ -36,7 +56,9 @@ def apply_symlinks(specs: list[SymlinkSpec], base_dir: str | Path) -> list[str]:
         if not path_str or not source_str:
             continue
 
-        target = base / path_str
+        target = _contained_target(base, path_str)
+        if target is None:
+            continue
         source = Path(source_str)
 
         target.parent.mkdir(parents=True, exist_ok=True)

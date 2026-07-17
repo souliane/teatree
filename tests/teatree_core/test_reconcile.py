@@ -16,6 +16,7 @@ from teatree.core.models import Ticket, Worktree
 from teatree.core.models.merge_clear import MergeAudit, MergeClear
 from teatree.core.overlay import OverlayBase, OverlayProvisioning
 from teatree.core.worktree.reconcile import (
+    _GLOBAL_DRIFT_KEY,
     DoneButUnmerged,
     Drift,
     DuplicateScope,
@@ -28,6 +29,7 @@ from teatree.core.worktree.reconcile import (
     _done_but_unmerged_for_ticket,
     _duplicate_scope_for_ticket,
     _unpushed_work_for_worktree,
+    find_orphan_dbs,
     reconcile_all,
     reconcile_ticket,
     reconcile_work_state_all,
@@ -543,3 +545,48 @@ class TestReconcileWorkStateAll(TestCase):
         Worktree.objects.create(ticket=ticket, repo_path="repo", branch="main", extra={"worktree_path": str(work)})
         with _no_forge():
             assert reconcile_work_state_all() == {}
+
+
+class TestFindOrphanDbs(TestCase):
+    """``find_orphan_dbs`` gives ``Drift.orphan_dbs`` a producer (leaked-DB detection).
+
+    A teardown whose DB drop failed still deletes the Worktree row, so the ``wt_*``
+    database is left referenced by nothing. The reconciler must surface it so
+    ``workspace doctor`` can drop it, rather than let it leak forever.
+    """
+
+    def _psql_listing(self, *db_names: str) -> subprocess.CompletedProcess[str]:
+        stdout = "\n".join(f"{name}|postgres|UTF8" for name in db_names) + "\n"
+        return subprocess.CompletedProcess(args=["psql"], returncode=0, stdout=stdout, stderr="")
+
+    def test_wt_db_with_no_worktree_row_is_orphan(self) -> None:
+        ticket = Ticket.objects.create(issue_url="https://github.com/org/repo/issues/1")
+        Worktree.objects.create(ticket=ticket, repo_path="repo", branch="fix-1", db_name="wt_referenced")
+
+        with (
+            patch("teatree.core.worktree.reconcile.shutil.which", return_value="/usr/bin/psql"),
+            patch(
+                "teatree.core.worktree.reconcile.run_allowed_to_fail",
+                return_value=self._psql_listing("wt_referenced", "wt_leaked", "template1"),
+            ),
+        ):
+            orphans = find_orphan_dbs()
+
+        assert [o.db_name for o in orphans] == ["wt_leaked"]
+
+    def test_no_psql_client_yields_no_findings(self) -> None:
+        with patch("teatree.core.worktree.reconcile.shutil.which", return_value=None):
+            assert find_orphan_dbs() == []
+
+    def test_reconcile_all_surfaces_orphan_db_under_global_key(self) -> None:
+        with (
+            patch("teatree.core.worktree.reconcile.shutil.which", return_value="/usr/bin/psql"),
+            patch(
+                "teatree.core.worktree.reconcile.run_allowed_to_fail",
+                return_value=self._psql_listing("wt_leaked"),
+            ),
+        ):
+            drifts = reconcile_all()
+
+        assert _GLOBAL_DRIFT_KEY in drifts
+        assert [o.db_name for o in drifts[_GLOBAL_DRIFT_KEY].orphan_dbs] == ["wt_leaked"]
