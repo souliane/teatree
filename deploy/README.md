@@ -92,14 +92,17 @@ Re-running the deploy workflow is **idempotent** — it converges the same stack
 
 teatree runs as a small fleet: the operator's laptop plus this headless box.
 Some autonomous loops are **fleet-scoped** — they must run on exactly **one**
-instance or they double-act. The box provisions **no Slack credential** (see
-[Access & networking](#access--networking)), so the Slack-facing loops would be
-both broken here and duplicates of the laptop's. The split:
+instance or they double-act. The box now **hosts the DM-only Slack conversational
+loop** for the owner overlay, so `inbox` (the inbound-messaging scanners: Slack DM
+→ `PendingChatInjection`, review-intent, red-card, mentions) runs here and drives
+the headless drain → 👀-ack → answer cycle. Only the **colleague-facing** Slack
+loops stay on the laptop, since running them here would both misfire and duplicate
+the laptop's. The split:
 
 | Instance | Runs | Does not run |
 | --- | --- | --- |
-| **Laptop** | `inbox` (Slack drain), `review` (colleague PR review → Slack), `directive_loop` (asks the human via Slack) | `tickets` — the operator disables it by hand |
-| **Box** (this deploy) | `tickets` (issue scanning/dispatch) + all machine-local loops | `inbox`, `review`, `directive_loop` |
+| **Laptop** | `review` (colleague PR review → Slack), `directive_loop` (asks the human via Slack) | `tickets` — the operator disables it by hand |
+| **Box** (this deploy) | `inbox` (DM-only owner Slack loop), `tickets` (issue scanning/dispatch) + all machine-local loops | `review`, `directive_loop` |
 
 The box enforces its side in `deploy/entrypoint.sh` (init role): after seeding
 config it calls `t3 loop disable <name>` — the single DB-backed per-loop control
@@ -107,7 +110,7 @@ plane (`Loop.enabled` AND not `LoopState`-held, via `loop_state_admits`) — for
 The disable is idempotent, so re-running the deploy converges.
 
 `TEATREE_DISABLED_LOOPS` (comma-separated) overrides the set the box disables. It
-defaults to `inbox,review,directive_loop` when unset, so a fresh deploy is safe
+defaults to `review,directive_loop` when unset, so a fresh deploy is safe
 with no configuration; an **empty** value disables nothing (every loop runs
 here). Set it in the box env file (`teatree.env`) to change the set. Because the
 deploy workflow rewrites `teatree.env` from repository secrets on every run, a

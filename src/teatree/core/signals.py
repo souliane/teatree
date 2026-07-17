@@ -38,11 +38,12 @@ _WORKTREE_TRANSITION_TASKS: dict[str, str] = {
 }
 
 # The terminal target states that trigger completion-time side effects: freeing
-# the issue-implementer marker AND purging the ticket's worktrees. Mirrors
-# ``worktree_done._DONE_TICKET_STATES`` — SHIPPED is excluded (its PR is still
-# open, so the work is not finished), which is exactly ``Ticket`` terminal states
-# minus SHIPPED.
-_TERMINAL_TARGET_STATES: frozenset[str] = frozenset({Ticket.State.MERGED, Ticket.State.DELIVERED, Ticket.State.IGNORED})
+# the issue-implementer marker AND purging the ticket's worktrees. Sourced from
+# ``Ticket.marker_release_states()`` so the on-transition signals and the
+# retroactive reconciler (#3275) can never diverge on which states are terminal;
+# mirrors ``worktree_done._DONE_TICKET_STATES`` — SHIPPED is excluded (its PR is
+# still open, so the work is not finished), i.e. ``Ticket`` terminal states minus SHIPPED.
+_TERMINAL_TARGET_STATES: frozenset[str] = Ticket.marker_release_states()
 
 
 def _log_ticket_transition(

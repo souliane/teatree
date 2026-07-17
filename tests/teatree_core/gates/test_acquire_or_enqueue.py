@@ -14,6 +14,7 @@ from django.test import TestCase
 
 from teatree.core.gates import local_stack_gate as gate_mod
 from teatree.core.gates.local_stack_gate import LocalStackLimitExceededError, acquire_or_enqueue
+from teatree.core.gates.provision_admission_gate import ProvisionAdmissionVerdict
 from teatree.core.models import LocalStackQueueItem, Ticket, Worktree
 
 
@@ -74,6 +75,44 @@ class TestEnqueueWhenStillFull(TestCase):
             # The whole point of #2190: NO SystemExit — proven by it not raising.
             result = acquire_or_enqueue(candidate, write_out=lambda _m: None)
         assert result is False
+
+
+class TestRamAwareAdmission(TestCase):
+    """#2949: on a capped overlay, hold a new stack when host RAM is over the ceiling."""
+
+    def test_ram_over_ceiling_enqueues_even_with_a_free_count_slot(self) -> None:
+        candidate = _worktree(ticket_number="600", state=Worktree.State.PROVISIONED)
+        messages: list[str] = []
+        with (
+            patch.object(gate_mod, "resolve_max_concurrent_local_stacks", return_value=1),
+            patch.object(gate_mod, "check_provision_admission", return_value=ProvisionAdmissionVerdict.hold("ram")),
+        ):
+            acquired = acquire_or_enqueue(candidate, write_out=messages.append)
+        assert acquired is False
+        item = LocalStackQueueItem.objects.get(worktree=candidate)
+        assert item.status == LocalStackQueueItem.Status.QUEUED
+        assert any("queued" in m.lower() for m in messages)
+
+    def test_ram_ok_proceeds_to_the_count_gate(self) -> None:
+        candidate = _worktree(ticket_number="601", state=Worktree.State.PROVISIONED)
+        with (
+            patch.object(gate_mod, "resolve_max_concurrent_local_stacks", return_value=1),
+            patch.object(gate_mod, "check_provision_admission", return_value=ProvisionAdmissionVerdict.allow()),
+        ):
+            acquired = acquire_or_enqueue(candidate, write_out=lambda _m: None)
+        assert acquired is True
+        assert LocalStackQueueItem.objects.count() == 0
+
+    def test_unbounded_overlay_never_ram_holds(self) -> None:
+        """The default (unbounded) overlay keeps its pre-#2949 behaviour — RAM is not consulted."""
+        candidate = _worktree(ticket_number="602", state=Worktree.State.PROVISIONED)
+        with (
+            patch.object(gate_mod, "resolve_max_concurrent_local_stacks", return_value=0),
+            patch.object(gate_mod, "check_provision_admission", return_value=ProvisionAdmissionVerdict.hold("ram")),
+        ):
+            acquired = acquire_or_enqueue(candidate, write_out=lambda _m: None)
+        assert acquired is True
+        assert LocalStackQueueItem.objects.count() == 0
 
 
 class TestReapThenAcquire(TestCase):

@@ -1,9 +1,9 @@
 """The compact SDK-equivalent cost chip on the statusline (#1714).
 
-The chip carries an explicit ``mtd`` (month-to-date) period label and is
-handed to the statusline header via ``tick-meta.json``'s ``cost_chip`` field,
-which ``hooks/scripts/statusline.sh`` renders next to the weekly (``7d=``)
-rate-limit segment.
+The chip carries an explicit ``mtd`` (month-to-date) period label and is handed
+to the statusline header as the first ``usage``-placed contributed segment in
+``tick-meta.json``'s ``segments`` list (#3237), which ``hooks/scripts/statusline.sh``
+renders next to the weekly (``7d=``) rate-limit segment.
 """
 
 import datetime as dt
@@ -72,10 +72,12 @@ class TestCostChipInTickMeta:
 
     def test_meta_carries_period_labelled_chip(self, tmp_path: Path) -> None:
         _headless_attempt(self.task, cost=48.0)
-        assert self._meta(tmp_path)["cost_chip"] == "SDK mtd ≈$48/$200"
+        # The cost chip is now the first ``usage``-placed contributed segment (#3237).
+        chip = self._meta(tmp_path)["segments"][0]
+        assert chip == {"id": "cost_chip", "text": "SDK mtd ≈$48/$200", "placement": "usage"}
 
     def test_meta_chip_empty_when_no_headless_cost(self, tmp_path: Path) -> None:
-        assert self._meta(tmp_path)["cost_chip"] == ""
+        assert all(s["id"] != "cost_chip" for s in self._meta(tmp_path)["segments"])
 
     def test_meta_carries_rendered_at_for_staleness_gate(self, tmp_path: Path) -> None:
         # The statusline freshness gate reads rendered_at to surface a STALE

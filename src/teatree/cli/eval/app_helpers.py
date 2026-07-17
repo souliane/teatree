@@ -14,7 +14,7 @@ from claude_agent_sdk.types import EffortLevel
 
 from teatree.agents.model_tiering import resolve_tier
 from teatree.cli.eval.escalate import EscalationConfig
-from teatree.eval.backends import API_BACKEND
+from teatree.eval.backends import FRESH_CLAUDE_BACKENDS
 from teatree.eval.discovery import discover_specs, find_spec
 from teatree.eval.model_variant import EFFORT_LEVELS
 from teatree.eval.models import EvalSpec
@@ -97,13 +97,14 @@ def require_effort(effort: str) -> EffortLevel:
 
 
 def require_api_backend_for_fresh_run(*, backend: str, trials: int, models: str | None) -> None:
-    """Reject fresh-run-only shapes unless the caller explicitly opts into api."""
+    """Reject fresh-run-only shapes unless the caller opts into a fresh Claude backend."""
     if trials == 1 and models is None:
         return
-    if backend == API_BACKEND:
+    if backend in FRESH_CLAUDE_BACKENDS:
         return
+    choices = " or ".join(f"--backend {b}" for b in FRESH_CLAUDE_BACKENDS)
     typer.echo(
-        f"--trials/--models require a fresh metered run; pass --backend api instead of --backend {backend!r}.",
+        f"--trials/--models require a fresh metered run; pass {choices} instead of --backend {backend!r}.",
         err=True,
     )
     raise typer.Exit(code=2)

@@ -370,6 +370,40 @@ class TestWs3TickDispatchContract:
         assert capsys.readouterr().out == ""
 
 
+class TestSessionStartSeedsSkills:
+    """#3273: an engaged (autoloaded) SessionStart seeds ``<session>.skills``.
+
+    The ``_isolation`` fixture forces both engagement gates on, so the default
+    path here is the engaged one; the non-engaged test flips both off.
+    """
+
+    def _skills(self, state: Path, session_id: str) -> list[str]:
+        path = state / f"{session_id}.skills"
+        if not path.is_file():
+            return []
+        return [ln for ln in path.read_text(encoding="utf-8").splitlines() if ln.strip()]
+
+    def test_engaged_session_seeds_non_empty_skills(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        state = tmp_path / "state"
+        state.mkdir()
+        monkeypatch.setattr(router, "STATE_DIR", state)
+
+        handle_session_start_bootstrap({"session_id": "s-engaged"})
+
+        assert self._skills(state, "s-engaged"), "engaged SessionStart must seed a non-empty skills set"
+
+    def test_non_engaged_session_writes_no_skills(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        state = tmp_path / "state"
+        state.mkdir()
+        monkeypatch.setattr(router, "STATE_DIR", state)
+        monkeypatch.setattr(router, "_autoload_enabled", lambda: False)
+        monkeypatch.setattr(router, "_teatree_active", lambda session_id: False)
+
+        handle_session_start_bootstrap({"session_id": "s-cold"})
+
+        assert self._skills(state, "s-cold") == []
+
+
 # ── Issue #980: auto-compact kill-switch advisory ─────────────────────
 
 

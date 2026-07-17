@@ -59,7 +59,7 @@ from teatree.core.models import LoopLease
 from teatree.loop.loop_cadences import loop_owner_ttl_seconds
 from teatree.loop.preset_resolution import active_overlay_scope
 from teatree.loop.statusline import set_preset_segment_reader
-from teatree.loops.preset_status import statusline_chunk
+from teatree.loops.preset_status import preset_line_chunk
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -321,7 +321,7 @@ class Command(TyperCommand):
         # the live DB-backed readers so this per-loop tick's render keeps the full
         # loop line, then reset after the tick so the process-global seams never leak.
         set_mini_loop_schedules_reader(mini_loop_schedules)
-        set_preset_segment_reader(statusline_chunk)
+        set_preset_segment_reader(preset_line_chunk)
         try:
             request = self._build_request(overlay)
             report = run_tick(request, statusline_path=statusline_file, jobs_builder=_scoped_jobs_builder(loop))
@@ -331,3 +331,26 @@ class Command(TyperCommand):
             LoopLease.objects.release(tick_mutex, owner=owner)
 
         self._emit_report(report, json_output=json_output)
+        self._hard_exit_if_subprocess()
+
+    @staticmethod
+    def _hard_exit_if_subprocess() -> None:
+        """``os._exit`` right after render when this is the worker's deadlined subprocess.
+
+        A hung NON-daemon scanner thread blocks interpreter shutdown (the
+        ``ThreadPoolExecutor`` atexit join it left running), pinning this subprocess —
+        and one of the worker's scarce ``loops`` executor slots — until the outer
+        deadline SIGKILL. Once the report is rendered there is nothing left to do, so a
+        hard exit reclaims the slot immediately. Gated on the env marker the worker's
+        ``run_deadlined_tick`` sets, so an in-process ``call_command`` (tests) NEVER
+        hits it. Streams are flushed first because ``os._exit`` skips atexit flushing.
+        """
+        from teatree.loops.timer_chains import TICK_SUBPROCESS_ENV_MARKER  # noqa: PLC0415 — deferred: keep import light
+
+        if not os.environ.get(TICK_SUBPROCESS_ENV_MARKER):
+            return
+        import sys  # noqa: PLC0415 — deferred: only needed on the subprocess exit path
+
+        sys.stdout.flush()
+        sys.stderr.flush()
+        os._exit(0)

@@ -268,6 +268,45 @@ class TestExecuteHeadlessUnknownOverlay(TestCase):
         assert "ghost-overlay" in attempt.error
 
     @override_settings(**IMMEDIATE_BACKEND)
+    def test_headless_subprocess_stderr_is_recorded_on_the_attempt(self) -> None:
+        # A claude-agent-sdk ``ProcessError`` stringifies to "Check stderr output
+        # for details" and hides the real cause on ``.stderr``. The recorded
+        # attempt must carry that stderr so a headless failure is diagnosable.
+        from teatree.core import headless_dispatch as headless_dispatch_mod  # noqa: PLC0415
+        from teatree.core.tasks import execute_headless_task  # noqa: PLC0415
+
+        ticket = Ticket.objects.create()
+        session = Session.objects.create(ticket=ticket)
+        task = Task.objects.create(
+            ticket=ticket,
+            session=session,
+            execution_target=Task.ExecutionTarget.HEADLESS,
+            status=Task.Status.PENDING,
+            phase="architectural_review",
+        )
+
+        class _FakeProcessError(RuntimeError):
+            def __init__(self) -> None:
+                super().__init__("Command failed with exit code 1. Check stderr output for details")
+                self.stderr = "claude: error: OAuth token expired -- run `claude login`"
+
+        def _boom(*_args: object, **_kwargs: object) -> object:
+            raise _FakeProcessError
+
+        with (
+            patch.object(overlay_loader_mod, "_discover_overlays", return_value=_MOCK_OVERLAY),
+            patch.object(headless_dispatch_mod, "loop_dispatch_refusal", return_value=None),
+            patch.object(headless_dispatch_mod, "get_headless_runner", return_value=_boom),
+            pytest.raises(_FakeProcessError),
+        ):
+            execute_headless_task.func(task.pk, task.phase)
+
+        attempt = TaskAttempt.objects.get(task=task)
+        assert attempt.exit_code == 1
+        assert "claude subprocess stderr" in attempt.error
+        assert "OAuth token expired" in attempt.error
+
+    @override_settings(**IMMEDIATE_BACKEND)
     def test_failed_unknown_overlay_task_is_not_re_enqueued_next_drain(self) -> None:
         from teatree.core.tasks import execute_headless_task  # noqa: PLC0415
 
@@ -550,6 +589,28 @@ class TestExecuteTeardownTerminalPurge(TestCase):
         assert self.branch in result.return_value["detail"]
         assert "salvage" in result.return_value["detail"]
         assert self.wt_path.exists(), "#706 guard breached: worktree with unpushed commits was destroyed"
+        assert Worktree.objects.filter(branch=self.branch).exists()
+
+    @override_settings(**IMMEDIATE_BACKEND)
+    def test_keeps_uncommitted_changes_on_terminal_purge(self) -> None:
+        from teatree.core.models import Worktree  # noqa: PLC0415
+
+        ticket = self._ignored_ticket_with_worktree()
+        # Every commit is pushed, so the unpushed-commit branch of the guard is
+        # clean — the ONLY thing at risk is a real uncommitted working-tree change,
+        # which is never on any remote. It must gate the purge on its own.
+        self._commit_in_worktree("pushed work")
+        _run_git("push", "-q", "origin", self.branch, cwd=self.wt_path)
+        _run_git("fetch", "-q", "origin", cwd=self.repo_main)
+        (self.wt_path / "uncommitted.txt").write_text("local edit not on any remote", encoding="utf-8")
+
+        with self._patched_clone_root():
+            result = execute_teardown.enqueue(ticket.pk)
+
+        assert result.return_value["ok"] is False
+        assert "uncommitted" in result.return_value["detail"]
+        assert "salvage" in result.return_value["detail"]
+        assert self.wt_path.exists(), "#706 guard breached: worktree with uncommitted changes was destroyed"
         assert Worktree.objects.filter(branch=self.branch).exists()
 
 

@@ -569,6 +569,10 @@
           "name": "enable"
         },
         {
+          "help": "Set the emergency FORCED plane for *name* \u2014 on/off beats a preset, clear returns to neutral",
+          "name": "override"
+        },
+        {
           "help": "Read *name*'s durable state (ENABLED when no row exists) WITHOUT mutating it",
           "name": "status"
         }

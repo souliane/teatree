@@ -103,18 +103,22 @@ seed_setting() {
 }
 
 # Fleet role split: this instance must not run the loops another fleet member
-# owns. The box provisions no Slack credential (see README), so the Slack-facing
-# loops — broken here AND duplicates of the laptop's — are disabled through the
-# one DB-backed per-loop control plane. `t3 loop disable` is idempotent, so a
-# re-deploy converges. TEATREE_DISABLED_LOOPS (comma-separated, from teatree.env)
-# overrides the default; an empty value runs every loop here.
+# owns. The box now HOSTS the DM-only Slack conversational loop for the owner
+# overlay, so `inbox` — the inbound-messaging scanners (Slack DM → PendingChatInjection,
+# review-intent, red-card, mentions) — MUST run here and is no longer disabled by
+# default. Only the COLLEAGUE-facing Slack loops the laptop owns stay off: `review`
+# (colleague PR review → Slack) and `directive_loop` (asks the human via Slack).
+# They are disabled through the one DB-backed per-loop control plane. `t3 loop
+# disable` is idempotent, so a re-deploy converges. TEATREE_DISABLED_LOOPS
+# (comma-separated, from teatree.env) overrides the default; an empty value runs
+# every loop here.
 #
 # `t3 loop disable` exits 0 even on an unregistered name (it only flips a real
 # Loop row), so a typo would silently disable nothing and leave the real loop
 # running — a double-run against the laptop. Validate the WHOLE list against the
 # registered mini-loops first, so a bad value fails before anything is disabled.
 disable_fleet_scoped_loops() {
-    local raw="${TEATREE_DISABLED_LOOPS-inbox,review,directive_loop}"
+    local raw="${TEATREE_DISABLED_LOOPS-review,directive_loop}"
     local field loop registered
     local fields=() requested=()
     IFS=',' read -ra fields <<<"$raw"
@@ -137,7 +141,7 @@ disable_fleet_scoped_loops() {
     done
 
     for loop in "${requested[@]}"; do
-        if ! t3 loop disable "$loop"; then
+        if ! t3 loop disable "$loop" --emergency; then
             echo "entrypoint: 't3 loop disable ${loop}' FAILED - the DB-backed loop control plane is unreachable; confirm 't3 teatree db migrate' succeeded above and re-run Deploy" >&2
             exit 1
         fi
