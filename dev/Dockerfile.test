@@ -1,4 +1,9 @@
-FROM ubuntu:latest AS base
+# Pin the base by digest, not the floating `latest`/`24.04` tag: an unpinned
+# base moves its digest several times a month, and every move cache-busts every
+# layer below — so all 6 CI test shards do the full apt+node+uv rebuild at once
+# (souliane/teatree CI-speedup). Digest = ubuntu:24.04 as of 2026-07-16. Bump it
+# deliberately (dependabot's docker ecosystem can automate this).
+FROM ubuntu:24.04@sha256:4fbb8e6a8395de5a7550b33509421a2bafbc0aab6c06ba2cef9ebffbc7092d90 AS base
 RUN apt-get update -qq && \
     apt-get install -y -qq ca-certificates curl direnv git jq sqlite3 >/dev/null 2>&1 && \
     curl -fsSL https://deb.nodesource.com/setup_24.x | bash - >/dev/null 2>&1 && \
