@@ -114,7 +114,8 @@
 "src/teatree/core/worktree/worktree_tasks.py" = 1
 
 [intra_loop]
-"src/teatree/loop/domain_jobs.py" = 2
+"src/teatree/loop/domain_jobs.py" = 1
+"src/teatree/loop/domain_optional_scanner_jobs.py" = 1
 "src/teatree/loop/global_scanner_factories.py" = 1
 "src/teatree/loop/loop_scoping.py" = 1
 "src/teatree/loop/phases/render.py" = 8

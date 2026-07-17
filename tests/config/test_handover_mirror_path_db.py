@@ -21,7 +21,7 @@ from unittest.mock import patch
 
 from django.test import TestCase
 
-from teatree.config.settings import _default_handover_mirror_path, _parse_handover_mirror_path
+from teatree.config.setting_parsers import _default_handover_mirror_path, _parse_handover_mirror_path
 from teatree.core.handover import mirror_path
 from teatree.core.models import ConfigSetting
 

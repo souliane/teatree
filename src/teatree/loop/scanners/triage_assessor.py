@@ -11,12 +11,12 @@ ASK-GATE marker.
 Two hard invariants (mirroring the disposition scanner's conservative doctrine):
 
 * **Zero host writes.** This scanner NEVER closes, comments on, or relabels an
-  issue — it only reads and queues an assessment. Acting is the interactive
-  approval skill's job (``gh`` on user approval), gated by the ask-gate rows the
-  recorder persists from the agent's returned envelope.
+    issue — it only reads and queues an assessment. Acting is the interactive
+    approval skill's job (``gh`` on user approval), gated by the ask-gate rows the
+    recorder persists from the agent's returned envelope.
 * **Nothing acts autonomously.** The queued task routes to a shell-denied agent
-  that RETURNS a typed ``triage_recommendations`` envelope; the recorder persists
-  one PENDING ask-gate row per issue plus one ``DeferredQuestion`` DMing the user.
+    that RETURNS a typed ``triage_recommendations`` envelope; the recorder persists
+    one PENDING ask-gate row per issue plus one ``DeferredQuestion`` DMing the user.
 
 The dedup contract is the ``scanning_news`` shape: a pending/claimed
 ``triage_assessing`` task is the lock, and the most-recent task's

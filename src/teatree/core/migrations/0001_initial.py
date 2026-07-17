@@ -163,6 +163,18 @@ _DEFAULT_LOOPS = (
         False,
     ),
     (
+        "triage_assessor",
+        3600,
+        None,
+        None,
+        (
+            "Assesses OPEN needs-triage issues hourly and queues keep/close/needs-info recommendations "
+            "behind an ask-gate; default-off behind triage_assessor_enabled, never acts without per-item approval."
+        ),
+        False,
+        False,
+    ),
+    (
         "housekeeping",
         3600,
         None,

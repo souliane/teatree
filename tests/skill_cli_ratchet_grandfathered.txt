@@ -98,6 +98,10 @@ skills/ticket/SKILL.md::gh pr list
 skills/ticket/SKILL.md::glab api
 skills/ticket/SKILL.md::glab issue view
 skills/ticket/SKILL.md::glab mr list
+skills/triaging-issues/SKILL.md::gh issue
+skills/triaging-issues/SKILL.md::gh issue close
+skills/triaging-issues/SKILL.md::gh issue comment
+skills/triaging-issues/SKILL.md::gh issue edit
 skills/wip/SKILL.md::gh issue list
 skills/wip/SKILL.md::glab issue list
 skills/workspace/SKILL.md::gh pr list
