@@ -34,22 +34,32 @@ def _resolve_overlay() -> tuple[Path | None, str]:
 
 @recover_app.callback(invoke_without_command=True)
 def recover(
+    *,
     requeue: Annotated[
         bool,
         typer.Option("--requeue", help="Reopen genuinely-incomplete FAILED (incl. outage-death) tasks."),
+    ] = False,
+    json_output: Annotated[
+        bool,
+        typer.Option("--json", help="Emit the structured report as JSON."),
     ] = False,
     overlay: Annotated[
         str,
         typer.Option("--overlay", help="Which overlay's manage.py runs the report (default: active overlay)."),
     ] = "",
 ) -> None:
-    """Forward `t3 recover [--requeue]` to `t3 <overlay> recover`.
+    """Forward `t3 recover [--requeue] [--json]` to `t3 <overlay> recover`.
 
     The flags are declared explicitly (not a raw ``ctx.args`` passthrough) so
     Typer's group parser does not mis-read a leading ``--requeue`` as a
-    subcommand name (`No such command '--requeue'`). ``recover`` takes only
-    ``--requeue``; the default is the dry-run report.
+    subcommand name (`No such command '--requeue'`). ``--requeue`` reopens FAILED
+    tasks and ``--json`` emits the structured report; both forward to the
+    management command for parity, and the default is the dry-run report.
     """
     project_path, overlay_name = _resolve_overlay()
-    forwarded = ["--requeue"] if requeue else []
+    forwarded: list[str] = []
+    if requeue:
+        forwarded.append("--requeue")
+    if json_output:
+        forwarded.append("--json")
     managepy(project_path, "recover", *forwarded, overlay_name=overlay or overlay_name)

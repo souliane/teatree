@@ -11,11 +11,13 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from io import StringIO
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 from django.core.management import call_command
 from django.test import TestCase
 
+from teatree.cli import recover as cli_recover
 from teatree.core.gates.orphan_guard import BranchReport, BranchStatus
 from teatree.core.models import Session, Task, TaskAttempt, Ticket
 from teatree.core.worktree.recover import RecoverReport, gather_recover_report, requeue_failed_tasks
@@ -253,6 +255,22 @@ class TestRecoverCliForwarding(TestCase):
             cli_recover.recover(requeue=True, overlay="")
 
         managepy.assert_called_once_with(Path("/proj"), "recover", "--requeue", overlay_name="acme")
+
+    def test_json_flag_forwards_the_flag(self) -> None:
+        """Regression: `t3 recover --json` must forward `--json` (parity with manage.py recover).
+
+        The old ``ctx.args`` passthrough forwarded any flag; the explicit-option
+        rewrite must keep declaring and forwarding ``--json`` or the documented
+        shortcut breaks while the management command still supports it.
+        """
+        active = SimpleNamespace(project_path=Path("/proj"), name="acme")
+        with (
+            patch("teatree.config.discover_active_overlay", return_value=active),
+            patch("teatree.cli.recover.managepy") as managepy,
+        ):
+            cli_recover.recover(requeue=False, json_output=True, overlay="")
+
+        managepy.assert_called_once_with(Path("/proj"), "recover", "--json", overlay_name="acme")
 
     def test_overlay_flag_overrides_active_overlay(self) -> None:
         from teatree.cli import recover as cli_recover  # noqa: PLC0415
