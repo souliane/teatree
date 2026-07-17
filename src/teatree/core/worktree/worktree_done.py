@@ -42,6 +42,7 @@ from teatree.core.cleanup.cleanup_emit import CleanupEmitRecord, banned_terms_st
 from teatree.core.cleanup.cleanup_liveness import worktree_liveness
 from teatree.core.cleanup.cleanup_orphan_ref import classify_orphan_ref
 from teatree.core.cleanup.cleanup_ownership import is_excluded_by_ownership
+from teatree.core.cleanup.working_tree_dirt import real_uncommitted_reasons
 from teatree.core.models import Ticket, Worktree
 from teatree.core.worktree.branch_classification import (
     _branch_has_open_pr,
@@ -51,7 +52,6 @@ from teatree.core.worktree.branch_classification import (
     is_squash_merged,
 )
 from teatree.core.worktree.clone_paths import resolve_clone_path
-from teatree.core.worktree.worktree_env import CACHE_DIRNAME, CACHE_FILENAME
 from teatree.utils import git
 from teatree.utils.run import CommandFailedError
 
@@ -63,11 +63,6 @@ _DONE_TICKET_STATES = frozenset(
     {Ticket.State.MERGED, Ticket.State.DELIVERED, Ticket.State.IGNORED},
 )
 
-# Regenerable artifacts a "real uncommitted change" probe must ignore: provisioning
-# writes the env cache into every worktree, so a porcelain status listing only
-# those is still clean for the wipe decision.
-_REGENERABLE_WORKTREE_PATHS = (CACHE_FILENAME, f"{CACHE_DIRNAME}/")
-_PORCELAIN_STATUS_PREFIX_WIDTH = 3
 _PREVIEW_LIMIT = 3
 _FALLBACK_DEFAULT_TARGET = "origin/main"
 
@@ -203,7 +198,7 @@ def analyze_worktree_changes(worktree: Worktree, *, workspace: Path) -> ChangeAn
     default_target = _effective_default_target(Path(repo_main))
 
     reasons: list[str] = []
-    reasons.extend(_uncommitted_reasons(wt_path, target))
+    reasons.extend(real_uncommitted_reasons(wt_path, target))
     reasons.extend(_unpushed_commit_reasons(Path(repo_main), target, default_target=default_target))
     return ChangeAnalysis(proven_redundant=not reasons, kept_reasons=reasons)
 
@@ -224,70 +219,6 @@ def _current_head_sha(worktree: Worktree, *, workspace: Path) -> str | None:
     if resolved:
         return resolved
     return classify_orphan_ref(target).recovered_sha
-
-
-def _uncommitted_reasons(wt_path: str, target: _EffectiveTarget) -> list[str]:
-    """Kept-reasons for real (non-regenerable) uncommitted changes; empty when clean.
-
-    Fails CLOSED: an inconclusive ``git status`` (corrupt index, lock contention)
-    is treated as dirty so the worktree is kept. A dangling-HEAD worktree (its
-    branch ref deleted post-merge) has no resolvable HEAD, so ``git status``
-    reports EVERY tracked file as a staged addition — noise, not real uncommitted
-    work. Rather than skipping the dirt check entirely there (which would let a
-    force-wipe destroy genuine uncommitted follow-up edits), the working tree is
-    diffed against the RECOVERED last-HEAD SHA plus an untracked-file scan —
-    :func:`_dangling_head_dirty_reasons`.
-    """
-    if not Path(wt_path).is_dir():
-        return []
-    if not git.check(repo=wt_path, args=["rev-parse", "--verify", "--quiet", "HEAD"]):
-        return _dangling_head_dirty_reasons(wt_path, target)
-    try:
-        porcelain = git.status_porcelain(wt_path)
-    except CommandFailedError as exc:
-        return [f"could not read working-tree status ({exc}) — keeping"]
-    dirty = [
-        entry
-        for line in porcelain.splitlines()
-        if (entry := line[_PORCELAIN_STATUS_PREFIX_WIDTH:].strip())
-        and not entry.startswith(_REGENERABLE_WORKTREE_PATHS)
-    ]
-    return _dirt_reasons(dirty)
-
-
-def _dangling_head_dirty_reasons(wt_path: str, target: _EffectiveTarget) -> list[str]:
-    """Kept-reasons for real uncommitted edits in a dangling-HEAD worktree; empty when clean.
-
-    A post-merge branch-ref deletion leaves HEAD unresolvable, so ``git status``
-    is useless (everything reads as a staged add). The recovered last-HEAD SHA is
-    the real comparison base: the working tree is diffed against it
-    (``git diff --name-only <sha>`` — tracked modifications) plus an untracked-file
-    scan (``git ls-files --others --exclude-standard``), ignoring the regenerable
-    env cache. Fails CLOSED: an unrecoverable HEAD or an erroring diff keeps the
-    worktree rather than letting a force-wipe destroy unexamined edits.
-    """
-    sha = classify_orphan_ref(target).recovered_sha
-    if sha is None:
-        return ["could not recover HEAD to check working-tree changes — keeping"]
-    try:
-        changed = git.run(repo=wt_path, args=["diff", "--name-only", sha])
-        untracked = git.run(repo=wt_path, args=["ls-files", "--others", "--exclude-standard"])
-    except CommandFailedError as exc:
-        return [f"could not diff working tree against recovered HEAD ({exc}) — keeping"]
-    dirty = [
-        stripped
-        for raw in (*changed.splitlines(), *untracked.splitlines())
-        if (stripped := raw.strip()) and not stripped.startswith(_REGENERABLE_WORKTREE_PATHS)
-    ]
-    return _dirt_reasons(dirty)
-
-
-def _dirt_reasons(dirty: list[str]) -> list[str]:
-    """Format a single kept-reason for a non-empty ``dirty`` file list; empty when clean."""
-    if not dirty:
-        return []
-    preview = ", ".join(dirty[:_PREVIEW_LIMIT]) + (", …" if len(dirty) > _PREVIEW_LIMIT else "")
-    return [f"{len(dirty)} uncommitted change(s) not on any remote: {preview}"]
 
 
 def _unpushed_commit_reasons(

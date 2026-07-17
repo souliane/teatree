@@ -22,6 +22,7 @@ from teatree.config import clone_root
 from teatree.core import prek_hook
 from teatree.core.cleanup.cleanup_busy_guards import WorktreeBusyError, guard_live_worktree
 from teatree.core.cleanup.cleanup_orphan_ref import raise_or_reap_orphan_ref
+from teatree.core.cleanup.working_tree_dirt import real_uncommitted_reasons
 from teatree.core.models import Worktree
 from teatree.core.overlay_loader import get_overlay_for_worktree
 from teatree.core.worktree._overlay_teardown import reap_external_resources, run_overlay_cleanup_steps
@@ -433,7 +434,9 @@ def _remove_git_worktree(repo_main: Path, wt_path: str, worktree: Worktree) -> l
     return errors
 
 
-def _guard_or_warn_dirty_worktree(worktree: Worktree, wt_path: str, *, keep_if_dirty: bool, force: bool) -> None:
+def _guard_or_warn_dirty_worktree(
+    worktree: Worktree, wt_path: str, target: _EffectiveTarget, *, keep_if_dirty: bool, force: bool
+) -> None:
     """KEEP a dirty worktree when ``keep_if_dirty`` (the fail-closed default), else warn-and-proceed.
 
     A worktree with uncommitted changes may be a live one an agent is mid-task
@@ -443,13 +446,22 @@ def _guard_or_warn_dirty_worktree(worktree: Worktree, wt_path: str, *, keep_if_d
     step, which the reaper / sync backend routes to a KEEP-with-warning. Only an
     explicit ``keep_if_dirty=False`` caller warns-and-proceeds, and ``force=True``
     (the proven-redundant reaper / explicit abandon) overrides the guard entirely.
+
+    "Dirty" is REAL uncommitted work — :func:`real_uncommitted_reasons` ignores the
+    regenerable env cache every provisioned worktree carries and the "every tracked
+    file reads as a staged add" noise of a dangling-HEAD (post-merge branch-ref
+    deletion) worktree. A raw ``git status --porcelain`` would false-positive on
+    both, refusing teardown of every normally-provisioned worktree and every
+    legitimate post-merge orphan; the shared probe fails CLOSED only on GENUINE
+    edits.
     """
-    if not (Path(wt_path).is_dir() and git.status_porcelain(wt_path)):
+    reasons = real_uncommitted_reasons(wt_path, target)
+    if not reasons:
         return
     if keep_if_dirty and not force:
         msg = (
             f"{worktree.repo_path} ({worktree.branch}): "
-            f"refused cleanup — worktree has uncommitted changes (possibly in use). "
+            f"refused cleanup — worktree has uncommitted changes (possibly in use): {'; '.join(reasons)}. "
             f"Kept it on disk at {wt_path}; commit or discard the changes, then re-run cleanup."
         )
         raise RuntimeError(msg)
@@ -578,8 +590,10 @@ def cleanup_worktree(
     # overlay cleanup, git worktree removal). A refused teardown must leave the
     # worktree fully intact — a guard that fired only after `docker compose down
     # --volumes` would have already deleted the per-worktree Postgres volume of a
-    # worktree it then "kept".
-    _guard_or_warn_dirty_worktree(worktree, wt_path, keep_if_dirty=keep_if_dirty, force=force)
+    # worktree it then "kept". Both probe the SAME git-resolved effective target
+    # (immune to a drifted DB slug, aware of a dangling post-merge HEAD).
+    target = _effective_target(str(repo_main), wt_path, worktree)
+    _guard_or_warn_dirty_worktree(worktree, wt_path, target, keep_if_dirty=keep_if_dirty, force=force)
     _run_data_loss_guards(repo_main, wt_path, worktree, force=force, strict_hygiene=strict_hygiene)
 
     # Stop the docker compose project so containers don't leak when this path is
