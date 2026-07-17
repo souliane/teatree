@@ -48,3 +48,28 @@ class TestAllows:
     def test_pass_show_piped_to_re_emitter_is_still_a_print(self) -> None:
         # A pipe whose sink re-emits (cat/tee/…) still displays the secret.
         assert is_secret_print("pass show ci/token | cat") is True
+
+
+class TestPerSegmentLexing:
+    """Each statement is lexed independently — a redirect/verb on one segment must not mask another."""
+
+    def test_redirect_on_an_unrelated_segment_does_not_suppress_the_leak(self) -> None:
+        # The ``> /dev/null`` is on a DIFFERENT statement; the cat still prints.
+        assert is_secret_print("cat ~/.ssh/id_rsa; echo ok > /dev/null") is True
+
+    def test_print_verb_not_at_command_start_is_still_detected(self) -> None:
+        # ``cat`` is the SECOND statement; the whole-command anchor missed it.
+        assert is_secret_print("true; cat ~/.netrc") is True
+
+    def test_secret_read_with_stderr_redirect_still_leaks(self) -> None:
+        # ``2>`` redirects stderr, not stdout — the secret still hits stdout.
+        assert is_secret_print("cat ~/.netrc 2> /tmp/err") is True
+
+    def test_secret_read_redirected_to_a_file_is_captured(self) -> None:
+        assert is_secret_print("cat ~/.ssh/id_rsa > /tmp/out") is False
+
+    def test_downstream_consuming_sink_keeps_secret_off_stdout(self) -> None:
+        assert is_secret_print("cat ~/.netrc | wc -l") is False
+
+    def test_secret_read_inside_a_quoted_echo_arg_is_prose(self) -> None:
+        assert is_secret_print('echo "reminder: cat ~/.netrc is forbidden"') is False
