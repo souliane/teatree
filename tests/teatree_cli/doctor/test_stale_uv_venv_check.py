@@ -9,7 +9,7 @@ pipenv-built venv) is silent.
 from pathlib import Path
 from unittest.mock import patch
 
-from teatree.cli.doctor.checks import _check_stale_uv_venv
+from teatree.cli.doctor.checks_environment import _check_stale_uv_venv
 
 
 def _pipfile_repo(root: Path, name: str) -> Path:

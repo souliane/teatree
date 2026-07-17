@@ -4,7 +4,7 @@ from unittest.mock import patch
 
 import pytest
 
-from teatree.cli.doctor.checks import _check_slack_socket_mode
+from teatree.cli.doctor.checks_session import _check_slack_socket_mode
 from teatree.cli.slack.socket_doctor import Level, SocketModeFinding, SocketModeOutcome
 
 

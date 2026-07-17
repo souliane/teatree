@@ -15,7 +15,7 @@ from unittest.mock import patch
 from django.test import TestCase
 from django.utils import timezone
 
-from teatree.cli.doctor.checks import _check_dream_staleness
+from teatree.cli.doctor.checks_loop import _check_dream_staleness
 from teatree.core.models import DreamRunMarker
 
 

@@ -2,7 +2,7 @@
 
 import django.test
 
-from teatree.cli.doctor.checks import _check_marker_jam
+from teatree.cli.doctor.checks_loop import _check_marker_jam
 from teatree.core.models import Ticket
 from tests.factories import ImplementedIssueMarkerFactory, TicketFactory
 
