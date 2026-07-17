@@ -4,20 +4,23 @@ from django.db import migrations, models
 
 
 class Migration(migrations.Migration):
-
     dependencies = [
-        ('core', '0014_loopstate_forced_loopstate_forced_reason_and_more'),
+        ("core", "0014_loopstate_forced_loopstate_forced_reason_and_more"),
     ]
 
     operations = [
         migrations.AlterField(
-            model_name='evalscenarioresult',
-            name='verdict',
-            field=models.CharField(choices=[('pass', 'Pass'), ('fail', 'Fail'), ('skip', 'Skip'), ('error', 'Error')], max_length=8),
+            model_name="evalscenarioresult",
+            name="verdict",
+            field=models.CharField(
+                choices=[("pass", "Pass"), ("fail", "Fail"), ("skip", "Skip"), ("error", "Error")], max_length=8
+            ),
         ),
         migrations.AlterField(
-            model_name='sessionauditrecord',
-            name='verdict',
-            field=models.CharField(choices=[('pass', 'Pass'), ('fail', 'Fail'), ('skip', 'Skip'), ('error', 'Error')], max_length=8),
+            model_name="sessionauditrecord",
+            name="verdict",
+            field=models.CharField(
+                choices=[("pass", "Pass"), ("fail", "Fail"), ("skip", "Skip"), ("error", "Error")], max_length=8
+            ),
         ),
     ]
