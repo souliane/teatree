@@ -605,6 +605,7 @@ graph LR
 <!-- BEGIN SKILLS -->
 | Skill | Phase |
 |-------|-------|
+| `ac-reviewing-codebase` | Periodic holistic architectural review — the third of teatree's three review tiers (design-time `architecture-design`, per-PR deterministic `check_antipatterns.py`, periodic holistic `ac-reviewing-codebase`). Walks the whole tree for judgement-tier anti-patterns and BLUEPRINT.md staleness that no single diff can catch. Dispatched automatically by `ArchitecturalReviewScanner` on a time or merge-count cadence — not user-invoked. |
 | `answerer` | Draft a reply to an inbound question, DM the user for approval, post on confirmation |
 | `architecture-design` | Architecture pre-check companion. Loaded transitively by implementation skills (code, ticket-for-features, retro-for-skill-changes) to force an architecture pass — BLUEPRINT alignment, FSM phase boundaries, extension-point contracts, component boundaries, dependency direction, test surface, resilience invariants, removability — BEFORE any code is written. |
 | `availability` | 24/7 dual question-mode — switch between asking the user now (present) and capturing questions as durable `DeferredQuestion` rows (away) |

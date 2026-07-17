@@ -28,8 +28,31 @@ from teatree.core.models.task import Task
 from teatree.core.models.ticket import Ticket
 from teatree.core.models.transition import TicketTransition
 from teatree.loop.scanners.architectural_review import ARCHITECTURAL_REVIEW_PHASE, ArchitecturalReviewScanner
+from teatree.skill_support.ref_validator import canonical_skill_names, default_search_dirs
 
 OVERLAY = "acme"
+
+
+class TestDefaultSkillResolvesToARealSkill:
+    """Regression for #3353: the default review skill must actually exist.
+
+    ``ArchitecturalReviewScanner.skill`` and ``UserSettings.architectural_review_skill``
+    both default to a skill name that every queued review task's ``execution_reason``
+    names as the guidance to load. Neither ``t3 tool validate-skill-refs`` nor the
+    antipattern-catalog ``consumers:`` field ever checked that this particular
+    reference site resolves, so the name drifted to a directory that was never
+    created — every periodic review ran with zero skill guidance. This asserts the
+    default resolves against the same canonical skill set the skill-loading hook
+    itself uses, so a future rename/typo here fails loudly instead of silently.
+    """
+
+    def test_scanner_default_skill_is_canonical(self) -> None:
+        default_skill = ArchitecturalReviewScanner(overlay_name=OVERLAY).skill
+        assert default_skill in canonical_skill_names(default_search_dirs())
+
+    def test_settings_default_skill_is_canonical(self) -> None:
+        default_skill = UserSettings().architectural_review_skill
+        assert default_skill in canonical_skill_names(default_search_dirs())
 
 
 def _scanner(
