@@ -17,19 +17,30 @@ This module owns only the orchestration (create the run row, fan out the
 scenario rows in one transaction); the aggregation and diff logic lives on the
 models. Persisting wraps in ``atomic()`` so a partially-written run never
 pollutes the history.
+
+The ``teatree.core.models`` imports are deferred into the functions that build
+model instances: importing that package eagerly instantiates Django model
+classes (e.g. ``AnthropicActivePick``), which requires configured settings.
+This module is imported at CLI startup via ``current_git_sha`` (a Django-free
+git helper), so it must import without ``DJANGO_SETTINGS_MODULE`` set. The model
+classes appear only in ``TYPE_CHECKING`` (as quoted annotations) and in
+function-local runtime imports, never at module import time.
 """
 
 from collections.abc import Callable, Sequence
+from typing import TYPE_CHECKING
 
 from django.db import transaction
 
-from teatree.core.models import EvalRunRecord, MatcherDetail, TrajectoryToolCall
 from teatree.eval.matrix import MatrixRow
 from teatree.eval.models import AnyOf, ExpectItem, FinalStateMatcher, Matcher, TokenUsage
 from teatree.eval.pass_at_k import PassAtKResult
 from teatree.eval.report import MatcherResult, ScenarioResult
 from teatree.utils import git
 from teatree.utils.run import CommandFailedError
+
+if TYPE_CHECKING:
+    from teatree.core.models import EvalRunRecord, MatcherDetail, TrajectoryToolCall
 
 
 def _token_columns(usage: TokenUsage) -> dict[str, int]:
@@ -49,11 +60,15 @@ def current_git_sha() -> str:
         return ""
 
 
-def _trajectory(result: ScenarioResult) -> list[TrajectoryToolCall]:
+def _trajectory(result: ScenarioResult) -> list["TrajectoryToolCall"]:
+    from teatree.core.models import TrajectoryToolCall  # noqa: PLC0415 — deferred: keep import Django-free
+
     return [TrajectoryToolCall(name=c.name, input=c.input, turn=c.turn) for c in result.run.tool_calls]
 
 
-def _matcher_detail(item: MatcherResult) -> MatcherDetail:
+def _matcher_detail(item: MatcherResult) -> "MatcherDetail":
+    from teatree.core.models import MatcherDetail  # noqa: PLC0415 — deferred: keep import Django-free
+
     matcher: ExpectItem = item.matcher
     if isinstance(matcher, AnyOf):
         return _any_of_detail(matcher, passed=item.passed)
@@ -69,13 +84,15 @@ def _matcher_detail(item: MatcherResult) -> MatcherDetail:
     )
 
 
-def _final_state_detail(matcher: FinalStateMatcher, *, passed: bool) -> MatcherDetail:
+def _final_state_detail(matcher: FinalStateMatcher, *, passed: bool) -> "MatcherDetail":
     """Persist a final-state matcher: the subject is the final assistant message.
 
     ``MatcherDetail`` requires ``tool``/``arg_path`` strings; a final-state
     matcher has neither (its sole subject is the run's terminal message), so the
     ``<final_state>`` sentinel names the subject and ``arg_path`` is empty.
     """
+    from teatree.core.models import MatcherDetail  # noqa: PLC0415 — deferred: keep import Django-free
+
     return MatcherDetail(
         kind="final_state",
         tool="<final_state>",
@@ -86,7 +103,9 @@ def _final_state_detail(matcher: FinalStateMatcher, *, passed: bool) -> MatcherD
     )
 
 
-def _any_of_detail(matcher: AnyOf, *, passed: bool) -> MatcherDetail:
+def _any_of_detail(matcher: AnyOf, *, passed: bool) -> "MatcherDetail":
+    from teatree.core.models import MatcherDetail  # noqa: PLC0415 — deferred: keep import Django-free
+
     def field(getter: Callable[[Matcher], str]) -> str:
         return " | ".join(getter(alt) for alt in matcher.alternatives)
 
@@ -100,7 +119,7 @@ def _any_of_detail(matcher: AnyOf, *, passed: bool) -> MatcherDetail:
     )
 
 
-def _matcher_details(result: ScenarioResult) -> list[MatcherDetail]:
+def _matcher_details(result: ScenarioResult) -> list["MatcherDetail"]:
     return [_matcher_detail(m) for m in result.matcher_results]
 
 
@@ -120,7 +139,9 @@ def persist_run(  # noqa: PLR0913 — run-ledger boundary; each kwarg is a docum
     max_turns_override: int | None = None,
     trial: int = 0,
     git_sha: str | None = None,
-) -> EvalRunRecord:
+) -> "EvalRunRecord":
+    from teatree.core.models import EvalRunRecord  # noqa: PLC0415 — deferred: keep import Django-free
+
     with transaction.atomic():
         run = EvalRunRecord.objects.record(
             model=model,
@@ -154,7 +175,9 @@ def persist_pass_at_k(
     model: str,
     max_turns_override: int | None = None,
     git_sha: str | None = None,
-) -> EvalRunRecord:
+) -> "EvalRunRecord":
+    from teatree.core.models import EvalRunRecord  # noqa: PLC0415 — deferred: keep import Django-free
+
     with transaction.atomic():
         run = EvalRunRecord.objects.record(
             model=model,
@@ -182,7 +205,9 @@ def persist_matrix(
     models: Sequence[str],
     max_turns_override: int | None = None,
     git_sha: str | None = None,
-) -> EvalRunRecord:
+) -> "EvalRunRecord":
+    from teatree.core.models import EvalRunRecord  # noqa: PLC0415 — deferred: keep import Django-free
+
     with transaction.atomic():
         run = EvalRunRecord.objects.record(
             model=",".join(models),
