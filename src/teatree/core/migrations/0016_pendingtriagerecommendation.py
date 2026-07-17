@@ -6,7 +6,7 @@ from django.db import migrations, models
 
 class Migration(migrations.Migration):
     dependencies = [
-        ("core", "0014_loopstate_forced_loopstate_forced_reason_and_more"),
+        ("core", "0015_dreamqaprobe_scope"),
     ]
 
     operations = [
