@@ -8,12 +8,12 @@ A naive ``git status --porcelain`` over-reports two ways, and BOTH would falsely
 refuse a legitimate teardown:
 
 - **Regenerable provisioning artifacts.** Provisioning writes the env cache into
-  every worktree, so a porcelain status listing only those is still clean for the
-  wipe decision — they are ignored.
+    every worktree, so a porcelain status listing only those is still clean for the
+    wipe decision — they are ignored.
 - **Dangling-HEAD noise.** A post-merge branch-ref deletion leaves HEAD
-  unresolvable, so ``git status`` reports EVERY tracked file as a staged addition.
-  That is noise, not real uncommitted work; the working tree is instead diffed
-  against the RECOVERED last-HEAD SHA plus an untracked-file scan.
+    unresolvable, so ``git status`` reports EVERY tracked file as a staged addition.
+    That is noise, not real uncommitted work; the working tree is instead diffed
+    against the RECOVERED last-HEAD SHA plus an untracked-file scan.
 
 Fails CLOSED: an inconclusive ``git status`` (corrupt index, lock contention) or
 an unrecoverable HEAD is treated as dirty so the worktree is KEPT — a guard that
