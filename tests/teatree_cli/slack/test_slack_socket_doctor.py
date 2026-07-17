@@ -54,8 +54,10 @@ class TestAppTokenValidation:
         actions = [f for f in outcome.findings if f.level is Level.ACTION]
         assert any("app-level" in f.message and "connections:write" in f.message for f in actions)
         assert any("pass insert" in f.message and _APP_SLOT in f.message for f in actions)
-        # An absent xapp token is a human step, not a broken config: no hard FAIL.
-        assert outcome.ok
+        # An absent xapp token leaves Socket Mode non-functional until the human
+        # mints one — an ACTION counts as not-ok (#3313), though never a FAIL.
+        assert outcome.ok is False
+        assert not any(f.level is Level.FAIL for f in outcome.findings)
 
     def test_malformed_app_token_is_fail(self) -> None:
         _seed_t3()
@@ -112,8 +114,11 @@ class TestManifestAutoFix:
         ):
             outcome = check_slack_socket_mode()
         upd.assert_called_once()
-        assert any(f.level is Level.OK and "reaction_added" in f.message for f in outcome.findings)
-        assert outcome.ok
+        # The manifest was rewritten, but Socket Mode is live only after the
+        # operator reinstalls — an ACTION (awaiting reinstall), not OK (#3313).
+        assert any(f.level is Level.ACTION and "reaction_added" in f.message for f in outcome.findings)
+        assert any("Reinstall" in f.message for f in outcome.findings)
+        assert outcome.ok is False
 
     def test_no_config_token_degrades_manifest_to_action(self) -> None:
         _seed_t3()

@@ -125,6 +125,16 @@ class MemorySnapshot:
         return any(target in _normalize(text) for text in self.memories.values())
 
 
+def scoped_probe_key(scope: str, question: str) -> str:
+    """The ``DreamQaProbe`` idempotency anchor: sha256 of scope + NUL + question.
+
+    Folding the corpus *scope* (the memory dir) into the key keeps two dirs holding
+    a same-named memory — hence the same question — on DISTINCT rows instead of
+    colliding on one shared row.
+    """
+    return hashlib.sha256(f"{scope}\x00{question}".encode()).hexdigest()
+
+
 @dataclass(frozen=True, slots=True)
 class QaProbe:
     """One question / expected-answer pair replayed around a pass.
@@ -136,11 +146,6 @@ class QaProbe:
     question: str
     expected_answer: str
     source_name: str
-
-    @property
-    def probe_key(self) -> str:
-        """sha256 of the question — the idempotency anchor matching ``DreamQaProbe``."""
-        return hashlib.sha256(self.question.encode("utf-8")).hexdigest()
 
 
 @dataclass(frozen=True, slots=True)
@@ -466,5 +471,6 @@ __all__ = [
     "derive_probes",
     "evaluate_gates",
     "probe_answerable",
+    "scoped_probe_key",
     "snapshot_memory_dir",
 ]

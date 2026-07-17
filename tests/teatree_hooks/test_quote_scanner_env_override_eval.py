@@ -49,6 +49,16 @@ class TestQuoteOkEnvReachesWrapper:
         cmd = 'gh pr create --title t --body "the user said: ship it now"'
         assert has_quote_ok_override("Bash", {"command": cmd}) is True
 
+    def test_env_sourced_override_emits_visible_note(
+        self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        # An inherited-env override silently disables every publish scan — the
+        # NOTE makes that standing disable visible (finding 7).
+        monkeypatch.delenv("CLAUDE_SESSION_ID", raising=False)
+        monkeypatch.setenv("QUOTE_OK", "1")
+        assert has_quote_ok_override("Bash", {"command": "gh pr create --body x"}) is True
+        assert "QUOTE_OK=1 is set in the process environment" in capsys.readouterr().err
+
     def test_process_env_quote_ok_zero_does_not_override(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv("QUOTE_OK", "0")
         cmd = 'gh pr create --title t --body "the user said: ship it now"'

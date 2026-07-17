@@ -419,14 +419,18 @@ class TestGateSkipsDestination:
         ],
         ids=["unexpanded-variable", "non-repo-endpoint", "unknown-flag-value-misparse"],
     )
-    def test_api_write_to_unresolvable_target_skips(self, tmp_path: Path, write: str) -> None:
+    def test_api_write_to_unresolvable_target_scans(self, tmp_path: Path, write: str) -> None:
         # An ``api`` WRITE whose URL path does not resolve to a repo -- a shell
-        # variable (``$opp``, unknowable runtime value), a non-repo endpoint
-        # (``/user``), or a value-misparse hole (``--jq``'s value LOOKS like an
-        # internal repo, real endpoint ``user/keys`` is non-repo) -- has an
-        # UNKNOWN target, so it SKIPS (bias hard toward not firing; #1415/#1213).
+        # variable (``$opp``, could expand to a PUBLIC repo at run time), a non-repo
+        # endpoint (``/user``), or a value-misparse hole (``--jq``'s value LOOKS like
+        # an internal repo, real endpoint ``user/keys`` is non-repo) -- is an
+        # immediate public egress with no pre-push backstop and an UNRESOLVABLE
+        # target. It must NOT skip: the ALL-SEGMENTS anti-leak contract forces a
+        # SCAN so a one-variable indirection cannot route a public REST POST around
+        # the leak gate (#1415/#1213). Only a slug resolving to an affirmatively
+        # NON-public repo skips (``test_api_write_to_internal_repo_is_skipped``).
         cfg = _config(tmp_path, ["internalcorp"])
-        assert public_visibility.gate_skips_for_visibility(write, None, config_path=cfg) is True
+        assert public_visibility.gate_skips_for_visibility(write, None, config_path=cfg) is False
 
     def test_api_write_to_public_repo_still_scans(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         # An ``api`` WRITE whose URL path resolves to an affirmatively-PUBLIC

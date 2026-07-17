@@ -28,7 +28,13 @@ class OverlayScaffolder:
         (pkg_dir / "__init__.py").write_text("", encoding="utf-8")
         (pkg_dir / "overlay.py").write_text(
             dedent(f"""\
+                from typing import TYPE_CHECKING
+
                 from teatree.core.overlay import OverlayBase
+
+                if TYPE_CHECKING:
+                    from teatree.core.models import Worktree
+                    from teatree.types import ProvisionStep, SkillMetadata
 
 
                 class {self.overlay_class_name}Overlay(OverlayBase):
@@ -37,10 +43,10 @@ class OverlayScaffolder:
                     def get_repos(self) -> list[str]:
                         return []
 
-                    def get_provision_steps(self, worktree):
+                    def get_provision_steps(self, worktree: "Worktree") -> list["ProvisionStep"]:
                         return []
 
-                    def get_skill_metadata(self):
+                    def get_skill_metadata(self) -> "SkillMetadata":
                         return {{"skill_path": "skills/{skill_name}/SKILL.md"}}
             """),
             encoding="utf-8",

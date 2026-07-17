@@ -53,10 +53,11 @@ class MemoryPhaseRunnerTestCase(TestCase):
             summary, _passed, _gate_summary = self.runner.run_memory_phases_and_gates(
                 clusters_recorded=1, dry_run=False
             )
-        # The phase failure is warned in the summary, not raised — the run continues.
-        assert "WARN decay raised: RuntimeError" in summary
+        # The phase failure is warned per-dir in the summary, not raised — the run continues.
+        assert "WARN decay raised for" in summary
+        assert "RuntimeError: decay boom" in summary
 
-    def test_gate_evaluation_failure_is_warned_and_defaults_pass(self) -> None:
+    def test_gate_evaluation_failure_is_warned_and_fails_closed(self) -> None:
         with (
             self._patch_dirs(),
             patch(
@@ -65,9 +66,10 @@ class MemoryPhaseRunnerTestCase(TestCase):
             ),
         ):
             _summary, passed, gate_summary = self.runner.run_memory_phases_and_gates(clusters_recorded=1, dry_run=False)
-        assert "WARN gates raised: RuntimeError" in gate_summary
-        # A gate-machinery failure defaults that dir's verdict to PASS.
-        assert passed is True
+        assert "WARN gates raised (verdict FAIL): RuntimeError" in gate_summary
+        # A gate-machinery failure FAILS CLOSED — a raised gate is a failed gate, never
+        # laundered into an accepted pass (the gate exists to catch lossy consolidation).
+        assert passed is False
 
     def test_prior_archived_pointer_is_homed_not_a_false_loss(self) -> None:
         # Root-cause regression (#2545 sibling of the reworded-pointer #2619 fix): a

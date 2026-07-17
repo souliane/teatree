@@ -49,6 +49,7 @@ from teatree.cli.doctor.app import (
     check,
     check_statusline,
     doctor_app,
+    run_doctor_checks,
 )
 
 __all__ = [
@@ -93,4 +94,5 @@ __all__ = [
     "check",
     "check_statusline",
     "doctor_app",
+    "run_doctor_checks",
 ]

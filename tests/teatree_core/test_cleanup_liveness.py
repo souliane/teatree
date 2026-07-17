@@ -116,6 +116,18 @@ class TestFsmTerminalBypass(_LivenessFixture):
         assert worktree_liveness(worktree, wt_path=self.wt_path).active is True
         assert worktree_liveness(worktree, wt_path=self.wt_path, fsm_terminal=True).active is False
 
+    def test_open_session_ignored_under_fsm_terminal(self) -> None:
+        # A never-ended Session (ended_at NULL) pins a frozen ticket's worktree
+        # ACTIVE forever on the ad-hoc path — the exact stale-session that kept
+        # worktrees from being reaped. The post-terminal teardown passes
+        # fsm_terminal=True so that stale session no longer blocks the purge,
+        # while the ad-hoc sweep (fsm_terminal=False) still keeps it.
+        worktree = self._worktree()
+        session = Session.objects.create(overlay="test", ticket=worktree.ticket)
+        assert session.ended_at is None
+        assert worktree_liveness(worktree, wt_path=self.wt_path, fsm_terminal=False).active is True
+        assert worktree_liveness(worktree, wt_path=self.wt_path, fsm_terminal=True).active is False
+
     def test_recent_commit_is_bypassed_on_fsm_terminal(self) -> None:
         worktree = self._worktree()
         recent = self.commit_instant + timedelta(minutes=30)  # within the 120m window

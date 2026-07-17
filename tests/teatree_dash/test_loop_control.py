@@ -130,3 +130,20 @@ class BuildLoopControlTestCase(TestCase):
         assert any(r.name == "dashloop" for r in view.loops)
         assert view.availability_mode
         assert view.gate_fail_open is False
+
+    def test_view_survives_broken_gate_read(self) -> None:
+        # The loop-control page previously read danger_gate_fail_open unguarded
+        # and 500'd on a broken read; the shared guarded helper now fails closed
+        # to False so the page renders (#3313).
+        _make_loop()
+        real = ConfigSetting.objects.get_effective
+
+        def _raise_on_gate(key, *args, **kwargs):
+            if key == "danger_gate_fail_open":
+                msg = "db down"
+                raise RuntimeError(msg)
+            return real(key, *args, **kwargs)
+
+        with patch.object(ConfigSetting.objects, "get_effective", side_effect=_raise_on_gate):
+            view = loop_control.build_loop_control()
+        assert view.gate_fail_open is False

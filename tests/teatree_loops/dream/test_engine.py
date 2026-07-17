@@ -648,6 +648,35 @@ class TestEnumerateMembersMainTranscripts:
         )
         assert members == []
 
+    def test_file_reaped_after_recency_check_does_not_crash_the_sort(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # A /tmp session .jsonl is actively reaped: it can vanish between the recency
+        # check and the mtime sort. The sort keys on the mtime captured up front, so a
+        # now-deleted path never re-stats — the whole pass no longer crashes.
+        slug = tmp_path / "slug"
+        slug.mkdir()
+        (slug / "a.jsonl").write_text("{}\n")
+        (slug / "b.jsonl").write_text("{}\n")
+
+        real_recent_mtime = engine._recent_file_mtime
+
+        def reaping_probe(path: Path, cutoff_ts: float) -> float | None:
+            mtime = real_recent_mtime(path, cutoff_ts)
+            if mtime is not None:
+                path.unlink()  # reaped right after the recency check, before the sort
+            return mtime
+
+        monkeypatch.setattr(engine, "_recent_file_mtime", reaping_probe)
+
+        members = enumerate_members(
+            projects_dir=tmp_path,
+            task_output_roots=[],
+            since=datetime.now(tz=UTC) - timedelta(hours=1),
+        )
+
+        assert {m.path.name for m in members} == {"a.jsonl", "b.jsonl"}
+
     def test_nonexistent_projects_dir_returns_empty(self, tmp_path: Path) -> None:
         members = enumerate_members(
             projects_dir=tmp_path / "nonexistent",

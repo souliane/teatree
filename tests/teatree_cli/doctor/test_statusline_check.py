@@ -35,6 +35,30 @@ class TestCheckStatusline:
         assert ok is True
         assert "FAIL" not in message
 
+    def test_passes_for_absolute_executable_command_with_arguments(self, tmp_path: Path) -> None:
+        # A command carrying flags must validate its executable (the first shell
+        # token), not the whole command string as one path (#3313).
+        script = _executable_script(tmp_path)
+        ok, message = _run(_write_settings(tmp_path, f"{script} --loop --json"))
+        assert ok is True, message
+        assert "FAIL" not in message
+
+    def test_passes_for_tilde_anchored_command(self, tmp_path: Path) -> None:
+        # A `~`-anchored command is absolute after home-expansion — it must not
+        # be flagged "not absolute" (#3313). The conftest pins HOME to a tmp dir.
+        script = Path.home() / "statusline.sh"
+        script.write_text("#!/usr/bin/env bash\n", encoding="utf-8")
+        script.chmod(0o755)
+        ok, message = _run(_write_settings(tmp_path, "~/statusline.sh --loop"))
+        assert ok is True, message
+        assert "FAIL" not in message
+
+    def test_unparseable_command_string_fails(self, tmp_path: Path) -> None:
+        ok, message = _run(_write_settings(tmp_path, 'a "b'))  # unbalanced quote
+        assert ok is False
+        assert "FAIL" in message
+        assert "valid shell command" in message
+
     def test_missing_settings_warns_with_remediation(self, tmp_path: Path) -> None:
         ok, message = _run(tmp_path / "absent.json")
         assert ok is True

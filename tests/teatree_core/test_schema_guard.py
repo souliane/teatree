@@ -42,7 +42,7 @@ from django.db import OperationalError, ProgrammingError, connection
 from django.db.utils import ConnectionDoesNotExist
 from django.test import TransactionTestCase
 
-from teatree.cli.doctor import check as doctor_check
+from teatree.cli.doctor import run_doctor_checks as doctor_check
 from teatree.core.gates.schema_guard import (
     SelfDbMigrationError,
     doctor_check_self_db_migrations,

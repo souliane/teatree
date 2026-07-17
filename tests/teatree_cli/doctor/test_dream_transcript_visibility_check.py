@@ -51,7 +51,9 @@ class TestDreamTranscriptVisibility:
         assert "bind mount" in out
         assert ".claude/projects" in out
 
-    def test_crash_degrades_to_false_with_warn(self) -> None:
+    def test_crash_degrades_to_ok_with_warn(self) -> None:
+        # A crashed advisory read degrades to OK (True) per the docstring — it
+        # WARNs but never reddens the run (#3313).
         buf = io.StringIO()
         with (
             patch(
@@ -60,5 +62,5 @@ class TestDreamTranscriptVisibility:
             ),
             redirect_stdout(buf),
         ):
-            assert _check_dream_transcript_visibility() is False
+            assert _check_dream_transcript_visibility() is True
         assert "RuntimeError" in buf.getvalue()

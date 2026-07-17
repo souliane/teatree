@@ -659,50 +659,30 @@ class TestVisibilityProbeFallback:
 
 
 class TestVisibilityCachePathCollision:
-    """Bug 2: the cache must persist even when ``$HOME/.teatree`` is a FILE.
+    """The cache roots at ``hook_state_root()`` and must persist even on a collision.
 
-    The historical default rooted the cache at ``$HOME/.teatree`` -- but that
-    path is the shell-sourceable config FILE, not a directory, so every
-    cache write raised "Not a directory" (swallowed as OSError) and the
-    verdict could never persist. The default now lives under the XDG cache
-    dir, which is collision-free.
+    ``_cache_root()`` resolves the single hook-state root (``T3_DATA_DIR`` else the
+    canonical XDG data dir). When that root already exists as a NON-directory (a
+    stray file at the configured path), the write would raise "Not a directory"
+    (swallowed as ``OSError``) and the verdict could never persist -- so the root
+    falls back to ``~/.teatree-data``, which is collision-free.
     """
 
-    def _patch_home_with_teatree_file(self, home: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-        home.mkdir(exist_ok=True)
-        (home / ".teatree").write_text("# shell-sourceable config FILE\n", encoding="utf-8")
-        monkeypatch.delenv("T3_DATA_DIR", raising=False)
-        monkeypatch.delenv("XDG_CACHE_HOME", raising=False)
-        monkeypatch.setattr(_repo_visibility, "Path", _FakeHomePath(home))
-
-    def test_default_cache_root_avoids_home_teatree_config_file(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        home = tmp_path / "home"
-        self._patch_home_with_teatree_file(home, monkeypatch)
-        root = _repo_visibility._cache_root()
-        assert (home / ".teatree") not in root.parents
-        assert root != home / ".teatree"
-
-    def test_cache_round_trips_when_home_teatree_is_a_file(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        home = tmp_path / "home"
-        self._patch_home_with_teatree_file(home, monkeypatch)
+    def test_cache_round_trips_under_hook_state_root(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        root = tmp_path / "data"
+        monkeypatch.setenv("T3_DATA_DIR", str(root))
 
         _repo_visibility._write_visibility_cache("gitlab.com/acme/secret", "PRIVATE")
 
         assert _repo_visibility._read_visibility_cache("gitlab.com/acme/secret") == "PRIVATE"
-        assert (home / ".cache" / "teatree" / "repo-visibility-cache.json").is_file()
+        assert (root / "repo-visibility-cache.json").is_file()
 
-    def test_cache_falls_back_when_xdg_cache_teatree_is_a_file(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_cache_falls_back_when_state_root_is_a_file(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         home = tmp_path / "home"
-        (home / ".cache").mkdir(parents=True)
-        (home / ".cache" / "teatree").write_text("not a dir\n", encoding="utf-8")
-        monkeypatch.delenv("T3_DATA_DIR", raising=False)
-        monkeypatch.delenv("XDG_CACHE_HOME", raising=False)
+        home.mkdir(exist_ok=True)
+        state_root_file = tmp_path / "state-root"
+        state_root_file.write_text("# not a dir\n", encoding="utf-8")
+        monkeypatch.setenv("T3_DATA_DIR", str(state_root_file))
         monkeypatch.setattr(_repo_visibility, "Path", _FakeHomePath(home))
 
         _repo_visibility._write_visibility_cache("gitlab.com/acme/x", "PUBLIC")
