@@ -242,6 +242,23 @@ class TestPersistOrchestrator(TestCase):
         assert result == []
         assert Ticket.objects.count() == 0
 
+    def test_stamps_issue_title_from_payload_raw_on_create(self) -> None:
+        action = DispatchAction(
+            kind="agent",
+            zone="t3:orchestrator",
+            detail="Auto-start assigned issue",
+            payload={
+                "issue_url": "https://example.com/owner/repo/issues/77",
+                "auto_start": True,
+                "overlay": "acme",
+                "raw": {"title": "Make the dashboard usable"},
+            },
+        )
+        created = persist_agent_actions([action])
+        ticket = created[0].ticket
+        assert ticket.extra.get("issue_title") == "Make the dashboard usable"
+        assert ticket.short_description == "Make the dashboard usable"
+
     def test_skips_pending_task_signal_without_issue_url(self) -> None:
         # pending_task signals also dispatch to t3:orchestrator but the Task already exists.
         action = DispatchAction(

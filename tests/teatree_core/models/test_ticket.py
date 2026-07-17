@@ -116,6 +116,45 @@ class TestTicketMergeExtra(TestCase):
         assert ticket.variant == "v"
 
 
+class TestStampIssueTitle(TestCase):
+    """``Ticket.stamp_issue_title`` seeds the dashboard label from the forge title."""
+
+    def test_stamps_extra_and_short_description(self) -> None:
+        ticket = Ticket.objects.create(issue_url="https://example.com/o/r/issues/5")
+        written = ticket.stamp_issue_title("Make the dashboard usable")
+        ticket.refresh_from_db()
+        assert ticket.extra["issue_title"] == "Make the dashboard usable"
+        assert ticket.short_description == "Make the dashboard usable"
+        assert set(written) == {"extra", "short_description"}
+
+    def test_blank_title_is_a_noop(self) -> None:
+        ticket = Ticket.objects.create(issue_url="https://example.com/o/r/issues/5")
+        assert ticket.stamp_issue_title("") == []
+        ticket.refresh_from_db()
+        assert ticket.short_description == ""
+        assert "issue_title" not in (ticket.extra or {})
+
+    def test_does_not_clobber_existing_values(self) -> None:
+        ticket = Ticket.objects.create(
+            issue_url="https://example.com/o/r/issues/5",
+            short_description="hand-written",
+            extra={"issue_title": "original title"},
+        )
+        assert ticket.stamp_issue_title("new title") == []
+        ticket.refresh_from_db()
+        assert ticket.short_description == "hand-written"
+        assert ticket.extra["issue_title"] == "original title"
+
+    def test_long_title_is_truncated_to_column_width(self) -> None:
+        ticket = Ticket.objects.create(issue_url="https://example.com/o/r/issues/5")
+        max_len = Ticket._meta.get_field("short_description").max_length or 80
+        ticket.stamp_issue_title("x" * (max_len + 50))
+        ticket.refresh_from_db()
+        assert len(ticket.short_description) == max_len
+        # The full untruncated title is preserved for the summariser.
+        assert ticket.extra["issue_title"] == "x" * (max_len + 50)
+
+
 class TestTicketTransitions(TestCase):
     @pytest.fixture(autouse=True)
     def _inject_tmp_path(self, tmp_path: Path) -> None:

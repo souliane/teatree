@@ -1,5 +1,6 @@
 {% if result.launch_url %}
-  <p>Terminal ready — <a href="{{ result.launch_url }}" target="_blank" rel="noopener">{{ result.launch_url }}</a> (loopback; reach it over your SSH tunnel).</p>
+  <p data-ttyd-launch="{{ result.launch_url }}">Opening terminal in a new tab — if your browser blocked the pop-up, use
+    <a href="{{ result.launch_url }}" target="_blank" rel="noopener">{{ result.launch_url }}</a> (loopback; reach it over your SSH tunnel).</p>
 {% else %}
   <p class="card-error">{{ result.error|default:"failed to launch terminal" }}</p>
 {% endif %}

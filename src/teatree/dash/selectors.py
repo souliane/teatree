@@ -23,6 +23,7 @@ from teatree.core.models.task_attempt import TaskAttempt
 from teatree.core.models.ticket import Ticket
 from teatree.core.models.transition import TicketTransition
 from teatree.core.selectors import _humanize_duration
+from teatree.dash.issue_link import issue_link
 
 State = Ticket.State
 
@@ -68,6 +69,8 @@ class KanbanCard:
     number: str
     short_description: str
     issue_url: str
+    issue_href: str
+    issue_ref: str
     overlay: str
     role: str
     kind: str
@@ -264,11 +267,14 @@ def _pr_chips_by_ticket(ticket_ids: list[int]) -> dict[int, tuple[PrChip, ...]]:
 
 
 def _card(ticket: Ticket, context: _CardContext) -> KanbanCard:
+    issue_href, issue_ref = issue_link(ticket.issue_url)
     return KanbanCard(
         ticket_id=ticket.pk,
         number=ticket.ticket_number,
         short_description=ticket.short_description,
         issue_url=ticket.issue_url,
+        issue_href=issue_href,
+        issue_ref=issue_ref,
         overlay=ticket.overlay,
         role=ticket.role,
         kind=ticket.kind,

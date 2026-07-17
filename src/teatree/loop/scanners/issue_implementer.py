@@ -42,6 +42,7 @@ from teatree.core.backend_protocols import CodeHostBackend
 from teatree.core.fleet import wire
 from teatree.core.models import NEEDS_TRIAGE_LABEL, ImplementedIssueMarker
 from teatree.core.review.author_trust import classify_author, is_trusted_author, trusted_handles
+from teatree.loop.issue_meta import issue_title
 from teatree.loop.scanners.base import ScanSignal
 from teatree.loop.scanners.forge_readback import existing_work_for_issue, fetch_merged_prs, fetch_open_prs, issue_number
 from teatree.types import RawAPIDict
@@ -59,8 +60,7 @@ def _issue_url(issue: RawAPIDict) -> str:
 
 
 def _issue_title(issue: RawAPIDict) -> str:
-    title = issue.get("title")
-    return title if isinstance(title, str) else ""
+    return issue_title(issue)
 
 
 def _issue_author(issue: RawAPIDict) -> str:

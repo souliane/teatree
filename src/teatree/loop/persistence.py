@@ -24,6 +24,7 @@ from teatree.core.models.ticket_external_review import schedule_external_review
 from teatree.loop.dispatch import DispatchAction
 from teatree.loop.dispatch_gates import claim_red_mr_fix
 from teatree.loop.dispatch_tables import PERSISTED_AT_SOURCE_ZONES
+from teatree.loop.issue_meta import issue_title_from_payload
 
 if TYPE_CHECKING:
     from teatree.core.models.types import TicketExtra
@@ -228,6 +229,8 @@ def _handle_orchestrator(action: DispatchAction) -> Task | None:
         issue_url=issue_url,
         defaults={"overlay": _owning_overlay(issue_url, scan_tag), "role": Ticket.Role.AUTHOR},
     )
+    if created:
+        ticket.stamp_issue_title(issue_title_from_payload(payload))
     _reconcile_existing_overlay(ticket, created=created)
     # #748: a loop/coordinator-built ticket must have a durable phase-
     # attestation session even when scheduling below is skipped (role

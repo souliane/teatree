@@ -173,6 +173,34 @@ class Ticket(
         self.issue_number = derive_issue_number(self.issue_url)
         super().save(*args, **kwargs)  # type: ignore[arg-type]
 
+    def stamp_issue_title(self, title: str) -> list[str]:
+        """Persist the forge issue *title* onto this ticket for the dashboard.
+
+        Stores the full title under ``extra['issue_title']`` (the input the
+        ``ticket_short_describe`` summariser reads) and seeds
+        ``short_description`` with the title, truncated to the column width, so
+        a card shows a human label immediately — before any LLM-refined
+        summary. Never clobbers an existing value, and a blank title is a
+        no-op. Returns the list of fields written (empty when nothing changed),
+        and saves only those fields.
+        """
+        if not title:
+            return []
+        extra = self.extra if isinstance(self.extra, dict) else {}
+        set_keys: dict[str, object] = {}
+        also_set: dict[str, object] = {}
+        written: list[str] = []
+        if not extra.get("issue_title"):
+            set_keys["issue_title"] = title
+            written.append("extra")
+        if not self.short_description:
+            max_len = self._meta.get_field("short_description").max_length or 80
+            also_set["short_description"] = title[:max_len]
+            written.append("short_description")
+        if written:
+            self.merge_extra(set_keys=set_keys or None, also_set=also_set or None)
+        return written
+
     @transition(field=state, source=State.NOT_STARTED, target=State.SCOPED)
     def scope(
         self,
