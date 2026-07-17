@@ -213,11 +213,9 @@ class TestDoctorAggregation:
         with redirect_stdout(buffer):
             # `_check_singletons` / `_ensure_plugin_registered` are real-env
             # side-effects we tolerate — only the clone-currency aggregation
-            # is what we pin here.
-            try:
-                ok = doctor_mod.check()
-            except SystemExit as exc:  # typer may sys.exit on FAIL
-                ok = exc.code == 0
+            # is what we pin here. `run_doctor_checks` is the bool core the
+            # `check` command wraps into an exit code.
+            ok = doctor_mod.run_doctor_checks()
 
         out = buffer.getvalue()
         assert ok is False

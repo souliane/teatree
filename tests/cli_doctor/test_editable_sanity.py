@@ -5,6 +5,8 @@ Lifted verbatim from the former monolithic ``tests/test_cli_doctor.py``
 only relocated under a focused package by concern.
 """
 
+import io
+from contextlib import redirect_stdout
 from pathlib import Path
 from unittest.mock import patch
 
@@ -170,3 +172,33 @@ class TestCheckEditableSanity(TestCase):
             problems = DoctorService.check_editable_sanity()
 
         assert any("overlay" in p and "repo not found" in p for p in problems)
+
+
+class TestCheckEditableSanityWrapperGating(TestCase):
+    """``_check_editable_sanity`` — a mismatch WARNs but does NOT gate; a crash FAILs (#3313)."""
+
+    def test_mismatch_problems_warn_but_return_true(self):
+        from teatree.cli.doctor import _check_editable_sanity  # noqa: PLC0415
+
+        buf = io.StringIO()
+        with (
+            patch.object(DoctorService, "check_editable_sanity", return_value=["teatree is editable but ..."]),
+            redirect_stdout(buf),
+        ):
+            result = _check_editable_sanity()
+        assert result is True
+        out = buf.getvalue()
+        assert "WARN" in out
+        assert "FAIL" not in out
+
+    def test_crash_is_a_gating_fail(self):
+        from teatree.cli.doctor import _check_editable_sanity  # noqa: PLC0415
+
+        buf = io.StringIO()
+        with (
+            patch.object(DoctorService, "check_editable_sanity", side_effect=RuntimeError("overlay boom")),
+            redirect_stdout(buf),
+        ):
+            result = _check_editable_sanity()
+        assert result is False
+        assert "FAIL" in buf.getvalue()

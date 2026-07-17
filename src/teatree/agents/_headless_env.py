@@ -6,11 +6,15 @@ scope the per-account selector routes for. Re-exported from ``teatree.agents.hea
 so ``from teatree.agents.headless import _provider_child_env`` stays valid.
 """
 
-from teatree.config import AgentHarness, AgentHarnessProvider
+import logging
+
+from teatree.config import AgentHarness, AgentHarnessProvider, get_effective_settings
 from teatree.core.models import Task
 from teatree.credential_config import resolve_api_key_credential, resolve_subscription_credential
 from teatree.llm.credentials import CredentialError
 from teatree.utils.git_run import git_env_without_overrides
+
+logger = logging.getLogger(__name__)
 
 
 def _overlay_scope(task: Task) -> str:
@@ -63,3 +67,38 @@ def _provider_child_env(provider: AgentHarnessProvider | None, *, scope: str = "
     if provider is AgentHarnessProvider.API_KEY:
         return resolve_api_key_credential(scope=scope).child_env(base)
     return resolve_subscription_credential(scope=scope).child_env(base)
+
+
+def system_child_env() -> dict[str, str] | None:
+    """The ``claude`` CLI child env for a SYSTEM pass — no Task, global scope.
+
+    A system pass (the dream distiller / eval synthesizer) spawns ``claude`` outside
+    any ticket, so it has no overlay to route an account for and resolves the Layer-2
+    ``agent_harness_provider`` credential at the GLOBAL scope. Behaviour mirrors
+    :func:`_provider_child_env`: ``None`` (no Layer-2 pin) returns ``None`` — the
+    ambient ``claude`` auth state applies unchanged. An explicit ``subscription_oauth``
+    / ``api_key`` provider pins that credential (on the GIT_*-stripped base) so the
+    spawned CLI rides the plan or the meter deterministically rather than whatever the
+    ambient env happens to hold. A :class:`CredentialError` (the pinned token resolves
+    from neither env nor the ``pass`` store) PROPAGATES so an auth gap fails the pass
+    loud instead of laundering into a fake empty/unparsable result.
+
+    Unlike :func:`_provider_child_env` — whose sole caller is already scoped to a
+    ``claude_sdk`` dispatch, so a non-``claude_sdk`` provider there is a real
+    misconfiguration — this helper's callers spawn ``claude`` unconditionally on ANY
+    ``agent_harness``. A provider valid only under ``pydantic_ai`` (a validly
+    configured deployment) must therefore fall back to the ambient env with a WARNING,
+    not raise: the system ``claude`` turn stays on whatever auth the ambient env
+    carries, exactly as before this pinning existed.
+    """
+    provider = get_effective_settings().agent_harness_provider
+    if provider is None:
+        return None
+    if provider not in AgentHarnessProvider.valid_for(AgentHarness.CLAUDE_SDK):
+        logger.warning(
+            "agent_harness_provider=%s pins a non-claude_sdk lane; the system claude "
+            "subprocess falls back to the ambient environment's auth state",
+            provider.value,
+        )
+        return None
+    return _provider_child_env(provider, scope="")

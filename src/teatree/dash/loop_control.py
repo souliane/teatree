@@ -15,9 +15,9 @@ from dataclasses import dataclass
 
 from teatree.config import get_effective_settings
 from teatree.core.availability import resolve_mode
-from teatree.core.models.config_setting import ConfigSetting
 from teatree.core.models.loop import Loop
 from teatree.core.models.loop_state import LoopState, LoopStatus
+from teatree.dash.gate_state import dash_gate_fail_open
 from teatree.loops.preset_status import LoopVerdict, effective_verdicts
 
 logger = logging.getLogger(__name__)
@@ -65,14 +65,9 @@ def build_loop_control() -> LoopControlView:
         loops=build_loop_rows(),
         availability_mode=resolution.mode,
         availability_source=resolution.source,
-        gate_fail_open=_gate_fail_open(),
+        gate_fail_open=dash_gate_fail_open(),
         runner_enabled=_runner_enabled(),
     )
-
-
-def _gate_fail_open() -> bool:
-    """The master ``danger_gate_fail_open`` DB-home switch state (a red banner when on)."""
-    return bool(ConfigSetting.objects.get_effective("danger_gate_fail_open"))
 
 
 def _runner_enabled() -> bool:

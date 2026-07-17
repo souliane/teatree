@@ -324,6 +324,28 @@ def slack_provision(
         typer.echo("Remaining manual step: click Allow on the OAuth (re)install URL above.")
         typer.echo("dm_only overlay — no user (xoxp) token needed.")
 
+    _fail_on_provision_errors(reports)
+
+
+def _fail_on_provision_errors(reports: list[OverlayProvisionReport]) -> None:
+    """Exit non-zero when any overlay's manifest push or DM provisioning failed.
+
+    The failures are recorded in each report (``manifest_action="error"``, a
+    ``FAILED_OPEN_DM`` ``dm_result``) and already printed inline, but a
+    half-provisioned overlay must not report success — a caller/CI that keys on
+    the exit code would treat the run as done (#3313).
+    """
+    failed = [
+        report.overlay_name
+        for report in reports
+        if report.manifest_action == "error"
+        or (report.dm_result is not None and report.dm_result.status is ProvisionResult.FAILED_OPEN_DM)
+    ]
+    if failed:
+        typer.echo("")
+        typer.echo(f"ERROR Provisioning failed for: {', '.join(failed)}. See the errors above.")
+        raise typer.Exit(code=1)
+
 
 def manifest_json(overlay: str) -> str:
     """Return the desired manifest JSON for *overlay* (debugging / docs aid)."""

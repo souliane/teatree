@@ -133,33 +133,51 @@ def _run_distiller_turn(extract: ConsolidationExtract) -> str:
     import asyncio  # noqa: PLC0415 — deferred: loaded only on this code path
     import shutil  # noqa: PLC0415 — deferred: loaded only on this code path
 
+    from teatree.agents._headless_env import (  # noqa: PLC0415 — deferred: avoids pulling the SDK-heavy headless runner
+        system_child_env,
+    )
+
     if shutil.which("claude") is None:
         msg = "claude is not installed — the dream distiller cannot run"
         raise RuntimeError(msg)
+    # Resolve the credential child-env in this SYNC frame (it reads config/DB rows,
+    # which Django forbids inside the async turn), so the spawned ``claude`` rides the
+    # configured plan/meter instead of an unauthenticated ambient env — an auth gap
+    # would otherwise surface only as an UNPARSABLE reply, never as a real failure. A
+    # CredentialError propagates and fails the pass loud.
+    env = system_child_env()
     prompt = _DISTILL_PROMPT_TEMPLATE.format(snippets=_render_snippets(extract))
-    return asyncio.run(_collect_turn(prompt))
+    return asyncio.run(_collect_turn(prompt, env=env))
 
 
-def _distill_options() -> "ClaudeAgentOptions":
+def _distill_options(*, env: dict[str, str] | None = None) -> "ClaudeAgentOptions":
     """Build the bounded, no-tool SDK options for one distiller turn.
 
     A PLAIN-STRING system prompt (not the ``claude_code`` preset) keeps the turn
     model-agnostic so an off-Claude ``cheap`` tier resolves cleanly; the model is
     :func:`resolve_tier`-driven (``agent_tier_models`` DB-overridable) rather than a
     hardcoded id, so this aux call follows the same tiering as every other agent.
+
+    *env*, when set, pins the ``agent_harness_provider`` credential onto the spawned
+    ``claude`` (the caller resolves it via :func:`~teatree.agents._headless_env.system_child_env`);
+    ``None`` leaves the SDK default empty env so the child inherits the ambient auth
+    state unchanged — the same "no pin → ambient" contract the headless runner keeps.
     """
     from claude_agent_sdk import ClaudeAgentOptions  # noqa: PLC0415 — deferred: optional heavy SDK dep
 
-    return ClaudeAgentOptions(
+    options = ClaudeAgentOptions(
         system_prompt=_DISTILL_SYSTEM_PROMPT,
         model=resolve_tier("cheap"),
         permission_mode="bypassPermissions",
         max_turns=1,
         allowed_tools=[],
     )
+    if env is not None:
+        options.env = env
+    return options
 
 
-async def _collect_turn(prompt: str) -> str:
+async def _collect_turn(prompt: str, *, env: dict[str, str] | None = None) -> str:
     import asyncio  # noqa: PLC0415 — deferred: loaded only on this code path
 
     from claude_agent_sdk import (  # noqa: PLC0415 — deferred: optional heavy SDK dep, imported only at turn time
@@ -168,7 +186,7 @@ async def _collect_turn(prompt: str) -> str:
         TextBlock,
     )
 
-    options = _distill_options()
+    options = _distill_options(env=env)
     parts: list[str] = []
     # Bound the ENTIRE turn — connect (``__aenter__`` spawns the ``claude``
     # subprocess), query, AND the response drain — under one watchdog. Wrapping
