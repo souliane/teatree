@@ -1002,6 +1002,12 @@ class _ScannerSettings:
     auto_update_require_green_main: bool = True
 
 
+# The regenerable cache dirs auto-purged at CRITICAL disk pressure (the
+# ``disk_cache_allowlist`` default). A module constant so the field default stays a
+# single line; ``.copy`` gives each settings instance its own list.
+_DEFAULT_DISK_CACHE_ALLOWLIST = ["~/.cache/pre-commit", "~/.cache/puppeteer", "~/.cache/codex-runtimes"]
+
+
 @dataclass
 class _ResourcePressureSettings:
     """Resource-pressure auto-free thresholds (disk / RAM) + the destructive-lever opt-ins + task-sweep."""
@@ -1026,9 +1032,7 @@ class _ResourcePressureSettings:
     # are auto-purged at CRITICAL. ``uv`` is handled via ``uv cache prune``.
     # ``~/.cache/prek`` and ``~/.claude/projects`` are deliberately absent —
     # the latter is hard-protected even if a user adds it.
-    disk_cache_allowlist: list[str] = field(
-        default_factory=lambda: ["~/.cache/pre-commit", "~/.cache/puppeteer", "~/.cache/codex-runtimes"],
-    )
+    disk_cache_allowlist: list[str] = field(default_factory=_DEFAULT_DISK_CACHE_ALLOWLIST.copy)
     # Opt-in: enables stale-worktree GC (clean + fully pushed + unmodified
     # ``worktree_stale_days``) at CRITICAL, capped at
     # ``max_worktree_gc_per_tick`` per pass and never the active session's
