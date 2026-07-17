@@ -8,7 +8,7 @@ only relocated under a focused package by concern.
 import json
 from unittest.mock import MagicMock, patch
 
-import teatree.cli.doctor.app as teatree_cli_doctor
+import teatree.cli.doctor.service as teatree_cli_doctor
 from teatree.cli.doctor import IntrospectionHelpers
 
 

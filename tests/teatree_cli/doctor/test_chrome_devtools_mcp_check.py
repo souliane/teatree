@@ -12,7 +12,7 @@ import json
 from contextlib import redirect_stdout
 from pathlib import Path
 
-from teatree.cli.doctor.checks import _check_chrome_devtools_mcp_suggestion
+from teatree.cli.doctor.checks_mcp import _check_chrome_devtools_mcp_suggestion
 
 
 def _run(home: Path) -> tuple[bool, str]:

@@ -7,7 +7,7 @@ from unittest.mock import patch
 
 import django.test
 
-from teatree.cli.doctor.checks import _check_loop_presets
+from teatree.cli.doctor.checks_loop import _check_loop_presets
 from teatree.core.models import ConfigSetting, Loop, LoopPreset, LoopPresetOverride, LoopSchedule, LoopScheduleSlot
 from teatree.loop.preset_resolution import ACTIVE_SCHEDULE_SETTING
 
@@ -45,7 +45,7 @@ class TestLoopPresetsDoctorCheck(django.test.TestCase):
         # WARNs but never reddens the run (#3313).
         buf = io.StringIO()
         with (
-            patch("teatree.cli.doctor.checks.consistency_findings", side_effect=RuntimeError("db offline")),
+            patch("teatree.cli.doctor.checks_loop.consistency_findings", side_effect=RuntimeError("db offline")),
             redirect_stdout(buf),
         ):
             assert _check_loop_presets() is True

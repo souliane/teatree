@@ -56,7 +56,7 @@ class TestMakeEditable:
 
         success = subprocess.CompletedProcess([], 0)
         with (
-            patch("teatree.cli.doctor.app._find_host_project_root", return_value=tmp_path),
+            patch("teatree.cli.doctor.service._find_host_project_root", return_value=tmp_path),
             patch("subprocess.run", return_value=success),
         ):
             DoctorService.make_editable("teatree", Path("/tmp/teatree"))
@@ -70,7 +70,7 @@ class TestMakeEditable:
     def test_falls_back_to_ephemeral_install_without_host_project(self, capsys):
         success = subprocess.CompletedProcess([], 0)
         with (
-            patch("teatree.cli.doctor.app._find_host_project_root", return_value=None),
+            patch("teatree.cli.doctor.service._find_host_project_root", return_value=None),
             patch("subprocess.run", return_value=success),
         ):
             DoctorService.make_editable("teatree", Path("/tmp/teatree"))
@@ -82,7 +82,7 @@ class TestMakeEditable:
         pyproject.write_text('[project]\nname = "myproject"\n')
         (tmp_path / "manage.py").write_text("")
 
-        with patch("teatree.cli.doctor.app._find_host_project_root", return_value=tmp_path):
+        with patch("teatree.cli.doctor.service._find_host_project_root", return_value=tmp_path):
             DoctorService.make_editable("teatree", Path("/tmp/teatree"))
 
         assert "uv tool install" in capsys.readouterr().out
@@ -90,7 +90,7 @@ class TestMakeEditable:
     def test_reports_fail_without_host_project_when_install_fails(self, tmp_path):
         failure = subprocess.CompletedProcess([], 1, "", "install failed")
         with (
-            patch("teatree.cli.doctor.app._find_host_project_root", return_value=None),
+            patch("teatree.cli.doctor.service._find_host_project_root", return_value=None),
             patch("subprocess.run", return_value=failure),
         ):
             DoctorService.make_editable("teatree", tmp_path)
@@ -102,7 +102,7 @@ class TestMakeEditable:
         )
         failure = subprocess.CompletedProcess([], 1, "", "sync failed")
         with (
-            patch("teatree.cli.doctor.app._find_host_project_root", return_value=tmp_path),
+            patch("teatree.cli.doctor.service._find_host_project_root", return_value=tmp_path),
             patch("subprocess.run", return_value=failure),
         ):
             DoctorService.make_editable("teatree", Path("/repos/teatree"))
@@ -133,7 +133,7 @@ class TestMakeEditableDoesNotLeakLockfile:
         _install_fake_uv(bin_dir)
         monkeypatch.setenv("PATH", f"{bin_dir}{os.pathsep}{os.environ['PATH']}")
 
-        with patch("teatree.cli.doctor.app._find_host_project_root", return_value=repo):
+        with patch("teatree.cli.doctor.service._find_host_project_root", return_value=repo):
             DoctorService.make_editable("teatree", tmp_path / "teatree")
 
         dirty = _git(repo, "status", "--porcelain").stdout
