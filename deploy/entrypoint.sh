@@ -102,47 +102,81 @@ seed_setting() {
     fi
 }
 
-# Fleet role split: this instance must not run the loops another fleet member
-# owns. The box now HOSTS the DM-only Slack conversational loop for the owner
-# overlay, so `inbox` — the inbound-messaging scanners (Slack DM → PendingChatInjection,
-# review-intent, red-card, mentions) — MUST run here and is no longer disabled by
-# default. Only the COLLEAGUE-facing Slack loops the laptop owns stay off: `review`
-# (colleague PR review → Slack) and `directive_loop` (asks the human via Slack).
-# They are disabled through the one DB-backed per-loop control plane. `t3 loop
-# disable` is idempotent, so a re-deploy converges. TEATREE_DISABLED_LOOPS
-# (comma-separated, from teatree.env) overrides the default; an empty value runs
-# every loop here.
+# Fleet role split: this instance must run its own loops and NOT the loops another
+# fleet member owns. The box HOSTS the DM-only Slack conversational loop for the
+# owner overlay, so `inbox` — the inbound-messaging scanners (Slack DM →
+# PendingChatInjection, review-intent, red-card, mentions) — MUST run here; it
+# feeds the drain → 👀-ack → answer cycle that posts replies. The COLLEAGUE-facing
+# Slack loops the laptop owns stay off here: `review` (colleague PR review → Slack)
+# and `directive_loop` (asks the human via Slack).
 #
-# `t3 loop disable` exits 0 even on an unregistered name (it only flips a real
-# Loop row), so a typo would silently disable nothing and leave the real loop
-# running — a double-run against the laptop. Validate the WHOLE list against the
-# registered mini-loops first, so a bad value fails before anything is disabled.
-disable_fleet_scoped_loops() {
-    local raw="${TEATREE_DISABLED_LOOPS-review,directive_loop}"
+# Per-loop enable/disable/pause/resume is now EMERGENCY-only (#3248): the normal
+# handle is presets/schedules and the emergency per-loop handle is `t3 loop
+# override`. Neither presets, schedules, nor `t3 loop override` can express this
+# box's per-loop role, and — critically — none of them can lift a durable
+# `LoopState` HOLD: admission resolves hold > forced > preset > base, so a loop a
+# prior deploy left in a DISABLED hold (older images ran `t3 loop disable inbox`)
+# stays dead under any preset/schedule/override. Clearing a hold has exactly ONE
+# handle: `t3 loop enable`, which is emergency-gated. So this box declares its role
+# on the two authoritative planes that actually beat everything below them:
+#
+#   * ENABLED set (default `inbox`) → `t3 loop enable <name> --emergency`, which
+#     clears any stale hold AND sets `Loop.enabled=True`, so a box whose inbox a
+#     prior deploy durably disabled recovers. Idempotent (a no-op when already on).
+#   * DISABLED set (default `review,directive_loop`) → `t3 loop override <name> off`,
+#     the sanctioned, NON-emergency forced-off that supersedes the deprecated
+#     `t3 loop disable`. Forced-off beats the preset mask AND the base config, so a
+#     colleague/human-facing loop stays off here regardless of any mode the owner
+#     later selects. Idempotent.
+#
+# TEATREE_ENABLED_LOOPS / TEATREE_DISABLED_LOOPS (comma-separated, from teatree.env)
+# override the defaults; empty values act on nothing. Every name in BOTH lists is
+# validated against the registered mini-loops first, so a typo fails the deploy
+# loudly before anything is touched (rather than silently mis-configuring the box).
+apply_fleet_loop_policy() {
+    local enabled_raw="${TEATREE_ENABLED_LOOPS-inbox}"
+    local disabled_raw="${TEATREE_DISABLED_LOOPS-review,directive_loop}"
     local field loop registered
-    local fields=() requested=()
-    IFS=',' read -ra fields <<<"$raw"
+    local fields=() enable_loops=() disable_loops=()
+
+    IFS=',' read -ra fields <<<"$enabled_raw"
     for field in ${fields[@]+"${fields[@]}"}; do
         field="${field//[[:space:]]/}"
-        [ -n "$field" ] && requested+=("$field")
+        [ -n "$field" ] && enable_loops+=("$field")
     done
-    [ ${#requested[@]} -gt 0 ] || return 0
+    fields=()
+    IFS=',' read -ra fields <<<"$disabled_raw"
+    for field in ${fields[@]+"${fields[@]}"}; do
+        field="${field//[[:space:]]/}"
+        [ -n "$field" ] && disable_loops+=("$field")
+    done
+    [ $((${#enable_loops[@]} + ${#disable_loops[@]})) -gt 0 ] || return 0
 
     if ! registered="$(t3 loop list --json | jq -r '.mini_loops[].name')" || [ -z "$registered" ]; then
         echo "entrypoint: could not read the registered loops ('t3 loop list --json' failed or was empty) - confirm 't3 teatree db migrate' seeded the loops above and re-run Deploy" >&2
         exit 1
     fi
 
-    for loop in "${requested[@]}"; do
+    for loop in ${enable_loops[@]+"${enable_loops[@]}"} ${disable_loops[@]+"${disable_loops[@]}"}; do
         if ! grep -qxF "$loop" <<<"$registered"; then
-            echo "entrypoint: TEATREE_DISABLED_LOOPS names an unknown loop '${loop}' - valid loops are: $(tr '\n' ' ' <<<"$registered")- fix the value in teatree.env and re-run Deploy" >&2
+            echo "entrypoint: TEATREE_ENABLED_LOOPS/TEATREE_DISABLED_LOOPS names an unknown loop '${loop}' - valid loops are: $(tr '\n' ' ' <<<"$registered")- fix the value in teatree.env and re-run Deploy" >&2
             exit 1
         fi
     done
 
-    for loop in "${requested[@]}"; do
-        if ! t3 loop disable "$loop" --emergency; then
-            echo "entrypoint: 't3 loop disable ${loop}' FAILED - the DB-backed loop control plane is unreachable; confirm 't3 teatree db migrate' succeeded above and re-run Deploy" >&2
+    # ENABLE clears any durable hold (only `enable` can) and sets Loop.enabled=True.
+    for loop in ${enable_loops[@]+"${enable_loops[@]}"}; do
+        if ! t3 loop enable "$loop" --emergency; then
+            echo "entrypoint: 't3 loop enable ${loop} --emergency' FAILED - the DB-backed loop control plane is unreachable; confirm 't3 teatree db migrate' succeeded above and re-run Deploy" >&2
+            exit 1
+        fi
+    done
+
+    # DISABLE via the forced-off override plane (beats preset + base config), the
+    # sanctioned non-emergency successor to the now-refused `t3 loop disable`.
+    for loop in ${disable_loops[@]+"${disable_loops[@]}"}; do
+        if ! t3 loop override "$loop" off --reason "fleet policy (DM-only box): ${loop} must not run here"; then
+            echo "entrypoint: 't3 loop override ${loop} off' FAILED - the DB-backed loop control plane is unreachable; confirm 't3 teatree db migrate' succeeded above and re-run Deploy" >&2
             exit 1
         fi
     done
@@ -196,7 +230,7 @@ init)
     # The admin binds the box loopback (host networking), so auto-login fires for
     # the SSH-tunnelled 127.0.0.1 request — no admin password behind the tunnel.
     seed_setting admin_autologin_enabled true
-    disable_fleet_scoped_loops
+    apply_fleet_loop_policy
     echo "teatree-init: complete"
     ;;
 worker)

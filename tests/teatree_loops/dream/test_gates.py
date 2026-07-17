@@ -487,7 +487,7 @@ class TestPersistProbeResults(TestCase):
             QaProbe(question="q1", expected_answer="fact ONE", source_name="m.md"),
             QaProbe(question="q2", expected_answer="fact MISSING", source_name="m.md"),
         ]
-        persist_probe_results(probes, after, overlay="acme")
+        persist_probe_results(probes, after, scope="acme")
 
         assert DreamQaProbe.objects.current_corpus("acme").count() == 2
         q1 = DreamQaProbe.objects.get(question="q1")
@@ -499,8 +499,8 @@ class TestPersistProbeResults(TestCase):
         after = _snapshot({"m.md": "name: m\nfact ONE present\n"})
         probes = [QaProbe(question="q1", expected_answer="fact ONE", source_name="m.md")]
 
-        persist_probe_results(probes, after, overlay="acme")
-        persist_probe_results(probes, after, overlay="acme")
+        persist_probe_results(probes, after, scope="acme")
+        persist_probe_results(probes, after, scope="acme")
 
         assert DreamQaProbe.objects.count() == 1
         row = DreamQaProbe.objects.get(question="q1")
@@ -510,9 +510,21 @@ class TestPersistProbeResults(TestCase):
     def test_marks_prior_session_on_re_record(self) -> None:
         after = _snapshot({"m.md": "name: m\nfact ONE present\n"})
         probes = [QaProbe(question="q1", expected_answer="fact ONE", source_name="m.md")]
-        persist_probe_results(probes, after, overlay="acme")
-        persist_probe_results(probes, after, overlay="acme")
+        persist_probe_results(probes, after, scope="acme")
+        persist_probe_results(probes, after, scope="acme")
         assert DreamQaProbe.objects.prior_session_probes("acme").count() == 1
+
+    def test_same_question_in_two_scopes_does_not_collide(self) -> None:
+        # Two memory dirs holding a same-named memory produce the SAME question. The
+        # scope is folded into probe_key, so each dir gets its own row instead of
+        # sharing (and cross-contaminating) one — the per-dir corpus isolation.
+        after = _snapshot({"m.md": "name: m\nfact ONE present\n"})
+        probes = [QaProbe(question="q1", expected_answer="fact ONE", source_name="m.md")]
+        persist_probe_results(probes, after, scope="/home/a/.claude/memory")
+        persist_probe_results(probes, after, scope="/home/b/.claude/memory")
+        assert DreamQaProbe.objects.count() == 2
+        assert DreamQaProbe.objects.current_corpus("/home/a/.claude/memory").count() == 1
+        assert DreamQaProbe.objects.current_corpus("/home/b/.claude/memory").count() == 1
 
 
 class TestRunAcceptancePass(TestCase):

@@ -183,6 +183,23 @@ def _reset_log_throttle() -> Iterator[None]:
 
 
 @pytest.fixture(autouse=True)
+def _reset_quote_blocklist_cache() -> Iterator[None]:
+    """Reset the quote-scanner compiled-blocklist memo around every test (TSH-2/TSH-7).
+
+    ``quote_scanner._BLOCKLIST_CACHE`` memoises compiled blocklist patterns keyed
+    by resolved path and validated by ``(mtime_ns, size)``. A test that rewrites a
+    blocklist at the same resolved path within one mtime tick at an identical size
+    would otherwise read the earlier generation's patterns; clearing it here keeps
+    one test's blocklist from leaking into another.
+    """
+    from teatree.hooks.quote_scanner import reset_blocklist_cache  # noqa: PLC0415
+
+    reset_blocklist_cache()
+    yield
+    reset_blocklist_cache()
+
+
+@pytest.fixture(autouse=True)
 def _isolate_scope_cache() -> Iterator[None]:
     """Reset the process-singleton token-scope cache with a no-op banner sink (PR-19).
 

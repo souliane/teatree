@@ -34,6 +34,7 @@ checks and is itself logged for audit.
 import json
 import os
 import re
+import sys
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
@@ -43,6 +44,7 @@ from teatree.hooks._command_parser import FAIL_CLOSED_SENTINEL as _FAIL_CLOSED_S
 from teatree.hooks._command_parser import extract_bash_payload as _extract_bash_payload
 from teatree.hooks._command_parser import is_fail_closed_sentinel as _is_fail_closed_sentinel
 from teatree.hooks._command_parser import is_publish_command as _is_publish_command
+from teatree.hooks._hook_state import hook_state_root, note_env_override_once
 from teatree.hooks._publish_detection import segment_word_lists_raw as _segment_word_lists_raw
 
 _QUOTE_OK_ENV = "QUOTE_OK"
@@ -197,26 +199,24 @@ _BUILTIN_PATTERNS: Final[tuple[Pattern, ...]] = (
 
 
 def _blocklist_path() -> Path:
-    base = os.environ.get("T3_DATA_DIR")
-    if base:
-        return Path(base) / "quote-blocklist.txt"
-    from teatree.paths import DATA_DIR  # noqa: PLC0415 — deferred: paths resolves the data dir at import
-
-    return DATA_DIR / "quote-blocklist.txt"
+    return hook_state_root() / "quote-blocklist.txt"
 
 
-def _load_blocklist_patterns(path: Path | None = None) -> list[Pattern]:
-    """Compile regexes from the on-disk blocklist file.
+# Compiled-blocklist cache keyed by resolved path -> (mtime_ns, size, patterns).
+# The file is user-editable and rarely changes, so a single compile per (mtime,
+# size) generation avoids re-parsing every ``scan_text`` call.
+_BLOCKLIST_CACHE: dict[Path, tuple[int, int, list[Pattern]]] = {}
 
-    The file is a list of REGEX patterns (one per line) — never raw
-    quotes. Blank lines and ``#``-prefixed comments are skipped. Each
-    line is compiled with ``re.IGNORECASE``. Any line that fails to
-    compile is reported via ``ValueError`` so a bad regex shows up
-    immediately rather than silently disabling a rule.
+
+def _compile_blocklist(target: Path) -> list[Pattern]:
+    """Compile every valid regex line, SKIPPING (never raising on) a bad one.
+
+    A single malformed line must never disable the whole gate: the sole caller
+    (``hook_router.handle_quote_scanner_pretool``) swallows exceptions and fails
+    OPEN, so a raised ``re.error`` would turn the entire #1213 leak gate into a
+    silent no-op on every publish. Each bad line is skipped with a one-line
+    stderr NOTE naming the file+line so a typo is visible, not silent.
     """
-    target = path if path is not None else _blocklist_path()
-    if not target.is_file():
-        return []
     patterns: list[Pattern] = []
     for idx, raw in enumerate(target.read_text(encoding="utf-8").splitlines(), 1):
         line = raw.strip()
@@ -225,10 +225,48 @@ def _load_blocklist_patterns(path: Path | None = None) -> list[Pattern]:
         try:
             compiled = re.compile(line, re.IGNORECASE)
         except re.error as exc:
-            msg = f"invalid regex in {target}:{idx} — {exc}"
-            raise ValueError(msg) from exc
+            sys.stderr.write(f"NOTE: quote-scanner skipped invalid blocklist regex in {target}:{idx} — {exc}\n")
+            continue
         patterns.append(Pattern(name=f"blocklist:{idx}", severity=HIGH, regex=compiled))
     return patterns
+
+
+def _load_blocklist_patterns(path: Path | None = None) -> list[Pattern]:
+    """Return the compiled blocklist patterns, mtime-cached per resolved path.
+
+    The file is a list of REGEX patterns (one per line) — never raw quotes.
+    Blank lines and ``#``-prefixed comments are skipped; each remaining line is
+    compiled with ``re.IGNORECASE``. A line that fails to compile is skipped
+    (:func:`_compile_blocklist`) rather than raised, so one bad regex never
+    fails the gate open. The result is cached by ``(mtime_ns, size)`` so an
+    unchanged file is compiled once, not on every scan.
+    """
+    target = path if path is not None else _blocklist_path()
+    if not target.is_file():
+        return []
+    try:
+        stat = target.stat()
+    except OSError:
+        return []
+    cached = _BLOCKLIST_CACHE.get(target)
+    if cached is not None and cached[0] == stat.st_mtime_ns and cached[1] == stat.st_size:
+        return cached[2]
+    patterns = _compile_blocklist(target)
+    _BLOCKLIST_CACHE[target] = (stat.st_mtime_ns, stat.st_size, patterns)
+    return patterns
+
+
+def reset_blocklist_cache() -> None:
+    """Clear the compiled-blocklist memo (test isolation; TSH-2/TSH-7).
+
+    The memo is keyed by resolved path and validated by ``(mtime_ns, size)``, so
+    a changed file self-invalidates in production. Across tests the SAME resolved
+    path (a fixed ``hook_state_root()`` root, or a re-created temp path) can be
+    rewritten within one mtime-granularity tick at an identical size, which would
+    return the earlier generation's patterns. The conftest roster clears it around
+    every test so a blocklist written by one test can never leak into another.
+    """
+    _BLOCKLIST_CACHE.clear()
 
 
 # Unicode smart-quote variants normalised to their ASCII equivalents before
@@ -528,6 +566,7 @@ def has_quote_ok_override(tool_name: str, tool_input: ToolInput) -> bool:
     if tool_name == "Bash" and _publish_segment_carries_override(tool_input.get("command", "")):
         return True
     if os.environ.get(_QUOTE_OK_ENV, "").strip() == "1":
+        note_env_override_once(_QUOTE_OK_ENV)
         return True
     env = tool_input.get("env") or {}
     return env.get(_QUOTE_OK_ENV, "").strip() == "1"
@@ -557,9 +596,7 @@ def dispatch_quote_ok_reason(text: str) -> str | None:
 
 
 def _ledger_path() -> Path:
-    base = os.environ.get("T3_DATA_DIR")
-    root = Path(base) if base else Path.home() / ".teatree"
-    return root / "quote-scanner.jsonl"
+    return hook_state_root() / "quote-scanner.jsonl"
 
 
 def log_decision(

@@ -154,6 +154,38 @@ class DecayTestCase(SimpleTestCase):
         assert stale.exists()  # but nothing moved
         assert not (self.dir / "archive").exists()
 
+    def test_archiving_a_name_that_already_exists_never_clobbers_the_prior_body(self) -> None:
+        # A memory with the SAME filename was archived a prior pass; archiving a fresh
+        # same-named memory must NOT blind-overwrite the earlier archived body — the
+        # "never blind delete" invariant. The collision is uniquified instead.
+        archive = self.dir / "archive"
+        archive.mkdir()
+        prior = archive / "mem_stale.md"
+        prior.write_text("the PRIOR archived lesson body\n", encoding="utf-8")
+
+        self._write("mem_stale", "the NEW lesson body to archive", age_days=90)
+        result = self._decay(retention_days=30)
+
+        assert result.archived_count == 1
+        assert prior.read_text(encoding="utf-8") == "the PRIOR archived lesson body\n"  # untouched
+        new_body = (archive / "mem_stale.1.md").read_text(encoding="utf-8")
+        assert "the NEW lesson body to archive" in new_body
+
+    def test_stale_by_lesson_updated_is_archived_even_when_mtime_is_fresh(self) -> None:
+        # Cross-link / re-index rewrote the file (bumping st_mtime to now) without
+        # touching the lesson. The freshness guard ages by the LOGICAL lesson_updated
+        # clock, so an old lesson is still a decay candidate — otherwise a linked
+        # memory stays perpetually "fresh" and transfer-before-prune never fires.
+        path = self.dir / "mem_touched.md"
+        path.write_text(
+            "name: mem_touched\nlesson_updated: 2020-01-01\nan old lesson last meaningfully touched in 2020\n",
+            encoding="utf-8",
+        )  # st_mtime is NOW (just written) but lesson_updated is years old
+        result = self._decay(retention_days=30)
+        assert result.archived_count == 1
+        assert result.archived[0].name == "mem_touched"
+        assert not path.exists()
+
     def test_missing_dir_is_noop(self) -> None:
         result = decay_memories(self.dir / "absent", now=_NOW, has_durable_home=self.home_resolver)
         assert result.seen == 0

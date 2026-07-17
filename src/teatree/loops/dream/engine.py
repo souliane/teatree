@@ -120,6 +120,10 @@ _PER_SESSION_CHARS = 8_000
 class TranscriptMember:
     path: Path
     kind: str
+    #: The file's mtime captured ONCE at enumeration. Re-stat'ing the path in the
+    #: sort key would crash the whole pass if a transcript (a /tmp session .jsonl)
+    #: is reaped between enumeration and sort; capturing it up front is race-safe.
+    mtime: float = 0.0
 
 
 @dataclass(frozen=True, slots=True)
@@ -248,21 +252,19 @@ def _task_output_roots() -> list[Path]:
     return [candidate] if candidate.is_dir() else []
 
 
-def _is_recent_file(path: Path, cutoff_ts: float) -> bool:
+def _regular_file_mtime(path: Path) -> float | None:
+    """The mtime of *path* if it is a regular file, else ``None`` (missing / not a file)."""
     try:
         st = path.stat()
     except OSError:
-        return False
-    if not stat.S_ISREG(st.st_mode):
-        return False
-    return st.st_mtime >= cutoff_ts
+        return None
+    return st.st_mtime if stat.S_ISREG(st.st_mode) else None
 
 
-def _is_regular_file(path: Path) -> bool:
-    try:
-        return stat.S_ISREG(path.stat().st_mode)
-    except OSError:
-        return False
+def _recent_file_mtime(path: Path, cutoff_ts: float) -> float | None:
+    """The mtime of *path* if it is a regular file at/after *cutoff_ts*, else ``None``."""
+    mtime = _regular_file_mtime(path)
+    return mtime if mtime is not None and mtime >= cutoff_ts else None
 
 
 def enumerate_members(
@@ -285,25 +287,29 @@ def enumerate_members(
 
     if root.is_dir():
         members.extend(
-            TranscriptMember(path=p, kind="memory") for p in root.glob("*/memory/*.md") if _is_regular_file(p)
+            TranscriptMember(path=p, kind="memory", mtime=mt)
+            for p in root.glob("*/memory/*.md")
+            if (mt := _regular_file_mtime(p)) is not None
         )
         members.extend(
-            TranscriptMember(path=p, kind="main") for p in root.glob("*/*.jsonl") if _is_recent_file(p, cutoff_ts)
+            TranscriptMember(path=p, kind="main", mtime=mt)
+            for p in root.glob("*/*.jsonl")
+            if (mt := _recent_file_mtime(p, cutoff_ts)) is not None
         )
         members.extend(
-            TranscriptMember(path=p, kind="subagent")
+            TranscriptMember(path=p, kind="subagent", mtime=mt)
             for p in root.glob("*/*/subagents/agent-*.jsonl")
-            if _is_recent_file(p, cutoff_ts)
+            if (mt := _recent_file_mtime(p, cutoff_ts)) is not None
         )
 
     for task_root in task_roots:
         members.extend(
-            TranscriptMember(path=p, kind="task_output")
+            TranscriptMember(path=p, kind="task_output", mtime=mt)
             for p in task_root.glob("*/*/tasks/*.output")
-            if _is_recent_file(p, cutoff_ts)
+            if (mt := _recent_file_mtime(p, cutoff_ts)) is not None
         )
 
-    members.sort(key=lambda m: m.path.stat().st_mtime, reverse=True)
+    members.sort(key=lambda m: m.mtime, reverse=True)
     return members
 
 

@@ -21,7 +21,9 @@ adds nothing. It is fault-isolated by the command's try/except.
 
 import tempfile
 from pathlib import Path
+from unittest.mock import patch
 
+import pytest
 from django.test import SimpleTestCase
 
 from teatree.loops.dream import merge
@@ -125,6 +127,26 @@ class MergeTestCase(SimpleTestCase):
         assert "[[feedback_bind_two]]" in a.read_text(encoding="utf-8")
         assert "[[feedback_bind_one]]" in b.read_text(encoding="utf-8")
 
+    def test_absorbed_is_archived_before_survivor_rewrite_so_a_crash_never_leaves_both(self) -> None:
+        # Archive-first crash-safety: if the survivor rewrite dies mid-merge, the
+        # absorbed file must already be archived (gone from the live dir) so a re-run
+        # never re-pairs both live files and re-applies the merge. The old order
+        # (rewrite survivor, then archive) left BOTH files live on a kill.
+        self._write("feedback_dup_a", _TOPIC + " FIRST", frontmatter="type: feedback\n")
+        self._write("feedback_dup_b", _TOPIC + " SECOND", frontmatter="type: feedback\n")
+
+        # Crash the survivor rewrite step (which runs AFTER the absorbed file is
+        # archived) by raising from the provenance builder it depends on.
+        with (
+            patch.object(merge, "_merge_provenance", side_effect=OSError("survivor rewrite boom")),
+            pytest.raises(OSError, match="boom"),
+        ):
+            merge_memories(self.dir)
+
+        live = {p.name for p in self.dir.glob("feedback_dup_*.md")}
+        assert len(live) == 1  # only the survivor is still live — the absorbed was archived first
+        assert (self.dir / "archive").is_dir()
+
     def test_idempotent_rerun_merges_nothing(self) -> None:
         self._write("feedback_dup_a", _TOPIC + " FIRST", frontmatter="type: feedback\n")
         self._write("feedback_dup_b", _TOPIC + " SECOND", frontmatter="type: feedback\n")
@@ -194,13 +216,18 @@ class MergeTestCase(SimpleTestCase):
         # plus the un-paired third).
         assert len(survivors) == 2
 
-    def test_dry_run_does_not_cross_link_a_binding_conflict(self) -> None:
+    def test_dry_run_reports_the_binding_conflict_but_writes_nothing(self) -> None:
         a = self._write("feedback_bind_one", _TOPIC + " BINDING: always", frontmatter="type: feedback\n")
         b = self._write("feedback_bind_two", _TOPIC + " BINDING: never", frontmatter="type: feedback\n")
         before_a = a.read_text(encoding="utf-8")
         result = merge_memories(self.dir, dry_run=True)
-        # Under dry-run no conflict ticket-pair is surfaced and nothing is written.
-        assert result.binding_conflicts == ()
+        # Dry-run PREVIEWS the binding conflict a real run would surface (never a
+        # silent zero), while the cross-link side effect stays on disk-untouched.
+        assert len(result.binding_conflicts) == 1
+        assert {result.binding_conflicts[0].survivor_name, result.binding_conflicts[0].absorbed_name} == {
+            "feedback_bind_one",
+            "feedback_bind_two",
+        }
         assert a.read_text(encoding="utf-8") == before_a
         assert "[[" not in b.read_text(encoding="utf-8")
 

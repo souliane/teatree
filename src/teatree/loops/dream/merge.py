@@ -181,16 +181,24 @@ def _merge_provenance(absorbed: _MemoryFile, now: datetime) -> str:
 
 
 def _apply_merge(pair: _Pair, archive_dir: Path, now: datetime, *, dry_run: bool) -> MergedMemory:
-    """Append the absorbed file's distinct lines to the survivor, then archive it."""
+    """Archive the absorbed file FIRST, then append its distinct lines to the survivor.
+
+    Archive-first keeps the two-file mutation crash-safe: if the process dies after
+    the absorbed file is archived but before the survivor is rewritten, the absorbed
+    lesson still lives (in ``archive/``, body preserved) and the pair is never
+    re-paired next pass (the absorbed file is gone from the live dir). The reverse
+    order — rewrite survivor, then archive — left BOTH files live on a kill, so the
+    next pass re-paired them and re-appended the same content.
+    """
     distinct = _distinct_lines(pair.survivor, pair.absorbed)
+    archived = _archive_one(
+        pair.absorbed, archive_dir, now, reason=f"merged into {pair.survivor.path.name}", dry_run=dry_run
+    )
     if not dry_run:
         existing = pair.survivor.path.read_text(encoding="utf-8")
         suffix = "" if existing.endswith("\n") else "\n"
         addition = _merge_provenance(pair.absorbed, now) + "\n".join(distinct) + ("\n" if distinct else "")
         pair.survivor.path.write_text(f"{existing}{suffix}{addition}", encoding="utf-8")
-    archived = _archive_one(
-        pair.absorbed, archive_dir, now, reason=f"merged into {pair.survivor.path.name}", dry_run=dry_run
-    )
     return MergedMemory(
         survivor_name=pair.survivor.path.stem,
         absorbed_name=pair.absorbed.path.stem,
@@ -198,10 +206,16 @@ def _apply_merge(pair: _Pair, archive_dir: Path, now: datetime, *, dry_run: bool
     )
 
 
-def _cross_link_conflict(pair: _Pair) -> BindingConflict:
-    """Cross-link two conflicting BINDING files (Decision-3) without merging them."""
-    _ensure_wikilink(pair.survivor.path, pair.absorbed.path.stem)
-    _ensure_wikilink(pair.absorbed.path, pair.survivor.path.stem)
+def _record_binding_conflict(pair: _Pair, *, dry_run: bool) -> BindingConflict:
+    """Return the two-BINDING conflict (Decision-3); cross-link the files unless dry-run.
+
+    The conflict is ALWAYS reported (so a dry run previews the binding conflicts a real
+    run would surface, not zero); only the cross-link side effect is skipped under
+    *dry_run*.
+    """
+    if not dry_run:
+        _ensure_wikilink(pair.survivor.path, pair.absorbed.path.stem)
+        _ensure_wikilink(pair.absorbed.path, pair.survivor.path.stem)
     return BindingConflict(
         survivor_name=pair.survivor.path.stem,
         absorbed_name=pair.absorbed.path.stem,
@@ -238,8 +252,7 @@ def merge_memories(memory_dir: Path, *, now: datetime | None = None, dry_run: bo
     conflicts: list[BindingConflict] = []
     for pair in _near_duplicate_pairs(files):
         if _is_binding(pair.survivor) and _is_binding(pair.absorbed):
-            if not dry_run:
-                conflicts.append(_cross_link_conflict(pair))
+            conflicts.append(_record_binding_conflict(pair, dry_run=dry_run))
             continue
         merged.append(_apply_merge(pair, archive_dir, moment, dry_run=dry_run))
     return MergeResult(seen=len(files), merged=tuple(merged), binding_conflicts=tuple(conflicts), dry_run=dry_run)
