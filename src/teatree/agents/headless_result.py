@@ -7,10 +7,10 @@ orchestration the runner owns.
 
 import json
 
-from teatree.agents.result_schema import RESULT_JSON_SCHEMA
+from teatree.agents.result_schema import RESULT_JSON_SCHEMA, AgentResultBlob, JSONSchema
 
 
-def parse_result(agent_text: str) -> dict[str, object]:
+def parse_result(agent_text: str) -> AgentResultBlob:
     """Extract structured result from the agent's text output.
 
     Tries to parse the last JSON object in the text (agents may print
@@ -26,7 +26,7 @@ def parse_result(agent_text: str) -> dict[str, object]:
     return {}
 
 
-def validate_result(result: dict[str, object]) -> str:
+def validate_result(result: AgentResultBlob) -> str:
     """Check that *result* only contains keys declared in the schema.
 
     Delegates to the shared :func:`~teatree.agents.attempt_recorder.validate_result_keys`
@@ -38,7 +38,7 @@ def validate_result(result: dict[str, object]) -> str:
     return validate_result_keys(result)
 
 
-def get_result_json_schema() -> dict[str, object]:
+def get_result_json_schema() -> JSONSchema:
     """Return the JSON schema for structured agent output.
 
     Agents produce output matching this schema as a final JSON object.

@@ -48,7 +48,7 @@ def check_requeue_allowed(task: Task) -> None:
 
     * :class:`~teatree.core.repair_loop.IterationStalled` — two identical failures;
     * :class:`~teatree.core.repair_loop.MaxIterationsExceeded` — the iteration cap
-      (previously FAILed the row with only a ``logger.warning`` — a silent freeze).
+        (previously FAILed the row with only a ``logger.warning`` — a silent freeze).
 
     A no-op when under the cap and not stalled.
     """

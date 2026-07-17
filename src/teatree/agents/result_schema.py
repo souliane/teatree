@@ -175,7 +175,9 @@ class AgentResult(TypedDict, total=False):
     commands_executed: list[str]
 
 
-RESULT_JSON_SCHEMA: dict[str, object] = {
+type JSONSchema = dict[str, object]
+
+RESULT_JSON_SCHEMA: JSONSchema = {
     "type": "object",
     "properties": {
         "summary": {"type": "string", "description": "One-line summary of what the agent did."},
