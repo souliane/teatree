@@ -84,7 +84,22 @@ def check_command() -> None:
     to signal the bot has seen it, then prints each as a JSON line.
     Returns exit code 0 when messages were found, 1 when the queue
     was empty. Designed to be called from a fast cron (every 30s).
+
+    A singleton guard serialises the drain: the 30s cron can double-fire and
+    two concurrent drains would ack the same mentions twice, so a second drain
+    stands down (exit 0) while the first holds the lock.
     """
+    drain_pid = default_queue_path().with_name("slack-drain.pid")
+    try:
+        with singleton("slack-drain", pid_path=drain_pid):
+            _drain_and_emit()
+    except AlreadyRunningError:
+        typer.echo("Another slack drain is in progress; standing down.", err=True)
+        raise typer.Exit(code=0) from None
+
+
+def _drain_and_emit() -> None:
+    """Drain the queue once, ack each user message, and emit them as JSON lines."""
     import json  # noqa: PLC0415 — deferred: loaded only when this command runs
 
     from teatree.backends.slack.receiver import commit_drain, drain_event_queue  # noqa: PLC0415 — lazy CLI import

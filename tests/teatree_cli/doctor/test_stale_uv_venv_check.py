@@ -34,8 +34,10 @@ class TestStaleUvVenvDoctorCheck:
     def test_removes_empty_uv_venv_and_warns(self, tmp_path, capsys):
         repo = _pipfile_repo(tmp_path, "clone")
         venv = _uv_venv(repo)
+        # A SUCCESSFUL repair keeps the run GREEN (#3313): the problem is fixed,
+        # and a WARN is surfacing-only, not extracted into the watchdog FAIL DM.
         with patch("teatree.cli.update._collect_repos", return_value=[("clone", repo)]):
-            assert _check_stale_uv_venv() is False
+            assert _check_stale_uv_venv() is True
         out = capsys.readouterr().out
         assert "WARN" in out
         assert str(repo) in out
@@ -58,7 +60,10 @@ class TestStaleUvVenvDoctorCheck:
         assert capsys.readouterr().out == ""
         assert venv.exists()
 
-    def test_removal_failure_degrades_to_warn(self, tmp_path, capsys):
+    def test_removal_failure_is_a_hard_fail(self, tmp_path, capsys):
+        # A removal that FAILS leaves the poisoned venv in place — a genuine
+        # unresolved error, so it FAILs (reddens the run) rather than silent
+        # success (#3313).
         repo = _pipfile_repo(tmp_path, "clone")
         venv = _uv_venv(repo)
         with (
@@ -67,6 +72,6 @@ class TestStaleUvVenvDoctorCheck:
         ):
             assert _check_stale_uv_venv() is False
         out = capsys.readouterr().out
-        assert "WARN" in out
+        assert "FAIL" in out
         assert "manually" in out
         assert venv.exists()

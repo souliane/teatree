@@ -36,12 +36,27 @@ class TestBuildConfigView(TestCase):
         # Defaults still resolve so the view is never empty.
         assert view.intent["mode"] == "interactive"
 
-    def test_derived_section_is_labelled_regenerable_cache(self) -> None:
+    def test_derived_section_labels_regenerability_per_entry(self) -> None:
         view = build_config_view()
-        # Every derived entry must be flagged regenerable so the #628
-        # cache-vs-intent invariant is visible in the output itself.
-        assert view.derived  # non-empty
-        assert all(entry["regenerable"] is True for entry in view.derived)
+        by_name = {entry["name"]: entry for entry in view.derived}
+        # The canonical control DB (and its row-count view) hold durable user
+        # intent — tickets, sessions, merge approvals, ConfigSetting rows — so
+        # they must NOT be flagged regenerable/deletable (#3313). The data-dir
+        # cache files remain regenerable so the #628 invariant stays visible.
+        assert by_name["control DB"]["regenerable"] is False
+        if "DB row counts" in by_name:
+            assert by_name["DB row counts"]["regenerable"] is False
+        cache_entries = [e for e in view.derived if e["name"] not in {"control DB", "DB row counts"}]
+        assert cache_entries  # the regenerable data-dir cache files
+        assert all(entry["regenerable"] is True for entry in cache_entries)
+
+    def test_control_db_rendered_as_not_regenerable(self) -> None:
+        from teatree.cli.config_view import render_config_view  # noqa: PLC0415
+
+        rendered = render_config_view(build_config_view())
+        control_line = next(line for line in rendered.splitlines() if "control DB" in line)
+        assert "NOT regenerable" in control_line
+        assert "regenerable cache" not in control_line
 
     def test_db_path_is_surfaced_in_derived(self) -> None:
         view = build_config_view()

@@ -78,6 +78,18 @@ class BuildKanbanColumnsTestCase(TestCase):
         assert card is not None
         assert card.last_error == "boom: it failed"
 
+    def test_last_error_cleared_when_latest_attempt_succeeded(self) -> None:
+        # A later successful attempt (no error) must clear the red: the board
+        # surfaces an error only when the MOST RECENT attempt carries one, so a
+        # recovered/shipped ticket no longer renders stale red (#3313).
+        ticket = TicketFactory(state=State.MERGED)
+        task = TaskFactory(ticket=ticket, session=SessionFactory(ticket=ticket))
+        TaskAttemptFactory(task=task, error="boom: it failed")
+        TaskAttemptFactory(task=task, error="")
+        card = _find_card(build_kanban_columns(), ticket.pk)
+        assert card is not None
+        assert card.last_error == ""
+
     def test_dwell_from_latest_transition(self) -> None:
         ticket = TicketFactory(state=State.STARTED)
         TicketTransition.objects.create(
