@@ -85,6 +85,22 @@ def test_scan_phase_times_out_hung_scanner_and_records_error() -> None:
     assert "timeout" in outcome.errors["hung"].lower() or "timed" in outcome.errors["hung"].lower()
 
 
+def test_scan_phase_bounds_all_jobs_under_one_shared_deadline() -> None:
+    """Two hung scanners share ONE absolute deadline — never N x per_job_timeout (fix #7)."""
+    jobs = [
+        _ScannerJob(scanner=_HungScanner(name="h1"), overlay=""),
+        _ScannerJob(scanner=_HungScanner(name="h2"), overlay=""),
+    ]
+    start = time.monotonic()
+    outcome = scan_phase(jobs, per_job_timeout=0.3)
+    elapsed = time.monotonic() - start
+
+    assert "h1" in outcome.errors
+    assert "h2" in outcome.errors
+    # One shared deadline: well under the ~0.6s a per-job sequential wait would charge.
+    assert elapsed < 0.5
+
+
 def test_scan_phase_worker_pool_is_bounded() -> None:
     """Pool size is capped even when many jobs are present."""
     import os  # noqa: PLC0415
