@@ -614,6 +614,21 @@ jobs:
           else
             docker build -f dev/Dockerfile.test -t "$IMAGE" .
           fi
+      # Cache the ONE migrated-sqlite template `tests/conftest.py::django_db_setup`
+      # builds (see tests/_db_template.py): keyed on the migration graph +
+      # lockfile + settings, so an unrelated change never touches it, and an
+      # exact-key-only restore (no restore-keys) means a hash miss just falls
+      # back to a fresh in-job build — never a stale/wrong-schema template. All
+      # twelve shards share the same key; whichever runs first each day/push
+      # populates it for the rest. `.cache/` is under the bind-mounted `/app`
+      # checkout so the container sees exactly what the runner cached.
+      - name: Cache the migrated test-DB template
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830  # v4.3.0
+        with:
+          path: .cache/django-test-template
+          key: django-test-template-${{ hashFiles('src/**/migrations/*.py', 'uv.lock', 'tests/django_settings.py') }}
+      - name: Ensure the template cache dir exists (fresh on a cache miss)
+        run: mkdir -p .cache/django-test-template
       # Shard N/12: pytest-split slices collection by `dev/.test_durations`;
       # `-n auto` parallelises WITHIN the shard. `--cov --cov-branch --doctest-modules`
       # measure exactly what the old monolithic lane did, but `--cov-report=`
@@ -639,6 +654,7 @@ jobs:
           -v "$PWD":/app
           -e COVERAGE_FILE=/app/coverage.shard${{ matrix.group }}
           -e PYTHONPATH=/app
+          -e TEATREE_TEST_DB_TEMPLATE_DIR=/app/.cache/django-test-template
           ${{ needs.build-image.outputs.image }}
           uv run --group shard -p ${{ matrix.python-version }} pytest --no-header -q -n auto
           -o cache_dir=/tmp/.pytest_cache
