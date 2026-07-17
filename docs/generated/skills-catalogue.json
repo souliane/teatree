@@ -145,6 +145,10 @@
       "summary": "List the current session's tasks/todos \u2014 terse, grouped pending / in_progress / completed, with clickable refs"
     },
     {
+      "name": "triaging-issues",
+      "summary": "Review and act on the needs-triage assessor's queued recommendations \u2014 list PENDING PendingTriageRecommendation rows, approve or reject each, and on approval run `gh issue close/edit/comment` then stamp the row"
+    },
+    {
       "name": "update",
       "summary": "WHEN to bring teatree core and registered overlays up to date with their default branch, and the safety guarantees of doing so"
     },
