@@ -137,7 +137,8 @@ class TestAuditCorpusMatchedSession(TestCase):
                     "id": "t1",
                     "name": "Bash",
                     "input": {"command": "gh run watch", "run_in_background": True},
-                }
+                },
+                _text("watch started"),
             )
             + "\n"
         )
