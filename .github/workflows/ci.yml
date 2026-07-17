@@ -508,7 +508,7 @@ jobs:
   # ── 5. Test suite ──────────────────────────────────────────────────────────
 
   # Build the shared test image ONCE per (dev/Dockerfile.test + uv.lock) hash and
-  # push it to ghcr, so the 6 `test-shard` jobs PULL one prebuilt, deps-baked
+  # push it to ghcr, so the 12 `test-shard` jobs PULL one prebuilt, deps-baked
   # image instead of each rebuilding the image AND cold-resolving the whole
   # dependency set from PyPI at `docker run` time — that per-shard cold work
   # (6x every run) was the bulk of the ~485s test-shard critical path. The build
@@ -614,7 +614,7 @@ jobs:
           else
             docker build -f dev/Dockerfile.test -t "$IMAGE" .
           fi
-      # Shard N/6: pytest-split slices collection by `dev/.test_durations`;
+      # Shard N/12: pytest-split slices collection by `dev/.test_durations`;
       # `-n auto` parallelises WITHIN the shard. `--cov --cov-branch --doctest-modules`
       # measure exactly what the old monolithic lane did, but `--cov-report=`
       # (empty) suppresses any report and `--cov-fail-under=0` NEUTRALISES the
