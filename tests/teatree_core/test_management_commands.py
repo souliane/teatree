@@ -1400,7 +1400,12 @@ class TestTasksListCommand(TestCase):
         assert len(result) == 1
         assert result[0]["execution_target"] == "interactive"
 
-    def test_list_reaps_stale_claims_before_returning_rows(self) -> None:
+    def test_list_makes_no_write_not_even_reaping_a_stale_claim(self) -> None:
+        # `tasks list` is a PURE READ — it makes no writes of any kind, not even
+        # reaping. A read surface reaping (CLAIMED→FAILED) with no preceding
+        # reclaim would terminally FAIL a recoverable crashed-session task on a
+        # mere listing, bypassing the rescue-before-fail ordering the boot/tick
+        # `run_boot_sweeps` owns. The stale claim stays CLAIMED.
         from datetime import timedelta  # noqa: PLC0415
 
         from django.utils import timezone  # noqa: PLC0415
@@ -1419,10 +1424,10 @@ class TestTasksListCommand(TestCase):
         result = cast("list[dict[str, object]]", call_command("tasks", "list"))
 
         stale.refresh_from_db()
-        assert stale.status == Task.Status.FAILED
+        assert stale.status == Task.Status.CLAIMED
         statuses = [row["status"] for row in result]
-        assert "claimed" not in statuses
-        assert "failed" in statuses
+        assert "claimed" in statuses
+        assert "failed" not in statuses
 
     def test_render_tasks_table_formats_rows(self) -> None:
         from io import StringIO  # noqa: PLC0415

@@ -985,6 +985,8 @@ class TestReplayOrphanedTransitions(TestCase):
     def test_replays_testing_and_reviewing_transitions(self) -> None:
         # The testing→test and reviewing→review branches of the shared
         # path, each from its earned predecessor state.
+        from unittest.mock import patch  # noqa: PLC0415
+
         coded = Ticket.objects.create(state=Ticket.State.CODED)
         s1 = Session.objects.create(ticket=coded, agent_id="a")
         Task.objects.create(ticket=coded, session=s1, phase="testing", status=Task.Status.COMPLETED)
@@ -992,7 +994,11 @@ class TestReplayOrphanedTransitions(TestCase):
         s2 = Session.objects.create(ticket=tested, agent_id="b")
         Task.objects.create(ticket=tested, session=s2, phase="reviewing", status=Task.Status.COMPLETED)
 
-        replayed = Task.objects.replay_orphaned_transitions()
+        # Shippable so `tested`'s replayed review lands REVIEWED (not
+        # auto-ignored) — this test pins the replay branch, not the #3313
+        # unshippable-review disposition.
+        with patch.object(Ticket, "has_shippable_diff", return_value=True):
+            replayed = Task.objects.replay_orphaned_transitions()
 
         coded.refresh_from_db()
         tested.refresh_from_db()
