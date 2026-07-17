@@ -256,6 +256,19 @@ def _load_blocklist_patterns(path: Path | None = None) -> list[Pattern]:
     return patterns
 
 
+def reset_blocklist_cache() -> None:
+    """Clear the compiled-blocklist memo (test isolation; TSH-2/TSH-7).
+
+    The memo is keyed by resolved path and validated by ``(mtime_ns, size)``, so
+    a changed file self-invalidates in production. Across tests the SAME resolved
+    path (a fixed ``hook_state_root()`` root, or a re-created temp path) can be
+    rewritten within one mtime-granularity tick at an identical size, which would
+    return the earlier generation's patterns. The conftest roster clears it around
+    every test so a blocklist written by one test can never leak into another.
+    """
+    _BLOCKLIST_CACHE.clear()
+
+
 # Unicode smart-quote variants normalised to their ASCII equivalents before
 # pattern matching. Codex round-2 #7 surfaced curly-quoted blockquote bodies
 # bypassing every quote-aware regex — the fix is upstream normalisation, not

@@ -134,6 +134,7 @@ RESET_BY_CONFTEST: dict[str, str] = {
     "teatree.core.overlay_loader:_discover_overlays": "reset_overlay_cache",
     "teatree.core.gates.pr_budget_forge:_forge_cache": "reset_forge_pr_budget_cache",
     "teatree.utils.throttled_log:_last_warned": "reset_throttle",
+    "teatree.hooks.quote_scanner:_BLOCKLIST_CACHE": "reset_blocklist_cache",
 }
 
 #: Caches deliberately NOT reset, each with the reason it is safe to leave alone.
