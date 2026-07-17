@@ -14,6 +14,7 @@ from teatree.core.models.errors import CriticGateError
 from teatree.core.models.external_delivery import under_external_delivery
 from teatree.core.models.trivial_plan_skip import is_trivial_plan_skip
 from teatree.core.runners import RetroExecutor, ShipExecutor, WorktreeProvisioner, WorktreeTeardown
+from teatree.core.worktree.worktree_done import _DONE_TICKET_STATES
 
 logger = logging.getLogger(__name__)
 
@@ -294,16 +295,19 @@ def _persist_critic_block(ticket_id: int, exc: "CriticGateError") -> None:
 
 @task()
 def execute_teardown(ticket_id: int) -> TransitionResult:
-    """Tear down worktrees for a MERGED ticket via the analyze-then-wipe reaper.
+    """Tear down worktrees for a terminal-state ticket via the analyze-then-wipe reaper.
 
     Idempotency: the worker takes a row lock and re-checks state before running.
     At-least-once delivery from django-tasks means this can fire more than once
     for the same transition — a lost update or a redelivered job must be safe.
 
-    Teardown is best-effort: per-worktree errors are reported in the result
-    detail but do not advance the ticket. The ticket stays in MERGED until
-    the operator either fixes the underlying issue and re-enqueues, or moves
-    on with ``retrospect()`` once the residual state is acceptable.
+    Runs for any ticket in ``_DONE_TICKET_STATES`` (MERGED / DELIVERED / IGNORED —
+    SHIPPED is excluded because its PR is still open), so an abandoned, delivered,
+    or merged ticket purges its worktrees the moment it is done, not only the merge
+    paths. Teardown is best-effort: per-worktree errors are reported in the result
+    detail but do not advance the ticket. The ticket stays in its terminal state
+    until the operator either fixes the underlying issue and re-enqueues, or moves
+    on once the residual state is acceptable.
 
     There is no force-bypass (CORRECTION 1): :class:`WorktreeTeardown` routes every
     worktree through the analyze-before-wipe reaper, which proves each unpushed
@@ -314,9 +318,9 @@ def execute_teardown(ticket_id: int) -> TransitionResult:
     """
     with transaction.atomic():
         ticket = Ticket.objects.select_for_update().get(pk=ticket_id)
-        if ticket.state != Ticket.State.MERGED:
+        if ticket.state not in _DONE_TICKET_STATES:
             logger.info(
-                "execute_teardown skipped for ticket %s: state=%s (not MERGED)",
+                "execute_teardown skipped for ticket %s: state=%s (not a terminal state)",
                 ticket_id,
                 ticket.state,
             )
@@ -328,6 +332,25 @@ def execute_teardown(ticket_id: int) -> TransitionResult:
             return {"ticket_id": ticket_id, "ok": False, "detail": result.detail}
 
     return {"ticket_id": ticket_id, "ok": True, "detail": result.detail}
+
+
+def enqueue_teardown_for_terminal_tickets() -> list[int]:
+    """One-shot backlog drain: enqueue teardown for every terminal ticket still holding worktrees.
+
+    The operational catch-up for tickets that reached a terminal state BEFORE the
+    target-state teardown enqueue existed, so their worktrees never got reaped. It
+    is idempotent — ``execute_teardown`` re-checks state and the reaper keeps any
+    unsynced work — so re-running it is safe. NOT invoked automatically; an operator
+    calls it explicitly to drain the pile-up. Returns the ticket pks enqueued.
+    """
+    ticket_ids = list(
+        Ticket.objects.filter(state__in=_DONE_TICKET_STATES, worktrees__isnull=False)
+        .distinct()
+        .values_list("pk", flat=True)
+    )
+    for ticket_id in ticket_ids:
+        execute_teardown.enqueue(int(ticket_id))
+    return [int(ticket_id) for ticket_id in ticket_ids]
 
 
 @task()

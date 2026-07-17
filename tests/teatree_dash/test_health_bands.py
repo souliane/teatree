@@ -11,7 +11,7 @@ from django.test import TestCase
 from django.urls import reverse
 
 from teatree.core.models.config_setting import ConfigSetting
-from teatree.dash import health_bands
+from teatree.dash import gate_state, health_bands
 
 
 class PerBandFailOpenTestCase(TestCase):
@@ -36,7 +36,7 @@ class PerBandFailOpenTestCase(TestCase):
 
     def test_gate_read_failure_fails_closed_to_false(self) -> None:
         with patch.object(ConfigSetting.objects, "get_effective", side_effect=RuntimeError("db down")):
-            assert health_bands._gate_fail_open() is False
+            assert gate_state.dash_gate_fail_open() is False
 
     def test_health_page_survives_a_raising_band(self) -> None:
         # The page still renders 200 with the degraded band's error visible.

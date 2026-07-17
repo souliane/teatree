@@ -237,14 +237,19 @@ def _claimed_by(ticket_ids: list[int]) -> dict[int, str]:
 
 
 def _last_error_by_ticket(ticket_ids: list[int]) -> dict[int, str]:
+    # Take the LATEST attempt per ticket (regardless of error), then keep its
+    # error only if that most-recent attempt carries one. Filtering to
+    # ``error__gt=""`` first would surface a stale error from an old failed
+    # attempt even after a later attempt succeeded — a recovered/shipped ticket
+    # still rendered red on the board (#3313).
     latest_pks = (
-        TaskAttempt.objects.filter(task__ticket_id__in=ticket_ids, error__gt="")
+        TaskAttempt.objects.filter(task__ticket_id__in=ticket_ids)
         .values("task__ticket_id")
         .annotate(latest_pk=Max("pk"))
         .values_list("latest_pk", flat=True)
     )
     attempts = TaskAttempt.objects.filter(pk__in=list(latest_pks)).select_related("task")
-    return {attempt.task.ticket_id: attempt.error for attempt in attempts}
+    return {attempt.task.ticket_id: attempt.error for attempt in attempts if attempt.error}
 
 
 def _latest_transition_at(ticket_ids: list[int]) -> dict[int, datetime]:

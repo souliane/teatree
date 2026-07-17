@@ -207,6 +207,31 @@ class TestSlackProvisionCommand:
         assert "t3: app A_T3" in result.stdout
         assert "secondary: app A_SEC" in result.stdout
 
+    def test_exits_nonzero_when_manifest_push_failed(self) -> None:
+        # A recorded manifest-push error must exit non-zero — a half-provisioned
+        # overlay must not report success (#3313).
+        _seed({"t3": {"messaging_backend": "slack", "slack_token_ref": "teatree/t3/slack", "slack_app_id": "A_T3"}})
+        report = OverlayProvisionReport(overlay_name="t3", app_id="A_T3", manifest_action="error")
+        with (
+            patch("teatree.cli.slack.provision.provision_overlay", return_value=report),
+            patch("teatree.cli.slack.provision._verify_user_token"),
+        ):
+            result = self._run(["slack-provision", "--no-open-browser"])
+        assert result.exit_code == 1
+        assert "Provisioning failed for: t3" in result.stdout
+
+    def test_exits_nonzero_when_dm_provisioning_failed(self) -> None:
+        _seed({"t3": {"messaging_backend": "slack", "slack_token_ref": "teatree/t3/slack", "slack_app_id": "A_T3"}})
+        dm = ProvisionResult(status=ProvisionResult.FAILED_OPEN_DM, overlay_name="t3", detail="ok:false")
+        report = OverlayProvisionReport(overlay_name="t3", app_id="A_T3", manifest_action="current", dm_result=dm)
+        with (
+            patch("teatree.cli.slack.provision.provision_overlay", return_value=report),
+            patch("teatree.cli.slack.provision._verify_user_token"),
+        ):
+            result = self._run(["slack-provision", "--no-open-browser"])
+        assert result.exit_code == 1
+        assert "Provisioning failed for: t3" in result.stdout
+
 
 class TestVerifyUserToken:
     def test_reports_missing_reactions_write(self) -> None:

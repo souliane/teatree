@@ -428,17 +428,20 @@ def run_self_heal_checks() -> bool:
     return ok
 
 
-def check_as_json(check_fn: Callable[..., bool]) -> bool:
-    """Run *check_fn* capturing its echoes and emit ``{"ok", "findings"}`` JSON.
+def check_as_json(run_checks: Callable[[], bool]) -> bool:
+    """Run *run_checks* capturing its echoes and emit ``{"ok", "findings"}`` JSON.
 
     The ``t3 doctor --json`` surface the watchdog container consumes: it inspects
     ``ok`` for the exit verdict and ``findings`` (level-tagged) for the DM body.
+    *run_checks* is a zero-arg callable that already carries the resolved
+    ``repair`` value, so the JSON path never re-invokes with repair implicitly
+    enabled (#3313).
     """
     import contextlib  # noqa: PLC0415 — deferred: loaded only on the --json path
     import io  # noqa: PLC0415 — deferred: loaded only on the --json path
 
     buffer = io.StringIO()
     with contextlib.redirect_stdout(buffer):
-        ok = check_fn(json_output=False)
+        ok = run_checks()
     typer.echo(json.dumps({"ok": ok, "findings": _Probe.parse_findings(buffer.getvalue())}))
     return ok

@@ -105,39 +105,53 @@ def sdk_spec_synthesizer(candidate: Mapping[str, object], transcript_slice: str)
     import asyncio  # noqa: PLC0415 — deferred: loaded only on this code path
     import shutil  # noqa: PLC0415 — deferred: loaded only on this code path
 
+    from teatree.agents._headless_env import (  # noqa: PLC0415 — deferred: avoids pulling the SDK-heavy headless runner
+        system_child_env,
+    )
+
     if shutil.which("claude") is None:
         msg = "claude is not installed — the dream eval synthesizer cannot run"
         raise RuntimeError(msg)
+    # Resolve the credential child-env in this SYNC frame (config/DB reads are barred
+    # inside the async turn) so the spawned ``claude`` authenticates on the configured
+    # plan/meter rather than an ambient env; a CredentialError propagates and DROPS the
+    # candidate loud instead of the auth gap masquerading as a malformed reply.
+    env = system_child_env()
     prompt = _SYNTH_PROMPT_TEMPLATE.format(
         scenario_name=str(candidate.get("scenario_name") or ""),
         drift_rule=str(candidate.get("drift_rule") or ""),
         seed_citation=str(candidate.get("seed_citation") or ""),
         slice=transcript_slice,
     )
-    raw = asyncio.run(_collect_synth_turn(prompt))
+    raw = asyncio.run(_collect_synth_turn(prompt, env=env))
     return _parse_synthesized(raw, candidate)
 
 
-def _synth_options() -> "ClaudeAgentOptions":
+def _synth_options(*, env: dict[str, str] | None = None) -> "ClaudeAgentOptions":
     """Build the bounded, no-tool SDK options for one synthesizer turn.
 
     Mirrors :func:`teatree.loops.dream.sdk_distiller._distill_options`: a PLAIN-STRING
     system prompt (not the ``claude_code`` preset) keeps the turn model-agnostic, and
     the model is :func:`resolve_tier`-driven on the ``cheap`` tier (``agent_tier_models``
-    DB-overridable) rather than a hardcoded id.
+    DB-overridable) rather than a hardcoded id. *env*, when set, pins the
+    ``agent_harness_provider`` credential onto the spawned ``claude``; ``None`` leaves
+    the SDK default empty env so the child inherits the ambient auth state unchanged.
     """
     from claude_agent_sdk import ClaudeAgentOptions  # noqa: PLC0415 — deferred: optional heavy SDK dep
 
-    return ClaudeAgentOptions(
+    options = ClaudeAgentOptions(
         system_prompt=_SYNTH_SYSTEM_PROMPT,
         model=resolve_tier("cheap"),
         permission_mode="bypassPermissions",
         max_turns=1,
         allowed_tools=[],
     )
+    if env is not None:
+        options.env = env
+    return options
 
 
-async def _collect_synth_turn(prompt: str) -> str:
+async def _collect_synth_turn(prompt: str, *, env: dict[str, str] | None = None) -> str:
     import asyncio  # noqa: PLC0415 — deferred: loaded only on this code path
 
     from claude_agent_sdk import (  # noqa: PLC0415 — deferred: optional heavy SDK dep, imported only at turn time
@@ -146,7 +160,7 @@ async def _collect_synth_turn(prompt: str) -> str:
         TextBlock,
     )
 
-    options = _synth_options()
+    options = _synth_options(env=env)
     parts: list[str] = []
     # Bound the ENTIRE turn — connect (``__aenter__`` spawns the ``claude`` subprocess),
     # query, AND the response drain — under one ``asyncio.timeout`` watchdog. Wrapping
