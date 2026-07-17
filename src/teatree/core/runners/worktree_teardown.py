@@ -2,7 +2,6 @@ import logging
 
 from teatree.core.cleanup.cleanup import cleanup_worktree
 from teatree.core.models import Worktree
-from teatree.core.models.types import WorktreeExtra
 from teatree.core.runners.base import RunnerBase, RunnerResult
 
 logger = logging.getLogger(__name__)
@@ -18,10 +17,11 @@ class WorktreeTeardownRunner(RunnerBase):
     chain commands. The runner owns docker-down + DB drop + git worktree
     removal; it then deletes the Worktree row.
 
-    The transition body resets ``db_name`` and ``extra`` on the row to
-    satisfy the FSM CREATED contract, so the runner accepts a snapshot of
-    those fields captured before the reset — restored on the row before the
-    cleanup helpers read them.
+    ``teardown()`` KEEPS ``db_name`` / ``extra`` on the row (they are the
+    recovery pointers naming the DB to drop and the worktree to remove), so the
+    runner reads them straight off the row — no pre-blank snapshot to restore.
+    The row is deleted only once cleanup succeeds, so the pointers survive a
+    crash between the state commit and this runner.
 
     ``force`` defaults to ``False`` so ``cleanup_worktree``'s unsynced-commit
     guard fires: this runner backs the ``execute_worktree_teardown`` task and
@@ -35,15 +35,9 @@ class WorktreeTeardownRunner(RunnerBase):
         worktree: Worktree,
         *,
         force: bool = False,
-        snapshot_db_name: str | None = None,
-        snapshot_extra: WorktreeExtra | None = None,
     ) -> None:
         self.worktree = worktree
         self.force = force
-        if snapshot_db_name is not None:
-            worktree.db_name = snapshot_db_name
-        if snapshot_extra is not None:
-            worktree.extra = dict(snapshot_extra)
 
     def run(self) -> RunnerResult:
         worktree = self.worktree

@@ -344,18 +344,12 @@ class Command(TyperCommand):
         failures: list[str] = []
         for wt in worktrees:
             repo = wt.repo_path
-            # Snapshot before the transition body resets db_name/extra
-            snapshot_db_name = wt.db_name
-            snapshot_extra = wt.get_extra()
+            # teardown() keeps db_name/extra on the row (recovery pointers), so the
+            # runner reads them straight off the live row — no snapshot to capture.
             with transaction.atomic():
                 wt.teardown()
                 wt.save()
-            result = WorktreeTeardownRunner(
-                wt,
-                force=force,
-                snapshot_db_name=snapshot_db_name,
-                snapshot_extra=snapshot_extra,
-            ).run()
+            result = WorktreeTeardownRunner(wt, force=force).run()
             if result.ok:
                 labels.append(result.detail)
             else:

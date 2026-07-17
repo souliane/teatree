@@ -48,7 +48,9 @@ def worktree_has_commits_ahead(worktree: "Worktree") -> bool:
         return git.rev_count(repo=repo_path, range_spec=f"{base}..{branch}") > 0
     except (CommandFailedError, ValueError, OSError):
         # Missing path, missing branch, missing git remote — all mean no
-        # shippable diff. Fail closed so the auto-FSM stops at REVIEWED.
+        # shippable diff. Fail closed: the auto-FSM disposes of the ticket via
+        # dispose_unshippable_review() (ticket.ignore()) rather than resting
+        # it at REVIEWED.
         return False
 
 

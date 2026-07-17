@@ -40,6 +40,7 @@ from typing import TYPE_CHECKING
 
 from django.core.exceptions import SuspiciousOperation
 from django.db.models import Case, IntegerField, Q, Value, When
+from django.db.models.expressions import BaseExpression
 from django.db.utils import OperationalError
 from django.utils import timezone
 
@@ -73,7 +74,7 @@ def _new_ticket_autostart_q() -> Q:
     return Q(parent_task__isnull=True) & Q(phase__in=autostart_phases)
 
 
-def admission_priority_annotations() -> dict[str, Case]:
+def admission_priority_annotations() -> dict[str, BaseExpression]:
     """The ``.annotate()`` kwargs producing the integer :data:`ADMISSION_RANK_ALIAS`.
 
     ``0`` = TODO/followup (drain first); ``1`` = new-ticket auto-start. Paired
