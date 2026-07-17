@@ -602,7 +602,7 @@
     },
     {
       "bom-ref": "requirements-L133",
-      "description": "requirements line 133: mcp==1.27.2",
+      "description": "requirements line 133: mcp==1.28.1",
       "externalReferences": [
         {
           "comment": "implicit dist url",
@@ -611,9 +611,9 @@
         }
       ],
       "name": "mcp",
-      "purl": "pkg:pypi/mcp@1.27.2",
+      "purl": "pkg:pypi/mcp@1.28.1",
       "type": "library",
-      "version": "1.27.2"
+      "version": "1.28.1"
     },
     {
       "bom-ref": "requirements-L137",
