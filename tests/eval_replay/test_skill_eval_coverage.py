@@ -11,10 +11,16 @@ from pathlib import Path
 
 from teatree.eval.coverage import render_text, skill_eval_coverage
 from teatree.eval.discovery import discover_specs
+from teatree.eval.models import Matcher
+
+_POSITIVE = (Matcher(kind="positive", tool="Bash", arg_path="command", operator="contains", value="x"),)
 
 
 def _spec(name: str, agent_path: str) -> object:
-    return dataclasses.replace(discover_specs()[0], name=name, agent_path=agent_path)
+    # A positive matcher makes the spec count as real coverage regardless of which
+    # scenario ``discover_specs()`` happens to return first (a judge-only or
+    # negative-only spec does NOT count — #3313).
+    return dataclasses.replace(discover_specs()[0], name=name, agent_path=agent_path, matchers=_POSITIVE)
 
 
 def _skill(skills_dir: Path, name: str, *, exempt: str | None = None) -> None:

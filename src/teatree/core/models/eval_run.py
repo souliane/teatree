@@ -47,6 +47,12 @@ class EvalVerdict(models.TextChoices):
     PASS = "pass", "Pass"
     FAIL = "fail", "Fail"
     SKIP = "skip", "Skip"
+    # A cell the runner could not grade — it raised even after the matrix loop's
+    # bounded retries (a transient infra blip, not a behavioral verdict). Recorded
+    # so a chronically-errored scenario stays VISIBLE in the ledger and the
+    # baseline diff, yet EXCLUDED from pass-rate math (``graded()``) so it neither
+    # counts as a pass nor unfairly lowers the rate as a fail.
+    ERROR = "error", "Error"
 
 
 @dataclasses.dataclass(frozen=True)
@@ -196,6 +202,10 @@ class EvalRunRecord(models.Model):
     @property
     def skipped(self) -> int:
         return self.results.filter(verdict=EvalVerdict.SKIP).count()
+
+    @property
+    def errored(self) -> int:
+        return self.results.filter(verdict=EvalVerdict.ERROR).count()
 
     @property
     def models(self) -> list[str]:
@@ -356,7 +366,9 @@ def _rates_by_scenario(rates: list[ScenarioPassRate]) -> dict[str, float]:
 
 class EvalScenarioResultQuerySet(models.QuerySet["EvalScenarioResult"]):
     def graded(self) -> "EvalScenarioResultQuerySet":
-        return self.exclude(verdict=EvalVerdict.SKIP)
+        # Both SKIP and ERROR carry no behavioral verdict — a skip never ran, an
+        # error could not be graded — so both are excluded from pass-rate math.
+        return self.exclude(verdict__in=(EvalVerdict.SKIP, EvalVerdict.ERROR))
 
     def pass_rates(self) -> list[ScenarioPassRate]:
         scores: dict[tuple[str, str], list[float]] = {}

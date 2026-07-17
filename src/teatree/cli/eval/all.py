@@ -79,13 +79,28 @@ def build_scenarios_table(specs: list[EvalSpec]) -> Table:
     return table
 
 
+#: Surfaced when the regression corpus SKIPPED one or more DB-backed checks —
+#: Django could not bootstrap where the lane ran, so the strongest invariants
+#: (merge floor, maker≠checker, lease hijack, migration fork, branch reconcile)
+#: asserted nothing. A green with skips is not a validated green; --strict / a
+#: metered backend must fail it so a CLI-can't-bootstrap-Django box (this host's
+#: history) never reports the pins as clean.
+REGRESSION_SKIPPED_HINT = (
+    "DB-backed regression checks skipped — Django did not bootstrap where the lane ran, so the "
+    "strongest pins asserted nothing; provision Django (t3's ensure_django) on the runner"
+)
+
+
 def regression_lane(report: RegressionReport) -> LaneResult:
+    skipped = sum(1 for r in report.results if r.skipped)
+    detail = f"{len(report.results)} checks, {len(report.failures)} failed, {skipped} skipped"
     return LaneResult(
         name="pinned-regressions",
         cost="free",
         passed=report.ok,
         skipped=False,
-        detail=f"{len(report.results)} checks, {len(report.failures)} failed",
+        detail=detail,
+        setup_hint=REGRESSION_SKIPPED_HINT if skipped > 0 else None,
     )
 
 
@@ -197,14 +212,20 @@ def _ai_lane_result(results: list[ScenarioResult], *, backend: str, graded: bool
         )
     executed = [r for r in results if not r.skipped]
     failed = sum(1 for r in executed if not r.passed)
+    n_skipped = len(results) - len(executed)
     cost = "api (fresh run)" if backend != TRANSCRIPT_BACKEND else "transcript ($0)"
+    # ANY skipped scenario means the lane did not grade the whole suite — a
+    # partial pass on arbitrarily stale coverage ("1 graded, 0 failed, 165
+    # skipped") must NOT read a clean green. The setup hint fires on any skip>0,
+    # so --strict / a metered backend fails the partial lane rather than blessing
+    # it; it clears only when every scenario graded.
     return LaneResult(
         name="ai-eval",
         cost=cost,
         passed=failed == 0,
         skipped=not executed,
-        detail=f"{len(executed)} graded, {failed} failed, {len(results) - len(executed)} skipped",
-        setup_hint=AI_LANE_SETUP_HINT if not executed else None,
+        detail=f"{len(executed)} graded, {failed} failed, {n_skipped} skipped",
+        setup_hint=AI_LANE_SETUP_HINT if n_skipped > 0 else None,
     )
 
 
@@ -353,14 +374,16 @@ def run_full_suite(  # noqa: PLR0913 — the single eval-suite chokepoint: each 
         # never fails the suite.
         lanes.append(_timed(lambda: skill_prose_judge_lane(run_prose_judge())))
     Console().print(build_summary_table(lanes))
-    print_verdict(lanes)
     # The fresh-run (`--backend api`) AI lane: an api run that executed scenarios
     # but recorded $0 never actually executed (the `--bare` OAuth bug — the model
     # authenticated as nothing, made zero tool calls, recorded nothing). Mirror the
     # `eval run` boundary's RunGuards.api_metered: fail loud rather than read the
     # green AI lane as validated. The transcript backend runs no model by design,
-    # so the guard short-circuits there (`backend != "api"`).
+    # so the guard short-circuits there (`backend != "api"`). Run it BEFORE the
+    # verdict so the closing line can never print "✅ ALL GOOD" a beat before the
+    # process exits 1 on an unmetered lane.
     _assert_metered_api_ai_lane(backend=backend, results=ai_results)
+    print_verdict(lanes)
     if _suite_should_fail(lanes, strict=strict, metered=metered):
         sys.exit(1)
 

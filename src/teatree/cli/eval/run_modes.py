@@ -21,11 +21,13 @@ from teatree.eval.pass_at_k import PassAtKResult
 from teatree.eval.report import JudgeGrader, JudgeOutcome, ScenarioResult
 from teatree.eval.skip_guard import (
     AllSkippedError,
+    EmptyFreshRunError,
     UnmeteredApiRunError,
     UnmeteredJudgeError,
     assert_api_run_was_metered,
     assert_executed_when_required,
     assert_judge_was_metered,
+    assert_pydantic_ai_run_produced_output,
 )
 
 if TYPE_CHECKING:
@@ -52,6 +54,22 @@ class RunGuards:
         RunGuards.api_metered_total(
             backend=backend, executed=executed, total_cost_usd=sum(r.run.cost_usd for r in results)
         )
+        RunGuards.fresh_run_produced_output(backend=backend, executed=executed, results=results)
+
+    @staticmethod
+    def fresh_run_produced_output(*, backend: str, executed: int, results: list[ScenarioResult]) -> None:
+        """Fail-loud when a ``pydantic_ai`` fresh run executed but every trajectory was empty.
+
+        The $0-cost guard cannot see a BYOK ``pydantic_ai`` run (it meters no
+        ``cost_usd``), so the backend-appropriate vacuous-green check there is an
+        empty trajectory — see :func:`assert_pydantic_ai_run_produced_output`.
+        """
+        produced = sum(1 for r in results if not r.skipped and (r.run.tool_calls or r.run.text_blocks))
+        try:
+            assert_pydantic_ai_run_produced_output(backend=backend, executed=executed, produced=produced)
+        except EmptyFreshRunError as exc:
+            typer.echo(str(exc), err=True)
+            raise typer.Exit(code=1) from None
 
     @staticmethod
     def judge_metered(*, judge_requested: bool, results: list[ScenarioResult]) -> None:

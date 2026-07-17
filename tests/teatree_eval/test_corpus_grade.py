@@ -106,11 +106,14 @@ class TestCapturedRunEdgeCases:
         assert run.tool_calls == ()
         assert run.text_blocks == ()
 
-    def test_non_dict_message_is_clean_completion(self) -> None:
+    def test_non_dict_message_is_incomplete_not_clean_completion(self) -> None:
+        # A malformed (non-dict) final assistant message cannot confirm completion —
+        # it grades as an error, never a silent clean pass (a truncated/corrupt
+        # capture must not read green).
         label = _label("background_ci_watch")
         run = captured_run(label, parse_session_jsonl('{"type":"assistant","message":"oops"}\n'))
-        assert run.terminal_reason == "completed"
-        assert run.is_error is False
+        assert run.terminal_reason == "incomplete"
+        assert run.is_error is True
         assert run.text_blocks == ()
 
     def test_non_text_content_block_is_dropped_from_text(self) -> None:

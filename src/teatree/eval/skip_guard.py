@@ -26,6 +26,10 @@ class UnmeteredApiRunError(RuntimeError):
     """Raised when the api backend ran scenarios but metered $0 — it never executed."""
 
 
+class EmptyFreshRunError(RuntimeError):
+    """Raised when a fresh-run backend executed scenarios but produced no trajectory."""
+
+
 class UnmeteredJudgeError(RuntimeError):
     """Raised when ``--judge`` was asked for and judge-oracle scenarios ran, but every judge call skipped."""
 
@@ -71,6 +75,29 @@ def assert_api_run_was_metered(*, backend: str, executed: int, total_cost_usd: f
         "than reporting a vacuous green."
     )
     raise UnmeteredApiRunError(msg)
+
+
+def assert_pydantic_ai_run_produced_output(*, backend: str, executed: int, produced: int) -> None:
+    """Fail when the ``pydantic_ai`` backend executed scenarios but every run was empty.
+
+    The ``$0``-metered guard (:func:`assert_api_run_was_metered`) is Claude-specific:
+    it keys on ``cost_usd``, which the OrcaRouter BYOK ``pydantic_ai`` lane does not
+    meter, so it can never guard a ``pydantic_ai`` fresh run. The backend-appropriate
+    vacuous-green signal there is an EMPTY trajectory — a run that captured no tool
+    calls AND no text never actually drove the model (the model-evolution lane could
+    otherwise report a decorative green). ``produced`` is the count of executed
+    (non-skipped) runs with a non-empty trajectory; the guard fires only for the
+    ``pydantic_ai`` backend when scenarios ran yet not one produced output.
+    """
+    if backend != "pydantic_ai" or executed == 0 or produced > 0:
+        return
+    msg = (
+        f"pydantic_ai eval run executed {executed} scenario(s) but every run captured an EMPTY "
+        "trajectory (no tool calls, no text). A fresh run that produces nothing never actually "
+        "drove the model — the OrcaRouter credential/model likely never authenticated. This fails "
+        "loud rather than reporting a vacuous green; check the OrcaRouter BYOK credential and model."
+    )
+    raise EmptyFreshRunError(msg)
 
 
 def assert_judge_was_metered(*, judge_requested: bool, judge_eligible: int, judge_calls: int) -> None:

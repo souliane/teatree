@@ -133,10 +133,19 @@ class TestEvalAudit:
 
     def test_corpus_label_matched_by_source_session_id(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv("HOME", str(tmp_path))
-        body = _assistant_tool(
-            "AskUserQuestion",
-            {"questions": [{"question": "Which deployment target should this build go to?"}]},
-        )
+        # Needs closing text (not just the tool_use block _assistant_tool alone
+        # produces) so corpus_grade._terminal_reason reads this as a completed
+        # turn rather than a truncated capture.
+        content = [
+            {
+                "type": "tool_use",
+                "id": "t1",
+                "name": "AskUserQuestion",
+                "input": {"questions": [{"question": "Which deployment target should this build go to?"}]},
+            },
+            {"type": "text", "text": "asked the user"},
+        ]
+        body = json.dumps({"type": "assistant", "message": {"role": "assistant", "content": content}}) + "\n"
         _write_session(tmp_path, "synthetic-aq-001", body)
         result = CliRunner().invoke(app, ["eval", "audit", "--session", "synthetic-aq-001"])
         assert result.exit_code == 0, result.output
