@@ -12,7 +12,7 @@ from contextlib import redirect_stdout
 from pathlib import Path
 from unittest.mock import patch
 
-from teatree.cli.doctor.checks import _check_dream_transcript_visibility
+from teatree.cli.doctor.checks_loop import _check_dream_transcript_visibility
 
 
 def _patch_root(root: Path):

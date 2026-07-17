@@ -13,7 +13,7 @@ import django.test
 from typer.testing import CliRunner
 
 import teatree.cli.worker as worker_cli
-from teatree.cli.doctor.checks import _check_worker_running
+from teatree.cli.doctor.checks_runtime import _check_worker_running
 from teatree.cli.worker import worker_app
 
 runner = CliRunner()
@@ -89,7 +89,7 @@ class TestDoctorWorkerCheck(django.test.TestCase):
         echoed: list[str] = []
         with (
             mock.patch("teatree.utils.singleton.flock_is_held", return_value=False),
-            mock.patch("teatree.cli.doctor.checks.typer.echo", side_effect=echoed.append),
+            mock.patch("teatree.cli.doctor.checks_runtime.typer.echo", side_effect=echoed.append),
         ):
             assert _check_worker_running() is True  # a WARN, never a hard FAIL
         assert any("t3 worker ensure" in line for line in echoed)
@@ -98,7 +98,7 @@ class TestDoctorWorkerCheck(django.test.TestCase):
         echoed: list[str] = []
         with (
             mock.patch("teatree.utils.singleton.flock_is_held", return_value=True),
-            mock.patch("teatree.cli.doctor.checks.typer.echo", side_effect=echoed.append),
+            mock.patch("teatree.cli.doctor.checks_runtime.typer.echo", side_effect=echoed.append),
         ):
             assert _check_worker_running() is True
         assert echoed == []

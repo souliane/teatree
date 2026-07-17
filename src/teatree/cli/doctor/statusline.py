@@ -1,8 +1,8 @@
 """The doctor's statusLine configuration check (PR-17).
 
-Split out of :mod:`teatree.cli.doctor.checks` by concern: everything statusline
-lives here, next to the installer (:mod:`teatree.cli.setup.statusline_installer`)
-that writes the block this check verifies.
+Kept in its own module by concern: everything statusline lives here, next to the
+installer (:mod:`teatree.cli.setup.statusline_installer`) that writes the block
+this check verifies.
 """
 
 from pathlib import Path

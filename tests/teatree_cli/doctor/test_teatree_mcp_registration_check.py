@@ -3,7 +3,7 @@
 from pathlib import Path
 from unittest.mock import patch
 
-from teatree.cli.doctor.checks import _check_teatree_mcp_registration
+from teatree.cli.doctor.checks_mcp import _check_teatree_mcp_registration
 from teatree.core.mcp_connectivity import McpServerStatus
 
 

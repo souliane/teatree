@@ -14,7 +14,7 @@ from pathlib import Path
 
 import pytest
 
-from teatree.cli.doctor.checks import _check_agent_session_pins
+from teatree.cli.doctor.checks_session import _check_agent_session_pins
 
 
 def _seed(db: Path, **settings: object) -> None:
