@@ -49,7 +49,7 @@ dependencies = [
   # runtime-dep declarations above.
   "gunicorn>=23",
   "httpx>=0.27",
-  "mcp>=1.27",
+  "mcp>=1.28.1",
   # ``teatree.core.evidence.test_plan_validation`` opens evidence PNGs with Pillow to
   # detect the highlightAndShoot red box before ``e2e post-test-plan`` uploads.
   # A RUNTIME command path, so it must be in the installed tool env, not only
