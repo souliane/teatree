@@ -225,41 +225,64 @@ class TestRecoverCommand(TestCase):
         assert payload["reopened_task_pks"] == []
 
 
-class TestSplitOverlayFlag(TestCase):
-    def test_splits_space_and_equals_forms_and_keeps_rest(self) -> None:
-        from teatree.cli.recover import _split_overlay_flag  # noqa: PLC0415
-
-        assert _split_overlay_flag(["--overlay", "acme", "--json"]) == ("acme", ["--json"])
-        assert _split_overlay_flag(["--overlay=acme", "--requeue"]) == ("acme", ["--requeue"])
-        assert _split_overlay_flag(["--json"]) == ("", ["--json"])
-
-
 class TestRecoverCliForwarding(TestCase):
-    def test_forwards_to_managepy_with_resolved_overlay(self) -> None:
+    def test_dry_run_forwards_no_flags(self) -> None:
         from types import SimpleNamespace  # noqa: PLC0415
 
         from teatree.cli import recover as cli_recover  # noqa: PLC0415
 
         active = SimpleNamespace(project_path=Path("/proj"), name="acme")
-        ctx = SimpleNamespace(args=["--json"])
         with (
             patch("teatree.config.discover_active_overlay", return_value=active),
             patch("teatree.cli.recover.managepy") as managepy,
         ):
-            cli_recover.recover(ctx)
+            cli_recover.recover(requeue=False, overlay="")
 
-        managepy.assert_called_once_with(Path("/proj"), "recover", "--json", overlay_name="acme")
+        managepy.assert_called_once_with(Path("/proj"), "recover", overlay_name="acme")
 
-    def test_overlay_flag_overrides_active_overlay(self) -> None:
+    def test_requeue_forwards_the_flag(self) -> None:
         from types import SimpleNamespace  # noqa: PLC0415
 
         from teatree.cli import recover as cli_recover  # noqa: PLC0415
 
-        ctx = SimpleNamespace(args=["--overlay", "other", "--requeue"])
+        active = SimpleNamespace(project_path=Path("/proj"), name="acme")
+        with (
+            patch("teatree.config.discover_active_overlay", return_value=active),
+            patch("teatree.cli.recover.managepy") as managepy,
+        ):
+            cli_recover.recover(requeue=True, overlay="")
+
+        managepy.assert_called_once_with(Path("/proj"), "recover", "--requeue", overlay_name="acme")
+
+    def test_overlay_flag_overrides_active_overlay(self) -> None:
+        from teatree.cli import recover as cli_recover  # noqa: PLC0415
+
         with (
             patch("teatree.config.discover_active_overlay", return_value=None),
             patch("teatree.cli.recover.managepy") as managepy,
         ):
-            cli_recover.recover(ctx)
+            cli_recover.recover(requeue=True, overlay="other")
 
         managepy.assert_called_once_with(None, "recover", "--requeue", overlay_name="other")
+
+    def test_requeue_flag_parses_at_cli_not_read_as_subcommand(self) -> None:
+        """Regression: `t3 recover --requeue` must PARSE, not fail 'No such command'.
+
+        The prior raw ``ctx.args`` passthrough let Typer's group parser treat a
+        leading ``--requeue`` as a subcommand name; declaring it as an explicit
+        option fixes that.
+        """
+        from typer.testing import CliRunner  # noqa: PLC0415
+
+        from teatree.cli.recover import recover_app  # noqa: PLC0415
+
+        with (
+            patch("teatree.config.discover_active_overlay", return_value=None),
+            patch("teatree.cli.recover.managepy") as managepy,
+        ):
+            result = CliRunner().invoke(recover_app, ["--requeue"])
+
+        assert result.exit_code == 0, result.output
+        assert "No such command" not in result.output
+        managepy.assert_called_once()
+        assert "--requeue" in managepy.call_args.args
