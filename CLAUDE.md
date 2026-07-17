@@ -50,3 +50,11 @@ push gate (scoped doctest + ast-grep, FULL on any uncertainty, behind the
 default-TRUE `incremental_push_gate` flag — ON scopes the diff, OFF is the pre-#122
 whole-tree run; the CI whole-tree backstop is untouched). The broad `tests/quality`
 dir is CI-only (it ran ~420s locally — the `test (3.13)` shard covers it whole-tree).
+
+**CI's `lint` job runs prek inside a prebuilt Docker image** (`dev/Dockerfile.test`'s
+`lint` stage, `FROM base`, bakes prek's per-hook environments — same hooks, same
+`SKIP` list as before, a venue-only change). `bash dev/ci-parity.sh`'s step 1 stays
+host-native (`uv run prek run --all-files`) by default; set `LINT_DOCKER=1` to run
+that step inside a locally-built `lint` image instead, for an exact CI-lint
+reproduction (catches an environment-only lint difference the host-native run
+cannot see).

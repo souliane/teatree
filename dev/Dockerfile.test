@@ -32,3 +32,31 @@ ENV UV_PROJECT_ENVIRONMENT=/home/testuser/venv \
     UV_PYTHON_INSTALL_DIR=/home/testuser/.local/uv-python
 COPY --chown=testuser:testuser pyproject.toml uv.lock ./
 RUN uv sync --locked --no-install-project --group shard -p 3.13
+
+# ============================================================
+# `lint` stage — bakes prek's per-hook environments (node/go/python
+# toolchains, one per pinned repo+rev in .pre-commit-config.yaml) into the
+# image so CI's `lint` job pulls a ready image instead of cold-installing every
+# hook env at `prek run` time — that cold install (~74s) was the bulk of the
+# bare-runner lint job's ~161s prek step (souliane/teatree CI-speedup).
+# PREK_HOME lives OUTSIDE /app (same trick as UV_PROJECT_ENVIRONMENT above) so
+# the lint job's `-v "$PWD":/app` bind mount can never shadow the baked envs.
+# `install-hooks` needs a real git repo, so a throwaway one is init'd here and
+# removed after baking — it is never the checkout the lint job actually lints
+# (that comes from the bind mount at runtime). `safe.directory /app` is baked
+# because the lint job bind-mounts the HOST checkout (owned by the runner's
+# uid) into this image's `testuser` (a different uid); without it every hook
+# that shells out to git (banned-terms, blueprint-sync, gate-relaxation, the
+# `no-commit-on-merged-branch` safety hooks, …) hits git's dubious-ownership
+# refusal. This stage is tagged on a WIDER key than the `-test` tag above
+# (`hash(dev/Dockerfile.test, uv.lock, .pre-commit-config.yaml)`) so a hook-rev
+# bump alone mints a fresh tag — baked envs can never silently go stale. A tag
+# MISS just degrades gracefully: prek cold-installs whichever repo changed.
+# ============================================================
+FROM base AS lint
+ENV PREK_HOME=/home/testuser/.prek
+COPY --chown=testuser:testuser .pre-commit-config.yaml ./
+RUN git init -q . && \
+    git config --global --add safe.directory /app && \
+    uv run --no-sync prek install-hooks && \
+    rm -rf .git
