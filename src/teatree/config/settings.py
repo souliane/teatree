@@ -118,6 +118,7 @@ OVERLAY_OVERRIDABLE_SETTINGS: dict[str, Callable[[Any], Any]] = {
     "require_executed_repro": _parse_strict_bool,
     "require_debt_delta": _parse_strict_bool,
     "require_merge_quality_verdict": _parse_strict_bool,
+    "expected_required_contexts": _parse_str_list,
     "critic_gate_mode": CriticGateMode.parse,
     "send_proxy_mode": SendProxyMode.parse,
     "send_proxy_allowlist": _parse_str_list,
@@ -856,6 +857,15 @@ class _QualityGateSettings:
     # never-lockout escape. A feature flag (governed in ``FEATURE_FLAGS``).
     # Per-overlay overridable.
     require_merge_quality_verdict: bool = False
+    # The branch-protection required-status-check contexts the operator KNOWS must
+    # gate a merge on this overlay's repos (e.g. ``["test (3.13)"]``). A fail-closed
+    # floor: when the forge reports a DETERMINATE-EMPTY required set (branch
+    # protection removed or never configured) while this floor is non-empty, the
+    # keystone CI verdict fails closed to ``failed`` — a removed branch-protection
+    # gate can no longer classify as "all checks passed / green". Default empty =
+    # NO-OP (a genuinely gate-less repo still merges); the operator opts in per
+    # overlay once their repos carry required checks. Per-overlay overridable.
+    expected_required_contexts: list[str] = field(default_factory=list)
     # SELFCATCH-5 / #104 The autonomous user-proxy critic's ENFORCEMENT posture on
     # ``mark_delivered`` (``critic_gate``), re-typed from the former boolean
     # enforcement flag. The critic ALWAYS records the cheap deterministic
@@ -992,6 +1002,12 @@ class _ScannerSettings:
     auto_update_require_green_main: bool = True
 
 
+# The regenerable cache dirs auto-purged at CRITICAL disk pressure (the
+# ``disk_cache_allowlist`` default). A module constant so the field default stays a
+# single line; ``.copy`` gives each settings instance its own list.
+_DEFAULT_DISK_CACHE_ALLOWLIST = ["~/.cache/pre-commit", "~/.cache/puppeteer", "~/.cache/codex-runtimes"]
+
+
 @dataclass
 class _ResourcePressureSettings:
     """Resource-pressure auto-free thresholds (disk / RAM) + the destructive-lever opt-ins + task-sweep."""
@@ -1016,9 +1032,7 @@ class _ResourcePressureSettings:
     # are auto-purged at CRITICAL. ``uv`` is handled via ``uv cache prune``.
     # ``~/.cache/prek`` and ``~/.claude/projects`` are deliberately absent —
     # the latter is hard-protected even if a user adds it.
-    disk_cache_allowlist: list[str] = field(
-        default_factory=lambda: ["~/.cache/pre-commit", "~/.cache/puppeteer", "~/.cache/codex-runtimes"],
-    )
+    disk_cache_allowlist: list[str] = field(default_factory=_DEFAULT_DISK_CACHE_ALLOWLIST.copy)
     # Opt-in: enables stale-worktree GC (clean + fully pushed + unmodified
     # ``worktree_stale_days``) at CRITICAL, capped at
     # ``max_worktree_gc_per_tick`` per pass and never the active session's

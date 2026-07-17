@@ -43,6 +43,7 @@ from teatree.core.models.critic_dispatch import CriticDispatch
 from teatree.core.models.critic_finding import CriticFinding, CriticFindingSpec
 from teatree.core.models.critic_verdict import CriticVerdict
 from teatree.core.models.directive import Directive
+from teatree.core.models.merge_clear import MergeClear
 from teatree.core.models.pull_request import PullRequest
 from teatree.core.review.critic_rubric import _MERGE_TRANSITION, item_for, llm_items
 
@@ -263,13 +264,37 @@ def check_merge_quality_verdict(ticket: "Ticket", head_sha: str) -> None:
         raise MergeQualityVerdictError(msg)
 
 
+def _resolve_gated_ticket(*, slug: str, pr_id: int) -> "Ticket | None":
+    """The ticket whose merge quality is gated, or ``None`` when nothing is gated.
+
+    Resolved from the PR ledger ``(repo, iid)`` FIRST (case-insensitive — GitHub
+    slugs are case-insensitive, so a ``Owner/Repo`` row must still match an
+    ``owner/repo`` merge). When the PR ledger has no matching row (never recorded,
+    or mis-cased before this fix), fall back to the ``MergeClear`` for the same
+    ``(slug, pr_id)`` — the CLEAR carries the ticket FK at merge time and is the
+    reliable handle. This closes the silent-bypass: a directive PR whose PR-ledger
+    row is missing or mis-cased no longer skips the PR-4 gate, because its CLEAR's
+    ticket still resolves and the (fail-closed) gate runs.
+    """
+    pr = PullRequest.objects.filter(repo__iexact=slug, iid=str(pr_id)).select_related("ticket").order_by("-id").first()
+    if pr is not None and pr.ticket is not None:
+        return pr.ticket
+    clear = MergeClear.objects.filter(slug__iexact=slug, pr_id=pr_id).select_related("ticket").order_by("-id").first()
+    if clear is not None and clear.ticket is not None:
+        return clear.ticket
+    return None
+
+
 def assert_merge_quality_verdict(*, slug: str, pr_id: int, head_sha: str) -> None:
     """The ``execute_bound_merge`` chokepoint entry — resolve the ticket then run the gate.
 
-    Resolves the ticket from the PR ``(repo, iid)`` (the only handle
-    ``execute_bound_merge`` carries); an unresolvable PR is a no-op (nothing to gate).
+    Resolves the gated ticket from the PR ``(repo, iid)`` ledger (case-insensitive)
+    OR the ``MergeClear`` for the same ``(slug, pr_id)`` (:func:`_resolve_gated_ticket`),
+    so a missing/mis-cased PR row can no longer silently skip the gate. A genuinely
+    unresolvable ticket (no PR row, no CLEAR) is a no-op (nothing to gate); a resolved
+    directive ticket runs the fail-closed gate.
     """
-    pr = PullRequest.objects.filter(repo=slug, iid=str(pr_id)).select_related("ticket").order_by("-id").first()
-    if pr is None or pr.ticket is None:
+    ticket = _resolve_gated_ticket(slug=slug, pr_id=pr_id)
+    if ticket is None:
         return
-    check_merge_quality_verdict(pr.ticket, head_sha)
+    check_merge_quality_verdict(ticket, head_sha)

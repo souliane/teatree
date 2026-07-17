@@ -159,6 +159,19 @@ class TestKeystoneMergeVerdictGate(TestCase):
         assert ticket.state == Ticket.State.IN_REVIEW
         assert not MergeAudit.objects.filter(clear=clear).exists()
 
+    def test_4b_same_timestamp_hold_and_merge_safe_refuses(self) -> None:
+        # Low finding: a HOLD recorded in the SAME instant as a PASS resolves to
+        # HOLD (the safe direction), never silently overridden to merge-safe.
+        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.IN_REVIEW)
+        clear = _clear(ticket=ticket)
+        _record("merge_safe", at=_T0)
+        _record("hold", at=_T0)
+        with pytest.raises(MergePreconditionError, match="an independent reviewer recorded a HOLD at this head"):
+            _merge(clear)
+        ticket.refresh_from_db()
+        assert ticket.state == Ticket.State.IN_REVIEW
+        assert not MergeAudit.objects.filter(clear=clear).exists()
+
     def test_5_stale_merge_safe_refuses(self) -> None:
         # SHA binding: a merge_safe reviewed against a different tree is stale at the
         # live head, so it cannot vouch for it. RED before #2829.
@@ -299,13 +312,15 @@ class TestHasIndependentColdReviewNewestWins(TestCase):
 
 
 class TestEffectiveStateAtTieBreak(TestCase):
-    """The ``>=`` tie-break: a same-timestamp PASS+HOLD resolves to MERGE_SAFE (PASS wins)."""
+    """The tie-break: a same-timestamp PASS+HOLD resolves to HOLD (the safe direction)."""
 
-    def test_same_timestamp_pass_and_hold_allows(self) -> None:
+    def test_same_timestamp_pass_and_hold_holds(self) -> None:
+        # Low finding: a HOLD recorded in the same instant as a PASS must NOT be
+        # silently overridden — the tie resolves to HOLD.
         _record("hold", at=_T0)
         _record("merge_safe", at=_T0)
         state = ReviewVerdict.objects.effective_state_at(slug=_SLUG, pr_id=_PR, head_sha=_HEAD)
-        assert state is HeadVerdictState.MERGE_SAFE
+        assert state is HeadVerdictState.HOLD
 
     def test_head_sha_is_normalised(self) -> None:
         _record("merge_safe", at=_T0)

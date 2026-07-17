@@ -201,9 +201,26 @@ class TestProvenanceGateUnit(TestCase):
         with p1, p2, p3, pytest.raises(MergePreconditionError, match="fork / cross-repo"):
             assert_merge_provenance_trusted(slug="souliane/teatree", pr_id=1)
 
-    def test_same_repo_passes_even_for_unlisted_bot(self) -> None:
+    def test_same_repo_untrusted_author_holds_on_public_repo(self) -> None:
+        # #3313 hardening: same-repo is NOT trusted unconditionally on a PUBLIC repo —
+        # an unlisted push-access account still holds for a human.
         p1, p2, p3 = self._patches(author="app/github-actions", same_repo=True)
+        with p1, p2, p3, pytest.raises(MergePreconditionError, match="untrusted author on a public repo"):
+            assert_merge_provenance_trusted(slug="souliane/teatree", pr_id=1)
+
+    def test_same_repo_trusted_author_passes(self) -> None:
+        p1, p2, p3 = self._patches(author="souliane", same_repo=True)
         with p1, p2, p3:
+            assert_merge_provenance_trusted(slug="souliane/teatree", pr_id=1)
+
+    def test_same_repo_on_internal_repo_passes(self) -> None:
+        # On a private/internal repo the operator owns access control — same-repo
+        # trusts any author (the internal-repo branch of classify_author).
+        with (
+            patch("teatree.core.merge.ci_rollup.CodeHostQuery.pr_author", return_value="app/github-actions"),
+            patch("teatree.core.merge.ci_rollup.CodeHostQuery.pr_same_repo", return_value=True),
+            patch.object(author_trust, "repo_is_internal", return_value=True),
+        ):
             assert_merge_provenance_trusted(slug="souliane/teatree", pr_id=1)
 
     def test_unknown_provenance_falls_back_and_denies_untrusted(self) -> None:

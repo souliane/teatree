@@ -238,7 +238,7 @@ class TestFetchRequiredChecksGitLab(TestCase):
         with patch("teatree.backends.forge_merge_rpc.glab_runner", return_value=stub):
             assert _gitlab_query().required_checks_status() == "failed"
 
-    def test_no_pipeline_is_green(self) -> None:
+    def test_no_pipeline_is_pending(self) -> None:
         def _no_pipeline(argv: list[str]) -> tuple[int, str, str]:
             joined = " ".join(argv)
             if "/pipelines" in joined:
@@ -246,9 +246,9 @@ class TestFetchRequiredChecksGitLab(TestCase):
             return (0, "", "")
 
         with patch("teatree.backends.forge_merge_rpc.glab_runner", return_value=_no_pipeline):
-            # No pipelines => no required checks => green (mirrors GitHub
-            # rollup-empty behaviour which the GitHub branch returns).
-            assert _gitlab_query().required_checks_status() == "green"
+            # No pipeline ran => NOT proof the required jobs passed => pending (fail
+            # closed): an empty pipeline list must never merge as "all checks passed".
+            assert _gitlab_query().required_checks_status() == "pending"
 
     def test_pipeline_query_failure_returns_failed(self) -> None:
         def _boom(argv: list[str]) -> tuple[int, str, str]:

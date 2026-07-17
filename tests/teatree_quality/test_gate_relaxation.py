@@ -43,6 +43,16 @@ class TestNoqaSuppression:
         )
         assert findings == []
 
+    def test_single_token_justification_still_blocks(self) -> None:
+        # Low finding: a single bare trailing token is not a real justification — it
+        # must reference an issue id or carry a real explanation.
+        findings = scan_relaxation(_diff("src/teatree/m.py", ["    x = bad()  # noqa: E501 x"]))
+        assert _kinds(findings) == {"noqa_without_justification"}
+
+    def test_issue_ref_justification_passes(self) -> None:
+        findings = scan_relaxation(_diff("src/teatree/m.py", ["    x = bad()  # noqa: E501 #3313"]))
+        assert findings == []
+
     def test_complexity_suppression_blocks_even_when_justified(self) -> None:
         findings = scan_relaxation(_diff("src/teatree/m.py", ["def f():  # noqa: C901 — legacy, refactor later"]))
         assert _kinds(findings) == {"complexity_suppression"}

@@ -142,6 +142,7 @@ GOLDEN_USER_SETTINGS_FIELDS: frozenset[str] = frozenset(
         "require_executed_repro",
         "require_human_approval_to_answer",
         "require_human_approval_to_merge",
+        "expected_required_contexts",
         "require_integration_review",
         "require_merge_evidence",
         "require_merge_quality_verdict",

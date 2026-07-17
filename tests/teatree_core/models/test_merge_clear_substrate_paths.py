@@ -133,3 +133,16 @@ class TestIsSubstrateConsultsTouchedPaths(TestCase):
     def test_touched_paths_defaults_empty(self) -> None:
         clear = self._logic_clear()
         assert clear.touched_paths == ()
+
+    def test_indeterminate_paths_fail_closed_to_substrate(self) -> None:
+        # A logic-labelled CLEAR whose changed-path list could not be read to
+        # completion (truncated/paginated/errored) can no longer be PROVEN
+        # non-substrate — it holds as substrate rather than silently auto-merging.
+        clear = self._logic_clear()
+        assert clear.is_substrate() is False
+        clear.substrate_paths_indeterminate = True
+        assert clear.is_substrate() is True
+
+    def test_substrate_paths_indeterminate_defaults_false(self) -> None:
+        clear = self._logic_clear()
+        assert clear.substrate_paths_indeterminate is False

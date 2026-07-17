@@ -135,10 +135,11 @@ class ReviewVerdictManager(models.Manager["ReviewVerdict"]):
 
         The effective verdict is the most-recent non-stale verdict by its
         recorded timestamp: ALLOW iff a non-stale ``merge_safe`` exists whose
-        timestamp is ``>=`` every non-stale ``hold``'s (a later PASS overrides
-        an earlier HOLD; an even-later HOLD re-blocks). A ``>=`` (not ``>``)
-        comparison makes a same-timestamp tie resolve to PASS. *head_sha* is
-        normalised the way :meth:`ReviewVerdict.is_stale_at` stores it.
+        timestamp is STRICTLY greater than every non-stale ``hold``'s (a later
+        PASS overrides an earlier HOLD; an even-later HOLD re-blocks). A
+        same-timestamp tie resolves to HOLD — the safe direction: a HOLD recorded
+        in the same instant as a PASS must not be silently overridden. *head_sha*
+        is normalised the way :meth:`ReviewVerdict.is_stale_at` stores it.
 
         Returns :attr:`HeadVerdictState.NO_MERGE_SAFE` when no non-stale
         merge_safe exists (fail closed), :attr:`HeadVerdictState.HOLD` when the
@@ -155,7 +156,7 @@ class ReviewVerdictManager(models.Manager["ReviewVerdict"]):
         if not merge_safe_times:
             return HeadVerdictState.NO_MERGE_SAFE
         hold_times = [verdict.recorded_at for verdict in non_stale if not verdict.is_merge_safe()]
-        if hold_times and max(hold_times) > max(merge_safe_times):
+        if hold_times and max(hold_times) >= max(merge_safe_times):
             return HeadVerdictState.HOLD
         return HeadVerdictState.MERGE_SAFE
 

@@ -9,9 +9,11 @@ internal org prefixes, quote anchors) and refuses with a structured
 error when any match fires.
 
 The gate is *public-target-aware*: it never fires for writes to a repo
-that is NOT in :attr:`OverlayConfig.public_repos`. A bypass flag
-``--privacy-ok`` (or the kwarg ``bypass=True`` on
-:func:`scan_for_publication`) authorises an intentional publish.
+that is NOT in :attr:`OverlayConfig.public_repos`. There is NO plain
+agent-invocable bypass: a public-target leak match always refuses, and
+an intentional publish that genuinely needs to override a match goes
+through a recorded, single-use, non-agent approval channel — never a
+self-asserted flag the executing agent can set for itself.
 """
 
 import logging
@@ -63,25 +65,23 @@ _DEFAULT_QUOTE_PATTERNS: tuple[tuple[str, str], ...] = (
 )
 
 
-# ast-grep-ignore: ac-django-no-complexity-suppressions
-def scan_for_publication(  # noqa: PLR0913 — gate entry-point; each kwarg is a documented input.
+def scan_for_publication(
     *,
     text: str,
     target_repo: str,
     public_repos: list[str],
     redact_terms: list[str] | None = None,
     block_patterns: list[str] | None = None,
-    bypass: bool = False,
 ) -> PrivacyGateResult:
     """Scan *text* against the active overlay's privacy rules.
 
     Returns a :class:`PrivacyGateResult` whose :attr:`refused` flag is
-    ``True`` when the target is public and at least one pattern matched.
-    Bypass short-circuits to a clean result (no matches surfaced) so
-    intentional publishes are not noisy.
+    ``True`` when the target is public and at least one pattern matched. There
+    is no bypass parameter — a public-target match always refuses (the executing
+    agent cannot self-assert a skip). A non-public target is a clean pass.
     """
     is_public = target_repo in public_repos
-    if not is_public or bypass:
+    if not is_public:
         return PrivacyGateResult(target_repo=target_repo, is_public=is_public)
     matches: list[PrivacyMatch] = []
     for term in redact_terms or []:
@@ -140,7 +140,7 @@ def format_refusal(result: PrivacyGateResult) -> str:
     lines.extend(
         f"  - {match.pattern_name} at position {match.position}: {match.matched_text!r}" for match in result.matches
     )
-    lines.append("Re-run with `--privacy-ok` only when the matches are intentional.")
+    lines.append("Redact the flagged text before publishing — there is no self-asserted bypass.")
     return "\n".join(lines)
 
 

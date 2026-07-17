@@ -10,6 +10,7 @@ only on a new reviewed SHA.
 import logging
 from typing import Protocol, runtime_checkable
 
+from teatree.core.backend_protocols import changed_paths_unavailable
 from teatree.core.merge.ci_rollup import CodeHostQuery
 from teatree.core.models.merge_clear import diff_paths_are_substrate
 from teatree.loop.scanners.pr_sweep_types import MergeAttempt, PrSummary
@@ -34,8 +35,8 @@ def pr_diff_is_substrate(pr: PrSummary) -> bool:
     except Exception:
         logger.exception("pr_sweep changed-paths fetch failed for %s#%d — holding", pr.slug, pr.number)
         return True
-    if not paths:
-        logger.warning("pr_sweep empty changed-paths for %s#%d — holding conservatively", pr.slug, pr.number)
+    if not paths or changed_paths_unavailable(paths):
+        logger.warning("pr_sweep empty/truncated changed-paths for %s#%d — holding conservatively", pr.slug, pr.number)
         return True
     return diff_paths_are_substrate(paths)
 

@@ -180,19 +180,21 @@ def classify_pr_provenance(
     Owner decision (BLUEPRINT §17.4.3): a PR whose head branch lives in a FORK /
     cross-repo ALWAYS requires a human, even when the author is a trusted
     identity — a fork PR is attacker-controllable code proposing itself for
-    auto-merge. A same-repo head branch is the operator's own push and is
-    trusted. Provenance the forge could not report (*same_repo* is ``None`` — a
+    auto-merge. Provenance the forge could not report (*same_repo* is ``None`` — a
     transient read error) fails closed to the identity+visibility author check
     :func:`classify_author`.
 
     STRICT: ``same_repo=False`` returns ``untrusted`` regardless of author, so a
-    trusted-author fork still holds for human approval. Only the two MERGE gates
-    (the sweep rung + the keystone) adopt this; :func:`classify_author`'s other
-    consumers (the reviewing scanners, the issue-implementer) keep the pure
-    identity model.
+    trusted-author fork still holds for human approval. And ``same_repo=True`` is
+    NOT trusted unconditionally — a same-repo head branch is still conjoined with
+    the identity+visibility check (:func:`classify_author` = internal repo OR
+    trusted author), so on a PUBLIC repo a push from a non-trusted push-access
+    account (an added collaborator, a compromised token) still holds for human
+    approval instead of auto-merging. Only the two MERGE gates (the sweep rung +
+    the keystone) adopt this; :func:`classify_author`'s other consumers (the
+    reviewing scanners, the issue-implementer) keep the pure identity model.
     """
-    if same_repo is True:
-        return AuthorClassification(trusted=True, untrusted=False, internal_repo=False)
     if same_repo is False:
         return AuthorClassification(trusted=False, untrusted=True, internal_repo=False)
+    # same_repo True or None: still require internal-repo OR a trusted author.
     return classify_author(slug, author, host_kind=host_kind)

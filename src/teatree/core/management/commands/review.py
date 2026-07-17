@@ -495,15 +495,25 @@ class Command(TyperCommand):
         repo_root: Annotated[
             str, typer.Option("--repo-root", help="Git clone the merge commit lives in (default: cwd project root).")
         ] = "",
+        base_branch: Annotated[
+            str,
+            typer.Option(
+                "--base-branch",
+                help="The PR base branch the merge's second parent must descend from (default: repo default branch).",
+            ),
+        ] = "",
     ) -> RebindClearanceResult:
         """Re-bind a CLEAR to a conflict-only merge commit — no re-review (PR-07).
 
         After ``origin/main`` is merged into a reviewed branch to resolve conflicts
         (merge, never rebase — §17.4), the head moves and the SHA-bind gate refuses
         it. This re-binds ONLY when the merge commit's first parent is the reviewed
-        SHA AND the commit is conflict-resolution-only; the original independent
-        verdict is carried forward to the merge SHA, so the merge preconditions pass
-        at the new head. A substantive merge is refused — a fresh review is required.
+        SHA, its SECOND parent is a forge-verified ancestor of the PR base branch
+        (never an arbitrary unreviewed branch), AND the commit is
+        conflict-resolution-only; the original independent verdict is carried forward
+        to the merge SHA, so the merge preconditions pass at the new head. A
+        substantive merge, or one that merged in a non-base branch, is refused — a
+        fresh review is required.
         """
         if not merge_sha.strip():
             self.stderr.write("  rebind-clearance refused: --merge-sha is required (full 40-char hex SHA)")
@@ -515,7 +525,9 @@ class Command(TyperCommand):
             raise SystemExit(1) from None
 
         root = repo_root.strip() or _project_root_or_cwd()
-        rebound = rebind_clearance_after_conflict_only_merge(clear=clear, merge_sha=merge_sha, repo_root=root)
+        rebound = rebind_clearance_after_conflict_only_merge(
+            clear=clear, merge_sha=merge_sha, repo_root=root, base_branch=base_branch
+        )
         clear.refresh_from_db()
         if rebound:
             self.stdout.write(f"  re-bound CLEAR {clear.pk} to conflict-only merge {merge_sha[:8]}")

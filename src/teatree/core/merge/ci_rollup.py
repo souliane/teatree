@@ -13,7 +13,7 @@ import logging
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, TypedDict, cast
 
-from teatree.core.backend_protocols import PrMergeState, rollup_query_failed
+from teatree.core.backend_protocols import PrMergeState, changed_paths_unavailable, rollup_query_failed
 from teatree.core.backend_registry import get_backend_provider
 from teatree.core.models import MergeClear
 from teatree.utils.pr_ref import PrRef
@@ -181,23 +181,35 @@ class CodeHostQuery:
 def attach_touched_paths(clear: object, query: CodeHostQuery) -> None:
     """Populate ``clear.touched_paths`` from the forge's live changed-file list.
 
-    Best-effort: a non-``MergeClear`` *clear* (the gate handles that refusal) or a
-    forge error degrades to leaving ``touched_paths`` empty. The path detector can
-    only WIDEN substrate over the recorded ``blast_class``, never narrow it, so a
-    missing diff never weakens the existing label-based substrate gate.
+    A non-``MergeClear`` *clear* (the gate handles that refusal) is a no-op. When the
+    changed-path list cannot be read to completion — a forge error (exception) or the
+    ``CHANGED_PATHS_UNAVAILABLE`` sentinel from a truncated/paginated diff — the diff
+    can no longer be PROVEN non-substrate, so ``substrate_paths_indeterminate`` is set
+    and ``is_substrate()`` fails CLOSED (holds the merge). A complete list populates
+    ``touched_paths`` for the path detector and clears the indeterminate flag.
     """
     if not isinstance(clear, MergeClear):
         return
     try:
         paths = query.pr_changed_paths()
     except Exception:  # noqa: BLE001 — a diff-fetch failure must never wedge the merge gate.
-        logger.debug(
-            "ci_rollup: changed-paths fetch failed for %s#%s — substrate label stands",
+        logger.warning(
+            "ci_rollup: changed-paths fetch failed for %s#%s — holding as substrate (fail closed)",
             query.ref.slug,
             query.ref.pr_id,
         )
+        clear.substrate_paths_indeterminate = True
+        return
+    if changed_paths_unavailable(paths):
+        logger.warning(
+            "ci_rollup: changed-paths list truncated/unavailable for %s#%s — holding as substrate (fail closed)",
+            query.ref.slug,
+            query.ref.pr_id,
+        )
+        clear.substrate_paths_indeterminate = True
         return
     clear.touched_paths = tuple(paths)
+    clear.substrate_paths_indeterminate = False
 
 
 class _RollupEntry(TypedDict, total=False):
@@ -396,12 +408,28 @@ def _gitlab_pipeline_verdict(
 ) -> str:
     """GitLab §17.4.3 verdict: the head pipeline's overall status (aggregates required jobs)."""
     if not rollup:
-        return "green"
+        # No pipeline ran for this MR — that is NOT proof the required jobs passed
+        # (a project could have CI disabled, or the head pipeline is not created
+        # yet). Fail closed to ``pending`` so an empty pipeline list never merges as
+        # "all checks passed"; a genuinely CI-less project is unblocked by the same
+        # required-context floor the GitHub path uses.
+        return "pending"
     head_sha = backend.fetch_live_head_sha(slug=slug, pr_id=pr_id)
     head = _select_gitlab_head_pipeline(list(rollup), head_sha, slug=slug, pr_id=pr_id)
     if head is None:
         return "failed"
     return _classify_gitlab_pipeline(str(head.get("status") or ""))
+
+
+def _expected_required_contexts_floor() -> set[str]:
+    """The operator-configured required-context floor (empty = no floor). Fail-safe to empty."""
+    try:
+        from teatree.config import get_effective_settings  # noqa: PLC0415 — deferred: keep core.merge import-light
+
+        return {name.strip() for name in get_effective_settings(None).expected_required_contexts if name.strip()}
+    except Exception:  # noqa: BLE001 — a config-read failure must never wedge the merge gate; treat as no floor.
+        logger.debug("ci_rollup: expected_required_contexts floor unresolved — treating as no floor")
+        return set()
 
 
 def _github_required_checks_verdict(
@@ -413,13 +441,23 @@ def _github_required_checks_verdict(
 ) -> str:
     """GitHub §17.4.3 verdict: scope the rollup to the branch-protection required contexts.
 
-    Fail CLOSED when the required set is indeterminate; otherwise the shared
+    Fail CLOSED when the required set is indeterminate. When the required set is a
+    DETERMINATE-EMPTY set (branch protection removed/never configured) AND the
+    operator configured an ``expected_required_contexts`` floor, fail CLOSED too — a
+    removed branch-protection gate must not classify as green. Otherwise the shared
     :func:`classify_required_rollup` verdict over only the required contexts (an
-    empty required set → ``green``, a non-required check never blocks).
+    empty required set with no floor → ``green``, a non-required check never blocks).
     """
     required_names = _required_context_names(backend, slug=slug, pr_id=pr_id)
     if required_names is None:
         return "failed"  # fail CLOSED — the branch-protection required set is indeterminate
+    if not required_names and _expected_required_contexts_floor():
+        logger.warning(
+            "ci_rollup: %s#%s reports NO required checks but a floor is configured — failing closed",
+            slug,
+            pr_id,
+        )
+        return "failed"
     return classify_required_rollup(rollup, required_names)
 
 

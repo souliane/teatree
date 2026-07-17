@@ -95,13 +95,15 @@ class TestDbApprovalRecordGuard(TestCase):
             DbApproval.record(_OP, _TENANT, "")
 
     def test_matches_is_exact_scoped_and_single_use(self) -> None:
-        """Pure scope logic: matches only the exact op+tenant while unconsumed."""
+        """Pure scope logic: matches only the exact op+tenant+approver while unconsumed."""
         approval = DbApproval.record(_OP, _TENANT, _USER)
-        assert approval.matches(_OP, _TENANT) is True
-        assert approval.matches(_OP, "other-tenant") is False
-        assert approval.matches("other-op", _TENANT) is False
+        assert approval.matches(_OP, _TENANT, _USER) is True
+        assert approval.matches(_OP, "other-tenant", _USER) is False
+        assert approval.matches("other-op", _TENANT, _USER) is False
+        # A non-empty presented approver that is NOT the recorded one never matches.
+        assert approval.matches(_OP, _TENANT, "mallory") is False
         approval.consumed_at = approval.created_at
-        assert approval.matches(_OP, _TENANT) is False  # single-use
+        assert approval.matches(_OP, _TENANT, _USER) is False  # single-use
 
     def test_str_renders_op_tenant_and_approver(self) -> None:
         approval = DbApproval.record(_OP, _TENANT, _USER)
@@ -167,7 +169,27 @@ class TestDbRefreshRecordedChannel(TestCase):
             # single-use: the approval is consumed and cannot be reused
             approval = DbApproval.objects.get()
             assert approval.consumed_at is not None
-            assert not approval.matches(_OP, _TENANT)
+            assert not approval.matches(_OP, _TENANT, _USER)
+
+    @_patch_overlays(FULL_OVERLAY)
+    @override_settings(**SETTINGS)
+    def test_iii_b_mismatched_presented_approver_is_refused(self) -> None:
+        """A recorded approval by one user cannot be unlocked by a different token.
+
+        The Medium finding: a non-empty ``--user-authorized`` value that is NOT the
+        recorded approver must fall through to the TTY path and be refused (non-TTY).
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            wt_dir = Path(tmp) / "test"
+            wt_dir.mkdir()
+            _make_worktree(wt_dir)
+            DbApproval.record(_OP, _TENANT, _USER)
+
+            with pytest.raises(SystemExit) as exc:
+                _run_fresh_dump(wt_dir, user_authorized="mallory", tty=False)
+            assert exc.value.code == 1
+            # The mismatched attempt never consumed the genuine approval.
+            assert DbApproval.objects.get().consumed_at is None
 
     @_patch_overlays(FULL_OVERLAY)
     @override_settings(**SETTINGS)
@@ -289,26 +311,34 @@ class TestDbApprovalScopeNormalization(TestCase):
 
     def test_op_case_and_whitespace_normalized_at_both_ends(self) -> None:
         DbApproval.record("  Fresh-Dump  ", _TENANT, _USER)
-        consumed = DbApproval.consume("fresh-dump", _TENANT)
+        consumed = DbApproval.consume("fresh-dump", _TENANT, _USER)
         assert consumed is not None, "a case/whitespace-variant op must still match"
 
     def test_tenant_whitespace_normalized(self) -> None:
         DbApproval.record(_OP, "  test_db  ", _USER)
-        consumed = DbApproval.consume(_OP, "test_db")
+        consumed = DbApproval.consume(_OP, "test_db", _USER)
         assert consumed is not None
 
     def test_distinct_op_still_does_not_match(self) -> None:
         DbApproval.record(_OP, _TENANT, _USER)
-        assert DbApproval.consume("dslr-snapshot", _TENANT) is None
+        assert DbApproval.consume("dslr-snapshot", _TENANT, _USER) is None
 
     def test_distinct_tenant_still_does_not_match(self) -> None:
         DbApproval.record(_OP, _TENANT, _USER)
-        assert DbApproval.consume(_OP, "tenant-b") is None
+        assert DbApproval.consume(_OP, "tenant-b", _USER) is None
+
+    def test_wrong_presented_approver_does_not_consume(self) -> None:
+        # The Medium finding: a non-empty --user-authorized token that is NOT the
+        # recorded approver can no longer consume the approval; an empty one either.
+        DbApproval.record(_OP, _TENANT, _USER)
+        assert DbApproval.consume(_OP, _TENANT, "mallory") is None
+        assert DbApproval.consume(_OP, _TENANT, "") is None
+        assert DbApproval.consume(_OP, _TENANT, _USER) is not None
 
     def test_single_use_preserved_across_normalized_forms(self) -> None:
         DbApproval.record("FRESH-DUMP", _TENANT, _USER)
-        assert DbApproval.consume("fresh-dump", _TENANT) is not None
-        assert DbApproval.consume("Fresh-Dump", _TENANT) is None
+        assert DbApproval.consume("fresh-dump", _TENANT, _USER) is not None
+        assert DbApproval.consume("Fresh-Dump", _TENANT, _USER) is None
 
 
 class TestDbRefreshRecordedChannelTtyRegression(TestCase):

@@ -223,6 +223,12 @@ class MergeClear(models.Model):
     # diff. Not a DB column — no migration, no compaction-survival concern (it is
     # re-derived from the live PR each merge attempt).
     touched_paths: "tuple[str, ...]" = ()
+    # Non-persisted: True when the live changed-path list could NOT be read to
+    # completion (forge error, or a paginated/truncated diff). The substrate
+    # detector can then no longer PROVE the diff is non-substrate, so it fails
+    # CLOSED (``is_substrate()`` holds the merge) — a >100-file PR whose substrate
+    # change sorted past a truncated page can never silently auto-merge.
+    substrate_paths_indeterminate: bool = False
 
     class Meta:
         db_table = "teatree_merge_clear"
@@ -428,13 +434,21 @@ class MergeClear(models.Model):
     def is_substrate(self) -> bool:
         """True iff this CLEAR is for a substrate-class change (invariant 4).
 
-        Substrate by EITHER the recorded ``blast_class`` label OR the live diff
+        Substrate by ANY of: the recorded ``blast_class`` label, the live diff
         touching a substrate path (:func:`diff_paths_are_substrate` over
-        :attr:`touched_paths`). The path detector makes the guarantee reliable —
-        a substrate diff a human left at the default ``logic`` label is still
-        held, never auto-merged.
+        :attr:`touched_paths`), OR an INDETERMINATE changed-path list
+        (:attr:`substrate_paths_indeterminate`). The path detector makes the
+        guarantee reliable — a substrate diff a human left at the default
+        ``logic`` label is still held, never auto-merged — and the fail-closed
+        indeterminate branch means a diff the forge could not read to completion
+        (truncated/paginated/errored) is held for the owner rather than silently
+        auto-merged as non-substrate.
         """
-        return self.blast_class == self.BlastClass.SUBSTRATE or diff_paths_are_substrate(self.touched_paths)
+        return (
+            self.blast_class == self.BlastClass.SUBSTRATE
+            or self.substrate_paths_indeterminate
+            or diff_paths_are_substrate(self.touched_paths)
+        )
 
     def human_merge_authorized_by(self, presented_authorizer: str) -> bool:
         """True iff a substrate CLEAR's recorded authoriser matches what the merge call presents.

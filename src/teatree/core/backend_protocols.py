@@ -127,6 +127,24 @@ def rollup_query_failed(rollup: "list[RawAPIDict]") -> bool:
     return any(entry.get(_ROLLUP_QUERY_FAILED_KEY) is True for entry in rollup)
 
 
+CHANGED_PATHS_UNAVAILABLE = "\x00_teatree_changed_paths_unavailable\x00"
+"""Sentinel path — the backend could NOT read the PR/MR changed-file list to completion.
+
+``fetch_pr_changed_paths`` returns ``[CHANGED_PATHS_UNAVAILABLE]`` when the diff
+query itself failed or could not be paginated to completion (non-zero rc, malformed
+payload), distinct from an empty list (a genuinely no-op diff) and from a complete
+list. The substrate detector treats an unavailable list as INDETERMINATE and fails
+CLOSED (holds the merge as substrate) — a >100-file PR whose substrate change sorts
+past a truncated page can never silently auto-merge. The NUL bytes make it
+un-collidable with any real forge path.
+"""
+
+
+def changed_paths_unavailable(paths: "list[str]") -> bool:
+    """True iff *paths* carries the :data:`CHANGED_PATHS_UNAVAILABLE` sentinel."""
+    return CHANGED_PATHS_UNAVAILABLE in paths
+
+
 @dataclass(frozen=True, slots=True)
 class ForgeMergeResult:
     """Raw outcome of a backend bound-squash-merge — core does the classification.
