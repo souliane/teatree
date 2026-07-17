@@ -3132,7 +3132,7 @@ requires-dist = [
     { name = "claude-agent-sdk", specifier = "==0.2.94" },
     { name = "coverage", specifier = ">=7" },
     { name = "croniter", specifier = ">=6.2.2" },
-    { name = "django", specifier = ">=5.2,<6.1" },
+    { name = "django", specifier = ">=6.0,<6.1" },
     { name = "django-fsm-2", specifier = ">=4" },
     { name = "django-linear-migrations", specifier = ">=2.19" },
     { name = "django-rich", specifier = ">=2.2" },
