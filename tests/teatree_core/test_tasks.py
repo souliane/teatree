@@ -1067,7 +1067,11 @@ class TestAdvanceTicketNormalizesPhase(TestCase):
         )
         task = Task.objects.create(ticket=ticket, session=session, phase="review")
 
-        task._advance_ticket()
+        # has_shippable_diff() is a separate concern (see
+        # test_task_apply_phase_transition.py) — force it True here so an
+        # unshippable-review auto-ignore doesn't mask the #750 assertion below.
+        with patch.object(Ticket, "has_shippable_diff", return_value=True):
+            task._advance_ticket()
 
         ticket.refresh_from_db()
         assert ticket.state == Ticket.State.REVIEWED, (
@@ -1116,7 +1120,11 @@ class TestReviewConditionNormalizesPhase(TestCase):
         # condition `tasks.filter(phase="reviewing")` misses it.
         task = Task.objects.create(ticket=ticket, session=session, phase="review", status=Task.Status.COMPLETED)
 
-        task._advance_ticket()
+        # has_shippable_diff() is a separate concern (see
+        # test_task_apply_phase_transition.py) — force it True here so an
+        # unshippable-review auto-ignore doesn't mask the #757 assertion below.
+        with patch.object(Ticket, "has_shippable_diff", return_value=True):
+            task._advance_ticket()
 
         ticket.refresh_from_db()
         assert ticket.state == Ticket.State.REVIEWED, (
@@ -1143,7 +1151,11 @@ class TestReviewConditionNormalizesPhase(TestCase):
         session = Session.objects.create(ticket=ticket, agent_id="t")
         task = Task.objects.create(ticket=ticket, session=session, phase="reviewing", status=Task.Status.COMPLETED)
 
-        task._advance_ticket()
+        # has_shippable_diff() is a separate concern (see
+        # test_task_apply_phase_transition.py) — force it True so an
+        # unshippable-review auto-ignore doesn't mask this regression guard.
+        with patch.object(Ticket, "has_shippable_diff", return_value=True):
+            task._advance_ticket()
 
         ticket.refresh_from_db()
         assert ticket.state == Ticket.State.REVIEWED
