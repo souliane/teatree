@@ -10,6 +10,7 @@ Happy paths run against real git under ``tmp_path``; the fail-closed error
 branches inject a ``CommandFailedError`` from the (unstoppable) git subprocess.
 """
 
+import subprocess
 from pathlib import Path
 from unittest.mock import patch
 
@@ -19,6 +20,26 @@ from teatree.core.cleanup.working_tree_dirt import real_uncommitted_reasons
 from teatree.utils import git
 from teatree.utils.run import CommandFailedError
 from tests.teatree_core.cleanup._shared import _run_git
+
+
+def _corrupt_index(wt_dir: Path) -> None:
+    """Corrupt the real on-disk index for a worktree so ``git status`` itself fails.
+
+    A ``git worktree add`` checkout's ``.git`` is a *file* (a gitdir pointer),
+    not a directory, and each worktree has its own per-worktree index living
+    under the main repo's ``.git/worktrees/<name>/index`` — not
+    ``<wt_dir>/.git/index``. Resolve the real git-dir via ``rev-parse`` first.
+    """
+    result = subprocess.run(
+        ["git", "-C", str(wt_dir), "rev-parse", "--git-dir"],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    git_dir = Path(result.stdout.strip())
+    if not git_dir.is_absolute():
+        git_dir = wt_dir / git_dir
+    (git_dir / "index").write_bytes(b"not a real git index")
 
 
 def _committed_worktree(tmp_path: Path) -> tuple[Path, _EffectiveTarget]:
@@ -90,7 +111,7 @@ class TestRealUncommittedReasons:
         boom = CommandFailedError(["git", "status"], 1, "", "index locked")
         with (
             patch("teatree.core.cleanup.working_tree_dirt.git.check", return_value=True),
-            patch("teatree.core.cleanup.working_tree_dirt.git.status_porcelain", side_effect=boom),
+            patch("teatree.core.cleanup.working_tree_dirt.git.status_porcelain_strict", side_effect=boom),
         ):
             reasons = real_uncommitted_reasons(str(wt_dir), target)
         assert reasons == [f"could not read working-tree status ({boom}) — keeping"]
@@ -99,11 +120,30 @@ class TestRealUncommittedReasons:
         wt_dir, target = _committed_worktree(tmp_path)
         with (
             patch("teatree.core.cleanup.working_tree_dirt.git.check", return_value=True),
-            patch("teatree.core.cleanup.working_tree_dirt.git.status_porcelain", return_value="\n M real.py"),
+            patch("teatree.core.cleanup.working_tree_dirt.git.status_porcelain_strict", return_value="\n M real.py"),
         ):
             reasons = real_uncommitted_reasons(str(wt_dir), target)
         assert len(reasons) == 1
         assert "real.py" in reasons[0]
+
+    def test_real_corrupt_index_fails_closed_not_clean(self, tmp_path: Path) -> None:
+        """A REAL (unmocked) git failure must be treated as dirty, not clean.
+
+        Regression for a bug where the probe called the lenient
+        :func:`teatree.utils.git.status_porcelain`, which swallows a non-zero
+        ``git status`` exit and returns whatever (possibly empty) stdout it got —
+        so a genuine read failure (corrupt index, lock contention) was
+        indistinguishable from a clean tree, and the reaper could wipe a
+        worktree it could not actually prove was safe to wipe. This test
+        corrupts the on-disk index directly (no mocking) so the underlying
+        ``git status --porcelain`` subprocess itself fails, the way it would
+        under real lock contention or disk corruption.
+        """
+        wt_dir, target = _committed_worktree(tmp_path)
+        _corrupt_index(wt_dir)
+        reasons = real_uncommitted_reasons(str(wt_dir), target)
+        assert reasons != []
+        assert "keeping" in reasons[0]
 
     def test_truncates_preview_beyond_limit(self, tmp_path: Path) -> None:
         wt_dir, target = _committed_worktree(tmp_path)
@@ -142,8 +182,21 @@ class TestDanglingHeadDirtReasons:
         with (
             patch("teatree.core.cleanup.working_tree_dirt.classify_orphan_ref", return_value=recovered),
             patch("teatree.core.cleanup.working_tree_dirt.git.check", return_value=False),
-            patch("teatree.core.cleanup.working_tree_dirt.git.run", side_effect=boom) as mock_run,
+            patch("teatree.core.cleanup.working_tree_dirt.git.run_strict", side_effect=boom) as mock_run,
         ):
             reasons = real_uncommitted_reasons(str(wt_dir), target)
         assert reasons == [f"could not diff working tree against recovered HEAD ({boom}) — keeping"]
         assert mock_run.called
+
+    def test_real_corrupt_index_fails_closed_for_dangling_head(self, tmp_path: Path) -> None:
+        """A REAL (unmocked) diff/ls-files failure on the dangling-HEAD path must fail closed too.
+
+        Same regression as the resolvable-HEAD case above, for the sibling
+        lenient calls (``git.run`` for ``diff``/``ls-files``) that also needed
+        to move to :func:`teatree.utils.git.run_strict`.
+        """
+        wt_dir, target = _dangling_head_worktree(tmp_path)
+        _corrupt_index(wt_dir)
+        reasons = real_uncommitted_reasons(str(wt_dir), target)
+        assert reasons != []
+        assert "keeping" in reasons[0]

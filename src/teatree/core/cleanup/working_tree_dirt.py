@@ -75,7 +75,7 @@ def real_uncommitted_reasons(wt_path: str, target: "_EffectiveTarget") -> list[s
     if not git.check(repo=wt_path, args=["rev-parse", "--verify", "--quiet", "HEAD"]):
         return _dangling_head_dirty_reasons(wt_path, target)
     try:
-        porcelain = git.status_porcelain(wt_path)
+        porcelain = git.status_porcelain_strict(wt_path)
     except CommandFailedError as exc:
         return [f"could not read working-tree status ({exc}) — keeping"]
     dirty = [
@@ -101,8 +101,8 @@ def _dangling_head_dirty_reasons(wt_path: str, target: "_EffectiveTarget") -> li
     if sha is None:
         return ["could not recover HEAD to check working-tree changes — keeping"]
     try:
-        changed = git.run(repo=wt_path, args=["diff", "--name-only", sha])
-        untracked = git.run(repo=wt_path, args=["ls-files", "--others", "--exclude-standard"])
+        changed = git.run_strict(repo=wt_path, args=["diff", "--name-only", sha])
+        untracked = git.run_strict(repo=wt_path, args=["ls-files", "--others", "--exclude-standard"])
     except CommandFailedError as exc:
         return [f"could not diff working tree against recovered HEAD ({exc}) — keeping"]
     dirty = [
