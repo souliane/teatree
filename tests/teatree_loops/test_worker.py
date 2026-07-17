@@ -21,11 +21,13 @@ from teatree.loops import timer_chains
 from teatree.loops import worker as worker_mod
 from teatree.loops.worker import (
     DEFAULT_QUEUE_FLOOR,
-    LOOPS_EXECUTOR_COUNT,
+    LOOPS_EXECUTOR_FLOOR,
     LoopWorker,
+    LoopWorkerExecutorCrashError,
     WorkerSeams,
     build_executor_queues,
     default_queue_executor_count,
+    loops_executor_count,
 )
 from teatree.utils.run import spawn_session_leader
 from teatree.utils.singleton import pid_alive
@@ -42,8 +44,12 @@ class _FakeExecutor:
 
 
 class _FakeHandle:
-    def __init__(self) -> None:
+    def __init__(self, *, alive: bool = True) -> None:
         self.joined = False
+        self._alive = alive
+
+    def is_alive(self) -> bool:
+        return self._alive
 
     def join(self, timeout: float | None = None) -> None:
         self.joined = True
@@ -94,28 +100,31 @@ def test_reconciles_seeds_and_expires_before_starting_executors() -> None:
     assert order.count("spawn") == len(build_executor_queues())
 
 
-def test_default_queue_scales_with_host_cores(monkeypatch: pytest.MonkeyPatch) -> None:
-    # 4 default executors on a host whose shared PR-01 ceiling is 4 (an 8-core box).
+def test_both_pools_scale_with_host_cores(monkeypatch: pytest.MonkeyPatch) -> None:
+    # 4 loops + 4 default executors on a host whose shared PR-01 ceiling is 4 (an 8-core
+    # box). Scaling the loops pool too means two slow ticks no longer stall every OTHER loop.
     monkeypatch.setattr(worker_mod, "default_provision_concurrency", lambda: 4)
+    assert loops_executor_count() == 4
     assert default_queue_executor_count() == 4
     queues = build_executor_queues()
-    assert queues.count("loops") == LOOPS_EXECUTOR_COUNT == 2
+    assert queues.count("loops") == 4
     assert queues.count("default") == 4
 
 
-def test_default_queue_floored_at_two_on_a_small_host(monkeypatch: pytest.MonkeyPatch) -> None:
-    # A 1-2 core box floors at the prior hardcoded minimum, never below.
+def test_both_pools_floored_at_two_on_a_small_host(monkeypatch: pytest.MonkeyPatch) -> None:
+    # A 1-2 core box floors both pools at the prior hardcoded minimum, never below.
     monkeypatch.setattr(worker_mod, "default_provision_concurrency", lambda: 1)
+    assert loops_executor_count() == LOOPS_EXECUTOR_FLOOR == 2
     assert default_queue_executor_count() == DEFAULT_QUEUE_FLOOR == 2
 
 
-def test_pins_two_loops_and_host_scaled_default_executors(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_spawns_host_scaled_loops_and_default_executors(monkeypatch: pytest.MonkeyPatch) -> None:
     # Patch BEFORE _make_worker so the WorkerSeams default_factory reads the host size.
     monkeypatch.setattr(worker_mod, "default_provision_concurrency", lambda: 3)
     worker, built, _ = _make_worker(enabled=lambda: False, sleep=lambda _s: None)
     worker.run()
     queues = [executor.queue for executor in built]
-    assert queues.count("loops") == 2
+    assert queues.count("loops") == 3
     assert queues.count("default") == 3
 
 
@@ -137,6 +146,57 @@ def test_stop_signal_tears_the_pool_down() -> None:
     worker.run()
     assert all(not executor.running for executor in built)
     assert all(handle.joined for handle in handles)
+
+
+def _liveness_seams(*, enabled, spawn, make_executor, **overrides) -> WorkerSeams:
+    return WorkerSeams(
+        enabled=enabled,
+        reconcile=lambda: None,
+        seed_chains=lambda: None,
+        expire=lambda: None,
+        make_executor=make_executor,
+        spawn=spawn,
+        kill_ticks=lambda: None,
+        sleep=lambda _s: None,
+        poll_seconds=0.0,
+        executor_queues=("loops",),
+        **overrides,
+    )
+
+
+def test_dead_executor_thread_is_respawned() -> None:
+    # An executor thread a swallowed DB error silently killed is detected via is_alive
+    # and respawned, so its pinned queue keeps draining instead of freezing the box.
+    built: list[_FakeExecutor] = []
+    alive_flags = iter([False])  # the FIRST handle is dead at the first poll; respawns are alive
+
+    def make_executor(queue: str, worker_id: str) -> _FakeExecutor:
+        executor = _FakeExecutor(queue, worker_id)
+        built.append(executor)
+        return executor
+
+    def spawn(_executor: _FakeExecutor) -> _FakeHandle:
+        return _FakeHandle(alive=next(alive_flags, True))
+
+    states = iter([True, False])  # one supervisory poll, then stop
+    seams = _liveness_seams(enabled=lambda: next(states, False), spawn=spawn, make_executor=make_executor)
+    LoopWorker(seams).run()
+
+    assert len(built) == 2  # the original dead executor + one respawn
+    assert built[1].queue == "loops"
+
+
+def test_repeated_executor_death_exits_the_worker_non_zero() -> None:
+    # A crash-looping executor is a real fault — after the respawn budget is spent the
+    # worker raises (exits non-zero) so the OS/container restarts it, never masks it.
+    seams = _liveness_seams(
+        enabled=lambda: True,  # never flips off — only the crash path terminates run()
+        spawn=lambda _e: _FakeHandle(alive=False),  # every executor is dead
+        make_executor=_FakeExecutor,
+        max_respawns=2,
+    )
+    with pytest.raises(LoopWorkerExecutorCrashError):
+        LoopWorker(seams).run()
 
 
 def test_shutdown_kills_in_flight_tick_process_groups() -> None:

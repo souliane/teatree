@@ -14,8 +14,10 @@ switch off terminates the chain at its source (not only at the worker supervisor
 the switch is ON the five fixed steps run:
 
 Step 1 — self-dedup: a second pending ``loop_timer`` for the same loop already
-carries the chain, so this one stops without chaining (collapses duplicates to one
-— the "exactly one pending timer per loop" invariant self-heals).
+carries the chain, OR a concurrently-RUNNING duplicate with a lower id outranks this
+fire, so this one stops without chaining (collapses duplicates to one — the "exactly
+one live timer per loop" invariant self-heals; the id tiebreak lets exactly one of two
+racing RUNNING timers proceed).
 
 Step 2 — successor-first re-enqueue: schedule the next timer BEFORE running the
 tick, so a crash during the tick leaves a queued successor (crash-safe). The
@@ -31,9 +33,13 @@ Step 3 — admission check: the unified enabled+due+reachable verdict
 is a free no-op; its successor is refined to a polling floor so it never busy-spins.
 
 Step 4 — deadlined subprocess tick: the tick runs as its OWN process group
-subprocess (``python -m teatree loops_tick --loop <name>``) with a hard deadline
-``max(300 s, 3 x cadence)``; on expiry the whole group is killed, so a hung tick
-occupies one executor slot for at most the deadline and every other loop keeps firing.
+subprocess (``python -m teatree loops_tick --loop <name>``) with a hard deadline —
+``max(300 s, 3 x cadence)`` for an interval loop, the dedicated
+:data:`DAILY_TICK_DEADLINE_SECONDS` for a ``daily_at`` loop; on expiry the whole group
+is killed, so a hung tick occupies one executor slot for at most the deadline and every
+other loop keeps firing. A tick killed at its deadline already consumed its cadence
+anchor, so its work is lost until the next slot — that is escalated LOUDLY via a durable
+``DeferredQuestion``, never left behind a silent warning.
 
 Step 5 — post-tick refinement: after the tick's CAS bumps ``Loop.last_run_at``, the
 successor's ``run_after`` is recomputed from the fresh anchor and pushed out to the
@@ -55,6 +61,7 @@ import os
 import signal
 import sys
 import threading
+import uuid
 from typing import TYPE_CHECKING, TypedDict
 
 from django.tasks import task
@@ -92,6 +99,14 @@ class TimerResult(TypedDict, total=False):
 #: allowlist in ``teatree.settings`` (parity-tested).
 LOOPS_QUEUE = "loops"
 
+#: Set in the deadlined tick subprocess's environment so the ``loops_tick`` command can
+#: ``os._exit`` right after rendering — a hung NON-daemon scanner thread would otherwise
+#: block interpreter shutdown (its ``ThreadPoolExecutor`` atexit join), pinning the
+#: subprocess (and one scarce ``loops`` executor slot) until the outer deadline SIGKILL.
+#: Only the spawned subprocess carries it — an in-process ``call_command`` never does, so
+#: tests never trip the hard exit.
+TICK_SUBPROCESS_ENV_MARKER = "T3_LOOPS_TICK_SUBPROCESS"
+
 #: A cadence-less (every-tick) loop has no interval, so its successor polls on this
 #: floor rather than busy-spinning.
 CADENCE_LESS_POLL_FLOOR_SECONDS = 60
@@ -100,9 +115,14 @@ CADENCE_LESS_POLL_FLOOR_SECONDS = 60
 #: polls at a sane cadence instead of re-firing immediately.
 IDLE_POLL_FLOOR_SECONDS = 60
 
-#: The tick subprocess deadline is ``max(MIN_TICK_DEADLINE_SECONDS, 3 x cadence)``.
+#: The interval tick subprocess deadline is ``max(MIN_TICK_DEADLINE_SECONDS, 3 x cadence)``.
 MIN_TICK_DEADLINE_SECONDS = 300.0
 DEADLINE_CADENCE_MULTIPLIER = 3
+#: A ``daily_at`` loop has no ``delay_seconds``, so ``3 x cadence`` collapses to the
+#: 300 s floor — far too short for a daily news scan / sweep, which is then SIGKILLed
+#: AFTER its cadence anchor was already consumed (loss for a full 24 h). Daily ticks
+#: get their own generous deadline instead; a genuine overrun past it escalates loudly.
+DAILY_TICK_DEADLINE_SECONDS = 1800.0
 
 
 def _loop_runner_enabled() -> bool:
@@ -155,6 +175,22 @@ def running_loop_timers(name: str) -> "list[DBTaskResult]":
     return _timers_for(name, status=TaskResultStatus.RUNNING)
 
 
+def _live_loop_timers(name: str) -> "list[DBTaskResult]":
+    """READY-or-RUNNING ``loop_timer`` rows for *name* in ONE query.
+
+    Step 1's self-dedup needs both the queued successor (READY) and any concurrent
+    duplicate (RUNNING); fetching them together keeps the hot path at a single DB
+    round-trip instead of two.
+    """
+    from django_tasks.base import TaskResultStatus  # noqa: PLC0415 — deferred: heavy/optional dep at call site
+    from django_tasks_db.models import DBTaskResult  # noqa: PLC0415 — deferred: heavy/optional dep at call site
+
+    rows = DBTaskResult.objects.filter(
+        task_path=_loop_timer_path(), status__in=[TaskResultStatus.READY, TaskResultStatus.RUNNING]
+    )
+    return [row for row in rows if row.args_kwargs.get("args") == [name]]
+
+
 def enqueue_loop_timer(name: str, *, run_after: dt.datetime) -> None:
     """Queue one ``loop_timer(name)`` timer on the ``loops`` queue at *run_after*."""
     loop_timer.using(run_after=run_after).enqueue(name)
@@ -204,9 +240,41 @@ def _idle_successor_run_after(row: "Loop", now: dt.datetime) -> dt.datetime:
 
 
 def compute_tick_deadline(row: "Loop") -> float:
-    """The hard subprocess-tick deadline: ``max(300 s, 3 x cadence)``."""
+    """The hard subprocess-tick deadline.
+
+    An interval loop gets ``max(300 s, 3 x cadence)``. A ``daily_at`` loop has no
+    ``delay_seconds`` (so ``3 x cadence`` would collapse to the 300 s floor and
+    SIGKILL a legitimately long daily scan after its anchor was already consumed) —
+    it gets the dedicated :data:`DAILY_TICK_DEADLINE_SECONDS` instead.
+    """
+    if row.delay_seconds is None and row.daily_at is not None:
+        return DAILY_TICK_DEADLINE_SECONDS
     cadence = row.delay_seconds or 0
     return max(MIN_TICK_DEADLINE_SECONDS, DEADLINE_CADENCE_MULTIPLIER * float(cadence))
+
+
+def _escalate_tick_timeout(name: str, *, deadline: float) -> None:
+    """Record a durable escalation when a tick was SIGKILLed at its deadline, once per loop.
+
+    A killed tick already consumed its cadence anchor (claimed BEFORE the scan in
+    ``build_loop_table_jobs``), so this run's work is lost until the next slot — for a
+    daily loop, a full 24 h, repeatable forever. That is exactly the "never silently
+    freeze" invariant: the timeout must surface loudly, not sit behind a lone
+    ``logger.warning``. Idempotent — a per-loop marker in the question text dedups
+    across ALL questions (answered or not) so a repeatedly-timing-out loop escalates
+    once, not every fire.
+    """
+    from teatree.core.models.deferred_question import DeferredQuestion  # noqa: PLC0415 — deferred: ORM import
+
+    marker = f"[loop-tick-timeout loop={name}]"
+    if DeferredQuestion.objects.filter(question__contains=marker).exists():
+        return
+    question = (
+        f"{marker} Loop {name!r} tick exceeded its {deadline:.0f}s deadline and was killed; its cadence "
+        "anchor was already consumed, so this run's work is lost until the next slot. Raise the loop's "
+        "deadline or investigate why the tick hangs — how should it proceed?"
+    )
+    DeferredQuestion.record(question, session_id="")
 
 
 def loop_admitted(name: str, now: dt.datetime) -> bool:
@@ -272,7 +340,7 @@ def run_deadlined_tick(name: str, *, deadline: float) -> TickOutcome:
     ``python -m teatree`` isolates a crash/hang from the worker executor thread and
     gives an OS-level kill boundary an in-process ``call_command`` cannot.
     """
-    proc = spawn_session_leader(_tick_argv(name))
+    proc = spawn_session_leader(_tick_argv(name), env={**os.environ, TICK_SUBPROCESS_ENV_MARKER: "1"})
     pgid = _tick_pgid(proc)
     if pgid is not None:
         _register_tick_pgid(pgid)
@@ -322,18 +390,39 @@ def _kill_process_group(proc: Popen[str]) -> None:
         logger.exception("loop tick process group for pid %s did not die after SIGKILL", proc.pid)
 
 
-@task(queue_name=LOOPS_QUEUE)
-def loop_timer(name: str) -> TimerResult:
+def _outranked_by_running(running: "list[DBTaskResult]", *, my_id: str | uuid.UUID) -> bool:
+    """Whether any RUNNING duplicate in *running* outranks this fire (lower id wins the tiebreak).
+
+    Both this fire AND a concurrent duplicate are RUNNING rows; excluding this fire's
+    own id, the lowest-id running timer survives and every other one dedups — so a slow
+    anchor CAS that let a second executor claim a duplicate can no longer run two
+    concurrent ticks (the READY-only self-dedup missed this). Exactly one winner: only
+    ids strictly below mine count, so the minimum-id fire sees none. Both sides are
+    normalized to the dashed-hex form so ``<`` is a stable total order regardless of the
+    raw id spelling.
+    """
+    from django_tasks_db.models import normalize_uuid  # noqa: PLC0415 — deferred: heavy/optional dep at call site
+
+    me = normalize_uuid(my_id)
+    return any(normalize_uuid(row.id) < me for row in running)
+
+
+@task(queue_name=LOOPS_QUEUE, takes_context=True)
+def loop_timer(context: object, name: str) -> TimerResult:
     """One self-rescheduling loop-timer fire — the five-step tick body (#1796).
 
     See the module docstring for the step-by-step contract. The running row is
-    already RUNNING (the worker claimed it before calling), so a READY row for the
-    same loop is unambiguously a duplicate successor — the self-dedup in step 1 does
-    not need this row's own id.
+    already RUNNING (the worker claimed it before calling); step 1 dedups against a
+    READY successor AND against any concurrently-RUNNING duplicate, excluding this
+    fire's own id (``context.task_result.id``) so exactly one of two racing timers
+    proceeds and the other collapses.
     """
+    from django_tasks.base import TaskResultStatus  # noqa: PLC0415 — deferred: heavy/optional dep at call site
+
     from teatree.core.models import Loop  # noqa: PLC0415 — deferred: ORM import needs the app registry
 
     now = timezone.now()
+    my_id = context.task_result.id  # ty: ignore[unresolved-attribute]  # django-tasks TaskContext
 
     # (0) kill-switch — the loop runner is OFF, so terminate the chain at its source:
     # do NOT re-enqueue a successor. The worker supervisor also stops on a flip-off, but
@@ -342,8 +431,12 @@ def loop_timer(name: str) -> TimerResult:
     if not _loop_runner_enabled():
         return {"loop": name, "action": "halted"}
 
-    # (1) self-dedup — another queued timer already carries the chain.
-    if pending_loop_timers(name):
+    # (1) self-dedup — a queued (READY) successor OR a lower-id concurrent RUNNING
+    # duplicate already carries the chain. One query fetches both.
+    live = _live_loop_timers(name)
+    pending = [row for row in live if row.status == TaskResultStatus.READY]
+    running = [row for row in live if row.status == TaskResultStatus.RUNNING]
+    if pending or _outranked_by_running(running, my_id=my_id):
         return {"loop": name, "action": "deduped"}
 
     row = Loop.objects.filter(name=name).first()
@@ -363,6 +456,10 @@ def loop_timer(name: str) -> TimerResult:
 
     # (4) deadlined subprocess tick in its own process group.
     outcome = run_deadlined_tick(name, deadline=compute_tick_deadline(row))
+    if outcome["timed_out"]:
+        # The killed tick already consumed its anchor, so its work is lost until the
+        # next slot (a full 24 h for a daily loop). Surface it loudly, never silent.
+        _escalate_tick_timeout(name, deadline=compute_tick_deadline(row))
 
     # (5) post-tick refinement. A faulted tick (crash before the CAS, connector
     # outage, lost lease) leaves the anchor unmoved, so the loop is still "due" and

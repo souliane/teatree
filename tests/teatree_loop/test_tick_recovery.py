@@ -6,6 +6,7 @@ both self-heal from the loop tick, never only from an explicit ``t3 recover``.
 """
 
 from datetime import timedelta
+from unittest.mock import patch
 
 from django.test import TestCase
 from django.utils import timezone
@@ -22,6 +23,28 @@ class TestReapStaleTaskClaims(TestCase):
 
         _reap_stale_task_claims()
 
+        transient.refresh_from_db()
+        assert transient.status == Task.Status.PENDING
+        assert stuck.tasks.filter(phase="planning", status=Task.Status.PENDING).count() == 1
+
+    def test_a_failing_boot_sweep_does_not_skip_the_other_two_and_is_recorded(self) -> None:
+        # #5: the old shared suppress(RuntimeError) let the FIRST sweep's failure skip
+        # BOTH later sweeps AND vanish. Each sweep must run independently, and a failure
+        # must land in the errors sink (rendered in action_needed), never silently.
+        transient = self._transient_failed_task()
+        stuck = self._stuck_started_ticket()
+        errors: dict[str, str] = {}
+
+        with patch(
+            "teatree.core.worktree.recovery_sweeps.run_boot_sweeps",
+            side_effect=RuntimeError("boot sweep exploded"),
+        ):
+            _reap_stale_task_claims(errors)
+
+        # The boot-sweep failure was recorded, not swallowed...
+        assert "recovery:boot_sweeps" in errors
+        assert "boot sweep exploded" in errors["recovery:boot_sweeps"]
+        # ...and the other two sweeps still ran despite it.
         transient.refresh_from_db()
         assert transient.status == Task.Status.PENDING
         assert stuck.tasks.filter(phase="planning", status=Task.Status.PENDING).count() == 1
