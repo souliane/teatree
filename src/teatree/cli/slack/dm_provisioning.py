@@ -15,12 +15,12 @@ overlay's entry in the ``overlays`` registry row. The runtime
 which short-circuits subsequent ``open_dm`` calls for the configured user (no
 extra Slack round-trip).
 
-The user's Slack id is resolved in priority order: first ``pass slack/user-id``
-(the canonical, overlay-agnostic single source of truth a wrapper script
-provisions once); then the per-overlay ``slack_user_id`` already recorded by
-``t3 setup slack-bot``; finally the bot's own ``auth.test`` response (last-resort
-fallback returning whichever user the token was minted for — usually the bot
-user, rarely the human).
+The user's Slack id is resolved from the per-overlay ``slack_user_id`` recorded
+by ``t3 setup slack-bot``, falling back to ``pass slack/user-id`` (the canonical,
+overlay-agnostic single source of truth a wrapper script provisions once). There
+is no ``auth.test`` fallback: it returns whichever user the bot token was minted
+for — usually the bot user — so a DM opened to it would make the bot message
+itself and misroute the owner's notifications.
 
 Failures are surfaced at setup time rather than mid-run at first DM attempt: a
 clean ``conversations.open ok:false`` produces a single
@@ -73,24 +73,18 @@ class ProvisionResult:
     detail: str = ""
 
 
-def resolve_user_slack_id(*, bot_token: str) -> str:
-    """Resolve the user's Slack id for the IM-provisioning step.
+def resolve_user_slack_id() -> str:
+    """Resolve the human owner's Slack id for the IM-provisioning step.
 
-    Try ``pass show slack/user-id`` first (the overlay-agnostic canonical
-    source); fall back to ``auth.test`` on the bot token (a soft fallback
-    that returns whichever user the token was minted for — usually the
-    bot user, rarely the human; the caller decides whether to accept it).
-    Returns ``""`` when neither source resolves.
+    Reads ONLY ``pass show slack/user-id`` (the overlay-agnostic canonical
+    source of the human's own id). There is no ``auth.test`` fallback: that
+    returns whichever user the bot token was minted for — usually the bot
+    user itself — so opening a DM to it would make the bot message itself and
+    silently misroute the owner's notifications (mirrors
+    ``slack/setup._resolve_owner_user_id``). Returns ``""`` when unset, and the
+    caller records ``SKIPPED_NO_USER_ID`` rather than provisioning a wrong id.
     """
-    from_pass = read_pass(SLACK_USER_ID_PASS_KEY)
-    if from_pass:
-        return from_pass
-    backend = SlackBotBackend(bot_token=bot_token)
-    data = backend.auth_test()
-    if not data.get("ok"):
-        return ""
-    user_id = data.get("user_id", "")
-    return user_id if isinstance(user_id, str) else ""
+    return read_pass(SLACK_USER_ID_PASS_KEY)
 
 
 def _load_overlays_registry() -> dict[str, dict]:
@@ -138,7 +132,7 @@ def provision_overlay_dm_channel(*, overlay_name: str) -> ProvisionResult:
             detail=f"no bot token at pass `{token_ref}-bot`",
         )
 
-    user_id = str(overlay_block.get("slack_user_id", "")) or resolve_user_slack_id(bot_token=bot_token)
+    user_id = str(overlay_block.get("slack_user_id", "")) or resolve_user_slack_id()
     if not user_id:
         return ProvisionResult(
             status=ProvisionResult.SKIPPED_NO_USER_ID,

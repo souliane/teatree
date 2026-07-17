@@ -1,22 +1,36 @@
 """Tests for the real LLM distiller seam — extract → clusters, no live LLM (#2723)."""
 
 import json
+import os
 import sqlite3
 import tempfile
 import threading
+from collections.abc import Callable
 from pathlib import Path
 from typing import Self
 from unittest.mock import patch
 
 import claude_agent_sdk
 import pytest
-from django.test import SimpleTestCase
+from django.test import SimpleTestCase, TestCase
 
 from teatree.agents.model_tiering import resolve_tier
+from teatree.core.models import ConfigSetting
+from teatree.llm.credentials import CredentialError
 from teatree.loops.dream import sdk_distiller
 from teatree.loops.dream.engine import ConsolidationExtract, DistillEmptyReason, WeightedSnippet
 from teatree.loops.dream.sdk_distiller import deterministic_cluster_key
 from tests.teatree_agents._sdk_fake import FakeHarnessSession, assistant_text
+
+
+def _recording_client(reply: str) -> Callable[..., FakeHarnessSession]:
+    """A fake ``ClaudeSDKClient`` that records the ``options`` it was opened with."""
+
+    def _make_client(*, options: object = None, **_: object) -> FakeHarnessSession:
+        FakeHarnessSession.last_options = options
+        return FakeHarnessSession([assistant_text(reply)])
+
+    return _make_client
 
 
 def _seed_config_setting(db_path: Path, key: str, raw_value: str) -> None:
@@ -296,6 +310,81 @@ class DistillOptionsTierResolutionTestCase(SimpleTestCase):
         options = sdk_distiller._distill_options()
         assert isinstance(options.system_prompt, str)
         assert "consolidate" in options.system_prompt.lower()
+
+
+class SdkDistillerCredentialEnvTestCase(TestCase):
+    """The distiller authenticates its ``claude`` subprocess via the configured provider.
+
+    Regression pin for the dream-consolidation outage: the distiller spawned ``claude``
+    with no credential env, so on a worker whose ambient env carries no token the
+    subprocess could not authenticate and its login-error text parsed as ``UNPARSABLE``
+    — 0 clusters, forever, masquerading as "nothing to consolidate". DB access: reads
+    ``agent_harness_provider`` + the credential routing list.
+    """
+
+    def test_options_env_pins_subscription_token(self) -> None:
+        # RED before the fix: _distill_options set no env, so options.env == {} and the
+        # spawned claude rode the (token-less) ambient env.
+        ConfigSetting.objects.set_value("agent_harness_provider", "subscription_oauth")
+        with (
+            patch.dict(os.environ, {"CLAUDE_CODE_OAUTH_TOKEN": "oauth-x", "GIT_DIR": "/outer/.git"}),
+            patch("shutil.which", return_value="/usr/bin/claude"),
+            patch.object(claude_agent_sdk, "ClaudeSDKClient", _recording_client("[]")),
+        ):
+            sdk_distiller.sdk_distiller(_extract_with_one_snippet())
+
+        options = FakeHarnessSession.last_options
+        assert options is not None
+        assert options.env["CLAUDE_CODE_OAUTH_TOKEN"] == "oauth-x"
+        assert "ANTHROPIC_API_KEY" not in options.env
+        # The git_env_without_overrides() base strips an outer git hook's GIT_DIR so
+        # options.env can never re-inject it into the child.
+        assert "GIT_DIR" not in options.env
+
+    def test_options_env_stays_ambient_with_no_provider(self) -> None:
+        # No provider pin → system_child_env() returns None → options.env keeps the SDK
+        # default empty mapping (ambient inherited), exactly as before the pinning.
+        with (
+            patch("shutil.which", return_value="/usr/bin/claude"),
+            patch.object(claude_agent_sdk, "ClaudeSDKClient", _recording_client("[]")),
+        ):
+            sdk_distiller.sdk_distiller(_extract_with_one_snippet())
+
+        assert FakeHarnessSession.last_options.env == {}
+
+    def test_unresolvable_credential_fails_loud_before_any_turn(self) -> None:
+        # An auth gap must RAISE (CredentialError) before the turn spawns, so it can
+        # never be laundered into an UNPARSABLE 0-cluster result. The client is never
+        # constructed.
+        ConfigSetting.objects.set_value("agent_harness_provider", "subscription_oauth")
+
+        def _never(*_a: object, **_k: object) -> FakeHarnessSession:
+            msg = "the claude turn must not start when the credential is unresolvable"
+            raise AssertionError(msg)
+
+        with (
+            patch(
+                "teatree.agents._headless_env.resolve_subscription_credential",
+                side_effect=CredentialError("no subscription token resolvable"),
+            ),
+            patch("shutil.which", return_value="/usr/bin/claude"),
+            patch.object(claude_agent_sdk, "ClaudeSDKClient", _never),
+            pytest.raises(CredentialError),
+        ):
+            sdk_distiller.sdk_distiller(_extract_with_one_snippet())
+
+    def test_pydantic_ai_provider_falls_back_to_ambient(self) -> None:
+        # A pydantic_ai-only provider warns and uses ambient auth rather than breaking a
+        # valid deployment: the turn still runs and options.env stays the SDK default.
+        ConfigSetting.objects.set_value("agent_harness", "pydantic_ai")
+        ConfigSetting.objects.set_value("agent_harness_provider", "orca_router_byok")
+        with (
+            patch("shutil.which", return_value="/usr/bin/claude"),
+            patch.object(claude_agent_sdk, "ClaudeSDKClient", _recording_client("[]")),
+        ):
+            sdk_distiller.sdk_distiller(_extract_with_one_snippet())
+
+        assert FakeHarnessSession.last_options.env == {}
 
 
 class SdkDistillReasonTestCase(SimpleTestCase):

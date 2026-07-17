@@ -21,25 +21,19 @@ from teatree.core.models import ConfigSetting
 class TestResolveUserSlackId:
     def test_returns_pass_value_when_available(self) -> None:
         with patch("teatree.cli.slack.dm_provisioning.read_pass", return_value="U_FROM_PASS"):
-            assert resolve_user_slack_id(bot_token="xoxb-tok") == "U_FROM_PASS"
+            assert resolve_user_slack_id() == "U_FROM_PASS"
 
-    def test_falls_back_to_auth_test_when_pass_empty(self) -> None:
+    def test_returns_empty_without_auth_test_fallback(self) -> None:
+        # The bot's own auth.test id must NEVER be used as the owner id — a DM to
+        # it makes the bot message itself and misroutes notifications. An empty
+        # pass entry yields "" so the caller records SKIPPED_NO_USER_ID.
         backend = MagicMock(spec=SlackBotBackend)
-        backend.auth_test.return_value = {"ok": True, "user_id": "U_FROM_AUTH"}
         with (
             patch("teatree.cli.slack.dm_provisioning.read_pass", return_value=""),
             patch("teatree.cli.slack.dm_provisioning.SlackBotBackend", return_value=backend),
         ):
-            assert resolve_user_slack_id(bot_token="xoxb-tok") == "U_FROM_AUTH"
-
-    def test_returns_empty_when_auth_test_fails(self) -> None:
-        backend = MagicMock(spec=SlackBotBackend)
-        backend.auth_test.return_value = {"ok": False, "error": "invalid_auth"}
-        with (
-            patch("teatree.cli.slack.dm_provisioning.read_pass", return_value=""),
-            patch("teatree.cli.slack.dm_provisioning.SlackBotBackend", return_value=backend),
-        ):
-            assert resolve_user_slack_id(bot_token="xoxb-tok") == ""
+            assert resolve_user_slack_id() == ""
+        backend.auth_test.assert_not_called()
 
 
 class TestProvisionOverlayDmChannel(TestCase):
@@ -130,6 +124,23 @@ class TestProvisionOverlayDmChannel(TestCase):
             result = provision_overlay_dm_channel(overlay_name="teatree")
 
         assert result.status == ProvisionResult.SKIPPED_NO_BOT_TOKEN
+
+    def test_skips_when_no_user_id_anywhere_and_never_dms_the_bot(self) -> None:
+        # No overlay slack_user_id and empty `pass slack/user-id` must SKIP — the
+        # dropped auth.test fallback would have DMed the bot's own id (#3313).
+        self._seed_overlay({"messaging_backend": "slack", "slack_token_ref": "teatree/teatree/slack"})
+        backend = MagicMock(spec=SlackBotBackend)
+        with (
+            patch(
+                "teatree.cli.slack.dm_provisioning.read_pass",
+                side_effect=lambda key: "xoxb-tok" if key.endswith("-bot") else "",
+            ),
+            patch("teatree.cli.slack.dm_provisioning.SlackBotBackend", return_value=backend),
+        ):
+            result = provision_overlay_dm_channel(overlay_name="teatree")
+        assert result.status == ProvisionResult.SKIPPED_NO_USER_ID
+        backend.open_dm.assert_not_called()
+        backend.auth_test.assert_not_called()
 
     def test_uses_pass_slack_user_id_when_overlay_has_none(self) -> None:
         """Setup falls back to ``pass slack/user-id`` when the overlay has no ``slack_user_id`` yet."""

@@ -16,6 +16,7 @@ from pydantic_ai.models.test import TestModel
 
 import teatree.agents.harness as harness_mod
 import teatree.agents.headless as headless_mod
+from teatree.agents._headless_env import system_child_env
 from teatree.agents._headless_options import _get_resume_session_id
 from teatree.agents.harness import ClaudeSdkHarness, PydanticAiHarness
 from teatree.agents.headless import (
@@ -1239,6 +1240,51 @@ class TestProviderChildEnv(TestCase):
         # None — no explicit Layer-2 pin, so the ambient environment is used
         # unchanged rather than forcing an eager credential lookup.
         assert _provider_child_env(None) is None
+
+
+class TestSystemChildEnv(TestCase):
+    """``system_child_env`` pins the Layer-2 credential for a SYSTEM ``claude`` pass.
+
+    The dream distiller / eval synthesizer spawn ``claude`` with no Task, so the
+    provider is read from GLOBAL config and the credential resolves at global scope.
+    DB access: the config read and the credential factory both touch ``ConfigSetting``.
+    """
+
+    def test_subscription_oauth_pins_token_at_global_scope(self) -> None:
+        ConfigSetting.objects.set_value("agent_harness_provider", "subscription_oauth")
+        with patch.dict(os.environ, {"CLAUDE_CODE_OAUTH_TOKEN": "oauth-x", "ANTHROPIC_API_KEY": "key-y"}):
+            env = system_child_env()
+
+        assert env is not None
+        assert env["CLAUDE_CODE_OAUTH_TOKEN"] == "oauth-x"
+        assert "ANTHROPIC_API_KEY" not in env
+
+    def test_api_key_pins_key_at_global_scope(self) -> None:
+        ConfigSetting.objects.set_value("agent_harness_provider", "api_key")
+        with patch.dict(os.environ, {"CLAUDE_CODE_OAUTH_TOKEN": "oauth-x", "ANTHROPIC_API_KEY": "key-y"}):
+            env = system_child_env()
+
+        assert env is not None
+        assert env["ANTHROPIC_API_KEY"] == "key-y"
+        assert "CLAUDE_CODE_OAUTH_TOKEN" not in env
+
+    def test_no_provider_pin_uses_ambient_env(self) -> None:
+        # No ConfigSetting row → no Layer-2 pin → None, so the system ``claude`` turn
+        # inherits the ambient auth state unchanged (byte-identical to pre-pinning).
+        assert system_child_env() is None
+
+    def test_pydantic_ai_only_provider_falls_back_to_ambient_with_warning(self) -> None:
+        # A provider valid only under agent_harness=pydantic_ai must NOT raise here
+        # (unlike ``_provider_child_env``, whose caller is claude_sdk-scoped): a system
+        # pass spawns ``claude`` on ANY harness, so a valid pydantic_ai deployment keeps
+        # its working ambient auth — warned, never broken.
+        ConfigSetting.objects.set_value("agent_harness", "pydantic_ai")
+        ConfigSetting.objects.set_value("agent_harness_provider", "orca_router_byok")
+        with self.assertLogs("teatree.agents._headless_env", level="WARNING") as logs:
+            env = system_child_env()
+
+        assert env is None
+        assert any("non-claude_sdk lane" in message for message in logs.output)
 
 
 class TestResolveDispatchLane:

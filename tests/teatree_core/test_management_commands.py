@@ -28,7 +28,7 @@ from teatree.core.overlay import (
     ProvisionStep,
     RunCommands,
 )
-from teatree.core.signals import _TICKET_TRANSITION_TASKS
+from teatree.core.signals import _TERMINAL_TARGET_STATES, _TICKET_TRANSITION_TASKS
 from tests._ansi import strip_ansi as _strip_ansi
 from tests.teatree_agents._sdk_fake import fake_sdk, success_stream
 
@@ -937,18 +937,29 @@ class TestTicketCommand(TestCase):
         ticket.refresh_from_db()
         assert ticket.state == Ticket.State.REVIEWED
 
-    def test_ignore_and_unignore_are_cli_allowed_and_enqueue_no_task(self) -> None:
-        """#2275 cleanup: abandon (ignore) is CLI-reachable and never drives teardown/ship/post.
+    def test_ignore_and_unignore_are_cli_allowed_and_never_ship(self) -> None:
+        """#2275 cleanup: abandon (ignore) is CLI-reachable and never drives a forge post.
 
-        The two names must be in the CLI allow-list, and neither may map to a
-        ``_TICKET_TRANSITION_TASKS`` executor — that mapping is what enqueues
-        ``execute_teardown`` / ``execute_ship`` (the only transition side effects
-        that post to the forge). Their absence is the structural proof that
-        abandoning a mis-adopted ticket is non-posting.
+        The two names must be in the CLI allow-list, and neither may name-map to a
+        ``_TICKET_TRANSITION_TASKS`` executor — in particular ``execute_ship`` (the
+        transition side effect that opens/pushes a PR). Their absence from the
+        NAME map is the structural proof that abandoning a mis-adopted ticket never
+        posts to the forge.
+
+        Teardown is now keyed on the TARGET STATE, not the name, so ``ignore``'s
+        IGNORED target DOES purge the ticket's worktrees — a local, non-posting
+        reap guarded by the analyze-before-wipe (#706). ``unignore`` restores a
+        non-terminal state, so it purges nothing.
         """
         assert {"ignore", "unignore"} <= ALLOWED_TRANSITIONS
         assert "ignore" not in _TICKET_TRANSITION_TASKS
         assert "unignore" not in _TICKET_TRANSITION_TASKS
+        # The forge-posting executor is never name-mapped to either abandon name.
+        assert _TICKET_TRANSITION_TASKS.get("ignore") != "execute_ship"
+        assert _TICKET_TRANSITION_TASKS.get("unignore") != "execute_ship"
+        # ignore lands in a terminal state → local worktree purge (non-posting);
+        # unignore restores a non-terminal state → no purge.
+        assert Ticket.State.IGNORED in _TERMINAL_TARGET_STATES
 
     def test_transition_ignore_reaches_ignored_state(self) -> None:
         ticket = Ticket.objects.create(overlay="test", state=Ticket.State.STARTED)

@@ -1,6 +1,9 @@
 """``_check_loop_presets`` — the `t3 doctor` dangling-reference warning (#3159)."""
 
 import datetime as dt
+import io
+from contextlib import redirect_stdout
+from unittest.mock import patch
 
 import django.test
 
@@ -36,3 +39,16 @@ class TestLoopPresetsDoctorCheck(django.test.TestCase):
     def test_active_schedule_naming_unknown_warns(self) -> None:
         ConfigSetting.objects.set_value(ACTIVE_SCHEDULE_SETTING, "ghost")
         assert _check_loop_presets() is False
+
+    def test_crash_degrades_to_ok_with_warn(self) -> None:
+        # A crashed advisory read degrades to OK (True) per the docstring — it
+        # WARNs but never reddens the run (#3313).
+        buf = io.StringIO()
+        with (
+            patch("teatree.cli.doctor.checks.consistency_findings", side_effect=RuntimeError("db offline")),
+            redirect_stdout(buf),
+        ):
+            assert _check_loop_presets() is True
+        out = buf.getvalue()
+        assert "WARN" in out
+        assert "RuntimeError" in out

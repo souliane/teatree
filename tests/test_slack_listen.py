@@ -159,6 +159,23 @@ class TestCheckCommand:
 
         assert result.exit_code == 1
 
+    def test_stands_down_when_another_drain_holds_the_lock(self) -> None:
+        # The 30s cron can double-fire; a concurrent drain would double-ack the
+        # same mentions. A singleton serialises it — a second drain stands down
+        # (exit 0) and never touches the queue (#3313).
+        from teatree.backends.slack.receiver import default_queue_path  # noqa: PLC0415
+        from teatree.utils.singleton import singleton  # noqa: PLC0415
+
+        pid = default_queue_path().with_name("slack-drain.pid")
+        with (
+            singleton("slack-drain", pid_path=pid),
+            patch("teatree.backends.slack.receiver.drain_event_queue") as drain,
+        ):
+            result = runner.invoke(slack_app, ["check"])
+
+        assert result.exit_code == 0
+        drain.assert_not_called()
+
     def test_prints_user_messages_as_json(self) -> None:
         events = [
             {

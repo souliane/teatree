@@ -13,7 +13,7 @@ commits before anyone noticed — see PR #623 for the cleanup. Without a
 codified floor, the same drift would happen again. New uncovered code must
 ship with tests.
 
-The CI ``test (3.13)`` lane is sharded 6-way (``test-shard`` matrix) behind an
+The CI ``test (3.13)`` lane is sharded 12-way (``test-shard`` matrix) behind an
 unchanged ``test`` combiner context. This guard is the safety-critical piece of
 that change: the combiner floor is asserted LOAD-BEARING — the needs-edge to the
 shards, the >= 2 distinct shard groups, the partition check, and the shard-pass
@@ -192,7 +192,7 @@ class TestShardedCoverageLane:
     """Lock the sharded CI coverage lane so the 93% floor stays load-bearing.
 
     The required ``test (3.13)`` context is produced by the ``test`` COMBINER,
-    which aggregates the 6-way ``test-shard`` matrix. Each assertion below pins
+    which aggregates the 12-way ``test-shard`` matrix. Each assertion below pins
     one property that, if quietly removed, would turn the floor into a no-op —
     the exact anti-vacuity the FIX-CIRUNTIME plan calls the safety-critical edit.
     """

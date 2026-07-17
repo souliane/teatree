@@ -2734,8 +2734,12 @@ Usage: t3 tool validate-mr [OPTIONS]
  that overlay's validator FAILS CLOSED (deny), never silently skips. This
  closes the gap where an MR targeting an overlay with stricter title rules,
  created with cwd in a repo owned by a more-lenient overlay, was graded
- against the cwd overlay and slipped through. A blank or unmatched ``--repo``
- falls back to the cwd-keyed resolution below.
+ against the cwd overlay and slipped through. A **blank** ``--repo`` falls
+ back to the cwd-keyed resolution below. A **non-empty** ``--repo`` that maps
+ to no registered overlay SKIPS validation (exit 0) rather than falling
+ through — a repo teatree does not own must never be graded by whatever
+ overlay owns the cwd, which would wrongly reject titles valid under the
+ target's own convention (#2430).
 
  Overlay resolution is deterministic and never crashes on ambiguity
  (#1526). Order:
@@ -4837,6 +4841,10 @@ Usage: t3 slack check [OPTIONS]
  to signal the bot has seen it, then prints each as a JSON line.
  Returns exit code 0 when messages were found, 1 when the queue
  was empty. Designed to be called from a fast cron (every 30s).
+
+ A singleton guard serialises the drain: the 30s cron can double-fire and
+ two concurrent drains would ack the same mentions twice, so a second drain
+ stands down (exit 0) while the first holds the lock.
 
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --help          Show this message and exit.                                  │

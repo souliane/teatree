@@ -75,7 +75,10 @@ class SocketModeOutcome:
 
     @property
     def ok(self) -> bool:
-        return not any(finding.level is Level.FAIL for finding in self.findings)
+        # An ACTION is a required human step (mint the app-level token, reinstall
+        # after a manifest auto-fix) that leaves Socket Mode non-functional until
+        # done — so it counts as not-ok alongside FAIL (#3313).
+        return not any(finding.level in {Level.FAIL, Level.ACTION} for finding in self.findings)
 
 
 def _mint_app_token_message(app_id: str, pass_key: str) -> str:
@@ -181,7 +184,10 @@ def _check_manifest(overlay: str) -> list[SocketModeFinding]:
         update_manifest(app_id=app_id, manifest=desired, config_token=read_pass(_CONFIG_TOKEN_REF))
     except SlackManifestError as exc:
         return [SocketModeFinding(overlay, Level.WARN, f"manifest update failed: {exc}.")]
-    return [SocketModeFinding(overlay, Level.OK, _fixed_message(gaps, app_id))]
+    # The manifest was rewritten, but Socket Mode is NOT live until the operator
+    # reinstalls the app to consent — so this is an ACTION (awaiting reinstall),
+    # not an OK (#3313). The message already names the reinstall URL.
+    return [SocketModeFinding(overlay, Level.ACTION, _fixed_message(gaps, app_id))]
 
 
 def check_slack_socket_mode() -> SocketModeOutcome:

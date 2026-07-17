@@ -12,8 +12,8 @@ class WorktreeTeardown(RunnerBase):
     """Tear down a done ticket's worktrees through the analyze-then-wipe reaper.
 
     The FSM-automatic teardown path (CORRECTION 3): ``execute_teardown`` enqueues
-    this when the ticket reaches MERGED (the merge/ship transition). Each worktree
-    funnels through :func:`reap_done_worktree` — the SAME consolidated
+    this when the ticket reaches a terminal state (MERGED / DELIVERED / IGNORED).
+    Each worktree funnels through :func:`reap_done_worktree` — the SAME consolidated
     done+redundant reaper ``clean-all`` and ``clean-merged`` use — so the loop
     tears a ticket's worktrees down the moment it is done, with the per-change
     analyze-before-wipe as the primary data-loss safety.
