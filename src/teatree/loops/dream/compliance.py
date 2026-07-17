@@ -368,11 +368,9 @@ def escalate_recurrences(
     recurring = {f.rule_identity: f for f in findings if f.is_recurrence}
     outcomes: list[EscalationOutcome] = []
     for identity, finding in recurring.items():
-        if dry_run:
-            continue
-        outcome = _escalate_one_recurrence(host, finding, umbrella_url=umbrella_url)
+        outcome = _escalate_one_recurrence(host, finding, umbrella_url=umbrella_url, dry_run=dry_run)
         outcomes.append(outcome)
-        if snapshot is not None and outcome.ticket_url:
+        if not dry_run and snapshot is not None and outcome.ticket_url:
             _stamp_escalated(snapshot, identity, outcome.ticket_url)
     return outcomes
 
@@ -474,7 +472,7 @@ def _stamp_escalated(snapshot: InstructionComplianceSnapshot, rule_identity: str
 
 
 def _escalate_one_recurrence(
-    host: CodeHostBackend, finding: ComplianceFinding, *, umbrella_url: str
+    host: CodeHostBackend, finding: ComplianceFinding, *, umbrella_url: str, dry_run: bool = False
 ) -> EscalationOutcome:
     """Drive one recurring rule to a fix-and-merge via the umbrella ledger (#2663).
 
@@ -482,7 +480,10 @@ def _escalate_one_recurrence(
     upserted under the umbrella (deduped by this recurrence's gap key) and a coding
     task is scheduled (deduped by the same key). The checkbox title PRESCRIBES the
     structural fix — a gate or an eval — never another memory. The banned-term /
-    bare-reference withholding is enforced inside ``promote_gap``.
+    bare-reference withholding is enforced inside ``promote_gap`` (and still runs
+    under *dry_run*, so a withheld gap is withheld in the preview too). Under
+    *dry_run* nothing is written, but a non-withheld gap is reported as filed so the
+    preview counts what a real run WOULD escalate rather than reporting zero.
     """
     from teatree.loops.dream import umbrella_ledger  # noqa: PLC0415 — deferred: loaded at tick time, not import
 
@@ -491,12 +492,13 @@ def _escalate_one_recurrence(
         host,
         umbrella_url=umbrella_url,
         gap=umbrella_ledger.GapSpec(gap_key=gap_key, title=_escalation_title(finding), cluster_key=gap_key),
+        dry_run=dry_run,
     )
     if outcome.withheld:
         return EscalationOutcome(rule_identity=finding.rule_identity, filed=False, withheld=True, reason=outcome.reason)
     return EscalationOutcome(
         rule_identity=finding.rule_identity,
-        filed=outcome.scheduled or outcome.checkbox_added,
+        filed=outcome.scheduled or outcome.checkbox_added or dry_run,
         ticket_url=umbrella_url,
         reason=outcome.reason,
     )

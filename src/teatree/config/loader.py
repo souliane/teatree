@@ -212,7 +212,7 @@ def worktree_root() -> Path:
     edge the module docstring describes) so it stays fail-safe to "no row" when
     Django is unconfigured.
     """
-    from django.conf import settings  # noqa: PLC0415 — deferred: Django import at call time
+    from django.core.exceptions import ImproperlyConfigured  # noqa: PLC0415 — deferred: Django import at call time
 
     from teatree.config.resolution import (  # noqa: PLC0415 — deferred: breaks loader ↔ resolution cycle
         _db_global_overrides,
@@ -223,8 +223,14 @@ def worktree_root() -> Path:
     env_override = os.environ.get("T3_WORKSPACE_DIR")
     if env_override:
         return Path(env_override).expanduser()
-    if hasattr(settings, "T3_WORKSPACE_DIR"):
-        return Path(settings.T3_WORKSPACE_DIR)
+    # Guard the settings probe like clone_root(): accessing an attribute on an
+    # unconfigured LazySettings raises ImproperlyConfigured, so a pre-Django caller
+    # must fall through to the DB / default tiers rather than crash (fail-safe).
+    with suppress(ImproperlyConfigured):
+        from django.conf import settings  # noqa: PLC0415 — deferred: Django import at call time
+
+        if hasattr(settings, "T3_WORKSPACE_DIR"):
+            return Path(settings.T3_WORKSPACE_DIR)
 
     overlay_name = _resolved_overlay_name(None)
     stored = _db_overlay_overrides(overlay_name).get("workspace_dir")

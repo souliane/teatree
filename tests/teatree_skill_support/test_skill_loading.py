@@ -212,105 +212,127 @@ def test_select_for_runtime_phase_with_overlay(tmp_path: Path):
     assert result.lifecycle_skill == "code"
 
 
-# ── _overlay_skill_for_context ──────────────────────────────────────
+# ── _overlay_in_scope (drives whether the overlay skill + companions load) ──
 
 
-def test_overlay_no_skill_path(tmp_path: Path):
-    result = SkillLoadingPolicy._overlay_skill_for_context(
+def test_overlay_in_scope_when_active(tmp_path: Path):
+    assert (
+        SkillLoadingPolicy._overlay_in_scope(
+            cwd=tmp_path,
+            overlay_skill_metadata={"skill_path": "t3:acme"},
+            overlay_active=True,
+            lifecycle_skill="code",
+        )
+        is True
+    )
+
+
+def test_overlay_out_of_scope_without_lifecycle(tmp_path: Path):
+    assert (
+        SkillLoadingPolicy._overlay_in_scope(
+            cwd=tmp_path,
+            overlay_skill_metadata={"skill_path": "t3:acme", "remote_patterns": ["*acme*"]},
+            overlay_active=False,
+            lifecycle_skill="",
+        )
+        is False
+    )
+
+
+def test_overlay_out_of_scope_when_remote_patterns_not_a_list(tmp_path: Path):
+    assert (
+        SkillLoadingPolicy._overlay_in_scope(
+            cwd=tmp_path,
+            overlay_skill_metadata={"skill_path": "t3:acme", "remote_patterns": "not-a-list"},
+            overlay_active=False,
+            lifecycle_skill="code",
+        )
+        is False
+    )
+
+
+def test_overlay_out_of_scope_when_remote_patterns_empty(tmp_path: Path):
+    assert (
+        SkillLoadingPolicy._overlay_in_scope(
+            cwd=tmp_path,
+            overlay_skill_metadata={"skill_path": "t3:acme", "remote_patterns": []},
+            overlay_active=False,
+            lifecycle_skill="code",
+        )
+        is False
+    )
+
+
+def test_overlay_out_of_scope_when_remote_patterns_all_non_string(tmp_path: Path):
+    assert (
+        SkillLoadingPolicy._overlay_in_scope(
+            cwd=tmp_path,
+            overlay_skill_metadata={"skill_path": "t3:acme", "remote_patterns": [123, None, ""]},
+            overlay_active=False,
+            lifecycle_skill="code",
+        )
+        is False
+    )
+
+
+def test_overlay_in_scope_on_remote_match(tmp_path: Path, monkeypatch):
+    monkeypatch.setattr("teatree.skill_support.loading._matches_any_remote", lambda _cwd, _patterns: True)
+    assert (
+        SkillLoadingPolicy._overlay_in_scope(
+            cwd=tmp_path,
+            overlay_skill_metadata={"skill_path": "t3:acme", "remote_patterns": ["*acme*"]},
+            overlay_active=False,
+            lifecycle_skill="code",
+        )
+        is True
+    )
+
+
+def test_overlay_out_of_scope_on_remote_no_match(tmp_path: Path, monkeypatch):
+    monkeypatch.setattr("teatree.skill_support.loading._matches_any_remote", lambda _cwd, _patterns: False)
+    assert (
+        SkillLoadingPolicy._overlay_in_scope(
+            cwd=tmp_path,
+            overlay_skill_metadata={"skill_path": "t3:acme", "remote_patterns": ["*acme*"]},
+            overlay_active=False,
+            lifecycle_skill="code",
+        )
+        is False
+    )
+
+
+# ── the overlay skill_path guard in _base_detected_skills ───────────────────
+
+
+def test_base_detected_skills_omits_overlay_skill_when_no_skill_path(tmp_path: Path):
+    # In scope (active) but the overlay declares no skill_path -> nothing appended.
+    ordered = SkillLoadingPolicy()._base_detected_skills(
         cwd=tmp_path,
         overlay_skill_metadata={},
-        overlay_active=False,
+        overlay_active=True,
         lifecycle_skill="code",
     )
-    assert result == ""
+    assert ordered == []
 
 
-def test_overlay_empty_skill_path(tmp_path: Path):
-    result = SkillLoadingPolicy._overlay_skill_for_context(
+def test_base_detected_skills_omits_overlay_skill_when_skill_path_blank(tmp_path: Path):
+    ordered = SkillLoadingPolicy()._base_detected_skills(
         cwd=tmp_path,
         overlay_skill_metadata={"skill_path": "  "},
-        overlay_active=False,
+        overlay_active=True,
         lifecycle_skill="code",
     )
-    assert result == ""
+    assert ordered == []
 
 
-def test_overlay_active_returns_skill_path(tmp_path: Path):
-    result = SkillLoadingPolicy._overlay_skill_for_context(
+def test_base_detected_skills_includes_overlay_skill_when_active(tmp_path: Path):
+    ordered = SkillLoadingPolicy()._base_detected_skills(
         cwd=tmp_path,
         overlay_skill_metadata={"skill_path": "t3:acme"},
         overlay_active=True,
         lifecycle_skill="code",
     )
-    assert result == "t3:acme"
-
-
-def test_overlay_no_lifecycle_returns_empty(tmp_path: Path):
-    result = SkillLoadingPolicy._overlay_skill_for_context(
-        cwd=tmp_path,
-        overlay_skill_metadata={"skill_path": "t3:acme", "remote_patterns": ["*acme*"]},
-        overlay_active=False,
-        lifecycle_skill="",
-    )
-    assert result == ""
-
-
-def test_overlay_remote_patterns_not_a_list(tmp_path: Path):
-    result = SkillLoadingPolicy._overlay_skill_for_context(
-        cwd=tmp_path,
-        overlay_skill_metadata={"skill_path": "t3:acme", "remote_patterns": "not-a-list"},
-        overlay_active=False,
-        lifecycle_skill="code",
-    )
-    assert result == ""
-
-
-def test_overlay_remote_patterns_empty_list(tmp_path: Path):
-    result = SkillLoadingPolicy._overlay_skill_for_context(
-        cwd=tmp_path,
-        overlay_skill_metadata={"skill_path": "t3:acme", "remote_patterns": []},
-        overlay_active=False,
-        lifecycle_skill="code",
-    )
-    assert result == ""
-
-
-def test_overlay_remote_patterns_with_non_string_entries(tmp_path: Path):
-    result = SkillLoadingPolicy._overlay_skill_for_context(
-        cwd=tmp_path,
-        overlay_skill_metadata={"skill_path": "t3:acme", "remote_patterns": [123, None, ""]},
-        overlay_active=False,
-        lifecycle_skill="code",
-    )
-    assert result == ""
-
-
-def test_overlay_remote_match(tmp_path: Path, monkeypatch):
-    monkeypatch.setattr(
-        "teatree.skill_support.loading._matches_any_remote",
-        lambda _cwd, _patterns: True,
-    )
-    result = SkillLoadingPolicy._overlay_skill_for_context(
-        cwd=tmp_path,
-        overlay_skill_metadata={"skill_path": "t3:acme", "remote_patterns": ["*acme*"]},
-        overlay_active=False,
-        lifecycle_skill="code",
-    )
-    assert result == "t3:acme"
-
-
-def test_overlay_remote_no_match(tmp_path: Path, monkeypatch):
-    monkeypatch.setattr(
-        "teatree.skill_support.loading._matches_any_remote",
-        lambda _cwd, _patterns: False,
-    )
-    result = SkillLoadingPolicy._overlay_skill_for_context(
-        cwd=tmp_path,
-        overlay_skill_metadata={"skill_path": "t3:acme", "remote_patterns": ["*acme*"]},
-        overlay_active=False,
-        lifecycle_skill="code",
-    )
-    assert result == ""
+    assert ordered == ["t3:acme"]
 
 
 # ── overlay-companion skills are scoped to overlay work ─────────────

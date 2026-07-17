@@ -24,10 +24,7 @@ import dataclasses
 from collections.abc import Callable
 from pathlib import Path
 
-# ``skills/`` sits next to ``src/`` — resolve from this module's path so the lane
-# stays a leaf of the eval package (the backwards-edge convention the sibling
-# ``discovery`` / ``skill_command_validity`` lanes follow).
-DEFAULT_SKILLS_DIR = Path(__file__).resolve().parents[3] / "skills"
+from teatree.eval.discovery import DEFAULT_SKILLS_DIR  # the one eval-leaf skills-dir resolver
 
 #: The clarity/actionability rubric the live judge grades each SKILL.md against.
 #: Kept here (not in the CLI lane) so the rubric travels with the engine and the
