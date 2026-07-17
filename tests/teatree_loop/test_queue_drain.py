@@ -17,6 +17,7 @@ from unittest.mock import patch
 
 import pytest
 from django.core.management import call_command
+from django.db.utils import OperationalError
 from django.test import override_settings
 from django.utils import timezone
 from django_tasks.base import TaskResultStatus
@@ -274,6 +275,48 @@ class TestExpireThenDrain:
         assert result["drained"] == 1
         assert DBTaskResult.objects.get().status == TaskResultStatus.SUCCESSFUL
 
+    def test_leaves_a_stale_loops_queue_timer_untouched(self) -> None:
+        # The expiry step is scoped to the `default` queue: a due `daily_at` successor
+        # timer that just crossed the 24h threshold must NOT be retired to FAILED just
+        # before it fires — the reconciler owns loops-queue staleness.
+        from teatree.loops.timer_chains import loop_timer  # noqa: PLC0415 — enqueue a loops-queue row
+
+        refresh_followup_snapshot.enqueue()  # default — expirable
+        loop_timer.enqueue("inbox")  # loops — must survive
+        _backdate(50)
+
+        expire_then_drain()
+
+        assert DBTaskResult.objects.get(queue_name="loops").status == TaskResultStatus.READY
+        assert DBTaskResult.objects.get(queue_name="default").status == TaskResultStatus.FAILED
+
+
+# ast-grep-ignore: ac-django-no-pytest-django-db
+@pytest.mark.django_db(transaction=True)
+class TestLockedRowGuard:
+    """``_run_one_ready_job`` guards ``exc.args`` before indexing (#10).
+
+    An args-less / non-string ``OperationalError`` from ``get_locked`` must not itself
+    crash the drain batch with an ``IndexError``: a genuine "database is locked" is
+    treated as contention (no job this pass); anything else re-raises unchanged.
+    """
+
+    def _queryset_class(self) -> type:
+        return DBTaskResult.objects.get_queryset().__class__
+
+    def test_database_is_locked_is_treated_as_contention_not_a_crash(self) -> None:
+        with patch.object(self._queryset_class(), "get_locked", side_effect=OperationalError("database is locked")):
+            assert drain_ready_batch(max_jobs=1) == 0
+
+    def test_args_less_operational_error_re_raises_not_indexerror(self) -> None:
+        # The OLD `exc.args[0]` crashed with IndexError here; the guard re-raises the
+        # genuine OperationalError instead of masking it as a spurious IndexError.
+        with (
+            patch.object(self._queryset_class(), "get_locked", side_effect=OperationalError()),
+            pytest.raises(OperationalError),
+        ):
+            drain_ready_batch(max_jobs=1)
+
 
 class TestThresholdConfig:
     def test_default_threshold(self, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -330,6 +373,20 @@ class TestQueueCommand:
         call_command("queue", "expire-stale", "--hours", "24", "--dry-run")
 
         assert DBTaskResult.objects.get().status == TaskResultStatus.READY
+
+    def test_expire_stale_command_leaves_the_loops_queue_alone(self) -> None:
+        # The operator expiry is scoped to the `default` queue, matching the tick path —
+        # a stale loops-queue timer is owned by the reconciler, never retired here.
+        from teatree.loops.timer_chains import loop_timer  # noqa: PLC0415 — enqueue a loops-queue row
+
+        refresh_followup_snapshot.enqueue()  # default
+        loop_timer.enqueue("inbox")  # loops
+        _backdate(50)
+
+        call_command("queue", "expire-stale", "--hours", "24")
+
+        assert DBTaskResult.objects.get(queue_name="loops").status == TaskResultStatus.READY
+        assert DBTaskResult.objects.get(queue_name="default").status == TaskResultStatus.FAILED
 
     def test_status_command_is_read_only(self) -> None:
         refresh_followup_snapshot.enqueue()

@@ -18,6 +18,7 @@ scheduling methods with the ``core`` repair-loop budget over a housekeeping swee
 """
 
 import logging
+import re
 from datetime import datetime
 
 from django.conf import settings
@@ -36,6 +37,9 @@ logger = logging.getLogger(__name__)
 DEFAULT_STUCK_IDLE_HOURS = 6
 
 _ESCALATION_MARKER = "[stuck-redispatch-halt ticket={pk}]"
+#: Extracts the ticket pk from an escalation marker so an already-escalated ticket is
+#: skipped without re-running its per-ticket budget query every tick (bounds the sweep).
+_ESCALATION_PK_RE = re.compile(r"\[stuck-redispatch-halt ticket=(\d+)\]")
 
 #: The non-terminal work-states a stuck ticket re-dispatches from, mapped to the
 #: phase the state implies. NOT_STARTED / SCOPED await provisioning (excluded);
@@ -56,8 +60,13 @@ def redispatch_stuck_tickets() -> int:
     """
     now = timezone.now()
     threshold = _idle_threshold_hours()
+    already_escalated = _already_escalated_ticket_pks()
     scheduled = 0
     for ticket in _stuck_candidates(now=now, threshold_hours=threshold):
+        # An already-escalated ticket is parked — skip it BEFORE its budget query, so
+        # the dead-letter set never grows the per-tick work (bounded sweep, #8).
+        if ticket.pk in already_escalated:
+            continue
         phase = _STATE_PHASE[ticket.state]
         halt = _budget_halt_reason(ticket, phase=phase)
         if halt is not None:
@@ -65,6 +74,19 @@ def redispatch_stuck_tickets() -> int:
             continue
         scheduled += _redispatch(ticket, phase=phase)
     return scheduled
+
+
+def _already_escalated_ticket_pks() -> set[int]:
+    """Ticket pks that already carry a stuck-redispatch escalation (any answered state).
+
+    One query, parsed to a set — an escalated stuck ticket is parked durably, so it is
+    never re-escalated when its question is answered/dismissed and never re-budget-
+    queried every tick.
+    """
+    texts = DeferredQuestion.objects.filter(question__contains="[stuck-redispatch-halt ticket=").values_list(
+        "question", flat=True
+    )
+    return {int(m.group(1)) for text in texts if (m := _ESCALATION_PK_RE.search(text))}
 
 
 def _stuck_candidates(*, now: datetime, threshold_hours: int) -> list[Ticket]:
@@ -160,16 +182,13 @@ def _phase_attempts(ticket: Ticket, *, phase: str) -> list[TaskAttempt]:
 def _escalate_once(ticket: Ticket, *, reason: str) -> None:
     """Record a durable escalation for a budget-halted stuck ticket, once per ticket.
 
-    Idempotent: a per-ticket marker in the question text dedups so a halted stuck
-    ticket re-scanned every tick escalates exactly once. Reuses the §17.1
-    invariant 9 surface (statusline / ``t3 teatree questions list`` / Slack DM).
+    Idempotent: a per-ticket marker deduped across ALL questions (answered or not) so a
+    halted stuck ticket escalates exactly once and answering/dismissing the question
+    never resurrects a fresh one. Reuses the §17.1 invariant 9 surface (statusline /
+    ``t3 teatree questions list`` / Slack DM).
     """
     marker = _ESCALATION_MARKER.format(pk=ticket.pk)
-    already = DeferredQuestion.objects.filter(
-        answered_at__isnull=True,
-        dismissed_at__isnull=True,
-        question__contains=marker,
-    ).exists()
+    already = DeferredQuestion.objects.filter(question__contains=marker).exists()
     if already:
         return
     where = ticket.issue_url or f"ticket {ticket.pk}"

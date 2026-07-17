@@ -141,7 +141,7 @@ disable_fleet_scoped_loops() {
     done
 
     for loop in "${requested[@]}"; do
-        if ! t3 loop disable "$loop"; then
+        if ! t3 loop disable "$loop" --emergency; then
             echo "entrypoint: 't3 loop disable ${loop}' FAILED - the DB-backed loop control plane is unreachable; confirm 't3 teatree db migrate' succeeded above and re-run Deploy" >&2
             exit 1
         fi
