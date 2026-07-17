@@ -380,14 +380,15 @@ class TestHasShippableDiff(TestCase):
 
         assert ticket.has_shippable_diff() is True
 
-    def test_review_skips_shipping_task_when_no_diff(self) -> None:
+    def test_review_with_no_diff_skips_shipping_and_auto_ignores(self) -> None:
         ticket = self._make_ticket_with_worktree(commits_ahead=0)
         _advance_ticket_to_tested(ticket)
 
         _complete_phase_task(ticket, "reviewing")
         ticket.refresh_from_db()
 
-        assert ticket.state == Ticket.State.REVIEWED
+        assert ticket.state == Ticket.State.IGNORED
+        assert ticket.extra.get("ignored_from") == Ticket.State.REVIEWED
         assert not ticket.tasks.filter(phase="shipping").exists()
         assert "no shippable diff" in ticket.extra.get("shipping_skipped", "")
 

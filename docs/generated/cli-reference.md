@@ -8000,6 +8000,12 @@ Usage: t3 teatree tasks list [OPTIONS]
 
  List the teatree tasks queue (not your harness TODO list).
 
+ A pure READ: it never reaps or reclaims. Failing a stale CLAIMED task from
+ a read path (a bare ``reap_stale_claims`` with no preceding
+ ``reclaim_orphaned_claims``) would terminally FAIL a recoverable
+ crashed-session task on a mere ``tasks list``, bypassing the
+ rescue-before-fail ordering the boot/tick ``run_boot_sweeps`` owns.
+
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --status                              TEXT  Filter by status                 │
 │ --execution-target                    TEXT  Filter by execution target       │

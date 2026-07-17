@@ -13,7 +13,7 @@ from teatree.core.models.deferred_question import DeferredQuestion
 from teatree.core.models.task import Task
 from teatree.core.models.task_attempt import TaskAttempt
 from teatree.core.models.usage_window_state import LIMIT_PARKED_PREFIX
-from teatree.core.repair_loop import IterationStalled, requeue_verdict
+from teatree.core.repair_loop import IterationStalled, MaxIterationsExceeded, requeue_verdict
 
 
 def phase_attempts(task: Task) -> list[TaskAttempt]:
@@ -38,13 +38,18 @@ def phase_attempts(task: Task) -> list[TaskAttempt]:
 
 
 def check_requeue_allowed(task: Task) -> None:
-    """Raise if *task*'s ticket-phase may NOT be re-queued; escalate on a stall.
+    """Raise if *task*'s ticket-phase may NOT be re-queued; escalate on a terminal verdict.
 
     Applies the pure :func:`~teatree.core.repair_loop.requeue_verdict` to the
-    recorded attempts of the SAME ``(ticket, normalized-phase)``; on
-    :class:`~teatree.core.repair_loop.IterationStalled` ALSO records a durable
-    user-facing ``DeferredQuestion`` (§17.1 invariant 9) before re-raising — so
-    the loop escalates to the user instead of re-running the identical failure.
+    recorded attempts of the SAME ``(ticket, normalized-phase)``. Both terminal
+    verdicts ALSO record a durable user-facing ``DeferredQuestion`` (§17.1
+    invariant 9) before re-raising — so a doomed phase escalates to the user
+    instead of freezing silently:
+
+    * :class:`~teatree.core.repair_loop.IterationStalled` — two identical failures;
+    * :class:`~teatree.core.repair_loop.MaxIterationsExceeded` — the iteration cap
+        (previously FAILed the row with only a ``logger.warning`` — a silent freeze).
+
     A no-op when under the cap and not stalled.
     """
     attempts = phase_attempts(task)
@@ -59,6 +64,9 @@ def check_requeue_allowed(task: Task) -> None:
         )
     except IterationStalled:
         _escalate_stall(task, phase=phase, iterations=len(attempts))
+        raise
+    except MaxIterationsExceeded:
+        _escalate_cap(task, phase=phase, iterations=len(attempts))
         raise
 
 
@@ -83,4 +91,28 @@ def _escalate_stall(task: Task, *, phase: str, iterations: int) -> None:
         question,
         session_id=str(session_id or ""),
         dedupe_marker=f"repair-stall:{ticket.pk}:{phase}",
+    )
+
+
+def _escalate_cap(task: Task, *, phase: str, iterations: int) -> None:
+    """Record a durable, deduped ``DeferredQuestion`` for a ``MaxIterationsExceeded``.
+
+    The iteration-cap verdict previously dropped the row from the re-queue set
+    with only a ``logger.warning`` — the ticket froze at that phase with no
+    user-facing fingerprint, so the stall detector never fired and no question
+    was queued. This surfaces the exhausted budget on the same §17.1 invariant 9
+    away-mode escalation queue the stall path uses, deduped per (ticket, phase).
+    """
+    ticket = task.ticket
+    where = ticket.issue_url or f"ticket {ticket.pk}"
+    session_id: int | None = task.session_id  # ty: ignore[unresolved-attribute]
+    question = (
+        f"Repair-loop cap on {where} (phase {phase!r}): the phase hit its iteration cap "
+        f"after {iterations} attempt(s) without completing. Re-queueing is paused so it does "
+        f"not burn more attempts. How should it proceed — investigate, rework, or ignore?"
+    )
+    DeferredQuestion.record(
+        question,
+        session_id=str(session_id or ""),
+        dedupe_marker=f"repair-cap:{ticket.pk}:{phase}",
     )

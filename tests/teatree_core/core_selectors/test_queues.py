@@ -221,11 +221,19 @@ class TestReapStaleClaims(TestCase):
         assert stale.status == Task.Status.FAILED
         assert active.status == Task.Status.CLAIMED
 
-    def test_queue_reaps_before_building(self) -> None:
+    def test_queue_build_is_non_destructive(self) -> None:
+        """Building the dashboard queue is a pure READ — it never reaps a stale claim.
+
+        A read surface reaping (CLAIMED→FAILED) with no preceding reclaim would
+        terminally FAIL a recoverable crashed-session task, bypassing the
+        rescue-before-fail ordering the boot/tick ``run_boot_sweeps`` owns. The
+        stale CLAIMED task therefore stays CLAIMED and appears in the queue
+        (``heartbeat_age`` reveals its staleness) rather than being failed.
+        """
         ticket = Ticket.objects.create(state=Ticket.State.STARTED)
         session = Session.objects.create(ticket=ticket, agent_id="agent")
         now = timezone.now()
-        Task.objects.create(
+        stale = Task.objects.create(
             ticket=ticket,
             session=session,
             execution_target=Task.ExecutionTarget.HEADLESS,
@@ -236,7 +244,9 @@ class TestReapStaleClaims(TestCase):
 
         queue = build_headless_queue()
 
-        assert len(queue) == 0
+        assert len(queue) == 1
+        stale.refresh_from_db()
+        assert stale.status == Task.Status.CLAIMED
 
 
 class TestHeadlessQueueElapsedTime(TestCase):

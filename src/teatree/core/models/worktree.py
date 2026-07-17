@@ -67,12 +67,6 @@ class Worktree(models.Model):
     # re-capture. Null = no E2E run has touched it.
     last_e2e_run = models.DateTimeField(null=True, blank=True)
 
-    # Transient (non-DB) carrier for the pre-blank ``(db_name, extra)`` snapshot
-    # the ``teardown`` body captures, read by the post_transition receiver that
-    # enqueues ``execute_worktree_teardown`` (#2385). Default empty so a row
-    # that never tore down still reads safely.
-    teardown_snapshot: "tuple[str, WorktreeExtra]" = ("", WorktreeExtra())
-
     objects = WorktreeManager()
 
     class Meta:
@@ -204,25 +198,23 @@ class Worktree(models.Model):
     def teardown(self) -> None:
         """Schedule docker down + DB drop + git worktree removal.
 
-        Pure transition body (BLUEPRINT §4): snapshot ``db_name`` and
-        ``extra`` for the worker, reset them on the row, then enqueue
+        Pure transition body (BLUEPRINT §4): the FSM resets to CREATED and the
+        ``post_transition`` receiver (``teatree.core.signals``) enqueues
         ``execute_worktree_teardown`` after commit. The worker runs the
         destructive cleanup (docker compose down, dropdb, ``git worktree
-        remove``, branch delete) using the captured snapshot, then
-        deletes the Worktree row, so the FSM ``CREATED`` state lasts
-        only until the worker fires.
+        remove``, branch delete) and only THEN deletes the Worktree row.
 
-        The body BLANKS ``db_name`` / ``extra`` here, so the
-        ``post_transition`` receiver (``teatree.core.signals``) cannot read
-        them off the live row — it would enqueue a teardown with an empty
-        DB name and never drop the database. The PRE-BLANK values are
-        stashed on the transient :attr:`teardown_snapshot` attribute, which
-        the receiver reads to enqueue ``execute_worktree_teardown`` with the
-        correct snapshot (#2385).
+        The recovery pointers (``db_name`` / ``extra`` — which name the database
+        to drop and the on-disk worktree to remove) are KEPT on the row until
+        that cleanup succeeds and deletes it. Blanking them in the body (the
+        previous shape) opened a data-loss window: the state commit landed with
+        empty pointers while the on_commit callback still had to fire, so a
+        death between the two left a committed CREATED row with no db_name — the
+        live database and git worktree orphaned with nothing able to reap them.
+        A CREATED row still carrying its pointers is exactly what a reaper needs
+        to finish the job; ``assert_db_name_unclaimed`` already excludes CREATED
+        rows, so keeping the pointers never blocks a re-provision.
         """
-        self.teardown_snapshot = (self.db_name, self._extra())
-        self.db_name = ""
-        self.extra = {}
 
     def _build_db_name(self) -> str:
         ticket = cast("Ticket", self.ticket)

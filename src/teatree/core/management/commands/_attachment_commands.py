@@ -93,4 +93,17 @@ class AttachmentCommands(TyperCommand):
         elif not rows:
             self.stdout.write(f"  ticket {ticket.pk}: no referenced attachments")
 
+        # A successful ``--fetch`` that leaves nothing missing releases the intake
+        # attachment-gate hold: re-enqueue ``execute_provision`` so a ticket parked
+        # at STARTED behind the gate re-checks and hands off to planning. Without
+        # this the fetched ticket stays frozen — the gate never re-fires on its own.
+        if fetch and not missing and ticket.state == Ticket.State.STARTED:
+            self._reenqueue_provision(ticket)
+
         return {"ticket_id": int(ticket.pk), "entries": rows, "missing": len(missing)}
+
+    def _reenqueue_provision(self, ticket: Ticket) -> None:
+        from teatree.core.tasks import execute_provision  # noqa: PLC0415 — deferred: call-time import, kept lazy
+
+        execute_provision.enqueue(int(ticket.pk))
+        self.stdout.write(f"  attachments complete — re-enqueued intake for ticket {ticket.pk}")

@@ -1,11 +1,12 @@
 import logging
 from dataclasses import dataclass
 from datetime import datetime, timedelta
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, cast
 
 from django.apps import apps
 from django.db import models, transaction
 from django.db.models import Q
+from django.db.models.expressions import BaseExpression
 from django.utils import timezone
 
 from teatree.core.loop_lease_manager import (
@@ -57,7 +58,7 @@ class ClaimOrder:
     passes no ``ClaimOrder`` and stays plain oldest-``pk``.
     """
 
-    annotations: dict[str, Any]
+    annotations: dict[str, BaseExpression]
     order_by: tuple[str, ...]
 
 
@@ -75,15 +76,23 @@ def _claimable_now_q(now: datetime) -> Q:
     return Q(not_before__isnull=True) | Q(not_before__lte=now)
 
 
-class _OverlayFilterMixin:
+def _for_overlay(qs: models.QuerySet, overlay: str | None) -> models.QuerySet:
+    """Scope *qs* to *overlay*, including legacy empty-overlay rows.
+
+    A module function rather than a mixin (composition over inheritance): the
+    three overlay-scoped QuerySets call it from their own ``for_overlay`` method,
+    so there is no mixin diamond and no ``# type: ignore[attr-defined]`` on
+    ``self.filter`` / ``self.all``.
+    """
+    if overlay:
+        return qs.filter(Q(overlay=overlay) | Q(overlay=""))
+    return qs.all()
+
+
+class TicketQuerySet(models.QuerySet):
     def for_overlay(self, overlay: str | None = None) -> models.QuerySet:
-        if overlay:
-            # Include tickets with empty overlay (created before multi-overlay)
-            return self.filter(Q(overlay=overlay) | Q(overlay=""))  # type: ignore[attr-defined]
-        return self.all()  # type: ignore[attr-defined]
+        return _for_overlay(self, overlay)
 
-
-class TicketQuerySet(_OverlayFilterMixin, models.QuerySet):
     def resolve(self, ref: str) -> "Ticket":
         """Resolve a ticket from a pk, an issue number, an issue URL, or a repo key.
 
@@ -133,7 +142,10 @@ class TicketQuerySet(_OverlayFilterMixin, models.QuerySet):
         )
 
 
-class WorktreeQuerySet(_OverlayFilterMixin, models.QuerySet):
+class WorktreeQuerySet(models.QuerySet):
+    def for_overlay(self, overlay: str | None = None) -> models.QuerySet:
+        return _for_overlay(self, overlay)
+
     def active(self, overlay: str | None = None) -> models.QuerySet:
         """Worktrees whose ticket is still in flight (not delivered or ignored).
 
@@ -164,7 +176,10 @@ class WorktreeQuerySet(_OverlayFilterMixin, models.QuerySet):
         ).update(last_e2e_run=now or timezone.now())
 
 
-class SessionQuerySet(_OverlayFilterMixin, models.QuerySet):
+class SessionQuerySet(models.QuerySet):
+    def for_overlay(self, overlay: str | None = None) -> models.QuerySet:
+        return _for_overlay(self, overlay)
+
     def for_agent(self, agent_id: str) -> models.QuerySet:
         return self.filter(agent_id=agent_id).order_by("pk")
 

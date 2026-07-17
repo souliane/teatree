@@ -81,9 +81,11 @@ class TestWorktreeTeardownRunner(TestCase):
         assert result.ok is False
         assert "on NO remote" in result.detail
 
-    def test_snapshot_fields_restored_before_cleanup(self) -> None:
-        """The snapshot of db_name/extra is restored on the row before cleanup reads them."""
+    def test_reads_pointers_from_live_row_no_snapshot(self) -> None:
+        """teardown() keeps db_name/extra on the row; the runner reads them straight off it."""
         wt = self._make_worktree()
+        wt.db_name = "wt_877"
+        wt.save(update_fields=["db_name"])
         captured: dict[str, object] = {}
 
         def fake_cleanup(worktree: Worktree, **_: object) -> CleanupResult:
@@ -95,11 +97,7 @@ class TestWorktreeTeardownRunner(TestCase):
             patch(_PATCH_DOWN),
             patch(_PATCH_CLEANUP, side_effect=fake_cleanup),
         ):
-            WorktreeTeardownRunner(
-                wt,
-                snapshot_db_name="wt_877",
-                snapshot_extra={"worktree_path": "/tmp/snap/org/repo"},
-            ).run()
+            WorktreeTeardownRunner(wt).run()
 
         assert captured["db_name"] == "wt_877"
-        assert captured["extra"] == {"worktree_path": "/tmp/snap/org/repo"}
+        assert captured["extra"] == {"worktree_path": "/tmp/wt/org/repo"}

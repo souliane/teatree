@@ -24,13 +24,11 @@ from teatree.agents.headless import (
     TaskUsage,
     _drive_with_heartbeat,
     _limit_match,
-    _parse_result,
     _provider_child_env,
     _resolve_dispatch_lane,
-    _validate_result,
-    get_result_json_schema,
     run_headless,
 )
+from teatree.agents.headless_result import get_result_json_schema, parse_result, validate_result
 from teatree.agents.headless_usage import _safe_float, _safe_int
 from teatree.agents.model_tiering import TIER_EFFORT, TIER_MODELS
 from teatree.agents.pydantic_ai_resume import persist_parked_thread
@@ -527,25 +525,25 @@ def test_limit_match_handles_missing_message() -> None:
 
 
 def test_validate_result_accepts_valid_keys() -> None:
-    assert _validate_result({"summary": "OK", "tests_passed": 5}) == ""
+    assert validate_result({"summary": "OK", "tests_passed": 5}) == ""
 
 
 def test_validate_result_rejects_unknown_keys() -> None:
-    error = _validate_result({"summary": "OK", "bogus": True})
+    error = validate_result({"summary": "OK", "bogus": True})
     assert "bogus" in error
 
 
 def test_parse_result_extracts_last_json_line() -> None:
     stdout = "Loading skills...\nRunning task...\n" + json.dumps({"summary": "OK"}) + "\n"
-    assert _parse_result(stdout) == {"summary": "OK"}
+    assert parse_result(stdout) == {"summary": "OK"}
 
 
 def test_parse_result_returns_empty_dict_for_no_json() -> None:
-    assert _parse_result("no json here\n") == {}
+    assert parse_result("no json here\n") == {}
 
 
 def test_parse_result_skips_malformed_json() -> None:
-    assert _parse_result("{bad json\n") == {}
+    assert parse_result("{bad json\n") == {}
 
 
 def test_get_result_json_schema_returns_valid_schema() -> None:
@@ -878,6 +876,30 @@ class TestDriveWithHeartbeat(TestCase):
 
         assert outcome.stuck_reason is None
         assert mock_logger.warning.call_count >= 1
+
+    def test_lease_lost_interrupts_the_duplicate_run(self) -> None:
+        # A LeaseLostError from renew_lease means another worker re-claimed the
+        # task; this run must abort (interrupt + report stuck) rather than keep
+        # driving the same unit alongside the new owner (double-spend).
+        from teatree.core.models.errors import LeaseLostError  # noqa: PLC0415
+
+        def lease_lost_renew(**_kwargs: object) -> None:
+            msg = f"lease lost for task {self.task.pk}"
+            raise LeaseLostError(msg)
+
+        self.task.renew_lease = lease_lost_renew
+        messages = [_assistant_text("step") for _ in range(1000)]
+        watchdog = LoopWatchdog(max_runtime_seconds=0, max_turns=0, max_cost_usd=0.0)
+        start = time.monotonic()
+        with _fake_sdk(messages, delay=0.05), patch.object(headless_mod, "_HEARTBEAT_INTERVAL", 0.02):
+            outcome = asyncio.run(
+                _drive_with_heartbeat(self.task, "p", self._options(), ClaudeSdkHarness(), watchdog=watchdog)
+            )
+        elapsed = time.monotonic() - start
+
+        assert elapsed < 10
+        assert outcome.stuck_reason is not None
+        assert "lease lost" in outcome.stuck_reason
 
 
 class TestUsageSampleClosesWorkerConnection(TestCase):

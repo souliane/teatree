@@ -16,7 +16,6 @@ process registry, no platform autostart.
 
 import asyncio
 import contextlib
-import json
 import logging
 import os
 import shutil
@@ -39,11 +38,10 @@ from teatree.agents.headless_budget import TicketBudget
 from teatree.agents.headless_usage import _attempt_usage
 from teatree.agents.pydantic_ai_resume import maybe_persist_on_park
 from teatree.agents.reader_profile import is_reader_phase, reader_child_env, reader_env_hermetic
-from teatree.agents.result_schema import RESULT_JSON_SCHEMA
 from teatree.agents.skill_bundle import active_overlay_stage_skills, resolve_skill_bundle
 from teatree.agents.usage_window import maybe_park_for_active_window, park_task_on_limit
 from teatree.config import AgentHarnessProvider, get_effective_settings
-from teatree.core.models import Task, TaskAttempt
+from teatree.core.models import LeaseLostError, Task, TaskAttempt
 from teatree.core.models.ticket_worktree_checks import dispatch_worktree_path
 from teatree.llm.anthropic_limits import LimitMatch, classify_limit, classify_rate_limit_type
 from teatree.llm.credentials import CredentialError
@@ -510,7 +508,15 @@ async def _drive_with_heartbeat(
                     await asyncio.sleep(_HEARTBEAT_INTERVAL)
                     try:
                         await asyncio.to_thread(task.renew_lease)
-                    except Exception:  # noqa: BLE001 — a heartbeat failure is logged, never breaks the watchdog loop
+                    except LeaseLostError:
+                        # Another worker took over this task's claim (the lease
+                        # lapsed and was reclaimed). Abort THIS run — two workers
+                        # driving the same unit is the double-spend the CAS guards.
+                        breach.append(f"lease lost for task {task.pk}: re-claimed by another worker")
+                        logger.warning("Task %s lease lost; interrupting duplicate run", task.pk)
+                        await session.interrupt()
+                        return
+                    except Exception:  # noqa: BLE001 — a transient heartbeat failure is logged, never breaks the watchdog loop
                         logger.warning("Heartbeat failed for task %s", task.pk)
                     reason = watchdog.breach_reason(
                         task,
@@ -589,41 +595,14 @@ def _record_success(task: Task, outcome: HarnessOutcome, *, phase: str = "", lan
     (souliane/teatree#657) this dispatch authenticated through.
     """
     from teatree.agents.attempt_recorder import record_result_envelope  # noqa: PLC0415 — deferred: call-time import
+    from teatree.agents.headless_result import parse_result  # noqa: PLC0415 — deferred: call-time import
 
-    result = _parse_result(outcome.agent_text)
+    result = parse_result(outcome.agent_text)
     if not result:
         result = {"summary": outcome.agent_text[:1000]}
 
     maybe_persist_on_park(task, result, outcome.thread)  # (#2886)
     return record_result_envelope(task, result, phase=phase, usage=_attempt_usage(outcome.result_message, lane=lane))
-
-
-def _parse_result(agent_text: str) -> dict[str, object]:
-    """Extract structured result from the agent's text output.
-
-    Tries to parse the last JSON object in the text (agents may print
-    progress text before the final JSON result).
-    """
-    for raw_line in reversed(agent_text.strip().splitlines()):
-        stripped = raw_line.strip()
-        if stripped.startswith("{"):
-            try:
-                return json.loads(stripped)
-            except json.JSONDecodeError:
-                continue
-    return {}
-
-
-def _validate_result(result: dict[str, object]) -> str:
-    """Check that *result* only contains keys declared in the schema.
-
-    Delegates to the shared :func:`~teatree.agents.attempt_recorder.validate_result_keys`
-    so the headless and ``record-attempt`` paths enforce the identical
-    ``additionalProperties: false`` rule.
-    """
-    from teatree.agents.attempt_recorder import validate_result_keys  # noqa: PLC0415 — deferred: call-time import
-
-    return validate_result_keys(result)
 
 
 def _record_failure(task: Task, *, exit_code: int = 1, error: str = "") -> TaskAttempt:
@@ -636,11 +615,3 @@ def _record_failure(task: Task, *, exit_code: int = 1, error: str = "") -> TaskA
     )
     task.fail()
     return attempt
-
-
-def get_result_json_schema() -> dict[str, object]:
-    """Return the JSON schema for structured agent output.
-
-    Agents produce output matching this schema as a final JSON object.
-    """
-    return RESULT_JSON_SCHEMA

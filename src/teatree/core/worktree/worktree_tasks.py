@@ -22,7 +22,6 @@ from django.db import transaction
 from django.tasks import task
 
 from teatree.core.models import Worktree
-from teatree.core.models.types import WorktreeExtra
 from teatree.core.runners import (
     WorktreeProvisionRunner,
     WorktreeStartRunner,
@@ -231,20 +230,16 @@ def execute_worktree_verify(worktree_id: int) -> WorktreeTransitionResult:
 
 
 @task()
-def execute_worktree_teardown(
-    worktree_id: int,
-    snapshot_db_name: str,
-    snapshot_extra: WorktreeExtra,
-) -> WorktreeTransitionResult:
+def execute_worktree_teardown(worktree_id: int) -> WorktreeTransitionResult:
     """Tear down a single worktree (docker down + DB drop + git worktree remove).
 
-    Fired by ``Worktree.teardown()``'s on_commit. The transition body has
-    cleared ``db_name`` and ``extra`` to satisfy the FSM contract (the row
-    is in CREATED state), so the worker receives a snapshot of those fields
-    captured before the reset — that's what the runner needs to know which
-    DB to drop and which git worktree to remove. The runner deletes the
-    Worktree row at the end, so subsequent re-fires no-op (the row is gone).
-    Best-effort: per-worktree errors are reported in the result detail.
+    Fired by ``Worktree.teardown()``'s on_commit. The transition KEEPS
+    ``db_name`` and ``extra`` on the row (the recovery pointers naming the DB to
+    drop and the worktree to remove), so the runner reads them straight off the
+    live row. The runner deletes the Worktree row at the end, so subsequent
+    re-fires no-op (the row is gone) and a crash before the delete leaves a
+    still-reapable row (pointers intact). Best-effort: per-worktree errors are
+    reported in the result detail.
     """
     try:
         worktree = Worktree.objects.get(pk=worktree_id)
@@ -252,11 +247,7 @@ def execute_worktree_teardown(
         logger.info("execute_worktree_teardown skipped: worktree %s already gone", worktree_id)
         return {"worktree_id": worktree_id, "skipped": True}
 
-    result = WorktreeTeardownRunner(
-        worktree,
-        snapshot_db_name=snapshot_db_name,
-        snapshot_extra=snapshot_extra,
-    ).run()
+    result = WorktreeTeardownRunner(worktree).run()
     if not result.ok:
         logger.warning("Worktree teardown failed for %s: %s", worktree_id, result.detail)
         return {"worktree_id": worktree_id, "ok": False, "detail": result.detail}
