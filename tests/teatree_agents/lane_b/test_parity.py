@@ -63,9 +63,9 @@ from tests.test_hook_router_classifier_relax_wire import run_hook_router
 pydantic_ai.models.ALLOW_MODEL_REQUESTS = False  # ty: ignore[invalid-assignment] — the zero-token test guard.
 
 # Lane-A Bash-shaped deny matchers, imported from the cold PreToolUse guards — the
-# INDEPENDENT implementations the Lane-B leaves must agree with. raw-merge and
-# raw-pid-kill are already unified (the router guards DELEGATE to the leaves), so
-# their "Lane A denies" proof reads the shared detector; the other four guards keep
+# implementations the Lane-B leaves must agree with. raw-merge, raw-pid-kill AND
+# secret-file-print are now unified (the router guards DELEGATE to the leaves), so
+# their "Lane A denies" proof reads the shared detector; the remaining guards keep
 # their own matcher, making the parity check a genuine cross-implementation compare.
 bash_assigns_reviewer_lane_a = _reviewer_guard._bash_assigns_reviewer
 _secret_print_lane_a = _secret_guard._is_secret_print

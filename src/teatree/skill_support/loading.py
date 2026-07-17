@@ -308,26 +308,6 @@ class SkillLoadingPolicy:
         return ordered
 
     @staticmethod
-    def _overlay_skill_for_context(
-        *,
-        cwd: Path,
-        overlay_skill_metadata: OverlaySkillMetadata,
-        overlay_active: bool,
-        lifecycle_skill: str,
-    ) -> str:
-        skill_path = str(overlay_skill_metadata.get("skill_path", "")).strip()
-        if not skill_path:
-            return ""
-        if not SkillLoadingPolicy._overlay_in_scope(
-            cwd=cwd,
-            overlay_skill_metadata=overlay_skill_metadata,
-            overlay_active=overlay_active,
-            lifecycle_skill=lifecycle_skill,
-        ):
-            return ""
-        return skill_path
-
-    @staticmethod
     def _overlay_in_scope(
         *,
         cwd: Path,

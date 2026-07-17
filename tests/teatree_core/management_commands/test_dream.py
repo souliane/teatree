@@ -563,7 +563,8 @@ class DreamMemoryPhasesPipelineTestCase(TestCase):
         with patch("teatree.loops.dream.merge.merge_memories", side_effect=RuntimeError("merge boom")):
             self._tick(stdout)
         out = stdout.getvalue()
-        assert "WARN merge raised: RuntimeError" in out
+        assert "WARN merge raised for" in out
+        assert "RuntimeError: merge boom" in out
         assert DreamRunMarker.objects.get(name=DreamRunMarker.NAME).last_succeeded_at is not None
 
     def test_budget_tier_archives_duplicates_and_index_drops_under_budget(self) -> None:
@@ -649,7 +650,8 @@ class DreamMemoryPhasesPipelineTestCase(TestCase):
         out = stdout.getvalue()
         # The pass still stamped success; the phase failure is warned, not fatal,
         # and the LATER phases still ran.
-        assert "WARN cross-link raised: RuntimeError" in out
+        assert "WARN cross-link raised for" in out
+        assert "RuntimeError: phase4 boom" in out
         assert "re-indexed" in out
         assert DreamRunMarker.objects.get(name=DreamRunMarker.NAME).last_succeeded_at is not None
 

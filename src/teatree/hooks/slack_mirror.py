@@ -89,12 +89,28 @@ def slack_config_from_toml() -> tuple[str, str] | None:
 
 
 def format_question_text(questions: list[dict]) -> str:
+    """Render the AskUserQuestion payload for the Slack DM, tolerant of loose shapes.
+
+    The harness input is opaque, not the typed view: a question may not be a
+    mapping, ``options`` may be absent or not a list, and an option may be a bare
+    string rather than a ``{label, description}`` mapping. Each shape is guarded
+    so a ``.get`` on a non-mapping can NEVER raise into the never-raise mirror
+    (an ``AttributeError`` here means the DM never lands).
+    """
     lines: list[str] = []
     for q in questions:
+        if not isinstance(q, dict):
+            continue
         lines.append(f"*{q.get('question', '')}*")
-        for i, opt in enumerate(q.get("options", []), 1):
-            label = opt.get("label", "")
-            desc = opt.get("description", "")
+        options = q.get("options", [])
+        for i, opt in enumerate(options if isinstance(options, list) else [], 1):
+            if isinstance(opt, dict):
+                label = opt.get("label", "")
+                desc = opt.get("description", "")
+            elif isinstance(opt, str):
+                label, desc = opt, ""
+            else:
+                continue
             lines.append(f"  {i}. {label}" + (f" — {desc}" if desc else ""))
     lines.append("\n_Reply with the number (e.g. `1`) or type your answer._")
     return "\n".join(lines)
@@ -120,16 +136,26 @@ def read_dm_channel_cache(user_id: str) -> str:
 
 
 def write_dm_channel_cache(user_id: str, channel: str) -> None:
+    """Persist the DM channel id (best-effort, never raises into the mirror).
+
+    Both the read-merge and the mkdir/write are guarded: the cache lives under a
+    dir that may be unwritable in the restricted hook subprocess, and an
+    ``OSError`` from ``mkdir``/``write_text`` must never propagate into the
+    PreToolUse mirror (a raise there means the question DM never lands).
+    """
     path = slack_dm_cache_path()
-    path.parent.mkdir(parents=True, exist_ok=True)
     try:
-        existing = json.loads(path.read_text(encoding="utf-8"))
+        existing = json.loads(path.read_text(encoding="utf-8")) if path.is_file() else {}
     except (OSError, json.JSONDecodeError):
         existing = {}
     if not isinstance(existing, dict):
         existing = {}
     existing[user_id] = channel
-    path.write_text(json.dumps(existing, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(existing, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    except OSError:
+        return
 
 
 def _str_field(mapping: dict | None, key: str) -> str:

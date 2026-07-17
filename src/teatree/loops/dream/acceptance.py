@@ -27,6 +27,7 @@ from teatree.loops.dream.gates import (
     derive_probes,
     evaluate_gates,
     probe_answerable,
+    scoped_probe_key,
 )
 
 if TYPE_CHECKING:
@@ -39,6 +40,7 @@ def run_acceptance_pass(  # noqa: PLR0913 — kwargs-only §4 pass inputs; the c
     snapshot_after: MemorySnapshot,
     *,
     overlay: str,
+    scope: str | None = None,
     archived: "Sequence[ArchivedMemory]",
     schema_before: int,
     schema_after: int,
@@ -62,12 +64,18 @@ def run_acceptance_pass(  # noqa: PLR0913 — kwargs-only §4 pass inputs; the c
     off (dry-run) — records each probe's outcome to :class:`DreamQaProbe` (so the
     formerly-dead model is populated and the next pass has a prior baseline).
 
+    The QA corpus (probe rows + the prior-session baseline) is partitioned by *scope*
+    — the memory dir the pass ran over — so two dirs with a same-named memory never
+    collide on one row and the interference/monotonicity baseline is read per dir,
+    not averaged across every dir. *scope* defaults to *overlay* when not given.
+
     *compliance_remediations* feeds gate (g); when not supplied it is read from the
     persisted instruction-compliance records for *overlay* (#2663) so a recurrence
     remediated with a memory FAILS the pass.
     """
+    corpus_scope = scope if scope is not None else overlay
     probes = derive_probes(snapshot_before)
-    prior_rate, had_prior = _prior_pass_rate(overlay)
+    prior_rate, had_prior = _prior_pass_rate(corpus_scope)
     now_rate = _pass_rate(probes, snapshot_after, None)
     pruned_lines = snapshot_before.index_lines - snapshot_after.index_lines
     homed_names = {a.source.name for a in archived} | decay.cold_archive_names(archive_dir)
@@ -89,7 +97,7 @@ def run_acceptance_pass(  # noqa: PLR0913 — kwargs-only §4 pass inputs; the c
         compliance_remediations=remediations,
     )
     if persist:
-        persist_probe_results(probes, snapshot_after, overlay=overlay)
+        persist_probe_results(probes, snapshot_after, scope=corpus_scope)
     return report
 
 
@@ -97,16 +105,17 @@ def persist_probe_results(
     probes: Sequence[QaProbe],
     snapshot: MemorySnapshot,
     *,
-    overlay: str,
+    scope: str,
     answerer: ProbeAnswerer | None = None,
 ) -> int:
     """Record each probe's replay outcome to the ``DreamQaProbe`` corpus, idempotently.
 
-    Idempotent on ``probe_key`` (sha256 of the question): a probe re-recorded on a
-    later run finds its existing row and ACCUMULATES pass/run counts via
-    :meth:`DreamQaProbe.record_result`, and is marked ``is_prior_session`` from the
-    second recording on (it now carries over from an earlier run). Returns the
-    number of probes that PASSED this replay.
+    Idempotent on ``probe_key`` (sha256 of scope + NUL + question): a probe
+    re-recorded on a later run in the same *scope* finds its existing row and
+    ACCUMULATES pass/run counts via :meth:`DreamQaProbe.record_result`, and is marked
+    ``is_prior_session`` from the second recording on (it now carries over from an
+    earlier run). Scoping the key keeps two dirs' same-named probes on distinct rows.
+    Returns the number of probes that PASSED this replay.
     """
     from teatree.core.models import DreamQaProbe  # noqa: PLC0415 — deferred: ORM import needs the app registry
 
@@ -115,12 +124,12 @@ def persist_probe_results(
         answerable = probe_answerable(probe, snapshot, answerer)
         passed += int(answerable)
         row, created = DreamQaProbe.objects.get_or_create(
-            probe_key=probe.probe_key,
+            probe_key=scoped_probe_key(scope, probe.question),
             defaults={
                 "question": probe.question,
                 "expected_answer": probe.expected_answer,
                 "source_memory_path": probe.source_name,
-                "overlay": overlay,
+                "scope": scope,
             },
         )
         if not created and not row.is_prior_session:
@@ -130,17 +139,17 @@ def persist_probe_results(
     return passed
 
 
-def _prior_pass_rate(overlay: str) -> tuple[float, bool]:
-    """Recorded prior-session pass-rate for *overlay* and whether a prior run exists.
+def _prior_pass_rate(scope: str) -> tuple[float, bool]:
+    """Recorded prior-session pass-rate for *scope* and whether a prior run exists.
 
-    Averages ``last_pass_rate`` over the persisted prior-session probes. A fresh
-    overlay (no prior probes) returns ``(1.0, False)`` — gate (b)/(e) cannot
-    regress against a non-existent baseline, so the first run is never failed by
-    interference/monotonicity.
+    Averages ``last_pass_rate`` over the persisted prior-session probes IN THIS SCOPE
+    (the memory dir). A fresh scope (no prior probes) returns ``(1.0, False)`` — gate
+    (b)/(e) cannot regress against a non-existent baseline, so the first run is never
+    failed by interference/monotonicity.
     """
     from teatree.core.models import DreamQaProbe  # noqa: PLC0415 — deferred: ORM import needs the app registry
 
-    prior = list(DreamQaProbe.objects.prior_session_probes(overlay))
+    prior = list(DreamQaProbe.objects.prior_session_probes(scope))
     if not prior:
         return 1.0, False
     return sum(p.last_pass_rate for p in prior) / len(prior), True

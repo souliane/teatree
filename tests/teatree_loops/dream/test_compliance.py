@@ -259,10 +259,12 @@ class RunComplianceEscalationTestCase(TestCase):
         summary = run_compliance_escalation(snapshot=None, findings=[self._recurrence()], host=None, dry_run=False)
         assert "no teatree code host resolved" in summary
 
-    def test_dry_run_files_nothing(self) -> None:
+    def test_dry_run_previews_the_count_but_files_nothing(self) -> None:
         host = _fake_host()
         summary = run_compliance_escalation(snapshot=None, findings=[self._recurrence()], host=host, dry_run=True)
-        assert summary == "; escalated 0/1 compliance recurrence(s)"
+        # The preview reports what a real run WOULD escalate (1/1), not a bare zero…
+        assert summary == "; escalated 1/1 compliance recurrence(s)"
+        # …while nothing is actually written.
         host.update_issue.assert_not_called()
 
     def test_no_recurrence_returns_empty_clause(self) -> None:

@@ -25,11 +25,7 @@ another command's argument (``grep kill 4242 file``), or as a subcommand word
 import re
 from dataclasses import dataclass
 
-# Command-position anchor: a segment starts at the beginning of the command, or
-# right after a shell separator (``;`` ``&&`` ``||`` ``|`` ``&`` newline). The
-# first WORD of a segment is the command name; only when that word is exactly
-# ``kill`` is the segment a kill invocation.
-_SEGMENT_SPLIT_RE = re.compile(r"(?:\|\||&&|[;|&\n])")
+from teatree.hooks._shell_lexer import split_commands, tokenize
 
 # A signal flag on ``kill``: ``-9`` / ``-KILL`` / ``-SIGKILL`` / ``-TERM`` / the
 # explicit ``-s SIGNAL`` form. ``-0`` is matched here so it can be detected as
@@ -85,14 +81,13 @@ def _operand_index(words: list[str]) -> int | None:
     return i
 
 
-def _kill_pid_in_segment(segment: str) -> int | None:
+def _kill_pid_in_words(words: list[str]) -> int | None:
     """Return the raw pid a ``kill`` segment targets, or ``None`` when it is not one.
 
     The segment's first word must be exactly ``kill``. A non-numeric target
     (``%job``, ``$VAR``, ``$(…)``), a no-op ``-0``/``-s 0`` probe, and a ``kill``
     that is not the command name all yield ``None``.
     """
-    words = segment.split()
     if not words or words[0] != "kill":
         return None
     index = _operand_index(words)
@@ -108,16 +103,18 @@ def _kill_pid_in_segment(segment: str) -> int | None:
 def detect_raw_pid_kill(command: str) -> SafeKillDetection:
     """Return a detection for *command*; ``is_raw_pid_kill`` True iff it kills by raw pid.
 
-    Detection is anchored to a command position: each ``;``/``&&``/``||``/``|``/
-    newline-separated segment whose first word is ``kill`` is inspected, so a
-    ``kill`` token inside a comment, string, or as another command's argument is
-    not flagged. ``kill -0`` (no-op probe), ``pkill``/``killall`` (signal by
+    Detection is anchored to a command position via the shared quote-accurate
+    shell lexer (:mod:`teatree.hooks._shell_lexer`): each ``;``/``&&``/``||``/
+    ``|``/newline-separated segment whose first WORD is ``kill`` is inspected, so
+    a ``kill`` token inside a quoted string (``echo "if it hangs; kill 1234"``),
+    a comment, or as another command's argument is never split apart into a bogus
+    kill segment. ``kill -0`` (no-op probe), ``pkill``/``killall`` (signal by
     name), and ``%job``/``$VAR``/``$(…)`` targets are left alone.
     """
     if not command:
         return SafeKillDetection(is_raw_pid_kill=False, pid=None, message="")
-    for segment in _SEGMENT_SPLIT_RE.split(command):
-        pid = _kill_pid_in_segment(segment.strip())
+    for segment in split_commands(tokenize(command)):
+        pid = _kill_pid_in_words([tok.value for tok in segment])
         if pid is not None:
             return SafeKillDetection(is_raw_pid_kill=True, pid=pid, message=_SAFE_KILL_BLOCK_MSG)
     return SafeKillDetection(is_raw_pid_kill=False, pid=None, message="")

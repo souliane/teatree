@@ -16,73 +16,36 @@ files, and echo of prose that merely MENTIONS a secret-file path. Fails OPEN on
 any internal error — a gate bug must never wedge the agent (consistent with the
 #1164 raw-review-post guard).
 
-Extracted whole from ``hook_router`` (the #2384 Wave-2 router split, PR4) so the
-dispatcher shrinks; the router re-exports :func:`handle_block_secret_file_print`
-into ``_HANDLERS`` unchanged. The deny routes through the router's shared
-``_fail_open_or_deny`` chokepoint (back-imported lazily), so the self-rescue
-allowlist and the ``danger_gate_fail_open`` kill-switch apply uniformly and the
-``emit_pretooluse_deny`` / ``_write_pretooluse_deny`` deny writer stays in the
-router (the never-lockout contract).
+The secret-print SHAPE detection lives in the ``teatree.hooks.secret_file_print_detect``
+leaf (per-segment shell-lexed, so a redirect on an unrelated segment cannot mask
+the leak and a print verb not at the whole-command start is still seen), lazily
+imported inside the sibling ``src/`` bootstrap (#1314) — one canonical matcher
+for BOTH the cold PreToolUse subprocess (here) and Lane B's shared hard-deny
+registry, never a duplicated copy that drifts. Extracted whole from ``hook_router``
+(the #2384 Wave-2 router split, PR4) so the dispatcher shrinks; the router
+re-exports :func:`handle_block_secret_file_print` into ``_HANDLERS`` unchanged.
+The deny routes through the router's shared ``_fail_open_or_deny`` chokepoint
+(back-imported lazily), so the self-rescue allowlist and the ``danger_gate_fail_open``
+kill-switch apply uniformly and the ``emit_pretooluse_deny`` / ``_write_pretooluse_deny``
+deny writer stays in the router (the never-lockout contract).
 
 Cold-import safe: the live PreToolUse hook is a bare ``python3`` subprocess with
-no guarantee ``teatree`` is importable, so the module top imports only stdlib —
-never Django / ``teatree.core``. The shared spine helper ``_fail_open_or_deny``
-stays in the router and is back-imported lazily inside the handler body — the
-``hooks/scripts`` sibling back-import the import-direction fitness test permits
-(it governs only the ``src/teatree/hooks`` leaves).
+no guarantee ``teatree`` is importable, so the module top imports only stdlib and
+the already-extracted ``managed_repo`` sibling (the ``teatree_src_on_path``
+bootstrap) — never Django / ``teatree.core``. The shared spine helper
+``_fail_open_or_deny`` stays in the router and is back-imported lazily inside the
+handler body.
 """
 
-import re
 import sys
+
+from hooks.scripts.managed_repo import teatree_src_on_path as _teatree_src_on_path
 
 # Alias the bare and ``hooks.scripts.`` identities so the handler the router
 # re-exports and a test patching a helper here operate on ONE module object.
 sys.modules.setdefault("secret_file_print_guard", sys.modules[__name__])
 sys.modules.setdefault("hooks.scripts.secret_file_print_guard", sys.modules[__name__])
 
-_SECRET_PATHS_RE = re.compile(  # [skill-load-ok: souliane/teatree repo]
-    r"""(?x)
-    (?:~|/root|/home/[^/\s]+|/Users/[^/\s]+|\$HOME|\$\{HOME\}|\$\{?HOME\}?)
-    /(?:
-        \.teatree\.toml
-        | \.netrc
-        | \.config/gh/hosts\.yml
-        | (?:Library/Application\s+Support|\.config)/glab-cli/config\.yml
-        | \.ssh/(?:id_[a-z0-9_]+|.*\.pem|.*\.key)
-    )
-    | (?:^|[\s/])(?:
-        \.env(?!\.(?:example|sample|template|dist)\b)(?:\.[a-z]+)?
-        | secrets?\.env
-        | .*\.credentials?
-        | .*\.pem
-        | .*\.key
-        | .*_account\.json
-    )(?:\s|$|['")])
-    """,
-    re.IGNORECASE,
-)
-
-_TOKEN_LITERAL_RE = re.compile(
-    r"""(?:^|\s)(?:glpat[-_]|ghp_|gho_|xoxb-|xoxp-|sk-)\S+""",
-)
-
-_PRINT_CMDS_RE = re.compile(r"^\s*(?:cat|head|tail)\b")
-
-_PASS_SHOW_RE = re.compile(r"^\s*pass\s+show\b")
-
-_CAPTURE_RE = re.compile(  # [skill-load-ok: souliane/teatree repo]
-    r"""
-    \$\(            # subshell capture: $(…)
-    | >\s*\S+       # stdout redirect to a file or /dev/null
-    """,
-    re.VERBOSE,
-)
-
-_RE_EMITTER_SINK_RE = re.compile(r"^\s*(?:cat|less|more|tee|grep|head|tail)\b")
-
-_ECHO_SAFE_QUOTE_RE = re.compile(r"""^(?:'[^']*'|"[^"]*")$""")
-
-# [skill-load-ok: souliane/teatree repo]
 _CREDENTIAL_PRINT_BLOCK_MSG = (
     "BLOCKED: this command would print a secret-bearing file or credential token "
     "to the transcript. Reading a secret into the transcript is irrecoverable — "
@@ -93,51 +56,21 @@ _CREDENTIAL_PRINT_BLOCK_MSG = (
 )
 
 
-def _command_captures_or_redirects(command: str) -> bool:
-    """Return True when the command's stdout is captured or redirected, not printed.
+def _is_secret_print(command: str) -> bool:
+    """Whether *command* would print a secret-bearing value to stdout.
 
-    A variable-assignment prefix (``VAR=$(…)`` or ``export VAR=$(…)``) or a
-    stdout redirect (``> file``) keeps the secret off the transcript. A pipe
-    is a capture only when its sink consumes the value — a sink that re-emits
-    to the transcript (``cat`` / ``less`` / ``more`` / ``tee`` / ``grep`` /
-    ``head`` / ``tail``, incl. ``tee /dev/tty``) still displays the secret and
-    is NOT a capture. A plain ``pass show x`` with no such construct prints.
+    Delegates to the single ``teatree.hooks.secret_file_print_detect`` leaf
+    (lazily imported via the sibling ``src/`` bootstrap) so the cold PreToolUse
+    path and Lane B share ONE per-segment-lexed matcher. Crash-proof: any
+    import/internal failure degrades to ``False`` (never wedge the tool call).
     """
-    if _CAPTURE_RE.search(command):
-        return True
-    segments = command.split("|")
-    if len(segments) < 2:  # noqa: PLR2004 — self-documenting literal in this context
-        return False
-    return not any(_RE_EMITTER_SINK_RE.match(segment) for segment in segments[1:])
-
-
-def _echo_arg_is_token(command: str) -> bool:
-    """Return True when the echo/printf command carries a token literal.
-
-    Prose strings inside quotes that merely MENTION a secret path are not
-    treated as token prints — they contain no token literal. A fully-quoted
-    arg whose CONTENT is itself a token literal still lands on the transcript,
-    so it is treated as a token. Only quoted prose (no token shape) passes.
-    """
-    parts = command.split(None, 1)
-    if len(parts) < 2:  # noqa: PLR2004 — self-documenting literal in this context
-        return False
-    arg = parts[1].strip()
-    if _ECHO_SAFE_QUOTE_RE.match(arg):
-        return bool(_TOKEN_LITERAL_RE.search(arg[1:-1]))
-    return bool(_TOKEN_LITERAL_RE.search(command))
-
-
-def _is_secret_print(command: str) -> bool:  # [skill-load-ok: souliane/teatree repo]
-    """Whether *command* would print a secret-bearing value to stdout."""
     try:
-        if _command_captures_or_redirects(command):
-            return False
-        if _PRINT_CMDS_RE.match(command):
-            return bool(_SECRET_PATHS_RE.search(command))
-        if re.match(r"^\s*(?:echo|printf)\b", command):
-            return _echo_arg_is_token(command)
-        return bool(_PASS_SHOW_RE.match(command))
+        with _teatree_src_on_path():
+            from teatree.hooks.secret_file_print_detect import (  # noqa: PLC0415 — deferred: cold-hook import
+                is_secret_print,
+            )
+
+            return is_secret_print(command)
     except Exception:  # noqa: BLE001 — crash-proof hook: any failure degrades silently, never breaks the tool call
         return False
 

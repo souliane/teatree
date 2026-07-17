@@ -252,6 +252,28 @@ class TestQuestionFormatting:
         assert "2. No" in text
         assert "Reply with the number" in text
 
+    def test_string_option_does_not_raise(self) -> None:
+        # A bare-string option (loose harness input) must not AttributeError on
+        # ``opt.get`` — a raise here means the question DM never lands.
+        text = slack_mirror.format_question_text([{"question": "Ship it?", "options": ["Yes", "No"]}])
+        assert "1. Yes" in text
+        assert "2. No" in text
+
+    def test_non_mapping_question_and_bad_options_are_skipped(self) -> None:
+        text = slack_mirror.format_question_text(["not-a-dict", {"question": "Q?", "options": "not-a-list"}])
+        assert "*Q?*" in text  # the valid question still renders; the junk is skipped
+
+
+class TestWriteCacheNeverRaises:
+    def test_unwritable_cache_dir_does_not_raise(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        # A cache path whose PARENT is an existing FILE makes mkdir raise
+        # NotADirectoryError (an OSError). The write must swallow it, not
+        # propagate into the never-raise mirror.
+        blocker = tmp_path / "blocker"
+        blocker.write_text("i am a file", encoding="utf-8")
+        monkeypatch.setattr(slack_mirror, "slack_dm_cache_path", lambda: blocker / "teatree" / "cache.json")
+        slack_mirror.write_dm_channel_cache("U1", "D1")  # must not raise
+
 
 class TestConfigFromToml:
     def test_returns_ref_and_uid_for_slack_overlay(self) -> None:
