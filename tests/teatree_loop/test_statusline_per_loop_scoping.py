@@ -14,14 +14,18 @@ from datetime import UTC, datetime, timedelta
 from unittest.mock import patch
 
 import pytest
+from django.test import TestCase
 from django.utils import timezone
 
-from teatree.core.loop_lease_manager import is_per_loop_tick_mutex
+from teatree.core.loop_lease_manager import is_per_loop_tick_mutex, per_loop_owner_slot
+from teatree.core.models import Loop
 from teatree.core.models.loop_lease import LoopLease
 from teatree.loop.loop_scoping import (
     current_session_owned_per_loop_slots,
     is_transient_tick_mutex,
+    loop_is_actively_ticking,
     owned_per_loop_slots,
+    per_loop_loop_name,
 )
 from teatree.loop.statusline import live_loops_anchor
 from teatree.loop.statusline_loops import _live_lease_chunks
@@ -230,3 +234,36 @@ class TestTickMutexNotDoubleRendered:
         ):
             chunks = _live_lease_chunks()
         assert chunks == [], chunks
+
+
+class TestPerLoopLoopName:
+    def test_strips_the_owner_prefix(self) -> None:
+        assert per_loop_loop_name("loop:inbox") == "inbox"
+
+    def test_is_the_inverse_of_per_loop_owner_slot(self) -> None:
+        assert per_loop_loop_name(per_loop_owner_slot("dispatch")) == "dispatch"
+
+    def test_bare_name_without_prefix_is_unchanged(self) -> None:
+        assert per_loop_loop_name("inbox") == "inbox"
+
+
+class TestLoopIsActivelyTicking(TestCase):
+    """``loop_is_actively_ticking`` reads the ``Loop`` cadence ledger (#3366)."""
+
+    def _seed(self, **fields: object) -> None:
+        Loop.objects.update_or_create(name="inbox", defaults={"script": "inbox", "enabled": True, **fields})
+
+    def test_true_when_last_run_within_cadence_tolerance(self) -> None:
+        self._seed(delay_seconds=60, last_run_at=timezone.now() - timedelta(seconds=90))
+        assert loop_is_actively_ticking("loop:inbox") is True
+
+    def test_false_when_last_run_beyond_cadence_tolerance(self) -> None:
+        self._seed(delay_seconds=60, last_run_at=timezone.now() - timedelta(seconds=600))
+        assert loop_is_actively_ticking("loop:inbox") is False
+
+    def test_false_when_loop_never_ran(self) -> None:
+        self._seed(delay_seconds=60, last_run_at=None)
+        assert loop_is_actively_ticking("loop:inbox") is False
+
+    def test_false_when_row_absent(self) -> None:
+        assert loop_is_actively_ticking("loop:nonexistent") is False
