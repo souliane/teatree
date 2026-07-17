@@ -7,38 +7,50 @@ orphaned ticket state), and the agent/mechanical helpers after dispatch
 produces actions.
 """
 
-import contextlib
 import logging
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
+
     from teatree.loop.tick import TickReport
 
 logger = logging.getLogger(__name__)
 
 
-def _reap_stale_task_claims() -> None:
-    """Run the boot sweeps + transient auto-requeue from the loop tick, swallowing a DB-blocked harness.
+def _reap_stale_task_claims(errors: dict[str, str] | None = None) -> None:
+    """Run the three recovery sweeps INDEPENDENTLY, recording each failure — never silently.
 
-    Best-effort wrapper over :func:`teatree.core.worktree.recovery_sweeps.run_boot_sweeps`
-    (the single SSOT, shared with ``t3 recover``) plus
-    :func:`teatree.loop.transient_requeue.requeue_transient_failed` — the bounded
-    reopen of transient-FAILED tasks (an outage/provision-fail/coder-yield that
-    RETURNED a failure, which the crashed-session boot sweeps never rescue) — plus
-    :func:`teatree.loop.stuck_ticket_redispatch.redispatch_stuck_tickets` — the
-    bounded re-dispatch of stuck non-terminal tickets with no work in flight. Both
-    live in the loop layer (they compose the ``agents``/``core`` surfaces), so they
-    are called here rather than folded into the core-only ``run_boot_sweeps``. If
-    the test harness blocks DB access (pytest-django without a ``db`` marker), the
-    loop tick should still render scanners and signals.
+    Chains :func:`teatree.core.worktree.recovery_sweeps.run_boot_sweeps` (the single
+    SSOT, shared with ``t3 recover``), :func:`~teatree.loop.transient_requeue.requeue_transient_failed`
+    (the bounded reopen of transient-FAILED tasks a crashed-session boot sweep never
+    rescues), and :func:`~teatree.loop.stuck_ticket_redispatch.redispatch_stuck_tickets`
+    (the bounded re-dispatch of stuck non-terminal tickets). The two loop-layer sweeps
+    compose the ``agents``/``core`` surfaces, so they run here rather than in the
+    core-only ``run_boot_sweeps``.
+
+    Each sweep runs in its OWN ``try`` so a ``RuntimeError`` from the FIRST never skips
+    the other two (the old shared ``suppress(RuntimeError)`` let one boot-sweep failure
+    silently disable transient-requeue AND stuck-redispatch, and recovery itself failed
+    invisibly). A failure is logged and recorded in *errors* (rendered in the tick's
+    ``action_needed``), so a DB-blocked pytest-django harness still renders while a real
+    recovery failure surfaces loudly instead of freezing the factory in silence.
     """
     from teatree.core.worktree.recovery_sweeps import run_boot_sweeps  # noqa: PLC0415 — deferred: loaded at tick time
     from teatree.loop import stuck_ticket_redispatch, transient_requeue  # noqa: PLC0415 — deferred: loaded at tick time
 
-    with contextlib.suppress(RuntimeError):
-        run_boot_sweeps()
-        transient_requeue.requeue_transient_failed()
-        stuck_ticket_redispatch.redispatch_stuck_tickets()
+    sweeps: tuple[tuple[str, Callable[[], object]], ...] = (
+        ("recovery:boot_sweeps", run_boot_sweeps),
+        ("recovery:transient_requeue", transient_requeue.requeue_transient_failed),
+        ("recovery:stuck_redispatch", stuck_ticket_redispatch.redispatch_stuck_tickets),
+    )
+    for label, sweep in sweeps:
+        try:
+            sweep()
+        except RuntimeError as exc:
+            logger.warning("Recovery sweep %s failed: %s", label, exc)
+            if errors is not None:
+                errors[label] = f"{type(exc).__name__}: {exc}"
 
 
 def _persist_agent_dispatches(report: "TickReport") -> None:

@@ -210,6 +210,7 @@ def spawn(
 def spawn_session_leader(
     cmd: Sequence[str],
     *,
+    env: dict[str, str] | None = None,
     stdout: int | IO[bytes] | IO[str] | None = None,
     stderr: int | IO[bytes] | IO[str] | None = None,
 ) -> Popen[str]:
@@ -219,10 +220,12 @@ def spawn_session_leader(
     caller can ``os.killpg(os.getpgid(proc.pid), …)`` the WHOLE group (the child
     plus any grandchildren it spawns) on a deadline — an OS-level kill boundary a
     plain :func:`spawn` cannot give. ``stdin`` is always ``DEVNULL`` (a detached
-    background process must never inherit or block on the parent's stdin).
+    background process must never inherit or block on the parent's stdin). ``env``
+    replaces the child's environment when given (pass ``{**os.environ, …}`` to extend).
     """
     return subprocess.Popen(
         list(cmd),
+        env=env,
         stdin=DEVNULL,
         stdout=stdout,
         stderr=stderr,

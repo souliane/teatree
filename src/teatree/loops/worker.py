@@ -1,14 +1,20 @@
 """The long-lived ``t3 worker`` — the singleton executor pool for the timer chains (#1796).
 
 One process runs programmatic ``django_tasks_db`` :class:`Worker` executor threads —
-2 pinned to the ``loops`` queue and a host-scaled ``default`` pool (floored at 2,
-:func:`default_queue_executor_count`) — so a heavy headless ``default`` job can never
-starve a reactive loop timer, and a deep backlog of independent headless work still
-drains in parallel on a bigger box instead of one-or-two-at-a-time. A
-supervisor thread re-reads the ``loop_runner_enabled`` kill-switch every ~5 s and
+a host-scaled ``loops`` pool (floored at 2, :func:`loops_executor_count`) and a
+host-scaled ``default`` pool (floored at 2, :func:`default_queue_executor_count`) —
+so a heavy headless ``default`` job can never starve a reactive loop timer, two slow
+loop ticks can never stall every OTHER loop's timer, and a deep backlog of independent
+headless work still drains in parallel on a bigger box instead of one-or-two-at-a-time.
+A supervisor thread re-reads the ``loop_runner_enabled`` kill-switch every ~5 s AND
+polls each executor thread's :meth:`is_alive`, respawning any that a swallowed error
+(a ``DBTaskResult`` ``OperationalError`` inside ``db_worker``) silently killed — so a
+dead executor never freezes the whole box while the process still looks healthy. It
 stops every executor on a flip-off or a SIGTERM/SIGINT, joining and — after the join
 timeout — SIGKILLing any in-flight tick process group the join left orphaned, then
-exiting; the flock singleton (:func:`teatree.utils.singleton.singleton`) guarantees
+exiting; when a single executor exhausts its respawn budget the worker exits NON-ZERO
+(loud, never silent) so the OS/container restarts it fresh rather than limping with a
+dead pool. The flock singleton (:func:`teatree.utils.singleton.singleton`) guarantees
 at most one worker per box. At startup the worker reconciles the loop-timer chains, seeds
 the maintenance chains, and expires the stale ``default``-queue backlog BEFORE spawning
 executors (so a box that queued days-old provision/ship jobs while no worker ran never
@@ -35,12 +41,26 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-#: Reactive-timer executors pinned to the ``loops`` queue — fixed at 2 so a heavy
-#: headless ``default`` job can never starve a loop timer.
-LOOPS_EXECUTOR_COUNT = 2
+#: The prior hardcoded ``loops``-queue width; now the FLOOR so a small box keeps the
+#: old minimum (2 reactive-timer threads) while a bigger box scales up — two slow loop
+#: ticks pinning both floor threads no longer stalls every OTHER loop's timer.
+LOOPS_EXECUTOR_FLOOR = 2
 #: The prior hardcoded ``default``-queue width; now the FLOOR so a small box keeps
 #: the old minimum while a bigger box scales up.
 DEFAULT_QUEUE_FLOOR = 2
+
+
+def loops_executor_count() -> int:
+    """Host-scaled width of the ``loops`` (reactive-timer) executor pool, floored at 2.
+
+    A fixed 2 threads serialise every loop timer fire behind at most two in-flight
+    ticks, so two slow ticks stall every other loop's timer plus the maintenance /
+    reconcile chains. Scaling with the shared PR-01 resource ceiling
+    (:func:`default_provision_concurrency` — half the logical cores) lets a bigger
+    box fire more timers in parallel; the floor preserves the prior minimum on a
+    1-2 core box.
+    """
+    return max(LOOPS_EXECUTOR_FLOOR, default_provision_concurrency())
 
 
 def default_queue_executor_count() -> int:
@@ -56,8 +76,8 @@ def default_queue_executor_count() -> int:
 
 
 def build_executor_queues() -> tuple[str, ...]:
-    """The executor pool: 2 ``loops`` threads + a host-scaled ``default`` pool."""
-    return ("loops",) * LOOPS_EXECUTOR_COUNT + ("default",) * default_queue_executor_count()
+    """The executor pool: a host-scaled ``loops`` pool + a host-scaled ``default`` pool."""
+    return ("loops",) * loops_executor_count() + ("default",) * default_queue_executor_count()
 
 
 #: The supervisor re-reads the kill-switch on this cadence — a flip-off stops
@@ -65,6 +85,11 @@ def build_executor_queues() -> tuple[str, ...]:
 SUPERVISOR_POLL_SECONDS = 5.0
 #: Each executor's empty-poll interval — small so a requested stop flips fast.
 EXECUTOR_INTERVAL_SECONDS = 1.0
+#: How many times a single executor slot may be respawned within one worker
+#: lifetime before the worker gives up and exits NON-ZERO (a crash-looping executor
+#: is a real fault the OS/container should restart the whole worker for, not one the
+#: supervisor should mask by respawning forever).
+MAX_EXECUTOR_RESPAWNS = 5
 
 
 class _Executor(Protocol):
@@ -74,7 +99,21 @@ class _Executor(Protocol):
 
 
 class _Handle(Protocol):
+    def is_alive(self) -> bool: ...
+
     def join(self, timeout: float | None = None) -> None: ...
+
+
+class LoopWorkerExecutorCrashError(RuntimeError):
+    """A ``loops``/``default`` executor thread died and exhausted its respawn budget.
+
+    Raised out of :meth:`LoopWorker.run` (after the pool is torn down) so the worker
+    process exits NON-ZERO: a repeatedly-crashing executor is a genuine fault the
+    OS/container must restart the worker for, never one the supervisor silently masks.
+    """
+
+
+_CRASH_MESSAGE = "A loops/default executor thread died and exhausted its respawn budget; exiting non-zero."
 
 
 def _build_executor(queue_name: str, worker_id: str) -> "Worker":
@@ -126,23 +165,69 @@ class WorkerSeams:
     kill_ticks: Callable[[], object] = kill_live_tick_process_groups
     sleep: Callable[[float], None] = time.sleep
     poll_seconds: float = SUPERVISOR_POLL_SECONDS
+    max_respawns: int = MAX_EXECUTOR_RESPAWNS
     executor_queues: tuple[str, ...] = field(default_factory=build_executor_queues)
 
 
+@dataclass
+class _Slot:
+    """One executor thread plus the queue + respawn bookkeeping to resurrect it."""
+
+    queue: str
+    index: int
+    executor: _Executor
+    handle: _Handle
+    respawns: int = 0
+
+
 class LoopWorker:
-    """Supervised executor pool: reconcile, drain K queues, stop on kill-switch/signal."""
+    """Supervised executor pool: reconcile, drain K queues, respawn dead threads, stop on kill-switch/signal."""
 
     def __init__(self, seams: WorkerSeams | None = None) -> None:
         self._seams = seams or WorkerSeams()
         self._stop = threading.Event()
-        self._executors: list[_Executor] = []
+        self._slots: list[_Slot] = []
 
     def request_stop(self) -> None:
         """Signal the supervisor to shut down (the SIGTERM/SIGINT handler target)."""
         self._stop.set()
 
+    def _spawn_slot(self, queue: str, index: int, *, respawns: int = 0) -> _Slot:
+        executor = self._seams.make_executor(queue, f"worker-{os.getpid()}-{index}-{queue}")
+        return _Slot(queue=queue, index=index, executor=executor, handle=self._seams.spawn(executor), respawns=respawns)
+
+    def _respawn_dead_executors(self) -> bool:
+        """Respawn any executor thread that died; return True iff one exhausted its respawn budget.
+
+        A ``db_worker`` executor thread that hits a swallowed error (a ``DBTaskResult``
+        ``OperationalError``) exits silently — the pinned queue then never drains and
+        every timer chain on it freezes machine-wide while the process still looks
+        healthy. Polling :meth:`is_alive` and respawning keeps the pool live; a slot
+        that keeps dying past :attr:`WorkerSeams.max_respawns` is a real fault, so the
+        caller exits the worker NON-ZERO instead of masking it.
+        """
+        for i, slot in enumerate(self._slots):
+            if slot.handle.is_alive():
+                continue
+            if slot.respawns >= self._seams.max_respawns:
+                logger.error(
+                    "Executor for queue %r (slot %d) died %d times — giving up; the worker will exit non-zero.",
+                    slot.queue,
+                    slot.index,
+                    slot.respawns,
+                )
+                return True
+            logger.warning(
+                "Executor for queue %r (slot %d) died; respawning (respawn %d).",
+                slot.queue,
+                slot.index,
+                slot.respawns + 1,
+            )
+            self._slots[i] = self._spawn_slot(slot.queue, slot.index, respawns=slot.respawns + 1)
+        return False
+
     def run(self) -> None:
-        """Reconcile, expire stale jobs, start the executors, supervise until stop, then join and exit."""
+        """Reconcile, expire stale jobs, start the executors, supervise (kill-switch + liveness), then join and exit."""
         seams = self._seams
         seams.reconcile()
         seams.seed_chains()
@@ -151,22 +236,24 @@ class LoopWorker:
         # them the instant the worker starts (the default-ON flip's load-jam class).
         seams.expire()
 
-        self._executors = [
-            seams.make_executor(queue, f"worker-{os.getpid()}-{index}-{queue}")
-            for index, queue in enumerate(seams.executor_queues)
-        ]
-        handles = [seams.spawn(executor) for executor in self._executors]
+        self._slots = [self._spawn_slot(queue, index) for index, queue in enumerate(seams.executor_queues)]
 
+        crashed = False
         try:
             while not self._stop.is_set() and seams.enabled():
                 seams.sleep(seams.poll_seconds)
+                if self._respawn_dead_executors():
+                    crashed = True
+                    break
         finally:
             self.request_stop()
-            for executor in self._executors:
-                executor.running = False
-            for handle in handles:
-                handle.join(timeout=EXECUTOR_INTERVAL_SECONDS * 3)
+            for slot in self._slots:
+                slot.executor.running = False
+            for slot in self._slots:
+                slot.handle.join(timeout=EXECUTOR_INTERVAL_SECONDS * 3)
             # The daemon-join above never reaches a tick SUBPROCESS: a kill-switch flip
             # or SIGTERM mid-tick orphans it with no deadline owner. Kill any in-flight
             # tick process group so no zombie/orphan outlives the worker's shutdown.
             seams.kill_ticks()
+        if crashed:
+            raise LoopWorkerExecutorCrashError(_CRASH_MESSAGE)
