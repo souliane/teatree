@@ -545,3 +545,67 @@ class TestTeardownThreadedByTransition(TestCase):
 
     def test_mark_merged_enqueues_teardown_without_force(self) -> None:
         assert "force" not in self._enqueue_kwargs_for("mark_merged")
+
+
+class TestTerminalTransitionsEnqueueTeardown(TestCase):
+    """Every terminal transition purges — teardown is keyed on the TARGET STATE.
+
+    The target-state enqueue (#808 derive-don't-enumerate) fires
+    ``execute_teardown`` for EVERY transition landing in a terminal state:
+    ``ignore``→IGNORED, ``mark_delivered``→DELIVERED,
+    ``mark_review_no_action``→DELIVERED, and the
+    ``mark_merged``/``reconcile_merged``→MERGED merge paths (regression). A frozen
+    or abandoned ticket's worktrees are reaped the instant it is done, not only on
+    merge, so worktrees stop piling up on closed tickets.
+    """
+
+    def _assert_enqueues_teardown_once(self, ticket: Ticket, transition_name: str) -> None:
+        import teatree.core.tasks as tasks_mod  # noqa: PLC0415
+
+        with (
+            patch.object(tasks_mod, "execute_teardown") as teardown,
+            self.captureOnCommitCallbacks(execute=True),
+        ):
+            getattr(ticket, transition_name)()
+            ticket.save()
+        teardown.enqueue.assert_called_once_with(ticket.pk)
+
+    def test_ignore_from_started_enqueues_teardown(self) -> None:
+        ticket = Ticket.objects.create(overlay="test", state=Ticket.State.STARTED)
+        self._assert_enqueues_teardown_once(ticket, "ignore")
+
+    def test_mark_delivered_from_retrospected_enqueues_teardown(self) -> None:
+        ticket = Ticket.objects.create(overlay="test", state=Ticket.State.RETROSPECTED)
+        self._assert_enqueues_teardown_once(ticket, "mark_delivered")
+
+    def test_mark_merged_enqueues_teardown(self) -> None:
+        ticket = Ticket.objects.create(overlay="test", state=Ticket.State.IN_REVIEW)
+        self._assert_enqueues_teardown_once(ticket, "mark_merged")
+
+    def test_reconcile_merged_enqueues_teardown(self) -> None:
+        ticket = Ticket.objects.create(overlay="test", state=Ticket.State.IN_REVIEW)
+        self._assert_enqueues_teardown_once(ticket, "reconcile_merged")
+
+    def test_mark_review_no_action_enqueues_teardown(self) -> None:
+        ticket = Ticket.objects.create(overlay="test", state=Ticket.State.REVIEWED, role=Ticket.Role.REVIEWER)
+        self._assert_enqueues_teardown_once(ticket, "mark_review_no_action")
+
+    def test_non_terminal_transition_does_not_enqueue_teardown(self) -> None:
+        # A pre-terminal transition (scope) must NOT purge — teardown is
+        # target-state-keyed, so only terminal targets fire it.
+        import teatree.core.tasks as tasks_mod  # noqa: PLC0415
+
+        ticket = Ticket.objects.create(overlay="test", state=Ticket.State.NOT_STARTED)
+        with (
+            patch.object(tasks_mod, "execute_teardown") as teardown,
+            self.captureOnCommitCallbacks(execute=True),
+        ):
+            ticket.scope()
+            ticket.save()
+        teardown.enqueue.assert_not_called()
+
+    def test_teardown_target_states_are_ticket_terminal_minus_shipped(self) -> None:
+        # Completeness: the teardown target set is exactly the Ticket terminal
+        # states minus SHIPPED, so a future terminal state cannot silently skip
+        # purge (SHIPPED stays excluded — its PR is still open).
+        assert set(Ticket._TERMINAL_STATES) - {Ticket.State.SHIPPED} == signals_mod._TERMINAL_TARGET_STATES
