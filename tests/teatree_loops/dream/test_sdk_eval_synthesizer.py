@@ -9,22 +9,37 @@ connect (the prior watchdog wrapped only the response drain, so a stall hung for
 
 import asyncio
 import json
+import os
 import sqlite3
 import tempfile
 import threading
+from collections.abc import Callable
 from pathlib import Path
 from typing import Self
 from unittest.mock import patch
 
 import claude_agent_sdk
 import pytest
-from django.test import SimpleTestCase
+from django.test import SimpleTestCase, TestCase
 
 from teatree.agents.model_tiering import resolve_tier
+from teatree.core.models import ConfigSetting
+from teatree.llm.credentials import CredentialError
 from teatree.loops.dream import sdk_eval_synthesizer
+from tests.teatree_agents._sdk_fake import FakeHarnessSession, assistant_text
 
 _CANDIDATE: dict[str, object] = {"scenario_name": "x_under_load", "drift_rule": "d", "seed_citation": "c"}
 _SLICE = "a session slice"
+
+
+def _recording_client(reply: str) -> Callable[..., FakeHarnessSession]:
+    """A fake ``ClaudeSDKClient`` that records the ``options`` it was opened with."""
+
+    def _make_client(*, options: object = None, **_: object) -> FakeHarnessSession:
+        FakeHarnessSession.last_options = options
+        return FakeHarnessSession([assistant_text(reply)])
+
+    return _make_client
 
 
 def _seed_config_setting(db_path: Path, key: str, raw_value: str) -> None:
@@ -124,3 +139,50 @@ class SdkSynthesizerWatchdogTestCase(SimpleTestCase):
         assert isinstance(captured.get("exc"), TimeoutError), (
             f"expected the watchdog to raise TimeoutError on a stalled turn, got {captured.get('exc')!r}"
         )
+
+
+class SdkSynthesizerCredentialEnvTestCase(TestCase):
+    """The synthesizer authenticates its ``claude`` subprocess via the configured provider.
+
+    Same regression class as the distiller: a system ``claude`` turn spawned with no
+    credential env fails to authenticate and its reply parses as malformed, silently
+    dropping every derived candidate. The reply parse is exercised elsewhere, so these
+    isolate the credential-threading concern. DB access: reads ``agent_harness_provider``.
+    """
+
+    def test_options_env_pins_subscription_token(self) -> None:
+        # RED before the fix: _synth_options set no env, so options.env == {}.
+        ConfigSetting.objects.set_value("agent_harness_provider", "subscription_oauth")
+        with (
+            patch.object(sdk_eval_synthesizer, "_parse_synthesized", return_value=object()),
+            patch.dict(os.environ, {"CLAUDE_CODE_OAUTH_TOKEN": "oauth-x", "GIT_DIR": "/outer/.git"}),
+            patch("shutil.which", return_value="/usr/bin/claude"),
+            patch.object(claude_agent_sdk, "ClaudeSDKClient", _recording_client("{}")),
+        ):
+            sdk_eval_synthesizer.sdk_spec_synthesizer(_CANDIDATE, _SLICE)
+
+        options = FakeHarnessSession.last_options
+        assert options is not None
+        assert options.env["CLAUDE_CODE_OAUTH_TOKEN"] == "oauth-x"
+        assert "ANTHROPIC_API_KEY" not in options.env
+        assert "GIT_DIR" not in options.env
+
+    def test_unresolvable_credential_fails_loud_before_any_turn(self) -> None:
+        # An auth gap RAISES before the turn spawns, so it can never masquerade as a
+        # malformed reply that silently drops the candidate. The client is never built.
+        ConfigSetting.objects.set_value("agent_harness_provider", "subscription_oauth")
+
+        def _never(*_a: object, **_k: object) -> FakeHarnessSession:
+            msg = "the claude turn must not start when the credential is unresolvable"
+            raise AssertionError(msg)
+
+        with (
+            patch(
+                "teatree.agents._headless_env.resolve_subscription_credential",
+                side_effect=CredentialError("no subscription token resolvable"),
+            ),
+            patch("shutil.which", return_value="/usr/bin/claude"),
+            patch.object(claude_agent_sdk, "ClaudeSDKClient", _never),
+            pytest.raises(CredentialError),
+        ):
+            sdk_eval_synthesizer.sdk_spec_synthesizer(_CANDIDATE, _SLICE)
