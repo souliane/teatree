@@ -17,6 +17,7 @@ scanner's broad ``except``, which logged "failed on message" and dropped the
 review-intent signal — so the colleague-MR broadcast dispatched nothing.
 """
 
+import time
 from pathlib import Path
 
 import pytest
@@ -60,6 +61,39 @@ class TestProbeTimeoutFailsSafe:
 
         # An unresolvable (timed-out) probe must treat the repo as NOT private, not raise.
         assert _repo_visibility.slug_is_private("github.com/octo/repo") is False
+
+
+class TestNegativeVisibilityCaching:
+    """An unresolved probe is short-TTL cached so it is not re-probed every publish."""
+
+    def test_unresolved_verdict_is_cached_and_not_reprobed(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        calls = {"n": 0}
+
+        def _probe(_slug: str) -> str | None:
+            calls["n"] += 1
+            return None
+
+        monkeypatch.setattr(_repo_visibility, "probe_visibility", _probe)
+        assert _repo_visibility.slug_visibility("github.com/octo/mystery") is None
+        assert _repo_visibility.slug_visibility("github.com/octo/mystery") is None
+        # The second call read the negative cache entry rather than re-probing.
+        assert calls["n"] == 1
+
+    def test_negative_entry_expires_after_the_short_ttl(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(_repo_visibility, "probe_visibility", lambda _slug: None)
+        _repo_visibility.slug_visibility("github.com/octo/mystery")
+        # A read just past the short negative TTL treats the entry as expired.
+        future = time.time() + _repo_visibility._UNKNOWN_TTL_S + 1
+        monkeypatch.setattr(_repo_visibility.time, "time", lambda: future)
+        assert _repo_visibility._read_visibility_cache("github.com/octo/mystery") is None
+
+    def test_positive_verdict_uses_the_long_ttl(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(_repo_visibility, "probe_visibility", lambda _slug: "PRIVATE")
+        _repo_visibility.slug_visibility("github.com/octo/secret")
+        # Just past the short negative TTL, a positive verdict is still fresh.
+        future = time.time() + _repo_visibility._UNKNOWN_TTL_S + 1
+        monkeypatch.setattr(_repo_visibility.time, "time", lambda: future)
+        assert _repo_visibility._read_visibility_cache("github.com/octo/secret") == "PRIVATE"
 
 
 class TestGitRemoteResolverTimeoutFailsSafe:

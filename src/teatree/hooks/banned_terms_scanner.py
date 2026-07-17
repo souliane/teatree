@@ -45,6 +45,7 @@ from teatree.hooks._command_parser import first_segment_words as _first_segment_
 from teatree.hooks._command_parser import is_fail_closed_sentinel as _is_fail_closed_sentinel
 from teatree.hooks._command_parser import is_publish_command as _is_publish_command
 from teatree.hooks._command_parser import is_unavailable_body_source_sentinel as _is_unavailable_body_source_sentinel
+from teatree.hooks._hook_state import note_env_override_once
 from teatree.hooks._publish_detection import segment_word_lists_raw as _segment_word_lists_raw
 from teatree.hooks.term_match import matched_term as _matched_token_term
 from teatree.utils.run import CommandFailedError, TimeoutExpired, run_allowed_to_fail
@@ -224,6 +225,7 @@ def has_override(tool_name: str, tool_input: ToolInput) -> bool:
         if _has_leading_env_override(command):
             return True
     if os.environ.get(_OVERRIDE_ENV, "").strip() == "1":
+        note_env_override_once(_OVERRIDE_ENV)
         return True
     env = tool_input.get("env") or {}
     return env.get(_OVERRIDE_ENV, "").strip() == "1"

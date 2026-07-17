@@ -38,9 +38,18 @@ class _VisibilityEntry(TypedDict):
 # A slug must have at least ``owner/repo`` (host-prefixed slugs add more).
 _MIN_SLUG_PARTS: Final[int] = 2
 
-# How long a cached visibility verdict stays fresh. Repo visibility changes
-# rarely; a day-long cache keeps the offline path fast.
+# How long a cached POSITIVE visibility verdict stays fresh. Repo visibility
+# changes rarely; a day-long cache keeps the offline path fast.
 _VISIBILITY_TTL_S: Final[int] = 24 * 60 * 60
+
+# Sentinel + TTL for a NEGATIVE cache entry: a probe that RAN but could not
+# resolve visibility (tool absent, auth differs, slug unrecognised). Without it,
+# every unresolved slug re-probes at the full 5s budget PER segment on every
+# publish, stacking toward the 30s hook ceiling. The negative entry is short-
+# lived (distinct from the 24h positive TTL) because an unresolvable repo may
+# become resolvable soon (auth fixed, tool installed).
+_UNKNOWN_VERDICT: Final[str] = "UNKNOWN"
+_UNKNOWN_TTL_S: Final[int] = 5 * 60
 
 # Visibility probe budget -- a hook that hangs blocks the user, so the
 # network call gets a tight timeout and any failure falls back to "unknown".
@@ -192,15 +201,15 @@ def _is_canonical_host(host: str) -> bool:
 def _cache_root() -> Path:
     """Resolve a writable cache dir for the visibility verdict cache.
 
-    Honour ``T3_DATA_DIR`` when set, else use the XDG cache dir. If the chosen
+    Routes through the single :func:`teatree.hooks._hook_state.hook_state_root`
+    resolver (``T3_DATA_DIR`` else the canonical XDG data dir) so hook state does
+    not scatter across ``~/.teatree`` / ``~/.cache`` / the data dir. If the chosen
     root already exists as a non-directory, fall back to a sibling so the write
     still succeeds.
     """
-    base = os.environ.get("T3_DATA_DIR")
-    if base:
-        return Path(base)
-    xdg = os.environ.get("XDG_CACHE_HOME")
-    root = (Path(xdg) if xdg else Path.home() / ".cache") / "teatree"
+    from teatree.hooks._hook_state import hook_state_root  # noqa: PLC0415 — deferred: keep the cold-hook top light
+
+    root = hook_state_root()
     if root.exists() and not root.is_dir():
         return Path.home() / ".teatree-data"
     return root
@@ -226,7 +235,8 @@ def _read_visibility_cache(slug: str) -> str | None:
     verdict = entry.get("visibility")
     if not isinstance(ts, (int, float)) or not isinstance(verdict, str):
         return None
-    if time.time() - ts > _VISIBILITY_TTL_S:
+    ttl = _UNKNOWN_TTL_S if verdict == _UNKNOWN_VERDICT else _VISIBILITY_TTL_S
+    if time.time() - ts > ttl:
         return None
     return verdict
 
@@ -376,13 +386,17 @@ def slug_visibility(slug: str) -> str | None:
     or a ``"PUBLIC"`` one (the affirmative-public leak-gate scope in
     :mod:`teatree.hooks.public_visibility`); every other verdict, and ``None``,
     is neither.
+
+    A negative (``None``) probe result is short-TTL cached under the
+    :data:`_UNKNOWN_VERDICT` sentinel so an unresolvable slug is not re-probed at
+    the full 5s budget on every publish -- the read maps that sentinel back to
+    ``None`` for callers.
     """
     cached = _read_visibility_cache(slug)
     if cached is not None:
-        return cached
+        return None if cached == _UNKNOWN_VERDICT else cached
     verdict = probe_visibility(slug)
-    if verdict is not None:
-        _write_visibility_cache(slug, verdict)
+    _write_visibility_cache(slug, verdict if verdict is not None else _UNKNOWN_VERDICT)
     return verdict
 
 

@@ -292,14 +292,35 @@ def _provenance_header(memory: _MemoryFile, now: datetime, reason: str) -> str:
     )
 
 
+def _unique_archive_destination(archive_dir: Path, filename: str) -> Path:
+    """A non-colliding archive path for *filename* under *archive_dir*.
+
+    Never blind-overwrites a prior archived lesson (the "never blind delete"
+    invariant): on a name collision the destination gets a numeric suffix
+    (``feedback_x.md`` → ``feedback_x.1.md`` → …) so an earlier archived body is
+    preserved alongside the new one.
+    """
+    destination = archive_dir / filename
+    if not destination.exists():
+        return destination
+    stem, suffix = Path(filename).stem, Path(filename).suffix
+    counter = 1
+    while (candidate := archive_dir / f"{stem}.{counter}{suffix}").exists():
+        counter += 1
+    return candidate
+
+
 def _archive_one(
     memory: _MemoryFile, archive_dir: Path, now: datetime, reason: str, *, dry_run: bool
 ) -> ArchivedMemory:
-    destination = archive_dir / memory.path.name
-    if not dry_run:
-        archive_dir.mkdir(parents=True, exist_ok=True)
-        destination.write_text(_provenance_header(memory, now, reason) + memory.text, encoding="utf-8")
-        memory.path.unlink()
+    if dry_run:
+        return ArchivedMemory(
+            name=memory.name, source=memory.path, destination=archive_dir / memory.path.name, reason=reason
+        )
+    archive_dir.mkdir(parents=True, exist_ok=True)
+    destination = _unique_archive_destination(archive_dir, memory.path.name)
+    destination.write_text(_provenance_header(memory, now, reason) + memory.text, encoding="utf-8")
+    memory.path.unlink()
     return ArchivedMemory(name=memory.name, source=memory.path, destination=destination, reason=reason)
 
 
@@ -312,14 +333,19 @@ def _stale_candidates(
 ) -> Iterable[_MemoryFile]:
     """Yield only the memories that are old AND unreferenced AND durably homed — the guard.
 
-    A fresh memory (mtime within *retention*) is retained; a referenced memory is
-    retained; and — the transfer-before-prune rail (#2546) — a memory whose lesson
-    has NO confirmed durable home is retained even when old + unreferenced. Only a
-    memory failing all three tests is a decay candidate.
+    A fresh memory (``lesson_touched`` within *retention*) is retained; a referenced
+    memory is retained; and — the transfer-before-prune rail (#2546) — a memory whose
+    lesson has NO confirmed durable home is retained even when old + unreferenced. Only
+    a memory failing all three tests is a decay candidate.
+
+    Ages by the LOGICAL ``lesson_touched`` clock, not raw ``st_mtime``: cross-link and
+    re-index rewrite a file (bumping ``st_mtime``) without touching its lesson, so
+    keying on ``st_mtime`` would keep a linked memory perpetually "fresh" and the
+    transfer-before-prune tier would never fire. Same clock the budget tier uses.
     """
     cutoff = now - retention
     for memory in files:
-        if memory.mtime >= cutoff:
+        if memory.lesson_touched >= cutoff:
             continue  # fresh — retained
         if _is_referenced(memory, files, index_text):
             continue  # referenced — retained

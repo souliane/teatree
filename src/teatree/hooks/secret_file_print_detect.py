@@ -12,17 +12,23 @@ credential/key/``.env`` file or a pass store to stdout:
 
 Allowed (must NOT false-positive): a variable capture (``VAR=$(…)``), a file
 redirect (``… > out``), env/header use (``curl -H "Token: $VAR"``), cat of an
-ordinary file, and echo of prose that merely MENTIONS a secret path. Pure and
-stdlib-only (regex + ``str`` ops), so it never raises on a shell-command string.
+ordinary file, and echo of prose that merely MENTIONS a secret path.
+
+The command is decomposed with the shared quote-accurate shell lexer
+(:mod:`teatree.hooks._shell_lexer`) into per-STATEMENT pipelines, so the
+print-verb, the capture/redirect, and the pipe sink are evaluated on the segment
+that actually produces the secret -- never on the whole command. Hand-rolled
+whole-command matching false-NEGATIVED two shapes the lexer closes: a redirect on
+an UNRELATED segment (``cat ~/.ssh/id_rsa; echo ok > /dev/null``) suppressed the
+leak, and a print verb NOT at the whole-command start (``true; cat ~/.netrc``)
+was never seen.
 """
 
 import re
 
-# A pipe with a downstream sink — ``head | tail`` etc. — has at least this many
-# segments; fewer means no sink to consume the secret.
-_MIN_PIPE_SEGMENTS = 2
+from teatree.hooks._shell_lexer import TokenKind, tokenize
 
-_SECRET_PATHS_RE = re.compile(  # [skill-load-ok: souliane/teatree repo]
+_SECRET_PATHS_RE = re.compile(
     r"""(?x)
     (?:~|/root|/home/[^/\s]+|/Users/[^/\s]+|\$HOME|\$\{HOME\}|\$\{?HOME\}?)
     /(?:
@@ -45,19 +51,27 @@ _SECRET_PATHS_RE = re.compile(  # [skill-load-ok: souliane/teatree repo]
 )
 
 _TOKEN_LITERAL_RE = re.compile(r"""(?:^|\s)(?:glpat[-_]|ghp_|gho_|xoxb-|xoxp-|sk-)\S+""")
-_PRINT_CMDS_RE = re.compile(r"^\s*(?:cat|head|tail)\b")
-_PASS_SHOW_RE = re.compile(r"^\s*pass\s+show\b")
-_CAPTURE_RE = re.compile(  # [skill-load-ok: souliane/teatree repo]
-    r"""
-    \$\(            # subshell capture: $(…)
-    | >\s*\S+       # stdout redirect to a file or /dev/null
-    """,
-    re.VERBOSE,
-)
-_RE_EMITTER_SINK_RE = re.compile(r"^\s*(?:cat|less|more|tee|grep|head|tail)\b")
-_ECHO_SAFE_QUOTE_RE = re.compile(r"""^(?:'[^']*'|"[^"]*")$""")
 
-_STDOUT_LEAK_DENY_REASON = (  # [skill-load-ok: souliane/teatree repo]
+# Verbs that route their file operand(s) to stdout, and the pass-store reader.
+_PRINT_VERBS = frozenset({"cat", "head", "tail"})
+_ECHO_VERBS = frozenset({"echo", "printf"})
+
+# A downstream pipe stage that itself re-emits its stdin to stdout, so the secret
+# still reaches the transcript. A non-re-emitting sink (``wc``, ``gpg``, ``base64
+# -d``) consumes the secret, keeping it off stdout.
+_RE_EMITTER_SINKS = frozenset({"cat", "less", "more", "tee", "grep", "head", "tail"})
+
+# A producer stage needs at least the verb plus one operand (the token literal
+# for echo/printf, ``show`` for pass) before it can emit a secret.
+_VERB_PLUS_OPERAND = 2
+
+# Statement separators — a ``|`` stays WITHIN one statement (it connects the
+# producer's stdout to the next stage); these END the statement.
+_STATEMENT_SEPARATORS = frozenset({";", "&&", "||", "&", "\n"})
+
+_STDOUT_REDIRECT_PREFIXES = (">", "1>", "&>")
+
+_STDOUT_LEAK_DENY_REASON = (
     "BLOCKED: this command would print a secret-bearing file or credential token "
     "to the transcript. Reading a secret into the transcript is irrecoverable — "
     "rotation is the only remedy. Instead, extract the value into a shell variable "
@@ -67,37 +81,74 @@ _STDOUT_LEAK_DENY_REASON = (  # [skill-load-ok: souliane/teatree repo]
 )
 
 
-def _command_captures_or_redirects(command: str) -> bool:
-    """Whether the command's stdout is captured or redirected (kept off the transcript)."""
-    if _CAPTURE_RE.search(command):
+def _pipelines(command: str) -> list[list[list[str]]]:
+    """Group *command* into statements → pipeline stages → decoded word lists.
+
+    Statements split on ``;``/``&&``/``||``/``&``/newline; a ``|`` splits stages
+    WITHIN one statement. Word VALUES are shell-decoded (quotes/escapes resolved)
+    so a separator inside a quoted string never splits a statement.
+    """
+    statements: list[list[list[str]]] = []
+    stages: list[list[str]] = []
+    words: list[str] = []
+    for tok in tokenize(command):
+        if tok.kind is TokenKind.OP and tok.value in _STATEMENT_SEPARATORS:
+            if words:
+                stages.append(words)
+                words = []
+            if stages:
+                statements.append(stages)
+                stages = []
+        elif tok.kind is TokenKind.OP and tok.value == "|":
+            if words:
+                stages.append(words)
+                words = []
+        else:
+            words.append(tok.value)
+    if words:
+        stages.append(words)
+    if stages:
+        statements.append(stages)
+    return statements
+
+
+def _stage_redirects_stdout(words: list[str]) -> bool:
+    """Whether a stage redirects its OWN stdout to a file (keeping it off the transcript).
+
+    Only stdout redirects (``>``/``>>``/``1>``/``&>``) count — a ``2>`` stderr
+    redirect leaves stdout on the transcript, so it does NOT capture the secret.
+    """
+    return any(word.startswith(_STDOUT_REDIRECT_PREFIXES) for word in words)
+
+
+def _stage_reads_secret(words: list[str]) -> bool:
+    """Whether the producer stage would emit a secret to its stdout."""
+    if not words:
+        return False
+    verb = words[0]
+    if verb in _PRINT_VERBS:
+        return bool(_SECRET_PATHS_RE.search(" ".join(words)))
+    if verb in _ECHO_VERBS:
+        return len(words) >= _VERB_PLUS_OPERAND and bool(_TOKEN_LITERAL_RE.search(" ".join(words[1:])))
+    return verb == "pass" and len(words) >= _VERB_PLUS_OPERAND and words[1] == "show"
+
+
+def _statement_prints_secret(stages: list[list[str]]) -> bool:
+    """Whether a statement's producer stage prints a secret that reaches the transcript."""
+    producer = stages[0]
+    if not _stage_reads_secret(producer) or _stage_redirects_stdout(producer):
+        return False
+    downstream = stages[1:]
+    if not downstream:
         return True
-    segments = command.split("|")
-    if len(segments) < _MIN_PIPE_SEGMENTS:
-        return False
-    return not any(_RE_EMITTER_SINK_RE.match(segment) for segment in segments[1:])
+    # The secret still displays iff SOME downstream stage re-emits to stdout; a
+    # pipeline whose sinks all consume (``| gpg``, ``| wc``) keeps it off stdout.
+    return any(bool(stage) and stage[0] in _RE_EMITTER_SINKS for stage in downstream)
 
 
-def _echo_arg_is_token(command: str) -> bool:
-    """Whether the echo/printf command carries a token literal (not just quoted prose)."""
-    verb_and_arg = 2
-    parts = command.split(None, 1)
-    if len(parts) < verb_and_arg:
-        return False
-    arg = parts[1].strip()
-    if _ECHO_SAFE_QUOTE_RE.match(arg):
-        return bool(_TOKEN_LITERAL_RE.search(arg[1:-1]))
-    return bool(_TOKEN_LITERAL_RE.search(command))
-
-
-def is_secret_print(command: str) -> bool:  # [skill-load-ok: souliane/teatree repo]
+def is_secret_print(command: str) -> bool:
     """Whether *command* would print a secret-bearing value to stdout."""
-    if _command_captures_or_redirects(command):
-        return False
-    if _PRINT_CMDS_RE.match(command):
-        return bool(_SECRET_PATHS_RE.search(command))
-    if re.match(r"^\s*(?:echo|printf)\b", command):
-        return _echo_arg_is_token(command)
-    return bool(_PASS_SHOW_RE.match(command))
+    return any(_statement_prints_secret(stages) for stages in _pipelines(command))
 
 
 def secret_print_deny_reason(command: str) -> str | None:

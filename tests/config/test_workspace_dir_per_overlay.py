@@ -19,6 +19,7 @@ import tempfile
 from pathlib import Path
 from unittest.mock import patch
 
+from django.core.exceptions import ImproperlyConfigured
 from django.test import TestCase
 
 from teatree.config import worktree_root
@@ -95,3 +96,28 @@ class TestEnvOverrideWins(_WorktreeRootCase):
         ConfigSetting.objects.set_value("workspace_dir", "/srv/overlay-ws", scope="myoverlay")
         with self.settings(T3_WORKSPACE_DIR="/from/django"):
             assert worktree_root() == Path("/from/django")
+
+
+class TestPreDjangoSafe(_WorktreeRootCase):
+    """The settings probe is fail-safe when Django is unconfigured (mirrors clone_root)."""
+
+    def test_unconfigured_settings_probe_falls_through_instead_of_raising(self) -> None:
+        # Accessing the T3_WORKSPACE_DIR attribute on an unconfigured LazySettings
+        # raises ImproperlyConfigured (not AttributeError, so hasattr does not swallow
+        # it). The suppress guard must let worktree_root fall through to the DB tier
+        # rather than crash a pre-Django caller. The proxy raises ONLY for that probe
+        # and delegates everything else to the real settings so the ORM read still works.
+        from django.conf import settings as real_settings  # noqa: PLC0415 — test-local proxy target
+
+        ConfigSetting.objects.set_value("workspace_dir", "/srv/overlay-ws", scope="myoverlay")
+
+        unconfigured = "Requested setting, but settings are not configured."
+
+        class _ProbeRaisingSettings:
+            def __getattr__(self, name: str) -> object:
+                if name == "T3_WORKSPACE_DIR":
+                    raise ImproperlyConfigured(unconfigured)
+                return getattr(real_settings, name)
+
+        with patch("django.conf.settings", _ProbeRaisingSettings()):
+            assert worktree_root() == Path("/srv/overlay-ws")
