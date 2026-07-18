@@ -139,7 +139,7 @@ class TestResurfaceText:
         assert "Ship?" in text
         assert "Yes — go" in text
         assert "No" in text
-        assert f"questions answer {row.pk}" in text
+        assert "reply in this thread to answer" in text
 
     def test_malformed_options_json_is_tolerated(self) -> None:
         row = DeferredQuestion.record("Broken?", options_json="{not json", session_id="s-1")
