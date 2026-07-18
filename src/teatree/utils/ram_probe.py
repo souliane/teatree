@@ -74,17 +74,71 @@ def read_ram_used_percent() -> float:
     return 0.0
 
 
+def _cgroup_v2_cpu_quota() -> int | None:
+    """Cores permitted by the cgroup-v2 CPU quota, or ``None`` when unlimited/absent.
+
+    ``/sys/fs/cgroup/cpu.max`` holds ``"<quota> <period>"`` (or ``"max <period>"``
+    when uncapped). A capped container reports a quota well below the host's
+    physical cores, so honouring it keeps :func:`available_cpu_count` from
+    reading the host's 8 cores inside a 2-core-capped container (#3409). Rounds
+    the quota/period ratio up and floors at 1 — a fractional sub-core quota still
+    admits one worker. Any read/parse failure degrades to ``None`` (treated as
+    "no cgroup cap"), never raising.
+    """
+    from pathlib import Path  # noqa: PLC0415 — deferred: loaded only on this code path
+
+    try:
+        quota_raw, _, period_raw = Path("/sys/fs/cgroup/cpu.max").read_text(encoding="utf-8").strip().partition(" ")
+        if quota_raw == "max":
+            return None
+        quota, period = int(quota_raw), int(period_raw)
+    except (OSError, ValueError):
+        return None
+    if quota <= 0 or period <= 0:
+        return None
+    return max(1, -(-quota // period))  # ceil division, floored at 1
+
+
+def available_cpu_count() -> int:
+    """Cores actually available to THIS process — cgroup/affinity-aware (#3409).
+
+    A container capped below the host must not derive its concurrency from the
+    host's physical core count. The minimum of every signal we can read is the
+    honest ceiling: CPU-affinity (``os.process_cpu_count`` on 3.13, else
+    ``sched_getaffinity``), the physical ``os.cpu_count``, and the cgroup-v2 CPU
+    quota. Floored at 1 so a caller always gets a usable positive count.
+    """
+    candidates: list[int] = []
+    process_cpu_count = getattr(os, "process_cpu_count", None)
+    if process_cpu_count is not None:
+        affinity = process_cpu_count()
+        if affinity:
+            candidates.append(affinity)
+    elif hasattr(os, "sched_getaffinity"):
+        candidates.append(len(os.sched_getaffinity(0)))
+    physical = os.cpu_count()
+    if physical:
+        candidates.append(physical)
+    quota = _cgroup_v2_cpu_quota()
+    if quota is not None:
+        candidates.append(quota)
+    return max(1, min(candidates)) if candidates else 1
+
+
 def default_provision_concurrency(cpu_count: int | None = None) -> int:
     """nCPU-derived default concurrency cap for parallel worktree provisioning.
 
     Each worktree's provision subprocess is I/O-heavy (network, DB, docker)
     but still spends real CPU time (Django boot, ``migrate``, ``uv sync``).
-    Half the host's logical cores — floored at 1 — keeps enough headroom for
-    the RAM-based admission gate to still matter on a cold multi-repo
-    provision instead of every core being saturated the instant it fires.
+    Half the process's *available* logical cores — floored at 1 — keeps enough
+    headroom for the RAM-based admission gate to still matter on a cold
+    multi-repo provision instead of every core being saturated the instant it
+    fires. The available-core read is cgroup/affinity-aware
+    (:func:`available_cpu_count`) so a capped container derives from its cap,
+    not the host (#3409).
     """
-    n = cpu_count if cpu_count is not None else (os.cpu_count() or 2)
+    n = cpu_count if cpu_count is not None else available_cpu_count()
     return max(1, n // 2)
 
 
-__all__ = ["default_provision_concurrency", "read_ram_used_percent"]
+__all__ = ["available_cpu_count", "default_provision_concurrency", "read_ram_used_percent"]

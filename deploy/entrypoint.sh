@@ -70,6 +70,60 @@ anthropic_credential_decrypts() {
     pass show "${entry%.gpg}" >/dev/null 2>&1
 }
 
+# Parse ``owner/repo`` from the https/ssh clone URL (empty when unparsable).
+gh_repo_slug() {
+    local url="${TEATREE_REPO_URL:-$REPO_URL}"
+    url="${url#https://github.com/}"
+    url="${url#ssh://git@github.com/}"
+    url="${url#git@github.com:}"
+    url="${url%.git}"
+    local owner="${url%%/*}" rest="${url#*/}" repo
+    repo="${rest%%/*}"
+    if [ -n "$owner" ] && [ -n "$repo" ] && [ "$owner" != "$url" ]; then
+        printf '%s/%s' "$owner" "$repo"
+    fi
+}
+
+# True (0) when a side-effect-free write probe is DENIED — i.e. the token lacks
+# the permission. GitHub returns "Resource not accessible by personal access
+# token" at the route level for a missing write permission, before it validates
+# the (non-existent) target, so nothing is ever created or changed.
+_gh_perm_denied() {
+    local out
+    out="$(gh api --method "$1" "$2" 2>&1 || true)"
+    grep -qi "not accessible" <<<"$out"
+}
+
+# Probe that TEATREE_GH_TOKEN carries the WRITE permissions the loop actually
+# needs (#3405). ``gh auth status`` only proves the token authenticates — a token
+# with ``issues: read`` but not ``issues: write`` passes it, then every
+# ``gh issue edit/close/comment`` fails LATE, mid-run, with "Resource not
+# accessible by personal access token" — a silent block on autonomy. Each write
+# permission is probed with a mutation aimed at a resource id that cannot exist
+# (issue/PR 0, a bogus ref): a permitted token gets a harmless 404, a denied
+# token gets the route-level 403. FAIL the deploy loudly naming each missing
+# permission. Mirrors ``teatree.core.gates.gh_token_preflight`` (pinned by a test).
+assert_gh_token_permissions() {
+    local slug missing=()
+    slug="$(gh_repo_slug)"
+    if [ -z "$slug" ]; then
+        echo "entrypoint: could not resolve the GitHub repo slug from '${TEATREE_REPO_URL:-$REPO_URL}' - skipping token-permission preflight" >&2
+        return 0
+    fi
+    if ! gh api "repos/$slug" >/dev/null 2>&1; then
+        echo "entrypoint: TEATREE_GH_TOKEN cannot read repos/$slug (metadata: read) - the token has no access to the repo. Grant it and re-run Deploy" >&2
+        exit 1
+    fi
+    _gh_perm_denied PATCH "repos/$slug/issues/0" && missing+=("issues: write")
+    _gh_perm_denied PATCH "repos/$slug/pulls/0" && missing+=("pull_requests: write")
+    _gh_perm_denied PATCH "repos/$slug/git/refs/heads/teatree-preflight-nonexistent" && missing+=("contents: write")
+    if [ ${#missing[@]} -gt 0 ]; then
+        echo "entrypoint: TEATREE_GH_TOKEN is missing GitHub permission(s): ${missing[*]} - the loop's 'gh issue'/'gh pr'/push writes will fail mid-run with 'Resource not accessible by personal access token'. Grant them on the token and re-run Deploy" >&2
+        exit 1
+    fi
+    echo "teatree-init: GitHub token permissions verified (issues/pull_requests/contents write present on $slug)"
+}
+
 # Fail loud, early, and actionably when a required runtime token is missing or
 # does not authenticate — otherwise a green deploy hides a dead loop.
 init_preflight() {
@@ -90,6 +144,10 @@ init_preflight() {
         echo "entrypoint: TEATREE_GH_TOKEN does not authenticate with GitHub - rotate the token and re-run Deploy" >&2
         exit 1
     fi
+    # #3405: authentication is not authorization - verify the token can WRITE the
+    # resources the loop mutates (issues/pull_requests/contents), failing loud now
+    # rather than mid-run with 'Resource not accessible by personal access token'.
+    assert_gh_token_permissions
 }
 
 # Provision ~/.claude/settings.json so the containerized (headless) agent is
@@ -317,7 +375,11 @@ init)
     seed_setting agent_harness '"claude_sdk"'
     seed_setting agent_runtime '"headless"'
     seed_setting loop_runner_enabled true
-    seed_setting provision_max_concurrency 1
+    # #3409: seed provision concurrency as 0 = AUTO so the runtime derives it from
+    # THIS host (nCPU/2, cgroup-aware) instead of pinning a per-box value that a
+    # migration onto a bigger box would carry forward as a stale serialization.
+    # `t3 doctor` additionally auto-clears a stale small-box pin left in the DB.
+    seed_setting provision_max_concurrency 0
     seed_setting provision_ram_ceiling_percent 75
     seed_setting max_concurrent_local_stacks 1
     # The admin binds the box loopback (host networking), so auto-login fires for

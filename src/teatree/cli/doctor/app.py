@@ -14,6 +14,12 @@ from importlib.metadata import PackageNotFoundError
 import typer
 
 from teatree.cli.doctor.checks_availability import _check_availability_override_staleness
+from teatree.cli.doctor.checks_bootstrap import (
+    _check_claude_settings_drift,
+    _check_gh_token_permissions,
+    _check_provision_concurrency_from_host,
+    run_bootstrap_checks,
+)
 from teatree.cli.doctor.checks_docker import _check_docker_workflow_wired
 from teatree.cli.doctor.checks_environment import (
     _check_configured_review_skills,
@@ -83,6 +89,7 @@ __all__ = (
     "_check_agent_session_pins",
     "_check_availability_override_staleness",
     "_check_chrome_devtools_mcp_suggestion",
+    "_check_claude_settings_drift",
     "_check_configured_review_skills",
     "_check_connector_manifest",
     "_check_dangling_editable_pth",
@@ -91,10 +98,12 @@ __all__ = (
     "_check_dream_transcript_visibility",
     "_check_editable_sanity",
     "_check_entrypoint_is_primary_clone",
+    "_check_gh_token_permissions",
     "_check_legacy_overlay_alias",
     "_check_loop_presets",
     "_check_marker_jam",
     "_check_mcp_connectivity",
+    "_check_provision_concurrency_from_host",
     "_check_single_db",
     "_check_singletons",
     "_check_skills",
@@ -144,6 +153,22 @@ def check(
     # must be turned into the process exit code here — a `t3 doctor check && …`
     # in CI/hooks and the watchdog's non-JSON path both key on it (#3313).
     raise typer.Exit(code=0 if ok else 1)
+
+
+def _optional_tooling_advisories() -> None:
+    """Surfacing-only advisories for optional tooling (never gate the exit code).
+
+    #3263 WARNs when this box serves the admin dashboard but its loopback
+    "Debug session" terminal's ttyd is missing. #3271 INFO-suggests the OPTIONAL
+    chrome-devtools MCP e2e/debug aid when absent (teatree's runtime requires zero
+    MCP). #3232 WARNs when the operator opted into the containerized ``t3`` workflow
+    but a piece the wrapper depends on (compose stack, the executable ``deploy/t3``
+    entry, the docker CLI, a non-drifted alias path) is missing — silent inside a
+    container and on a host that never opted in.
+    """
+    _check_ttyd_for_dashboard()
+    _check_chrome_devtools_mcp_suggestion()
+    _check_docker_workflow_wired()
 
 
 def run_doctor_checks(*, repair: bool = False) -> bool:
@@ -215,20 +240,9 @@ def run_doctor_checks(*, repair: bool = False) -> bool:
     # the default-ON loops are silently dead until `t3 worker ensure` spawns one.
     ok = _check_worker_running() and ok
 
-    # #3263: the admin dashboard's loopback "Debug session" terminal needs ttyd;
-    # WARN when this box serves the dashboard but ttyd is missing. Surfacing-only.
-    _check_ttyd_for_dashboard()
-
-    # #3271: INFO-suggest the OPTIONAL chrome-devtools MCP e2e/debug aid when it is
-    # absent. Never a WARN/FAIL and never gates — teatree's runtime requires zero MCP.
-    _check_chrome_devtools_mcp_suggestion()
-
-    # #3232: WARN when the operator has opted into the containerized `t3` workflow
-    # (a `t3 setup`-installed shell alias) but a piece the wrapper depends on is
-    # missing/stale — the compose stack, the executable `deploy/t3` entry, the
-    # docker CLI, or a non-drifted alias path. Silent inside a container and on a
-    # host that never opted in. Surfacing-only — never gates the exit code.
-    _check_docker_workflow_wired()
+    # Optional-tooling advisories (ttyd / chrome-devtools MCP / containerized-t3
+    # wiring) — all surfacing-only, never gating the exit code.
+    _optional_tooling_advisories()
 
     # H24 self-heal (owner directive #10): the hard-FAIL silent-freeze detectors —
     # dead compose containers, a free worker flock over overdue loop work, a
@@ -253,6 +267,13 @@ def run_doctor_checks(*, repair: bool = False) -> bool:
     # force it with `t3 loop reclaim-markers`. Reads the ORM, so it runs
     # post-ensure_django.
     _check_marker_jam()
+
+    # Fresh-box bootstrap-hardening gates (umbrella #3404): the GitHub token lacks a
+    # write permission the loop needs (#3405, hard FAIL); a stale small-box
+    # provision_max_concurrency pin carried onto a bigger host (#3409, auto-clear);
+    # host ~/.claude/settings.json drifted from the committed template (#3410, WARN).
+    # Post-ensure_django — the concurrency autofix reads the ORM.
+    ok = run_bootstrap_checks() and ok
 
     # Pre-investigation stale-clone hard-fail gate (#948). Surfaces at
     # session start so a bug-investigation sub-agent cannot start root-

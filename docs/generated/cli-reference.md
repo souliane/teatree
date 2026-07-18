@@ -3420,8 +3420,14 @@ Usage: t3 setup [OPTIONS] COMMAND [ARGS]...
  First-time setup and global skill management.
 
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
-│ --skip-plugin          Skip Claude CLI plugin registration.                  │
-│ --help                 Show this message and exit.                           │
+│ --skip-plugin             Skip Claude CLI plugin registration.               │
+│ --write-automode          Deep-merge the committed Claude-settings template  │
+│                           (recommended autoMode grants + managed keys) into  │
+│                           ~/.claude/settings.json. Requires --yes (or        │
+│                           TEATREE_WRITE_AUTOMODE=1).                         │
+│ --yes                     Consent to teatree editing ~/.claude/settings.json │
+│                           (see --write-automode).                            │
+│ --help                    Show this message and exit.                        │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ╭─ Commands ───────────────────────────────────────────────────────────────────╮
 │ slack-bot               Register or update a per-overlay Slack bot and store │

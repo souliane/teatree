@@ -8,6 +8,7 @@ The ``run`` callback wires together the composed units
 clone-resolution helpers. Each concern lives in its own sibling module.
 """
 
+import os
 from pathlib import Path
 
 import typer
@@ -36,6 +37,45 @@ setup_app = typer.Typer(
 )
 
 
+def _write_automode_consented(*, yes: bool) -> bool:
+    """True when the operator explicitly consented to writing managed settings.
+
+    Consent is an explicit ``--yes`` or a truthy ``TEATREE_WRITE_AUTOMODE`` env
+    (the non-interactive/provisioning consent channel). Teatree edits the user's
+    ``~/.claude/settings.json`` only under this explicit grant — the classifier
+    whitelist stays the operator's final say (BLUEPRINT §11.4).
+    """
+    return yes or os.environ.get("TEATREE_WRITE_AUTOMODE", "").strip().lower() in {"1", "true", "yes"}
+
+
+def _maybe_write_managed_settings(repo: Path, settings_json: Path, *, write_automode: bool, yes: bool) -> None:
+    """Deep-merge the committed Claude-settings template into ``settings_json`` on consent (#3408/#3410).
+
+    ``deploy/claude-settings.template.json`` is the single source of truth for the
+    managed keys (model, permission mode + allow-list, ``autoMode.allow`` recommended
+    grants, tool-use concurrency). With ``--write-automode`` and explicit consent this
+    applies the SAME deep merge the container seed uses, so host and container never
+    drift. Without consent it only points the operator at the flag — it never writes.
+    """
+    if not write_automode:
+        return
+    if not _write_automode_consented(yes=yes):
+        typer.echo(
+            "WARN  --write-automode needs explicit consent — re-run with `--yes` "
+            "(or set TEATREE_WRITE_AUTOMODE=1) to deep-merge the managed Claude settings.",
+        )
+        return
+    from teatree.cli.setup.claude_settings import write_host_claude_settings  # noqa: PLC0415 — lazy CLI import
+
+    template = repo / "deploy" / "claude-settings.template.json"
+    try:
+        write_host_claude_settings(template, settings_json)
+    except FileNotFoundError:
+        typer.echo(f"WARN  No Claude-settings template at {template} — skipped --write-automode.")
+        return
+    typer.echo(f"OK    Merged managed Claude settings from {template.name} into {settings_json}.")
+
+
 def _report_statusline_install(settings_json: Path, repo: Path) -> None:
     """Install the Claude Code statusLine block and echo the outcome (PR-17)."""
     result = install_statusline(settings_json, repo)
@@ -54,6 +94,15 @@ def run(
     ctx: typer.Context,
     *,
     skip_plugin: bool = typer.Option(False, "--skip-plugin", help="Skip Claude CLI plugin registration."),
+    write_automode: bool = typer.Option(
+        False,
+        "--write-automode",
+        help="Deep-merge the committed Claude-settings template (recommended autoMode grants + managed keys) "
+        "into ~/.claude/settings.json. Requires --yes (or TEATREE_WRITE_AUTOMODE=1).",
+    ),
+    yes: bool = typer.Option(
+        False, "--yes", help="Consent to teatree editing ~/.claude/settings.json (see --write-automode)."
+    ),
 ) -> None:
     """Install and configure teatree skills globally.
 
@@ -154,6 +203,11 @@ def run(
     from teatree.cli.recommended_authorizations import report_missing_authorizations  # noqa: PLC0415 — lazy CLI import
 
     report_missing_authorizations(typer.echo)
+
+    # #3408/#3410: on explicit consent, WRITE the managed settings (recommended
+    # autoMode grants + model/permissions/env) from the one committed template so
+    # a fresh box is classifier-unblocked and host+container stay in lockstep.
+    _maybe_write_managed_settings(repo, settings_json, write_automode=write_automode, yes=yes)
 
     if self_db_unmigrated:
         raise typer.Exit(code=1)
