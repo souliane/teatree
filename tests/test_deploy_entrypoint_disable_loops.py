@@ -303,8 +303,7 @@ class TestApplyFleetLoopPolicy:
         assert out.overridden == ["inbox clear", "review off"]
 
     def test_enable_clears_stale_forced_off_override(self, tmp_path: Path) -> None:
-        """Enabling a loop also clears any override, so a forced-off left by a prior
-        deploy's DISABLED set can't keep a now-ENABLED loop masked.
+        """Enabling a loop clears any override so a stale forced-off can't keep it masked.
 
         `t3 loop enable` lifts holds but NOT a forced-off override; without the
         follow-up `clear`, promoting a loop from the DISABLED to the ENABLED set
