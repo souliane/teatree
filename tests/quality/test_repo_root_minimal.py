@@ -41,6 +41,7 @@ ALLOWED_ROOT = frozenset(
         "tach.toml",
         "mkdocs.yml",
         ".pre-commit-config.yaml",
+        ".pre-commit-hooks.yaml",  # pre-commit hook-provider manifest (#3312)
         ".gitignore",
         ".dockerignore",  # headless-deploy build-context ignore (deploy/README.md is the SOT)
         ".gitlab-ci.yml",

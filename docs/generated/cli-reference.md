@@ -44,6 +44,8 @@ Usage: t3 [OPTIONS] COMMAND [ARGS]...
 │                 suite; subcommands target one lane.                          │
 │ doctor          Smoke-test hooks, imports, services.                         │
 │ tool            Standalone utilities.                                        │
+│ hook            Run teatree's portable repo-quality hooks in any repo        │
+│                 (#3312).                                                     │
 │ setup           First-time setup and global skill management.                │
 │ update          Sync teatree core and registered overlays to their default   │
 │                 branch.                                                      │
@@ -3346,6 +3348,48 @@ Usage: t3 tool verify-gates [OPTIONS]
 
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+### `t3 hook`
+
+```
+Usage: t3 hook [OPTIONS] COMMAND [ARGS]...
+
+ Run teatree's portable repo-quality hooks in any repo (#3312).
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Commands ───────────────────────────────────────────────────────────────────╮
+│ list  List the portable hook names ``t3 hook run`` resolves.                 │
+│ run   Run the portable hook ``name``; extra args pass through (e.g.          │
+│       ``--from-ref``).                                                       │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+#### `t3 hook list`
+
+```
+Usage: t3 hook list [OPTIONS]
+
+ List the portable hook names ``t3 hook run`` resolves.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+#### `t3 hook run`
+
+```
+Usage: t3 hook run [OPTIONS] NAME
+
+ Run the portable hook ``name``; extra args pass through (e.g. ``--from-ref``).
+
+╭─ Arguments ──────────────────────────────────────────────────────────────────╮
+│ *    name      TEXT  Portable hook name, e.g. check_module_health.           │
+│                      [required]                                              │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 

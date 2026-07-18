@@ -1,0 +1,63 @@
+# Consumable hook ids for downstream repos (#3312).
+#
+# A consuming repo pins teatree as a hook source and gets the portable
+# repo-quality gates with zero launcher code:
+#
+#   - repo: https://github.com/souliane/teatree
+#     rev: <tag>
+#     hooks:
+#       - id: module-health
+#       - id: refuse-main-clone-commit
+#
+# pre-commit builds an isolated env from teatree's package (language: python),
+# exposing the ``t3`` console script, then runs each gate via ``t3 hook run``.
+# The gates operate on ``git diff --cached`` in the current repo, so they run
+# unchanged anywhere. Teatree's own ``.pre-commit-config.yaml`` keeps its
+# ``repo: local`` entries; this manifest is the external-consumer surface.
+
+- id: module-health
+  name: Module-level architectural health ratchet
+  description: LOC / public-function caps with a shrink-only ratchet over HEAD.
+  entry: t3 hook run check_module_health
+  language: python
+  types: [python]
+  pass_filenames: false
+
+- id: no-silent-skip
+  name: Ban silently-disabled tests
+  description: Refuse @skip / @skipif(True) — dead coverage that looks alive.
+  entry: t3 hook run check_no_silent_skip
+  language: python
+  types: [python]
+  pass_filenames: false
+
+- id: broad-except
+  name: Broad-except handlers must be observable
+  description: A broad except must log, surface, or re-raise — never fail open.
+  entry: t3 hook run check_broad_except
+  language: python
+  types: [python]
+  pass_filenames: false
+
+- id: test-shape
+  name: Test-shape check (report-first)
+  description: Integration/E2E ratio and duplicate-shape advisory (config-driven).
+  entry: t3 hook run check_test_shape
+  language: python
+  pass_filenames: false
+
+- id: test-path-mirror
+  name: Test files mirror their src module path
+  description: Forward-guard — a test must mirror src/<pkg>/... as tests/<pkg>/....
+  entry: t3 hook run check_test_path_mirror
+  language: python
+  pass_filenames: false
+
+- id: refuse-main-clone-commit
+  name: Worktree-first — refuse commits in the main clone
+  description: Feature work belongs in a worktree, never the shared main clone.
+  entry: t3 hook run refuse-main-clone-commit
+  language: python
+  always_run: true
+  pass_filenames: false
+  stages: [pre-commit]
