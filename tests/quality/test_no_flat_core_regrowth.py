@@ -44,7 +44,11 @@ _CORE_DIR = Path(__file__).resolve().parents[2] / "src" / "teatree" / "core"
 # registry (read_issue_title + fetch_issue_title). A genuine shared root leaf: it
 # must import backend_registry + overlay_loader (which core/models/ may not), so it
 # cannot live under models/, and no cleanup/intake/review/… subpackage owns it.
-PINNED_FLAT_CORE_MODULES = 68
+# 69: +notify_targets.py (#3421) — the owner-DM target resolution split out of
+# notify.py to keep notify.py under the 500-LOC module-health cap. A flat sibling
+# of the notify leaves it serves (notify.py, send_proxy.py, reply_transport.py),
+# owned by no existing subpackage.
+PINNED_FLAT_CORE_MODULES = 69
 
 
 def _flat_core_modules() -> list[str]:
