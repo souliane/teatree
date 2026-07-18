@@ -2,6 +2,7 @@ from typing import TYPE_CHECKING
 
 from django.apps import apps
 
+from teatree.core.modelkit.phases import normalize_phase
 from teatree.core.models.ticket_data import TicketFacet
 from teatree.core.models.ticket_number import derive_issue_number
 from teatree.core.models.ticket_worktree_checks import worktree_has_commits_ahead
@@ -33,6 +34,24 @@ class TicketIntrospectionModel(TicketFacet):
     def is_terminal(self) -> bool:
         """True when the ticket is in a genuinely terminal/abandoned state (SHIPPED/MERGED/DELIVERED/IGNORED)."""
         return self.state in self._TERMINAL_STATES
+
+    def has_completed_phase(self, phase: str) -> bool:
+        """True when the FSM state has already reached the state *phase* produces.
+
+        A FAILED task for such a phase is SUPERSEDED: the ticket's own FSM advanced
+        past that phase's output (an earlier interrupted run left the dead row), so
+        re-dispatching or escalating it only floods the away-mode DeferredQuestion
+        queue with a question that is already answered by the ticket's state. The
+        transient-requeue sweep retires such tasks silently instead of asking the
+        owner. An unknown phase, or a state off the linear work ladder
+        (IN_REVIEW/RETROSPECTED/…), is conservatively treated as NOT completed —
+        the safe default that escalates rather than silently drops a live task.
+        """
+        produces = self._PHASE_PRODUCES_STATE.get(normalize_phase(phase))
+        order = self._WORK_STATE_ORDER
+        if produces is None or self.state not in order:
+            return False
+        return order.index(self.state) >= order.index(produces)
 
     def may_expedite(self) -> bool:
         """True iff this ticket may carry a human-authorized PENDING-checks waiver (PR-07).

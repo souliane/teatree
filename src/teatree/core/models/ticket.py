@@ -81,6 +81,31 @@ class Ticket(
     _TERMINAL_STATES: ClassVar[frozenset[str]] = frozenset(
         {State.SHIPPED, State.MERGED, State.DELIVERED, State.IGNORED},
     )
+    # The linear author work-state progression (excludes the terminal set and the
+    # off-ladder IN_REVIEW/RETROSPECTED branch states). A ticket at index i has
+    # produced every phase output up to and including index i — the ordering
+    # ``has_completed_phase`` reads to tell a live phase apart from a superseded one.
+    _WORK_STATE_ORDER: ClassVar[tuple[str, ...]] = (
+        State.NOT_STARTED,
+        State.SCOPED,
+        State.STARTED,
+        State.PLANNED,
+        State.CODED,
+        State.TESTED,
+        State.REVIEWED,
+        State.SHIPPED,
+    )
+    # The work-state each author phase PRODUCES on success. A FAILED task whose
+    # phase output the ticket's FSM already reached is SUPERSEDED — an earlier
+    # interrupted run left the dead row while the ticket advanced on its own — so
+    # re-dispatching or escalating that task only floods the away-mode queue.
+    _PHASE_PRODUCES_STATE: ClassVar[dict[str, str]] = {
+        "planning": State.PLANNED,
+        "coding": State.CODED,
+        "testing": State.TESTED,
+        "reviewing": State.REVIEWED,
+        "shipping": State.SHIPPED,
+    }
     # NOTE: a class-body comprehension cannot see the enclosing ``State``
     # (Python scoping); enumerate explicitly and assert completeness in a
     # test so a future added state is caught rather than silently dropped.
