@@ -34,11 +34,18 @@ class MergePrecheck:
     ``expedited_by`` is non-empty only when the merge proceeded on PENDING
     live checks via the human-authorized expedite waiver (§17.4.3 / PR-07) —
     the authoriser stamped onto the ``MergeAudit`` row.
+
+    ``standing_delegation_by`` is non-empty only when a substrate merge was
+    authorized by the config-sourced standing delegation (#3413,
+    ``substrate_auto_merge_authorized_by``) rather than a per-PR recorded human
+    approval — the config authorizer id stamped onto the ``MergeAudit`` row so a
+    standing-delegation merge stays distinguishable from an interactive one.
     """
 
     verified_sha: str
     already_merged_sha: str = ""
     expedited_by: str = ""
+    standing_delegation_by: str = ""
 
     @property
     def needs_reconcile(self) -> bool:
@@ -153,11 +160,15 @@ def _assert_substrate_authorized(clear: "MergeClear", *, slug: str, pr_id: int, 
     PER-PR human sign-off (invariant 4 / §17.4.3 step 5). By default substrate is
     NOT covered by the overlay's standing grant — not even at ``autonomy = full``:
     the owner's directive is that substrate (merge keystone, architecture spec,
-    governance doc) PINGS-and-HOLDS. The one opt-in that lifts the hold is the
-    explicit, default-off ``substrate_self_signoff`` config setting (#3223), which
-    lets ``_overlay_grants_standing_substrate_signoff`` cover a substrate clear on a
-    ``full`` (solo-owned) overlay. When neither the per-CLEAR ``human_authorizer``
-    nor that standing grant is satisfied the held clear raises below, which the loop
+    governance doc) PINGS-and-HOLDS. Two opt-ins lift the hold, neither weakening
+    any gate: the explicit, default-off ``substrate_self_signoff`` setting (#3223,
+    via ``_overlay_grants_standing_substrate_signoff`` on a ``full`` overlay), and
+    the standing config delegation ``substrate_auto_merge_authorized_by`` (#3413,
+    via ``_config_standing_substrate_delegation``) — the owner id the headless
+    ``pr_sweep`` presents as ``--human-authorized`` and this guard accepts ONLY when
+    the presented id still equals the configured value (config-sourced, revocable).
+    When none of the per-CLEAR ``human_authorizer``, the config delegation, nor the
+    ``full``-tier grant is satisfied the held clear raises below, which the loop
     edge routes to the substrate-hold Slack ping; the AGENT still executes the
     authorized merge through this same SHA-bound, audited transition. The
     quality/safety floor is untouched; non-substrate changes self-merge unchanged.
@@ -175,6 +186,7 @@ def _assert_substrate_authorized(clear: "MergeClear", *, slug: str, pr_id: int, 
     if (
         clear.is_substrate()
         and not clear.human_merge_authorized_by(presented)
+        and not _config_standing_substrate_delegation(clear, presented, resolved_slug=slug)
         and not _overlay_grants_standing_substrate_signoff(clear, resolved_slug=slug)
     ):
         detail = (
@@ -315,6 +327,39 @@ def _overlay_grants_standing_substrate_signoff(clear: "MergeClear", *, resolved_
     if settings.autonomy is Autonomy.NOTIFY:
         return False
     return settings.require_human_approval_to_merge is False
+
+
+def _config_standing_substrate_delegation(clear: "MergeClear", presented: str, *, resolved_slug: str = "") -> str:
+    """The config-sourced standing substrate authorizer, when it authorizes this merge (#3413).
+
+    The owner's standing delegation: ``substrate_auto_merge_authorized_by`` on the
+    CLEAR's OWNING overlay (resolved by REPO IDENTITY via
+    :func:`_resolve_clear_overlay_name`, exactly like the sibling grant). Returns
+    the configured owner id ONLY when every condition holds — the CLEAR is
+    substrate, the setting is non-empty, and *presented* (the ``--human-authorized``
+    the headless ``pr_sweep`` sourced from that same config) still EQUALS the
+    configured value. Otherwise returns ``""``.
+
+    The re-read at merge time is the "config-sourced, not a live flag" safety
+    property: a stray ``--human-authorized`` can never unlock substrate unless the
+    config still names that id, so unsetting the config REVOKES the delegation at
+    the very next merge attempt (invariant 4 stays owner-controlled). This changes
+    only WHO may supply the substrate authorization; every merge gate still runs.
+    An empty setting (the default) returns ``""``, so the held-for-owner posture is
+    preserved verbatim.
+    """
+    presented_id = presented.strip()
+    if not presented_id or not clear.is_substrate():
+        return ""
+    from teatree.config import get_effective_settings  # noqa: PLC0415 — deferred: call-time import, kept lazy
+
+    overlay_name = _resolve_clear_overlay_name(clear, resolved_slug=resolved_slug)
+    if not overlay_name:
+        return ""
+    configured = get_effective_settings(overlay_name=overlay_name).substrate_auto_merge_authorized_by.strip()
+    if configured and presented_id == configured:
+        return configured
+    return ""
 
 
 def _assert_anti_vacuity(clear: "MergeClear", head_sha: str) -> None:

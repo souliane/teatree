@@ -87,6 +87,7 @@ OVERLAY_OVERRIDABLE_SETTINGS: dict[str, Callable[[Any], Any]] = {
     "teams_display": TeamsDisplay.parse,
     "require_human_approval_to_merge": _parse_strict_bool,
     "substrate_self_signoff": _parse_strict_bool,
+    "substrate_auto_merge_authorized_by": _parse_strict_str,
     "max_open_prs_per_repo_per_ticket": _parse_strict_int,
     "require_human_approval_to_answer": _parse_strict_bool,
     "on_behalf_post_mode": OnBehalfPostMode.parse,
@@ -600,6 +601,23 @@ class _OnBehalfSettings:
     # `full` tier gate is kept so a below-full overlay never self-merges substrate
     # even with this on. DB-home (#1775), per-overlay overridable.
     substrate_self_signoff: bool = False
+    # The owner id the headless loop presents as the standing substrate merge
+    # authorization (#3413). Empty (the default) preserves the hold-for-owner
+    # posture verbatim — a substrate CLEAR PINGS-and-HOLDS and is never
+    # auto-merged (invariant 4). Setting it to an owner id is the durable,
+    # revocable delegation: the config WRITE is the human authorization. When
+    # set, the `pr_sweep` scanner presents this id at merge time as the
+    # `--human-authorized` a substrate CLEAR requires, and the keystone
+    # (`_config_standing_substrate_delegation`) authorizes the merge ONLY when the
+    # presented id still equals this configured value — sourced from config, never
+    # a live CLI flag, so unsetting it revokes the delegation at the next merge.
+    # Every gate still runs (green required checks, recorded merge_safe verdict,
+    # clean rebase, draft-lock, maker≠checker, SHA-bind); this changes only WHO
+    # supplies the substrate authorization (a standing config delegation vs. a
+    # per-PR recorded human approval), and the merge is audited as config-sourced
+    # (`MergeAudit.standing_delegation_by`) to stay distinguishable from an
+    # interactive human authorization. DB-home (#1775), per-overlay overridable.
+    substrate_auto_merge_authorized_by: str = ""
     # Per-(repo, ticket) open-PR budget: the max number of concurrently-open
     # (not-merged) PRs a single ticket may have in one repo. Enforced at the
     # core PR-creation seam by ``pr_budget_gate`` before a PR is opened. The

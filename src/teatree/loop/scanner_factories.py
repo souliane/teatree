@@ -179,6 +179,11 @@ def _pr_sweep_scanner_for(backend: OverlayBackends, *, slack_user_id: str) -> Pr
         # Ping-and-hold: a held SUBSTRATE merge DMs the owner once (deduped per
         # diff via the BotPing ledger) so substrate is never auto-merged silently.
         substrate_pinger=NotifyWithFallbackSubstratePinger(),
+        # #3413: the owner's standing substrate delegation, sourced from config.
+        # Empty (the default) keeps substrate held-for-owner; a configured owner id
+        # lets the sweep auto-merge a substrate PR that passes EVERY gate and DM the
+        # owner "informed, not asked".
+        substrate_standing_authorizer=settings.substrate_auto_merge_authorized_by,
     )
 
 

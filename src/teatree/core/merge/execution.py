@@ -14,6 +14,7 @@ are documented on :func:`assert_merge_preconditions` / :func:`execute_bound_merg
 / :func:`record_merge_and_advance`.
 """
 
+import dataclasses
 import logging
 import time
 from dataclasses import dataclass
@@ -30,6 +31,7 @@ from teatree.core.merge.authorization import (
     _assert_anti_vacuity,
     _assert_clear_authorized,
     _assert_rubric_satisfied,
+    _config_standing_substrate_delegation,
     assert_merge_provenance_trusted,
     assert_no_active_review_lock,
     assert_review_verdict_gate,
@@ -58,11 +60,30 @@ MERGE_TRANSIENT_BASE_DELAY = 0.5
 
 
 @dataclass(frozen=True, slots=True)
+class MergeAuditAuthorizers:
+    """The authorizer ids the post hook stamps on the ``MergeAudit`` for a non-default merge.
+
+    Both empty for an ordinary merge. ``expedited_by`` is the PENDING-checks
+    expedite waiver authoriser (§17.4.3 / PR-07); ``standing_delegation_by`` is the
+    config-sourced standing substrate authorizer (#3413). Grouped so
+    :func:`record_merge_and_advance` takes one audit-authorizer argument instead of
+    a widening list.
+    """
+
+    expedited_by: str = ""
+    standing_delegation_by: str = ""
+
+
+@dataclass(frozen=True, slots=True)
 class MergeOutcome:
     pr_id: int
     slug: str
     merged_sha: str
     ticket_state: str
+    # #3413: the config-sourced standing substrate authorizer id when this merge
+    # was authorized by the standing delegation (empty otherwise) — surfaced so the
+    # loop edge posts the "informed, not asked" Slack notification only on such a merge.
+    standing_delegation_by: str = ""
 
 
 def _reconcile_if_already_merged(
@@ -145,6 +166,18 @@ def assert_merge_preconditions(
         approvals=PresentedApprovals(human=human_authorized, expedite=expedite_authorized),
     )
 
+    # #3413 audit: re-derive whether the config-sourced standing delegation was the
+    # authorizing path (substrate CLEAR, presented id equals the configured
+    # ``substrate_auto_merge_authorized_by``) and NOT a per-PR recorded human
+    # approval — so a standing-delegation merge is stamped distinctly on the audit.
+    # A pure re-read of the same guard the authorize step ran; "" for every other
+    # merge (config unset, non-substrate, or per-PR human-authorized).
+    standing_delegation_by = (
+        ""
+        if authorized_clear.human_merge_authorized_by(human_authorized.strip())
+        else _config_standing_substrate_delegation(authorized_clear, human_authorized, resolved_slug=slug)
+    )
+
     # 2. SHA still matches — re-fetch the live head; it must equal reviewed_sha.
     live_sha = query.live_head_sha()
     if not live_sha:
@@ -173,7 +206,7 @@ def assert_merge_preconditions(
 
     reconcile = _reconcile_if_already_merged(query=query, live_sha=live_sha)
     if reconcile is not None:
-        return reconcile
+        return dataclasses.replace(reconcile, standing_delegation_by=standing_delegation_by)
 
     # 4. Not draft.
     if query.pr_is_draft():
@@ -207,9 +240,13 @@ def assert_merge_preconditions(
                 f"and a `--local-ci-green-sha` bound to the reviewed tree"
             )
             raise MergePreconditionError(msg)
-        return MergePrecheck(verified_sha=live_sha, expedited_by=expedite_authorized.strip())
+        return MergePrecheck(
+            verified_sha=live_sha,
+            expedited_by=expedite_authorized.strip(),
+            standing_delegation_by=standing_delegation_by,
+        )
 
-    return MergePrecheck(verified_sha=live_sha)
+    return MergePrecheck(verified_sha=live_sha, standing_delegation_by=standing_delegation_by)
 
 
 def assert_not_draft(query: CodeHostQuery) -> None:
@@ -375,8 +412,8 @@ def record_merge_and_advance(
     clear: object,
     merged_sha: str,
     required_checks_status: str,
-    expedited_by: str = "",
     repo_slug: str = "",
+    authorizers: MergeAuditAuthorizers | None = None,
 ) -> str:
     """Post hook: consume CLEAR, write audit, supersede siblings, ``mark_merged()``.
 
@@ -417,6 +454,7 @@ def record_merge_and_advance(
     from teatree.core.modelkit.db_retry import retry_on_locked  # noqa: PLC0415 — deferred: call-time import, kept lazy
     from teatree.core.models import MergeClear  # noqa: PLC0415 — deferred: ORM import needs the app registry
 
+    stamps = authorizers or MergeAuditAuthorizers()
     if not isinstance(clear, MergeClear):  # pragma: no cover - guarded by caller
         msg = "record_merge_and_advance requires a MergeClear instance"
         raise MergePreconditionError(msg)
@@ -444,8 +482,9 @@ def record_merge_and_advance(
                 clear=locked,
                 merged_sha=merged_sha,
                 required_checks_status=required_checks_status,
-                expedited_by=expedited_by,
+                expedited_by=stamps.expedited_by,
                 repo_slug=repo_slug,
+                standing_delegation_by=stamps.standing_delegation_by,
             )
             # §15: supersede every sibling unconsumed CLEAR for the same PR —
             # re-review at a moved head issues a fresh CLEAR at the new SHA,
@@ -592,8 +631,11 @@ def _merge_ticket_pr_inner(
         clear=clear,
         merged_sha=merged_sha,
         required_checks_status=checks,
-        expedited_by=precheck.expedited_by,
         repo_slug=slug,
+        authorizers=MergeAuditAuthorizers(
+            expedited_by=precheck.expedited_by,
+            standing_delegation_by=precheck.standing_delegation_by,
+        ),
     )
     logger.info(
         "merge keystone: %s#%s %s at %s; ticket state=%s",
@@ -603,4 +645,10 @@ def _merge_ticket_pr_inner(
         merged_sha[:8],
         state or "(no ticket)",
     )
-    return MergeOutcome(pr_id=pr_id, slug=slug, merged_sha=merged_sha, ticket_state=state)
+    return MergeOutcome(
+        pr_id=pr_id,
+        slug=slug,
+        merged_sha=merged_sha,
+        ticket_state=state,
+        standing_delegation_by=precheck.standing_delegation_by,
+    )

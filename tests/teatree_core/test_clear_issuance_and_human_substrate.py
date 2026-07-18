@@ -1468,3 +1468,254 @@ class TestClearResolvesVerdictSlugBeforeIssuing(TestCase):
         assert verdict.slug == "souliane/teatree"
         assert resolve_pr_repo_slug(clear) == "souliane/teatree"
         assert_review_verdict_gate(slug=verdict.slug, pr_id=clear.pr_id, head_sha=clear.reviewed_sha)
+
+
+# #3413: the owner id the headless loop presents as the standing substrate delegation.
+_DELEGATE = "owner:standing"
+
+
+@contextmanager
+def _overlay_standing_delegation(overlay: str, *, authorized_by: str) -> Iterator[None]:
+    """Stage ``overlay``'s ``substrate_auto_merge_authorized_by`` standing delegation (#3413).
+
+    DB-home (#1775) ``ConfigSetting`` row scoped to the overlay — the config WRITE
+    IS the owner's durable, revocable authorization for headless substrate
+    auto-merge.
+    """
+    row = ConfigSetting.objects.set_value("substrate_auto_merge_authorized_by", authorized_by, scope=overlay)
+    try:
+        yield
+    finally:
+        row.delete()
+
+
+class TestSubstrateStandingDelegationConfig(TestCase):
+    """#3413: ``substrate_auto_merge_authorized_by`` is the standing, config-sourced substrate delegation.
+
+    Empty (the default) preserves invariant 4 verbatim — a substrate CLEAR is
+    HELD for the owner and never auto-merged, even when a ``--human-authorized`` id
+    is presented (the presented flag alone can never unlock substrate). Setting it
+    to an owner id lets the headless ``pr_sweep`` present that id at merge time and
+    the keystone auto-merge a substrate PR that passes EVERY gate — the merge is
+    audited as config-sourced (``MergeAudit.standing_delegation_by``), distinct from
+    a per-PR recorded human approval. The delegation NEVER weakens a gate: green
+    required checks, recorded merge_safe verdict, SHA-bind, not-draft, and
+    maker≠checker all still refuse a config-delegated substrate merge.
+    """
+
+    def test_config_empty_substrate_still_held(self) -> None:
+        """MUST-DENY (a): with the delegation UNSET, a loop substrate merge is held — byte-identical."""
+        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.IN_REVIEW)
+        clear = _substrate_clear(ticket, pr_id=34130)
+        with pytest.raises(MergePreconditionError, match="substrate"):
+            _assert_preconditions(clear)
+        ticket.refresh_from_db()
+        assert ticket.state == Ticket.State.IN_REVIEW
+
+    def test_config_empty_presented_id_still_held(self) -> None:
+        """MUST-DENY (a): the presented ``--human-authorized`` id alone can never unlock substrate.
+
+        With no config delegation and no recorded per-CLEAR ``human_authorizer``,
+        presenting an arbitrary id is refused — the config is the authorization, and
+        it is empty. This pins that the standing-delegation code path adds NO CLI
+        bypass when the config is unset.
+        """
+        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.IN_REVIEW)
+        clear = _substrate_clear(ticket, pr_id=34131)
+        with pytest.raises(MergePreconditionError, match="substrate"):
+            _assert_preconditions(clear, human_authorized=_DELEGATE)
+        ticket.refresh_from_db()
+        assert ticket.state == Ticket.State.IN_REVIEW
+
+    def test_config_set_delegation_passes_preconditions(self) -> None:
+        """MUST-ALLOW (b): config set + the matching id presented passes the substrate gate."""
+        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.IN_REVIEW)
+        clear = _substrate_clear(ticket, pr_id=34132)
+        with _overlay_standing_delegation("t3-teatree", authorized_by=_DELEGATE):
+            precheck = _assert_preconditions(clear, human_authorized=_DELEGATE)
+        # The precheck stamps the config-sourced authorizer for the audit trail.
+        assert getattr(precheck, "standing_delegation_by", None) == _DELEGATE
+
+    def test_config_set_delegation_merges_end_to_end_and_audits(self) -> None:
+        """MUST-ALLOW (b) end-to-end: a substrate CLEAR with NO recorded human_authorizer auto-merges.
+
+        The config write is the authorization; the keystone merges through the same
+        SHA-bound, audited transition and records ``standing_delegation_by`` so the
+        merge is distinguishable from an interactive human approval (which would
+        stamp ``human_authorizer`` on the CLEAR instead).
+        """
+        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.IN_REVIEW)
+        clear = MergeClear.objects.create(
+            ticket=ticket,
+            pr_id=34133,
+            slug="souliane/teatree",
+            reviewed_sha=_SHA,
+            reviewer_identity="cold-reviewer",
+            gh_verify_result=MergeClear.VerifyResult.GREEN,
+            blast_class=MergeClear.BlastClass.SUBSTRATE,
+        )
+        seed_merge_safe_verdict(slug=clear.slug, pr_id=clear.pr_id, sha=clear.reviewed_sha)
+        with (
+            _overlay_standing_delegation("t3-teatree", authorized_by=_DELEGATE),
+            patch("teatree.backends.forge_merge_rpc.gh_runner", return_value=_gh_stub),
+        ):
+            result = cast(
+                "dict[str, object]",
+                call_command("ticket", "merge", str(clear.pk), loop_identity="merge-loop", human_authorized=_DELEGATE),
+            )
+        ticket.refresh_from_db()
+        clear.refresh_from_db()
+        assert result["merged"] is True
+        assert result["standing_delegation_by"] == _DELEGATE
+        assert ticket.state == Ticket.State.MERGED
+        assert clear.consumed_at is not None
+        # Config-sourced, NOT a per-PR recorded human approval.
+        assert clear.human_authorizer == ""
+        audit = MergeAudit.objects.get(clear=clear)
+        assert audit.standing_delegation_by == _DELEGATE
+        assert audit.expedited_by == ""
+
+    def test_config_set_but_presented_id_mismatch_still_held(self) -> None:
+        """MUST-DENY: a presented id that does NOT equal the configured value is held (scoped to the id)."""
+        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.IN_REVIEW)
+        clear = _substrate_clear(ticket, pr_id=34134)
+        with (
+            _overlay_standing_delegation("t3-teatree", authorized_by=_DELEGATE),
+            pytest.raises(MergePreconditionError, match="substrate"),
+        ):
+            _assert_preconditions(clear, human_authorized="someone-else")
+        ticket.refresh_from_db()
+        assert ticket.state == Ticket.State.IN_REVIEW
+
+    def test_config_set_no_merge_safe_verdict_refused_end_to_end(self) -> None:
+        """MUST-DENY (d): the delegation NEVER waives the recorded merge_safe verdict gate.
+
+        A substrate CLEAR with NO seeded ``merge_safe`` ReviewVerdict at the head is
+        refused end-to-end even with the config delegation set and presented — the
+        #2829 verdict gate fires in ``execute_bound_merge`` regardless.
+        """
+        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.IN_REVIEW)
+        clear = MergeClear.objects.create(
+            ticket=ticket,
+            pr_id=34135,
+            slug="souliane/teatree",
+            reviewed_sha=_SHA,
+            reviewer_identity="cold-reviewer",
+            gh_verify_result=MergeClear.VerifyResult.GREEN,
+            blast_class=MergeClear.BlastClass.SUBSTRATE,
+        )
+        with (
+            _overlay_standing_delegation("t3-teatree", authorized_by=_DELEGATE),
+            patch("teatree.backends.forge_merge_rpc.gh_runner", return_value=_gh_stub),
+        ):
+            result = cast(
+                "dict[str, object]",
+                call_command("ticket", "merge", str(clear.pk), loop_identity="merge-loop", human_authorized=_DELEGATE),
+            )
+        ticket.refresh_from_db()
+        clear.refresh_from_db()
+        assert result["merged"] is False
+        assert result["escalated"] is True
+        assert ticket.state == Ticket.State.IN_REVIEW
+        assert clear.consumed_at is None
+        assert not MergeAudit.objects.filter(clear=clear).exists()
+
+    def test_config_set_does_not_relax_ci_green_floor(self) -> None:
+        """MUST-DENY (c): a FAILED recorded verdict still refuses under the delegation — CI floor intact."""
+        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.IN_REVIEW)
+        clear = _substrate_clear(ticket, pr_id=34136, gh_verify_result=MergeClear.VerifyResult.FAILED)
+        with (
+            _overlay_standing_delegation("t3-teatree", authorized_by=_DELEGATE),
+            pytest.raises(MergePreconditionError, match="FAILED required check"),
+        ):
+            _assert_preconditions(clear, human_authorized=_DELEGATE)
+
+    def test_config_set_does_not_relax_sha_bind_floor(self) -> None:
+        """MUST-DENY (c): a head moved off ``reviewed_sha`` still refuses under the delegation — SHA bind intact."""
+        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.IN_REVIEW)
+        clear = _substrate_clear(ticket, pr_id=34137, reviewed_sha="d" * 40)
+        with (
+            _overlay_standing_delegation("t3-teatree", authorized_by=_DELEGATE),
+            pytest.raises(MergePreconditionError, match="head moved"),
+        ):
+            _assert_preconditions(clear, human_authorized=_DELEGATE)
+
+    def test_config_set_does_not_relax_not_draft_floor(self) -> None:
+        """MUST-DENY (c): a draft PR still refuses under the delegation — the not-draft floor is intact."""
+        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.IN_REVIEW)
+        clear = _substrate_clear(ticket, pr_id=34138)
+
+        def _draft_stub(argv: list[str]) -> tuple[int, str, str]:
+            joined = " ".join(argv)
+            if "isDraft" in joined:
+                return (0, "true", "")
+            return _gh_stub(argv)
+
+        with (
+            _overlay_standing_delegation("t3-teatree", authorized_by=_DELEGATE),
+            patch("teatree.backends.forge_merge_rpc.gh_runner", return_value=_draft_stub),
+            pytest.raises(MergePreconditionError, match="draft"),
+        ):
+            assert_merge_preconditions(
+                clear=clear,
+                executing_loop_identity="merge-loop",
+                ref=PrRef(slug=clear.slug, pr_id=clear.pr_id),
+                human_authorized=_DELEGATE,
+            )
+
+    def test_config_set_does_not_relax_maker_checker_floor(self) -> None:
+        """MUST-DENY (c): reviewer==maker still refuses under the delegation — maker≠checker intact."""
+        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.IN_REVIEW)
+        clear = _substrate_clear(ticket, pr_id=34139, reviewer_identity="coding-agent")
+        with (
+            _overlay_standing_delegation("t3-teatree", authorized_by=_DELEGATE),
+            pytest.raises(MergePreconditionError, match=r"non-reviewer role|independent cold reviewer"),
+        ):
+            _assert_preconditions(clear, human_authorized=_DELEGATE)
+
+    def test_delegation_scoped_by_repo_identity_does_not_leak(self) -> None:
+        """MUST-DENY: the delegation on overlay A never authorizes a substrate PR on a foreign repo.
+
+        The config is read against the CLEAR's OWNING overlay (repo identity), so a
+        ``t3-teatree`` delegation never leaks onto a repo it does not own.
+        """
+        ticket = Ticket.objects.create(overlay="t3-client", state=Ticket.State.IN_REVIEW)
+        clear = _substrate_clear(ticket, pr_id=34140, slug="other-owner/other-repo")
+        with (
+            _overlay_standing_delegation("t3-teatree", authorized_by=_DELEGATE),
+            pytest.raises(MergePreconditionError, match="substrate"),
+        ):
+            _assert_preconditions(clear, human_authorized=_DELEGATE, slug="other-owner/other-repo")
+
+    def test_recorded_human_authorizer_not_audited_as_standing_delegation(self) -> None:
+        """A per-PR recorded ``human_authorizer`` merge is audited as interactive, NOT config-sourced.
+
+        Even with the config delegation ALSO set to the same id, a CLEAR carrying a
+        recorded ``human_authorizer`` matching the presented id is the interactive
+        per-PR path — ``standing_delegation_by`` stays empty so the two remain
+        distinguishable on the audit.
+        """
+        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.IN_REVIEW)
+        clear = MergeClear.objects.create(
+            ticket=ticket,
+            pr_id=34141,
+            slug="souliane/teatree",
+            reviewed_sha=_SHA,
+            reviewer_identity="cold-reviewer",
+            gh_verify_result=MergeClear.VerifyResult.GREEN,
+            blast_class=MergeClear.BlastClass.SUBSTRATE,
+            human_authorizer=_DELEGATE,
+        )
+        seed_merge_safe_verdict(slug=clear.slug, pr_id=clear.pr_id, sha=clear.reviewed_sha)
+        with (
+            _overlay_standing_delegation("t3-teatree", authorized_by=_DELEGATE),
+            patch("teatree.backends.forge_merge_rpc.gh_runner", return_value=_gh_stub),
+        ):
+            result = cast(
+                "dict[str, object]",
+                call_command("ticket", "merge", str(clear.pk), loop_identity="merge-loop", human_authorized=_DELEGATE),
+            )
+        assert result["merged"] is True
+        assert "standing_delegation_by" not in result
+        audit = MergeAudit.objects.get(clear=clear)
+        assert audit.standing_delegation_by == ""
