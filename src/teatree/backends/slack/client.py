@@ -3,6 +3,7 @@ from typing import cast
 
 import httpx
 
+from teatree.backends.slack.http import SlackHttpClient
 from teatree.identity import agent_signature_suffix
 from teatree.types import RawAPIDict
 from teatree.url_classify import find_pr_urls
@@ -34,11 +35,18 @@ class SlackReviewMatch:
     author: str = ""
 
 
-def _resolve_workspace_domain(client: httpx.Client) -> str:
-    """Resolve Slack workspace domain via auth.test API."""
-    auth_resp = client.get("https://slack.com/api/auth.test")
-    auth_data = auth_resp.json() if auth_resp.is_success else {}
-    url = str(auth_data.get("url", "https://app.slack.com/")).rstrip("/")
+def _resolve_workspace_domain(client: SlackHttpClient, token: str) -> str:
+    """Resolve the Slack workspace domain via ``auth.test``, or ``""`` on failure.
+
+    A failed ``auth.test`` (ratelimited, auth error, transport failure) must NOT
+    fabricate ``app.slack.com`` — a wrong domain yields permalinks that point at
+    the generic app host and never resolve to the real message. An empty domain
+    is the honest signal that the permalink base is unknown.
+    """
+    data = client.get("auth.test", token=token, params={})
+    if not data.get("ok"):
+        return ""
+    url = str(data.get("url", "")).rstrip("/")
     return url.removeprefix("https://") if url.startswith("https://") else url
 
 
@@ -84,25 +92,82 @@ def _iter_review_matches(
 
 
 def _fetch_history_page(
-    client: httpx.Client,
+    client: SlackHttpClient,
+    token: str,
     channel_id: str,
     cursor: str | None,
     oldest_ts: str = "",
 ) -> RawAPIDict:
-    """Fetch one page of conversations.history. Returns {} on non-ok response.
+    """Fetch one page of ``conversations.history``. Returns {} on a non-ok body.
 
-    ``oldest_ts`` bounds the read to messages at or after that Slack ``ts``
-    so a recency-windowed dedup never paginates the entire channel history.
+    Routes through :class:`SlackHttpClient` so a transient ``429`` / ``5xx`` is
+    retried (honoring ``Retry-After``) instead of dropping the dedup read — a
+    dropped read during a PR sweep would re-post a duplicate review request.
+    ``oldest_ts`` bounds the read to messages at or after that Slack ``ts`` so a
+    recency-windowed dedup never paginates the entire channel history.
     """
     params: dict[str, str | int] = {"channel": channel_id, "limit": 100}
     if oldest_ts:
         params["oldest"] = oldest_ts
     if cursor:
         params["cursor"] = cursor
-    response = client.get("https://slack.com/api/conversations.history", params=params)
-    response.raise_for_status()
-    data = response.json()
+    data = client.get("conversations.history", token=token, params=params)
     return data if data.get("ok") else {}
+
+
+def _history_messages(data: RawAPIDict) -> list[RawAPIDict]:
+    """The message dicts of a history page, or ``[]`` when the field is absent/malformed."""
+    messages = data.get("messages")
+    if not isinstance(messages, list):
+        return []
+    return [cast("RawAPIDict", message) for message in messages if isinstance(message, dict)]
+
+
+def _next_cursor(data: RawAPIDict) -> str | None:
+    """The next pagination cursor, or ``None`` when there is no further page."""
+    meta = data.get("response_metadata")
+    if not isinstance(meta, dict):
+        return None
+    cursor = cast("RawAPIDict", meta).get("next_cursor")
+    return cursor if isinstance(cursor, str) and cursor else None
+
+
+def _walk_review_history(request: "SlackReviewSearchRequest") -> tuple[list["SlackReviewMatch"], bool]:
+    """Walk a channel's recent history, matching PR URLs — the shared read core.
+
+    The single implementation behind both :func:`search_review_permalinks` and
+    :func:`read_recent_review_matches`; the two differ only in how they report
+    read success. Returns ``(matches, read_ok)``: ``read_ok`` is ``False`` when a
+    page came back not-ok (so a caller that needs the distinction can fail safe
+    to suppression), ``True`` for a clean walk that simply found nothing.
+    """
+    if not request.token or not request.channel_id or not request.pr_urls:
+        return [], True
+
+    pr_url_set = set(request.pr_urls)
+    matches: list[SlackReviewMatch] = []
+    seen: set[str] = set()
+    client = SlackHttpClient(timeout=request.timeout)
+    workspace_domain = request.workspace_domain or _resolve_workspace_domain(client, request.token)
+    ctx = _ChannelContext(
+        channel_id=request.channel_id,
+        channel_name=request.channel_name,
+        workspace_domain=workspace_domain,
+    )
+
+    cursor: str | None = None
+    for _ in range(request.max_pages):  # pragma: no branch
+        data = _fetch_history_page(client, request.token, request.channel_id, cursor, request.oldest_ts)
+        if not data:
+            return matches, False
+        for msg in _history_messages(data):
+            matches.extend(_iter_review_matches(msg, pr_url_set, seen, ctx))
+        if seen == pr_url_set or not data.get("has_more"):
+            break
+        cursor = _next_cursor(data)
+        if cursor is None:
+            break
+    return matches, True
 
 
 @dataclass(frozen=True, slots=True)
@@ -123,38 +188,7 @@ def search_review_permalinks(request: SlackReviewSearchRequest) -> list[SlackRev
     Uses conversations.history (no search:read scope needed).
     Matching is deterministic: exact PR URL substring match, no AI.
     """
-    if not request.token or not request.channel_id or not request.pr_urls:
-        return []
-
-    pr_url_set = set(request.pr_urls)
-    matches: list[SlackReviewMatch] = []
-    seen: set[str] = set()
-
-    with httpx.Client(headers={"Authorization": f"Bearer {request.token}"}, timeout=request.timeout) as client:
-        workspace_domain = request.workspace_domain or _resolve_workspace_domain(client)
-        ctx = _ChannelContext(
-            channel_id=request.channel_id,
-            channel_name=request.channel_name,
-            workspace_domain=workspace_domain,
-        )
-
-        cursor: str | None = None
-        for _ in range(request.max_pages):  # pragma: no branch
-            data = _fetch_history_page(client, request.channel_id, cursor, request.oldest_ts)
-            if not data:
-                break
-
-            for msg in data.get("messages", []):  # ty: ignore[not-iterable]
-                matches.extend(_iter_review_matches(msg, pr_url_set, seen, ctx))
-
-            if seen == pr_url_set or not data.get("has_more"):
-                break
-            meta = data.get("response_metadata", {})
-            cursor = meta.get("next_cursor") if isinstance(meta, dict) else None  # ty: ignore[invalid-argument-type]
-            if not cursor:
-                break
-
-    return matches
+    return _walk_review_history(request)[0]
 
 
 @dataclass(frozen=True, slots=True)
@@ -177,43 +211,11 @@ def read_recent_review_matches(request: SlackReviewSearchRequest) -> ReviewHisto
 
     Mirrors :func:`search_review_permalinks` but returns
     :class:`ReviewHistoryRead` so the caller can tell "completed cleanly,
-    nothing found" apart from "API said not-ok / page unavailable". An
-    httpx transport error still propagates — the guard wraps the call so
-    a timeout/HTTP error fails safe to suppression.
+    nothing found" (``ok=True, matches=[]``) apart from "API said not-ok / page
+    unavailable" (``ok=False``). A transport error still propagates — the guard
+    wraps the call so a timeout/HTTP error fails safe to suppression.
     """
-    if not request.token or not request.channel_id or not request.pr_urls:
-        return ReviewHistoryRead(ok=True, matches=[])
-
-    pr_url_set = set(request.pr_urls)
-    matches: list[SlackReviewMatch] = []
-    seen: set[str] = set()
-    read_ok = True
-
-    with httpx.Client(headers={"Authorization": f"Bearer {request.token}"}, timeout=request.timeout) as client:
-        workspace_domain = request.workspace_domain or _resolve_workspace_domain(client)
-        ctx = _ChannelContext(
-            channel_id=request.channel_id,
-            channel_name=request.channel_name,
-            workspace_domain=workspace_domain,
-        )
-
-        cursor: str | None = None
-        for _ in range(request.max_pages):  # pragma: no branch
-            data = _fetch_history_page(client, request.channel_id, cursor, request.oldest_ts)
-            if not data:
-                read_ok = False
-                break
-
-            for msg in data.get("messages", []):  # ty: ignore[not-iterable]
-                matches.extend(_iter_review_matches(msg, pr_url_set, seen, ctx))
-
-            if seen == pr_url_set or not data.get("has_more"):
-                break
-            meta = data.get("response_metadata", {})
-            cursor = meta.get("next_cursor") if isinstance(meta, dict) else None  # ty: ignore[invalid-argument-type]
-            if not cursor:
-                break
-
+    matches, read_ok = _walk_review_history(request)
     return ReviewHistoryRead(ok=read_ok, matches=matches)
 
 
@@ -269,13 +271,12 @@ def read_thread_activity(request: SlackThreadActivityRequest) -> ThreadActivityR
     if not request.token or not request.channel_id or not request.thread_ts:
         return ThreadActivityRead(ok=True, exists=False)
 
-    with httpx.Client(headers={"Authorization": f"Bearer {request.token}"}, timeout=request.timeout) as client:
-        response = client.get(
-            "https://slack.com/api/conversations.replies",
-            params={"channel": request.channel_id, "ts": request.thread_ts, "limit": 200},
-        )
-        response.raise_for_status()
-        data = response.json()
+    client = SlackHttpClient(timeout=request.timeout)
+    data = client.get(
+        "conversations.replies",
+        token=request.token,
+        params={"channel": request.channel_id, "ts": request.thread_ts, "limit": 200},
+    )
 
     if not data.get("ok"):
         # A deleted root/thread comes back as an ``ok:false`` API error
@@ -290,12 +291,13 @@ def read_thread_activity(request: SlackThreadActivityRequest) -> ThreadActivityR
     messages = data.get("messages")
     if not isinstance(messages, list) or not messages:
         return ThreadActivityRead(ok=True, exists=False)
-    parent = messages[0] if isinstance(messages[0], dict) else {}
+    parent: RawAPIDict = cast("RawAPIDict", messages[0]) if isinstance(messages[0], dict) else {}
     # A tombstone root (parent deleted, replies survive) is gone — do not count
     # ``messages[0]`` as "exists" just because the array is non-empty (#3292).
     if parent.get("subtype") == "tombstone":
         return ThreadActivityRead(ok=True, exists=False)
-    reply_tss = [str(m.get("ts", "")) for m in messages[1:] if isinstance(m, dict) and m.get("ts")]
+    reply_dicts = [cast("RawAPIDict", m) for m in messages[1:] if isinstance(m, dict)]
+    reply_tss = [str(m.get("ts", "")) for m in reply_dicts if m.get("ts")]
     return ThreadActivityRead(
         ok=True,
         exists=True,

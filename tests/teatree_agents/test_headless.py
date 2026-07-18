@@ -546,6 +546,23 @@ def test_parse_result_skips_malformed_json() -> None:
     assert parse_result("{bad json\n") == {}
 
 
+def test_parse_result_extracts_pretty_printed_multiline_json() -> None:
+    # A pretty-printed final object spans multiple lines; a line-based scan never
+    # parsed it and degraded to truncated prose (breaking the #1284 gate).
+    stdout = 'Running task...\n{\n  "summary": "done",\n  "phase": "review"\n}\n'
+    assert parse_result(stdout) == {"summary": "done", "phase": "review"}
+
+
+def test_parse_result_returns_last_object_when_several_present() -> None:
+    stdout = '{"summary": "first"}\nmore progress\n{\n  "summary": "final"\n}\n'
+    assert parse_result(stdout) == {"summary": "final"}
+
+
+def test_parse_result_ignores_inner_braces_of_multiline_object() -> None:
+    stdout = 'progress\n{\n  "summary": "ok",\n  "nested": {"k": "v"}\n}\n'
+    assert parse_result(stdout) == {"summary": "ok", "nested": {"k": "v"}}
+
+
 def test_get_result_json_schema_returns_valid_schema() -> None:
     schema = get_result_json_schema()
     assert schema["type"] == "object"

@@ -5,7 +5,9 @@ files. This wraps the Figma REST API directly (``X-Figma-Token`` personal
 access token auth) as a lightweight, reliable alternative for design-to-code
 workflows: mockup screenshots, frame navigation, review comments, and
 component/style ("design token") metadata. Callers resolve the token via
-``teatree.utils.secrets.read_pass("figma/pat")``.
+:class:`FigmaTokenCredential` (env ``FIGMA_TOKEN`` wins, then ``pass``), which
+routes through the audited :class:`~teatree.llm.credentials.Credential` machinery
+and fails loud (naming the fix) when neither source yields a value.
 """
 
 from dataclasses import dataclass
@@ -14,6 +16,25 @@ from typing import TypedDict, cast
 
 import httpx
 from PIL import Image
+
+from teatree.llm.credentials import Credential, CredentialSpec
+
+
+class FigmaTokenCredential(Credential):
+    """The Figma personal access token — resolved env-first, ``pass``-fallback.
+
+    Routes Figma-token resolution through the provider-neutral
+    :class:`~teatree.llm.credentials.Credential` machinery (env ``FIGMA_TOKEN``
+    wins, then the ``pass`` store) so a rotated env value always overrides a stale
+    ``pass`` entry, and an absent credential fails loud naming the fix rather than
+    resolving to an empty token.
+    """
+
+    spec = CredentialSpec(
+        env_var="FIGMA_TOKEN",
+        conflicting_vars=(),
+        pass_path="figma/pat",  # noqa: S106 — pass entry path, not a secret value
+    )
 
 
 class FigmaComponentPropertyDefinition(TypedDict, total=False):

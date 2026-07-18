@@ -6,24 +6,38 @@ orchestration the runner owns.
 """
 
 import json
+from typing import cast
 
 from teatree.agents.result_schema import RESULT_JSON_SCHEMA, AgentResultBlob, JSONSchema
 
 
 def parse_result(agent_text: str) -> AgentResultBlob:
-    """Extract structured result from the agent's text output.
+    """Return the LAST top-level JSON object in the agent's text output.
 
-    Tries to parse the last JSON object in the text (agents may print
-    progress text before the final JSON result).
+    Agents may print progress text before the final JSON result. A line-based
+    scan only ever matched single-line JSON — a pretty-printed final object
+    spanning several lines never parsed and degraded to truncated prose,
+    breaking the #1284 phase-evidence gate. This scans with ``raw_decode`` from
+    each ``{``: on a successful top-level decode it jumps past the object (so
+    inner braces of a multi-line object are never mistaken for a start) and
+    keeps the last dict.
     """
-    for raw_line in reversed(agent_text.strip().splitlines()):
-        stripped = raw_line.strip()
-        if stripped.startswith("{"):
-            try:
-                return json.loads(stripped)
-            except json.JSONDecodeError:
-                continue
-    return {}
+    text = agent_text.strip()
+    decoder = json.JSONDecoder()
+    best: AgentResultBlob = {}
+    index = 0
+    while True:
+        brace = text.find("{", index)
+        if brace == -1:
+            return best
+        try:
+            decoded, end = decoder.raw_decode(text, brace)
+        except json.JSONDecodeError:
+            index = brace + 1
+            continue
+        if isinstance(decoded, dict):
+            best = cast("AgentResultBlob", decoded)
+        index = end
 
 
 def validate_result(result: AgentResultBlob) -> str:

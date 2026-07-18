@@ -6,17 +6,21 @@ from typer.testing import CliRunner
 
 from teatree.backends.figma import FigmaComponentMetadata, FigmaFrameRef
 from teatree.cli import app
+from teatree.llm.credentials import CredentialError
 
 runner = CliRunner()
 
 
 class TestFigmaClientFactory:
     def test_exits_with_hint_when_no_token_stored(self) -> None:
-        with patch("teatree.cli.figma_tools.read_pass", return_value=""):
+        with patch(
+            "teatree.cli.figma_tools.FigmaTokenCredential.resolve",
+            side_effect=CredentialError("no FIGMA_TOKEN"),
+        ):
             result = runner.invoke(app, ["tool", "figma-frames", "abc123", "1:1"])
 
         assert result.exit_code == 1
-        assert "pass show figma/pat" in result.output
+        assert "FIGMA_TOKEN" in result.output
         assert "pass insert figma/pat" in result.output
 
 
@@ -26,7 +30,7 @@ class TestFigmaScreenshotCLI:
         dest.write_bytes(b"PNG-BYTES")
 
         with (
-            patch("teatree.cli.figma_tools.read_pass", return_value="tok"),
+            patch("teatree.cli.figma_tools.FigmaTokenCredential.resolve", return_value="tok"),
             patch("teatree.cli.figma_tools.FigmaClient") as client_cls,
         ):
             client_cls.return_value.get_screenshot.return_value = dest
@@ -46,7 +50,7 @@ class TestFigmaFramesCLI:
             FigmaFrameRef(node_id="1:3", name="Body", node_type="GROUP"),
         ]
         with (
-            patch("teatree.cli.figma_tools.read_pass", return_value="tok"),
+            patch("teatree.cli.figma_tools.FigmaTokenCredential.resolve", return_value="tok"),
             patch("teatree.cli.figma_tools.FigmaClient") as client_cls,
         ):
             client_cls.return_value.list_frame_children.return_value = frames
@@ -60,7 +64,7 @@ class TestFigmaFramesCLI:
 
     def test_reports_when_no_children(self) -> None:
         with (
-            patch("teatree.cli.figma_tools.read_pass", return_value="tok"),
+            patch("teatree.cli.figma_tools.FigmaTokenCredential.resolve", return_value="tok"),
             patch("teatree.cli.figma_tools.FigmaClient") as client_cls,
         ):
             client_cls.return_value.list_frame_children.return_value = []
@@ -73,7 +77,7 @@ class TestFigmaFramesCLI:
 class TestFigmaCommentsCLI:
     def test_fetches_all_comments_by_default(self) -> None:
         with (
-            patch("teatree.cli.figma_tools.read_pass", return_value="tok"),
+            patch("teatree.cli.figma_tools.FigmaTokenCredential.resolve", return_value="tok"),
             patch("teatree.cli.figma_tools.FigmaClient") as client_cls,
         ):
             client_cls.return_value.get_comments.return_value = [{"id": "c1", "message": "hi"}]
@@ -86,7 +90,7 @@ class TestFigmaCommentsCLI:
 
     def test_filters_by_node_id_when_given(self) -> None:
         with (
-            patch("teatree.cli.figma_tools.read_pass", return_value="tok"),
+            patch("teatree.cli.figma_tools.FigmaTokenCredential.resolve", return_value="tok"),
             patch("teatree.cli.figma_tools.FigmaClient") as client_cls,
         ):
             client_cls.return_value.get_node_comments.return_value = [{"id": "c1"}]
@@ -107,7 +111,7 @@ class TestFigmaComponentsCLI:
             variant_properties={"1:1": {"Size": {"type": "VARIANT", "variantOptions": ["Small", "Large"]}}},
         )
         with (
-            patch("teatree.cli.figma_tools.read_pass", return_value="tok"),
+            patch("teatree.cli.figma_tools.FigmaTokenCredential.resolve", return_value="tok"),
             patch("teatree.cli.figma_tools.FigmaClient") as client_cls,
         ):
             client_cls.return_value.get_component_metadata.return_value = metadata

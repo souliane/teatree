@@ -9,7 +9,7 @@ exercised end to end.
 """
 
 import datetime as dt
-from typing import TYPE_CHECKING, Self
+from typing import TYPE_CHECKING
 from unittest.mock import patch
 
 import httpx
@@ -17,7 +17,7 @@ import pytest
 from django.test import TestCase
 from django.utils import timezone
 
-from teatree.backends.slack import client as slack_client
+from teatree.backends.slack import http as slack_http
 from teatree.backends.slack.bot import SlackBotBackend
 from teatree.core.gates.review_request_guard import (
     GuardDecision,
@@ -47,32 +47,23 @@ def _ts_now() -> str:
 
 
 class FakeClient:
-    """Fake httpx.Client returning configurable conversations.history pages."""
+    """Fake for the module-level ``httpx.get`` :class:`SlackHttpClient` calls internally."""
 
     def __init__(
         self,
         *,
         pages: list[dict] | None = None,
         replies: dict | None = None,
-        headers: dict[str, str] | None = None,
         raises: BaseException | None = None,
-        **_kw: object,
     ) -> None:
         self.pages = pages or []
         self._page_idx = 0
         self.replies = replies
-        self.headers = headers or {}
         self._raises = raises
         self.get_calls: list[dict[str, object]] = []
 
-    def __enter__(self) -> Self:
-        return self
-
-    def __exit__(self, *_args: object) -> None:
-        return None
-
     def get(self, url: str, **kwargs: object) -> httpx.Response:
-        self.get_calls.append({"url": url, "headers": dict(self.headers), **kwargs})
+        self.get_calls.append({"url": url, **kwargs})
         if self._raises is not None:
             raise self._raises
         if "auth.test" in url:
@@ -91,11 +82,6 @@ class FakeClient:
         return httpx.Response(404, request=httpx.Request("GET", url))
 
 
-def _bind(fake: FakeClient, kw: dict) -> FakeClient:
-    fake.headers = kw.get("headers", fake.headers)
-    return fake
-
-
 class TestPriorAgentPostSuppresses(TestCase):
     """(a) A prior agent post already in channel history → SUPPRESS + permalink."""
 
@@ -109,7 +95,7 @@ class TestPriorAgentPostSuppresses(TestCase):
         }
         fake = FakeClient(pages=[page])
         with pytest.MonkeyPatch.context() as mp:
-            mp.setattr(slack_client.httpx, "Client", lambda **kw: _bind(fake, kw))
+            mp.setattr(slack_http.httpx, "get", fake.get)
             decision = should_post_review_request(
                 mr_url=_MR_URL,
                 target=GuardTarget(channel_id=_CHANNEL_ID, channel_name=_CHANNEL_NAME, token="xoxb-bot"),
@@ -136,7 +122,7 @@ class TestUserManualPostSuppresses(TestCase):
         }
         fake = FakeClient(pages=[page])
         with pytest.MonkeyPatch.context() as mp:
-            mp.setattr(slack_client.httpx, "Client", lambda **kw: _bind(fake, kw))
+            mp.setattr(slack_http.httpx, "get", fake.get)
             decision = should_post_review_request(
                 mr_url=_MR_URL,
                 target=GuardTarget(channel_id=_CHANNEL_ID, channel_name=_CHANNEL_NAME, token="xoxb-bot"),
@@ -157,7 +143,7 @@ class TestRaceAtomicClaim(TestCase):
         empty_page = {"ok": True, "messages": [], "has_more": False}
         fake1 = FakeClient(pages=[empty_page])
         with pytest.MonkeyPatch.context() as mp:
-            mp.setattr(slack_client.httpx, "Client", lambda **kw: _bind(fake1, kw))
+            mp.setattr(slack_http.httpx, "get", fake1.get)
             first = should_post_review_request(
                 mr_url=_MR_URL,
                 target=GuardTarget(channel_id=_CHANNEL_ID, channel_name=_CHANNEL_NAME, token="xoxb-bot"),
@@ -172,7 +158,7 @@ class TestRaceAtomicClaim(TestCase):
         }
         fake2 = FakeClient(pages=[page2])
         with pytest.MonkeyPatch.context() as mp:
-            mp.setattr(slack_client.httpx, "Client", lambda **kw: _bind(fake2, kw))
+            mp.setattr(slack_http.httpx, "get", fake2.get)
             second = should_post_review_request(
                 mr_url=_MR_URL,
                 target=GuardTarget(channel_id=_CHANNEL_ID, channel_name=_CHANNEL_NAME, token="xoxb-bot"),
@@ -193,13 +179,13 @@ class TestRaceAtomicClaim(TestCase):
         fake1 = FakeClient(pages=[empty_page])
         fake2 = FakeClient(pages=[{"ok": True, "messages": [], "has_more": False}])
         with pytest.MonkeyPatch.context() as mp:
-            mp.setattr(slack_client.httpx, "Client", lambda **kw: _bind(fake1, kw))
+            mp.setattr(slack_http.httpx, "get", fake1.get)
             first = should_post_review_request(
                 mr_url=_MR_URL,
                 target=GuardTarget(channel_id=_CHANNEL_ID, channel_name=_CHANNEL_NAME, token="xoxb-bot"),
             )
         with pytest.MonkeyPatch.context() as mp:
-            mp.setattr(slack_client.httpx, "Client", lambda **kw: _bind(fake2, kw))
+            mp.setattr(slack_http.httpx, "get", fake2.get)
             second = should_post_review_request(
                 mr_url=_MR_URL,
                 target=GuardTarget(channel_id=_CHANNEL_ID, channel_name=_CHANNEL_NAME, token="xoxb-bot"),
@@ -217,7 +203,7 @@ class TestFailSafeOnReadError(TestCase):
         fake = FakeClient(raises=httpx.TimeoutException("slow"))
         start = timezone.now()
         with pytest.MonkeyPatch.context() as mp:
-            mp.setattr(slack_client.httpx, "Client", lambda **kw: _bind(fake, kw))
+            mp.setattr(slack_http.httpx, "get", fake.get)
             decision = should_post_review_request(
                 mr_url=_MR_URL,
                 target=GuardTarget(channel_id=_CHANNEL_ID, channel_name=_CHANNEL_NAME, token="xoxb-bot"),
@@ -234,7 +220,7 @@ class TestFailSafeOnReadError(TestCase):
     def test_http_error_suppresses_failsafe(self) -> None:
         fake = FakeClient(raises=httpx.HTTPError("boom"))
         with pytest.MonkeyPatch.context() as mp:
-            mp.setattr(slack_client.httpx, "Client", lambda **kw: _bind(fake, kw))
+            mp.setattr(slack_http.httpx, "get", fake.get)
             decision = should_post_review_request(
                 mr_url=_MR_URL,
                 target=GuardTarget(channel_id=_CHANNEL_ID, channel_name=_CHANNEL_NAME, token="xoxb-bot"),
@@ -246,7 +232,7 @@ class TestFailSafeOnReadError(TestCase):
         """A non-exception API ok=false read also fails safe to SUPPRESS."""
         fake = FakeClient(pages=[{"ok": False, "error": "channel_not_found"}])
         with pytest.MonkeyPatch.context() as mp:
-            mp.setattr(slack_client.httpx, "Client", lambda **kw: _bind(fake, kw))
+            mp.setattr(slack_http.httpx, "get", fake.get)
             decision = should_post_review_request(
                 mr_url=_MR_URL,
                 target=GuardTarget(channel_id=_CHANNEL_ID, channel_name=_CHANNEL_NAME, token="xoxb-bot"),
@@ -264,7 +250,7 @@ class TestFailSafeOnReadError(TestCase):
         }
         fake = FakeClient(pages=[page])
         with pytest.MonkeyPatch.context() as mp:
-            mp.setattr(slack_client.httpx, "Client", lambda **kw: _bind(fake, kw))
+            mp.setattr(slack_http.httpx, "get", fake.get)
             decision = should_post_review_request(
                 mr_url=_MR_URL,
                 target=GuardTarget(channel_id=_CHANNEL_ID, channel_name=_CHANNEL_NAME, token="xoxb-bot"),
@@ -285,7 +271,7 @@ class TestConnectTokenIsReadToken(TestCase):
         page = {"ok": True, "messages": [], "has_more": False}
         fake = FakeClient(pages=[page])
         with pytest.MonkeyPatch.context() as mp:
-            mp.setattr(slack_client.httpx, "Client", lambda **kw: _bind(fake, kw))
+            mp.setattr(slack_http.httpx, "get", fake.get)
             should_post_review_request(
                 mr_url=_MR_URL,
                 target=GuardTarget(channel_id=_CHANNEL_ID, channel_name=_CHANNEL_NAME, token="xoxp-user-connect"),
@@ -322,7 +308,7 @@ class TestReconciliationOnOutOfBandPost(TestCase):
         }
         fake = FakeClient(pages=[page])
         with pytest.MonkeyPatch.context() as mp:
-            mp.setattr(slack_client.httpx, "Client", lambda **kw: _bind(fake, kw))
+            mp.setattr(slack_http.httpx, "get", fake.get)
             decision = should_post_review_request(
                 mr_url=_MR_URL,
                 target=GuardTarget(channel_id=_CHANNEL_ID, channel_name=_CHANNEL_NAME, token="xoxb-bot"),
@@ -348,7 +334,7 @@ class TestReconciliationOnOutOfBandPost(TestCase):
         }
         fake = FakeClient(pages=[page])
         with pytest.MonkeyPatch.context() as mp:
-            mp.setattr(slack_client.httpx, "Client", lambda **kw: _bind(fake, kw))
+            mp.setattr(slack_http.httpx, "get", fake.get)
             decision = should_post_review_request(
                 mr_url=_MR_URL,
                 target=GuardTarget(channel_id=_CHANNEL_ID, channel_name=_CHANNEL_NAME, token="xoxb-bot"),
@@ -438,8 +424,6 @@ class TestResolveGuardTarget(TestCase):
         The real ``resolve_channel_token`` / ``_channel_token`` run; only
         the ``httpx`` boundary is faked so ``conversations.info`` fails.
         """
-        from teatree.backends.slack import http as slack_http  # noqa: PLC0415
-
         overlay = _overlay_with_channel()
         backend = SlackBotBackend(bot_token="xoxb-bot", user_token="xoxp-user")
 
@@ -485,7 +469,7 @@ class TestReconcileOutOfBand(TestCase):
     def test_returns_empty_when_read_fails(self) -> None:
         fake = FakeClient(raises=httpx.HTTPError("down"))
         with pytest.MonkeyPatch.context() as mp:
-            mp.setattr(slack_client.httpx, "Client", lambda **kw: _bind(fake, kw))
+            mp.setattr(slack_http.httpx, "get", fake.get)
             permalink = reconcile_out_of_band(
                 mr_url=_MR_URL,
                 target=GuardTarget(channel_id=_CHANNEL_ID, channel_name=_CHANNEL_NAME, token="xoxb-bot"),
@@ -495,7 +479,7 @@ class TestReconcileOutOfBand(TestCase):
     def test_returns_empty_when_api_not_ok(self) -> None:
         fake = FakeClient(pages=[{"ok": False}])
         with pytest.MonkeyPatch.context() as mp:
-            mp.setattr(slack_client.httpx, "Client", lambda **kw: _bind(fake, kw))
+            mp.setattr(slack_http.httpx, "get", fake.get)
             permalink = reconcile_out_of_band(
                 mr_url=_MR_URL,
                 target=GuardTarget(channel_id=_CHANNEL_ID, channel_name=_CHANNEL_NAME, token="xoxb-bot"),
@@ -505,7 +489,7 @@ class TestReconcileOutOfBand(TestCase):
     def test_returns_empty_when_nothing_in_window(self) -> None:
         fake = FakeClient(pages=[{"ok": True, "messages": [], "has_more": False}])
         with pytest.MonkeyPatch.context() as mp:
-            mp.setattr(slack_client.httpx, "Client", lambda **kw: _bind(fake, kw))
+            mp.setattr(slack_http.httpx, "get", fake.get)
             permalink = reconcile_out_of_band(
                 mr_url=_MR_URL,
                 target=GuardTarget(channel_id=_CHANNEL_ID, channel_name=_CHANNEL_NAME, token="xoxb-bot"),
@@ -528,7 +512,7 @@ class TestReconcileOutOfBand(TestCase):
         }
         fake = FakeClient(pages=[page])
         with pytest.MonkeyPatch.context() as mp:
-            mp.setattr(slack_client.httpx, "Client", lambda **kw: _bind(fake, kw))
+            mp.setattr(slack_http.httpx, "get", fake.get)
             permalink = reconcile_out_of_band(
                 mr_url=_MR_URL,
                 target=GuardTarget(channel_id=_CHANNEL_ID, channel_name=_CHANNEL_NAME, token="xoxb-bot"),
@@ -543,7 +527,7 @@ class TestReconcileOutOfBand(TestCase):
         old_ts = f"{(timezone.now() - dt.timedelta(days=40)).timestamp():.6f}"
         fake = FakeClient(pages=[{"ok": True, "messages": [{"text": _MR_URL, "ts": old_ts}], "has_more": False}])
         with pytest.MonkeyPatch.context() as mp:
-            mp.setattr(slack_client.httpx, "Client", lambda **kw: _bind(fake, kw))
+            mp.setattr(slack_http.httpx, "get", fake.get)
             permalink = reconcile_out_of_band(
                 mr_url=_MR_URL,
                 target=GuardTarget(channel_id=_CHANNEL_ID, channel_name=_CHANNEL_NAME, token="xoxb-bot"),
@@ -576,7 +560,7 @@ class TestReconcileIdempotent(TestCase):
         }
         fake = FakeClient(pages=[page])
         with pytest.MonkeyPatch.context() as mp:
-            mp.setattr(slack_client.httpx, "Client", lambda **kw: _bind(fake, kw))
+            mp.setattr(slack_http.httpx, "get", fake.get)
             permalink = reconcile_out_of_band(
                 mr_url=_MR_URL,
                 target=GuardTarget(channel_id=_CHANNEL_ID, channel_name=_CHANNEL_NAME, token="xoxb-bot"),
@@ -606,7 +590,7 @@ class TestStaleOrphanReclaim(TestCase):
         )
         fake = FakeClient(pages=[{"ok": True, "messages": [], "has_more": False}])
         with pytest.MonkeyPatch.context() as mp:
-            mp.setattr(slack_client.httpx, "Client", lambda **kw: _bind(fake, kw))
+            mp.setattr(slack_http.httpx, "get", fake.get)
             decision = should_post_review_request(
                 mr_url=_MR_URL,
                 target=GuardTarget(channel_id=_CHANNEL_ID, channel_name=_CHANNEL_NAME, token="xoxb-bot"),
@@ -628,7 +612,7 @@ class TestStaleOrphanReclaim(TestCase):
         )
         fake = FakeClient(pages=[{"ok": True, "messages": [], "has_more": False}])
         with pytest.MonkeyPatch.context() as mp:
-            mp.setattr(slack_client.httpx, "Client", lambda **kw: _bind(fake, kw))
+            mp.setattr(slack_http.httpx, "get", fake.get)
             decision = should_post_review_request(
                 mr_url=_MR_URL,
                 target=GuardTarget(channel_id=_CHANNEL_ID, channel_name=_CHANNEL_NAME, token="xoxb-bot"),
@@ -655,7 +639,7 @@ class TestStaleOrphanReclaim(TestCase):
             replies={"ok": True, "messages": [{"ts": "1700000000.000100", "text": f"review {_MR_URL}"}]},
         )
         with pytest.MonkeyPatch.context() as mp:
-            mp.setattr(slack_client.httpx, "Client", lambda **kw: _bind(fake, kw))
+            mp.setattr(slack_http.httpx, "get", fake.get)
             decision = should_post_review_request(
                 mr_url=_MR_URL,
                 target=GuardTarget(channel_id=_CHANNEL_ID, channel_name=_CHANNEL_NAME, token="xoxb-bot"),
@@ -682,7 +666,7 @@ class TestStaleOrphanReclaim(TestCase):
             replies={"ok": True, "messages": []},
         )
         with pytest.MonkeyPatch.context() as mp:
-            mp.setattr(slack_client.httpx, "Client", lambda **kw: _bind(fake, kw))
+            mp.setattr(slack_http.httpx, "get", fake.get)
             decision = should_post_review_request(
                 mr_url=_MR_URL,
                 target=GuardTarget(channel_id=_CHANNEL_ID, channel_name=_CHANNEL_NAME, token="xoxb-bot"),
@@ -707,7 +691,7 @@ class TestStaleOrphanReclaim(TestCase):
             replies={"ok": False, "error": "ratelimited"},
         )
         with pytest.MonkeyPatch.context() as mp:
-            mp.setattr(slack_client.httpx, "Client", lambda **kw: _bind(fake, kw))
+            mp.setattr(slack_http.httpx, "get", fake.get)
             decision = should_post_review_request(
                 mr_url=_MR_URL,
                 target=GuardTarget(channel_id=_CHANNEL_ID, channel_name=_CHANNEL_NAME, token="xoxb-bot"),
@@ -733,7 +717,7 @@ class TestPostedRowProbesRecordedChannel(TestCase):
             replies={"ok": True, "messages": [{"ts": "1700000000.000100", "text": _MR_URL}]},
         )
         with pytest.MonkeyPatch.context() as mp:
-            mp.setattr(slack_client.httpx, "Client", lambda **kw: _bind(fake, kw))
+            mp.setattr(slack_http.httpx, "get", fake.get)
             # The review channel changed since the post — the current target is a
             # different channel than the one recorded on the row.
             decision = should_post_review_request(
@@ -794,7 +778,7 @@ class TestPeekPostedRowVerification(TestCase):
             replies={"ok": True, "messages": [{"ts": "1700000000.000100", "text": _MR_URL}]},
         )
         with pytest.MonkeyPatch.context() as mp:
-            mp.setattr(slack_client.httpx, "Client", lambda **kw: _bind(fake, kw))
+            mp.setattr(slack_http.httpx, "get", fake.get)
             decision = peek_should_post_review_request(
                 mr_url=_MR_URL,
                 target=GuardTarget(channel_id=_CHANNEL_ID, channel_name=_CHANNEL_NAME, token="xoxb-bot"),
@@ -816,7 +800,7 @@ class TestPeekPostedRowVerification(TestCase):
             replies={"ok": True, "messages": []},
         )
         with pytest.MonkeyPatch.context() as mp:
-            mp.setattr(slack_client.httpx, "Client", lambda **kw: _bind(fake, kw))
+            mp.setattr(slack_http.httpx, "get", fake.get)
             decision = peek_should_post_review_request(
                 mr_url=_MR_URL,
                 target=GuardTarget(channel_id=_CHANNEL_ID, channel_name=_CHANNEL_NAME, token="xoxb-bot"),
@@ -832,7 +816,7 @@ class TestPeekTakesNoClaim(TestCase):
     def test_peek_clean_scan_posts_without_claim(self) -> None:
         fake = FakeClient(pages=[{"ok": True, "messages": [], "has_more": False}])
         with pytest.MonkeyPatch.context() as mp:
-            mp.setattr(slack_client.httpx, "Client", lambda **kw: _bind(fake, kw))
+            mp.setattr(slack_http.httpx, "get", fake.get)
             decision = peek_should_post_review_request(
                 mr_url=_MR_URL,
                 target=GuardTarget(channel_id=_CHANNEL_ID, channel_name=_CHANNEL_NAME, token="xoxb-bot"),
@@ -848,7 +832,7 @@ class TestPeekTakesNoClaim(TestCase):
         }
         fake = FakeClient(pages=[page])
         with pytest.MonkeyPatch.context() as mp:
-            mp.setattr(slack_client.httpx, "Client", lambda **kw: _bind(fake, kw))
+            mp.setattr(slack_http.httpx, "get", fake.get)
             decision = peek_should_post_review_request(
                 mr_url=_MR_URL,
                 target=GuardTarget(channel_id=_CHANNEL_ID, channel_name=_CHANNEL_NAME, token="xoxb-bot"),
@@ -877,7 +861,7 @@ class TestNoLoopTaskTouched(TestCase):
         fake = FakeClient(pages=[page])
         before = Task.objects.count()
         with pytest.MonkeyPatch.context() as mp:
-            mp.setattr(slack_client.httpx, "Client", lambda **kw: _bind(fake, kw))
+            mp.setattr(slack_http.httpx, "get", fake.get)
             should_post_review_request(
                 mr_url=_MR_URL,
                 target=GuardTarget(channel_id=_CHANNEL_ID, channel_name=_CHANNEL_NAME, token="xoxb-bot"),

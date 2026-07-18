@@ -44,6 +44,12 @@ class BotPing(models.Model):
     class Status(models.TextChoices):
         SENDING = "sending", "Sending (delivery claimed, in flight)"
         SENT = "sent", "Sent"
+        # A fallback direct send that returned a message ts (so the DM almost
+        # certainly landed) but whose round-trip verification read could not
+        # confirm it. Terminal and NON-recoverable: it must never trigger a
+        # re-post — the message was sent, only the confirmation read failed —
+        # so a retry stands down rather than double-posting (#1181 race).
+        SENT_UNVERIFIED = "sent_unverified", "Sent (unconfirmed round-trip read)"
         NOOP = "noop", "Noop (no backend)"
         FAILED = "failed", "Failed"
         EXPIRED = "expired", "Expired (re-delivery abandoned)"
