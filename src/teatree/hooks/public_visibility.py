@@ -1,36 +1,45 @@
 """Affirmative-public visibility scope for the pre-publish leak gates (#1415/#1213).
 
 The banned-terms (#1415) and quote-scanner (#1213) gates protect against
-leaking internal vocabulary / user quotes onto PUBLIC surfaces. They therefore
-enforce ONLY when the target repository is affirmatively known ``public``. For
-every OTHER case -- a ``private`` or ``internal`` repo, an unknown/unresolvable
-target, or an in-hook visibility lookup error -- the gate is SKIPPED (bias hard
-toward not firing): a non-public repo must never be falsely blocked.
+leaking internal vocabulary / user quotes onto PUBLIC surfaces. A segment is
+skip-eligible ONLY when its target is PROVABLY non-public: an allowlisted-private
+slug, an internal-namespace slug, or a ``private``/``internal`` probe verdict. A
+target the gate cannot prove non-public -- an affirmatively-``public`` probe
+verdict, OR a RESOLVABLE ``owner/repo`` slug whose visibility probe could not be
+confirmed (a network/API error, an absent ``gh``/``glab``, an unrecognised
+answer) -- is scanned. The probe-error case FAILS CLOSED: it is never a silent
+skip (#3442). This reconciles the Python scope with its bash mirror
+(:file:`scripts/hooks/refuse-public-push-with-leak.sh`, whose undetermined-
+visibility branch scans anyway) and the fail-closed-always leak-gate doctrine in
+:file:`hooks/CLAUDE.md` -- both now agree that an unconfirmed visibility on a
+resolvable target scans, never skips. The offline ``private_repos`` allowlist
+remains the reliable, network-free way to declare a private repo so an
+own-private post to it still skips without a probe.
 
 The visibility verdict is resolved from the command's OWN target (the
 ``--repo``/``-R`` flag, the ``gh``/``glab api`` URL path, or the cwd git remote
--- reusing ``publish_destination``'s resolver), then classified: an
-allowlisted-private slug, an internal-namespace slug, a ``private``/``internal``
-probe verdict, and an unknown verdict all resolve NON-public; only a ``public``
-probe verdict on a non-allowlisted slug is public. The verdict is day-cached
-per-repo by :func:`_repo_visibility.slug_visibility`, so repeated gate
+-- reusing ``publish_destination``'s resolver), then classified into
+:class:`_Visibility`: an allowlisted-private slug, an internal-namespace slug,
+and a ``private``/``internal`` probe verdict resolve ``NON_PUBLIC``; a ``public``
+probe verdict on a non-allowlisted slug is ``PUBLIC``; a resolvable slug the
+probe cannot confirm is ``UNKNOWN`` (fail closed -> scan). The verdict is
+day-cached per-repo by :func:`_repo_visibility.slug_visibility`, so repeated gate
 evaluations never re-probe.
 
 :func:`gate_skips_for_visibility` is the composed predicate the gates call. It
-keeps the ALL-SEGMENTS anti-leak posture of the destination classifier it
-replaced -- a ``$(...)``/transport construct, an unrecognised chained executable
-(``sh -c``/``make``/``./x.sh``), or a raw ``api`` WRITE whose URL does not
-resolve are all NON-skippable, so an obscured PUBLIC post can never hide behind
-a leading non-public segment -- but with the destination polarity FLIPPED: a
-segment is skip-eligible when its target is NOT affirmatively public (rather
-than only when provably-internal), so an unknown/unresolvable target now SKIPS
-instead of failing closed. A ``git commit`` segment defers to the landing-repo
-carve-out and the #703 pre-push backstop and is never skipped here.
+keeps the ALL-SEGMENTS anti-leak posture -- a ``$(...)``/transport construct, an
+unrecognised chained executable (``sh -c``/``make``/``./x.sh``), or a raw
+``api`` WRITE whose URL does not resolve are all NON-skippable, so an obscured
+PUBLIC post can never hide behind a leading non-public segment. A ``git commit``
+segment defers to the landing-repo carve-out and the #703 pre-push backstop and
+is never skipped here.
 
 This lives in its own module because :mod:`teatree.hooks.publish_destination`
 and :mod:`teatree.hooks._repo_visibility` are both at the per-file LOC cap.
 """
 
+import sys
+from enum import Enum
 from pathlib import Path
 
 from teatree.hooks import _commit_carve_out, _repo_visibility
@@ -54,59 +63,128 @@ _SKIP_PUBLISH = "skip-publish"  # skip-eligible AND counts as a repo-targeted pu
 _SKIP_INERT = "skip-inert"  # skip-eligible, not a publish (nav/local/api-read)
 
 
+class _Visibility(Enum):
+    """Three-valued affirmative-public visibility of a RESOLVED destination.
+
+    ``PUBLIC`` (confirmed-public probe verdict) and ``UNKNOWN`` (a resolvable
+    slug the probe could not confirm) both SCAN; only ``NON_PUBLIC`` (provably
+    private/internal) is skip-eligible. ``UNKNOWN`` is the fail-CLOSED case the
+    old boolean collapsed into "not public -> skip", which let a probe error on a
+    resolvable slug ride out unscanned (#3442).
+    """
+
+    PUBLIC = "public"
+    NON_PUBLIC = "non-public"
+    UNKNOWN = "unknown"
+
+
+def _destination_visibility(dest: Destination, *, config_path: Path | None) -> _Visibility:
+    """Classify a RESOLVED ``dest`` into :class:`_Visibility` for the leak-gate scope.
+
+    ``NON_PUBLIC`` (skip-eligible) when the target is PROVABLY non-public: an
+    empty / unexpanded-``$`` slug (no resolvable target to probe), an
+    ``internal_publish_namespaces`` match, a ``private_repos`` allowlist match, or
+    a ``private``/``internal`` (any non-``PUBLIC``, non-``None``) probe verdict.
+    ``PUBLIC`` only on a confirmed-``PUBLIC`` probe verdict for a non-allowlisted
+    slug. ``UNKNOWN`` when the slug IS probe-resolvable but the visibility probe
+    returns no verdict (``None`` -- a network/API error, an absent ``gh``/``glab``,
+    or an unrecognised answer): the fail-CLOSED case the gate must SCAN, mirroring
+    the bash pre-push gate and the fail-closed-always doctrine (#3442).
+
+    ``dest.forge`` qualifies a bare ``owner/repo`` slug up to its canonical host
+    so the host-keyed probe routes to the right tool.
+    """
+    slug = dest.slug.strip().lower()
+    if not slug or "$" in slug:
+        return _Visibility.NON_PUBLIC
+    if any(_repo_visibility.slug_namespace_matches(entry, slug) for entry in _internal_publish_namespaces(config_path)):
+        return _Visibility.NON_PUBLIC
+    if _repo_visibility.slug_is_allowlisted_private(slug, config_path):
+        return _Visibility.NON_PUBLIC
+    probe_slug = _repo_visibility.forge_qualified_slug(slug, dest.forge)
+    verdict = _repo_visibility.slug_visibility(probe_slug)
+    if verdict == _PUBLIC:
+        return _Visibility.PUBLIC
+    if verdict is None:
+        return _Visibility.UNKNOWN
+    return _Visibility.NON_PUBLIC
+
+
 def is_affirmatively_public(dest: Destination | None, *, config_path: Path | None = None) -> bool:
     """Return True iff ``dest`` resolves to an affirmatively-PUBLIC repo.
 
-    NON-public (False) when the slug is empty / carries an unexpanded ``$``,
-    matches an ``internal_publish_namespaces`` entry, matches a ``private_repos``
-    allowlist entry, or its ``gh``/``glab`` visibility verdict is anything other
-    than ``"PUBLIC"`` (``private``/``internal``/unknown). ``dest.forge`` qualifies
-    a bare ``owner/repo`` slug up to its canonical host so the host-keyed probe
-    routes to the right tool.
+    True ONLY on a confirmed-``PUBLIC`` probe verdict for a non-allowlisted slug
+    (:attr:`_Visibility.PUBLIC`); every other case -- private/internal/allowlisted
+    (``NON_PUBLIC``) and a resolvable slug the probe cannot confirm (``UNKNOWN``)
+    -- is False. Callers that must FAIL CLOSED on ``UNKNOWN`` (the leak-gate
+    scope) use :func:`_destination_visibility` directly rather than this boolean,
+    which cannot distinguish ``UNKNOWN`` from ``NON_PUBLIC``.
     """
     if dest is None:
         return False
-    slug = dest.slug.strip().lower()
-    if not slug or "$" in slug:
-        return False
-    if any(_repo_visibility.slug_namespace_matches(entry, slug) for entry in _internal_publish_namespaces(config_path)):
-        return False
-    if _repo_visibility.slug_is_allowlisted_private(slug, config_path):
-        return False
-    probe_slug = _repo_visibility.forge_qualified_slug(slug, dest.forge)
-    return _repo_visibility.slug_visibility(probe_slug) == _PUBLIC
+    return _destination_visibility(dest, config_path=config_path) is _Visibility.PUBLIC
 
 
-def _api_write_targets_non_public(words: list[str], *, config_path: Path | None = None) -> bool:
-    """Return True iff a raw ``api`` WRITE segment RESOLVES to a NON-public repo.
+def _signal_probe_error_scan(slug: str) -> None:
+    """Emit a loud, one-line stderr signal that a probe error drove a fail-CLOSED scan.
+
+    A probe-error-driven scan must NEVER be silent (#3442): this mirrors the bash
+    pre-push gate's ``echo ... >&2`` on undetermined visibility. Best-effort and
+    crash-proof -- a failed stderr write never breaks the fast hook.
+    """
+    try:
+        sys.stderr.write(
+            f"leak gate: could not confirm '{slug or '<repo>'}' repo visibility "
+            "(probe unavailable or errored) - scanning anyway (fail closed, #3442).\n"
+        )
+    except OSError:
+        return
+
+
+def _visibility_segment_verdict(dest: Destination, *, config_path: Path | None) -> str:
+    """Map a RESOLVED destination's :class:`_Visibility` to a segment verdict.
+
+    ``NON_PUBLIC`` -> :data:`_SKIP_PUBLISH` (skip-eligible). ``PUBLIC`` ->
+    :data:`_SCAN`. ``UNKNOWN`` (resolvable slug, unconfirmed probe) FAILS CLOSED
+    to :data:`_SCAN` and emits :func:`_signal_probe_error_scan` so the decision is
+    never silent (#3442).
+    """
+    visibility = _destination_visibility(dest, config_path=config_path)
+    if visibility is _Visibility.NON_PUBLIC:
+        return _SKIP_PUBLISH
+    if visibility is _Visibility.UNKNOWN:
+        _signal_probe_error_scan(dest.slug)
+    return _SCAN
+
+
+def _api_write_segment_verdict(words: list[str], *, config_path: Path | None) -> str:
+    """Segment verdict for a raw ``gh``/``glab api`` WRITE (see :func:`_visibility_segment_verdict`).
 
     A ``gh``/``glab api`` write carries its body only to the endpoint its URL
-    path names. When that path resolves to a repo slug that is affirmatively NOT
-    public (a probe-confirmed private/internal repo, or an allowlisted-private /
+    path names. When that path resolves to a PROVABLY non-public repo (a
+    probe-confirmed private/internal repo, or an allowlisted-private /
     internal-namespace slug), the write cannot leak to a public surface -- e.g. a
-    private customer MR-description PUT -- so it is skip-eligible. The slug must
-    come from the URL path itself (``via="api"``): an ``-R`` flag does not
+    private customer MR-description PUT -- so it is :data:`_SKIP_PUBLISH`. The slug
+    must come from the URL path itself (``via="api"``): an ``-R`` flag does not
     constrain a raw endpoint.
 
-    An UNRESOLVABLE endpoint is NOT skip-eligible (returns False -> the caller
-    forces a SCAN). Per this module's ALL-SEGMENTS anti-leak contract a raw api
-    WRITE with an unresolvable URL is non-skippable, because it is an immediate
-    public egress with no pre-push backstop and a leading non-public segment must
-    never route it around the leak scan. Unresolvable means: no ``api``
-    destination at all (a flagless call, an ambiguous unknown flag, a non-repo
-    endpoint), OR a slug carrying an unexpanded ``$`` (a ``$OWNER``/``$VAR`` that
-    could expand to a PUBLIC repo at run time -- e.g. ``gh api
-    "repos/$OWNER/repo/issues" -f body=...``). Only a slug that resolves to an
-    affirmatively non-public repo returns True.
+    An UNRESOLVABLE endpoint FAILS CLOSED to :data:`_SCAN`. Per this module's
+    ALL-SEGMENTS anti-leak contract a raw api WRITE with an unresolvable URL is
+    non-skippable, because it is an immediate public egress with no pre-push
+    backstop and a leading non-public segment must never route it around the leak
+    scan. Unresolvable means: no ``api`` destination at all (a flagless call, an
+    ambiguous unknown flag, a non-repo endpoint), OR a slug carrying an unexpanded
+    ``$`` (a ``$OWNER``/``$VAR`` that could expand to a PUBLIC repo at run time --
+    e.g. ``gh api "repos/$OWNER/repo/issues" -f body=...``). A slug that resolves
+    but whose probe cannot confirm visibility ALSO fails closed (``UNKNOWN`` via
+    :func:`_visibility_segment_verdict`, #3442).
     """
     if not words or words[0] not in {"gh", "glab"}:
-        return False
+        return _SCAN
     dest = _destination_from_api(words, words[0])
-    if dest is None or dest.via != "api":
-        return False
-    if "$" in dest.slug:
-        return False
-    return not is_affirmatively_public(dest, config_path=config_path)
+    if dest is None or dest.via != "api" or "$" in dest.slug:
+        return _SCAN
+    return _visibility_segment_verdict(dest, config_path=config_path)
 
 
 def _segment_visibility_verdict(
@@ -116,10 +194,11 @@ def _segment_visibility_verdict(
 
     A LIVE ``$(...)``/transport construct or an unrecognised chained executable
     forces :data:`_SCAN` (the ALL-SEGMENTS anti-leak posture); a repo-targeted
-    publish to an affirmatively-PUBLIC target forces :data:`_SCAN`; a repo-targeted
-    publish (structured or ``api`` WRITE) to a NON-public or UNRESOLVABLE target
-    is :data:`_SKIP_PUBLISH` (an unknown target skips, per #1415); an ``api``
-    read or an inert nav/local segment is :data:`_SKIP_INERT`.
+    publish to a PROVABLY non-public target is :data:`_SKIP_PUBLISH`; a
+    repo-targeted publish (structured or ``api`` WRITE) to an affirmatively-PUBLIC
+    OR probe-unconfirmed target forces :data:`_SCAN` (fail closed on a probe
+    error, #3442); an ``api`` read or an inert nav/local segment is
+    :data:`_SKIP_INERT`.
 
     ``raws`` carries each token's as-written source span (index-aligned with
     ``words``) so the substitution check fires only on a marker bash would actually
@@ -129,13 +208,13 @@ def _segment_visibility_verdict(
     if _segment_carries_substitution_or_transport(words, raws):
         return _SCAN
     if segment_is_api_write(words):
-        return _SKIP_PUBLISH if _api_write_targets_non_public(words, config_path=config_path) else _SCAN
+        return _api_write_segment_verdict(words, config_path=config_path)
     if segment_is_api_read(words):
         return _SKIP_INERT
     rest = strip_cd_prefix(words)
     dest = _destination_from_words(rest, cwd)
     if dest is not None:
-        return _SCAN if is_affirmatively_public(dest, config_path=config_path) else _SKIP_PUBLISH
+        return _visibility_segment_verdict(dest, config_path=config_path)
     if rest and rest[0] in {"gh", "glab"}:
         return _SKIP_PUBLISH
     return _SKIP_INERT if _segment_is_skip_inert(words) else _SCAN
@@ -146,14 +225,14 @@ def gate_skips_for_visibility(command: str, cwd: Path | None, *, config_path: Pa
 
     SKIP (True) only when EVERY top-level segment is provably safe on visibility
     grounds and at least one is a repo-targeted publish: the leak gate enforces
-    ONLY on an affirmatively-public target (#1415/#1213). A segment is safe when
-    it is one of:
+    on every target it cannot PROVE non-public (#1415/#1213, #3442). A segment is
+    safe when it is one of:
 
-    - a ``gh``/``glab``/``t3 review`` publish whose destination is NOT
-        affirmatively public (private/internal/unknown/unresolvable) and carries
-        no substitution/transport construct;
-    - a raw ``gh``/``glab api`` WRITE whose URL path resolves to a NON-public
-        repo (:func:`_api_write_targets_non_public`);
+    - a ``gh``/``glab``/``t3 review`` publish whose destination is PROVABLY
+        non-public (allowlisted-private / internal-namespace / probe-confirmed
+        private) and carries no substitution/transport construct;
+    - a raw ``gh``/``glab api`` WRITE whose URL path resolves to a PROVABLY
+        non-public repo (:func:`_api_write_segment_verdict`);
     - a read-only ``api`` GET (posts no body); or
     - a provably-inert navigation / local-only / git-transport segment
         (:func:`publish_destination._segment_is_skip_inert`).
@@ -162,11 +241,17 @@ def gate_skips_for_visibility(command: str, cwd: Path | None, *, config_path: Pa
 
     - any repo-targeted publish resolves to an affirmatively-PUBLIC repo (the
         gate must fire to catch a real public leak);
+    - any repo-targeted publish resolves to a RESOLVABLE slug whose visibility
+        the probe cannot confirm -- a network/API error, an absent ``gh``/``glab``,
+        or an unrecognised answer. This FAILS CLOSED (scans) and emits a loud
+        signal, mirroring the bash pre-push gate and the fail-closed-always
+        leak-gate doctrine (#3442); the offline ``private_repos`` allowlist is the
+        network-free way to keep an own-private post skip-eligible;
     - a segment carries a ``$(...)``/transport construct, is an unrecognised
         chained executable (``sh -c``/``make``/``./x.sh`` -- can shell out to a
         hidden public post), or is a raw ``api`` WRITE to an affirmatively-public
-        URL -- these keep the ALL-SEGMENTS anti-leak posture so an obscured public
-        post cannot hide behind a leading non-public segment;
+        or unresolvable URL -- these keep the ALL-SEGMENTS anti-leak posture so an
+        obscured public post cannot hide behind a leading non-public segment;
     - the command carries a ``git commit`` segment (the landing-repo carve-out
         and the #703 pre-push backstop own that surface, unchanged); or
     - the command has no repo-targeted publish segment at all (a Slack/curl post

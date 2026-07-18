@@ -6,13 +6,14 @@ visibility check. An org/repo slug is attacker-controllable (``<term>-eng/tracke
 so a genuinely-public repo whose slug carries the term could silence the leak
 block.
 
-These tests pin the HARD invariant on the PUBLIC surface the leak gate now
-scopes to: a CONFIRMED-PUBLIC destination BLOCKS even when the slug carries the
-term (the slug-text match must not vouch for a public leak). An
-UNKNOWN-visibility destination is NOT affirmatively public, so the gate SKIPS it
-entirely (#1415 -- bias hard toward not firing). The companion
-``TestProvablyPrivateDestinationStillAllowed`` proves a provably-private
-destination is likewise skipped via the config allowlist.
+These tests pin the HARD invariant: a CONFIRMED-PUBLIC destination BLOCKS even
+when the slug carries the term (the slug-text match must not vouch for a public
+leak), AND a destination whose visibility the probe cannot confirm now FAILS
+CLOSED and BLOCKS too (#3442 -- a probe error is not a skip; the attacker-
+controllable ``<term>-eng/tracker`` slug can no longer silence the block by
+merely being unresolvable in-hook). The companion
+``TestProvablyPrivateDestinationStillAllowed`` proves a PROVABLY-private
+destination (declared in the ``private_repos`` allowlist) is still skipped.
 
 Synthetic terms only (``apple`` / ``democorp`` / ``othercorp``) -- the
 overlay-leak-tree runs on PRs.
@@ -124,7 +125,7 @@ class TestPublicSlugCarryingTermStillBlocks:
         assert term in decision["permissionDecisionReason"]
 
     @pytest.mark.parametrize(("command", "term"), _SLUG_CARRIES_TERM_EXPLOITS)
-    def test_unknown_visibility_destination_skips(
+    def test_probe_error_destination_fails_closed_and_blocks(
         self,
         command: str,
         term: str,
@@ -132,13 +133,17 @@ class TestPublicSlugCarryingTermStillBlocks:
         monkeypatch: pytest.MonkeyPatch,
         capsys: pytest.CaptureFixture[str],
     ) -> None:
-        # Indeterminate probe (tool absent in-hook). An unknown-visibility
-        # destination is NOT affirmatively public, so the leak gate SKIPS it
-        # entirely (#1415) -- the post is allowed, bias hard toward not firing.
+        # #3442 fail closed: an indeterminate probe (tool absent / API error) on a
+        # resolvable slug is NOT provably non-public, so the leak gate SCANS and the
+        # slug-carried term BLOCKS -- the attacker-controllable slug can no longer
+        # silence the block by being unresolvable in-hook. A genuinely-private repo
+        # declares itself in ``private_repos`` (see the companion class).
         _pin_probe(monkeypatch, None)
         blocked = handle_banned_terms_pretool(_bash(command))
-        assert blocked is False, "a banned term on an UNKNOWN-visibility destination must SKIP"
-        assert capsys.readouterr().out == ""  # no deny JSON
+        decision = json.loads(capsys.readouterr().out)
+        assert blocked is True, "a banned term on a probe-UNCONFIRMED destination must fail closed and BLOCK"
+        assert decision["permissionDecision"] == "deny"
+        assert term in decision["permissionDecisionReason"]
 
 
 class TestProvablyPrivateDestinationStillAllowed:

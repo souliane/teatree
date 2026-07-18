@@ -615,19 +615,20 @@ class TestProbeResolvedTargetVisibility:
         cmd = 'gh issue comment 5 --repo someowner/open-svc --body "acmecorp domain note"'
         assert _verdict(cmd, cwd, empty_allowlist_config) == "block"
 
-    def test_unresolvable_target_skips(
+    def test_probe_error_target_fails_closed_and_blocks(
         self, empty_allowlist_config: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        # must-ALLOW (#1415/#1213 policy): when the probe cannot prove the target
-        # PUBLIC (it returns the UNKNOWN ``None`` -- tool absent in-hook or auth
-        # differs) and the allowlist does not name it, the target is NOT
-        # affirmatively public, so the gate SKIPS -- bias hard toward not firing,
-        # never false-block a repo of unknown visibility.
+        # must-DENY (#3442 fail closed): when the probe cannot confirm the target's
+        # visibility (returns the UNKNOWN ``None`` -- tool absent in-hook or auth
+        # differs) and the allowlist does not name it, the target is NOT provably
+        # non-public, so the gate SCANS and the banned term BLOCKS -- mirroring the
+        # bash pre-push gate. A genuinely-private repo declares itself in the
+        # offline ``private_repos`` allowlist to stay skip-eligible.
         monkeypatch.setattr(_repo_visibility, "probe_visibility", lambda _slug: None)
         monkeypatch.delenv("GH_REPO", raising=False)
         cwd = self._public_cwd(tmp_path)
         cmd = 'gh issue comment 5 --repo unknown/mystery --body "acmecorp domain note"'
-        assert _verdict(cmd, cwd, empty_allowlist_config) == "allow"
+        assert _verdict(cmd, cwd, empty_allowlist_config) == "block"
 
     def test_clean_post_to_private_probe_target_never_blocks(
         self, empty_allowlist_config: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -654,15 +655,14 @@ class TestProbeResolvedTargetVisibility:
 
 
 class TestLeakGateEnforcesOnPublicTargetsOnly:
-    """The leak gate enforces on PUBLIC targets ONLY (the user's explicit rule).
+    """The leak gate skips ONLY a PROVABLY non-public target (the user's rule + #3442).
 
-    A customer/banned term is blocked when -- and only when -- the COMMAND's
-    resolved target is affirmatively PUBLIC. On ANY other target -- the user's
-    OWN private overlay repo, a customer's own (colleague) private repo, AND an
-    unknown/unresolvable target -- the gate does NOT block: it resolves the real
-    target from the command and skips the scan (bias hard toward not firing).
-    SYNTHETIC namespaces only; the private ones are proven private via the
-    allowlist and via the live ``gh`` probe shim.
+    A customer/banned term is allowed only when the COMMAND's resolved target is
+    PROVABLY non-public -- the user's OWN private overlay repo or a customer's own
+    (colleague) private repo, proven via the offline allowlist or the live ``gh``
+    probe. On an affirmatively-PUBLIC target it BLOCKS, and on a resolvable target
+    whose probe cannot confirm visibility it now FAILS CLOSED and BLOCKS too
+    (#3442 -- a probe error is not a skip). SYNTHETIC namespaces only.
     """
 
     @pytest.fixture
@@ -726,16 +726,17 @@ class TestLeakGateEnforcesOnPublicTargetsOnly:
         cmd = 'gh pr create --title "feat: x" --body "customercorp here"'
         assert _verdict(cmd, worktree, allowlist_config) == "allow"
 
-    def test_customer_term_to_unresolvable_target_skips(
+    def test_customer_term_to_probe_error_target_fails_closed(
         self, allowlist_config: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        # #1415/#1213 policy: an undeclared target whose visibility cannot be
-        # determined (probe returns the UNKNOWN None) is NOT affirmatively public,
-        # so the gate SKIPS -- bias hard toward not firing.
+        # #3442 fail closed: an undeclared target whose visibility cannot be
+        # confirmed (probe returns the UNKNOWN None) is NOT provably non-public, so
+        # the gate SCANS and BLOCKS -- a probe error must never route a leak out
+        # unscanned. A genuinely-private repo is declared in ``private_repos``.
         monkeypatch.setattr(_repo_visibility, "probe_visibility", lambda _slug: None)
         cwd = self._public_cwd(tmp_path)
         cmd = 'gh issue comment 5 --repo unknown/mystery --body "customercorp note"'
-        assert _verdict(cmd, cwd, allowlist_config) == "allow"
+        assert _verdict(cmd, cwd, allowlist_config) == "block"
 
     def test_colleague_private_proven_only_by_probe_allows(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
