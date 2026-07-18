@@ -4,7 +4,7 @@ import io
 from contextlib import redirect_stdout
 from pathlib import Path
 
-from teatree.cli.doctor.checks import _check_stale_path_t3
+from teatree.cli.doctor.checks_environment import _check_stale_path_t3
 
 
 def _run(env_path: str, home: Path, *, uv_tool_bin_dir: str | None = None) -> tuple[bool, str]:

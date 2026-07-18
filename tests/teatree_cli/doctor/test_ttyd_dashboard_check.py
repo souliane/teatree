@@ -11,7 +11,7 @@ import io
 from contextlib import redirect_stdout
 from unittest.mock import patch
 
-from teatree.cli.doctor.checks import _check_ttyd_for_dashboard
+from teatree.cli.doctor.checks_runtime import _check_ttyd_for_dashboard
 
 
 def _run(env: dict[str, str], *, ttyd_present: bool) -> tuple[bool, str]:

@@ -8,7 +8,7 @@ subprocess.
 from contextlib import AbstractContextManager
 from unittest.mock import MagicMock, patch
 
-from teatree.cli.doctor.checks import _check_connector_manifest
+from teatree.cli.doctor.checks_mcp import _check_connector_manifest
 from teatree.core.connector_manifest import ConnectorManifestOutcome, ConnectorRequirement, DownConnector
 
 

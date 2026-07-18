@@ -218,6 +218,23 @@ init)
     # receiver can open its WebSocket. Without it `t3 slack listen` degrades to a
     # no-op ("slack_sdk not installed") and inbound Slack never reaches the loop.
     uv tool install --editable "$CLONE_DIR[slack]" --reinstall --python 3.13
+    # prek (the pre-commit reimplementation) is a DEV-group dependency, so the
+    # editable tool install above does NOT provide it. Worktree provisioning
+    # (`prek_hook.install`) and the base-clone commit/push gates need `prek` on
+    # PATH; install it as a standalone uv tool (pinned to the lockfile) into the
+    # shared teatree_uv volume so every role sees it. Runtime (not Dockerfile):
+    # /opt/teatree/uv is a named volume that shadows any image-baked install.
+    uv tool install prek==0.3.13
+    # Install the commit/push gate hooks on the base clone's SHARED hooks dir
+    # (git links every worktree to it), so the privacy leak gate (#685), the
+    # foreign-MR guard, banned-terms, and the push gates actually fire on the
+    # loop's pushes. Without this the migrated box had an EMPTY .git/hooks and
+    # every gate was silently bypassed. Idempotent; harden the baked PREK path
+    # to a PATH lookup (souliane/teatree#1462) so a torn-down worktree can't
+    # leave a stale absolute path in the shared hook.
+    ( cd "$CLONE_DIR" && prek install -f \
+        && sed -i 's#^PREK="/opt/teatree/uv/tools/prek/bin/prek"#PREK="prek"#' \
+            .git/hooks/pre-push .git/hooks/pre-commit .git/hooks/commit-msg 2>/dev/null )
     t3 setup
     t3 teatree db migrate
     # Values are JSON: enum strings are quoted, booleans and ints are bare.

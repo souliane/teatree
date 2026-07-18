@@ -14,7 +14,7 @@ What *is* required is catching drift: a hand-edited or accidentally-deleted
 instead of calling the structured-search tools, with no loud signal. This
 module is the single chokepoint both ``t3 setup``
 (:mod:`teatree.cli.setup.mcp_registrar`) and ``t3 doctor check``
-(``_check_teatree_mcp_registration`` in :mod:`teatree.cli.doctor.checks`)
+(``_check_teatree_mcp_registration`` in :mod:`teatree.cli.doctor.checks_mcp`)
 read, so the two surfaces can never drift on what "correctly registered"
 means.
 """
