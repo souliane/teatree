@@ -17,10 +17,10 @@ from teatree.utils.run import CommandFailedError, CompletedProcess, run_allowed_
 
 _ISSUE_URL_RE = re.compile(r"^/(?P<owner>[^/]+)/(?P<repo>[^/]+)/issues/(?P<number>\d+)/?$")
 
-# Bound a read-only forge search so a network stall degrades (raises TimeoutExpired
-# → the caller's fail-open) instead of wedging the ship indefinitely. Generous
-# enough not to false-trip a fully-paginated fetch; the GitLab client already
-# bounds each request at 10s.
+# Bound every ``gh`` subprocess so a stalled TLS handshake or a hung read degrades
+# (raises TimeoutExpired → the caller's fail-open) instead of wedging the
+# single-threaded loop indefinitely. Generous enough not to false-trip a
+# fully-paginated fetch; the GitLab client already bounds each request at 10s.
 _FORGE_READ_TIMEOUT_SECONDS = 60.0
 
 
@@ -45,7 +45,7 @@ def gh_ambient_auth_available() -> bool:
     surface deep inside a PR-creation call.
     """
     try:
-        result = run_allowed_to_fail(["gh", "auth", "status"], expected_codes=None)
+        result = run_allowed_to_fail(["gh", "auth", "status"], expected_codes=None, timeout=_FORGE_READ_TIMEOUT_SECONDS)
     except FileNotFoundError:
         return False
     return result.returncode == 0
@@ -67,7 +67,15 @@ def gh_can_push(repo_slug: str, *, token: str = "") -> bool | None:
     if not repo_slug:
         return None
     try:
-        result = _run_gh("gh", "api", f"repos/{repo_slug}", "--jq", ".permissions.push", token=token)
+        result = _run_gh(
+            "gh",
+            "api",
+            f"repos/{repo_slug}",
+            "--jq",
+            ".permissions.push",
+            token=token,
+            timeout=_FORGE_READ_TIMEOUT_SECONDS,
+        )
     except (CommandFailedError, FileNotFoundError):
         return None
     answer = result.stdout.strip().lower()
@@ -87,6 +95,7 @@ def _gh_api_get(endpoint: str, *, token: str = "") -> object:
         "--header",
         "Accept: application/vnd.github+json",
         token=token,
+        timeout=_FORGE_READ_TIMEOUT_SECONDS,
     )
     return json.loads(result.stdout)
 
@@ -114,6 +123,7 @@ def _gh_api_get_paginated(endpoint: str, *, token: str = "") -> list[RawAPIDict]
         "--header",
         "Accept: application/vnd.github+json",
         token=token,
+        timeout=_FORGE_READ_TIMEOUT_SECONDS,
     )
     pages = json.loads(result.stdout)
     if not isinstance(pages, list):
@@ -158,42 +168,44 @@ def _gh_api_search_paginated(endpoint: str, *, token: str = "") -> list[RawAPIDi
     return items
 
 
+def _gh_api_write(endpoint: str, payload: RawAPIDict, *, method: str, token: str = "") -> object:
+    """Call ``gh api`` with a body-carrying verb (POST / PATCH) and return parsed JSON.
+
+    The token is passed via ``GH_TOKEN`` env, never ``--header
+    "Authorization: Bearer <token>"`` — an argv header is visible in
+    ``/proc/<pid>/cmdline`` and ``ps`` for the lifetime of the subprocess.
+    Every write is timeout-bounded so a hung TLS handshake degrades (raises
+    ``TimeoutExpired`` → the caller's fail-open) instead of wedging the
+    single-threaded loop.
+    """
+    env = {**os.environ, "GH_TOKEN": token} if token else None
+    result = run_checked(
+        [
+            "gh",
+            "api",
+            endpoint,
+            "--method",
+            method,
+            "--header",
+            "Accept: application/vnd.github+json",
+            "--input",
+            "-",
+        ],
+        stdin_text=json.dumps(payload),
+        env=env,
+        timeout=_FORGE_READ_TIMEOUT_SECONDS,
+    )
+    return json.loads(result.stdout)
+
+
 def _gh_api_post(endpoint: str, payload: RawAPIDict, *, token: str = "") -> object:
     """Call ``gh api`` (POST) and return parsed JSON."""
-    cmd = [
-        "gh",
-        "api",
-        endpoint,
-        "--method",
-        "POST",
-        "--header",
-        "Accept: application/vnd.github+json",
-        "--input",
-        "-",
-    ]
-    if token:
-        cmd.extend(["--header", f"Authorization: Bearer {token}"])
-    result = run_checked(cmd, stdin_text=json.dumps(payload))
-    return json.loads(result.stdout)
+    return _gh_api_write(endpoint, payload, method="POST", token=token)
 
 
 def _gh_api_patch(endpoint: str, payload: RawAPIDict, *, token: str = "") -> object:
     """Call ``gh api`` (PATCH) and return parsed JSON."""
-    cmd = [
-        "gh",
-        "api",
-        endpoint,
-        "--method",
-        "PATCH",
-        "--header",
-        "Accept: application/vnd.github+json",
-        "--input",
-        "-",
-    ]
-    if token:
-        cmd.extend(["--header", f"Authorization: Bearer {token}"])
-    result = run_checked(cmd, stdin_text=json.dumps(payload))
-    return json.loads(result.stdout)
+    return _gh_api_write(endpoint, payload, method="PATCH", token=token)
 
 
 def _parse_issue_ref(issue_url: str) -> tuple[str, int] | None:

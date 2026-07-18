@@ -132,6 +132,12 @@ class TestGhApiGet:
             _gh_api_get("/test", token="tok")
         assert mock_run.call_args[1]["token"] == "tok"
 
+    def test_bounds_the_read_with_a_timeout(self) -> None:
+        with patch.object(github_api_mod, "_run_gh") as mock_run:
+            mock_run.return_value = MagicMock(stdout="{}")
+            _gh_api_get("/test")
+        assert mock_run.call_args.kwargs["timeout"] == _FORGE_READ_TIMEOUT_SECONDS
+
 
 class TestGhApiGetPaginated:
     def test_flattens_slurped_pages(self) -> None:
@@ -150,6 +156,12 @@ class TestGhApiGetPaginated:
             mock_run.return_value = MagicMock(stdout="[]")
             _gh_api_get_paginated("repos/o/r/issues/5/comments", token="tok")
         assert mock_run.call_args.kwargs["token"] == "tok"
+
+    def test_bounds_the_read_with_a_timeout(self) -> None:
+        with patch.object(github_api_mod, "_run_gh") as mock_run:
+            mock_run.return_value = MagicMock(stdout="[]")
+            _gh_api_get_paginated("repos/o/r/issues/5/comments")
+        assert mock_run.call_args.kwargs["timeout"] == _FORGE_READ_TIMEOUT_SECONDS
 
     def test_empty_pages_return_empty_list(self) -> None:
         with patch.object(github_api_mod, "_run_gh") as mock_run:
@@ -223,12 +235,19 @@ class TestGhApiPost:
         call_kwargs = mock_run.call_args[1]
         assert json.loads(call_kwargs["input"]) == {"body": "hello"}
 
-    def test_includes_token(self) -> None:
+    def test_passes_token_via_env_not_argv(self) -> None:
         with patch.object(utils_run_mod.subprocess, "run") as mock_run:
             mock_run.return_value = subprocess.CompletedProcess([], 0, "{}", "")
             _gh_api_post("/test", {}, token="tok")
         args = mock_run.call_args[0][0]
-        assert "Authorization: Bearer tok" in args
+        assert not any("Authorization" in arg for arg in args)
+        assert mock_run.call_args.kwargs["env"]["GH_TOKEN"] == "tok"
+
+    def test_bounds_timeout(self) -> None:
+        with patch.object(utils_run_mod.subprocess, "run") as mock_run:
+            mock_run.return_value = subprocess.CompletedProcess([], 0, "{}", "")
+            _gh_api_post("/test", {}, token="tok")
+        assert mock_run.call_args.kwargs["timeout"] == _FORGE_READ_TIMEOUT_SECONDS
 
 
 class TestGhApiPatch:
@@ -241,12 +260,13 @@ class TestGhApiPatch:
         assert "--method" in args
         assert "PATCH" in args
 
-    def test_includes_token(self) -> None:
+    def test_passes_token_via_env_not_argv(self) -> None:
         with patch.object(utils_run_mod.subprocess, "run") as mock_run:
             mock_run.return_value = subprocess.CompletedProcess([], 0, "{}", "")
             _gh_api_patch("/test", {}, token="tok")
         args = mock_run.call_args[0][0]
-        assert "Authorization: Bearer tok" in args
+        assert not any("Authorization" in arg for arg in args)
+        assert mock_run.call_args.kwargs["env"]["GH_TOKEN"] == "tok"
 
 
 class TestGhGraphql:
@@ -258,12 +278,13 @@ class TestGhGraphql:
         args = mock_run.call_args[0][0]
         assert "graphql" in args
 
-    def test_includes_token(self) -> None:
+    def test_passes_token_via_env_not_argv(self) -> None:
         with patch.object(utils_run_mod.subprocess, "run") as mock_run:
             mock_run.return_value = subprocess.CompletedProcess([], 0, "{}", "")
             _gh_graphql("{ test }", token="tok")
         args = mock_run.call_args[0][0]
-        assert "Authorization: Bearer tok" in args
+        assert not any("Authorization" in arg for arg in args)
+        assert mock_run.call_args.kwargs["env"]["GH_TOKEN"] == "tok"
 
 
 class TestFetchProjectItems:

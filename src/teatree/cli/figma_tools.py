@@ -16,21 +16,20 @@ from pathlib import Path
 
 import typer
 
-from teatree.backends.figma import FigmaClient, build_side_by_side_comparison
-from teatree.utils.secrets import read_pass
-
-_TOKEN_PASS_KEY = "figma/pat"  # noqa: S105 — pass key name, not a secret
+from teatree.backends.figma import FigmaClient, FigmaTokenCredential, build_side_by_side_comparison
+from teatree.llm.credentials import CredentialError
 
 
 def _client() -> FigmaClient:
-    token = read_pass(_TOKEN_PASS_KEY)
-    if not token:
+    try:
+        token = FigmaTokenCredential().resolve()
+    except CredentialError:
         typer.echo(
-            f"No Figma personal access token at `pass show {_TOKEN_PASS_KEY}`. "
-            f"Store one with `pass insert {_TOKEN_PASS_KEY}`.",
+            "No Figma personal access token. Set FIGMA_TOKEN in the environment "
+            "or store one with `pass insert figma/pat`.",
             err=True,
         )
-        raise typer.Exit(code=1)
+        raise typer.Exit(code=1) from None
     return FigmaClient(token=token)
 
 

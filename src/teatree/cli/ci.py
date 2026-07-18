@@ -78,8 +78,14 @@ class CICommands:
             pass
 
         from teatree.backends.gitlab.api import GitLabAPI  # noqa: PLC0415 — deferred: keeps CLI startup light
+        from teatree.core.backend_protocols import (  # noqa: PLC0415 — deferred: keeps CLI startup light
+            BackendResolutionError,
+        )
 
-        project_info = GitLabAPI().resolve_project_from_remote()
+        try:
+            project_info = GitLabAPI().resolve_project_from_remote()
+        except BackendResolutionError:
+            return ""
         return project_info.path_with_namespace if project_info else ""
 
     @staticmethod

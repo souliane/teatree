@@ -96,13 +96,15 @@ def gitlab_api_for_overlay(overlay_name: str) -> object | None:
         return None
     token, base_url = _overlay_gitlab_credentials(overlay_name)
     try:
-        if token:
-            return GitLabAPI(token=token, base_url=base_url)
-        # Legacy fallback: empty overlay or unregistered overlay name —
-        # use the process-global default resolver (same shape pre-#1275).
-        return GitLabAPI()
+        # Legacy fallback: an empty/unregistered overlay uses the process-global
+        # default resolver (env/pass), same shape pre-#1275.
+        client = GitLabAPI(token=token, base_url=base_url) if token else GitLabAPI()
     except Exception:  # noqa: BLE001 — a failed GitLabAPI construction yields no verifier
         return None
+    # Resolve-or-skip: a client with no resolved token would raise
+    # BackendResolutionError on first use (the fail-loud transport boundary), so
+    # skip verification cleanly rather than hand back a client that cannot call.
+    return client if getattr(client, "token", "") else None
 
 
 def _overlay_gitlab_credentials(overlay_name: str) -> tuple[str, str]:

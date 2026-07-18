@@ -1,55 +1,44 @@
 """``read_thread_activity`` — single-thread liveness + latest-activity read (#1084 follow-up).
 
-Fakes stop at the ``conversations.replies`` httpx boundary — no live Slack.
+Fakes stop at the ``SlackHttpClient.get`` boundary — no live Slack.
 """
-
-from typing import Self
 
 import httpx
 import pytest
 
 from teatree.backends.slack import client as slack_client
 from teatree.backends.slack.client import SlackThreadActivityRequest, read_thread_activity
+from teatree.types import RawAPIDict
 
 _CHANNEL = "C0REVIEW"
 _THREAD_TS = "1700000000.000100"
 
 
-class FakeClient:
+class FakeSlackHttp:
     def __init__(
         self,
         *,
         payload: dict | None = None,
-        headers: dict[str, str] | None = None,
         raises: BaseException | None = None,
         **_kw: object,
     ) -> None:
         self.payload = payload or {}
-        self.headers = headers or {}
         self._raises = raises
 
-    def __enter__(self) -> Self:
-        return self
-
-    def __exit__(self, *_a: object) -> None:
-        return None
-
-    def get(self, url: str, **_kw: object) -> httpx.Response:
+    def get(self, method: str, *, token: str = "", params: dict | None = None) -> RawAPIDict:
         if self._raises is not None:
             raise self._raises
-        return httpx.Response(200, json=self.payload, request=httpx.Request("GET", url))
+        return dict(self.payload)
 
 
-def _bind(fake: FakeClient, kw: dict) -> FakeClient:
-    fake.headers = kw.get("headers", fake.headers)
-    return fake
-
-
-def _read(fake: FakeClient) -> object:
+def _read(fake: FakeSlackHttp) -> object:
     with pytest.MonkeyPatch.context() as mp:
-        mp.setattr(slack_client.httpx, "Client", lambda **kw: _bind(fake, kw))
+        mp.setattr(slack_client, "SlackHttpClient", lambda **kw: fake)
         request = SlackThreadActivityRequest(token="xoxp-user", channel_id=_CHANNEL, thread_ts=_THREAD_TS)
         return read_thread_activity(request)
+
+
+FakeClient = FakeSlackHttp
 
 
 class TestThreadStillLive:

@@ -553,16 +553,20 @@ class OverlayCredentialResolutionTests(TestCase):
 
     def test_gitlab_api_for_overlay_empty_name_uses_default_constructor(self) -> None:
         """Empty overlay name → ``GitLabAPI()`` legacy single-overlay default."""
-        from teatree.loop.scanners.outbound_audit_overlay_verifiers import gitlab_api_for_overlay  # noqa: PLC0415
+        from teatree.loop.scanners.outbound_audit_overlay_verifiers import (  # noqa: PLC0415 — deferred test-local import, matches the sibling gitlab_api_for_overlay cases
+            gitlab_api_for_overlay,
+        )
 
-        sentinel = object()
+        # A real GitLabAPI always carries a resolved ``.token``; the resolve-or-skip
+        # guard returns the client only when that token is present.
+        client = MagicMock(token="resolved")
         with patch(
             "teatree.backends.gitlab.api.GitLabAPI",
-            return_value=sentinel,
+            return_value=client,
         ) as ctor:
             api = gitlab_api_for_overlay("")
 
-        assert api is sentinel
+        assert api is client
         ctor.assert_called_once_with()
 
     def test_gitlab_api_for_overlay_uses_overlay_credentials(self) -> None:
@@ -572,7 +576,7 @@ class OverlayCredentialResolutionTests(TestCase):
         fake_overlay = MagicMock()
         fake_overlay.config.get_gitlab_token.return_value = "glpat-z"
         fake_overlay.config.gitlab_url = "https://gl.example/api/v4"
-        sentinel = object()
+        client = MagicMock(token="glpat-z")
         with (
             patch(
                 "teatree.core.overlay_loader.get_overlay",
@@ -580,13 +584,28 @@ class OverlayCredentialResolutionTests(TestCase):
             ),
             patch(
                 "teatree.backends.gitlab.api.GitLabAPI",
-                return_value=sentinel,
+                return_value=client,
             ) as ctor,
         ):
             api = gitlab_api_for_overlay("named")
 
-        assert api is sentinel
+        assert api is client
         ctor.assert_called_once_with(token="glpat-z", base_url="https://gl.example/api/v4")
+
+    def test_gitlab_api_for_overlay_skips_when_no_token_resolved(self) -> None:
+        """A constructed client with no resolved token → ``None`` (resolve-or-skip).
+
+        The default constructor may build a client whose env/pass resolution
+        yields no token; handing it back would only raise
+        ``BackendResolutionError`` on first use, so the verifier skips cleanly.
+        """
+        from teatree.loop.scanners.outbound_audit_overlay_verifiers import gitlab_api_for_overlay  # noqa: PLC0415
+
+        with patch(
+            "teatree.backends.gitlab.api.GitLabAPI",
+            return_value=MagicMock(token=""),
+        ):
+            assert gitlab_api_for_overlay("") is None
 
     def test_gitlab_api_for_overlay_returns_none_when_ctor_raises(self) -> None:
         """``GitLabAPI`` constructor raising → ``None`` (graceful degrade)."""
