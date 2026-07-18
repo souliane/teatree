@@ -57,6 +57,11 @@ class MergeKeystoneResult(TypedDict, total=False):
     # pings the owner once and holds — ping-and-hold). Empty / absent for any
     # other refusal so the loop pings ONLY on substrate, not every held merge.
     escalation_kind: str
+    # #3413: the config-sourced standing substrate authorizer id when the merge was
+    # authorized by the owner's standing delegation (``substrate_auto_merge_authorized_by``);
+    # absent for every other merge, so the loop edge posts the "informed, not asked"
+    # Slack notification only when present.
+    standing_delegation_by: str
 
 
 class _MergeClearLike(Protocol):

@@ -118,12 +118,18 @@ class PrApiClient(Protocol):
 class MergeKeystone(Protocol):
     """Adapter over ``call_command('ticket', 'merge', ...)`` — mockable."""
 
-    def merge_clear(self, *, clear_id: int) -> tuple[bool, str, str, str]:
-        """Return ``(merged, merged_sha, error, escalation_kind)``.
+    def merge_clear(self, *, clear_id: int, human_authorized: str = "") -> tuple[bool, str, str, str, str]:
+        """Return ``(merged, merged_sha, error, escalation_kind, standing_delegation_by)``.
 
         ``error`` is the rejection reason; ``escalation_kind`` is ``"substrate"``
         when the refusal is a substrate sign-off hold (else empty) so the loop
-        pings the owner ONLY on substrate.
+        pings the owner ONLY on substrate. ``human_authorized`` is the standing
+        substrate authorizer the sweep sources from
+        ``substrate_auto_merge_authorized_by`` and re-presents at merge time (#3413)
+        — empty for the legacy hold-for-owner behaviour. ``standing_delegation_by``
+        echoes back the config-sourced authorizer id when the keystone actually
+        authorized the merge via that standing delegation (empty otherwise), so the
+        sweep posts the "informed, not asked" notification only on such a merge.
         """
         ...  # pragma: no branch
 
@@ -234,6 +240,14 @@ class PrSweepScanner:
     #: ``notify_with_fallback`` adapter so the owner is pinged ONCE per held
     #: substrate diff (deduped via the BotPing ledger on the per-diff key).
     substrate_pinger: "substrate.SubstratePinger | None" = None
+    #: #3413: the owner id the headless sweep re-presents as ``--human-authorized``
+    #: for a ``blast_class=substrate`` CLEAR, sourced from
+    #: ``substrate_auto_merge_authorized_by``. Empty (the default) preserves the
+    #: hold-for-owner behaviour verbatim — a substrate CLEAR is never auto-merged;
+    #: the keystone refuses and the sweep pings-and-holds. When set, the sweep
+    #: presents it and (only if EVERY gate passes and the keystone confirms the id
+    #: still equals the configured value) the substrate PR auto-merges + notifies.
+    substrate_standing_authorizer: str = ""
     name: str = "pr_sweep"
 
     def scan(self) -> list[ScanSignal]:
@@ -519,9 +533,34 @@ class PrSweepScanner:
             return False
 
     def _merge(self, *, pr: PrSummary, clear: MergeClear, fallback: bool) -> MergeAttempt:
-        merged, merged_sha, error, escalation_kind = self.keystone.merge_clear(clear_id=int(clear.pk))
+        # #3413: for a substrate-labeled CLEAR, re-present the owner's standing
+        # delegation as ``--human-authorized`` (sourced from config, empty by
+        # default). Presented ONLY for substrate so the interactive non-substrate
+        # refusal guard is never tripped; the keystone still runs every gate and
+        # only authorizes when the presented id equals the configured value. A
+        # non-substrate CLEAR (or an empty config) presents nothing — byte-identical
+        # to the prior loop-driven merge.
+        standing_authorizer = (
+            self.substrate_standing_authorizer
+            if self.substrate_standing_authorizer and clear.blast_class == MergeClear.BlastClass.SUBSTRATE
+            else ""
+        )
+        merged, merged_sha, error, escalation_kind, standing_delegation_by = self.keystone.merge_clear(
+            clear_id=int(clear.pk), human_authorized=standing_authorizer
+        )
         if merged:
             self._announce_merge(slug=pr.slug, pr_id=pr.number, merged_sha=merged_sha, fallback=fallback)
+            if standing_delegation_by:
+                # "Informed, not asked": the config-sourced standing delegation
+                # auto-merged a substrate PR — DM the owner (PR #, title, blast_class,
+                # CLEAR id, merge SHA, authorizer) once via the BotPing ledger.
+                substrate.ping_substrate_auto_merged(
+                    self.substrate_pinger,
+                    pr=pr,
+                    clear=clear,
+                    authorizer=standing_delegation_by,
+                    merged_sha=merged_sha,
+                )
             return MergeAttempt(
                 slug=pr.slug,
                 pr_id=pr.number,

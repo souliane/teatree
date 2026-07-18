@@ -229,17 +229,23 @@ class CallCommandMergeKeystone:
 
     loop_identity: str = "merge-loop"
 
-    def merge_clear(self, *, clear_id: int) -> tuple[bool, str, str, str]:
+    def merge_clear(self, *, clear_id: int, human_authorized: str = "") -> tuple[bool, str, str, str, str]:
         from django.core.management import call_command  # noqa: PLC0415 — deferred: Django import at call time
 
-        result = call_command("ticket", "merge", str(clear_id), loop_identity=self.loop_identity)
+        # #3413: thread the standing substrate authorizer through as the same
+        # ``--human-authorized`` an interactive substrate merge presents. Empty (the
+        # default) reproduces the prior loop-driven merge exactly.
+        result = call_command(
+            "ticket", "merge", str(clear_id), loop_identity=self.loop_identity, human_authorized=human_authorized
+        )
         if not isinstance(result, dict):
-            return False, "", "ticket merge returned non-dict", ""
+            return False, "", "ticket merge returned non-dict", "", ""
         merged = bool(result.get("merged"))
         merged_sha = str(result.get("merged_sha") or "")
         error = str(result.get("error") or "")
         escalation_kind = str(result.get("escalation_kind") or "")
-        return merged, merged_sha, error, escalation_kind
+        standing_delegation_by = str(result.get("standing_delegation_by") or "")
+        return merged, merged_sha, error, escalation_kind, standing_delegation_by
 
 
 @dataclass(slots=True)

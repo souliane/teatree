@@ -510,6 +510,13 @@ class MergeAudit(models.Model):
     # proceeded on ``required_checks_status='pending'`` via the human-authorized
     # waiver — the durable audit trail of every expedited merge.
     expedited_by = models.CharField(max_length=255, blank=True, default="")
+    # The config-sourced standing substrate authorizer id this merge used (#3413).
+    # Empty for every merge EXCEPT a substrate merge authorized by the owner's
+    # standing ``substrate_auto_merge_authorized_by`` delegation (as opposed to a
+    # per-PR recorded ``human_authorizer``). The durable audit trail that keeps a
+    # config-sourced standing-delegation merge distinguishable from an interactive
+    # human authorization (invariant 4 audit).
+    standing_delegation_by = models.CharField(max_length=255, blank=True, default="")
 
     class Meta:
         db_table = "teatree_merge_audit"
