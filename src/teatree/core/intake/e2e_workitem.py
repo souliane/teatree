@@ -184,10 +184,12 @@ def resolve_environment(ticket: Ticket, *, at: str = "") -> EnvResolution:
 
 @dataclass(frozen=True)
 class RunProvenance:
-    """Which vanilla spec a run exercised, for DB-only reproducibility (#272).
+    """Which vanilla spec a run exercised + where its evidence lives, for DB-only reproducibility (#272, #3331).
 
     ``spec_path`` is the exact spec that ran; ``manifest_entry`` the
-    overlay-resolved manifest entry id (e.g. a CI lane). Both are
+    overlay-resolved manifest entry id (e.g. a CI lane); ``artifacts_dir`` the
+    out-of-repo artifacts root the runner exported for the run (so
+    ``post-test-plan --from-seams`` locates the captures after cleanup). All
     overlay-agnostic strings core never parses; empty values are dropped rather
     than stored, so an overlay with no per-spec manifest records exactly the
     pre-#272 shape (the default ``RunProvenance()`` is the no-op).
@@ -195,6 +197,7 @@ class RunProvenance:
 
     spec_path: str = ""
     manifest_entry: str = ""
+    artifacts_dir: str = ""
 
 
 _NO_PROVENANCE = RunProvenance()
@@ -220,12 +223,16 @@ def record_run(
     env: str = "local",
     provenance: RunProvenance = _NO_PROVENANCE,
 ) -> None:
-    """Record run provenance on the durable recipe (#794, #88, #272).
+    """Record run provenance on the durable recipe (#794, #88, #272, #3331).
 
     ``{result, timestamp, per_repo_shas, env}`` is written to ``last_run`` so
     a run is auditable after the workspace is cleaned. On a **green** run the
     SHA-set is promoted to ``last_green`` (the new baseline); a failed run
     records provenance but never moves the baseline.
+
+    ``provenance.artifacts_dir`` (#3331) is the out-of-repo artifacts root the
+    runner exported; recorded so ``post-test-plan --from-seams`` (#3329) defaults
+    the artifacts dir to the run's. Empty is dropped rather than stored.
 
     ``env`` is the environment the run executed against — ``"local"``
     (teatree-managed local stack, the default since ``e2e run`` resolves an
@@ -249,6 +256,8 @@ def record_run(
         last_run["spec_path"] = provenance.spec_path
     if provenance.manifest_entry:
         last_run["manifest_entry"] = provenance.manifest_entry
+    if provenance.artifacts_dir:
+        last_run["artifacts_dir"] = provenance.artifacts_dir
     recipe.last_run = last_run
     if result == "green":
         by_repo = {r.repo: r for r in recipe.repos}

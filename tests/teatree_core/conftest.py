@@ -76,7 +76,7 @@ class _CommandRuntime(OverlayRuntime):
 
 
 class _CommandE2E(OverlayE2E):
-    def env_extras(self, env_cache: dict[str, str]) -> dict[str, str]:
+    def env_extras(self, env_cache: dict[str, str], **_: object) -> dict[str, str]:
         variant = env_cache.get("WT_VARIANT", "")
         return {"CUSTOMER": variant} if variant else {}
 

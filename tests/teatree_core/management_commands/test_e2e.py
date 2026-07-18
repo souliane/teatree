@@ -691,7 +691,7 @@ class TestE2eExternal(TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             captured_env_caches: list[dict[str, str]] = []
 
-            def _e2e_env_extras(self: object, env_cache: dict[str, str]) -> dict[str, str]:
+            def _e2e_env_extras(self: object, env_cache: dict[str, str], **_kwargs: object) -> dict[str, str]:
                 _ = self
                 captured_env_caches.append(dict(env_cache))
                 return {

@@ -104,6 +104,7 @@ Drive the idle-time memory-consolidation (dreaming) cron (#1933).
 | `run` | Run E2E tests — the one command that works for every overlay |
 | `external` | Run Playwright tests from an external repo (overlay repo, T3_PRIVATE_TESTS, or --repo) |
 | `project` | Run E2E tests from the project's own test directory |
+| `lanes` | Emit the ``{lane: [spec, ...]}`` split derived from the overlay's registered specs (#3329) |
 | `trigger-ci` | Trigger E2E tests on a remote CI pipeline |
 | `post-test-plan` | Post (or update) the ticket's single test-plan note from a manifest |
 | `tracked-manifest` | Print a manifest's authored half (run provenance stripped) for a private test repo to commit |

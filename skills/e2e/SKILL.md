@@ -381,7 +381,7 @@ Flags (all keyword-only):
 
 ### Artifact directory layout (Non-Negotiable)
 
-E2E artifacts live in a **dedicated directory per environment**, **outside every repo working tree**. The overlay exports the resolved root — the per-ticket workspace's `.t3-cache/artifacts` — as `T3_E2E_ARTIFACTS_DIR`; honour it rather than hard-coding a path. A capture for `env ∈ {dev, local}` lives at `$T3_E2E_ARTIFACTS_DIR/<TICKET>/<env>/<file>`. Writing captures to a **worktree-root** `artifacts/` puts binaries inside a product repo — the exact mistake the rule above forbids. Capture every screenshot and recording for a given env under that env's directory — never mix a dev and a local capture in one folder, and never dump artifacts at the ticket root. Examples:
+E2E artifacts live in a **dedicated directory per environment**, **outside every repo working tree**. The **runner** exports the resolved root — the per-ticket workspace's `.t3-cache/artifacts` — as `T3_E2E_ARTIFACTS_DIR` (core owns the path, so the no-artifacts-in-a-repo rule is structural, not each overlay re-deriving it; #3331). Override it with `--artifacts-dir` (refused when it resolves inside a repo working tree). Honour the variable rather than hard-coding a path. A capture for `env ∈ {dev, local}` lives at `$T3_E2E_ARTIFACTS_DIR/<TICKET>/<env>/<file>`. Writing captures to a **worktree-root** `artifacts/` puts binaries inside a product repo — the exact mistake the rule above forbids. Capture every screenshot and recording for a given env under that env's directory — never mix a dev and a local capture in one folder, and never dump artifacts at the ticket root. Examples:
 
 ```
 $T3_E2E_ARTIFACTS_DIR/8521/local/run.webm

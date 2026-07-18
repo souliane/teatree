@@ -413,7 +413,7 @@ class WorktreeFsmTransitionTests(TestCase):
 
 
 class _FixedExtrasOverlayE2e(OverlayE2E):
-    def env_extras(self, env_cache: dict[str, str]) -> dict[str, str]:
+    def env_extras(self, env_cache: dict[str, str], **_: object) -> dict[str, str]:
         return {"E2E_CONTRACT_KEY": "from-overlay", "E2E_ONLY_OVERLAY": "filled"}
 
 

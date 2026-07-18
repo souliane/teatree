@@ -42,6 +42,7 @@ Lane-B toolset registration, the context/cache plan) is re-exported from
 
 from teatree._overlay_api import __overlay_api_version__
 from teatree.config import clone_root, discover_overlays
+from teatree.core.e2e_scenario import Capture, E2eExtrasContext, Scenario
 from teatree.core.gates.merge_guard import MergeGuard
 from teatree.core.overlay import (
     DEFAULT_TRANSITION_EMOJIS,
@@ -122,6 +123,7 @@ __all__ = [
     "AttemptUsage",
     "BaseImageConfig",
     "CacheBreakpoint",
+    "Capture",
     "CommandFailedError",
     "CommandProbeSpec",
     "CompactionPolicy",
@@ -131,6 +133,7 @@ __all__ = [
     "CostReport",
     "DbImportStrategy",
     "DjangoDbImportConfig",
+    "E2eExtrasContext",
     "FailedE2EWatcher",
     "HTTPProbeSpec",
     "Harness",
@@ -157,6 +160,7 @@ __all__ = [
     "ResultEnvelopeError",
     "RunCommand",
     "RunCommands",
+    "Scenario",
     "SegmentStability",
     "ServiceSpec",
     "SkillMetadata",

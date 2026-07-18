@@ -208,6 +208,10 @@
           "name": "project"
         },
         {
+          "help": "Emit the ``{lane: [spec, ...]}`` split derived from the overlay's registered specs (#3329)",
+          "name": "lanes"
+        },
+        {
           "help": "Trigger E2E tests on a remote CI pipeline",
           "name": "trigger-ci"
         },

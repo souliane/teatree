@@ -48,7 +48,16 @@ _CORE_DIR = Path(__file__).resolve().parents[2] / "src" / "teatree" / "core"
 # notify.py to keep notify.py under the 500-LOC module-health cap. A flat sibling
 # of the notify leaves it serves (notify.py, send_proxy.py, reply_transport.py),
 # owned by no existing subpackage.
-PINNED_FLAT_CORE_MODULES = 69
+# 70: +e2e_scenario.py (#3329/#3331) — the e2e seam value types (the authoring
+# Scenario/Capture shapes + the runner→seam E2eExtrasContext). A genuine shared
+# root leaf: it must be importable by BOTH teatree.core.overlay (the OverlayE2E
+# seam) and _e2e_runners (the runner) with no cycle, so it cannot live under a
+# management-command subpackage (layering) nor models/; no existing subpackage owns it.
+# 71: +failed_e2e_watcher.py (#3329/#3331) — the FailedE2EWatcher value type split
+# out of overlay.py to keep it under the 500-LOC cap once OverlayE2E grew the
+# spec_paths seam. A pure overlay-config leaf consumed by the loop's
+# FailedE2EPostsScanner, owned by no existing subpackage (mirrors notify_targets.py).
+PINNED_FLAT_CORE_MODULES = 71
 
 
 def _flat_core_modules() -> list[str]:

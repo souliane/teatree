@@ -7316,6 +7316,10 @@ Usage: t3 teatree e2e external [OPTIONS]
  the spec's lane); overlay args go first, an explicit ``--playwright-args``
  follows so a caller can override.
 
+ The runner exports the out-of-repo ``T3_E2E_ARTIFACTS_DIR``
+ (``--artifacts-dir`` overrides; refused when it resolves inside a repo)
+ and the ``T3_E2E_CAPTURE_EVIDENCE`` flag (``--no-evidence`` opts out).
+
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --test-path                                   TEXT                           │
 │ --repo                                        TEXT                           │
@@ -7329,6 +7333,9 @@ Usage: t3 teatree e2e external [OPTIONS]
 │                                                        overriding the        │
 │                                                        .branch default (e.g. │
 │                                                        an open MR's branch). │
+│ --artifacts-dir                               TEXT                           │
+│ --no-evidence         --no-no-evidence                 [default:             │
+│                                                        no-no-evidence]       │
 │ --help                                                 Show this message and │
 │                                                        exit.                 │
 ╰──────────────────────────────────────────────────────────────────────────────╯
@@ -7343,7 +7350,10 @@ Usage: t3 teatree e2e project [OPTIONS]
 
  ``--target dev|qa|local`` is exported as ``T3_E2E_TARGET`` for the in-repo
  suite (same contract as the ``external`` runner); empty falls back to
- ``BASE_URL``-based inference.
+ ``BASE_URL``-based inference. The runner also exports the out-of-repo
+ ``T3_E2E_ARTIFACTS_DIR`` and the ``T3_E2E_CAPTURE_EVIDENCE`` flag on every
+ managed run (#3331); the ``external`` runner carries the
+ ``--artifacts-dir`` / ``--no-evidence`` overrides.
 
  Pass ``--update-snapshots`` to regenerate ``pytest-playwright-visual``
  baselines. Always do this inside the Docker image (the default) — the
@@ -7381,6 +7391,11 @@ Usage: t3 teatree e2e post-test-plan [OPTIONS]
  ``--manifest``). See :mod:`._test_plan.post`. ``post-evidence`` is a hidden,
  deprecated alias.
 
+ ``--from-seams`` (#3329) assembles the ``scenario-plan`` note from the
+ overlay seams instead of a manifest: it folds ``overlay.e2e.scenarios``,
+ the run's captures, and the recipe's recorded SHAs. ``--spec-path`` /
+ ``--artifacts-dir`` default to the recipe's recorded ``last_run``.
+
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --manifest                                   TEXT                            │
 │ --ticket                                     TEXT                            │
@@ -7410,6 +7425,9 @@ Usage: t3 teatree e2e post-test-plan [OPTIONS]
 │                                                    video:'on' instead.       │
 │                                                    [default:                 │
 │                                                    no-allow-no-video]        │
+│ --from-seams         --no-from-seams               [default: no-from-seams]  │
+│ --spec-path                                  TEXT                            │
+│ --artifacts-dir                              TEXT                            │
 │ --help                                             Show this message and     │
 │                                                    exit.                     │
 ╰──────────────────────────────────────────────────────────────────────────────╯
