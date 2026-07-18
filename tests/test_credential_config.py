@@ -210,6 +210,43 @@ class TestSelectorRouting(TestCase):
         assert soon.isoformat() in message, "the loud error names the soonest an account frees up"
 
 
+class TestSelectorRescueReprobe(TestCase):
+    """#3406: a cached-exhausted verdict outlives a rolling window's real recovery.
+
+    An exhausted health row is trusted until its recorded reset, but a 5h window frees
+    capacity continuously — so when every account reads exhausted the selector re-probes
+    LIVE before declaring a hard stall, rescuing an account that has since recovered
+    rather than stranding the loop until the full recorded reset.
+    """
+
+    def test_rescue_reprobes_a_cached_exhausted_account_that_recovered(self) -> None:
+        ConfigSetting.objects.set_value(_OAUTH_SETTING, ["anthropic/a/oauth", "anthropic/b/oauth"])
+        stale = timezone.now() - dt.timedelta(minutes=5)
+        reset = timezone.now() + dt.timedelta(hours=4)
+        # Both cached EXHAUSTED (fresh until their far reset), so the cache-respecting
+        # path would hard-fail — but account b has since recovered.
+        for path in ("anthropic/a/oauth", "anthropic/b/oauth"):
+            AnthropicTokenUsage.objects.record(path, reading_from(_snapshot(u5=0.99, reset=reset)), now=stale)
+        reader = _FakeReader({"anthropic/a/oauth": _snapshot(u5=0.99, reset=reset), "anthropic/b/oauth": _snapshot()})
+        with _pass_echoes_path():
+            chosen = PassPathSelector(reader=reader).select(TokenKind.OAUTH)
+        assert chosen == "anthropic/b/oauth", "the rescue re-probe routes to the recovered account"
+        assert reader.calls == ["anthropic/a/oauth", "anthropic/b/oauth"], "only the rescue path re-probes"
+
+    def test_rescue_cooldown_skips_a_just_probed_account(self) -> None:
+        # A just-probed exhausted account is NOT re-probed within the cooldown, so a
+        # spinning all-exhausted dispatch loop cannot storm the rate-limit API.
+        ConfigSetting.objects.set_value(_OAUTH_SETTING, ["anthropic/a/oauth"])
+        reset = timezone.now() + dt.timedelta(hours=4)
+        AnthropicTokenUsage.objects.record(
+            "anthropic/a/oauth", reading_from(_snapshot(u5=0.99, reset=reset)), now=timezone.now()
+        )
+        reader = _FakeReader({"anthropic/a/oauth": _snapshot()})  # would read healthy IF re-probed
+        with _pass_echoes_path(), pytest.raises(AllTokensExhaustedError):
+            PassPathSelector(reader=reader).select(TokenKind.OAUTH)
+        assert reader.calls == [], "a just-probed account is not re-probed within the cooldown"
+
+
 class TestSelectorCrossScopeFallback(TestCase):
     """A requested scope with no routing falls back to the cross-scope union.
 

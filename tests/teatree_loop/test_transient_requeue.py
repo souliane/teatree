@@ -10,12 +10,16 @@ failures, is NOT reopened and is escalated LOUDLY via a durable
 never reopened. The hardest pin: it NEVER retries endlessly.
 """
 
+from datetime import datetime, timedelta
+
 from django.test import TestCase
 from django.utils import timezone
 
 from teatree.core.models import Session, Task, TaskAttempt, Ticket
+from teatree.core.models.config_setting import ConfigSetting
 from teatree.core.models.deferred_question import DeferredQuestion
 from teatree.core.repair_loop import max_phase_iterations
+from teatree.llm.anthropic_limits import LimitCause, LimitMatch
 from teatree.loop.tick_recovery import _reap_stale_task_claims
 from teatree.loop.transient_requeue import requeue_transient_failed
 
@@ -26,15 +30,20 @@ def _failed_task(*, phase: str = "coding", state: str = Ticket.State.STARTED) ->
     return Task.objects.create(ticket=ticket, session=session, phase=phase, status=Task.Status.FAILED)
 
 
-def _add_failed_attempt(task: Task, *, error: str) -> None:
+def _add_failed_attempt(task: Task, *, error: str, ended_at: datetime | None = None) -> None:
     TaskAttempt.objects.create(
         task=task,
         execution_target=task.execution_target,
-        ended_at=timezone.now(),
+        ended_at=ended_at or timezone.now(),
         exit_code=1,
         error=error,
     )
     Task.objects.filter(pk=task.pk).update(status=Task.Status.FAILED)
+
+
+def _exhaustion_error(cause: LimitCause) -> str:
+    """The real ``error`` string a limit-killed attempt records (``LimitMatch.as_reason``)."""
+    return LimitMatch(phrase="5-hour limit", cause=cause).as_reason()
 
 
 class TestTransientRequeue(TestCase):
@@ -315,4 +324,70 @@ class TestTransientRequeue(TestCase):
             assert requeue_transient_failed() == 0
         task.refresh_from_db()
         assert task.status == Task.Status.FAILED
+        assert DeferredQuestion.objects.filter(answered_at__isnull=True).count() == 1
+
+
+class TestExhaustionAutoRequeue(TestCase):
+    """#3407: exhaustion-killed FAILED tasks auto-requeue once their window resets.
+
+    A task that died on a subscription session/weekly or transient rate limit is a
+    capacity failure, not a defect — while ``limit_autorecovery_enabled`` is ON it is
+    reopened once the window HORIZON has elapsed, never escalated to a human. API-credit
+    exhaustion (no timed reset) and the flag-off path keep the existing escalation.
+    """
+
+    def setUp(self) -> None:
+        ConfigSetting.objects.set_value("limit_autorecovery_enabled", value=True)
+
+    def test_session_limit_task_is_reopened_after_the_window_resets(self) -> None:
+        task = _failed_task()
+        # The 5h session window has elapsed since the failure → capacity is back.
+        _add_failed_attempt(
+            task, error=_exhaustion_error(LimitCause.SUBSCRIPTION_SESSION), ended_at=timezone.now() - timedelta(hours=6)
+        )
+
+        assert requeue_transient_failed() == 1
+        task.refresh_from_db()
+        assert task.status == Task.Status.PENDING
+        # No human question — a capacity dip is auto-recovered, not escalated.
+        assert DeferredQuestion.objects.filter(answered_at__isnull=True).count() == 0
+
+    def test_session_limit_task_is_left_failed_before_the_window_resets(self) -> None:
+        task = _failed_task()
+        # Only 1h since the failure — the 5h window has not reset yet.
+        _add_failed_attempt(
+            task, error=_exhaustion_error(LimitCause.SUBSCRIPTION_SESSION), ended_at=timezone.now() - timedelta(hours=1)
+        )
+
+        assert requeue_transient_failed() == 0
+        task.refresh_from_db()
+        assert task.status == Task.Status.FAILED
+        # Left FAILED for a later tick — NOT escalated (it is a timed wait, not a defect).
+        assert DeferredQuestion.objects.filter(answered_at__isnull=True).count() == 0
+
+    def test_api_credit_task_is_escalated_not_auto_requeued(self) -> None:
+        # A $0 balance has no timed reset → it must not be auto-requeued; it stays on the
+        # deterministic path and is escalated so the operator adds credits.
+        task = _failed_task()
+        _add_failed_attempt(
+            task, error=_exhaustion_error(LimitCause.API_CREDIT), ended_at=timezone.now() - timedelta(days=30)
+        )
+
+        assert requeue_transient_failed() == 0
+        task.refresh_from_db()
+        assert task.status == Task.Status.FAILED
+        assert DeferredQuestion.objects.filter(answered_at__isnull=True).count() == 1
+
+    def test_flag_off_keeps_the_pre_3407_escalation(self) -> None:
+        ConfigSetting.objects.set_value("limit_autorecovery_enabled", value=False)
+        task = _failed_task()
+        _add_failed_attempt(
+            task, error=_exhaustion_error(LimitCause.SUBSCRIPTION_SESSION), ended_at=timezone.now() - timedelta(hours=6)
+        )
+
+        assert requeue_transient_failed() == 0
+        task.refresh_from_db()
+        assert task.status == Task.Status.FAILED
+        # Byte-identical to before #3407: an exhaustion failure follows the deterministic
+        # escalation path while the flag is off.
         assert DeferredQuestion.objects.filter(answered_at__isnull=True).count() == 1

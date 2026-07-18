@@ -132,6 +132,34 @@ def window_horizon(cause: LimitCause) -> timedelta | None:
     return WINDOW_HORIZON[cause]
 
 
+#: The exhaustion causes whose window RESETS on a timer — the ones an idle auto-requeue
+#: (#3407) may reopen once the horizon elapses. :data:`LimitCause.API_CREDIT` is excluded:
+#: a $0 balance has no timed reset, so a credit-killed task is never auto-requeued.
+RECOVERABLE_EXHAUSTION_CAUSES: frozenset[LimitCause] = frozenset(
+    {LimitCause.SUBSCRIPTION_SESSION, LimitCause.SUBSCRIPTION_WEEKLY, LimitCause.RATE_LIMIT},
+)
+
+
+def recoverable_exhaustion_cause(error: str) -> LimitCause | None:
+    """The time-recoverable exhaustion cause a FAILED attempt's *error* names, or ``None``.
+
+    A limit-killed attempt records its reason as ``"<cause>: <phrase> — <remediation>"``
+    (:meth:`LimitMatch.as_reason`), so the token before the first ``:`` is the machine
+    cause marker. This maps that marker back to its :class:`LimitCause`, but ONLY for a
+    cause with a time-based window reset (session / weekly / transient rate limit) — the
+    signal the idle auto-requeue (#3407) keys on. Returns ``None`` for any non-limit error
+    AND for API-credit exhaustion (no timed recovery), so only a genuinely
+    window-recoverable failure is ever auto-requeued; the rest stay on their existing path.
+    """
+    if not error or ":" not in error:
+        return None
+    marker = error.split(":", 1)[0].strip().casefold()
+    for cause in RECOVERABLE_EXHAUSTION_CAUSES:
+        if marker == cause.value:
+            return cause
+    return None
+
+
 #: Operator-facing remediation per cause. The API-credit message names the
 #: console explicitly and never says "subscription"; the two subscription
 #: messages name their own reset cadence so session and weekly read distinctly.
