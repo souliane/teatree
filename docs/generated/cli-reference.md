@@ -2663,10 +2663,12 @@ Usage: t3 doctor check [OPTIONS]
  Verify imports, required tools, and editable-install sanity.
 
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
-│ --repair          Re-point a relocated/hijacked t3 editable install at the   │
-│                   expected checkout (#3231).                                 │
-│ --json            Emit findings as JSON for the watchdog container.          │
-│ --help            Show this message and exit.                                │
+│ --repair                   Re-point a relocated/hijacked t3 editable install │
+│                            at the expected checkout (#3231).                 │
+│ --slack-roundtrip          Deep Slack round-trip: additionally run a LIVE    │
+│                            auth.test per Slack backend (#3411).              │
+│ --json                     Emit findings as JSON for the watchdog container. │
+│ --help                     Show this message and exit.                       │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 

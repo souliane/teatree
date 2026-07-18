@@ -47,6 +47,7 @@ from teatree.cli.doctor.checks_mcp import (
 )
 from teatree.cli.doctor.checks_runtime import _check_singletons, _check_ttyd_for_dashboard, _check_worker_running
 from teatree.cli.doctor.checks_session import _check_account_switch, _check_agent_session_pins, _check_slack_socket_mode
+from teatree.cli.doctor.checks_slack_roundtrip import check_slack_roundtrip
 from teatree.cli.doctor.dev_sources import (
     _find_host_project_root,
     _find_teatree_pyproject_from_cwd,
@@ -127,6 +128,7 @@ __all__ = (
     "_write_dev_sources_marker",
     "agent_skill_dirs",
     "check",
+    "check_slack_roundtrip",
     "check_statusline",
     "doctor_app",
 )
@@ -140,15 +142,20 @@ def check(
         "--repair",
         help="Re-point a relocated/hijacked t3 editable install at the expected checkout (#3231).",
     ),
+    slack_roundtrip: bool = typer.Option(
+        False,
+        "--slack-roundtrip",
+        help="Deep Slack round-trip: additionally run a LIVE auth.test per Slack backend (#3411).",
+    ),
     json_output: bool = typer.Option(False, "--json", help="Emit findings as JSON for the watchdog container."),
 ) -> None:
     """Verify imports, required tools, and editable-install sanity."""
     if json_output:
         from teatree.cli.doctor.self_heal import check_as_json  # noqa: PLC0415 — deferred: --json path only
 
-        ok = check_as_json(lambda: run_doctor_checks(repair=repair))
+        ok = check_as_json(lambda: run_doctor_checks(repair=repair, slack_roundtrip=slack_roundtrip))
     else:
-        ok = run_doctor_checks(repair=repair)
+        ok = run_doctor_checks(repair=repair, slack_roundtrip=slack_roundtrip)
     # Standalone Click discards a command's return value, so the pass/fail bool
     # must be turned into the process exit code here — a `t3 doctor check && …`
     # in CI/hooks and the watchdog's non-JSON path both key on it (#3313).
@@ -171,12 +178,13 @@ def _optional_tooling_advisories() -> None:
     _check_docker_workflow_wired()
 
 
-def run_doctor_checks(*, repair: bool = False) -> bool:
+def run_doctor_checks(*, repair: bool = False, slack_roundtrip: bool = False) -> bool:
     """Run every doctor check; return ``False`` if any hard-FAILs.
 
     The pure-boolean core the ``check`` command turns into the process exit code.
     Direct callers — ``_doctor_default`` and the ``--json`` surface — reuse it so
-    the pass/fail verdict is computed in exactly one place.
+    the pass/fail verdict is computed in exactly one place. ``slack_roundtrip``
+    turns on the deep live-``auth.test`` mode of the Slack round-trip gate (#3411).
     """
     try:
         import django  # noqa: PLC0415, F401 — deferred: Django import at call time; re-export
@@ -317,6 +325,16 @@ def run_doctor_checks(*, repair: bool = False) -> bool:
     # via the overlay factory. Surfacing-only (never gates the exit code): Slack
     # is optional and must never become mandatory.
     check_and_render_dm_ready()
+
+    # Slack round-trip comms (#3411): the "reacts-but-never-answers" detector. When
+    # a Slack backend is configured, actively verify the FULL loop — outbound egress
+    # resolves, the owner id resolves (the empty-string headless bug), the listener
+    # is live, the inbox answer loop is enabled+unmasked with a worker draining it,
+    # and no real message sits reacted-👀 but unanswered. Unlike the surfacing-only
+    # DM-readiness check above, THIS gates the exit code: a silent round-trip break
+    # must be a doctor FAILURE, not a surprise. `--slack-roundtrip` adds a live
+    # auth.test. A silent no-op with no Slack-backed overlay (Slack stays optional).
+    ok = check_slack_roundtrip(deep=slack_roundtrip) and ok
 
     # In-session `/login` account-switch recovery (#1916). Runs after
     # ``ensure_django`` because it builds messaging backends via the overlay

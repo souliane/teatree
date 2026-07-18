@@ -306,13 +306,15 @@ class DoctorJsonSurfaceTest(TestCase):
 
         captured: dict[str, bool] = {}
 
-        def _run_checks(*, repair: bool = False) -> bool:
+        def _run_checks(*, repair: bool = False, slack_roundtrip: bool = False) -> bool:
             captured["repair"] = repair
+            captured["slack_roundtrip"] = slack_roundtrip
             return True
 
         with mock.patch.object(doctor_app_mod, "run_doctor_checks", side_effect=_run_checks):
             result = CliRunner().invoke(cli_app, ["doctor", "check", "--json"])
         assert captured["repair"] is False
+        assert captured["slack_roundtrip"] is False
         assert result.exit_code == 0
 
     def test_json_with_repair_threads_repair_true(self) -> None:
@@ -321,13 +323,31 @@ class DoctorJsonSurfaceTest(TestCase):
 
         captured: dict[str, bool] = {}
 
-        def _run_checks(*, repair: bool = False) -> bool:
+        def _run_checks(*, repair: bool = False, slack_roundtrip: bool = False) -> bool:
             captured["repair"] = repair
+            captured["slack_roundtrip"] = slack_roundtrip
             return True
 
         with mock.patch.object(doctor_app_mod, "run_doctor_checks", side_effect=_run_checks):
             CliRunner().invoke(cli_app, ["doctor", "check", "--json", "--repair"])
         assert captured["repair"] is True
+        assert captured["slack_roundtrip"] is False
+
+    def test_json_with_slack_roundtrip_threads_true(self) -> None:
+        """`--json --slack-roundtrip` threads `slack_roundtrip=True` without disturbing `repair` (#3411)."""
+        import teatree.cli.doctor.app as doctor_app_mod  # noqa: PLC0415
+
+        captured: dict[str, bool] = {}
+
+        def _run_checks(*, repair: bool = False, slack_roundtrip: bool = False) -> bool:
+            captured["repair"] = repair
+            captured["slack_roundtrip"] = slack_roundtrip
+            return True
+
+        with mock.patch.object(doctor_app_mod, "run_doctor_checks", side_effect=_run_checks):
+            CliRunner().invoke(cli_app, ["doctor", "check", "--json", "--slack-roundtrip"])
+        assert captured["slack_roundtrip"] is True
+        assert captured["repair"] is False
 
     def test_check_without_json_does_not_route_to_json(self) -> None:
         with (

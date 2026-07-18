@@ -87,6 +87,12 @@ CAPABILITIES: tuple[Capability, ...] = (
         exit_codes=("0", "1"),
         note="human outcome line (salvaged/deleted/branch/pr), not a JSON document",
     ),
+    Capability(
+        "doctor check",
+        json_output=True,
+        exit_codes=("0", "1"),
+        note="--json for the watchdog; --slack-roundtrip adds the deep live Slack round-trip probe (#3411)",
+    ),
     Capability("cost", json_output=True, exit_codes=("0",)),
     Capability("tokens", json_output=True, exit_codes=("0",)),
     Capability("config show", json_output=True, exit_codes=("0",)),
