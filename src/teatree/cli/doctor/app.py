@@ -15,6 +15,7 @@ import typer
 
 from teatree.cli.doctor.checks_availability import _check_availability_override_staleness
 from teatree.cli.doctor.checks_environment import (
+    _check_configured_review_skills,
     _check_dangling_editable_pth,
     _check_editable_sanity,
     _check_entrypoint_is_primary_clone,
@@ -81,6 +82,7 @@ __all__ = (
     "_check_agent_session_pins",
     "_check_availability_override_staleness",
     "_check_chrome_devtools_mcp_suggestion",
+    "_check_configured_review_skills",
     "_check_connector_manifest",
     "_check_dangling_editable_pth",
     "_check_dream_staleness",
@@ -185,6 +187,11 @@ def run_doctor_checks(*, repair: bool = False) -> bool:
     ensure_django()
     ok = _check_editable_sanity() and ok
     ok = _check_skills() and ok
+    # #3352: the configured review skills (review_skill / architectural_review_skill)
+    # must resolve to an installed SKILL.md. Runs after ensure_django() above — it
+    # reads the effective ConfigSetting-store values, whose DB tier is live only
+    # once Django is configured.
+    ok = _check_configured_review_skills() and ok
     ok = _check_single_db() and ok
     ok = _check_stale_uv_venv() and ok
     ok = _check_stale_path_t3() and ok

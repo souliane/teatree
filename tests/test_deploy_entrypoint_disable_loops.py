@@ -115,7 +115,8 @@ def _write_t3_stub(bin_dir: Path) -> None:
         'if [ "${1:-}" = "loop" ] && [ "${2:-}" = "override" ]; then\n'
         '  name="$3"; state="$4"\n'
         '  echo "$name $state" >> "$T3_OVERRIDE_LOG"\n'
-        '  if [ "$name" = "${T3_FAIL_LOOP:-}" ]; then echo "boom" >&2; exit 1; fi\n'
+        '  if [ "$name" = "${T3_FAIL_LOOP:-}" ] || [ "$name" = "${T3_FAIL_OVERRIDE_LOOP:-}" ]; '
+        'then echo "boom" >&2; exit 1; fi\n'
         "  echo \"OK    loop '$name' override is now $state.\"\n"
         "  exit 0\n"
         "fi\n"
@@ -202,7 +203,10 @@ class TestApplyFleetLoopPolicy:
         out = _run(tmp_path)
         assert out.result.returncode == 0, out.result.stderr
         assert out.enabled == ["inbox"]
-        assert out.overridden == ["review off", "directive_loop off"]
+        # `inbox clear` drops any stale forced-off override left by a prior deploy
+        # so the sanctioned-enabled inbox can never stay masked; then the
+        # colleague loops are forced off.
+        assert out.overridden == ["inbox clear", "review off", "directive_loop off"]
         assert out.disabled == [], "the deprecated `t3 loop disable` must never be called"
 
     def test_enable_passes_emergency(self, tmp_path: Path) -> None:
@@ -217,14 +221,14 @@ class TestApplyFleetLoopPolicy:
         out = _run(tmp_path, enabled="inbox,tickets", disabled="review")
         assert out.result.returncode == 0, out.result.stderr
         assert out.enabled == ["inbox", "tickets"]
-        assert out.overridden == ["review off"]
+        assert out.overridden == ["inbox clear", "tickets clear", "review off"]
         assert out.disabled == []
 
     def test_whitespace_and_trailing_comma_tolerated(self, tmp_path: Path) -> None:
         out = _run(tmp_path, enabled="inbox, ,", disabled="review, directive_loop ,")
         assert out.result.returncode == 0, out.result.stderr
         assert out.enabled == ["inbox"]
-        assert out.overridden == ["review off", "directive_loop off"]
+        assert out.overridden == ["inbox clear", "review off", "directive_loop off"]
 
     def test_both_empty_is_a_noop_and_succeeds(self, tmp_path: Path) -> None:
         out = _run(tmp_path, enabled="", disabled="")
@@ -273,6 +277,49 @@ class TestApplyFleetLoopPolicy:
         assert out.enabled == []
         assert out.overridden == []
         assert "could not read the registered loops" in out.result.stderr
+
+    def test_loop_in_both_lists_stays_enabled_with_warning(self, tmp_path: Path) -> None:
+        """A loop in BOTH lists stays ENABLED (not re-masked) — this was the `inbox` bug.
+
+        The ENABLE pass forces inbox on; the DISABLE pass would then force it off
+        on every init, leaving it silently masked. ENABLED wins: the loop is
+        dropped from the disable set and a loud warning surfaces the misconfig.
+        Resolving (not `exit 1`) is deliberate so an already-deployed box carrying
+        the overlap doesn't crash-loop init.
+        """
+        out = _run(tmp_path, enabled="inbox", disabled="inbox")
+        assert out.result.returncode == 0, out.result.stderr
+        assert out.enabled == ["inbox"]
+        # only the enable-path clear ran; inbox was NOT forced off.
+        assert out.overridden == ["inbox clear"]
+        assert "in BOTH" in out.result.stderr
+        assert "keeping it ENABLED" in out.result.stderr
+
+    def test_overlap_prunes_only_the_shared_loop(self, tmp_path: Path) -> None:
+        """Overlap resolution drops only the shared loop; other disables still apply."""
+        out = _run(tmp_path, enabled="inbox", disabled="inbox,review")
+        assert out.result.returncode == 0, out.result.stderr
+        assert out.enabled == ["inbox"]
+        assert out.overridden == ["inbox clear", "review off"]
+
+    def test_enable_clears_stale_forced_off_override(self, tmp_path: Path) -> None:
+        """Enabling a loop clears any override so a stale forced-off can't keep it masked.
+
+        `t3 loop enable` lifts holds but NOT a forced-off override; without the
+        follow-up `clear`, promoting a loop from the DISABLED to the ENABLED set
+        between deploys would leave it masked by the stale override.
+        """
+        out = _run(tmp_path, enabled="inbox", disabled="")
+        assert out.result.returncode == 0, out.result.stderr
+        assert out.enabled == ["inbox"]
+        assert out.overridden == ["inbox clear"]
+
+    def test_enable_path_override_clear_failure_is_loud(self, tmp_path: Path) -> None:
+        """A failing override-clear on the enable path aborts loudly (control plane down)."""
+        out = _run(tmp_path, enabled="inbox", disabled="", T3_FAIL_OVERRIDE_LOOP="inbox")
+        assert out.result.returncode != 0
+        assert out.enabled == ["inbox"], "enable ran before the clear failed"
+        assert "'t3 loop override inbox clear' FAILED" in out.result.stderr
 
 
 if __name__ == "__main__":

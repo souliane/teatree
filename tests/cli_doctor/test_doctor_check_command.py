@@ -46,6 +46,13 @@ def _isolate_environment_dependent_gates(monkeypatch):
     # are exercised in tests/teatree_cli/doctor/test_self_heal.py and pinned to
     # a pass here so this command-aggregation smoke test stays deterministic.
     monkeypatch.setattr("teatree.cli.doctor.self_heal.run_self_heal_checks", lambda: True)
+    # The configured-review-skill check (#3352) resolves review_skill /
+    # architectural_review_skill against the runner's real skill-install state
+    # (``ac-reviewing-codebase`` is an external apm skill absent on CI runners),
+    # so it FAILs deterministically off-box. It is exercised end-to-end in
+    # tests/cli_doctor/test_configured_review_skills_check.py; pin it to a pass
+    # here so this aggregation smoke test stays deterministic.
+    monkeypatch.setattr(teatree_cli_doctor, "_check_configured_review_skills", lambda: True)
 
 
 class TestDoctorCheckCommand:

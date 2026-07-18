@@ -35,8 +35,8 @@ class TestMergeDurations:
         }
 
     def test_missing_shard_file_raises_loud(self, tmp_path: Path) -> None:
-        # A missing shard is NOT an empty contribution: the four shards partition the
-        # suite, so silently dropping one truncates the merge by ~1/4. Fail loud.
+        # A missing shard is NOT an empty contribution: the shards partition the
+        # suite, so silently dropping one truncates the merge by its slice. Fail loud.
         present = _write(tmp_path / "present.json", {"tests/x.py::t1": 1.0})
         absent = tmp_path / "absent.json"
         with pytest.raises(MissingShardDurationsError, match="shard-durations file is absent"):

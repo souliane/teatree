@@ -1,8 +1,8 @@
-"""Merge the four scheduled shards' recorded durations and decide whether to refresh.
+"""Merge the scheduled shards' recorded durations and decide whether to refresh.
 
 Each shard on the daily ``schedule`` run stores its group's fresh, tests-that-ran
 durations (``pytest --store-durations --clean-durations``) and uploads the file. This
-script unions the four disjoint slices back into one complete ``dev/.test_durations``
+script unions the disjoint per-shard slices back into one complete ``dev/.test_durations``
 and decides — from the drift versus the committed file — whether that refresh is worth
 a PR. Without a drift gate every daily run would open a churn PR from pure timing
 jitter; the gate opens one only when the set of tests changed (added/removed — the
@@ -35,10 +35,10 @@ def load_durations(path: Path) -> dict[str, float]:
 
 
 def merge_durations(paths: list[Path]) -> dict[str, float]:
-    """Union the per-shard duration slices (the four groups partition the suite).
+    """Union the per-shard duration slices (the groups partition the suite).
 
-    A missing shard file is a HARD error, never an empty contribution: the four
-    groups partition the suite, so an absent shard would silently drop ~1/4 of the
+    A missing shard file is a HARD error, never an empty contribution: the groups
+    partition the suite, so an absent shard would silently drop its slice of the
     tests from the merged file and PR a truncated ``dev/.test_durations`` that
     unbalances the shard split. Fail LOUD (raise) so a partial merge never ships —
     an absent artifact means an upload/download failure to investigate, not a
@@ -48,8 +48,8 @@ def merge_durations(paths: list[Path]) -> dict[str, float]:
     for path in paths:
         if not path.exists():
             message = (
-                f"expected shard-durations file is absent: {path}. The four shards partition "
-                "the suite, so a missing shard would silently drop ~1/4 of the tests from the "
+                f"expected shard-durations file is absent: {path}. The shards partition "
+                "the suite, so a missing shard would silently drop its slice of the tests from the "
                 "merged durations — refusing to write a truncated file. Check the "
                 "durations-shard-* artifact upload/download in the refresh-durations job."
             )

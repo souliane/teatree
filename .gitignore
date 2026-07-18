@@ -86,3 +86,9 @@ deploy/teatree.env
 # uncommitted; the synthetic corpus_gen pipeline is the only committed source.)
 /*.jsonl
 .pr-body.md
+
+# CI's cached migrated-sqlite test-DB template (test-shard job, perf(ci):
+# skip redundant per-xdist-worker migrate). Never meant to be committed —
+# only ever built by tests/conftest.py::django_db_setup into a runner-local
+# or actions/cache-restored path.
+/.cache/django-test-template/
