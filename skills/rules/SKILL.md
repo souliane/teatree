@@ -69,6 +69,7 @@ Use `Ctrl+F`/`grep` to jump to a rule. Sections are grouped below by theme; numb
 23. [Preserve Existing UX Patterns](#preserve-existing-ux-patterns)
 24. [Prefer Native Tool APIs Over Filesystem Heuristics](#prefer-native-tool-apis-over-filesystem-heuristics)
 25. [Shell Alias Safety](#shell-alias-safety)
+25a. [Shell Probes Run Under zsh — a Probe Without a Control Is Unfalsifiable](#shell-probes-run-under-zsh--a-probe-without-a-control-is-unfalsifiable)
 
 **Files, agents, and worktrees**
 
@@ -389,7 +390,7 @@ When using temporary files (for PR note bodies, test data, etc.):
 
 - Hardcoded paths are forbidden like `/tmp/mr_note_body.md` — stale content from other sessions gets posted to the wrong PR.
 - **Always use `mktemp`** or inline Python heredocs instead.
-- **Always use `>|`** (clobber override) not `>` — zsh `noclobber` silently prevents overwrite.
+- **Always use `>|`** (clobber override) not `>` — zsh `noclobber` silently prevents overwrite (an instance of § "Shell Probes Run Under zsh").
 - **Always clean up** the temp file immediately after use (`os.unlink()` in Python, `rm` in shell).
 - **Exception: pre-compaction snapshots** — files matching `/tmp/t3-snapshot-*.md` are recovered automatically on the post-compaction `SessionStart` (`source=="compact"`) event (issue #845). Use `t3-snapshot-${CLAUDE_SESSION_ID:-manual}-$(date +%Y%m%d-%H%M).md` for the filename. Delete after persisting findings to durable storage.
 
@@ -562,6 +563,10 @@ Sub-agents (Agent tool) **lose all loaded skills, MCP access, and shell function
 
 **A blocked sub-agent surfaces the block to the orchestrator — it never silently works around the gate (Non-Negotiable).** When a sub-agent hits a gate it cannot satisfy — a missing skill, an autonomy/on-behalf block, a missing token, a classifier denial, a missing approval — it must **stop and return a structured blocked result naming the reason**, not guess, retry with a different shape, partial-ship, or fabricate a workaround. The structured channel is the result envelope's `needs_user_input: true` + `user_input_reason: "<why>"` (`teatree.agents.result_schema`); a free-prose "I couldn't do X so I did Y instead" is not a surfaced block — it is a swallowed one. The orchestrator, on receiving a blocked result, **escalates** (AskUserQuestion when interactive, or a Slack DM / a `DeferredQuestion` when away) — it never records the sub-agent's run as done, never advances the FSM over it, and never re-dispatches the same blocked unit without resolving the block first. Silent work-around masks the problem and produces invisible partial work; the fix is satisfiable, not pure suppression — once the human supplies the missing skill/token/approval, the unit re-runs and proceeds. (Issue [#1915](https://github.com/souliane/teatree/issues/1915); the agent-facing side of the Classifier Denial Protocol above; pinned by `evals/scenarios/blocked_subagent_escalation.yaml`.)
 
+**A killed run's empty return does NOT mean no side effect landed — reconcile against the world before re-dispatching (Non-Negotiable).** The blocked-result guard above keys on a structured blocked envelope. A run killed mid-flight by a **usage limit** never produces one: it returns an empty/absent report. That empty report is not evidence — a killed process is *more* likely to under-report than an intact one, because reporting is the last thing it does. So any reasoning of the form "the run said it did nothing, therefore nothing exists" is unsound whenever the run could have been killed. The concrete failure: a batch that files issues on a public tracker was killed after filing one, reported nothing filed, was re-dispatched, and created a **duplicate public issue**. Before re-dispatching any batch with external side effects, **query the tracker for what already exists and attach to it** (comment/update the existing artifact), rather than trust the previous run's account of itself — keyed on a durable idempotency record written BEFORE the side effect, not on the empty return.
+
+The safe shape is idempotency by construction, not orchestrator vigilance. Core already does this for the issue-implementer batch, and it is the pattern to copy: the claim is recorded as an `ImplementedIssueMarker` **before** the work is dispatched (`ImplementedIssueMarker.objects.claim(issue_url, overlay)` is a `get_or_create` keyed on `(issue_url, overlay)` — a second claim of the same issue returns `None`, so a killed-then-retried run never re-dispatches it), the `Ticket` is likewise a `get_or_create(issue_url=…)` so a retry attaches to the existing ticket instead of forking a second one, and the scanner's forge read-back (`teatree.loop.scanners.forge_readback.existing_work_for_issue`) queries the tracker for a branch/PR that already references the issue before claiming — reconciling against the world, not against a dead run's report. Orphaned `DISPATCHED` markers (claimed, process died before the ticket was created) are reconciled by `ImplementedIssueMarker.objects.reconcile_stale` (#3275). When you build a NEW batch with external side effects, give it the same shape: a durable idempotency key per intended artifact, recorded before the side effect, and a re-run that attaches rather than re-creates. (Issue [#3360](https://github.com/souliane/teatree/issues/3360).)
+
 **Dispatch-prompt hygiene — match the target repo's conventions, don't drift to your own defaults (Non-Negotiable).** A sub-agent prompt that scaffolds a branch or opens a PR must carry the **target repo's** convention, not a habitual default carried over from another repo.
 
 - **Branch name = the repo's own scheme.** If the repo uses a flat `<number>-<type>-<short-description>` scheme with NO prefix, scaffold exactly that — never inject an `ac/` / `a-` / `ac-` prefix the repo doesn't use.
@@ -606,7 +611,22 @@ A user config file or dotfile (a `dotfiles`-repo file, an XDG `.config` file, `.
 
 ## Shell Alias Safety
 
-Use `command rm`, `command cp`, `command mv` in Bash tool calls to avoid zsh interactive aliases that hang. Also `gs` is aliased to `git status` — use `command gs` for GhostScript.
+Use `command rm`, `command cp`, `command mv` in Bash tool calls to avoid zsh interactive aliases that hang. Also `gs` is aliased to `git status` — use `command gs` for GhostScript. (An instance of the general fact below: the Bash tool's shell is zsh.)
+
+## Shell Probes Run Under zsh — a Probe Without a Control Is Unfalsifiable
+
+**The Bash tool's shell is zsh. bash idioms do not error here — they answer WRONGLY.** State this once and generalize it: the two notes above (`>|` in § "Temp File Safety", `command rm` in § "Shell Alias Safety") are instances of this one fact, not isolated trivia. An agent writing a shell **probe** — a throwaway command to check whether some property holds — reads neither of those sections (it is not writing a temp file, not calling `rm`), writes bash out of habit, and gets **confident, meaningless output instead of an error**. The four ways this has actually broken a probe:
+
+| Bash idiom | What zsh actually does |
+| --- | --- |
+| `${BASH_SOURCE[0]}` | **Empty.** `cd "$(dirname "${BASH_SOURCE[0]}")"` silently resolves to `dirname ""` → `.` → **cwd**, so the probe "works" against the wrong directory. |
+| `for x in $var` (unquoted) | **No word-splitting** in zsh. The loop iterates **once**, over the whole string, and reports one clean pass. |
+| `> file` on an existing stub | `noclobber` silently blocks the rewrite. The probe reads back the **stub's old content** and concludes the property holds. |
+| `grep -r <pat>` with no file arg | Recurses **cwd** instead of reading stdin. Returns matches from the tree, not from the piped input under test. |
+
+Every row fails the same way: **the wrong answer looks exactly like the right answer** — nothing errors, nothing is empty, the output is well-formed and false. (The `noclobber` case is the proof a scattered symptom-fix does not work: that exact rule is already written under § "Temp File Safety", and the failure still recurred, because no probe author looks there.)
+
+**Always include a CONTROL proving the probe can detect what it looks for (Non-Negotiable).** Plant the violation, or run the old code, and confirm the probe goes **RED** before trusting a GREEN. A probe with no control cannot distinguish "the property holds" from "my harness is broken" — both present as GREEN. This is what turns each zsh row above from a silent bug into a *reported finding*: the loop that iterated once, the read-back of a stale stub, the grep against the wrong tree — every one returns a green a control would have caught in one extra command. The two halves are one rule: the shell lies quietly, so a green needs a control before it is evidence. (Issue [#3363](https://github.com/souliane/teatree/issues/3363).)
 
 ## Skill File Writes Require a Git Repo
 
@@ -914,6 +934,18 @@ Edit(file_path="module.py", ...)   # do the thorough fix
 # AskUserQuestion(questions=[{"question": "Fix all five issues or just the one the ticket names?", ...}])  # FORBIDDEN
 ```
 
+**A user-specified SHAPE is a ceiling, not a floor — "do the best" is bounded by it, never a licence to substitute scope (do X, never Y).** The examples above ("fix all or some?", "thorough or okay?", "the heavy/full version?") are all **magnitude** questions, on an axis where more is unambiguously better — and there "do the best" = do the maximum. But when the user constrains the **shape** — "quick wins", "low-hanging fruit", "minimal", "just this file", "no new dependencies" — that is information about the solution space, not the user hedging. It **bounds** the work; it is a constraint, not timidity to override. Reading it as "do the maximum" and shipping a larger, different thing is **scope substitution** — and this very clause is what an agent reaches for to rationalize it, which is exactly why the carve-out lives here.
+
+- **Do the best work INSIDE the shape.** Do-the-best still applies fully — to the space the user drew. The best quick win is a real, thorough deliverable; keep demanding that.
+- **Use each target's EXISTING tooling.** Inside a shape constraint the existing runner / gate / config is the instrument. New shared machinery (a versioned contract, new runner files, new CI gates) is by definition outside a "quick win".
+- **New shared machinery is a separate, NAMED suggestion the user can decline** — never smuggled in as the delivery of a different request. If the migration really is the right answer, say so as a proposal.
+
+```text
+# Asked for "quick wins across N repos" — do X: the small per-repo fix using each repo's current tooling,
+#   plus "a shared contract would also be worth doing — want it?" as a named, declinable suggestion.
+# never Y: ship a multi-repo migration behind a new versioned contract + runners + CI gates as if THAT were the ask.
+```
+
 **The boundary — what you SHOULD still ask (do ask Z).** Asking is correct, not a violation, when the blocker is something you genuinely cannot know or decide alone:
 
 - a **fact you cannot obtain** — a private URL/endpoint, the intended audience, a credential/token, a value that lives only in the user's head and is in no repo/config you can read;
@@ -1150,3 +1182,8 @@ The escalation is **situational and auto-clears** — it is NOT a standing revie
 ## Re-Validate a Reused Guard in a New Destructive Context
 
 A guard or classifier that is safe for gating one action is not automatically safe for authorizing another. Before reusing an existing guard to authorize a NEW destructive operation (`git reset --hard`, force-delete, force-push, `DROP`/`DELETE`), re-validate that the guard's safety property actually holds for THIS operation — e.g. subject-matching is sufficient to clean up a forge-merged branch, but only content-equivalence (patch-id) is safe before resetting a branch. In a sub-agent brief, never assert a safety property you have not verified; require the implementer to prove the property holds in the new context, and route any change that introduces a destructive operation through an adversarial review that specifically attacks the data-loss path.
+
+**Mark every load-bearing premise VERIFIED or UNVERIFIED — not just a safety property (Non-Negotiable).** A safety property is one kind of premise a brief leans on, but the premises that break work are usually ordinary ones: an impact / LOC estimate ("~40 lines across 3 files"), "X is unused — a free delete", "the upstream lacks capability Y", "the blocker is Z". If the brief's plan changes when the claim is false, the claim is **load-bearing** — treat it exactly like a safety property. The failure this prevents is specific: an agent that COMPLIES with a false premise produces confident wrong work — the brief says "X is unused", the implementer deletes X, and every step after is locally correct and globally worthless. This slips past every other guard, because a false premise does not BLOCK anything: the sub-agent returns a clean success envelope (§ "Sub-Agent Limitations" fires only on a block), and the premise was handed DOWN to it, so it has no reason to grep its own claim (§ "Grep Before Claiming Cross-Reference Coverage" covers only the agent's OWN outward claim).
+
+- **Mark each load-bearing premise `VERIFIED` or `UNVERIFIED`.** `VERIFIED` carries its evidence inline — a `file:line` or command output. `UNVERIFIED` is permitted and honest, and it carries an instruction: **check this first, before building on it.** The point is not to ban uncertainty; it is to stop uncertainty arriving disguised as fact. The `2x` estimate and the "free delete" both die at the marking step, before any work is built on them.
+- **The implementer DISCONFIRMS AND STOPS — never routes around a false premise.** When a premise proves false on contact, the correct action is to stop and report the disconfirmation — not to proceed on the remaining premises, not to silently substitute a plan the brief never asked for. This is the counterpart to the blocked-sub-agent escalation: the same "stop and surface" posture, for the case where nothing is blocking you.
