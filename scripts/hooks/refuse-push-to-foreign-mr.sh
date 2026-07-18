@@ -36,8 +36,8 @@
 set -euo pipefail
 
 ZERO="0000000000000000000000000000000000000000"
-remote_name="${1:-origin}"
-remote_url="${2:-}"
+remote_name="${PRE_COMMIT_REMOTE_NAME:-${1:-origin}}"
+remote_url="${PRE_COMMIT_REMOTE_URL:-${2:-}}"
 
 if [ -z "${remote_url}" ]; then
   remote_url=$(git remote get-url "${remote_name}" 2>/dev/null || true)
@@ -63,6 +63,16 @@ command -v gh >/dev/null 2>&1 || exit 0  # no gh — fail open
 our_login=$(gh api user --jq '.login' 2>/dev/null | tr -d '[:space:]' || true)
 [ -n "${our_login}" ] || exit 0
 our_login_lc=$(printf '%s' "${our_login}" | tr '[:upper:]' '[:lower:]')
+
+# See refuse-public-push-with-leak.sh: prek/pre-commit consume the pre-push
+# stdin and expose PRE_COMMIT_* instead, so a stdin-only hook is inert under the
+# prek wrapper. Fall back to the env-synthesized ref line when stdin is empty.
+refs_input=$(cat)
+if [ -z "${refs_input//[[:space:]]/}" ] && [ -n "${PRE_COMMIT_TO_REF:-}" ]; then
+  refs_input=$(printf '%s %s %s %s\n' \
+    "${PRE_COMMIT_LOCAL_BRANCH:-HEAD}" "${PRE_COMMIT_TO_REF}" \
+    "${PRE_COMMIT_REMOTE_BRANCH:-HEAD}" "${PRE_COMMIT_FROM_REF:-$ZERO}")
+fi
 
 blocked=0
 while read -r local_ref local_sha _remote_ref _remote_sha; do
@@ -108,6 +118,6 @@ while read -r local_ref local_sha _remote_ref _remote_sha; do
   echo "  A worktree opened to INSPECT a colleague's MR is read-only (see /t3:rules § never push to a colleague's open MR branch)."
   echo "  For a genuine co-authoring push, add [push-to-foreign-mr-ok: <reason>] to a commit message in the push range."
   blocked=1
-done
+done <<< "${refs_input}"
 
 exit "${blocked}"
