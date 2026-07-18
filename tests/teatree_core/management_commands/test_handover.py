@@ -8,6 +8,8 @@ from io import StringIO
 import pytest
 from django.core.management import call_command
 
+from teatree.core.fast_push import FastPushOutcome
+from teatree.core.handover_orchestration import SubagentPush
 from teatree.core.models import LoopLease, SessionHandover
 
 # ast-grep-ignore: ac-django-no-pytest-django-db
@@ -22,11 +24,20 @@ def _call(*args: str, **kwargs) -> str:
 
 @pytest.fixture(autouse=True)
 def _session(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
-    """Pin this 'session' id and isolate the snapshot dir + XDG mirror."""
+    """Pin this 'session' id and isolate the snapshot dir + XDG mirror.
+
+    Also stubs the directive-#8 sub-agent driver to a no-op so a hand-off in
+    the test process never fast-pushes the real repo's worktrees; the coupling
+    itself is asserted by ``TestHandoverDrivesSubagents`` with its own spy.
+    """
     monkeypatch.setenv("T3_LOOP_SESSION_ID", "this-session")
     monkeypatch.setenv("TEATREE_CLAUDE_STATUSLINE_STATE_DIR", str(tmp_path / "state"))
     monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "xdg"))
     (tmp_path / "state").mkdir(parents=True, exist_ok=True)
+    monkeypatch.setattr(
+        "teatree.core.management.commands.handover.drive_subagents_to_fast_push",
+        lambda *a, **k: [],
+    )
 
 
 class TestHandoverCreate:
@@ -62,6 +73,49 @@ class TestHandoverCreate:
         monkeypatch.setenv("T3_LOOP_REGISTRY_DIR", "/nonexistent-registry-dir")
         with pytest.raises(SystemExit):
             _call("handover", "create", json_output=True)
+
+
+class TestHandoverDrivesSubagents:
+    """Directive #8 — ``handover create`` drives in-flight sub-agents through fast-push."""
+
+    def test_create_invokes_the_subagent_driver_and_surfaces_pushes(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        calls: list[tuple] = []
+
+        def _spy(repo: str, **kwargs) -> list[SubagentPush]:
+            calls.append((repo, kwargs))
+            outcome = FastPushOutcome(ok=True, branch="feat/x", committed=True, pushed=True, pr_url="http://pr/1")
+            return [SubagentPush(worktree=pathlib.Path("/wt/agent-x"), branch="feat/x", driven=True, outcome=outcome)]
+
+        monkeypatch.setattr("teatree.core.management.commands.handover.drive_subagents_to_fast_push", _spy)
+
+        data = json.loads(_call("handover", "create", json_output=True))
+
+        assert calls, "handover create must drive sub-agents to fast-push (directive #8)"
+        pushes = data["subagent_pushes"]
+        assert pushes[0]["branch"] == "feat/x"
+        assert pushes[0]["pushed"] is True
+        assert pushes[0]["pr_url"] == "http://pr/1"
+
+    def test_no_drive_subagents_flag_skips_the_driver(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        calls: list = []
+        monkeypatch.setattr(
+            "teatree.core.management.commands.handover.drive_subagents_to_fast_push",
+            lambda *a, **k: calls.append((a, k)) or [],
+        )
+        data = json.loads(_call("handover", "create", drive_subagents=False, json_output=True))
+        assert calls == []
+        assert data["subagent_pushes"] == []
+
+    def test_driver_failure_never_fails_the_handover(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        def _boom(*_a, **_k) -> list:
+            msg = "git exploded"
+            raise RuntimeError(msg)
+
+        monkeypatch.setattr("teatree.core.management.commands.handover.drive_subagents_to_fast_push", _boom)
+        data = json.loads(_call("handover", "create", json_output=True))
+        assert data["ok"] is True
+        assert data["subagent_pushes"] == []
+        assert SessionHandover.objects.count() == 1
 
 
 class TestHandoverWhoami:
