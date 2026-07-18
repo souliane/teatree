@@ -25,6 +25,7 @@ from django.db import transaction
 from django.db.models import Max
 from django.utils import timezone
 
+from teatree.core.modelkit.phases import DOGFOOD_SMOKE_PHASE
 from teatree.loop.scanners.base import ScanSignal, hours_since
 
 if TYPE_CHECKING:
@@ -35,10 +36,6 @@ if TYPE_CHECKING:
     from teatree.core.models import Ticket as _Ticket
 
 logger = logging.getLogger(__name__)
-
-
-#: Canonical phase token written to ``Task.phase`` for smoke tasks.
-DOGFOOD_SMOKE_PHASE = "dogfood_smoke"
 
 #: States that mean a smoke task is still in-flight (cannot queue a dupe).
 _IN_FLIGHT_TASK_STATES: frozenset[str] = frozenset({"pending", "claimed"})

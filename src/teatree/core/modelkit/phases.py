@@ -133,11 +133,27 @@ SUBAGENT_BY_PHASE: dict[tuple[str, str], str] = {
     ("author", "directive_interpreting"): "t3:planner",
 }
 
+#: Phases a loop SCANNER writes DIRECTLY to ``Task.phase`` (``execution_target=
+#: HEADLESS``), bypassing the ``SUBAGENT_BY_PHASE`` ``(role, phase)`` dispatch map.
+#: They are still dispatchable headless ``Task`` rows, so the phase-tools totality
+#: lane (``tests/conformance/test_registry_parity.py``) must treat them as producers
+#: that REQUIRE an explicit ``_TOOLS_BY_PHASE`` least-privilege entry — the read-only
+#: fallback must never be the silent resolution for one (#3386). Owned HERE, in the
+#: canonical phase vocabulary, so a scanner and the totality lane read ONE source of
+#: truth rather than two literals that can drift; each scanner module re-exports its
+#: own token from this set.
+ARCHITECTURAL_REVIEW_PHASE: str = "architectural_review"
+DOGFOOD_SMOKE_PHASE: str = "dogfood_smoke"
+SCANNER_DISPATCHED_PHASES: frozenset[str] = frozenset({ARCHITECTURAL_REVIEW_PHASE, DOGFOOD_SMOKE_PHASE})
+
 #: Every canonical FSM phase plus every reactive/dispatch-only phase registered
-#: in ``SUBAGENT_BY_PHASE`` (``debugging``/``bughunt``/``answering``/…). The full
-#: set a per-stage config key (``OverlayConfig.stage_skills``) may name — a key
-#: that does not normalize into this set is a typo the field validator rejects.
-KNOWN_PHASES: frozenset[str] = CANONICAL_PHASES | frozenset(phase for _role, phase in SUBAGENT_BY_PHASE)
+#: in ``SUBAGENT_BY_PHASE`` (``debugging``/``bughunt``/``answering``/…) and every
+#: scanner-dispatched phase (``SCANNER_DISPATCHED_PHASES``). The full set a per-stage
+#: config key (``OverlayConfig.stage_skills``) may name — a key that does not
+#: normalize into this set is a typo the field validator rejects.
+KNOWN_PHASES: frozenset[str] = (
+    CANONICAL_PHASES | frozenset(phase for _role, phase in SUBAGENT_BY_PHASE) | SCANNER_DISPATCHED_PHASES
+)
 
 #: The chaining orchestrator must never be the target of an author phase
 #: dispatch — that is the shadowing the per-phase restoration removes. A

@@ -18,6 +18,7 @@ from teatree.cli.eval.changed_scenarios import changed_scenarios
 from teatree.cli.eval.ci_status import ci_status
 from teatree.cli.eval.ci_trigger import ci_trigger
 from teatree.cli.eval.corpus import corpus_app
+from teatree.cli.eval.green_proof import green_proof
 from teatree.cli.eval.history import history_command
 from teatree.cli.eval.label import label_app
 from teatree.cli.eval.lanes import coverage, pinned_regressions
@@ -45,6 +46,7 @@ def register_imported_commands(eval_app: typer.Typer) -> None:
     eval_app.command("changed-scenarios")(changed_scenarios)
     eval_app.command("ci-trigger")(ci_trigger)
     eval_app.command("ci-status")(ci_status)
+    eval_app.command("green-proof")(green_proof)
     eval_app.command("merged-prs-since")(merged_prs_since)
     eval_app.command("merge-summaries")(merge_summaries)
     eval_app.command("merge-summary-json")(merge_summary_json)

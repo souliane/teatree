@@ -9,8 +9,10 @@ renders neither, pinning edge-case 6.
 from datetime import timedelta
 from unittest.mock import patch
 
+from django.test import TestCase
 from django.utils import timezone
 
+from teatree.core.models import Loop
 from teatree.loop.statusline_loops import _live_lease_chunks
 
 
@@ -49,3 +51,37 @@ class TestPerLoopDriverChip:
         assert chunks
         assert not any("DRIVERLESS" in c for c in chunks)
         assert not any("·" in c for c in chunks)
+
+
+class TestDriverlessSuppressedWhileTicking(TestCase):
+    """A blank driver on a loop that is actually ticking is NOT ·DRIVERLESS (#3366).
+
+    A worker/cron tick runs anonymously (empty ``session_id``), so
+    ``claim_ownership`` never rewrites the owner lease and its stored ``driver``
+    fossilises blank while the loop ticks fine. ·DRIVERLESS means "claimed but
+    never ticks", so the cadence ledger (``Loop.last_run_at``) — not the stale
+    lease — decides whether the alert is real.
+    """
+
+    def _seed_loop(self, *, last_run_seconds_ago: int | None) -> None:
+        last_run_at = None if last_run_seconds_ago is None else _at(last_run_seconds_ago)
+        Loop.objects.update_or_create(
+            name="inbox",
+            defaults={"script": "inbox", "enabled": True, "delay_seconds": 60, "last_run_at": last_run_at},
+        )
+
+    def test_blank_driver_but_loop_ticking_suppresses_driverless(self) -> None:
+        self._seed_loop(last_run_seconds_ago=30)
+        chunks = _chunks([("loop:inbox", _at(30))], {"loop:inbox": ("sess-a", "")})
+        assert chunks
+        assert not any("DRIVERLESS" in c for c in chunks)
+
+    def test_blank_driver_and_loop_stale_still_driverless(self) -> None:
+        self._seed_loop(last_run_seconds_ago=600)
+        chunks = _chunks([("loop:inbox", _at(30))], {"loop:inbox": ("sess-a", "")})
+        assert any("DRIVERLESS" in c for c in chunks)
+
+    def test_blank_driver_and_loop_never_ran_still_driverless(self) -> None:
+        self._seed_loop(last_run_seconds_ago=None)
+        chunks = _chunks([("loop:inbox", _at(30))], {"loop:inbox": ("sess-a", "")})
+        assert any("DRIVERLESS" in c for c in chunks)

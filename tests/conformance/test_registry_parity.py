@@ -28,7 +28,7 @@ from teatree.agents.sdk_tool_map import CAPABILITY_TO_SDK_TOOLS
 from teatree.core.management.commands import loop_dispatch
 from teatree.core.managers import TaskQuerySet
 from teatree.core.modelkit.phase_tools import _TOOLS_BY_PHASE, tools_for_phase
-from teatree.core.modelkit.phases import SUBAGENT_BY_PHASE, normalize_phase
+from teatree.core.modelkit.phases import SCANNER_DISPATCHED_PHASES, SUBAGENT_BY_PHASE, normalize_phase
 from teatree.core.models import Task
 from teatree.loop.dispatch_tables import AGENT_ZONES, PERSISTED_AT_SOURCE_ZONES
 from teatree.loop.job_identity import PER_OVERLAY_DOMAINS
@@ -243,17 +243,31 @@ class TestPhaseToolsTotalityParity:
     ``_TOOLS_BY_PHASE`` key; the read-only fallback stays as defense-in-depth
     for a genuinely unregistered phase, never as the silent resolution for a
     dispatchable one — the #10 recurrence dies in CI.
+
+    A dispatchable phase is NOT only a ``SUBAGENT_BY_PHASE`` key: a loop scanner
+    can write ``Task.phase`` directly (``execution_target=HEADLESS``) with no
+    ``(role, phase)`` dispatch row at all — ``architectural_review`` and
+    ``dogfood_smoke`` did exactly that and slipped every registry-parity net,
+    silently resolving to read-only (``dogfood_smoke`` needs the shell it was
+    denied). The producer set unions ``SCANNER_DISPATCHED_PHASES`` so a
+    scanner-dispatched phase can never repeat that gap silently (#3386).
     """
 
     @staticmethod
     def _dispatchable_phases() -> set[str]:
-        return {normalize_phase(phase) for _role, phase in SUBAGENT_BY_PHASE}
+        # Producers are BOTH the ``SUBAGENT_BY_PHASE`` (role, phase) dispatch keys
+        # AND the phases a loop scanner writes directly to ``Task.phase`` (#3386):
+        # a scanner-dispatched phase is just as real a headless ``Task`` row, so it
+        # must carry an explicit ``_TOOLS_BY_PHASE`` entry too.
+        subagent = {normalize_phase(phase) for _role, phase in SUBAGENT_BY_PHASE}
+        scanner = {normalize_phase(phase) for phase in SCANNER_DISPATCHED_PHASES}
+        return subagent | scanner
 
     def test_every_dispatchable_phase_has_an_explicit_tool_entry(self) -> None:
         assert_registry_covers(
             producers=self._dispatchable_phases(),
             consumers=set(_TOOLS_BY_PHASE),
-            label="SUBAGENT_BY_PHASE phase -> explicit _TOOLS_BY_PHASE entry",
+            label="dispatchable phase (SUBAGENT_BY_PHASE + scanner) -> explicit _TOOLS_BY_PHASE entry",
         )
 
     def test_bughunt_can_reproduce_findings_but_not_write(self) -> None:
@@ -262,9 +276,32 @@ class TestPhaseToolsTotalityParity:
         assert "write_file" not in tools
         assert "edit_file" not in tools
 
+    def test_scanner_dispatched_phases_resolve_an_explicit_entry(self) -> None:
+        # The exact gap #3386 closes: a scanner-dispatched phase must be a producer
+        # the totality lane covers, not a silent read-only fallback resolution.
+        for phase in SCANNER_DISPATCHED_PHASES:
+            assert normalize_phase(phase) in _TOOLS_BY_PHASE, phase
+
+    def test_dogfood_smoke_can_run_the_smoke_shell_but_never_writes(self) -> None:
+        # ``dogfood_smoke`` shells out to ``t3 dogfood overlay-provision-smoke`` —
+        # its silent read-only degradation (task 151 stalled) was the real bug.
+        tools = tools_for_phase("dogfood_smoke")
+        assert {"shell", "read_file"} <= tools
+        assert "write_file" not in tools
+        assert "edit_file" not in tools
+
+    def test_architectural_review_is_an_explicit_read_only_policy(self) -> None:
+        # A REVIEWED read-only+web allowance (the MCP-write carve-out), not the
+        # deny-by-default accident it used to be.
+        tools = tools_for_phase("architectural_review")
+        assert {"read_file", "search_files"} <= tools
+        assert "shell" not in tools
+        assert "write_file" not in tools
+        assert "edit_file" not in tools
+
     def test_cardinality_floor_anti_vacuity(self) -> None:
-        assert len(self._dispatchable_phases()) >= 12, self._dispatchable_phases()
-        assert len(_TOOLS_BY_PHASE) >= 12, set(_TOOLS_BY_PHASE)
+        assert len(self._dispatchable_phases()) >= 14, self._dispatchable_phases()
+        assert len(_TOOLS_BY_PHASE) >= 14, set(_TOOLS_BY_PHASE)
 
 
 #: teatree capability name <- each ``claude_sdk`` built-in tool an agent md may list.

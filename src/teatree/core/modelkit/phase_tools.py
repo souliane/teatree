@@ -104,6 +104,23 @@ _TOOLS_BY_PHASE: Final[dict[str, frozenset[str]]] = {
     "shipping": _READ_ONLY | {"shell", "record_attempt"},
     "answering": _READ_ONLY | _WEB,
     "retro": _READ_ONLY | _WRITE,
+    # Scanner-dispatched phases (#3386): a loop scanner writes these directly to
+    # ``Task.phase`` (``execution_target=HEADLESS``), OUTSIDE ``SUBAGENT_BY_PHASE`` —
+    # ``phases.SCANNER_DISPATCHED_PHASES`` makes the totality lane see them as
+    # producers, so an EXPLICIT entry here is REQUIRED, never the deny-by-default
+    # read-only fallback resolving a dispatchable phase silently.
+    #
+    # ``architectural_review`` (the periodic ``ac-reviewing-codebase`` pass) is a
+    # REVIEWED read-only+web policy, not the fallback accident the guard used to let
+    # slip: its skill walks the tree (Read/Grep) and files tickets through the
+    # teatree MCP write tools — MCP-server tools that are never in this built-in
+    # disallow complement — so it needs NO shell/write/edit to do its job. Same
+    # read-mostly shape as the reviewer phases, minus the cold-review-checkout shell.
+    "architectural_review": _READ_ONLY | _WEB,
+    # ``dogfood_smoke`` shells out to ``t3 dogfood overlay-provision-smoke`` to run
+    # the provision smoke, so it needs the shell (read-only+shell, mirroring
+    # ``bughunt``/``shipping``); it never mutates source through the write tools.
+    "dogfood_smoke": _READ_ONLY | {"shell"},
 }
 
 

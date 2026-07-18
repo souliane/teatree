@@ -205,6 +205,7 @@ t3 eval changed-scenarios < changed-files.txt # CI primitive: print the scenario
 t3 eval merged-prs-since --prs-file prs.json --days 7  # CI primitive: exit 0 iff any PR merged in the window (the scheduled-eval no-PR guard); else --skip-code
 t3 eval merge-summaries summaries/ --run-url … --sha … --generated-at …  # CI primitive: merge per-shard sanitized summaries into one weekly dashboard
 t3 eval merge-summary-json shards/ --sha … --generated-at … --out eval-heal-<sha>.json  # CI heal loop: fold per-shard publish-safe --summary-json artifacts into one eval-heal-<sha> JSON (totals summed, scenarios concatenated)
+t3 eval green-proof eval-heal-<sha>.json    # CI heal loop: assert the merged full-suite eval-heal JSON is the green proof — an executed, red-free run (0 behavioral/infra/judge/no_coverage reds, total > 0); non-zero on any red or an empty run
 t3 eval ci-trigger --ref <pr-branch>          # CI heal loop: dispatch eval-ci-heal (workflow_dispatch, scenarios/shards/credential/pr_ref inputs) against a PR branch; prints the head SHA the run keys on (non-blocking)
 t3 eval ci-status --ref <pr-branch>           # CI heal loop: resolve a PR branch's newest eval-ci-heal run and print its structured verdict + triaged reds (non-blocking)
 ```
@@ -225,7 +226,7 @@ dispatch/read and return) so the orchestrator owns the wait. The full suite is
 sharded across a parallel matrix inside `eval-ci-heal` (the `shards` input, default
 8); each shard uploads its own publish-safe `--summary-json`, and the workflow's
 `combine` job folds them with `merge-summary-json` into the ONE `eval-heal-<sha>`
-JSON `ci-status` downloads — so the shard fan-out is invisible to the heal loop.
+JSON `ci-status` downloads — so the shard fan-out is invisible to the heal loop. On a full-suite run the `combine` job then runs `green-proof` on that merged JSON, asserting an executed, red-free run (souliane/teatree#3202) so the green proof is an enforced CI gate.
 
 The deterministic regression lane is wired into prek under its explicit name:
 `eval-pinned-regressions` runs at the **pre-push** stage (real git/FSM work) —

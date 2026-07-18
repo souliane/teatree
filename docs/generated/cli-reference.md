@@ -1544,6 +1544,8 @@ Usage: t3 eval [OPTIONS] COMMAND [ARGS]...
 │                         print the head SHA it keys on.                       │
 │ ci-status               Resolve one eval-ci-heal run's verdict (and, on      │
 │                         failure, its triaged reds).                          │
+│ green-proof             Assert the merged eval-heal JSON proves a full-suite │
+│                         green (executed, 0 reds).                            │
 │ merged-prs-since        Exit 0 if any PR merged in the last --days, else     │
 │                         --skip-code (non-list payload exits 2).              │
 │ merge-summaries         Merge per-shard summary markdown into one dashboard  │
@@ -1879,6 +1881,23 @@ Usage: t3 eval ci-status [OPTIONS]
 │    --repo        TEXT  owner/repo the eval-ci-heal workflow lives in.        │
 │                        [default: souliane/teatree]                           │
 │    --help              Show this message and exit.                           │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+#### `t3 eval green-proof`
+
+```
+Usage: t3 eval green-proof [OPTIONS] SUMMARY_JSON
+
+ Assert the merged eval-heal JSON proves a full-suite green (executed, 0 reds).
+
+╭─ Arguments ──────────────────────────────────────────────────────────────────╮
+│ *    summary_json      PATH  The merged eval-heal-<sha> §2.4 summary JSON to │
+│                              prove green.                                    │
+│                              [required]                                      │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                  │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 

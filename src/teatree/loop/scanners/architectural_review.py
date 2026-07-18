@@ -56,6 +56,7 @@ from django.db import transaction
 from django.db.models import Count, Max, Q
 from django.utils import timezone
 
+from teatree.core.modelkit.phases import ARCHITECTURAL_REVIEW_PHASE
 from teatree.loop.scanners.base import ScanSignal, hours_since
 
 if TYPE_CHECKING:
@@ -65,9 +66,6 @@ if TYPE_CHECKING:
     from teatree.core.models import TicketTransition as _TicketTransition
 
 logger = logging.getLogger(__name__)
-
-#: Canonical phase token written to ``Task.phase`` for review tasks.
-ARCHITECTURAL_REVIEW_PHASE = "architectural_review"
 
 #: States that count as "merged" for the after-merge trigger. ``delivered``
 #: covers the post-merge "ticket fully closed" state; ``merged`` covers the

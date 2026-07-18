@@ -12,6 +12,7 @@ from teatree.loop.loop_scoping import (
     current_session_owned_per_loop_slots,
     is_per_loop_owner_slot,
     is_transient_tick_mutex,
+    loop_is_actively_ticking,
     per_loop_chunk_visible,
 )
 from teatree.loop.statusline_palette import (
@@ -147,8 +148,9 @@ def _live_lease_drivers() -> dict[str, tuple[str, str]]:
     A thin DB-read seam (parallel to :func:`_live_loop_leases`) so the driver chip
     stays a pure formatter concern — tests stub it rather than construct rows. Only
     the pid-anchored ownership layer (``loop:<name>``) reads its driver from here;
-    a blank driver on an owned ``loop:<name>`` row is DRIVERLESS. Fails open to
-    ``{}`` so a broken read only drops the chips, never blanks the loop line.
+    a blank driver on an owned ``loop:<name>`` row is DRIVERLESS unless the loop is
+    actually ticking (:func:`_driver_suffix`, #3366). Fails open to ``{}`` so a
+    broken read only drops the chips, never blanks the loop line.
     """
     from django.apps import apps  # noqa: PLC0415 — deferred: keep this module Django-free at import
     from django.utils import timezone  # noqa: PLC0415 — deferred: keep this module Django-free at import
@@ -379,8 +381,14 @@ def _driver_suffix(name: str, drivers: dict[str, tuple[str, str]], *, colorize: 
     loop line (``t3-master`` has its own anchor; infra leases never do — pinning
     edge-case 6, e.g. ``loop-reinstall`` renders no chip). An owned row (non-empty
     ``session_id``) with a registered driver renders ``·<driver>`` palette-neutral;
-    an owned row with a blank driver renders ``·DRIVERLESS`` in the alert palette;
     an unowned row renders nothing.
+
+    A blank stored driver only warrants the ``·DRIVERLESS`` alert when the loop is
+    genuinely not ticking. A worker/cron tick runs anonymously (empty
+    ``session_id``), so :meth:`LoopLeaseQuerySet.claim_ownership` never rewrites the
+    owner lease and its stored ``driver`` fossilises blank while the loop ticks fine
+    (#3366). ``·DRIVERLESS`` means "claimed but never ticks", so a loop the cadence
+    ledger shows ticking (:func:`loop_is_actively_ticking`) suppresses the alert.
     """
     if not is_per_loop_owner_slot(name):
         return ""
@@ -389,6 +397,8 @@ def _driver_suffix(name: str, drivers: dict[str, tuple[str, str]], *, colorize: 
         return ""
     if driver:
         return f"·{driver}"
+    if loop_is_actively_ticking(name):
+        return ""
     return "·" + _colorize_chunk("DRIVERLESS", _ANSI_YELLOW, colorize=colorize)
 
 
