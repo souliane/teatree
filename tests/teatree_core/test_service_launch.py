@@ -153,3 +153,45 @@ class RealisticStackWorkflowTests(TestCase):
         assert ran == {"migrate", "uvicorn-deps", "npm-install", "link-node-modules"}
         # No run-* markers — prepare_all wires prerequisites, never commands.
         assert not any(line.startswith("run-") for line in self.order_file.read_text().splitlines())
+
+
+class _EnvOverlayRuntime(OverlayRuntime):
+    def __init__(self, overlay: "EnvOverlay") -> None:
+        self._overlay = overlay
+
+    def run_commands(self, worktree: Worktree) -> RunCommands:
+        out = self._overlay.out_file
+        # The command echoes an env var the overlay supplied via RunCommand.env
+        # — proving the runner merged cmd.env into the subprocess environment.
+        script = f'printf "%s" "$OVERLAY_VAR" > {out}'
+        return {"backend": RunCommand(args=["sh", "-c", script], env={"OVERLAY_VAR": "merged"})}
+
+    def pre_run_steps(self, worktree: Worktree, service: str) -> list[ProvisionStep]:
+        return []
+
+
+class EnvOverlay(CommandOverlay):
+    """An overlay whose run command declares env directly on the RunCommand."""
+
+    def __init__(self, out_file: Path) -> None:
+        self.out_file = out_file
+        self.runtime = _EnvOverlayRuntime(self)
+
+
+class ServiceLauncherEnvTests(TestCase):
+    """RunCommand.env is merged into the subprocess environment when exec'ing argv (#3330)."""
+
+    def setUp(self) -> None:
+        self.ticket = Ticket.objects.create(overlay="test", issue_url="https://example.com/issues/3")
+        self.worktree = Worktree.objects.create(ticket=self.ticket, repo_path="backend", branch="b")
+        self._tmp = tempfile.TemporaryDirectory()
+        self.out_file = Path(self._tmp.name) / "env.txt"
+        self.overlay = EnvOverlay(self.out_file)
+
+    def tearDown(self) -> None:
+        self._tmp.cleanup()
+
+    def test_run_command_env_reaches_the_subprocess(self) -> None:
+        result = ServiceLauncher(self.worktree, "backend", overlay=self.overlay).run()
+        assert result.ok
+        assert self.out_file.read_text() == "merged"

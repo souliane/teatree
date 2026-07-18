@@ -249,13 +249,13 @@ def _find_docker_containers(project_prefix: str) -> list[str]:
 def _find_worktree_paths_on_disk(repo_main: Path) -> set[str]:
     """Return the set of worktree paths reported by ``git worktree list`` for *repo_main*.
 
-    ``git.run`` uses ``run_allowed_to_fail`` under the hood — a non-git dir or
-    other failure just yields empty stdout, no exception.
+    A thin derivation of :func:`git.list_worktrees`, which is permissive (a
+    non-git dir yields no records, no exception). The :func:`git.is_git_checkout`
+    guard rejects a torn-down "hollow" directory before probing.
     """
-    if not (repo_main / ".git").exists():
+    if not git.is_git_checkout(repo_main):
         return set()
-    raw = git.run(repo=str(repo_main), args=["worktree", "list", "--porcelain"])
-    return {line.removeprefix("worktree ") for line in raw.splitlines() if line.startswith("worktree ")}
+    return {str(record.path) for record in git.list_worktrees(str(repo_main))}
 
 
 # ── Reconciler ───────────────────────────────────────────────────────

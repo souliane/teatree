@@ -141,6 +141,29 @@ class TestRunTimeboxedStep(TestCase):
         assert any("restore" in b for b in beats)
 
 
+class TestRunTimeboxedStepEnvAndStdin(TestCase):
+    """`env` and `stdin_text` thread straight through to the subprocess."""
+
+    def test_env_reaches_the_child(self) -> None:
+        result = run_timeboxed_step(
+            "echo-env", ["sh", "-c", "echo $PROVISION_VAR"], env={"PROVISION_VAR": "on"}, timeout=30
+        )
+        assert result.success is True
+        assert result.stdout.strip() == "on"
+
+    def test_stdin_text_is_piped_in(self) -> None:
+        result = run_timeboxed_step("restore", ["cat"], stdin_text="dump-bytes", timeout=30)
+        assert result.success is True
+        assert result.stdout == "dump-bytes"
+
+    @patch("teatree.core.provision.provision_timebox.run_allowed_to_fail")
+    def test_env_and_stdin_forwarded_to_runner(self, mock_run: MagicMock) -> None:
+        mock_run.return_value = MagicMock(returncode=0, stdout="ok", stderr="")
+        run_timeboxed_step("step", ["cmd"], env={"K": "V"}, stdin_text="in", timeout=30)
+        assert mock_run.call_args.kwargs["env"] == {"K": "V"}
+        assert mock_run.call_args.kwargs["stdin_text"] == "in"
+
+
 class TestRunStepUsesTimebox(TestCase):
     """`run_step` routes long-blocking steps through the time-box on timeout."""
 

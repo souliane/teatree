@@ -12,6 +12,8 @@ import teatree.core.management.commands.run as run_mod
 import teatree.core.overlay_loader as overlay_loader_mod
 import teatree.utils.run as utils_run_mod
 from teatree.core.models import Ticket, Worktree
+from teatree.core.overlay import OverlayProvisioning, OverlayRuntime, ProvisionStep, RunCommands
+from teatree.types import RunCommand
 from tests.teatree_core.conftest import CommandOverlay
 
 COMMAND_SETTINGS: dict[str, object] = {}
@@ -204,6 +206,63 @@ class TestRunCommand(TestCase):
             assert result == "Backend started via docker-compose."
             # Should have called docker compose up -d web
             assert any("docker" in str(c[0]) and "web" in str(c[0]) for c in commands)
+
+
+class _EnvDispatchRuntime(OverlayRuntime):
+    def run_commands(self, worktree: Worktree) -> RunCommands:
+        return {}
+
+    def pre_run_steps(self, worktree: Worktree, service: str) -> list[ProvisionStep]:
+        return []
+
+    def test_command(self, worktree: Worktree) -> RunCommand:
+        return RunCommand(args=["mytest"], env={"OVERLAY_VAR": "from-cmd", "SHARED": "cmd-wins"})
+
+
+class _EnvDispatchProvisioning(OverlayProvisioning):
+    def env_extra(self, worktree: Worktree) -> dict[str, str]:
+        return {"SHARED": "extra-loses", "EXTRA_ONLY": "yes"}
+
+
+class EnvDispatchOverlay(CommandOverlay):
+    """test_command carries env; provisioning.env_extra supplies a base to merge over."""
+
+    runtime = _EnvDispatchRuntime()
+    provisioning = _EnvDispatchProvisioning()
+
+
+class TestRunTaskEnvMerge(TestCase):
+    """`run tests` merges RunCommand.env into the subprocess env, winning over env_extra (#3330)."""
+
+    @override_settings(**COMMAND_SETTINGS)
+    def test_run_command_env_wins_and_is_present(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            wt_dir = Path(tmp) / "backend"
+            wt_dir.mkdir()
+            wt_path = str(wt_dir)
+            ticket = Ticket.objects.create(overlay="test", issue_url="https://example.com/issues/33", variant="acme")
+            Worktree.objects.create(
+                ticket=ticket,
+                overlay="test",
+                repo_path="/tmp/backend",
+                branch="feature",
+                extra={"worktree_path": wt_path},
+            )
+            overlay = EnvDispatchOverlay()
+            commands: list[tuple[object, dict[str, object]]] = []
+
+            with (
+                patch.object(overlay_loader_mod, "_discover_overlays", return_value={"test": overlay}),
+                patch.object(run_mod, "get_overlay", return_value=overlay),
+                patch.object(utils_run_mod, "Popen", _popen_capturing(commands)),
+            ):
+                cast("str", call_command("run", "tests", path=wt_path))
+
+            assert commands
+            env = cast("dict[str, str]", commands[-1][1]["env"])
+            assert env["OVERLAY_VAR"] == "from-cmd"
+            assert env["SHARED"] == "cmd-wins"  # RunCommand.env wins over env_extra
+            assert env["EXTRA_ONLY"] == "yes"  # env_extra still contributes non-conflicting keys
 
 
 class TestE2eExternalCommand(TestCase):

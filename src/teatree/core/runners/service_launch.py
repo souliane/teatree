@@ -1,3 +1,4 @@
+import os
 import re
 from typing import TYPE_CHECKING
 
@@ -88,5 +89,6 @@ class ServiceLauncher(RunnerBase):
             return RunnerResult(ok=False, detail=f"no run command configured for {self.service!r}")
         args = cmd.args if isinstance(cmd, RunCommand) else list(cmd)
         cwd = cmd.cwd if isinstance(cmd, RunCommand) else None
-        rc = run_streamed(args, cwd=cwd, check=False)
+        env = {**os.environ, **cmd.env} if isinstance(cmd, RunCommand) and cmd.env else None
+        rc = run_streamed(args, cwd=cwd, env=env, check=False)
         return RunnerResult(ok=rc == 0, detail=f"{self.service} finished (rc={rc})")

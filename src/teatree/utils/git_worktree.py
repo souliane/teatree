@@ -8,6 +8,7 @@ and the #706 "absent from all remotes" guard, all via the
 from pathlib import Path
 
 from teatree.utils.git_run import check, run, run_strict
+from teatree.utils.git_worktree_query import list_worktrees
 from teatree.utils.run import CommandFailedError, run_checked
 
 # A git reflog line is "<old-sha> <new-sha> <committer> <ts> <tz>\t<message>";
@@ -103,20 +104,13 @@ def worktree_move(repo: str, src: str, dst: str) -> None:
 
 
 def locked_worktree_paths(repo: str) -> set[str]:
-    """Resolved paths of *repo*'s git-locked worktrees (``git worktree list --porcelain``).
+    """Resolved paths of *repo*'s git-locked worktrees.
 
-    A ``locked`` line in the porcelain listing marks the preceding ``worktree``
-    entry as locked; a locked worktree must never be relocated. Paths are
-    ``resolve()``-d so they compare equal to a caller's ``Path(...).resolve()``.
+    A locked worktree must never be relocated. A thin derivation of
+    :func:`list_worktrees`; paths are ``resolve()``-d so they compare equal to a
+    caller's ``Path(...).resolve()``.
     """
-    locked: set[str] = set()
-    current: str | None = None
-    for line in run(repo=repo, args=["worktree", "list", "--porcelain"]).splitlines():
-        if line.startswith("worktree "):
-            current = line[len("worktree ") :]
-        elif line.startswith("locked") and current is not None:
-            locked.add(str(Path(current).resolve()))
-    return locked
+    return {str(record.path.resolve()) for record in list_worktrees(repo) if record.locked}
 
 
 def worktree_add_at_ref(repo: str, path: str, ref: str) -> bool:
