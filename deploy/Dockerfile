@@ -66,6 +66,14 @@ RUN mkdir -p \
 
 COPY --chmod=0755 deploy/entrypoint.sh /usr/local/bin/entrypoint.sh
 
+# The deploy-managed default ~/.claude/settings.json template (#3359). The init
+# role generates the container's real settings.json from this (plus env overrides)
+# BEFORE `t3 setup`, so the headless agent has a configurable model / permission
+# mode / autoMode grants / tool-use concurrency instead of stock CLI defaults.
+# Baked (not mounted) so a mountless standalone run still has the default; edit
+# this committed, reviewable file to change the loop agent's configuration.
+COPY deploy/claude-settings.template.json /usr/local/share/teatree/claude-settings.template.json
+
 USER teatree
 WORKDIR /home/teatree
 

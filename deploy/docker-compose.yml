@@ -51,7 +51,13 @@ x-teatree-common: &teatree-common
     # permanent no-op (0 members). Path identity; rw — dream phases 4-6 write
     # cross-links / MEMORY.md / decay archives, and container-run headless sessions
     # persist their transcripts to the backed-up host disk. Scoped to projects/
-    # only, never the whole ~/.claude (credentials + settings stay host-only).
+    # only, never the whole ~/.claude — the reason is CREDENTIALS
+    # (~/.claude/.credentials.json) which must stay host-only, NOT settings.
+    # settings.json is non-secret and needs its own provisioning: the init role
+    # generates it from the image-baked deploy/claude-settings.template.json (+ env
+    # overrides) so the headless agent's model / permission mode / autoMode grants
+    # / tool-use concurrency are configurable rather than stock CLI defaults
+    # (#3359 — see deploy/entrypoint.sh seed_claude_settings).
     - type: bind
       source: /home/teatree/.claude/projects
       target: /home/teatree/.claude/projects
