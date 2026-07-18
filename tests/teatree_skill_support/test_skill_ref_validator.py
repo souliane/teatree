@@ -18,6 +18,7 @@ from teatree.skill_support.ref_validator import (
     canonical_skill_names,
     default_search_dirs,
     main,
+    resolves_to_canonical,
     validate_agent_frontmatter,
     validate_repo_refs,
     validate_skill_refs,
@@ -251,6 +252,20 @@ class TestValidateSkillRefs:
         config.write_text("rules: '.'\n", encoding="utf-8")
         findings = validate_skill_refs(supplementary_config=config)
         assert all(f.site != "supplementary-config" for f in findings)
+
+
+class TestResolvesToCanonical:
+    def test_bare_name_in_set_resolves(self) -> None:
+        assert resolves_to_canonical("ac-reviewing-codebase", {"ac-reviewing-codebase", "code"})
+
+    def test_bare_name_absent_does_not_resolve(self) -> None:
+        assert not resolves_to_canonical("ac-reviewing-skills", {"ac-reviewing-codebase", "code"})
+
+    def test_namespaced_prefix_resolves_on_bare_segment(self) -> None:
+        assert resolves_to_canonical("t3:rules", {"rules"})
+
+    def test_empty_canonical_never_resolves(self) -> None:
+        assert not resolves_to_canonical("code", set())
 
 
 class TestValidateRepoRefs:
