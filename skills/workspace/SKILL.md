@@ -73,7 +73,7 @@ many distinct tickets can be in those states at once for a given overlay
 — set it in the `ConfigSetting` store:
 
 ```bash
-t3 <overlay> config_setting set max_concurrent_local_stacks 1   # 0 = unbounded (default, no behaviour change)
+t3 <overlay> config_setting set max_concurrent_local_stacks 1   # default 1 (single in-flight stack, headless-safe); 0 = unbounded
 t3 <overlay> config_setting set max_concurrent_local_stacks 1 --overlay heavy-overlay   # per-overlay override is supported
 ```
 

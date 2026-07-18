@@ -78,7 +78,10 @@ services:
       teatree-init:
         condition: service_completed_successfully
     restart: unless-stopped
-    mem_limit: 5g
+    # ~18g leaves headroom for up to 4 concurrent heavy headless ``claude``
+    # subprocesses on the 30GB host; the prior 5g risked a cgroup OOM on
+    # recreate once more than one headless session was in flight.
+    mem_limit: 18g
     cpus: "3.0"
 
   # Django admin (gunicorn), DEBUG off like the worker — /admin/ mounts

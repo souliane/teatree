@@ -5,9 +5,10 @@ stack, language servers, browsers and CI processes; on a memory-
 constrained host (the 2026-05-27 OOM when two stacks ran in parallel)
 one stack at a time is the workable limit.
 
-The gate is opt-in (default ``0`` = unbounded) and per-overlay scoped:
-an overlay can cap to ``1`` while a cheap dogfood overlay stays
-unbounded. ``check_local_stack_limit`` is called from
+The gate defaults to ``1`` (a single in-flight stack, the headless-safe
+cap) and is per-overlay scoped: an overlay can raise or drop the cap, and
+``0`` restores unbounded behaviour for a cheap dogfood overlay.
+``check_local_stack_limit`` is called from
 ``t3 <overlay> worktree start`` and ``workspace start`` before the FSM
 advances into ``SERVICES_UP``; refusal raises
 ``LocalStackLimitExceededError`` naming every blocker so the operator
@@ -262,7 +263,7 @@ def acquire_or_enqueue(candidate: Worktree | None, *, write_out: Callable[[str],
     # HOLD a new stack when host RAM is over the ceiling — even when a count slot
     # is free. The request is not lost: it is enqueued to the SAME durable queue
     # the count-full path uses, so the loop's drainer starts it once RAM frees.
-    # The default (unbounded) overlay is untouched — RAM is not consulted there.
+    # An unbounded overlay (limit ``0``) is untouched — RAM is not consulted there.
     if resolve_max_concurrent_local_stacks() > 0 and _ram_admission_holds(candidate, write_out=write_out):
         return False
     try:
