@@ -3,6 +3,16 @@
 import pytest
 
 from teatree.core import backend_registry
+from teatree.types import SharePointRemoteSpec
+
+_SHAREPOINT_SPEC = SharePointRemoteSpec(
+    remote="sp:",
+    root="r",
+    config_path="c",
+    password_command="p",
+    site_url="s",
+    library_path="l",
+)
 
 
 class TestBackendProviderRegistry:
@@ -26,6 +36,7 @@ class TestBackendProviderRegistry:
             assert provider.build_sync_backends() == []
             assert provider.build_notion_client(token="t") is None
             assert provider.build_sentry_client(token="t", org="o", base_url="u") is None
+            assert provider.build_sharepoint_client(_SHAREPOINT_SPEC) is None
             provider.reset_caches()
         finally:
             backend_registry.register_backend_provider(original)

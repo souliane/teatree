@@ -15,6 +15,7 @@ from teatree.backends.gitlab import GitLabCodeHost
 from teatree.backends.gitlab.ci import GitLabCIService
 from teatree.backends.notion import NotionClient
 from teatree.backends.sentry import SentryClient
+from teatree.backends.sharepoint import SharePointClient
 from teatree.backends.slack.bot import SlackBotBackend
 from teatree.backends.types import Service
 from teatree.core import backend_factory
@@ -27,6 +28,7 @@ from teatree.core.backend_factory import (
     notion_client_from_overlay,
     reset_backend_caches,
     sentry_client_from_overlay,
+    sharepoint_client_from_overlay,
 )
 from teatree.core.backend_protocols import BackendResolutionError
 from teatree.core.overlay import OverlayBase, OverlayConfig
@@ -177,6 +179,32 @@ def test_sentry_client_from_overlay_builds_client_through_provider_when_org_pres
     assert isinstance(client, SentryClient)
     assert client.org == "acme"
     assert client.base_url == "https://sentry.example.com"
+
+
+_SHAREPOINT_ENV = {
+    "TEATREE_SHAREPOINT_REMOTE": "sp:",
+    "TEATREE_SHAREPOINT_ROOT": "Shared Documents",
+    "TEATREE_SHAREPOINT_CONFIG": "/enc/rclone.conf",
+    "TEATREE_SHAREPOINT_PASSWORD_COMMAND": "pass rclone-config",
+    "TEATREE_SHAREPOINT_SITE_URL": "https://tenant.sharepoint.com/sites/Team",
+}
+
+
+def test_sharepoint_client_from_overlay_returns_none_when_remote_env_unset() -> None:
+    with patch.dict(os.environ, {"TEATREE_SHAREPOINT_REMOTE": ""}, clear=False):
+        assert sharepoint_client_from_overlay() is None
+
+
+def test_sharepoint_client_from_overlay_builds_client_through_provider_from_env() -> None:
+    with patch.dict(os.environ, _SHAREPOINT_ENV, clear=False):
+        client = sharepoint_client_from_overlay()
+
+    assert isinstance(client, SharePointClient)
+    assert client.remote == "sp:"
+    assert client.root == "Shared Documents"
+    assert client.config_path == "/enc/rclone.conf"
+    assert client.password_command == "pass rclone-config"
+    assert client.site_url == "https://tenant.sharepoint.com/sites/Team"
 
 
 def test_messaging_from_overlay_delegates_to_loader() -> None:

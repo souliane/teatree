@@ -18,7 +18,7 @@ from typing import TYPE_CHECKING, Protocol
 if TYPE_CHECKING:
     from teatree.core.backend_protocols import CIService, CodeHostBackend, MessagingBackend
     from teatree.core.overlay import OverlayBase
-    from teatree.types import RawAPIDict, SyncBackend
+    from teatree.types import RawAPIDict, ShareLinkVerification, SharePointEntry, SharePointRemoteSpec, SyncBackend
 
 
 @dataclass(frozen=True, slots=True)
@@ -113,6 +113,28 @@ class SentryReadClient(Protocol):
     def list_projects(self) -> "list[RawAPIDict]": ...  # pragma: no branch
 
 
+class SharePointReadClient(Protocol):
+    """Core-owned view of the read-only SharePoint/OneDrive client (#3084).
+
+    The MCP sharepoint tool group lists/cats/fetches a document library and
+    verifies share links without importing the concrete
+    ``teatree.backends.sharepoint`` client — the same core → backends inversion
+    as :class:`SentryReadClient` and the forge/messaging builders.
+    """
+
+    def list_files(
+        self, subpath: str = "", *, recursive: bool = True
+    ) -> "list[SharePointEntry]": ...  # pragma: no branch
+
+    def cat(self, file_path: str) -> str: ...  # pragma: no branch
+
+    def fetch(self, file_path: str, dest: str) -> str: ...  # pragma: no branch
+
+    def verify_link(self, folder_path: str = "") -> "ShareLinkVerification": ...  # pragma: no branch
+
+    def verify_read_only(self) -> bool: ...  # pragma: no branch
+
+
 class BackendProvider(Protocol):
     def get_code_host(self, overlay: "OverlayBase") -> "CodeHostBackend | None": ...  # pragma: no branch
 
@@ -153,6 +175,10 @@ class BackendProvider(Protocol):
     def build_sentry_client(
         self, *, token: str, org: str, base_url: str
     ) -> "SentryReadClient | None": ...  # pragma: no branch
+
+    def build_sharepoint_client(
+        self, spec: "SharePointRemoteSpec"
+    ) -> "SharePointReadClient | None": ...  # pragma: no branch
 
     def read_recent_review_matches(self, spec: ReviewSearchSpec) -> ReviewHistoryReadLike: ...  # pragma: no branch
 
@@ -210,6 +236,9 @@ class _UnconfiguredProvider:
         return None
 
     def build_sentry_client(self, *, token: str, org: str, base_url: str) -> "SentryReadClient | None":  # noqa: ARG002, PLR6301 — fail-safe protocol stub; args unused, returns None with no backends app
+        return None
+
+    def build_sharepoint_client(self, spec: "SharePointRemoteSpec") -> "SharePointReadClient | None":  # noqa: ARG002, PLR6301 — fail-safe protocol stub; spec unused, returns None with no backends app
         return None
 
     def read_recent_review_matches(self, spec: ReviewSearchSpec) -> ReviewHistoryReadLike:  # noqa: ARG002, PLR6301 — fail-safe provider seam: instance method by Protocol contract; args used by real overrides

@@ -394,6 +394,52 @@ PENDING_REVIEWS_CACHE_KEY = "teatree_pending_reviews"
 
 type RawAPIDict = dict[str, object]
 type PREntryDict = dict[str, object]
+
+
+class SharePointEntry(TypedDict, total=False):
+    """One rclone ``lsjson`` record for a SharePoint document-library entry (#3084).
+
+    ``lsjson`` emits a superset of these keys; ``total=False`` because the exact
+    set varies by entry (folders omit ``MimeType``, ``--hash`` adds ``Hashes``).
+    """
+
+    Path: str
+    Name: str
+    Size: int
+    MimeType: str
+    ModTime: str
+    IsDir: bool
+    ID: str
+
+
+class ShareLinkVerification(TypedDict):
+    """A derived SharePoint ``?id=`` deep-link plus its live-existence check (#3084)."""
+
+    path: str
+    url: str
+    exists: bool
+
+
+@dataclass(frozen=True, slots=True)
+class SharePointRemoteSpec:
+    """A read-only SharePoint/OneDrive rclone remote's connection shape (#3084).
+
+    Shared vocabulary (no deps) so ``backend_factory`` can describe the remote and
+    the concrete ``teatree.backends.sharepoint`` client can consume it without a
+    layer crossing either way. ``password_command`` is the shell command rclone
+    runs (via ``RCLONE_PASSWORD_COMMAND``) to unlock the encrypted ``rclone.conf``
+    — e.g. ``pass <entry>``; ``site_url`` + ``library_path`` back the ``?id=``
+    deep-link.
+    """
+
+    remote: str
+    root: str
+    config_path: str
+    password_command: str
+    site_url: str
+    library_path: str
+
+
 #: One row from an ad-hoc ``db query`` SELECT — column name -> value. Keys
 #: are dynamic (whatever the query SELECTs), so a fixed-key TypedDict cannot
 #: model it; this alias is the typed home for that shape (#774).

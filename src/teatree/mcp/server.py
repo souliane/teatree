@@ -37,6 +37,7 @@ from teatree.mcp import (
     services_forge,
     services_notion,
     services_sentry,
+    services_sharepoint,
     services_slack,
     write_tools,
 )
@@ -54,6 +55,7 @@ _SERVICE_GROUPS: dict[Service, tuple[Callable[[FastMCP], None], str]] = {
     Service.SLACK: (services_slack.register, services_slack.INSTRUCTIONS),
     Service.NOTION: (services_notion.register, services_notion.INSTRUCTIONS),
     Service.SENTRY: (services_sentry.register, services_sentry.INSTRUCTIONS),
+    Service.SHAREPOINT: (services_sharepoint.register, services_sharepoint.INSTRUCTIONS),
 }
 
 
