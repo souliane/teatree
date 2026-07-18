@@ -26,6 +26,18 @@ freeze silently; it is routed straight to the escalation path. The invariant: a
 terminal FAILED task on a non-terminal ticket ALWAYS escalates or retries-once,
 never freezes silently.
 
+An EXHAUSTION-killed FAILED task — one that died on a Claude usage-window limit (a
+subscription 5h/weekly window or a transient rate limit, recorded ``<cause>: …`` by
+``LimitMatch.as_reason``) — is NOT a defect and must not be escalated to a human as one.
+While ``limit_autorecovery_enabled`` is ON, such a task is auto-requeued once its window
+HORIZON has elapsed since the last failed attempt (the deterministic, probe-free twin of
+``usage_window_recovery`` for tasks that ALREADY landed FAILED — a limit hit while the
+flag was off, or on a non-parking lane); before the horizon it is left FAILED and
+re-checked on a later tick, never escalated (a capacity dip is not a doomed failure).
+API-credit exhaustion is excluded (no timed reset) and stays on the escalation path. With
+the flag OFF the branch is inert — an exhaustion failure follows the deterministic path
+exactly as before, so the flag-off behaviour is byte-identical.
+
 A SUPERSEDED FAILED task — one whose phase output the ticket's FSM already reached
 (``ticket.has_completed_phase``) — is NOT escalated at all: it is a dead artifact of
 an earlier interrupted run while the ticket advanced on its own, so it is retired
@@ -47,10 +59,14 @@ orchestration-layer module may compose both.
 """
 
 import logging
+from datetime import datetime
+
+from django.utils import timezone
 
 from teatree.agents.outage_classifier import is_transient_failure
+from teatree.agents.usage_window import autorecovery_enabled
 from teatree.core.modelkit.phases import normalize_phase
-from teatree.core.models import Task, Ticket
+from teatree.core.models import Task, TaskAttempt, Ticket
 from teatree.core.models.deferred_question import DeferredQuestion
 from teatree.core.models.task_repair import phase_attempts
 from teatree.core.repair_loop import (
@@ -59,6 +75,7 @@ from teatree.core.repair_loop import (
     requeue_verdict,
     terminal_reason_fingerprint,
 )
+from teatree.llm.anthropic_limits import LimitCause, recoverable_exhaustion_cause, window_horizon
 
 logger = logging.getLogger(__name__)
 
@@ -102,6 +119,8 @@ def requeue_transient_failed() -> int:
     already-parked rows excluded, so the per-tick cost stays bounded as dead letters
     accumulate.
     """
+    now = timezone.now()
+    autorecovery = autorecovery_enabled()
     reopened = 0
     for task in _non_terminal_failed_tasks():
         if task.ticket.has_completed_phase(task.phase):
@@ -120,9 +139,34 @@ def requeue_transient_failed() -> int:
                 reopened += _reopen(task)
             else:
                 _escalate_once(task, reason=halt)
+        elif (cause := recoverable_exhaustion_cause(error)) is not None and autorecovery:
+            reopened += _requeue_on_window_reset(task, cause, now=now)
         else:
             reopened += _handle_deterministic(task)
     return reopened
+
+
+def _requeue_on_window_reset(task: Task, cause: LimitCause, *, now: datetime) -> int:
+    """Reopen an exhaustion-killed task once its window has reset; else leave it FAILED (#3407).
+
+    A task that died on a subscription session/weekly or transient rate limit is
+    window-recoverable: capacity RETURNS at a known horizon after the failure. Once
+    ``window_horizon(cause)`` has elapsed since the last failed attempt, the task is
+    reopened within the #2009 budget (an over-budget one is escalated LOUDLY, never
+    retried forever). Before the horizon it is left FAILED and re-checked on a later tick
+    — NOT escalated, because a capacity dip is not a doomed defect. Returns the reopen
+    count (0 or 1).
+    """
+    horizon = window_horizon(cause)
+    last = _latest_attempt(task)
+    ended = last.ended_at if last is not None else None
+    if horizon is None or ended is None or ended + horizon > now:
+        return 0
+    halt = _budget_halt_reason(task)
+    if halt is not None:
+        _escalate_once(task, reason=halt)
+        return 0
+    return _reopen(task)
 
 
 def _handle_deterministic(task: Task) -> int:
@@ -167,10 +211,16 @@ def _corrective_reopen(task: Task) -> int:
     )
 
 
+def _latest_attempt(task: Task) -> TaskAttempt | None:
+    """The newest attempt from the prefetched ``attempts`` (no extra query), or ``None``."""
+    attempts = sorted(task.attempts.all(), key=lambda a: a.pk)  # ty: ignore[unresolved-attribute]  # Django reverse FK
+    return attempts[-1] if attempts else None
+
+
 def _latest_error(task: Task) -> str:
     """The newest attempt's error, read from the prefetched ``attempts`` (no extra query)."""
-    attempts = sorted(task.attempts.all(), key=lambda a: a.pk)  # ty: ignore[unresolved-attribute]  # Django reverse FK
-    return attempts[-1].error if attempts else ""
+    attempt = _latest_attempt(task)
+    return attempt.error if attempt is not None else ""
 
 
 def _non_terminal_failed_tasks() -> list[Task]:

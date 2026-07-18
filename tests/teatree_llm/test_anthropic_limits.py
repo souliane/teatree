@@ -5,7 +5,13 @@ from typing import cast
 import pytest
 from claude_agent_sdk.types import RateLimitType
 
-from teatree.llm.anthropic_limits import LimitCause, LimitMatch, classify_limit, classify_rate_limit_type
+from teatree.llm.anthropic_limits import (
+    LimitCause,
+    LimitMatch,
+    classify_limit,
+    classify_rate_limit_type,
+    recoverable_exhaustion_cause,
+)
 
 
 class TestClassifyLimit:
@@ -133,3 +139,25 @@ class TestClassifyRateLimitType:
         assert classify_rate_limit_type(None) is None
         # A future/unknown window value falls through to the phrase fallback.
         assert classify_rate_limit_type(cast("RateLimitType", "made_up_window")) is None
+
+
+class TestRecoverableExhaustionCause:
+    """The recorded-``error`` marker a window-recoverable exhaustion failure carries (#3407)."""
+
+    @pytest.mark.parametrize(
+        "cause",
+        [LimitCause.SUBSCRIPTION_SESSION, LimitCause.SUBSCRIPTION_WEEKLY, LimitCause.RATE_LIMIT],
+    )
+    def test_recognises_the_reason_marker_a_recoverable_limit_records(self, cause: LimitCause) -> None:
+        # The real string a limit-killed attempt stores (``LimitMatch.as_reason``).
+        error = LimitMatch(phrase="5-hour limit", cause=cause).as_reason()
+        assert recoverable_exhaustion_cause(error) is cause
+
+    def test_api_credit_has_no_timed_recovery_and_is_never_auto_requeued(self) -> None:
+        error = LimitMatch(phrase="out of credits", cause=LimitCause.API_CREDIT).as_reason()
+        assert recoverable_exhaustion_cause(error) is None
+
+    def test_a_non_limit_error_is_not_a_recoverable_exhaustion(self) -> None:
+        assert recoverable_exhaustion_cause("AssertionError: expected 3 got 4") is None
+        assert recoverable_exhaustion_cause("outage_death: connection refused") is None
+        assert recoverable_exhaustion_cause("") is None

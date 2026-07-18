@@ -27,9 +27,12 @@ exhausted:
 *   On a cache miss / expiry each candidate is probed once (the reader), its health
     row upserted, and the first non-exhausted one is pinned as the new sticky pick.
 *   When the overlay's own accounts are all exhausted the selector falls back to ANY
-    other configured account (across overlays); when none anywhere is usable it raises
-    :class:`AllTokensExhaustedError` (a :class:`CredentialError`) naming the earliest
-    reset, so an all-accounts-spent condition halts agent work loudly.
+    other configured account (across overlays); when every account's CACHED verdict still
+    reads exhausted, a last-ditch live re-probe (:meth:`PassPathSelector._rescue_reprobe`,
+    cooldown-throttled) runs first — a rolling 5h window frees capacity before its recorded
+    reset, so a recovered account is rescued rather than stranding the loop. Only when the
+    rescue also finds nothing usable does it raise :class:`AllTokensExhaustedError` (a
+    :class:`CredentialError`) naming the earliest reset, halting agent work loudly.
 
 The token that signs a probe is never logged or returned; only its ``pass_path`` and
 parsed health are persisted.
@@ -67,6 +70,13 @@ if TYPE_CHECKING:
     from teatree.config.agent_enums import EvalCredential
 
 logger = logging.getLogger(__name__)
+
+#: A cached-exhausted verdict is trusted until its recorded window reset, but a rolling
+#: 5h window frees capacity continuously — well before that reset. When every account
+#: reads exhausted, :meth:`PassPathSelector._rescue_reprobe` re-probes live before
+#: declaring a hard stall; this cooldown skips any account probed more recently than
+#: this, so a spinning all-exhausted dispatch loop cannot storm the rate-limit API.
+_RESCUE_REPROBE_COOLDOWN = dt.timedelta(seconds=60)
 
 
 class TokenKind(StrEnum):
@@ -119,8 +129,11 @@ class PassPathSelector:
         union — a bare eval shell (no active overlay → :data:`GLOBAL_SCOPE`) still routes
         to an overlay-scoped account without a manual env export. An empty union (nothing
         configured anywhere) returns ``None`` so the caller fails loud downstream.
-        Raises :class:`AllTokensExhaustedError` when a configured list has no usable
-        account anywhere.
+        When every account's CACHED verdict reads exhausted, a last-ditch live
+        :meth:`_rescue_reprobe` runs before the hard fail — a rolling 5h window frees
+        capacity before its recorded reset, so a recovered account is rescued here rather
+        than after its full reset. Raises :class:`AllTokensExhaustedError` only when the
+        rescue re-probe also finds no usable account anywhere.
         """
         configured = self._configured_paths(kind, scope)
         fell_back_across_scopes = False
@@ -139,6 +152,8 @@ class PassPathSelector:
         if chosen is None:
             others = [path for path in self._all_configured_paths(kind) if path not in configured]
             chosen = self._first_usable(kind, others, now)
+        if chosen is None:
+            chosen = self._rescue_reprobe(kind, configured, now)
         if chosen is None:
             raise AllTokensExhaustedError(self._all_exhausted_message(kind))
 
@@ -167,6 +182,31 @@ class PassPathSelector:
             if row is not None and row.is_fresh(now):
                 if not row.is_exhausted:
                     return pass_path
+                continue
+            probed = self._probe(kind, pass_path, now)
+            if probed is not None and not probed.is_exhausted:
+                return pass_path
+        return None
+
+    def _rescue_reprobe(self, kind: TokenKind, configured: list[str], now: dt.datetime) -> str | None:
+        """Last-ditch live re-probe before declaring every account exhausted (#3406).
+
+        The normal path trusts a FRESH cached-exhausted verdict without re-probing, and an
+        exhausted row is cached until its recorded window reset. But a subscription 5h
+        window is ROLLING — capacity returns continuously, well before that reset — so a
+        cached-exhausted verdict can outlive the real exhaustion and strand the loop on
+        "all accounts exhausted" while an account has in fact recovered. When every
+        candidate reads exhausted, this re-probes each account LIVE (ignoring cache
+        freshness) and returns the first that recovered, bounding the stall to
+        :data:`_RESCUE_REPROBE_COOLDOWN` past real recovery rather than the full reset. The
+        cooldown skips any account probed within that window, so a spinning all-exhausted
+        dispatch loop cannot storm the rate-limit API — one live re-probe per account per
+        cooldown is enough to catch a rolling-window recovery.
+        """
+        candidates = configured + [path for path in self._all_configured_paths(kind) if path not in configured]
+        for pass_path in candidates:
+            row = AnthropicTokenUsage.objects.filter(pass_path=pass_path).first()
+            if row is not None and (now - row.checked_at) < _RESCUE_REPROBE_COOLDOWN:
                 continue
             probed = self._probe(kind, pass_path, now)
             if probed is not None and not probed.is_exhausted:
