@@ -185,6 +185,23 @@ class _LoopFlagAndCredentialSettings:
     # its off_value (False), so it can never ship default-ON without a code-reviewed
     # stage demotion.
     limit_autorecovery_enabled: bool = False
+    # #3201 PR-3b — the OFF switch the CI-eval self-heal AUTONOMOUS FIXER ships
+    # behind, and a DARK ``FEATURE_FLAGS`` entry. Ships behaviorally inert: the
+    # ``ci_eval_heal`` loop stays OBSERVE-ONLY (dispatch a behavioral eval, poll,
+    # GREEN or HALT+escalate on any red — never a fix) exactly as PR-3a, UNLESS
+    # this flag is on AND the ``ci_eval_heal`` ``Loop`` row is enabled (BOTH gates
+    # required). When armed, a behavioral (non-infra) red triggers a BOUNDED
+    # autonomous fixer dispatch (``begin_fix`` -> a headless coding sub-agent whose
+    # pushed diff must pass the #3282 anti-cheat gate), capped at the session's
+    # ``max_fix_attempts`` (default 2 at open time) before it HALTs and escalates —
+    # never a loop-forever. The anti-cheat invariant is untouched: a genuinely
+    # failing eval can NEVER be marked green, a fixer that edits a scenario/matcher
+    # file is REJECTED, and an exhausted-budget session HALTs rather than greens.
+    # DB-home (#1775), per-overlay overridable — an overlay can trial the fixer on
+    # its own budget. The conformance suite pins stage=DARK => this default == its
+    # off_value (False), so autonomous CI mutation can never ship default-ON without
+    # a code-reviewed stage demotion.
+    ci_eval_heal_autofix_enabled: bool = False
     # Human-readable mirror of the latest session hand-off. The
     # ``SessionHandover`` DB row is the source of truth; this file mirrors
     # the payload for human-readability and for bootstrapping a brand-new

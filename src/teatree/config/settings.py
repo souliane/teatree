@@ -187,6 +187,8 @@ OVERLAY_OVERRIDABLE_SETTINGS: dict[str, Callable[[Any], Any]] = {
     "fleet_claim_enabled": _parse_strict_bool,
     "auto_disposition_enabled": _parse_strict_bool,
     "limit_autorecovery_enabled": _parse_strict_bool,
+    # #3201 PR-3b — the CI-eval self-heal autonomous-fixer OFF switch (DARK flag).
+    "ci_eval_heal_autofix_enabled": _parse_strict_bool,
     "outer_loop_enabled": _parse_strict_bool,
     "directive_loop_enabled": _parse_strict_bool,
     # North-star PR-7 — the directive VERIFYING horizon (days) after activation.

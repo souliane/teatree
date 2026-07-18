@@ -166,6 +166,16 @@ FEATURE_FLAGS: dict[str, FeatureFlag] = {
             "usage_window_recovery re-arm; ships dark (a limit stays a terminal FAILED) until enabled."
         ),
     ),
+    "ci_eval_heal_autofix_enabled": FeatureFlag(
+        field="ci_eval_heal_autofix_enabled",
+        stage=FlagStage.DARK,
+        tracking_issue="souliane/teatree#3201 — CI-eval self-heal PR-3b autonomous fixer",
+        summary=(
+            "The OFF switch the CI-eval self-heal AUTONOMOUS fixer ships behind (autonomous CI mutation). "
+            "Ships dark: the ci_eval_heal loop stays observe-only until this AND the loop row are both on; "
+            "when armed a behavioral red triggers a bounded, anti-cheat-gated fix dispatch, never a loop-forever."
+        ),
+    ),
 }
 
 
