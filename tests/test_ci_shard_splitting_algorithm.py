@@ -5,14 +5,14 @@ for ``tests/quality/`` or the ``--doctest-modules`` items, so pytest-split balla
 The fix has three load-bearing parts that no other test locks, so a careless edit to the shard
 invocation could silently regress the rebalance while every gate still passes:
 
-* ``--splitting-algorithm least_duration`` — bin-packs the recorded durations tighter than the
-  default chunk split, which is what turns a balanced ``dev/.test_durations`` into balanced shards.
-* ``--doctest-modules`` — the doctest items run in the SAME sharded lane, so their durations are
-  measurable there (and their coverage counts toward the combined floor).
-* the scheduled ``--store-durations --clean-durations`` record — the daily lane is where the
-  previously-unrecorded ``tests/quality`` + doctest durations are captured for the refresh PR, so
-  the committed file stops ballasting them blindly. Recording must NOT happen on PR/push runs
-  (that would pay the store write on every PR); it is gated to the ``schedule`` event only.
+*   ``--splitting-algorithm least_duration`` — bin-packs the recorded durations tighter than the
+    default chunk split, which is what turns a balanced ``dev/.test_durations`` into balanced shards.
+*   ``--doctest-modules`` — the doctest items run in the SAME sharded lane, so their durations are
+    measurable there (and their coverage counts toward the combined floor).
+*   the scheduled ``--store-durations --clean-durations`` record — the daily lane is where the
+    previously-unrecorded ``tests/quality`` + doctest durations are captured for the refresh PR, so
+    the committed file stops ballasting them blindly. Recording must NOT happen on PR/push runs
+    (that would pay the store write on every PR); it is gated to the ``schedule`` event only.
 
 Locking the invocation, not the balance itself: the balance is data (``dev/.test_durations``, kept
 fresh by the scheduled ``refresh-durations`` job on representative CI hardware), but the flags that
