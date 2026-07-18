@@ -87,6 +87,29 @@ class TestStuckTicketRedispatch(TestCase):
         assert scheduled == 0
         assert DeferredQuestion.objects.filter(answered_at__isnull=True).count() == 1
 
+    def test_poison_ticket_does_not_abort_the_sweep(self) -> None:
+        # #3441: one stuck ticket whose per-item processing raises an unexpected
+        # exception must NOT abort the sweep and strand every OTHER stuck ticket. The
+        # poison ticket is skipped (logged, left as-is), the healthy one still schedules.
+        poison = _stuck_ticket(state=Ticket.State.STARTED)  # created first ⇒ processed first
+        healthy = _stuck_ticket(state=Ticket.State.STARTED)
+
+        def _raise_on_poison(ticket: Ticket, *, phase: str) -> str | None:
+            if ticket.pk == poison.pk:
+                msg = "budget query blew up on the poison ticket"
+                raise ValueError(msg)
+            return None
+
+        with patch(
+            "teatree.loop.stuck_ticket_redispatch._budget_halt_reason",
+            side_effect=_raise_on_poison,
+        ):
+            scheduled = redispatch_stuck_tickets()
+
+        assert scheduled == 1  # the healthy ticket was scheduled despite the poison one
+        assert healthy.tasks.filter(phase="planning", status=Task.Status.PENDING).count() == 1
+        assert poison.tasks.count() == 0  # the poison ticket is skipped, never fatal
+
     def test_bad_idle_threshold_setting_falls_back_to_default(self) -> None:
         with override_settings(STUCK_TICKET_IDLE_HOURS="not-a-number"):
             assert _idle_threshold_hours() == DEFAULT_STUCK_IDLE_HOURS
