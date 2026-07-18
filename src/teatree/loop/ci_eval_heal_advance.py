@@ -1,28 +1,35 @@
-"""Observe-only driver for the CI-eval self-healing loop (#3201 PR-3a).
+"""Driver for the CI-eval self-healing loop (#3201 PR-3a observe + PR-3b fixer).
 
 An operator opens a :class:`~teatree.core.models.CiEvalHealSession` for a PR branch
 (``t3 eval ci-heal open``); this module advances every open session ONE FSM step
 per tick, driven by the default-OFF ``ci_eval_heal`` mini-loop (or by an operator
-dry-run via ``t3 eval ci-heal advance``). It only OBSERVES:
+dry-run via ``t3 eval ci-heal advance``):
 
 * ``PENDING`` → dispatch the ``eval-ci-heal`` workflow against the branch (``$0``
     subscription credential), record the head SHA, and move to ``AWAITING_CI``.
 * ``AWAITING_CI`` → poll the run (non-blocking, one bounded ``gh`` read). While it
     runs, no-op. On ``success`` → ``receive_result([])`` → GREEN. On any non-success
     conclusion, the run is NEVER greened: a ``failure`` carrying parseable behavioral
-    reds moves through ``TRIAGING`` to ``HALTED`` (escalated); any other conclusion,
-    or a failure whose reds cannot be confirmed, is an infra HALT (escalated).
-* ``TRIAGING`` → GREEN only when no red remains; otherwise HALT + escalate.
+    reds moves through ``TRIAGING``; any other conclusion, or a failure whose reds
+    cannot be confirmed, is an infra HALT (escalated).
+* ``TRIAGING`` → GREEN when no red remains. With a red: observe-only (the default)
+    HALTs + escalates; when the fixer is ARMED (:func:`~teatree.loop.ci_eval_heal_fixer.autofix_armed`
+    — the ``ci_eval_heal_autofix_enabled`` DARK flag AND the loop row both on) and the
+    fix budget is not exhausted, it dispatches ONE bounded autonomous fix instead
+    (``begin_fix`` → propose → gate → publish → re-trigger). Budget exhausted ⇒ HALT.
+* ``PUSHED`` → re-trigger the eval on the fixed branch (the loop back-edge; recovers
+    a fix that pushed but crashed before re-dispatch).
 
 **Anti-cheat invariant (non-negotiable).** A genuinely-failing eval can never be
 marked green. ``GREEN`` is reachable from exactly ONE place — a run whose CI
 conclusion is ``success`` (an empty red set) — and the model's ``_no_reds`` guard
-independently refuses ``mark_green`` while any red remains. A red, an infra failure,
-or an unconfirmable result all terminate at ``HALTED`` and escalate to the human via
-a :class:`~teatree.core.models.DeferredQuestion` (the §17.1 invariant-9 surface:
-statusline / ``t3 teatree questions list`` / Slack DM). This loop NEVER writes a
-fix, never edits a test, and never pushes — autonomous fix dispatch is the bounded,
-anti-cheat-gated PR-3b follow-up (the ``FIXING`` / ``PUSHED`` branch of the FSM).
+independently refuses ``mark_green`` while any red remains. The fixer only PROPOSES:
+the #3282 anti-cheat gate (``record_fix``) runs over the proposed diff BEFORE any
+push, so a fix editing ``evals/scenarios/**`` or a red matcher is REJECTED and
+DISCARDED, never reaching the branch. A red, an infra failure, an unconfirmable
+result, an exhausted budget, or a rejected/empty fix all terminate at ``HALTED`` and
+escalate to the human via a :class:`~teatree.core.models.DeferredQuestion` (the
+§17.1 invariant-9 surface: statusline / ``t3 teatree questions list`` / Slack DM).
 """
 
 import logging
@@ -37,6 +44,7 @@ from teatree.backends.github.ci_eval_client import (
     GhCiEvalClient,
     build_ci_eval_client,
 )
+from teatree.loop.ci_eval_heal_fixer import CiEvalHealFixer, autofix_armed, default_fixer
 from teatree.types import RawAPIDict
 
 if TYPE_CHECKING:
@@ -150,31 +158,97 @@ def _dispatch_ci(session: "CiEvalHealSession", *, client: GhCiEvalClient) -> Adv
     return AdvanceOutcome(session.pr_ref, "pending", session.state, note=f"dispatched @ {head_sha[:12]}")
 
 
-def _resolve_triage(session: "CiEvalHealSession", *, escalate: EscalateFn) -> str:
-    """TRIAGING terminal: GREEN iff no red remains, else HALT + escalate. The anti-cheat gate.
+def _resolve_triage(
+    session: "CiEvalHealSession", *, client: GhCiEvalClient, escalate: EscalateFn, fixer: CiEvalHealFixer
+) -> str:
+    """TRIAGING terminal: GREEN iff no red remains; a red HALTs or dispatches a bounded fix.
 
     ``mark_green`` is never reached while ``red_scenarios`` is non-empty (and the
-    model's ``_no_reds`` guard would refuse it anyway) — a red always terminates at
-    ``HALTED`` and escalates.
+    model's ``_no_reds`` guard would refuse it anyway). With a red: observe-only
+    (:func:`~teatree.loop.ci_eval_heal_fixer.autofix_armed` false) HALTs + escalates;
+    armed-but-budget-exhausted HALTs + escalates; armed-with-budget dispatches ONE
+    bounded, anti-cheat-gated fix. A red NEVER self-certifies green.
     """
-    if session.red_scenarios:
-        reds = ", ".join(session.red_scenarios)
-        session.halt(
-            reason=(
-                f"behavioral eval red(s) unresolved (observe-only, PR-3a — autonomous fix is the "
-                f"PR-3b follow-up): {reds}"
-            )
-        )
+    if not session.red_scenarios:
+        session.mark_green()
         session.save()
-        escalate(session)
         return session.state
-    session.mark_green()
+    if not autofix_armed(session):
+        return _halt_red(session, escalate=escalate, detail="autofix disarmed (observe-only)")
+    if session.fix_budget_exhausted:
+        return _halt_red(
+            session, escalate=escalate, detail=f"fix budget exhausted after {session.fix_attempts} attempt(s)"
+        )
+    return _dispatch_fix(session, client=client, escalate=escalate, fixer=fixer)
+
+
+def _halt_red(session: "CiEvalHealSession", *, escalate: EscalateFn, detail: str) -> str:
+    """HALT + escalate a session whose behavioral red is unresolved — never a false green."""
+    reds = ", ".join(session.red_scenarios)
+    session.halt(reason=f"behavioral eval red(s) unresolved — {detail}: {reds}")
+    session.save()
+    escalate(session)
+    return session.state
+
+
+def _dispatch_fix(
+    session: "CiEvalHealSession", *, client: GhCiEvalClient, escalate: EscalateFn, fixer: CiEvalHealFixer
+) -> str:
+    """Dispatch ONE bounded autonomous fix — gate BEFORE publish, HALT on any refusal.
+
+    ``begin_fix`` → the fixer PROPOSES a fix in a throwaway worktree (no push) → the
+    #3282 anti-cheat gate (``record_fix``) runs over the proposed paths → on a clean
+    gate the fix is PUBLISHED and the eval re-triggered; a rejected (test-editing) or
+    empty proposal, or any fixer failure, is DISCARDED and the session HALTs +
+    escalates — a red is never greened by editing its test, and the fixer never loops.
+    """
+    from teatree.core.gates.eval_heal_anticheat_gate import (  # noqa: PLC0415 — deferred: gate registered via the model
+        EvalHealCheatError,
+    )
+
+    session.begin_fix()
+    session.save()
+    try:
+        proposal = fixer.propose(session)
+    except Exception as exc:
+        logger.exception("ci_eval_heal: fixer propose failed for %s", session.pr_ref)
+        return _halt_red(session, escalate=escalate, detail=f"autonomous fixer dispatch failed: {type(exc).__name__}")
+    if not proposal.changed_paths:
+        fixer.discard(proposal)
+        return _halt_red(
+            session,
+            escalate=escalate,
+            detail="autonomous fixer produced no change (un-fixable without editing the test)",
+        )
+    try:
+        session.record_fix(changed_paths=list(proposal.changed_paths))
+    except EvalHealCheatError as exc:
+        fixer.discard(proposal)
+        return _halt_red(
+            session, escalate=escalate, detail=f"autonomous fixer tried to edit the eval test — rejected ({exc})"
+        )
+    session.save()
+    head_sha = fixer.publish(session, proposal)
+    return _retrigger(session, client=client, head_sha=head_sha)
+
+
+def _retrigger(session: "CiEvalHealSession", *, client: GhCiEvalClient, head_sha: str) -> str:
+    """PUSHED → AWAITING_CI: re-dispatch the eval on the fixed branch (the loop back-edge)."""
+    resolved = head_sha or client.resolve_head_sha(session.pr_ref)
+    client.trigger_workflow(
+        EVAL_CI_HEAL_WORKFLOW,
+        ref=session.pr_ref,
+        inputs={"scenarios": "", "credential": _DISPATCH_CREDENTIAL, "pr_ref": session.pr_ref},
+    )
+    session.trigger(ci_run_id="", head_sha=resolved)
     session.save()
     return session.state
 
 
-def _observe_ci(session: "CiEvalHealSession", *, client: GhCiEvalClient, escalate: EscalateFn) -> AdvanceOutcome:
-    """AWAITING_CI: poll once; a finished run resolves to GREEN (success) or HALT (red / infra)."""
+def _observe_ci(
+    session: "CiEvalHealSession", *, client: GhCiEvalClient, escalate: EscalateFn, fixer: CiEvalHealFixer
+) -> AdvanceOutcome:
+    """AWAITING_CI: poll once; a finished run resolves to GREEN (success), a fix, or HALT (infra)."""
     runs = client.list_runs(EVAL_CI_HEAL_WORKFLOW, branch=session.pr_ref)
     run = _match_run(runs, head_sha=session.head_sha)
     if run is None or str(run.get("status") or "") != "completed":
@@ -184,13 +258,13 @@ def _observe_ci(session: "CiEvalHealSession", *, client: GhCiEvalClient, escalat
     if conclusion == "success":
         session.receive_result(red_scenarios=[])
         session.save()
-        to_state = _resolve_triage(session, escalate=escalate)
+        to_state = _resolve_triage(session, client=client, escalate=escalate, fixer=fixer)
         return AdvanceOutcome(session.pr_ref, "awaiting_ci", to_state, note="ci green")
     reds = _download_reds(client, run_id=int(run_id) if isinstance(run_id, int) else None, head_sha=session.head_sha)
     if reds:
         session.receive_result(red_scenarios=reds)
         session.save()
-        to_state = _resolve_triage(session, escalate=escalate)
+        to_state = _resolve_triage(session, client=client, escalate=escalate, fixer=fixer)
         return AdvanceOutcome(session.pr_ref, "awaiting_ci", to_state, note=f"ci red: {len(reds)} scenario(s)")
     # Non-success with NO confirmable behavioral red — an infra failure (transport,
     # throttle, cap, cancelled, or an unfetchable artifact). Never greened.
@@ -200,23 +274,36 @@ def _observe_ci(session: "CiEvalHealSession", *, client: GhCiEvalClient, escalat
     return AdvanceOutcome(session.pr_ref, "awaiting_ci", session.state, note="infra halt")
 
 
-def advance_session(session: "CiEvalHealSession", *, client: GhCiEvalClient, escalate: EscalateFn) -> AdvanceOutcome:
-    """Advance one open session ONE FSM step. Terminal / fix-branch states are no-ops.
+def advance_session(
+    session: "CiEvalHealSession",
+    *,
+    client: GhCiEvalClient,
+    escalate: EscalateFn,
+    fixer: CiEvalHealFixer | None = None,
+) -> AdvanceOutcome:
+    """Advance one open session ONE FSM step. ``FIXING`` and terminal states are no-ops.
 
-    ``FIXING`` / ``PUSHED`` belong to the PR-3b autonomous-fix follow-up; the observe
-    loop leaves them untouched. ``GREEN`` / ``HALTED`` are terminal.
+    ``FIXING`` is only ever transient WITHIN a ``TRIAGING`` dispatch (a fix proposes,
+    gates, publishes, and re-triggers in one step) — a session resting in ``FIXING``
+    means a prior step crashed mid-fix, so it is left for the operator rather than
+    silently retried. ``PUSHED`` re-triggers the eval (recovers a fix that pushed but
+    crashed before re-dispatch). ``GREEN`` / ``HALTED`` are terminal.
     """
     from teatree.core.models import CiEvalHealSession  # noqa: PLC0415 — deferred: ORM enum needs the app registry
 
+    resolved_fixer = fixer if fixer is not None else default_fixer()
     state = session.state
     if state == CiEvalHealSession.State.PENDING:
         return _dispatch_ci(session, client=client)
     if state == CiEvalHealSession.State.AWAITING_CI:
-        return _observe_ci(session, client=client, escalate=escalate)
+        return _observe_ci(session, client=client, escalate=escalate, fixer=resolved_fixer)
     if state == CiEvalHealSession.State.TRIAGING:
-        to_state = _resolve_triage(session, escalate=escalate)
+        to_state = _resolve_triage(session, client=client, escalate=escalate, fixer=resolved_fixer)
         return AdvanceOutcome(session.pr_ref, "triaging", to_state)
-    return AdvanceOutcome(session.pr_ref, state, state, note="no-op (terminal or fix-branch)")
+    if state == CiEvalHealSession.State.PUSHED:
+        to_state = _retrigger(session, client=client, head_sha="")
+        return AdvanceOutcome(session.pr_ref, "pushed", to_state, note="re-triggered eval after fix")
+    return AdvanceOutcome(session.pr_ref, state, state, note="no-op (terminal or in-flight fix)")
 
 
 def _escalate_via_deferred_question(session: "CiEvalHealSession") -> None:
@@ -246,23 +333,29 @@ def advance_open_sessions(
     *,
     client: GhCiEvalClient | None = None,
     escalate: EscalateFn | None = None,
+    fixer: CiEvalHealFixer | None = None,
 ) -> OpenSessionsRun:
     """Advance every non-terminal session one step, best-effort (a bad session never aborts the pass).
 
     Loads the open sessions (anything not GREEN / HALTED) and advances each. A
     per-session exception (a ``gh`` stall, a rolled-back transition) is logged and
     recorded, never raised — the next tick retries the un-advanced session. Returns
-    the outcomes + swallowed errors for the caller (loop log / operator CLI).
+    the outcomes + swallowed errors for the caller (loop log / operator CLI). The
+    ``fixer`` is the injected autonomous-fix seam (default: the production headless
+    fixer); it only fires when :func:`~teatree.loop.ci_eval_heal_fixer.autofix_armed`.
     """
     from teatree.core.models import CiEvalHealSession  # noqa: PLC0415 — deferred: ORM needs the app registry
 
     resolved_client = client if client is not None else build_ci_eval_client(DEFAULT_CI_EVAL_REPO)
     resolved_escalate = escalate if escalate is not None else _escalate_via_deferred_question
+    resolved_fixer = fixer if fixer is not None else default_fixer()
     run = OpenSessionsRun()
     terminal = (CiEvalHealSession.State.GREEN, CiEvalHealSession.State.HALTED)
     for session in CiEvalHealSession.objects.exclude(state__in=terminal).order_by("pk"):
         try:
-            run.outcomes.append(advance_session(session, client=resolved_client, escalate=resolved_escalate))
+            run.outcomes.append(
+                advance_session(session, client=resolved_client, escalate=resolved_escalate, fixer=resolved_fixer)
+            )
         except Exception as exc:
             logger.exception("ci_eval_heal: advancing session %s (%s) failed", session.pk, session.pr_ref)
             run.errors[f"ci_eval_heal:{session.pk}"] = f"{type(exc).__name__}: {exc}"

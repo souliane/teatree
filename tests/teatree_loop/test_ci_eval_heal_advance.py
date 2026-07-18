@@ -14,7 +14,7 @@ from pathlib import Path
 import pytest
 from django.test import TestCase
 
-from teatree.core.models import CiEvalHealSession, DeferredQuestion
+from teatree.core.models import CiEvalHealSession, ConfigSetting, DeferredQuestion, Loop
 from teatree.loop.ci_eval_heal_advance import (
     AdvanceOutcome,
     _escalate_via_deferred_question,
@@ -22,6 +22,7 @@ from teatree.loop.ci_eval_heal_advance import (
     advance_session,
     red_scenario_names,
 )
+from teatree.loop.ci_eval_heal_fixer import FixProposal
 
 
 class _FakeClient:
@@ -224,6 +225,206 @@ class TestEscalationDefault(TestCase):
         # Idempotent: escalating the same halted session again creates no duplicate.
         _escalate_via_deferred_question(session)
         assert DeferredQuestion.objects.filter(question__contains=marker).count() == 1
+
+
+class _FakeFixer:
+    """A CiEvalHealFixer spy — proposes canned paths, records publish/discard, never touches git."""
+
+    def __init__(
+        self,
+        *,
+        changed_paths: Sequence[str] = ("src/teatree/skills/t3-rules/SKILL.md",),
+        head_sha: str = "f" * 40,
+        raise_on_propose: Exception | None = None,
+    ) -> None:
+        self._changed = tuple(changed_paths)
+        self._head = head_sha
+        self._raise = raise_on_propose
+        self.proposed = 0
+        self.published: list[FixProposal] = []
+        self.discarded: list[FixProposal] = []
+
+    def propose(self, session: CiEvalHealSession) -> FixProposal:
+        self.proposed += 1
+        if self._raise is not None:
+            raise self._raise
+        return FixProposal(changed_paths=self._changed, worktree_path="/tmp/wt", base_sha="base", commit_sha="c0ffee")
+
+    def publish(self, session: CiEvalHealSession, proposal: FixProposal) -> str:
+        self.published.append(proposal)
+        return self._head
+
+    def discard(self, proposal: FixProposal) -> None:
+        self.discarded.append(proposal)
+
+
+def _arm_autofix() -> None:
+    """Turn on BOTH switches — the DARK flag AND the ci_eval_heal loop row."""
+    ConfigSetting.objects.set_value("ci_eval_heal_autofix_enabled", value=True)
+    Loop.objects.update_or_create(
+        name="ci_eval_heal",
+        defaults={"enabled": True, "delay_seconds": 300, "script": "src/teatree/loops/ci_eval_heal/loop.py"},
+    )
+
+
+def _red_run() -> "_FakeClient":
+    return _FakeClient(runs=[_completed("failure")], artifact=_artifact(reds=["rules_under_load"]))
+
+
+class TestFixerDisarmedIsObserveOnly(TestCase):
+    def test_red_halts_and_never_dispatches_when_disarmed(self) -> None:
+        session = _awaiting(head_sha="a" * 40)
+        fixer = _FakeFixer()
+        advance_session(session, client=_red_run(), escalate=_noop, fixer=fixer)
+        session.refresh_from_db()
+        assert session.state == CiEvalHealSession.State.HALTED
+        assert session.state != CiEvalHealSession.State.GREEN
+        assert fixer.proposed == 0
+        assert "observe-only" in session.halt_reason
+
+    def test_flag_on_but_loop_off_stays_observe_only(self) -> None:
+        ConfigSetting.objects.set_value("ci_eval_heal_autofix_enabled", value=True)  # only ONE switch
+        session = _awaiting(head_sha="a" * 40)
+        fixer = _FakeFixer()
+        advance_session(session, client=_red_run(), escalate=_noop, fixer=fixer)
+        session.refresh_from_db()
+        assert session.state == CiEvalHealSession.State.HALTED
+        assert fixer.proposed == 0
+
+
+class TestArmedFixerDispatch(TestCase):
+    def test_behavioral_red_dispatches_a_bounded_fix_and_retriggers(self) -> None:
+        _arm_autofix()
+        session = _awaiting(head_sha="a" * 40)
+        client = _red_run()
+        fixer = _FakeFixer(changed_paths=("src/teatree/skills/t3-rules/SKILL.md",), head_sha="f" * 40)
+        advance_session(session, client=client, escalate=_never, fixer=fixer)
+        session.refresh_from_db()
+        # begin_fix -> propose -> gate -> publish -> re-trigger.
+        assert fixer.proposed == 1
+        assert len(fixer.published) == 1
+        assert session.state == CiEvalHealSession.State.AWAITING_CI
+        assert session.fix_attempts == 1
+        assert session.last_fix_paths == ["src/teatree/skills/t3-rules/SKILL.md"]
+        assert session.head_sha == "f" * 40
+        # The re-trigger dispatched a fresh eval on the fixed branch.
+        assert client.triggered
+        assert client.triggered[-1]["inputs"] == {
+            "scenarios": "",
+            "credential": "subscription_oauth",
+            "pr_ref": "3201-feat-x",
+        }
+
+    def test_no_change_proposal_halts_never_green(self) -> None:
+        _arm_autofix()
+        session = _awaiting(head_sha="a" * 40)
+        fixer = _FakeFixer(changed_paths=())
+        escalated: list[int] = []
+        advance_session(session, client=_red_run(), escalate=lambda s: escalated.append(s.pk), fixer=fixer)
+        session.refresh_from_db()
+        assert session.state == CiEvalHealSession.State.HALTED
+        assert session.state != CiEvalHealSession.State.GREEN
+        assert fixer.published == []
+        assert len(fixer.discarded) == 1
+        assert "no change" in session.halt_reason
+        assert escalated == [session.pk]
+
+    def test_dispatch_failure_halts_never_stuck_in_fixing(self) -> None:
+        _arm_autofix()
+        session = _awaiting(head_sha="a" * 40)
+        fixer = _FakeFixer(raise_on_propose=RuntimeError("spawn boom"))
+        advance_session(session, client=_red_run(), escalate=_noop, fixer=fixer)
+        session.refresh_from_db()
+        assert session.state == CiEvalHealSession.State.HALTED
+        assert "dispatch failed" in session.halt_reason
+
+
+class TestAntiCheatRejectsTestEdit(TestCase):
+    """The load-bearing PR-3b guardrail — a fixer that edits the TEST is rejected, never pushed."""
+
+    def test_scenario_edit_is_rejected_discarded_and_halts_never_green(self) -> None:
+        _arm_autofix()
+        session = _awaiting(head_sha="a" * 40)
+        fixer = _FakeFixer(changed_paths=("evals/scenarios/rules_under_load.yaml",))
+        escalated: list[int] = []
+        advance_session(session, client=_red_run(), escalate=lambda s: escalated.append(s.pk), fixer=fixer)
+        session.refresh_from_db()
+        assert session.state == CiEvalHealSession.State.HALTED
+        assert session.state != CiEvalHealSession.State.GREEN
+        # The cheating diff never reached the branch and never spent budget.
+        assert fixer.published == []
+        assert len(fixer.discarded) == 1
+        assert session.fix_attempts == 0
+        assert "edit the eval test" in session.halt_reason
+        assert escalated == [session.pk]
+
+    def test_red_matcher_edit_is_rejected(self) -> None:
+        _arm_autofix()
+        session = _awaiting(head_sha="a" * 40)
+        fixer = _FakeFixer(changed_paths=("src/teatree/eval/matchers.py", "src/teatree/skills/foo.md"))
+        advance_session(session, client=_red_run(), escalate=_noop, fixer=fixer)
+        session.refresh_from_db()
+        assert session.state == CiEvalHealSession.State.HALTED
+        assert fixer.published == []
+        assert session.fix_attempts == 0
+
+
+class TestFixBudgetIsBounded(TestCase):
+    def test_exhausted_budget_halts_without_dispatch(self) -> None:
+        _arm_autofix()
+        session = _awaiting(head_sha="a" * 40)
+        session.max_fix_attempts = 2
+        session.fix_attempts = 2
+        session.save()
+        fixer = _FakeFixer()
+        escalated: list[int] = []
+        advance_session(session, client=_red_run(), escalate=lambda s: escalated.append(s.pk), fixer=fixer)
+        session.refresh_from_db()
+        assert session.state == CiEvalHealSession.State.HALTED
+        assert fixer.proposed == 0
+        assert "budget exhausted" in session.halt_reason
+        assert escalated == [session.pk]
+
+
+class TestPushedRetrigger(TestCase):
+    def test_pushed_session_retriggers_the_eval_on_the_fixed_branch(self) -> None:
+        session = _awaiting()
+        session.receive_result(red_scenarios=["rules_under_load"])
+        session.save()
+        session.begin_fix()
+        session.save()
+        session.record_fix(changed_paths=["src/teatree/skills/foo.md"])
+        session.save()
+        assert session.state == CiEvalHealSession.State.PUSHED
+        client = _FakeClient(head_sha="n" * 40)
+        outcome = advance_session(session, client=client, escalate=_never, fixer=_FakeFixer())
+        session.refresh_from_db()
+        assert session.state == CiEvalHealSession.State.AWAITING_CI
+        assert session.head_sha == "n" * 40
+        assert client.triggered
+        assert outcome.to_state == CiEvalHealSession.State.AWAITING_CI
+
+
+class TestRedNeverSelfCertifiesGreen(TestCase):
+    """Sweep: under every arming/budget/cheat combination, a red never reaches GREEN."""
+
+    def test_a_red_is_never_green_across_the_fixer_matrix(self) -> None:
+        # (arm?, changed_paths) → each must terminate NOT-GREEN while a red is present.
+        cases: list[tuple[bool, tuple[str, ...]]] = [
+            (False, ("src/teatree/skills/foo.md",)),  # disarmed observe-only
+            (True, ()),  # armed but un-fixable
+            (True, ("evals/scenarios/x.yaml",)),  # armed but cheating
+        ]
+        for arm, paths in cases:
+            if arm:
+                _arm_autofix()
+            session = _awaiting(head_sha="a" * 40)
+            advance_session(session, client=_red_run(), escalate=_noop, fixer=_FakeFixer(changed_paths=paths))
+            session.refresh_from_db()
+            assert session.state != CiEvalHealSession.State.GREEN, (arm, paths)
+            assert session.state == CiEvalHealSession.State.HALTED, (arm, paths)
+            ConfigSetting.objects.clear("ci_eval_heal_autofix_enabled")
+            Loop.objects.filter(name="ci_eval_heal").delete()
 
 
 def _awaiting(*, head_sha: str = "a" * 40) -> CiEvalHealSession:
