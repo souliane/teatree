@@ -26,7 +26,15 @@ from teatree.utils import bad_artifacts
 from teatree.utils.django_db import dslr as _dslr
 from teatree.utils.django_db import reconcile as _reconcile
 from teatree.utils.django_db.config import DjangoDbImportConfig
-from teatree.utils.django_db.helpers import _ensure_ref_db, _local_db_url, _pg_args, _terminate_connections
+from teatree.utils.django_db.helpers import (
+    _ensure_ref_db,
+    _local_db_url,
+    _pg_args,
+    _terminate_connections,
+    is_loopback_host,
+    rewrite_url_host,
+    url_host,
+)
 from teatree.utils.django_db.migrate import _MAX_MIGRATE_RETRIES, _MigrateResult
 from teatree.utils.django_db.reconcile import is_config_error as _is_config_error
 from teatree.utils.django_db.restore import validate_dump
@@ -190,11 +198,36 @@ class DjangoDbImporter:
         prefix (#1973).
         """
         if self._migrate_via_docker and self.cfg.dockerized_migrate is not None:
-            return self.cfg.dockerized_migrate(manage_args, run_env)
+            return self.cfg.dockerized_migrate(manage_args, self._containerized_env(run_env))
         runner = runner_prefix(Path(self.cfg.main_repo_path))
         return run_allowed_to_fail(
             [*runner, *manage_args], cwd=self.cfg.main_repo_path, env=run_env, expected_codes=None
         )
+
+    def _containerized_env(self, run_env: dict[str, str]) -> dict[str, str]:
+        """Make *run_env*'s ``DATABASE_URL`` correct inside the container (souliane/teatree#3328).
+
+        The URL is built host-side, so its host is meaningless in the container's
+        network namespace. With ``docker_db_host`` set, rewrite the host to it.
+        With it empty, a loopback-literal host is the known-bad combination that
+        can silently migrate a *different* Postgres — warn loudly rather than
+        proceed into that case.
+        """
+        url = run_env.get("DATABASE_URL", "")
+        docker_host = self.cfg.docker_db_host
+        if docker_host:
+            if url:
+                return {**run_env, "DATABASE_URL": rewrite_url_host(url, docker_host)}
+            return run_env
+        if url and is_loopback_host(url_host(url)):
+            self.stderr.write(
+                f"  WARNING: dockerized migrate got a loopback DATABASE_URL host "
+                f"({url_host(url)!r}) and no docker_db_host is set — the container may "
+                "reach a DIFFERENT database at the same host:port. Set "
+                "DjangoDbImportConfig.docker_db_host to the host the container reaches "
+                "Postgres at (souliane/teatree#3328).\n"
+            )
+        return run_env
 
     def _try_fake_failing_migration(self, combined: str, stdout: str, run_env: dict[str, str]) -> str:
         """Try to fake a failing migration. Returns empty string on success, error message on failure."""

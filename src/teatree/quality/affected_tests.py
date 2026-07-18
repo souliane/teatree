@@ -69,12 +69,22 @@ class Selection:
     changed_tests: tuple[str, ...] = ()
     warnings: tuple[str, ...] = ()
 
-    def pytest_args(self) -> list[str]:
-        create = ["--create-db"] if self.create_db else []
+    def pytest_args(self, *, test_db_cloned: bool = False) -> list[str]:
+        """Positional pytest args for this selection.
+
+        ``create_db`` normally emits ``--create-db`` (pytest-django replays every
+        migration from zero). When the caller has already refreshed the test DB via
+        the opt-in template clone (:func:`teatree.utils.django_db.prepare_test_db`,
+        souliane/teatree#3326), pass ``test_db_cloned=True`` so the same drift
+        instead emits ``--reuse-db``: the freshly cloned DB is current, and a
+        ``--create-db`` would wipe it and replay. Default (``False``) is
+        byte-identical to the pre-#3326 behaviour.
+        """
+        db = (["--reuse-db"] if test_db_cloned else ["--create-db"]) if self.create_db else []
         if self.full:
-            return create  # empty positionals ⇒ the runner executes the whole suite
+            return db  # empty positionals ⇒ the runner executes the whole suite
         doctest = ["--doctest-modules", *self.doctest_targets] if self.doctest_targets else []
-        return [*create, *self.test_files, *doctest, *self.floor_dirs]
+        return [*db, *self.test_files, *doctest, *self.floor_dirs]
 
     def report(self) -> str:
         if self.full:
