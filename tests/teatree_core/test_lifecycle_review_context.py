@@ -161,7 +161,10 @@ class TestNonFsmReviewPathsAreCovered(TestCase):
             execution_reason="cold review",
         )
         ticket.record_review_context(work_item="https://x/51", documents=["s.pdf"], analysis="matches")
-        with _gate(required=True):
+        # Shippable so the review lands REVIEWED (not auto-ignored) — this
+        # test pins "review allowed with context", not the #3313
+        # unshippable-review disposition.
+        with _gate(required=True), patch.object(Ticket, "has_shippable_diff", return_value=True):
             task.complete()
         ticket.refresh_from_db()
         assert ticket.state == Ticket.State.REVIEWED

@@ -2,6 +2,17 @@ class InvalidTransitionError(ValueError):
     pass
 
 
+class LeaseLostError(InvalidTransitionError):
+    """A heartbeat renewal found the task no longer claimed by this worker.
+
+    Raised by ``Task.renew_lease`` when its compare-and-swap matches zero rows:
+    the claim generation moved on (the lease expired and another worker
+    reclaimed the task, or the row went terminal). The heartbeating worker must
+    abort rather than re-stamp a lease it no longer owns — re-stamping would
+    resurrect a dead claim and let two workers drive the same unit.
+    """
+
+
 class NoPlanArtifactError(InvalidTransitionError):
     """plan() was attempted without a PlanArtifact record for the ticket."""
 

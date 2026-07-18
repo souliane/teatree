@@ -35,6 +35,11 @@
 "src/teatree/core/gates/rubric_gate.py" = 2
 "src/teatree/core/handover.py" = 2
 "src/teatree/core/headless_dispatch.py" = 1
+# _reenqueue_provision defers `from teatree.core.tasks import execute_provision`
+# (call-time, kept lazy) — tasks.py pulls the whole task-execution graph
+# (backend_factory / gates / runners / worktree); a top-level import from this
+# command helper would drag that graph in at command load.
+"src/teatree/core/management/commands/_attachment_commands.py" = 1
 "src/teatree/core/management/commands/_clear_preflight.py" = 1
 "src/teatree/core/management/commands/_e2e_discovery.py" = 1
 "src/teatree/core/management/commands/_ensure_pr.py" = 2
@@ -77,7 +82,12 @@
 "src/teatree/core/models/auto_review_dispatch.py" = 3
 "src/teatree/core/models/implemented_issue_marker.py" = 1
 "src/teatree/core/models/review_loop.py" = 3
-"src/teatree/core/models/task.py" = 8
+"src/teatree/core/models/task.py" = 7
+# FSM disposition helpers (dispose_unshippable_review / escalate_unmatched_phase_
+# transition) split out of task.py; record_stuck_transition_question defers
+# `from teatree.core.models.deferred_question import DeferredQuestion`
+# (ORM/app-registry — model import in a module loaded during model init).
+"src/teatree/core/models/task_phase_disposition.py" = 1
 # artifacts() defers `from teatree.core.models.ticket_artifacts import
 # collect_ticket_artifacts` (a real import cycle: ticket_artifacts imports the
 # ticket models back). The method — and its deferral — moved here from
@@ -101,10 +111,13 @@
 "src/teatree/core/safe_kill.py" = 1
 "src/teatree/core/intake/scope_cache.py" = 1
 "src/teatree/core/send_proxy.py" = 3
-"src/teatree/core/signals.py" = 6
+"src/teatree/core/signals.py" = 5
 "src/teatree/core/speak.py" = 2
 "src/teatree/core/provision/step_runner.py" = 1
-"src/teatree/core/tasks.py" = 5
+# _record_attachment_hold_question defers `from teatree.core.models.
+# deferred_question import DeferredQuestion` (ORM/app-registry) to escalate an
+# intake attachment-gate hold instead of silently freezing the ticket.
+"src/teatree/core/tasks.py" = 6
 "src/teatree/core/views/_rate_limit.py" = 1
 # #8 M7 revival: the waiting-lane covering-CLEAR match reads the shared SIG-1
 # supersede helper (superseding_context / clear_is_superseded) and the promoted

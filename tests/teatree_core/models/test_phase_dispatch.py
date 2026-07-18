@@ -362,6 +362,7 @@ class TestPhaseAutoDispatch(TestCase):
         from teatree.core import tasks as tasks_mod  # noqa: PLC0415
 
         ticket = Ticket.objects.create()
+        _attach_shippable_worktree(ticket, self._tmp_path)
         _advance_ticket_to_tested(ticket)
         _complete_phase_task(ticket, "reviewing")
 

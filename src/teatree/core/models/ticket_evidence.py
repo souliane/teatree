@@ -10,6 +10,7 @@ from teatree.core.models.types import validated_ticket_extra
 if TYPE_CHECKING:
     from teatree.core.models.types import (
         AntiVacuityAttestation,
+        JSONObject,
         ReviewContext,
         ReviewSkillRun,
         TicketExtra,
@@ -32,6 +33,8 @@ class TicketEvidenceModel(TicketFacet):
         set_keys: "TicketExtra | None" = None,
         pop_keys: "list[str] | None" = None,
         also_set: "TicketSiblingFields | None" = None,
+        append_to_lists: "dict[str, list[object]] | None" = None,
+        merge_into_dicts: "dict[str, JSONObject] | None" = None,
     ) -> None:
         """Canonical locked read-modify-write of ``extra`` (#800 N3).
 
@@ -59,12 +62,29 @@ class TicketEvidenceModel(TicketFacet):
         non-atomic writes) while still going through the single locked
         primitive, so the SSOT holds with zero unlocked ``extra`` RMW
         anywhere.
+
+        ``append_to_lists`` / ``merge_into_dicts`` extend an existing list /
+        dict value read from the **locked row** rather than replacing it from a
+        possibly-stale in-memory snapshot. A ``set_keys={"pr_urls": urls}`` built
+        from a run-start ``extra`` clobbers a concurrent ship's freshly-appended
+        URL (the whole list is overwritten); ``append_to_lists={"pr_urls":[url]}``
+        appends only the new item to whatever the locked re-read holds, so the
+        concurrent writer's entry survives. Items already present are not
+        duplicated.
         """
         with transaction.atomic():
             locked = type(self).objects.select_for_update().get(pk=self.pk)
             merged = dict(locked.extra or {})
             if set_keys:
                 merged.update(set_keys)
+            for key, items in (append_to_lists or {}).items():
+                existing = list(merged.get(key) or [])
+                existing.extend(item for item in items if item not in existing)
+                merged[key] = existing
+            for key, entries in (merge_into_dicts or {}).items():
+                base = dict(merged.get(key) or {})
+                base.update(entries)
+                merged[key] = base
             for key in pop_keys or []:
                 merged.pop(key, None)
             self.extra = merged

@@ -80,14 +80,14 @@ class TestWorktreeTransitionSignals(TestCase):
             worktree.save()
         fake.enqueue.assert_called_once_with(worktree.pk)
 
-    def test_teardown_enqueues_worker_with_pre_blank_snapshot(self) -> None:
-        """The receiver must enqueue the pre-blank db_name/extra, not the blanked row.
+    def test_teardown_keeps_pointers_and_enqueues_worker_by_pk(self) -> None:
+        """teardown() KEEPS db_name/extra on the row and enqueues the worker by pk only.
 
-        ``teardown()`` blanks ``db_name`` / ``extra`` IN THE BODY before the
-        post_transition receiver fires. The receiver reads the transient
-        ``teardown_snapshot`` so the worker still gets the values it needs to
-        drop the database and remove the worktree — a regression that read the
-        live (blanked) row would enqueue ``snapshot_db_name=""``.
+        The recovery pointers (``db_name`` / ``extra``) are what a reaper needs
+        to finish a teardown the worker never got to run. Blanking them in the
+        body (the previous shape) opened a data-loss window between the committed
+        CREATED row and the on_commit enqueue. The worker now reads the live row,
+        so the receiver enqueues just the pk — no pre-blank snapshot.
         """
         from teatree.core.worktree import worktree_tasks as worktree_tasks_mod  # noqa: PLC0415
 
@@ -96,8 +96,8 @@ class TestWorktreeTransitionSignals(TestCase):
         worktree.provision()
         worktree.save()
         worktree.refresh_from_db()
-        pre_blank_db = worktree.db_name
-        assert pre_blank_db == f"wt_{worktree.ticket_id}_acme"
+        db_name = worktree.db_name
+        assert db_name == f"wt_{worktree.ticket_id}_acme"
         worktree.extra = {"worktree_path": "/tmp/wt-79", "services": ["backend"]}
         worktree.save()
 
@@ -109,15 +109,12 @@ class TestWorktreeTransitionSignals(TestCase):
             worktree.teardown()
             worktree.save()
 
-        fake.enqueue.assert_called_once()
-        call_args = fake.enqueue.call_args
-        assert call_args.args[0] == worktree.pk
-        assert call_args.args[1] == pre_blank_db
-        assert call_args.args[2] == {"worktree_path": "/tmp/wt-79", "services": ["backend"]}
-        # And the row itself is blanked as before.
+        fake.enqueue.assert_called_once_with(worktree.pk)
+        # The row KEEPS its recovery pointers — a crash before the worker runs
+        # leaves a still-reapable orphan, not a blanked row nothing can find.
         worktree.refresh_from_db()
-        assert worktree.db_name == ""
-        assert worktree.extra == {}
+        assert worktree.db_name == db_name
+        assert worktree.extra == {"worktree_path": "/tmp/wt-79", "services": ["backend"]}
 
 
 class TestWorktree(TestCase):
@@ -159,8 +156,9 @@ class TestWorktree(TestCase):
         worktree.refresh_from_db()
 
         assert worktree.state == Worktree.State.CREATED
-        assert worktree.db_name == ""
-        assert worktree.extra == {}
+        # teardown() keeps the recovery pointers on the row (they are dropped
+        # only when the worker's cleanup succeeds and deletes the row).
+        assert worktree.db_name == f"wt_{worktree.ticket_id}"
 
     def test_start_services_allows_restart(self) -> None:
         """Calling start_services when already in SERVICES_UP should work (restart)."""

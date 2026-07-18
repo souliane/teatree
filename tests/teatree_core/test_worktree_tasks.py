@@ -173,7 +173,7 @@ class TestExecuteWorktreeVerify(_WorktreeTaskTest):
 class TestExecuteWorktreeTeardown(_WorktreeTaskTest):
     def test_no_ops_when_worktree_row_already_gone(self) -> None:
         with patch("teatree.core.worktree.worktree_tasks.WorktreeTeardownRunner") as runner:
-            result = execute_worktree_teardown.call(999_999, snapshot_db_name="db", snapshot_extra={})
+            result = execute_worktree_teardown.call(999_999)
         assert result == {"worktree_id": 999_999, "skipped": True}
         runner.assert_not_called()
 
@@ -181,14 +181,14 @@ class TestExecuteWorktreeTeardown(_WorktreeTaskTest):
         wt = self._worktree(state=Worktree.State.CREATED)
         with patch("teatree.core.worktree.worktree_tasks.WorktreeTeardownRunner") as runner:
             runner.return_value.run.return_value = RunnerResult(ok=True, detail="cleaned")
-            result = execute_worktree_teardown.call(wt.pk, snapshot_db_name="db_old", snapshot_extra={})
+            result = execute_worktree_teardown.call(wt.pk)
         assert result == {"worktree_id": wt.pk, "ok": True, "detail": "cleaned"}
 
     def test_returns_failure_when_teardown_runner_fails(self) -> None:
         wt = self._worktree(state=Worktree.State.CREATED)
         with patch("teatree.core.worktree.worktree_tasks.WorktreeTeardownRunner") as runner:
             runner.return_value.run.return_value = RunnerResult(ok=False, detail="docker stuck")
-            result = execute_worktree_teardown.call(wt.pk, snapshot_db_name="db_old", snapshot_extra={})
+            result = execute_worktree_teardown.call(wt.pk)
         assert result == {"worktree_id": wt.pk, "ok": False, "detail": "docker stuck"}
 
 

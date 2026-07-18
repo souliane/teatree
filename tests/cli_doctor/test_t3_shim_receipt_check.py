@@ -18,7 +18,7 @@ from pathlib import Path
 
 import pytest
 
-from teatree.cli.doctor.checks import _check_t3_shim_receipt
+from teatree.cli.doctor.checks_environment import _check_t3_shim_receipt
 from teatree.utils import editable_pth
 from teatree.utils.editable_pth import expected_checkout, repair_receipt_to_checkout
 

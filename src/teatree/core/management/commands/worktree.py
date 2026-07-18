@@ -391,18 +391,12 @@ class Command(TyperCommand):
         """
         worktree = resolve_worktree(path)
         repo_path = worktree.repo_path
-        # Snapshot before the transition body resets db_name/extra
-        snapshot_db_name = worktree.db_name
-        snapshot_extra = worktree.get_extra()
+        # teardown() keeps db_name/extra on the row (recovery pointers), so the
+        # runner reads them straight off the live row — no snapshot to capture.
         with transaction.atomic():
             worktree.teardown()
             worktree.save()
-        result = WorktreeTeardownRunner(
-            worktree,
-            force=force,
-            snapshot_db_name=snapshot_db_name,
-            snapshot_extra=snapshot_extra,
-        ).run()
+        result = WorktreeTeardownRunner(worktree, force=force).run()
         self.stdout.write(f"  {result.detail}")
         if not result.ok:
             self.stderr.write(f"  Teardown failed for {repo_path}")

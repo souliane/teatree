@@ -4953,6 +4953,15 @@ Usage: t3 task cancel [OPTIONS]
 Usage: t3 recover [OPTIONS] COMMAND [ARGS]...
 
  Find (and optionally recover) work stranded by a network-outage death (#1764).
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --requeue              Reopen genuinely-incomplete FAILED (incl.             │
+│                        outage-death) tasks.                                  │
+│ --json                 Emit the structured report as JSON.                   │
+│ --overlay        TEXT  Which overlay's manage.py runs the report (default:   │
+│                        active overlay).                                      │
+│ --help                 Show this message and exit.                           │
+╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
 ### `t3 dogfood`
@@ -7999,6 +8008,12 @@ Usage: t3 teatree tasks create [OPTIONS] TICKET
 Usage: t3 teatree tasks list [OPTIONS]
 
  List the teatree tasks queue (not your harness TODO list).
+
+ A pure READ: it never reaps or reclaims. Failing a stale CLAIMED task from
+ a read path (a bare ``reap_stale_claims`` with no preceding
+ ``reclaim_orphaned_claims``) would terminally FAIL a recoverable
+ crashed-session task on a mere ``tasks list``, bypassing the
+ rescue-before-fail ordering the boot/tick ``run_boot_sweeps`` owns.
 
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --status                              TEXT  Filter by status                 │

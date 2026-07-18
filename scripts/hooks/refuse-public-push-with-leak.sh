@@ -47,8 +47,8 @@
 set -euo pipefail
 
 ZERO="0000000000000000000000000000000000000000"
-remote_name="${1:-origin}"
-remote_url="${2:-}"
+remote_name="${PRE_COMMIT_REMOTE_NAME:-${1:-origin}}"
+remote_url="${PRE_COMMIT_REMOTE_URL:-${2:-}}"
 
 if [ -z "${remote_url}" ]; then
   remote_url=$(git remote get-url "${remote_name}" 2>/dev/null || true)
@@ -105,6 +105,21 @@ findings_code=${T3_PRIVACY_FINDINGS_EXIT_CODE:-3}
 default_ref=$(git symbolic-ref --short refs/remotes/"${remote_name}"/HEAD 2>/dev/null || true)
 default_branch=${default_ref#"${remote_name}"/}
 default_branch=${default_branch:-main}
+
+# Ref updates arrive on stdin under git's native pre-push protocol. But when the
+# hook runs through prek/pre-commit (the `.pre-commit-config.yaml` wiring), the
+# runner CONSUMES stdin itself and exposes the push range via PRE_COMMIT_* env
+# vars — the hook then reads an EMPTY stdin and silently passes every push (the
+# gate is inert). Capture stdin; when empty but PRE_COMMIT_TO_REF is set,
+# synthesize the one ref-update line from the env so the loop below enforces
+# under BOTH invocation paths (souliane/teatree: prek does not forward pre-push
+# stdin to `language: system` hooks).
+refs_input=$(cat)
+if [ -z "${refs_input//[[:space:]]/}" ] && [ -n "${PRE_COMMIT_TO_REF:-}" ]; then
+  refs_input=$(printf '%s %s %s %s\n' \
+    "${PRE_COMMIT_LOCAL_BRANCH:-HEAD}" "${PRE_COMMIT_TO_REF}" \
+    "${PRE_COMMIT_REMOTE_BRANCH:-HEAD}" "${PRE_COMMIT_FROM_REF:-$ZERO}")
+fi
 
 blocked=0
 while read -r local_ref local_sha remote_ref remote_sha; do
@@ -183,6 +198,6 @@ while read -r local_ref local_sha remote_ref remote_sha; do
     sed 's/^/  /' "${report}" 2>/dev/null || cat "${report}" 2>/dev/null || true
   fi
   rm -f "${report}"
-done
+done <<< "${refs_input}"
 
 exit "${blocked}"
