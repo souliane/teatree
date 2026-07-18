@@ -44,6 +44,12 @@ _SLACK_TOOLS = {
 }
 _NOTION_TOOLS = {"notion_page_status"}
 _SENTRY_TOOLS = {"sentry_top_issues", "sentry_issue_get", "sentry_issue_events", "sentry_projects"}
+_SHAREPOINT_TOOLS = {
+    "sharepoint_list",
+    "sharepoint_cat",
+    "sharepoint_verify_link",
+    "sharepoint_verify_read_only",
+}
 
 _GROUP_BY_SERVICE = {
     Service.GITHUB: _GITHUB_TOOLS,
@@ -51,6 +57,7 @@ _GROUP_BY_SERVICE = {
     Service.SLACK: _SLACK_TOOLS,
     Service.NOTION: _NOTION_TOOLS,
     Service.SENTRY: _SENTRY_TOOLS,
+    Service.SHAREPOINT: _SHAREPOINT_TOOLS,
 }
 _ALL_SERVICE_TOOLS = set().union(*_GROUP_BY_SERVICE.values())
 

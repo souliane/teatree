@@ -61,7 +61,7 @@ src/teatree/           Python package (the Django app + CLI)
     gitlab.py          GitLab code-host client
     gitlab_ci.py       GitLab CI pipeline operations
     gitlab_sync*.py    GitLabSyncBackend + per-concern sync modules (issues, prs, approvals, terminal)
-    slack*.py, notion.py, sentry.py  Other integrations
+    slack*.py, notion.py, sentry.py, sharepoint.py  Other integrations
   agents/              Agent runtime
     headless.py        Headless tasks via `claude -p` (capture structured JSON output)
     handover.py        Headless ↔ interactive session handover (resume by session id)

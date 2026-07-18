@@ -5,7 +5,8 @@ Two structural invariants of the MCP-serves-overlay-services architecture:
 No transport imports — an MCP handler never touches a forge/messaging transport
 directly. No module under ``teatree.mcp`` may import a concrete backend
 (``github`` / ``gitlab`` / ``slack`` / ``msteams`` / ``figma`` / ``sentry`` /
-``notion``), the merge RPC transport, ``subprocess``, or a raw HTTP/SDK client
+``sharepoint`` / ``notion``), the merge RPC transport, ``subprocess``, or a raw
+HTTP/SDK client
 (``httpx`` / ``requests`` / ``slack_sdk`` / ``urllib.request``) the concrete
 backends name. Writes reach transports only through core seams (``call_command``,
 the review seam, the ``backend_factory`` client builders), which own the gates.
@@ -46,6 +47,7 @@ _FORBIDDEN_IMPORT_PREFIXES = (
     "teatree.backends.msteams",
     "teatree.backends.figma",
     "teatree.backends.sentry",
+    "teatree.backends.sharepoint",
     "teatree.backends.notion",
     "teatree.backends.forge_merge_rpc",
     "subprocess",

@@ -16,10 +16,11 @@ from teatree.core.backend_protocols import BackendResolutionError, CIService, Co
 from teatree.core.backend_registry import get_backend_provider
 
 if TYPE_CHECKING:
-    from teatree.core.backend_registry import NotionPageClient, SentryReadClient
+    from teatree.core.backend_registry import NotionPageClient, SentryReadClient, SharePointReadClient
 from teatree.core.overlay import OverlayBase
 from teatree.core.overlay_loader import get_all_overlays, get_overlay
 from teatree.paths import find_overlay_db
+from teatree.types import SharePointRemoteSpec
 from teatree.utils import git
 from teatree.utils.forge import forge_from_remote
 
@@ -254,6 +255,36 @@ def sentry_client_from_overlay(overlay_name: str | None = None) -> "SentryReadCl
         token=config.get_sentry_token(),
         org=config.sentry_org,
         base_url=config.sentry_url,
+    )
+
+
+def sharepoint_client_from_overlay(overlay_name: str | None = None) -> "SharePointReadClient | None":
+    """Build a read-only SharePoint/OneDrive client from the environment (#3084).
+
+    The remote's tenant/site/root values are client-specific and must stay out of
+    this public repo, so they are read from the ``TEATREE_SHAREPOINT_*`` wrapper
+    environment (set by the private skill/overlay), NOT from committed config —
+    mirroring the issue's env-var fetch helper. Returns ``None`` when
+    ``TEATREE_SHAREPOINT_REMOTE`` is unset (the default-safe posture — the
+    sharepoint MCP group's resolver then moves to the next declaring overlay or
+    fails loud). Resolved through the registered provider so ``core`` never
+    imports the concrete ``teatree.backends.sharepoint`` client. The
+    ``overlay_name`` argument keeps the resolver's ``build(name)`` contract; the
+    gate that a registered overlay must DECLARE the service still holds upstream.
+    """
+    del overlay_name  # config is env-scoped, not per-overlay; gating is upstream.
+    remote = os.environ.get("TEATREE_SHAREPOINT_REMOTE", "")
+    if not remote:
+        return None
+    return get_backend_provider().build_sharepoint_client(
+        SharePointRemoteSpec(
+            remote=remote,
+            root=os.environ.get("TEATREE_SHAREPOINT_ROOT", ""),
+            config_path=os.environ.get("TEATREE_SHAREPOINT_CONFIG", ""),
+            password_command=os.environ.get("TEATREE_SHAREPOINT_PASSWORD_COMMAND", ""),
+            site_url=os.environ.get("TEATREE_SHAREPOINT_SITE_URL", ""),
+            library_path=os.environ.get("TEATREE_SHAREPOINT_LIBRARY_PATH", ""),
+        ),
     )
 
 
@@ -558,4 +589,5 @@ __all__ = [
     "notion_client_from_overlay",
     "reset_backend_caches",
     "sentry_client_from_overlay",
+    "sharepoint_client_from_overlay",
 ]

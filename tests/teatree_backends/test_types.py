@@ -6,7 +6,7 @@ from teatree.backends.types import Service, dig
 
 class TestService:
     def test_members_cover_the_wrappable_services(self) -> None:
-        assert {s.value for s in Service} == {"github", "gitlab", "slack", "notion", "sentry"}
+        assert {s.value for s in Service} == {"github", "gitlab", "slack", "notion", "sentry", "sharepoint"}
 
     def test_round_trips_from_string(self) -> None:
         assert Service("sentry") is Service.SENTRY

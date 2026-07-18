@@ -15,6 +15,7 @@ from teatree.backends.gitlab import GitLabCodeHost
 from teatree.backends.gitlab import sync as gitlab_sync
 from teatree.backends.notion import NotionClient
 from teatree.backends.sentry import SentryClient
+from teatree.backends.sharepoint import SharePointClient
 from teatree.backends.slack import (
     SlackReviewSearchRequest,
     SlackThreadActivityRequest,
@@ -31,11 +32,12 @@ if TYPE_CHECKING:
         ReviewHistoryReadLike,
         ReviewSearchSpec,
         SentryReadClient,
+        SharePointReadClient,
         ThreadActivityReadLike,
         ThreadActivitySpec,
     )
     from teatree.core.overlay import OverlayBase
-    from teatree.types import SyncBackend
+    from teatree.types import SharePointRemoteSpec, SyncBackend
 
 
 class ConcreteBackendProvider:
@@ -92,6 +94,9 @@ class ConcreteBackendProvider:
 
     def build_sentry_client(self, *, token: str, org: str, base_url: str) -> "SentryReadClient | None":  # noqa: PLR6301 — BackendProvider protocol method
         return SentryClient(token=token, org=org, base_url=base_url)
+
+    def build_sharepoint_client(self, spec: "SharePointRemoteSpec") -> "SharePointReadClient | None":  # noqa: PLR6301 — BackendProvider protocol method
+        return SharePointClient(spec)
 
     def read_recent_review_matches(self, spec: "ReviewSearchSpec") -> "ReviewHistoryReadLike":  # noqa: PLR6301 — fail-safe provider seam: instance method by Protocol contract
         return read_recent_review_matches(

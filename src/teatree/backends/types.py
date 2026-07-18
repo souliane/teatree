@@ -25,6 +25,7 @@ class Service(StrEnum):
     SLACK = "slack"
     NOTION = "notion"
     SENTRY = "sentry"
+    SHAREPOINT = "sharepoint"
 
 
 def dig(data: object, *keys: str) -> object:
