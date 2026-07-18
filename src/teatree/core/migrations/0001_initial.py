@@ -264,6 +264,15 @@ _DEFAULT_LOOPS = (
         False,
         False,
     ),
+    (
+        "ci_eval_heal",
+        300,
+        None,
+        None,
+        "Advances operator-opened CI-eval heal sessions every 5m (observe-only): dispatch the behavioral eval in CI, poll, and GREEN or HALT+escalate on any red — never a fix. Default-OFF (autonomous CI mutation); an operator opens sessions and enables the row.",
+        False,
+        False,
+    ),
 )
 
 

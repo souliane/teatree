@@ -19,6 +19,7 @@ from django.utils import timezone
 from teatree.backends.messaging_noop import NoopMessagingBackend
 from teatree.cli.doctor.checks_slack_roundtrip import Level, check_slack_roundtrip, run_slack_roundtrip_probes
 from teatree.core.models import Loop, PendingChatInjection
+from teatree.loops.seed import seed_default_loops_and_prompts
 from teatree.utils.singleton import WORKER_SINGLETON
 
 
@@ -43,9 +44,16 @@ class _HealthyBaseline(TestCase):
     """Base with a fully-healthy round-trip; each subclass breaks exactly one seam."""
 
     def setUp(self) -> None:
-        # The `inbox` answer loop is seeded enabled by 0001_initial; ensure it is
-        # ENABLED with no LoopState hold so loop_enabled("inbox") is True.
-        Loop.objects.update_or_create(name="inbox", defaults={"enabled": True})
+        # Recreate the `inbox` answer loop from the production seed SSOT so the row is
+        # valid against EVERY Loop CHECK constraint by construction (loop_prompt_xor_script,
+        # loop_script_requires_delay, and any future one) — a polluter test in the shuffled
+        # collection clears Loop rows (`Loop.objects.all().delete()`), dropping the
+        # migration-seeded inbox, so this setUp must not depend on it surviving. Delete-first
+        # then reseed also repairs a mutated row; then force ENABLED with no LoopState hold so
+        # loop_enabled("inbox") is True.
+        Loop.objects.filter(name="inbox").delete()
+        seed_default_loops_and_prompts()
+        Loop.objects.filter(name="inbox").update(enabled=True)
         self._backend = _FakeSlackBackend()
         self._stack = contextlib.ExitStack()
         self.overlays = self._stack.enter_context(

@@ -18,6 +18,7 @@ from teatree.loop.job_identity import _CANONICAL_CORE_OVERLAY, Domain, _ScannerJ
 from teatree.loop.scanners import (
     AssignedIssuesScanner,
     BacklogSweepScanner,
+    CiEvalHealScanner,
     DbBackupScanner,
     EvalLocalScanner,
     IdleStackReaperScanner,
@@ -267,6 +268,19 @@ def _db_backup_scanner() -> DbBackupScanner | None:
         retention_days=settings.db_backup_retention_days,
         cadence_hours=settings.db_backup_cadence_hours,
     )
+
+
+def _ci_eval_heal_scanner() -> CiEvalHealScanner | None:
+    """Build the CI-eval heal scanner (#3201 PR-3a) — always available; the ``Loop`` row gates it.
+
+    Unlike the config-kill-switched scanners, the observe loop's on/off decision is
+    the default-OFF ``ci_eval_heal`` ``Loop`` row itself (``enabled=False`` out of
+    the box): while the row is disabled the loop-table fan-out never calls
+    ``build_jobs``, so this factory is never reached. When an operator enables the
+    row, the scanner emits an advance signal only while a session is actually open —
+    it carries no overlay anchor and needs no config.
+    """
+    return CiEvalHealScanner()
 
 
 def _local_stack_queue_drainer_scanner() -> LocalStackQueueDrainerScanner | None:

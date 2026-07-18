@@ -257,6 +257,13 @@ DEFAULT_LOOPS: tuple[LoopSeedSpec, ...] = (
         "keep-only-if-verified, else human-asked revert), off the live tick; ships disabled "
         "behind the directive_loop_enabled flag and the critic-live guard.",
     ),
+    LoopSeedSpec(
+        "ci_eval_heal",
+        300,
+        "Advances operator-opened CI-eval heal sessions every 5m (observe-only): dispatch the "
+        "behavioral eval in CI, poll, and GREEN or HALT+escalate on any red — never a fix. "
+        "Default-OFF (autonomous CI mutation); an operator opens sessions and enables the row.",
+    ),
 )
 
 
