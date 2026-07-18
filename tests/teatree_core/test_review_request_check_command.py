@@ -11,10 +11,10 @@ import pytest
 from django.core.management import call_command
 from django.test import TestCase
 
-from teatree.backends.slack import client as slack_client
+from teatree.backends.slack import http as slack_http
 from teatree.core.gates.review_request_guard import GuardDecision, GuardTarget
 from teatree.core.models import ReviewRequestPost
-from tests.teatree_core.test_review_request_guard import FakeClient, _bind
+from tests.teatree_core.test_review_request_guard import FakeClient
 
 _MR_URL = "https://gitlab.com/org/repo/-/merge_requests/385"
 
@@ -110,7 +110,7 @@ class TestReviewRequestCheckCommand(TestCase):
             ),
             pytest.MonkeyPatch.context() as mp,
         ):
-            mp.setattr(slack_client.httpx, "Client", lambda **kw: _bind(fake, kw))
+            mp.setattr(slack_http.httpx, "get", fake.get)
             result = cast(
                 "dict[str, object]",
                 call_command("review_request_check", "--mr-url", _MR_URL),

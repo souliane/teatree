@@ -13,7 +13,6 @@ end-to-end so a future refactor that bypasses the live scan goes RED.
 import contextlib
 import io
 import json
-from typing import Self
 from unittest.mock import patch
 
 import httpx
@@ -21,7 +20,7 @@ import pytest
 from django.test import TestCase
 from django.utils import timezone
 
-from teatree.backends.slack import client as slack_client
+from teatree.backends.slack import http as slack_http
 from teatree.core.gates.review_request_guard import GuardTarget
 
 _MR_URL = "https://gitlab.com/org/repo/-/merge_requests/385"
@@ -32,15 +31,11 @@ _CMD_MOD = "teatree.core.management.commands.review_request_post"
 
 
 class _FakeHttpxClient:
-    def __init__(self, *, pages: list[dict[str, object]], **_kw: object) -> None:
+    """Fake for the module-level ``httpx.get`` :class:`SlackHttpClient` calls internally."""
+
+    def __init__(self, *, pages: list[dict[str, object]]) -> None:
         self._pages = pages
         self._idx = 0
-
-    def __enter__(self) -> Self:
-        return self
-
-    def __exit__(self, *_a: object) -> None:
-        return None
 
     def get(self, url: str, **_kw: object) -> httpx.Response:
         if "auth.test" in url:
@@ -103,8 +98,9 @@ class TestPostRefusedWhenChannelHistoryHasHit(TestCase):
             "has_more": False,
         }
         backend = _PostRecordingBackend()
+        fake = _FakeHttpxClient(pages=[page])
         with pytest.MonkeyPatch.context() as mp:
-            mp.setattr(slack_client.httpx, "Client", lambda **kw: _FakeHttpxClient(pages=[page], **kw))
+            mp.setattr(slack_http.httpx, "get", fake.get)
             with (
                 patch(f"{_CMD_MOD}.resolve_guard_target", return_value=_TARGET),
                 patch(f"{_CMD_MOD}.messaging_from_overlay", return_value=backend),

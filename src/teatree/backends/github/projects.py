@@ -9,11 +9,16 @@ unchanged.
 """
 
 import json
+import os
 from dataclasses import dataclass
 
 from teatree.backends.types import dig
 from teatree.types import RawAPIDict
 from teatree.utils.run import run_checked
+
+# Bound every ``gh api graphql`` subprocess so a stalled read degrades (raises
+# TimeoutExpired) instead of wedging the single-threaded loop.
+_GRAPHQL_TIMEOUT_SECONDS = 60.0
 
 
 @dataclass(frozen=True, slots=True)
@@ -30,11 +35,18 @@ class ProjectItem:
 
 
 def _gh_graphql(query: str, *, token: str = "") -> RawAPIDict:
-    """Execute a GraphQL query via ``gh api graphql``."""
-    cmd = ["gh", "api", "graphql", "-f", f"query={query}"]
-    if token:
-        cmd.extend(["--header", f"Authorization: Bearer {token}"])
-    result = run_checked(cmd)
+    """Execute a GraphQL query via ``gh api graphql``.
+
+    The token is passed via ``GH_TOKEN`` env, never ``--header "Authorization:
+    Bearer <token>"`` — an argv header leaks the credential to
+    ``/proc/<pid>/cmdline`` and ``ps``.
+    """
+    env = {**os.environ, "GH_TOKEN": token} if token else None
+    result = run_checked(
+        ["gh", "api", "graphql", "-f", f"query={query}"],
+        env=env,
+        timeout=_GRAPHQL_TIMEOUT_SECONDS,
+    )
     return json.loads(result.stdout)
 
 

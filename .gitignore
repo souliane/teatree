@@ -51,6 +51,9 @@ apm_modules/
 docs/plans/
 .t3.local.json
 
+# Transient XDG CLI state written into a worktree (e.g. `gh`'s device-id).
+.local/
+
 # E2E artifacts: server stdout/stderr capture + Playwright video recordings.
 # Mounted writable into the e2e Docker container; useful when triaging CI failures.
 e2e/.logs/

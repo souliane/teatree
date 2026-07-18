@@ -5,6 +5,7 @@ from teatree.backends.gitlab import api as gitlab_api
 # The REST transport (and its ``httpx`` handle) lives in ``http_client`` since the
 # api.py transport/domain split; ``api`` is the domain layer on top of it.
 from teatree.backends.gitlab import http_client as gitlab_http
+from teatree.core.backend_protocols import BackendResolutionError
 
 
 class _PagedResponse:
@@ -40,10 +41,12 @@ def _two_page_httpx_get(
     return fake_get
 
 
-def test_get_json_paginated_returns_empty_without_token() -> None:
+def test_get_json_paginated_raises_without_token(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(gitlab_http, "_resolve_token", lambda: "")
     client = gitlab_api.GitLabAPI(token="")
 
-    assert client.get_json_paginated("merge_requests?per_page=100") == []
+    with pytest.raises(BackendResolutionError):
+        client.get_json_paginated("merge_requests?per_page=100")
 
 
 def test_get_json_paginated_breaks_on_non_list_body(monkeypatch: pytest.MonkeyPatch) -> None:
