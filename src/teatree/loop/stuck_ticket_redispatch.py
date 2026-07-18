@@ -67,13 +67,28 @@ def redispatch_stuck_tickets() -> int:
         # the dead-letter set never grows the per-tick work (bounded sweep, #8).
         if ticket.pk in already_escalated:
             continue
-        phase = _STATE_PHASE[ticket.state]
-        halt = _budget_halt_reason(ticket, phase=phase)
-        if halt is not None:
-            _escalate_once(ticket, reason=halt)
-            continue
-        scheduled += _redispatch(ticket, phase=phase)
+        # Per-item fault isolation (#3441): one poison ticket (a budget query that blows
+        # up, a scheduling method that raises unexpectedly) must NOT abort the sweep and
+        # strand every OTHER stuck ticket. Record it loudly and move on.
+        try:
+            scheduled += _redispatch_one(ticket)
+        except Exception:
+            logger.exception("Stuck-redispatch skipped ticket %s after an unexpected error", ticket.pk)
     return scheduled
+
+
+def _redispatch_one(ticket: Ticket) -> int:
+    """Schedule ONE stuck ticket's implied phase within budget, else escalate. Returns 0/1.
+
+    Isolated per ticket so :func:`redispatch_stuck_tickets` can wrap it in a single
+    ``try`` and keep sweeping when one row raises.
+    """
+    phase = _STATE_PHASE[ticket.state]
+    halt = _budget_halt_reason(ticket, phase=phase)
+    if halt is not None:
+        _escalate_once(ticket, reason=halt)
+        return 0
+    return _redispatch(ticket, phase=phase)
 
 
 def _already_escalated_ticket_pks() -> set[int]:

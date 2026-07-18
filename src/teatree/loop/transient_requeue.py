@@ -123,27 +123,48 @@ def requeue_transient_failed() -> int:
     autorecovery = autorecovery_enabled()
     reopened = 0
     for task in _non_terminal_failed_tasks():
-        if task.ticket.has_completed_phase(task.phase):
-            # SUPERSEDED: the ticket's FSM already reached this phase's output, so this
-            # FAILED row is a dead artifact of an earlier interrupted run. Retire it
-            # silently — never escalate a question the ticket's own state answers.
-            _retire_superseded(task)
-            continue
-        error = _latest_error(task)
-        if not error:
-            # No recorded error → neither transient nor deterministic; must not freeze.
-            _escalate_once(task, reason="failed with no recorded error")
-        elif is_transient_failure(error):
-            halt = _budget_halt_reason(task)
-            if halt is None:
-                reopened += _reopen(task)
-            else:
-                _escalate_once(task, reason=halt)
-        elif (cause := recoverable_exhaustion_cause(error)) is not None and autorecovery:
-            reopened += _requeue_on_window_reset(task, cause, now=now)
-        else:
-            reopened += _handle_deterministic(task)
+        # Per-item fault isolation (#3441): a single poison row (a corrupt attempt, a
+        # classifier blow-up, a scheduling error) must NOT abort the sweep and strand
+        # every OTHER loop's FAILED tasks. Record the failure loudly and move on.
+        try:
+            reopened += _route_failed_task(task, now=now, autorecovery=autorecovery)
+        except Exception:
+            logger.exception(
+                "Transient-requeue skipped task %s (ticket %s) after an unexpected error",
+                task.pk,
+                task.ticket_id,  # ty: ignore[unresolved-attribute]
+            )
     return reopened
+
+
+def _route_failed_task(task: Task, *, now: datetime, autorecovery: bool) -> int:
+    """Route ONE FAILED task to reopen / retire / corrective-retry / escalate. Returns the reopen count.
+
+    Isolated per task so :func:`requeue_transient_failed` can wrap it in a single
+    ``try`` and keep sweeping when one row raises — a terminal FAILED task on a
+    non-terminal ticket is still never left silent (reopened, retired, retried, or
+    escalated), it just can no longer take the whole tick down with it.
+    """
+    if task.ticket.has_completed_phase(task.phase):
+        # SUPERSEDED: the ticket's FSM already reached this phase's output, so this
+        # FAILED row is a dead artifact of an earlier interrupted run. Retire it
+        # silently — never escalate a question the ticket's own state answers.
+        _retire_superseded(task)
+        return 0
+    error = _latest_error(task)
+    if not error:
+        # No recorded error → neither transient nor deterministic; must not freeze.
+        _escalate_once(task, reason="failed with no recorded error")
+        return 0
+    if is_transient_failure(error):
+        halt = _budget_halt_reason(task)
+        if halt is None:
+            return _reopen(task)
+        _escalate_once(task, reason=halt)
+        return 0
+    if (cause := recoverable_exhaustion_cause(error)) is not None and autorecovery:
+        return _requeue_on_window_reset(task, cause, now=now)
+    return _handle_deterministic(task)
 
 
 def _requeue_on_window_reset(task: Task, cause: LimitCause, *, now: datetime) -> int:
@@ -156,11 +177,20 @@ def _requeue_on_window_reset(task: Task, cause: LimitCause, *, now: datetime) ->
     retried forever). Before the horizon it is left FAILED and re-checked on a later tick
     — NOT escalated, because a capacity dip is not a doomed defect. Returns the reopen
     count (0 or 1).
+
+    The horizon is anchored on the last attempt's ``ended_at`` when present, else on its
+    ``started_at`` (#3444). A crashed / killed attempt can land FAILED having never
+    recorded ``ended_at``; the old ``ended is None`` guard stranded such a task FOREVER
+    (never past the horizon, never reopened, never escalated). ``started_at`` is
+    ``auto_now_add`` so it is always set — anchoring on it makes the window elapse from a
+    slightly earlier instant, which requeues the task rather than silently stranding it.
     """
     horizon = window_horizon(cause)
     last = _latest_attempt(task)
-    ended = last.ended_at if last is not None else None
-    if horizon is None or ended is None or ended + horizon > now:
+    if horizon is None or last is None:
+        return 0
+    anchor = last.ended_at or last.started_at
+    if anchor + horizon > now:
         return 0
     halt = _budget_halt_reason(task)
     if halt is not None:
