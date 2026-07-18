@@ -81,6 +81,51 @@ def is_per_loop_owner_slot(name: str) -> bool:
     return _impl(name)
 
 
+def per_loop_loop_name(slot: str) -> str:
+    """Return the bare loop name for a ``loop:<name>`` owner slot — loop-side re-export.
+
+    Inverse of :func:`teatree.core.loop_lease_manager.per_loop_owner_slot`, read
+    through this bridge because the tach graph forbids the statusline importing
+    ``teatree.core.loop_lease_manager`` directly. A slot without the prefix is
+    returned unchanged.
+    """
+    from teatree.core.loop_lease_manager import PER_LOOP_OWNER_PREFIX  # noqa: PLC0415 — deferred
+
+    return slot.removeprefix(PER_LOOP_OWNER_PREFIX)
+
+
+#: A ``loop:<name>`` slot whose loop last ran within this many of its own cadences
+#: counts as "actively ticking" (#3366). Two cadences mirrors the
+#: ``teatree.loops.live`` stall threshold.
+_TICKING_CADENCE_TOLERANCE = 2
+
+
+def loop_is_actively_ticking(slot: str) -> bool:
+    """Whether the ``loop:<name>`` slot's loop last ran within tolerance (#3366).
+
+    The statusline ``·DRIVERLESS`` chip reads the owner lease's stored ``driver``,
+    which an anonymous worker/cron tick never rewrites — so it fossilises blank
+    while the loop ticks fine. ``·DRIVERLESS`` means "claimed but never ticks", so
+    the alert is gated on this authoritative cadence-ledger read (``Loop.last_run_at``
+    against the loop's own ``delay_seconds`` cadence). Fails SAFE to ``False``
+    (unconfirmed → keep the alert): a read error, a missing / never-run row, or a
+    loop with no fixed-interval cadence all preserve the warning for a slot that
+    truly is not ticking.
+    """
+    from django.apps import apps  # noqa: PLC0415 — deferred: app registry read at call time
+    from django.utils import timezone  # noqa: PLC0415 — deferred: Django import at call time
+
+    try:
+        loop_model = apps.get_model("core", "Loop")
+        row = loop_model.objects.filter(name=per_loop_loop_name(slot)).only("last_run_at", "delay_seconds").first()
+        if row is None or row.last_run_at is None or not row.delay_seconds:
+            return False
+        age_seconds = (timezone.now() - row.last_run_at).total_seconds()
+        return age_seconds <= row.delay_seconds * _TICKING_CADENCE_TOLERANCE
+    except Exception:  # noqa: BLE001 — fail-safe: an unconfirmable tick keeps the DRIVERLESS alert
+        return False
+
+
 def is_transient_tick_mutex(name: str) -> bool:
     """Whether a lease ``name`` is a transient per-loop tick mutex (``loop-tick:<name>``).
 
@@ -102,6 +147,8 @@ __all__ = [
     "current_session_owned_per_loop_slots",
     "is_per_loop_owner_slot",
     "is_transient_tick_mutex",
+    "loop_is_actively_ticking",
     "owned_per_loop_slots",
     "per_loop_chunk_visible",
+    "per_loop_loop_name",
 ]

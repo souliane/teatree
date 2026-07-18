@@ -292,6 +292,19 @@ jobs:
           uv run t3 eval merge-summary-json "$SHARDS_DIR" \
             --sha "$SHA" --generated-at "$GENERATED_AT" \
             --out "$OUT_DIR/eval-heal-$SHA.json"
+      # GREEN PROOF (souliane/teatree#3202): the merged full-suite JSON IS the proof
+      # — assert it recorded an EXECUTED, RED-FREE run (0 behavioral/infra/judge/
+      # no_coverage reds, total > 0), turning the artifact into an enforced CI gate.
+      # Full-suite ONLY (empty `scenarios`): a named-subset heal re-run evals a red
+      # slice on purpose, so it is NOT a full-suite proof and this step is skipped.
+      # It runs BEFORE the upload; the upload is `if: always()` so the artifact still
+      # publishes for the heal loop even when this gate reds.
+      - name: Assert the full-suite eval green proof (231/231, 0 reds)
+        if: inputs.scenarios == ''
+        env:
+          SHA: ${{ needs.prepare.outputs.sha }}
+          OUT_DIR: ${{ runner.temp }}/combined
+        run: uv run t3 eval green-proof "$OUT_DIR/eval-heal-$SHA.json"
       # Upload the ONE merged JSON under the `eval-heal-<sha>` name the
       # `t3 eval ci-status` download path resolves — the combine seam that keeps the
       # sharded run indistinguishable from a single-invocation run to every consumer.
