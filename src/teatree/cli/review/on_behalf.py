@@ -45,12 +45,13 @@ def on_behalf_gate_active() -> bool:
     as inactive (no behaviour change until it lands).
     """
     try:
-        from teatree.on_behalf_gate import OnBehalfVerdict, resolve_on_behalf_verdict  # noqa: PLC0415 — lazy CLI import
+        from teatree.on_behalf_gate import on_behalf_post_will_block  # noqa: PLC0415 — lazy CLI import
     except ModuleNotFoundError:
         return False
-    # "approve" is a non-draft action: PROCEED under IMMEDIATE, BLOCK under
-    # ASK and DRAFT_OR_ASK. AUTO_DRAFT never fires for "approve".
-    return resolve_on_behalf_verdict("approve") is not OnBehalfVerdict.PROCEED
+    # "approve" is a non-draft action: PROCEED under IMMEDIATE, BLOCK under ASK
+    # and DRAFT_OR_ASK (AUTO_DRAFT never fires for "approve"), so the proactive
+    # will-block pre-check is exactly this gate's active predicate.
+    return on_behalf_post_will_block("approve")
 
 
 def gate_target(repo: str, mr: int) -> str:
