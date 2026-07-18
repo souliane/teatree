@@ -115,18 +115,44 @@ default_branch=${default_branch:-main}
 # under BOTH invocation paths (souliane/teatree: prek does not forward pre-push
 # stdin to `language: system` hooks).
 refs_input=$(cat)
+synthesized=0
 if [ -z "${refs_input//[[:space:]]/}" ] && [ -n "${PRE_COMMIT_TO_REF:-}" ]; then
+  synthesized=1
   refs_input=$(printf '%s %s %s %s\n' \
     "${PRE_COMMIT_LOCAL_BRANCH:-HEAD}" "${PRE_COMMIT_TO_REF}" \
     "${PRE_COMMIT_REMOTE_BRANCH:-HEAD}" "${PRE_COMMIT_FROM_REF:-$ZERO}")
 fi
+
+# Is ${sha} the TRUE base to diff against for this ref update? On git's
+# native pre-push protocol the reported remote_sha IS the real remote-side
+# tip, so it is always authoritative. On the prek synthesized-from-env path
+# the value is `PRE_COMMIT_FROM_REF`, which git reports as a STALE ancestor
+# (a weeks-old `main` commit) for the first push of a long-lived branch that
+# merged `main` since it was created (#3414) — NOT all-zeros and NOT the
+# current tip. Trusting it re-includes dozens of already-public, immutable
+# commits and false-positives the identity guard and the content scan.
+# Trust the synthesized remote_sha ONLY when it is confirmed to be the
+# current tip of the branch's remote-tracking ref (i.e. the branch already
+# exists on the remote and this is an update push); otherwise fall back to
+# the merge-base with the remote default branch, the true new-content range.
+_remote_sha_is_trusted_base() {
+  local remote_ref="$1" sha="$2"
+  [ "${synthesized}" = "1" ] || return 0  # native stdin — git's sha is authoritative
+  local branch="${remote_ref#refs/heads/}"
+  [ -n "${branch}" ] && [ "${branch}" != "HEAD" ] || return 1
+  local tracked
+  tracked=$(git rev-parse --verify --quiet \
+    "refs/remotes/${remote_name}/${branch}" 2>/dev/null || true)
+  [ -n "${tracked}" ] && [ "${tracked}" = "${sha}" ]
+}
 
 blocked=0
 while read -r local_ref local_sha remote_ref remote_sha; do
   [ -n "${local_sha:-}" ] || continue
   [ "${local_sha}" != "${ZERO}" ] || continue  # branch deletion — skip
 
-  if [ "${remote_sha}" != "${ZERO}" ] && [ -n "${remote_sha}" ]; then
+  if [ "${remote_sha}" != "${ZERO}" ] && [ -n "${remote_sha}" ] \
+    && _remote_sha_is_trusted_base "${remote_ref}" "${remote_sha}"; then
     base="${remote_sha}"
   else
     base=$(git merge-base "${local_sha}" \
