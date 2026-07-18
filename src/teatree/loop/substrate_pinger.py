@@ -24,6 +24,15 @@ class NotifyWithFallbackSubstratePinger:
     """
 
     def ping(self, *, text: str, idempotency_key: str) -> None:  # noqa: PLR6301 — instance method satisfies the injected SubstratePinger Protocol.
+        # One kwarg per line, deliberately: gitleaks' generic-api-key rule keys off
+        # a ``…key=`` prefix and then captures the following high-entropy-looking
+        # text. On the one-line call it ran the capture on past ``idempotency_key=``
+        # onto ``audience=NotifyAudience.INTERNAL`` (an enum reference, no secret) and
+        # false-tripped the repo's own secret gate (#3344). Breaking each kwarg onto
+        # its own line stops the capture running across kwargs.
         notify_with_fallback(
-            text=text, kind=NotifyKind.INFO, idempotency_key=idempotency_key, audience=NotifyAudience.INTERNAL
+            text=text,
+            kind=NotifyKind.INFO,
+            idempotency_key=idempotency_key,
+            audience=NotifyAudience.INTERNAL,
         )

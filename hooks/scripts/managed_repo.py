@@ -60,7 +60,7 @@ def teatree_src_on_path() -> Iterator[None]:
                 sys.path.remove(src_dir)
 
 
-def db_overlays_registry() -> dict[str, Any] | None:
+def _db_overlays_registry() -> dict[str, Any] | None:
     """The DB-home ``overlays`` registry dict, or ``None`` on any absence/failure.
 
     The cold-hook twin of ``loader._inject_db_registries``: reads the canonical
@@ -83,10 +83,10 @@ def db_overlays_registry() -> dict[str, Any] | None:
 def overlays_registry() -> dict[str, Any]:
     """The effective overlay registry: the DB-home ``overlays`` ``ConfigSetting`` row.
 
-    Reads the migrated ``overlays`` row DB-only via :func:`db_overlays_registry`.
+    Reads the migrated ``overlays`` row DB-only via :func:`_db_overlays_registry`.
     ``{}`` when the DB read yields nothing/empty or fails.
     """
-    return db_overlays_registry() or {}
+    return _db_overlays_registry() or {}
 
 
 def load_protected_branches() -> set[str]:
@@ -206,6 +206,38 @@ def repo_root_is_teatree_managed(repo_root: str) -> bool:
     except Exception:  # noqa: BLE001 — crash-proof hook: any failure degrades silently, never breaks the tool call
         return False
     return any(entry in slug for entry in slugs) if slug else False
+
+
+def cwd_teatree_managed_state(cwd: Path) -> bool | None:
+    """Tri-state: whether *cwd* belongs to a teatree-managed repo.
+
+    Returns ``True`` (managed — the out-of-band merge gate keeps the keystone-merge
+    block), ``False`` (unmanaged — allow a raw merge), or ``None`` (cannot classify
+    — the caller fails SAFE and BLOCKS). This is the fail-SAFE-to-``None`` twin of
+    :func:`repo_root_is_teatree_managed` (which fails OPEN to ``False`` for its
+    protected-branch / main-clone consumers); the merge gate needs "unknown" kept
+    distinct from "unmanaged" so an unresolvable cwd blocks rather than allows.
+    Reuses :func:`overlay_managed_repo_signals` and ``publish_surface.slug_for_cwd``
+    so the host/owner/repo shape matches the rest of the managed-repo machinery.
+    """
+    slugs, paths = overlay_managed_repo_signals()
+    for base in paths:
+        # is_relative_to, not relative_to: a non-subpath returns False instead
+        # of raising ValueError, which the suppress() below does NOT catch — an
+        # uncaught crash here makes the crash-proof dispatcher fail OPEN.
+        with contextlib.suppress(OSError, RuntimeError):
+            if cwd.resolve().is_relative_to(base):
+                return True
+    try:
+        with teatree_src_on_path():
+            from teatree.hooks import publish_surface  # noqa: PLC0415 — deferred: cold-hook import after sys.path setup
+
+            slug = publish_surface.slug_for_cwd(cwd).lower()
+    except Exception:  # noqa: BLE001 — crash-proof hook: any failure degrades silently, never breaks the tool call
+        return None
+    if not slug:
+        return None
+    return any(entry in slug for entry in slugs)
 
 
 def resolve_branch_and_root(parent: str) -> tuple[str, str] | None:

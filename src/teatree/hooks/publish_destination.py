@@ -46,7 +46,7 @@ from typing import Final
 
 from teatree.config import cold_reader
 from teatree.hooks._command_parser import first_segment_words
-from teatree.hooks._gh_glab_hiding import token_has_substitution_marker, token_is_transport_construct
+from teatree.hooks._gh_glab_hiding import raw_has_live_substitution, token_is_transport_construct
 from teatree.hooks._python_rest_detection import find_python_forge_rest_urls, is_python_leader
 from teatree.hooks._repo_visibility import (
     forge_qualified_slug,
@@ -421,17 +421,28 @@ def resolve_publish_destination(command: str, cwd: Path | None = None) -> Destin
     return _destination_from_words(first_segment_words(command), cwd)
 
 
-def _segment_carries_substitution_or_transport(words: list[str]) -> bool:
-    """Return True iff any token is a substitution marker or transport construct.
+def _segment_carries_substitution_or_transport(words: list[str], raws: list[str]) -> bool:
+    """Return True iff any token is a LIVE substitution or a transport construct.
 
-    A ``$(...)`` / backtick / process-substitution token, or a
-    redirection/here-doc/group-opener token, can run a SECOND command (a
-    public post) when the shell expands the line -- so the gate must NOT skip
-    and must scan instead. Mirrors the carve-out's fail-closed posture on
-    these constructs (a quoted flag value carrying ``$(...)`` still trips the
-    substitution check, since a public post can hide inside a body value).
+    A ``$(...)`` / backtick / process-substitution that bash would EXPAND, or a
+    redirection/here-doc/group-opener token, can run a SECOND command (a public
+    post) when the shell processes the line -- so the gate must NOT skip and must
+    scan instead.
+
+    The substitution half reads each token's as-written source span (``raws``,
+    index-aligned with ``words``) via :func:`raw_has_live_substitution` rather than
+    its decoded value: a marker inside a SINGLE-quoted body value is inert literal
+    text bash passes verbatim (``--body 'name the `flag` here'``), so it cannot
+    launch a second command and must NOT force a scan on an otherwise
+    private-target post (#3357). A marker that is unquoted or inside DOUBLE quotes
+    still expands, so it still scans -- the exact live-versus-inert distinction the
+    sibling opaque-transport check already makes. An empty raw span fails closed
+    (treated as live). The transport-construct half stays on the decoded ``words``,
+    where it belongs.
     """
-    return any(token_has_substitution_marker(token) or token_is_transport_construct(token) for token in words)
+    if any(raw_has_live_substitution(raw) for raw in raws):
+        return True
+    return any(token_is_transport_construct(token) for token in words)
 
 
 def _segment_is_skip_inert(words: list[str]) -> bool:
