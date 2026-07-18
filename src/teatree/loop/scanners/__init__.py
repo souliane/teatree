@@ -15,6 +15,7 @@ from teatree.loop.scanners.askuserquestion_reply import AskUserQuestionReplyScan
 from teatree.loop.scanners.assigned_issues import AssignedIssuesScanner
 from teatree.loop.scanners.backlog_sweep import BacklogSweepScanner
 from teatree.loop.scanners.base import Scanner, ScanSignal
+from teatree.loop.scanners.ci_eval_heal import CiEvalHealScanner
 from teatree.loop.scanners.codex_review import CodexReviewScanner, GhCodexPrApi
 from teatree.loop.scanners.db_backup import DbBackupScanner
 from teatree.loop.scanners.deferred_question_poster import DeferredQuestionPosterScanner
@@ -75,6 +76,7 @@ __all__ = [
     "BackendChannelHistoryFetcher",
     "BacklogSweepScanner",
     "CallCommandMergeKeystone",
+    "CiEvalHealScanner",
     "CodexReviewScanner",
     "DbBackupScanner",
     "DeferredQuestionPosterScanner",

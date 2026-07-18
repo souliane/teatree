@@ -1560,6 +1560,8 @@ Usage: t3 eval [OPTIONS] COMMAND [ARGS]...
 │                         Scenario, Agent, File, Asserts).                     │
 │ run                     Run one scenario by name, or all scenarios when no   │
 │                         name is given.                                       │
+│ ci-heal                 Operator control of the CI-eval self-healing loop    │
+│                         (open sessions, list, dry-run advance).              │
 │ corpus                  Ground-truth corpus curation: list, inspect, and     │
 │                         grade captured sessions.                             │
 │ label                   Corpus-label curation: list nominations, scaffold a  │
@@ -2458,6 +2460,74 @@ Usage: t3 eval run [OPTIONS] [NAME]
 │                                                     [default: 3]             │
 │ --help                                              Show this message and    │
 │                                                     exit.                    │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+#### `t3 eval ci-heal`
+
+```
+Usage: t3 eval ci-heal [OPTIONS] COMMAND [ARGS]...
+
+ Operator control of the CI-eval self-healing loop (open sessions, list,
+ dry-run advance).
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Commands ───────────────────────────────────────────────────────────────────╮
+│ open     Open a pending heal session for a PR branch and print it as JSON.   │
+│ list     List the recent CI-eval heal sessions and their FSM state.          │
+│ advance  Run ONE advance pass over every open session by hand (an operator   │
+│          dry-run; reaches gh).                                               │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 eval ci-heal open`
+
+```
+Usage: t3 eval ci-heal open [OPTIONS]
+
+ Open a pending heal session for a PR branch and print it as JSON.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ *  --ref                     TEXT     PR branch to open a CI-eval heal       │
+│                                       session for.                           │
+│                                       [required]                             │
+│    --overlay                 TEXT     Overlay the branch belongs to          │
+│                                       (default: the core overlay).           │
+│    --max-fix-attempts        INTEGER  Bounded fix budget the PR-3b           │
+│                                       autonomous fixer honours (observe-only │
+│                                       ignores it).                           │
+│                                       [default: 2]                           │
+│    --help                             Show this message and exit.            │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 eval ci-heal list`
+
+```
+Usage: t3 eval ci-heal list [OPTIONS]
+
+ List the recent CI-eval heal sessions and their FSM state.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --json                  Emit the sessions as a JSON array.                   │
+│ --limit        INTEGER  Most-recent N sessions to show. [default: 50]        │
+│ --help                  Show this message and exit.                          │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 eval ci-heal advance`
+
+```
+Usage: t3 eval ci-heal advance [OPTIONS]
+
+ Run ONE advance pass over every open session by hand (an operator dry-run;
+ reaches gh).
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --json          Emit the advance outcomes as a JSON array.                   │
+│ --help          Show this message and exit.                                  │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 

@@ -208,6 +208,9 @@ t3 eval merge-summary-json shards/ --sha … --generated-at … --out eval-heal-
 t3 eval green-proof eval-heal-<sha>.json    # CI heal loop: assert the merged full-suite eval-heal JSON is the green proof — an executed, red-free run (0 behavioral/infra/judge/no_coverage reds, total > 0); non-zero on any red or an empty run
 t3 eval ci-trigger --ref <pr-branch>          # CI heal loop: dispatch eval-ci-heal (workflow_dispatch, scenarios/shards/credential/pr_ref inputs) against a PR branch; prints the head SHA the run keys on (non-blocking)
 t3 eval ci-status --ref <pr-branch>           # CI heal loop: resolve a PR branch's newest eval-ci-heal run and print its structured verdict + triaged reds (non-blocking)
+t3 eval ci-heal open --ref <pr-branch>        # CI heal loop (observe-only, default-OFF): open a heal session for a PR branch (the loop advances it; it never discovers branches itself)
+t3 eval ci-heal list                          # CI heal loop: list recent heal sessions and their FSM state (--json)
+t3 eval ci-heal advance                       # CI heal loop: run ONE advance pass over every open session by hand (operator dry-run; reaches gh) — GREEN or HALT+escalate, never a fix
 ```
 
 `changed-scenarios`, `merged-prs-since`, and `merge-summaries` are the reusable

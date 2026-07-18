@@ -13,6 +13,7 @@ from django_fsm import can_proceed
 from teatree.core.review.author_trust import classify_author
 from teatree.core.send_proxy import OutboundBlockedError, forge_from_url, route_forge_write
 from teatree.loop.dispatch import ActionPayload
+from teatree.loop.mechanical_ci_eval_heal import advance_ci_eval_heal
 from teatree.loop.mechanical_db_backup import run_db_backup
 from teatree.loop.mechanical_local_stack import drain_stack_queue_item, reap_idle_stack
 from teatree.loop.mechanical_resources import free_resources
@@ -401,4 +402,7 @@ HANDLERS: dict[str, Callable[[ActionPayload], None]] = {
     # Directive #2 daily control-DB backup — snapshot the live control DB +
     # prune past the keep-last-N-days retention, off the tick.
     "run_db_backup": run_db_backup,
+    # #3201 PR-3a CI-eval self-healing loop — advance every open heal session one
+    # FSM step (dispatch / poll / GREEN / HALT+escalate). Observe-only, never a fix.
+    "advance_ci_eval_heal": advance_ci_eval_heal,
 }
