@@ -164,10 +164,47 @@ apply_fleet_loop_policy() {
         fi
     done
 
+    # A loop in BOTH lists is a contradiction: the ENABLE pass forces it on, then
+    # the DISABLE pass would immediately force it off (admission resolves
+    # forced > preset > base), leaving a sanctioned-enabled loop silently MASKED
+    # on every init. This is exactly how `inbox` regressed (teatree.env carried it
+    # in both lists). ENABLED wins (it is the stronger, emergency-gated signal and
+    # the operator's explicit "must run here"): drop such loops from the disable
+    # set and WARN loudly. Resolving rather than `exit 1` is deliberate — a hard
+    # failure here would crash-loop init on an already-deployed box that carries
+    # the overlap (the very config that shipped), turning a silent mask into an
+    # outage. The warning tells the operator to de-dup teatree.env.
+    local pruned_disable=()
+    for loop in ${disable_loops[@]+"${disable_loops[@]}"}; do
+        local overlaps=
+        for other in ${enable_loops[@]+"${enable_loops[@]}"}; do
+            if [ "$loop" = "$other" ]; then
+                overlaps=1
+                break
+            fi
+        done
+        if [ -n "$overlaps" ]; then
+            echo "entrypoint: loop '${loop}' is in BOTH TEATREE_ENABLED_LOOPS and TEATREE_DISABLED_LOOPS - keeping it ENABLED (would otherwise be re-masked every restart); remove it from TEATREE_DISABLED_LOOPS in teatree.env to silence this warning" >&2
+        else
+            pruned_disable+=("$loop")
+        fi
+    done
+    disable_loops=(${pruned_disable[@]+"${pruned_disable[@]}"})
+
     # ENABLE clears any durable hold (only `enable` can) and sets Loop.enabled=True.
+    # It does NOT lift a stale forced-OFF override — so a loop this box left in the
+    # DISABLED set on a PRIOR deploy stays masked even after being promoted to the
+    # ENABLED set here (the override outlives the config change in LoopState). Clear
+    # the override right after enabling so a sanctioned-enabled loop can never remain
+    # forced off by leftover state; `clear` is neutral, so a still-enabled loop keeps
+    # running via Loop.enabled=True.
     for loop in ${enable_loops[@]+"${enable_loops[@]}"}; do
         if ! t3 loop enable "$loop" --emergency; then
             echo "entrypoint: 't3 loop enable ${loop} --emergency' FAILED - the DB-backed loop control plane is unreachable; confirm 't3 teatree db migrate' succeeded above and re-run Deploy" >&2
+            exit 1
+        fi
+        if ! t3 loop override "$loop" clear --reason "fleet policy: ${loop} is sanctioned-enabled here; drop any stale forced-off override from a prior deploy"; then
+            echo "entrypoint: 't3 loop override ${loop} clear' FAILED - the DB-backed loop control plane is unreachable; confirm 't3 teatree db migrate' succeeded above and re-run Deploy" >&2
             exit 1
         fi
     done
