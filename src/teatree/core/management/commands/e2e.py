@@ -10,7 +10,10 @@ from django_typer.management import TyperCommand, command
 
 from teatree.core.intake.resolve import resolve_worktree
 from teatree.core.management.commands import _e2e_discovery as _disc
+from teatree.core.management.commands import _e2e_lanes as _lanes
+from teatree.core.management.commands import _e2e_run_workitem as _workitem
 from teatree.core.management.commands import _e2e_runners as _runners
+from teatree.core.management.commands._test_plan import from_seams as _from_seams
 from teatree.core.management.commands._test_plan import post as _test_plan_post
 from teatree.core.management.commands._test_plan import tracked as _tracked_manifest
 from teatree.core.models import Ticket, Worktree
@@ -120,67 +123,14 @@ class Command(TyperCommand):
             branch=branch,
         )
         if work_item:
-            return self._run_work_item(work_item, at=at, opts=opts)
+            return _workitem.run_work_item(
+                work_item=work_item,
+                at=at,
+                test_path=opts.test_path,
+                dispatch=lambda: self._dispatch_runner(opts),
+                write_err=self.stderr.write,
+            )
         return self._dispatch_runner(opts)
-
-    def _run_work_item(
-        self,
-        work_item: str,
-        *,
-        at: str,
-        opts: DispatchOptions,
-    ) -> str:
-        """#794 keystone: resolve work item → ladder → run → record provenance.
-
-        Deterministic outcome: either the e2e result, or a precise readiness
-        failure naming the exact provisioning gap (which repo at which ref).
-        Auto-provisioning of the missing repo set is the larger follow-up; the
-        MVP runs an already-present workspace as-is and records the run's
-        SHA-set + result to the durable recipe keyed by ``issue_url``.
-        """
-        from teatree.core.intake.e2e_workitem import (  # noqa: PLC0415 — deferred: keeps command import light
-            record_run,
-            resolve_environment,
-            resolve_run_provenance,
-        )
-        from teatree.utils import git  # noqa: PLC0415 — deferred: keeps command import light
-
-        try:
-            ticket = Ticket.objects.resolve(work_item)
-        except Ticket.DoesNotExist:
-            self.stderr.write(
-                f"No work item matching {work_item!r} (looked up by pk and issue_url). "
-                "Provision it first: t3 <overlay> workspace ticket <issue_url>",
-            )
-            raise SystemExit(2) from None
-
-        resolution = resolve_environment(ticket, at=at)
-        if resolution.rung != "existing":
-            refs = ", ".join(f"{repo}@{ref}" for repo, ref in sorted(resolution.provision_at.items()))
-            self.stderr.write(
-                f"E2E readiness failed for {ticket}: workspace not present on disk.\n"
-                f"Ladder rung '{resolution.rung}' requires provisioning: {refs or '(no repos in recipe)'}.\n"
-                "Provision the work item first: t3 <overlay> workspace ticket <issue_url>",
-            )
-            raise SystemExit(1)
-
-        per_repo_shas: dict[str, str] = {}
-        for repo, wt_path in resolution.repo_dirs.items():
-            try:
-                per_repo_shas[repo] = git.head_sha(repo=wt_path)
-            except Exception:  # noqa: BLE001 — an unresolvable head SHA degrades to empty, never aborts discovery
-                per_repo_shas[repo] = ""
-
-        os.environ["T3_ORIG_CWD"] = next(iter(resolution.repo_dirs.values()))
-        provenance = resolve_run_provenance(get_overlay(), opts.test_path)
-
-        try:
-            result = self._dispatch_runner(opts)
-        except SystemExit as exc:
-            record_run(ticket, result="red", per_repo_shas=per_repo_shas, provenance=provenance)
-            raise SystemExit(exc.code) from exc
-        record_run(ticket, result="green", per_repo_shas=per_repo_shas, provenance=provenance)
-        return result
 
     def _dispatch_runner(self, opts: DispatchOptions) -> str:
         overlay = get_overlay()
@@ -300,6 +250,28 @@ class Command(TyperCommand):
             )
             raise SystemExit(2) from None
 
+    def _resolve_artifacts_dir(self, explicit: str) -> str:
+        """Resolve the out-of-repo E2E artifacts root the runner exports (#3331).
+
+        An explicit ``--artifacts-dir`` is honoured but REFUSED when it resolves
+        inside a repo working tree (captures never live in a source tree). Empty
+        derives ``<ticket_dir>/.t3-cache/artifacts`` from the resolved worktree;
+        an unresolvable worktree yields ``""`` (the var is simply not exported).
+        """
+        if explicit:
+            try:
+                _runners.refuse_artifacts_dir_in_repo(Path(explicit))
+            except _runners.ArtifactsDirInRepoError as exc:
+                self.stderr.write(str(exc))
+                raise SystemExit(2) from exc
+            return str(Path(explicit).expanduser())
+        try:
+            worktree = resolve_worktree()
+        except Exception:  # noqa: BLE001 — an unresolvable worktree degrades to no artifacts dir, never aborts
+            return ""
+        wt_path = (worktree.extra or {}).get("worktree_path", "") if worktree else ""
+        return str(_runners.e2e_artifacts_root(wt_path)) if wt_path else ""
+
     def _resolve_target(self, target: str) -> str:
         """Resolve the dual-env target deterministically.
 
@@ -327,6 +299,8 @@ class Command(TyperCommand):
         playwright_args: str = "",
         linked_to: int = 0,
         branch: str = _runners.BRANCH_OPTION,
+        artifacts_dir: str = "",
+        no_evidence: bool = False,
     ) -> str:
         """Run Playwright tests from an external repo (overlay repo, T3_PRIVATE_TESTS, or --repo).
 
@@ -365,6 +339,10 @@ class Command(TyperCommand):
         ``e2e.playwright_args(test_path)`` (e.g. ``-c <config>`` chosen by
         the spec's lane); overlay args go first, an explicit ``--playwright-args``
         follows so a caller can override.
+
+        The runner exports the out-of-repo ``T3_E2E_ARTIFACTS_DIR``
+        (``--artifacts-dir`` overrides; refused when it resolves inside a repo)
+        and the ``T3_E2E_CAPTURE_EVIDENCE`` flag (``--no-evidence`` opts out).
         """
         overlay_repo = _runners.overlay_e2e_repo(get_overlay().metadata.get_e2e_config())
         try:
@@ -392,7 +370,13 @@ class Command(TyperCommand):
             frontend_url,
             headed=headed,
             target=resolved_target,
-            context=_runners.make_e2e_env_context(test_path, worktree_compose_project, env_cache_override),
+            context=_runners.make_e2e_env_context(
+                test_path,
+                worktree_compose_project,
+                env_cache_override,
+                artifacts_dir=self._resolve_artifacts_dir(artifacts_dir),
+                capture_evidence=not no_evidence,
+            ),
         )
 
         self.stdout.write(f"  Running from: {private_tests_path}")
@@ -424,63 +408,26 @@ class Command(TyperCommand):
 
         ``--target dev|qa|local`` is exported as ``T3_E2E_TARGET`` for the in-repo
         suite (same contract as the ``external`` runner); empty falls back to
-        ``BASE_URL``-based inference.
+        ``BASE_URL``-based inference. The runner also exports the out-of-repo
+        ``T3_E2E_ARTIFACTS_DIR`` and the ``T3_E2E_CAPTURE_EVIDENCE`` flag on every
+        managed run (#3331); the ``external`` runner carries the
+        ``--artifacts-dir`` / ``--no-evidence`` overrides.
 
         Pass ``--update-snapshots`` to regenerate ``pytest-playwright-visual``
         baselines. Always do this inside the Docker image (the default) — the
         CI runner's Chromium renders fonts at different heights than macOS, so
         locally-generated baselines mismatch in CI.
         """
-        resolved_target = self._resolve_target(target)
-        try:
-            worktree = resolve_worktree()
-            wt_path = (worktree.extra or {}).get("worktree_path", ".") if worktree else "."
-        except Exception:  # noqa: BLE001 — an unresolvable worktree path degrades to cwd
-            wt_path = "."
-        overlay = get_overlay()
-        e2e_config = overlay.metadata.get_e2e_config()
-        settings_module = e2e_config.get("settings_module", "e2e.settings")
-        test_dir = test_path or e2e_config.get("test_dir", "e2e/")
-
-        if docker and not Path("/.dockerenv").exists():
-            compose_file = Path(wt_path) / "dev" / "docker-compose.yml"
-            if compose_file.is_file():
-                cmd = [
-                    "docker",
-                    "compose",
-                    "-f",
-                    str(compose_file),
-                    "run",
-                    "--rm",
-                    "-e",
-                    f"T3_E2E_TARGET={resolved_target}",
-                    "e2e",
-                    test_dir,
-                ]
-                if update_snapshots:
-                    cmd.append("--update-snapshots")
-                rc = run_streamed(cmd, cwd=wt_path, check=False)
-                if rc == 0:
-                    return "E2E passed."
-                self.stderr.write(f"E2E failed (exit {rc}).")
-                raise SystemExit(rc)
-
-        cmd = ["uv", "run", "pytest", test_dir]
-        cmd.extend(["-o", f"DJANGO_SETTINGS_MODULE={settings_module}", "--no-cov", "-p", "no:tach", "-v"])
-        if update_snapshots:
-            cmd.append("--update-snapshots")
-
-        env = {**os.environ, "DJANGO_SETTINGS_MODULE": settings_module, "T3_E2E_TARGET": resolved_target}
-        if headed:
-            env.pop("CI", None)
-        else:
-            env["CI"] = "1"
-
-        rc = run_streamed(cmd, cwd=wt_path, env=env, check=False)
-        if rc == 0:
-            return "E2E passed."
-        self.stderr.write(f"E2E failed (exit {rc}).")
-        raise SystemExit(rc)
+        opts = _runners.ProjectRunOptions(
+            test_path=test_path,
+            resolved_target=self._resolve_target(target),
+            headed=headed,
+            docker=docker,
+            update_snapshots=update_snapshots,
+            artifacts_dir=self._resolve_artifacts_dir(""),
+            capture_evidence=True,
+        )
+        return _runners.run_project_suite(opts, write_err=self.stderr.write)
 
     @command(name="post-test-plan")
     # ast-grep-ignore: ac-django-no-complexity-suppressions
@@ -495,6 +442,9 @@ class Command(TyperCommand):
         body_file: str = "",
         template: str = _TEMPLATE_OPTION,
         allow_no_video: bool = _ALLOW_NO_VIDEO_OPTION,
+        from_seams: bool = False,
+        spec_path: str = "",
+        artifacts_dir: str = "",
     ) -> _test_plan_post.PostTestPlanResult:
         """Post (or update) the ticket's single test-plan note from a manifest.
 
@@ -509,7 +459,17 @@ class Command(TyperCommand):
         posts a pre-authored body verbatim (no upload; mutually exclusive with
         ``--manifest``). See :mod:`._test_plan.post`. ``post-evidence`` is a hidden,
         deprecated alias.
+
+        ``--from-seams`` (#3329) assembles the ``scenario-plan`` note from the
+        overlay seams instead of a manifest: it folds ``overlay.e2e.scenarios``,
+        the run's captures, and the recipe's recorded SHAs. ``--spec-path`` /
+        ``--artifacts-dir`` default to the recipe's recorded ``last_run``.
         """
+        if from_seams:
+            request = _from_seams.FromSeamsRequest(
+                ticket=ticket, spec_path=spec_path, artifacts_dir=artifacts_dir, title=title
+            )
+            return _from_seams.run_from_seams(request, write_out=self.stdout.write, write_err=self.stderr.write)
         return _test_plan_post.run_post_test_plan(
             manifest=manifest,
             ticket=ticket,
@@ -528,6 +488,27 @@ class Command(TyperCommand):
         """Print a manifest's authored half (run provenance stripped) for a private test repo to commit."""
         return _tracked_manifest.run_tracked_manifest(
             manifest=manifest, write_out=self.stdout.write, write_err=self.stderr.write
+        )
+
+    @command()
+    def lanes(
+        self,
+        *,
+        json_output: Annotated[
+            bool, typer.Option("--json", help="Emit the {lane: [spec]} split as a JSON CI matrix.")
+        ] = False,
+        names: bool = False,
+        lane: str = "",
+    ) -> dict[str, list[str]]:
+        """Emit the ``{lane: [spec, ...]}`` split derived from the overlay's registered specs (#3329).
+
+        Core folds ``overlay.e2e.spec_paths()`` by ``run_provenance`` so a CI
+        matrix derives from the manifest the overlay already registered.
+        ``--json`` prints the object (a CI matrix); ``--names`` prints every spec
+        one per line (a shell loop); ``--lane <n>`` filters to one lane.
+        """
+        return _lanes.run_lanes(
+            as_json=json_output, names=names, lane=lane, overlay=get_overlay(), write_out=self.stdout.write
         )
 
     @command(name="retract-evidence")

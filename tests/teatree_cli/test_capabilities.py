@@ -43,6 +43,7 @@ def _switch_handler_params() -> dict[str, set[str]]:
         availability,
         checking,
         do,
+        e2e,
         env,
         followup,
         questions,
@@ -65,6 +66,7 @@ def _switch_handler_params() -> dict[str, set[str]]:
         # so its real ``--json`` param lives on the registered typer callback.
         "teatree signals": signals.Command.typer_app.registered_commands[0].callback,
         "teatree checking show": checking.Command.show,
+        "teatree e2e lanes": e2e.Command.lanes,
         "teatree env show": env.Command.show,
         # ``do`` is a bare-``handle`` command (no subcommand token); django-typer
         # replaces the class ``handle`` attribute with a generic wrapper, so its

@@ -32,6 +32,7 @@ EXPECTED_SURFACE: frozenset[str] = frozenset(
         "AttemptUsage",
         "BaseImageConfig",
         "CacheBreakpoint",
+        "Capture",
         "CommandFailedError",
         "CommandProbeSpec",
         "CompactionPolicy",
@@ -41,6 +42,7 @@ EXPECTED_SURFACE: frozenset[str] = frozenset(
         "CostReport",
         "DbImportStrategy",
         "DjangoDbImportConfig",
+        "E2eExtrasContext",
         "FailedE2EWatcher",
         "HTTPProbeSpec",
         "Harness",
@@ -67,6 +69,7 @@ EXPECTED_SURFACE: frozenset[str] = frozenset(
         "ResultEnvelopeError",
         "RunCommand",
         "RunCommands",
+        "Scenario",
         "SegmentStability",
         "ServiceSpec",
         "SkillMetadata",
@@ -156,11 +159,15 @@ EXPECTED_RUNTIME_SIGNATURES: dict[str, str] = {
 }
 
 EXPECTED_E2E_SIGNATURES: dict[str, str] = {
-    "env_extras": "(self, env_cache: dict[str, str]) -> dict[str, str]",
+    "env_extras": (
+        "(self, env_cache: dict[str, str], *, context: teatree.core.e2e_scenario.E2eExtrasContext = "
+        "E2eExtrasContext(target='', spec_path='', artifacts_dir='', compose_project='')) -> dict[str, str]"
+    ),
     "playwright_args": "(self, spec_path: str) -> list[str]",
     "preflight": ("(self, *, customer: str | None, base_url: str | None) -> list[collections.abc.Callable[[], None]]"),
     "run_provenance": "(self, spec_path: str) -> str",
-    "scenarios": "(self, spec_path: str) -> tuple",
+    "scenarios": "(self, spec_path: str) -> tuple[teatree.core.e2e_scenario.Scenario, ...]",
+    "spec_paths": "(self) -> tuple[str, ...]",
 }
 
 EXPECTED_REVIEW_SIGNATURES: dict[str, str] = {

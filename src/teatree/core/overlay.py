@@ -3,7 +3,6 @@ import json
 import logging
 from abc import ABC, abstractmethod
 from collections.abc import Callable
-from dataclasses import dataclass
 from importlib import import_module
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -12,6 +11,8 @@ import httpx
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from teatree.backends.types import Service
+from teatree.core.e2e_scenario import Capture, E2eExtrasContext, Scenario
+from teatree.core.failed_e2e_watcher import FailedE2EWatcher
 from teatree.core.gates.merge_guard import MergeGuard
 from teatree.core.modelkit.phases import canonicalize_stage_skill_keys, normalize_phase
 from teatree.core.overlay_metadata import OverlayMetadata
@@ -48,7 +49,9 @@ logger = logging.getLogger(__name__)
 __all__ = [
     "DEFAULT_TRANSITION_EMOJIS",
     "BaseImageConfig",
+    "Capture",
     "DbImportStrategy",
+    "E2eExtrasContext",
     "FailedE2EWatcher",
     "HealthCheck",
     "MergeGuard",
@@ -63,6 +66,7 @@ __all__ = [
     "ProvisionStep",
     "RunCommand",
     "RunCommands",
+    "Scenario",
     "ServiceSpec",
     "SkillMetadata",
     "SymlinkSpec",
@@ -73,30 +77,6 @@ __all__ = [
 
 
 # ── Overlay configuration ────────────────────────────────────────────
-
-
-@dataclass(frozen=True, slots=True)
-class FailedE2EWatcher:
-    """One Slack-channel watcher spec for capability E (#1295).
-
-    The loop's ``FailedE2EPostsScanner`` consumes a list of these from
-    :meth:`OverlayConfig.get_failed_e2e_watchers`; each watcher tells the
-    scanner which channel to poll, how to recognise a failed-E2E post in
-    that channel, how to extract the failing spec path from one bullet,
-    and which agent skill to dispatch with the extracted spec.
-
-    ``post_pattern`` is a regex applied to the *message text* — a match
-    means "this is a failed-E2E post". ``spec_pattern`` is a regex
-    applied to one bullet line and must yield the spec path in either
-    group(1) or the named group ``spec``; non-matching bullets are
-    skipped. ``agent_skill`` is the skill name (e.g. ``"t3:e2e"``) the
-    dispatcher routes the resulting signal to.
-    """
-
-    channel_id: str
-    post_pattern: str
-    spec_pattern: str
-    agent_skill: str = "t3:e2e"
 
 
 DEFAULT_TRANSITION_EMOJIS: dict[str, str] = {
@@ -530,10 +510,27 @@ class OverlayRuntime:
         return []
 
 
-class OverlayE2E:
-    """End-to-end test concern — ``overlay.e2e``."""
+_EMPTY_EXTRAS_CONTEXT = E2eExtrasContext()
 
-    def env_extras(self, env_cache: dict[str, str]) -> dict[str, str]:
+
+class OverlayE2E:
+    """End-to-end test concern — ``overlay.e2e``.
+
+    The runner (``_e2e_runners``) OWNS target resolution, the artifacts dir, and
+    the evidence flag; it hands :meth:`env_extras` a frozen
+    :class:`E2eExtrasContext` so an overlay's extras key off the *same* target
+    core routed at — never a re-derived ``BASE_URL`` host regex (#3331).
+    """
+
+    def env_extras(
+        self, env_cache: dict[str, str], *, context: E2eExtrasContext = _EMPTY_EXTRAS_CONTEXT
+    ) -> dict[str, str]:
+        """Overlay-specific Playwright env vars (e.g. ``CUSTOMER``); ``{}`` default.
+
+        *env_cache* is the parsed per-worktree env file; *context* carries the run
+        facts core resolved. An overlay whose extras depend on the target reads
+        ``context.target`` rather than classifying ``BASE_URL`` by host.
+        """
         return {}
 
     def run_provenance(self, spec_path: str) -> str:
@@ -541,20 +538,22 @@ class OverlayE2E:
         return ""
 
     def playwright_args(self, spec_path: str) -> list[str]:
-        """Extra ``npx playwright test`` CLI args for *spec_path* (e.g. ``-c <config>``).
-
-        The args-sibling of :meth:`env_extras`: a multi-config Playwright suite
-        needs the runner to pass the right ``-c <config>`` per spec; the overlay
-        knows the lane->config mapping, core does not. Default ``[]``.
-        """
+        """Extra ``npx playwright test`` CLI args for *spec_path* (e.g. the lane's ``-c <config>``); ``[]`` default."""
         return []
 
-    def scenarios(self, spec_path: str) -> tuple:
-        """Return the per-feature acceptance scenarios for *spec_path*; ``()`` default.
+    def scenarios(self, spec_path: str) -> tuple[Scenario, ...]:
+        """The authored acceptance scenarios for *spec_path*; ``()`` default (#3329).
 
-        The overlay-agnostic seam the templated-test-plan renderer reads
-        scenarios through. Core never parses the scenario shape; it just threads
-        the tuple to the renderer.
+        Each element is a frozen :class:`~teatree.core.e2e_scenario.Scenario`
+        core owns — the single authoring shape ``--from-seams`` folds into the note.
+        """
+        return ()
+
+    def spec_paths(self) -> tuple[str, ...]:
+        """Enumerate the overlay's registered spec paths; ``()`` default (#3329).
+
+        The spec-enumeration seam ``e2e lanes`` folds over, grouping specs by
+        :meth:`run_provenance`; core cannot list an overlay's specs itself.
         """
         return ()
 

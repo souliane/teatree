@@ -51,7 +51,7 @@
 "src/teatree/core/management/commands/db.py" = 1
 "src/teatree/core/management/commands/dogfood.py" = 1
 "src/teatree/core/management/commands/dream.py" = 2
-"src/teatree/core/management/commands/e2e.py" = 2
+"src/teatree/core/management/commands/e2e.py" = 1
 "src/teatree/core/management/commands/followup.py" = 2
 "src/teatree/core/management/commands/handover.py" = 1
 "src/teatree/core/management/commands/lifecycle.py" = 3

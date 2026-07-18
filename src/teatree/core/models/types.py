@@ -461,6 +461,12 @@ class E2ELastRunSerialized(TypedDict, total=False):
     # indistinguishable from a pre-#272 row.
     spec_path: str
     manifest_entry: str
+    # The out-of-repo artifacts root the runner exported as
+    # ``T3_E2E_ARTIFACTS_DIR`` for this run (#3331). Recorded so
+    # ``post-test-plan --from-seams`` (#3329) can default the artifacts dir to
+    # the run's after the workspace is cleaned, instead of the overlay
+    # re-deriving it. Absent on rows recorded before the runner owned the path.
+    artifacts_dir: str
 
 
 class E2ERecipeSerialized(TypedDict, total=False):
