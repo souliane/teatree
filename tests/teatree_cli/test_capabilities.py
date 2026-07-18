@@ -39,6 +39,7 @@ def _switch_handler_params() -> dict[str, set[str]]:
     from teatree.cli import info as cli_info  # noqa: PLC0415
     from teatree.cli import tokens as cli_tokens  # noqa: PLC0415
     from teatree.cli.config import show as cli_config_show  # noqa: PLC0415
+    from teatree.cli.doctor import app as cli_doctor_app  # noqa: PLC0415 — lazy: no Django bootstrap at module import
     from teatree.core.management.commands import (  # noqa: PLC0415
         availability,
         checking,
@@ -72,6 +73,7 @@ def _switch_handler_params() -> dict[str, set[str]]:
         # replaces the class ``handle`` attribute with a generic wrapper, so its
         # real params live on the registered typer callback, not on ``Command.handle``.
         "teatree do": do.Command.typer_app.registered_commands[0].callback,
+        "doctor check": cli_doctor_app.check,
         "cost": cli_cost.cost,
         "tokens": cli_tokens.tokens,
         "config show": cli_config_show,

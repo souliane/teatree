@@ -256,6 +256,16 @@ class TestE2eRunWorkItem(TestCase):
     provenance on the durable recipe.
     """
 
+    def setUp(self) -> None:
+        # ``run_work_item`` sets ``os.environ["T3_ORIG_CWD"]`` as a live-process
+        # side effect (fine for the short-lived CLI, a cross-test leak under
+        # pytest). Snapshot + restore the whole environment around each test so
+        # the addition is stripped afterwards and never pollutes a shared shard.
+        super().setUp()
+        env_patch = patch.dict(os.environ, clear=False)
+        env_patch.start()
+        self.addCleanup(env_patch.stop)
+
     def _git(self, path: Path, *args: str) -> None:
         subprocess.run([_GIT, "-C", str(path), *args], check=True, capture_output=True, text=True)
 
