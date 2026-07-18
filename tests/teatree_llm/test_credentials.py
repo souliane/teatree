@@ -193,7 +193,12 @@ class TestExport:
     def test_export_resolves_and_writes_the_value_into_os_environ(self, monkeypatch: pytest.MonkeyPatch) -> None:
         # export() is the in-process side effect a docker `-e VARNAME` pass-through
         # relies on: the key must land in os.environ so the passthrough forwards it.
-        monkeypatch.delenv(_API_KEY_ENV, raising=False)
+        # Seed the var THROUGH monkeypatch (not a bare delenv, which records no undo
+        # for an already-absent key) so teardown reliably strips what export() writes
+        # straight into os.environ — otherwise the value leaks into every later
+        # test's environment, a cross-shard order-dependent flake. The credential
+        # resolves from the injected store, not env, so the seeded value is inert.
+        monkeypatch.setenv(_API_KEY_ENV, "")
         store = _FakePassSource({_API_KEY_PASS: "sk-pass"})
         credential = _api_key_credential([store], pass_path_override=_API_KEY_PASS)
         returned = credential.export()

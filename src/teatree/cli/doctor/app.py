@@ -14,6 +14,7 @@ from importlib.metadata import PackageNotFoundError
 import typer
 
 from teatree.cli.doctor.checks_availability import _check_availability_override_staleness
+from teatree.cli.doctor.checks_docker import _check_docker_workflow_wired
 from teatree.cli.doctor.checks_environment import (
     _check_configured_review_skills,
     _check_dangling_editable_pth,
@@ -85,6 +86,7 @@ __all__ = (
     "_check_configured_review_skills",
     "_check_connector_manifest",
     "_check_dangling_editable_pth",
+    "_check_docker_workflow_wired",
     "_check_dream_staleness",
     "_check_dream_transcript_visibility",
     "_check_editable_sanity",
@@ -220,6 +222,13 @@ def run_doctor_checks(*, repair: bool = False) -> bool:
     # #3271: INFO-suggest the OPTIONAL chrome-devtools MCP e2e/debug aid when it is
     # absent. Never a WARN/FAIL and never gates — teatree's runtime requires zero MCP.
     _check_chrome_devtools_mcp_suggestion()
+
+    # #3232: WARN when the operator has opted into the containerized `t3` workflow
+    # (a `t3 setup`-installed shell alias) but a piece the wrapper depends on is
+    # missing/stale — the compose stack, the executable `deploy/t3` entry, the
+    # docker CLI, or a non-drifted alias path. Silent inside a container and on a
+    # host that never opted in. Surfacing-only — never gates the exit code.
+    _check_docker_workflow_wired()
 
     # H24 self-heal (owner directive #10): the hard-FAIL silent-freeze detectors —
     # dead compose containers, a free worker flock over overdue loop work, a

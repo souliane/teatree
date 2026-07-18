@@ -92,6 +92,42 @@ init_preflight() {
     fi
 }
 
+# Provision ~/.claude/settings.json so the containerized (headless) agent is
+# CONFIGURABLE — model, permission mode, autoMode grants, tool-use concurrency —
+# instead of running on stock Claude Code defaults (#3359). Without this the
+# claude_sdk harness spawns the `claude` CLI, which reads ~/.claude/settings.json,
+# and that file simply never existed in the container.
+#
+# The reviewable default lives in the committed, image-baked
+# deploy/claude-settings.template.json; three env vars override the box-specific knobs.
+# Deploy-managed keys WIN over an existing file (a redeploy re-asserts the intended
+# config) while UNMANAGED keys the later `t3 setup` adds — notably statusLine — are
+# preserved (`jq '.[0] * .[1]'` deep-merges, right wins). MUST run before `t3 setup`.
+seed_claude_settings() {
+    local template="/usr/local/share/teatree/claude-settings.template.json"
+    local target="$HOME/.claude/settings.json"
+    if [ ! -f "$template" ]; then
+        echo "teatree-init: no claude-settings template at $template - skipping (agent runs on CLI defaults)" >&2
+        return 0
+    fi
+    mkdir -p "$HOME/.claude"
+    local managed
+    managed="$(jq \
+        --arg model "${TEATREE_CLAUDE_MODEL:-}" \
+        --arg mode "${TEATREE_CLAUDE_PERMISSION_MODE:-}" \
+        --arg conc "${TEATREE_CLAUDE_TOOL_CONCURRENCY:-}" \
+        '(if $model != "" then .model = $model else . end)
+        | (if $mode != "" then .permissions.defaultMode = $mode else . end)
+        | (if $conc != "" then .env.CLAUDE_CODE_MAX_TOOL_USE_CONCURRENCY = $conc else . end)' \
+        "$template")"
+    if [ -f "$target" ]; then
+        jq -s '.[0] * .[1]' "$target" <(printf '%s' "$managed") >"$target.tmp" && mv "$target.tmp" "$target"
+    else
+        printf '%s\n' "$managed" >"$target"
+    fi
+    echo "teatree-init: provisioned ~/.claude/settings.json (model=$(jq -r .model "$target"), mode=$(jq -r .permissions.defaultMode "$target"))"
+}
+
 # Seed a config value only when the operator has NOT already overridden it, so a
 # re-deploy never clobbers an operator's change (e.g. loop_runner_enabled=false).
 seed_setting() {
@@ -272,6 +308,9 @@ init)
     ( cd "$CLONE_DIR" && prek install -f \
         && sed -i 's#^PREK="/opt/teatree/uv/tools/prek/bin/prek"#PREK="prek"#' \
             .git/hooks/pre-push .git/hooks/pre-commit .git/hooks/commit-msg 2>/dev/null )
+    # Provision the agent's ~/.claude/settings.json BEFORE `t3 setup` — setup's
+    # statusLine writer merges into (never clobbers) the file this seeds (#3359).
+    seed_claude_settings
     t3 setup
     t3 teatree db migrate
     # Values are JSON: enum strings are quoted, booleans and ints are bare.

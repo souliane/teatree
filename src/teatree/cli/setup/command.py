@@ -17,6 +17,7 @@ from teatree.cli.dep_drift_repair import repair_dep_drift as _repair_dep_drift
 from teatree.cli.doctor import agent_skill_dirs
 from teatree.cli.setup.apm import ApmInstaller, strip_apm_hooks
 from teatree.cli.setup.clone import find_main_clone, validate_repo
+from teatree.cli.setup.docker_alias import DockerAliasInstaller
 from teatree.cli.setup.mcp_registrar import McpServerRegistrar
 from teatree.cli.setup.plugin_registrar import PluginRegistrar
 from teatree.cli.setup.skill_linker import CORE_EXCLUDED_SKILLS, SkillLinker
@@ -78,6 +79,12 @@ def run(
         typer.echo(f"OK    Stripped {stripped} APM-injected hook(s) from settings.json.")
 
     _report_statusline_install(settings_json, repo)
+
+    # #3232: wire the containerized `t3` workflow — install a shell alias pointing
+    # `t3` at the container-wrapping `deploy/t3` entry so `t3 <args>` transparently
+    # execs into the Docker worker. No-ops inside a container (there the container
+    # IS the CLI); best-effort on the host (an unwritable rc WARNs, never aborts).
+    DockerAliasInstaller(repo).install(echo=typer.echo)
 
     from teatree.config import clone_root, load_config  # noqa: PLC0415 — deferred: keeps CLI startup light
 

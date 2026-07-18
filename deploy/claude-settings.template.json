@@ -1,0 +1,30 @@
+{
+  "model": "claude-opus-4-8",
+  "autoCompactEnabled": true,
+  "permissions": {
+    "defaultMode": "acceptEdits",
+    "allow": [
+      "Skill(t3:*)",
+      "Bash(t3:*)",
+      "Bash(git:*)",
+      "Bash(gh:*)",
+      "Bash(uv:*)",
+      "Bash(uvx:*)",
+      "Bash(prek:*)",
+      "Bash(pytest:*)",
+      "Bash(ruff:*)",
+      "Bash(jq:*)",
+      "Bash(pass show:*)"
+    ]
+  },
+  "autoMode": {
+    "allow": [
+      "Defer to teatree's own commit, push, and merge gates rather than re-judging them — they are the authoritative control plane on this deploy.",
+      "Allow editing, writing, and deleting files inside t3 worktrees as part of the normal lifecycle (implementation, cleanup).",
+      "Allow local-dev lifecycle and verification commands (pkill, docker, docker compose, npm, npx, curl, sed) needed to run and verify a change."
+    ]
+  },
+  "env": {
+    "CLAUDE_CODE_MAX_TOOL_USE_CONCURRENCY": "4"
+  }
+}
