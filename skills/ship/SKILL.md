@@ -342,6 +342,16 @@ This gate exists because the overlay's own CI MR-title validator (the validating
 
 > **PreToolUse hook:** The unified hook router intercepts `glab mr create/update` (and the MCP equivalents) and validates title + description against the active overlay's rules **by default** via `t3 tool validate-mr` — no env-var opt-in — **blocking** non-compliant calls before the push with a clear error. The verdict is the same one `t3 <overlay> pr create` enforces. Fix the reported issues and retry — no manual validation needed.
 
+#### Concise Body (directive #4)
+
+The commit message body and the PR/MR description are **bullets, not prose**. A reviewer skims the body to know what changed and why — give them that in the fewest lines:
+
+- Bullet points, one change or reason per line. No multi-paragraph narrative.
+- State *what* changed and *why*; skip the blow-by-blow of *how* (that's the diff).
+- No filler ("This PR aims to…", "As we can see…"), no restating the title, no marketing.
+- Keep the structured sections (scope matrix, `Open questions & assumptions`) — they are terse by design, not prose.
+- Be RIGHT but concise — cut words, never a load-bearing decision or caveat.
+
 #### Open Questions & Assumptions (Non-Negotiable)
 
 Any open question (solved or not) and any assumption that is not 100% explicit from the spec itself MUST be listed in **both** the git commit message body **and** the PR/MR description, under an `Open questions & assumptions` section. This is the single source of truth for the requirement — the commit-format reference and `code/SKILL.md` point here.
