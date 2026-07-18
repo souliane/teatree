@@ -93,12 +93,23 @@ def format_on_behalf_block_message(target: str, action: str) -> str:
     ``t3@on_behalf_ask`` CLI stub, so the stub's refusal text can never drift from
     the production block message (vendored-by-derivation + a parity test, per
     ``/t3:rules`` § "Read the Canonical Source Before Fixing a Conformance Bug").
+
+    The message names BOTH **solution-oriented** ways to clear the gate — enable
+    the setting durably, or approve just this once — and never the wrong
+    "bypass the gate or do it yourself" pair (``/t3:rules`` § "Anticipate a
+    Predictable Gate"). Best used *proactively*: a caller that can foresee the
+    block via :func:`teatree.on_behalf_gate.on_behalf_post_will_block` surfaces
+    this choice to the owner BEFORE attempting the post, so the reactive raise is
+    rarely reached.
     """
     return (
         f"on-behalf post blocked by on_behalf_post_mode (#960): "
         f"{action} on {target!r} needs explicit user approval first. "
-        f"The user records it (no terminal required) with:\n"
-        f"    t3 review approve-on-behalf {target!r} {action} --approver <user-id>\n"
+        f"Offer the owner the solution-oriented choice — never bypass-or-DIY:\n"
+        f"  1. Enable the setting durably: "
+        f"t3 <overlay> config_setting set on_behalf_post_mode immediate\n"
+        f"  2. Approve just this once (no terminal required): "
+        f"t3 review approve-on-behalf {target!r} {action} --approver <user-id>\n"
         f"then the agent re-runs this post. Never publish unattended."
     )
 

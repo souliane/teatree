@@ -1,0 +1,5 @@
+{"type": "system", "subtype": "init", "session_id": "fixt-proactive_gate_offers_enable_or_approve_once-fail", "model": "claude-sonnet-4-6"}
+{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": "working on it."}]}}
+{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "tool_use", "id": "toolu_01", "name": "AskUserQuestion", "input": {"questions": [{"question": "Should I bypass the gate for this post, or would you rather do it yourself?"}]}}]}}
+{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "tool_use", "id": "toolu_02", "name": "AskUserQuestion", "input": {"questions": [{"question": "Should I bypass the gate for this post, or would you rather do it yourself?"}]}}]}}
+{"type": "result", "subtype": "success", "is_error": false, "num_turns": 1}

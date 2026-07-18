@@ -17,7 +17,7 @@ from django.test import TestCase
 
 from teatree.config import OnBehalfPostMode
 from teatree.core.models import ConfigSetting
-from teatree.on_behalf_gate import OnBehalfVerdict, resolve_on_behalf_verdict
+from teatree.on_behalf_gate import OnBehalfVerdict, on_behalf_post_will_block, resolve_on_behalf_verdict
 
 
 class _OnBehalfDbBase(TestCase):
@@ -49,6 +49,28 @@ class TestExplicitModes(_OnBehalfDbBase):
         assert resolve_on_behalf_verdict("post_comment") is OnBehalfVerdict.BLOCK
         # Draft is colleague-invisible: EXEMPT even under ASK — it auto-drafts.
         assert resolve_on_behalf_verdict("post_draft_note") is OnBehalfVerdict.AUTO_DRAFT
+
+
+class TestProactivePreCheck(_OnBehalfDbBase):
+    """``on_behalf_post_will_block`` is the forward-looking BLOCK predicate.
+
+    A caller runs it BEFORE attempting a colleague-visible post so it can offer
+    the owner the enable-setting / approve-once choice proactively, instead of
+    hitting the gate and only then reacting.
+    """
+
+    def test_visible_post_will_block_under_a_blocking_mode(self) -> None:
+        ConfigSetting.objects.set_value("on_behalf_post_mode", "ask")
+        assert on_behalf_post_will_block("post_comment") is True
+
+    def test_immediate_mode_will_not_block(self) -> None:
+        ConfigSetting.objects.set_value("on_behalf_post_mode", "immediate")
+        assert on_behalf_post_will_block("post_comment") is False
+
+    def test_draft_form_action_will_not_block_even_under_ask(self) -> None:
+        # A draft AUTO_DRAFTs (colleague-invisible), so it never needs a pre-ask.
+        ConfigSetting.objects.set_value("on_behalf_post_mode", "ask")
+        assert on_behalf_post_will_block("post_draft_note") is False
 
 
 class TestPerOverlayOverride(_OnBehalfDbBase):

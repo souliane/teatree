@@ -157,3 +157,23 @@ def resolve_on_behalf_verdict(action: str) -> OnBehalfVerdict:
     if action in _DRAFT_FORM_ACTIONS:
         return OnBehalfVerdict.AUTO_DRAFT
     return OnBehalfVerdict.BLOCK
+
+
+def on_behalf_post_will_block(action: str) -> bool:
+    """Whether *action* WILL BLOCK under the effective mode — the proactive pre-check.
+
+    The forward-looking companion to :func:`resolve_on_behalf_verdict`: a caller
+    runs this BEFORE attempting a colleague-visible on-behalf post so it can
+    surface the owner's solution-oriented choice up front — enable the setting
+    durably, or approve just this once (see
+    :func:`teatree.core.on_behalf_gate_recorded.format_on_behalf_block_message`) —
+    instead of blundering into the BLOCK and only then reacting. The gate is an
+    extra safety net, not the primary control (``/t3:rules`` § "Anticipate a
+    Predictable Gate"), so anticipating the predictable block one action ahead is
+    the point: teatree should ideally never hit it.
+
+    ``True`` iff the verdict is :attr:`OnBehalfVerdict.BLOCK`; a draft-form action
+    (AUTO_DRAFT) and an :attr:`OnBehalfVerdict.PROCEED` action both return
+    ``False`` — neither needs a pre-ask.
+    """
+    return resolve_on_behalf_verdict(action) is OnBehalfVerdict.BLOCK
