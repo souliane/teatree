@@ -243,6 +243,15 @@ lint.per-file-ignores."src/teatree/core/overlay.py" = [
 lint.per-file-ignores."src/teatree/core/views/*.py" = [
   "PLR6301", # Django class-based views intentionally implement HTTP verb methods on the class
 ]
+# Packaged portable repo-quality hooks (#3312) — the same git-driven CLI gates
+# that live under scripts/hooks/, relocated here so a non-editable teatree
+# install can run them via `t3 hook run`. Their git shell-outs go through the
+# typed teatree.utils.run wrapper (chokepoint-compliant); the only src-tree
+# exemption they need is print() for the gate's own report output, exactly as
+# the scripts/** tree allows.
+lint.per-file-ignores."src/teatree/hooks/portable/*.py" = [
+  "T201", # print (hook report output)
+]
 # Trusted internal subprocess wrappers around git and postgres CLIs.
 lint.per-file-ignores."src/teatree/utils/*.py" = [
   "S404",

@@ -73,6 +73,7 @@ _ALLOWED_ROOT_ENTRIES = frozenset(
         ".markdownlint-cli2.yaml",
         ".mcp.json",
         ".pre-commit-config.yaml",
+        ".pre-commit-hooks.yaml",  # pre-commit hook-provider manifest (#3312)
         ".python-version",
     }
 )

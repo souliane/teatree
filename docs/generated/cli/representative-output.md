@@ -47,6 +47,8 @@ Usage: t3 [OPTIONS] COMMAND [ARGS]...
 │                 suite; subcommands target one lane.                          │
 │ doctor          Smoke-test hooks, imports, services.                         │
 │ tool            Standalone utilities.                                        │
+│ hook            Run teatree's portable repo-quality hooks in any repo        │
+│                 (#3312).                                                     │
 │ setup           First-time setup and global skill management.                │
 │ update          Sync teatree core and registered overlays to their default   │
 │                 branch.                                                      │

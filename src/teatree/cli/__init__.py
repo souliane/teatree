@@ -55,6 +55,7 @@ from teatree.cli.dream import dream_app
 from teatree.cli.eval import eval_app
 from teatree.cli.eval.skill_command_lane import register_command_registry_provider
 from teatree.cli.goal import goal_app
+from teatree.cli.hook import hook_app
 from teatree.cli.identities import identities_app
 from teatree.cli.loop import loop_app
 from teatree.cli.loops import loops_app
@@ -185,6 +186,7 @@ app.add_typer(review_request_app, name="review-request")
 app.add_typer(eval_app, name="eval")
 app.add_typer(doctor_app, name="doctor")
 app.add_typer(tool_app, name="tool")
+app.add_typer(hook_app, name="hook")
 app.add_typer(setup_app, name="setup")
 app.add_typer(update_app, name="update")
 app.add_typer(assess_app, name="assess")
