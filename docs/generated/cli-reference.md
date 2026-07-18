@@ -7758,6 +7758,12 @@ Usage: t3 teatree pr create [OPTIONS] TICKET_ID
  separate, explicit opt-in that disables that format check too — needed
  only in the rare case where a non-canonical title must ship anyway.
 
+ ``--adopt-worktree`` opens a follow-up PR on a ticket whose prior PR
+ already merged and whose worktree row was torn down (#3327): it attaches
+ the invoking on-disk worktree as a new row and reopens the terminal
+ ticket to a shippable state once the #788 hollow-ship guard confirms the
+ fresh branch has real commits — so already-merged work is never re-shipped.
+
 ╭─ Arguments ──────────────────────────────────────────────────────────────────╮
 │ *    ticket_id      TEXT  [required]                                         │
 ╰──────────────────────────────────────────────────────────────────────────────╯
@@ -7770,6 +7776,8 @@ Usage: t3 teatree pr create [OPTIONS] TICKET_ID
 │                                                        no-skip-mr-format-ch… │
 │ --skip-visual-qa                                 TEXT                        │
 │ --sync                   --no-sync                     [default: no-sync]    │
+│ --adopt-worktree         --no-adopt-worktree           [default:             │
+│                                                        no-adopt-worktree]    │
 │ --help                                                 Show this message and │
 │                                                        exit.                 │
 ╰──────────────────────────────────────────────────────────────────────────────╯

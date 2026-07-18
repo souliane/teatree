@@ -107,6 +107,10 @@ class _FakeCodeHost:
         _ = (repo, pr_iid)
         return []
 
+    def list_pr_discussions(self, *, repo: str, pr_iid: int) -> list[dict[str, object]]:
+        _ = (repo, pr_iid)
+        return []
+
     def upload_file(self, *, repo: str, filepath: str) -> dict[str, object]:
         _ = (repo, filepath)
         return {}

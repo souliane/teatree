@@ -246,6 +246,12 @@ def _auto_register_from_git(cwd: str, ticket_hint: Ticket | None = None) -> Work
     as a LAST resort before forking a fresh ``auto:<branch>`` ticket — it
     rescues a moved or stale-``worktree_path`` worktree of a non-numbered branch
     without forking a duplicate, and can no longer out-vote real attribution.
+
+    The workspace-owner hint is best-effort and DECLINES (returns ``None``) on
+    an ambiguous parent (#3379) rather than aborting: an ad-hoc worktree under a
+    shared parent that already holds several tickets' worktrees must still reach
+    the branch+repo reuse and the ``auto:`` fork below, not raise out of the
+    single CLI entry point and route the caller onto a raw script.
     """
     cwd_path = Path(cwd).resolve()
     git_file = cwd_path / ".git"
@@ -367,9 +373,13 @@ def workspace_owner_ticket(workspace_dir: Path) -> Ticket | None:
 
     The one-ticket-per-workspace-dir invariant: at most one ticket's worktrees
     share a workspace dir (#641). More than one owner means the invariant is
-    violated; raising :class:`WorkspaceOwnerCollisionError` is the single
-    fail-loud policy both ``_auto_register_from_git`` and the ``workspace``
-    command resolver share — never an arbitrary pick.
+    violated; raising :class:`WorkspaceOwnerCollisionError` is the fail-loud
+    policy for the ``workspace`` command resolver, where an operator explicitly
+    named a workspace dir — an arbitrary pick there would be a real
+    mis-attribution. The auto-register attribution chain consults the
+    best-effort private wrapper :func:`_workspace_owner_ticket` instead, which
+    demotes this raise to ``None`` (#3379) so its own designed fallbacks stay
+    reachable for an ad-hoc worktree under a shared parent.
     """
     owners = tickets_owning_workspace_dir(workspace_dir)
     if len(owners) > 1:
@@ -383,13 +393,32 @@ def workspace_owner_ticket(workspace_dir: Path) -> Ticket | None:
 
 
 def _workspace_owner_ticket(cwd_path: Path) -> Ticket | None:
-    """Return the ticket that owns *cwd_path*'s workspace dir, if any.
+    """Return the ticket that owns *cwd_path*'s workspace dir, or ``None`` when ambiguous.
 
     Thin wrapper resolving the workspace dir (the parent that holds the repo
-    subdirs) and delegating to :func:`workspace_owner_ticket` so the
-    attribution chain shares the one fail-loud multi-owner policy (#641).
+    subdirs) and delegating to :func:`workspace_owner_ticket`. It is the LAST,
+    best-effort hint of the ``_auto_register_from_git`` attribution chain (#3379),
+    keyed on the parent directory — a signal core already documents as unreliable
+    for a worktree added ad-hoc straight into a SHARED workspace parent (that
+    parent legitimately holds unrelated repos, so ``tickets_owning_workspace_dir``
+    sees many owners that do not describe this worktree).
+
+    A best-effort hint whose empty answer the chain already handles (branch+repo
+    reuse, then an ``auto:<branch>`` fork) must DECLINE, not abort its caller: a
+    multi-owner parent yields ``None`` here so those designed fallbacks stay
+    reachable. The public :func:`workspace_owner_ticket` keeps failing loud for
+    the ``workspace`` command resolver, where an operator explicitly named a
+    workspace dir and an arbitrary pick would be a real mis-attribution.
     """
-    return workspace_owner_ticket(cwd_path.parent)
+    try:
+        return workspace_owner_ticket(cwd_path.parent)
+    except WorkspaceOwnerCollisionError:
+        logger.debug(
+            "Ambiguous workspace parent %s (multiple ticket owners); declining the "
+            "best-effort hint so the attribution chain's own fallbacks run.",
+            cwd_path.parent,
+        )
+        return None
 
 
 def _is_main_clone(path: str) -> bool:
