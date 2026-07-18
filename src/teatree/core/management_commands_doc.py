@@ -8,12 +8,16 @@ regenerated alongside other generated docs and covered by the existing
 """
 
 import json
+import logging
+from collections.abc import Sequence
 from pathlib import Path
 from typing import TypedDict
 
 import click
 from django.core.management import get_commands, load_command_class
 from typer.main import get_command
+
+logger = logging.getLogger(__name__)
 
 
 class SubcommandEntry(TypedDict):
@@ -34,33 +38,49 @@ class ManagementCommandsDocPayload(TypedDict):
 # Commands that exist as helper modules but are not real management commands.
 _EXCLUDED = frozenset({"tasks_session_view"})
 
-# App label that owns the commands we document.
+# App label that owns core's own commands — the default the checked-in doc builds against.
 _APP_LABEL = "teatree.core"
 
 
-def build_management_commands_doc_payload() -> ManagementCommandsDocPayload:
-    """Introspect every Django management command registered under ``teatree.core``.
+def build_management_commands_doc_payload(
+    app_labels: Sequence[str] = (_APP_LABEL,),
+) -> ManagementCommandsDocPayload:
+    """Introspect every Django management command owned by one of *app_labels*.
 
-    Returns a stable, deterministic payload (sorted by name) so the generated
-    JSON is diff-friendly and idempotent across runs.
+    ``get_commands()`` keys every registered command by its owning app label;
+    the default documents only ``teatree.core``, so core's own build is
+    unchanged. A consuming project passes its own app label(s) alongside
+    ``teatree.core`` to generate ONE reference covering core + its own commands
+    rather than two disjoint files (#3356).
+
+    Each command is loaded with the label that actually owns it, so an overlay
+    command loads under its own app — not core's. Returns a stable, deterministic
+    payload (sorted by name) so the generated JSON is diff-friendly and idempotent.
     """
-    all_cmds = get_commands()
-    core_names = sorted(name for name, app in all_cmds.items() if app == _APP_LABEL and name not in _EXCLUDED)
+    wanted = frozenset(app_labels)
+    owned = sorted((name, app) for name, app in get_commands().items() if app in wanted and name not in _EXCLUDED)
 
     commands: list[CommandEntry] = []
-    for name in core_names:
-        entry = _introspect_command(name)
+    for name, app in owned:
+        entry = _introspect_command(name, app)
         if entry is not None:
             commands.append(entry)
 
     return {"commands": commands}
 
 
-def _introspect_command(name: str) -> CommandEntry | None:
-    """Load and introspect a single management command, returning None on failure."""
+def _introspect_command(name: str, app_label: str) -> CommandEntry | None:
+    """Load and introspect a single management command, returning None on failure.
+
+    A command that cannot be imported under the docs-build settings is skipped —
+    but the skip is LOGGED with its exception (#3356) rather than swallowed, so a
+    dropped command is visible in the build output instead of silently absent from
+    the generated reference.
+    """
     try:
-        klass = load_command_class(_APP_LABEL, name)
-    except Exception:  # noqa: BLE001 — a non-importable command is skipped in the doc build
+        klass = load_command_class(app_label, name)
+    except Exception:
+        logger.warning("skipping management command %r (app %r): failed to import", name, app_label, exc_info=True)
         return None
 
     typer_app = getattr(klass, "typer_app", None)
@@ -116,12 +136,19 @@ def render_management_commands_markdown(payload: ManagementCommandsDocPayload) -
     return "\n".join(lines).rstrip("\n") + "\n"
 
 
-def write_management_commands_doc(output_dir: Path) -> tuple[Path, Path]:
+def write_management_commands_doc(
+    output_dir: Path,
+    app_labels: Sequence[str] = (_APP_LABEL,),
+) -> tuple[Path, Path]:
     """Build the payload, render Markdown, and write both files.
+
+    *app_labels* threads through to :func:`build_management_commands_doc_payload`
+    so a consuming project can render core + its own commands in one reference
+    (#3356); the default keeps core's own build unchanged.
 
     Returns ``(json_path, markdown_path)`` for callers that need to report them.
     """
-    payload = build_management_commands_doc_payload()
+    payload = build_management_commands_doc_payload(app_labels)
     markdown = render_management_commands_markdown(payload)
 
     json_path = output_dir / "management-commands.json"

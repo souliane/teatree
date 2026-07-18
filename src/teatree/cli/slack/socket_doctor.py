@@ -46,6 +46,7 @@ from teatree.cli.slack.manifest import (
 )
 from teatree.cli.slack.provision import _export_with_rotation, _slack_overlays
 from teatree.cli.slack.token_store import app_token_slot
+from teatree.core.messaging_tokens import diagnose_configured_ref
 from teatree.utils.secrets import read_pass
 
 
@@ -158,6 +159,22 @@ def _no_config_token_message(app_id: str, gaps: ManifestSocketGaps) -> str:
     )
 
 
+def _check_user_token_ref(overlay: str) -> list[SocketModeFinding]:
+    """Diagnose a configured-but-unresolvable ``user_token_ref`` (#3334).
+
+    ``user_token_ref`` is a FULL PATH (unlike ``slack_token_ref``, a prefix), and
+    a wrong guess reads back empty and degrades to bot-only silently. This gives
+    the doctor a check for the SECOND messaging ref, not just the first: a set ref
+    that resolves to nothing surfaces as a WARN naming the exact field and entry,
+    instead of reactions quietly never landing on Slack-Connect channels.
+    """
+    ref = read_overlay_field(overlay, "user_token_ref")
+    diagnosis = diagnose_configured_ref("user_token_ref", ref)
+    if diagnosis is None:
+        return []
+    return [SocketModeFinding(overlay, Level.WARN, diagnosis)]
+
+
 def _check_manifest(overlay: str) -> list[SocketModeFinding]:
     app_id = resolve_overlay_app_id(overlay)
     if not app_id:
@@ -200,6 +217,7 @@ def check_slack_socket_mode() -> SocketModeOutcome:
     for overlay in _slack_overlays():
         try:
             findings.extend(_check_app_token(overlay))
+            findings.extend(_check_user_token_ref(overlay))
             findings.extend(_check_manifest(overlay))
         except Exception as exc:  # noqa: BLE001 — one overlay's failure must not abort the rest
             findings.append(

@@ -33,7 +33,7 @@ class OverlayScaffolder:
                 from teatree.core.overlay import OverlayBase
 
                 if TYPE_CHECKING:
-                    from teatree.core.models import Worktree
+                    from teatree.overlay_sdk import WorktreeLike
                     from teatree.types import ProvisionStep, SkillMetadata
 
 
@@ -43,7 +43,7 @@ class OverlayScaffolder:
                     def get_repos(self) -> list[str]:
                         return []
 
-                    def get_provision_steps(self, worktree: "Worktree") -> list["ProvisionStep"]:
+                    def get_provision_steps(self, worktree: "WorktreeLike") -> list["ProvisionStep"]:
                         return []
 
                     def get_skill_metadata(self) -> "SkillMetadata":

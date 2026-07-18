@@ -57,7 +57,12 @@ _CORE_DIR = Path(__file__).resolve().parents[2] / "src" / "teatree" / "core"
 # out of overlay.py to keep it under the 500-LOC cap once OverlayE2E grew the
 # spec_paths seam. A pure overlay-config leaf consumed by the loop's
 # FailedE2EPostsScanner, owned by no existing subpackage (mirrors notify_targets.py).
-PINNED_FLAT_CORE_MODULES = 71
+# 74: +connector_probes.py / messaging_tokens.py / overlay_skills.py (#3333/#3334/#3355) —
+# each a flat sibling of the existing root leaves it belongs with: connector_probes
+# with connector_preflight/connector_manifest/connector_keys; messaging_tokens with
+# send_proxy/notify/reply_transport; overlay_skills with overlay/overlay_loader/
+# overlay_metadata. None is owned by an existing subpackage.
+PINNED_FLAT_CORE_MODULES = 74
 
 
 def _flat_core_modules() -> list[str]:

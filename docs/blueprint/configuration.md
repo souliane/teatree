@@ -601,7 +601,8 @@ Overlay-specific configuration lives on `overlay.config` (an `OverlayConfig` dat
 |---|---|---|---|
 | `messaging_backend` | `Literal["slack", "noop"]` | `"noop"` | Selects which `MessagingBackend` the loader returns |
 | `slack_scope_profile` | `Literal["full", "dm_only"]` | `"full"` | `"full"` = read/write-everywhere bot + shared xoxp user token. `"dm_only"` = a bot restricted to its one owner's DM: minimal bot scopes, no user token, no channel joins; the loader builds it with `owner_dm_only=True` so a non-owner destination fails loud |
-| `slack_token_ref` | `str` | `""` | `pass` entry prefix; `<ref>-bot` and `<ref>-app` resolve the two tokens |
+| `slack_token_ref` | `str` | `""` | `pass` entry **prefix**; `<ref>-bot` and `<ref>-app` resolve the two tokens |
+| `user_token_ref` | `str` | `""` | `pass` entry **full path** (NOT a prefix — read verbatim); holds the human's `xoxp-` user token for Slack-Connect reactions. A configured-but-unresolvable ref is flagged by `t3 doctor` (#3334) |
 | `slack_user_id` | `str` | `""` | The user's Slack ID (used to filter mentions/DMs) |
 | `get_review_channel()` | `tuple[str, str]` | `("", "")` | (channel name, channel ID) for review-request messages |
 | `get_transition_emojis()` | `dict[str, str]` | `DEFAULT_TRANSITION_EMOJIS` | Emoji reactions per ticket-state transition |

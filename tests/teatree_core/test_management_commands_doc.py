@@ -1,10 +1,13 @@
 """Tests for management-commands doc generation — auto-generated, drift-gated."""
 
 import json
+import logging
 from pathlib import Path
 
+import pytest
 from django.core.management import call_command
 
+from teatree.core import management_commands_doc
 from teatree.core.management_commands_doc import (
     ManagementCommandsDocPayload,
     build_management_commands_doc_payload,
@@ -175,6 +178,56 @@ class TestGenerateManagementCommandsDocCommand:
         call_command("generate_management_commands_doc", output_dir=str(output_dir))
         assert (output_dir / "management-commands.md").read_text(encoding="utf-8") == first_md
         assert (output_dir / "management-commands.json").read_text(encoding="utf-8") == first_json
+
+
+class TestAppLabelParameterization:
+    """#3356: the app label is a parameter, so overlay commands are not omitted."""
+
+    def test_default_documents_core(self) -> None:
+        names = {e["name"] for e in build_management_commands_doc_payload()["commands"]}
+        assert "lifecycle" in names
+
+    def test_a_foreign_only_label_excludes_core(self) -> None:
+        payload = build_management_commands_doc_payload(app_labels=("some.other.app",))
+        assert payload["commands"] == []
+
+    def test_a_command_owned_by_a_passed_label_is_documented(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        # An overlay command loads under ITS OWN app label, not core's — the pin
+        # that used to drop every non-``teatree.core`` command (#3356).
+        monkeypatch.setattr(
+            management_commands_doc,
+            "get_commands",
+            lambda: {"lifecycle": "teatree.core", "overlay_only": "my_overlay.app"},
+        )
+        loaded: list[tuple[str, str]] = []
+
+        def _fake_load(app_label: str, name: str) -> object:
+            loaded.append((app_label, name))
+            return type("C", (), {"help": f"{name} help", "typer_app": None})
+
+        monkeypatch.setattr(management_commands_doc, "load_command_class", _fake_load)
+
+        payload = build_management_commands_doc_payload(app_labels=("teatree.core", "my_overlay.app"))
+        names = {e["name"] for e in payload["commands"]}
+        assert names == {"lifecycle", "overlay_only"}
+        assert ("my_overlay.app", "overlay_only") in loaded
+
+    def test_a_command_that_fails_to_import_is_logged_not_swallowed(
+        self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        monkeypatch.setattr(management_commands_doc, "get_commands", lambda: {"boom": "teatree.core"})
+
+        def _raise(app_label: str, name: str) -> object:
+            msg = "boom cannot import"
+            raise ImportError(msg)
+
+        monkeypatch.setattr(management_commands_doc, "load_command_class", _raise)
+
+        with caplog.at_level(logging.WARNING, logger="teatree.core.management_commands_doc"):
+            payload = build_management_commands_doc_payload()
+
+        assert payload["commands"] == []
+        assert any("boom" in rec.message for rec in caplog.records)
 
 
 class TestGenerateAllDocsIncludesManagementCommands:

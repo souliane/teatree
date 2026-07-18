@@ -102,6 +102,7 @@ from teatree.overlay_sdk.factory import (
     run_headless,
     validate_result_keys,
 )
+from teatree.overlay_sdk.protocols import TicketLike, WorktreeLike
 from teatree.types import (
     BaseImageConfig,
     DbImportStrategy,
@@ -166,12 +167,14 @@ __all__ = [
     "SkillMetadata",
     "SymlinkSpec",
     "TicketBudget",
+    "TicketLike",
     "TimeoutExpired",
     "ToolCommand",
     "UnknownHarnessError",
     "UnstableCacheHeadError",
     "ValidationResult",
     "Variant",
+    "WorktreeLike",
     "__overlay_api_version__",
     "assert_byte_stable_head",
     "build_lane_b_toolsets",
