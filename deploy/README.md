@@ -179,7 +179,7 @@ Do this once as an admin on the box.
 | `HETZNER_SSH_KEY` | the deploy **private** SSH key |
 | `HETZNER_SSH_KNOWN_HOSTS` | the box's host key line(s) for strict checking |
 | `CLAUDE_CODE_OAUTH_TOKEN` | Claude Code OAuth token — the headless auth |
-| `TEATREE_GH_TOKEN` | GitHub token for the loop (clone/read/PRs) |
+| `TEATREE_GH_TOKEN` | GitHub token for the loop. Needs **write** on `issues`, `pull_requests`, and `contents` (plus `metadata: read`) — `init` preflights these and fails loud if any is missing (#3405) |
 | `T3_ADMIN_USER` | Django admin superuser name |
 | `T3_ADMIN_PASSWORD` | Django admin superuser password |
 | `GIT_AUTHOR_NAME` | git identity for the loop's commits |

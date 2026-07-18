@@ -5,8 +5,10 @@ from unittest.mock import patch
 import pytest
 
 from teatree.utils.ram_probe import (
+    _cgroup_v2_cpu_quota,
     _linux_ram_used_percent,
     _macos_ram_used_percent,
+    available_cpu_count,
     default_provision_concurrency,
     read_ram_used_percent,
 )
@@ -62,6 +64,49 @@ def test_default_provision_concurrency_floors_at_one() -> None:
     assert default_provision_concurrency(cpu_count=0) == 1
 
 
-def test_default_provision_concurrency_reads_os_cpu_count_when_unset() -> None:
-    with patch("teatree.utils.ram_probe.os.cpu_count", return_value=6):
+def test_default_provision_concurrency_reads_available_cpu_when_unset() -> None:
+    with patch("teatree.utils.ram_probe.available_cpu_count", return_value=6):
         assert default_provision_concurrency() == 3
+
+
+def test_available_cpu_count_takes_the_minimum_signal() -> None:
+    # A host with 8 physical cores but a 2-core cgroup quota must derive from 2.
+    with (
+        patch("os.process_cpu_count", return_value=8),
+        patch("teatree.utils.ram_probe.os.cpu_count", return_value=8),
+        patch("teatree.utils.ram_probe._cgroup_v2_cpu_quota", return_value=2),
+    ):
+        assert available_cpu_count() == 2
+
+
+def test_available_cpu_count_ignores_absent_cgroup_cap() -> None:
+    with (
+        patch("os.process_cpu_count", return_value=4),
+        patch("teatree.utils.ram_probe.os.cpu_count", return_value=4),
+        patch("teatree.utils.ram_probe._cgroup_v2_cpu_quota", return_value=None),
+    ):
+        assert available_cpu_count() == 4
+
+
+def test_available_cpu_count_floors_at_one() -> None:
+    with (
+        patch("os.process_cpu_count", return_value=None),
+        patch("teatree.utils.ram_probe.os.cpu_count", return_value=None),
+        patch("teatree.utils.ram_probe._cgroup_v2_cpu_quota", return_value=None),
+    ):
+        assert available_cpu_count() == 1
+
+
+def test_cgroup_v2_cpu_quota_parses_capped() -> None:
+    with patch("pathlib.Path.read_text", return_value="150000 100000\n"):  # 1.5 cores → ceil 2
+        assert _cgroup_v2_cpu_quota() == 2
+
+
+def test_cgroup_v2_cpu_quota_unlimited_is_none() -> None:
+    with patch("pathlib.Path.read_text", return_value="max 100000\n"):
+        assert _cgroup_v2_cpu_quota() is None
+
+
+def test_cgroup_v2_cpu_quota_missing_file_is_none() -> None:
+    with patch("pathlib.Path.read_text", side_effect=OSError):
+        assert _cgroup_v2_cpu_quota() is None

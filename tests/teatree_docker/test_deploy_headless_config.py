@@ -12,6 +12,7 @@ import json
 import stat
 from pathlib import Path
 
+from teatree.cli.recommended_authorizations import RECOMMENDED_AUTHORIZATIONS
 from teatree.docker.workflow import COMPOSE_REL, WRAPPER_REL
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -59,6 +60,14 @@ class TestHeadlessClaudeSettings:
     def test_env_concurrency_is_a_positive_int(self) -> None:
         data = self._settings()
         assert int(data["env"]["CLAUDE_CODE_MAX_TOOL_USE_CONCURRENCY"]) > 0
+
+    def test_automode_carries_every_recommended_authorization(self) -> None:
+        # #3408/#3410: the template's autoMode.allow is the single source both host
+        # (`t3 setup --write-automode`) and container seed apply, so it must carry the
+        # full recommended set — a fresh box is then classifier-unblocked everywhere.
+        allow = self._settings()["autoMode"]["allow"]
+        for rec in RECOMMENDED_AUTHORIZATIONS:
+            assert rec.sentence in allow, f"template autoMode.allow is missing the {rec.key!r} recommendation"
 
 
 class TestEntrypointAndDockerfileWiring:

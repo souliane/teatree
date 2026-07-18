@@ -20,8 +20,15 @@
   "autoMode": {
     "allow": [
       "Defer to teatree's own commit, push, and merge gates rather than re-judging them — they are the authoritative control plane on this deploy.",
+      "Allow editing ~/.claude/settings.json and files under ~/.claude/hooks/ — teatree manages its own hooks and settings registration there.",
       "Allow editing, writing, and deleting files inside t3 worktrees as part of the normal lifecycle (implementation, cleanup).",
-      "Allow local-dev lifecycle and verification commands (pkill, docker, docker compose, npm, npx, curl, sed) needed to run and verify a change."
+      "Allow local-dev lifecycle and verification commands (pkill, docker, docker compose, pipenv, playwright, npm, npx, curl, sed) when run as part of a t3 lifecycle or verification step.",
+      "Allow `gh pr merge` ONLY when the PR's required CI checks are all green (mergeStateStatus CLEAN); otherwise it stays gated.",
+      "Allow `t3 <overlay> lifecycle visit-phase <id> <phase> --agent-id ...` for recording phase attestation.",
+      "Allow the sanctioned merge path — `t3 <overlay> ticket clear ...` (orchestrator, independent reviewer identity) followed by `t3 <overlay> ticket merge <clear_id>` (agent executes) — for all blast classes including substrate/self-improvement, with safety enforced in the MergeClear preconditions (independent reviewer != loop, SHA-bound, live-green required checks, substrate needs a recorded human approver). Raw `gh pr merge` / `glab mr merge` is NOT authorized by this rule.",
+      "Allow `docker exec` into teatree deployment containers and installing the teatree editable package with extras via uv (e.g. `uv tool install --editable '<clone>[slack]'`) as part of Slack/deploy setup and runtime provisioning in Docker.",
+      "Allow reading an overlay's own Slack workspace data via its bot token (including `users.list` / `users.lookupByEmail`) STRICTLY to resolve or verify the owner's own Slack user id for DM-only provisioning — never bulk member-PII export.",
+      "Allow teatree provisioning to write overlay config state in the DB overlays registry (messaging backend, token references, user id, DM channel) via `t3 setup` or `t3 <overlay> config_setting set` during Slack or deploy setup."
     ]
   },
   "env": {
