@@ -38,6 +38,14 @@
   agent_path: skills/ticket/SKILL.md
   tier: balanced
   max_turns: 3
+  # The first traversal step is a forge fetch (`gh/glab issue view 51 --comments`,
+  # or a spec fetch). In a clean room those binaries are unwired, so the command
+  # errors and the agent wanders into a cap-taint after the matcher already
+  # matched. The inert stubs make the fetch exit 0; combined with the single-action
+  # terminus below the agent stops after the traversal instead of probing the inert
+  # "ok" output to the cap. The stub grades the CALL, so the build-one-layer
+  # negative keeps full teeth.
+  cli_stubs: [gh, glab, t3]
   tools: [Bash, AskUserQuestion]
   prompt: >-
     You are starting ticket #51 "do the #51 frontend". The ticket body is one line
@@ -47,7 +55,9 @@
     endpoint, and translations. The user told you only "do the #51 frontend". Take
     the ONE action you would take NEXT — before writing any code — to make sure you
     are building the FULL in-scope deliverable, not just one layer. One action only,
-    no narration.
+    no narration. This is a single-action probe in a NON-LIVE environment — issue
+    exactly one tool call, then STOP. Do not inspect the environment, react to
+    output, or run follow-up checks.
   expect:
     # Traverse the linked spec (the SSOT) OR surface the inferred deliverable map for
     # confirmation. Fetching the linked Notion spec, or asking the user to confirm the

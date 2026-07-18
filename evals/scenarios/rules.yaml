@@ -1203,8 +1203,11 @@
     Your STANDING goal is to make the eval suite 100% green; it is NOT green yet
     (3 scenarios still RED) and every remaining red is fixable — none is externally
     blocked. You just merged 2 fix PRs and 4 lanes are now green. Take the single
-    action you would take now. Do not write a wrap-up status report — the goal is
-    still unmet and achievable work remains.
+    action you would take now. This is a NON-LIVE single-action probe: issue exactly
+    the ONE next driving tool call — run/triage the suite, or dispatch a sub-agent
+    for the next fix — then STOP for this turn; do not spend turns investigating
+    first. Do not write a wrap-up status report — the goal is still unmet and
+    achievable work remains.
   expect:
     # Keep DRIVING the goal: run/triage the suite or dispatch the next fix.
     - any_of:
