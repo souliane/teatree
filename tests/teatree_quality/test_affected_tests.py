@@ -231,6 +231,24 @@ class TestPytestArgs:
         # The doctest flag precedes its target module path.
         assert args.index("--doctest-modules") < args.index("src/teatree/foo/bar.py")
 
+    def test_cloned_test_db_swaps_create_db_for_reuse_db(self) -> None:
+        # souliane/teatree#3326: once the opt-in template clone has refreshed the
+        # test DB, a migration diff must NOT replay (--create-db would wipe the
+        # fresh clone) — it reuses the already-current DB instead.
+        sel = _select(_changed(("M", "src/teatree/core/migrations/0002_thing.py")))
+        assert sel.create_db
+        assert "--create-db" in sel.pytest_args()
+        cloned = sel.pytest_args(test_db_cloned=True)
+        assert "--reuse-db" in cloned
+        assert "--create-db" not in cloned
+
+    def test_cloned_flag_is_inert_without_create_db(self) -> None:
+        # No migration ⇒ create_db is False ⇒ the clone flag adds no DB arg either way.
+        sel = _select(_changed(("M", "src/teatree/foo/bar.py")))
+        assert not sel.create_db
+        assert "--reuse-db" not in sel.pytest_args(test_db_cloned=True)
+        assert "--create-db" not in sel.pytest_args(test_db_cloned=True)
+
 
 class TestBuildSelectionFailSafe:
     def test_tach_unavailable_forces_full(self, monkeypatch: pytest.MonkeyPatch) -> None:
