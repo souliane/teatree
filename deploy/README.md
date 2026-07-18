@@ -68,6 +68,34 @@ from the operator's real DB.
 `teatree_src` and `teatree_uv` stay Docker-managed named volumes for now (later
 PRs handle code-mount modes).
 
+### UID invariant — the container user must equal the host deploy user
+
+Every state, credential, and session mount in the table above is a **host bind
+mount at path identity**, so each file on the host disk carries the host deploy
+user's numeric UID while the container writes it as the image's `teatree` user.
+Those two must be the **same UID**, or every bind mount is unwritable from inside
+the container and `init` crash-loops on its first write.
+
+`deploy/Dockerfile` therefore pins the container `teatree` user to a
+**deterministic UID** — the `TEATREE_UID` build arg, default **1000** — and removes
+Ubuntu 24.04's stock `ubuntu` user (which already occupies UID 1000) so `teatree`
+can claim it. A fresh box's first non-root user (`adduser teatree` in the bootstrap
+below) is UID 1000, so the default lines up with no extra step, and `deploy.sh`
+pre-creates every bind-mount source owned by that deploy user before the stack
+starts.
+
+If your deploy user is not UID 1000, build the image with a matching UID so the
+mounts stay writable:
+
+```bash
+docker compose -f deploy/docker-compose.yml build \
+    --build-arg TEATREE_UID="$(id -u)"
+```
+
+Changing the container UID on a box that already has bind-mount data written under
+the old UID requires a one-time `chown` of the bind sources to the new UID (stack
+stopped), otherwise the pre-existing files stay unwritable.
+
 ### One-time volume migration (operator step)
 
 A box that ran an older deploy has its state in Docker named volumes

@@ -2,7 +2,10 @@
 # selected by $TEATREE_ROLE. Extends the dev/Dockerfile.test toolchain and adds
 # gh. The teatree source is NOT baked: it is cloned onto a volume at runtime and
 # installed editable by the init role, so the image is just the toolchain.
-FROM ubuntu:24.04
+#
+# Digest-pinned to the same ubuntu:24.04 manifest dev/Dockerfile.test pins, so a
+# retag of the floating tag can never silently change the deploy toolchain.
+FROM ubuntu:24.04@sha256:4fbb8e6a8395de5a7550b33509421a2bafbc0aab6c06ba2cef9ebffbc7092d90
 
 # Toolchain layer — ca-certificates, curl, git, jq, sqlite3, direnv, node 24, the
 # claude CLI (as in dev/Dockerfile.test) plus gh, plus pass/gnupg so the box can
@@ -65,6 +68,22 @@ RUN mkdir -p \
     chown -R teatree:teatree /home/teatree /opt/teatree
 
 COPY --chmod=0755 deploy/entrypoint.sh /usr/local/bin/entrypoint.sh
+
+# Align the runtime user to a DETERMINISTIC UID (the TEATREE_UID build arg,
+# default 1000). Every host bind mount is at path identity (see
+# deploy/README.md § UID invariant), so the container UID MUST equal the host
+# deploy user's UID or every bind mount is unwritable and init crash-loops on
+# its first write. Ubuntu 24.04 ships a stock `ubuntu` user already holding UID
+# 1000, so it is removed to free the id; the teatree user created above (at the
+# next free id) is renumbered onto TEATREE_UID and its already-populated home
+# tree is re-owned to the new id. A fresh box's first `adduser` is UID 1000, so
+# the default lines up with no extra step; override with
+# `--build-arg TEATREE_UID=<n>` when the deploy user is not 1000.
+ARG TEATREE_UID=1000
+RUN userdel -r ubuntu 2>/dev/null || true; \
+    usermod -u "${TEATREE_UID}" teatree && \
+    groupmod -g "${TEATREE_UID}" teatree && \
+    chown -R teatree:teatree /home/teatree /opt/teatree  # privacy-scan:allow
 
 # The deploy-managed default ~/.claude/settings.json template (#3359). The init
 # role generates the container's real settings.json from this (plus env overrides)

@@ -50,14 +50,23 @@ git -C "$REPO_ROOT" fetch --prune origin
 git -C "$REPO_ROOT" pull --ff-only
 echo "deploy: deploying $(git -C "$REPO_ROOT" rev-parse --abbrev-ref HEAD) @ $(git -C "$REPO_ROOT" rev-parse --short HEAD)"
 
-# The credential-plane bind sources must pre-exist owned by the deploy user —
-# dockerd would otherwise create a missing source ROOT-owned, locking the user
-# out of later `pass insert` provisioning. Empty dirs are the sane degradation
-# for an env-token box (init's preflight then falls through to CLAUDE_CODE_OAUTH_TOKEN).
+# EVERY host bind-mount SOURCE dir (compose x-teatree-common `volumes:`) must
+# pre-exist owned by the deploy user. A missing source is auto-created by dockerd
+# ROOT-owned, which locks the non-root container — whose UID must equal this
+# deploy user (see deploy/README.md § UID invariant) — out of that mount: the
+# credential plane then blocks `pass insert` provisioning, and the data + session
+# planes block the DB, worktree, workspace, and transcript writes so `init`
+# crash-loops on its first write. Empty dirs are the sane degradation for an
+# env-token box (init's preflight then falls through to CLAUDE_CODE_OAUTH_TOKEN).
+#
+# The credential plane (pass store + its GPG home) is mode 700; the data and
+# session planes take the default mode.
 install -d -m 700 "$HOME/.password-store" "$HOME/.gnupg"
-# The dream pass's transcript/memory input dir must pre-exist owned by the deploy
-# user — dockerd would otherwise create the missing bind source ROOT-owned.
-install -d "$HOME/.claude/projects"
+install -d \
+    "$HOME/.local/share/teatree" \
+    "$HOME/.local/share/teatree-worktrees" \
+    "$HOME/workspace/t3-workspaces" \
+    "$HOME/.claude/projects"
 
 # Surface the WHY on a build/up failure — `set -e` would otherwise exit before
 # the Action log sees anything but "exited (1)".
