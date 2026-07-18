@@ -115,7 +115,8 @@ def _write_t3_stub(bin_dir: Path) -> None:
         'if [ "${1:-}" = "loop" ] && [ "${2:-}" = "override" ]; then\n'
         '  name="$3"; state="$4"\n'
         '  echo "$name $state" >> "$T3_OVERRIDE_LOG"\n'
-        '  if [ "$name" = "${T3_FAIL_LOOP:-}" ] || [ "$name" = "${T3_FAIL_OVERRIDE_LOOP:-}" ]; then echo "boom" >&2; exit 1; fi\n'
+        '  if [ "$name" = "${T3_FAIL_LOOP:-}" ] || [ "$name" = "${T3_FAIL_OVERRIDE_LOOP:-}" ]; '
+        'then echo "boom" >&2; exit 1; fi\n'
         "  echo \"OK    loop '$name' override is now $state.\"\n"
         "  exit 0\n"
         "fi\n"
