@@ -25,7 +25,9 @@ _ROUTER = pathlib.Path(__file__).resolve().parent.parent / "hooks" / "scripts" /
 # hooks/scripts/handlers/ per-domain package behind the routing table.
 # Lowered by #81 step 1, which extracted the shared forge-API detection
 # (effective-method + endpoint regexes/classifiers) into hooks/scripts/forge_api_detect.py.
-_CEILING_LOC = 4515
+# Lowered by #3343, which moved the tri-state cwd-managed classifier into the
+# managed_repo sibling (cwd_teatree_managed_state).
+_CEILING_LOC = 4493
 
 
 def _count_loc(text: str) -> int:

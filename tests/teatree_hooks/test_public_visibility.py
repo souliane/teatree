@@ -199,3 +199,53 @@ class TestApiWriteUnresolvableDoesNotSkip:
     def test_confirmed_public_api_write_does_not_skip(self, monkeypatch: pytest.MonkeyPatch) -> None:
         cmd = "gh api repos/souliane/teatree/issues -f body=x"
         assert self._skips(cmd, monkeypatch, "PUBLIC") is False
+
+
+class TestInertSubstitutionMarkerInBodyValue:
+    """A substitution marker forces a SCAN only when bash would EXPAND it (#3357).
+
+    ``_segment_carries_substitution_or_transport`` used to fire on the DECODED
+    token value, so a ``$(``/backtick inside a SINGLE-quoted body value -- inert
+    literal text bash passes verbatim (markdown inline code naming a flag/module
+    is the everyday case) -- forced a SCAN and preempted the #3251 private-target
+    skip, hard-blocking an ordinary private-target post. The fix reads the token's
+    as-written source span so an INERT single-quoted marker no longer forces the
+    scan, while the SECURITY invariants stand: a LIVE substitution (unquoted or
+    double-quoted) still scans on EVERY target, and any marker toward a PUBLIC
+    target still scans.
+    """
+
+    @staticmethod
+    def _skips(command: str, monkeypatch: pytest.MonkeyPatch, verdict: str | None) -> bool:
+        monkeypatch.setattr(_repo_visibility, "probe_visibility", lambda _slug: verdict)
+        return public_visibility.gate_skips_for_visibility(command, cwd=None)
+
+    def test_single_quoted_backtick_in_body_toward_private_skips(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        # Inert markdown inline code in a private-target body value: the false trip.
+        cmd = "gh issue create --repo owner/private-svc --body 'name the `flag` here'"
+        assert self._skips(cmd, monkeypatch, "PRIVATE") is True
+
+    def test_single_quoted_command_substitution_in_body_toward_private_skips(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        cmd = "gh issue create --repo owner/private-svc --body 'run $(gh issue create) now'"
+        assert self._skips(cmd, monkeypatch, "PRIVATE") is True
+
+    def test_unquoted_live_substitution_toward_private_still_scans(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        # A LIVE substitution can launch a hidden second command (a public post),
+        # so it must NEVER skip -- not even toward a private primary target.
+        cmd = "gh issue create --repo owner/private-svc --body $(cmd)"
+        assert self._skips(cmd, monkeypatch, "PRIVATE") is False
+
+    def test_double_quoted_live_substitution_toward_private_still_scans(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        cmd = 'gh issue create --repo owner/private-svc --body "run $(cmd)"'
+        assert self._skips(cmd, monkeypatch, "PRIVATE") is False
+
+    def test_plain_private_body_skips(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        cmd = "gh issue create --repo owner/private-svc --body plainbody"
+        assert self._skips(cmd, monkeypatch, "PRIVATE") is True
+
+    def test_inert_marker_toward_public_target_still_scans(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        # Anti-vacuity: an inert marker does not weaken the gate on a PUBLIC target.
+        cmd = "gh issue create --repo souliane/teatree --body 'name the `flag` here'"
+        assert self._skips(cmd, monkeypatch, "PUBLIC") is False

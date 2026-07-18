@@ -34,7 +34,7 @@ and :mod:`teatree.hooks._repo_visibility` are both at the per-file LOC cap.
 from pathlib import Path
 
 from teatree.hooks import _commit_carve_out, _repo_visibility
-from teatree.hooks._gh_glab_hiding import command_segments
+from teatree.hooks._gh_glab_hiding import command_segments_with_raw
 from teatree.hooks._publish_detection import segment_is_api_read, segment_is_api_write
 from teatree.hooks.publish_destination import (
     Destination,
@@ -109,17 +109,24 @@ def _api_write_targets_non_public(words: list[str], *, config_path: Path | None 
     return not is_affirmatively_public(dest, config_path=config_path)
 
 
-def _segment_visibility_verdict(words: list[str], cwd: Path | None, *, config_path: Path | None) -> str:
+def _segment_visibility_verdict(
+    words: list[str], raws: list[str], cwd: Path | None, *, config_path: Path | None
+) -> str:
     """Classify one top-level segment as :data:`_SCAN` / :data:`_SKIP_PUBLISH` / :data:`_SKIP_INERT`.
 
-    A ``$(...)``/transport construct or an unrecognised chained executable forces
-    :data:`_SCAN` (the ALL-SEGMENTS anti-leak posture); a repo-targeted publish
-    to an affirmatively-PUBLIC target forces :data:`_SCAN`; a repo-targeted
+    A LIVE ``$(...)``/transport construct or an unrecognised chained executable
+    forces :data:`_SCAN` (the ALL-SEGMENTS anti-leak posture); a repo-targeted
+    publish to an affirmatively-PUBLIC target forces :data:`_SCAN`; a repo-targeted
     publish (structured or ``api`` WRITE) to a NON-public or UNRESOLVABLE target
     is :data:`_SKIP_PUBLISH` (an unknown target skips, per #1415); an ``api``
     read or an inert nav/local segment is :data:`_SKIP_INERT`.
+
+    ``raws`` carries each token's as-written source span (index-aligned with
+    ``words``) so the substitution check fires only on a marker bash would actually
+    expand -- an inert marker inside a single-quoted body value does not force a
+    scan on a private-target post (#3357).
     """
-    if _segment_carries_substitution_or_transport(words):
+    if _segment_carries_substitution_or_transport(words, raws):
         return _SCAN
     if segment_is_api_write(words):
         return _SKIP_PUBLISH if _api_write_targets_non_public(words, config_path=config_path) else _SCAN
@@ -167,12 +174,12 @@ def gate_skips_for_visibility(command: str, cwd: Path | None, *, config_path: Pa
     """
     if _commit_carve_out.command_has_git_commit_segment(command):
         return False
-    segments = command_segments(command)
+    segments = command_segments_with_raw(command)
     if not segments:
         return False
     saw_repo_publish = False
-    for words in segments:
-        verdict = _segment_visibility_verdict(words, cwd, config_path=config_path)
+    for words, raws in segments:
+        verdict = _segment_visibility_verdict(words, raws, cwd, config_path=config_path)
         if verdict == _SCAN:
             return False
         if verdict == _SKIP_PUBLISH:

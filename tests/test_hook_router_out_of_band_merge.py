@@ -338,6 +338,53 @@ class TestClassifiesMergeTargetNotCwd:
         assert capsys.readouterr().out.strip() == ""
 
 
+class TestUnmanagedTargetAllowedRegardlessOfCwd:
+    """A confidently-unmanaged ``--repo`` TARGET is allowed on its own evidence (#3343).
+
+    The old bool target classifier could not tell "confidently-unmanaged
+    target" from "no target parsed": a confidently-unmanaged ``--repo`` always fell
+    through to the cwd rule, and a NON-git cwd (a multi-repo workspace parent)
+    classified as ``None`` there and DENIED a merge the gate never meant to block —
+    with the same command allowed only because the shell happened to sit inside the
+    repo's worktree. The tri-state resolves the target on its own evidence, so the
+    verdict no longer depends on where the shell is sitting.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _home(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        _seed_overlays(tmp_path, _MANAGED_OVERLAYS, monkeypatch)
+
+    _UNMANAGED_MERGE = "gh pr merge 9 --repo example-org/public-repo --squash"
+
+    def test_unmanaged_target_from_non_git_parent_cwd_is_allowed(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        # cwd is a NON-git multi-repo workspace parent — pre-fix this DENIED
+        # because the unmanaged target fell through to the (unclassifiable) cwd.
+        workspace = tmp_path / "workspace"
+        workspace.mkdir()
+        assert router.handle_block_out_of_band_merge(_merge_event(self._UNMANAGED_MERGE, workspace)) is False
+        assert capsys.readouterr().out.strip() == ""
+
+    def test_unmanaged_target_from_repo_cwd_is_allowed(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        # Same command, same tokens, from inside the repo's worktree — allowed too.
+        repo = _repo_with_remote(tmp_path / "wt", "git@github.com:example-org/public-repo.git")
+        assert router.handle_block_out_of_band_merge(_merge_event(self._UNMANAGED_MERGE, repo)) is False
+        assert capsys.readouterr().out.strip() == ""
+
+    def test_numeric_gitlab_project_id_still_fails_safe_to_cwd(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        # An opaque numeric ``projects/<id>`` is NOT a confidently-unmanaged slug —
+        # it stays cwd-keyed, so from a MANAGED cwd it still BLOCKS (fail-safe).
+        repo = _repo_with_remote(tmp_path / "wt", "git@gitlab.com:example-org/private-repo.git")
+        command = "glab api projects/5/merge_requests/9/merge --method POST"
+        assert router.handle_block_out_of_band_merge(_merge_event(command, repo)) is True
+        assert _parse_deny(capsys) is not None
+
+
 # ── cwd classifier must not crash-fail-open with an overlay path configured ───
 #
 # `_cwd_is_teatree_managed` iterated each overlay `path` base with
