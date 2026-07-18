@@ -1,8 +1,11 @@
 """Tests for the dream transcript line-keeping concern (#1933)."""
 
+import json
+
 from django.test import TestCase
 
 from teatree.loops.dream.transcript_extract import (
+    decode_transcript_line,
     high_signal_lines,
     looks_like_learning,
     looks_like_user_ask,
@@ -229,3 +232,61 @@ class HighSignalLinesTestCase(TestCase):
         learning = '{"type":"assistant","text":"root caused the empty owner crash to a missing tenant filter"}'
         raw = f'{{"type":"assistant","text":"row noise"}}\n{learning}'
         assert "root caused the empty owner crash" in high_signal_lines(raw)
+
+    def test_kept_line_is_decoded_not_escaped(self) -> None:
+        # The distiller prompt and the grounding index must share ONE decoded form:
+        # an escaped em-dash / inner quote decodes so a model's verbatim citation of
+        # the human text is a real substring of the kept snippet.
+        raw = json.dumps({"type": "user", "message": {"role": "user", "content": 'stop — the "banner", again'}})
+        kept = high_signal_lines(raw)
+        assert 'stop — the "banner", again' in kept
+        assert "\\u2014" not in kept
+        assert '\\"' not in kept
+
+
+class DecodeTranscriptLineTestCase(TestCase):
+    """The raw JSONL line → decoded, single-line human text seam that lets citations ground (#1933)."""
+
+    def test_decodes_escaped_message_content(self) -> None:
+        raw = json.dumps({"type": "user", "message": {"role": "user", "content": 'do not build a new "banner" — stop'}})
+        assert decode_transcript_line(raw) == '{"role": "user"} do not build a new "banner" — stop'
+
+    def test_retains_role_tag_so_correction_heuristic_still_fires(self) -> None:
+        # compliance + the weight ladder re-run looks_like_user_correction on the
+        # DECODED stream; the retained JSON role tag keeps that per-line signal alive.
+        raw = json.dumps({"type": "user", "message": {"role": "user", "content": "do not do that again"}})
+        decoded = decode_transcript_line(raw)
+        assert looks_like_user_correction(decoded)
+
+    def test_flattens_content_block_list(self) -> None:
+        raw = json.dumps(
+            {"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": "a finding"}]}}
+        )
+        assert decode_transcript_line(raw) == '{"role": "assistant"} a finding'
+
+    def test_collapses_internal_newlines_to_one_line(self) -> None:
+        raw = json.dumps({"type": "user", "message": {"role": "user", "content": "line one\nline two"}})
+        assert decode_transcript_line(raw) == '{"role": "user"} line one line two'
+
+    def test_tool_result_content_is_decoded(self) -> None:
+        raw = json.dumps(
+            {
+                "type": "user",
+                "message": {
+                    "role": "user",
+                    "content": [{"type": "tool_result", "content": [{"type": "text", "text": "DENIED by gate"}]}],
+                },
+            }
+        )
+        assert decode_transcript_line(raw) == '{"role": "user"} DENIED by gate'
+
+    def test_non_json_line_passes_through_unchanged(self) -> None:
+        assert decode_transcript_line("BINDING: never push to a red branch") == "BINDING: never push to a red branch"
+
+    def test_non_message_json_passes_through_unchanged(self) -> None:
+        raw = json.dumps({"type": "queue-operation", "operation": "enqueue"})
+        assert decode_transcript_line(raw) == raw
+
+    def test_top_level_text_shape_is_decoded(self) -> None:
+        raw = json.dumps({"type": "user", "text": "please open the PR"})
+        assert decode_transcript_line(raw) == '{"role": "user"} please open the PR'
