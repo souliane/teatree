@@ -96,10 +96,15 @@ class TestSplitSkillArgs:
 class TestOverlaySkillsDir:
     def test_returns_project_skills_when_present(self, tmp_path: Path) -> None:
         (tmp_path / "skills" / "acme").mkdir(parents=True)
-        assert _overlay_skills_dir(tmp_path) == tmp_path / "skills"
+        assert _overlay_skills_dir(tmp_path, {}) == tmp_path / "skills"
 
     def test_none_when_no_skills_dir(self, tmp_path: Path) -> None:
-        assert _overlay_skills_dir(tmp_path) is None
+        assert _overlay_skills_dir(tmp_path, {}) is None
 
     def test_none_when_no_project_path(self) -> None:
-        assert _overlay_skills_dir(None) is None
+        assert _overlay_skills_dir(None, {}) is None
+
+    def test_declared_skill_root_wins(self, tmp_path: Path) -> None:
+        declared = tmp_path / "packaged" / "skills"
+        (declared / "acme").mkdir(parents=True)
+        assert _overlay_skills_dir(tmp_path, {"skill_root": str(declared)}) == declared

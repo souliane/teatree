@@ -13,7 +13,13 @@ import pytest
 
 from teatree.backends.slack.socket_mode import AppTokenProbe, ManifestSocketGaps
 from teatree.cli.slack.manifest import _CONFIG_TOKEN_REF, SlackManifestError, build_manifest
-from teatree.cli.slack.socket_doctor import Level, _fixed_message, _no_config_token_message, check_slack_socket_mode
+from teatree.cli.slack.socket_doctor import (
+    Level,
+    _check_user_token_ref,
+    _fixed_message,
+    _no_config_token_message,
+    check_slack_socket_mode,
+)
 from teatree.core.models import ConfigSetting
 
 _APP_SLOT = "teatree/t3/slack-app"
@@ -287,3 +293,26 @@ class TestFindingMessages:
         assert "app_mention" in message
         assert "reactions:read" in message
         assert _CONFIG_TOKEN_REF in message
+
+
+# ast-grep-ignore: ac-django-no-pytest-django-db
+@pytest.mark.django_db
+class TestUserTokenRefCheck:
+    """#3334: the doctor gains a check for the SECOND messaging ref, not just one."""
+
+    def test_configured_but_unresolvable_user_token_ref_warns(self) -> None:
+        _seed({"t3": {**_T3_FULL, "user_token_ref": "team/user-oauth"}})
+        with patch("teatree.core.messaging_tokens._read", return_value=""):
+            findings = _check_user_token_ref("t3")
+        assert [f.level for f in findings] == [Level.WARN]
+        assert "user_token_ref" in findings[0].message
+        assert "team/user-oauth" in findings[0].message
+
+    def test_resolvable_user_token_ref_is_silent(self) -> None:
+        _seed({"t3": {**_T3_FULL, "user_token_ref": "team/user-oauth"}})
+        with patch("teatree.core.messaging_tokens._read", return_value="xoxp-U"):
+            assert _check_user_token_ref("t3") == []
+
+    def test_unset_user_token_ref_is_silent(self) -> None:
+        _seed({"t3": dict(_T3_FULL)})
+        assert _check_user_token_ref("t3") == []

@@ -86,6 +86,7 @@ class TeatreeMetadata(OverlayMetadata):
         root = _repo_root()
         return {
             "skill_path": str(root / "skills"),
+            "skill_root": str(root / "skills"),
             "remote_patterns": ["souliane/teatree"],
         }
 

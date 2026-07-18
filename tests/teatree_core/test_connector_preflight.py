@@ -94,7 +94,21 @@ class _SlackDownOverlay(OverlayBase):
 
 class TestOverlayBaseConnectorPreflightDefault(TestCase):
     def test_default_is_empty(self) -> None:
+        # An overlay that declares nothing keeps its previous no-probe behaviour.
         assert _NoOpOverlay().connectors.preflight() == []
+
+    def test_declaring_expectations_yields_standard_probes(self) -> None:
+        # Flipping the default (#3333): a declared MCP expectation now produces a
+        # live probe for free, with no bespoke preflight override.
+        class _DeclaringConnectors(OverlayConnectors):
+            def manifest(self) -> list[ConnectorRequirement]:
+                return [ConnectorRequirement(name="slack", required=True)]
+
+            def mcp_provider_expectations(self) -> dict[str, str]:
+                return {"slack": "slack"}
+
+        probes = _DeclaringConnectors().preflight()
+        assert len(probes) == 1
 
 
 class TestRunConnectorPreflight(TestCase):

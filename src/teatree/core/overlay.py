@@ -121,10 +121,10 @@ class OverlayConfig(BaseModel):
     # ``SlackBotBackend`` with ``owner_dm_only=True`` so a non-owner destination fails LOUD.
     slack_scope_profile: str = "full"
     slack_token_ref: str = ""
-    # ``user_token_ref`` points at a ``pass`` entry holding the human user's
-    # Slack OAuth token (``xoxp-…``).  Routed by ``SlackBotBackend`` for
-    # reactions on Slack-Connect externally-shared channels where the bot
-    # token is rejected by the workspace restriction policy.
+    # ``user_token_ref`` is a FULL ``pass`` PATH (NOT a prefix like
+    # ``slack_token_ref``) holding the human's Slack OAuth token (``xoxp-…``),
+    # routed by ``SlackBotBackend`` for reactions on Slack-Connect channels the
+    # bot token is rejected on. Resolution + doctor diagnosis: #3334.
     user_token_ref: str = ""
     slack_user_id: str = ""
     # Setup-time provisioned IM channel id between the per-overlay bot and
@@ -597,13 +597,14 @@ class OverlayConnectors:
     """External-connector concern (claude.ai, MCP, Slack/Notion) — ``overlay.connectors``."""
 
     def preflight(self) -> list[Callable[[], None]]:
-        """Return zero-arg probes run before any connector-dependent loop work.
+        """Zero-arg probes run before any connector-dependent loop work.
 
-        Each callable raises ``RuntimeError`` when a connector the overlay
-        hard-depends on is unreachable. Default empty — an overlay opts in only
-        when it cannot function correctly with a degraded connector.
+        Defaults to :func:`standard_probes` from this overlay's declarations
+        (#3333); an overlay overrides for a bespoke flow.
         """
-        return []
+        from teatree.core.connector_probes import standard_probes  # noqa: PLC0415 — deferred: avoids import cycle
+
+        return standard_probes(self.manifest(), self.mcp_provider_expectations())
 
     def mcp_provider_expectations(self) -> dict[str, str]:
         """``{mcp_server_name: provider}`` for the #2282 connectivity check; default empty."""

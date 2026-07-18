@@ -24,6 +24,7 @@ from teatree.utils.singleton import WORKER_SINGLETON, AlreadyRunningError, singl
 
 if TYPE_CHECKING:
     from teatree.config import OverlayEntry
+    from teatree.types import SkillMetadata
 
 logger = logging.getLogger(__name__)
 
@@ -63,19 +64,18 @@ def _split_skill_args(values: list[str]) -> list[str]:
     return names
 
 
-def _overlay_skills_dir(project_path: Path | None) -> Path | None:
-    """The active overlay's own ``skills/`` directory, when it ships one.
+def _overlay_skills_dir(project_path: Path | None, skill_metadata: "SkillMetadata") -> Path | None:
+    """The active overlay's own skills directory, when it ships one.
 
-    The overlay generator writes each skill to ``<project>/skills/<name>/SKILL.md``
-    (``overlay_init.generator``), so an overlay's skill bodies resolve under
-    ``<project>/skills``. Returns ``None`` when the overlay ships no ``skills/``
-    dir (e.g. a path-less invocation), in which case only the framework skills
-    dir is searched.
+    Resolves through the ``skill_root`` seam (#3355): an overlay-declared root, or
+    the ``<project>/skills`` layout ``overlay_init.generator`` scaffolds. Returns
+    ``None`` when neither resolves to a real directory (e.g. a path-less
+    invocation), in which case only the framework skills dir is searched.
     """
-    if project_path is None:
-        return None
-    candidate = project_path / "skills"
-    return candidate if candidate.is_dir() else None
+    from teatree.core.overlay_skills import overlay_skills_root  # noqa: PLC0415 — deferred: keeps CLI startup light
+
+    root = overlay_skills_root(skill_metadata, project_path)
+    return root if root is not None and root.is_dir() else None
 
 
 def _base_env() -> dict[str, str]:
@@ -441,6 +441,7 @@ class OverlayAppBuilder:
         overlay skills from the active overlay's own ``skills/`` directory.
         """
         project_path = self.project_path
+        overlay_name = self.overlay_name
         overlay_app = self.overlay_app
 
         @overlay_app.command(name="skill-preamble")
@@ -462,8 +463,10 @@ class OverlayAppBuilder:
             # team skills installed via `npx skills add` resolve) + the overlay's
             # own skills/ dir — so a stage skill body embeds for a fan-out brief
             # exactly as an overlay-local one does.
+            from teatree.core.overlay_skills import overlay_skill_metadata  # noqa: PLC0415 — deferred: lazy CLI import
+
             skills_dirs = list(harness_skills_dirs())
-            overlay_dir = _overlay_skills_dir(project_path)
+            overlay_dir = _overlay_skills_dir(project_path, overlay_skill_metadata(overlay_name))
             if overlay_dir is not None and overlay_dir not in skills_dirs:
                 skills_dirs.append(overlay_dir)
 
@@ -527,30 +530,38 @@ class OverlayAppBuilder:
         OVERLAY_PROXY_COMMANDS[_run.__name__] = (group_name, sub_name)
 
     def _register_overlay_tools(self) -> None:
-        """Register tool commands from ``skills/*/hook-config/tool-commands.json`` files.
+        """Register tool commands from ``<skills-root>/*/hook-config/tool-commands.json``.
 
-        Bounded to the documented per-overlay layout (one skill dir per package),
-        which is fast and side-steps an unbounded ``rglob`` over the entire
-        project tree (``.venv/``, ``__pycache__/``, ``node_modules/``, etc.).
+        The skills root resolves through the ``skill_root`` seam (#3355), falling
+        back to ``<project>/skills`` — the documented per-overlay layout (one skill
+        dir per package), which is fast and side-steps an unbounded ``rglob`` over
+        the whole project tree (``.venv/``, ``__pycache__/``, ``node_modules/``).
         """
-        project_path = self.project_path
-        if project_path is None:
+        from teatree.core.overlay_skills import (  # noqa: PLC0415 — deferred: keeps CLI startup light
+            overlay_skill_metadata,
+            overlay_skills_root,
+        )
+
+        metadata = overlay_skill_metadata(self.overlay_name)
+        skills_root = overlay_skills_root(metadata, self.project_path)
+        if skills_root is None:
             return
 
-        tool_commands: list[dict[str, str]] = []
-        for candidate in project_path.glob("skills/*/hook-config/tool-commands.json"):
-            try:
-                data = _json.loads(candidate.read_text(encoding="utf-8"))
-                if isinstance(data, list):  # pragma: no branch
-                    tool_commands.extend(data)
-            except _json.JSONDecodeError:
-                logger.warning("Invalid JSON in %s", candidate)
-                continue
-            except OSError as exc:
-                logger.warning("Cannot read %s: %s", candidate, exc)
-                continue
-
+        tool_commands = self._read_tool_commands(skills_root)
         if not tool_commands:
+            # A declared root that yields nothing is a real misconfiguration — the
+            # operator has a documented tool surface that would silently not exist.
+            # Name the searched path instead of returning silently (#3355). The
+            # default ``<project>/skills`` fallback stays quiet: an overlay that
+            # simply ships no tools is not a misconfiguration.
+            if metadata.get("skill_root"):
+                logger.warning(
+                    "overlay %r declares a skills root (%s) but no */hook-config/tool-commands.json "
+                    "was found there — the `t3 %s tool` command group is not registered.",
+                    self.overlay_name,
+                    skills_root,
+                    self.overlay_name,
+                )
             return
 
         tool_group = typer.Typer(no_args_is_help=True, help="Overlay-specific utilities.")
@@ -562,6 +573,23 @@ class OverlayAppBuilder:
                 continue
             self._bridge_tool_command(tool_group, name, help_text, mgmt_cmd)
         self.overlay_app.add_typer(tool_group, name="tool")
+
+    @staticmethod
+    def _read_tool_commands(skills_root: Path) -> list[dict[str, str]]:
+        """Collect tool-command specs from ``<skills_root>/*/hook-config/tool-commands.json``."""
+        tool_commands: list[dict[str, str]] = []
+        for candidate in skills_root.glob("*/hook-config/tool-commands.json"):
+            try:
+                data = _json.loads(candidate.read_text(encoding="utf-8"))
+            except _json.JSONDecodeError:
+                logger.warning("Invalid JSON in %s", candidate)
+                continue
+            except OSError as exc:
+                logger.warning("Cannot read %s: %s", candidate, exc)
+                continue
+            if isinstance(data, list):  # pragma: no branch
+                tool_commands.extend(data)
+        return tool_commands
 
     def _bridge_tool_command(
         self,

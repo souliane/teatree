@@ -24,7 +24,7 @@ from teatree.core.backend_protocols import (
     MessagingBackend,
     PrOpenState,
 )
-from teatree.core.send_proxy import read_posting_credential
+from teatree.core.messaging_tokens import resolve_messaging_tokens
 from teatree.utils import git, git_remote
 from teatree.utils.forge import forge_from_remote
 
@@ -300,11 +300,15 @@ def get_messaging(overlay: "OverlayBase") -> MessagingBackend:
     """
     choice = overlay.config.messaging_backend or "noop"
     if choice == "slack":
-        token_ref = overlay.config.slack_token_ref
+        tokens = resolve_messaging_tokens(
+            slack_token_ref=overlay.config.slack_token_ref,
+            user_token_ref=overlay.config.user_token_ref,
+            bot_fallback=overlay.config.get_slack_token(),
+        )
         return SlackBotBackend(
-            bot_token=read_posting_credential(f"{token_ref}-bot") if token_ref else overlay.config.get_slack_token(),
-            app_token=read_posting_credential(f"{token_ref}-app") if token_ref else "",
-            user_token=read_posting_credential(overlay.config.user_token_ref),
+            bot_token=tokens.bot,
+            app_token=tokens.app,
+            user_token=tokens.user,
             user_id=overlay.config.slack_user_id,
             # Setup-time provisioned IM channel id (#1342) — see
             # ``OverlayConfig.slack_dm_channel_id``.

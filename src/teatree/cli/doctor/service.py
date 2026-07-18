@@ -122,18 +122,22 @@ class DoctorService:
         Returns (target_dir, link_name) pairs for symlink creation.
         """
         from teatree.config import discover_overlays  # noqa: PLC0415 — deferred: keeps CLI startup light
+        from teatree.core.overlay_skills import (  # noqa: PLC0415 — deferred: keeps CLI startup light
+            overlay_skill_metadata,
+            overlay_skills_root,
+        )
 
         results: list[tuple[Path, str]] = []
         for entry in discover_overlays():
             if not entry.project_path or not entry.project_path.is_dir():
                 continue
-            project = entry.project_path.expanduser()
-
-            # New convention: skills/ directory
-            project_skills = project / "skills"
-            if project_skills.is_dir():
+            # Resolve the skills root through the ``skill_root`` seam (#3355), so an
+            # overlay whose skills live off the ``<project>/skills`` default is not
+            # silently reported clean.
+            skills_root = overlay_skills_root(overlay_skill_metadata(entry.name), entry.project_path.expanduser())
+            if skills_root is not None and skills_root.is_dir():
                 results.extend(
-                    (skill, skill.name) for skill in sorted(project_skills.iterdir()) if (skill / "SKILL.md").is_file()
+                    (skill, skill.name) for skill in sorted(skills_root.iterdir()) if (skill / "SKILL.md").is_file()
                 )
 
         return results

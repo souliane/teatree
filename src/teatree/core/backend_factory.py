@@ -516,15 +516,15 @@ def _host_from_toml_for_repo(cfg: dict, repo_path: str) -> CodeHostBackend | Non
 def _messaging_from_toml(cfg: dict) -> MessagingBackend | None:
     if cfg.get("messaging_backend") != "slack":
         return None
-    from teatree.core.send_proxy import read_posting_credential  # noqa: PLC0415 — deferred: ORM model, pre-app-registry
+    from teatree.core.messaging_tokens import resolve_messaging_tokens  # noqa: PLC0415 — deferred: pre-app-registry
 
     token_ref = cfg.get("slack_token_ref", "")
     if not token_ref:
         return None
-    bot_token = read_posting_credential(f"{token_ref}-bot")
-    app_token = read_posting_credential(f"{token_ref}-app")
-    user_token_ref = cfg.get("user_token_ref", "")
-    user_token = read_posting_credential(user_token_ref)
+    tokens = resolve_messaging_tokens(slack_token_ref=token_ref, user_token_ref=cfg.get("user_token_ref", ""))
+    bot_token = tokens.bot
+    app_token = tokens.app
+    user_token = tokens.user
     user_id = cfg.get("slack_user_id", "")
     # Setup-time provisioned IM channel id (#1342). When set, threads into
     # the Slack bot so its ``open_dm`` short-circuits the live
