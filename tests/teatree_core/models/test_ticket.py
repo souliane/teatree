@@ -574,3 +574,33 @@ class TestTicketArtifacts(TestCase):
 
         with pytest.raises(AttributeError):
             artifacts.ticket_id = 99  # frozen dataclass rejects mutation
+
+
+class TestHasCompletedPhase(TestCase):
+    """``Ticket.has_completed_phase`` tells a live phase apart from a superseded one.
+
+    True iff the FSM state has already reached the state the phase produces, so the
+    transient-requeue sweep can retire a dead FAILED task whose output the ticket
+    already has instead of escalating an already-answered away-mode question.
+    """
+
+    def test_phase_at_or_before_state_is_completed(self) -> None:
+        ticket = Ticket.objects.create(state=Ticket.State.TESTED)
+
+        # testing produces TESTED (== state) and coding produces CODED (< state): both done.
+        assert ticket.has_completed_phase("testing") is True
+        assert ticket.has_completed_phase("coding") is True
+        assert ticket.has_completed_phase("test") is True  # short-verb spelling normalizes
+
+    def test_phase_beyond_state_is_not_completed(self) -> None:
+        ticket = Ticket.objects.create(state=Ticket.State.TESTED)
+
+        # reviewing produces REVIEWED (> state): the ticket has NOT reached it.
+        assert ticket.has_completed_phase("reviewing") is False
+        assert ticket.has_completed_phase("shipping") is False
+
+    def test_unknown_or_off_ladder_is_conservatively_incomplete(self) -> None:
+        # An unknown phase and an off-ladder state both default to NOT completed —
+        # the safe answer that escalates rather than silently retiring a live task.
+        assert Ticket.objects.create(state=Ticket.State.TESTED).has_completed_phase("bughunt") is False
+        assert Ticket.objects.create(state=Ticket.State.IN_REVIEW).has_completed_phase("coding") is False

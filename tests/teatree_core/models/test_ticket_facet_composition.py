@@ -54,6 +54,7 @@ class TestStatusFacetCohesionSplit:
         assert _own_public_members(TicketIntrospectionModel) == {
             "has_active_work",
             "is_terminal",
+            "has_completed_phase",
             "may_expedite",
             "ticket_number",
             "has_shippable_diff",

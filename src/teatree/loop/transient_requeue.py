@@ -26,10 +26,19 @@ freeze silently; it is routed straight to the escalation path. The invariant: a
 terminal FAILED task on a non-terminal ticket ALWAYS escalates or retries-once,
 never freezes silently.
 
+A SUPERSEDED FAILED task — one whose phase output the ticket's FSM already reached
+(``ticket.has_completed_phase``) — is NOT escalated at all: it is a dead artifact of
+an earlier interrupted run while the ticket advanced on its own, so it is retired
+COMPLETED silently. This is the fix for the redispatch flood on already-done tickets
+(3366/3336/3352): the away-mode queue is never asked about a phase the ticket's own
+state already answers.
+
 A once-escalated task is stamped (:data:`_HALT_STAMP` in ``execution_reason``) and
 excluded from every subsequent scan, so the dead-letter set never grows the per-tick
-work unboundedly and an answered/dismissed question can never resurrect a fresh
-escalation for the same halted row.
+work unboundedly. The ``DeferredQuestion`` itself is deduped by a STABLE key —
+``(ticket, phase, failure-fingerprint)``, NOT the task pk — so the fresh ``Task`` rows
+a stuck phase mints each redispatch cycle collapse to ONE open question instead of one
+per cycle (the observed 10-15x duplicate flood).
 
 Lives in ``teatree.loop`` (orchestration): it needs both the transient classifier
 (``teatree.agents``) and the ``Task`` model (``teatree.core.models``), which sit
@@ -44,15 +53,24 @@ from teatree.core.modelkit.phases import normalize_phase
 from teatree.core.models import Task, Ticket
 from teatree.core.models.deferred_question import DeferredQuestion
 from teatree.core.models.task_repair import phase_attempts
-from teatree.core.repair_loop import IterationStalled, MaxIterationsExceeded, requeue_verdict
+from teatree.core.repair_loop import (
+    IterationStalled,
+    MaxIterationsExceeded,
+    requeue_verdict,
+    terminal_reason_fingerprint,
+)
 
 logger = logging.getLogger(__name__)
 
-_ESCALATION_MARKER = "[repair-halt task={pk}]"
 #: Stamped onto ``execution_reason`` when a task is escalated (dead-lettered), so it
 #: is excluded from every future scan — bounds per-tick work and makes the escalation
 #: durably once-per-task regardless of whether the question is later answered.
 _HALT_STAMP = "[repair-halt-parked]"
+#: Stamped onto ``execution_reason`` when a SUPERSEDED FAILED task is retired (its
+#: phase output the ticket's FSM already reached). It is marked COMPLETED and drops
+#: out of the scan — the away-mode queue is never asked about a phase the ticket
+#: already advanced past (the 3366/3336/3352 redispatch-loop root cause).
+_SUPERSEDED_STAMP = "[superseded-retired]"
 
 #: Phases whose omitted-envelope refusal earns the one-shot corrective retry.
 _CORRECTIVE_PHASES = frozenset({"coding", "debugging"})
@@ -86,6 +104,12 @@ def requeue_transient_failed() -> int:
     """
     reopened = 0
     for task in _non_terminal_failed_tasks():
+        if task.ticket.has_completed_phase(task.phase):
+            # SUPERSEDED: the ticket's FSM already reached this phase's output, so this
+            # FAILED row is a dead artifact of an earlier interrupted run. Retire it
+            # silently — never escalate a question the ticket's own state answers.
+            _retire_superseded(task)
+            continue
         error = _latest_error(task)
         if not error:
             # No recorded error → neither transient nor deterministic; must not freeze.
@@ -210,9 +234,11 @@ def _reopen(task: Task) -> int:
 def _stamp_halt(task: Task) -> None:
     """Park *task* out of future scans by stamping :data:`_HALT_STAMP` onto ``execution_reason``.
 
-    Idempotent — a no-op once the stamp is present. This is the durable dedup: an
-    escalated row is excluded from :func:`_non_terminal_failed_tasks`, so answering
-    or dismissing the question can never resurrect a fresh escalation for it.
+    Idempotent — a no-op once the stamp is present. The per-task park: an escalated
+    row is excluded from :func:`_non_terminal_failed_tasks`, so answering or dismissing
+    the question can never resurrect a fresh escalation for THIS row. Cross-row
+    collapse of the fresh ``Task`` rows a stuck phase mints each cycle is the separate
+    job of the stable ``dedupe_marker`` (:func:`_escalation_marker`).
     """
     if _HALT_STAMP in task.execution_reason:
         return
@@ -220,24 +246,63 @@ def _stamp_halt(task: Task) -> None:
     Task.objects.filter(pk=task.pk).update(execution_reason=reason)
 
 
-def _escalate_once(task: Task, *, reason: str) -> None:
-    """Record a durable escalation for a halted task, exactly once per task, then park it.
+def _retire_superseded(task: Task) -> None:
+    """Mark a SUPERSEDED FAILED task COMPLETED via CAS, stamping the reason. Idempotent.
 
-    The row is stamped so it drops out of every future scan; the DeferredQuestion is
-    deduped across ALL questions (answered or not) by a per-task marker, so a halted
-    FAILED row can never spam the away-mode queue nor re-escalate once its question is
-    answered/dismissed. Reuses the §17.1 invariant 9 surface (statusline /
-    ``t3 teatree questions list`` / the Slack DM drain).
+    The ticket's FSM already reached this phase's output (``has_completed_phase``),
+    so the dead FAILED row is retired instead of escalated — the same
+    ``UPDATE ... WHERE status=FAILED`` compare-and-swap the reopen path uses, so a
+    concurrent tick updates 0 rows and does not double-write. No FSM side effect and
+    no ``DeferredQuestion``: the ticket's own state already answers the question.
     """
-    marker = _ESCALATION_MARKER.format(pk=task.pk)
-    already = DeferredQuestion.objects.filter(question__contains=marker).exists()
+    reason = f"{task.execution_reason}\n{_SUPERSEDED_STAMP}".strip() if task.execution_reason else _SUPERSEDED_STAMP
+    Task.objects.filter(pk=task.pk, status=Task.Status.FAILED).update(
+        status=Task.Status.COMPLETED,
+        claimed_at=None,
+        claimed_by="",
+        claimed_by_session="",
+        lease_expires_at=None,
+        heartbeat_at=None,
+        execution_reason=reason,
+    )
+
+
+def _escalation_marker(task: Task) -> str:
+    """Stable dedupe key for a halted task's escalation — ``(ticket, phase, failure)``.
+
+    Keyed on the ticket + canonical phase + the NORMALIZED failure fingerprint, NOT
+    the task pk: a stuck phase mints a FRESH ``Task`` row every redispatch cycle, so a
+    per-task key filed one identical question per cycle (the observed 10-15x flood).
+    Keying on the underlying standing condition instead collapses every churned row
+    that fails the same way to ONE open ``DeferredQuestion``. A genuinely different
+    failure (different fingerprint) keeps its own key, so a real new problem still
+    surfaces. Truncated to fit the indexed ``dedupe_marker`` column (max 64).
+    """
+    fingerprint = terminal_reason_fingerprint(_latest_error(task))
+    phase = normalize_phase(task.phase)
+    return f"repair-halt:{task.ticket_id}:{phase}:{fingerprint}"[:64]  # ty: ignore[unresolved-attribute]
+
+
+def _escalate_once(task: Task, *, reason: str) -> None:
+    """Record a durable escalation for a halted task, then park the row. Deduped by condition.
+
+    The row is stamped (:data:`_HALT_STAMP`) so it drops out of every future scan; the
+    ``DeferredQuestion`` is deduped by the STABLE :func:`_escalation_marker` (ticket +
+    phase + failure fingerprint) through the model's indexed ``dedupe_marker`` — so the
+    fresh ``Task`` rows a stuck phase mints each redispatch cycle collapse to a SINGLE
+    open question instead of one per cycle. Reuses the §17.1 invariant 9 surface
+    (statusline / ``t3 teatree questions list`` / the Slack DM drain).
+    """
     _stamp_halt(task)
-    if already:
-        return
     where = task.ticket.issue_url or f"ticket {task.ticket.pk}"
+    phase = normalize_phase(task.phase)
     question = (
-        f"{marker} Auto-retry halted on {where} (phase {normalize_phase(task.phase)!r}): {reason} "
+        f"[repair-halt ticket={task.ticket.pk} phase={phase!r}] Auto-retry halted on {where}: {reason} "
         "Re-queueing is stopped so it does not retry a doomed failure forever. "
         "How should it proceed — investigate, rework, or ignore?"
     )
-    DeferredQuestion.record(question, session_id=str(task.session_id or ""))  # ty: ignore[unresolved-attribute]
+    DeferredQuestion.record(
+        question,
+        session_id=str(task.session_id or ""),  # ty: ignore[unresolved-attribute]
+        dedupe_marker=_escalation_marker(task),
+    )

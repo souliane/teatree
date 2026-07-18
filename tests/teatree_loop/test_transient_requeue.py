@@ -222,6 +222,69 @@ class TestTransientRequeue(TestCase):
         assert task.status == Task.Status.FAILED
         assert DeferredQuestion.objects.filter(answered_at__isnull=True).count() == 0
 
+    def test_superseded_failed_task_is_retired_not_escalated(self) -> None:
+        # 3366/3336/3352: a ticket whose FSM already reached a phase's output
+        # (state TESTED ⇒ testing done) can still carry a stale FAILED testing task
+        # from an earlier interrupted run. It must be retired silently — never
+        # escalated as an away-mode question the ticket's own state already answers.
+        task = _failed_task(phase="testing", state=Ticket.State.TESTED)
+        _add_failed_attempt(task, error="result_error: no terminal ResultMessage")
+        _add_failed_attempt(task, error="result_error: no terminal ResultMessage")
+
+        reopened = requeue_transient_failed()
+
+        task.refresh_from_db()
+        assert reopened == 0
+        assert task.status == Task.Status.COMPLETED  # retired, not left FAILED
+        assert "[superseded-retired]" in task.execution_reason
+        assert DeferredQuestion.objects.filter(answered_at__isnull=True).count() == 0
+
+    def test_live_phase_not_yet_reached_still_escalates(self) -> None:
+        # Boundary guard: a FAILED task for a phase the ticket has NOT reached
+        # (state TESTED, phase reviewing ⇒ produces REVIEWED, not yet reached) is a
+        # genuinely blocked phase — it must still escalate, never be silently retired.
+        task = _failed_task(phase="reviewing", state=Ticket.State.TESTED)
+        _add_failed_attempt(task, error="missing required evidence for phase 'reviewing'")
+        _add_failed_attempt(task, error="missing required evidence for phase 'reviewing'")
+
+        reopened = requeue_transient_failed()
+
+        task.refresh_from_db()
+        assert reopened == 0
+        assert task.status == Task.Status.FAILED
+        assert DeferredQuestion.objects.filter(answered_at__isnull=True).count() == 1
+
+    def test_churned_tasks_same_condition_collapse_to_one_question(self) -> None:
+        # THE FLOOD FIX: a stuck phase mints a FRESH Task row every redispatch cycle.
+        # Two FAILED tasks on the same (ticket, phase) failing IDENTICALLY are ONE
+        # standing condition — they must collapse to a single open DeferredQuestion,
+        # not one per task (the observed 10-15x duplicate flood).
+        ticket = Ticket.objects.create(role=Ticket.Role.AUTHOR, state=Ticket.State.TESTED)
+        for _ in range(2):
+            session = Session.objects.create(ticket=ticket, agent_id="review")
+            task = Task.objects.create(ticket=ticket, session=session, phase="reviewing", status=Task.Status.FAILED)
+            _add_failed_attempt(task, error="missing required evidence for phase 'reviewing'")
+
+        requeue_transient_failed()
+
+        # One condition ⇒ one question, despite two distinct FAILED task rows.
+        assert DeferredQuestion.objects.filter(answered_at__isnull=True).count() == 1
+
+    def test_distinct_conditions_do_not_over_collapse(self) -> None:
+        # Guard on the dedup: two DIFFERENT failures on the same (ticket, phase) are
+        # two conditions — they must NOT collapse into one, or a real second problem
+        # would be hidden behind the first.
+        ticket = Ticket.objects.create(role=Ticket.Role.AUTHOR, state=Ticket.State.TESTED)
+        errors = ("missing required evidence for phase 'reviewing'", "AssertionError: reviewer crashed")
+        for error in errors:
+            session = Session.objects.create(ticket=ticket, agent_id="review")
+            task = Task.objects.create(ticket=ticket, session=session, phase="reviewing", status=Task.Status.FAILED)
+            _add_failed_attempt(task, error=error)
+
+        requeue_transient_failed()
+
+        assert DeferredQuestion.objects.filter(answered_at__isnull=True).count() == 2
+
     def test_bounded_never_retries_endlessly(self) -> None:
         cap = max_phase_iterations()
         task = _failed_task()
