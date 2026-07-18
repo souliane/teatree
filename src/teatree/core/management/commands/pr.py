@@ -7,7 +7,7 @@ returns the PR URL once the worker completes.
 """
 
 import re
-from typing import TYPE_CHECKING, TypedDict, cast
+from typing import TYPE_CHECKING, cast
 
 from django_typer.management import TyperCommand, command
 
@@ -27,6 +27,7 @@ from teatree.core.management.commands._pr_ticket_resolve import (
     resolve_ticket,
     ticket_not_found_error,
 )
+from teatree.core.management.commands._pr_worktree import WorktreeMissingError, _resolve_or_adopt_worktree
 from teatree.core.management.commands._ship.exec import (
     ShipEnqueued,
     ShipExecuted,
@@ -62,6 +63,7 @@ from teatree.core.on_behalf_gate_recorded import (
 from teatree.core.on_behalf_post_receipt import notify_user_on_behalf_post
 from teatree.core.overlay_loader import get_overlay
 from teatree.core.provision.db_anchor import assert_lifecycle_db_is_canonical
+from teatree.core.provision.worktree_adopt import reopen_ticket_for_followup
 from teatree.core.public_identity import MergeResult
 from teatree.core.runners.ship import resolve_and_reconcile_branch, resolve_ship_worktree
 from teatree.core.send_proxy import OutboundBlockedError, route_forge_write
@@ -94,8 +96,10 @@ type CommentResult = dict[str, object]
 # working after the ticket-resolution split.
 
 
-class WorktreeMissingError(TypedDict):
-    error: str
+# WorktreeMissingError / _worktree_missing_error / _resolve_or_adopt_worktree
+# (the worktree-or-adopt resolver, #3327) live in ``_pr_worktree`` (re-exported
+# above) so ``pr.py`` stays within the module-health LOC bar and external
+# importers of ``pr.WorktreeMissingError`` keep working.
 
 
 # ShipEnqueued / ShipExecuted / ShippingGateFailure and the ship-execution
@@ -200,6 +204,29 @@ def _run_ship_gates(
     return validate_pr_metadata(ticket, worktree, title=title)
 
 
+def _run_skip_validation_path(
+    ticket: Ticket,
+    ship_worktree: Worktree,
+    *,
+    skip_mr_format_check: bool,
+    title: str,
+) -> PrValidationError | None:
+    """Reconcile the FSM for a ``--skip-validation`` ship, then run the cheap format check.
+
+    ``--skip-validation`` is the user-authorized attestation substitute (the
+    gate-fixer bootstrap, /t3:ship §5 #2): the FSM must follow the authorization
+    or ``ship()`` is structurally impossible from a non-REVIEWED state (#748). It
+    skips the HEAVY gates (visual QA, branch currency, FSM phase check) but NOT
+    the cheap, deterministic MR title/description format check — a non-compliant
+    title must not slip onto GitLab via the bypass; only the explicit
+    ``--skip-mr-format-check`` opt-in disables the format check too.
+    """
+    reconcile_fsm_for_ship(ticket)
+    if skip_mr_format_check:
+        return None
+    return validate_pr_metadata(ticket, ship_worktree, title=title)
+
+
 def _dispatch_ship(
     ticket: Ticket,
     worktree: Worktree,
@@ -262,6 +289,7 @@ class Command(TyperCommand):
         skip_mr_format_check: bool = False,
         skip_visual_qa: str = "",
         sync: bool = False,
+        adopt_worktree: bool = False,
     ) -> (
         ShipEnqueued
         | ShipExecuted
@@ -300,6 +328,12 @@ class Command(TyperCommand):
         title/description format check. ``--skip-mr-format-check`` is the
         separate, explicit opt-in that disables that format check too — needed
         only in the rare case where a non-canonical title must ship anyway.
+
+        ``--adopt-worktree`` opens a follow-up PR on a ticket whose prior PR
+        already merged and whose worktree row was torn down (#3327): it attaches
+        the invoking on-disk worktree as a new row and reopens the terminal
+        ticket to a shippable state once the #788 hollow-ship guard confirms the
+        fresh branch has real commits — so already-merged work is never re-shipped.
         """
         try:
             ticket = resolve_ticket(ticket_id)
@@ -316,9 +350,14 @@ class Command(TyperCommand):
         # phases were recorded — just in the canonical DB. Fail loudly here
         # instead, naming the canonical DB and the correct command.
         assert_lifecycle_db_is_canonical(ticket)
-        worktree = ticket.worktrees.first()  # ty: ignore[unresolved-attribute]
-        if worktree is None:
-            return WorktreeMissingError(error="ticket has no worktree")
+        # #3327: the follow-up-PR case — a terminal ticket whose prior PR's
+        # worktree row was torn down. With --adopt-worktree, attach the invoking
+        # on-disk worktree as a new row (guarded) and continue through the
+        # managed path; without it (or on a never-provisioned ticket), refuse.
+        resolved = _resolve_or_adopt_worktree(ticket, adopt_worktree=adopt_worktree)
+        if not isinstance(resolved, Worktree):
+            return resolved
+        worktree = resolved
 
         # #776: a ticket can span multiple PRs (one branch per
         # workstream). Record the INVOKING worktree's current git branch
@@ -350,25 +389,24 @@ class Command(TyperCommand):
         if no_commits is not None:
             return no_commits
 
+        # #3327: only after the #788 hollow-ship guard passes (the fresh branch
+        # has real commits ahead of base) does an adopted terminal ticket get
+        # reopened to a shippable FSM state — so a mistakenly-merged branch is
+        # refused above, before any FSM advance, never re-shipped. A no-op unless
+        # the ticket sits in MERGED/DELIVERED.
+        if adopt_worktree:
+            reopen_ticket_for_followup(ticket)
+
         if not skip_validation:
             gate_failure = _run_ship_gates(ticket, ship_worktree, skip_visual_qa=skip_visual_qa, title=title)
             if gate_failure is not None:
                 return gate_failure
         else:
-            # --skip-validation is the user-authorized attestation
-            # substitute (the gate-fixer bootstrap, /t3:ship §5 #2). The
-            # FSM must follow the authorization or ship() is structurally
-            # impossible from a non-REVIEWED state (#748).
-            reconcile_fsm_for_ship(ticket)
-            # --skip-validation skips the HEAVY gates (visual QA, branch
-            # currency, FSM phase check) — but NOT the cheap, deterministic
-            # MR title/description format check. A non-compliant title must
-            # not slip onto GitLab via the bypass; only the explicit
-            # --skip-mr-format-check opt-in disables the format check too.
-            if not skip_mr_format_check:
-                format_error = validate_pr_metadata(ticket, ship_worktree, title=title)
-                if format_error is not None:
-                    return format_error
+            format_error = _run_skip_validation_path(
+                ticket, ship_worktree, skip_mr_format_check=skip_mr_format_check, title=title
+            )
+            if format_error is not None:
+                return format_error
 
         return _dispatch_ship(ticket, ship_worktree, title=title, dry_run=dry_run, sync=sync)
 

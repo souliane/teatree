@@ -232,6 +232,17 @@ class GitHubCodeHost:  # noqa: PLR0904 — method count reflects the CodeHostBac
         # evidence-poster looks up to UPDATE — re-posting a duplicate instead.
         return _gh_api_get_paginated(f"repos/{repo}/issues/{pr_iid}/comments?per_page=100", token=self._token)
 
+    def list_pr_discussions(self, *, repo: str, pr_iid: int) -> list[RawAPIDict]:  # noqa: PLR6301 — instance method to satisfy the CodeHostBackend Protocol.
+        """No thread-structured resolvable-discussion read on GitHub (#3340).
+
+        GitHub has no resolvable-thread merge block like GitLab's "must resolve"
+        policy (mirrors :meth:`get_mr_approvals`, which reports
+        ``unresolved_resolvable=0`` here), so there is no stale-bot-thread count
+        to filter. Returns ``[]`` — a caller iterating it selects nothing.
+        """
+        _ = (repo, pr_iid)
+        return []
+
     def list_assigned_issues(self, *, assignee: str) -> list[RawAPIDict]:
         query = quote_plus(f"is:issue is:open assignee:{assignee}")
         return _gh_api_search_paginated(f"search/issues?q={query}&per_page=100", token=self._token)

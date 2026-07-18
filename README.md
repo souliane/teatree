@@ -247,6 +247,7 @@ stateDiagram-v2
     in_review --> merged : reconcile_merged
     in_review --> ignored : ignore
     merged --> started : reopen
+    merged --> reviewed : reopen_for_followup
     merged --> merged : mark_merged
     merged --> merged : reconcile_merged
     merged --> retrospected : retrospect
@@ -256,6 +257,7 @@ stateDiagram-v2
     retrospected --> retrospected : retrospect
     retrospected --> delivered : mark_delivered
     retrospected --> ignored : ignore
+    delivered --> reviewed : reopen_for_followup
     delivered --> delivered : mark_review_no_action
 ```
 <!-- END GENERATED: ticket-fsm -->

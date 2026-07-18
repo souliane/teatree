@@ -261,6 +261,17 @@ class CodeHostBackend(Protocol):
 
     def list_pr_comments(self, *, repo: str, pr_iid: int) -> list[RawAPIDict]: ...  # pragma: no branch
 
+    def list_pr_discussions(self, *, repo: str, pr_iid: int) -> list[RawAPIDict]:  # pragma: no branch
+        """Thread-structured, author-carrying discussion read (#3340).
+
+        Distinct from :meth:`list_pr_comments` (a flat note list): each element
+        is a thread whose notes carry authorship, so a caller can select "opened
+        by X with no reply from anyone else" — the stale-bot-thread predicate —
+        without dropping to a forge-specific client. Backends with no
+        resolvable-thread merge block (GitHub) return ``[]``.
+        """
+        ...
+
     def upload_file(self, *, repo: str, filepath: str) -> RawAPIDict: ...  # pragma: no branch
 
     def verify_upload(self, *, repo: str, upload: RawAPIDict) -> UploadVerification: ...  # pragma: no branch

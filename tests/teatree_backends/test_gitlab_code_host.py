@@ -2,6 +2,7 @@ from unittest.mock import MagicMock, patch
 
 from teatree.backends.gitlab import GitLabCodeHost
 from teatree.backends.gitlab.api import GitLabAPI, ProjectInfo
+from teatree.backends.gitlab.client import _count_unresolved_resolvable_threads, _note_author, thread_opened_solely_by
 from teatree.core.backend_protocols import PullRequestSpec
 
 
@@ -326,6 +327,125 @@ def test_post_pr_comment_returns_empty_dict_when_post_returns_none() -> None:
     result = host.post_pr_comment(repo="org/repo", pr_iid=5, body="note")
 
     assert result == {}
+
+
+# ---------------------------------------------------------------------------
+# #3340 — author-aware stale-bot-thread filtering
+# ---------------------------------------------------------------------------
+
+
+_MISSING = object()
+
+
+def _note(*, author: object = "bot", resolvable: bool = True, resolved: bool = False) -> dict:
+    """A discussion note: ``author`` is the raw value (dict / None / missing)."""
+    note: dict = {"resolvable": resolvable, "resolved": resolved}
+    if author is not _MISSING:
+        note["author"] = {"username": author} if isinstance(author, str) else author
+    return note
+
+
+def _thread(*notes: dict) -> dict:
+    return {"notes": list(notes)}
+
+
+class TestNoteAuthor:
+    def test_reads_username_from_author_dict(self) -> None:
+        assert _note_author({"author": {"username": "bot"}}) == "bot"
+
+    def test_null_author_is_empty(self) -> None:
+        # System notes carry author: null — must not blow up mid-walk.
+        assert _note_author({"author": None}) == ""
+
+    def test_absent_author_is_empty(self) -> None:
+        assert _note_author({}) == ""
+
+    def test_non_string_username_is_empty(self) -> None:
+        assert _note_author({"author": {"username": 123}}) == ""
+
+
+class TestThreadOpenedSolelyBy:
+    def test_true_when_bot_opened_and_only_bot_replied(self) -> None:
+        thread = _thread(_note(author="bot"), _note(author="bot"))
+
+        assert thread_opened_solely_by(thread, "bot") is True
+
+    def test_false_when_a_human_replied(self) -> None:
+        # ANTI-VACUITY: resolving this would discard a real human objection.
+        thread = _thread(_note(author="bot"), _note(author="carol"))
+
+        assert thread_opened_solely_by(thread, "bot") is False
+
+    def test_survives_null_author_note(self) -> None:
+        # A system note (author: null) is not "someone else" — still bot-only.
+        thread = _thread(_note(author="bot"), _note(author=None))
+
+        assert thread_opened_solely_by(thread, "bot") is True
+
+    def test_false_when_someone_else_opened(self) -> None:
+        thread = _thread(_note(author="carol"), _note(author="bot"))
+
+        assert thread_opened_solely_by(thread, "bot") is False
+
+    def test_false_for_blank_author(self) -> None:
+        # A missing bot-username config must never eat every thread.
+        thread = _thread(_note(author="bot"))
+
+        assert thread_opened_solely_by(thread, "") is False
+
+    def test_false_when_no_notes(self) -> None:
+        assert thread_opened_solely_by({"notes": []}, "bot") is False
+
+
+class TestCountUnresolvedResolvableThreads:
+    def test_default_counts_every_unresolved_resolvable_thread(self) -> None:
+        discussions = [
+            _thread(_note(author="bot", resolved=False)),
+            _thread(_note(author="carol", resolved=False)),
+            _thread(_note(author="bot", resolved=True)),  # resolved → not counted
+        ]
+
+        assert _count_unresolved_resolvable_threads(discussions) == 2
+
+    def test_default_is_byte_identical_when_ignore_author_blank(self) -> None:
+        discussions = [_thread(_note(author="bot")), _thread(_note(author="carol"))]
+
+        assert _count_unresolved_resolvable_threads(discussions, ignore_author="") == 2
+
+    def test_ignore_author_excludes_stale_bot_only_thread(self) -> None:
+        discussions = [
+            _thread(_note(author="bot")),  # stale bot-only → excluded
+            _thread(_note(author="carol")),  # human → kept
+        ]
+
+        assert _count_unresolved_resolvable_threads(discussions, ignore_author="bot") == 1
+
+    def test_ignore_author_keeps_bot_thread_with_human_reply(self) -> None:
+        # ANTI-VACUITY: a human reply makes the bot thread a live objection.
+        discussions = [_thread(_note(author="bot"), _note(author="carol"))]
+
+        assert _count_unresolved_resolvable_threads(discussions, ignore_author="bot") == 1
+
+
+def test_list_pr_discussions_delegates_to_client() -> None:
+    client = MagicMock(spec=GitLabAPI)
+    client.resolve_project.return_value = _project()
+    client.get_mr_discussions.return_value = [{"id": "a", "notes": []}]
+    host = GitLabCodeHost(client=client)
+
+    result = host.list_pr_discussions(repo="org/repo", pr_iid=10)
+
+    assert result == [{"id": "a", "notes": []}]
+    client.get_mr_discussions.assert_called_once_with(42, 10)
+
+
+def test_list_pr_discussions_returns_empty_when_project_unresolved() -> None:
+    client = MagicMock(spec=GitLabAPI)
+    client.resolve_project.return_value = None
+    host = GitLabCodeHost(client=client)
+
+    assert host.list_pr_discussions(repo="org/unknown", pr_iid=10) == []
+    client.get_mr_discussions.assert_not_called()
 
 
 def test_current_user_proxies_to_api_username() -> None:

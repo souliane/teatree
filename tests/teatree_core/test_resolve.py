@@ -24,6 +24,7 @@ from teatree.core.intake.resolve import (
     match_worktree_by_path,
     resolve_worktree,
     tickets_owning_workspace_dir,
+    workspace_owner_ticket,
 )
 from teatree.core.models import Ticket, Worktree
 from tests._git_repo import make_git_repo, run_git
@@ -795,6 +796,35 @@ class TestAutoRegisterAttributesManualWorktreeToBranchTicket(TestCase):
         assert result is not None
         assert result.ticket.issue_url == "auto:1180-fix-the-thing"
 
+    def test_ad_hoc_worktree_reaches_auto_fallback_under_multi_owner_parent(self) -> None:
+        """A shared parent already owning >1 ticket must not abort auto-register (#3379).
+
+        The workspace-owner hint keys on the parent dir; for an ad-hoc worktree
+        added straight into a shared parent that already holds two unrelated
+        tickets' worktrees, that hint used to RAISE
+        ``WorkspaceOwnerCollisionError`` and kill the single CLI entry point.
+        The branch here names no ticket in this DB, so the branch signal
+        declines too — resolution must fall through to the ``auto:<branch>``
+        fork, not raise. Red before the demotion (the raise escaped).
+        """
+        # Two unrelated tickets' worktrees already live under the shared parent.
+        for idx, name in enumerate(("owner-a", "owner-b"), start=1):
+            owner = Ticket.objects.create(issue_url=f"https://github.com/org/repo/issues/{idx}")
+            sibling = self._make_git_worktree(name)
+            Worktree.objects.create(
+                ticket=owner,
+                repo_path=name,
+                branch=f"{idx}-existing",
+                extra={"worktree_path": str(sibling)},
+            )
+        manual = self._make_git_worktree("adhoc-repo")
+
+        with patch("teatree.core.intake.resolve.git.current_branch", return_value="feat/no-ticket-number"):
+            result = _auto_register_from_git(str(manual))
+
+        assert result is not None
+        assert result.ticket.issue_url == "auto:feat/no-ticket-number"
+
 
 class TestResolveWorktreeTicketHint(TestCase):
     """``ticket_hint`` rebinds a synthetic-ticket worktree but never steals a real one."""
@@ -886,16 +916,30 @@ class TestWorkspaceOwnerFailsLoudOnCollision(TestCase):
         )
         return first_ticket, second_ticket
 
-    def test_workspace_owner_ticket_raises_on_multiple_owners(self) -> None:
-        """A workspace dir holding two tickets' worktrees raises, not an arbitrary pick.
+    def test_public_workspace_owner_ticket_raises_on_multiple_owners(self) -> None:
+        """The PUBLIC resolver fails loud — an operator named the dir, so an arbitrary pick is wrong.
 
         The pre-fix code returned the lowest-pk owner silently; that
         arbitrary selection is exactly what mis-attributes a sibling worktree.
+        The raise stays on the public :func:`workspace_owner_ticket` (the
+        ``workspace`` command resolver's call site); the private wrapper now
+        demotes it (see the demotion test below), so the pin moved here (#3379).
         """
         self._seed_two_owners()
 
         with pytest.raises(WorkspaceOwnerCollisionError):
-            _workspace_owner_ticket((self._tmp_path / "repo-c").resolve())
+            workspace_owner_ticket(self._tmp_path.resolve())
+
+    def test_private_hint_declines_on_multiple_owners(self) -> None:
+        """The best-effort attribution hint returns ``None`` on an ambiguous parent (#3379).
+
+        A hint whose empty answer the chain already handles must decline, not
+        abort its caller — declining is not an arbitrary pick, so the
+        mis-attribution the loud raise guards against stays foreclosed.
+        """
+        self._seed_two_owners()
+
+        assert _workspace_owner_ticket((self._tmp_path / "repo-c").resolve()) is None
 
     def test_tickets_owning_workspace_dir_lists_all_owners(self) -> None:
         first_ticket, second_ticket = self._seed_two_owners()

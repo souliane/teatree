@@ -44,6 +44,7 @@ _PUBLIC_API: frozenset[str] = frozenset(
         "record_review_context",
         "record_review_skill_run",
         "reopen",
+        "reopen_for_followup",
         "request_review",
         "resolve_phase_session",
         "retrospect",
@@ -66,8 +67,9 @@ _PUBLIC_API: frozenset[str] = frozenset(
     }
 )
 
-# The FSM state graph as it stands before the split — {transition: (sources, targets)}.
-# Behaviour-preserving means this map is byte-identical afterwards.
+# The full FSM state graph — {transition: (sources, targets)}. The god-object
+# split had to leave it byte-identical; every later edge is a deliberate,
+# reviewed addition pinned here (e.g. reopen_for_followup, #3327).
 _FSM_GRAPH: dict[str, tuple[tuple[str, ...], tuple[str, ...]]] = {
     "code": (("planned",), ("coded",)),
     "code_direct": (("not_started", "scoped", "started"), ("coded",)),
@@ -118,6 +120,7 @@ _FSM_GRAPH: dict[str, tuple[tuple[str, ...], tuple[str, ...]]] = {
         ("reviewed",),
     ),
     "reopen": (("in_review", "merged", "retrospected", "shipped"), ("started",)),
+    "reopen_for_followup": (("delivered", "merged"), ("reviewed",)),
     "request_review": (("shipped",), ("in_review",)),
     "retrospect": (("merged", "retrospected"), ("retrospected",)),
     "review": (("tested",), ("reviewed",)),

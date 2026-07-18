@@ -54,13 +54,62 @@ def _read_int(data: RawAPIDict, key: str) -> int:
     return -1
 
 
-def _count_unresolved_resolvable_threads(discussions: list[RawAPIDict]) -> int:
+def _note_author(note: RawAPIDict) -> str:
+    """Return a note's author username, or ``""`` when absent/null (#3340).
+
+    GitLab system notes carry ``author: null`` (or omit the key); a naive
+    ``note["author"]["username"]`` blows up mid-walk. An empty string means
+    "no human author" — which never counts as "someone else" in
+    :func:`thread_opened_solely_by`.
+    """
+    author = note.get("author")
+    if not isinstance(author, dict):
+        return ""
+    username = cast("RawAPIDict", author).get("username")
+    return username if isinstance(username, str) else ""
+
+
+def thread_opened_solely_by(discussion: RawAPIDict, author: str) -> bool:
+    """True when *author* opened *discussion* and no one else replied (#3340).
+
+    The load-bearing "stale bot thread" predicate: a review bot posts inline
+    threads, the author force-pushes, the threads now point at code that no
+    longer exists — yet they still count as unresolved. This is *true* only when
+    the thread's first note is *author*'s AND every other authored note is also
+    *author*'s. A note whose author is null/absent (a system note) never counts
+    as "someone else"; a single reply from a different username flips it to
+    ``False`` — resolving such a thread would silently discard a real objection,
+    the correctness failure worth encoding once here rather than per overlay.
+
+    *author* is the bot username (overlay config, not core's business). A blank
+    *author* returns ``False`` so a missing config never eats every thread.
+    """
+    if not author:
+        return False
+    notes = discussion.get("notes")
+    if not isinstance(notes, list) or not notes:
+        return False
+    first = notes[0]
+    if not isinstance(first, dict) or _note_author(cast("RawAPIDict", first)) != author:
+        return False
+    return all(_note_author(cast("RawAPIDict", note)) in {"", author} for note in notes if isinstance(note, dict))
+
+
+def _count_unresolved_resolvable_threads(discussions: list[RawAPIDict], *, ignore_author: str = "") -> int:
     """Count open ``resolvable`` discussion threads — what blocks an MR merge.
 
     A thread is "unresolved-resolvable" when at least one of its notes is
-    ``resolvable: true`` AND no note carries ``resolved: true``. System notes
-    and non-resolvable comments are skipped: the GitLab "must resolve all
-    threads" policy is keyed on the same ``resolvable`` flag.
+    ``resolvable: true`` AND no note carries ``resolved: true`` (the missing key
+    is treated as not-resolved — truthiness on an absent key would be a bug).
+    System notes and non-resolvable comments are skipped: the GitLab "must
+    resolve all threads" policy is keyed on the same ``resolvable`` flag.
+
+    When *ignore_author* is set, threads opened solely by that author — a review
+    bot's own stale threads with no reply from anyone else, per
+    :func:`thread_opened_solely_by` — are EXCLUDED, so stale bot noise stops
+    blocking auto-merge as hard as a human's unaddressed objection. The default
+    (``""``) is byte-identical to the pre-#3340 count: no existing consumer
+    shifts.
     """
     count = 0
     for disc in discussions:
@@ -80,6 +129,8 @@ def _count_unresolved_resolvable_threads(discussions: list[RawAPIDict]) -> int:
             if note_dict.get("resolved") is True:
                 has_resolved = True
         if has_resolvable and not has_resolved:
+            if ignore_author and thread_opened_solely_by(disc, ignore_author):
+                continue
             count += 1
     return count
 
@@ -274,6 +325,21 @@ class GitLabCodeHost:  # noqa: PLR0904 — method count reflects the CodeHostBac
         return self._client.get_json_paginated(
             f"projects/{project.project_id}/merge_requests/{pr_iid}/notes?per_page=100"
         )
+
+    def list_pr_discussions(self, *, repo: str, pr_iid: int) -> list[RawAPIDict]:
+        """Return thread-structured, author-carrying discussion threads for an MR (#3340).
+
+        Unlike :meth:`list_pr_comments` (a flat note list), this preserves the
+        thread grouping AND each note's authorship — what
+        :func:`thread_opened_solely_by` needs to tell a stale bot thread apart
+        from one a human replied to. Keyed like its neighbours (``repo`` +
+        ``pr_iid``) so a caller selects threads through the backend without
+        dropping to the forge-specific ``project_id``-keyed API client.
+        """
+        project = self._resolve_project(repo)
+        if project is None:
+            return []
+        return cast("list[RawAPIDict]", self._client.get_mr_discussions(project.project_id, pr_iid))
 
     def upload_file(self, *, repo: str, filepath: str) -> dict[str, object]:
         return _uploads.upload_file(self._client, project=self._resolve_project(repo), repo=repo, filepath=filepath)

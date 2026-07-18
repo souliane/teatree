@@ -372,25 +372,12 @@ class Ticket(
         The shipping gate is the single source of truth: it verifies the
         required phases aggregated across **all** of the ticket's sessions
         (``aggregate_phase_records``/``check_gate_across_ticket``) *before*
-        calling this. Unlike ``review()``, there is no completed-reviewing-
-        task condition — the session record already attests the work was
-        done. So a passing gate must imply a shippable FSM state and
-        ``ship()`` never raises a raw ``TransitionNotAllowed`` at
-        ``pr create``.
-
-        #808 made this state-complete: previously the source was an
-        enumerated list (#799 added ``IN_REVIEW`` after #798; ``RETROSPECTED``
-        and any future unlisted non-terminal state was still rejected),
-        which kept re-introducing the ``{'allowed': False, 'missing': []}``
-        denial — the gate aggregated ``missing: []`` but the FSM couldn't
-        reach ``REVIEWED`` from the lingering state (e.g. a ticket
-        re-provisioned for a new workstream whose FSM sat at
-        ``RETROSPECTED``). Deriving the source from the terminal set makes
-        the FSM follow the phase ledger, so a newly added non-terminal
-        state can never silently re-break the gate. Terminal states stay
-        non-recoverable: SHIPPED/MERGED/DELIVERED are genuine post-ship
-        success; IGNORED is abandoned — none should reconcile backward to a
-        shippable state.
+        calling this, so a passing gate implies a shippable FSM state and
+        ``ship()`` never raises a raw ``TransitionNotAllowed`` at ``pr create``.
+        Deriving the source from the terminal set (not a hand-kept list) means a
+        newly added non-terminal state cannot silently re-break the gate.
+        Terminal states stay non-recoverable: SHIPPED/MERGED/DELIVERED are
+        post-ship success and IGNORED is abandoned — none reconcile backward.
 
         This transition body stays pure: task ledger consumption is the
         caller's responsibility on the gate-verified path
@@ -585,6 +572,19 @@ class Ticket(
         get_gate("spec_coverage")(self)
         get_gate("integration_review")(self)
         get_gate("critic")(self)
+
+    @transition(field=state, source=[State.MERGED, State.DELIVERED], target=State.REVIEWED)
+    def reopen_for_followup(self) -> None:
+        """Reopen a terminally-shipped ticket to REVIEWED for a follow-up PR (#3327).
+
+        One ticket → N PRs: the narrow "new branch on the same ticket" edge that
+        ``pr create --adopt-worktree`` fires so PR-B can ship after PR-A merged.
+        Only MERGED/DELIVERED need it (SHIPPED ships directly; IN_REVIEW/
+        RETROSPECTED reconcile to REVIEWED; IGNORED is abandoned). Pure body that
+        keeps the phase ledger (unlike ``reopen()``): the follow-up re-ships from
+        REVIEWED, then gets its own review via SHIPPED → IN_REVIEW. Re-shipping
+        merged work is foreclosed upstream by the #788 hollow-ship guard.
+        """
 
     @transition(field=state, source=[State.CODED, State.TESTED, State.REVIEWED], target=State.STARTED)
     def rework(self) -> None:
