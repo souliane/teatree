@@ -36,7 +36,7 @@ dependencies = [
   # PreToolUse hook used to treat that crash as a coverage finding (#122).
   "coverage>=7",
   "croniter>=6.2.2",
-  "django>=5.2,<6.1",
+  "django>=6,<6.1",
   "django-fsm-2>=4",
   "django-linear-migrations>=2.19",
   "django-rich>=2.2",

@@ -170,7 +170,6 @@ STATIC_URL = "static/"
 # gunicorn (DEBUG off). Kept beside the canonical DB so a headless deploy writes
 # to the same operator-owned data dir it already provisions.
 STATIC_ROOT = str(_DATA_DIR / "staticfiles")
-DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 
 LOGGING = default_logging("teatree")
 
