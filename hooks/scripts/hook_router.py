@@ -110,6 +110,7 @@ from hooks.scripts.loop_owner_db import db_owner_is_current_session as _db_owner
 from hooks.scripts.loop_registrations import emit_loop_registrations, is_bare_loop_tick_prompt
 from hooks.scripts.loop_state_self_pump_gate import db_loop_state_suppresses_self_pump
 from hooks.scripts.main_clone_guard import handle_block_main_clone_mutation
+from hooks.scripts.managed_repo import cwd_teatree_managed_state as _cwd_is_teatree_managed
 from hooks.scripts.managed_repo import file_is_inside_worktree as _file_is_inside_worktree
 from hooks.scripts.managed_repo import is_agent_state_path as _is_agent_state_path
 from hooks.scripts.managed_repo import load_protected_branches as _load_protected_branches
@@ -124,7 +125,7 @@ from hooks.scripts.mr_cli_fields import (
     cli_update_is_title_only,
     extract_cli_mr_fields,
     extract_mr_target_repo,
-    merge_target_is_managed,
+    merge_target_managed_state,
 )
 from hooks.scripts.no_self_reviewer_assign import handle_block_self_reviewer_assign
 from hooks.scripts.orchestration_boundary_signals import PYTEST_VERB_FINDER as _PYTEST_VERB_FINDER
@@ -162,6 +163,7 @@ from hooks.scripts.state_files import append_line, read_lines
 from hooks.scripts.stop_snapshot_slot import handle_stop_snapshot_slot
 from hooks.scripts.stop_snapshot_slot import open_prs_for_repo as _open_prs_for_repo
 from hooks.scripts.stop_snapshot_slot import run_prepare_stop_best_effort as _run_prepare_stop_best_effort
+from hooks.scripts.subagent_hint import suppress_self_auth_hint_for_subagent as _suppress_self_auth_hint_for_subagent
 from hooks.scripts.subagent_no_commit import handle_subagent_stop_no_commit
 from hooks.scripts.subagent_skill_gate import is_file_safe, unreferenced_demand_reason
 from hooks.scripts.teatree_settings import autoload_enabled as _autoload_enabled
@@ -333,7 +335,11 @@ def emit_pretooluse_deny(reason: str, *, gate_id: str | None = None) -> bool:
     decision = _apply_deny_circuit_breaker(reason)
     if decision.allow:
         return False
-    return _write_pretooluse_deny(decision.reason, gate_id=gate_id)
+    # A sub-agent deny must not advertise the ALLOW_*/QUOTE_OK self-bypass hint it
+    # cannot self-authorize (the classifier-denied retry poisoned its context) —
+    # rewrite the hint to escalation guidance, deny unchanged (#3252, sibling leaf).
+    reason_out = _suppress_self_auth_hint_for_subagent(decision.reason, _current_hook_context()[1])
+    return _write_pretooluse_deny(reason_out, gate_id=gate_id)
 
 
 def _write_pretooluse_deny(reason: str, *, gate_id: str | None = None) -> bool:
@@ -5240,8 +5246,9 @@ _OUT_OF_BAND_MERGE_REASON = (
     "MergeClear validation, SHA-binding, privacy/AI-signature scan, mark_merged). "
     "Use the sanctioned keystone transition `t3 <overlay> ticket merge <clear_id>` "
     "(BLUEPRINT §17.1 invariant 8 / §17.4). If this repo is genuinely not "
-    "teatree-managed and the cwd could not be resolved, run the merge from inside "
-    "the repo's working tree so the gate can classify it. kill-switch: `t3 <overlay> gate raw-merge disable`."
+    "teatree-managed, name the target explicitly with `--repo <owner>/<repo>` (or "
+    "a full forge URL) so the gate classifies it from the command itself and never "
+    "consults the cwd. kill-switch: `t3 <overlay> gate raw-merge disable`."
 )
 
 
@@ -5261,35 +5268,6 @@ def _is_raw_merge_api_write(command: str) -> bool:
             return raw_merge_detect.is_raw_merge_api_write(command)
     except Exception:  # noqa: BLE001 (fail-closed: a broken import must not weaken the merge gate)
         return True
-
-
-def _cwd_is_teatree_managed(cwd: Path) -> bool | None:
-    """Whether *cwd* belongs to a teatree-managed repo.
-
-    Returns ``True`` (managed — keep the keystone-merge block), ``False``
-    (unmanaged — allow a raw merge), or ``None`` (cannot classify — the
-    caller fails safe and BLOCKS). Reuses ``publish_surface.slug_for_cwd``
-    for slug resolution so the host/owner/repo shape matches the
-    private-repo carve-out's.
-    """
-    slugs, paths = _overlay_managed_repo_signals()
-    for base in paths:
-        # is_relative_to, not relative_to: a non-subpath returns False instead
-        # of raising ValueError, which the suppress() below does NOT catch — an
-        # uncaught crash here makes the crash-proof dispatcher fail OPEN.
-        with contextlib.suppress(OSError, RuntimeError):
-            if cwd.resolve().is_relative_to(base):
-                return True
-    try:
-        with _teatree_src_on_path():
-            from teatree.hooks import publish_surface  # noqa: PLC0415 — deferred: cold-hook import after sys.path setup
-
-            slug = publish_surface.slug_for_cwd(cwd).lower()
-    except Exception:  # noqa: BLE001 — crash-proof hook: any failure degrades silently, never breaks the tool call
-        return None
-    if not slug:
-        return None
-    return any(entry in slug for entry in slugs)
 
 
 def _invokes_raw_merge_subcommand(command: str) -> bool:
@@ -5322,9 +5300,10 @@ def handle_block_out_of_band_merge(data: dict) -> bool:
     mutation (mergePullRequest / enablePullRequestAutoMerge / mergeBranch) has an
     unresolvable node-id target, so it is blocked (fail-closed).
 
-    Otherwise classification keys on the merge TARGET (parsed from the command),
-    not the cwd — a managed-repo target is BLOCKED regardless of cwd; when none
-    parses, the cwd-keyed fallback (#126) allows only a confidently-unmanaged cwd.
+    Otherwise classification keys on the merge TARGET via a tri-state
+    (:func:`merge_target_managed_state`): a managed target is BLOCKED regardless of
+    cwd; a confidently-unmanaged target is ALLOWED on its own evidence; only when NO
+    target parses does the cwd-keyed fallback (#126) run (#3343).
     """
     if data.get("tool_name") != "Bash":
         return False
@@ -5339,10 +5318,17 @@ def handle_block_out_of_band_merge(data: dict) -> bool:
         return _fail_open_or_deny(data, _OUT_OF_BAND_MERGE_REASON)
     if not _invokes_raw_merge_subcommand(command) and not _is_raw_merge_api_write(command):
         return False
-    if not merge_target_is_managed(command, _overlay_managed_repo_signals()[0]):
+    # Tri-state target classification (#3343): a managed target → BLOCK regardless
+    # of cwd; a confidently-UNMANAGED target → ALLOW on its own evidence, never
+    # keyed off cwd (the bug: a non-git cwd forced a deny on a classifiable target).
+    # Only a NON-resolvable target (None) consults the cwd fallback (#126), allowing
+    # a confidently-unmanaged cwd (a non-classifiable cwd fails safe to BLOCK).
+    target_state = merge_target_managed_state(command, _overlay_managed_repo_signals()[0])
+    if target_state is None:
         cwd = _resolve_cwd_repo(data)
-        if cwd is not None and _cwd_is_teatree_managed(cwd) is False:
-            return False
+        target_state = not (cwd is not None and _cwd_is_teatree_managed(cwd) is False)
+    if target_state is False:
+        return False
     return _fail_open_or_deny(data, _OUT_OF_BAND_MERGE_REASON)
 
 

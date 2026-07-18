@@ -306,20 +306,33 @@ def extract_mr_target_repo(command: str) -> str | None:
     return None
 
 
-def merge_target_is_managed(command: str, managed_slugs: list[str]) -> bool:
-    """Whether the command's MR-TARGET slug names a teatree-managed repo.
+def merge_target_managed_state(command: str, managed_slugs: list[str]) -> bool | None:
+    """Tri-state classification of the command's MR-TARGET repo (#3343).
 
-    Classifies the merge TARGET (parsed by :func:`extract_mr_target_repo`),
-    NOT the agent's cwd, so a raw merge form aimed at a managed repo is caught
-    regardless of where it runs. Returns ``True`` only when a target slug
-    parses AND contains one of the ``managed_slugs`` signal substrings (the
-    same offline set the cwd-keyed check uses). A non-parseable target — a
-    numeric GitLab project id, or a bare ``gh pr merge <n>`` with no
-    ``--repo`` — returns ``False`` so the caller falls back to its cwd-keyed
-    classification (the established fail-safe).
+    Classifies the merge TARGET (parsed by :func:`extract_mr_target_repo`), NOT
+    the agent's cwd, so a raw merge form aimed at a managed repo is caught
+    regardless of where it runs. ``True`` — a target slug PARSES and matches a
+    ``managed_slugs`` signal (managed → the caller BLOCKS). ``False`` — a target
+    resolves to a real ``owner/repo`` namespace (contains a ``/``) matching no
+    managed signal (a CONFIDENT unmanaged verdict → the caller ALLOWS on the
+    target's own evidence, never consulting cwd). ``None`` — NO RESOLVABLE target:
+    none parses at all (a bare ``gh pr merge <n>``), OR the parsed target is an
+    OPAQUE id the offline slug set cannot classify (a numeric GitLab ``projects/5``
+    id, which could well BE a managed repo whose slug is unresolvable offline) →
+    the caller falls back to its cwd-keyed classification (never-lockout fail-safe).
+
+    The plain ``bool`` this replaces conflated the last two states: a
+    confidently-unmanaged TARGET was indistinguishable from NO target, so it always
+    fell through to the cwd rule and a non-git cwd denied a merge the gate never
+    meant to block. Mirroring the tri-state ``cwd_teatree_managed_state`` shape
+    makes ``None`` expressible (#3343).
     """
     target = extract_mr_target_repo(command)
     if target is None:
-        return False
+        return None
     target_lower = target.strip().lower()
-    return bool(target_lower) and any(entry in target_lower for entry in managed_slugs)
+    # Only a namespaced ``owner/repo`` slug is classifiable offline; an opaque id
+    # (no ``/``) cannot be confirmed unmanaged, so defer to the cwd fail-safe.
+    if "/" not in target_lower:
+        return None
+    return any(entry in target_lower for entry in managed_slugs)
