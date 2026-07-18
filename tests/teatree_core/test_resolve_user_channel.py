@@ -111,6 +111,59 @@ class TestResolveUserChannel:
         assert notify.resolve_user_channel() == "D-OVERLAY"
 
 
+class TestSoleOverlayFallback:
+    """Env-independent fallback: a single registered overlay resolves without ``T3_OVERLAY_NAME``.
+
+    The headless worker that DMs the owner does NOT export ``T3_OVERLAY_NAME``,
+    so the overlay-scoped tier is skipped; a fresh box carries no GLOBAL
+    ``slack_user_id`` / ``slack_user_channel``. When exactly one overlay is
+    registered there is no ambiguity, so its own values resolve — mirroring
+    ``backend_factory.messaging_from_overlay``'s single-overlay resolution.
+    """
+
+    def test_user_id_resolves_from_sole_overlay_without_env_or_global(self, tmp_path, monkeypatch) -> None:
+        monkeypatch.delenv("T3_OVERLAY_NAME", raising=False)
+        _write_cfg(tmp_path, monkeypatch, overlays={"acme": {"slack_user_id": "U-SOLE"}})
+
+        assert notify.resolve_user_id() == "U-SOLE"
+
+    def test_channel_resolves_from_sole_overlay_without_env_or_global(self, tmp_path, monkeypatch) -> None:
+        monkeypatch.delenv("T3_OVERLAY_NAME", raising=False)
+        _write_cfg(tmp_path, monkeypatch, overlays={"acme": {"slack_user_channel": "D-SOLE"}})
+
+        assert notify.resolve_user_channel() == "D-SOLE"
+
+    def test_global_still_wins_over_sole_overlay(self, tmp_path, monkeypatch) -> None:
+        # The sole-overlay tier is the LAST resort — a configured global keeps priority.
+        monkeypatch.delenv("T3_OVERLAY_NAME", raising=False)
+        _write_cfg(
+            tmp_path,
+            monkeypatch,
+            global_user_id="U-GLOBAL",
+            global_channel="D-GLOBAL",
+            overlays={"acme": {"slack_user_id": "U-SOLE", "slack_user_channel": "D-SOLE"}},
+        )
+
+        assert notify.resolve_user_id() == "U-GLOBAL"
+        assert notify.resolve_user_channel() == "D-GLOBAL"
+
+    def test_multiple_overlays_stay_ambiguous(self, tmp_path, monkeypatch) -> None:
+        # Two registered overlays with no env selector and no global: never guess —
+        # a multi-overlay box must not silently pick the wrong owner.
+        monkeypatch.delenv("T3_OVERLAY_NAME", raising=False)
+        _write_cfg(
+            tmp_path,
+            monkeypatch,
+            overlays={
+                "acme": {"slack_user_id": "U-ACME", "slack_user_channel": "D-ACME"},
+                "beta": {"slack_user_id": "U-BETA", "slack_user_channel": "D-BETA"},
+            },
+        )
+
+        assert notify.resolve_user_id() == ""
+        assert notify.resolve_user_channel() == ""
+
+
 class TestLiveApprovalCliUsesCanonicalResolver:
     """The live-post-approval CLI resolves its DM channel through the canonical helper."""
 

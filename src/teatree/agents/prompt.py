@@ -90,6 +90,29 @@ _REVIEW_VERDICT_RETURN_LINES: tuple[str, ...] = (
     "Use verdict=hold with the blocking findings when the change must not merge yet.",
 )
 
+# Injected into a headless answering brief: the answering phase is denied the
+# shell (agents/answerer.md tools = Read/Grep/Glob only), so it CANNOT post the
+# reply itself via the Replier / `t3 <overlay> notify` CLI. It RETURNS the draft
+# in the result envelope instead; the orchestrator (``attempt_recorder`` →
+# ``_maybe_record_answer_draft``) routes it through the DeferredQuestion approval
+# path and posts on the user's behalf (maker≠checker: a different actor posts).
+# Symmetric to ``_REVIEW_VERDICT_RETURN_LINES`` — without this directive the
+# shell-denied answerer returns a prose summary with no ``answer`` field and the
+# phase evidence gate refuses ("missing required evidence for phase 'answering'").
+_ANSWER_RETURN_LINES: tuple[str, ...] = (
+    "",
+    "RETURN YOUR REPLY AS A DRAFT (this phase has no shell — do NOT try to post via",
+    "`t3 <overlay> notify`, the Replier, or any CLI; you cannot post, you HAND BACK the draft):",
+    "add an `answer` object to your final JSON result. The orchestrator routes it through the",
+    "approval path and posts on the user's behalf:",
+    '  "answer": {"text": "<the drafted reply, in the user\'s voice — no AI signature>",',
+    '             "thread_ref": "<the inbound thread ts/ref this reply targets, or \'\' if none>"}',
+    "The `text` MUST be non-empty — a summary-only result with no `answer` drops the reply and",
+    "the phase is refused. If you cannot answer (missing context, a decision only the user can",
+    "make), draft a clarifying-question reply as the `answer` text rather than returning nothing.",
+)
+
+
 # The coding directive force-loads these two by name in its first lines, and
 # ``rules`` is always embedded in full — so they are never re-listed in the
 # resolved-stack skill-load block.
@@ -388,6 +411,30 @@ def _reviewing_phase_lines(task: Task) -> tuple[str, ...]:
     return tuple(lines)
 
 
+def _answering_phase_lines(task: Task) -> tuple[str, ...]:
+    """The headless ``PHASE: answering`` block — draft, then RETURN the answer envelope.
+
+    The shell-denied answerer cannot post the reply itself; it hands the draft
+    back and the orchestrator posts on confirmation. Surfaces the inbound thread
+    context (``ticket.extra["slack_answer"]``, populated by the reactive
+    slack-answer cycle) best-effort so the agent knows what ``thread_ref`` to
+    fill; absent for the event-router dispatch shape, which carries the thread
+    on the routed ``IncomingEvent`` the answerer skill reads.
+    """
+    lines = ["", "PHASE: answering", "Read the thread context and draft a concise reply in the user's voice."]
+    ticket_extra = task.ticket.extra if isinstance(task.ticket.extra, dict) else {}
+    slack_answer = ticket_extra.get("slack_answer")
+    if isinstance(slack_answer, dict):
+        thread_ts = str(slack_answer.get("slack_ts") or "")
+        question = str(slack_answer.get("question") or "")
+        if thread_ts:
+            lines.append(f"Inbound Slack thread ts (use as `thread_ref`): {thread_ts}")
+        if question:
+            lines.append(f"The user's message: {question}")
+    lines.extend(_ANSWER_RETURN_LINES)
+    return tuple(lines)
+
+
 def _shipping_phase_lines() -> tuple[str, ...]:
     """The headless ``PHASE: shipping`` auto-review-gate block."""
     reviewer_dispatch = build_reviewer_dispatch_prompt(
@@ -438,6 +485,8 @@ def _phase_specific_lines(
         return _planning_phase_lines(task)
     if phase == "reviewing":
         return _reviewing_phase_lines(task)
+    if phase == "answering":
+        return _answering_phase_lines(task)
     if phase == "shipping":
         return _shipping_phase_lines()
     return ()
