@@ -44,7 +44,7 @@ def _resurface_text(row: DeferredQuestion) -> str:
         label = opt.get("label", "")
         desc = opt.get("description", "")
         lines.append(f"  {i}. {label}" + (f" — {desc}" if desc else ""))
-    lines.append(f"\n_Answer with_ `t3 teatree questions answer {row.pk} <text>`")
+    lines.append("\n_Just reply in this thread to answer._")
     return "\n".join(lines)
 
 

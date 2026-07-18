@@ -431,11 +431,18 @@ def _feature_enabled() -> bool:
 
 
 def resolve_user_id() -> str:
-    """Resolve the Slack user id to DM (overlay override → global → empty).
+    """Resolve the Slack user id to DM (overlay override → global → sole overlay → empty).
 
     The per-overlay id comes from the DB overlays registry (still injected into
     ``load_config().raw["overlays"]``); the GLOBAL fallback reads the DB-home
     ``slack_user_id`` setting so every routing path agrees on the same order.
+
+    The final ``sole overlay`` tier is the env-independent fallback that mirrors
+    :func:`teatree.core.backend_factory.messaging_from_overlay` — the headless
+    worker that DMs the owner does NOT export ``T3_OVERLAY_NAME``, so the
+    overlay-scoped tier is skipped, and a fresh box carries no GLOBAL setting.
+    When exactly one overlay is registered there is no ambiguity, so its own
+    ``slack_user_id`` resolves without depending on the env var being set.
     """
     from teatree.config import cold_reader  # noqa: PLC0415 — deferred: call-time import, kept lazy
 
@@ -446,14 +453,17 @@ def resolve_user_id() -> str:
         user_id = overlays[overlay_name].get("slack_user_id", "")
         if user_id:
             return str(user_id)
-    return cold_reader.str_setting("slack_user_id", default="")
+    global_id = cold_reader.str_setting("slack_user_id", default="")
+    if global_id:
+        return global_id
+    return _sole_overlay_field(overlays, "slack_user_id")
 
 
 def resolve_user_channel() -> str:
-    """Resolve the Slack DM channel id the user reads (overlay override → global → empty).
+    """Resolve the Slack DM channel id the user reads (overlay → global → sole overlay → empty).
 
     The canonical resolver for the ``slack_user_channel`` config key,
-    walking the SAME overlay→global→empty order :func:`resolve_user_id`
+    walking the SAME overlay→global→sole-overlay→empty order :func:`resolve_user_id`
     uses for ``slack_user_id``. Both DM-channel call sites (the bot→user
     DM path and the live-post-approval CLI verifier) consult this single
     helper, so a change to the resolution order can never drift between
@@ -472,7 +482,28 @@ def resolve_user_channel() -> str:
         channel = overlays[overlay_name].get("slack_user_channel", "")
         if channel:
             return str(channel)
-    return cold_reader.str_setting("slack_user_channel", default="")
+    global_channel = cold_reader.str_setting("slack_user_channel", default="")
+    if global_channel:
+        return global_channel
+    return _sole_overlay_field(overlays, "slack_user_channel")
+
+
+def _sole_overlay_field(overlays: dict, key: str) -> str:
+    """Return the sole registered overlay's ``key`` value, or ``""``.
+
+    Env-independent fallback for the DM-target resolvers: when the active
+    overlay is ambiguous (``T3_OVERLAY_NAME`` unset in the headless worker)
+    and no GLOBAL setting is configured, a single registered overlay is
+    unambiguous — its own value is the right target. Returns ``""`` when
+    zero or more than one overlay is registered (ambiguous), so a
+    multi-overlay box never silently picks the wrong owner.
+    """
+    if len(overlays) != 1:
+        return ""
+    entry = next(iter(overlays.values()))
+    if not isinstance(entry, dict):
+        return ""
+    return str(entry.get(key, "") or "")
 
 
 def maybe_linkify(text: str) -> str:

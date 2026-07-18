@@ -197,6 +197,42 @@ class TestBuildSystemContext(TestCase):
         assert "review_verdict" in ctx
         assert "do NOT try `t3 <overlay> review record`" in ctx
 
+    def test_answering_phase(self) -> None:
+        ticket = Ticket.objects.create()
+        session = Session.objects.create(ticket=ticket)
+        task = Task.objects.create(ticket=ticket, session=session, phase="answering")
+
+        ctx = build_system_context(task, skills=[])
+        assert "PHASE: answering" in ctx
+
+    def test_answering_brief_instructs_returning_the_answer_envelope(self) -> None:
+        # The answering phase has no shell (agents/answerer.md tools = Read/Grep/Glob),
+        # so the brief MUST tell the answerer to RETURN an `answer` envelope rather than
+        # try to post itself — otherwise the phase evidence gate refuses the run for
+        # "missing required evidence for phase 'answering'".
+        ticket = Ticket.objects.create()
+        session = Session.objects.create(ticket=ticket)
+        task = Task.objects.create(ticket=ticket, session=session, phase="answering")
+
+        ctx = build_system_context(task, skills=[])
+        assert '"answer"' in ctx
+        assert "thread_ref" in ctx
+        assert "do NOT try to post" in ctx
+
+    def test_answering_brief_surfaces_slack_thread_context(self) -> None:
+        # When the reactive slack-answer cycle stamps the inbound thread onto
+        # ticket.extra["slack_answer"], the brief surfaces the ts (as thread_ref)
+        # and the user's message so the agent can fill the envelope.
+        ticket = Ticket.objects.create(
+            extra={"slack_answer": {"channel": "C1", "slack_ts": "1700000000.0001", "question": "is it ready?"}}
+        )
+        session = Session.objects.create(ticket=ticket)
+        task = Task.objects.create(ticket=ticket, session=session, phase="answering")
+
+        ctx = build_system_context(task, skills=[])
+        assert "1700000000.0001" in ctx
+        assert "is it ready?" in ctx
+
     def test_coding_brief_carries_heartbeat_dm_block(self) -> None:
         # PR-12: a long-running maker brief auto-injects the heartbeat-DM cue.
         ticket = Ticket.objects.create()
