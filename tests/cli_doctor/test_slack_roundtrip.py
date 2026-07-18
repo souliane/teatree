@@ -45,7 +45,23 @@ class _HealthyBaseline(TestCase):
     def setUp(self) -> None:
         # The `inbox` answer loop is seeded enabled by 0001_initial; ensure it is
         # ENABLED with no LoopState hold so loop_enabled("inbox") is True.
-        Loop.objects.update_or_create(name="inbox", defaults={"enabled": True})
+        # `create_defaults` keeps the CREATE branch XOR-valid: under `pytest-randomly`
+        # a preceding `TransactionTestCase` flushes teatree_loop WITHOUT restoring the
+        # migration-seeded rows (no `serialized_rollback`), so the seeded `inbox` row
+        # can be gone. The bare-`defaults` create branch then built a Loop with neither
+        # `prompt` nor `script`, tripping the `loop_prompt_xor_script` CHECK constraint
+        # (a shuffle-order-only flake). Seeding the same script-backed shape the
+        # migration uses keeps the create legal; the update branch (the row present)
+        # still only flips `enabled`, so the normal path is unchanged.
+        Loop.objects.update_or_create(
+            name="inbox",
+            defaults={"enabled": True},
+            create_defaults={
+                "enabled": True,
+                "script": "src/teatree/loops/inbox/loop.py",
+                "delay_seconds": 60,
+            },
+        )
         self._backend = _FakeSlackBackend()
         self._stack = contextlib.ExitStack()
         self.overlays = self._stack.enter_context(
