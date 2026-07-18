@@ -38,13 +38,19 @@ def _django_upgrade_repo() -> dict[str, Any] | None:
 
 
 def _django_floor_version() -> str:
-    """The minimum supported Django version from the ``django>=X.Y`` pin."""
+    """The minimum supported Django version, as ``major.minor``, from the ``django>=`` pin.
+
+    ``pyproject-fmt`` strips a ``.0`` patch/minor (``django>=6.0`` is normalized to
+    ``django>=6``), so a bare-major floor is widened back to ``major.minor`` to
+    match django-upgrade's ``--target-version`` form (e.g. ``"6.0"``).
+    """
     data = tomllib.loads(_PYPROJECT.read_text(encoding="utf-8"))
     deps: list[str] = data["project"]["dependencies"]
     django_pin = next(dep for dep in deps if re.match(r"^django\b", dep))
-    match = re.search(r">=\s*(\d+\.\d+)", django_pin)
-    assert match, f"Could not parse a '>=X.Y' floor from the Django pin: {django_pin!r}"
-    return match.group(1)
+    match = re.search(r">=\s*(\d+)(?:\.(\d+))?", django_pin)
+    assert match, f"Could not parse a '>=X[.Y]' floor from the Django pin: {django_pin!r}"
+    major, minor = match.group(1), match.group(2) or "0"
+    return f"{major}.{minor}"
 
 
 class TestDjangoUpgradeHook:
