@@ -8529,13 +8529,26 @@ Usage: t3 teatree handover create [OPTIONS]
 
  No ``--to`` → the live ``t3-master`` slot holder; if none, parked
  for whichever session starts next. Always persists the
- :class:`SessionHandover` row AND mirrors it to the XDG file.
+ :class:`SessionHandover` row AND mirrors it to the XDG file. Then, per
+ directive #8, drives every in-flight sub-agent worktree through
+ leak-gated fast-push so their work is committed/pushed/PR'd BEFORE the
+ orchestrator terminates them.
 
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
-│ --to          TEXT  Target session id. Omit to hand to the live loop owner,  │
-│                     else park for next.                                      │
-│ --json              Emit JSON.                                               │
-│ --help              Show this message and exit.                              │
+│ --to                                         TEXT  Target session id. Omit   │
+│                                                    to hand to the live loop  │
+│                                                    owner, else park for      │
+│                                                    next.                     │
+│ --drive-subagents    --no-drive-subagents          Fast-push in-flight       │
+│                                                    sub-agent worktrees       │
+│                                                    before they are           │
+│                                                    terminated (directive     │
+│                                                    #8).                      │
+│                                                    [default:                 │
+│                                                    drive-subagents]          │
+│ --json                                             Emit JSON.                │
+│ --help                                             Show this message and     │
+│                                                    exit.                     │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 

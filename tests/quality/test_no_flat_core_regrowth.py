@@ -62,7 +62,12 @@ _CORE_DIR = Path(__file__).resolve().parents[2] / "src" / "teatree" / "core"
 # with connector_preflight/connector_manifest/connector_keys; messaging_tokens with
 # send_proxy/notify/reply_transport; overlay_skills with overlay/overlay_loader/
 # overlay_metadata. None is owned by an existing subpackage.
-PINNED_FLAT_CORE_MODULES = 74
+# 75: +handover_orchestration.py (directive #8) — the hand-off/shutdown seam that
+# drives in-flight sub-agent worktrees through fast-push before termination. A
+# genuine new root concern bridging two flat root leaves — handover.py (the
+# hand-off record + mirror) and fast_push.py (the leak-gated ship lane) — owned by
+# no existing subpackage (merge/ is the keystone transition, not the hand-off seam).
+PINNED_FLAT_CORE_MODULES = 75
 
 
 def _flat_core_modules() -> list[str]:

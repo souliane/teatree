@@ -62,21 +62,61 @@ class TestResolveTargetSession(TestCase):
 class TestWriteMirror(TestCase):
     def setUp(self) -> None:
         super().setUp()
-        self.target = Path(self.enterContext(_tmp_env("XDG_STATE_HOME"))) / "m.md"
+        # ``pointer`` is the well-known ``latest`` path; content lands in a unique sibling.
+        self.pointer = Path(self.enterContext(_tmp_env("XDG_STATE_HOME"))) / "latest.md"
 
-    def test_mirror_writes_payload_and_recipient(self) -> None:
+    def test_mirror_writes_payload_to_unique_file_and_repoints_latest(self) -> None:
         row = SessionHandover.objects.create_handover(from_session="a", to_session="b", payload="BODY")
-        written = handover.write_mirror(row, self.target)
-        assert written == self.target
-        text = self.target.read_text(encoding="utf-8")
+        written = handover.write_mirror(row, self.pointer)
+        # Content lives in a UNIQUE per-session file, not the fixed pointer.
+        assert written != self.pointer
+        assert written.name.startswith("handover-")
+        assert "a" in written.name
+        text = written.read_text(encoding="utf-8")
         assert "from: `a`" in text
         assert "to: `b`" in text
         assert "BODY" in text
+        # ``latest`` resolves to the same content the unique file holds.
+        assert self.pointer.read_text(encoding="utf-8") == text
 
     def test_next_session_renders_as_next_session(self) -> None:
         row = SessionHandover.objects.create_handover(from_session="a", to_session="", payload="BODY")
-        handover.write_mirror(row, self.target)
-        assert "to: `next-session`" in self.target.read_text(encoding="utf-8")
+        written = handover.write_mirror(row, self.pointer)
+        assert "to: `next-session`" in written.read_text(encoding="utf-8")
+
+
+class TestUniqueMirrorNoClobber(TestCase):
+    """Directive #7 — concurrent hand-offs from different sessions must not clobber."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.pointer = Path(self.enterContext(_tmp_env("XDG_STATE_HOME"))) / "latest.md"
+
+    def test_two_concurrent_handoffs_write_distinct_files(self) -> None:
+        first = SessionHandover.objects.create_handover(from_session="sess-A", to_session="x", payload="FROM-A")
+        second = SessionHandover.objects.create_handover(from_session="sess-B", to_session="y", payload="FROM-B")
+
+        first_file = handover.write_mirror(first, self.pointer)
+        second_file = handover.write_mirror(second, self.pointer)
+
+        assert first_file != second_file
+        assert first_file.read_text(encoding="utf-8").find("FROM-A") != -1
+        assert second_file.read_text(encoding="utf-8").find("FROM-B") != -1
+        # The first session's mirror survived the second hand-off (no clobber).
+        assert "FROM-A" in first_file.read_text(encoding="utf-8")
+
+    def test_latest_pointer_tracks_the_newest_handover(self) -> None:
+        first = SessionHandover.objects.create_handover(from_session="sess-A", to_session="x", payload="FROM-A")
+        second = SessionHandover.objects.create_handover(from_session="sess-B", to_session="y", payload="FROM-B")
+
+        handover.write_mirror(first, self.pointer)
+        handover.write_mirror(second, self.pointer)
+
+        assert "FROM-B" in self.pointer.read_text(encoding="utf-8")
+
+    def test_remirroring_same_row_is_idempotent(self) -> None:
+        row = SessionHandover.objects.create_handover(from_session="sess-A", to_session="x", payload="BODY")
+        assert handover.write_mirror(row, self.pointer) == handover.write_mirror(row, self.pointer)
 
 
 class TestCreateHandover(TestCase):

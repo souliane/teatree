@@ -20,7 +20,10 @@ Target resolution (``create``):
 - otherwise ``""`` — parked for whichever session starts next to claim.
 """
 
+import contextlib
 import os
+import re
+import shutil
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -31,6 +34,8 @@ if TYPE_CHECKING:
 
 _SNAPSHOT_PREFIX = "t3-snapshot-"
 _SNAPSHOT_SUFFIX = "-precompact.md"
+_MIRROR_PREFIX = "handover-"
+_MIRROR_SUFFIX = ".md"
 
 
 def _state_dir() -> Path:
@@ -85,18 +90,70 @@ def resolve_target_session(explicit_to: str) -> str:
 
 
 def mirror_path() -> Path:
-    """The configured XDG file mirror path for the latest hand-off."""
+    """The configured XDG ``latest`` pointer for the most-recent hand-off.
+
+    This is the stable, well-known path a human (or a bootstrapping session)
+    reads to find the newest hand-off. The actual content lives in a
+    per-session UNIQUE sibling file (:func:`unique_mirror_path`); this path is
+    kept as a pointer to that newest file so concurrent hand-offs never clobber
+    each other's content.
+    """
     return get_effective_settings().handover_mirror_path
 
 
-def write_mirror(handover: "SessionHandover", path: Path | None = None) -> Path:
-    """Mirror *handover* to the human-readable XDG file (overwrites the single ``latest.md``).
+def _mirror_slug(value: str) -> str:
+    """A filename-safe slug of a session id: ``[A-Za-z0-9._-]`` runs, collapsed."""
+    cleaned = re.sub(r"[^A-Za-z0-9._-]+", "-", value).strip("-.")
+    return cleaned or "unknown"
 
-    Best-effort framing: the parent dir is created. A target of ``""``
+
+def unique_mirror_path(handover: "SessionHandover", *, directory: Path) -> Path:
+    """The collision-safe per-hand-off mirror file inside *directory*.
+
+    Keyed on the ``from_session`` id AND the row's own ``created_at`` (a
+    DB-assigned, deterministic timestamp — NOT wall-clock read at write time),
+    so re-mirroring the same row is idempotent while two *different*
+    concurrent hand-offs — from different sessions, or the same session at
+    different instants — never resolve to the same file. This is the fix for
+    the fixed-``latest.md`` clobber (directive #7).
+    """
+    stamp = handover.created_at.strftime("%Y%m%dT%H%M%S_%f")
+    return directory / f"{_MIRROR_PREFIX}{_mirror_slug(handover.from_session)}-{stamp}{_MIRROR_SUFFIX}"
+
+
+def _update_latest_pointer(pointer: Path, unique: Path) -> None:
+    """Point the well-known ``latest`` path at the newest unique mirror.
+
+    Prefers a relative symlink (``latest.md`` → ``handover-<sess>-<stamp>.md``)
+    so the pointer moves atomically to the newest file; falls back to copying
+    the content when the platform/filesystem refuses symlinks. Best-effort: a
+    pointer-update failure never loses the already-written unique content.
+    """
+    if pointer.resolve() == unique.resolve():
+        return
+    try:
+        if pointer.is_symlink() or pointer.exists():
+            pointer.unlink()
+        pointer.symlink_to(unique.name)
+    except OSError:
+        with contextlib.suppress(OSError):
+            shutil.copyfile(unique, pointer)
+
+
+def write_mirror(handover: "SessionHandover", path: Path | None = None) -> Path:
+    """Mirror *handover* to a UNIQUE per-session file; repoint ``latest`` at it.
+
+    *path* is the well-known ``latest`` pointer (default: :func:`mirror_path`).
+    The content is written to a collision-safe sibling (:func:`unique_mirror_path`)
+    so concurrent hand-offs from multiple sessions never clobber one another,
+    and the ``latest`` pointer is moved to the newest file. Returns the UNIQUE
+    content file (the durable artifact), not the pointer. A target of ``""``
     renders as ``next-session`` so the file always names a recipient.
     """
-    target = path or mirror_path()
-    target.parent.mkdir(parents=True, exist_ok=True)
+    pointer = path or mirror_path()
+    directory = pointer.parent
+    directory.mkdir(parents=True, exist_ok=True)
+    unique = unique_mirror_path(handover, directory=directory)
     recipient = handover.to_session or "next-session"
     header = (
         f"# Session hand-off\n\n"
@@ -105,8 +162,9 @@ def write_mirror(handover: "SessionHandover", path: Path | None = None) -> Path:
         f"- created: {handover.created_at.isoformat()}\n\n"
         "---\n\n"
     )
-    target.write_text(header + handover.payload + "\n", encoding="utf-8")
-    return target
+    unique.write_text(header + handover.payload + "\n", encoding="utf-8")
+    _update_latest_pointer(pointer, unique)
+    return unique
 
 
 def create_handover(*, from_session: str, explicit_to: str) -> "tuple[SessionHandover, Path]":
