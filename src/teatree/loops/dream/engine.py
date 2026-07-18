@@ -489,8 +489,33 @@ def write_clusters(
     return WriteOutcome(written=written, rejected=rejected)
 
 
+#: Unicode punctuation folded to its ASCII equivalent before the grounding
+#: substring test. A decoded transcript may carry a smart quote / em-dash where the
+#: model's citation used the straight form (or the reverse), so both operands are
+#: folded SYMMETRICALLY (:func:`normalize_ws` runs on the snippet index AND on the
+#: citation). This stays a strict substring test — a canonical form on both sides,
+#: never a fuzzy / token-overlap match — so an invented citation is still rejected.
+_PUNCT_FOLD = str.maketrans(
+    {
+        "\u2018": "'",  # left single quotation mark
+        "\u2019": "'",  # right single quotation mark
+        "\u201a": "'",  # single low-9 quotation mark
+        "\u201b": "'",  # single high-reversed-9 quotation mark
+        "\u201c": '"',  # left double quotation mark
+        "\u201d": '"',  # right double quotation mark
+        "\u201e": '"',  # double low-9 quotation mark
+        "\u201f": '"',  # double high-reversed-9 quotation mark
+        "\u2013": "-",  # en dash
+        "\u2014": "-",  # em dash
+        "\u2015": "-",  # horizontal bar
+        "\u2212": "-",  # minus sign
+        "\u2026": "...",  # horizontal ellipsis
+    }
+)
+
+
 def normalize_ws(text: str) -> str:
-    return " ".join(text.split())
+    return " ".join(text.translate(_PUNCT_FOLD).split())
 
 
 def cluster_is_grounded(cluster: DistilledCluster, snippet_texts: dict[str, str]) -> bool:

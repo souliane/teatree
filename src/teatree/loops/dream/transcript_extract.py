@@ -23,9 +23,11 @@ Without these keepers the keyword gate filtered fresh user-correction and user-a
 prose out before the distiller ever saw it — the gap this module closes.
 """
 
+import json
 import re
 from collections import Counter
 from collections.abc import Sequence
+from typing import Any, cast
 
 #: Transcript lines worth keeping on keyword alone — the rest is chatter that
 #: must never reach the LLM prompt. Necessary-not-sufficient: a line also
@@ -211,7 +213,7 @@ def high_signal_lines(raw: str) -> str:
     lines = raw.splitlines()
     repeated = _repeated_user_turns(lines)
     kept = [
-        line
+        decode_transcript_line(line)
         for line in lines
         if any(signal in line for signal in TRANSCRIPT_SIGNALS)
         or looks_like_user_correction(line)
@@ -220,6 +222,121 @@ def high_signal_lines(raw: str) -> str:
         or line.strip() in repeated
     ]
     return "\n".join(kept)
+
+
+#: Message-envelope ``type`` / ``role`` values whose content is human prose the
+#: distiller cites. A line carrying one of these is decoded to readable text; any
+#: other line (a queue-operation, an attachment, a non-JSON marker) is passed
+#: through verbatim.
+_ROLE_MESSAGE_TYPES = frozenset({"user", "assistant"})
+
+
+def _as_mapping(value: object) -> dict[str, Any] | None:
+    """A JSON object as a ``str``-keyed mapping, or ``None`` — the one ``Any`` chokepoint.
+
+    ``json.loads`` is untyped, so every decoded value arrives as ``object``. Narrowing
+    it here (once) keeps the ``Any`` confined to this helper and lets every caller stay
+    strictly typed against ``dict[str, Any]``.
+    """
+    return cast("dict[str, Any]", value) if isinstance(value, dict) else None
+
+
+def _as_text(value: object) -> str:
+    return value if isinstance(value, str) else ""
+
+
+def _message_role(obj: dict[str, Any]) -> str | None:
+    """The ``user`` / ``assistant`` role of a transcript object, across envelope shapes."""
+    kind = obj.get("type")
+    if isinstance(kind, str) and kind in _ROLE_MESSAGE_TYPES:
+        return kind
+    message = _as_mapping(obj.get("message"))
+    if message is not None:
+        role = message.get("role")
+        if isinstance(role, str) and role in _ROLE_MESSAGE_TYPES:
+            return role
+    role = obj.get("role")
+    if isinstance(role, str) and role in _ROLE_MESSAGE_TYPES:
+        return role
+    return None
+
+
+def _stringify_block(block: object) -> str:
+    """Flatten one content block to its human-readable text, adding no re-escaping.
+
+    ``text`` / ``thinking`` blocks carry the prose a citation quotes; a
+    ``tool_result`` recurses into its (already-decoded) content so a gate BLOCK /
+    DENIED reason survives; a ``tool_use`` contributes only its bare tool name so no
+    JSON-escaped input payload re-enters the decoded stream.
+    """
+    if isinstance(block, str):
+        return block
+    mapping = _as_mapping(block)
+    if mapping is None:
+        return ""
+    block_type = mapping.get("type")
+    if block_type in {"text", "thinking"}:
+        return _as_text(mapping.get("text") or mapping.get("thinking") or "")
+    if block_type == "tool_result":
+        return _stringify_content(mapping.get("content"))
+    if block_type == "tool_use":
+        return _as_text(mapping.get("name"))
+    return _as_text(mapping.get("text"))
+
+
+def _stringify_content(content: object) -> str:
+    """Flatten a message ``content`` (string, or a list of content blocks) to text."""
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        return " ".join(part for part in (_stringify_block(block) for block in content) if part)
+    return ""
+
+
+def _flatten_message_text(obj: dict[str, Any]) -> str:
+    """The decoded, human-readable text of a transcript message across envelope shapes."""
+    message = _as_mapping(obj.get("message"))
+    source = message.get("content") if message is not None else obj.get("content")
+    parts = [_stringify_content(source)]
+    text = obj.get("text")
+    if isinstance(text, str):
+        parts.append(text)
+    return " ".join(part for part in parts if part).strip()
+
+
+def decode_transcript_line(line: str) -> str:
+    r"""Render one raw JSONL transcript line as decoded, single-line human text.
+
+    Signal DETECTION runs on the RAW escaped JSONL (:func:`high_signal_lines` — the
+    regexes need the JSON envelope), but the distiller prompt and the grounding index
+    must share ONE decoded representation: a model quotes the human-readable content
+    it is shown as its verbatim citation, and that citation can only be a substring of
+    the grounding snippet when the snippet holds the SAME decoded form. A raw line
+    keeps JSON escapes (``\u2014`` for an em-dash, ``\"`` for ``"``, ``\n`` for a
+    newline), so the decoded citation is never a substring of it — the mismatch that
+    rejected every transcript-cited cluster as ungrounded.
+
+    A user/assistant turn is flattened to ``{"role": "<role>"} <text>`` on a SINGLE
+    line: the JSON role tag is retained so the per-line role heuristics
+    (:func:`looks_like_user_correction` / :func:`looks_like_user_ask`, reused by the
+    ``compliance`` and weight paths) keep working on the decoded stream, and the
+    content is JSON-decoded so a citation grounds. A line that does not parse, is not
+    a role message, or carries no extractable text is returned verbatim, so a plain
+    signal marker still passes through unchanged.
+    """
+    try:
+        obj = _as_mapping(json.loads(line))
+    except (ValueError, TypeError):
+        return line
+    if obj is None:
+        return line
+    role = _message_role(obj)
+    if role is None:
+        return line
+    text = _flatten_message_text(obj)
+    if not text:
+        return line
+    return f'{{"role": "{role}"}} {" ".join(text.split())}'
 
 
 def user_ask_lines(raw: str) -> str:
@@ -235,6 +352,7 @@ def user_ask_lines(raw: str) -> str:
 
 __all__ = [
     "TRANSCRIPT_SIGNALS",
+    "decode_transcript_line",
     "high_signal_lines",
     "looks_like_learning",
     "looks_like_user_ask",

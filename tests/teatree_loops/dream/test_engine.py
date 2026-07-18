@@ -1,10 +1,12 @@
 """Tests for the dream distillation engine SEAM (#1933)."""
 
+import json
 import os
 import tempfile
 import time
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from typing import ClassVar
 from unittest.mock import patch
 
 import pytest
@@ -22,7 +24,9 @@ from teatree.loops.dream.engine import (
     WeightedSnippet,
     WriteOutcome,
     build_extract,
+    cluster_is_grounded,
     enumerate_members,
+    normalize_ws,
     run_consolidation,
     write_clusters,
 )
@@ -586,6 +590,140 @@ class CorrectionProseProducesGroundedClusterTestCase(TestCase):
             run_consolidation(overlay="", since=None, dry_run=False, distiller=_distill)
 
         assert ConsolidatedMemory.objects.filter(cluster_key="learning").count() == 1
+
+
+class EscapedJsonlCitationGroundsTestCase(TestCase):
+    r"""A citation of a real .jsonl turn grounds once transcript content is decoded (#1933).
+
+    A raw session ``.jsonl`` line JSON-escapes its content — an em-dash is ``\u2014``,
+    an inner quote is ``\"``, a newline is ``\n``. The distiller reads the DECODED
+    human text and quotes it verbatim, so before the extract shared that one decoded
+    form the decoded citation was never a substring of the escaped snippet and every
+    transcript-cited cluster was rejected as ungrounded. These tests pin the decoded
+    representation AND prove the anti-hallucination substring gate still has teeth.
+    """
+
+    def setUp(self) -> None:
+        self.tmp = Path(self.enterContext(tempfile.TemporaryDirectory()))
+
+    @staticmethod
+    def _realistic_session_jsonl() -> str:
+        """A byte-for-byte realistic session transcript: content is JSON-escaped."""
+        return "\n".join(
+            json.dumps(obj)
+            for obj in (
+                {"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": "noise"}]}},
+                {
+                    "type": "user",
+                    "message": {
+                        "role": "user",
+                        "content": 'stop — do not build a new "banner" again\nI told you not to',
+                    },
+                },
+            )
+        )
+
+    def _member(self) -> TranscriptMember:
+        path = self.tmp / "session.jsonl"
+        path.write_text(self._realistic_session_jsonl())
+        return TranscriptMember(path=path, kind="main")
+
+    def test_fixture_is_genuinely_escaped_on_disk(self) -> None:
+        # Guards the test itself: if the fixture stopped escaping, the bug it
+        # reproduces would silently vanish and the grounding assertion would be vacuous.
+        on_disk = (self._member()).path.read_text()
+        assert "\\u2014" in on_disk
+        assert '\\"banner\\"' in on_disk
+
+    def test_snippet_text_is_decoded_not_escaped(self) -> None:
+        extract = build_extract([self._member()])
+        joined = "\n".join(s.text for s in extract.snippets)
+        assert "—" in joined
+        assert '"banner"' in joined
+        assert "\\u2014" not in joined
+        assert '\\"' not in joined
+
+    def test_decoded_citation_grounds(self) -> None:
+        # RED before the fix: the decoded quote is not a substring of the escaped
+        # snippet, so the ledger rejected the cluster and recorded nothing.
+        member = self._member()
+
+        def _distill(extract: ConsolidationExtract) -> list[DistilledCluster]:
+            snippet = extract.snippets[0]
+            return [
+                DistilledCluster(
+                    cluster_key="grounded",
+                    rule="Do not rebuild what the user told you not to.",
+                    source_files=[str(snippet.path)],
+                    is_binding=True,
+                    verified_citation='do not build a new "banner" again I told you not to',
+                    durable_destination="",
+                )
+            ]
+
+        with patch.object(engine, "enumerate_members", return_value=[member]):
+            run_consolidation(overlay="", since=None, dry_run=False, distiller=_distill)
+
+        assert ConsolidatedMemory.objects.filter(cluster_key="grounded").count() == 1
+
+    def test_hallucinated_citation_is_still_rejected(self) -> None:
+        # The gate MUST keep its teeth: an invented quote that never appears in the
+        # decoded transcript is rejected, not recorded.
+        member = self._member()
+
+        def _distill(extract: ConsolidationExtract) -> list[DistilledCluster]:
+            snippet = extract.snippets[0]
+            return [
+                DistilledCluster(
+                    cluster_key="hallucinated",
+                    rule="A rule the transcript never supports.",
+                    source_files=[str(snippet.path)],
+                    is_binding=False,
+                    verified_citation="the user demanded a full rewrite of the auth layer",
+                    durable_destination="",
+                )
+            ]
+
+        with patch.object(engine, "enumerate_members", return_value=[member]):
+            result = run_consolidation(overlay="", since=None, dry_run=False, distiller=_distill)
+
+        assert result.clusters_recorded == 0
+        assert result.clusters_rejected == 1
+        assert ConsolidatedMemory.objects.filter(cluster_key="hallucinated").count() == 0
+
+
+class GroundingPunctuationFoldTestCase(TestCase):
+    """The grounding substring test folds smart/straight punctuation symmetrically (#1933).
+
+    A decoded transcript may carry a straight quote where the model's citation used a
+    curly one (or the reverse). Folding both operands to one canonical form keeps a
+    genuine citation grounded while remaining a strict substring test — an invented
+    quote is still rejected.
+    """
+
+    _SNIPPET: ClassVar[dict[str, str]] = {
+        "/s.jsonl": normalize_ws('{"role": "user"} do not ship the "beta" build tonight')
+    }
+
+    def _cluster(self, citation: str) -> DistilledCluster:
+        return DistilledCluster(
+            cluster_key="k",
+            rule="r",
+            source_files=["/s.jsonl"],
+            is_binding=False,
+            verified_citation=citation,
+            durable_destination="",
+        )
+
+    def test_smart_quote_citation_grounds_against_straight_quote_snippet(self) -> None:
+        assert cluster_is_grounded(self._cluster("do not ship the “beta” build"), self._SNIPPET)
+
+    def test_em_dash_citation_grounds_against_hyphen_snippet(self) -> None:
+        snippet = {"/s.jsonl": normalize_ws('{"role": "user"} stop - do not build a new banner')}
+        assert cluster_is_grounded(self._cluster("stop — do not build a new banner"), snippet)
+
+    def test_invented_citation_still_rejected_after_fold(self) -> None:
+        assert not cluster_is_grounded(self._cluster("ship the “release” build now"), self._SNIPPET)
 
 
 class WeightedSnippetTestCase(TestCase):
