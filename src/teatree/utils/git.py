@@ -52,13 +52,23 @@ from teatree.utils.git_worktree import (
     worktree_move,
     worktree_remove,
 )
+from teatree.utils.git_worktree_query import (
+    WorktreeRecord,
+    canonical_repo_root,
+    git_common_dir,
+    is_git_checkout,
+    list_worktrees,
+    worktree_for_branch,
+)
 
 __all__ = [
     "DETACHED_HEAD",
     "GitRepo",
+    "WorktreeRecord",
     "branch_delete",
     "branch_diff",
     "branch_merged",
+    "canonical_repo_root",
     "check",
     "commit",
     "commit_messages",
@@ -69,10 +79,13 @@ __all__ = [
     "fetch",
     "first_commit_message",
     "full_worktree_diff",
+    "git_common_dir",
     "git_env_hermetic",
     "git_env_without_overrides",
     "head_sha",
+    "is_git_checkout",
     "last_commit_message",
+    "list_worktrees",
     "locked_worktree_paths",
     "log_oneline",
     "merge_abort",
@@ -93,6 +106,7 @@ __all__ = [
     "unsynced_commits",
     "worktree_add",
     "worktree_add_at_ref",
+    "worktree_for_branch",
     "worktree_move",
     "worktree_remove",
 ]

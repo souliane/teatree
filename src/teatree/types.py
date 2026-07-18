@@ -193,10 +193,17 @@ class RunCommand:
     overlay supplies argv + cwd metadata that other CLI verbs reuse
     (``t3 <overlay> run tests``, ``run backend``, ``run build-frontend``).
     The runner never spawns anything on the host.
+
+    ``env`` names extra environment variables for the run; the runners merge it
+    over ``os.environ`` (overlay values win, inherited env preserved) when they
+    exec argv, so an overlay expresses ``FOO=bar sometool`` as structured data
+    instead of a ``sh -lc`` wrap. An empty default keeps every existing
+    ``RunCommand(args=..., cwd=...)`` call site byte-identical.
     """
 
     args: list[str] = field(default_factory=list)
     cwd: Path | None = None
+    env: dict[str, str] = field(default_factory=dict)
 
 
 type RunCommands = dict[str, list[str] | RunCommand]

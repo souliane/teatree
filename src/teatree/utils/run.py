@@ -111,12 +111,14 @@ def run_checked(
     return result
 
 
-def run_allowed_to_fail(
+# ast-grep-ignore: ac-django-no-complexity-suppressions
+def run_allowed_to_fail(  # noqa: PLR0913 — each keyword-only param is one documented subprocess control (expected_codes/env/cwd/stdin_text/timeout), mirroring run_checked.
     cmd: Sequence[str],
     *,
     expected_codes: Iterable[int] | None = (0,),
     env: dict[str, str] | None = None,
     cwd: str | Path | None = None,
+    stdin_text: str | None = None,
     timeout: float | None = None,
 ) -> CompletedProcess[str]:
     """Run a command and return the result if the exit code is expected.
@@ -124,11 +126,15 @@ def run_allowed_to_fail(
     *expected_codes* controls what counts as success.  Pass a specific set
     (e.g. ``(0, 1)`` for probes where 1 means "nothing to do") or ``None``
     to accept any exit code.  Unexpected codes raise :class:`CommandFailedError`.
+
+    *stdin_text* mirrors :func:`run_checked`: when given it is fed to the child's
+    stdin (piping a dump/SQL/credential in rather than materialising a temp file).
     """
     result = subprocess.run(
         list(cmd),
         env=env,
         cwd=str(cwd) if cwd is not None else None,
+        input=stdin_text,
         capture_output=True,
         text=True,
         timeout=timeout,

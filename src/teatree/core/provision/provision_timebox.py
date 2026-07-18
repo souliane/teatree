@@ -183,11 +183,14 @@ def _emit_heartbeats(
         heartbeat(f"still running `{step}`… ({elapsed_min:.1f}m elapsed)")
 
 
-def run_timeboxed_step(
+# ast-grep-ignore: ac-django-no-complexity-suppressions
+def run_timeboxed_step(  # noqa: PLR0913 — each keyword-only param is one documented step control (cwd/env/stdin_text/timeout/progress) threaded into the guarded subprocess.
     name: str,
     cmd: Sequence[str],
     *,
     cwd: str | Path | None = None,
+    env: dict[str, str] | None = None,
+    stdin_text: str | None = None,
     timeout: int | None = None,
     progress: ProgressAlert = _NO_PROGRESS,
 ) -> StepResult:
@@ -200,6 +203,12 @@ def run_timeboxed_step(
     with a "timed out" error and a loud user alert — it never hangs. While the
     op runs, a progress heartbeat fires every ``progress.interval`` seconds so a
     slow-but-moving step is distinguishable from a hang.
+
+    *env* and *stdin_text* pass straight through to :func:`run_allowed_to_fail`
+    so a step needing an env var (a database URL, a no-telemetry flag) or stdin
+    (piping a dump/SQL in) uses this guard instead of forking it. A secret fed
+    via *stdin_text* must not be echoed into the step's output — the alert body
+    is already bounded by the truncation below.
     """
     ceiling = timeout if timeout is not None else resolve_step_timeout_seconds()
     start = time.monotonic()
@@ -212,7 +221,7 @@ def run_timeboxed_step(
     )
     pulse.start()
     try:
-        proc = run_allowed_to_fail(cmd, cwd=cwd, expected_codes=None, timeout=ceiling)
+        proc = run_allowed_to_fail(cmd, cwd=cwd, env=env, stdin_text=stdin_text, expected_codes=None, timeout=ceiling)
     except subprocess.TimeoutExpired:
         duration = time.monotonic() - start
         error = f"timed out after {ceiling}s"

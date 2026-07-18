@@ -178,12 +178,14 @@ class Command(TyperCommand):
         if isinstance(cmd, RunCommand):
             args = list(cmd.args)
             cwd: Path | str | None = cmd.cwd
+            cmd_env = cmd.env
         else:
             args = list(cmd)
             cwd = None
+            cmd_env = {}
 
         args.extend(extra_args)
-        env = {**os.environ, **get_overlay().provisioning.env_extra(worktree)}
+        env = {**os.environ, **get_overlay().provisioning.env_extra(worktree), **cmd_env}
         env.pop("VIRTUAL_ENV", None)
 
         rc = run_streamed(args, cwd=cwd, env=env, check=False)

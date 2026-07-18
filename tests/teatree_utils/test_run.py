@@ -100,6 +100,14 @@ class TestRunAllowedToFail:
         result = run_allowed_to_fail(["sh", "-c", "exit 42"], expected_codes=None)
         assert result.returncode == 42
 
+    def test_feeds_stdin(self) -> None:
+        result = run_allowed_to_fail(["cat"], stdin_text="piped-in")
+        assert result.stdout == "piped-in"
+
+    def test_passes_env(self) -> None:
+        result = run_allowed_to_fail(["sh", "-c", "echo $FOO"], env={"FOO": "bar"})
+        assert result.stdout.strip() == "bar"
+
 
 class TestCommandFailedError:
     def test_message_contains_command_and_stderr_tail(self) -> None:
