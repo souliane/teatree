@@ -1,3 +1,4 @@
+# test-path: cross-cutting — drives deploy/entrypoint.sh + docker-compose.yml + the doctor drain-heartbeat contract.
 """The Slack Socket-Mode receiver runs as its own Docker service.
 
 Inbound Slack (a DM reply, a mention, an emoji reaction) only reaches the loop
@@ -13,8 +14,13 @@ Structure is parsed from the deploy sources directly (the source of truth),
 mirroring `tests/test_deploy_bindmount_compose.py`.
 """
 
+import json
+import os
+import shutil
+import subprocess
 from pathlib import Path
 
+import pytest
 import yaml
 
 DEPLOY = Path(__file__).resolve().parents[1] / "deploy"
@@ -29,6 +35,25 @@ class TestInitInstallsSlackExtra:
         # Without the [slack] extra slack_sdk is absent and the receiver logs
         # "slack_sdk not installed" then no-ops — inbound Slack never arrives.
         assert '"$CLONE_DIR[slack]"' in ENTRYPOINT
+
+
+_BASH = shutil.which("bash") or "bash"
+_TIMEOUT = shutil.which("timeout") or "timeout"
+
+
+def _drain_loop_body() -> str:
+    """The verbatim source of the top-level ``slack_drain_loop`` shell function."""
+    lines: list[str] = []
+    capturing = False
+    for line in ENTRYPOINT.splitlines():
+        if line.startswith("slack_drain_loop() {"):
+            capturing = True
+        if capturing:
+            lines.append(line)
+            if line == "}":
+                return "\n".join(lines)
+    not_found = "slack_drain_loop function not found in entrypoint.sh"
+    raise AssertionError(not_found)
 
 
 class TestSlackListenerRole:
@@ -46,21 +71,37 @@ class TestSlackListenerRole:
         # listener's captured DMs never reach an observable (👀-acked) state.
         # `t3 slack check` drains the JSONL queue and is NOT worker-singleton
         # gated (unlike the drain-queue loop).
-        arm = self._arm
-        assert "t3 slack check" in arm
-        assert "while true; do" in arm, "the drain must run on a repeating cadence, not once"
+        body = _drain_loop_body()
+        assert "t3 slack check" in body
+        assert "while true; do" in body, "the drain must run on a repeating cadence, not once"
 
-    def test_drain_loop_is_failure_tolerant_and_backgrounded(self) -> None:
-        # `set -euo pipefail` at the top must never let a non-zero `t3 slack
-        # check` crash the service: the `|| true` swallows the exit code and
-        # the `( … ) &` backgrounds the loop so `exec t3 slack listen` stays
-        # the foreground process.
+    def test_drain_loop_is_backgrounded_before_the_foreground_exec(self) -> None:
+        # `slack_drain_loop &` backgrounds the cadence so `exec t3 slack listen`
+        # stays the foreground process; it must start BEFORE the exec, or exec
+        # would replace the shell before the loop is ever launched.
         arm = self._arm
-        assert "t3 slack check >/dev/null 2>&1 || true" in arm
+        assert "slack_drain_loop &" in arm
         assert "&\n" in arm, "the drain loop must be backgrounded"
-        # The background drain must be started BEFORE the foreground exec, or
-        # exec would replace the shell before the loop is ever launched.
-        assert arm.index("while true; do") < arm.index("exec t3 slack listen")
+        # `rindex` for the exec: an earlier mention lives in the explanatory comment.
+        assert arm.index("slack_drain_loop &") < arm.rindex("exec t3 slack listen")
+
+    def test_drain_failures_are_surfaced_not_swallowed(self) -> None:
+        # #3443: the old `>/dev/null 2>&1 || true` hid every error. The loop must
+        # now log real failures to stderr with a consecutive-failure counter and
+        # never re-introduce the output-swallowing form in the active loop body.
+        body = _drain_loop_body()
+        assert "t3 slack check >/dev/null 2>&1 || true" not in body
+        assert ">&2" in body, "drain failures must be logged to stderr"
+        assert "consecutive" in body, "the loop must track a consecutive-failure counter"
+
+    def test_drain_writes_a_heartbeat_doctor_reads(self) -> None:
+        # The heartbeat filename is the doctor↔entrypoint contract; the doctor
+        # side (`self_heal._SLACK_DRAIN_HEARTBEAT_FILENAME`) must name the same file.
+        from teatree.cli.doctor.self_heal import _SLACK_DRAIN_HEARTBEAT_FILENAME  # noqa: PLC0415 — test-local import
+
+        body = _drain_loop_body()
+        assert _SLACK_DRAIN_HEARTBEAT_FILENAME in body
+        assert "consecutive_failures" in body, "the heartbeat must carry the failure count doctor gates on"
 
     def test_role_is_documented_and_validated(self) -> None:
         # The required-role prompt and the unknown-role guard both name it, so a
@@ -97,7 +138,63 @@ class TestComposeSlackListenerService:
         assert SHARED_DB_MOUNT in sources
 
 
-if __name__ == "__main__":
-    import pytest
+@pytest.mark.skipif(
+    shutil.which("bash") is None or shutil.which("timeout") is None,
+    reason="needs bash + timeout (present in the deploy image and CI)",
+)
+class TestSlackDrainLoopExecution:
+    """Run the REAL `slack_drain_loop` (extracted verbatim) with a stub `t3`.
 
+    `t3 slack check` exits 1-with-no-output on an empty queue (healthy) and
+    non-zero-with-output on a real failure; the loop must tell them apart, log
+    only real failures to stderr, and record the streak in the heartbeat doctor
+    reads.
+    """
+
+    def _run(self, tmp_path: Path, check_body: str) -> tuple[str, dict]:
+        bin_dir = tmp_path / "bin"
+        bin_dir.mkdir()
+        t3 = bin_dir / "t3"
+        # The stub answers only `t3 slack check`; anything else is a no-op success.
+        t3.write_text(
+            '#!/usr/bin/env bash\nif [ "$1 $2" = "slack check" ]; then\n' + check_body + "\nfi\nexit 0\n",
+            encoding="utf-8",
+        )
+        t3.chmod(0o755)
+        heartbeat = tmp_path / "hb.json"
+        harness = tmp_path / "harness.sh"
+        harness.write_text(f"set -euo pipefail\n{_drain_loop_body()}\nslack_drain_loop\n", encoding="utf-8")
+        env = dict(os.environ)
+        env["PATH"] = f"{bin_dir}{os.pathsep}{env['PATH']}"
+        env["SLACK_CHECK_INTERVAL_SECONDS"] = "0.2"
+        env["SLACK_DRAIN_HEARTBEAT"] = str(heartbeat)
+        proc = subprocess.run(
+            [_TIMEOUT, "1", _BASH, str(harness)],
+            capture_output=True,
+            text=True,
+            env=env,
+            check=False,
+        )
+        beat = json.loads(heartbeat.read_text(encoding="utf-8")) if heartbeat.exists() else {}
+        return proc.stderr, beat
+
+    def test_real_failure_is_logged_and_counted(self, tmp_path: Path) -> None:
+        stderr, beat = self._run(tmp_path, 'echo "Traceback: DB unreachable" >&2\nexit 2')
+        assert "FAILED" in stderr
+        assert "Traceback: DB unreachable" in stderr, "the real error output must reach the logs"
+        assert beat.get("consecutive_failures", 0) >= 1
+
+    def test_empty_queue_is_not_a_failure(self, tmp_path: Path) -> None:
+        # exit 1 with NO output = empty queue on a quiet box; must not count/log.
+        stderr, beat = self._run(tmp_path, "exit 1")
+        assert "FAILED" not in stderr
+        assert beat.get("consecutive_failures", -1) == 0
+
+    def test_drained_messages_reset_the_streak(self, tmp_path: Path) -> None:
+        stderr, beat = self._run(tmp_path, 'echo "{\\"overlay\\": \\"acme\\"}"\nexit 0')
+        assert "FAILED" not in stderr
+        assert beat.get("consecutive_failures", -1) == 0
+
+
+if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__, "-q"]))

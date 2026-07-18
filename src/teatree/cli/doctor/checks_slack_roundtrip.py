@@ -26,10 +26,13 @@ doctor exit code — a silent break must be a doctor failure, not a surprise. Sl
 stays optional: with no Slack-backed overlay the check is a silent no-op.
 """
 
+import contextlib
 import datetime as dt
+import json
 import os
 from collections.abc import Callable
 from dataclasses import dataclass
+from pathlib import Path
 
 import typer
 
@@ -42,6 +45,55 @@ _UNANSWERED_STALENESS = dt.timedelta(minutes=5)
 
 #: The durable ``Loop`` row that gates the reactive Slack-answer / DM-inbound work.
 _ANSWER_LOOP = "inbox"
+
+#: How many consecutive doctor runs the round-trip probe may crash before the gate
+#: stops crash-OPENING and FAILs loud (#3443). A crashed probe reveals nothing, so
+#: below the threshold a one-off blip stays a WARN; a probe that crashes run after
+#: run is itself a break the operator must see, not a silently-green comms gate.
+_MAX_CONSECUTIVE_CRASHES = 3
+#: The durable consecutive-crash tally lives here under ``teatree.paths.DATA_DIR``.
+_CRASH_COUNTER_FILENAME = "slack-roundtrip-crash-count.json"
+
+
+@dataclass(frozen=True, slots=True)
+class _CrashCounter:
+    """A durable count of back-to-back crashed round-trip runs (crash-tolerant I/O).
+
+    Persisted so "consecutive" spans doctor invocations, not one process. All
+    reads/writes degrade silently — a counter that cannot be read/written must
+    never itself crash or falsely redden the doctor run.
+    """
+
+    path: Path
+
+    @classmethod
+    def default(cls) -> "_CrashCounter":
+        # Under the box data dir (``$HOME/.local/share/teatree`` == ``teatree.paths.DATA_DIR``
+        # in the non-worktree deploy container the watchdog runs doctor in). Resolved from
+        # ``Path.home()`` at call time — NOT the import-bound ``DATA_DIR`` constant — so the
+        # test HOME-isolation fixture redirects it per test; otherwise a full-doctor test
+        # whose round-trip probe crashes (no DB) would bump one shared real-box counter
+        # across tests and flip a WARN into a FAIL.
+        return cls(Path.home() / ".local" / "share" / "teatree" / _CRASH_COUNTER_FILENAME)
+
+    def _read(self) -> int:
+        try:
+            return int(json.loads(self.path.read_text(encoding="utf-8"))["consecutive_crashes"])
+        except (OSError, ValueError, TypeError, KeyError, json.JSONDecodeError):
+            return 0
+
+    def bump(self) -> int:
+        count = self._read() + 1
+        try:
+            self.path.parent.mkdir(parents=True, exist_ok=True)
+            self.path.write_text(json.dumps({"consecutive_crashes": count}) + "\n", encoding="utf-8")
+        except OSError:
+            pass
+        return count
+
+    def reset(self) -> None:
+        with contextlib.suppress(OSError):
+            self.path.unlink(missing_ok=True)
 
 
 @dataclass(frozen=True, slots=True)
@@ -276,19 +328,35 @@ def check_slack_roundtrip(
     deep: bool = False,
     env: dict[str, str] | None = None,
     echo: Callable[[str], object] = typer.echo,
+    crash_counter: "_CrashCounter | None" = None,
 ) -> bool:
     """Run the Slack round-trip probes, render each finding, and return the pass/fail verdict.
 
     Gates the overall doctor exit code (unlike the surfacing-only DM-readiness
-    check): a FAIL reddens the run. Crash-proof — any unexpected error degrades to
-    a WARN + OK so a check bug never crashes or falsely reddens the doctor run
-    (the actual comms-break signals are FAILs from probes that ran).
+    check): a FAIL reddens the run. A single crashed run degrades to a WARN + OK so
+    a transient check bug never falsely reddens the run — but a probe that crashes
+    :data:`_MAX_CONSECUTIVE_CRASHES` runs in a row stops crash-OPENING and FAILs
+    loud (#3443), because a permanently-blind comms gate silently passing is the
+    very failure this check exists to catch. A successful run resets the tally.
     """
+    counter = crash_counter or _CrashCounter.default()
     try:
         outcome = run_slack_roundtrip_probes(deep=deep, env=env)
     except Exception as exc:  # noqa: BLE001 — a doctor check must never crash the run
-        echo(f"WARN  Slack round-trip check crashed: {exc.__class__.__name__}: {exc}")
+        count = counter.bump()
+        if count >= _MAX_CONSECUTIVE_CRASHES:
+            echo(
+                f"FAIL  Slack round-trip: check crashed {count} runs in a row (latest "
+                f"{exc.__class__.__name__}: {exc}) — the comms gate has been blind for {count} consecutive "
+                "doctor runs; failing loud instead of crash-opening. Fix the round-trip probe."
+            )
+            return False
+        echo(
+            f"WARN  Slack round-trip check crashed ({count}/{_MAX_CONSECUTIVE_CRASHES}): "
+            f"{exc.__class__.__name__}: {exc} — degrading to a pass this run."
+        )
         return True
+    counter.reset()
     for finding in outcome.findings:
         echo(f"{finding.level.value:<5} Slack round-trip: {finding.message}")
     return outcome.ok
