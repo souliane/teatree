@@ -12,6 +12,8 @@ from unittest.mock import MagicMock
 
 import pytest
 
+from tests._db_template import build_or_reuse_template, restore_from_template
+
 # Ensure unit tests use the settings declared in pyproject.toml, not a stale
 # DJANGO_SETTINGS_MODULE from the shell. pytest-django falls back to
 # pyproject.toml when the env var is absent.
@@ -361,3 +363,91 @@ def _isolate_env(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     # tier and no env var, so ``T3_LOOPS_DISABLED`` is inert — there is nothing
     # to isolate here (the env-inertness is pinned by
     # ``tests/teatree_loop/test_review_loop_db_only_control.py``).
+
+
+@pytest.fixture(scope="session")
+def django_db_setup(
+    request: pytest.FixtureRequest,
+    django_db_blocker: object,
+    worker_id: str,
+    tmp_path_factory: pytest.TempPathFactory,
+    *,
+    django_db_keepdb: bool,
+) -> Iterator[None]:
+    """Migrate once per session, restore every xdist worker from that template.
+
+    pytest-django's default ``django_db_setup`` runs a full ``migrate`` in
+    *every* xdist worker process — with ``-n auto`` that is N redundant runs
+    of the identical migration graph against the same ``:memory:`` sqlite
+    target, each paying the full migration-graph cost before that worker's
+    first DB test can run. This override instead builds ONE migrated
+    template file — the first worker to grab the cross-process lock wins,
+    see ``tests/_db_template.py`` — and restores every worker's private
+    ``:memory:`` connection from it via ``sqlite3.Connection.backup()``
+    instead of re-running migrations.
+
+    The template is built the normal way (``call_command("migrate", ...,
+    run_syncdb=True)``, matching what ``setup_databases`` does internally),
+    so it includes the seed ``RunPython`` folded into ``0001_initial`` — the
+    copy handed to each worker is byte-for-byte what a from-scratch migrate
+    would have produced. ``FreshMigrateSeedsDefaultLoops`` re-migrates
+    ``core`` from ``zero`` to prove the seed *inside a test*, on whatever
+    connection it's given, so it is unaffected either way.
+
+    Falls back to pytest-django's normal per-session ``setup_databases``
+    when there is nothing to share: a plain non-xdist run (``worker_id ==
+    "master"``, e.g. ``pytest -k foo`` with no ``-n``) or a non-memory
+    backend (the template/backup trick is sqlite-specific).
+    """
+    from django.conf import settings  # noqa: PLC0415
+    from django.core.management import call_command  # noqa: PLC0415
+    from django.db import connections  # noqa: PLC0415
+    from django.test.utils import setup_databases, teardown_databases  # noqa: PLC0415 # ty: ignore[unresolved-import]
+
+    # Dependency-only fixtures (test-environment patching, xdist NAME
+    # suffixing) — pulled by value instead of as params to stay under the
+    # repo's max-args=5 ceiling; both must still run before setup for the
+    # same ordering pytest-django's own fixture relies on.
+    request.getfixturevalue("django_test_environment")
+    request.getfixturevalue("django_db_modify_db_settings")
+
+    alias = "default"
+    if worker_id == "master" or settings.DATABASES[alias]["NAME"] != ":memory:":
+        with django_db_blocker.unblock():
+            db_cfg = setup_databases(
+                verbosity=request.config.option.verbose,
+                interactive=False,
+                keepdb=django_db_keepdb,
+            )
+        yield
+        if not django_db_keepdb:
+            with django_db_blocker.unblock():
+                teardown_databases(db_cfg, verbosity=request.config.option.verbose)
+        return
+
+    template_dir_override = os.environ.get("TEATREE_TEST_DB_TEMPLATE_DIR")
+    root_tmp_dir = Path(template_dir_override) if template_dir_override else tmp_path_factory.getbasetemp().parent
+    template_path = root_tmp_dir / "django_test_template.sqlite3"
+    lock_path = root_tmp_dir / "django_test_template.sqlite3.lock"
+
+    def _build(path: Path) -> None:
+        original_name = settings.DATABASES[alias]["NAME"]
+        settings.DATABASES[alias]["NAME"] = str(path)
+        connections[alias].close()
+        try:
+            call_command("migrate", verbosity=0, interactive=False, run_syncdb=True, database=alias)
+        finally:
+            connections[alias].close()
+            settings.DATABASES[alias]["NAME"] = original_name
+
+    with django_db_blocker.unblock():
+        root_tmp_dir.mkdir(parents=True, exist_ok=True)
+        build_or_reuse_template(template_path, lock_path, _build)
+        target = connections[alias]
+        target.ensure_connection()
+        restore_from_template(template_path, target.connection)
+
+    yield
+
+    with django_db_blocker.unblock():
+        connections.close_all()

@@ -299,3 +299,69 @@ def _check_stale_path_t3(env: dict[str, str] | None = None) -> bool:
             f"This stale entry masks dep updates. Remove it: rm {shadow}",
         )
     return False
+
+
+def _configured_review_skill_gaps() -> list[str]:
+    """A FAIL line per configured review skill that resolves to no installed skill (#3352).
+
+    Enumerates every registered overlay's effective ``architectural_review_skill``
+    (only when the always-on cadence is not disabled for that overlay) and
+    ``review_skill`` (only when the project opted in by setting it non-empty), then
+    confirms each name resolves to an installed ``SKILL.md`` in the canonical skill
+    set — the same enumeration :mod:`teatree.skill_support.ref_validator` uses for
+    dangling references. A name that will actually be dispatched/gated but resolves
+    to nothing is the exact ``ac-reviewing-skills`` → ``ac-reviewing-codebase``
+    incident class, at the live config site rather than the ``.teatree-skills.yml`` /
+    ``agents/*.md`` sites the reference validator already covers. Empty == clean.
+    """
+    from teatree.config import (  # noqa: PLC0415 — deferred: keeps CLI startup light
+        discover_overlays,
+        get_effective_settings,
+    )
+    from teatree.skill_support.ref_validator import (  # noqa: PLC0415 — deferred: keeps CLI startup light
+        canonical_skill_names,
+        default_search_dirs,
+        resolves_to_canonical,
+    )
+
+    canonical = canonical_skill_names(default_search_dirs())
+    overlay_names: list[str | None] = [entry.name for entry in discover_overlays()] or [None]
+    gaps: list[str] = []
+    for overlay_name in overlay_names:
+        settings = get_effective_settings(overlay_name)
+        configured: list[tuple[str, str]] = [("review_skill", settings.review_skill.strip())]
+        if not settings.architectural_review_disabled:
+            configured.append(("architectural_review_skill", settings.architectural_review_skill.strip()))
+        scope = overlay_name or "(active overlay)"
+        for label, skill in configured:
+            if skill and not resolves_to_canonical(skill, canonical):
+                gaps.append(
+                    f"FAIL  Configured {label}={skill!r} (overlay {scope}) resolves to no installed skill — "
+                    f"the review discipline that depends on it dispatches empty. Install it with "
+                    f"`apm install souliane/skills/{skill}` (or re-run `t3 setup` with `apm` present), "
+                    "then re-run `t3 doctor check`."
+                )
+    return gaps
+
+
+def _check_configured_review_skills() -> bool:
+    """FAIL when a configured review-skill name doesn't resolve to an installed skill (#3352).
+
+    The gap :func:`_check_skills` leaves: it validates only skills that ARE present
+    under ``~/.claude/skills`` and is silent when the directory is absent, so a
+    ``review_skill`` / ``architectural_review_skill`` configured to a name no skill
+    is installed for passes unseen — the review cadence and the reviewing-phase
+    evidence gate then run against an unloadable skill with zero signal. This
+    resolves the effective values and hard-FAILs loudly on any that dangle.
+
+    Crash-proof: any resolution error degrades to a WARN so a doctor run never
+    aborts on this check.
+    """
+    try:
+        gaps = _configured_review_skill_gaps()
+    except Exception as exc:  # noqa: BLE001 — a doctor check must never crash the run
+        typer.echo(f"WARN  Configured-review-skill check crashed: {exc.__class__.__name__}: {exc}")
+        return True
+    for gap in gaps:
+        typer.echo(gap)
+    return not gaps

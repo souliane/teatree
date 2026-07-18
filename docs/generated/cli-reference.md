@@ -1825,9 +1825,17 @@ Usage: t3 eval changed-scenarios [OPTIONS]
  none.
 
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
-│ --skip-code        INTEGER  Exit code when no scenario file changed.         │
-│                             [default: 1]                                     │
-│ --help                      Show this message and exit.                      │
+│ --skip-code            INTEGER  Exit code when no scenario file changed.     │
+│                                 [default: 1]                                 │
+│ --repo-root            PATH     Root the STDIN diff paths are relative to    │
+│                                 (default: teatree's own repo root).          │
+│ --scenarios-dir        PATH     Filter the discovered catalog to specs under │
+│                                 this directory (default: the whole union     │
+│                                 catalog).                                    │
+│ --require-specs                 Fail loud (exit 2) when the filtered catalog │
+│                                 is empty, instead of skipping like 'nothing  │
+│                                 changed'.                                    │
+│ --help                          Show this message and exit.                  │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 

@@ -104,6 +104,34 @@ def names_for_changed(changed: Iterable[str], specs: Iterable[EvalSpec], repo_ro
     return selection_for_changed(changed, specs, repo_root).names
 
 
-def select_changed_scenarios(changed: Iterable[str]) -> ScenarioSelection:
-    """The full selection (names + truncation) the selective-PR entry points surface."""
-    return selection_for_changed(changed, discover_specs(), REPO_ROOT)
+def specs_under(specs: Iterable[EvalSpec], scenarios_dir: Path) -> list[EvalSpec]:
+    """The specs whose ``source_path`` lives under ``scenarios_dir`` — the per-consumer catalog filter.
+
+    :func:`discover_specs` returns the whole union catalog (core plus every installed overlay's
+    scenarios). A consuming repo owns only the scenarios under its OWN directory, so it passes that
+    directory here: without the filter a PR touching a core scenario file would drag scenarios that
+    are not the consumer's into the consumer's PR lane. Both sides are ``resolve()``-normalized so the
+    match is representation-independent (the same discipline :func:`_relative_to_root` uses).
+    """
+    root = scenarios_dir.resolve()
+    return [spec for spec in specs if spec.source_path.resolve().is_relative_to(root)]
+
+
+def select_changed_scenarios(
+    changed: Iterable[str],
+    *,
+    repo_root: Path = REPO_ROOT,
+    specs: Iterable[EvalSpec] | None = None,
+) -> ScenarioSelection:
+    """The full selection (names + truncation) the selective-PR entry points surface.
+
+    ``repo_root`` is what the diff paths are relative to; it defaults to teatree's own repo root, so
+    the host lane's ``t3 eval changed-scenarios`` (and ``scripts/eval/scenarios_for_changed.py``) stay
+    byte-for-byte unchanged. ``specs`` defaults to the whole union catalog (:func:`discover_specs`); a
+    consuming overlay passes its own scenarios-dir-filtered subset (see :func:`specs_under`). Both
+    keyword defaults preserve today's behavior exactly, so teatree's own lane is untouched — the CLI
+    just reaches the already-parameterized :func:`selection_for_changed` instead of the entry point
+    hardwiring one repo root and one catalog scope.
+    """
+    resolved_specs = discover_specs() if specs is None else specs
+    return selection_for_changed(changed, resolved_specs, repo_root)

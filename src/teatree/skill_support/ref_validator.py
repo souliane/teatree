@@ -107,7 +107,13 @@ def _bare_segment(name: str) -> str:
     return segment
 
 
-def _resolves(name: str, canonical: set[str]) -> bool:
+def resolves_to_canonical(name: str, canonical: set[str]) -> bool:
+    """Whether *name*'s bare skill segment is one of the *canonical* skill names.
+
+    The shared resolution predicate: the dangling-reference sites here and the
+    ``t3 doctor`` configured-review-skill check (#3352) both resolve a reference
+    name against the same canonical set the skill-loading hook enumerates.
+    """
     return _bare_segment(name) in canonical
 
 
@@ -142,7 +148,7 @@ def validate_supplementary_config(config_path: Path, canonical: set[str]) -> lis
         if not match:
             continue
         name = match.group(1)
-        if not _resolves(name, canonical):
+        if not resolves_to_canonical(name, canonical):
             findings.append(
                 DanglingReference(
                     path=config_path,
@@ -181,7 +187,7 @@ def validate_agent_frontmatter(agent_path: Path, canonical: set[str]) -> list[Da
             continue
         if in_list and stripped.startswith("- "):
             name = stripped.removeprefix("- ").strip().strip("'\"")
-            if name and not _resolves(name, canonical):
+            if name and not resolves_to_canonical(name, canonical):
                 findings.append(
                     DanglingReference(
                         path=agent_path,
