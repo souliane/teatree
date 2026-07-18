@@ -1068,11 +1068,13 @@ class _ResourcePressureSettings:
     # ``t3 <overlay> worktree start`` / ``workspace start`` gate refuses to
     # advance a second stack into ``SERVICES_UP`` while another is already
     # there, naming the blockers and pointing at ``worktree teardown``.
-    # Default ``0`` keeps the legacy unbounded behaviour so the gate is
-    # opt-in; set ``1`` (or any positive integer) to enforce the cap.
-    # Per-overlay overridable: a heavy overlay can cap to ``1`` while a
-    # cheap dogfood overlay stays unbounded.
-    max_concurrent_local_stacks: int = 0
+    # Default ``1``: for unattended 24/7 headless operation a single in-flight
+    # local stack avoids merge conflicts against ``main`` and conserves the
+    # Anthropic 5h token window. Set ``0`` to restore the legacy unbounded
+    # behaviour, or any higher positive integer to raise the cap. Per-overlay
+    # overridable: a heavy overlay can cap to ``1`` while a cheap dogfood
+    # overlay stays unbounded (``0``).
+    max_concurrent_local_stacks: int = 1
 
 
 @dataclass

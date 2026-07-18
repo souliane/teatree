@@ -74,11 +74,12 @@ def _make_worktree(
 
 
 class TestConfigLoadsMaxConcurrentLocalStacks(TestCase):
-    """``max_concurrent_local_stacks`` is DB-home (#1775): default 0, set in the store."""
+    """``max_concurrent_local_stacks`` is DB-home (#1775): default 1, set in the store."""
 
-    def test_default_is_zero_unbounded(self) -> None:
-        # No row in the store -> the dataclass default (0 = unbounded) resolves.
-        assert get_effective_settings().max_concurrent_local_stacks == 0
+    def test_default_is_single_stack(self) -> None:
+        # No row in the store -> the dataclass default (1 = single in-flight
+        # stack, the headless-safe cap) resolves.
+        assert get_effective_settings().max_concurrent_local_stacks == 1
 
     def test_global_setting_resolves_from_db_store(self) -> None:
         # DB-home under the partition: a GLOBAL ``ConfigSetting`` row supplies the
@@ -88,7 +89,7 @@ class TestConfigLoadsMaxConcurrentLocalStacks(TestCase):
 
 
 class TestLocalStackGateUnbounded(TestCase):
-    """Default (limit=0) lets any number of stacks run."""
+    """Unbounded (limit=0) lets any number of stacks run."""
 
     def test_unbounded_zero_does_not_refuse(self) -> None:
         """With ``limit=0`` even N stacks already up cannot trigger refusal."""

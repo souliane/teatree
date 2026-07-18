@@ -99,7 +99,7 @@ def drain_stack_queue_item(payload: ActionPayload) -> None:
         # #2949: resource-aware admission — on a capped overlay, hold the drain
         # while host RAM is over the ceiling even if a count slot is free, so
         # draining the queue never itself pushes the host into OOM. Same durable
-        # backoff as a full cap. The default (unbounded) overlay is untouched.
+        # backoff as a full cap. An unbounded overlay (limit ``0``) is untouched.
         if limit > 0:
             verdict = check_provision_admission()
             if not verdict.ok:
