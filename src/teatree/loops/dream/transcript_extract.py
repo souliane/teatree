@@ -195,7 +195,11 @@ def looks_like_learning(line: str) -> bool:
 def _repeated_user_turns(lines: Sequence[str]) -> set[str]:
     user_lines = [line for line in lines if _USER_TURN_HINT in line and _USER_TURN_RE.search(line)]
     counts = Counter(line.strip() for line in user_lines if line.strip())
-    return {line for line, count in counts.items() if count > _REPEAT_THRESHOLD}
+    # "at least _REPEAT_THRESHOLD times" (the docstring contract): a turn seen exactly
+    # _REPEAT_THRESHOLD times IS a repeat. The old ``> threshold`` needed one MORE than
+    # documented (three for a threshold of two), so a twice-repeated correction slipped
+    # past the keeper (F6.10).
+    return {line for line, count in counts.items() if count >= _REPEAT_THRESHOLD}
 
 
 def high_signal_lines(raw: str) -> str:

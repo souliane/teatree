@@ -53,8 +53,13 @@ def run_acceptance_pass(  # noqa: PLR0913 — kwargs-only §4 pass inputs; the c
     """Run the §4 acceptance gates for one memory dir and persist the probe corpus.
 
     Wiring entry point for the dream command (#2545): derives probes from the
-    BEFORE snapshot, reads the recorded prior-session pass-rate as the monotonicity
-    / interference baseline, computes the durable-home set for the consolidation
+    BEFORE snapshot, reconstructs the RECORDED prior-session probe SET
+    (:func:`_reconstruct_prior_probes`) and replays it against the AFTER snapshot to
+    feed gate (b) interference — distinct from gate (e) monotonicity, which tracks
+    this pass's current-probe pass-rate against the recorded baseline (F6.3, restoring
+    the two from collapsing onto one predicate that never replayed the persisted
+    corpus). Reads the recorded prior-session pass-rate as the interference /
+    monotonicity baseline, computes the durable-home set for the consolidation
     gate as the pruned index lines whose lesson is still findable in the AFTER
     snapshot (transfer-before-prune) OR whose pointer targets a file in the durable
     ``archive/`` cold store (*archive_dir*, this/prior pass, #2723), threads the caller's *maintenance_performed*
@@ -76,6 +81,7 @@ def run_acceptance_pass(  # noqa: PLR0913 — kwargs-only §4 pass inputs; the c
     corpus_scope = scope if scope is not None else overlay
     probes = derive_probes(snapshot_before)
     prior_rate, had_prior = _prior_pass_rate(corpus_scope)
+    prior_probes = _reconstruct_prior_probes(corpus_scope) if had_prior else None
     now_rate = _pass_rate(probes, snapshot_after, None)
     pruned_lines = snapshot_before.index_lines - snapshot_after.index_lines
     homed_names = {a.source.name for a in archived} | decay.cold_archive_names(archive_dir)
@@ -94,6 +100,7 @@ def run_acceptance_pass(  # noqa: PLR0913 — kwargs-only §4 pass inputs; the c
         clusters_recorded=clusters_recorded,
         maintenance_performed=maintenance_performed,
         probes=probes,
+        prior_probes=prior_probes,
         compliance_remediations=remediations,
     )
     if persist:
@@ -137,6 +144,25 @@ def persist_probe_results(
             row.save(update_fields=["is_prior_session"])
         row.record_result(passed=answerable)
     return passed
+
+
+def _reconstruct_prior_probes(scope: str) -> list[QaProbe]:
+    """Rebuild the prior-session probe SET for *scope* from the persisted corpus.
+
+    Gate (b) interference replays the ACTUAL prior probe set (the questions earlier
+    sessions recorded in this scope) against the AFTER snapshot — a genuine
+    regression check on OLD answers, distinct from gate (e) monotonicity's
+    current-probe pass-rate. Reading the rows back as :class:`QaProbe` objects (not
+    only their averaged pass-rate) restores interference as an independent 7th gate
+    (F6.3); a scope with no prior rows yields an empty set, and the caller then falls
+    back to the derived current probes so a first run is never failed by interference.
+    """
+    from teatree.core.models import DreamQaProbe  # noqa: PLC0415 — deferred: ORM import needs the app registry
+
+    return [
+        QaProbe(question=row.question, expected_answer=row.expected_answer, source_name=row.source_memory_path)
+        for row in DreamQaProbe.objects.prior_session_probes(scope)
+    ]
 
 
 def _prior_pass_rate(scope: str) -> tuple[float, bool]:
