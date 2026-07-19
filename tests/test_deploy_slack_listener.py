@@ -34,7 +34,8 @@ class TestInitInstallsSlackExtra:
     def test_editable_install_pulls_the_slack_extra(self) -> None:
         # Without the [slack] extra slack_sdk is absent and the receiver logs
         # "slack_sdk not installed" then no-ops — inbound Slack never arrives.
-        assert '"$CLONE_DIR[slack]"' in ENTRYPOINT
+        # Braced form (`${CLONE_DIR}`) so the expansion is shellcheck-clean (SC1087).
+        assert '--editable "${CLONE_DIR}[slack]"' in ENTRYPOINT
 
 
 _BASH = shutil.which("bash") or "bash"

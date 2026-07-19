@@ -1,0 +1,186 @@
+# Publish the self-contained teatree headless deploy image to a registry (#3451).
+#
+# The image (deploy/Dockerfile) BAKES a pinned source@ref + the managed Python
+# interpreter + the locked editable install, so a box that PULLS a published tag
+# boots deterministically and offline — no on-box build, no cold github/PyPI/astral
+# fetch at first boot. The runtime clone stays the in-loop self-update path; this
+# workflow only produces the reproducible artifact to pull.
+#
+# REGISTRY IS CONFIGURABLE. The default is GitHub Container Registry (ghcr.io)
+# authenticated with the built-in GITHUB_TOKEN — the SAME pattern CI already uses
+# for the test image (.github/workflows/ci.yml build-image), so no owner-provisioned
+# secret is required for the default path. To publish to a DIFFERENT registry, set
+# the repo VARIABLES and SECRET documented in deploy/README.md § "Publishing the
+# self-contained image". Uses no third-party actions (only actions/checkout, GitHub-
+# owned and SHA-pinned) — mirrors the deploy workflow's no-third-party-actions stance.
+#
+# OWNER-INFRA NOTE: this workflow's PUSH step cannot be validated without the
+# target registry. On a fork PR or when registry credentials do not resolve it
+# runs in BUILD-ONLY mode (proves the image builds, pushes nothing).
+name: Publish teatree image
+
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: "Git ref (branch/tag/SHA) to bake and publish. Defaults to the triggering commit."
+        required: false
+        default: ""
+  push:
+    branches: [main]
+    # Rebuild only when something baked into the image changes. Source-only commits
+    # still self-update the runtime clone via origin fast-forward, so they need no
+    # fresh image; a box that wants the newer bake pulls the next tag this produces.
+    paths: &bake-paths
+      - deploy/Dockerfile
+      - deploy/entrypoint.sh
+      - deploy/claude-settings.template.json
+      - uv.lock
+      - pyproject.toml
+      - .github/workflows/publish-image.yml
+  # On a PR touching the baked inputs, BUILD-ONLY (never push) so the Dockerfile
+  # bake is validated in CI without needing the registry — the honest answer to
+  # "can the publish path be CI-validated?" for the build half.
+  pull_request:
+    paths: *bake-paths
+
+permissions:
+  contents: read
+  packages: write
+
+# One publish at a time; never cancel an in-flight push mid-layer.
+concurrency:
+  group: publish-image
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          # A dispatch may target an arbitrary ref; default checkout is the
+          # triggering commit. The baked source@ref is pinned to this same commit.
+          ref: ${{ github.event.inputs.ref || github.sha }}
+
+      - name: Resolve image refs, tags, and push mode
+        id: meta
+        env:
+          # Optional overrides for a NON-ghcr registry (repo Settings > Variables).
+          REGISTRY_VAR: ${{ vars.TEATREE_IMAGE_REGISTRY }}
+          IMAGE_NAME_VAR: ${{ vars.TEATREE_IMAGE_NAME }}
+          # 'true' only for a fork PR (no push access to the registry).
+          IS_FORK: ${{ github.event.pull_request.head.repo.fork }}
+          # A custom-registry token is optional; its presence flips login to the
+          # custom path. Empty for the default ghcr/GITHUB_TOKEN path.
+          REGISTRY_TOKEN: ${{ secrets.TEATREE_REGISTRY_TOKEN }}
+        run: |
+          set -euo pipefail
+          REPO_LC="$(echo '${{ github.repository }}' | tr '[:upper:]' '[:lower:]')"
+          REGISTRY="${REGISTRY_VAR:-ghcr.io}"
+          IMAGE_NAME="${IMAGE_NAME_VAR:-${REPO_LC}-headless}"
+          # The baked source@ref MUST be an ORIGIN-reachable commit — the Dockerfile
+          # clones origin and checks it out. On a pull_request `github.sha` is the
+          # ephemeral merge commit (not on origin), so bake the PR HEAD (its pushed
+          # branch tip) instead; on push/dispatch the checked-out HEAD is on origin.
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            SOURCE_REF="${{ github.event.pull_request.head.sha }}"
+          else
+            SOURCE_REF="$(git rev-parse HEAD)"
+          fi
+          SHORT_SHA="$(git rev-parse --short "$SOURCE_REF")"
+          # Reproducible primary tag: keyed on the BAKED toolchain (Dockerfile +
+          # entrypoint + lockfile + project metadata) AND the source commit, so the
+          # same inputs always mint the same tag and different source never collides.
+          LOCK_KEY="${{ hashFiles('deploy/Dockerfile', 'deploy/entrypoint.sh', 'uv.lock', 'pyproject.toml') }}"
+          PRIMARY_TAG="${LOCK_KEY:0:16}-${SHORT_SHA}"
+          IMAGE="${REGISTRY}/${IMAGE_NAME}"
+          {
+            echo "image=${IMAGE}"
+            echo "primary=${IMAGE}:${PRIMARY_TAG}"
+            echo "sha_tag=${IMAGE}:sha-${SHORT_SHA}"
+            echo "latest=${IMAGE}:latest"
+            echo "registry=${REGISTRY}"
+            echo "source_ref=${SOURCE_REF}"
+          } >> "$GITHUB_OUTPUT"
+          # Decide push mode. A PR only ever validates the build (never publishes);
+          # fork PRs never have registry write; a custom registry needs its token
+          # secret present; the default ghcr path uses GITHUB_TOKEN.
+          MODE=registry
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            MODE=local
+          elif [ "${IS_FORK:-}" = "true" ]; then
+            MODE=local
+          elif [ "$REGISTRY" != "ghcr.io" ] && [ -z "${REGISTRY_TOKEN:-}" ]; then
+            echo "publish: registry '$REGISTRY' is non-ghcr but TEATREE_REGISTRY_TOKEN is unset - building WITHOUT pushing. Set the secret (see deploy/README.md) to publish." >&2
+            MODE=local
+          fi
+          echo "mode=${MODE}" >> "$GITHUB_OUTPUT"
+          echo "publish: image=${IMAGE} primary_tag=${PRIMARY_TAG} mode=${MODE}"
+
+      - name: Log in to the registry
+        if: steps.meta.outputs.mode == 'registry'
+        env:
+          REGISTRY: ${{ steps.meta.outputs.registry }}
+          # ghcr default: the built-in token (no owner secret). Custom registry:
+          # the operator-provisioned user + token.
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REGISTRY_USER: ${{ secrets.TEATREE_REGISTRY_USER }}
+          REGISTRY_TOKEN: ${{ secrets.TEATREE_REGISTRY_TOKEN }}
+        run: |
+          set -euo pipefail
+          if [ "$REGISTRY" = "ghcr.io" ]; then
+            echo "$GHCR_TOKEN" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+          else
+            echo "$REGISTRY_TOKEN" | docker login "$REGISTRY" -u "${REGISTRY_USER:?TEATREE_REGISTRY_USER must be set for a custom registry}" --password-stdin
+          fi
+
+      - name: Build the self-contained image
+        env:
+          PRIMARY: ${{ steps.meta.outputs.primary }}
+          SHA_TAG: ${{ steps.meta.outputs.sha_tag }}
+          SOURCE_REF: ${{ steps.meta.outputs.source_ref }}
+          MODE: ${{ steps.meta.outputs.mode }}
+        run: |
+          set -euo pipefail
+          # An already-published primary tag is reproducible — skip the rebuild.
+          if [ "$MODE" = registry ] && docker manifest inspect "$PRIMARY" >/dev/null 2>&1; then
+            echo "publish: $PRIMARY already exists - skipping build (baked inputs unchanged)."
+            echo "SKIP_BUILD=1" >> "$GITHUB_ENV"
+            exit 0
+          fi
+          # Bake the resolved origin-reachable commit as source@ref so the image and
+          # its tag pin together. Building requires network (as the apt/node/uv layers
+          # do); the RUNTIME is what becomes deterministic and offline-capable.
+          docker build \
+            -f deploy/Dockerfile \
+            --build-arg "TEATREE_SOURCE_REF=${SOURCE_REF}" \
+            -t "$PRIMARY" \
+            -t "$SHA_TAG" \
+            .
+
+      - name: Push the image (registry mode only)
+        if: steps.meta.outputs.mode == 'registry' && env.SKIP_BUILD != '1'
+        env:
+          IMAGE: ${{ steps.meta.outputs.image }}
+          PRIMARY: ${{ steps.meta.outputs.primary }}
+          SHA_TAG: ${{ steps.meta.outputs.sha_tag }}
+          LATEST: ${{ steps.meta.outputs.latest }}
+        run: |
+          set -euo pipefail
+          docker push "$PRIMARY"
+          docker push "$SHA_TAG"
+          # `latest` tracks main's tip so a box's `.env` can pin TEATREE_IMAGE to a
+          # fixed primary tag (reproducible) or float on latest (auto-newest bake).
+          if [ "${{ github.ref }}" = "refs/heads/main" ]; then
+            docker tag "$PRIMARY" "$LATEST"
+            docker push "$LATEST"
+          fi
+          echo "publish: pushed $PRIMARY (+ sha tag$( [ "${{ github.ref }}" = "refs/heads/main" ] && echo ' + latest'))"
+
+      - name: Build-only summary (no registry push)
+        if: steps.meta.outputs.mode == 'local'
+        run: |
+          echo "publish: BUILD-ONLY (fork PR or unresolved custom-registry creds) - the image built but was not pushed." >&2
+          echo "publish: set the registry vars/secret per deploy/README.md to publish." >&2

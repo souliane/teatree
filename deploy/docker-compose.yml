@@ -8,10 +8,21 @@
 name: teatree
 
 x-teatree-common: &teatree-common
-  image: teatree-headless:latest
+  # Pull a PUBLISHED self-contained image by setting TEATREE_IMAGE (the publish
+  # workflow's lockfile-keyed tag, #3451) in a `.env` next to this file or in the
+  # deploy shell; leaving it unset builds locally from deploy/Dockerfile (the
+  # current on-box flow, unchanged). `.env` adjacency keeps the value identical
+  # for the host deploy AND the path-identity-mounted watchdog, so both resolve
+  # the same image; the watchdog's `up -d --no-recreate` never recreates a running
+  # container on a value change regardless.
+  image: ${TEATREE_IMAGE:-teatree-headless:latest}
   build:
     context: ..
     dockerfile: deploy/Dockerfile
+    args:
+      # Pin the baked source@ref (#3451). Defaults to `main`; the publish workflow
+      # passes the exact build SHA so the image and its lockfile-keyed tag pin together.
+      TEATREE_SOURCE_REF: ${TEATREE_SOURCE_REF:-main}
   env_file:
     - teatree.env
   # All services mount all state so admin and worker share ONE db.sqlite3
@@ -139,10 +150,12 @@ services:
   # and a depends_on on init — all of which the watchdog must NOT have. It needs
   # only the docker socket + a read-only view of this checkout.
   teatree-watchdog:
-    image: teatree-headless:latest
+    image: ${TEATREE_IMAGE:-teatree-headless:latest}
     build:
       context: ..
       dockerfile: deploy/Dockerfile
+      args:
+        TEATREE_SOURCE_REF: ${TEATREE_SOURCE_REF:-main}
     environment:
       TEATREE_ROLE: watchdog
       TEATREE_WATCHDOG_INTERVAL: "300"

@@ -3,7 +3,10 @@
 Run teatree headless on a single existing Hetzner ARM64 box (CAX21, 8 GB), driven
 by one manual GitHub Action. teatree runs the autonomous loop (`t3 worker`,
 `agent_runtime=headless`), self-updates via its own loop, autostarts on reboot,
-and serves the Django admin on the box loopback for SSH-tunnel access.
+and serves the Django admin on the box loopback for SSH-tunnel access. The image
+is **self-contained** — it bakes a pinned source@ref + interpreter + locked deps
+so a fresh box boots deterministically and offline; see
+[Self-contained image](#self-contained-image--bake--publish-3451).
 
 This is **teatree-only** — no customer or product overlays. The only registered
 overlay is the built-in `t3-teatree`.
@@ -67,6 +70,84 @@ from the operator's real DB.
 
 `teatree_src` and `teatree_uv` stay Docker-managed named volumes for now (later
 PRs handle code-mount modes).
+
+## Self-contained image — bake + publish (#3451)
+
+The image is **self-contained**: `deploy/Dockerfile` bakes a pinned source@ref +
+the managed Python 3.13 interpreter + the locked editable `t3` install (the same
+`uv sync --locked` reproducibility pattern as `dev/Dockerfile.test`, extended to
+also bake the source and the tool). So a fresh box with only the image + secrets
+boots deterministically and **offline** — first boot no longer clones the repo or
+cold-resolves the dependency graph from github/PyPI/astral.
+
+**How the two named volumes inherit the bake.** Docker seeds a *fresh* named
+volume from the image content at the mount path, so on a brand-new box the empty
+`teatree_src` → `/home/teatree/teatree` and `teatree_uv` → `/opt/teatree/uv`
+volumes are seeded with the baked clone, interpreter, and tool. An
+already-provisioned box keeps its populated volumes (the bake is shadowed) and
+converges via the runtime clone's origin fast-forward — so the bake changes only
+**fresh-box** first boot; existing boxes are unaffected.
+
+**Boot mode — online vs. offline (`deploy/entrypoint.sh`).** The entrypoint picks
+its mode from a bare origin reachability probe (`network_up`):
+
+- **online** — fast-forward the runtime clone from origin and refresh the editable
+  install; `t3 update` remains the in-loop self-update path;
+- **offline** — run the baked snapshot as-is, with zero fetches. Set
+  `TEATREE_FORCE_OFFLINE=1` to force this pinned no-fetch boot deliberately.
+
+Note the GitHub **token preflight** (`assert_gh_token_permissions`) still contacts
+`api.github.com`, so a fully air-gapped box cannot pass init — the loop needs
+GitHub to function. The bake removes the *source + dependency* fetches (the
+github/PyPI/astral blips that made first boot non-deterministic), not the loop's
+own GitHub access.
+
+### Pulling a published image instead of building on the box
+
+`docker-compose.yml` resolves the image as `${TEATREE_IMAGE:-teatree-headless:latest}`.
+Leaving `TEATREE_IMAGE` unset builds locally from `deploy/Dockerfile` (the current
+on-box flow, unchanged). To PULL a published, self-contained tag, set
+`TEATREE_IMAGE` to the registry ref in a `.env` file next to `docker-compose.yml`
+(or in the deploy shell):
+
+```bash
+# deploy/.env  (compose-interpolation env, NOT the container env_file teatree.env)
+TEATREE_IMAGE=ghcr.io/<owner>/teatree-headless:<lockkey>-<shortsha>
+```
+
+`.env` adjacency keeps the value identical for the host deploy AND the
+path-identity-mounted watchdog, so both resolve the same image; the watchdog's
+`up -d --no-recreate` never recreates a running container on a value change anyway.
+
+### Publishing the self-contained image
+
+`.github/workflows/publish-image.yml` builds `deploy/Dockerfile` (pinning
+`--build-arg TEATREE_SOURCE_REF=<commit>` to the built commit) and pushes it. Tags:
+
+- `<lockkey>-<shortsha>` — reproducible primary tag, keyed on the baked toolchain
+  (`deploy/Dockerfile` + `deploy/entrypoint.sh` + `uv.lock` + `pyproject.toml`)
+  **and** the source commit;
+- `sha-<shortsha>` — the exact source commit;
+- `latest` — main's tip (float on it, or pin a primary tag for reproducibility).
+
+**Registry is configurable. The default needs no owner-provisioned secret:** it
+publishes to **ghcr.io** authenticated with the workflow's built-in `GITHUB_TOKEN`
+(the same pattern CI already uses for its test image) at
+`ghcr.io/<owner>/teatree-headless`. To publish elsewhere, the owner sets:
+
+| Kind | Name | Purpose | Needed when |
+| --- | --- | --- | --- |
+| Variable | `TEATREE_IMAGE_REGISTRY` | registry host (default `ghcr.io`) | non-ghcr registry |
+| Variable | `TEATREE_IMAGE_NAME` | image path (default `<owner>/teatree-headless`) | custom image name |
+| Secret | `TEATREE_REGISTRY_USER` | registry login user | non-ghcr registry |
+| Secret | `TEATREE_REGISTRY_TOKEN` | registry login token/password | non-ghcr registry |
+
+On a fork PR, or a custom registry with no `TEATREE_REGISTRY_TOKEN`, the workflow
+runs **build-only** (proves the image builds, pushes nothing). For the default
+ghcr path the repo/org must allow the package (GHCR is enabled by default on
+GitHub-hosted repos); a first publish creates the package, which the owner can
+then make public or keep private (a private package still pulls on the box with a
+`packages: read` token).
 
 ### One-time volume migration (operator step)
 
@@ -225,8 +306,11 @@ verify the fingerprint out of band).
 - **Autostart on reboot:** the compose `restart: unless-stopped` policy plus Docker
   enabled on boot bring the worker and admin back after a reboot.
 - **Updates:** teatree self-updates in-loop via `t3 update` (deferred reinstall on
-  the editable clone). There is **no** second workflow and no quiescence probe — a
-  re-run of the deploy workflow is only needed for infra/compose/image changes.
+  the editable clone), and the entrypoint fast-forwards the runtime clone from
+  origin on every (online) boot — the baked snapshot is only the *first-boot* /
+  offline floor, never a replacement for in-loop self-update. There is **no**
+  second workflow and no quiescence probe — a re-run of the deploy workflow is only
+  needed for infra/compose/image changes.
 
 ## Running the `t3` CLI on the box (#3232)
 

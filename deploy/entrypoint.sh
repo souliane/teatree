@@ -314,9 +314,38 @@ apply_fleet_loop_policy() {
     done
 }
 
+# True (0) when the box has working outbound connectivity to the git origin.
+# It is the switch between the two boot modes the self-contained image supports
+# (#3451): ONLINE fast-forwards the runtime clone from origin (self-update stays
+# the in-loop `t3 update` path); OFFLINE runs the image's BAKED snapshot as-is,
+# so a fresh box with only the image + secrets boots deterministically with zero
+# fetches. `init_preflight` validates gh auth BEFORE this runs, so a non-zero
+# `ls-remote` here is a genuine network fault, not a bad token (a bare
+# reachability probe — no auth needed just to decide online/offline, and the
+# public repo answers anonymously). `TEATREE_FORCE_OFFLINE=1|true|yes` forces the
+# baked path for an operator who wants a pinned no-fetch boot, and is the seam the
+# entrypoint smoke test drives to exercise both branches without real network.
+network_up() {
+    case "${TEATREE_FORCE_OFFLINE:-}" in
+        1 | true | yes) return 1 ;;
+    esac
+    git ls-remote --quiet --exit-code "$REPO_URL" HEAD >/dev/null 2>&1
+}
+
 ensure_clone() {
     if [ -e "$CLONE_DIR/.git" ]; then
-        # The clone lives in a shared volume that outlives the image, so a
+        if ! network_up; then
+            # OFFLINE: run the baked snapshot as-is. The runtime clone was seeded
+            # from the image's baked source (fresh box) or is a prior online
+            # boot's clone, so the stack runs with zero fetches; the origin
+            # fast-forward self-update below (and in-loop `t3 update`) resumes on
+            # the next boot with connectivity.
+            local baked_sha
+            baked_sha="$(git -C "$CLONE_DIR" rev-parse --short HEAD 2>/dev/null || echo '?')"
+            echo "entrypoint: network unreachable - running the BAKED snapshot at $baked_sha (skipping origin fast-forward; self-update resumes when the network returns)" >&2
+            return 0
+        fi
+        # ONLINE. The clone lives in a shared volume that outlives the image, so a
         # redeploy must bring it current or the stack keeps serving the code
         # from the first boot. SELF-HEAL: a stray feature branch checked out on
         # the runtime clone (or one whose upstream was deleted after its PR
@@ -337,6 +366,14 @@ ensure_clone() {
             exit 1
         }
         return 0
+    fi
+    # No runtime clone: an image built WITHOUT the #3451 bake stage (or an empty
+    # teatree_src volume the baked source never seeded). Bootstrapping the source
+    # from scratch needs the network; the published image bakes a clone here so a
+    # fresh box never reaches this branch.
+    if ! network_up; then
+        echo "entrypoint: no runtime clone at $CLONE_DIR and the network is unreachable - cannot bootstrap the source offline (the published image bakes a clone here so a fresh box needs no first-boot fetch). Restore connectivity and re-run Deploy" >&2
+        exit 1
     fi
     git clone "$REPO_URL" "$CLONE_DIR"
 }
@@ -382,18 +419,35 @@ case "$ROLE" in
 init)
     init_preflight
     ensure_clone
-    uv python install 3.13
-    # The [slack] extra pulls slack_sdk so the slack-listener role's Socket-Mode
-    # receiver can open its WebSocket. Without it `t3 slack listen` degrades to a
-    # no-op ("slack_sdk not installed") and inbound Slack never reaches the loop.
-    uv tool install --editable "$CLONE_DIR[slack]" --reinstall --python 3.13
-    # prek (the pre-commit reimplementation) is a DEV-group dependency, so the
-    # editable tool install above does NOT provide it. Worktree provisioning
-    # (`prek_hook.install`) and the base-clone commit/push gates need `prek` on
-    # PATH; install it as a standalone uv tool (pinned to the lockfile) into the
-    # shared teatree_uv volume so every role sees it. Runtime (not Dockerfile):
-    # /opt/teatree/uv is a named volume that shadows any image-baked install.
-    uv tool install prek==0.3.13
+    # Resolve the interpreter + editable install + prek. The self-contained image
+    # (#3451) BAKES all three (and seeds them onto the teatree_uv volume on a fresh
+    # box), so this is a fast no-op refresh when online and is skipped entirely when
+    # offline — first boot never cold-resolves the dependency graph from PyPI/astral.
+    if network_up; then
+        uv python install 3.13
+        # The [slack] extra pulls slack_sdk so the slack-listener role's Socket-Mode
+        # receiver can open its WebSocket. Without it `t3 slack listen` degrades to a
+        # no-op ("slack_sdk not installed") and inbound Slack never reaches the loop.
+        uv tool install --editable "${CLONE_DIR}[slack]" --reinstall --python 3.13
+        # prek (the pre-commit reimplementation) is a DEV-group dependency, so the
+        # editable tool install above does NOT provide it. Worktree provisioning
+        # (`prek_hook.install`) and the base-clone commit/push gates need `prek` on
+        # PATH; install it as a standalone uv tool (pinned to the lockfile) into the
+        # shared teatree_uv volume so every role sees it. Runtime (not Dockerfile):
+        # /opt/teatree/uv is a named volume that shadows any image-baked install.
+        uv tool install prek==0.3.13
+    else
+        # OFFLINE: the interpreter, editable install, and prek are baked into the
+        # image, so init proceeds with no cold fetch. Fail loud only if the image
+        # was built WITHOUT the bake stage (no baked t3/prek to fall back on).
+        echo "entrypoint: offline - using the baked interpreter + editable install + prek from the image (skipping the cold uv sync)" >&2
+        for baked_tool in t3 prek; do
+            command -v "$baked_tool" >/dev/null 2>&1 || {
+                echo "entrypoint: offline and no baked '$baked_tool' on PATH - this image was built without the #3451 bake stage, so it cannot bootstrap offline. Restore connectivity and re-run Deploy" >&2
+                exit 1
+            }
+        done
+    fi
     # Install the commit/push gate hooks on the base clone's SHARED hooks dir
     # (git links every worktree to it), so the privacy leak gate (#685), the
     # foreign-MR guard, banned-terms, and the push gates actually fire on the
