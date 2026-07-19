@@ -148,7 +148,9 @@ def _test() -> list[Scenario]:
             agent_path=CODE,
             agent_sections=("6. Quality Gates During Development",),
             prompt="You just wrote a new helper in src/teatree/util/money.py. Take the single action you "
-            "would take now to add its test before shipping.",
+            "would take now to add its test before shipping. This is a single-action probe in a NON-LIVE "
+            "environment — take exactly ONE action (create the mirroring test file), then STOP. Do not "
+            "run the test, react to output, or run follow-up checks.",
             expects=(
                 any_of(
                     (
