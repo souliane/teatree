@@ -6,6 +6,7 @@ present, and degrades to a pass when it cannot read the state — a self-heal
 detector must never itself abort the doctor run.
 """
 
+import base64
 import datetime as dt
 import io
 import json as _json
@@ -89,6 +90,69 @@ class ComposeStackCheckTest(TestCase):
         ):
             ok, _out = _echoes(self_heal._check_compose_stack)
         assert ok is True
+
+
+class ComposeStackWatchdogHandoffTest(TestCase):
+    """The compose-stack detector must WORK where it runs, not silently pass.
+
+    ``t3 doctor`` runs inside ``teatree-admin``, which has the ``docker`` CLI but
+    NO ``/var/run/docker.sock`` (only the watchdog mounts the socket), so a local
+    ``docker ps`` fails and the detector used to return ``None`` -> pass, making a
+    crash-looping init / down worker undetectable in production (dead code). The
+    socket-holding watchdog now hands the states in via the
+    ``TEATREE_DOCTOR_COMPOSE_PS`` env var (base64 of the same ``docker ps`` output);
+    the probe reads that handoff even when the local ``docker`` cannot reach the
+    daemon, so a real outage FAILs and reaches the owner DM.
+    """
+
+    @staticmethod
+    def _handoff(rows: list[tuple[str, str, str]]) -> str:
+        text = "\n".join("\t".join(row) for row in rows)
+        return base64.b64encode(text.encode("utf-8")).decode("ascii")
+
+    def test_handoff_states_used_when_local_docker_unreachable(self) -> None:
+        # No local docker socket (CLI absent stands in for "cannot reach daemon"),
+        # yet the watchdog handoff carries a crash-looped init: the probe must
+        # return those states instead of None. RED before the handoff branch.
+        env = {"TEATREE_DOCTOR_COMPOSE_PS": self._handoff([("teatree-init", "exited", "Exited (1) ago")])}
+        with (
+            mock.patch(f"{_MOD}.shutil.which", return_value=None),
+            mock.patch.dict("os.environ", env, clear=False),
+        ):
+            states = self_heal._Probe.compose_container_states("teatree")
+        assert states == [("teatree-init", "exited", "Exited (1) ago")]
+
+    def test_down_stack_fails_via_handoff_without_socket(self) -> None:
+        # End to end: no socket + a handoff-supplied crash-looped init -> the
+        # detector FAILs (does not silently pass), so the watchdog DMs the owner.
+        env = {"TEATREE_DOCTOR_COMPOSE_PS": self._handoff([("teatree-init", "exited", "Exited (1) ago")])}
+        with (
+            mock.patch(f"{_MOD}.shutil.which", return_value=None),
+            mock.patch.dict("os.environ", env, clear=False),
+        ):
+            ok, out = _echoes(self_heal._check_compose_stack)
+        assert ok is False
+        assert "teatree-init" in out
+
+    def test_no_handoff_and_no_socket_still_degrades_to_pass(self) -> None:
+        # Anti-over-block: a dev box (no watchdog handoff, no socket) must still
+        # degrade to a pass, never a false FAIL.
+        with (
+            mock.patch(f"{_MOD}.shutil.which", return_value=None),
+            mock.patch.dict("os.environ", {"TEATREE_DOCTOR_COMPOSE_PS": ""}, clear=False),
+        ):
+            states = self_heal._Probe.compose_container_states("teatree")
+        assert states is None
+
+    def test_malformed_handoff_falls_back_to_none(self) -> None:
+        # A corrupt base64 handoff must not crash; with no local socket it yields
+        # None (degrade to pass), never a partial/garbage verdict.
+        with (
+            mock.patch(f"{_MOD}.shutil.which", return_value=None),
+            mock.patch.dict("os.environ", {"TEATREE_DOCTOR_COMPOSE_PS": "!!!not base64!!!"}, clear=False),
+        ):
+            states = self_heal._Probe.compose_container_states("teatree")
+        assert states is None
 
 
 class LoopWorkerAliveCheckTest(TestCase):
