@@ -133,6 +133,38 @@ class LoopWorkerAliveCheckTest(TestCase):
         assert "WARN" in out
 
 
+class StaleLoopTimerCollapseTest(TestCase):
+    """Overdue timers collapse to one timestamp-free FAIL summary (#slack-comms Phase 3)."""
+
+    def test_many_overdue_timers_render_one_fail_line(self) -> None:
+        overdue = [
+            ("inbox", timezone.now() - dt.timedelta(hours=1), 600),
+            ("ship", timezone.now() - dt.timedelta(hours=2), 600),
+            ("review", timezone.now() - dt.timedelta(hours=3), 600),
+        ]
+        with mock.patch(f"{_MOD}._Probe.overdue_ready_timers", return_value=overdue):
+            ok, out = _echoes(self_heal._check_stale_loop_timer)
+        assert ok is False
+        fail_lines = [ln for ln in out.splitlines() if ln.startswith("FAIL")]
+        assert len(fail_lines) == 1
+        # the set of names is named on the one summary line
+        for name in ("inbox", "review", "ship"):
+            assert name in fail_lines[0]
+
+    def test_fail_summary_has_no_volatile_timestamp(self) -> None:
+        # The watchdog RED body-hash keys on FAIL messages; an isoformat timestamp
+        # there would churn the key every pass. Timestamps live on non-FAIL detail.
+        run_after = timezone.now() - dt.timedelta(hours=5)
+        overdue = [("inbox", run_after, 600)]
+        with mock.patch(f"{_MOD}._Probe.overdue_ready_timers", return_value=overdue):
+            _ok, out = _echoes(self_heal._check_stale_loop_timer)
+        fail_lines = [ln for ln in out.splitlines() if ln.startswith("FAIL")]
+        assert fail_lines
+        assert run_after.isoformat() not in fail_lines[0]
+        # the timestamp detail is still surfaced (on a non-FAIL line)
+        assert run_after.isoformat() in out
+
+
 class StrandedHeadlessCheckTest(TestCase):
     def test_running_headless_with_free_flock_fails(self) -> None:
         stranded = [("501", timezone.now() - dt.timedelta(hours=2))]

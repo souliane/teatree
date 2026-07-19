@@ -113,12 +113,17 @@ run_doctor() {
   return 125
 }
 
+# The three hard-outage alarms below key on a DAILY bucket (`%Y%m%d`), not an
+# hourly one: `notify_user` dedups on the key, so an hourly bucket re-DM'd the
+# identical "stack down" alarm every hour (13+ overnight copies observed). A
+# daily bucket collapses a persisting unchanged outage to at most one DM/day
+# while still re-alerting each day it persists and on a next-day recurrence.
 run_pass() {
   log "restarting any down services (gated on init state)"
   if ! restart_down_services; then
     # The stack could not even be brought up — the strongest outage signal.
     printf 'teatree watchdog: `docker compose up -d` FAILED on the box — the stack is DOWN and could not be restarted. SSH in and inspect `docker compose -p %s logs`.' "$PROJECT" \
-      | notify_owner "watchdog:compose-up-failed:$(date -u +%Y%m%d%H)"
+      | notify_owner "watchdog:compose-up-failed:$(date -u +%Y%m%d)"
     return 0
   fi
 
@@ -127,7 +132,7 @@ run_pass() {
     # ONLY case that is truly "unreachable" (distinct from doctor running and
     # returning a red verdict, which is handled below).
     printf 'teatree watchdog: could not exec `t3 doctor` in any service (%s) — the stack is unreachable even after `up -d`. SSH in and inspect `docker compose -p %s ps`.' "$EXEC_SERVICES" "$PROJECT" \
-      | notify_owner "watchdog:doctor-unreachable:$(date -u +%Y%m%d%H)"
+      | notify_owner "watchdog:doctor-unreachable:$(date -u +%Y%m%d)"
     return 0
   fi
 
@@ -140,10 +145,10 @@ run_pass() {
   if [ -z "$json" ]; then
     # Doctor was reachable but emitted no parseable verdict: a half-crashed doctor
     # is itself a RED condition, not a healthy pass (the old code treated it as
-    # healthy and stayed silent). DM once per hour so a persistent breakage is seen.
+    # healthy and stayed silent). DM at most once per day so a persistent breakage is seen.
     log "doctor reachable but produced no JSON verdict — treating as RED"
     printf 'teatree watchdog: `t3 doctor check --json` ran but produced NO parseable verdict — doctor may be crashing on the box. SSH in and run `t3 doctor check` in `docker compose -p %s exec teatree-admin`.' "$PROJECT" \
-      | notify_owner "watchdog:doctor-no-verdict:$(date -u +%Y%m%d%H)"
+      | notify_owner "watchdog:doctor-no-verdict:$(date -u +%Y%m%d)"
     return 0
   fi
 

@@ -350,11 +350,22 @@ def _check_stale_loop_timer() -> bool:
         return True
     if not overdue:
         return True
-    for name, run_after, threshold in overdue:
+    # Collapse to ONE FAIL summary keyed on the SET of overdue timers (sorted
+    # names, no timestamps): the watchdog RED body-hash keys on FAIL messages, so
+    # a volatile ``run_after`` in the summary would churn the hash and re-DM the
+    # whole bundle every pass even when the set is unchanged (#slack-comms). The
+    # per-timer ``run_after`` detail goes on non-FAIL lines — visible in
+    # ``t3 doctor``, excluded from the dedup body.
+    names = sorted(name for name, _run_after, _threshold in overdue)
+    typer.echo(
+        f"FAIL  {len(names)} loop timer(s) READY but overdue past 2x cadence: "
+        f"{', '.join(names)}. The drain is stalled; check the worker "
+        f"(`t3 worker ensure` / worker logs)."
+    )
+    for name, run_after, threshold in sorted(overdue):
         typer.echo(
-            f"FAIL  Loop timer {name!r} is READY but overdue — due {run_after.isoformat()}, past "
-            f"2x its {threshold // _STALE_TIMER_CADENCE_MULTIPLIER}s cadence. The drain is stalled; "
-            f"check the worker (`t3 worker ensure` / worker logs)."
+            f"INFO    {name}: due {run_after.isoformat()}, past 2x its "
+            f"{threshold // _STALE_TIMER_CADENCE_MULTIPLIER}s cadence."
         )
     return False
 
