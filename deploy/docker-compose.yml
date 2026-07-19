@@ -104,6 +104,14 @@ services:
       teatree-init:
         condition: service_completed_successfully
     restart: unless-stopped
+    # Defense-in-depth for drain-then-deploy: deploy/deploy.sh drains the worker
+    # (quiesce + wait for in-flight leases) BEFORE the recreate, so a clean deploy
+    # never SIGKILLs live work. This grace covers the residual case — a recreate that
+    # skipped the drain (bare `docker compose up`) or a worker mid-shutdown — giving
+    # the SIGTERM handler (`worker.request_stop()`) room to exit cleanly before SIGKILL
+    # instead of the 10s default. A CLAIMED task killed anyway re-queues via its lease
+    # lapse, so this is a graceful-exit window, not a correctness dependency.
+    stop_grace_period: "60s"
     # The worker's CPU/RAM caps are DERIVED FROM THE REAL HOST at deploy time
     # (#3432): deploy/deploy.sh runs uncapped on the host, reads its true
     # cores/RAM via src/teatree/utils/ram_probe.py, and exports

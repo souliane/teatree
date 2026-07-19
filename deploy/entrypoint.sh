@@ -554,6 +554,16 @@ init)
     # The admin binds the box loopback (host networking), so auto-login fires for
     # the SSH-tunnelled 127.0.0.1 request — no admin password behind the tunnel.
     seed_setting admin_autologin_enabled true
+    # Clear any drain-set quiescing flag so the FRESH worker RESUMES admission after a
+    # rolling deploy (drain-then-deploy). This is a HARD `set false`, NOT a provenance
+    # `seed`: `t3 worker drain` writes worker_quiescing via `config_setting set` (a
+    # durable operator-style row), and a `seed false` — equal to the code default — is
+    # a no-op that would leave the fresh worker quiesced and admitting nothing. NON-FATAL
+    # like the seeds: a transient failure must not brick the stack (a warn, then the
+    # operator can clear it via `t3 worker status` / `config_setting set`).
+    if ! t3 teatree config_setting set worker_quiescing false; then
+        echo "teatree-init: WARNING could not clear worker_quiescing ('t3 teatree config_setting set' failed); the worker may stay quiesced and admit no new work — clear it manually with 't3 teatree config_setting set worker_quiescing false' and check 't3 worker status'." >&2
+    fi
     apply_fleet_loop_policy
     echo "teatree-init: complete"
     ;;

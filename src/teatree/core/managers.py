@@ -76,6 +76,20 @@ def _claimable_now_q(now: datetime) -> Q:
     return Q(not_before__isnull=True) | Q(not_before__lte=now)
 
 
+def _worker_quiescing() -> bool:
+    """True when the worker is draining for a deploy — admit NO new claims.
+
+    Read at the claim/admission chokepoint ONLY (``claim_next_pending`` and
+    ``_claimable_for_target``), never by the worker supervisor's stop condition:
+    quiescing admits zero new work while in-flight CLAIMED leases keep renewing and
+    finish, so a rolling deploy never kills a live sub-agent. Resolved through the
+    same ``ConfigSetting`` + ``T3_WORKER_QUIESCING`` env tier as ``loop_runner_enabled``.
+    """
+    from teatree.config import get_effective_settings  # noqa: PLC0415 — deferred: call-time config read
+
+    return get_effective_settings().worker_quiescing
+
+
 def _for_overlay(qs: models.QuerySet, overlay: str | None) -> models.QuerySet:
     """Scope *qs* to *overlay*, including legacy empty-overlay rows.
 
@@ -346,6 +360,11 @@ class TaskQuerySet(models.QuerySet):
         """
         task_model = cast("type[Task]", apps.get_model("core", "Task"))
 
+        # Drain gate (rolling deploy): while the worker is quiescing, admit NO new
+        # task — the CAS never fires, so claimed ≡ spawned stays true and in-flight
+        # CLAIMED leases (which renew via ``renew_lease``, not this path) are untouched.
+        if _worker_quiescing():
+            return None
         now = timezone.now()
         candidates = self.filter(status=task_model.Status.PENDING).filter(_claimable_now_q(now))
         if extra_filter is not None:
@@ -550,24 +569,40 @@ class TaskQuerySet(models.QuerySet):
             self.filter(status=task_model.Status.CLAIMED, lease_expires_at__gt=now).filter(dispatchable_filter).count()
         )
 
-    def active_claim_exists(self) -> bool:
-        """True iff some task is CLAIMED with a still-live lease.
+    def active_claims(self) -> models.QuerySet:
+        """Tasks CLAIMED with a still-live lease — the in-flight set (SSOT).
 
-        A live CLAIMED lease means a worker / sub-agent is actively driving
-        a unit of loop work right now — the deferred-reinstall drain reads
-        this to DEFER re-anchoring the running interpreter until no unit is
-        in flight (never mutate the code out from under an active agent).
-        An expired lease is not in-flight (the worker is gone; the reaper /
-        reclaimer will sweep it).
+        A live CLAIMED lease means a worker / sub-agent is actively driving a unit
+        of loop work right now; an expired lease is not in-flight (the worker is
+        gone; the reaper / reclaimer will sweep it). This is the single predicate
+        both ``active_claim_exists`` (the deferred-reinstall + drain readiness check)
+        and ``t3 worker drain``'s still-claimed listing read, so the two can never
+        drift.
         """
         task_model = cast("type[Task]", apps.get_model("core", "Task"))
 
         now = timezone.now()
-        return self.filter(status=task_model.Status.CLAIMED, lease_expires_at__gt=now).exists()
+        return self.filter(status=task_model.Status.CLAIMED, lease_expires_at__gt=now)
+
+    def active_claim_exists(self) -> bool:
+        """True iff some task is CLAIMED with a still-live lease.
+
+        The deferred-reinstall drain and ``t3 worker drain`` read this to DEFER an
+        action (re-anchoring the running interpreter / swapping the deploy image)
+        until no unit is in flight — never mutate the code out from under an active
+        agent.
+        """
+        return self.active_claims().exists()
 
     def _claimable_for_target(self, target: str, overlay: str | None = None) -> models.QuerySet:
         task_model = cast("type[Task]", apps.get_model("core", "Task"))
 
+        # Drain gate (rolling deploy): a quiescing worker sees NO claimable work, so
+        # the interactive/headless claim commands admit zero new tasks during the
+        # deploy window. Orthogonal to the supervisor's stop condition — in-flight
+        # leases keep renewing.
+        if _worker_quiescing():
+            return self.none()
         now = timezone.now()
         qs = (
             self.filter(

@@ -17,7 +17,14 @@ on:
 permissions:
   contents: read
 
-# Serialize deploys to one box; never cancel an in-flight convergence mid-run.
+# Deploy debounce (drain-then-deploy Piece A). A single fixed group serializes
+# every deploy to the one box, and `cancel-in-progress: false` NEVER cancels a
+# RUNNING convergence mid-run — a merge train coalesces into: the in-flight run
+# finishes, and GitHub keeps only the NEWEST queued run (superseding older queued
+# ones), which `deploy/deploy.sh` fast-forwards to the latest main. So a burst of
+# merges converges the box to newest main with exactly one extra run, and an
+# in-flight drain (deploy.sh quiesces the worker and waits for in-flight agents)
+# is never interrupted. Both keys are pinned by tests/test_deploy_rolling_drain.py.
 concurrency:
   group: deploy
   cancel-in-progress: false

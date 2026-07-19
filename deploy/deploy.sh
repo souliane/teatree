@@ -101,6 +101,22 @@ fi
 export TEATREE_WORKER_CPUS TEATREE_WORKER_MEM_LIMIT
 echo "deploy: worker sizing — cpus=${TEATREE_WORKER_CPUS:-<default>} mem_limit=${TEATREE_WORKER_MEM_LIMIT:-<default>}"
 
+# Drain-then-deploy (rolling / zero-downtime): a deploy must NEVER kill an
+# in-flight agent. Before swapping the worker image, quiesce the RUNNING worker —
+# `t3 worker drain` sets the `worker_quiescing` admission gate (the claim path then
+# admits ZERO new work) and waits up to TEATREE_DRAIN_TIMEOUT seconds for every
+# live CLAIMED lease to finish. The supervisor is never stopped, so in-flight
+# sub-agents keep renewing and complete. On a grace overrun the drain exits non-zero
+# (code 3); we still PROCEED — a stuck task re-queues PENDING via its lease lapse and
+# the fresh worker picks it up. The fresh worker's init clears worker_quiescing so
+# admission resumes. Skipped when no worker is running (nothing to drain).
+if worker_running; then
+    echo "deploy: draining teatree-worker (up to ${TEATREE_DRAIN_TIMEOUT:-1800}s for in-flight agents to finish) ..."
+    docker compose -f "$COMPOSE_FILE" exec -T teatree-worker \
+        t3 worker drain --timeout "${TEATREE_DRAIN_TIMEOUT:-1800}" \
+        || echo "deploy: drain window exceeded — proceeding (a stuck task re-queues via its lease lapse)"
+fi
+
 # Surface the WHY on a build/up failure — `set -e` would otherwise exit before
 # the Action log sees anything but "exited (1)".
 docker compose -f "$COMPOSE_FILE" up -d --build || {
