@@ -1,7 +1,11 @@
-# teatree headless deployment image — one image, three roles (init/worker/admin)
-# selected by $TEATREE_ROLE. Extends the dev/Dockerfile.test toolchain and adds
-# gh. The teatree source is NOT baked: it is cloned onto a volume at runtime and
-# installed editable by the init role, so the image is just the toolchain.
+# teatree headless deployment image — one image, five roles (init/worker/admin/
+# slack-listener/watchdog) selected by $TEATREE_ROLE. Extends the
+# dev/Dockerfile.test toolchain and adds gh. The image is SELF-CONTAINED (#3451):
+# it BAKES a pinned source@ref + the managed Python interpreter + the locked
+# editable install (see the bake stage near the end), so a fresh box with only
+# the image + secrets boots deterministically and offline. The runtime clone on
+# the teatree_src volume stays the self-update path — the entrypoint fast-forwards
+# it from origin when online and runs the baked snapshot when offline.
 #
 # Digest-pinned to the same ubuntu:24.04 manifest dev/Dockerfile.test pins, so a
 # retag of the floating tag can never silently change the deploy toolchain.
@@ -123,3 +127,31 @@ ENV PATH="/opt/teatree/uv/bin:/home/teatree/.local/bin:${PATH}" \
     GNUPGHOME=/home/teatree/.gnupg
 
 ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]
+
+# ============================================================
+# Bake the product — source@ref + interpreter + LOCKED editable install (#3451).
+# Kept as the FINAL build stage (after the ENTRYPOINT metadata declaration,
+# which has no build-time effect): the source-ref-pinned bake is the most
+# volatile layer, so putting it last maximizes cache reuse of the stable
+# toolchain/ENV/ENTRYPOINT layers above.
+# Mirrors dev/Dockerfile.test:19-34 (bake the managed Python + `uv` locked deps so
+# nothing is cold-resolved from PyPI/astral at runtime), extended to also bake the
+# pinned SOURCE and the editable `t3` tool. Both bake targets sit UNDER the two
+# named volumes (teatree_src -> $TEATREE_CLONE_DIR, teatree_uv -> /opt/teatree/uv):
+# Docker seeds a FRESH volume from the image content at the mount path, so a fresh
+# box inherits the baked clone + Python + tool and boots offline with zero fetches.
+# An already-provisioned box keeps its populated volumes (the bake is shadowed) and
+# self-updates via the entrypoint's origin fast-forward — the runtime clone remains
+# the in-loop `t3 update` path (epic #3445), so this bake changes only FRESH-box boot.
+#
+# TEATREE_SOURCE_REF pins the baked commit (default `main`; the publish workflow
+# passes the exact build SHA so the image and its lockfile-keyed tag can never
+# drift). The clone keeps its full `.git` so the runtime fast-forward and `t3
+# update` work. Building requires network (as the apt/node/uv layers already do) —
+# it is the RUNTIME that becomes deterministic and offline-capable.
+ARG TEATREE_SOURCE_REF=main
+RUN git clone "$TEATREE_REPO_URL" "$TEATREE_CLONE_DIR" && \
+    git -C "$TEATREE_CLONE_DIR" checkout --quiet "$TEATREE_SOURCE_REF" && \
+    uv python install 3.13 && \
+    uv tool install --editable "${TEATREE_CLONE_DIR}[slack]" --python 3.13 && \
+    uv tool install prek==0.3.13
