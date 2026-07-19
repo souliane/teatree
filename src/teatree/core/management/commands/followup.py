@@ -5,6 +5,7 @@ from django_typer.management import TyperCommand, command
 
 from teatree.core.backend_factory import code_host_from_overlay
 from teatree.core.machine_output import emit
+from teatree.core.management.commands._shared_code_host import no_code_host_error
 from teatree.core.models import Task, Ticket
 from teatree.core.overlay_loader import get_overlay
 from teatree.core.table_output import print_table
@@ -124,7 +125,7 @@ class Command(TyperCommand):
         """
         host = code_host_from_overlay()
         if host is None:
-            return {"error": "No code host configured (check overlay tokens)"}
+            return no_code_host_error()
 
         author = get_overlay().config.get_gitlab_username() or host.current_user()
         if not author:

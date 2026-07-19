@@ -24,6 +24,7 @@ from django_typer.management import TyperCommand, command
 
 from teatree.config import get_effective_settings
 from teatree.core.backend_factory import code_host_from_overlay, messaging_from_overlay
+from teatree.core.management.commands._shared_code_host import NO_CODE_HOST_MESSAGE
 from teatree.core.on_behalf_egress import OnBehalfPostBlockedError, OnBehalfSlackEgress
 from teatree.core.review.mr_reminder import ChannelMessage, MrReminder, build_mr_reminder
 
@@ -63,7 +64,7 @@ def _build(overlay: str) -> tuple[MrReminder | None, str]:
     """Return the assembled reminder, or ``(None, error)`` when prerequisites are missing."""
     host = code_host_from_overlay(overlay or None)
     if host is None:
-        return None, "No code host configured (check overlay tokens)"
+        return None, NO_CODE_HOST_MESSAGE
     settings = get_effective_settings(overlay or None)
     config = settings.mr_reminder
     if not config.channels and not config.default_channel:

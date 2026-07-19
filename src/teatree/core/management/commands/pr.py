@@ -12,6 +12,7 @@ from typing import TYPE_CHECKING, cast
 from django_typer.management import TyperCommand, command
 
 from teatree.core.backend_factory import code_host_from_overlay
+from teatree.core.evidence.test_plan_blocked_gate import BlockedTestPlanPostError
 from teatree.core.gates.orphan_guard import BranchStatus, classify_branch
 from teatree.core.management.commands._close_keyword_gate import run_close_keyword_gate
 from teatree.core.management.commands._closes_issue_crosscheck import run_closes_issue_crosscheck
@@ -28,6 +29,7 @@ from teatree.core.management.commands._pr_ticket_resolve import (
     ticket_not_found_error,
 )
 from teatree.core.management.commands._pr_worktree import WorktreeMissingError, _resolve_or_adopt_worktree
+from teatree.core.management.commands._shared_code_host import no_code_host_error
 from teatree.core.management.commands._ship.exec import (
     ShipEnqueued,
     ShipExecuted,
@@ -53,20 +55,20 @@ from teatree.core.management.commands._ship.gates import run_e2e_mandatory_gate 
 from teatree.core.management.commands._ship.gates import run_fleet_claim_fence_gate as _run_fleet_claim_fence_gate
 from teatree.core.management.commands._ship.gates import run_pr_budget_gate as _run_pr_budget_gate
 from teatree.core.management.commands._ship.gates import run_visual_qa_gate as _run_visual_qa_gate
+from teatree.core.management.commands._test_plan.post import (
+    MrTestPlanPost,
+    TestPlanMediaError,
+    post_mr_test_plan_comment,
+)
 from teatree.core.modelkit.phases import normalize_phase
 from teatree.core.models import Ticket, Worktree
-from teatree.core.on_behalf_gate_recorded import (
-    OnBehalfPostBlockedError,
-    on_behalf_block_message,
-    require_on_behalf_approval,
-)
-from teatree.core.on_behalf_post_receipt import notify_user_on_behalf_post
+from teatree.core.on_behalf_gate_recorded import OnBehalfPostBlockedError
 from teatree.core.overlay_loader import get_overlay
 from teatree.core.provision.db_anchor import assert_lifecycle_db_is_canonical
 from teatree.core.provision.worktree_adopt import reopen_ticket_for_followup
 from teatree.core.public_identity import MergeResult
 from teatree.core.runners.ship import resolve_and_reconcile_branch, resolve_ship_worktree
-from teatree.core.send_proxy import OutboundBlockedError, route_forge_write
+from teatree.core.send_proxy import OutboundBlockedError
 from teatree.types import RawAPIDict
 from teatree.utils import git
 from teatree.utils.run import CommandFailedError
@@ -503,7 +505,7 @@ class Command(TyperCommand):
         """Fetch issue details with embedded image URLs and external links."""
         host = code_host_from_overlay()
         if host is None:
-            return {"error": "No code host configured"}
+            return no_code_host_error()
         issue = host.get_issue(issue_url)
         description = str(issue.get("description", ""))
 
@@ -548,7 +550,7 @@ class Command(TyperCommand):
         """
         host = code_host_from_overlay()
         if host is None:
-            return {"error": "No code host configured (check overlay tokens)"}
+            return no_code_host_error()
 
         author = get_overlay().config.get_gitlab_username() or host.current_user()
         if not author:
@@ -571,8 +573,16 @@ class Command(TyperCommand):
     ) -> dict[str, object]:
         """Post a test plan as a PR comment. Uploads files and updates existing notes.
 
-        Files (screenshots, videos) are uploaded and embedded as ``![name](url)`` in the body.
-        If an existing note contains ``## Test Plan``, it is updated instead of creating a new one.
+        A thin delegator to the shared gated engine
+        (:func:`teatree.core.management.commands._test_plan.post.post_mr_test_plan_comment`),
+        so the MR path gets the SAME gates as the ticket/issue poster (F3.1) and
+        can no longer drift: files (screenshots, videos) are uploaded and each one
+        passes the #2156 ``verify_upload`` existence check before it is embedded
+        as ``![name](url)``; the body is run through the blocked-body config gate
+        and the scanned public-repo leak seam; and the note is matched for an
+        idempotent in-place update by THIS MR's hidden idempotency marker — never
+        a naive ``"## Test Plan" in body`` scan that could clobber a colleague's
+        unrelated comment.
 
         Gated by ``on_behalf_post_mode`` (#960, BLOCK under ``ask`` /
         ``draft_or_ask``): the call is refused with no upload or host side
@@ -580,85 +590,31 @@ class Command(TyperCommand):
         ``(<repo>!<mr>, "post_evidence")``. The ``"post_evidence"`` action key
         is PERSISTED on existing ``OnBehalfApproval`` rows, so it stays the wire
         value even though the command is now named ``post-test-plan``. The gate
-        is inlined here (not at the ``code_host`` layer) so PR creation — which
-        is not an on-behalf colleague-facing post — remains ungated.
+        is inlined at the command layer (not at the ``code_host`` layer) so PR
+        creation — which is not an on-behalf colleague-facing post — remains
+        ungated.
 
         The legacy ``post-evidence`` name is kept as a hidden, deprecated alias
         for one release so existing scripts keep working.
         """
         host = code_host_from_overlay()
         if host is None:
-            return {"error": "No code host configured (check overlay GitLab token)"}
+            return no_code_host_error()
 
         repo_path = repo or get_overlay().metadata.get_ci_project_path()
-        target = f"{repo_path}!{mr_iid}"
-
-        # Peek (non-consuming) so an unapproved post refuses before uploading
-        # anything; the consume happens atomically with the comment post below.
-        blocked = on_behalf_block_message(target, "post_evidence")
-        if blocked:
-            return {"error": blocked}
-
-        # Upload files and build markdown embeds
-        embeds: list[str] = []
-        for filepath in files or []:
-            upload = host.upload_file(repo=repo_path, filepath=filepath)
-            md = upload.get("markdown", "")
-            if md:
-                embeds.append(str(md))
-                self.stdout.write(f"  Uploaded: {filepath}")
-
-        # Build note body
-        embed_section = "\n\n".join(embeds)
-        note_body = f"## {title}\n\n{body}" if body else f"## {title}\n\n_No details provided._"
-        if embed_section:
-            note_body += f"\n\n{embed_section}"
-
-        # Route the colleague-visible body through the shared scanned forge-write
-        # seam (public-repo leak gate + #117 send-proxy) — the SAME seam the MCP /
-        # ticket / test-plan-body writers use — BEFORE consuming the on-behalf
-        # approval, so a test-plan body carrying a customer codename bound for a
-        # public forge is REFUSED (and every post audited) instead of reaching the
-        # PR comment raw. The overlay's CI project path is a bare slug, so the
-        # forge is left unqualified: the leak gate then fails CLOSED (scans) on an
-        # unknown host rather than skipping the scan.
         try:
-            note_body = route_forge_write(
-                forge="", repo=repo_path, text=note_body, action="post_evidence", target=target
+            # The MR path is a thin delegator to the shared gated engine (F3.1):
+            # the on-behalf peek, the #2156 verify_upload existence check, the
+            # blocked-body config gate, the scanned forge-write seam, and the
+            # marker-scoped note match are the SAME as the ticket/issue poster, so
+            # the two paths can never drift.
+            return post_mr_test_plan_comment(
+                host,
+                MrTestPlanPost(repo=repo_path, mr_iid=mr_iid, title=title, body=body, files=list(files or [])),
+                write_out=self.stdout.write,
             )
-        except OutboundBlockedError as blocked:
-            return {"error": str(blocked)}
-
-        # Find existing test plan note to update
-        existing_notes = host.list_pr_comments(repo=repo_path, pr_iid=mr_iid)
-        marker = "## Test Plan"
-        existing_note = next(
-            (n for n in existing_notes if marker in str(n.get("body", "")) and not n.get("system")),
-            None,
-        )
-
-        def _publish() -> RawAPIDict:
-            if existing_note:
-                comment_id = int(str(existing_note["id"]))
-                self.stdout.write(f"  Updating existing note {comment_id}")
-                return host.update_pr_comment(repo=repo_path, pr_iid=mr_iid, comment_id=comment_id, body=note_body)
-            return host.post_pr_comment(repo=repo_path, pr_iid=mr_iid, body=note_body)
-
-        try:
-            # consume + post + audit atomic (#1879): a failed comment post
-            # rolls back the consume and writes no audit.
-            result = require_on_behalf_approval(target=target, action="post_evidence", publish=_publish)
-        except OnBehalfPostBlockedError as blocked_now:
-            return {"error": str(blocked_now)}
-
-        notify_user_on_behalf_post(
-            target=target,
-            action="post_evidence",
-            destination=target,
-            artifact_url=str(result.get("web_url") or result.get("html_url") or target),
-            summary=f"{title} on {target}",
-        )
-        return result
+        except (OnBehalfPostBlockedError, OutboundBlockedError, BlockedTestPlanPostError, TestPlanMediaError) as err:
+            return {"error": str(err)}
 
     @command(name="post-evidence", hidden=True, deprecated=True)
     def post_evidence(

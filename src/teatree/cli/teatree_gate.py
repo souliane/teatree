@@ -29,6 +29,7 @@ does NOT route through Django or an overlay ``manage.py`` subprocess, so it stay
 runnable even when the heavier overlay machinery is wedged.
 """
 
+from dataclasses import dataclass
 from pathlib import Path
 
 import typer
@@ -149,27 +150,52 @@ def _write_gate_and_verify(key: str, *, enabled: bool) -> Path:
     return destination
 
 
-def _register_keyed_gate(parent: typer.Typer, *, name: str, key: str, label: str) -> None:
-    """Attach a ``status``/``disable``/``enable`` subgroup for ``[teatree] <key>``."""
-    group = typer.Typer(no_args_is_help=True, help=f"{label} kill-switch (self-rescue).")
+@dataclass(frozen=True, slots=True)
+class _GateHelp:
+    """The status echo line + per-command CLI help for one gate kill-switch trio.
 
-    @group.command(name="status")
+    Defaults are the keyed-gate wording; the top-level heavy-Bash gate passes a
+    custom instance so the extraction leaves the published CLI surface (help text)
+    and the ``status`` echo byte-identical to the former hand-rolled commands.
+    """
+
+    enabled_status: str = "gate ENABLED"
+    status: str = "Show whether the gate is enabled."
+    disable: str = "Disable the gate (self-rescue from a lockout)."
+    enable: str = "Re-enable the gate."
+
+
+def _attach_gate_commands(app: typer.Typer, *, key: str, help_: _GateHelp | None = None) -> None:
+    """Register the ``status``/``disable``/``enable`` trio for ``key`` on ``app``.
+
+    The one home for a gate kill-switch's three commands, shared by
+    :func:`_register_keyed_gate` (which hangs them under a named subgroup) and the
+    top-level orchestrator heavy-Bash gate (which hangs them directly on the
+    ``gate`` group). ``help_`` carries the status echo line and the per-command
+    help text; the disabled echo line and the disable/enable receipts are keyed
+    off ``key`` and identical everywhere.
+    """
+    texts = help_ or _GateHelp()
+
+    @app.command(name="status", help=texts.status)
     def status() -> None:
-        """Show whether the gate is enabled."""
-        typer.echo("gate ENABLED" if _gate_key_is_enabled(key) else "gate DISABLED — no-op")
+        typer.echo(texts.enabled_status if _gate_key_is_enabled(key) else "gate DISABLED — no-op")
 
-    @group.command(name="disable")
+    @app.command(name="disable", help=texts.disable)
     def disable() -> None:
-        """Disable the gate (self-rescue from a lockout)."""
         destination = _write_gate_and_verify(key, enabled=False)
         typer.echo(f"gate DISABLED — wrote `{key} = false` to {destination}")
 
-    @group.command(name="enable")
+    @app.command(name="enable", help=texts.enable)
     def enable() -> None:
-        """Re-enable the gate."""
         destination = _write_gate_and_verify(key, enabled=True)
         typer.echo(f"gate ENABLED — wrote `{key} = true` to {destination}")
 
+
+def _register_keyed_gate(parent: typer.Typer, *, name: str, key: str, label: str) -> None:
+    """Attach a ``status``/``disable``/``enable`` subgroup for ``[teatree] <key>``."""
+    group = typer.Typer(no_args_is_help=True, help=f"{label} kill-switch (self-rescue).")
+    _attach_gate_commands(group, key=key)
     parent.add_typer(group, name=name)
 
 
@@ -180,25 +206,21 @@ def register_gate_commands(overlay_app: typer.Typer) -> None:
         help="Enforcement-gate kill-switches (self-rescue).",
     )
 
-    @gate_group.command(name="status")
-    def status() -> None:
-        """Show whether the orchestrator heavy-Bash gate is enabled."""
-        if gate_is_enabled():
-            typer.echo("gate ENABLED — heavy orchestrator bash blocked")
-        else:
-            typer.echo("gate DISABLED — no-op")
-
-    @gate_group.command(name="disable")
-    def disable() -> None:
-        """Disable the gate (self-rescue from a Bash lockout)."""
-        destination = _write_gate_and_verify(GATE_KEY, enabled=False)
-        typer.echo(f"gate DISABLED — wrote `{GATE_KEY} = false` to {destination}")
-
-    @gate_group.command(name="enable")
-    def enable() -> None:
-        """Re-enable the gate."""
-        destination = _write_gate_and_verify(GATE_KEY, enabled=True)
-        typer.echo(f"gate ENABLED — wrote `{GATE_KEY} = true` to {destination}")
+    # The orchestrator heavy-Bash gate is the group's own top-level
+    # status/disable/enable (``t3 <overlay> gate disable`` — the primary
+    # self-rescue surface), so it attaches DIRECTLY to ``gate_group`` rather than
+    # under a named subgroup. It shares the exact command bodies with every keyed
+    # gate via ``_attach_gate_commands`` (F3.4), overriding only its enabled
+    # status wording.
+    _attach_gate_commands(
+        gate_group,
+        key=GATE_KEY,
+        help_=_GateHelp(
+            enabled_status="gate ENABLED — heavy orchestrator bash blocked",
+            status="Show whether the orchestrator heavy-Bash gate is enabled.",
+            disable="Disable the gate (self-rescue from a Bash lockout).",
+        ),
+    )
 
     _register_keyed_gate(
         gate_group,
