@@ -1,0 +1,62 @@
+# ============================================================
+# BEHAVIORAL BENCHMARK — dispatchable caller for the weekly reusable workflow
+# ============================================================
+#
+# `eval-weekly-reusable.yml` (`t3 eval run --benchmark --backend api --docker`,
+# a 3-tier frontier/balanced/cheap matrix + published HTML dashboard) is
+# `on: workflow_call` ONLY — nothing in this repo invokes it, so the benchmark
+# has never actually been dispatchable here. This file is that missing caller.
+#
+# CHOSEN APPROACH: (a) thread `credential` through the reusable workflow itself
+# (see `eval-weekly-reusable.yml`'s `credential` input / `T3_EVAL_CREDENTIAL`
+# wiring), not (b) a standalone workflow that reimplements the reusable's
+# prepare/eval/publish jobs. (a) is lower-risk: it reuses the reusable's
+# already-proven guard + shard-matrix + publish logic byte-for-byte and only
+# changes WHICH credential env var gets forwarded into the container, mirroring
+# the exact pattern `eval.yml` already uses for its own `credential` input. (b)
+# would duplicate ~150 lines of matrix/publish logic in a second place that
+# then has to be kept in lock-step with the reusable by hand — strictly more
+# surface area for the same outcome.
+#
+# WHY THIS CALLER EXISTS AT ALL: the reusable's ORIGINAL-only auth path was the
+# metered `ANTHROPIC_API_KEY` secret, which this environment does not have —
+# only the subscription `CLAUDE_CODE_OAUTH_TOKEN` is available. Defaulting
+# `credential` to `subscription_oauth` here (mirrors `eval.yml`) makes the
+# benchmark runnable on the credential this environment actually has, while
+# `metered_api_key` stays selectable wherever the metered secret does exist.
+# ============================================================
+
+name: Behavioral benchmark
+
+on:
+  workflow_dispatch:
+    inputs:
+      lane:
+        description: "Eval lane subset to run (clean_room | under_load); empty = every lane."
+        required: false
+        default: ""
+        type: string
+      efforts:
+        description: "Comma-separated reasoning-effort tiers to fan the matrix across (e.g. 'low,medium,high'); empty = no effort axis (single tier at the lane default)."
+        required: false
+        default: ""
+        type: string
+      credential:
+        description: "Eval credential (subscription_oauth | metered_api_key). Default subscription_oauth — this environment has no metered ANTHROPIC_API_KEY secret, only the subscription CLAUDE_CODE_OAUTH_TOKEN. subscription_oauth draws no per-token bill but rides a depleting usage window; metered_api_key is per-token cost, no window."
+        required: false
+        default: "subscription_oauth"
+        type: string
+
+jobs:
+  benchmark:
+    permissions:
+      contents: write
+    uses: ./.github/workflows/eval-weekly-reusable.yml
+    with:
+      force: true
+      lane: ${{ inputs.lane }}
+      efforts: ${{ inputs.efforts }}
+      credential: ${{ inputs.credential }}
+    secrets:
+      subscription-oauth-token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+      anthropic-api-key: ${{ secrets.ANTHROPIC_API_KEY }}

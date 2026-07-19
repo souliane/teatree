@@ -9,7 +9,7 @@ floor plus the #2192 cap-taint turn that wander into a ``max_turns`` red even
 though the matcher already matched the correct call. The command, not the model,
 manufactured the red.
 
-Declaring ``cli_stubs: [t3, gh, glab]`` prepends a throwaway ``bin/`` of inert
+Declaring ``cli_stubs: [t3, gh, glab, uv]`` prepends a throwaway ``bin/`` of inert
 ``sh`` stubs to the scenario's ``PATH``. Each stub accepts any sanctioned argv,
 prints one plausible success line per verb family, and exits ``0`` — no state, no
 network. The correct command now succeeds, so the agent stops.
@@ -126,6 +126,21 @@ esac
 exit 0
 """
 
+#: ``uv`` stub — ``uv run pytest <node>`` (and a bare ``uv pytest <node>``) print a
+#: plausible green regression-suite summary and exit 0, so the §6-mandated
+#: "write the test, then run it and confirm green" dance completes in a
+#: fixture-less sandbox instead of erroring the agent into a `max_turns` wander.
+_UV_STUB = """\
+#!/bin/sh
+# Inert uv CLI stub for clean-room evals. See cli_stub_fixture.py.
+args=" $* "
+case "$args" in
+    *" run pytest "*|*" pytest "*) echo "1 passed in 0.12s" ;;
+    *) echo "ok" ;;
+esac
+exit 0
+"""
+
 #: The stub bodies keyed by the name a scenario declares in ``cli_stubs:``. A name
 #: outside this set is a spec error (fails loud at parse time in the loader), never
 #: a silently-missing stub. A ``name@profile`` key (e.g. ``t3@on_behalf_ask``) is a
@@ -136,6 +151,7 @@ KNOWN_CLI_STUBS: dict[str, str] = {
     "t3": _T3_STUB,
     "gh": _GH_STUB,
     "glab": _GLAB_STUB,
+    "uv": _UV_STUB,
     "t3@on_behalf_ask": _T3_ON_BEHALF_ASK_STUB,
 }
 

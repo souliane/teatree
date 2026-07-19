@@ -233,6 +233,103 @@ class TestManagedKeyPathsCoverTemplate:
             assert _dig(template, path) is not None, f"managed path {'.'.join(path)} missing from template"
 
 
+class TestTempToDiskManagedConfig:
+    """The committed template routes agent/pytest temp to DISK and auto-allows temp cleanup.
+
+    The box's ``/tmp`` is a small RAM tmpfs; agent + pytest scratch fills it to
+    ENOSPC and wedges the box. The managed template pins ``TMPDIR`` /
+    ``PYTEST_DEBUG_TEMPROOT`` to a disk path (so every agent's Bash tool inherits it)
+    and grants a SCOPED temp-cleanup allow-list so an agent can trim ``/tmp`` without
+    a classifier prompt. Both are managed, so a redeploy re-asserts them and the host
+    drift check preserves them.
+    """
+
+    _TEMP_ENV_PATHS: tuple[tuple[str, ...], ...] = (("env", "TMPDIR"), ("env", "PYTEST_DEBUG_TEMPROOT"))
+
+    def _committed(self) -> dict[str, object]:
+        return json.loads(_COMMITTED_TEMPLATE.read_text(encoding="utf-8"))
+
+    def test_temp_env_routes_off_the_tmpfs_to_disk(self) -> None:
+        template = self._committed()
+        for path in self._TEMP_ENV_PATHS:
+            value = _dig(template, path)
+            assert isinstance(value, str)
+            assert value, f"{'.'.join(path)} must be a non-empty path"
+            # Must NOT land on the RAM-backed /tmp tmpfs (the whole point).
+            assert value == "/var/tmp"
+            assert not value.startswith("/tmp/")
+            assert value != "/tmp"
+
+    def test_temp_env_paths_are_managed(self) -> None:
+        for path in self._TEMP_ENV_PATHS:
+            assert path in MANAGED_KEY_PATHS
+
+    def test_temp_env_drift_is_detected(self, tmp_path: Path) -> None:
+        template = _COMMITTED_TEMPLATE
+        target = self._committed()
+        target["env"]["TMPDIR"] = "/tmp"  # type: ignore[index]  # host diverged back onto the tmpfs
+        target_path = _write(tmp_path / "t.json", target)
+        assert "env.TMPDIR" in managed_key_drift(template, target_path, env={})
+
+    def test_temp_cleanup_allow_rules_present_and_scoped(self) -> None:
+        allow = _dig(self._committed(), ("permissions", "allow"))
+        assert isinstance(allow, list)
+        for rule in ("Bash(find /tmp:*)", "Bash(find /var/tmp:*)", "Bash(rm -rf /tmp/pytest-:*)"):
+            assert rule in allow
+        # Scoped, never a blanket rm/find allow.
+        assert "Bash(rm:*)" not in allow
+        assert "Bash(find:*)" not in allow
+
+    def test_drift_flags_a_dropped_temp_cleanup_rule(self, tmp_path: Path) -> None:
+        template = _COMMITTED_TEMPLATE
+        target = self._committed()
+        target["permissions"]["allow"] = ["Bash(git:*)"]  # type: ignore[index]  # operator dropped the temp grants
+        target_path = _write(tmp_path / "t.json", target)
+        assert "permissions.allow" in managed_key_drift(template, target_path, env={})
+
+    def test_operator_extra_grant_beside_temp_rules_is_not_drift(self, tmp_path: Path) -> None:
+        template = _COMMITTED_TEMPLATE
+        target = self._committed()
+        allow = target["permissions"]["allow"]  # type: ignore[index]
+        assert isinstance(allow, list)
+        allow.append("Bash(operator-tool:*)")  # operator addition beside every managed grant
+        target_path = _write(tmp_path / "t.json", target)
+        assert "permissions.allow" not in managed_key_drift(template, target_path, env={})
+
+
+class TestEnabledPluginsManagedConfig:
+    """The committed template enables the ``t3@souliane`` skills plugin, managed + drift-guarded.
+
+    Factory agents load skills only when ``~/.claude/settings.json`` carries
+    ``enabledPlugins: {"t3@souliane": true}``. The template pins it and it is
+    managed, so every seeded container enables the plugin and the host drift check
+    re-asserts it.
+    """
+
+    _PLUGIN_PATH: tuple[str, ...] = ("enabledPlugins", "t3@souliane")
+
+    def _committed(self) -> dict[str, object]:
+        return json.loads(_COMMITTED_TEMPLATE.read_text(encoding="utf-8"))
+
+    def test_template_enables_the_t3_plugin(self) -> None:
+        assert _dig(self._committed(), self._PLUGIN_PATH) is True
+
+    def test_enabled_plugin_path_is_managed(self) -> None:
+        assert self._PLUGIN_PATH in MANAGED_KEY_PATHS
+
+    def test_drift_detected_when_plugin_disabled_on_host(self, tmp_path: Path) -> None:
+        target = self._committed()
+        target["enabledPlugins"]["t3@souliane"] = False  # type: ignore[index]  # host disabled the plugin
+        target_path = _write(tmp_path / "t.json", target)
+        assert "enabledPlugins.t3@souliane" in managed_key_drift(_COMMITTED_TEMPLATE, target_path, env={})
+
+    def test_drift_detected_when_plugin_key_absent_on_host(self, tmp_path: Path) -> None:
+        target = self._committed()
+        del target["enabledPlugins"]  # host never registered the plugin
+        target_path = _write(tmp_path / "t.json", target)
+        assert "enabledPlugins.t3@souliane" in managed_key_drift(_COMMITTED_TEMPLATE, target_path, env={})
+
+
 class TestMainScript:
     def test_renders_resolved_template_to_stdout(
         self, tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch

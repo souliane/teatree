@@ -45,6 +45,11 @@ def test_e2e_sibling_repos_fixture_is_accepted(tmp_path: Path) -> None:
     assert spec.fixture == "e2e_sibling_repos"
 
 
+def test_uv_project_fixture_is_accepted(tmp_path: Path) -> None:
+    spec = load_eval_yaml(_write(tmp_path, "  fixture: uv_project\n"))[0]
+    assert spec.fixture == "uv_project"
+
+
 def test_unknown_fixture_is_a_loud_spec_error(tmp_path: Path) -> None:
     with pytest.raises(EvalSpecError, match=r"fixture.*must be one of"):
         load_eval_yaml(_write(tmp_path, "  fixture: not_a_fixture\n"))

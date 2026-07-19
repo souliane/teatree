@@ -309,6 +309,8 @@ class EvalSpec:
     #: untouched, so every existing scenario is byte-identical. See
     #: :mod:`teatree.eval.cli_stub_fixture`.
     cli_stubs: tuple[str, ...] = ()
+    #: First-action probe (#2192 carve-out): a cap is not a taint once every matcher passed; needs >=1 positive anchor.
+    single_action: bool = False
     #: Register the shipped teatree plugin (``hooks/hooks.json``) into the SDK
     #: child so the scenario measures the model+hook SYSTEM that ships, not the raw
     #: model with hooks stripped. The clean-room personal-context isolation
