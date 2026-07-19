@@ -1,18 +1,24 @@
-"""The pre-publish leak gates enforce ONLY on affirmatively-public targets (#1415/#1213).
+"""The pre-publish leak gates skip ONLY a PROVABLY non-public target (#1415/#1213, #3442).
 
 The banned-terms (#1415) and quote-scanner (#1213) PUBLISH gates protect against
-leaking internal vocabulary / user quotes onto PUBLIC surfaces, so they enforce
-ONLY when the target repository is affirmatively ``public``. For EVERY other case
--- a ``private``/``internal`` repo, or a target whose visibility cannot be
-resolved in-hook (the common cold-hook state) -- the gate is SKIPPED entirely
-(bias hard toward not firing: a non-public repo must never be falsely blocked).
+leaking internal vocabulary / user quotes onto PUBLIC surfaces. A leak scan is
+SKIPPED only when the target repository is PROVABLY non-public: an
+allowlisted-private / internal-namespace slug, or a probe-CONFIRMED
+private/internal repo. A target the gate cannot prove non-public -- an
+affirmatively-``public`` probe verdict, OR a RESOLVABLE ``owner/repo`` slug whose
+visibility probe could not be confirmed (a network/API error, an absent
+``gh``/``glab``, an unrecognised answer) -- is SCANNED. The probe-error case FAILS
+CLOSED (#3442): it agrees with the bash pre-push mirror
+(:file:`scripts/hooks/refuse-public-push-with-leak.sh`) and the fail-closed-always
+leak-gate doctrine, and it is never a silent skip.
 
-These tests drive BOTH live handlers across the three-visibility matrix with the
-forge visibility probe mocked (no ``gh``/``glab``, no network): a PUBLIC target
-carrying a leak FIRES, and both a PRIVATE and an UNRESOLVABLE target carrying the
-SAME leak SKIP. The public FIRE row is the anti-vacuity guard for the two SKIP
-rows -- it proves they are green because the target is non-public, not because
-the gate stopped detecting the leak. The unit block pins the polarity of the
+These tests drive BOTH live handlers across the visibility matrix with the forge
+visibility probe mocked (no ``gh``/``glab``, no network): a PUBLIC target carrying
+a leak FIRES, a probe-CONFIRMED-PRIVATE target carrying the SAME leak SKIPS, and a
+RESOLVABLE target whose probe cannot confirm visibility FIRES (fail closed). The
+private SKIP row is the anti-vacuity guard -- it proves the gate is green there
+because the target is provably non-public, not because it stopped detecting the
+leak. The unit block pins the polarity of the
 :func:`public_visibility.gate_skips_for_visibility` predicate the handlers call.
 """
 
@@ -124,20 +130,24 @@ def test_private_target_with_leak_skips(
 
 @pytest.mark.usefixtures("leak_home")
 @pytest.mark.parametrize(("handler", "leak_body", "reason_token"), _GATES)
-def test_unresolvable_target_with_leak_skips(
+def test_probe_error_resolvable_target_with_leak_fires(
     handler: Handler,
     leak_body: str,
     reason_token: str,
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    # The SAME leak toward a target whose visibility the in-hook probe cannot
-    # resolve (returns None -- the common cold-hook / lookup-failure state) is NOT
-    # affirmatively public, so the gate SKIPS it (bias hard toward not firing).
+    # #3442 fail-closed: the SAME leak toward a RESOLVABLE ``owner/repo`` slug the
+    # in-hook probe cannot confirm (returns None -- a network/API error, absent
+    # tool, or unrecognised answer) is NOT provably non-public, so the gate FAILS
+    # CLOSED and SCANS -- the leak is denied, mirroring the bash pre-push gate.
+    # (Previously this skipped, letting a probe error ride the leak out unscanned.)
     monkeypatch.setattr(_repo_visibility, "probe_visibility", lambda _slug: None)
     blocked = handler(_post("someowner/mystery", leak_body))
-    assert blocked is False
-    assert capsys.readouterr().out == ""  # no deny JSON
+    decision = json.loads(capsys.readouterr().out)
+    assert blocked is True
+    assert decision["permissionDecision"] == "deny"
+    assert reason_token in decision["permissionDecisionReason"]
 
 
 class TestGateSkipsForVisibilityPolarity:
@@ -154,8 +164,10 @@ class TestGateSkipsForVisibilityPolarity:
     def test_confirmed_private_target_skips(self, monkeypatch: pytest.MonkeyPatch) -> None:
         assert self._skips("gh issue create --repo owner/private-svc --body x", monkeypatch, "PRIVATE") is True
 
-    def test_unresolvable_target_skips(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        assert self._skips("gh issue create --repo owner/mystery --body x", monkeypatch, None) is True
+    def test_probe_error_resolvable_target_does_not_skip(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        # #3442: a resolvable slug whose probe cannot confirm visibility (None)
+        # FAILS CLOSED -- the gate scans, it does not skip.
+        assert self._skips("gh issue create --repo owner/mystery --body x", monkeypatch, None) is False
 
     def test_is_affirmatively_public_only_on_confirmed_public(self, monkeypatch: pytest.MonkeyPatch) -> None:
         # Distinct slugs so the per-slug day-cache does not carry the first
@@ -249,3 +261,72 @@ class TestInertSubstitutionMarkerInBodyValue:
         # Anti-vacuity: an inert marker does not weaken the gate on a PUBLIC target.
         cmd = "gh issue create --repo souliane/teatree --body 'name the `flag` here'"
         assert self._skips(cmd, monkeypatch, "PUBLIC") is False
+
+
+class TestProbeErrorFailsClosed:
+    """A visibility-probe error on a RESOLVABLE slug FAILS CLOSED, never silently skips (#3442).
+
+    The leak gate is fail-closed-always doctrine: it must SCAN every target it
+    cannot PROVE non-public. Before #3442 a probe error (``slug_visibility ->
+    None``) on a resolvable ``owner/repo`` slug made the gate SKIP -- the same
+    fail-OPEN the bash pre-push mirror was hardened against (§3f #14). These rows
+    pin the reconciled polarity: the structured post AND the raw ``api`` WRITE both
+    scan on a probe error, the decision is signalled on stderr (never silent), and
+    a PROVABLY-private target (allowlist / confirmed-private probe) still skips so
+    the fix does not over-block a declared-private repo.
+    """
+
+    @staticmethod
+    def _skips(command: str, monkeypatch: pytest.MonkeyPatch, verdict: str | None) -> bool:
+        monkeypatch.setattr(_repo_visibility, "probe_visibility", lambda _slug: verdict)
+        return public_visibility.gate_skips_for_visibility(command, cwd=None)
+
+    def test_structured_post_probe_error_does_not_skip(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        # RED before #3442: probe None on a resolvable, non-allowlisted slug SKIPPED.
+        cmd = "gh issue create --repo someowner/mystery --body leak"
+        assert self._skips(cmd, monkeypatch, None) is False
+
+    def test_api_write_probe_error_does_not_skip(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        # A raw ``gh api`` WRITE whose URL resolves a slug the probe cannot confirm
+        # is an immediate public egress with no pre-push backstop -- fail closed.
+        cmd = "gh api repos/someowner/mystery/issues -f body=leak"
+        assert self._skips(cmd, monkeypatch, None) is False
+
+    def test_probe_error_scan_is_signalled_on_stderr(
+        self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        # ALWAYS log a probe-error-driven decision so it is never silent (#3442),
+        # mirroring the bash gate's ``echo ... >&2`` on undetermined visibility.
+        monkeypatch.setattr(_repo_visibility, "probe_visibility", lambda _slug: None)
+        public_visibility.gate_skips_for_visibility("gh issue create --repo someowner/mystery --body x", cwd=None)
+        err = capsys.readouterr().err
+        assert "someowner/mystery" in err
+        assert "fail closed" in err
+
+    def test_confirmed_private_probe_still_skips(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        # Anti-over-block: a probe-CONFIRMED-private target is provably non-public,
+        # so it still skips -- the fix narrows the scan to the UNCONFIRMED case.
+        cmd = "gh issue create --repo someowner/private-svc --body x"
+        assert self._skips(cmd, monkeypatch, "PRIVATE") is True
+
+    def test_allowlisted_private_skips_without_probe(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        # The offline allowlist is the network-free way to keep an own-private post
+        # skip-eligible even when the probe cannot run -- so the fail-closed change
+        # does not over-block a DECLARED-private repo.
+        db = tmp_path / "config.sqlite3"
+        conn = sqlite3.connect(str(db))
+        try:
+            conn.execute(
+                "CREATE TABLE IF NOT EXISTS teatree_config_setting "
+                "(id INTEGER PRIMARY KEY, scope TEXT NOT NULL DEFAULT '', key TEXT NOT NULL, value TEXT NOT NULL)"
+            )
+            conn.execute(
+                "INSERT INTO teatree_config_setting (scope, key, value) VALUES ('', 'private_repos', ?)",
+                (json.dumps(["declaredowner/svc"]),),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+        monkeypatch.setattr(_repo_visibility, "probe_visibility", lambda _slug: None)
+        cmd = "gh issue create --repo declaredowner/svc --body x"
+        assert public_visibility.gate_skips_for_visibility(cmd, cwd=None, config_path=db) is True
