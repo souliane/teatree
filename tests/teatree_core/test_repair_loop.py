@@ -172,6 +172,18 @@ class TestCheckRequeueAllowed(TestCase):
         assert pending.count() == 1
         assert "stall" in pending.first().question.lower()
 
+    def test_stall_escalation_is_internal_audience_not_dmed(self) -> None:
+        # Phase 2: a repair-loop stall is the box's own health, not an owner
+        # question — it is recorded INTERNAL so the poster never DMs it.
+        ticket = Ticket.objects.create(issue_url="https://example.com/issues/9")
+        task = self._phase_task(ticket)
+        _failed_attempt(task, error="the identical failure")
+        _failed_attempt(task, error="the identical failure")
+        with pytest.raises(IterationStalled):
+            task.check_requeue_allowed()
+        row = DeferredQuestion.pending().get()
+        assert row.audience == DeferredQuestion.Audience.INTERNAL
+
     def test_two_consecutive_stalls_record_a_single_deferred_question(self) -> None:
         # F2 dedupe: re-stalling on the same ticket-phase escalates once, not once
         # per tick — the escalate-once dedupe_marker collapses both to one row.

@@ -68,6 +68,36 @@ class TestDrainUnmirroredDeferredQuestions(TestCase):
         question.refresh_from_db()
         assert question.slack_ts == "1700000000.000000"
 
+    def test_internal_audience_row_is_not_dmed(self) -> None:
+        # Phase 2: an INTERNAL escalation (repair-loop / dispatch health) is
+        # excluded from the mirror poster, so it never DMs the owner.
+        DeferredQuestion.record(
+            "Repair-loop stall on ticket 1",
+            session_id="s",
+            audience=DeferredQuestion.Audience.INTERNAL,
+        )
+        backend = _backend()
+        with patch.object(notify_module, "messaging_from_overlay", return_value=backend):
+            delivered, total = drain_unmirrored_deferred_questions(user_id="U_ME")
+        assert (delivered, total) == (0, 0)
+        backend.post_message.assert_not_called()
+
+    def test_owner_question_row_is_still_dmed(self) -> None:
+        # The owner-audience row alongside an internal one is the only one posted.
+        owner = DeferredQuestion.record("Owner decision?", session_id="s")
+        DeferredQuestion.record(
+            "internal stall",
+            session_id="s",
+            audience=DeferredQuestion.Audience.INTERNAL,
+        )
+        backend = _backend()
+        with patch.object(notify_module, "messaging_from_overlay", return_value=backend):
+            delivered, total = drain_unmirrored_deferred_questions(user_id="U_ME")
+        assert (delivered, total) == (1, 1)
+        backend.post_message.assert_called_once()
+        owner.refresh_from_db()
+        assert owner.slack_ts == "1700000000.000000"
+
     def test_answered_row_is_not_posted(self) -> None:
         question = DeferredQuestion.record("Which DB host?", session_id="s")
         question.apply_answer("postgres-1", resolved_via="local")

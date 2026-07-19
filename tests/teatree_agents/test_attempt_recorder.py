@@ -1,7 +1,7 @@
 """Shared result-envelope recorder used by both dispatch backends."""
 
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 from django.test import TestCase
@@ -18,6 +18,7 @@ from teatree.core.models import (
     Directive,
     DirectiveDispatch,
     PendingArticleSuggestion,
+    PendingChatInjection,
     PendingTriageRecommendation,
     Session,
     Task,
@@ -402,6 +403,79 @@ class TestAnsweringEnvelopeChannel(TestCase):
         task.refresh_from_db()
         assert task.status == Task.Status.FAILED
         assert DeferredQuestion.objects.count() == 0
+
+
+class TestOwnerDmAnsweringRepliesInThread(TestCase):
+    """An owner-DM answering task SENDS the reply in-thread, never the defer gate.
+
+    The owner's #1 complaint: an inbound owner DM in ``autonomous_away`` got a
+    "Approve this drafted reply?" pending question parked instead of an answer.
+    Answering the owner is not a post on the owner's behalf, so it must never
+    route through the away/approval defer gate — the reply is posted directly,
+    threaded under the owner's own message, regardless of availability.
+    """
+
+    def _owner_dm_task(self, *, channel: str = "D0OWNER", slack_ts: str = "1784474278.074869") -> Task:
+        ticket = Ticket.objects.create(
+            role=Ticket.Role.AUTHOR,
+            state=Ticket.State.STARTED,
+            overlay="acme",
+            extra={"slack_answer": {"channel": channel, "slack_ts": slack_ts, "question": "test"}},
+        )
+        session = Session.objects.create(ticket=ticket, agent_id="answering")
+        task = Task.objects.create(ticket=ticket, session=session, phase="answering")
+        task.claim(claimed_by="loop-slot")
+        return task
+
+    def test_owner_dm_reply_is_posted_in_thread_not_deferred(self) -> None:
+        channel, slack_ts = "D0OWNER", "1784474278.074869"
+        task = self._owner_dm_task(channel=channel, slack_ts=slack_ts)
+        PendingChatInjection.objects.create(overlay="acme", channel=channel, slack_ts=slack_ts, text="test")
+        backend = MagicMock()
+        backend.post_reply.return_value = {"ok": True, "ts": "1784475031.606029"}
+        with patch("teatree.core.backend_factory.messaging_from_overlay", return_value=backend):
+            record_result_envelope(
+                task,
+                {"summary": "drafted", "answer": {"text": "Got it, working.", "thread_ref": ""}},
+            )
+        task.refresh_from_db()
+        assert task.status == Task.Status.COMPLETED
+        # Sent directly, threaded under the OWNER's message ts (authoritative
+        # ticket coordinates, not the advisory agent-returned thread_ref).
+        backend.post_reply.assert_called_once_with(channel=channel, ts=slack_ts, text="Got it, working.")
+        # Never parked behind the away/approval defer gate.
+        assert DeferredQuestion.objects.count() == 0
+        # The owner-question row is stamped answered so the turn-end gate rests.
+        assert PendingChatInjection.objects.get().answered_at is not None
+
+    def test_failed_post_falls_back_to_the_approval_gate_losing_nothing(self) -> None:
+        task = self._owner_dm_task()
+        backend = MagicMock()
+        backend.post_reply.return_value = {"ok": False, "error": "channel_not_found"}
+        with patch("teatree.core.backend_factory.messaging_from_overlay", return_value=backend):
+            record_result_envelope(
+                task,
+                {"summary": "drafted", "answer": {"text": "Got it.", "thread_ref": ""}},
+            )
+        task.refresh_from_db()
+        assert task.status == Task.Status.COMPLETED
+        # A Slack failure must not drop the reply: it falls back to the on-behalf gate.
+        assert DeferredQuestion.objects.get().parked_task_id == task.pk
+
+    def test_non_owner_answering_still_uses_the_approval_gate(self) -> None:
+        # No slack_answer context (an on-behalf colleague/channel reply): the
+        # approval gate is unchanged.
+        ticket = Ticket.objects.create(role=Ticket.Role.AUTHOR, state=Ticket.State.STARTED, overlay="acme")
+        session = Session.objects.create(ticket=ticket, agent_id="answering")
+        task = Task.objects.create(ticket=ticket, session=session, phase="answering")
+        task.claim(claimed_by="loop-slot")
+        with patch("teatree.core.backend_factory.messaging_from_overlay") as resolve:
+            record_result_envelope(
+                task,
+                {"summary": "drafted", "answer": {"text": "On behalf reply.", "thread_ref": "C9/1.0"}},
+            )
+            resolve.assert_not_called()
+        assert DeferredQuestion.objects.get().parked_task_id == task.pk
 
 
 class TestDirectiveInterpretationEnvelopeChannel(TestCase):

@@ -82,7 +82,9 @@ def drain_deferred_questions(*, user_id: str = "", overlay: str = "") -> tuple[i
     :func:`notify_user` and never aborts the drain or raises. Returns
     ``(delivered, total)``.
     """
-    rows = list(DeferredQuestion.pending())
+    # DM only owner-audience rows; INTERNAL escalations (repair-loop / dispatch
+    # health the box raised about itself) stay logged/statusline-only.
+    rows = [r for r in DeferredQuestion.pending() if r.audience != DeferredQuestion.Audience.INTERNAL]
     if not rows:
         return 0, 0
 

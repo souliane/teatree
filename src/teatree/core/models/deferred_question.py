@@ -78,7 +78,21 @@ class DeferredQuestion(models.Model):
         STALE = "stale", "Stale"
         POLICY = "policy", "Policy auto-answer"  # #119 graduation: the dial answered, not a human
 
+    class Audience(models.TextChoices):
+        OWNER_QUESTION = "owner_question", "Owner question"
+        INTERNAL = "internal", "Internal"
+
     question = models.TextField()
+    # Who the question is for. OWNER_QUESTION rows are DM'd to the owner; INTERNAL
+    # rows (repair-loop stalls, dispatch-health escalations synthesized by the box
+    # about its OWN health) are logged/statusline-only and never reach the owner
+    # feed — mirroring ``NotifyAudience`` so the two queues share one audience model.
+    audience = models.CharField(
+        max_length=16,
+        default=Audience.OWNER_QUESTION,
+        choices=Audience.choices,
+        db_index=True,
+    )
     options_json = models.TextField(blank=True, default="")
     session_id = models.CharField(max_length=255, blank=True, default="")
     tool_use_id = models.CharField(max_length=255, blank=True, default="")
@@ -164,6 +178,7 @@ class DeferredQuestion(models.Model):
         run_id: str = "",
         dedupe_marker: str = "",
         parked_task: "Task | None" = None,
+        audience: str = Audience.OWNER_QUESTION,
     ) -> "DeferredQuestion":
         """The single guarded factory for a queued question.
 
@@ -211,6 +226,7 @@ class DeferredQuestion(models.Model):
                 run_id=run_id or "",
                 dedupe_marker=dedupe_marker or "",
                 parked_task=parked_task,
+                audience=audience or cls.Audience.OWNER_QUESTION,
             )
 
     @classmethod
@@ -226,6 +242,7 @@ class DeferredQuestion(models.Model):
             answered_at__isnull=True,
             dismissed_at__isnull=True,
             slack_ts="",
+            audience=cls.Audience.OWNER_QUESTION,
         ).order_by("created_at")
 
     def mark_mirrored(self, *, channel: str, slack_ts: str) -> bool:

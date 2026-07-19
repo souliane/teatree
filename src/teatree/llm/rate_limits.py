@@ -26,7 +26,7 @@ real network; the default transport uses ``httpx``.
 
 The header names follow Anthropic's response-header conventions and are centralised as
 module constants so a naming drift is a one-line fix. ``utilization`` is a 0.0-1.0
-fraction; ``*-reset`` is an RFC 3339 timestamp parsed to a tz-aware UTC ``datetime``;
+fraction; ``*-reset`` is Unix epoch seconds parsed to a tz-aware UTC ``datetime``;
 ``retry-after`` is whole seconds.
 """
 
@@ -319,12 +319,15 @@ def _parse_int(raw: str | None) -> int | None:
 
 
 def _parse_reset(raw: str | None) -> dt.datetime | None:
+    """Fold a unified-window ``*-reset`` header into a tz-aware UTC ``datetime``.
+
+    Anthropic emits the reset instant as Unix epoch **seconds** (e.g. ``"1784476200"``),
+    NOT an RFC 3339 timestamp; ``None`` when the header is absent or not an integer.
+    """
     if not raw:
         return None
     try:
-        parsed = dt.datetime.fromisoformat(raw)
+        epoch_seconds = int(raw)
     except ValueError:
         return None
-    if parsed.tzinfo is None:
-        return parsed.replace(tzinfo=dt.UTC)
-    return parsed.astimezone(dt.UTC)
+    return dt.datetime.fromtimestamp(epoch_seconds, tz=dt.UTC)

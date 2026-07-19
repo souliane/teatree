@@ -9,6 +9,7 @@ and survives the drain, so a deploy never kills a live sub-agent. The
 """
 
 from datetime import timedelta
+from typing import cast
 
 import django.test
 from django.utils import timezone
@@ -55,7 +56,7 @@ class TestQuiescingBlocksNewClaims(django.test.TestCase):
 
 class TestQuiescingLeavesInFlightAlone(django.test.TestCase):
     def _claim_with_live_lease(self) -> Task:
-        task = TaskFactory(status=Task.Status.PENDING)
+        task: Task = cast("Task", TaskFactory(status=Task.Status.PENDING))
         task.claim(claimed_by="loop", lease_seconds=300)  # raises on a lost claim
         task.refresh_from_db()
         return task

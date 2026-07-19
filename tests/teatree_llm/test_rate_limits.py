@@ -47,10 +47,10 @@ _FULL_HEADERS = {
     _RETRY_AFTER: "42",
     _5H_STATUS: "allowed",
     _5H_UTIL: "0.30",
-    _5H_RESET: "2026-07-01T18:00:00Z",
+    _5H_RESET: "1782928800",  # Unix epoch seconds == 2026-07-01T18:00:00Z
     _7D_STATUS: "allowed_warning",
     _7D_UTIL: "0.80",
-    _7D_RESET: "2026-07-08T00:00:00+00:00",
+    _7D_RESET: "1783468800",  # Unix epoch seconds == 2026-07-08T00:00:00Z
 }
 
 _METERED_HEADERS = {
@@ -142,9 +142,10 @@ class TestHeaderParsing:
         assert snap.retry_after is None
         assert snap.unified_5h_reset is None
 
-    def test_naive_reset_timestamp_is_assumed_utc(self) -> None:
-        snap = _read(200, {_5H_RESET: "2026-07-01T18:00:00"})
-        assert snap.unified_5h_reset == dt.datetime(2026, 7, 1, 18, 0, tzinfo=dt.UTC)
+    def test_epoch_seconds_reset_parses_to_tz_aware_utc(self) -> None:
+        # Anthropic sends the reset instant as Unix epoch seconds, not an ISO timestamp.
+        snap = _read(200, {_5H_RESET: "1784476200"})
+        assert snap.unified_5h_reset == dt.datetime(2026, 7, 19, 15, 50, tzinfo=dt.UTC)
 
 
 class TestDefaultTransport:

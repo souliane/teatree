@@ -18,7 +18,10 @@ permission it lacks. Each write permission is checked with a side-effect-free
 mutation aimed at a resource number that never exists (issue/PR ``0``, a bogus
 ref): a token that *has* the permission gets a harmless ``404``, a token that
 *lacks* it gets the ``403`` GitHub returns before it ever loads the resource.
-Nothing is created, edited, or deleted either way.
+Nothing is created, edited, or deleted either way. A write probe that reaches
+NEITHER verdict -- a transport/network fault, no ``403`` and no ``404`` -- is
+*indeterminate*, never read as a grant: the deploy skips (a network blip must not
+falsely certify a token) rather than passing preflight then failing mid-run.
 
 A **classic** PAT does NOT get that route-level ``403`` — the write probe would
 fail *open* for it. Instead GitHub reports a classic token's granted scopes in
@@ -40,6 +43,7 @@ it so the two implementations cannot drift.
 import shutil
 from collections.abc import Callable
 from dataclasses import dataclass
+from typing import Literal
 
 from teatree.utils.run import run_allowed_to_fail
 
@@ -68,6 +72,18 @@ _DENIED_SIGNALS: tuple[str, ...] = (
 # The single write-permission signal: GitHub returns exactly this at the route
 # level for a token missing the permission, before validating the target.
 _FORBIDDEN_SIGNAL = "not accessible"
+
+# Substrings that mean a write probe REACHED the route past the write-authorization
+# gate: a token WITH the permission gets a 404/422 on the deliberately non-existent
+# target (never a 403 ``not accessible``). Their presence -- or a zero exit code --
+# means the permission is PRESENT. Their ABSENCE, with no ``not accessible`` denial,
+# means the probe never reached a verdict (a transport/network fault) -> indeterminate.
+_WRITE_REACHED_SIGNALS: tuple[str, ...] = (
+    "not found",  # 404 on the non-existent issue/PR/ref (JSON body and gh's message)
+    "(http ",  # gh appends the HTTP status on any reached response (e.g. "(HTTP 404)")
+)
+
+type _WriteVerdict = Literal["denied", "present", "indeterminate"]
 
 # (permission label, gh-api argv template) for the three write probes. Each
 # mutates a resource id that cannot exist, so a permitted token gets a 404 and a
@@ -102,8 +118,10 @@ class GhTokenProbe:
 
     ``missing`` is the denied permission labels (empty == the token has every
     required permission). ``indeterminate_reason`` is set only when the probe
-    could not run to a verdict (``gh`` absent, or the API unreachable) — the
-    caller then skips rather than failing on a network fault.
+    could not run to a verdict (``gh`` absent, the metadata read unreachable, or a
+    write probe that reached no 403/404) — the caller then skips rather than
+    failing on a network fault. A genuine denial always takes precedence over an
+    indeterminate write probe, so a real permission gap is never masked.
     """
 
     missing: tuple[str, ...]
@@ -129,6 +147,24 @@ def _default_run(args: list[str]) -> tuple[int, str]:
 def _has_signal(text: str, signals: tuple[str, ...]) -> bool:
     lowered = text.lower()
     return any(signal in lowered for signal in signals)
+
+
+def _write_probe_verdict(code: int, out: str) -> _WriteVerdict:
+    """Classify one write probe as ``denied`` / ``present`` / ``indeterminate``.
+
+    ``denied`` when GitHub returned the route-level 403 :data:`_FORBIDDEN_SIGNAL`
+    (the token lacks the permission). ``present`` when the probe REACHED a verdict
+    past the write-authorization gate -- a zero exit or a :data:`_WRITE_REACHED_SIGNALS`
+    (404/422) response on the non-existent target. ``indeterminate`` otherwise: a
+    non-zero exit with NEITHER signal is a transport/network fault, NOT a grant --
+    the fail-open the old ``not accessible``-only test collapsed into ``present``.
+    """
+    lowered = out.lower()
+    if _FORBIDDEN_SIGNAL in lowered:
+        return "denied"
+    if code == 0 or _has_signal(lowered, _WRITE_REACHED_SIGNALS):
+        return "present"
+    return "indeterminate"
 
 
 def _oauth_scopes(headers_text: str) -> frozenset[str] | None:
@@ -176,13 +212,34 @@ def probe_token_permissions(slug: str, run: GhRunner | None = None) -> GhTokenPr
             return GhTokenProbe(missing=())
         return GhTokenProbe(missing=_WRITE_PERMISSION_LABELS)
 
+    return _probe_fine_grained_writes(slug, run)
+
+
+def _probe_fine_grained_writes(slug: str, run: GhRunner) -> GhTokenProbe:
+    """Per-route write probes for a fine-grained PAT: classify each, then aggregate.
+
+    A genuine denial is a definite gap -> report it (a loud FAIL) even alongside a
+    transient probe, so a real permission gap is never masked. Only when NO probe
+    was denied but one could not reach a verdict do we return indeterminate, so a
+    network blip on a write probe SKIPS the preflight rather than falsely certifying
+    (or falsely failing) the token.
+    """
     missing: list[str] = []
+    indeterminate: list[str] = []
     for label, template in _WRITE_PROBES:
         args = [part.format(slug=slug) for part in template]
-        _code, out = run(args)
-        if _FORBIDDEN_SIGNAL in out.lower():
+        code, out = run(args)
+        verdict = _write_probe_verdict(code, out)
+        if verdict == "denied":
             missing.append(label)
-    return GhTokenProbe(missing=tuple(missing))
+        elif verdict == "indeterminate":
+            indeterminate.append(label)
+    if missing:
+        return GhTokenProbe(missing=tuple(missing))
+    if indeterminate:
+        reason = f"write probe(s) did not reach a verdict: {', '.join(indeterminate)} (API unreachable?)"
+        return GhTokenProbe(missing=(), indeterminate_reason=reason)
+    return GhTokenProbe(missing=())
 
 
 __all__ = [
