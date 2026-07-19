@@ -249,9 +249,12 @@ init_preflight() {
 # deploy/claude-settings.template.json; three env vars override the box-specific knobs.
 # Deploy-managed keys WIN over an existing file (a redeploy re-asserts the intended
 # config) while UNMANAGED keys the later `t3 setup` adds — notably statusLine — are
-# preserved (`jq '.[0] * .[1]'` deep-merges, right wins). MUST run before `t3 setup`.
+# preserved (`jq '.[0] * .[1]'` deep-merges, right wins). A pre-existing INVALID
+# settings.json is REPLACED with the managed config (the merge cannot parse it, and a
+# corrupt file downstream bricks `t3 setup` / the `claude` CLI). MUST run before
+# `t3 setup`.
 seed_claude_settings() {
-    local template="/usr/local/share/teatree/claude-settings.template.json"
+    local template="${TEATREE_CLAUDE_SETTINGS_TEMPLATE:-/usr/local/share/teatree/claude-settings.template.json}"
     local target="$HOME/.claude/settings.json"
     if [ ! -f "$template" ]; then
         echo "teatree-init: no claude-settings template at $template - skipping (agent runs on CLI defaults)" >&2
@@ -268,9 +271,23 @@ seed_claude_settings() {
         echo "teatree-init: failed to resolve claude-settings template - skipping" >&2
         return 0
     fi
-    if [ -f "$target" ]; then
-        jq -s '.[0] * .[1]' "$target" <(printf '%s' "$managed") >"$target.tmp" && mv "$target.tmp" "$target"
+    # Deep-merge over an EXISTING valid file (right wins) so unmanaged keys survive;
+    # but a pre-existing INVALID settings.json cannot be parsed by the merge and, left
+    # in place, bricks `t3 setup` / the `claude` CLI and silently drops the managed
+    # config. Validate first and REPLACE a corrupt (or unmergeable) file with the
+    # managed config rather than aborting init or leaving it broken.
+    if [ -f "$target" ] && jq -e . "$target" >/dev/null 2>&1; then
+        if jq -s '.[0] * .[1]' "$target" <(printf '%s' "$managed") >"$target.tmp" 2>/dev/null; then
+            mv "$target.tmp" "$target"
+        else
+            rm -f "$target.tmp"
+            echo "teatree-init: could not merge existing ~/.claude/settings.json - replacing it with the managed config" >&2
+            printf '%s\n' "$managed" >"$target"
+        fi
     else
+        if [ -f "$target" ]; then
+            echo "teatree-init: existing ~/.claude/settings.json is not valid JSON - replacing it with the managed config" >&2
+        fi
         printf '%s\n' "$managed" >"$target"
     fi
     echo "teatree-init: provisioned ~/.claude/settings.json (model=$(jq -r .model "$target"), mode=$(jq -r .permissions.defaultMode "$target"))"

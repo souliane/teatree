@@ -444,19 +444,30 @@ def _maybe_record_triage_recommendations(task: Task, result: AgentResultBlob, *,
 
 
 def _maybe_record_answer_draft(task: Task, result: AgentResultBlob, *, phase: str) -> None:
-    """Route an answering agent's returned ``answer`` draft to the approval path (corr-11, #9).
+    """Deliver an answering agent's returned ``answer`` draft (corr-11, #9).
 
-    The shell-denied answerer cannot post on the user's behalf, so it hands the
-    draft back: this records a :class:`DeferredQuestion` (correlated to the task
-    via ``parked_task``) asking the user to approve the reply — the orchestrator
-    posts on confirmation. A non-answering phase or a result with no ``answer``
-    text is a no-op.
+    A reply to the OWNER's own inbound DM (an answering task the reactive
+    Slack-answer cycle delegated, carrying its ``slack_answer`` context on the
+    ticket) is SENT immediately, threaded under the owner's message — answering
+    the owner is never a post *on the owner's behalf*, so it must never route
+    through the away/approval defer gate that parks the box's self-initiated
+    questions. Deferring the owner's own reply is exactly the bug where an owner
+    DM in ``autonomous_away`` got a "Approve this drafted reply?" pending
+    question parked instead of an answer.
+
+    Any other answering task (a colleague/channel thread the agent answers on
+    the user's behalf) still hands the draft back through a
+    :class:`DeferredQuestion` (correlated via ``parked_task``) for approval —
+    that on-behalf gate is unchanged. A non-answering phase or a result with no
+    ``answer`` text is a no-op.
     """
     if normalize_phase(phase or task.phase) != _ANSWERING_PHASE:
         return
     raw_answer = result.get("answer")
     text = answer_text(raw_answer)
     if not text:
+        return
+    if _post_owner_dm_reply(task, text):
         return
     answer = cast("AnswerEnvelope", raw_answer)
     thread_ref = str(answer.get("thread_ref") or "").strip()
@@ -466,6 +477,46 @@ def _maybe_record_answer_draft(task: Task, result: AgentResultBlob, *, phase: st
         session_id=task.claimed_by_session or "",
         parked_task=task,
     )
+
+
+def _post_owner_dm_reply(task: Task, text: str) -> bool:
+    """Send *text* as a threaded reply to the owner's inbound DM; ``True`` if sent.
+
+    The reactive Slack-answer cycle stamps the authoritative Slack coordinates
+    onto the delegated ticket as ``extra["slack_answer"]`` — ``channel`` and the
+    owner-message ``slack_ts``. Posting with ``ts=slack_ts`` threads the reply
+    under the owner's own message (a top-level DM roots on its own ts), so the
+    answer lands in the owner's thread, not as a new root or under a stale DM
+    cache. The ticket's ``slack_ts`` is the authoritative thread target — the
+    agent-returned ``thread_ref`` is advisory and may be blank or wrong.
+
+    Returns ``False`` (so the caller falls back to the on-behalf approval path,
+    losing nothing) when the ticket carries no ``slack_answer`` context, the
+    coordinates are incomplete, no messaging backend resolves, or the post does
+    not confirm ``ok``. On a confirmed send the owner-question row is stamped
+    ``answered_at`` so the #1063 turn-end gate stops nagging for it.
+    """
+    from teatree.core.backend_factory import messaging_from_overlay  # noqa: PLC0415 — deferred: call-time import
+    from teatree.core.models import PendingChatInjection  # noqa: PLC0415 — deferred: call-time import
+
+    slack_answer = (task.ticket.extra or {}).get("slack_answer")
+    if not isinstance(slack_answer, dict):
+        return False
+    channel = str(slack_answer.get("channel") or "").strip()
+    slack_ts = str(slack_answer.get("slack_ts") or "").strip()
+    if not channel or not slack_ts:
+        return False
+    backend = messaging_from_overlay(task.ticket.overlay or None)
+    if backend is None:
+        return False
+    try:
+        resp = backend.post_reply(channel=channel, ts=slack_ts, text=text)
+    except Exception:  # noqa: BLE001 — a Slack failure falls back to the approval path, never drops the reply
+        return False
+    if not isinstance(resp, dict) or resp.get("ok") is not True:
+        return False
+    PendingChatInjection.agent_answered_question(slack_ts)
+    return True
 
 
 #: Phases whose landed commit can back-fill a missing ``files_modified`` envelope.

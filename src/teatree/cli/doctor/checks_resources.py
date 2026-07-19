@@ -11,6 +11,7 @@ hygiene) so each module stays a single concern under the module-health LOC cap.
 import json
 import os
 from pathlib import Path
+from typing import cast
 
 import typer
 
@@ -202,14 +203,14 @@ def _worker_skills_registered(home: Path) -> bool:
     worker's hard startup precondition agree on "skills available".
     """
     enabled = _read_json_object(home / ".claude" / "settings.json").get("enabledPlugins")
-    if not (isinstance(enabled, dict) and enabled.get(_CLAUDE_PLUGIN_ID) is True):
+    if not (isinstance(enabled, dict) and cast("JsonObject", enabled).get(_CLAUDE_PLUGIN_ID) is True):
         return False
     plugins = _read_json_object(home / ".claude" / "plugins" / "installed_plugins.json").get("plugins")
-    entries = plugins.get(_CLAUDE_PLUGIN_ID) if isinstance(plugins, dict) else None
+    entries = cast("JsonObject", plugins).get(_CLAUDE_PLUGIN_ID) if isinstance(plugins, dict) else None
     if not (isinstance(entries, list) and entries):
         return False
     first = entries[0]
-    install_path = first.get("installPath") if isinstance(first, dict) else None
+    install_path = cast("JsonObject", first).get("installPath") if isinstance(first, dict) else None
     return isinstance(install_path, str) and bool(install_path) and Path(install_path).is_dir()
 
 

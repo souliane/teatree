@@ -100,6 +100,21 @@ notify_owner() {
   fi
 }
 
+# Gather the compose container states from the daemon socket and base64-encode them
+# for handoff to `t3 doctor`. This watchdog is the ONLY container with
+# /var/run/docker.sock, while `t3 doctor` runs in a socket-less app container whose
+# own `docker ps` cannot reach the daemon — so without this handoff the doctor's
+# compose-stack detector (crash-looping init / down worker) silently passes every
+# real outage. Empty on any docker/base64 failure — the doctor then degrades to a
+# pass exactly as it did before this handoff, and its other detectors still run.
+compose_states_b64() {
+  local ps
+  ps="$(docker ps --all \
+        --filter "label=com.docker.compose.project=$PROJECT" \
+        --format '{{.Label "com.docker.compose.service"}}'$'\t''{{.State}}'$'\t''{{.Status}}' 2>/dev/null)" || return 0
+  printf '%s' "$ps" | base64 -w0 2>/dev/null || true
+}
+
 # Run `t3 doctor check --json` in the first REACHABLE exec service, capturing its
 # stdout into DOCTOR_RAW regardless of doctor's exit code. This is the heart of
 # the #3440 fix: a red-findings verdict exits NON-ZERO yet is a healthy RUN of
@@ -109,13 +124,16 @@ notify_owner() {
 # falls through to the next one. Returns 0 when a service was reached (DOCTOR_RAW
 # set, possibly empty), 125 when NO exec service could be reached at all.
 run_doctor() {
-  local svc
+  local svc states_b64
   DOCTOR_RAW=""
+  states_b64="$(compose_states_b64)"
   for svc in $EXEC_SERVICES; do
     if compose exec -T "$svc" true >/dev/null 2>&1; then
       # `|| true`: doctor exits non-zero on red findings; keep its stdout, drop
       # the exit code (set -e must not abort, and the code is NOT the signal).
-      DOCTOR_RAW="$(compose exec -T "$svc" t3 doctor check --json 2>/dev/null || true)"
+      # `-e TEATREE_DOCTOR_COMPOSE_PS`: hand the socket-only container states to the
+      # doctor's compose-stack detector, which cannot reach the daemon itself.
+      DOCTOR_RAW="$(compose exec -T -e "TEATREE_DOCTOR_COMPOSE_PS=$states_b64" "$svc" t3 doctor check --json 2>/dev/null || true)"
       return 0
     fi
   done
@@ -141,12 +159,17 @@ trim_stale_temp() {
   log "stale-temp trim swept ${TEMP_TRIM_SERVICES// /, } (>${TEMP_TRIM_MIN_AGE_MIN}min under ${TEMP_TRIM_ROOTS// /, })"
 }
 
+# The three hard-outage alarms below key on a DAILY bucket (`%Y%m%d`), not an
+# hourly one: `notify_user` dedups on the key, so an hourly bucket re-DM'd the
+# identical "stack down" alarm every hour (13+ overnight copies observed). A
+# daily bucket collapses a persisting unchanged outage to at most one DM/day
+# while still re-alerting each day it persists and on a next-day recurrence.
 run_pass() {
   log "restarting any down services (gated on init state)"
   if ! restart_down_services; then
     # The stack could not even be brought up — the strongest outage signal.
     printf 'teatree watchdog: `docker compose up -d` FAILED on the box — the stack is DOWN and could not be restarted. SSH in and inspect `docker compose -p %s logs`.' "$PROJECT" \
-      | notify_owner "watchdog:compose-up-failed:$(date -u +%Y%m%d%H)"
+      | notify_owner "watchdog:compose-up-failed:$(date -u +%Y%m%d)"
     return 0
   fi
 
@@ -158,7 +181,7 @@ run_pass() {
     # ONLY case that is truly "unreachable" (distinct from doctor running and
     # returning a red verdict, which is handled below).
     printf 'teatree watchdog: could not exec `t3 doctor` in any service (%s) — the stack is unreachable even after `up -d`. SSH in and inspect `docker compose -p %s ps`.' "$EXEC_SERVICES" "$PROJECT" \
-      | notify_owner "watchdog:doctor-unreachable:$(date -u +%Y%m%d%H)"
+      | notify_owner "watchdog:doctor-unreachable:$(date -u +%Y%m%d)"
     return 0
   fi
 
@@ -171,10 +194,10 @@ run_pass() {
   if [ -z "$json" ]; then
     # Doctor was reachable but emitted no parseable verdict: a half-crashed doctor
     # is itself a RED condition, not a healthy pass (the old code treated it as
-    # healthy and stayed silent). DM once per hour so a persistent breakage is seen.
+    # healthy and stayed silent). DM at most once per day so a persistent breakage is seen.
     log "doctor reachable but produced no JSON verdict — treating as RED"
     printf 'teatree watchdog: `t3 doctor check --json` ran but produced NO parseable verdict — doctor may be crashing on the box. SSH in and run `t3 doctor check` in `docker compose -p %s exec teatree-admin`.' "$PROJECT" \
-      | notify_owner "watchdog:doctor-no-verdict:$(date -u +%Y%m%d%H)"
+      | notify_owner "watchdog:doctor-no-verdict:$(date -u +%Y%m%d)"
     return 0
   fi
 
