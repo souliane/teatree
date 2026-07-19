@@ -437,6 +437,14 @@ def build_system_context(
             "- Limit git diff output to 200 lines; use --stat for overview first.",
             "- Summarize test output instead of pasting full logs.",
             "",
+            "# Authored Output — Be Concise (directive #4)",
+            (
+                "- Everything you write — commit/PR body, review comments, code comments, Slack —"
+                " is bullets, straight to the point, no prose."
+            ),
+            "- Comment only the non-obvious *why*; never narrate the *what* the code already shows.",
+            "- Be RIGHT but concise: trim words, never a load-bearing fact, decision, or caveat.",
+            "",
             "When done, run /t3:next to wrap up. It will:",
             "- Run /t3:retro (captures lessons while context is fresh)",
             "- Emit the structured JSON result the pipeline needs",

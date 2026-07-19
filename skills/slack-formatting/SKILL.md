@@ -12,6 +12,15 @@ metadata:
 
 How teatree renders structured output to Slack. Load this alongside any work that posts to a Slack surface — the outbound notify path, a loop digest, a review-request message.
 
+## Be concise (directive #4)
+
+Respect the reader's time. Every Slack message teatree posts:
+
+- Bullets, not paragraphs. Lead with the point; drop the preamble.
+- One idea per line. No throat-clearing ("Just wanted to let you know…"), no sign-off prose.
+- Include only what the reader must act on; link out for the rest.
+- Be RIGHT but concise — trim words, never the load-bearing fact.
+
 ## Tables — use the formatter, never a hand-rolled pipe table
 
 Slack mrkdwn has **no** GitHub-flavored table syntax. A `| col | col |` / `|---|` markdown table renders as inert literal text — pipes and dashes, no columns. Do not build pipe tables in message text.
