@@ -2,9 +2,13 @@
 # (init/worker/admin/slack-listener/watchdog) sharing named volumes so init
 # installs teatree once and worker/admin run it.
 #
-# The box-side secrets file `teatree.env` (next to this file, gitignored, written
-# by the deploy workflow) supplies every credential. Non-secret runtime config
-# (clone/repo paths, uv dirs) is baked into the image.
+# The box-side env file `teatree.env` (next to this file, gitignored, written by
+# the deploy workflow) supplies the non-secret runtime env and the Anthropic auth
+# path. The GitHub token and admin password are NOT kept here as plaintext: the
+# entrypoint sources them from the box's gpg-encrypted `pass` store at boot
+# (#3454 — TEATREE_GH_TOKEN / T3_ADMIN_PASSWORD, see deploy/entrypoint.sh and
+# deploy/README.md). Other non-secret runtime config (clone/repo paths, uv dirs)
+# is baked into the image.
 name: teatree
 
 x-teatree-common: &teatree-common

@@ -194,14 +194,81 @@ Do this once as an admin on the box.
 | `HETZNER_SSH_KEY` | the deploy **private** SSH key |
 | `HETZNER_SSH_KNOWN_HOSTS` | the box's host key line(s) for strict checking |
 | `CLAUDE_CODE_OAUTH_TOKEN` | Claude Code OAuth token — the headless auth |
-| `TEATREE_GH_TOKEN` | GitHub token for the loop. Needs **write** on `issues`, `pull_requests`, and `contents` (plus `metadata: read`) — `init` preflights these and fails loud if any is missing (#3405) |
 | `T3_ADMIN_USER` | Django admin superuser name |
-| `T3_ADMIN_PASSWORD` | Django admin superuser password |
 | `GIT_AUTHOR_NAME` | git identity for the loop's commits |
 | `GIT_AUTHOR_EMAIL` | git identity email (use a GitHub noreply for public repos) |
 
+The **GitHub token** and the **admin password** are **not** repository secrets and
+are **never** written to `teatree.env`. They live in the box's `pass` store and are
+sourced at boot — see [Credential provisioning](#credential-provisioning-passgpg)
+below (#3454, #3433). `CLAUDE_CODE_OAUTH_TOKEN` is optional too when the box is provisioned with
+`anthropic/<account>/oauth-token` entries.
+
 The `known_hosts` line comes from `ssh-keyscan -p <port> <box-host>` (run once,
 verify the fingerprint out of band).
+
+### Credential provisioning (pass/GPG)
+
+No plaintext GitHub token or admin password ever lands on the box disk. Both live
+in the box's gpg-encrypted [`pass`](https://www.passwordstore.org/) store — the same
+credential plane (`~/.password-store` + `~/.gnupg`, bind-mounted into every app
+service) that holds the Anthropic OAuth tokens — and `deploy/entrypoint.sh` sources
+them into the environment at boot (`source_secret_from_pass`), before the token
+preflight and `t3 setup`.
+
+| Boot env var | Default `pass` path | Override |
+| --- | --- | --- |
+| `TEATREE_GH_TOKEN` | `github/souliane/pat` | `TEATREE_GH_TOKEN_PASS_PATH` |
+| `T3_ADMIN_PASSWORD` | `teatree/admin-password` | `T3_ADMIN_PASSWORD_PASS_PATH` |
+
+An existing env value always wins; the store is the fallback. So a box that still
+carries a literal in `teatree.env` keeps working, and a missing `pass` entry is a
+no-op (the `TEATREE_GH_TOKEN` preflight then fails loud; a missing admin password
+just yields a generated one, since loopback auto-login — not the password — is the
+admin boundary).
+
+**One-time provisioning on the box** (as the deploy user, needs host access once):
+
+```bash
+# 1. A GPG keypair to encrypt the store (no passphrase, or a gpg-agent-cached one,
+#    so `pass show` runs non-interactively on a headless box):
+gpg --batch --gen-key <<'EOF'
+%no-protection
+Key-Type: eddsa
+Key-Curve: ed25519
+Subkey-Type: ecdh
+Subkey-Curve: cv25519
+Name-Real: teatree deploy
+Name-Email: teatree@localhost
+Expire-Date: 0
+%commit
+EOF
+
+# 2. Initialise the pass store against that key, then insert the secrets
+#    (`-m` reads from stdin so the value never hits argv or shell history):
+pass init teatree@localhost
+printf '%s' "<github-pat>"      | pass insert -m -f github/souliane/pat
+printf '%s' "<admin-password>"  | pass insert -m -f teatree/admin-password
+# Anthropic tokens follow the same store, one per account:
+printf '%s' "<oauth-token>"     | pass insert -m -f anthropic/<account>/oauth-token
+```
+
+The `TEATREE_GH_TOKEN` still needs **write** on `issues`, `pull_requests`, and
+`contents` (plus `metadata: read`); `init` preflights the token and fails loud when
+a permission is missing (#3405, #3436). A classic PAT satisfies this with the single
+`repo` scope.
+
+**Secrets-only rotation** — no SSH edit of `teatree.env`, no host file surgery:
+
+```bash
+# Update the entry in the pass store (host access to run `pass`, one command):
+printf '%s' "<new-github-pat>" | pass insert -m -f github/souliane/pat
+```
+
+Then re-run **Actions → Deploy teatree to Hetzner** (or restart the stack): the
+entrypoint re-sources the rotated value from `pass` at boot. Because the token is no
+longer written into `teatree.env`, rotation is a `pass` update plus a redeploy —
+the deploy workflow never rewrites the on-disk secret file for it.
 
 ## Access & networking
 

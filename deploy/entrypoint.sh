@@ -29,6 +29,34 @@ REPO_URL="${TEATREE_REPO_URL:-https://github.com/souliane/teatree.git}"
 
 # The loop and gh use GH_TOKEN from the ambient env for GitHub access, so the
 # token never appears in a clone URL, argv, or logs.
+
+# gpg refuses a group/other-readable home, so normalise GNUPGHOME's mode BEFORE
+# the boot-time `pass show` reads below can decrypt — only when the mount is
+# writable (a hardened read-only mount would EROFS here under -e).
+if [ -n "${GNUPGHOME:-}" ] && [ -d "$GNUPGHOME" ] && [ -w "$GNUPGHOME" ]; then
+    chmod 700 "$GNUPGHOME"
+fi
+
+# Source a runtime secret from the box pass store when its env var is unset,
+# keeping the plaintext out of teatree.env and off argv/logs (#3454). An env
+# value always wins (eval/CI paths and a deliberate literal override); the pass
+# store is the fallback that lets a rotated secret be picked up at boot without
+# rewriting teatree.env. `pass show` writes only to the captured stdout here.
+source_secret_from_pass() {
+    local var="$1" path="$2" value
+    [ -n "${!var:-}" ] && return 0
+    value="$(pass show "$path" 2>/dev/null | head -n1)" || return 0
+    if [ -n "$value" ]; then
+        export "$var"="$value"
+    fi
+    return 0
+}
+
+# GitHub token + admin password default to the box's provisioned pass paths;
+# override either in teatree.env when the store is laid out differently.
+source_secret_from_pass TEATREE_GH_TOKEN "${TEATREE_GH_TOKEN_PASS_PATH:-github/souliane/pat}"
+source_secret_from_pass T3_ADMIN_PASSWORD "${T3_ADMIN_PASSWORD_PASS_PATH:-teatree/admin-password}"
+
 if [ -n "${TEATREE_GH_TOKEN:-}" ]; then
     export GH_TOKEN="$TEATREE_GH_TOKEN"
 fi
@@ -44,14 +72,6 @@ git config --global user.name "${GIT_AUTHOR_NAME:-teatree}"
 git config --global user.email "${GIT_AUTHOR_EMAIL:-teatree@localhost}"
 git config --global init.defaultBranch main
 git config --global --add safe.directory "$CLONE_DIR"
-
-# The GPG home is a dedicated bind mount of the host ~/.gnupg (see Dockerfile ENV
-# + docker-compose credential plane); gpg refuses a home directory readable by
-# group/other. Fix the mode before anything reads a credential — but only when
-# the mount is writable (a hardened read-only mount would EROFS here under -e).
-if [ -n "${GNUPGHOME:-}" ] && [ -d "$GNUPGHOME" ] && [ -w "$GNUPGHOME" ]; then
-    chmod 700 "$GNUPGHOME"
-fi
 
 # True when the box pass store holds at least one Anthropic account entry —
 # the option-b credential source (anthropic_oauth_pass_paths routing).
@@ -84,11 +104,19 @@ gh_repo_slug() {
     fi
 }
 
+# True (0) when a metadata-read failure carries a genuine token-DENIAL signal (a
+# permission/credential fault), as opposed to a transient network fault. Mirrors
+# the Python gate's _DENIED_SIGNALS so the two reach the SAME verdict on an
+# unreadable read: a denial blocks, anything else is indeterminate (retry/warn).
+_gh_metadata_denied() {
+    grep -qiE 'not accessible|not found|bad credentials|requires authentication|must be authenticated' <<<"$1"
+}
+
 # True (0) when a side-effect-free write probe is DENIED — i.e. the token lacks
 # the permission. GitHub returns "Resource not accessible by personal access
 # token" at the route level for a missing write permission, before it validates
 # the (non-existent) target, so nothing is ever created or changed.
-_gh_perm_denied() {
+_gh_write_probe_denied() {
     local out
     out="$(gh api --method "$1" "$2" 2>&1 || true)"
     grep -qi "not accessible" <<<"$out"
@@ -96,27 +124,67 @@ _gh_perm_denied() {
 
 # Probe that TEATREE_GH_TOKEN carries the WRITE permissions the loop actually
 # needs (#3405). ``gh auth status`` only proves the token authenticates — a token
-# with ``issues: read`` but not ``issues: write`` passes it, then every
-# ``gh issue edit/close/comment`` fails LATE, mid-run, with "Resource not
-# accessible by personal access token" — a silent block on autonomy. Each write
-# permission is probed with a mutation aimed at a resource id that cannot exist
-# (issue/PR 0, a bogus ref): a permitted token gets a harmless 404, a denied
-# token gets the route-level 403. FAIL the deploy loudly naming each missing
-# permission. Mirrors ``teatree.core.gates.gh_token_preflight`` (pinned by a test).
+# that reads but cannot write passes it, then every ``gh issue edit/close`` /
+# ``gh pr merge`` / push fails LATE, mid-run, with "Resource not accessible by
+# personal access token" — a silent block on autonomy. Mirrors the verdict
+# SEMANTICS of ``teatree.core.gates.gh_token_preflight`` (pinned by a test):
+#
+#   * A genuine DENIAL (cannot read the repo, a fine-grained token lacks a write
+#     permission, or a classic token lacks the ``repo`` scope) FAILS loudly.
+#   * A TRANSIENT/indeterminate probe failure (network) is retried with backoff,
+#     then WARNED past — never an ``exit 1`` that crash-loops ``init`` (#3436).
+#
+# Token class matters: a fine-grained PAT returns the route-level 403 the write
+# probe reads, but a CLASSIC PAT does NOT (the probe fails OPEN for it), so a
+# classic token — identified by the ``X-OAuth-Scopes`` response header a
+# fine-grained token omits — is judged by REQUIRING the write-granting ``repo``
+# scope instead.
 assert_gh_token_permissions() {
-    local slug missing=()
+    local slug meta rc scopes attempt missing=()
+    local backoff="${TEATREE_GH_PREFLIGHT_BACKOFF_SECONDS:-2}"
     slug="$(gh_repo_slug)"
     if [ -z "$slug" ]; then
         echo "entrypoint: could not resolve the GitHub repo slug from '${TEATREE_REPO_URL:-$REPO_URL}' - skipping token-permission preflight" >&2
         return 0
     fi
-    if ! gh api "repos/$slug" >/dev/null 2>&1; then
-        echo "entrypoint: TEATREE_GH_TOKEN cannot read repos/$slug (metadata: read) - the token has no access to the repo. Grant it and re-run Deploy" >&2
+
+    # Metadata read with -i so the X-OAuth-Scopes header comes back. Retry a
+    # TRANSIENT failure so a network blip cannot crash-loop init; only a genuine
+    # DENIAL blocks the deploy.
+    rc=0
+    for attempt in 1 2 3; do
+        meta="$(gh api -i "repos/$slug" 2>&1)" && rc=0 && break || rc=$?
+        if _gh_metadata_denied "$meta"; then
+            echo "entrypoint: TEATREE_GH_TOKEN cannot read repos/$slug (metadata: read) - the token has no access to the repo. Grant it and re-run Deploy" >&2
+            exit 1
+        fi
+        echo "entrypoint: gh token preflight: transient failure reading repos/$slug (attempt $attempt/3, rc=$rc) - retrying" >&2
+        if [ "$attempt" -lt 3 ]; then
+            sleep "$((attempt * backoff))"
+        fi
+    done
+    if [ "$rc" -ne 0 ]; then
+        echo "entrypoint: gh token preflight: repos/$slug still unreachable after retries (indeterminate, rc=$rc) - SKIPPING the write-permission preflight (a transient GitHub/network fault, not a denial); the loop surfaces any real gap on its first write" >&2
+        return 0
+    fi
+
+    # Classic PAT? Judge it by the write-granting ``repo`` scope from the
+    # X-OAuth-Scopes header (the per-route probe below fails OPEN for it). Match
+    # ``repo`` as an exact scope token so ``repo:status`` / ``public_repo`` never
+    # count as write.
+    if scopes="$(grep -i '^x-oauth-scopes:' <<<"$meta")"; then
+        if grep -qE '(^|[[:space:],])repo([[:space:],]|$)' <<<"${scopes#*:}"; then
+            echo "teatree-init: GitHub token permissions verified (classic PAT with 'repo' scope on $slug)"
+            return 0
+        fi
+        echo "entrypoint: TEATREE_GH_TOKEN is a classic PAT WITHOUT the 'repo' scope - the loop's 'gh issue'/'gh pr'/push writes will fail mid-run with 'Resource not accessible by personal access token'. Grant the 'repo' scope on the token and re-run Deploy" >&2
         exit 1
     fi
-    _gh_perm_denied PATCH "repos/$slug/issues/0" && missing+=("issues: write")
-    _gh_perm_denied PATCH "repos/$slug/pulls/0" && missing+=("pull_requests: write")
-    _gh_perm_denied PATCH "repos/$slug/git/refs/heads/teatree-preflight-nonexistent" && missing+=("contents: write")
+
+    # Fine-grained PAT: per-permission route probes (403 = missing, 404 = present).
+    _gh_write_probe_denied PATCH "repos/$slug/issues/0" && missing+=("issues: write")
+    _gh_write_probe_denied PATCH "repos/$slug/pulls/0" && missing+=("pull_requests: write")
+    _gh_write_probe_denied PATCH "repos/$slug/git/refs/heads/teatree-preflight-nonexistent" && missing+=("contents: write")
     if [ ${#missing[@]} -gt 0 ]; then
         echo "entrypoint: TEATREE_GH_TOKEN is missing GitHub permission(s): ${missing[*]} - the loop's 'gh issue'/'gh pr'/push writes will fail mid-run with 'Resource not accessible by personal access token'. Grant them on the token and re-run Deploy" >&2
         exit 1
