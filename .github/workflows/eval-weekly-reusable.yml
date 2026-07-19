@@ -24,10 +24,15 @@
 #   discovery resolves the overlay scenarios; `assert-scenarios` lists the names
 #   `t3 eval list` MUST discover before any API spend (broken wiring fails RED).
 #
-# AUTH (`anthropic-api-key` secret, EXCLUSIVE — never the subscription token)
-#   The metered backend authenticates EXCLUSIVELY from `anthropic-api-key`. A full
-#   run on the subscription OAuth token would throttle on its depleting usage
-#   window and mislabel the throttled cells; the metered API has no such window.
+# AUTH (`credential` input, mirrors `eval.yml`'s `T3_EVAL_CREDENTIAL` knob)
+#   DEFAULT `subscription_oauth` — the plan's `CLAUDE_CODE_OAUTH_TOKEN` secret
+#   (`subscription-oauth-token`). No repo carries a metered `ANTHROPIC_API_KEY`
+#   secret by default, so a caller with only the subscription token still gets a
+#   runnable benchmark; select `metered_api_key` (`anthropic-api-key`) for a
+#   per-token run with no depleting usage window. Both secrets are wired so the
+#   knob is a pure config flip — docker forwards ONLY the selected credential's
+#   var into the container, mirroring `eval.yml`'s `T3_EVAL_CREDENTIAL`
+#   resolution exactly.
 #
 # PUBLISH — the `publish` job collects every shard's SANITIZED benchmark matrix
 #   HTML (per-(scenario, tier) verdicts + per-model tally, NO reasoning/tool
@@ -45,6 +50,11 @@ on:
         required: false
         default: false
         type: boolean
+      credential:
+        description: "Eval credential (subscription_oauth | metered_api_key). Default subscription_oauth — mirrors eval.yml's `credential` input/`T3_EVAL_CREDENTIAL` knob, since no repo here carries a metered ANTHROPIC_API_KEY secret by default. subscription_oauth draws no per-token bill but rides a depleting usage window (keep the fan-out small); metered_api_key is per-token cost, no window."
+        required: false
+        default: "subscription_oauth"
+        type: string
       lane:
         description: "Eval lane subset (clean_room | under_load); empty = every lane."
         required: false
@@ -86,9 +96,12 @@ on:
         default: "3.13"
         type: string
     secrets:
+      subscription-oauth-token:
+        description: "The plan's CLAUDE_CODE_OAUTH_TOKEN, used when `credential` is subscription_oauth (the default)."
+        required: false
       anthropic-api-key:
-        description: "The metered API key (sk-ant-api03…) the eval authenticates with, EXCLUSIVELY."
-        required: true
+        description: "The metered API key (sk-ant-api03…), used when `credential` is metered_api_key."
+        required: false
 
 jobs:
   # PREPARE: ONE place that (a) decides whether the eval runs at all (the no-PR
@@ -268,8 +281,9 @@ jobs:
           SUFFIX="${EVAL_LANE}-${EVAL_SHARD//\//-}"
           [ -n "$EVAL_EFFORT" ] && SUFFIX="${SUFFIX}-${EVAL_EFFORT}"
           echo "suffix=$SUFFIX" >> "$GITHUB_OUTPUT"
-      # `--docker` routes the metered lane THROUGH the CI container; the host's
-      # ANTHROPIC_API_KEY is forwarded in via docker's `-e`. `--benchmark` runs
+      # `--docker` routes the lane THROUGH the CI container; the SELECTED
+      # credential (below) is forwarded in via docker's `-e` pass-through, mirroring
+      # `eval.yml`'s `T3_EVAL_CREDENTIAL` resolution exactly. `--benchmark` runs
       # every (lane/shard-filtered) scenario against ALL THREE tier models
       # (frontier/balanced/cheap, resolved through the single TIER_MODELS constant)
       # and renders the comparison matrix + a self-contained HTML dashboard — the
@@ -280,7 +294,14 @@ jobs:
       - name: Metered behavioral benchmark suite (in Docker; 3-tier matrix; --require-executed always armed)
         uses: nick-fields/retry@ad984534de44a9489a53aefd81eb77f87c70dc60  # v4
         env:
+          # Both credentials are wired so the `credential` knob is a pure config
+          # flip, exactly like `eval.yml`. `T3_EVAL_CREDENTIAL` selects which one
+          # every eval chokepoint (make_runner, the judge, the docker `-e`
+          # passthrough) resolves; docker forwards only the SELECTED credential's
+          # var into the container.
+          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.subscription-oauth-token }}
           ANTHROPIC_API_KEY: ${{ secrets.anthropic-api-key }}
+          T3_EVAL_CREDENTIAL: ${{ inputs.credential || 'subscription_oauth' }}
           EVAL_LANE: ${{ matrix.lane }}
           EVAL_SHARD: ${{ matrix.shard }}
           EVAL_EFFORT: ${{ matrix.effort }}

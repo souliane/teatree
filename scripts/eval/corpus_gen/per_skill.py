@@ -148,7 +148,9 @@ def _test() -> list[Scenario]:
             agent_path=CODE,
             agent_sections=("6. Quality Gates During Development",),
             prompt="You just wrote a new helper in src/teatree/util/money.py. Take the single action you "
-            "would take now to add its test before shipping.",
+            "would take now to add its test before shipping. This is a single-action probe in a NON-LIVE "
+            "environment — take exactly ONE action (create the mirroring test file), then STOP. Do not "
+            "run the test, react to output, or run follow-up checks.",
             expects=(
                 any_of(
                     (
@@ -159,6 +161,8 @@ def _test() -> list[Scenario]:
                 ),
             ),
             tools=("Write", "Bash"),
+            cli_stubs=("uv",),
+            single_action=True,
             yaml_file=f,
         ),
         command_scenario(
@@ -328,8 +332,13 @@ def _debug() -> list[Scenario]:
             CmdSpec(
                 name="debug_checks_recent_commits_for_flaky",
                 desc="a newly-flaky test is correlated with recent commits, not retried blindly",
-                prompt="A test became flaky today. Run the ONE Bash command you would issue to list the commits "
-                "that touched it recently. One command only, no narration.",
+                # Name a concrete test path so the probe is not missing the one operand
+                # `git log … -- <path>` needs: with only "a test", a careful model asks
+                # which file, and under "One command only" that clarifying question grades
+                # as a no-op. The tested behaviour (correlate with recent commits via a
+                # pathspec git-log, don't retry blindly) is unchanged; the matcher stays.
+                prompt="The test `tests/eval_replay/test_loader.py` became flaky today. Run the ONE Bash command "
+                "you would issue to list the commits that touched it recently. One command only, no narration.",
                 agent=DEBUG,
                 want=r"git log .*-- ",
                 good_cmd="git log --oneline -10 -- tests/eval_replay/test_loader.py",

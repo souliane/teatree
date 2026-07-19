@@ -18,6 +18,7 @@ import yaml
 from teatree.agents.model_tiering import TIER_MODELS
 from teatree.eval.cli_stub_fixture import KNOWN_CLI_STUBS
 from teatree.eval.git_fixture import KNOWN_FIXTURES
+from teatree.eval.matcher_vacuity import is_positive_anchor
 from teatree.eval.models import (
     CLEAN_ROOM_LANE,
     DEFAULT_MAX_TURNS,
@@ -88,6 +89,14 @@ def _parse_spec(entry: object, path: Path, default_agent_path: str | None) -> Ev
     agent_sections = _parse_agent_sections(spec_map, name, path)
     available_skills = _parse_available_skills(spec_map, name, path)
     cli_stubs = _parse_cli_stubs(spec_map, name, path)
+    single_action = _parse_bool(spec_map, "single_action", name, path)
+    if single_action and not any(is_positive_anchor(m) for m in matchers):
+        raise EvalSpecError(
+            path,
+            None,
+            f"spec {name!r}: single_action requires at least one positive matcher "
+            "(tool_call/any_of/final_state) — a negatives-only probe would vacuously pass on a cap",
+        )
     return EvalSpec(
         name=name,
         scenario=scenario,
@@ -110,6 +119,7 @@ def _parse_spec(entry: object, path: Path, default_agent_path: str | None) -> Ev
         available_skills=available_skills,
         cli_stubs=cli_stubs,
         production_hooks=_parse_bool(spec_map, "production_hooks", name, path),
+        single_action=single_action,
     )
 
 

@@ -123,6 +123,24 @@ class TestStubExecutables:
         with pytest.raises(ValueError, match="unknown cli_stubs"), provision_cli_stubs(["not-a-cli"]):
             pass
 
+    @pytest.mark.parametrize(
+        "argv",
+        [
+            ["uv", "run", "pytest", "tests/teatree_util/test_money.py"],
+            ["uv", "pytest", "tests/teatree_util/test_money.py"],
+        ],
+    )
+    def test_uv_stub_prints_a_passing_line_for_pytest_invocations(self, argv: list[str]) -> None:
+        with provision_cli_stubs(["uv"]) as bindir:
+            result = _run_stub(bindir, argv)
+        assert result.returncode == 0
+        assert "passed" in result.stdout
+
+    def test_uv_stub_unknown_verb_still_exits_zero(self) -> None:
+        with provision_cli_stubs(["uv"]) as bindir:
+            result = _run_stub(bindir, ["uv", "sync"])
+        assert result.returncode == 0
+
 
 class TestPrependToPath:
     def test_prepends_bindir_highest_priority(self) -> None:

@@ -31,10 +31,15 @@ def _on(workflow: dict[str, Any]) -> dict[str, Any]:
 
 
 class TestReusableContract:
-    def test_both_are_workflow_call_with_a_required_api_key_secret(self) -> None:
-        for path in (_PR, _WEEKLY):
-            call = _on(_load(path))["workflow_call"]
-            assert call["secrets"]["anthropic-api-key"]["required"] is True, path.name
+    def test_both_are_workflow_call_with_credential_secrets(self) -> None:
+        # eval-pr-reusable requires the metered api-key; eval-weekly-reusable is
+        # dual-credential (subscription_oauth default), so it declares both secrets
+        # and the runner enforces the selected one.
+        pr_secrets = _on(_load(_PR))["workflow_call"]["secrets"]
+        assert pr_secrets["anthropic-api-key"]["required"] is True, _PR.name
+        weekly_secrets = _on(_load(_WEEKLY))["workflow_call"]["secrets"]
+        assert "subscription-oauth-token" in weekly_secrets, _WEEKLY.name
+        assert "anthropic-api-key" in weekly_secrets, _WEEKLY.name
 
     def test_overlay_host_checkout_inputs_are_exposed(self) -> None:
         for path in (_PR, _WEEKLY):

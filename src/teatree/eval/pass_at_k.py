@@ -52,7 +52,7 @@ class PassAtKResult:
     #: when EVERY trial finished cleanly — one capped trial taints the sum. The
     #: benchmark threads this onto ``MatrixRow.terminal_reason`` so a multi-trial
     #: cell with a capped trial is excluded from the warm-equivalent fit exactly
-    #: like the single-trial path.
+    #: like the single-trial path. BILLING identity only — see ``ok`` for the GATE verdict.
     terminal_reason: str = ""
     #: Whether ANY trial substituted the requested main model (a fallback).
     #: ``True`` if any observed trial fell back; ``False`` if every observed trial
@@ -80,17 +80,17 @@ class PassAtKResult:
         return self.passes / self.trials if self.trials else 0.0
 
     @property
+    def _cap_excused(self) -> bool:
+        if not self.trial_results:
+            return False
+        return all(t.passed for t in self.trial_results if t.run.terminal_reason in CAP_TERMINAL_REASONS)
+
+    @property
     def ok(self) -> bool:
         if self.skipped:
             return True
-        # A cap-tainted aggregate (ANY trial hit max_turns/budget/watchdog)
-        # COULDN'T COMPLETE its work, so it can never prop up a green gate —
-        # regardless of ``require`` (any/all). The pass COUNT stays diagnostic
-        # (clean trials still count toward ``passes``/``pass_rate``); only this
-        # gate verdict flips. Without it the REAL CI lane (``--require any``)
-        # goes green on ``[success, max_turns, …]`` because one clean pass
-        # satisfies ``passes >= 1`` while two trials are cap-tainted (#2192).
-        if self.terminal_reason in CAP_TERMINAL_REASONS:
+        # A cap-tainted aggregate never props up a green gate (#2192) unless every capped trial is excused.
+        if self.terminal_reason in CAP_TERMINAL_REASONS and not self._cap_excused:
             return False
         if self.require == "all":
             return self.passes == self.trials
