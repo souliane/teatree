@@ -51,6 +51,51 @@ class TestDiffPathsAreSubstrate:
         assert diff_paths_are_substrate(["src/teatree/loop/scanners/issue_implementer.py"]) is True
         assert diff_paths_are_substrate(["src/teatree/loop/scanner_factories.py"]) is True
 
+    def test_merge_classifier_module_is_substrate(self) -> None:
+        # The module that DEFINES the trust boundary must class itself substrate:
+        # a PR loosening this very classifier can no longer auto-merge as logic.
+        assert diff_paths_are_substrate(["src/teatree/core/models/merge_clear.py"]) is True
+
+    def test_review_verdict_record_is_substrate(self) -> None:
+        # The cold-review record + maker!=checker guard is a trust seam.
+        assert diff_paths_are_substrate(["src/teatree/core/models/review_verdict.py"]) is True
+
+    def test_merge_safety_gate_is_substrate(self) -> None:
+        # Every gate under core/gates/ enforces a merge/safety invariant.
+        assert diff_paths_are_substrate(["src/teatree/core/gates/merge_guard.py"]) is True
+
+    def test_schema_migration_is_substrate(self) -> None:
+        # A schema change (incl. destructive DROP / data-rewrite) mutates the
+        # durable governance store -> substrate, never a silent logic auto-merge
+        # (this gap is why #3464's migration auto-merged).
+        assert diff_paths_are_substrate(["src/teatree/core/migrations/0001_initial.py"]) is True
+
+    def test_autonomy_config_is_substrate(self) -> None:
+        # config/ holds the autonomy tiers and the substrate_auto_merge_authorized_by
+        # default -> editing it changes how the factory governs itself.
+        assert diff_paths_are_substrate(["src/teatree/config/settings.py"]) is True
+
+    def test_on_behalf_gate_is_substrate(self) -> None:
+        assert diff_paths_are_substrate(["src/teatree/on_behalf_gate.py"]) is True
+
+    def test_ordinary_cli_check_is_not_substrate(self) -> None:
+        # A clearly-logic path (a doctor check) stays logic after the widening.
+        assert diff_paths_are_substrate(["src/teatree/cli/doctor/checks.py"]) is False
+
+    def test_ordinary_test_file_is_not_substrate(self) -> None:
+        assert diff_paths_are_substrate(["tests/teatree_core/models/test_merge_clear_substrate_paths.py"]) is False
+
+    def test_models_sibling_is_not_substrate(self) -> None:
+        # The widening pins merge_clear.py / review_verdict.py exactly — an
+        # unrelated model in core/models/ must NOT become substrate.
+        assert diff_paths_are_substrate(["src/teatree/core/models/ticket.py"]) is False
+
+    def test_config_lookalike_is_not_substrate(self) -> None:
+        # config/ has a trailing slash -> a sibling like configuration.py or the
+        # cli/config.py helper is not the autonomy-config package.
+        assert diff_paths_are_substrate(["src/teatree/cli/config.py"]) is False
+        assert diff_paths_are_substrate(["src/teatree/core/migrationsx/x.py"]) is False
+
     def test_safety_hooks_are_substrate(self) -> None:
         assert diff_paths_are_substrate(["hooks/scripts/question_gates.py"]) is True
 
