@@ -1382,6 +1382,19 @@ it via `--models`/`--benchmark`/an explicit `model: claude-opus-4-8` pin — thi
 rule is about the catalog's OWN default resolution path, not about removing
 `frontier` from the tier system.
 
+### The per-scenario Opus fallback, and the guard it has to clear first
+
+Mechanically, a scenario CAN pin `tier: frontier` (or `model: claude-opus-4-8`)
+in its `evals/scenarios/*.yaml` spec — both are loader-validated against
+`TIER_MODELS` and honored by the normal eval lanes the same as any other tier.
+But doing so on a scenario shipped under `evals/scenarios/` also trips the
+catalog-wide guard above: `tests/eval_replay/test_catalog_never_resolves_frontier.py`
+fails on ANY shipped scenario that resolves to the frontier model, by any path.
+So a scenario that demonstrably cannot pass on Sonnet and genuinely needs to
+pin Opus has to update that guard test deliberately alongside the pin — never
+flip the suite default, most scenarios must stay on Sonnet. Currently zero
+scenarios need it.
+
 ### Per-scenario effort escalation — the sanctioned lever for a flaky-on-reasoning-depth scenario
 
 When a specific scenario is flaky because it needs more reasoning depth (not

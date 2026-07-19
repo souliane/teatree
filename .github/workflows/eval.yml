@@ -139,6 +139,11 @@ on:
         required: false
         default: "api"
         type: string
+      model:
+        description: "Force every scenario onto this one model id, overriding per-scenario tiers (e.g. claude-opus-4-8 for a full-Opus run). Single-trial: trials is ignored when set. Empty = per-scenario tier (mostly Sonnet)."
+        required: false
+        default: ""
+        type: string
 
 jobs:
   # PREPARE: ONE place that (a) decides whether the eval runs at all (the weekly
@@ -381,6 +386,11 @@ jobs:
           # Messages API directly, no `claude` CLI child (#3222); it authenticates on
           # ANTHROPIC_API_KEY, so pair it with `credential: metered_api_key`.
           EVAL_BACKEND: ${{ inputs.backend || 'api' }}
+          # Optional single-model override — forces the WHOLE suite onto one model id,
+          # overriding every scenario's own tier (single-trial). Empty (the default) is
+          # a pure no-op: MODEL_FLAG stays "" below and the emitted command is
+          # byte-identical to a run with no `model` input at all.
+          EVAL_MODEL: ${{ inputs.model || '' }}
         with:
           # A single shard is ≤ its lane's ceiling (clean_room ≤14, under_load ≤4 —
           # #2683) x 3 trials, each a real metered `claude` SDK call. Each retry
@@ -412,11 +422,14 @@ jobs:
           command: |
             EFFORT_FLAG=""
             [ -n "$EVAL_EFFORT" ] && EFFORT_FLAG="--effort $EVAL_EFFORT"
+            MODEL_FLAG=""
+            [ -n "$EVAL_MODEL" ] && MODEL_FLAG="--model $EVAL_MODEL"
             uv run t3 eval run --trials "$EVAL_TRIALS" --require any --backend "$EVAL_BACKEND" \
               --lane "$EVAL_LANE" --shard "$EVAL_SHARD" $EFFORT_FLAG \
               --require-executed --docker \
               --transcript-html "$RUNNER_TEMP/eval-transcripts.html" \
-              --summary-md "$RUNNER_TEMP/eval-summary-${{ steps.artifact.outputs.suffix }}.md"
+              --summary-md "$RUNNER_TEMP/eval-summary-${{ steps.artifact.outputs.suffix }}.md" \
+              $MODEL_FLAG
       # Publish the per-trial transcript report THIS leg emitted as a job artifact.
       # `if: always()` so a red leg still publishes it (the report is exactly what a
       # maintainer reads to triage the failure; the eval step above already decided
