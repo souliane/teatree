@@ -32,6 +32,7 @@ from teatree.cli.doctor.checks_environment import (
     _check_stale_path_t3,
     _check_stale_uv_venv,
     _check_t3_shim_receipt,
+    _check_tmp_tmpfs_headroom,
 )
 from teatree.cli.doctor.checks_loop import (
     _check_dream_staleness,
@@ -113,6 +114,7 @@ __all__ = (
     "_check_stale_uv_venv",
     "_check_t3_shim_receipt",
     "_check_teatree_mcp_registration",
+    "_check_tmp_tmpfs_headroom",
     "_check_ttyd_for_dashboard",
     "_check_worker_running",
     "_do_ensure_plugin_registered",
@@ -175,11 +177,14 @@ def _optional_tooling_advisories() -> None:
     MCP). #3232 WARNs when the operator opted into the containerized ``t3`` workflow
     but a piece the wrapper depends on (compose stack, the executable ``deploy/t3``
     entry, the docker CLI, a non-drifted alias path) is missing — silent inside a
-    container and on a host that never opted in.
+    container and on a host that never opted in. The tmpfs-headroom check WARNs when
+    a RAM-backed ``/tmp`` is filling toward ENOSPC (the fill that wedges the box);
+    runtime temp is routed to disk and the watchdog trims stale scratch on a cadence.
     """
     _check_ttyd_for_dashboard()
     _check_chrome_devtools_mcp_suggestion()
     _check_docker_workflow_wired()
+    _check_tmp_tmpfs_headroom()
 
 
 def run_doctor_checks(*, repair: bool = False, slack_roundtrip: bool = False) -> bool:

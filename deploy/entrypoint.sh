@@ -37,6 +37,27 @@ if [ -n "${GNUPGHOME:-}" ] && [ -d "$GNUPGHOME" ] && [ -w "$GNUPGHOME" ]; then
     chmod 700 "$GNUPGHOME"
 fi
 
+# Route ALL runtime temp to DISK, never the box's small RAM-backed tmpfs. The
+# host /tmp is a ~16G tmpfs; the spawned headless `claude` sessions, `pytest`, and
+# `uv` write scratch there and can fill it to 100% (ENOSPC), wedging the whole box.
+# The container root is a large overlay DISK, so ``/var/tmp`` (always present,
+# world-writable+sticky, disk-backed on both host and container) is a safe temp
+# root that never touches the RAM tmpfs. Exported for EVERY non-watchdog role
+# BEFORE the role `exec`s, so the role process and its children — the headless
+# `claude` subprocess (which inherits every non-``GIT_*`` var, see
+# teatree.utils.git_run.git_env_without_overrides), pytest, and uv — all land their
+# scratch on disk. The container settings.json seed (from the image-baked template)
+# also carries ``TMPDIR``/``PYTEST_DEBUG_TEMPROOT`` so an agent's Bash tool inherits
+# it too; this export additionally covers the role process itself. Overridable via
+# ``TEATREE_DISK_TMPDIR`` for a box whose disk temp lives elsewhere.
+setup_disk_tmpdir() {
+    local tmproot="${TEATREE_DISK_TMPDIR:-/var/tmp}"
+    mkdir -p "$tmproot"
+    export TMPDIR="$tmproot"
+    export PYTEST_DEBUG_TEMPROOT="$tmproot"
+}
+setup_disk_tmpdir
+
 # Source a runtime secret from the box pass store when its env var is unset,
 # keeping the plaintext out of teatree.env and off argv/logs (#3454). An env
 # value always wins (eval/CI paths and a deliberate literal override); the pass

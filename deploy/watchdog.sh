@@ -40,6 +40,15 @@ EXEC_SERVICES="${TEATREE_WATCHDOG_EXEC_SERVICES:-teatree-admin teatree-worker}"
 # Services restarted when init has already completed (init excluded — see header).
 read -ra APP_SERVICES <<<"${TEATREE_WATCHDOG_APP_SERVICES:-teatree-worker teatree-admin teatree-slack-listener teatree-watchdog}"
 
+# Stale-temp trim: services to sweep, the disk temp roots to sweep in each, and the
+# minimum age (minutes) a scratch entry must reach before it is trimmed. Runtime
+# temp is routed to disk (/var/tmp) by the entrypoint + settings template, but a
+# crashed/abandoned run can still leave pytest/uv/claude scratch behind that grows
+# unbounded over weeks — the periodic half of the tmpfs-fill guard.
+TEMP_TRIM_SERVICES="${TEATREE_WATCHDOG_TEMP_TRIM_SERVICES:-teatree-worker teatree-admin}"
+TEMP_TRIM_ROOTS="${TEATREE_WATCHDOG_TEMP_TRIM_ROOTS:-/var/tmp /tmp}"
+TEMP_TRIM_MIN_AGE_MIN="${TEATREE_WATCHDOG_TEMP_TRIM_MIN_AGE_MIN:-720}"
+
 log() { printf '%s watchdog: %s\n' "$(date -uIseconds)" "$*" >&2; }
 
 compose() { docker compose -p "$PROJECT" -f "$COMPOSE_FILE" "$@"; }
@@ -113,6 +122,25 @@ run_doctor() {
   return 125
 }
 
+# Trim ONLY well-known stale scratch (pytest / uv / claude) older than the age
+# threshold from each service's disk temp roots, so a leaked temp dir can never
+# fill the disk and wedge the box. Bounded (maxdepth 1, name-scoped, age-gated) and
+# idempotent — a clean temp dir is a no-op. NEVER fatal: a trim failure (a service
+# down, a read-only root) must not retire the only supervisor, so every branch is
+# swallowed. A whole-tree dir like ``pytest-of-<user>`` is only "old" once no run
+# has touched it for the threshold, so an ACTIVE test run is never trimmed.
+trim_stale_temp() {
+  local svc root
+  for svc in $TEMP_TRIM_SERVICES; do
+    for root in $TEMP_TRIM_ROOTS; do
+      compose exec -T "$svc" bash -lc \
+        "find '$root' -mindepth 1 -maxdepth 1 \\( -name 'pytest-*' -o -name 'uv-*' -o -name 'claude-*' \\) -mmin +$TEMP_TRIM_MIN_AGE_MIN -exec rm -rf {} + 2>/dev/null" \
+        >/dev/null 2>&1 || true
+    done
+  done
+  log "stale-temp trim swept ${TEMP_TRIM_SERVICES// /, } (>${TEMP_TRIM_MIN_AGE_MIN}min under ${TEMP_TRIM_ROOTS// /, })"
+}
+
 run_pass() {
   log "restarting any down services (gated on init state)"
   if ! restart_down_services; then
@@ -121,6 +149,9 @@ run_pass() {
       | notify_owner "watchdog:compose-up-failed:$(date -u +%Y%m%d%H)"
     return 0
   fi
+
+  # Guard against a temp-scratch leak filling the disk (never fatal — see fn).
+  trim_stale_temp
 
   if ! run_doctor; then
     # No exec service could be reached at all — a genuine transport failure, the

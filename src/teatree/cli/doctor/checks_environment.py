@@ -4,9 +4,82 @@ Each helper is narrow (single concern, single ``typer.echo`` path) and returns
 ``bool`` for pass/fail aggregation by :func:`teatree.cli.doctor.app.run_doctor_checks`.
 """
 
+import os
 from pathlib import Path
 
 import typer
+
+_DEFAULT_TMPFS_WARN_PERCENT = 80
+_PERCENT_MAX = 100
+_MIN_MOUNT_FIELDS = 3
+
+
+def _tmpfs_warn_percent(raw: str | None) -> int:
+    """Parse ``TEATREE_TMPFS_WARN_PERCENT`` into a 1..100 threshold; default on garbage."""
+    if raw is None:
+        return _DEFAULT_TMPFS_WARN_PERCENT
+    try:
+        value = int(raw)
+    except ValueError:
+        return _DEFAULT_TMPFS_WARN_PERCENT
+    return value if 1 <= value <= _PERCENT_MAX else _DEFAULT_TMPFS_WARN_PERCENT
+
+
+def _tmp_mount_fstype(mounts_text: str, mount_point: str) -> str | None:
+    """Return the fstype backing *mount_point* per ``/proc/mounts`` text, or ``None``.
+
+    Reads the standard ``/proc/mounts`` columns (device, mount point, fstype, ...)
+    and returns the LAST matching entry's fstype — a later mount over the same point
+    shadows an earlier one. ``None`` when *mount_point* is not mounted.
+    """
+    fstype: str | None = None
+    for line in mounts_text.splitlines():
+        fields = line.split()
+        if len(fields) >= _MIN_MOUNT_FIELDS and fields[1] == mount_point:
+            fstype = fields[2]
+    return fstype
+
+
+def _check_tmp_tmpfs_headroom(
+    *,
+    mounts_path: Path = Path("/proc/mounts"),
+    tmp_dir: str = "/tmp",  # noqa: S108 — auditing the /tmp mount, not creating a temp file
+) -> bool:
+    """WARN when a RAM-backed (tmpfs) ``/tmp`` is filling toward ENOSPC.
+
+    The box's ``/tmp`` is a small RAM tmpfs; agent ``claude`` sessions, pytest, and
+    uv scratch can fill it to 100% and wedge everything with ENOSPC. Runtime temp is
+    now routed to DISK (``deploy/entrypoint.sh`` + the managed settings-template
+    ``TMPDIR``), but this surfaces residual tmpfs pressure directly so a fill is SEEN
+    before it wedges the box. Only meaningful when ``/tmp`` is actually tmpfs — a
+    disk-backed ``/tmp`` (e.g. the container overlay) is silently skipped, as is a
+    box with no ``/proc/mounts`` (non-Linux). Surfacing-only: a WARN that keeps the
+    run GREEN (never extracted into the watchdog FAIL DM), matching the sibling
+    advisory checks. Threshold overridable via ``TEATREE_TMPFS_WARN_PERCENT`` (1..100,
+    default 80). Crash-proof — any probe error degrades to a silent pass so this
+    diagnostic never aborts the doctor run.
+    """
+    try:
+        if not mounts_path.is_file():
+            return True
+        if _tmp_mount_fstype(mounts_path.read_text(encoding="utf-8"), tmp_dir) != "tmpfs":
+            return True
+        threshold = _tmpfs_warn_percent(os.environ.get("TEATREE_TMPFS_WARN_PERCENT"))
+        stats = os.statvfs(tmp_dir)
+        total = stats.f_blocks * stats.f_frsize
+        if total <= 0:
+            return True
+        used_pct = round((total - stats.f_bavail * stats.f_frsize) / total * 100)
+        if used_pct >= threshold:
+            typer.echo(
+                f"WARN  {tmp_dir} is a RAM-backed tmpfs at {used_pct}% used (>= {threshold}% threshold) — "
+                f"agent/pytest/uv scratch can fill it to ENOSPC and wedge the box. Trim it: "
+                f"`find {tmp_dir} -maxdepth 1 -name 'pytest-*' -mmin +120 -exec rm -rf {{}} +`. Runtime "
+                "temp is routed to disk via TMPDIR; tune this with TEATREE_TMPFS_WARN_PERCENT."
+            )
+    except OSError:
+        return True
+    return True
 
 
 def _check_single_db() -> bool:
