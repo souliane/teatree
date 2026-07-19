@@ -36,6 +36,7 @@ from teatree.config.feature_flags import flag_trailer, render_flags_audit
 from teatree.config.registries import COLD_SETTINGS, REGISTRY_SETTINGS
 from teatree.core.config_migration import export_db_to_toml
 from teatree.core.models import ConfigSetting
+from teatree.core.models.config_setting import ENTRYPOINT_SEEDER
 
 # Every key ``config_setting`` knows: the ``UserSettings`` DB partition, the
 # injected registries (``overlays`` / ``e2e_repos``), the cold-read keys (codename
@@ -50,6 +51,11 @@ _ALLOWED_SETTINGS: dict[str, Callable[[Any], Any]] = {
     **COLD_SETTINGS,
     **{key: setting.parse for key, setting in COLD_HOOK_SETTINGS.items()},
 }
+
+# Sentinel for "no known code default" — a registry/cold key that is not a
+# ``UserSettings`` field. It never equals a real seed value, so a seed of such a
+# key is always written rather than mistaken for a redundant code-default seed.
+_NO_CODE_DEFAULT: object = object()
 
 _OverlayOption = Annotated[
     str,
@@ -70,6 +76,20 @@ def _flag_suffix(key: str) -> str:
     """
     trailer = flag_trailer(key)
     return f"  {trailer}" if trailer else ""
+
+
+def _code_default(key: str) -> object:
+    """The pure CODE default for *key* — the ``UserSettings`` field default.
+
+    A bare ``UserSettings()`` carries the dataclass field defaults with NO env or
+    DB layer applied, so this is the value a setting resolves to when nothing
+    overrides it. Returns :data:`_NO_CODE_DEFAULT` when *key* is not a
+    ``UserSettings`` field (a registry/cold key), so the seeder never mistakes a
+    non-``UserSettings`` seed for a redundant code-default write.
+    """
+    from teatree.config.settings import UserSettings  # noqa: PLC0415 — deferred: heavy config import
+
+    return getattr(UserSettings(), key, _NO_CODE_DEFAULT)
 
 
 class Command(TyperCommand):
@@ -122,6 +142,53 @@ class Command(TyperCommand):
         # Verify-by-re-read: report the stored value the resolver will now see.
         stored = ConfigSetting.objects.get_effective(key, scope=overlay)
         self.stdout.write(f"  set {key} = {stored!r}  [{_scope_label(overlay)}]{_flag_suffix(key)}")
+
+    @command()
+    def seed(
+        self,
+        key: Annotated[str, typer.Argument(help="UserSettings field name (must be overridable).")],
+        value: Annotated[str, typer.Argument(help="JSON value, e.g. true / false / '\"x\"' / 3.")],
+        overlay: _OverlayOption = "",
+        seeded_by: Annotated[
+            str,
+            typer.Option("--seeded-by", help="Provenance marker recorded on the row (default: entrypoint)."),
+        ] = ENTRYPOINT_SEEDER,
+    ) -> None:
+        """Provenance-aware DEPLOY seed of *key* → *value* (#3435).
+
+        Unlike ``set`` (an operator write that always upserts), ``seed`` is the
+        idempotent redeploy path: it NEVER writes a value equal to the code
+        default (which would only freeze a future default change), PRESERVES any
+        operator override, and re-seeds a row it still owns when the shipped
+        default changed. It records provenance (``seeded_by`` + the seeded value)
+        so a later ``t3 doctor --repair`` autofix can tell a deploy-seeded row
+        from an operator's deliberate pin. Same key/JSON validation as ``set``.
+        """
+        if key not in _ALLOWED_SETTINGS:
+            self.stderr.write(f"  refusing: {key!r} is not a known config setting")
+            raise SystemExit(2)
+        try:
+            parsed = json.loads(value)
+        except json.JSONDecodeError as exc:
+            self.stderr.write(f"  invalid JSON value for {key!r}: {exc}")
+            raise SystemExit(2) from exc
+        parser = _ALLOWED_SETTINGS[key]
+        try:
+            canonical = parser(parsed)
+        except (ValueError, TypeError, AttributeError) as exc:
+            self.stderr.write(f"  invalid value for {key!r}: {exc}")
+            raise SystemExit(2) from exc
+        outcome = ConfigSetting.objects.seed(
+            key,
+            canonical,
+            code_default=_code_default(key),
+            seeded_by=seeded_by,
+            scope=overlay,
+        )
+        stored = ConfigSetting.objects.get_effective(key, scope=overlay)
+        self.stdout.write(
+            f"  seed {key}: {outcome.value}  (effective={stored!r})  [{_scope_label(overlay)}]{_flag_suffix(key)}"
+        )
 
     @command()
     def clear(

@@ -63,6 +63,10 @@
           "name": "set"
         },
         {
+          "help": "Provenance-aware DEPLOY seed of *key* \u2192 *value* (#3435)",
+          "name": "seed"
+        },
+        {
           "help": "Delete the DB override row for *key* in *overlay*'s scope (or global)",
           "name": "clear"
         },

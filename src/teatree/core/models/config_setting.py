@@ -26,12 +26,25 @@ a global DB row exactly as a per-overlay TOML override beats the global TOML
 value. Uniqueness is the ``(scope, key)`` pair, so a global and an overlay row
 for the same key coexist and the manager upserts within a scope.
 
+**Seed provenance (#3435).** A row carries ``seeded_by`` (the seeder that owns
+it — :data:`ENTRYPOINT_SEEDER` for a deploy seed, ``""`` for an operator/runtime
+write) and ``seed_value`` (the exact value that seeder last wrote). Together they
+let a redeploy tell a value the operator has pinned apart from one the deploy
+seeded and the operator never touched: :meth:`ConfigSettingManager.seed` re-seeds
+only a row it still owns (``seeded_by`` matches AND ``value == seed_value``),
+never creates a row equal to the code default (which would only FREEZE a future
+default change), and preserves any operator override. An explicit
+:meth:`ConfigSettingManager.set_value` is an operator/runtime write, so it clears
+the provenance — the row becomes operator-owned and no later deploy or doctor
+autofix may touch it.
+
 Bootstrap-readable settings (``DATABASE_URL`` / data-dir /
 ``DJANGO_SETTINGS_MODULE`` / the offline ``private_repos`` allowlist) are
 explicitly out of scope — they must be readable before Django starts, so they can
 never live here (#1775).
 """
 
+from enum import StrEnum
 from typing import ClassVar
 
 from django.db import models
@@ -47,6 +60,22 @@ type ConfigValue = bool | int | float | str | list[object] | dict[str, object]
 # string applies to every overlay (the original #1775 single-tier behaviour). A
 # non-empty ``scope`` is an overlay name that scopes the row to that overlay.
 GLOBAL_SCOPE = ""
+
+# The provenance marker :func:`deploy/entrypoint.sh`'s seed step stamps on a row
+# it created, so a later redeploy re-seed and the ``t3 doctor --repair``
+# concurrency autofix can tell a deploy-seeded row from an operator override.
+ENTRYPOINT_SEEDER = "entrypoint"
+
+
+class SeedOutcome(StrEnum):
+    """What :meth:`ConfigSettingManager.seed` did to the row (for operator logs)."""
+
+    CREATED = "created"
+    UPDATED = "updated"
+    UNCHANGED = "unchanged"
+    PRESERVED = "preserved-operator-override"
+    REMOVED = "removed-equals-default"
+    SKIPPED_DEFAULT = "skipped-equals-default"
 
 
 class ConfigSettingManager(models.Manager["ConfigSetting"]):
@@ -79,9 +108,69 @@ class ConfigSettingManager(models.Manager["ConfigSetting"]):
         setting the same key in the same scope twice updates the one row rather
         than creating a duplicate. A global and an overlay-scoped row for the
         same key are distinct rows.
+
+        An explicit ``set_value`` is an operator/runtime write, so it CLEARS any
+        seed provenance (``seeded_by`` → ``""``, ``seed_value`` → ``None``): the
+        row becomes operator-owned, and no later deploy re-seed or ``t3 doctor
+        --repair`` autofix may overwrite or delete it (#3435 / #3434).
         """
-        row, _ = self.update_or_create(scope=scope, key=key, defaults={"value": value})
+        row, _ = self.update_or_create(
+            scope=scope,
+            key=key,
+            defaults={"value": value, "seeded_by": "", "seed_value": None},
+        )
         return row
+
+    def seed(
+        self,
+        key: str,
+        value: ConfigValue,
+        *,
+        code_default: object,
+        seeded_by: str = ENTRYPOINT_SEEDER,
+        scope: str = GLOBAL_SCOPE,
+    ) -> SeedOutcome:
+        """Provenance-aware deploy seed of *key* → *value* in *scope* (#3435).
+
+        The idempotent policy a redeploy needs so a changed shipped default
+        reaches existing boxes without ever clobbering an operator's pin:
+
+        * **value == code_default** → never create a row (a code-default seed
+            is a no-op that would only FREEZE a future default change). If a row
+            this seeder still owns already holds that value, DELETE it so the
+            live code default flows through again.
+        * **no row** → create it, recording provenance (``seeded_by`` +
+            ``seed_value = value``).
+        * **row this seeder no longer owns** (a different ``seeded_by``, or
+            ``value != seed_value`` because an operator edited it) → PRESERVE
+            it untouched.
+        * **row this seeder still owns** (``seeded_by`` matches AND
+            ``value == seed_value``) → UPDATE it when the shipped seed changed,
+            else no-op.
+
+        *code_default* is the pure code default (the ``UserSettings`` field
+        default with no env/DB layer). Pass a sentinel that never equals a real
+        value for a non-``UserSettings`` key, so such a seed is always written.
+        """
+        row = self.filter(scope=scope, key=key).first()
+        equals_default = value == code_default
+        if row is None:
+            if equals_default:
+                return SeedOutcome.SKIPPED_DEFAULT
+            self.create(scope=scope, key=key, value=value, seeded_by=seeded_by, seed_value=value)
+            return SeedOutcome.CREATED
+        if row.seeded_by != seeded_by or row.value != row.seed_value:
+            return SeedOutcome.PRESERVED
+        if equals_default:
+            row.delete()
+            return SeedOutcome.REMOVED
+        if row.value == value:
+            return SeedOutcome.UNCHANGED
+        row.value = value
+        row.seed_value = value
+        row.seeded_by = seeded_by
+        row.save(update_fields=["value", "seed_value", "seeded_by", "updated_at"])
+        return SeedOutcome.UPDATED
 
     def clear(self, key: str, scope: str = GLOBAL_SCOPE) -> bool:
         """Delete the override row for *key* in *scope*; return whether one was removed.
@@ -115,11 +204,20 @@ class ConfigSetting(models.Model):
     stored as JSON so any TOML-shaped value round-trips. The ``(scope, key)``
     pair is unique so the manager's ``set_value`` is a clean per-scope upsert
     and a global + overlay row for one key can coexist.
+
+    ``seeded_by`` / ``seed_value`` carry the seed provenance (#3435):
+    ``seeded_by`` names the seeder that owns the row (:data:`ENTRYPOINT_SEEDER`
+    for a deploy seed, ``""`` for an operator/runtime write) and ``seed_value``
+    is the value that seeder last wrote. A redeploy re-seeds only a row it still
+    owns, and the ``t3 doctor --repair`` concurrency autofix clears only an
+    entrypoint-seeded pin — never an operator's deliberate one.
     """
 
     scope = models.CharField(max_length=255, default=GLOBAL_SCOPE, blank=True)
     key = models.CharField(max_length=255)
     value = models.JSONField()
+    seeded_by = models.CharField(max_length=255, default="", blank=True)
+    seed_value = models.JSONField(null=True, blank=True, default=None)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 

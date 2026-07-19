@@ -36,6 +36,7 @@ Edit the source command, not this file.
 | Subcommand | Description |
 | --- | --- |
 | `set` | Upsert the DB override row for *key* (in *overlay*'s scope or global) to *value* |
+| `seed` | Provenance-aware DEPLOY seed of *key* → *value* (#3435) |
 | `clear` | Delete the DB override row for *key* in *overlay*'s scope (or global) |
 | `flags` | The read-only dead-toggle audit report over the ``FEATURE_FLAGS`` registry |
 | `get` | Print the resolved value for *key* and name its source (DB vs env/default) |

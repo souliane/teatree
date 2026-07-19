@@ -2733,8 +2733,11 @@ Usage: t3 doctor check [OPTIONS]
  Verify imports, required tools, and editable-install sanity.
 
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
-│ --repair                   Re-point a relocated/hijacked t3 editable install │
-│                            at the expected checkout (#3231).                 │
+│ --repair                   Allow doctor to APPLY fixes that mutate state:    │
+│                            re-point a relocated/hijacked t3 editable install │
+│                            (#3231) AND clear a stale entrypoint-seeded       │
+│                            provision_max_concurrency pin (#3434). A plain    │
+│                            run never mutates.                                │
 │ --slack-roundtrip          Deep Slack round-trip: additionally run a LIVE    │
 │                            auth.test per Slack backend (#3411).              │
 │ --json                     Emit findings as JSON for the watchdog container. │

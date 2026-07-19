@@ -84,11 +84,18 @@ services:
       teatree-init:
         condition: service_completed_successfully
     restart: unless-stopped
-    # ~18g leaves headroom for up to 4 concurrent heavy headless ``claude``
-    # subprocesses on the 30GB host; the prior 5g risked a cgroup OOM on
-    # recreate once more than one headless session was in flight.
-    mem_limit: 18g
-    cpus: "3.0"
+    # The worker's CPU/RAM caps are DERIVED FROM THE REAL HOST at deploy time
+    # (#3432): deploy/deploy.sh runs uncapped on the host, reads its true
+    # cores/RAM via src/teatree/utils/ram_probe.py, and exports
+    # TEATREE_WORKER_CPUS / TEATREE_WORKER_MEM_LIMIT before `docker compose up`.
+    # The cgroup cap then reflects the host, so inside the worker
+    # `available_cpu_count` derives provision concurrency from the host instead
+    # of a baked-in 3-core cap that made host-derived concurrency a no-op. The
+    # in-file defaults below apply only when deploy.sh did not export a value
+    # (python3 absent / RAM unreadable, or a bare `docker compose up`): ~18g and
+    # 3 cores, the pre-#3432 hard-coded caps sized for a ~30GB host.
+    mem_limit: "${TEATREE_WORKER_MEM_LIMIT:-18g}"
+    cpus: "${TEATREE_WORKER_CPUS:-3.0}"
 
   # Django admin (gunicorn), DEBUG off like the worker — /admin/ mounts
   # unconditionally now, so the admin no longer needs DEBUG (and inherits the
