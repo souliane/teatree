@@ -1,19 +1,23 @@
-# teatree headless deployment (Hetzner)
+# teatree headless deployment
 
-Run teatree headless on a single existing Hetzner ARM64 box (CAX21, 8 GB), driven
-by one manual GitHub Action. teatree runs the autonomous loop (`t3 worker`,
+Run teatree headless on a single existing box, reached over direct SSH, driven
+by one GitHub Action. teatree runs the autonomous loop (`t3 worker`,
 `agent_runtime=headless`), self-updates via its own loop, autostarts on reboot,
-and serves the Django admin on the box loopback for SSH-tunnel access.
+and serves the Django admin on the box loopback for SSH-tunnel access. The image
+is **self-contained** — it bakes a pinned source@ref + interpreter + locked deps
+so a fresh box boots deterministically and offline; see
+[Self-contained image](#self-contained-image--bake--publish-3451).
 
 This is **teatree-only** — no customer or product overlays. The only registered
 overlay is the built-in `t3-teatree`.
 
 ## How the one-click deploy works
 
-`Actions → Deploy teatree to Hetzner → Run workflow` (`.github/workflows/deploy-hetzner.yml`):
+`Actions → Deploy teatree → Run workflow` (`.github/workflows/deploy.yml`):
 
-1. Installs a checksum-pinned `hcloud` CLI and resolves the box IP from the server
-   name (the IP is masked out of the logs immediately).
+1. Connects to the box at the fixed host/IP held in the `DEPLOY_SSH_HOST` secret
+   (masked out of the logs immediately) — no cloud API resolves it, so any
+   directly-reachable box works, not just a Hetzner Cloud one.
 2. Writes the SSH key + known_hosts from secrets, connects with strict host-key
    checking.
 3. Writes the box secrets file `deploy/teatree.env` over SSH (piped over stdin,
@@ -82,6 +86,121 @@ from the operator's real DB.
 
 `teatree_src` and `teatree_uv` stay Docker-managed named volumes for now (later
 PRs handle code-mount modes).
+
+### UID invariant — the container user must equal the host deploy user
+
+Every state, credential, and session mount in the table above is a **host bind
+mount at path identity**, so each file on the host disk carries the host deploy
+user's numeric UID while the container writes it as the image's `teatree` user.
+Those two must be the **same UID**, or every bind mount is unwritable from inside
+the container and `init` crash-loops on its first write.
+
+`deploy.sh` therefore **derives the container UID from the host at deploy time**:
+it runs as the deploy user, reads that user's UID (`id -u`), and exports it as the
+`TEATREE_UID` build arg (compose reads `${TEATREE_UID}` into the image build). The
+image build then renumbers its `teatree` user onto that UID and removes Ubuntu
+24.04's stock `ubuntu` user (which occupies UID 1000) so the id is free. Because the
+container UID is taken from whatever box runs the build, **the invariant holds on
+any box with no manual step** — the live box (deploy user 1001) rebuilds at 1001
+with no chown, and a fresh box lands on its own deploy user's UID.
+
+The default UID, used when nothing exports `TEATREE_UID` (the `ARG TEATREE_UID`
+default in `deploy/Dockerfile`, and the `${TEATREE_UID:-1001}` default in
+`deploy/docker-compose.yml`), is **1001** — the live box's deploy user, and the UID
+`useradd teatree` lands on unaided inside the image (UID 1000 is taken by the stock
+`ubuntu` user, so `teatree` takes the next free id, 1001). `deploy.sh` also
+pre-creates every bind-mount source owned by the deploy user before the stack
+starts.
+
+A bare `docker compose build` (no `deploy.sh`) uses that 1001 default. To build for
+a different deploy user by hand, export or pass the UID explicitly:
+
+```bash
+TEATREE_UID="$(id -u)" docker compose -f deploy/docker-compose.yml build
+# or: docker compose -f deploy/docker-compose.yml build --build-arg TEATREE_UID="$(id -u)"
+```
+
+Changing the container UID on a box that already has bind-mount data written under
+the old UID requires a one-time `chown` of the bind sources to the new UID (stack
+stopped), otherwise the pre-existing files stay unwritable.
+
+## Self-contained image — bake + publish (#3451)
+
+The image is **self-contained**: `deploy/Dockerfile` bakes a pinned source@ref +
+the managed Python 3.13 interpreter + the locked editable `t3` install (the same
+`uv sync --locked` reproducibility pattern as `dev/Dockerfile.test`, extended to
+also bake the source and the tool). So a fresh box with only the image + secrets
+boots deterministically and **offline** — first boot no longer clones the repo or
+cold-resolves the dependency graph from github/PyPI/astral.
+
+**How the two named volumes inherit the bake.** Docker seeds a *fresh* named
+volume from the image content at the mount path, so on a brand-new box the empty
+`teatree_src` → `~/teatree` and `teatree_uv` → `/opt/teatree/uv`
+volumes are seeded with the baked clone, interpreter, and tool. An
+already-provisioned box keeps its populated volumes (the bake is shadowed) and
+converges via the runtime clone's origin fast-forward — so the bake changes only
+**fresh-box** first boot; existing boxes are unaffected.
+
+**Boot mode — online vs. offline (`deploy/entrypoint.sh`).** The entrypoint picks
+its mode from a bare origin reachability probe (`network_up`):
+
+- **online** — fast-forward the runtime clone from origin and refresh the editable
+  install; `t3 update` remains the in-loop self-update path;
+- **offline** — run the baked snapshot as-is, with zero fetches. Set
+  `TEATREE_FORCE_OFFLINE=1` to force this pinned no-fetch boot deliberately.
+
+Note the GitHub **token preflight** (`assert_gh_token_permissions`) still contacts
+`api.github.com`, so a fully air-gapped box cannot pass init — the loop needs
+GitHub to function. The bake removes the *source + dependency* fetches (the
+github/PyPI/astral blips that made first boot non-deterministic), not the loop's
+own GitHub access.
+
+### Pulling a published image instead of building on the box
+
+`docker-compose.yml` resolves the image as `${TEATREE_IMAGE:-teatree-headless:latest}`.
+Leaving `TEATREE_IMAGE` unset builds locally from `deploy/Dockerfile` (the current
+on-box flow, unchanged). To PULL a published, self-contained tag, set
+`TEATREE_IMAGE` to the registry ref in a `.env` file next to `docker-compose.yml`
+(or in the deploy shell):
+
+```bash
+# deploy/.env  (compose-interpolation env, NOT the container env_file teatree.env)
+TEATREE_IMAGE=ghcr.io/<owner>/teatree-headless:<lockkey>-<shortsha>
+```
+
+`.env` adjacency keeps the value identical for the host deploy AND the
+path-identity-mounted watchdog, so both resolve the same image; the watchdog's
+`up -d --no-recreate` never recreates a running container on a value change anyway.
+
+### Publishing the self-contained image
+
+`.github/workflows/publish-image.yml` builds `deploy/Dockerfile` (pinning
+`--build-arg TEATREE_SOURCE_REF=<commit>` to the built commit) and pushes it. Tags:
+
+- `<lockkey>-<shortsha>` — reproducible primary tag, keyed on the baked toolchain
+  (`deploy/Dockerfile` + `deploy/entrypoint.sh` + `uv.lock` + `pyproject.toml`)
+  **and** the source commit;
+- `sha-<shortsha>` — the exact source commit;
+- `latest` — main's tip (float on it, or pin a primary tag for reproducibility).
+
+**Registry is configurable. The default needs no owner-provisioned secret:** it
+publishes to **ghcr.io** authenticated with the workflow's built-in `GITHUB_TOKEN`
+(the same pattern CI already uses for its test image) at
+`ghcr.io/<owner>/teatree-headless`. To publish elsewhere, the owner sets:
+
+| Kind | Name | Purpose | Needed when |
+| --- | --- | --- | --- |
+| Variable | `TEATREE_IMAGE_REGISTRY` | registry host (default `ghcr.io`) | non-ghcr registry |
+| Variable | `TEATREE_IMAGE_NAME` | image path (default `<owner>/teatree-headless`) | custom image name |
+| Secret | `TEATREE_REGISTRY_USER` | registry login user | non-ghcr registry |
+| Secret | `TEATREE_REGISTRY_TOKEN` | registry login token/password | non-ghcr registry |
+
+On a fork PR, or a custom registry with no `TEATREE_REGISTRY_TOKEN`, the workflow
+runs **build-only** (proves the image builds, pushes nothing). For the default
+ghcr path the repo/org must allow the package (GHCR is enabled by default on
+GitHub-hosted repos); a first publish creates the package, which the owner can
+then make public or keep private (a private package still pulls on the box with a
+`packages: read` token).
 
 ### One-time volume migration (operator step)
 
@@ -187,21 +306,87 @@ Do this once as an admin on the box.
 
 | Secret | Purpose |
 | --- | --- |
-| `HCLOUD_TOKEN` | Hetzner Cloud API token (read-only is enough) to resolve the box IP |
-| `HETZNER_SERVER_NAME` | the Cloud server name to resolve |
-| `HETZNER_SSH_USER` | the deploy user (e.g. `teatree`) |
-| `HETZNER_SSH_PORT` | the SSH port |
-| `HETZNER_SSH_KEY` | the deploy **private** SSH key |
-| `HETZNER_SSH_KNOWN_HOSTS` | the box's host key line(s) for strict checking |
+| `DEPLOY_SSH_HOST` | the box host/IP to SSH into directly (e.g. `82.25.60.50`) |
+| `DEPLOY_SSH_USER` | the deploy user (e.g. `teatree`) |
+| `DEPLOY_SSH_PORT` | the SSH port |
+| `DEPLOY_SSH_KEY` | the deploy **private** SSH key |
+| `DEPLOY_SSH_KNOWN_HOSTS` | the box's host key line(s) for strict checking |
 | `CLAUDE_CODE_OAUTH_TOKEN` | Claude Code OAuth token — the headless auth |
-| `TEATREE_GH_TOKEN` | GitHub token for the loop. Needs **write** on `issues`, `pull_requests`, and `contents` (plus `metadata: read`) — `init` preflights these and fails loud if any is missing (#3405) |
 | `T3_ADMIN_USER` | Django admin superuser name |
-| `T3_ADMIN_PASSWORD` | Django admin superuser password |
 | `GIT_AUTHOR_NAME` | git identity for the loop's commits |
 | `GIT_AUTHOR_EMAIL` | git identity email (use a GitHub noreply for public repos) |
 
+The **GitHub token** and the **admin password** are **not** repository secrets and
+are **never** written to `teatree.env`. They live in the box's `pass` store and are
+sourced at boot — see [Credential provisioning](#credential-provisioning-passgpg)
+below (#3454, #3433). `CLAUDE_CODE_OAUTH_TOKEN` is optional too when the box is provisioned with
+`anthropic/<account>/oauth-token` entries.
+
 The `known_hosts` line comes from `ssh-keyscan -p <port> <box-host>` (run once,
 verify the fingerprint out of band).
+
+### Credential provisioning (pass/GPG)
+
+No plaintext GitHub token or admin password ever lands on the box disk. Both live
+in the box's gpg-encrypted [`pass`](https://www.passwordstore.org/) store — the same
+credential plane (`~/.password-store` + `~/.gnupg`, bind-mounted into every app
+service) that holds the Anthropic OAuth tokens — and `deploy/entrypoint.sh` sources
+them into the environment at boot (`source_secret_from_pass`), before the token
+preflight and `t3 setup`.
+
+| Boot env var | Default `pass` path | Override |
+| --- | --- | --- |
+| `TEATREE_GH_TOKEN` | `github/souliane/pat` | `TEATREE_GH_TOKEN_PASS_PATH` |
+| `T3_ADMIN_PASSWORD` | `teatree/admin-password` | `T3_ADMIN_PASSWORD_PASS_PATH` |
+
+An existing env value always wins; the store is the fallback. So a box that still
+carries a literal in `teatree.env` keeps working, and a missing `pass` entry is a
+no-op (the `TEATREE_GH_TOKEN` preflight then fails loud; a missing admin password
+just yields a generated one, since loopback auto-login — not the password — is the
+admin boundary).
+
+**One-time provisioning on the box** (as the deploy user, needs host access once):
+
+```bash
+# 1. A GPG keypair to encrypt the store (no passphrase, or a gpg-agent-cached one,
+#    so `pass show` runs non-interactively on a headless box):
+gpg --batch --gen-key <<'EOF'
+%no-protection
+Key-Type: eddsa
+Key-Curve: ed25519
+Subkey-Type: ecdh
+Subkey-Curve: cv25519
+Name-Real: teatree deploy
+Name-Email: teatree@localhost
+Expire-Date: 0
+%commit
+EOF
+
+# 2. Initialise the pass store against that key, then insert the secrets
+#    (`-m` reads from stdin so the value never hits argv or shell history):
+pass init teatree@localhost
+printf '%s' "<github-pat>"      | pass insert -m -f github/souliane/pat
+printf '%s' "<admin-password>"  | pass insert -m -f teatree/admin-password
+# Anthropic tokens follow the same store, one per account:
+printf '%s' "<oauth-token>"     | pass insert -m -f anthropic/<account>/oauth-token
+```
+
+The `TEATREE_GH_TOKEN` still needs **write** on `issues`, `pull_requests`, and
+`contents` (plus `metadata: read`); `init` preflights the token and fails loud when
+a permission is missing (#3405, #3436). A classic PAT satisfies this with the single
+`repo` scope.
+
+**Secrets-only rotation** — no SSH edit of `teatree.env`, no host file surgery:
+
+```bash
+# Update the entry in the pass store (host access to run `pass`, one command):
+printf '%s' "<new-github-pat>" | pass insert -m -f github/souliane/pat
+```
+
+Then re-run **Actions → Deploy teatree** (or restart the stack): the
+entrypoint re-sources the rotated value from `pass` at boot. Because the token is no
+longer written into `teatree.env`, rotation is a `pass` update plus a redeploy —
+the deploy workflow never rewrites the on-disk secret file for it.
 
 ## Access & networking
 
@@ -240,8 +425,11 @@ verify the fingerprint out of band).
 - **Autostart on reboot:** the compose `restart: unless-stopped` policy plus Docker
   enabled on boot bring the worker and admin back after a reboot.
 - **Updates:** teatree self-updates in-loop via `t3 update` (deferred reinstall on
-  the editable clone). There is **no** second workflow and no quiescence probe — a
-  re-run of the deploy workflow is only needed for infra/compose/image changes.
+  the editable clone), and the entrypoint fast-forwards the runtime clone from
+  origin on every (online) boot — the baked snapshot is only the *first-boot* /
+  offline floor, never a replacement for in-loop self-update. There is **no**
+  second workflow and no quiescence probe — a re-run of the deploy workflow is only
+  needed for infra/compose/image changes.
 
 ## Running the `t3` CLI on the box (#3232)
 

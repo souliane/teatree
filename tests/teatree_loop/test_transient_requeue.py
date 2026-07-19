@@ -433,6 +433,34 @@ class TestExhaustionAutoRequeue(TestCase):
         assert task.status == Task.Status.FAILED
         assert DeferredQuestion.objects.filter(answered_at__isnull=True).count() == 1
 
+    def test_repeated_session_limit_is_reopened_not_escalated_as_a_stall(self) -> None:
+        # Two identical session-limit FAILED attempts in a row record two identical
+        # error_fingerprints. The stall detector must NOT count usage-limit failures:
+        # a capacity dip repeated across a window is auto-recovered once the horizon
+        # elapses, never dead-lettered + paged to a human.
+        task = _failed_task()
+        err = _exhaustion_error(LimitCause.SUBSCRIPTION_SESSION)
+        _add_failed_attempt(task, error=err, ended_at=timezone.now() - timedelta(hours=6))
+        _add_failed_attempt(task, error=err, ended_at=timezone.now() - timedelta(hours=6))
+
+        assert requeue_transient_failed() == 1
+        task.refresh_from_db()
+        assert task.status == Task.Status.PENDING
+        assert DeferredQuestion.objects.filter(answered_at__isnull=True).count() == 0
+
+    def test_repeated_rate_limit_is_reopened_not_escalated_as_a_stall(self) -> None:
+        # Same invariant for the transient rate-limit cause (a distinct recoverable
+        # window): repeated identical rate-limit failures must not trip the stall.
+        task = _failed_task()
+        err = LimitMatch(phrase="rate limit", cause=LimitCause.RATE_LIMIT).as_reason()
+        _add_failed_attempt(task, error=err, ended_at=timezone.now() - timedelta(hours=1))
+        _add_failed_attempt(task, error=err, ended_at=timezone.now() - timedelta(hours=1))
+
+        assert requeue_transient_failed() == 1
+        task.refresh_from_db()
+        assert task.status == Task.Status.PENDING
+        assert DeferredQuestion.objects.filter(answered_at__isnull=True).count() == 0
+
     def test_flag_off_keeps_the_pre_3407_escalation(self) -> None:
         ConfigSetting.objects.set_value("limit_autorecovery_enabled", value=False)
         task = _failed_task()

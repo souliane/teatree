@@ -444,6 +444,7 @@ depends_on = [
   "teatree.loop.loop_scoping",
   "teatree.loop.statusline",
   "teatree.loop.statusline_loops",
+  "teatree.loop.statusline_loop_chunks",
   "teatree.loop.statusline_palette",
   "teatree.loop.statusline_render",
   "teatree.loop.url_specificity",
@@ -492,6 +493,11 @@ layer = "domain"
 depends_on = ["teatree.core.loop_lease_manager", "teatree.loop.session_identity"]
 
 [[modules]]
+path = "teatree.loop.statusline_loop_chunks"
+layer = "domain"
+depends_on = ["teatree.loop.loop_scoping", "teatree.loop.statusline_palette"]
+
+[[modules]]
 path = "teatree.loop.statusline_loops"
 layer = "domain"
 depends_on = [
@@ -499,6 +505,7 @@ depends_on = [
   "teatree.core",
   "teatree.loop.loop_cadences",
   "teatree.loop.loop_scoping",
+  "teatree.loop.statusline_loop_chunks",
   "teatree.loop.statusline_palette"
 ]
 

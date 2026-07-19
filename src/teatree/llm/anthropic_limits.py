@@ -139,6 +139,14 @@ RECOVERABLE_EXHAUSTION_CAUSES: frozenset[LimitCause] = frozenset(
     {LimitCause.SUBSCRIPTION_SESSION, LimitCause.SUBSCRIPTION_WEEKLY, LimitCause.RATE_LIMIT},
 )
 
+#: The stable signature substring an all-accounts-exhausted failure carries, SHARED by the
+#: selector that BUILDS the message (``teatree.credential_config``'s ``AllTokensExhaustedError``)
+#: and the recoverable-cause reader HERE, so the two can never drift. A task that landed FAILED
+#: with EVERY configured account drained (auto-recovery on but not parked — e.g. the flag flipped
+#: mid-run, or a non-parking lane) is window-recoverable, NOT a defect: it is auto-requeued once
+#: capacity returns rather than escalated to a human as a failure.
+ALL_TOKENS_EXHAUSTED_SIGNATURE = "accounts are exhausted"
+
 
 def recoverable_exhaustion_cause(error: str) -> LimitCause | None:
     """The time-recoverable exhaustion cause a FAILED attempt's *error* names, or ``None``.
@@ -147,11 +155,18 @@ def recoverable_exhaustion_cause(error: str) -> LimitCause | None:
     (:meth:`LimitMatch.as_reason`), so the token before the first ``:`` is the machine
     cause marker. This maps that marker back to its :class:`LimitCause`, but ONLY for a
     cause with a time-based window reset (session / weekly / transient rate limit) — the
-    signal the idle auto-requeue (#3407) keys on. Returns ``None`` for any non-limit error
-    AND for API-credit exhaustion (no timed recovery), so only a genuinely
-    window-recoverable failure is ever auto-requeued; the rest stay on their existing path.
+    signal the idle auto-requeue (#3407) keys on. An all-accounts-exhausted failure
+    (:data:`ALL_TOKENS_EXHAUSTED_SIGNATURE`) is treated as the WEEKLY cause — the safe upper
+    bound on when an account frees up — so a drained-lane task auto-requeues instead of
+    escalating. Returns ``None`` for any non-limit error AND for API-credit exhaustion (no
+    timed recovery), so only a genuinely window-recoverable failure is ever auto-requeued;
+    the rest stay on their existing path.
     """
-    if not error or ":" not in error:
+    if not error:
+        return None
+    if ALL_TOKENS_EXHAUSTED_SIGNATURE in error.casefold():
+        return LimitCause.SUBSCRIPTION_WEEKLY
+    if ":" not in error:
         return None
     marker = error.split(":", 1)[0].strip().casefold()
     for cause in RECOVERABLE_EXHAUSTION_CAUSES:

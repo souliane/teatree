@@ -1,8 +1,15 @@
-# teatree headless deployment image — one image, three roles (init/worker/admin)
-# selected by $TEATREE_ROLE. Extends the dev/Dockerfile.test toolchain and adds
-# gh. The teatree source is NOT baked: it is cloned onto a volume at runtime and
-# installed editable by the init role, so the image is just the toolchain.
-FROM ubuntu:24.04
+# teatree headless deployment image — one image, five roles (init/worker/admin/
+# slack-listener/watchdog) selected by $TEATREE_ROLE. Extends the
+# dev/Dockerfile.test toolchain and adds gh. The image is SELF-CONTAINED (#3451):
+# it BAKES a pinned source@ref + the managed Python interpreter + the locked
+# editable install (see the bake stage near the end), so a fresh box with only
+# the image + secrets boots deterministically and offline. The runtime clone on
+# the teatree_src volume stays the self-update path — the entrypoint fast-forwards
+# it from origin when online and runs the baked snapshot when offline.
+#
+# Digest-pinned to the same ubuntu:24.04 manifest dev/Dockerfile.test pins, so a
+# retag of the floating tag can never silently change the deploy toolchain.
+FROM ubuntu:24.04@sha256:4fbb8e6a8395de5a7550b33509421a2bafbc0aab6c06ba2cef9ebffbc7092d90
 
 # Toolchain layer — ca-certificates, curl, git, jq, sqlite3, direnv, node 24, the
 # claude CLI (as in dev/Dockerfile.test) plus gh, plus pass/gnupg so the box can
@@ -66,6 +73,24 @@ RUN mkdir -p \
 
 COPY --chmod=0755 deploy/entrypoint.sh /usr/local/bin/entrypoint.sh
 
+# Align the runtime user to the HOST deploy user's UID (the TEATREE_UID build
+# arg). Every host bind mount is at path identity (see deploy/README.md § UID
+# invariant), so the container UID MUST equal the host deploy user's UID or every
+# bind mount is unwritable and init crash-loops on its first write. deploy.sh
+# derives this from the host at deploy time (`id -u` of the deploy user) and
+# passes it as the build arg, so the image always matches whatever box builds it.
+# The default is 1001 — the live box's deploy user, and also the UID `useradd`
+# below lands on unaided (Ubuntu 24.04 ships a stock `ubuntu` user already holding
+# UID 1000, so the teatree user created above takes the next free id, 1001). The
+# stock `ubuntu` user is removed to free UID 1000 for boxes whose deploy user is
+# 1000; the teatree user is then renumbered onto TEATREE_UID (a no-op when it
+# already equals 1001) and its already-populated home tree re-owned to that id.
+ARG TEATREE_UID=1001
+RUN userdel -r ubuntu 2>/dev/null || true; \
+    usermod -u "${TEATREE_UID}" teatree && \
+    groupmod -g "${TEATREE_UID}" teatree && \
+    chown -R teatree:teatree /home/teatree /opt/teatree  # privacy-scan:allow
+
 # The deploy-managed default ~/.claude/settings.json template (#3359). The init
 # role generates the container's real settings.json from this (plus env overrides)
 # BEFORE `t3 setup`, so the headless agent has a configurable model / permission
@@ -102,3 +127,31 @@ ENV PATH="/opt/teatree/uv/bin:/home/teatree/.local/bin:${PATH}" \
     GNUPGHOME=/home/teatree/.gnupg
 
 ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]
+
+# ============================================================
+# Bake the product — source@ref + interpreter + LOCKED editable install (#3451).
+# Kept as the FINAL build stage (after the ENTRYPOINT metadata declaration,
+# which has no build-time effect): the source-ref-pinned bake is the most
+# volatile layer, so putting it last maximizes cache reuse of the stable
+# toolchain/ENV/ENTRYPOINT layers above.
+# Mirrors dev/Dockerfile.test:19-34 (bake the managed Python + `uv` locked deps so
+# nothing is cold-resolved from PyPI/astral at runtime), extended to also bake the
+# pinned SOURCE and the editable `t3` tool. Both bake targets sit UNDER the two
+# named volumes (teatree_src -> $TEATREE_CLONE_DIR, teatree_uv -> /opt/teatree/uv):
+# Docker seeds a FRESH volume from the image content at the mount path, so a fresh
+# box inherits the baked clone + Python + tool and boots offline with zero fetches.
+# An already-provisioned box keeps its populated volumes (the bake is shadowed) and
+# self-updates via the entrypoint's origin fast-forward — the runtime clone remains
+# the in-loop `t3 update` path (epic #3445), so this bake changes only FRESH-box boot.
+#
+# TEATREE_SOURCE_REF pins the baked commit (default `main`; the publish workflow
+# passes the exact build SHA so the image and its lockfile-keyed tag can never
+# drift). The clone keeps its full `.git` so the runtime fast-forward and `t3
+# update` work. Building requires network (as the apt/node/uv layers already do) —
+# it is the RUNTIME that becomes deterministic and offline-capable.
+ARG TEATREE_SOURCE_REF=main
+RUN git clone "$TEATREE_REPO_URL" "$TEATREE_CLONE_DIR" && \
+    git -C "$TEATREE_CLONE_DIR" checkout --quiet "$TEATREE_SOURCE_REF" && \
+    uv python install 3.13 && \
+    uv tool install --editable "${TEATREE_CLONE_DIR}[slack]" --python 3.13 && \
+    uv tool install prek==0.3.13

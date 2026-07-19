@@ -56,18 +56,34 @@ _COMPONENT_ROLE_WORDS = frozenset({"maker", "coding", "loop"})
 
 # A diff is substrate — independent of the reviewer's ``blast_class`` label —
 # when it touches the merge keystone, the architecture spec, a governance doc,
-# or the factory's OWN self-governance seams (the trust classifier, the intake
-# gate, the PreToolUse/Stop safety hooks). The label defaults to ``logic`` (the
-# orchestrator's judgment), so a change a human forgot to mark would otherwise
-# auto-merge silently under ``autonomy = full``. This path detector makes the
-# substrate guarantee label-independent (invariant 4): the change is substrate
-# if its diff is. The self-governance seams (#3244) are held because an
-# autonomous PR that widened the trusted-author set, loosened the fork gate, or
-# disabled a safety hook must NEVER auto-merge itself on agent-only review — the
-# factory cannot loosen its own guardrails unattended.
+# or the factory's OWN self-governance seams. Those seams are: the merge/CLEAR
+# classifier and the cold-review record that DEFINE the trust boundary itself
+# (``merge_clear.py`` — this module — and ``review_verdict.py``, the maker≠checker
+# guard), every merge/safety gate (``core/gates/``), the trust classifier
+# (``author_trust.py``), the intake gate (``issue_implementer.py`` /
+# ``scanner_factories.py``), the autonomy/trust configuration (``config/`` —
+# autonomy tiers and the ``substrate_auto_merge_authorized_by`` default), the
+# on-behalf authorisation gate (``on_behalf_gate.py``), and the PreToolUse/Stop
+# safety hooks (``hooks/``). Schema migrations (``core/migrations/``, incl.
+# destructive DROP / data-rewrites) are substrate too: they mutate the durable
+# governance store itself — this gap is why #3464's migration auto-merged as
+# logic. The label defaults to ``logic`` (the orchestrator's judgment), so a
+# change a human forgot to mark would otherwise auto-merge silently under
+# ``autonomy = full``. This path detector makes the substrate guarantee
+# label-independent (invariant 4): the change is substrate if its diff is. The
+# self-governance seams (#3244) are held because an autonomous PR that widened
+# the trusted-author set, loosened a gate, edited the classifier that judges
+# itself, or shipped a destructive migration must NEVER auto-merge itself on
+# agent-only review — the factory cannot loosen its own guardrails unattended.
 _SUBSTRATE_PATH_PREFIXES = (
     "src/teatree/core/merge/",
+    "src/teatree/core/models/merge_clear.py",
+    "src/teatree/core/models/review_verdict.py",
+    "src/teatree/core/gates/",
+    "src/teatree/core/migrations/",
     "src/teatree/core/review/author_trust.py",
+    "src/teatree/config/",
+    "src/teatree/on_behalf_gate.py",
     "src/teatree/loop/scanners/issue_implementer.py",
     "src/teatree/loop/scanner_factories.py",
     "hooks/",
@@ -77,15 +93,21 @@ _SUBSTRATE_FILE_NAMES = frozenset({"BLUEPRINT.md", "CLAUDE.md", "AGENTS.md"})
 
 
 def diff_paths_are_substrate(paths: "Iterable[str]") -> bool:
-    """True iff any of *paths* is a substrate path (merge keystone / spec / governance / self-governance).
+    """True iff any of *paths* is a substrate path (keystone / spec / governance / self-governance / migrations).
 
     Substrate paths are: anything under ``src/teatree/core/merge/`` (the merge
     keystone), the architecture spec (``BLUEPRINT.md`` and ``docs/blueprint/``),
-    the governance docs (``CLAUDE.md`` / ``AGENTS.md`` at any depth), and the
-    factory's self-governance seams (#3244) — the trust classifier
-    (``author_trust.py``), the intake gate (``issue_implementer.py`` /
-    ``scanner_factories.py``), and the safety hooks (``hooks/``). Matching is on
-    whole path components after stripping a leading ``./`` or ``/`` so a
+    the governance docs (``CLAUDE.md`` / ``AGENTS.md`` at any depth), the
+    factory's self-governance seams (#3244) — the merge/CLEAR classifier and
+    cold-review record that DEFINE the trust boundary (``merge_clear.py`` /
+    ``review_verdict.py``), every merge/safety gate (``core/gates/``), the trust
+    classifier (``author_trust.py``), the intake gate (``issue_implementer.py`` /
+    ``scanner_factories.py``), the autonomy/trust config (``config/``), the
+    on-behalf gate (``on_behalf_gate.py``) and the safety hooks (``hooks/``) — and
+    schema migrations (``core/migrations/``, incl. destructive DROP / data
+    rewrites, which mutate the durable governance store). Directory/file prefixes
+    match after stripping a leading ``./`` or ``/``; the bare governance file
+    names (``BLUEPRINT.md`` etc.) match on the final path component so a
     look-alike sibling (``BLUEPRINT.md.bak``, ``src/teatree/core/merger/``) is not
     misclassified.
     """

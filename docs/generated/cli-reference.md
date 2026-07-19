@@ -9706,6 +9706,7 @@ Usage: t3 teatree config_setting [OPTIONS] COMMAND [ARGS]...
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ╭─ Commands ───────────────────────────────────────────────────────────────────╮
 │ set     Upsert a DB row for a DB-home setting (JSON value).                  │
+│ seed    Provenance-aware deploy seed of a DB-home setting (#3435).           │
 │ get     Print a setting's resolved value and its source (db vs file/env).    │
 │ clear   Remove a DB row, falling back to the dataclass default.              │
 │ list    List every DB config setting row (read-only).                        │
@@ -9745,6 +9746,36 @@ Usage: t3 teatree config_setting set [OPTIONS] KEY VALUE
 │ --overlay        TEXT  Overlay name to scope the row to; omit for the global │
 │                        scope (every overlay).                                │
 │ --help                 Show this message and exit.                           │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 teatree config_setting seed`
+
+```
+Usage: t3 teatree config_setting seed [OPTIONS] KEY VALUE
+
+ Provenance-aware DEPLOY seed of *key* → *value* (#3435).
+
+ Unlike ``set`` (an operator write that always upserts), ``seed`` is the
+ idempotent redeploy path: it NEVER writes a value equal to the code
+ default (which would only freeze a future default change), PRESERVES any
+ operator override, and re-seeds a row it still owns when the shipped
+ default changed. It records provenance (``seeded_by`` + the seeded value)
+ so a later ``t3 doctor --repair`` autofix can tell a deploy-seeded row
+ from an operator's deliberate pin. Same key/JSON validation as ``set``.
+
+╭─ Arguments ──────────────────────────────────────────────────────────────────╮
+│ *    key        TEXT  UserSettings field name (must be overridable).         │
+│                       [required]                                             │
+│ *    value      TEXT  JSON value, e.g. true / false / '"x"' / 3. [required]  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --overlay          TEXT  Overlay name to scope the row to; omit for the      │
+│                          global scope (every overlay).                       │
+│ --seeded-by        TEXT  Provenance marker recorded on the row (default:     │
+│                          entrypoint).                                        │
+│                          [default: entrypoint]                               │
+│ --help                   Show this message and exit.                         │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 

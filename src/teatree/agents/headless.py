@@ -39,10 +39,15 @@ from teatree.agents.headless_usage import _attempt_usage
 from teatree.agents.pydantic_ai_resume import maybe_persist_on_park
 from teatree.agents.reader_profile import is_reader_phase, reader_child_env, reader_env_hermetic
 from teatree.agents.skill_bundle import active_overlay_stage_skills, resolve_skill_bundle
-from teatree.agents.usage_window import maybe_park_for_active_window, park_task_on_limit
+from teatree.agents.usage_window import (
+    maybe_park_for_active_window,
+    park_or_rotate_on_limit,
+    park_task_on_all_exhausted,
+)
 from teatree.config import AgentHarnessProvider, UserSettings, get_effective_settings
 from teatree.core.models import LeaseLostError, Task, TaskAttempt
 from teatree.core.models.ticket_worktree_checks import dispatch_worktree_path
+from teatree.credential_config import AllTokensExhaustedError
 from teatree.llm.anthropic_limits import LimitMatch, classify_limit, classify_rate_limit_type
 from teatree.llm.credentials import CredentialError
 from teatree.skill_support.loading import SkillLoadingPolicy
@@ -384,11 +389,11 @@ def _admission_park_or_child_env(
     if admission_park is not None:
         _restore_unconsumed_resume_thread(harness)
         return admission_park
-    return _resolve_child_env_or_failure(task, harness, provider, phase=phase)
+    return _resolve_child_env_or_failure(task, harness, provider, lane=lane, phase=phase)
 
 
 def _resolve_child_env_or_failure(
-    task: Task, harness: Harness, provider: AgentHarnessProvider | None, *, phase: str = ""
+    task: Task, harness: Harness, provider: AgentHarnessProvider | None, *, lane: str = "", phase: str = ""
 ) -> dict[str, str] | TaskAttempt | None:
     """Resolve the ``claude`` CLI child env for a :class:`~teatree.agents.harness.ClaudeSdkHarness` dispatch.
 
@@ -417,6 +422,13 @@ def _resolve_child_env_or_failure(
     try:
         base_env = _provider_child_env(provider, scope=_overlay_scope(task))
     except CredentialError as exc:
+        # #C2: every configured account drained (an ``AllTokensExhaustedError``) → quiesce the
+        # lane and auto-resume at the earliest reset rather than escalating to a human; any
+        # other credential gap (or flag-off) records the loud terminal FAILED as before.
+        if isinstance(exc, AllTokensExhaustedError):
+            parked = park_task_on_all_exhausted(task, resets_at=exc.earliest_reset, lane=lane)
+            if parked is not None:
+                return parked
         logger.warning("Refusing dispatch for task %s: %s", task.pk, exc)
         return _record_failure(task, error=str(exc))
     if is_reader_phase(phase):
@@ -440,7 +452,7 @@ def _outcome_failure(task: Task, outcome: HarnessOutcome, *, lane: str = "") -> 
     limit = _limit_match(outcome.result_message, outcome.rate_limit_info)
     if limit is not None:
         sdk_resets_at = outcome.rate_limit_info.resets_at if outcome.rate_limit_info is not None else None
-        parked = park_task_on_limit(task, limit, sdk_resets_at=sdk_resets_at, lane=lane)
+        parked = park_or_rotate_on_limit(task, limit, sdk_resets_at=sdk_resets_at, lane=lane)
         if parked is not None:
             return parked
         reason = limit.as_reason()
