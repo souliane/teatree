@@ -411,6 +411,9 @@ class EvalScenarioResult(models.Model):
     tool_calls = models.JSONField(default=list, blank=True)
     matcher_details = models.JSONField(default=list, blank=True)
     judge_rationale = models.CharField(max_length=512, blank=True, default="")
+    # Float (not Decimal) for cost_usd/main_cost_usd/aux_cost_usd is a recorded,
+    # accepted waiver of the float-for-money anti-pattern: provider-cost telemetry,
+    # never invoicing. See ``float-for-money`` in src/teatree/quality/antipatterns.yaml.
     cost_usd = models.FloatField(default=0.0)
     # Metered cost split: the requested MAIN model vs the AUXILIARY background
     # (Claude Code's claude-haiku-4-5), from per-model model_usage.costUSD. 0.0 on
