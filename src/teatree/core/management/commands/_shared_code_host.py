@@ -20,6 +20,11 @@ from typing import Final
 NO_CODE_HOST_MESSAGE: Final = "No code host configured (check overlay GitLab/GitHub token)."
 
 
-def no_code_host_error() -> dict[str, str]:
-    """The canonical ``{"error": <no code host>}`` payload for dict-returning commands."""
+def no_code_host_error() -> dict[str, object]:
+    """The canonical ``{"error": <no code host>}`` payload for dict-returning commands.
+
+    Typed ``dict[str, object]`` (not ``dict[str, str]``) so the payload is
+    assignable to the ``dict[str, object]`` return contract every dict-returning
+    command declares — ``dict`` is invariant in its value type.
+    """
     return {"error": NO_CODE_HOST_MESSAGE}
