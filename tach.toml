@@ -18,6 +18,14 @@
 # primitives keeps the graph acyclic under forbid_circular_dependencies (else
 # gitlab/github <-> parent would cycle).
 # tests/quality/test_backends_explicit_coupling.py pins the explicit edge.
+#
+# depends_on is NOT an exhaustive import list. In tach's layered mode a module
+# may import any module in a LOWER layer without declaring it, so only
+# SAME-layer edges bind here. teatree.mcp (integration), for example, also
+# imports teatree.config (platform), teatree.backends.types (domain), and broad
+# teatree.core.* (domain) -- all downward cross-layer edges, permitted
+# implicitly -- so its minimal depends_on list is not an understatement of its
+# real surface.
 
 interfaces = []
 forbid_circular_dependencies = true
@@ -223,12 +231,6 @@ depends_on = [
   "teatree.verification"
 ]
 
-# NOTE: `depends_on` is NOT an exhaustive import list. In tach's layered mode a
-# module may import any module in a LOWER layer without declaring it, so only
-# SAME-layer edges bind here. teatree.mcp (integration) also imports teatree.config
-# (platform), teatree.backends.types (domain), and broad teatree.core.* (domain) —
-# all downward cross-layer edges, permitted implicitly. teatree.mcp has no
-# same-layer (integration→integration) dependency, so this list stays minimal.
 [[modules]]
 path = "teatree.mcp"
 layer = "integration"
