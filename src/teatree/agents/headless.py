@@ -40,7 +40,7 @@ from teatree.agents.pydantic_ai_resume import maybe_persist_on_park
 from teatree.agents.reader_profile import is_reader_phase, reader_child_env, reader_env_hermetic
 from teatree.agents.skill_bundle import active_overlay_stage_skills, resolve_skill_bundle
 from teatree.agents.usage_window import maybe_park_for_active_window, park_task_on_limit
-from teatree.config import AgentHarnessProvider, get_effective_settings
+from teatree.config import AgentHarnessProvider, UserSettings, get_effective_settings
 from teatree.core.models import LeaseLostError, Task, TaskAttempt
 from teatree.core.models.ticket_worktree_checks import dispatch_worktree_path
 from teatree.llm.anthropic_limits import LimitMatch, classify_limit, classify_rate_limit_type
@@ -65,6 +65,15 @@ _DEFAULT_WATCHDOG = {
     "max_turns": 0,  # 0 = disabled
     "max_cost_usd": 0.0,  # 0 = disabled
 }
+
+
+def _config_or_fallback(configured: float, default: float, fallback: float) -> float:
+    """The config value when explicitly set, else the documented Django-settings fallback.
+
+    A config field still at its dataclass *default* is "unconfigured", so the legacy
+    Django-settings *fallback* supplies the dimension; any other config value wins (F9.5).
+    """
+    return configured if configured != default else fallback
 
 
 @dataclass(frozen=True)
@@ -103,11 +112,39 @@ class LoopWatchdog:
 
     @classmethod
     def from_settings(cls) -> "LoopWatchdog":
-        configured = getattr(settings, "TEATREE_LOOP_WATCHDOG", None) or _DEFAULT_WATCHDOG
+        """Build the watchdog from the DB-home config tier; Django-settings as fallback.
+
+        The ceilings resolve through ``get_effective_settings()`` (the #1775 config tier —
+        env -> ConfigSetting -> dataclass default), so ``config_setting get`` sees them
+        (F9.5). The legacy Django-settings ``TEATREE_LOOP_WATCHDOG`` dict stays a documented
+        fallback: it supplies a dimension only while the config value is still at its
+        dataclass default (unconfigured), so an explicit DB / env config always wins.
+        """
+        effective = get_effective_settings()
+        fallback = getattr(settings, "TEATREE_LOOP_WATCHDOG", None) or _DEFAULT_WATCHDOG
+        defaults = UserSettings()
         return cls(
-            max_runtime_seconds=float(configured.get("max_runtime_seconds", 0)),
-            max_turns=int(configured.get("max_turns", 0)),
-            max_cost_usd=float(configured.get("max_cost_usd", 0.0)),
+            max_runtime_seconds=float(
+                _config_or_fallback(
+                    effective.watchdog_max_runtime_seconds,
+                    defaults.watchdog_max_runtime_seconds,
+                    fallback.get("max_runtime_seconds", 0),
+                )
+            ),
+            max_turns=int(
+                _config_or_fallback(
+                    effective.watchdog_max_turns,
+                    defaults.watchdog_max_turns,
+                    fallback.get("max_turns", 0),
+                )
+            ),
+            max_cost_usd=float(
+                _config_or_fallback(
+                    effective.watchdog_max_cost_usd,
+                    defaults.watchdog_max_cost_usd,
+                    fallback.get("max_cost_usd", 0.0),
+                )
+            ),
         )
 
     def breach_reason(self, task: Task, *, elapsed_seconds: float, usage: TaskUsage | None = None) -> str | None:
@@ -518,10 +555,18 @@ async def _drive_with_heartbeat(
                         return
                     except Exception:  # noqa: BLE001 — a transient heartbeat failure is logged, never breaks the watchdog loop
                         logger.warning("Heartbeat failed for task %s", task.pk)
+                    # Re-sample the accumulated turn/cost deltas each tick (F9.3) so the
+                    # turn/cost ceilings observe the CURRENT run's spend, not the pre-run
+                    # static snapshot — the "cost spike DURING the heartbeat loop" the
+                    # watchdog docstring promises. Only pay the DB read when a turn/cost
+                    # ceiling is armed (the runtime ceiling needs no usage).
+                    live_usage = usage
+                    if watchdog.max_turns or watchdog.max_cost_usd:
+                        live_usage = await asyncio.to_thread(_sample_usage_closing_connection, task)
                     reason = watchdog.breach_reason(
                         task,
                         elapsed_seconds=time.monotonic() - started_at,
-                        usage=usage,
+                        usage=live_usage,
                     )
                     if reason and not breach:
                         breach.append(reason)

@@ -5,6 +5,9 @@ result of the query function — the manager reuse (overlay scoping, in-flight,
 resolve) is exercised end to end against the test DB, not mocked.
 """
 
+import logging
+
+import pytest
 from django.test import TestCase
 
 from teatree.core.models import IncomingEvent, PullRequest, Task, Ticket
@@ -30,6 +33,35 @@ class TestCapped:
 
     def test_oversized_limit_is_clamped_to_max(self) -> None:
         assert search._capped(10_000, 50) == search._MAX_LIMIT
+
+
+class TestCappedPage:
+    """The clamp reports truncation instead of silently dropping rows (F9.4)."""
+
+    def test_over_limit_request_reports_truncated_and_logs(self, caplog: pytest.LogCaptureFixture) -> None:
+        with caplog.at_level(logging.WARNING, logger="teatree.mcp.search"):
+            page = search._capped_page(500, 50)
+        assert page.limit == search._MAX_LIMIT
+        assert page.truncated is True
+        assert "exceeds" in caplog.text
+        assert "500" in caplog.text
+
+    def test_in_range_request_is_not_truncated_and_is_silent(self, caplog: pytest.LogCaptureFixture) -> None:
+        with caplog.at_level(logging.WARNING, logger="teatree.mcp.search"):
+            page = search._capped_page(10, 50)
+        assert page == search.CappedLimit(limit=10, truncated=False)
+        assert caplog.text == ""
+
+    def test_non_positive_falls_back_without_truncation(self) -> None:
+        # Falling back to the default withheld no rows the caller asked for, so it is not
+        # a truncation — only an over-_MAX_LIMIT request drops requested rows.
+        page = search._capped_page(0, 50)
+        assert page == search.CappedLimit(limit=50, truncated=False)
+
+    def test_at_max_boundary_is_not_truncated(self) -> None:
+        page = search._capped_page(search._MAX_LIMIT, 50)
+        assert page.limit == search._MAX_LIMIT
+        assert page.truncated is False
 
 
 class TestTicketSearch(TestCase):

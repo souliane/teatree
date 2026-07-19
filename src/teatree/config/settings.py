@@ -10,7 +10,7 @@ package module for the module-health LOC cap; re-exported from
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, Final
 
 from teatree.config.agent_enums import (
     AgentHarness,
@@ -73,6 +73,13 @@ OVERLAY_OVERRIDABLE_SETTINGS: dict[str, Callable[[Any], Any]] = {
     "enforce_regulated_path": _parse_strict_bool,
     "regulated_path_model_allowlist": _parse_str_list,
     "pydantic_ai_request_limit": _parse_strict_int,
+    # #882 / #885 (F9.5): the headless watchdog + per-ticket budget ceilings, folded
+    # off the former Django-settings ``TEATREE_LOOP_WATCHDOG`` / ``TEATREE_TICKET_BUDGET``
+    # dicts into the DB-home config tier so ``config_setting get`` reads them.
+    "watchdog_max_runtime_seconds": _parse_strict_int,
+    "watchdog_max_turns": _parse_strict_int,
+    "watchdog_max_cost_usd": _parse_strict_float,
+    "ticket_budget_max_cost_usd": _parse_strict_float,
     "orca_router_pass_path": _parse_strict_str,
     "orca_router_lane": _parse_strict_str,
     "orca_router_name": _parse_strict_str,
@@ -351,6 +358,40 @@ ENV_SETTING_OVERRIDES: dict[str, tuple[str, Callable[[str], Any]]] = {
 }
 
 
+# The ``UserSettings`` fields whose WRITE is itself an authorization / delegation /
+# fail-closed-boundary act — not a tunable knob. Writing one of these does not merely
+# CONFIGURE a gate: it grants authority (``substrate_auto_merge_authorized_by`` — "the
+# config write IS the human authorization"), delegates a keystone sign-off
+# (``substrate_self_signoff``), disarms an egress/on-behalf pre-gate
+# (``on_behalf_post_mode = IMMEDIATE``, ``on_behalf_auto_actions``), or WIDENS a
+# fail-closed intake / egress / regulated allowlist (``trusted_issue_authors``,
+# ``send_proxy_allowlist``, ``regulated_path_model_allowlist``), raises the global
+# autonomy posture (``autonomy``, ``enforce_regulated_path``), or relaxes an
+# autonomous-close boundary (``bulk_close_threshold``). The MCP ``config_setting_set``
+# surface REFUSES every key here by declared EFFECT (``teatree.mcp.write_tools`` reads
+# this set), so a shell-denied MCP agent can never self-grant merge delegation or widen
+# the fail-closed intake allowlist by classifying keys via a name-glob that misses them
+# (F9.1). This is EFFECT-based, not name-shaped: the companion conformance test
+# (``tests/teatree_mcp/test_write_tools_refusals.py``) walks every ``UserSettings`` field
+# and fails CLOSED if a delegation/allowlist/authorization-shaped field is in neither this
+# set nor the explicit reviewed ``teatree.mcp.write_tools.MCP_SETTABLE_OK`` allowlist — so
+# a future safety-posture field can never ship silently MCP-settable.
+SAFETY_POSTURE_KEYS: Final[frozenset[str]] = frozenset(
+    {
+        "autonomy",
+        "enforce_regulated_path",
+        "regulated_path_model_allowlist",
+        "substrate_self_signoff",
+        "substrate_auto_merge_authorized_by",
+        "on_behalf_post_mode",
+        "on_behalf_auto_actions",
+        "send_proxy_allowlist",
+        "trusted_issue_authors",
+        "bulk_close_threshold",
+    }
+)
+
+
 @dataclass
 class OverlayEntry:
     name: str
@@ -512,6 +553,23 @@ class _ModeHarnessSettings:
     # ``metered_api_key`` rides the metered key (per-token cost, no window) and stays
     # selectable. Per-overlay overridable; ``T3_EVAL_CREDENTIAL`` env wins over both.
     eval_credential: EvalCredential = EvalCredential.SUBSCRIPTION_OAUTH
+    # Absolute per-RUN watchdog ceilings for the headless ``claude_sdk`` lane (#882,
+    # F9.5). Folded off the former Django-settings ``TEATREE_LOOP_WATCHDOG`` dict into
+    # the DB-home config tier so ``config_setting get`` sees them (the third config
+    # plane #1775 partitioned away); ``LoopWatchdog.from_settings`` reads these and
+    # the Django ``TEATREE_LOOP_WATCHDOG`` value stays a documented fallback consulted
+    # only when the config value is still at its default. ``0`` disables a dimension —
+    # matching the shipped-off turn/cost caps (only the generous runtime ceiling is
+    # armed by default). Per-overlay overridable.
+    watchdog_max_runtime_seconds: int = 3 * 60 * 60
+    watchdog_max_turns: int = 0
+    watchdog_max_cost_usd: float = 0.0
+    # Per-TICKET cumulative cost cap for the headless lane (#885 / #398-4, F9.5), folded
+    # off the former Django-settings ``TEATREE_TICKET_BUDGET`` dict into the DB-home
+    # config tier for the same #1775 provenance reason. ``TicketBudget.from_settings``
+    # reads it; the Django ``TEATREE_TICKET_BUDGET`` value stays the documented fallback.
+    # ``0.0`` disables the cap. Per-overlay overridable.
+    ticket_budget_max_cost_usd: float = 0.0
 
 
 @dataclass
