@@ -16,6 +16,12 @@ x-teatree-common: &teatree-common
   build:
     context: ..
     dockerfile: deploy/Dockerfile
+    # The container's runtime UID must equal the host deploy user's UID (path-
+    # identity bind mounts — see deploy/README.md § UID invariant). deploy.sh
+    # exports TEATREE_UID from the host (`id -u`); the default matches the image's
+    # own ARG default (1001) for a bare `compose build` with no deploy.sh.
+    args:
+      TEATREE_UID: ${TEATREE_UID:-1001}
   env_file:
     - teatree.env
   # All services mount all state so admin and worker share ONE db.sqlite3
@@ -154,6 +160,10 @@ services:
     build:
       context: ..
       dockerfile: deploy/Dockerfile
+      # Same shared image, so the UID build arg must match the anchor's (see
+      # deploy/README.md § UID invariant); default 1001 tracks the ARG default.
+      args:
+        TEATREE_UID: ${TEATREE_UID:-1001}
     environment:
       TEATREE_ROLE: watchdog
       TEATREE_WATCHDOG_INTERVAL: "300"

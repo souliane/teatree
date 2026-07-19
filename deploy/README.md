@@ -83,6 +83,43 @@ from the operator's real DB.
 `teatree_src` and `teatree_uv` stay Docker-managed named volumes for now (later
 PRs handle code-mount modes).
 
+### UID invariant — the container user must equal the host deploy user
+
+Every state, credential, and session mount in the table above is a **host bind
+mount at path identity**, so each file on the host disk carries the host deploy
+user's numeric UID while the container writes it as the image's `teatree` user.
+Those two must be the **same UID**, or every bind mount is unwritable from inside
+the container and `init` crash-loops on its first write.
+
+`deploy.sh` therefore **derives the container UID from the host at deploy time**:
+it runs as the deploy user, reads that user's UID (`id -u`), and exports it as the
+`TEATREE_UID` build arg (compose reads `${TEATREE_UID}` into the image build). The
+image build then renumbers its `teatree` user onto that UID and removes Ubuntu
+24.04's stock `ubuntu` user (which occupies UID 1000) so the id is free. Because the
+container UID is taken from whatever box runs the build, **the invariant holds on
+any box with no manual step** — the live box (deploy user 1001) rebuilds at 1001
+with no chown, and a fresh box lands on its own deploy user's UID.
+
+The default UID, used when nothing exports `TEATREE_UID` (the `ARG TEATREE_UID`
+default in `deploy/Dockerfile`, and the `${TEATREE_UID:-1001}` default in
+`deploy/docker-compose.yml`), is **1001** — the live box's deploy user, and the UID
+`useradd teatree` lands on unaided inside the image (UID 1000 is taken by the stock
+`ubuntu` user, so `teatree` takes the next free id, 1001). `deploy.sh` also
+pre-creates every bind-mount source owned by the deploy user before the stack
+starts.
+
+A bare `docker compose build` (no `deploy.sh`) uses that 1001 default. To build for
+a different deploy user by hand, export or pass the UID explicitly:
+
+```bash
+TEATREE_UID="$(id -u)" docker compose -f deploy/docker-compose.yml build
+# or: docker compose -f deploy/docker-compose.yml build --build-arg TEATREE_UID="$(id -u)"
+```
+
+Changing the container UID on a box that already has bind-mount data written under
+the old UID requires a one-time `chown` of the bind sources to the new UID (stack
+stopped), otherwise the pre-existing files stay unwritable.
+
 ### One-time volume migration (operator step)
 
 A box that ran an older deploy has its state in Docker named volumes
