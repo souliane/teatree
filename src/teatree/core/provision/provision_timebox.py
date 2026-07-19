@@ -159,12 +159,19 @@ def alert_provision_user(*, step: str, repo: str, detail: str) -> None:
     steps. Best-effort: :func:`notify_user` never raises (degrades to a
     recorded NOOP when no backend resolves), so a failed alert never aborts the
     caller.
+
+    The audience is :attr:`~teatree.core.modelkit.notify_policy.NotifyAudience.OWNER_ESCALATION`
+    (F4.2): a slow/aborted provisioning step is exactly the "outage/HALT" class
+    the owner reads. An earlier ``INTERNAL`` audience meant
+    :func:`teatree.core.notify.notify_user` short-circuited BEFORE any backend
+    resolution — the loud #2220 alert degraded to a log line and never left the
+    machine, so an away user was never told the step was slow and aborted.
     """
     where = f" for {repo}" if repo else ""
     text = f"Worktree provisioning step `{step}`{where}: {detail}"
     key = f"provision-timeout:{step}:{repo or 'unknown'}"
     try:
-        notify_user(text, kind=NotifyKind.INFO, idempotency_key=key, audience=NotifyAudience.INTERNAL)
+        notify_user(text, kind=NotifyKind.INFO, idempotency_key=key, audience=NotifyAudience.OWNER_ESCALATION)
     except Exception as exc:  # noqa: BLE001 — alert is best-effort; never crash provisioning
         logger.warning("provision-timebox alert failed for step=%s: %s", step, exc)
 
