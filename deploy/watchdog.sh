@@ -91,6 +91,21 @@ notify_owner() {
   fi
 }
 
+# Gather the compose container states from the daemon socket and base64-encode them
+# for handoff to `t3 doctor`. This watchdog is the ONLY container with
+# /var/run/docker.sock, while `t3 doctor` runs in a socket-less app container whose
+# own `docker ps` cannot reach the daemon — so without this handoff the doctor's
+# compose-stack detector (crash-looping init / down worker) silently passes every
+# real outage. Empty on any docker/base64 failure — the doctor then degrades to a
+# pass exactly as it did before this handoff, and its other detectors still run.
+compose_states_b64() {
+  local ps
+  ps="$(docker ps --all \
+        --filter "label=com.docker.compose.project=$PROJECT" \
+        --format '{{.Label "com.docker.compose.service"}}'$'\t''{{.State}}'$'\t''{{.Status}}' 2>/dev/null)" || return 0
+  printf '%s' "$ps" | base64 -w0 2>/dev/null || true
+}
+
 # Run `t3 doctor check --json` in the first REACHABLE exec service, capturing its
 # stdout into DOCTOR_RAW regardless of doctor's exit code. This is the heart of
 # the #3440 fix: a red-findings verdict exits NON-ZERO yet is a healthy RUN of
@@ -100,13 +115,16 @@ notify_owner() {
 # falls through to the next one. Returns 0 when a service was reached (DOCTOR_RAW
 # set, possibly empty), 125 when NO exec service could be reached at all.
 run_doctor() {
-  local svc
+  local svc states_b64
   DOCTOR_RAW=""
+  states_b64="$(compose_states_b64)"
   for svc in $EXEC_SERVICES; do
     if compose exec -T "$svc" true >/dev/null 2>&1; then
       # `|| true`: doctor exits non-zero on red findings; keep its stdout, drop
       # the exit code (set -e must not abort, and the code is NOT the signal).
-      DOCTOR_RAW="$(compose exec -T "$svc" t3 doctor check --json 2>/dev/null || true)"
+      # `-e TEATREE_DOCTOR_COMPOSE_PS`: hand the socket-only container states to the
+      # doctor's compose-stack detector, which cannot reach the daemon itself.
+      DOCTOR_RAW="$(compose exec -T -e "TEATREE_DOCTOR_COMPOSE_PS=$states_b64" "$svc" t3 doctor check --json 2>/dev/null || true)"
       return 0
     fi
   done

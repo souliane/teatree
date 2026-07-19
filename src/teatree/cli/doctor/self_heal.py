@@ -24,8 +24,10 @@ aborts the doctor run would recreate the very "monitor dies, alerting dies"
 failure this module exists to end.
 """
 
+import base64
 import datetime as dt
 import json
+import os
 import shutil
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -37,6 +39,10 @@ from teatree.paths import DATA_DIR
 
 #: The compose project the box runs the factory under (``deploy/docker-compose.yml``).
 _COMPOSE_PROJECT = "teatree"
+#: Env var the socket-holding watchdog uses to hand compose container states to
+#: ``t3 doctor`` (base64 of the ``docker ps`` tab-rows); see
+#: :func:`_compose_states_from_handoff`.
+_COMPOSE_STATES_ENV = "TEATREE_DOCTOR_COMPOSE_PS"
 #: The one-shot prep service — a non-zero exit is a crash-looping init.
 _INIT_SERVICE = "teatree-init"
 #: The long-running services expected to stay ``running`` while loops are enabled.
@@ -82,6 +88,47 @@ _STRANDED_HEADLESS_GRACE_SECONDS = 900
 _BOX_RUNTIME_CLONE = Path("/home/teatree/teatree")
 
 
+def _parse_compose_state_rows(text: str) -> list[tuple[str, str, str]]:
+    """Parse tab-separated ``docker ps`` lines into ``(service, state, status)`` tuples.
+
+    Each line carries three tab-separated fields -- service, state, status (the
+    probe's ``--format``); the state is lower-cased for the down-state comparison.
+    Malformed / short lines are dropped so a partial read never yields a garbage
+    verdict.
+    """
+    rows: list[tuple[str, str, str]] = []
+    for line in text.splitlines():
+        parts = line.split("\t")
+        if len(parts) == _STATE_ROW_FIELDS and parts[0]:
+            rows.append((parts[0], parts[1].strip().lower(), parts[2].strip()))
+    return rows
+
+
+def _compose_states_from_handoff() -> list[tuple[str, str, str]] | None:
+    """Compose states handed off by the socket-holding watchdog, or ``None`` when absent.
+
+    ``t3 doctor`` runs inside ``teatree-admin``, which has the ``docker`` CLI but
+    NOT ``/var/run/docker.sock`` (only the watchdog mounts the socket), so a local
+    ``docker ps`` there cannot reach the daemon and the compose-stack detector would
+    silently pass every real outage. The watchdog — the ONE container with the
+    socket — gathers the states and passes them in via :data:`_COMPOSE_STATES_ENV`
+    (base64 of the same tab-separated ``docker ps`` output), so the detector runs in
+    the container that also has the DB-backed ``loop_runner_on`` gate.
+
+    ``None`` when the env var is unset / empty (a dev box, or a direct ``t3 doctor``
+    run) so the caller falls back to a LOCAL ``docker ps``. A malformed / non-base64
+    handoff also yields ``None`` (degrade to a pass) rather than a garbage verdict.
+    """
+    raw = os.environ.get(_COMPOSE_STATES_ENV, "").strip()
+    if not raw:
+        return None
+    try:
+        decoded = base64.b64decode(raw).decode("utf-8")
+    except (ValueError, UnicodeDecodeError):
+        return None
+    return _parse_compose_state_rows(decoded)
+
+
 class _Probe:
     """Crash-tolerant reads of the loop/worker/clone state the checks aggregate.
 
@@ -104,16 +151,26 @@ class _Probe:
 
     @staticmethod
     def compose_container_states(project: str) -> list[tuple[str, str, str]] | None:
-        """``(service, state, status)`` per container of *project*, or ``None`` when docker is unreachable.
+        """``(service, state, status)`` per container of *project*, or ``None`` when unreadable.
 
-        ``None`` means "cannot tell" (no ``docker`` on PATH, daemon down, or the
-        probe timed out) — the caller degrades to a pass, exactly as the MCP /
-        Slack doctor probes degrade when their tool is absent. Inside the worker
-        container (no docker socket) this returns ``None`` and the watchdog's own
-        ``docker compose up -d`` remains the actual container-restart repair.
+        Prefers the watchdog handoff (:func:`_compose_states_from_handoff`): the
+        doctor runs inside a socket-LESS app container (``teatree-admin`` has the
+        ``docker`` CLI but not ``/var/run/docker.sock``), so a local ``docker ps``
+        cannot reach the daemon there and the detector would silently pass every
+        real outage. The socket-holding watchdog gathers the states and hands them
+        in, so the check runs where the DB-backed ``loop_runner_on`` gate lives.
+
+        Falls back to a LOCAL ``docker ps`` when no handoff is present (a dev box,
+        or a direct ``t3 doctor`` run on a machine WITH docker access). ``None``
+        means "cannot tell" (no handoff, and no ``docker`` on PATH / daemon down /
+        timeout) — the caller degrades to a pass, exactly as the MCP / Slack doctor
+        probes degrade when their tool is absent.
         """
         from teatree.utils.run import run_allowed_to_fail  # noqa: PLC0415 — deferred: keeps CLI startup light
 
+        handoff = _compose_states_from_handoff()
+        if handoff is not None:
+            return handoff
         docker = shutil.which("docker")
         if docker is None:
             return None
@@ -135,12 +192,7 @@ class _Probe:
             return None
         if completed.returncode != 0:
             return None
-        rows: list[tuple[str, str, str]] = []
-        for line in completed.stdout.splitlines():
-            parts = line.split("\t")
-            if len(parts) == _STATE_ROW_FIELDS and parts[0]:
-                rows.append((parts[0], parts[1].strip().lower(), parts[2].strip()))
-        return rows
+        return _parse_compose_state_rows(completed.stdout)
 
     @staticmethod
     def _cadence_seconds(loop_row: object) -> int:
@@ -247,10 +299,12 @@ def _check_compose_stack() -> bool:
 
     A non-zero init exit is a crash-looping prep container (nothing downstream
     starts); a worker/admin container stuck ``Created``/``Exited`` while
-    ``loop_runner_enabled`` is ON is a silently dead factory. Best-effort: when
-    docker is unreachable (the common in-container case, no socket) the probe
-    returns ``None`` and this degrades to a pass — the watchdog's own
-    ``docker compose up -d`` is the real container-restart repair.
+    ``loop_runner_enabled`` is ON is a silently dead factory. The container states
+    come from the watchdog handoff (:func:`_compose_states_from_handoff`) since the
+    doctor runs in a socket-less app container; only when neither the handoff nor a
+    local ``docker ps`` can read the daemon (a dev box) does the probe return
+    ``None`` and this degrade to a pass — the watchdog's own ``docker compose up
+    -d`` is the real container-restart repair.
     """
     try:
         states = _Probe.compose_container_states(_COMPOSE_PROJECT)
