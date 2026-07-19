@@ -1,7 +1,7 @@
-# teatree headless deployment (Hetzner)
+# teatree headless deployment
 
-Run teatree headless on a single existing Hetzner ARM64 box (CAX21, 8 GB), driven
-by one manual GitHub Action. teatree runs the autonomous loop (`t3 worker`,
+Run teatree headless on a single existing box, reached over direct SSH, driven
+by one GitHub Action. teatree runs the autonomous loop (`t3 worker`,
 `agent_runtime=headless`), self-updates via its own loop, autostarts on reboot,
 and serves the Django admin on the box loopback for SSH-tunnel access. The image
 is **self-contained** — it bakes a pinned source@ref + interpreter + locked deps
@@ -13,10 +13,11 @@ overlay is the built-in `t3-teatree`.
 
 ## How the one-click deploy works
 
-`Actions → Deploy teatree to Hetzner → Run workflow` (`.github/workflows/deploy-hetzner.yml`):
+`Actions → Deploy teatree → Run workflow` (`.github/workflows/deploy.yml`):
 
-1. Installs a checksum-pinned `hcloud` CLI and resolves the box IP from the server
-   name (the IP is masked out of the logs immediately).
+1. Connects to the box at the fixed host/IP held in the `DEPLOY_SSH_HOST` secret
+   (masked out of the logs immediately) — no cloud API resolves it, so any
+   directly-reachable box works, not just a Hetzner Cloud one.
 2. Writes the SSH key + known_hosts from secrets, connects with strict host-key
    checking.
 3. Writes the box secrets file `deploy/teatree.env` over SSH (piped over stdin,
@@ -305,12 +306,11 @@ Do this once as an admin on the box.
 
 | Secret | Purpose |
 | --- | --- |
-| `HCLOUD_TOKEN` | Hetzner Cloud API token (read-only is enough) to resolve the box IP |
-| `HETZNER_SERVER_NAME` | the Cloud server name to resolve |
-| `HETZNER_SSH_USER` | the deploy user (e.g. `teatree`) |
-| `HETZNER_SSH_PORT` | the SSH port |
-| `HETZNER_SSH_KEY` | the deploy **private** SSH key |
-| `HETZNER_SSH_KNOWN_HOSTS` | the box's host key line(s) for strict checking |
+| `DEPLOY_SSH_HOST` | the box host/IP to SSH into directly (e.g. `82.25.60.50`) |
+| `DEPLOY_SSH_USER` | the deploy user (e.g. `teatree`) |
+| `DEPLOY_SSH_PORT` | the SSH port |
+| `DEPLOY_SSH_KEY` | the deploy **private** SSH key |
+| `DEPLOY_SSH_KNOWN_HOSTS` | the box's host key line(s) for strict checking |
 | `CLAUDE_CODE_OAUTH_TOKEN` | Claude Code OAuth token — the headless auth |
 | `T3_ADMIN_USER` | Django admin superuser name |
 | `GIT_AUTHOR_NAME` | git identity for the loop's commits |
@@ -383,7 +383,7 @@ a permission is missing (#3405, #3436). A classic PAT satisfies this with the si
 printf '%s' "<new-github-pat>" | pass insert -m -f github/souliane/pat
 ```
 
-Then re-run **Actions → Deploy teatree to Hetzner** (or restart the stack): the
+Then re-run **Actions → Deploy teatree** (or restart the stack): the
 entrypoint re-sources the rotated value from `pass` at boot. Because the token is no
 longer written into `teatree.env`, rotation is a `pass` update plus a redeploy —
 the deploy workflow never rewrites the on-disk secret file for it.
