@@ -30,6 +30,16 @@ from teatree.llm.anthropic_limits import LimitCause, LimitMatch, window_horizon
 
 logger = logging.getLogger(__name__)
 
+#: The subscription causes a mid-run limit can ROTATE off (an account hit its 5h/weekly
+#: window while others may still be healthy). A transient rate limit is lane-wide and
+#: API-credit exhaustion has no rotation, so both stay on the plain lane park.
+_ROTATABLE_SUBSCRIPTION_CAUSES: frozenset[LimitCause] = frozenset(
+    {LimitCause.SUBSCRIPTION_SESSION, LimitCause.SUBSCRIPTION_WEEKLY},
+)
+#: The ``UsageWindowState.cause`` recorded when the WHOLE subscription lane parked because
+#: every account drained — distinct from a single-account cause for audit / notify wording.
+_ALL_EXHAUSTED_CAUSE = "all_accounts_exhausted"
+
 
 def autorecovery_enabled() -> bool:
     """Whether ``limit_autorecovery_enabled`` resolves ON — fail-safe OFF.
@@ -106,6 +116,98 @@ def park_task_on_limit(
         reset.isoformat(),
     )
     return _record_park(task, reason=f"{LIMIT_PARKED_PREFIX}{match.as_reason()}", not_before=reset)
+
+
+def park_or_rotate_on_limit(
+    task: Task, match: LimitMatch, *, sdk_resets_at: int | None, lane: str, now: datetime | None = None
+) -> TaskAttempt | None:
+    """Reactive limit handler: rotate accounts before parking (multi-account #C1), or park.
+
+    On a subscription session/weekly limit, record the CURRENT account exhausted and
+    re-consult the credential selector (routing scope = the task's ticket overlay): if another
+    account is still healthy, REQUEUE the task to rotate onto it (no lane park) so the next
+    dispatch runs on the fresh account; only when every account is exhausted does the whole
+    lane park (auto-resume at the earliest reset). A single unrouted credential, a transient
+    rate limit, or an API-credit cause falls through to :func:`park_task_on_limit` unchanged.
+    ``None`` (→ caller records a terminal FAILED, byte-identical to today) when the flag is OFF
+    or the cause has no time-based recovery.
+    """
+    if not autorecovery_enabled():
+        return None
+    moment = now or timezone.now()
+    reset = effective_resets_at(match.cause, _epoch_to_datetime(sdk_resets_at), moment)
+    if reset is None:
+        return None
+    if lane == TaskAttempt.Lane.SUBSCRIPTION and match.cause in _ROTATABLE_SUBSCRIPTION_CAUSES:
+        scope = task.ticket.overlay or ""  # the overlay the per-account selector routes for
+        rotated = _rotate_or_none(task, match, reset=reset, scope=scope, moment=moment)
+        if rotated is not None:
+            return rotated
+    return park_task_on_limit(task, match, sdk_resets_at=sdk_resets_at, lane=lane, now=moment)
+
+
+def _rotate_or_none(
+    task: Task, match: LimitMatch, *, reset: datetime, scope: str, moment: datetime
+) -> TaskAttempt | None:
+    """Record the current account exhausted + reselect: requeue to rotate, park if all spent, else ``None``.
+
+    ``None`` means nothing was routed (no sticky account), so the caller falls back to the
+    plain lane park. The credential import is call-time so the domain credential factory is
+    only pulled in when a subscription limit actually fires.
+    """
+    from teatree.credential_config import (  # noqa: PLC0415 — call-time import (domain credential factory)
+        AllTokensExhaustedError,
+        record_reactive_exhaustion_and_reselect,
+    )
+
+    weekly = match.cause is LimitCause.SUBSCRIPTION_WEEKLY
+    try:
+        healthy = record_reactive_exhaustion_and_reselect(scope=scope, resets_at=reset, weekly=weekly, now=moment)
+    except AllTokensExhaustedError as exc:
+        return park_task_on_all_exhausted(
+            task, resets_at=exc.earliest_reset or reset, lane=TaskAttempt.Lane.SUBSCRIPTION, now=moment
+        )
+    if healthy is None:
+        return None
+    logger.info("Task %s rotating off an exhausted subscription account to a healthy one", task.pk)
+    return _requeue_for_rotation(task, moment=moment)
+
+
+def _requeue_for_rotation(task: Task, *, moment: datetime) -> TaskAttempt:
+    """Return *task* to the queue immediately (PENDING) so the next dispatch rotates accounts.
+
+    Records the same ``limit_parked:`` audit attempt shape :func:`_record_park` uses (excluded
+    from the repair budget — a rotation is a scheduling event, not a work iteration), then
+    parks with ``not_before`` at *moment* so the task is claimable on the next tick.
+    """
+    reason = f"{LIMIT_PARKED_PREFIX}rotating to a healthy subscription account (an account hit its window)"
+    return _record_park(task, reason=reason, not_before=moment)
+
+
+def park_task_on_all_exhausted(
+    task: Task, *, resets_at: datetime | None, lane: str, now: datetime | None = None
+) -> TaskAttempt | None:
+    """Park *task* behind an ALL-ACCOUNTS-exhausted lane (multi-account #C2) — or ``None``.
+
+    Every configured account is spent, so there is no account to rotate to: park the WHOLE
+    lane keyed on *resets_at* (the earliest reset across accounts) so the existing
+    ``usage_window_recovery`` chain auto-resumes the task when the soonest account frees up — a
+    quiesce, NOT a human escalation. ``None`` (caller records a terminal FAILED, as today) when
+    the flag is OFF or no reset is known (nothing to re-arm to).
+    """
+    if not autorecovery_enabled() or resets_at is None:
+        return None
+    moment = now or timezone.now()
+    UsageWindowState.record_limit(lane=lane, cause=_ALL_EXHAUSTED_CAUSE, resets_at=resets_at, now=moment)
+    _auto_engage_low_power(resets_at, moment)
+    logger.warning(
+        "Task %s parked — all %s accounts exhausted; auto-resume at %s",
+        task.pk,
+        lane or "ambient",
+        resets_at.isoformat(),
+    )
+    reason = f"{LIMIT_PARKED_PREFIX}all configured subscription accounts exhausted — auto-resume at reset"
+    return _record_park(task, reason=reason, not_before=resets_at)
 
 
 def _auto_engage_low_power(reset: datetime, moment: datetime) -> None:

@@ -208,6 +208,7 @@ class TestSelectorRouting(TestCase):
         message = str(caught.value)
         assert "exhausted" in message
         assert soon.isoformat() in message, "the loud error names the soonest an account frees up"
+        assert caught.value.earliest_reset == soon, "the earliest reset is carried as a datetime for the C2 park"
 
 
 class TestSelectorRescueReprobe(TestCase):

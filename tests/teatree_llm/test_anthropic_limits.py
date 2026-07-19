@@ -6,6 +6,7 @@ import pytest
 from claude_agent_sdk.types import RateLimitType
 
 from teatree.llm.anthropic_limits import (
+    ALL_TOKENS_EXHAUSTED_SIGNATURE,
     LimitCause,
     LimitMatch,
     classify_limit,
@@ -161,3 +162,8 @@ class TestRecoverableExhaustionCause:
         assert recoverable_exhaustion_cause("AssertionError: expected 3 got 4") is None
         assert recoverable_exhaustion_cause("outage_death: connection refused") is None
         assert recoverable_exhaustion_cause("") is None
+
+    def test_all_accounts_exhausted_is_window_recoverable_not_a_human_escalation(self) -> None:
+        # A FAILED task with every configured account drained must auto-requeue, never escalate.
+        error = f"all configured Anthropic oauth {ALL_TOKENS_EXHAUSTED_SIGNATURE} (accounts a, b)"
+        assert recoverable_exhaustion_cause(error) is LimitCause.SUBSCRIPTION_WEEKLY

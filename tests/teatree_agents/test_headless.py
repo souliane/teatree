@@ -471,6 +471,80 @@ class TestRunHeadlessTypedRateLimitWindow(TestCase):
         assert "seven_day_sonnet" in attempt.error
 
 
+class TestRunHeadlessAllAccountsExhausted(TestCase):
+    """Multi-account #C2: with EVERY subscription account drained, a dispatch QUIESCES.
+
+    Pre-dispatch the credential selector raises ``AllTokensExhaustedError``; the headless
+    runner must PARK the task (auto-resume at the earliest reset) rather than record a
+    terminal FAILED that a human is later pinged about. Flag-off is byte-identical to today
+    (the drained lane still records a loud FAILED).
+    """
+
+    @classmethod
+    def setUpTestData(cls) -> None:
+        cls.ticket = Ticket.objects.create()
+
+    def _seed_exhausted(self, pass_path: str, *, reset: Any) -> None:
+        from teatree.core.models import AnthropicTokenUsage  # noqa: PLC0415 — test-local
+        from teatree.core.models.anthropic_token_usage import REJECTED_STATUS, TokenHealthReading  # noqa: PLC0415
+
+        AnthropicTokenUsage.objects.record(
+            pass_path,
+            TokenHealthReading(
+                organization_id="org-1",
+                utilization_5h=0.1,
+                utilization_7d=1.0,
+                status_5h="allowed",
+                status_7d=REJECTED_STATUS,
+                reset_5h=None,
+                reset_7d=reset,
+            ),
+        )
+
+    def _configure_three_exhausted_accounts(self) -> Any:
+        from datetime import timedelta  # noqa: PLC0415 — test-local
+
+        from django.utils import timezone  # noqa: PLC0415 — test-local
+
+        ConfigSetting.objects.set_value("agent_harness_provider", "subscription_oauth")
+        ConfigSetting.objects.set_value("anthropic_oauth_pass_paths", ["acct/1/oauth", "acct/2/oauth", "acct/3/oauth"])
+        earliest = timezone.now() + timedelta(hours=1)
+        self._seed_exhausted("acct/1/oauth", reset=timezone.now() + timedelta(hours=4))
+        self._seed_exhausted("acct/2/oauth", reset=earliest)  # the soonest to free up
+        self._seed_exhausted("acct/3/oauth", reset=timezone.now() + timedelta(hours=3))
+        return earliest
+
+    def test_all_exhausted_parks_and_auto_resumes_not_failed(self) -> None:
+        from teatree.core.models import UsageWindowState  # noqa: PLC0415 — test-local
+
+        ConfigSetting.objects.set_value("limit_autorecovery_enabled", value=True)
+        earliest = self._configure_three_exhausted_accounts()
+        with _fake_sdk([]):  # the run parks pre-dispatch; the SDK is never opened
+            session = Session.objects.create(ticket=self.ticket)
+            task = Task.objects.create(ticket=self.ticket, session=session)
+            attempt = run_headless(task, phase="coding", overlay_skill_metadata={})
+
+        task.refresh_from_db()
+        assert task.status == Task.Status.PENDING, "PARKED for auto-resume, NOT terminal FAILED"
+        assert task.not_before == earliest, "parked until the earliest account frees up"
+        assert attempt.error.startswith("limit_parked: ")
+        window = UsageWindowState.objects.active_for_lane(TaskAttempt.Lane.SUBSCRIPTION)
+        assert window is not None
+        assert window.resets_at == earliest
+
+    def test_flag_off_records_the_terminal_failed_as_today(self) -> None:
+        ConfigSetting.objects.set_value("limit_autorecovery_enabled", value=False)
+        self._configure_three_exhausted_accounts()
+        with _fake_sdk([]):
+            session = Session.objects.create(ticket=self.ticket)
+            task = Task.objects.create(ticket=self.ticket, session=session)
+            attempt = run_headless(task, phase="coding", overlay_skill_metadata={})
+
+        task.refresh_from_db()
+        assert task.status == Task.Status.FAILED, "flag off → byte-identical to today (loud FAILED)"
+        assert "exhausted" in attempt.error
+
+
 def test_limit_match_prefers_the_typed_window_over_the_result_text() -> None:
     # The result text names no limit phrase; the rejected typed window is the only
     # signal, so _limit_match classifies WEEKLY from it (the fallback would be None).

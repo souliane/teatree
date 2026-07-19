@@ -115,6 +115,29 @@ class TestReArmsOnlyAfterReset(django.test.TestCase):
         recover_windows(reset)
         assert BotPing.objects.filter(idempotency_key__startswith="usage_window_recovered:").exists()
 
+    def test_all_accounts_exhausted_park_auto_resumes_at_reset(self) -> None:
+        # A task parked because every configured account drained must auto-resume at its reset.
+        from teatree.agents.usage_window import park_task_on_all_exhausted  # noqa: PLC0415 — test-local
+
+        _set_autorecovery(on=True)
+        now = timezone.now()
+        reset = now + timedelta(hours=2)
+        task = _parked_task(not_before=now)  # placeholder; the park below sets the real gate
+        Task.objects.filter(pk=task.pk).update(status=Task.Status.CLAIMED, not_before=None)
+        task.refresh_from_db()
+
+        parked = park_task_on_all_exhausted(task, resets_at=reset, lane=TaskAttempt.Lane.SUBSCRIPTION, now=now)
+        assert parked is not None
+        task.refresh_from_db()
+        assert task.status == Task.Status.PENDING
+        assert task.not_before == reset
+
+        assert recover_windows(now + timedelta(hours=1)).released == 0, "still parked before the reset"
+        outcome = recover_windows(reset)
+        assert outcome.released == 1
+        task.refresh_from_db()
+        assert task.not_before is None, "auto-resumed at the reset — claimable again"
+
     def test_credit_window_is_never_auto_cleared(self) -> None:
         # A null-reset (API-credit) window has no time-based recovery — never cleared here.
         now = timezone.now()
