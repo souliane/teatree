@@ -7975,10 +7975,17 @@ Usage: t3 teatree pr post-test-plan [OPTIONS] MR_IID
 
  Post a test plan as a PR comment. Uploads files and updates existing notes.
 
- Files (screenshots, videos) are uploaded and embedded as ``!(url)`` in the
- body.
- If an existing note contains ``## Test Plan``, it is updated instead of
- creating a new one.
+ A thin delegator to the shared gated engine
+ (:func:`teatree.core.management.commands._test_plan.post.post_mr_test_plan_com
+ ment`),
+ so the MR path gets the SAME gates as the ticket/issue poster (F3.1) and
+ can no longer drift: files (screenshots, videos) are uploaded and each one
+ passes the #2156 ``verify_upload`` existence check before it is embedded
+ as ``!(url)``; the body is run through the blocked-body config gate
+ and the scanned public-repo leak seam; and the note is matched for an
+ idempotent in-place update by THIS MR's hidden idempotency marker — never
+ a naive ``"## Test Plan" in body`` scan that could clobber a colleague's
+ unrelated comment.
 
  Gated by ``on_behalf_post_mode`` (#960, BLOCK under ``ask`` /
  ``draft_or_ask``): the call is refused with no upload or host side
@@ -7986,8 +7993,9 @@ Usage: t3 teatree pr post-test-plan [OPTIONS] MR_IID
  ``(<repo>!<mr>, "post_evidence")``. The ``"post_evidence"`` action key
  is PERSISTED on existing ``OnBehalfApproval`` rows, so it stays the wire
  value even though the command is now named ``post-test-plan``. The gate
- is inlined here (not at the ``code_host`` layer) so PR creation — which
- is not an on-behalf colleague-facing post — remains ungated.
+ is inlined at the command layer (not at the ``code_host`` layer) so PR
+ creation — which is not an on-behalf colleague-facing post — remains
+ ungated.
 
  The legacy ``post-evidence`` name is kept as a hidden, deprecated alias
  for one release so existing scripts keep working.
