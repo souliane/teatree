@@ -132,6 +132,19 @@ def manual_override_chunk(now: dt.datetime | None = None) -> str:
     return "ovr: " + " ".join(f"{name}{'+' if on else '-'}" for name, on in entries)
 
 
+def overridden_loop_names(now: dt.datetime | None = None) -> set[str]:
+    """The bare names of every loop manually overridden away from the preset/base verdict (#3248).
+
+    The statusline per-loop-lease collapse
+    (:func:`teatree.loop.statusline_loops.live_loops_anchor`) keeps a
+    ``loop:<name>`` chunk only for a manually-overridden loop; this is the
+    injected selector it reads. Sharing :func:`manual_override_entries`'
+    divergence logic keeps the surfaced lease chunks and the ``ovr:`` segment
+    from ever disagreeing about which loops diverge from the handle.
+    """
+    return {name for name, _ in manual_override_entries(now)}
+
+
 def preset_line_chunk(now: dt.datetime | None = None) -> str:
     """The composed schedule/preset/override statusline segment (#3248), or ``""`` when nothing governs.
 
@@ -170,6 +183,7 @@ __all__ = [
     "effective_verdicts",
     "manual_override_chunk",
     "manual_override_entries",
+    "overridden_loop_names",
     "preset_line_chunk",
     "schedule_chunk",
     "statusline_chunk",

@@ -16,7 +16,7 @@ from datetime import UTC, datetime, timedelta
 from unittest.mock import patch
 
 from teatree.loop.statusline import live_loops_anchor
-from teatree.loop.statusline_loops import _loop_recency_color
+from teatree.loop.statusline_loop_chunks import _loop_recency_color
 from teatree.loop.statusline_palette import _ANSI_GREEN, _ANSI_RED, _ANSI_YELLOW
 
 
