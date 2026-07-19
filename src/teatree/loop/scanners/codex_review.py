@@ -47,6 +47,13 @@ logger = logging.getLogger(__name__)
 
 _GH_NOT_INSTALLED_RC = 127
 
+#: ``gh pr list`` default page size is 30; a user with more than 30 open
+#: self-authored PRs on one repo would silently leave the overflow
+#: un-doublechecked (F5.4). Ask for a high explicit limit and warn when the
+#: result count reaches it, so a genuine >200-PR repo is visible rather than
+#: silently truncated.
+_LIST_OPEN_PRS_LIMIT = 200
+
 #: Path fragments that classify a diff as high-stakes; touching any of
 #: them routes the scanner's dispatch to ``codex:adversarial-review`` so
 #: the harder review is the default for security-sensitive code paths.
@@ -134,7 +141,14 @@ class CodexReviewScanner:
         signals: list[ScanSignal] = []
         for slug in self.repos:
             for pr in self._safe_list(slug):
-                signal = self._evaluate(pr)
+                try:
+                    signal = self._evaluate(pr)
+                except Exception:
+                    # F5.6: isolate each PR — one PR whose classification raises
+                    # (e.g. a live visibility probe failing) must not drop the
+                    # codex dispatch for the other PRs in the sweep.
+                    logger.exception("codex_review failed to evaluate %s#%d", pr.slug, pr.number)
+                    continue
                 if signal is not None:
                     signals.append(signal)
                     logger.info(
@@ -223,6 +237,8 @@ class GhCodexPrApi:
             "open",
             "--author",
             "@me",
+            "--limit",
+            str(_LIST_OPEN_PRS_LIMIT),
             "--json",
             "number,headRefOid,isDraft,url,title,author,files",
         ]
@@ -245,6 +261,16 @@ class GhCodexPrApi:
             return []
         if not isinstance(data, list):
             return []
+        if len(data) >= _LIST_OPEN_PRS_LIMIT:
+            # F5.4: the page filled to the requested cap — there may be more open
+            # self-authored PRs beyond it that this tick will not doublecheck.
+            logger.warning(
+                "codex_review: %s returned %d open self-PRs, hitting the --limit %d cap — "
+                "PRs beyond the cap are not codex-reviewed this tick",
+                slug,
+                len(data),
+                _LIST_OPEN_PRS_LIMIT,
+            )
         decoded = (_decode_pr(slug=slug, raw=cast("GhPrJson", item)) for item in data if isinstance(item, dict))
         return [pr for pr in decoded if pr is not None]
 

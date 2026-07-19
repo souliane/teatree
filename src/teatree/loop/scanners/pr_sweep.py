@@ -252,17 +252,41 @@ class PrSweepScanner:
 
     def scan(self) -> list[ScanSignal]:
         signals: list[ScanSignal] = []
+        errors: list[ScannerError] = []
         for slug in self.repos:
-            for pr in self._safe_list(slug):
+            try:
+                prs = self._safe_list(slug)
+            except ScannerError as exc:
+                # F5.8: record-and-continue rather than re-raise mid-pass. A
+                # later repo's auth/rate-limit failure must not discard the
+                # merge signals a preceding repo already produced (those merges
+                # have side effects the tick report must surface).
+                errors.append(exc)
+                continue
+            for pr in prs:
                 try:
                     attempt = self._evaluate(pr)
-                except ScannerError:
-                    raise  # auth/rate-limit escalation (#1287) — surface to the dispatcher
+                except ScannerError as exc:
+                    errors.append(exc)
+                    continue
                 except Exception:
                     logger.exception("pr_sweep failed to evaluate %s#%s", slug, getattr(pr, "number", "?"))
                     continue
                 self._log_attempt(attempt)
                 signals.append(_signal_from_attempt(attempt, overlay=self.overlay))
+        if errors and not signals:
+            # Nothing was produced this pass — surface the first recoverable error
+            # to the dispatcher (#1287) so a sustained auth/rate-limit failure is
+            # recorded and DM'd, exactly as before. When signals DID accumulate we
+            # keep them (F5.8) and log the errors instead of discarding the pass.
+            raise errors[0]
+        if errors:
+            logger.warning(
+                "pr_sweep: %d recoverable error(s) during pass, preserving %d accumulated signal(s): %s",
+                len(errors),
+                len(signals),
+                "; ".join(str(exc) for exc in errors),
+            )
         return signals
 
     def evaluate_one(self, *, slug: str, pr_id: int) -> MergeAttempt | None:

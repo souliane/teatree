@@ -85,6 +85,19 @@ def test_scan_phase_times_out_hung_scanner_and_records_error() -> None:
     assert "timeout" in outcome.errors["hung"].lower() or "timed" in outcome.errors["hung"].lower()
 
 
+def test_timed_out_scanner_error_is_labelled_abandoned() -> None:
+    """F5.9: a timed-out scanner thread is abandoned (kept running), not cancelled.
+
+    The recorded error must make the still-running state explicit so the tick
+    report / statusline does not imply the scanner simply stopped — a later tick
+    may start a second instance of it.
+    """
+    jobs = [_ScannerJob(scanner=_HungScanner(), overlay="")]
+    outcome = scan_phase(jobs, per_job_timeout=0.1)
+    assert "abandoned" in outcome.errors["hung"].lower()
+    assert "still running" in outcome.errors["hung"].lower()
+
+
 def test_scan_phase_bounds_all_jobs_under_one_shared_deadline() -> None:
     """Two hung scanners share ONE absolute deadline — never N x per_job_timeout (fix #7)."""
     jobs = [

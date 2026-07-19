@@ -41,10 +41,11 @@ Both the per-channel message fetcher and the MR-state classifier are
 function parameters on the scanner, not protocol methods on the
 backend. This keeps the scanner unit-testable without expanding the
 :class:`MessagingBackend` protocol or shelling out to ``glab`` in tests.
-The production wiring (channel-history fetcher on the Slack backend,
-``glab mr view`` based classifier) lands in follow-up #1131-wiring once
-the overlay extension point ``get_review_broadcast_channels()`` is
-designed and merged.
+The production wiring is :class:`BackendChannelHistoryFetcher` (delegating
+to :meth:`MessagingBackend.fetch_channel_history`) and
+:class:`GlabGhMrStateClassifier` (``glab mr view`` / ``gh pr view``); the
+tick-jobs builder resolves the overlay's broadcast channel list and passes
+it in, keeping the scanner overlay-agnostic.
 """
 
 import json
@@ -54,7 +55,7 @@ import re
 import shutil
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
-from typing import Protocol
+from typing import Protocol, cast
 
 from django.db import OperationalError, ProgrammingError
 
@@ -69,7 +70,7 @@ from teatree.loop.review_claim_signals import (
     record_reaction_claim,
 )
 from teatree.loop.review_request_tracker import record_review_request_post
-from teatree.loop.scanners.base import ScanSignal
+from teatree.loop.scanners.base import ScannerError, ScannerErrorClass, ScanSignal, classify_gh_stderr
 from teatree.types import RawAPIDict
 from teatree.url_classify import Forge, find_pr_urls, forge_of, repo_and_iid
 from teatree.utils.url_slug import pr_ref_from_url
@@ -238,7 +239,19 @@ class SlackBroadcastsScanner:
         signals: list[ScanSignal] = []
         try:
             for channel in self.channels:
-                signals.extend(self._scan_channel(channel))
+                # F5.5: isolate each channel — one channel's fetch/handle failure
+                # must not starve the channels queued after it. ScannerError
+                # (auth / rate-limit from the classifier) and the DB-not-migrated
+                # OperationalError/ProgrammingError still propagate: they are
+                # not per-channel faults and belong to the dispatcher's #1287
+                # error surface / the pre-migration skip below.
+                try:
+                    signals.extend(self._scan_channel(channel))
+                except (ConnectChannelBotRestrictedError, ScannerError, OperationalError, ProgrammingError):
+                    raise
+                except Exception:
+                    logger.exception("SlackBroadcastsScanner failed on channel %s", channel)
+                    continue
         except (OperationalError, ProgrammingError):
             # ``ScannedBroadcast`` lives in core migration 0028; an
             # install that hasn't run migrations yet raises "no such
@@ -263,7 +276,11 @@ class SlackBroadcastsScanner:
             ts = message.get("ts", "<unknown>")
             try:
                 signals.extend(self._handle_message(channel, message))
-            except ConnectChannelBotRestrictedError:
+            except (ConnectChannelBotRestrictedError, ScannerError):
+                # F5.3: a classifier auth / rate-limit failure is a recoverable
+                # scanner-wide error, not a per-message parse fault — surface it
+                # to the dispatcher (#1287) instead of masking it as a skipped
+                # message. Connect-restriction is likewise loud (#1131).
                 raise
             except Exception:
                 logger.exception("SlackBroadcastsScanner failed on message %s in %s", ts, channel)
@@ -511,6 +528,48 @@ class BackendChannelHistoryFetcher:
         return self.backend.fetch_channel_history(channel=channel, limit=self.limit)
 
 
+def _classifier_error(error_class: ScannerErrorClass, detail: str) -> ScannerError:
+    """Build the :class:`ScannerError` the classifier raises on a non-verdict failure (F5.3)."""
+    return ScannerError(scanner="slack_broadcasts", error_class=error_class, detail=detail)
+
+
+def _parse_classifier_json(stdout: str, *, tool: str, url: str) -> RawAPIDict:
+    """Parse a classifier subprocess's JSON object, raising :class:`ScannerError` on garbage (F5.3).
+
+    Empty output, non-JSON text, and a well-formed-but-non-object payload are
+    all failures-to-reach-a-verdict, not "not merged": the caller must not read
+    ``merged=False`` out of them. Only a parsed JSON *object* is a verdict.
+    """
+    if not stdout.strip():
+        raise _classifier_error(ScannerErrorClass.UNKNOWN, f"{tool} {url!r} returned empty output")
+    try:
+        data = json.loads(stdout)
+    except json.JSONDecodeError as exc:
+        raise _classifier_error(ScannerErrorClass.UNKNOWN, f"{tool} {url!r} returned non-JSON output: {exc}") from exc
+    if not isinstance(data, dict):
+        raise _classifier_error(ScannerErrorClass.UNKNOWN, f"{tool} {url!r} returned non-object JSON")
+    return cast("RawAPIDict", data)
+
+
+def _classifier_str(data: RawAPIDict, key: str) -> str:
+    value = data.get(key)
+    return value if isinstance(value, str) else ""
+
+
+def _classifier_int(data: RawAPIDict, key: str) -> int:
+    value = data.get(key)
+    return value if isinstance(value, int) else 0
+
+
+def _classifier_author(data: RawAPIDict, *, key: str) -> str:
+    """The forge author's username from ``data["author"][key]`` (GitLab ``username`` / GitHub ``login``)."""
+    author = data.get("author")
+    if not isinstance(author, dict):
+        return ""
+    value = cast("RawAPIDict", author).get(key)
+    return value if isinstance(value, str) else ""
+
+
 @dataclass(slots=True)
 class GlabGhMrStateClassifier:
     """Production :class:`MrStateClassifier` — shells out to ``glab`` / ``gh``.
@@ -519,11 +578,19 @@ class GlabGhMrStateClassifier:
     GitLab merge requests, ``gh pr view <url> --json …`` for GitHub
     pulls. The classifier reads ``state`` (merged-or-not) and a coarse
     approval flag (GitLab ``upvotes > 0``, GitHub
-    ``reviewDecision == APPROVED``). Any URL that fails to parse or
-    whose subprocess returns non-zero is treated as
-    ``merged=False, approved=False`` so the scanner falls through to
-    "open MR — please review" — the safe default for a broadcast we
-    couldn't confirm.
+    ``reviewDecision == APPROVED``).
+
+    Transient vs verdict (F5.3): ``merged=False`` is a *verdict* — the tool
+    ran, returned a parseable payload, and the MR was not merged — so the
+    scanner may safely dispatch a reviewer / seed a nag row for it. A
+    FAILURE to reach that verdict (the binary is missing, the token is
+    expired / rc≠0, or the output is not parseable JSON) is NOT a verdict:
+    the classifier raises :class:`ScannerError` so the dispatcher records
+    the degradation (#1287) and skips the tick, instead of silently
+    classifying a possibly-MERGED MR as open — which would nag reviewers
+    about already-landed work. A URL that is not a recognised MR (unparseable
+    forge / IID) stays ``merged=False`` (it is a deterministic non-match, not
+    a transient failure).
 
     Tokens are optional: when set they're exported as ``GITLAB_TOKEN`` /
     ``GH_TOKEN`` for each subprocess so a private-repo overlay can
@@ -566,22 +633,19 @@ class GlabGhMrStateClassifier:
                 expected_codes=None,
                 env=env,
             )
-        except FileNotFoundError:
-            return MrState(url=url, merged=False, approved=False)
-        if result.returncode != 0 or not result.stdout.strip():
-            return MrState(url=url, merged=False, approved=False)
-        try:
-            data = json.loads(result.stdout)
-        except json.JSONDecodeError:
-            return MrState(url=url, merged=False, approved=False)
-        if not isinstance(data, dict):
-            return MrState(url=url, merged=False, approved=False)
-        state = str(data.get("state", "")).lower()
+        except FileNotFoundError as exc:
+            raise _classifier_error(ScannerErrorClass.UNKNOWN, f"glab not installed for {url!r}: {exc}") from exc
+        if result.returncode != 0:
+            raise _classifier_error(
+                classify_gh_stderr(result.stderr),
+                f"glab mr view {url!r} rc={result.returncode}: {result.stderr.strip()[:200]}",
+            )
+        data = _parse_classifier_json(result.stdout, tool="glab mr view", url=url)
+        state = _classifier_str(data, "state").lower()
         merged = state in {"merged", "closed_as_merged"}
-        upvotes = int(data.get("upvotes", 0) or 0)
+        upvotes = _classifier_int(data, "upvotes")
         approved = upvotes > 0 or merged
-        author = data.get("author")
-        author_username = str(author.get("username", "")) if isinstance(author, dict) else ""
+        author_username = _classifier_author(data, key="username")
         return MrState(url=url, merged=merged, approved=approved, author_username=author_username)
 
     def _classify_github(self, url: str) -> MrState:
@@ -595,22 +659,19 @@ class GlabGhMrStateClassifier:
                 expected_codes=None,
                 env=env,
             )
-        except FileNotFoundError:
-            return MrState(url=url, merged=False, approved=False)
-        if result.returncode != 0 or not result.stdout.strip():
-            return MrState(url=url, merged=False, approved=False)
-        try:
-            data = json.loads(result.stdout)
-        except json.JSONDecodeError:
-            return MrState(url=url, merged=False, approved=False)
-        if not isinstance(data, dict):
-            return MrState(url=url, merged=False, approved=False)
-        state = str(data.get("state", "")).upper()
-        review_decision = str(data.get("reviewDecision", "")).upper()
+        except FileNotFoundError as exc:
+            raise _classifier_error(ScannerErrorClass.UNKNOWN, f"gh not installed for {url!r}: {exc}") from exc
+        if result.returncode != 0:
+            raise _classifier_error(
+                classify_gh_stderr(result.stderr),
+                f"gh pr view {url!r} rc={result.returncode}: {result.stderr.strip()[:200]}",
+            )
+        data = _parse_classifier_json(result.stdout, tool="gh pr view", url=url)
+        state = _classifier_str(data, "state").upper()
+        review_decision = _classifier_str(data, "reviewDecision").upper()
         merged = state == "MERGED"
         approved = review_decision == "APPROVED" or merged
-        author = data.get("author")
-        author_username = str(author.get("login", "")) if isinstance(author, dict) else ""
+        author_username = _classifier_author(data, key="login")
         return MrState(url=url, merged=merged, approved=approved, author_username=author_username)
 
 
