@@ -188,7 +188,7 @@ class Task(models.Model):
         if not self.execution_reason:
             self.execution_reason = "Loop-dispatched phase — in-session sub-agent (agent_runtime=interactive)"
 
-    def claim(self, *, claimed_by: str, lease_seconds: int = 300) -> None:
+    def claim(self, *, claimed_by: str, claimed_by_session: str = "", lease_seconds: int = 300) -> None:
         """Atomically claim this task — exactly one concurrent claimer wins (#786 shape).
 
         A single guarded conditional ``UPDATE ... WHERE pk=self AND <claimable>``
@@ -210,6 +210,14 @@ class Task(models.Model):
         terminal task is never re-claimed. On a lost claim the current row is
         read back ONLY to raise the matching typed error — the claim *decision*
         is the atomic UPDATE's row count, never the read-back.
+
+        ``claimed_by_session`` rides the SET clause only — never the
+        ``<claimable>`` CAS predicate — exactly as ``claim_next_pending`` does,
+        so the claim semantics are byte-identical with or without a session.
+        Writing it here (rather than leaving it untouched) is what keeps
+        ``renew_lease``'s claim-generation CAS truthful: a re-claim of an
+        expired-lease orphan overwrites the dead owner's stale session instead
+        of leaving it to falsely satisfy the heartbeat predicate.
         """
         now = timezone.now()
         claimable = Q(status=self.Status.PENDING) | (
@@ -221,6 +229,7 @@ class Task(models.Model):
             .update(
                 status=self.Status.CLAIMED,
                 claimed_by=claimed_by,
+                claimed_by_session=claimed_by_session,
                 claimed_at=now,
                 heartbeat_at=now,
                 lease_expires_at=now + timedelta(seconds=lease_seconds),
@@ -297,6 +306,7 @@ class Task(models.Model):
                     "result_artifact_path",
                     "claimed_at",
                     "claimed_by",
+                    "claimed_by_session",
                     "lease_expires_at",
                     "heartbeat_at",
                 ],
@@ -334,6 +344,7 @@ class Task(models.Model):
                     "result_artifact_path",
                     "claimed_at",
                     "claimed_by",
+                    "claimed_by_session",
                     "lease_expires_at",
                     "heartbeat_at",
                 ],
@@ -511,7 +522,16 @@ class Task(models.Model):
     def fail(self) -> None:
         self.status = self.Status.FAILED
         self._clear_claim()
-        self.save(update_fields=["status", "claimed_at", "claimed_by", "lease_expires_at", "heartbeat_at"])
+        self.save(
+            update_fields=[
+                "status",
+                "claimed_at",
+                "claimed_by",
+                "claimed_by_session",
+                "lease_expires_at",
+                "heartbeat_at",
+            ],
+        )
 
     def reopen(self) -> None:
         if self.status != self.Status.FAILED:
@@ -539,6 +559,7 @@ class Task(models.Model):
                 "not_before",
                 "claimed_at",
                 "claimed_by",
+                "claimed_by_session",
                 "lease_expires_at",
                 "heartbeat_at",
             ],
@@ -625,6 +646,7 @@ class Task(models.Model):
                 "status",
                 "claimed_at",
                 "claimed_by",
+                "claimed_by_session",
                 "lease_expires_at",
                 "heartbeat_at",
             ],

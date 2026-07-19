@@ -3,12 +3,17 @@
 Split verbatim from the former monolithic ``tests/teatree_core/test_selectors.py`` (souliane/teatree#443).
 """
 
+from typing import TYPE_CHECKING
+
 import pytest
 from django.test import TestCase
 from django.utils import timezone
 
 from teatree.core.models import Session, Task, TaskAttempt, Ticket
 from teatree.core.selectors import _check_pr, build_action_required, build_automation_summary
+
+if TYPE_CHECKING:
+    from teatree.core.models.types import PREntrySerialized
 
 
 class TestCheckPr(TestCase):
@@ -165,6 +170,30 @@ class TestCheckPr(TestCase):
         }
         items = _check_pr(pr, self.ticket)
         assert all(i.kind != "review_draft" for i in items)
+
+    def test_fully_typed_pr_entry_flows_through(self) -> None:
+        """A ``PREntrySerialized`` populating every key ``_check_pr`` reads yields the expected items (F1.7)."""
+        pr: PREntrySerialized = {
+            "url": "https://gitlab.com/org/backend/-/merge_requests/10",
+            "repo": "backend",
+            "iid": 10,
+            "draft": False,
+            "state": "open",
+            "pipeline_status": "success",
+            "review_requested": True,
+            "review_permalink": "https://slack.com/archives/C1/p2",
+            "approvals": {"count": 0, "required": 2},
+            "discussions": [{"status": "needs_reply", "detail": "fix the bug"}],
+            "draft_comments_pending": True,
+            "draft_comments_count": 2,
+        }
+
+        items = _check_pr(pr, self.ticket)
+
+        kinds = {item.kind for item in items}
+        assert "needs_reply" in kinds
+        assert "needs_approval" in kinds
+        assert "review_draft" in kinds
 
     def test_review_draft_missing_count(self) -> None:
         """When draft_comments_pending is True but count is missing, no item."""

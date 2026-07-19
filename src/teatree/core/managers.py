@@ -44,6 +44,7 @@ __all__ = [
     "TicketManager",
     "WorktreeManager",
     "is_per_loop_owner_slot",
+    "overlay_scope_q",
     "per_loop_owner_slot",
 ]
 
@@ -74,6 +75,27 @@ def _claimable_now_q(now: datetime) -> Q:
     drift between "is there work" and the actual claim.
     """
     return Q(not_before__isnull=True) | Q(not_before__lte=now)
+
+
+def overlay_scope_q(overlay: str | None, *, prefix: str = "") -> Q:
+    """The Task-overlay scope clause as a reusable ``Q`` — the single source of truth.
+
+    A ``Task`` has no overlay column of its own: its overlay is its ticket's OR
+    its session's, so the clause spans both relations and always admits the
+    legacy empty-overlay rows (pre-multi-overlay data). ``prefix`` reaches the
+    ``ticket``/``session`` pair from a related model — ``"task__"`` scopes a
+    ``TaskAttempt`` by its task's overlay. An empty/``None`` overlay yields a
+    bare ``Q()`` that matches everything (``filter(Q())`` == ``all()``).
+
+    Shared by ``TaskQuerySet.for_overlay`` and the dashboard-selector filters
+    (``selectors._filters``) so the Task overlay clause can never drift between
+    the manager path and the read-model path (F1.6).
+    """
+    if not overlay:
+        return Q()
+    ticket = f"{prefix}ticket__overlay"
+    session = f"{prefix}session__overlay"
+    return Q(**{ticket: overlay}) | Q(**{session: overlay}) | Q(**{ticket: ""}) | Q(**{session: ""})
 
 
 def _for_overlay(qs: models.QuerySet, overlay: str | None) -> models.QuerySet:
@@ -237,18 +259,12 @@ class TaskQuerySet(models.QuerySet):
         A ``Task`` has no overlay column of its own — its overlay is the
         ticket's or the session's, so the scope clause spans both relations
         and includes legacy empty-overlay rows. An empty ``overlay`` returns
-        every task. This is the single source of truth for the Task overlay
-        clause, shared by ``_claimable_for_target`` (the loop claim) and the
-        MCP ``loop_stats`` read.
+        every task. Delegates to :func:`overlay_scope_q`, the single source of
+        truth for the Task overlay clause, shared with ``_claimable_for_target``
+        (the loop claim), the MCP ``loop_stats`` read, and the dashboard
+        selectors (F1.6).
         """
-        if overlay:
-            return self.filter(
-                Q(ticket__overlay=overlay)
-                | Q(session__overlay=overlay)
-                | Q(ticket__overlay="")
-                | Q(session__overlay="")
-            )
-        return self.all()
+        return self.filter(overlay_scope_q(overlay))
 
     def for_claude_session(self, claude_session_id: str) -> models.QuerySet:
         """Tasks whose session is the given Claude session, newest first.
