@@ -43,7 +43,7 @@ import shutil
 from dataclasses import dataclass
 from pathlib import Path
 
-from teatree.utils.run import CommandFailedError, run_allowed_to_fail
+from teatree.utils.run import CommandFailedError, TimeoutExpired, run_allowed_to_fail
 
 # The dead-lead budget: a recording may carry a small amount of settle/start
 # time, but more than this is dead pre-roll the author should have trimmed. A
@@ -114,14 +114,22 @@ def _ffmpeg_tools() -> tuple[str, str] | None:
 
 
 def _probe_duration(ffprobe: str, video: Path) -> float:
-    """Read the container duration (seconds) via ffprobe; 0.0 when unreadable."""
+    """Read the container duration (seconds) via ffprobe; 0.0 when unreadable.
+
+    ``expected_codes=None`` accepts any exit code, so ffprobe erroring does not
+    raise ``CommandFailedError`` — the REAL uncaught exception from ``timeout=`` is
+    :class:`subprocess.TimeoutExpired` (a hung/pathological input). Both are caught
+    to ``0.0`` (unknown duration, the same fail-safe value an unparseable ``stdout``
+    yields) so a probe timeout — or a tightened ``expected_codes`` — can never
+    surface as a raw traceback out of the post path.
+    """
     try:
         result = run_allowed_to_fail(
             [ffprobe, "-v", "quiet", "-show_entries", "format=duration", "-of", "csv=p=0", str(video)],
             expected_codes=None,
             timeout=_PROBE_TIMEOUT_SECONDS,
         )
-    except CommandFailedError:
+    except (CommandFailedError, TimeoutExpired):
         return 0.0
     try:
         return float(result.stdout.strip())
@@ -189,11 +197,21 @@ def _detect_dead_lead(ffmpeg: str, video: Path, duration: float) -> float:
         f"blackdetect=d=0.1:pix_th={_BLACK_PIXEL_THRESHOLD}:pic_th={_BLACK_PICTURE_RATIO},"
         f"freezedetect=n={_FREEZE_NOISE_DB}:d=0.5"
     )
-    result = run_allowed_to_fail(
-        [ffmpeg, "-i", str(video), "-vf", filtergraph, "-an", "-f", "null", "-"],
-        expected_codes=None,
-        timeout=_PROBE_TIMEOUT_SECONDS,
-    )
+    try:
+        result = run_allowed_to_fail(
+            [ffmpeg, "-i", str(video), "-vf", filtergraph, "-an", "-f", "null", "-"],
+            expected_codes=None,
+            timeout=_PROBE_TIMEOUT_SECONDS,
+        )
+    except TimeoutExpired as exc:
+        # A hung/pathological ffmpeg pass must surface as the gate's own typed
+        # failure, not a raw ``subprocess.TimeoutExpired`` traceback out of the
+        # post path.
+        msg = (
+            f"Test plan refused: analysing video {video.name} timed out after "
+            f"{_PROBE_TIMEOUT_SECONDS:.0f}s — the recording could not be checked for dead pre-roll."
+        )
+        raise VideoEvidenceError(msg) from exc
     stderr = result.stderr
     black_lead = _leading_run(_parse_black_runs(stderr))
     freeze_lead = _leading_run(_parse_freeze_runs(stderr))

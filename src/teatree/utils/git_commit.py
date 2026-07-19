@@ -39,6 +39,27 @@ def unsynced_commits(repo: str, branch: str, target: str = "origin/main") -> lis
     return [line for line in output.splitlines() if line.strip()]
 
 
+def unsynced_commits_strict(repo: str, branch: str, target: str = "origin/main") -> list[str]:
+    """Strict twin of :func:`unsynced_commits` — RAISES instead of degrading to ``[]``.
+
+    :func:`unsynced_commits` uses the LENIENT :func:`run` runner, so a real git
+    failure (an unresolvable ``target``, a ``branch`` that is gone, a corrupt
+    repo, or a forge slug like ``owner/repo`` passed where a checkout PATH is
+    expected) is swallowed to ``""`` → an EMPTY list, indistinguishable from a
+    genuinely fully-synced branch. A destructive caller that reads ``[]`` as
+    "nothing to lose — safe to wipe" then destroys work on an inconclusive
+    probe.
+
+    This form runs through :func:`run_strict`, so a git failure raises
+    :class:`teatree.utils.run.CommandFailedError` and the caller can route the
+    uncertainty to its fail-closed outcome (keep / refuse), never conflating
+    "could not verify" with "provably synced". A successful run with no unsynced
+    commits still returns ``[]`` — the honest positive result.
+    """
+    output = run_strict(repo=repo, args=["log", branch, "--not", target, "--oneline"])
+    return [line for line in output.splitlines() if line.strip()]
+
+
 def soft_reset(repo: str = ".", target: str = "") -> None:
     run_strict(repo=repo, args=["reset", "--soft", target])
 

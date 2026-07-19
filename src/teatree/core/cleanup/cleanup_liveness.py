@@ -128,9 +128,15 @@ def _git_lock_present(wt_path: Path) -> bool:
 
 
 def _last_commit_at(wt_path: Path) -> datetime | None:
-    """The committer timestamp of HEAD as an aware UTC datetime, or ``None``."""
+    """The committer timestamp of HEAD as an aware UTC datetime, or ``None``.
+
+    Runs the STRICT runner so a real ``git log`` failure (no HEAD, corrupt repo)
+    raises and is caught HONESTLY to ``None`` — with the lenient runner the
+    ``except CommandFailedError`` was dead code and a failure silently returned
+    ``""`` down the same ``None`` path, so the handler now actually fires.
+    """
     try:
-        raw = git.run(repo=str(wt_path), args=["log", "-1", "--format=%ct", "HEAD"])
+        raw = git.run_strict(repo=str(wt_path), args=["log", "-1", "--format=%ct", "HEAD"])
     except CommandFailedError:
         return None
     if not raw.strip():

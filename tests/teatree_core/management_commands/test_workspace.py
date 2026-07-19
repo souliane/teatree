@@ -2374,9 +2374,19 @@ class TestDropOrphanedStashes(TestCase):
                 return stash_output
             if args == ["branch", "--no-color"]:
                 return branches_output
+            if args == ["rev-parse", "--abbrev-ref", "origin/HEAD"]:
+                return "origin/main"
+            if args[:1] == ["cherry"]:
+                # PROVABLY captured upstream ("-" line) so the drop is authorised.
+                return "- abc123def some work"
             return ""
 
-        with patch.object(git_mod, "run", side_effect=fake_run):
+        # The rev-parse + cherry probes now run through the STRICT runner (#F4.1),
+        # so patch it alongside the lenient one.
+        with (
+            patch.object(git_mod, "run", side_effect=fake_run),
+            patch.object(git_mod, "run_strict", side_effect=fake_run),
+        ):
             result = ws_stash_mod.drop_orphaned_stashes("/repo")
 
         assert len(result) == 1
@@ -2434,9 +2444,16 @@ class TestDropOrphanedStashes(TestCase):
                 return stash_output
             if args == ["branch", "--no-color"]:
                 return branches_output
+            if args == ["rev-parse", "--abbrev-ref", "origin/HEAD"]:
+                return "origin/main"
+            if args[:1] == ["cherry"]:
+                return "- abc123def refactor parser"
             return ""
 
-        with patch.object(git_mod, "run", side_effect=fake_run):
+        with (
+            patch.object(git_mod, "run", side_effect=fake_run),
+            patch.object(git_mod, "run_strict", side_effect=fake_run),
+        ):
             result = ws_stash_mod.drop_orphaned_stashes("/repo")
 
         assert len(result) == 1
@@ -2485,7 +2502,10 @@ class TestDropOrphanedStashes(TestCase):
                 return "+ abc123def unmerged work"
             return ""
 
-        with patch.object(git_mod, "run", side_effect=fake_run):
+        with (
+            patch.object(git_mod, "run", side_effect=fake_run),
+            patch.object(git_mod, "run_strict", side_effect=fake_run),
+        ):
             result = ws_stash_mod.drop_orphaned_stashes("/repo")
 
         assert len(result) == 1
@@ -2512,12 +2532,79 @@ class TestDropOrphanedStashes(TestCase):
                 return "- abc123def merged work"
             return ""
 
-        with patch.object(git_mod, "run", side_effect=fake_run):
+        with (
+            patch.object(git_mod, "run", side_effect=fake_run),
+            patch.object(git_mod, "run_strict", side_effect=fake_run),
+        ):
             result = ws_stash_mod.drop_orphaned_stashes("/repo")
 
         assert len(result) == 1
         assert "already merged" in result[0]
         assert ["stash", "drop", "stash@{0}"] in calls
+
+    def test_keeps_orphaned_stash_when_cherry_output_is_empty(self) -> None:
+        # #F4.1 data-loss: an EMPTY `git cherry` output (the stash ref is a merge
+        # commit, or nothing was content-compared) is NOT proof of capture —
+        # ``all([])`` is vacuously True but nothing was actually compared. The
+        # stash is the only copy of the work, so an empty probe must KEEP it.
+        stash_output = "stash@{0}: WIP on deleted-branch: abc123 uncompared work"
+        branches_output = "* main"
+        calls: list[list[str]] = []
+
+        def fake_run(*, repo: str = ".", args: list[str]) -> str:
+            calls.append(args)
+            if args == ["stash", "list"]:
+                return stash_output
+            if args == ["branch", "--no-color"]:
+                return branches_output
+            if args == ["rev-parse", "--abbrev-ref", "origin/HEAD"]:
+                return "origin/main"
+            if args[:1] == ["cherry"]:
+                return ""
+            return ""
+
+        with (
+            patch.object(git_mod, "run", side_effect=fake_run),
+            patch.object(git_mod, "run_strict", side_effect=fake_run),
+        ):
+            result = ws_stash_mod.drop_orphaned_stashes("/repo")
+
+        assert len(result) == 1
+        assert "Kept orphaned stash" in result[0]
+        assert not any(a[:2] == ["stash", "drop"] for a in calls), "empty cherry must NOT authorise a drop"
+
+    def test_keeps_orphaned_stash_when_cherry_probe_fails(self) -> None:
+        # #F4.1: a FAILED `git cherry` (unresolvable ref, corrupt repo) is
+        # inconclusive — it must KEEP the stash, never drop it. The strict runner
+        # raises, and ``_branch_captured_upstream`` maps that to not-captured.
+        stash_output = "stash@{0}: WIP on deleted-branch: abc123 unverifiable work"
+        branches_output = "* main"
+        calls: list[list[str]] = []
+
+        def fake_run(*, repo: str = ".", args: list[str]) -> str:
+            calls.append(args)
+            if args == ["stash", "list"]:
+                return stash_output
+            if args == ["branch", "--no-color"]:
+                return branches_output
+            if args == ["rev-parse", "--abbrev-ref", "origin/HEAD"]:
+                return "origin/main"
+            return ""
+
+        def fake_run_strict(*, repo: str = ".", args: list[str]) -> str:
+            if args[:1] == ["cherry"]:
+                raise utils_run_mod.CommandFailedError(["git", "cherry"], 128, "", "fatal: bad revision")
+            return fake_run(repo=repo, args=args)
+
+        with (
+            patch.object(git_mod, "run", side_effect=fake_run),
+            patch.object(git_mod, "run_strict", side_effect=fake_run_strict),
+        ):
+            result = ws_stash_mod.drop_orphaned_stashes("/repo")
+
+        assert len(result) == 1
+        assert "Kept orphaned stash" in result[0]
+        assert not any(a[:2] == ["stash", "drop"] for a in calls), "an inconclusive probe must NOT drop"
 
     def test_keeps_detached_head_stash(self) -> None:
         # A stash taken on a detached HEAD reads "On (no branch): ..." — there

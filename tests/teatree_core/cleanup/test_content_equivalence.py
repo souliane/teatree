@@ -29,6 +29,7 @@ from django.test import TestCase
 from teatree.core.cleanup.cleanup import CleanupResult, cleanup_worktree
 from teatree.core.models import Ticket, Worktree
 from teatree.core.worktree.branch_classification import content_equivalence_blockers
+from teatree.utils.run import CommandFailedError
 from tests.teatree_core.cleanup._shared import _GIT, _clean_env, _run_git
 
 
@@ -235,6 +236,28 @@ class TestCleanAllRefusesSubjectCollision(TestCase):
         # The worktree, branch, and the genuine commit all survive.
         assert wt_path.exists(), "worktree directory was destroyed despite genuine un-upstreamed work"
         assert head == _git_out("rev-parse", head, cwd=self.repo_main)
+        assert Worktree.objects.filter(pk=worktree.pk).exists()
+
+    def test_probe_failure_does_not_early_return_and_still_fails_closed(self) -> None:
+        """#F4.3 — a FAILED unsynced-commits probe must NOT skip the content gate.
+
+        The old lenient ``unsynced_commits`` degraded a git failure to ``[]``, which
+        made ``_raise_if_genuinely_ahead`` early-return and SKIP the fail-closed
+        content gate → force-delete of genuine work. With the strict probe a git
+        failure raises, the flow falls through to ``content_equivalence_blockers``
+        (itself fail-closed), and the destroy is refused.
+        """
+        worktree, wt_path, _head = self._make_pushed_worktree(
+            branch="f43-probe-fail", subject="feat: genuine work", content="genuine un-upstreamed content\n"
+        )
+        boom = CommandFailedError(["git", "log"], 128, "", "fatal: bad revision")
+        with (
+            patch("teatree.core.cleanup.cleanup.git.unsynced_commits_strict", side_effect=boom),
+            pytest.raises(RuntimeError, match="not provably on origin/main"),
+        ):
+            self._cleanup(worktree)
+
+        assert wt_path.exists(), "a probe failure must keep the worktree, not force-delete it"
         assert Worktree.objects.filter(pk=worktree.pk).exists()
 
     def test_deletes_genuinely_upstreamed_branch(self) -> None:
