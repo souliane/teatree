@@ -86,15 +86,21 @@ def _resolve_self_identities(host: CodeHostBackend | None, identities: Iterable[
     return resolved
 
 
-def _is_self_authored(post: ReviewRequestPost, host: CodeHostBackend | None, identities: Iterable[str]) -> bool:
-    """Return True iff the MR for *post* was authored by the user themselves.
+def _is_self_authored(post: ReviewRequestPost, host: CodeHostBackend | None, identities: Iterable[str]) -> bool | None:
+    """Classify authorship of the MR for *post* as self / colleague / unresolved.
 
-    Fail-closed on a *resolved* self-identity set but no author: when we
-    know who the user is and the author lookup returns ``""`` (transient
-    failure / unparsable URL), the author is not provably *not* self, so we
-    report ``True`` to suppress the reaction rather than risk reacting on
-    the user's own MR. With no resolvable self-identity at all there is
-    nothing to protect, so the colleague path proceeds.
+    Returns:
+    * ``True`` — the author RESOLVED to one of the user's identities. The
+      reaction is skipped and the row is closed (self-authored).
+    * ``False`` — the author resolved to someone else (or there is no
+      self-identity to protect). The colleague path proceeds and the row
+      may be reacted on.
+    * ``None`` — the author lookup FAILED (the backend raised, or returned
+      ``""`` for a transient failure / unparsable URL). This is a *transient*
+      outcome, not a verdict: the caller skips this tick WITHOUT stamping
+      ``done_at`` so a later tick retries (F5.2). Permanently closing the row
+      here would abandon a colleague's merged review-request on one bad forge
+      read.
     """
     self_identities = _resolve_self_identities(host, identities)
     if not self_identities or host is None:
@@ -103,9 +109,9 @@ def _is_self_authored(post: ReviewRequestPost, host: CodeHostBackend | None, ide
         author = host.get_pr_author(pr_url=post.mr_url)
     except Exception as exc:  # noqa: BLE001 — author lookup must never crash a tick.
         logger.warning("review_request_merge_react: author lookup failed for %s: %s", post.mr_url, exc)
-        author = ""
+        return None
     if not author:
-        return True
+        return None
     return author_is_self(author, current_user="", self_identities=self_identities)
 
 
@@ -171,11 +177,34 @@ def react_merge_on_post(
     themselves (matched against ``identities`` plus ``host.current_user()``),
     the row is closed and a ``self_authored`` signal returned WITHOUT
     reacting — the bot must never react on the user's own review-request.
+
+    A *failed* author lookup (F5.2) is transient, not a verdict: the tick is
+    skipped WITHOUT stamping ``done_at`` (returning ``None``) so a later tick
+    retries, rather than permanently closing a colleague's merged
+    review-request on one bad forge read.
     """
     if not post.slack_thread_ts:
         return None
-    if _is_self_authored(post, host, identities):
+    self_authored = _is_self_authored(post, host, identities)
+    if self_authored is None:
+        logger.debug(
+            "review_request_merge_react: author lookup unresolved for %s — skipping tick without stamping",
+            post.mr_url,
+        )
+        return None
+    if self_authored:
         return _close_self_authored(post)
+    return _claim_and_react(post, messaging)
+
+
+def _claim_and_react(post: ReviewRequestPost, messaging: MessagingBackend) -> ScanSignal | None:
+    """Claim *post* and post the ``:merge:`` reaction, releasing the claim on failure.
+
+    Split out of :func:`react_merge_on_post` so the self-authored / transient
+    guards and the claim+react mechanics each stay within the return-count
+    budget. A lost claim returns ``None``; a gated / transient failure releases
+    the claim and returns the corresponding signal for retry.
+    """
     if not _claim_post(post):
         return None
     try:

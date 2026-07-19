@@ -181,7 +181,11 @@ class TestSelfAuthoredReactSkipMatrix:
 
         assert slack.reactions == [{"channel": _CHANNEL, "ts": _THREAD_TS, "emoji": MERGE_REACTION_EMOJI}]
 
-    def test_unresolved_author_fails_closed_when_identity_known(self) -> None:
+    def test_unresolved_author_skips_without_stamping(self) -> None:
+        # F5.2: an empty author return is a lookup FAILURE, not a verdict. It must
+        # NOT permanently close the row — that would abandon a colleague's merged
+        # review-request on one bad forge read. The tick is skipped (no reaction)
+        # and ``done_at`` stays None so a later tick retries.
         post = _seed(reacted=False)
         slack = _RecordingSlack()
         host = _AuthoredHost(open_state=PrOpenState.MERGED, author="", user=_USER_LOGIN)
@@ -191,9 +195,11 @@ class TestSelfAuthoredReactSkipMatrix:
 
         assert slack.reactions == []
         post.refresh_from_db()
-        assert post.done_at is not None
+        assert post.done_at is None
 
-    def test_author_lookup_raising_fails_closed_and_skips(self) -> None:
+    def test_author_lookup_raising_skips_without_stamping(self) -> None:
+        # F5.2: a raised author lookup is transient — skip WITHOUT stamping so the
+        # next tick retries, instead of permanently closing the row.
         post = _seed(reacted=False)
         slack = _RecordingSlack()
         host = _AuthoredHost(
@@ -208,7 +214,23 @@ class TestSelfAuthoredReactSkipMatrix:
 
         assert slack.reactions == []
         post.refresh_from_db()
-        assert post.done_at is not None
+        assert post.done_at is None
+
+    def test_unresolved_author_retries_and_reacts_once_resolved(self) -> None:
+        # The retry contract: the transient tick leaves the row open, and a later
+        # tick that DOES resolve the (colleague) author reacts exactly once.
+        _seed(reacted=False)
+        slack = _RecordingSlack()
+        host = _AuthoredHost(open_state=PrOpenState.MERGED, author="", user=_USER_LOGIN)
+        scanner = ReviewRequestMergeReactScanner(messaging=slack, host=host, identities=(_USER_LOGIN,))
+
+        scanner.scan()
+        assert slack.reactions == []
+
+        host.author = _COLLEAGUE_LOGIN
+        scanner.scan()
+
+        assert slack.reactions == [{"channel": _CHANNEL, "ts": _THREAD_TS, "emoji": MERGE_REACTION_EMOJI}]
 
     def test_current_user_raising_with_no_aliases_reacts_for_colleague(self) -> None:
         _seed(reacted=False)
