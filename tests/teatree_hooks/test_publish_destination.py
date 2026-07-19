@@ -4,10 +4,11 @@
 publish command; ``is_public_destination`` classifies it FAIL-CLOSED
 (PUBLIC unless provably internal -- consumed by the FSM privacy gate);
 ``public_visibility.gate_skips_for_visibility`` is the composed predicate the
-banned-terms (#1415) / quote-scanner (#1213) gates call, which enforces ONLY on
-an affirmatively-PUBLIC target: a private/internal/unknown/unresolvable target
-SKIPS (bias hard toward not firing), while an affirmatively-public probe verdict
-scans.
+banned-terms (#1415) / quote-scanner (#1213) gates call: it SKIPS only a PROVABLY
+non-public target (allowlisted-private / internal-namespace / probe-confirmed
+private), and SCANS every target it cannot prove non-public -- an
+affirmatively-public probe verdict AND a resolvable slug whose probe cannot
+confirm visibility (fail closed on a probe error, #3442).
 
 Synthetic namespaces only (``internalcorp``, ``acme-internal``, the
 genuinely-public ``souliane/teatree``); the allowlist lives in the user's
@@ -442,12 +443,12 @@ class TestGateSkipsDestination:
 
 
 class TestInternalDenylistScoping:
-    """#1415/#1213 scope: enforce ONLY on an affirmatively-PUBLIC target.
+    """#1415/#1213 scope: SKIP only a PROVABLY non-public target (#3442 fail closed).
 
     A private internal namespace in ``internal_publish_namespaces`` (the
-    denylist) SKIPS; an affirmatively-PUBLIC probe verdict SCANS; and an
-    unknown/unresolvable target now SKIPS too (bias hard toward not firing so a
-    non-public repo is never falsely blocked). A non-repo surface (a Slack
+    denylist) SKIPS; an affirmatively-PUBLIC probe verdict SCANS; and a resolvable
+    target whose probe cannot confirm visibility FAILS CLOSED and SCANS too (#3442
+    -- a probe error is not a licence to skip). A non-repo surface (a Slack
     ``curl``) is not repo-scoped, so this scope leaves it to the gate's default.
     """
 
@@ -470,17 +471,17 @@ class TestInternalDenylistScoping:
         cmd = 'gh issue create -R ourorg/other-public-repo --body "customercorp leak"'
         assert public_visibility.gate_skips_for_visibility(cmd, None, config_path=cfg) is False
 
-    def test_unknown_visibility_non_denylisted_target_skips(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        # POLICY FLIP (#1415/#1213): a target not in the denylist whose
-        # visibility the in-hook probe cannot resolve (the common cold-hook
-        # state) is NOT affirmatively public, so the gate SKIPS -- bias hard
-        # toward not firing, never false-block a repo of unknown visibility.
+    def test_probe_error_non_denylisted_target_scans(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        # #3442 fail closed: a resolvable target NOT in the denylist whose
+        # visibility the in-hook probe cannot confirm (returns None) is NOT
+        # provably non-public, so the gate SCANS (does not skip) -- mirroring the
+        # bash pre-push gate's undetermined-visibility branch. The offline
+        # ``private_repos`` allowlist is the network-free way to keep a genuinely
+        # private repo skip-eligible.
         cfg = _config(tmp_path, ["internal-eng"])
         monkeypatch.setattr(_repo_visibility, "probe_visibility", lambda _slug: None)
         cmd = 'gh issue create -R someowner/mystery --body "customercorp note"'
-        assert public_visibility.gate_skips_for_visibility(cmd, None, config_path=cfg) is True
+        assert public_visibility.gate_skips_for_visibility(cmd, None, config_path=cfg) is False
 
     def test_non_repo_surface_is_not_scoped_out(self, tmp_path: Path) -> None:
         # A publish with no repo-targeted segment (a Slack ``curl``) is not

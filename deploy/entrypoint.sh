@@ -29,6 +29,55 @@ REPO_URL="${TEATREE_REPO_URL:-https://github.com/souliane/teatree.git}"
 
 # The loop and gh use GH_TOKEN from the ambient env for GitHub access, so the
 # token never appears in a clone URL, argv, or logs.
+
+# gpg refuses a group/other-readable home, so normalise GNUPGHOME's mode BEFORE
+# the boot-time `pass show` reads below can decrypt — only when the mount is
+# writable (a hardened read-only mount would EROFS here under -e).
+if [ -n "${GNUPGHOME:-}" ] && [ -d "$GNUPGHOME" ] && [ -w "$GNUPGHOME" ]; then
+    chmod 700 "$GNUPGHOME"
+fi
+
+# Route ALL runtime temp to DISK, never the box's small RAM-backed tmpfs. The
+# host /tmp is a ~16G tmpfs; the spawned headless `claude` sessions, `pytest`, and
+# `uv` write scratch there and can fill it to 100% (ENOSPC), wedging the whole box.
+# The container root is a large overlay DISK, so ``/var/tmp`` (always present,
+# world-writable+sticky, disk-backed on both host and container) is a safe temp
+# root that never touches the RAM tmpfs. Exported for EVERY non-watchdog role
+# BEFORE the role `exec`s, so the role process and its children — the headless
+# `claude` subprocess (which inherits every non-``GIT_*`` var, see
+# teatree.utils.git_run.git_env_without_overrides), pytest, and uv — all land their
+# scratch on disk. The container settings.json seed (from the image-baked template)
+# also carries ``TMPDIR``/``PYTEST_DEBUG_TEMPROOT`` so an agent's Bash tool inherits
+# it too; this export additionally covers the role process itself. Overridable via
+# ``TEATREE_DISK_TMPDIR`` for a box whose disk temp lives elsewhere.
+setup_disk_tmpdir() {
+    local tmproot="${TEATREE_DISK_TMPDIR:-/var/tmp}"
+    mkdir -p "$tmproot"
+    export TMPDIR="$tmproot"
+    export PYTEST_DEBUG_TEMPROOT="$tmproot"
+}
+setup_disk_tmpdir
+
+# Source a runtime secret from the box pass store when its env var is unset,
+# keeping the plaintext out of teatree.env and off argv/logs (#3454). An env
+# value always wins (eval/CI paths and a deliberate literal override); the pass
+# store is the fallback that lets a rotated secret be picked up at boot without
+# rewriting teatree.env. `pass show` writes only to the captured stdout here.
+source_secret_from_pass() {
+    local var="$1" path="$2" value
+    [ -n "${!var:-}" ] && return 0
+    value="$(pass show "$path" 2>/dev/null | head -n1)" || return 0
+    if [ -n "$value" ]; then
+        export "$var"="$value"
+    fi
+    return 0
+}
+
+# GitHub token + admin password default to the box's provisioned pass paths;
+# override either in teatree.env when the store is laid out differently.
+source_secret_from_pass TEATREE_GH_TOKEN "${TEATREE_GH_TOKEN_PASS_PATH:-github/souliane/pat}"
+source_secret_from_pass T3_ADMIN_PASSWORD "${T3_ADMIN_PASSWORD_PASS_PATH:-teatree/admin-password}"
+
 if [ -n "${TEATREE_GH_TOKEN:-}" ]; then
     export GH_TOKEN="$TEATREE_GH_TOKEN"
 fi
@@ -44,14 +93,6 @@ git config --global user.name "${GIT_AUTHOR_NAME:-teatree}"
 git config --global user.email "${GIT_AUTHOR_EMAIL:-teatree@localhost}"
 git config --global init.defaultBranch main
 git config --global --add safe.directory "$CLONE_DIR"
-
-# The GPG home is a dedicated bind mount of the host ~/.gnupg (see Dockerfile ENV
-# + docker-compose credential plane); gpg refuses a home directory readable by
-# group/other. Fix the mode before anything reads a credential — but only when
-# the mount is writable (a hardened read-only mount would EROFS here under -e).
-if [ -n "${GNUPGHOME:-}" ] && [ -d "$GNUPGHOME" ] && [ -w "$GNUPGHOME" ]; then
-    chmod 700 "$GNUPGHOME"
-fi
 
 # True when the box pass store holds at least one Anthropic account entry —
 # the option-b credential source (anthropic_oauth_pass_paths routing).
@@ -84,11 +125,19 @@ gh_repo_slug() {
     fi
 }
 
+# True (0) when a metadata-read failure carries a genuine token-DENIAL signal (a
+# permission/credential fault), as opposed to a transient network fault. Mirrors
+# the Python gate's _DENIED_SIGNALS so the two reach the SAME verdict on an
+# unreadable read: a denial blocks, anything else is indeterminate (retry/warn).
+_gh_metadata_denied() {
+    grep -qiE 'not accessible|not found|bad credentials|requires authentication|must be authenticated' <<<"$1"
+}
+
 # True (0) when a side-effect-free write probe is DENIED — i.e. the token lacks
 # the permission. GitHub returns "Resource not accessible by personal access
 # token" at the route level for a missing write permission, before it validates
 # the (non-existent) target, so nothing is ever created or changed.
-_gh_perm_denied() {
+_gh_write_probe_denied() {
     local out
     out="$(gh api --method "$1" "$2" 2>&1 || true)"
     grep -qi "not accessible" <<<"$out"
@@ -96,27 +145,67 @@ _gh_perm_denied() {
 
 # Probe that TEATREE_GH_TOKEN carries the WRITE permissions the loop actually
 # needs (#3405). ``gh auth status`` only proves the token authenticates — a token
-# with ``issues: read`` but not ``issues: write`` passes it, then every
-# ``gh issue edit/close/comment`` fails LATE, mid-run, with "Resource not
-# accessible by personal access token" — a silent block on autonomy. Each write
-# permission is probed with a mutation aimed at a resource id that cannot exist
-# (issue/PR 0, a bogus ref): a permitted token gets a harmless 404, a denied
-# token gets the route-level 403. FAIL the deploy loudly naming each missing
-# permission. Mirrors ``teatree.core.gates.gh_token_preflight`` (pinned by a test).
+# that reads but cannot write passes it, then every ``gh issue edit/close`` /
+# ``gh pr merge`` / push fails LATE, mid-run, with "Resource not accessible by
+# personal access token" — a silent block on autonomy. Mirrors the verdict
+# SEMANTICS of ``teatree.core.gates.gh_token_preflight`` (pinned by a test):
+#
+#   * A genuine DENIAL (cannot read the repo, a fine-grained token lacks a write
+#     permission, or a classic token lacks the ``repo`` scope) FAILS loudly.
+#   * A TRANSIENT/indeterminate probe failure (network) is retried with backoff,
+#     then WARNED past — never an ``exit 1`` that crash-loops ``init`` (#3436).
+#
+# Token class matters: a fine-grained PAT returns the route-level 403 the write
+# probe reads, but a CLASSIC PAT does NOT (the probe fails OPEN for it), so a
+# classic token — identified by the ``X-OAuth-Scopes`` response header a
+# fine-grained token omits — is judged by REQUIRING the write-granting ``repo``
+# scope instead.
 assert_gh_token_permissions() {
-    local slug missing=()
+    local slug meta rc scopes attempt missing=()
+    local backoff="${TEATREE_GH_PREFLIGHT_BACKOFF_SECONDS:-2}"
     slug="$(gh_repo_slug)"
     if [ -z "$slug" ]; then
         echo "entrypoint: could not resolve the GitHub repo slug from '${TEATREE_REPO_URL:-$REPO_URL}' - skipping token-permission preflight" >&2
         return 0
     fi
-    if ! gh api "repos/$slug" >/dev/null 2>&1; then
-        echo "entrypoint: TEATREE_GH_TOKEN cannot read repos/$slug (metadata: read) - the token has no access to the repo. Grant it and re-run Deploy" >&2
+
+    # Metadata read with -i so the X-OAuth-Scopes header comes back. Retry a
+    # TRANSIENT failure so a network blip cannot crash-loop init; only a genuine
+    # DENIAL blocks the deploy.
+    rc=0
+    for attempt in 1 2 3; do
+        meta="$(gh api -i "repos/$slug" 2>&1)" && rc=0 && break || rc=$?
+        if _gh_metadata_denied "$meta"; then
+            echo "entrypoint: TEATREE_GH_TOKEN cannot read repos/$slug (metadata: read) - the token has no access to the repo. Grant it and re-run Deploy" >&2
+            exit 1
+        fi
+        echo "entrypoint: gh token preflight: transient failure reading repos/$slug (attempt $attempt/3, rc=$rc) - retrying" >&2
+        if [ "$attempt" -lt 3 ]; then
+            sleep "$((attempt * backoff))"
+        fi
+    done
+    if [ "$rc" -ne 0 ]; then
+        echo "entrypoint: gh token preflight: repos/$slug still unreachable after retries (indeterminate, rc=$rc) - SKIPPING the write-permission preflight (a transient GitHub/network fault, not a denial); the loop surfaces any real gap on its first write" >&2
+        return 0
+    fi
+
+    # Classic PAT? Judge it by the write-granting ``repo`` scope from the
+    # X-OAuth-Scopes header (the per-route probe below fails OPEN for it). Match
+    # ``repo`` as an exact scope token so ``repo:status`` / ``public_repo`` never
+    # count as write.
+    if scopes="$(grep -i '^x-oauth-scopes:' <<<"$meta")"; then
+        if grep -qE '(^|[[:space:],])repo([[:space:],]|$)' <<<"${scopes#*:}"; then
+            echo "teatree-init: GitHub token permissions verified (classic PAT with 'repo' scope on $slug)"
+            return 0
+        fi
+        echo "entrypoint: TEATREE_GH_TOKEN is a classic PAT WITHOUT the 'repo' scope - the loop's 'gh issue'/'gh pr'/push writes will fail mid-run with 'Resource not accessible by personal access token'. Grant the 'repo' scope on the token and re-run Deploy" >&2
         exit 1
     fi
-    _gh_perm_denied PATCH "repos/$slug/issues/0" && missing+=("issues: write")
-    _gh_perm_denied PATCH "repos/$slug/pulls/0" && missing+=("pull_requests: write")
-    _gh_perm_denied PATCH "repos/$slug/git/refs/heads/teatree-preflight-nonexistent" && missing+=("contents: write")
+
+    # Fine-grained PAT: per-permission route probes (403 = missing, 404 = present).
+    _gh_write_probe_denied PATCH "repos/$slug/issues/0" && missing+=("issues: write")
+    _gh_write_probe_denied PATCH "repos/$slug/pulls/0" && missing+=("pull_requests: write")
+    _gh_write_probe_denied PATCH "repos/$slug/git/refs/heads/teatree-preflight-nonexistent" && missing+=("contents: write")
     if [ ${#missing[@]} -gt 0 ]; then
         echo "entrypoint: TEATREE_GH_TOKEN is missing GitHub permission(s): ${missing[*]} - the loop's 'gh issue'/'gh pr'/push writes will fail mid-run with 'Resource not accessible by personal access token'. Grant them on the token and re-run Deploy" >&2
         exit 1
@@ -160,9 +249,12 @@ init_preflight() {
 # deploy/claude-settings.template.json; three env vars override the box-specific knobs.
 # Deploy-managed keys WIN over an existing file (a redeploy re-asserts the intended
 # config) while UNMANAGED keys the later `t3 setup` adds — notably statusLine — are
-# preserved (`jq '.[0] * .[1]'` deep-merges, right wins). MUST run before `t3 setup`.
+# preserved (`jq '.[0] * .[1]'` deep-merges, right wins). A pre-existing INVALID
+# settings.json is REPLACED with the managed config (the merge cannot parse it, and a
+# corrupt file downstream bricks `t3 setup` / the `claude` CLI). MUST run before
+# `t3 setup`.
 seed_claude_settings() {
-    local template="/usr/local/share/teatree/claude-settings.template.json"
+    local template="${TEATREE_CLAUDE_SETTINGS_TEMPLATE:-/usr/local/share/teatree/claude-settings.template.json}"
     local target="$HOME/.claude/settings.json"
     if [ ! -f "$template" ]; then
         echo "teatree-init: no claude-settings template at $template - skipping (agent runs on CLI defaults)" >&2
@@ -170,29 +262,82 @@ seed_claude_settings() {
     fi
     mkdir -p "$HOME/.claude"
     local managed
-    managed="$(jq \
-        --arg model "${TEATREE_CLAUDE_MODEL:-}" \
-        --arg mode "${TEATREE_CLAUDE_PERMISSION_MODE:-}" \
-        --arg conc "${TEATREE_CLAUDE_TOOL_CONCURRENCY:-}" \
-        '(if $model != "" then .model = $model else . end)
-        | (if $mode != "" then .permissions.defaultMode = $mode else . end)
-        | (if $conc != "" then .env.CLAUDE_CODE_MAX_TOOL_USE_CONCURRENCY = $conc else . end)' \
-        "$template")"
-    if [ -f "$target" ]; then
-        jq -s '.[0] * .[1]' "$target" <(printf '%s' "$managed") >"$target.tmp" && mv "$target.tmp" "$target"
+    # Apply the TEATREE_CLAUDE_* box-knob overrides via the ONE shared resolver in
+    # cli/setup/claude_settings.py, so this seed and the host-side `t3 doctor` drift
+    # check (managed_key_drift) resolve the SAME effective config (#3437). The module
+    # is pure-stdlib, so `python3 <file>` runs it without importing the teatree CLI.
+    local resolver="$CLONE_DIR/src/teatree/cli/setup/claude_settings.py"
+    if ! managed="$(python3 "$resolver" "$template")"; then
+        echo "teatree-init: failed to resolve claude-settings template - skipping" >&2
+        return 0
+    fi
+    # Deep-merge over an EXISTING valid file (right wins) so unmanaged keys survive;
+    # but a pre-existing INVALID settings.json cannot be parsed by the merge and, left
+    # in place, bricks `t3 setup` / the `claude` CLI and silently drops the managed
+    # config. Validate first and REPLACE a corrupt (or unmergeable) file with the
+    # managed config rather than aborting init or leaving it broken.
+    if [ -f "$target" ] && jq -e . "$target" >/dev/null 2>&1; then
+        if jq -s '.[0] * .[1]' "$target" <(printf '%s' "$managed") >"$target.tmp" 2>/dev/null; then
+            mv "$target.tmp" "$target"
+        else
+            rm -f "$target.tmp"
+            echo "teatree-init: could not merge existing ~/.claude/settings.json - replacing it with the managed config" >&2
+            printf '%s\n' "$managed" >"$target"
+        fi
     else
+        if [ -f "$target" ]; then
+            echo "teatree-init: existing ~/.claude/settings.json is not valid JSON - replacing it with the managed config" >&2
+        fi
         printf '%s\n' "$managed" >"$target"
     fi
     echo "teatree-init: provisioned ~/.claude/settings.json (model=$(jq -r .model "$target"), mode=$(jq -r .permissions.defaultMode "$target"))"
 }
 
-# Seed a config value only when the operator has NOT already overridden it, so a
-# re-deploy never clobbers an operator's change (e.g. loop_runner_enabled=false).
+# Provision the per-container Claude runtime the spawned `claude` agent needs:
+# ~/.claude/settings.json (seed_claude_settings) AND `t3 setup` (skill links, the
+# t3@souliane plugin registration via PluginRegistrar.install, statusLine, MCP
+# registration). This MUST run in EVERY agent-spawning role, not just init: the
+# `~/.claude` dir is PER-CONTAINER ephemeral (docker-compose.yml bind-mounts only
+# ~/.claude/projects — credentials stay host-only), so init's registration lands in
+# the init container's throwaway ~/.claude and never reaches worker/admin/slack-
+# listener. Without this, the worker's `claude` has no ~/.claude/plugins and no
+# enabledPlugins, so factory agents load ZERO skills. `t3 setup` is idempotent and
+# claude-env-focused, and these roles `depends_on` a completed init (shared clone +
+# editable install on the teatree_uv volume are present), so it is safe per-role.
+prepare_claude_runtime() {
+    seed_claude_settings
+    t3 setup
+}
+
+# VERIFY the agent's skills are actually available after `prepare_claude_runtime`:
+# the ``t3@souliane`` plugin is registered in ~/.claude/plugins/installed_plugins.json
+# with a resolvable install path AND enabled in ~/.claude/settings.json. Returns
+# non-zero when any signal is missing — the exact "agents would run SKILL-LESS"
+# condition. The worker treats this as a HARD startup precondition (owner directive:
+# PREFER HARD FAIL over silently running with a critical capability missing).
+verify_agent_skills() {
+    local settings="$HOME/.claude/settings.json"
+    local installed="$HOME/.claude/plugins/installed_plugins.json"
+    jq -e '.enabledPlugins."t3@souliane" == true' "$settings" >/dev/null 2>&1 || return 1
+    local install_path
+    install_path="$(jq -r '(.plugins."t3@souliane" // [])[0].installPath // empty' "$installed" 2>/dev/null)" || return 1
+    [ -n "$install_path" ] && [ -d "$install_path" ]
+}
+
+# Seed a config value through the provenance-aware DEPLOY seed (#3435). The ORM
+# command NEVER writes a value equal to the code default (a code-default seed only
+# FREEZES a future default change), PRESERVES any operator override, re-seeds a row
+# this deploy still owns when the SHIPPED default changed, and records provenance
+# so a later `t3 doctor --repair` clears only an entrypoint-seeded pin — never an
+# operator's deliberate one. Idempotent across redeploys.
 seed_setting() {
-    if t3 teatree config_setting get "$1" 2>/dev/null | grep -q 'source: db'; then
-        echo "teatree-init: $1 already set (operator override preserved) - skipping"
-    else
-        t3 teatree config_setting set "$1" "$2"
+    # A single provisioning seed is NON-FATAL: one setting the runtime already
+    # has a sane code default for must never brick the whole stack (init failing
+    # takes worker/admin/slack-listener down with it, since they `depends_on` a
+    # successful init). Warn to stderr and continue under `set -e`; the runtime
+    # falls back to the code default and a later redeploy re-seeds it.
+    if ! t3 teatree config_setting seed "$1" "$2"; then
+        echo "teatree-init: WARNING seed of '$1' failed ('t3 teatree config_setting seed' exited non-zero); continuing — the runtime uses the code default for it. Fix and re-run Deploy to persist an override." >&2
     fi
 }
 
@@ -313,9 +458,38 @@ apply_fleet_loop_policy() {
     done
 }
 
+# True (0) when the box has working outbound connectivity to the git origin.
+# It is the switch between the two boot modes the self-contained image supports
+# (#3451): ONLINE fast-forwards the runtime clone from origin (self-update stays
+# the in-loop `t3 update` path); OFFLINE runs the image's BAKED snapshot as-is,
+# so a fresh box with only the image + secrets boots deterministically with zero
+# fetches. `init_preflight` validates gh auth BEFORE this runs, so a non-zero
+# `ls-remote` here is a genuine network fault, not a bad token (a bare
+# reachability probe — no auth needed just to decide online/offline, and the
+# public repo answers anonymously). `TEATREE_FORCE_OFFLINE=1|true|yes` forces the
+# baked path for an operator who wants a pinned no-fetch boot, and is the seam the
+# entrypoint smoke test drives to exercise both branches without real network.
+network_up() {
+    case "${TEATREE_FORCE_OFFLINE:-}" in
+        1 | true | yes) return 1 ;;
+    esac
+    git ls-remote --quiet --exit-code "$REPO_URL" HEAD >/dev/null 2>&1
+}
+
 ensure_clone() {
     if [ -e "$CLONE_DIR/.git" ]; then
-        # The clone lives in a shared volume that outlives the image, so a
+        if ! network_up; then
+            # OFFLINE: run the baked snapshot as-is. The runtime clone was seeded
+            # from the image's baked source (fresh box) or is a prior online
+            # boot's clone, so the stack runs with zero fetches; the origin
+            # fast-forward self-update below (and in-loop `t3 update`) resumes on
+            # the next boot with connectivity.
+            local baked_sha
+            baked_sha="$(git -C "$CLONE_DIR" rev-parse --short HEAD 2>/dev/null || echo '?')"
+            echo "entrypoint: network unreachable - running the BAKED snapshot at $baked_sha (skipping origin fast-forward; self-update resumes when the network returns)" >&2
+            return 0
+        fi
+        # ONLINE. The clone lives in a shared volume that outlives the image, so a
         # redeploy must bring it current or the stack keeps serving the code
         # from the first boot. SELF-HEAL: a stray feature branch checked out on
         # the runtime clone (or one whose upstream was deleted after its PR
@@ -337,25 +511,87 @@ ensure_clone() {
         }
         return 0
     fi
+    # No runtime clone: an image built WITHOUT the #3451 bake stage (or an empty
+    # teatree_src volume the baked source never seeded). Bootstrapping the source
+    # from scratch needs the network; the published image bakes a clone here so a
+    # fresh box never reaches this branch.
+    if ! network_up; then
+        echo "entrypoint: no runtime clone at $CLONE_DIR and the network is unreachable - cannot bootstrap the source offline (the published image bakes a clone here so a fresh box needs no first-boot fetch). Restore connectivity and re-run Deploy" >&2
+        exit 1
+    fi
     git clone "$REPO_URL" "$CLONE_DIR"
+}
+
+# Drain + 👀-ack inbound Slack on a cadence, SURFACING failures (#3443). The old
+# `t3 slack check >/dev/null 2>&1 || true` swallowed every error, so a drain that
+# could not boot Django looked identical to a healthy one and nobody ever saw it.
+#
+# `t3 slack check` exits 0 when it drained messages and 1 with NO output when the
+# queue was empty (the common, healthy case on a quiet box) — so a non-zero exit
+# is NOT itself a failure. A REAL failure is a non-zero exit that ALSO produced
+# output (a Django boot traceback, a DB error). Those increment a consecutive-
+# failure counter and are logged to stderr (visible in `docker compose logs
+# teatree-slack-listener`); an empty-queue exit never does.
+#
+# Each pass rewrites a heartbeat file that `t3 doctor` reads from another
+# container to surface a stuck/failed drain (self_heal `_check_slack_drain_alive`).
+# The heartbeat path mirrors teatree.paths.DATA_DIR ($HOME/.local/share/teatree) —
+# the filename is pinned to the doctor side by tests/test_deploy_slack_listener.py.
+slack_drain_loop() {
+    local interval="${SLACK_CHECK_INTERVAL_SECONDS:-15}"
+    local heartbeat="${SLACK_DRAIN_HEARTBEAT:-$HOME/.local/share/teatree/slack-drain-heartbeat.json}"
+    local consecutive=0 last_ok=null now out rc
+    mkdir -p "$(dirname "$heartbeat")"
+    while true; do
+        now="$(date +%s)"
+        out="$(t3 slack check 2>&1)" && rc=0 || rc=$?
+        if [ "$rc" -eq 0 ] || { [ "$rc" -eq 1 ] && [ -z "$out" ]; }; then
+            consecutive=0
+            last_ok="$now"
+        else
+            consecutive=$((consecutive + 1))
+            echo "entrypoint: slack drain (t3 slack check) FAILED rc=$rc (consecutive=$consecutive):" >&2
+            printf '%s\n' "$out" >&2
+        fi
+        printf '{"updated_at": %s, "interval_seconds": %s, "consecutive_failures": %s, "last_ok_at": %s}\n' \
+            "$now" "$interval" "$consecutive" "$last_ok" >"$heartbeat"
+        sleep "$interval"
+    done
 }
 
 case "$ROLE" in
 init)
     init_preflight
     ensure_clone
-    uv python install 3.13
-    # The [slack] extra pulls slack_sdk so the slack-listener role's Socket-Mode
-    # receiver can open its WebSocket. Without it `t3 slack listen` degrades to a
-    # no-op ("slack_sdk not installed") and inbound Slack never reaches the loop.
-    uv tool install --editable "$CLONE_DIR[slack]" --reinstall --python 3.13
-    # prek (the pre-commit reimplementation) is a DEV-group dependency, so the
-    # editable tool install above does NOT provide it. Worktree provisioning
-    # (`prek_hook.install`) and the base-clone commit/push gates need `prek` on
-    # PATH; install it as a standalone uv tool (pinned to the lockfile) into the
-    # shared teatree_uv volume so every role sees it. Runtime (not Dockerfile):
-    # /opt/teatree/uv is a named volume that shadows any image-baked install.
-    uv tool install prek==0.3.13
+    # Resolve the interpreter + editable install + prek. The self-contained image
+    # (#3451) BAKES all three (and seeds them onto the teatree_uv volume on a fresh
+    # box), so this is a fast no-op refresh when online and is skipped entirely when
+    # offline — first boot never cold-resolves the dependency graph from PyPI/astral.
+    if network_up; then
+        uv python install 3.13
+        # The [slack] extra pulls slack_sdk so the slack-listener role's Socket-Mode
+        # receiver can open its WebSocket. Without it `t3 slack listen` degrades to a
+        # no-op ("slack_sdk not installed") and inbound Slack never reaches the loop.
+        uv tool install --editable "${CLONE_DIR}[slack]" --reinstall --python 3.13
+        # prek (the pre-commit reimplementation) is a DEV-group dependency, so the
+        # editable tool install above does NOT provide it. Worktree provisioning
+        # (`prek_hook.install`) and the base-clone commit/push gates need `prek` on
+        # PATH; install it as a standalone uv tool (pinned to the lockfile) into the
+        # shared teatree_uv volume so every role sees it. Runtime (not Dockerfile):
+        # /opt/teatree/uv is a named volume that shadows any image-baked install.
+        uv tool install prek==0.3.13
+    else
+        # OFFLINE: the interpreter, editable install, and prek are baked into the
+        # image, so init proceeds with no cold fetch. Fail loud only if the image
+        # was built WITHOUT the bake stage (no baked t3/prek to fall back on).
+        echo "entrypoint: offline - using the baked interpreter + editable install + prek from the image (skipping the cold uv sync)" >&2
+        for baked_tool in t3 prek; do
+            command -v "$baked_tool" >/dev/null 2>&1 || {
+                echo "entrypoint: offline and no baked '$baked_tool' on PATH - this image was built without the #3451 bake stage, so it cannot bootstrap offline. Restore connectivity and re-run Deploy" >&2
+                exit 1
+            }
+        done
+    fi
     # Install the commit/push gate hooks on the base clone's SHARED hooks dir
     # (git links every worktree to it), so the privacy leak gate (#685), the
     # foreign-MR guard, banned-terms, and the push gates actually fire on the
@@ -366,19 +602,21 @@ init)
     ( cd "$CLONE_DIR" && prek install -f \
         && sed -i 's#^PREK="/opt/teatree/uv/tools/prek/bin/prek"#PREK="prek"#' \
             .git/hooks/pre-push .git/hooks/pre-commit .git/hooks/commit-msg 2>/dev/null )
-    # Provision the agent's ~/.claude/settings.json BEFORE `t3 setup` — setup's
-    # statusLine writer merges into (never clobbers) the file this seeds (#3359).
-    seed_claude_settings
-    t3 setup
+    # Provision the agent's ~/.claude/settings.json + `t3 setup` (skill links, the
+    # t3@souliane plugin registration, statusLine, MCP). setup's statusLine writer
+    # merges into (never clobbers) the file the seed writes (#3359).
+    prepare_claude_runtime
     t3 teatree db migrate
     # Values are JSON: enum strings are quoted, booleans and ints are bare.
     seed_setting agent_harness '"claude_sdk"'
     seed_setting agent_runtime '"headless"'
     seed_setting loop_runner_enabled true
-    # #3409: seed provision concurrency as 0 = AUTO so the runtime derives it from
-    # THIS host (nCPU/2, cgroup-aware) instead of pinning a per-box value that a
-    # migration onto a bigger box would carry forward as a stale serialization.
-    # `t3 doctor` additionally auto-clears a stale small-box pin left in the DB.
+    # #3409/#3435: provision concurrency 0 = AUTO EQUALS the code default, so the
+    # provenance-aware seeder intentionally SKIPS it — the runtime already
+    # auto-derives from THIS host (nCPU/2, cgroup-aware), and the worker's compose
+    # `cpus` cap is itself host-derived at deploy time (#3432) so that cgroup view
+    # reflects the real host instead of a baked-in cap. `t3 doctor --repair` clears
+    # ONLY a stale ENTRYPOINT-seeded pin, never an operator's deliberate one (#3434).
     seed_setting provision_max_concurrency 0
     seed_setting provision_ram_ceiling_percent 75
     seed_setting max_concurrent_local_stacks 1
@@ -389,6 +627,18 @@ init)
     echo "teatree-init: complete"
     ;;
 worker)
+    # ~/.claude is per-container ephemeral, so the agent's plugin/skill registration
+    # from init never reaches this container — re-run it here. For the WORKER, skills
+    # are a HARD startup precondition: the loop spawns headless agents, and a worker
+    # that spawns them with ZERO skills is the exact silent outage we refuse (owner
+    # directive: PREFER HARD FAIL over running with a critical capability missing). So
+    # `t3 setup` failing (set -e) OR the post-setup skills verification failing REFUSES
+    # to start, loudly and specifically, rather than serving a skill-less loop.
+    prepare_claude_runtime
+    if ! verify_agent_skills; then
+        echo "entrypoint: FATAL worker refusing to start: the t3 skills plugin is NOT registered (t3@souliane missing from ~/.claude/plugins/installed_plugins.json or not enabled in ~/.claude/settings.json) — the loop's agents would run SKILL-LESS. Re-run \`t3 setup\` in this container (or redeploy) and check \`t3 doctor check\`." >&2
+        exit 1
+    fi
     exec t3 worker
     ;;
 slack-listener)
@@ -402,14 +652,23 @@ slack-listener)
     # slot is not bootstrapped under `t3 worker` in headless, so the listener's
     # captures would never reach an observable state without this. `t3 slack
     # check` drains the JSONL queue and, unlike the drain-queue loop, is NOT
-    # gated by the worker singleton. Failure-tolerant (`|| true`) and
-    # backgrounded so a non-zero check never trips `set -e` or crashes the
-    # foreground listener.
-    SLACK_CHECK_INTERVAL_SECONDS=15
-    ( while true; do t3 slack check >/dev/null 2>&1 || true; sleep "$SLACK_CHECK_INTERVAL_SECONDS"; done ) &
+    # gated by the worker singleton. `slack_drain_loop` backgrounds the cadence
+    # (so `exec t3 slack listen` stays the foreground process), never trips
+    # `set -e`, and — unlike the old `|| true` — logs real failures to stderr and
+    # writes a heartbeat `t3 doctor` reads to catch a stuck/failed drain (#3443).
+    #
+    # ~/.claude is per-container ephemeral, so re-run the agent plugin/skill
+    # registration here too (non-fatal — a listener must keep draining Slack even if
+    # setup hiccups; init already proved setup works).
+    prepare_claude_runtime || echo "entrypoint: WARNING prepare_claude_runtime failed in slack-listener - agent skills may be unavailable until restart" >&2
+    slack_drain_loop &
     exec t3 slack listen
     ;;
 admin)
+    # ~/.claude is per-container ephemeral, so re-run the agent plugin/skill
+    # registration here too (non-fatal — the admin UI must serve even if setup
+    # hiccups; init already proved setup works).
+    prepare_claude_runtime || echo "entrypoint: WARNING prepare_claude_runtime failed in admin - agent skills may be unavailable until restart" >&2
     # Bind the box loopback (the service uses host networking) so the SSH-tunnel
     # request arrives as 127.0.0.1 and clears the middleware's loopback check.
     exec t3 admin --host 127.0.0.1 --port 8000 --no-browser

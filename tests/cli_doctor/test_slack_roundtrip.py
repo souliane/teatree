@@ -19,6 +19,7 @@ from django.utils import timezone
 from teatree.backends.messaging_noop import NoopMessagingBackend
 from teatree.cli.doctor.checks_slack_roundtrip import Level, check_slack_roundtrip, run_slack_roundtrip_probes
 from teatree.core.models import Loop, PendingChatInjection
+from teatree.loops.seed import seed_default_loops_and_prompts
 from teatree.utils.singleton import WORKER_SINGLETON
 
 
@@ -43,25 +44,16 @@ class _HealthyBaseline(TestCase):
     """Base with a fully-healthy round-trip; each subclass breaks exactly one seam."""
 
     def setUp(self) -> None:
-        # The `inbox` answer loop is seeded enabled by 0001_initial; ensure it is
-        # ENABLED with no LoopState hold so loop_enabled("inbox") is True.
-        # `create_defaults` keeps the CREATE branch XOR-valid: under `pytest-randomly`
-        # a preceding `TransactionTestCase` flushes teatree_loop WITHOUT restoring the
-        # migration-seeded rows (no `serialized_rollback`), so the seeded `inbox` row
-        # can be gone. The bare-`defaults` create branch then built a Loop with neither
-        # `prompt` nor `script`, tripping the `loop_prompt_xor_script` CHECK constraint
-        # (a shuffle-order-only flake). Seeding the same script-backed shape the
-        # migration uses keeps the create legal; the update branch (the row present)
-        # still only flips `enabled`, so the normal path is unchanged.
-        Loop.objects.update_or_create(
-            name="inbox",
-            defaults={"enabled": True},
-            create_defaults={
-                "enabled": True,
-                "script": "src/teatree/loops/inbox/loop.py",
-                "delay_seconds": 60,
-            },
-        )
+        # Recreate the `inbox` answer loop from the production seed SSOT so the row is
+        # valid against EVERY Loop CHECK constraint by construction (loop_prompt_xor_script,
+        # loop_script_requires_delay, and any future one) — a polluter test in the shuffled
+        # collection clears Loop rows (`Loop.objects.all().delete()`), dropping the
+        # migration-seeded inbox, so this setUp must not depend on it surviving. Delete-first
+        # then reseed also repairs a mutated row; then force ENABLED with no LoopState hold so
+        # loop_enabled("inbox") is True.
+        Loop.objects.filter(name="inbox").delete()
+        seed_default_loops_and_prompts()
+        Loop.objects.filter(name="inbox").update(enabled=True)
         self._backend = _FakeSlackBackend()
         self._stack = contextlib.ExitStack()
         self.overlays = self._stack.enter_context(
@@ -224,11 +216,69 @@ class TestRenderAndGate(_HealthyBaseline):
         assert any("Slack round-trip:" in line and "FAIL" in line for line in lines)
 
     def test_check_is_crash_proof(self) -> None:
+        # A SINGLE crashed run still degrades to OK (a WARN), never reddens the run.
+        import tempfile  # noqa: PLC0415 — test-local
+        from pathlib import Path  # noqa: PLC0415 — test-local
+
+        from teatree.cli.doctor.checks_slack_roundtrip import _CrashCounter  # noqa: PLC0415 — test-local
+
         lines: list[str] = []
+        with tempfile.TemporaryDirectory() as d:
+            counter = _CrashCounter(Path(d) / "crash.json")
+            with patch(
+                "teatree.cli.slack.provision._slack_overlays",
+                side_effect=RuntimeError("boom"),
+            ):
+                ok = check_slack_roundtrip(echo=lines.append, crash_counter=counter)
+        assert ok is True  # one crash degrades to OK, never crashes/reddens the run
+        assert any("crashed" in line for line in lines)
+
+
+class TestConsecutiveCrashGate(_HealthyBaseline):
+    """A probe that crashes run after run stops crash-OPENING and FAILs loud (#3443)."""
+
+    def _crash_once(self, counter: object, lines: list[str]) -> bool:
         with patch(
             "teatree.cli.slack.provision._slack_overlays",
             side_effect=RuntimeError("boom"),
         ):
-            ok = check_slack_roundtrip(echo=lines.append)
-        assert ok is True  # a check bug degrades to OK, never crashes/reddens the run
-        assert any("crashed" in line for line in lines)
+            return check_slack_roundtrip(echo=lines.append, crash_counter=counter)
+
+    def test_fails_after_max_consecutive_crashes(self) -> None:
+        import tempfile  # noqa: PLC0415 — test-local
+        from pathlib import Path  # noqa: PLC0415 — test-local
+
+        from teatree.cli.doctor.checks_slack_roundtrip import (  # noqa: PLC0415 — test-local import
+            _MAX_CONSECUTIVE_CRASHES,
+            _CrashCounter,
+        )
+
+        lines: list[str] = []
+        with tempfile.TemporaryDirectory() as d:
+            counter = _CrashCounter(Path(d) / "crash.json")
+            verdicts = [self._crash_once(counter, lines) for _ in range(_MAX_CONSECUTIVE_CRASHES)]
+        # Every run before the last is a WARN+pass; the threshold run FAILs.
+        assert verdicts[:-1] == [True] * (_MAX_CONSECUTIVE_CRASHES - 1)
+        assert verdicts[-1] is False
+        assert any("FAIL" in line and "runs in a row" in line for line in lines)
+
+    def test_a_successful_run_resets_the_streak(self) -> None:
+        import tempfile  # noqa: PLC0415 — test-local
+        from pathlib import Path  # noqa: PLC0415 — test-local
+
+        from teatree.cli.doctor.checks_slack_roundtrip import (  # noqa: PLC0415 — test-local import
+            _MAX_CONSECUTIVE_CRASHES,
+            _CrashCounter,
+        )
+
+        lines: list[str] = []
+        with tempfile.TemporaryDirectory() as d:
+            counter = _CrashCounter(Path(d) / "crash.json")
+            # Crash up to one short of the threshold...
+            for _ in range(_MAX_CONSECUTIVE_CRASHES - 1):
+                assert self._crash_once(counter, lines) is True
+            # ...a healthy run resets the tally (no overlay → silent no-op pass)...
+            with patch("teatree.cli.slack.provision._slack_overlays", return_value=[]):
+                assert check_slack_roundtrip(echo=lines.append, crash_counter=counter) is True
+            # ...so the very next crash is a WARN again, not a FAIL.
+            assert self._crash_once(counter, lines) is True

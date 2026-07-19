@@ -49,6 +49,7 @@ from django.utils import timezone
 from teatree.core.models.anthropic_active_pick import AnthropicActivePick
 from teatree.core.models.anthropic_token_usage import REJECTED_STATUS, AnthropicTokenUsage, TokenHealthReading
 from teatree.core.models.config_setting import GLOBAL_SCOPE, ConfigSetting
+from teatree.llm.anthropic_limits import ALL_TOKENS_EXHAUSTED_SIGNATURE
 from teatree.llm.credentials import (
     AnthropicApiKeyCredential,
     AnthropicSubscriptionCredential,
@@ -101,8 +102,16 @@ class AllTokensExhaustedError(CredentialError):
 
     A :class:`CredentialError` subclass so the existing headless / eval
     ``except CredentialError`` handlers record it as a loud dispatch refusal. The
-    message names the earliest known reset so the operator knows when work can resume.
+    message names the earliest known reset so the operator knows when work can resume;
+    :attr:`earliest_reset` carries the same instant as a datetime so the headless
+    quiesce-and-auto-resume park (multi-account #C2) can key its release on it.
     """
+
+    def __init__(self, message: str, *, earliest_reset: dt.datetime | None = None) -> None:
+        super().__init__(message)
+        #: The soonest an account frees up — the earliest window reset across all exhausted
+        #: accounts, or ``None`` when no reset is known. NOT a token; a schedule instant.
+        self.earliest_reset = earliest_reset
 
 
 class PassPathSelector:
@@ -155,7 +164,7 @@ class PassPathSelector:
         if chosen is None:
             chosen = self._rescue_reprobe(kind, configured, now)
         if chosen is None:
-            raise AllTokensExhaustedError(self._all_exhausted_message(kind))
+            raise self._all_exhausted_error(kind)
 
         AnthropicActivePick.objects.set_pick(kind.value, scope, chosen)
         if fell_back_across_scopes:
@@ -264,16 +273,18 @@ class PassPathSelector:
         return list(seen)
 
     @staticmethod
-    def _all_exhausted_message(kind: TokenKind) -> str:
+    def _all_exhausted_error(kind: TokenKind) -> AllTokensExhaustedError:
         candidates = PassPathSelector._all_configured_paths(kind)
         rows = AnthropicTokenUsage.objects.filter(pass_path__in=candidates)
         resets = [row.earliest_reset for row in rows if row.is_exhausted and row.earliest_reset is not None]
-        when = f" — earliest reset {min(resets).isoformat()}" if resets else ""
+        earliest = min(resets) if resets else None
+        when = f" — earliest reset {earliest.isoformat()}" if earliest is not None else ""
         # Name the candidate accounts so the operator knows exactly which ones to
         # refill/check. A ``pass_path`` is a store path (already persisted, logged in
         # ``select``), never the token value — safe to surface in the loud error.
         accounts = f" (accounts: {', '.join(candidates)})" if candidates else ""
-        return f"all configured Anthropic {kind.value} accounts are exhausted{accounts}{when}"
+        message = f"all configured Anthropic {kind.value} {ALL_TOKENS_EXHAUSTED_SIGNATURE}{accounts}{when}"
+        return AllTokensExhaustedError(message, earliest_reset=earliest)
 
 
 def reading_from(snapshot: RateLimitSnapshot) -> TokenHealthReading:
@@ -320,6 +331,49 @@ def _as_path_list(stored: object) -> list[str]:
 
 
 _SELECTOR = PassPathSelector()
+
+
+def _record_account_exhausted(pass_path: str, *, resets_at: dt.datetime, weekly: bool, now: dt.datetime) -> None:
+    """Cache *pass_path* as exhausted until *resets_at* so the selector routes off it.
+
+    A weekly hit blocks the 7d window, else the 5h one; the verdict is trusted until the
+    reset. Only the ``pass_path`` health verdict is written — the token is never read here.
+    """
+    reading = TokenHealthReading(
+        organization_id="",
+        utilization_5h=0.0 if weekly else 1.0,
+        utilization_7d=1.0 if weekly else 0.0,
+        status_5h="",
+        status_7d=REJECTED_STATUS if weekly else "",
+        reset_5h=None if weekly else resets_at,
+        reset_7d=resets_at if weekly else None,
+    )
+    AnthropicTokenUsage.objects.record(pass_path, reading, now=now)
+
+
+def record_reactive_exhaustion_and_reselect(
+    *, scope: str, resets_at: dt.datetime, weekly: bool, now: dt.datetime | None = None
+) -> str | None:
+    """Record the CURRENT subscription account exhausted after a mid-run limit, then re-select.
+
+    A mid-run 5h/weekly limit is observed by the SDK, NOT the health cache — so without
+    recording it the selector's sticky pick would route the SAME spent account again. This
+    marks the sticky OAuth account for *scope* exhausted (its ``resets_at`` cached so the
+    verdict is trusted until the window re-arms) and re-consults the selector:
+
+    * returns the next healthy account's ``pass_path`` — another account is available, so the
+        caller REQUEUES the task to rotate onto it rather than parking the whole lane;
+    * raises :class:`AllTokensExhaustedError` (carrying the earliest reset) when every account
+        is now exhausted, so the caller parks the lane for auto-resume at the soonest reset;
+    * returns ``None`` when nothing is routed (no sticky account — an ambient-env or single
+        unrouted credential), so the caller falls back to the existing lane park unchanged.
+    """
+    moment = now or timezone.now()
+    current = AnthropicActivePick.objects.pick_for(TokenKind.OAUTH.value, scope)
+    if current is None:
+        return None
+    _record_account_exhausted(current, resets_at=resets_at, weekly=weekly, now=moment)
+    return _SELECTOR.select(TokenKind.OAUTH, scope)
 
 
 def resolve_subscription_credential(*, scope: str = GLOBAL_SCOPE) -> AnthropicSubscriptionCredential:

@@ -112,6 +112,11 @@ class MergeKeystoneCommands(TyperCommand):
             "merged_sha": outcome.merged_sha,
             "ticket_state": outcome.ticket_state,
         }
+        if outcome.standing_delegation_by:
+            # #3413: surface the config-sourced standing substrate authorizer so the
+            # loop edge posts the "informed, not asked" Slack notification and the
+            # merge stays distinguishable from an interactive human authorization.
+            result["standing_delegation_by"] = outcome.standing_delegation_by
         if clear.ticket_id is not None:
             result["ticket_id"] = int(clear.ticket_id)
         self.stdout.write(f"  merged {outcome.slug}#{outcome.pr_id} → ticket state {outcome.ticket_state}")

@@ -7,11 +7,18 @@ api`` outputs.
 
 from unittest.mock import patch
 
+from teatree.core.gates import gh_token_preflight
 from teatree.core.gates.gh_token_preflight import REQUIRED_PERMISSION_LABELS, probe_token_permissions
 
 _SLUG = "souliane/teatree"
 _NOT_ACCESSIBLE = '{"message":"Resource not accessible by personal access token"}'
 _NOT_FOUND = '{"message":"Not Found"}'
+_WRITE_LABELS = ("issues: write", "pull_requests: write", "contents: write")
+
+
+def _classic_headers(scopes: str) -> str:
+    """Model a `gh api -i` metadata response for a classic PAT granting *scopes*."""
+    return f"HTTP/2.0 200 OK\nX-OAuth-Scopes: {scopes}\nContent-Type: application/json\n\n{{}}"
 
 
 def _runner(responses: dict[str, tuple[int, str]]):
@@ -99,6 +106,130 @@ class TestProbeTokenPermissions:
             probe = probe_token_permissions(_SLUG, run=_runner({}))
         assert probe.indeterminate_reason is not None
         assert "gh" in probe.indeterminate_reason.lower()
+
+
+class TestWriteProbeIndeterminate:
+    """A write probe that fails to REACH a verdict is INDETERMINATE, not present.
+
+    The per-route write probe reads a genuine grant as a 404 (resource absent) and
+    a missing permission as a 403 ``not accessible``. A TRANSIENT/network failure of
+    a write probe returns NEITHER string, so the old loop — which only appended to
+    ``missing`` on the 403 signal and discarded the return code — silently recorded
+    the failed probe as permission PRESENT. A token genuinely missing the permission
+    then passed preflight and failed mid-run. The fix treats a probe that reached no
+    definitive 403/404 verdict as indeterminate (fail closed to a skip/warn, never a
+    false grant).
+    """
+
+    def test_transient_write_probe_is_indeterminate_not_present(self) -> None:
+        # RED before the fix: the transient issues probe (no `not accessible`, no
+        # reached-route signal) was counted as PRESENT, so probe.ok was True.
+        run = _runner(
+            {
+                "repos/souliane/teatree": (0, "{}"),
+                "issues/0": (1, "error connecting to api.github.com: connection reset by peer"),
+                "pulls/0": (1, _NOT_FOUND),
+                "refs/heads": (1, _NOT_FOUND),
+            }
+        )
+        with patch("teatree.core.gates.gh_token_preflight.shutil.which", return_value="/usr/bin/gh"):
+            probe = probe_token_permissions(_SLUG, run=run)
+        assert probe.missing == ()
+        assert probe.indeterminate_reason is not None
+        assert "issues: write" in probe.indeterminate_reason
+        assert not probe.ok
+
+    def test_genuine_denial_takes_precedence_over_transient(self) -> None:
+        # A real 403 denial must be reported (loud FAIL) even when another probe is
+        # transient — the denial is a definite gap, not masked by the indeterminate.
+        run = _runner(
+            {
+                "repos/souliane/teatree": (0, "{}"),
+                "issues/0": (1, _NOT_ACCESSIBLE),
+                "pulls/0": (1, "curl: (6) could not resolve host"),
+                "refs/heads": (1, _NOT_FOUND),
+            }
+        )
+        with patch("teatree.core.gates.gh_token_preflight.shutil.which", return_value="/usr/bin/gh"):
+            probe = probe_token_permissions(_SLUG, run=run)
+        assert probe.missing == ("issues: write",)
+        assert not probe.ok
+
+    def test_http_status_marker_counts_as_reached(self) -> None:
+        # Real `gh` prints `(HTTP 404)` on a reached route; that is present, not
+        # indeterminate, even without the bare `Not Found` JSON body.
+        run = _runner(
+            {
+                "repos/souliane/teatree": (0, "{}"),
+                "issues/0": (1, "gh: Sub-issues are disabled (HTTP 422)"),
+                "pulls/0": (1, "gh: Not Found (HTTP 404)"),
+                "refs/heads": (1, "gh: Not Found (HTTP 404)"),
+            }
+        )
+        with patch("teatree.core.gates.gh_token_preflight.shutil.which", return_value="/usr/bin/gh"):
+            probe = probe_token_permissions(_SLUG, run=run)
+        assert probe.ok
+        assert probe.missing == ()
+
+
+class TestClassicPatScope:
+    """A classic PAT is judged by its ``X-OAuth-Scopes`` header.
+
+    The per-route 403 probe fails OPEN for classic tokens (#3436), so the scope
+    header is the source of truth for them.
+    """
+
+    def test_classic_pat_with_repo_scope_passes(self) -> None:
+        run = _runner({f"repos/{_SLUG}": (0, _classic_headers("repo, workflow, read:org"))})
+        with patch("teatree.core.gates.gh_token_preflight.shutil.which", return_value="/usr/bin/gh"):
+            probe = probe_token_permissions(_SLUG, run=run)
+        assert probe.ok
+        assert probe.missing == ()
+
+    def test_classic_pat_without_repo_scope_blocks_every_write(self) -> None:
+        # The bug: without `repo`, the write probes would 404 (fail open). The
+        # scope header is the truth — every write is denied.
+        run = _runner({f"repos/{_SLUG}": (0, _classic_headers("public_repo, read:org"))})
+        with patch("teatree.core.gates.gh_token_preflight.shutil.which", return_value="/usr/bin/gh"):
+            probe = probe_token_permissions(_SLUG, run=run)
+        assert not probe.ok
+        assert probe.missing == _WRITE_LABELS
+
+    def test_classic_repo_status_scope_is_not_repo_write(self) -> None:
+        # `repo:status` shares the `repo` prefix but grants no write — an exact
+        # scope-token match, never a substring, must reject it.
+        run = _runner({f"repos/{_SLUG}": (0, _classic_headers("repo:status, gist"))})
+        with patch("teatree.core.gates.gh_token_preflight.shutil.which", return_value="/usr/bin/gh"):
+            probe = probe_token_permissions(_SLUG, run=run)
+        assert probe.missing == _WRITE_LABELS
+
+    def test_empty_scope_header_is_classic_with_no_write(self) -> None:
+        run = _runner({f"repos/{_SLUG}": (0, _classic_headers(""))})
+        with patch("teatree.core.gates.gh_token_preflight.shutil.which", return_value="/usr/bin/gh"):
+            probe = probe_token_permissions(_SLUG, run=run)
+        assert probe.missing == _WRITE_LABELS
+
+
+class TestDefaultRunReachesApi:
+    def test_default_run_invokes_gh_api(self) -> None:
+        # Regression (#3436): the probe operands must run under `gh api …`, not a
+        # bare `gh …` that GitHub's CLI rejects as an unknown command — the latter
+        # made every real (unmocked) probe read indeterminate and silently no-op.
+        captured: dict[str, list[str]] = {}
+
+        class _Result:
+            returncode = 0
+            stdout = "{}"
+            stderr = ""
+
+        def fake_run(argv: list[str], **_kwargs: object) -> _Result:
+            captured["argv"] = argv
+            return _Result()
+
+        with patch.object(gh_token_preflight, "run_allowed_to_fail", fake_run):
+            gh_token_preflight._default_run(["-i", f"repos/{_SLUG}"])
+        assert captured["argv"][:2] == ["gh", "api"]
+        assert captured["argv"][-1] == f"repos/{_SLUG}"
 
 
 class TestRequiredLabels:

@@ -318,6 +318,7 @@ New tests — added in this repo or in any overlay repo — must lean **integrat
 - Python 3.13+ required. Use `X | Y` union syntax, not `Optional`.
 - `from __future__ import annotations` is banned — use native syntax.
 - No docstrings on classes/methods by policy (D1xx disabled). Self-documenting code.
+- **Concise (directive #4).** Everything teatree authors — code comments, commit/PR bodies, reviews, Slack — is bullets, straight to the point, no prose. Comment only what the code cannot say (the *why*, a non-obvious constraint); never narrate the *what*. Be RIGHT but concise — brevity is an efficiency axis, not a licence to drop detail that changes the meaning.
 - Management commands use `django-typer`, not `BaseCommand`.
 - Git author: use whatever `git config user.name` / `git config user.email` is set to.
 - Never add `Co-Authored-By` trailers to commits.

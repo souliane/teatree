@@ -77,8 +77,10 @@ _REVIEW_VERDICT_RETURN_LINES: tuple[str, ...] = (
 # shell (agents/answerer.md tools = Read/Grep/Glob only), so it CANNOT post the
 # reply itself via the Replier / `t3 <overlay> notify` CLI. It RETURNS the draft
 # in the result envelope instead; the orchestrator (``attempt_recorder`` →
-# ``_maybe_record_answer_draft``) routes it through the DeferredQuestion approval
-# path and posts on the user's behalf (maker≠checker: a different actor posts).
+# ``_maybe_record_answer_draft``) posts your draft directly to the owner
+# in-thread — answering the owner is not a post on the owner's behalf, so it
+# is never approval-gated or deferred (an on-behalf reply to a third party
+# still routes through the DeferredQuestion approval path).
 # Symmetric to ``_REVIEW_VERDICT_RETURN_LINES`` — without this directive the
 # shell-denied answerer returns a prose summary with no ``answer`` field and the
 # phase evidence gate refuses ("missing required evidence for phase 'answering'").
@@ -86,8 +88,8 @@ _ANSWER_RETURN_LINES: tuple[str, ...] = (
     "",
     "RETURN YOUR REPLY AS A DRAFT (this phase has no shell — do NOT try to post via",
     "`t3 <overlay> notify`, the Replier, or any CLI; you cannot post, you HAND BACK the draft):",
-    "add an `answer` object to your final JSON result. The orchestrator routes it through the",
-    "approval path and posts on the user's behalf:",
+    "add an `answer` object to your final JSON result. The orchestrator posts your draft",
+    "directly to the owner, in-thread, on your behalf:",
     '  "answer": {"text": "<the drafted reply, in the user\'s voice — no AI signature>",',
     '             "thread_ref": "<the inbound thread ts/ref this reply targets, or \'\' if none>"}',
     "The `text` MUST be non-empty — a summary-only result with no `answer` drops the reply and",
@@ -436,6 +438,14 @@ def build_system_context(
             "- Truncate file reads to the relevant section — avoid reading entire large files.",
             "- Limit git diff output to 200 lines; use --stat for overview first.",
             "- Summarize test output instead of pasting full logs.",
+            "",
+            "# Authored Output — Be Concise (directive #4)",
+            (
+                "- Everything you write — commit/PR body, review comments, code comments, Slack —"
+                " is bullets, straight to the point, no prose."
+            ),
+            "- Comment only the non-obvious *why*; never narrate the *what* the code already shows.",
+            "- Be RIGHT but concise: trim words, never a load-bearing fact, decision, or caveat.",
             "",
             "When done, run /t3:next to wrap up. It will:",
             "- Run /t3:retro (captures lessons while context is fresh)",

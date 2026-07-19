@@ -1560,6 +1560,8 @@ Usage: t3 eval [OPTIONS] COMMAND [ARGS]...
 │                         Scenario, Agent, File, Asserts).                     │
 │ run                     Run one scenario by name, or all scenarios when no   │
 │                         name is given.                                       │
+│ ci-heal                 Operator control of the CI-eval self-healing loop    │
+│                         (open sessions, list, dry-run advance).              │
 │ corpus                  Ground-truth corpus curation: list, inspect, and     │
 │                         grade captured sessions.                             │
 │ label                   Corpus-label curation: list nominations, scaffold a  │
@@ -2461,6 +2463,74 @@ Usage: t3 eval run [OPTIONS] [NAME]
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
+#### `t3 eval ci-heal`
+
+```
+Usage: t3 eval ci-heal [OPTIONS] COMMAND [ARGS]...
+
+ Operator control of the CI-eval self-healing loop (open sessions, list,
+ dry-run advance).
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Commands ───────────────────────────────────────────────────────────────────╮
+│ open     Open a pending heal session for a PR branch and print it as JSON.   │
+│ list     List the recent CI-eval heal sessions and their FSM state.          │
+│ advance  Run ONE advance pass over every open session by hand (an operator   │
+│          dry-run; reaches gh).                                               │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 eval ci-heal open`
+
+```
+Usage: t3 eval ci-heal open [OPTIONS]
+
+ Open a pending heal session for a PR branch and print it as JSON.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ *  --ref                     TEXT     PR branch to open a CI-eval heal       │
+│                                       session for.                           │
+│                                       [required]                             │
+│    --overlay                 TEXT     Overlay the branch belongs to          │
+│                                       (default: the core overlay).           │
+│    --max-fix-attempts        INTEGER  Bounded fix budget the PR-3b           │
+│                                       autonomous fixer honours (observe-only │
+│                                       ignores it).                           │
+│                                       [default: 2]                           │
+│    --help                             Show this message and exit.            │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 eval ci-heal list`
+
+```
+Usage: t3 eval ci-heal list [OPTIONS]
+
+ List the recent CI-eval heal sessions and their FSM state.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --json                  Emit the sessions as a JSON array.                   │
+│ --limit        INTEGER  Most-recent N sessions to show. [default: 50]        │
+│ --help                  Show this message and exit.                          │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 eval ci-heal advance`
+
+```
+Usage: t3 eval ci-heal advance [OPTIONS]
+
+ Run ONE advance pass over every open session by hand (an operator dry-run;
+ reaches gh).
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --json          Emit the advance outcomes as a JSON array.                   │
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
 #### `t3 eval corpus`
 
 ```
@@ -2663,8 +2733,11 @@ Usage: t3 doctor check [OPTIONS]
  Verify imports, required tools, and editable-install sanity.
 
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
-│ --repair                   Re-point a relocated/hijacked t3 editable install │
-│                            at the expected checkout (#3231).                 │
+│ --repair                   Allow doctor to APPLY fixes that mutate state:    │
+│                            re-point a relocated/hijacked t3 editable install │
+│                            (#3231) AND clear a stale entrypoint-seeded       │
+│                            provision_max_concurrency pin (#3434). A plain    │
+│                            run never mutates.                                │
 │ --slack-roundtrip          Deep Slack round-trip: additionally run a LIVE    │
 │                            auth.test per Slack backend (#3411).              │
 │ --json                     Emit findings as JSON for the watchdog container. │
@@ -8529,13 +8602,26 @@ Usage: t3 teatree handover create [OPTIONS]
 
  No ``--to`` → the live ``t3-master`` slot holder; if none, parked
  for whichever session starts next. Always persists the
- :class:`SessionHandover` row AND mirrors it to the XDG file.
+ :class:`SessionHandover` row AND mirrors it to the XDG file. Then, per
+ directive #8, drives every in-flight sub-agent worktree through
+ leak-gated fast-push so their work is committed/pushed/PR'd BEFORE the
+ orchestrator terminates them.
 
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
-│ --to          TEXT  Target session id. Omit to hand to the live loop owner,  │
-│                     else park for next.                                      │
-│ --json              Emit JSON.                                               │
-│ --help              Show this message and exit.                              │
+│ --to                                         TEXT  Target session id. Omit   │
+│                                                    to hand to the live loop  │
+│                                                    owner, else park for      │
+│                                                    next.                     │
+│ --drive-subagents    --no-drive-subagents          Fast-push in-flight       │
+│                                                    sub-agent worktrees       │
+│                                                    before they are           │
+│                                                    terminated (directive     │
+│                                                    #8).                      │
+│                                                    [default:                 │
+│                                                    drive-subagents]          │
+│ --json                                             Emit JSON.                │
+│ --help                                             Show this message and     │
+│                                                    exit.                     │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -9612,6 +9698,7 @@ Usage: t3 teatree config_setting [OPTIONS] COMMAND [ARGS]...
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ╭─ Commands ───────────────────────────────────────────────────────────────────╮
 │ set     Upsert a DB row for a DB-home setting (JSON value).                  │
+│ seed    Provenance-aware deploy seed of a DB-home setting (#3435).           │
 │ get     Print a setting's resolved value and its source (db vs file/env).    │
 │ clear   Remove a DB row, falling back to the dataclass default.              │
 │ list    List every DB config setting row (read-only).                        │
@@ -9651,6 +9738,36 @@ Usage: t3 teatree config_setting set [OPTIONS] KEY VALUE
 │ --overlay        TEXT  Overlay name to scope the row to; omit for the global │
 │                        scope (every overlay).                                │
 │ --help                 Show this message and exit.                           │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 teatree config_setting seed`
+
+```
+Usage: t3 teatree config_setting seed [OPTIONS] KEY VALUE
+
+ Provenance-aware DEPLOY seed of *key* → *value* (#3435).
+
+ Unlike ``set`` (an operator write that always upserts), ``seed`` is the
+ idempotent redeploy path: it NEVER writes a value equal to the code
+ default (which would only freeze a future default change), PRESERVES any
+ operator override, and re-seeds a row it still owns when the shipped
+ default changed. It records provenance (``seeded_by`` + the seeded value)
+ so a later ``t3 doctor --repair`` autofix can tell a deploy-seeded row
+ from an operator's deliberate pin. Same key/JSON validation as ``set``.
+
+╭─ Arguments ──────────────────────────────────────────────────────────────────╮
+│ *    key        TEXT  UserSettings field name (must be overridable).         │
+│                       [required]                                             │
+│ *    value      TEXT  JSON value, e.g. true / false / '"x"' / 3. [required]  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --overlay          TEXT  Overlay name to scope the row to; omit for the      │
+│                          global scope (every overlay).                       │
+│ --seeded-by        TEXT  Provenance marker recorded on the row (default:     │
+│                          entrypoint).                                        │
+│                          [default: entrypoint]                               │
+│ --help                   Show this message and exit.                         │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 

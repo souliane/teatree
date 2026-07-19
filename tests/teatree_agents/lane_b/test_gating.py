@@ -89,13 +89,29 @@ class TestHardDenyReason:
         assert reason is not None
         assert "privacy/banned-term gate" in reason
 
-    def test_publish_high_finding_to_an_unresolvable_target_is_allowed(
+    def test_publish_high_finding_to_a_probe_error_target_is_denied(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        # RED before the destination fix: Lane B denied ANY HIGH finding. Lane A
-        # SKIPS an unresolvable target (bias to not firing), so Lane B must too.
+        # #3442 fail closed: the target IS a resolvable ``owner/repo`` slug
+        # (``someowner/mystery``); only its visibility PROBE fails (None). A target
+        # the gate cannot PROVE non-public is scanned, so a HIGH finding is DENIED
+        # on both lanes -- a probe error must not route a leak out unscanned. Lane A
+        # and Lane B agree via the shared ``gate_skips_for_visibility`` predicate.
         self._isolate_visibility(tmp_path, monkeypatch, None)
         args = {"command": 'gh pr comment 5 --repo someowner/mystery --body "**User directive (verbatim):** go"'}
+        reason = hard_deny_reason("shell", args, cwd=tmp_path)
+        assert reason is not None
+        assert "privacy/banned-term gate" in reason
+
+    def test_publish_high_finding_to_a_genuinely_unresolvable_target_is_allowed(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # #3442 scope guard: a GENUINELY unresolvable target -- no ``--repo`` flag
+        # and a cwd with no git remote, so the destination resolves to nothing at
+        # all -- is NOT the probe-error case and stays SKIPPED/ALLOWED (unchanged).
+        # This pins that fail-closed did NOT leak into the truly-unresolvable path.
+        self._isolate_visibility(tmp_path, monkeypatch, None)
+        args = {"command": 'gh pr comment 5 --body "**User directive (verbatim):** go"'}
         assert hard_deny_reason("shell", args, cwd=tmp_path) is None
 
     def test_publish_high_finding_to_a_private_target_is_allowed(

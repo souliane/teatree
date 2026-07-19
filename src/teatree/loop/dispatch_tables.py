@@ -261,6 +261,11 @@ MECHANICAL_BY_KIND: dict[str, tuple[ActionKind, str]] = {
     # snapshot + keep-last-N-days retention prune, off the tick. Mechanical-only
     # (the scanner flags cadence; the executor writes the artifact), never an agent.
     "db_backup.due": ("mechanical", "run_db_backup"),
+    # #3201 PR-3a CI-eval self-healing loop — open heal sessions to advance → the
+    # mechanical observe pass (dispatch a CI eval, poll, GREEN / HALT + escalate).
+    # Mechanical-only (the scanner flags open sessions; the executor advances the
+    # durable FSM), never an agent — the observe loop writes no fix.
+    "ci_eval_heal.advance": ("mechanical", "advance_ci_eval_heal"),
 }
 
 

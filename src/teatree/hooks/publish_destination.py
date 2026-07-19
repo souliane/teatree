@@ -18,11 +18,15 @@ consumers:
     / ``private_repos`` allowlist match, or a CONFIRMED-PRIVATE probe verdict).
     An unknown/unresolvable target stays PUBLIC. This conservative classifier is
     consumed by the FSM-level :mod:`teatree.core.gates.privacy_gate`.
-- :func:`public_visibility.is_affirmatively_public` -- FAIL-OPEN. A destination
-    is public ONLY on a CONFIRMED-PUBLIC probe verdict for a non-allowlisted
-    slug; a private/internal/unknown/unresolvable target is NON-public. The
-    PreToolUse leak gates (#1415/#1213) use this so they enforce ONLY on an
-    affirmatively-public repo and never false-block a non-public one.
+- :func:`public_visibility.is_affirmatively_public` + the three-valued
+    :func:`public_visibility._destination_visibility` -- the PreToolUse leak-gate
+    scope. A destination is ``PUBLIC`` ONLY on a CONFIRMED-PUBLIC probe verdict
+    for a non-allowlisted slug, ``NON_PUBLIC`` when PROVABLY internal/private
+    (allowlist / internal-namespace / confirmed-private probe), and ``UNKNOWN``
+    when a RESOLVABLE slug's probe cannot confirm visibility. The leak gates
+    (#1415/#1213) SKIP only a ``NON_PUBLIC`` target and FAIL CLOSED (scan) on
+    ``PUBLIC`` and ``UNKNOWN`` -- a probe error on a resolvable target scans, never
+    skips (#3442), agreeing with the fail-closed bash pre-push mirror.
 
 The hook process is overlay-agnostic and cannot import ``OverlayConfig``; it
 reads the internal denylist from the canonical ``ConfigSetting`` DB via the

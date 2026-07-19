@@ -31,6 +31,7 @@ from teatree.core.models.deferred_question import DeferredQuestion
 from teatree.core.models.errors import InvalidTransitionError
 from teatree.core.models.usage_window_state import LIMIT_PARKED_PREFIX
 from teatree.core.repair_loop import IterationStalled, MaxIterationsExceeded, requeue_verdict
+from teatree.llm.anthropic_limits import recoverable_exhaustion_cause
 
 logger = logging.getLogger(__name__)
 
@@ -67,13 +68,28 @@ def redispatch_stuck_tickets() -> int:
         # the dead-letter set never grows the per-tick work (bounded sweep, #8).
         if ticket.pk in already_escalated:
             continue
-        phase = _STATE_PHASE[ticket.state]
-        halt = _budget_halt_reason(ticket, phase=phase)
-        if halt is not None:
-            _escalate_once(ticket, reason=halt)
-            continue
-        scheduled += _redispatch(ticket, phase=phase)
+        # Per-item fault isolation (#3441): one poison ticket (a budget query that blows
+        # up, a scheduling method that raises unexpectedly) must NOT abort the sweep and
+        # strand every OTHER stuck ticket. Record it loudly and move on.
+        try:
+            scheduled += _redispatch_one(ticket)
+        except Exception:
+            logger.exception("Stuck-redispatch skipped ticket %s after an unexpected error", ticket.pk)
     return scheduled
+
+
+def _redispatch_one(ticket: Ticket) -> int:
+    """Schedule ONE stuck ticket's implied phase within budget, else escalate. Returns 0/1.
+
+    Isolated per ticket so :func:`redispatch_stuck_tickets` can wrap it in a single
+    ``try`` and keep sweeping when one row raises.
+    """
+    phase = _STATE_PHASE[ticket.state]
+    halt = _budget_halt_reason(ticket, phase=phase)
+    if halt is not None:
+        _escalate_once(ticket, reason=halt)
+        return 0
+    return _redispatch(ticket, phase=phase)
 
 
 def _already_escalated_ticket_pks() -> set[int]:
@@ -168,15 +184,24 @@ def _budget_halt_reason(ticket: Ticket, *, phase: str) -> str | None:
 
 
 def _phase_attempts(ticket: Ticket, *, phase: str) -> list[TaskAttempt]:
-    """WORK attempts of *ticket*'s ``(ticket, normalized-phase)``, oldest first (limit-parks excluded)."""
-    return list(
+    """WORK attempts of *ticket*'s ``(ticket, normalized-phase)``, oldest first.
+
+    Both a usage-window limit-PARK (``LIMIT_PARKED_PREFIX``) and a window-recoverable
+    exhaustion FAILURE (session/weekly/rate-limit — see
+    :func:`~teatree.llm.anthropic_limits.recoverable_exhaustion_cause`) are excluded: a
+    capacity dip never executed a work iteration, so it must not burn the repair budget
+    nor trip the identical-failure stall — otherwise two limit hits spuriously halt the
+    re-dispatch and page a human. API-credit exhaustion (no timed reset) still counts.
+    """
+    attempts = (
         TaskAttempt.objects.filter(
             task__ticket_id=ticket.pk,
             task__phase__in=phase_spellings(normalize_phase(phase)),
         )
         .exclude(error__startswith=LIMIT_PARKED_PREFIX)
-        .order_by("pk"),
+        .order_by("pk")
     )
+    return [attempt for attempt in attempts if recoverable_exhaustion_cause(attempt.error) is None]
 
 
 def _escalate_once(ticket: Ticket, *, reason: str) -> None:

@@ -11,6 +11,7 @@ never reopened. The hardest pin: it NEVER retries endlessly.
 """
 
 from datetime import datetime, timedelta
+from unittest import mock
 
 from django.test import TestCase
 from django.utils import timezone
@@ -58,6 +59,30 @@ class TestTransientRequeue(TestCase):
         assert task.status == Task.Status.PENDING
         # A second pass finds it PENDING (no longer FAILED) — no double reopen.
         assert requeue_transient_failed() == 0
+
+    def test_poison_row_does_not_abort_the_sweep(self) -> None:
+        # #3441: one FAILED task whose processing raises an unexpected exception must NOT
+        # abort the whole sweep and strand every OTHER loop's recoverable task. The poison
+        # row is skipped (left FAILED, logged), the healthy row still recovers.
+        poison = _failed_task()  # created first ⇒ lower pk ⇒ processed first
+        _add_failed_attempt(poison, error="outage_death: poison row")
+        healthy = _failed_task()
+        _add_failed_attempt(healthy, error="outage_death: connection refused")
+
+        def _raise_on_poison(error: str) -> bool:
+            if "poison" in error:
+                msg = "classifier blew up on the poison row"
+                raise ValueError(msg)
+            return True
+
+        with mock.patch("teatree.loop.transient_requeue.is_transient_failure", side_effect=_raise_on_poison):
+            reopened = requeue_transient_failed()
+
+        healthy.refresh_from_db()
+        poison.refresh_from_db()
+        assert reopened == 1
+        assert healthy.status == Task.Status.PENDING  # the sweep kept going past the poison row
+        assert poison.status == Task.Status.FAILED  # the poison row is skipped, never fatal
 
     def test_empty_error_failed_task_is_escalated_not_frozen(self) -> None:
         # A FAILED task with NO recorded error matches neither the transient nor the
@@ -352,6 +377,36 @@ class TestExhaustionAutoRequeue(TestCase):
         # No human question — a capacity dip is auto-recovered, not escalated.
         assert DeferredQuestion.objects.filter(answered_at__isnull=True).count() == 0
 
+    def test_session_limit_task_with_no_ended_at_is_reopened_not_stranded(self) -> None:
+        # #3444: a limit-killed attempt can land FAILED having NEVER recorded ended_at
+        # (a crash/kill after the failure classification, before the row was finalized).
+        # The old ``ended is None`` guard stranded such a task forever — never past the
+        # horizon, never reopened, never escalated. The horizon must anchor on started_at
+        # so the task still requeues once the window has elapsed.
+        task = _failed_task()
+        _add_failed_attempt(task, error=_exhaustion_error(LimitCause.SUBSCRIPTION_SESSION))
+        # The attempt started 6h ago (past the 5h window) and never recorded an end.
+        TaskAttempt.objects.filter(task=task).update(started_at=timezone.now() - timedelta(hours=6), ended_at=None)
+
+        assert requeue_transient_failed() == 1
+        task.refresh_from_db()
+        assert task.status == Task.Status.PENDING
+        # A capacity dip auto-recovers — no human question.
+        assert DeferredQuestion.objects.filter(answered_at__isnull=True).count() == 0
+
+    def test_no_ended_at_task_is_left_failed_before_the_window_resets(self) -> None:
+        # The started_at fallback must still RESPECT the horizon: an attempt that started
+        # only 1h ago (no ended_at) has not cleared the 5h window and must be left FAILED
+        # for a later tick, not reopened prematurely.
+        task = _failed_task()
+        _add_failed_attempt(task, error=_exhaustion_error(LimitCause.SUBSCRIPTION_SESSION))
+        TaskAttempt.objects.filter(task=task).update(started_at=timezone.now() - timedelta(hours=1), ended_at=None)
+
+        assert requeue_transient_failed() == 0
+        task.refresh_from_db()
+        assert task.status == Task.Status.FAILED
+        assert DeferredQuestion.objects.filter(answered_at__isnull=True).count() == 0
+
     def test_session_limit_task_is_left_failed_before_the_window_resets(self) -> None:
         task = _failed_task()
         # Only 1h since the failure — the 5h window has not reset yet.
@@ -377,6 +432,34 @@ class TestExhaustionAutoRequeue(TestCase):
         task.refresh_from_db()
         assert task.status == Task.Status.FAILED
         assert DeferredQuestion.objects.filter(answered_at__isnull=True).count() == 1
+
+    def test_repeated_session_limit_is_reopened_not_escalated_as_a_stall(self) -> None:
+        # Two identical session-limit FAILED attempts in a row record two identical
+        # error_fingerprints. The stall detector must NOT count usage-limit failures:
+        # a capacity dip repeated across a window is auto-recovered once the horizon
+        # elapses, never dead-lettered + paged to a human.
+        task = _failed_task()
+        err = _exhaustion_error(LimitCause.SUBSCRIPTION_SESSION)
+        _add_failed_attempt(task, error=err, ended_at=timezone.now() - timedelta(hours=6))
+        _add_failed_attempt(task, error=err, ended_at=timezone.now() - timedelta(hours=6))
+
+        assert requeue_transient_failed() == 1
+        task.refresh_from_db()
+        assert task.status == Task.Status.PENDING
+        assert DeferredQuestion.objects.filter(answered_at__isnull=True).count() == 0
+
+    def test_repeated_rate_limit_is_reopened_not_escalated_as_a_stall(self) -> None:
+        # Same invariant for the transient rate-limit cause (a distinct recoverable
+        # window): repeated identical rate-limit failures must not trip the stall.
+        task = _failed_task()
+        err = LimitMatch(phrase="rate limit", cause=LimitCause.RATE_LIMIT).as_reason()
+        _add_failed_attempt(task, error=err, ended_at=timezone.now() - timedelta(hours=1))
+        _add_failed_attempt(task, error=err, ended_at=timezone.now() - timedelta(hours=1))
+
+        assert requeue_transient_failed() == 1
+        task.refresh_from_db()
+        assert task.status == Task.Status.PENDING
+        assert DeferredQuestion.objects.filter(answered_at__isnull=True).count() == 0
 
     def test_flag_off_keeps_the_pre_3407_escalation(self) -> None:
         ConfigSetting.objects.set_value("limit_autorecovery_enabled", value=False)

@@ -53,20 +53,24 @@ def _extract_shell_function(name: str) -> str:
 def _write_gh_stub(bin_dir: Path) -> None:
     """A `gh` shim modelling GitHub's write-permission responses.
 
-    ``GH_META_FAIL`` makes the metadata read (``gh api repos/<slug>``) fail with
-    the given text. ``GH_DENY`` is a space-separated set of endpoint substrings
-    for which a write probe returns the 403 "Resource not accessible" body;
-    every other write probe returns a 404 (permitted-but-nonexistent). Exit code
-    is non-zero for any 4xx, exactly as real `gh api` behaves.
+    ``GH_META_FAIL`` makes the metadata read (``gh api -i repos/<slug>``) fail
+    with the given text. ``GH_OAUTH_SCOPES`` (when SET, even empty) makes the
+    metadata read emit an ``X-OAuth-Scopes`` header with that value — modelling a
+    CLASSIC PAT; leaving it unset models a fine-grained PAT (no such header).
+    ``GH_DENY`` is a space-separated set of endpoint substrings for which a write
+    probe returns the 403 "Resource not accessible" body; every other write probe
+    returns a 404 (permitted-but-nonexistent). Exit code is non-zero for any 4xx,
+    exactly as real `gh api` behaves.
     """
     bin_dir.mkdir(parents=True, exist_ok=True)
     shim = bin_dir / "gh"
     shim.write_text(
         "#!/usr/bin/env bash\n"
         'args="$*"\n'
-        # metadata read: `gh api repos/<slug>` with no --method
-        'if [[ "$args" != *"--method"* && "$args" == *"api repos/"* ]]; then\n'
+        # metadata read: `gh api [-i] repos/<slug>` — the only call with no --method
+        'if [[ "$args" != *"--method"* ]]; then\n'
         '  if [ -n "${GH_META_FAIL:-}" ]; then echo "$GH_META_FAIL" >&2; exit 1; fi\n'
+        '  if [ -n "${GH_OAUTH_SCOPES+x}" ]; then echo "X-OAuth-Scopes: $GH_OAUTH_SCOPES"; fi\n'
         '  echo "{}"; exit 0\n'
         "fi\n"
         # write probes: deny listed endpoints, else 404
@@ -85,7 +89,8 @@ def _run(tmp_path: Path, **stub_env: str) -> subprocess.CompletedProcess[str]:
     _write_gh_stub(bin_dir)
 
     func = "\n\n".join(
-        _extract_shell_function(name) for name in ("gh_repo_slug", "_gh_perm_denied", "assert_gh_token_permissions")
+        _extract_shell_function(name)
+        for name in ("gh_repo_slug", "_gh_metadata_denied", "_gh_write_probe_denied", "assert_gh_token_permissions")
     )
     harness = tmp_path / "harness.sh"
     harness.write_text(
@@ -96,6 +101,8 @@ def _run(tmp_path: Path, **stub_env: str) -> subprocess.CompletedProcess[str]:
     env = dict(os.environ)
     env["PATH"] = f"{bin_dir}{os.pathsep}{env['PATH']}"
     env.setdefault("TEATREE_REPO_URL", "https://github.com/souliane/teatree.git")
+    # Retries must not sleep in the transient-failure test.
+    env.setdefault("TEATREE_GH_PREFLIGHT_BACKOFF_SECONDS", "0")
     env.update(stub_env)
     return subprocess.run([_BASH, str(harness)], capture_output=True, text=True, check=False, env=env)
 
@@ -128,6 +135,43 @@ class TestAssertGhTokenPermissions:
         # No GitHub slug → skip the probe, do not fail the deploy.
         assert out.returncode == 0, out.stderr
         assert "could not resolve the GitHub repo slug" in out.stderr
+
+
+class TestClassicPatScope:
+    """A classic PAT is judged by its ``X-OAuth-Scopes`` header (#3436).
+
+    The per-route 403 probe fails OPEN for a classic token, so the header's
+    ``repo`` scope — not the write probe — decides the verdict.
+    """
+
+    def test_classic_pat_with_repo_scope_passes(self, tmp_path: Path) -> None:
+        # A classic token WITHOUT `repo` would 404 every write probe (fail open);
+        # the passing verdict must come from the scope header, and DENY is ignored.
+        out = _run(tmp_path, GH_OAUTH_SCOPES="repo, workflow, read:org", GH_DENY="issues/0 pulls/0 refs/heads")
+        assert out.returncode == 0, out.stderr
+        assert "classic PAT with 'repo' scope" in out.stdout
+
+    def test_classic_pat_without_repo_scope_fails_loud(self, tmp_path: Path) -> None:
+        out = _run(tmp_path, GH_OAUTH_SCOPES="public_repo, read:org", GH_DENY="")
+        assert out.returncode != 0
+        assert "classic PAT WITHOUT the 'repo' scope" in out.stderr
+
+    def test_classic_repo_status_scope_is_not_repo_write(self, tmp_path: Path) -> None:
+        out = _run(tmp_path, GH_OAUTH_SCOPES="repo:status, gist", GH_DENY="")
+        assert out.returncode != 0
+        assert "classic PAT WITHOUT the 'repo' scope" in out.stderr
+
+
+class TestTransientProbeFailure:
+    """A transient metadata-read fault must NOT crash-loop init (#3436)."""
+
+    def test_transient_metadata_failure_warns_and_continues(self, tmp_path: Path) -> None:
+        # A network-shaped failure carries no denial signal — retry, then warn and
+        # skip the write preflight rather than exit 1 (which would crash-loop init).
+        out = _run(tmp_path, GH_META_FAIL="could not resolve host: api.github.com")
+        assert out.returncode == 0, out.stderr
+        assert "SKIPPING the write-permission preflight" in out.stderr
+        assert "indeterminate" in out.stderr
 
 
 class TestGhRepoSlug:

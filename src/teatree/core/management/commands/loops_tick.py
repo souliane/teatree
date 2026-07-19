@@ -58,8 +58,8 @@ from teatree.core.loop_lease_manager import PER_LOOP_TICK_MUTEX_PREFIX, per_loop
 from teatree.core.models import LoopLease
 from teatree.loop.loop_cadences import loop_owner_ttl_seconds
 from teatree.loop.preset_resolution import active_overlay_scope
-from teatree.loop.statusline import set_preset_segment_reader
-from teatree.loops.preset_status import preset_line_chunk
+from teatree.loop.statusline import set_overridden_loops_reader, set_preset_segment_reader
+from teatree.loops.preset_status import overridden_loop_names, preset_line_chunk
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -316,18 +316,23 @@ class Command(TyperCommand):
         from teatree.loop.tick import run_tick  # noqa: PLC0415 — deferred: keeps command import light
         from teatree.loops.schedule import mini_loop_schedules  # noqa: PLC0415 — deferred: keeps command import light
 
-        # The statusline dedicated loop line shows every enabled loop with its own
-        # next-tick countdown (#1400) plus the active-preset segment (#3159); install
-        # the live DB-backed readers so this per-loop tick's render keeps the full
-        # loop line, then reset after the tick so the process-global seams never leak.
+        # The statusline dedicated loop line shows due-soon loops with their own
+        # next-tick countdowns (#1400) under the active-preset/schedule handle
+        # (#3159/#3248); install the live DB-backed readers so this per-loop tick's
+        # render carries that handle AND collapses the routine per-loop leases into
+        # it (the overridden-loops reader is what activates the collapse — so it is
+        # installed together with the preset segment that represents the folded
+        # loops), then reset after the tick so the process-global seams never leak.
         set_mini_loop_schedules_reader(mini_loop_schedules)
         set_preset_segment_reader(preset_line_chunk)
+        set_overridden_loops_reader(overridden_loop_names)
         try:
             request = self._build_request(overlay)
             report = run_tick(request, statusline_path=statusline_file, jobs_builder=_scoped_jobs_builder(loop))
         finally:
             set_mini_loop_schedules_reader(None)
             set_preset_segment_reader(None)
+            set_overridden_loops_reader(None)
             LoopLease.objects.release(tick_mutex, owner=owner)
 
         self._emit_report(report, json_output=json_output)

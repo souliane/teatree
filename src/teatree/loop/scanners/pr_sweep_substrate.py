@@ -8,13 +8,16 @@ only on a new reviewed SHA.
 """
 
 import logging
-from typing import Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Protocol, runtime_checkable
 
 from teatree.core.backend_protocols import changed_paths_unavailable
 from teatree.core.merge.ci_rollup import CodeHostQuery
 from teatree.core.models.merge_clear import diff_paths_are_substrate
 from teatree.loop.scanners.pr_sweep_types import MergeAttempt, PrSummary
 from teatree.utils.pr_ref import PrRef
+
+if TYPE_CHECKING:
+    from teatree.core.models.merge_clear import MergeClear
 
 logger = logging.getLogger(__name__)
 
@@ -82,6 +85,54 @@ def ping_substrate_hold(pinger: "SubstratePinger | None", *, pr: PrSummary, revi
         )
     except Exception:
         logger.exception("pr_sweep failed to ping substrate-hold for %s#%d", pr.slug, pr.number)
+
+
+def substrate_auto_merged_text(
+    pr: PrSummary, *, clear_id: int, blast_class: str, authorizer: str, merged_sha: str
+) -> str:
+    """The owner-facing DM body for a config-delegated substrate auto-merge (#3413).
+
+    "Informed, not asked": the standing delegation
+    (``substrate_auto_merge_authorized_by``) auto-merged a substrate PR, so the
+    owner is TOLD (never asked). Carries the PR #, title, blast_class, the CLEAR id,
+    the merge SHA, and the config-sourced authorizer id.
+    """
+    return (
+        f"substrate auto-merged via standing delegation: [{pr.slug}#{pr.number}]({pr.url}) "
+        f"{pr.title!r} — blast_class={blast_class}, CLEAR #{clear_id}, merged @ {merged_sha[:8]}, "
+        f"authorized-by (config) {authorizer!r}"
+    )
+
+
+def substrate_auto_merged_key(pr: PrSummary, *, merged_sha: str) -> str:
+    """The per-merge idempotency key so the BotPing ledger DMs the auto-merge once."""
+    return f"substrate-auto-merged:{pr.slug}#{pr.number}:{merged_sha}"
+
+
+def ping_substrate_auto_merged(
+    pinger: "SubstratePinger | None", *, pr: PrSummary, clear: "MergeClear", authorizer: str, merged_sha: str
+) -> None:
+    """DM the owner ONCE that the standing delegation auto-merged a substrate PR (#3413).
+
+    No-op when no pinger is wired. Best-effort: a pinger error never aborts the
+    sweep — the merge already landed; only the "informed" DM is missed. Deduped per
+    merge SHA via the BotPing ledger, so a re-tick after the merge never re-DMs.
+    """
+    if pinger is None:
+        return
+    try:
+        pinger.ping(
+            text=substrate_auto_merged_text(
+                pr,
+                clear_id=int(clear.pk),
+                blast_class=str(clear.blast_class),
+                authorizer=authorizer,
+                merged_sha=merged_sha,
+            ),
+            idempotency_key=substrate_auto_merged_key(pr, merged_sha=merged_sha),
+        )
+    except Exception:
+        logger.exception("pr_sweep failed to ping substrate auto-merge for %s#%d", pr.slug, pr.number)
 
 
 def hold_solo_overlay_substrate(pinger: "SubstratePinger | None", *, pr: PrSummary) -> MergeAttempt:

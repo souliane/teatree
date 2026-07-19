@@ -14,6 +14,7 @@ A scenario absent from the map sends the whole file — the safe default.
 import dataclasses
 
 from scripts.eval.corpus_gen.catalog import RECURRING
+from scripts.eval.corpus_gen.concise_doctrine import CONCISE_DOCTRINE
 from scripts.eval.corpus_gen.model import Scenario
 from scripts.eval.corpus_gen.per_skill import PER_SKILL
 from scripts.eval.corpus_gen.ship_scenario import ship_scenarios
@@ -150,7 +151,7 @@ def _with_cli_stubs(scenario: Scenario) -> Scenario:
 
 ALL_SCENARIOS: list[Scenario] = [
     _with_uv_project_fixture(_with_cli_stubs(_with_git_repo_fixture(_with_agent_sections(s))))
-    for s in (*RECURRING, *PER_SKILL, *ship_scenarios(), *todos_scenarios())
+    for s in (*RECURRING, *PER_SKILL, *ship_scenarios(), *todos_scenarios(), *CONCISE_DOCTRINE)
 ]
 
 

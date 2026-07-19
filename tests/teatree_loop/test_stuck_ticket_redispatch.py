@@ -19,6 +19,7 @@ from teatree.core.models.deferred_question import DeferredQuestion
 from teatree.core.models.errors import InvalidTransitionError
 from teatree.core.models.transition import TicketTransition
 from teatree.core.repair_loop import max_phase_iterations
+from teatree.llm.anthropic_limits import LimitCause, LimitMatch
 from teatree.loop.stuck_ticket_redispatch import (
     DEFAULT_STUCK_IDLE_HOURS,
     _idle_threshold_hours,
@@ -87,6 +88,29 @@ class TestStuckTicketRedispatch(TestCase):
         assert scheduled == 0
         assert DeferredQuestion.objects.filter(answered_at__isnull=True).count() == 1
 
+    def test_poison_ticket_does_not_abort_the_sweep(self) -> None:
+        # #3441: one stuck ticket whose per-item processing raises an unexpected
+        # exception must NOT abort the sweep and strand every OTHER stuck ticket. The
+        # poison ticket is skipped (logged, left as-is), the healthy one still schedules.
+        poison = _stuck_ticket(state=Ticket.State.STARTED)  # created first ⇒ processed first
+        healthy = _stuck_ticket(state=Ticket.State.STARTED)
+
+        def _raise_on_poison(ticket: Ticket, *, phase: str) -> str | None:
+            if ticket.pk == poison.pk:
+                msg = "budget query blew up on the poison ticket"
+                raise ValueError(msg)
+            return None
+
+        with patch(
+            "teatree.loop.stuck_ticket_redispatch._budget_halt_reason",
+            side_effect=_raise_on_poison,
+        ):
+            scheduled = redispatch_stuck_tickets()
+
+        assert scheduled == 1  # the healthy ticket was scheduled despite the poison one
+        assert healthy.tasks.filter(phase="planning", status=Task.Status.PENDING).count() == 1
+        assert poison.tasks.count() == 0  # the poison ticket is skipped, never fatal
+
     def test_bad_idle_threshold_setting_falls_back_to_default(self) -> None:
         with override_settings(STUCK_TICKET_IDLE_HOURS="not-a-number"):
             assert _idle_threshold_hours() == DEFAULT_STUCK_IDLE_HOURS
@@ -143,6 +167,31 @@ class TestStuckTicketRedispatch(TestCase):
         # Idempotent: a second sweep neither schedules nor spams another escalation.
         assert redispatch_stuck_tickets() == 0
         assert DeferredQuestion.objects.filter(answered_at__isnull=True).count() == 1
+
+    def test_repeated_exhaustion_failures_do_not_halt_redispatch(self) -> None:
+        # A stuck ticket whose recent phase attempts all died on the session limit must
+        # NOT be treated as a stalled/doomed phase: usage-limit failures are capacity
+        # dips, not defects, so they must not burn the repair budget nor trip the
+        # identical-failure stall. The ticket is re-dispatched, never escalated.
+        ticket = _stuck_ticket(state=Ticket.State.STARTED)
+        err = LimitMatch(phrase="5-hour limit", cause=LimitCause.SUBSCRIPTION_SESSION).as_reason()
+        for _ in range(2):
+            session = Session.objects.create(ticket=ticket, agent_id="planning")
+            task = Task.objects.create(ticket=ticket, session=session, phase="planning", status=Task.Status.FAILED)
+            attempt = TaskAttempt.objects.create(
+                task=task,
+                execution_target=task.execution_target,
+                ended_at=timezone.now(),
+                exit_code=1,
+                error=err,
+            )
+            TaskAttempt.objects.filter(pk=attempt.pk).update(started_at=timezone.now() - timedelta(hours=48))
+
+        scheduled = redispatch_stuck_tickets()
+
+        assert scheduled == 1
+        assert ticket.tasks.filter(phase="planning", status=Task.Status.PENDING).count() == 1
+        assert DeferredQuestion.objects.filter(answered_at__isnull=True).count() == 0
 
     def _burn_planning_budget(self, ticket: Ticket) -> None:
         for i in range(max_phase_iterations()):

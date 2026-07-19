@@ -49,6 +49,29 @@ class TestReapStaleTaskClaims(TestCase):
         assert transient.status == Task.Status.PENDING
         assert stuck.tasks.filter(phase="planning", status=Task.Status.PENDING).count() == 1
 
+    def test_a_non_runtimeerror_sweep_failure_is_isolated_and_recorded(self) -> None:
+        # #3441: a sweep can raise more than RuntimeError (a DatabaseError on a poison
+        # row, a ValueError from a classifier). The old ``except RuntimeError`` let such
+        # an exception abort the whole recovery step; the broadened ``except Exception``
+        # must isolate it — record it in the errors sink AND still run the later sweeps.
+        transient = self._transient_failed_task()
+        stuck = self._stuck_started_ticket()
+        errors: dict[str, str] = {}
+
+        with patch(
+            "teatree.core.worktree.recovery_sweeps.run_boot_sweeps",
+            side_effect=ValueError("boot sweep hit a poison row"),
+        ):
+            _reap_stale_task_claims(errors)
+
+        # The non-RuntimeError failure was recorded, not propagated...
+        assert "recovery:boot_sweeps" in errors
+        assert "ValueError" in errors["recovery:boot_sweeps"]
+        # ...and the other two sweeps still ran despite it.
+        transient.refresh_from_db()
+        assert transient.status == Task.Status.PENDING
+        assert stuck.tasks.filter(phase="planning", status=Task.Status.PENDING).count() == 1
+
     def _transient_failed_task(self) -> Task:
         ticket = Ticket.objects.create(role=Ticket.Role.AUTHOR, state=Ticket.State.STARTED)
         session = Session.objects.create(ticket=ticket, agent_id="coding")

@@ -14,7 +14,8 @@ and DM the owner:
 - a READY loop timer stale past 2x its cadence (a wedged drain),
 - a PENDING ``interactive`` task under ``agent_runtime=headless`` (unrunnable),
 - a FAILED task on a still-live ticket (the silent-freeze signature),
-- a runtime clone that has drifted off its default branch.
+- a runtime clone that has drifted off its default branch,
+- a slack-drain sidecar failing every pass or gone silent, so inbound Slack stops being answered.
 
 Each returns ``bool`` — ``False`` is a hard FAIL that reddens ``t3 doctor`` (and
 so the watchdog's ``t3 doctor --json``). Every check is crash-proof: any
@@ -23,16 +24,25 @@ aborts the doctor run would recreate the very "monitor dies, alerting dies"
 failure this module exists to end.
 """
 
+import base64
 import datetime as dt
 import json
+import os
 import shutil
 from collections.abc import Callable
+from dataclasses import dataclass
 from pathlib import Path
 
 import typer
 
+from teatree.paths import DATA_DIR
+
 #: The compose project the box runs the factory under (``deploy/docker-compose.yml``).
 _COMPOSE_PROJECT = "teatree"
+#: Env var the socket-holding watchdog uses to hand compose container states to
+#: ``t3 doctor`` (base64 of the ``docker ps`` tab-rows); see
+#: :func:`_compose_states_from_handoff`.
+_COMPOSE_STATES_ENV = "TEATREE_DOCTOR_COMPOSE_PS"
 #: The one-shot prep service — a non-zero exit is a crash-looping init.
 _INIT_SERVICE = "teatree-init"
 #: The long-running services expected to stay ``running`` while loops are enabled.
@@ -41,6 +51,28 @@ _LONG_RUNNING_SERVICES = ("teatree-worker", "teatree-admin")
 _DOWN_STATES = frozenset({"created", "exited", "dead", "restarting", "paused"})
 #: The tab-separated ``service\tstate\tstatus`` fields the docker probe emits.
 _STATE_ROW_FIELDS = 3
+
+#: The slack-drain sidecar heartbeat filename under :data:`teatree.paths.DATA_DIR`
+#: (the shared data bind mount). ``deploy/entrypoint.sh``'s ``slack_drain_loop``
+#: rewrites it every pass; doctor — running in another container — reads it here.
+#: The filename is pinned to the entrypoint by ``tests/test_deploy_slack_listener.py``.
+_SLACK_DRAIN_HEARTBEAT_FILENAME = "slack-drain-heartbeat.json"
+#: A drain that has failed this many passes in a row is a real, non-transient break.
+_MAX_DRAIN_CONSECUTIVE_FAILURES = 5
+#: The heartbeat must refresh within max(this x its interval, floor) or the sidecar
+#: is dead/wedged. The multiplier absorbs a slow pass; the floor covers a fast cadence.
+_DRAIN_HEARTBEAT_STALE_MULTIPLIER = 4
+_DRAIN_HEARTBEAT_STALE_FLOOR_SECONDS = 120
+
+
+@dataclass(frozen=True, slots=True)
+class DrainBeat:
+    """One parsed slack-drain heartbeat: when it last ran and its failure streak."""
+
+    updated_at: dt.datetime
+    consecutive_failures: int
+    interval_seconds: int
+
 
 #: A READY loop timer older than this multiple of its cadence is a stalled drain.
 _STALE_TIMER_CADENCE_MULTIPLIER = 2
@@ -54,6 +86,47 @@ _STRANDED_HEADLESS_GRACE_SECONDS = 900
 #: The box's runtime clone; used as a fallback when the running code's repo root
 #: cannot be resolved (``deploy/docker-compose.yml`` mounts the clone here).
 _BOX_RUNTIME_CLONE = Path("/home/teatree/teatree")
+
+
+def _parse_compose_state_rows(text: str) -> list[tuple[str, str, str]]:
+    """Parse tab-separated ``docker ps`` lines into ``(service, state, status)`` tuples.
+
+    Each line carries three tab-separated fields -- service, state, status (the
+    probe's ``--format``); the state is lower-cased for the down-state comparison.
+    Malformed / short lines are dropped so a partial read never yields a garbage
+    verdict.
+    """
+    rows: list[tuple[str, str, str]] = []
+    for line in text.splitlines():
+        parts = line.split("\t")
+        if len(parts) == _STATE_ROW_FIELDS and parts[0]:
+            rows.append((parts[0], parts[1].strip().lower(), parts[2].strip()))
+    return rows
+
+
+def _compose_states_from_handoff() -> list[tuple[str, str, str]] | None:
+    """Compose states handed off by the socket-holding watchdog, or ``None`` when absent.
+
+    ``t3 doctor`` runs inside ``teatree-admin``, which has the ``docker`` CLI but
+    NOT ``/var/run/docker.sock`` (only the watchdog mounts the socket), so a local
+    ``docker ps`` there cannot reach the daemon and the compose-stack detector would
+    silently pass every real outage. The watchdog — the ONE container with the
+    socket — gathers the states and passes them in via :data:`_COMPOSE_STATES_ENV`
+    (base64 of the same tab-separated ``docker ps`` output), so the detector runs in
+    the container that also has the DB-backed ``loop_runner_on`` gate.
+
+    ``None`` when the env var is unset / empty (a dev box, or a direct ``t3 doctor``
+    run) so the caller falls back to a LOCAL ``docker ps``. A malformed / non-base64
+    handoff also yields ``None`` (degrade to a pass) rather than a garbage verdict.
+    """
+    raw = os.environ.get(_COMPOSE_STATES_ENV, "").strip()
+    if not raw:
+        return None
+    try:
+        decoded = base64.b64decode(raw).decode("utf-8")
+    except (ValueError, UnicodeDecodeError):
+        return None
+    return _parse_compose_state_rows(decoded)
 
 
 class _Probe:
@@ -78,16 +151,26 @@ class _Probe:
 
     @staticmethod
     def compose_container_states(project: str) -> list[tuple[str, str, str]] | None:
-        """``(service, state, status)`` per container of *project*, or ``None`` when docker is unreachable.
+        """``(service, state, status)`` per container of *project*, or ``None`` when unreadable.
 
-        ``None`` means "cannot tell" (no ``docker`` on PATH, daemon down, or the
-        probe timed out) — the caller degrades to a pass, exactly as the MCP /
-        Slack doctor probes degrade when their tool is absent. Inside the worker
-        container (no docker socket) this returns ``None`` and the watchdog's own
-        ``docker compose up -d`` remains the actual container-restart repair.
+        Prefers the watchdog handoff (:func:`_compose_states_from_handoff`): the
+        doctor runs inside a socket-LESS app container (``teatree-admin`` has the
+        ``docker`` CLI but not ``/var/run/docker.sock``), so a local ``docker ps``
+        cannot reach the daemon there and the detector would silently pass every
+        real outage. The socket-holding watchdog gathers the states and hands them
+        in, so the check runs where the DB-backed ``loop_runner_on`` gate lives.
+
+        Falls back to a LOCAL ``docker ps`` when no handoff is present (a dev box,
+        or a direct ``t3 doctor`` run on a machine WITH docker access). ``None``
+        means "cannot tell" (no handoff, and no ``docker`` on PATH / daemon down /
+        timeout) — the caller degrades to a pass, exactly as the MCP / Slack doctor
+        probes degrade when their tool is absent.
         """
         from teatree.utils.run import run_allowed_to_fail  # noqa: PLC0415 — deferred: keeps CLI startup light
 
+        handoff = _compose_states_from_handoff()
+        if handoff is not None:
+            return handoff
         docker = shutil.which("docker")
         if docker is None:
             return None
@@ -109,12 +192,7 @@ class _Probe:
             return None
         if completed.returncode != 0:
             return None
-        rows: list[tuple[str, str, str]] = []
-        for line in completed.stdout.splitlines():
-            parts = line.split("\t")
-            if len(parts) == _STATE_ROW_FIELDS and parts[0]:
-                rows.append((parts[0], parts[1].strip().lower(), parts[2].strip()))
-        return rows
+        return _parse_compose_state_rows(completed.stdout)
 
     @staticmethod
     def _cadence_seconds(loop_row: object) -> int:
@@ -193,16 +271,40 @@ class _Probe:
             findings.append({"level": level, "message": message})
         return findings
 
+    @staticmethod
+    def slack_drain_heartbeat() -> "DrainBeat | None":
+        """The slack-drain sidecar's last heartbeat, or ``None`` when absent/unreadable.
+
+        ``None`` means the box runs no slack-drain sidecar (a dev machine, or a
+        deploy without the listener) OR the file is unparsable — the caller
+        degrades to a pass, never a false FAIL. Read from
+        :data:`teatree.paths.DATA_DIR` so a test can repoint the whole probe by
+        patching that name on this module.
+        """
+        path = DATA_DIR / _SLACK_DRAIN_HEARTBEAT_FILENAME
+        try:
+            raw = json.loads(path.read_text(encoding="utf-8"))
+            updated = dt.datetime.fromtimestamp(int(raw["updated_at"]), tz=dt.UTC)
+            return DrainBeat(
+                updated_at=updated,
+                consecutive_failures=int(raw["consecutive_failures"]),
+                interval_seconds=int(raw.get("interval_seconds", 0)),
+            )
+        except (OSError, ValueError, TypeError, KeyError, json.JSONDecodeError):
+            return None
+
 
 def _check_compose_stack() -> bool:
     """FAIL when the compose init crash-loops or a long-running service is down.
 
     A non-zero init exit is a crash-looping prep container (nothing downstream
     starts); a worker/admin container stuck ``Created``/``Exited`` while
-    ``loop_runner_enabled`` is ON is a silently dead factory. Best-effort: when
-    docker is unreachable (the common in-container case, no socket) the probe
-    returns ``None`` and this degrades to a pass — the watchdog's own
-    ``docker compose up -d`` is the real container-restart repair.
+    ``loop_runner_enabled`` is ON is a silently dead factory. The container states
+    come from the watchdog handoff (:func:`_compose_states_from_handoff`) since the
+    doctor runs in a socket-less app container; only when neither the handoff nor a
+    local ``docker ps`` can read the daemon (a dev box) does the probe return
+    ``None`` and this degrade to a pass — the watchdog's own ``docker compose up
+    -d`` is the real container-restart repair.
     """
     try:
         states = _Probe.compose_container_states(_COMPOSE_PROJECT)
@@ -302,11 +404,22 @@ def _check_stale_loop_timer() -> bool:
         return True
     if not overdue:
         return True
-    for name, run_after, threshold in overdue:
+    # Collapse to ONE FAIL summary keyed on the SET of overdue timers (sorted
+    # names, no timestamps): the watchdog RED body-hash keys on FAIL messages, so
+    # a volatile ``run_after`` in the summary would churn the hash and re-DM the
+    # whole bundle every pass even when the set is unchanged (#slack-comms). The
+    # per-timer ``run_after`` detail goes on non-FAIL lines — visible in
+    # ``t3 doctor``, excluded from the dedup body.
+    names = sorted(name for name, _run_after, _threshold in overdue)
+    typer.echo(
+        f"FAIL  {len(names)} loop timer(s) READY but overdue past 2x cadence: "
+        f"{', '.join(names)}. The drain is stalled; check the worker "
+        f"(`t3 worker ensure` / worker logs)."
+    )
+    for name, run_after, threshold in sorted(overdue):
         typer.echo(
-            f"FAIL  Loop timer {name!r} is READY but overdue — due {run_after.isoformat()}, past "
-            f"2x its {threshold // _STALE_TIMER_CADENCE_MULTIPLIER}s cadence. The drain is stalled; "
-            f"check the worker (`t3 worker ensure` / worker logs)."
+            f"INFO    {name}: due {run_after.isoformat()}, past 2x its "
+            f"{threshold // _STALE_TIMER_CADENCE_MULTIPLIER}s cadence."
         )
     return False
 
@@ -401,6 +514,44 @@ def _check_runtime_clone_on_default_branch() -> bool:
     return False
 
 
+def _check_slack_drain_alive() -> bool:
+    """FAIL when the slack-drain sidecar is failing every pass or has gone silent.
+
+    The ``teatree-slack-listener`` service drains inbound Slack every ~15s
+    (``deploy/entrypoint.sh`` ``slack_drain_loop``) and rewrites a heartbeat with
+    its consecutive-failure count. A drain failing pass after pass (``t3 slack
+    check`` erroring — Django won't boot, DB unreachable) or a heartbeat gone
+    stale (the loop died or hung) both mean captured DMs never reach the answer
+    pipeline: teatree reacts 👀 but silently stops answering. Best-effort — an
+    absent/unreadable heartbeat (no sidecar on this box) degrades to a pass.
+    """
+    try:
+        beat = _Probe.slack_drain_heartbeat()
+        now = _now()
+    except Exception as exc:  # noqa: BLE001 — a self-heal probe must never crash the doctor run
+        typer.echo(f"WARN  Slack-drain check crashed: {exc.__class__.__name__}: {exc}")
+        return True
+    if beat is None:
+        return True
+    stale_after = max(_DRAIN_HEARTBEAT_STALE_MULTIPLIER * beat.interval_seconds, _DRAIN_HEARTBEAT_STALE_FLOOR_SECONDS)
+    age = (now - beat.updated_at).total_seconds()
+    if age > stale_after:
+        typer.echo(
+            f"FAIL  Slack-drain heartbeat is stale ({int(age)}s old, past {stale_after}s) — the "
+            f"`teatree-slack-listener` drain loop has died or hung, so inbound Slack is no longer drained "
+            f"or answered. Restart it: `docker compose -p {_COMPOSE_PROJECT} up -d teatree-slack-listener`."
+        )
+        return False
+    if beat.consecutive_failures >= _MAX_DRAIN_CONSECUTIVE_FAILURES:
+        typer.echo(
+            f"FAIL  Slack drain has failed {beat.consecutive_failures} passes in a row — `t3 slack check` "
+            f"keeps erroring in the `teatree-slack-listener` sidecar, so captured DMs never get 👀-acked or "
+            f"answered. Inspect `docker compose -p {_COMPOSE_PROJECT} logs teatree-slack-listener`."
+        )
+        return False
+    return True
+
+
 def _now() -> dt.datetime:
     from django.utils import timezone  # noqa: PLC0415 — deferred: Django import at call time
 
@@ -421,6 +572,7 @@ def run_self_heal_checks() -> bool:
         _check_interactive_task_under_headless,
         _check_failed_tasks_on_live_tickets,
         _check_runtime_clone_on_default_branch,
+        _check_slack_drain_alive,
     )
     ok = True
     for check in checks:

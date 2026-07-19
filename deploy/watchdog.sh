@@ -40,6 +40,15 @@ EXEC_SERVICES="${TEATREE_WATCHDOG_EXEC_SERVICES:-teatree-admin teatree-worker}"
 # Services restarted when init has already completed (init excluded — see header).
 read -ra APP_SERVICES <<<"${TEATREE_WATCHDOG_APP_SERVICES:-teatree-worker teatree-admin teatree-slack-listener teatree-watchdog}"
 
+# Stale-temp trim: services to sweep, the disk temp roots to sweep in each, and the
+# minimum age (minutes) a scratch entry must reach before it is trimmed. Runtime
+# temp is routed to disk (/var/tmp) by the entrypoint + settings template, but a
+# crashed/abandoned run can still leave pytest/uv/claude scratch behind that grows
+# unbounded over weeks — the periodic half of the tmpfs-fill guard.
+TEMP_TRIM_SERVICES="${TEATREE_WATCHDOG_TEMP_TRIM_SERVICES:-teatree-worker teatree-admin}"
+TEMP_TRIM_ROOTS="${TEATREE_WATCHDOG_TEMP_TRIM_ROOTS:-/var/tmp /tmp}"
+TEMP_TRIM_MIN_AGE_MIN="${TEATREE_WATCHDOG_TEMP_TRIM_MIN_AGE_MIN:-720}"
+
 log() { printf '%s watchdog: %s\n' "$(date -uIseconds)" "$*" >&2; }
 
 compose() { docker compose -p "$PROJECT" -f "$COMPOSE_FILE" "$@"; }
@@ -91,27 +100,104 @@ notify_owner() {
   fi
 }
 
+# Gather the compose container states from the daemon socket and base64-encode them
+# for handoff to `t3 doctor`. This watchdog is the ONLY container with
+# /var/run/docker.sock, while `t3 doctor` runs in a socket-less app container whose
+# own `docker ps` cannot reach the daemon — so without this handoff the doctor's
+# compose-stack detector (crash-looping init / down worker) silently passes every
+# real outage. Empty on any docker/base64 failure — the doctor then degrades to a
+# pass exactly as it did before this handoff, and its other detectors still run.
+compose_states_b64() {
+  local ps
+  ps="$(docker ps --all \
+        --filter "label=com.docker.compose.project=$PROJECT" \
+        --format '{{.Label "com.docker.compose.service"}}'$'\t''{{.State}}'$'\t''{{.Status}}' 2>/dev/null)" || return 0
+  printf '%s' "$ps" | base64 -w0 2>/dev/null || true
+}
+
+# Run `t3 doctor check --json` in the first REACHABLE exec service, capturing its
+# stdout into DOCTOR_RAW regardless of doctor's exit code. This is the heart of
+# the #3440 fix: a red-findings verdict exits NON-ZERO yet is a healthy RUN of
+# doctor, so the watchdog must NOT read a non-zero exit as "unreachable" (that
+# made the red-findings DM path below dead code). Reachability is probed
+# separately (a trivial `exec ... true`); only a genuinely unreachable service
+# falls through to the next one. Returns 0 when a service was reached (DOCTOR_RAW
+# set, possibly empty), 125 when NO exec service could be reached at all.
+run_doctor() {
+  local svc states_b64
+  DOCTOR_RAW=""
+  states_b64="$(compose_states_b64)"
+  for svc in $EXEC_SERVICES; do
+    if compose exec -T "$svc" true >/dev/null 2>&1; then
+      # `|| true`: doctor exits non-zero on red findings; keep its stdout, drop
+      # the exit code (set -e must not abort, and the code is NOT the signal).
+      # `-e TEATREE_DOCTOR_COMPOSE_PS`: hand the socket-only container states to the
+      # doctor's compose-stack detector, which cannot reach the daemon itself.
+      DOCTOR_RAW="$(compose exec -T -e "TEATREE_DOCTOR_COMPOSE_PS=$states_b64" "$svc" t3 doctor check --json 2>/dev/null || true)"
+      return 0
+    fi
+  done
+  return 125
+}
+
+# Trim ONLY well-known stale scratch (pytest / uv / claude) older than the age
+# threshold from each service's disk temp roots, so a leaked temp dir can never
+# fill the disk and wedge the box. Bounded (maxdepth 1, name-scoped, age-gated) and
+# idempotent — a clean temp dir is a no-op. NEVER fatal: a trim failure (a service
+# down, a read-only root) must not retire the only supervisor, so every branch is
+# swallowed. A whole-tree dir like ``pytest-of-<user>`` is only "old" once no run
+# has touched it for the threshold, so an ACTIVE test run is never trimmed.
+trim_stale_temp() {
+  local svc root
+  for svc in $TEMP_TRIM_SERVICES; do
+    for root in $TEMP_TRIM_ROOTS; do
+      compose exec -T "$svc" bash -lc \
+        "find '$root' -mindepth 1 -maxdepth 1 \\( -name 'pytest-*' -o -name 'uv-*' -o -name 'claude-*' \\) -mmin +$TEMP_TRIM_MIN_AGE_MIN -exec rm -rf {} + 2>/dev/null" \
+        >/dev/null 2>&1 || true
+    done
+  done
+  log "stale-temp trim swept ${TEMP_TRIM_SERVICES// /, } (>${TEMP_TRIM_MIN_AGE_MIN}min under ${TEMP_TRIM_ROOTS// /, })"
+}
+
+# The three hard-outage alarms below key on a DAILY bucket (`%Y%m%d`), not an
+# hourly one: `notify_user` dedups on the key, so an hourly bucket re-DM'd the
+# identical "stack down" alarm every hour (13+ overnight copies observed). A
+# daily bucket collapses a persisting unchanged outage to at most one DM/day
+# while still re-alerting each day it persists and on a next-day recurrence.
 run_pass() {
   log "restarting any down services (gated on init state)"
   if ! restart_down_services; then
     # The stack could not even be brought up — the strongest outage signal.
     printf 'teatree watchdog: `docker compose up -d` FAILED on the box — the stack is DOWN and could not be restarted. SSH in and inspect `docker compose -p %s logs`.' "$PROJECT" \
-      | notify_owner "watchdog:compose-up-failed:$(date -u +%Y%m%d%H)"
+      | notify_owner "watchdog:compose-up-failed:$(date -u +%Y%m%d)"
     return 0
   fi
 
-  local raw
-  if ! raw="$(exec_in_stack t3 doctor check --json)"; then
-    printf 'teatree watchdog: could not run `t3 doctor` in any service (%s) — the stack is unreachable even after `up -d`. SSH in and inspect `docker compose -p %s ps`.' "$EXEC_SERVICES" "$PROJECT" \
-      | notify_owner "watchdog:doctor-unreachable:$(date -u +%Y%m%d%H)"
+  # Guard against a temp-scratch leak filling the disk (never fatal — see fn).
+  trim_stale_temp
+
+  if ! run_doctor; then
+    # No exec service could be reached at all — a genuine transport failure, the
+    # ONLY case that is truly "unreachable" (distinct from doctor running and
+    # returning a red verdict, which is handled below).
+    printf 'teatree watchdog: could not exec `t3 doctor` in any service (%s) — the stack is unreachable even after `up -d`. SSH in and inspect `docker compose -p %s ps`.' "$EXEC_SERVICES" "$PROJECT" \
+      | notify_owner "watchdog:doctor-unreachable:$(date -u +%Y%m%d)"
     return 0
   fi
 
-  # Keep only the JSON line (doctor may print incidental lines before it).
+  # Branch on the PRESENCE of a parseable JSON verdict, NOT on doctor's exit code
+  # (#3440). Keep only the JSON line (doctor may print incidental lines before it).
+  # `|| true`: no match makes the pipeline exit non-zero under `set -o pipefail`,
+  # which would abort here before the no-verdict branch could fire.
   local json
-  json="$(printf '%s\n' "$raw" | grep '"ok"' | tail -n 1)"
+  json="$(printf '%s\n' "$DOCTOR_RAW" | grep '"ok"' | tail -n 1 || true)"
   if [ -z "$json" ]; then
-    log "doctor produced no JSON verdict — treating as healthy"
+    # Doctor was reachable but emitted no parseable verdict: a half-crashed doctor
+    # is itself a RED condition, not a healthy pass (the old code treated it as
+    # healthy and stayed silent). DM at most once per day so a persistent breakage is seen.
+    log "doctor reachable but produced no JSON verdict — treating as RED"
+    printf 'teatree watchdog: `t3 doctor check --json` ran but produced NO parseable verdict — doctor may be crashing on the box. SSH in and run `t3 doctor check` in `docker compose -p %s exec teatree-admin`.' "$PROJECT" \
+      | notify_owner "watchdog:doctor-no-verdict:$(date -u +%Y%m%d)"
     return 0
   fi
 
@@ -143,11 +229,14 @@ run_loop() {
   done
 }
 
-# Extract the FAIL messages from the doctor JSON. Uses python3 (present on the box)
-# and degrades to a generic body when it is absent.
+# Extract the FAIL messages from the doctor JSON (read on stdin). Uses python3
+# (present on the box) and degrades to a generic body when it is absent. Uses
+# `python3 -c` rather than a `-` heredoc: a `python3 - <<'PY'` feeds the heredoc
+# as the PROGRAM on stdin, leaving `sys.stdin` at EOF so the piped verdict is
+# never read — the body would always be the generic fallback.
 _extract_fail_body() {
   if command -v python3 >/dev/null 2>&1; then
-    python3 - <<'PY'
+    python3 -c '
 import json, sys
 try:
     data = json.load(sys.stdin)
@@ -155,7 +244,7 @@ try:
 except Exception:
     fails = []
 print("\n".join(f"- {m}" for m in fails) if fails else "- (see `t3 doctor check` on the box for detail)")
-PY
+'
   else
     printf '%s' "- one or more red findings (install python3 on the box for detail, or run \`t3 doctor check\`)"
   fi
@@ -170,8 +259,14 @@ _stable_key() {
   fi
 }
 
-if [ "${1:-}" = "--loop" ]; then
-  run_loop
-else
-  run_pass
+# Run the dispatch only when EXECUTED, not when sourced — so a test can source
+# this file and drive `run_pass` / `run_doctor` in isolation with stubbed docker.
+# `run_loop` re-invokes the script with `bash "$SELF"`, which is an execution, so
+# the default single pass still fires there.
+if [ "${BASH_SOURCE[0]}" = "${0}" ]; then
+  if [ "${1:-}" = "--loop" ]; then
+    run_loop
+  else
+    run_pass
+  fi
 fi

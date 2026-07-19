@@ -14,6 +14,7 @@ from teatree.core.models.task import Task
 from teatree.core.models.task_attempt import TaskAttempt
 from teatree.core.models.usage_window_state import LIMIT_PARKED_PREFIX
 from teatree.core.repair_loop import IterationStalled, MaxIterationsExceeded, requeue_verdict
+from teatree.llm.anthropic_limits import recoverable_exhaustion_cause
 
 
 def phase_attempts(task: Task) -> list[TaskAttempt]:
@@ -26,15 +27,25 @@ def phase_attempts(task: Task) -> list[TaskAttempt]:
     A usage-window limit-park (Directive #3) is EXCLUDED: its ``TaskAttempt`` records a
     scheduling event, not a work iteration, so it must not burn the per-phase iteration
     budget nor trip the identical-failure stall detector during a multi-hour outage.
+
+    A window-recoverable exhaustion FAILURE (subscription session/weekly or a transient
+    rate limit — see :func:`~teatree.llm.anthropic_limits.recoverable_exhaustion_cause`)
+    is EXCLUDED for the same reason: capacity ran out, the run never executed a work
+    iteration. It lands FAILED (not parked) when limit auto-recovery is off or on a
+    non-parking lane, so it carries no ``LIMIT_PARKED_PREFIX`` — counting it would let two
+    identical capacity dips trip the stall detector and spuriously dead-letter the phase.
+    API-credit exhaustion (no timed reset) is NOT excluded: it is a real halt the operator
+    must clear, so it keeps burning the budget and may escalate.
     """
-    return list(
+    attempts = (
         TaskAttempt.objects.filter(
             task__ticket_id=task.ticket_id,  # ty: ignore[unresolved-attribute]
             task__phase__in=phase_spellings(normalize_phase(task.phase)),
         )
         .exclude(error__startswith=LIMIT_PARKED_PREFIX)
-        .order_by("pk"),
+        .order_by("pk")
     )
+    return [attempt for attempt in attempts if recoverable_exhaustion_cause(attempt.error) is None]
 
 
 def check_requeue_allowed(task: Task) -> None:
@@ -91,6 +102,7 @@ def _escalate_stall(task: Task, *, phase: str, iterations: int) -> None:
         question,
         session_id=str(session_id or ""),
         dedupe_marker=f"repair-stall:{ticket.pk}:{phase}",
+        audience=DeferredQuestion.Audience.INTERNAL,
     )
 
 
@@ -115,4 +127,5 @@ def _escalate_cap(task: Task, *, phase: str, iterations: int) -> None:
         question,
         session_id=str(session_id or ""),
         dedupe_marker=f"repair-cap:{ticket.pk}:{phase}",
+        audience=DeferredQuestion.Audience.INTERNAL,
     )

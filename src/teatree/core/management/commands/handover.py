@@ -12,12 +12,14 @@ the project's "anything touching the ORM is a management command" rule.
 """
 
 import json
+from pathlib import Path
 from typing import Annotated
 
 import typer
 from django_typer.management import TyperCommand, command, initialize
 
 from teatree.core.handover import create_handover
+from teatree.core.handover_orchestration import SubagentPush, drive_subagents_to_fast_push
 from teatree.loop.session_identity import current_session_id
 
 
@@ -36,13 +38,23 @@ class Command(TyperCommand):
             str,
             typer.Option("--to", help="Target session id. Omit to hand to the live loop owner, else park for next."),
         ] = "",
+        drive_subagents: Annotated[
+            bool,
+            typer.Option(
+                "--drive-subagents/--no-drive-subagents",
+                help="Fast-push in-flight sub-agent worktrees before they are terminated (directive #8).",
+            ),
+        ] = True,
         json_output: Annotated[bool, typer.Option("--json", help="Emit JSON.")] = False,
     ) -> None:
         """Hand this session's full durable state to another session.
 
         No ``--to`` → the live ``t3-master`` slot holder; if none, parked
         for whichever session starts next. Always persists the
-        :class:`SessionHandover` row AND mirrors it to the XDG file.
+        :class:`SessionHandover` row AND mirrors it to the XDG file. Then, per
+        directive #8, drives every in-flight sub-agent worktree through
+        leak-gated fast-push so their work is committed/pushed/PR'd BEFORE the
+        orchestrator terminates them.
         """
         from_session = current_session_id()
         if not from_session:
@@ -55,6 +67,7 @@ class Command(TyperCommand):
 
         handover, mirror = create_handover(from_session=from_session, explicit_to=to)
         recipient = handover.to_session or "next-session"
+        pushes = self._drive_subagents() if drive_subagents else []
         if json_output:
             self.stdout.write(
                 json.dumps(
@@ -64,12 +77,53 @@ class Command(TyperCommand):
                         "to_session": handover.to_session,
                         "parked_for_next": handover.is_for_next_session,
                         "mirror_path": str(mirror),
+                        "subagent_pushes": [self._push_json(push) for push in pushes],
                     },
                     indent=2,
                 )
             )
         else:
             self.stdout.write(f"OK    handed off to {recipient}; mirror written to {mirror}.")
+            for push in pushes:
+                self.stdout.write(f"      sub-agent {push.branch}: {self._push_summary(push)}")
+
+    def _drive_subagents(self) -> list[SubagentPush]:
+        """Fast-push in-flight sub-agent worktrees; a failure here never fails the hand-off.
+
+        The hand-off row + mirror are already durable, so the orchestration
+        step is best-effort: a git/network hiccup is logged and swallowed
+        rather than losing the recorded hand-off.
+        """
+        cwd = Path.cwd()
+        try:
+            return drive_subagents_to_fast_push(str(cwd), exclude=(cwd,))
+        except Exception:  # noqa: BLE001 — the hand-off is already persisted; sub-agent driving must not fail it
+            self.stderr.write(f"WARN  could not drive sub-agents to fast-push from {cwd} (hand-off still recorded).")
+            return []
+
+    @staticmethod
+    def _push_json(push: SubagentPush) -> dict[str, object]:
+        outcome = push.outcome
+        return {
+            "worktree": str(push.worktree),
+            "branch": push.branch,
+            "driven": push.driven,
+            "committed": bool(outcome and outcome.committed),
+            "pushed": bool(outcome and outcome.pushed),
+            "pr_url": outcome.pr_url if outcome else "",
+            "error": push.error,
+        }
+
+    @staticmethod
+    def _push_summary(push: SubagentPush) -> str:
+        if not push.driven:
+            return f"NOT pushed ({push.error or 'unknown error'})"
+        outcome = push.outcome
+        if outcome is None or not outcome.ok:
+            findings = "; ".join(f.detail for f in outcome.findings) if outcome else "no outcome"
+            return f"REFUSED ({findings})"
+        pr = f" PR {outcome.pr_url}" if outcome.pr_url else ""
+        return f"pushed (committed={outcome.committed}){pr}"
 
     @command()
     def whoami(

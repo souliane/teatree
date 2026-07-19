@@ -231,11 +231,15 @@ class FakeKeystone:
     merged_sha: str = MAIN_SHA
     error: str = ""
     escalation_kind: str = ""
+    standing_delegation_by: str = ""
     calls: list[int] = field(default_factory=list)
+    #: (clear_id, presented human_authorized) per call — #3413 pins what the sweep presents.
+    authorized_calls: list[tuple[int, str]] = field(default_factory=list)
 
-    def merge_clear(self, *, clear_id: int) -> tuple[bool, str, str, str]:
+    def merge_clear(self, *, clear_id: int, human_authorized: str = "") -> tuple[bool, str, str, str, str]:
         self.calls.append(clear_id)
-        return self.merged, self.merged_sha, self.error, self.escalation_kind
+        self.authorized_calls.append((clear_id, human_authorized))
+        return self.merged, self.merged_sha, self.error, self.escalation_kind, self.standing_delegation_by
 
 
 @dataclass(slots=True)
@@ -272,6 +276,7 @@ def _scanner(  # noqa: PLR0913 — test helper: each kwarg maps 1:1 to a PrSweep
     dispatcher: FakeReviewDispatcher | None = None,
     self_identities: tuple[str, ...] = (SELF_LOGIN,),
     substrate_pinger: FakeSubstratePinger | None = None,
+    substrate_standing_authorizer: str = "",
 ) -> tuple[PrSweepScanner, NullMergeNotifier]:
     notifier = notifier or NullMergeNotifier()
     return (
@@ -286,6 +291,7 @@ def _scanner(  # noqa: PLR0913 — test helper: each kwarg maps 1:1 to a PrSweep
             review_dispatcher=dispatcher,
             self_identities=self_identities,
             substrate_pinger=substrate_pinger,
+            substrate_standing_authorizer=substrate_standing_authorizer,
         ),
         notifier,
     )
@@ -1565,13 +1571,13 @@ class TestErrorIsolation:
         class _BoomFirstKeystone:
             calls: list[int] = field(default_factory=list)
 
-            def merge_clear(self, *, clear_id: int) -> tuple[bool, str, str, str]:
+            def merge_clear(self, *, clear_id: int, human_authorized: str = "") -> tuple[bool, str, str, str, str]:
                 self.calls.append(clear_id)
                 if not self.calls or (self.calls == [clear_id] and len(self.calls) == 1):
                     # First call: inject a fault to simulate a merge conflict / DB error
                     msg = "simulated keystone failure"
                     raise RuntimeError(msg)
-                return True, MAIN_SHA, "", ""  # pragma: no cover
+                return True, MAIN_SHA, "", "", ""  # pragma: no cover
 
         # Issue a CLEAR for both PRs so _evaluate reaches _merge for each.
         _issue_clear(pr_id=6230)
@@ -1592,7 +1598,7 @@ class TestErrorIsolation:
 
         @dataclass(slots=True)
         class _AuthErrorKeystone:
-            def merge_clear(self, *, clear_id: int) -> tuple[bool, str, str, str]:
+            def merge_clear(self, *, clear_id: int, human_authorized: str = "") -> tuple[bool, str, str, str, str]:
                 raise ScannerError(
                     scanner="pr_sweep",
                     error_class=ScannerErrorClass.AUTH,
@@ -1901,3 +1907,95 @@ class TestSoloOverlaySubstrateHold:
         assert notifier.calls == []
         assert signals[0].payload["decision"] == "blocked"
         assert len(pinger.calls) == 1
+
+
+class TestSubstrateStandingDelegation:
+    """#3413: the sweep presents the owner's config-sourced standing substrate authorizer.
+
+    Empty (the default) presents nothing — the keystone holds substrate and the
+    sweep pings-and-holds (byte-identical to before). When configured, the sweep
+    re-presents the id as ``--human-authorized`` ONLY for a substrate-labeled CLEAR
+    (so the interactive non-substrate refusal guard is never tripped), and posts the
+    "informed, not asked" DM only when the keystone confirms the merge was
+    authorized by that standing delegation.
+    """
+
+    _AUTHORIZER = "owner:standing"
+
+    def test_no_config_presents_no_authorizer_and_holds(self) -> None:
+        # Default (unset): even a substrate CLEAR is presented with an EMPTY
+        # authorizer, so the keystone holds and the sweep pings-and-holds.
+        clear = _issue_substrate_clear()
+        api = FakePrApiClient(prs_by_slug={SLUG: [_open_pr()]})
+        keystone = FakeKeystone(merged=False, error="held: substrate change", escalation_kind="substrate")
+        pinger = FakeSubstratePinger()
+        scanner, _ = _scanner(api=api, keystone=keystone, substrate_pinger=pinger)
+
+        signals = scanner.scan()
+
+        assert keystone.authorized_calls == [(int(clear.pk), "")]
+        assert signals[0].payload["decision"] == "blocked"
+        # The hold ping fired; no auto-merge notification.
+        assert len(pinger.calls) == 1
+        assert pinger.calls[0][1].startswith("substrate-hold:")
+
+    def test_config_presents_authorizer_for_substrate_clear(self) -> None:
+        clear = _issue_substrate_clear()
+        api = FakePrApiClient(prs_by_slug={SLUG: [_open_pr()]})
+        keystone = FakeKeystone(merged=True, standing_delegation_by=self._AUTHORIZER)
+        pinger = FakeSubstratePinger()
+        scanner, _ = _scanner(
+            api=api, keystone=keystone, substrate_pinger=pinger, substrate_standing_authorizer=self._AUTHORIZER
+        )
+
+        scanner.scan()
+
+        assert keystone.authorized_calls == [(int(clear.pk), self._AUTHORIZER)]
+
+    def test_config_does_not_present_authorizer_for_non_substrate_clear(self) -> None:
+        # A logic/docs CLEAR must NOT receive the substrate authorizer — presenting
+        # ``--human-authorized`` on a non-substrate CLEAR would be refused outright.
+        clear = _issue_clear()
+        api = FakePrApiClient(prs_by_slug={SLUG: [_open_pr()]})
+        keystone = FakeKeystone(merged=True)
+        scanner, _ = _scanner(api=api, keystone=keystone, substrate_standing_authorizer=self._AUTHORIZER)
+
+        scanner.scan()
+
+        assert keystone.authorized_calls == [(int(clear.pk), "")]
+
+    def test_standing_delegation_merge_posts_informed_notification(self) -> None:
+        clear = _issue_substrate_clear()
+        api = FakePrApiClient(prs_by_slug={SLUG: [_open_pr()]})
+        keystone = FakeKeystone(merged=True, merged_sha=MAIN_SHA, standing_delegation_by=self._AUTHORIZER)
+        pinger = FakeSubstratePinger()
+        scanner, notifier = _scanner(
+            api=api, keystone=keystone, substrate_pinger=pinger, substrate_standing_authorizer=self._AUTHORIZER
+        )
+
+        signals = scanner.scan()
+
+        assert signals[0].payload["merged"] is True
+        # The ordinary merge announcement still fires...
+        assert notifier.calls == [(SLUG, 6230, MAIN_SHA, False)]
+        # ...plus the "informed, not asked" substrate DM (PR #, CLEAR id, SHA, authorizer).
+        assert len(pinger.calls) == 1
+        text, key = pinger.calls[0]
+        assert key == f"substrate-auto-merged:{SLUG}#6230:{MAIN_SHA}"
+        assert f"{SLUG}#6230" in text
+        assert f"CLEAR #{clear.pk}" in text
+        assert self._AUTHORIZER in text
+
+    def test_ordinary_merge_does_not_post_substrate_notification(self) -> None:
+        # A non-delegated merge (keystone returns empty standing_delegation_by) posts
+        # only the ordinary announcement — never the substrate auto-merge DM.
+        _issue_clear()
+        api = FakePrApiClient(prs_by_slug={SLUG: [_open_pr()]})
+        keystone = FakeKeystone(merged=True, standing_delegation_by="")
+        pinger = FakeSubstratePinger()
+        scanner, notifier = _scanner(api=api, keystone=keystone, substrate_pinger=pinger)
+
+        scanner.scan()
+
+        assert notifier.calls == [(SLUG, 6230, MAIN_SHA, False)]
+        assert pinger.calls == []

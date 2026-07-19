@@ -340,17 +340,20 @@ class TestPrivacyGateParity:
         assert hard_deny_reason("shell", args, cwd=tmp_path) is None
         assert self._lane_a_denies("shell", args, tmp_path) is False
 
-    def test_unresolvable_target_high_finding_is_allowed_on_both_lanes(
+    def test_probe_error_target_high_finding_is_denied_on_both_lanes(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        # The allow-on-unknown anti-vacuity proof — RED before the fix, where Lane B
-        # denied ANY HIGH finding while Lane A skips an unresolvable target (bias to
-        # not firing). A cold-hook target whose visibility cannot be resolved is NOT
-        # affirmatively public, so both lanes ALLOW it.
+        # #3442 fail closed: a HIGH body to a RESOLVABLE target whose visibility the
+        # probe cannot confirm (None) is NOT provably non-public, so BOTH lanes
+        # DENY it (parity preserved, in the fail-closed direction) -- a probe error
+        # must never route a leak out unscanned. The probe-CONFIRMED-PRIVATE row
+        # above stays the anti-over-block allow proof.
         monkeypatch.setattr(_repo_visibility, "probe_visibility", lambda _slug: None)
         args = self._post("someowner/mystery", self._HIGH_BODY)
-        assert hard_deny_reason("shell", args, cwd=tmp_path) is None
-        assert self._lane_a_denies("shell", args, tmp_path) is False
+        reason = hard_deny_reason("shell", args, cwd=tmp_path)
+        assert reason is not None
+        assert "privacy/banned-term gate" in reason
+        assert self._lane_a_denies("shell", args, tmp_path) is True
 
 
 class TestBashHardDenyCorpusParity:

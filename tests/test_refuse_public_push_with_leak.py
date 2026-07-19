@@ -855,5 +855,58 @@ class TestLeakGateRecomputesBaseFromRemoteTrackingRef:
         assert result.returncode == 0, result.stdout + result.stderr
 
 
+def _make_erroring_gh_shim(bin_dir: Path) -> None:
+    """Write a ``gh`` that is PRESENT on PATH but whose ``repo view`` FAILS.
+
+    Distinct from "no gh at all": the tool resolves, but the visibility API call
+    ERRORS (a network/auth failure). The bash gate then sees an empty verdict and
+    must fail CLOSED (scan anyway) -- the exact analogue of the Python leak gate's
+    ``slug_visibility -> None`` probe-error path (#3442).
+    """
+    bin_dir.mkdir(parents=True, exist_ok=True)
+    shim = bin_dir / "gh"
+    shim.write_text(
+        '#!/usr/bin/env bash\necho "gh: could not reach api.github.com (probe error)" >&2\nexit 1\n',
+        encoding="utf-8",
+    )
+    shim.chmod(shim.stat().st_mode | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH)
+
+
+class TestProbeErrorVisibilityFailsClosed:
+    """A visibility-PROBE ERROR fails CLOSED on the bash pre-push gate (#3442).
+
+    Distinct from the gh-ABSENT rows above: here ``gh`` is PRESENT but its
+    ``repo view`` errors (a network/auth failure), so the gate sees an empty
+    verdict and scans anyway (the ``*)`` undetermined branch). This is the bash
+    half of the #3442 reconciliation; the Python PreToolUse leak gate is held to
+    the SAME polarity (a resolvable slug whose probe cannot be confirmed is
+    scanned, never skipped) by
+    ``tests/teatree_hooks/test_public_visibility.py::TestProbeErrorFailsClosed``.
+    """
+
+    def test_bash_gate_scans_and_blocks_leak_when_probe_errors(self, tmp_path: Path) -> None:
+        # gh PRESENT but `repo view` ERRORS -> visibility undetermined -> fail
+        # CLOSED (scan) -> the planted secret blocks. The loud "fail closed"
+        # warning shows the undetermined path was taken (not a private skip).
+        work, _env = _clone_with_remote(tmp_path, "PUBLIC")
+        bin_dir = tmp_path / "errbin"
+        _make_erroring_gh_shim(bin_dir)
+        env = _hermetic_env()
+        env["PATH"] = f"{bin_dir}{os.pathsep}/usr/bin:/bin"
+        env["T3_PRIVACY_SCAN_CMD"] = f"{sys.executable} {SCAN}"
+        # privacy-scan:allow fixture -- a planted FAKE secret the gate-under-test must
+        # scan; annotated so this repo's own pre-push gate does not flag the diff line.
+        (work / "leak.txt").write_text("token = glpat-XXXXXXXXXXXXXXXX\n", encoding="utf-8")  # privacy-scan:allow
+        _git(work, "add", "leak.txt")
+        _git(work, "commit", "-m", "add config")
+
+        result = _run_hook(work, env, _push_stdin(work))
+
+        assert result.returncode == 1, result.stdout + result.stderr
+        combined = (result.stdout + result.stderr).lower()
+        assert "privacy" in combined
+        assert "fail closed" in combined
+
+
 if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__, "-q"]))
