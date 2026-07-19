@@ -11,6 +11,7 @@ import pytest
 from django.test import TestCase
 
 from teatree.core.models import E2eMandatoryRun, PlanArtifact, Session, Task, TaskAttempt, Ticket, Worktree
+from teatree.core.models.ticket_worktree_checks import WorktreeProbeUnverifiableError
 from tests.teatree_core.models._shared import (
     _advance_started_to_planned,
     _advance_ticket_to_tested,
@@ -415,8 +416,6 @@ class TestHasShippableDiff(TestCase):
         # Per #F1.4 it must raise so the caller HOLDs the tick, never flatten to
         # False (which would route review() to dispose and abandon a live ticket
         # on a transient git error). The gone-from-disk case still returns False.
-        from teatree.core.models.ticket_worktree_checks import WorktreeProbeUnverifiableError
-
         ticket = Ticket.objects.create()
         not_a_repo = self._tmp_path / "not-a-repo"
         not_a_repo.mkdir()
