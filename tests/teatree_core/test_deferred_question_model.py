@@ -80,6 +80,27 @@ class TestDeferredQuestionRecord:
         assert row.tool_use_id == ""
 
 
+class TestDeferredQuestionAudience:
+    """Audience separates owner questions from the box's internal escalations (Phase 2)."""
+
+    def test_record_defaults_to_owner_audience(self) -> None:
+        row = DeferredQuestion.record("Ship it?")
+        assert row.audience == DeferredQuestion.Audience.OWNER_QUESTION
+
+    def test_record_accepts_internal_audience(self) -> None:
+        row = DeferredQuestion.record(
+            "Repair-loop stall on ticket 1",
+            audience=DeferredQuestion.Audience.INTERNAL,
+        )
+        assert row.audience == DeferredQuestion.Audience.INTERNAL
+
+    def test_unmirrored_pending_excludes_internal_rows(self) -> None:
+        owner = DeferredQuestion.record("Owner decision?")
+        DeferredQuestion.record("internal stall", audience=DeferredQuestion.Audience.INTERNAL)
+        unmirrored = list(DeferredQuestion.unmirrored_pending())
+        assert [r.pk for r in unmirrored] == [owner.pk]
+
+
 class TestDeferredQuestionPending:
     def test_pending_returns_only_unresolved_rows_oldest_first(self) -> None:
         first = DeferredQuestion.record("first?")
