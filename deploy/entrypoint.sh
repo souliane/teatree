@@ -276,6 +276,22 @@ seed_claude_settings() {
     echo "teatree-init: provisioned ~/.claude/settings.json (model=$(jq -r .model "$target"), mode=$(jq -r .permissions.defaultMode "$target"))"
 }
 
+# Provision the per-container Claude runtime the spawned `claude` agent needs:
+# ~/.claude/settings.json (seed_claude_settings) AND `t3 setup` (skill links, the
+# t3@souliane plugin registration via PluginRegistrar.install, statusLine, MCP
+# registration). This MUST run in EVERY agent-spawning role, not just init: the
+# `~/.claude` dir is PER-CONTAINER ephemeral (docker-compose.yml bind-mounts only
+# ~/.claude/projects — credentials stay host-only), so init's registration lands in
+# the init container's throwaway ~/.claude and never reaches worker/admin/slack-
+# listener. Without this, the worker's `claude` has no ~/.claude/plugins and no
+# enabledPlugins, so factory agents load ZERO skills. `t3 setup` is idempotent and
+# claude-env-focused, and these roles `depends_on` a completed init (shared clone +
+# editable install on the teatree_uv volume are present), so it is safe per-role.
+prepare_claude_runtime() {
+    seed_claude_settings
+    t3 setup
+}
+
 # Seed a config value through the provenance-aware DEPLOY seed (#3435). The ORM
 # command NEVER writes a value equal to the code default (a code-default seed only
 # FREEZES a future default change), PRESERVES any operator override, re-seeds a row
@@ -554,10 +570,10 @@ init)
     ( cd "$CLONE_DIR" && prek install -f \
         && sed -i 's#^PREK="/opt/teatree/uv/tools/prek/bin/prek"#PREK="prek"#' \
             .git/hooks/pre-push .git/hooks/pre-commit .git/hooks/commit-msg 2>/dev/null )
-    # Provision the agent's ~/.claude/settings.json BEFORE `t3 setup` — setup's
-    # statusLine writer merges into (never clobbers) the file this seeds (#3359).
-    seed_claude_settings
-    t3 setup
+    # Provision the agent's ~/.claude/settings.json + `t3 setup` (skill links, the
+    # t3@souliane plugin registration, statusLine, MCP). setup's statusLine writer
+    # merges into (never clobbers) the file the seed writes (#3359).
+    prepare_claude_runtime
     t3 teatree db migrate
     # Values are JSON: enum strings are quoted, booleans and ints are bare.
     seed_setting agent_harness '"claude_sdk"'
@@ -579,6 +595,10 @@ init)
     echo "teatree-init: complete"
     ;;
 worker)
+    # ~/.claude is per-container ephemeral, so the agent's plugin/skill registration
+    # from init never reaches this container — re-run it here (non-fatal: a degraded
+    # setup must not crash-loop the loop owner; init already proved setup works).
+    prepare_claude_runtime || echo "entrypoint: WARNING prepare_claude_runtime failed in worker - agent skills may be unavailable until restart" >&2
     exec t3 worker
     ;;
 slack-listener)
@@ -596,10 +616,19 @@ slack-listener)
     # (so `exec t3 slack listen` stays the foreground process), never trips
     # `set -e`, and — unlike the old `|| true` — logs real failures to stderr and
     # writes a heartbeat `t3 doctor` reads to catch a stuck/failed drain (#3443).
+    #
+    # ~/.claude is per-container ephemeral, so re-run the agent plugin/skill
+    # registration here too (non-fatal — a listener must keep draining Slack even if
+    # setup hiccups; init already proved setup works).
+    prepare_claude_runtime || echo "entrypoint: WARNING prepare_claude_runtime failed in slack-listener - agent skills may be unavailable until restart" >&2
     slack_drain_loop &
     exec t3 slack listen
     ;;
 admin)
+    # ~/.claude is per-container ephemeral, so re-run the agent plugin/skill
+    # registration here too (non-fatal — the admin UI must serve even if setup
+    # hiccups; init already proved setup works).
+    prepare_claude_runtime || echo "entrypoint: WARNING prepare_claude_runtime failed in admin - agent skills may be unavailable until restart" >&2
     # Bind the box loopback (the service uses host networking) so the SSH-tunnel
     # request arrives as 127.0.0.1 and clears the middleware's loopback check.
     exec t3 admin --host 127.0.0.1 --port 8000 --no-browser

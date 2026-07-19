@@ -1,6 +1,9 @@
 {
   "model": "claude-opus-4-8",
   "autoCompactEnabled": true,
+  "enabledPlugins": {
+    "t3@souliane": true
+  },
   "permissions": {
     "defaultMode": "acceptEdits",
     "allow": [

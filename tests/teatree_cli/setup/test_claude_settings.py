@@ -297,6 +297,39 @@ class TestTempToDiskManagedConfig:
         assert "permissions.allow" not in managed_key_drift(template, target_path, env={})
 
 
+class TestEnabledPluginsManagedConfig:
+    """The committed template enables the ``t3@souliane`` skills plugin, managed + drift-guarded.
+
+    Factory agents load skills only when ``~/.claude/settings.json`` carries
+    ``enabledPlugins: {"t3@souliane": true}``. The template pins it and it is
+    managed, so every seeded container enables the plugin and the host drift check
+    re-asserts it.
+    """
+
+    _PLUGIN_PATH: tuple[str, ...] = ("enabledPlugins", "t3@souliane")
+
+    def _committed(self) -> dict[str, object]:
+        return json.loads(_COMMITTED_TEMPLATE.read_text(encoding="utf-8"))
+
+    def test_template_enables_the_t3_plugin(self) -> None:
+        assert _dig(self._committed(), self._PLUGIN_PATH) is True
+
+    def test_enabled_plugin_path_is_managed(self) -> None:
+        assert self._PLUGIN_PATH in MANAGED_KEY_PATHS
+
+    def test_drift_detected_when_plugin_disabled_on_host(self, tmp_path: Path) -> None:
+        target = self._committed()
+        target["enabledPlugins"]["t3@souliane"] = False  # type: ignore[index]  # host disabled the plugin
+        target_path = _write(tmp_path / "t.json", target)
+        assert "enabledPlugins.t3@souliane" in managed_key_drift(_COMMITTED_TEMPLATE, target_path, env={})
+
+    def test_drift_detected_when_plugin_key_absent_on_host(self, tmp_path: Path) -> None:
+        target = self._committed()
+        del target["enabledPlugins"]  # type: ignore[misc]  # host never registered the plugin
+        target_path = _write(tmp_path / "t.json", target)
+        assert "enabledPlugins.t3@souliane" in managed_key_drift(_COMMITTED_TEMPLATE, target_path, env={})
+
+
 class TestMainScript:
     def test_renders_resolved_template_to_stdout(
         self, tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
