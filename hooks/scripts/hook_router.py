@@ -142,7 +142,7 @@ from hooks.scripts.question_gates import (
 )
 from hooks.scripts.question_gates import last_assistant_turn as _last_assistant_turn
 from hooks.scripts.question_gates import read_transcript_entries as _read_transcript_entries
-from hooks.scripts.quote_verdict import QuoteVerdict
+from hooks.scripts.quote_scanner_verdict_io import quote_scanner_high_block_message as _quote_scanner_high_block_message
 from hooks.scripts.quote_verdict import resolve_high_verdict as _resolve_quote_verdict
 from hooks.scripts.raw_pid_kill_guard import handle_block_raw_pid_kill
 from hooks.scripts.raw_review_post_guard import (
@@ -2087,23 +2087,6 @@ def handle_quote_scanner_pretool(data: dict) -> bool:
                 sys.path.remove(str(src_dir))
 
 
-def _quote_scanner_high_io(quote_scanner: "ModuleType", tool_name: str, result: object, verdict: QuoteVerdict) -> bool:
-    """Apply a resolved quote ``QuoteVerdict``: warn-downgrade or deny.
-
-    The verdict DECISION (#1213/#1415/#126) lives in the ``quote_verdict`` sibling;
-    this owns only the router-side I/O — the stderr warning + ledger write on a
-    downgrade, or the ledger deny + ``emit_pretooluse_deny`` block. Split out of
-    :func:`_run_quote_scanner_pretool` to keep its return count under the PLR0911
-    ceiling, mirroring :func:`_banned_term_marker_blocks`.
-    """
-    if verdict.warning is not None:
-        sys.stderr.write(verdict.warning)
-        quote_scanner.log_decision(tool_name=tool_name, decision=verdict.decision, result=result, override=False)
-        return False
-    quote_scanner.log_decision(tool_name=tool_name, decision="deny", result=result, override=False)
-    return emit_pretooluse_deny(quote_scanner.format_block_message(result))
-
-
 def _run_quote_scanner_pretool(data: dict) -> bool:
     """Quote-scanner inner body — assumes ``teatree`` is already importable.
 
@@ -2140,7 +2123,8 @@ def _run_quote_scanner_pretool(data: dict) -> bool:
     if result.has_high:
         command = tool_input.get("command", "")
         verdict = _resolve_quote_verdict(command, _resolve_cwd_repo(data))
-        return _quote_scanner_high_io(quote_scanner, tool_name, result, verdict)
+        block_message = _quote_scanner_high_block_message(quote_scanner, tool_name, result, verdict)
+        return emit_pretooluse_deny(block_message) if block_message is not None else False
 
     if result.has_medium:
         sys.stderr.write(quote_scanner.format_warn_message(result) + "\n")

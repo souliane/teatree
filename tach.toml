@@ -160,6 +160,9 @@ depends_on = [
   "teatree.core.modelkit",
   "teatree.core.models.errors",
   "teatree.core.models",
+  # selectors reuse the single-source overlay Q-builder that lives with the
+  # managers (F1.6) — a downward edge, mirroring teatree.core.models → managers.
+  "teatree.core.managers",
   "teatree.core.loop_lease_manager",
   "teatree.core.session_identity",
   "teatree.loop.loop_cadences"
