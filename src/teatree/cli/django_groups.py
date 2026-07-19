@@ -356,6 +356,7 @@ DJANGO_GROUPS: dict[str, DjangoGroup] = {
         "DB-home settings store — the sole tier for a DB-home setting below env (#1775).",
         [
             ("set", "Upsert a DB row for a DB-home setting (JSON value)."),
+            ("seed", "Provenance-aware deploy seed of a DB-home setting (#3435)."),
             ("get", "Print a setting's resolved value and its source (db vs file/env)."),
             ("clear", "Remove a DB row, falling back to the dataclass default."),
             ("list", "List every DB config setting row (read-only)."),

@@ -262,7 +262,14 @@ seed_claude_settings() {
 # so a later `t3 doctor --repair` clears only an entrypoint-seeded pin — never an
 # operator's deliberate one. Idempotent across redeploys.
 seed_setting() {
-    t3 teatree config_setting seed "$1" "$2"
+    # A single provisioning seed is NON-FATAL: one setting the runtime already
+    # has a sane code default for must never brick the whole stack (init failing
+    # takes worker/admin/slack-listener down with it, since they `depends_on` a
+    # successful init). Warn to stderr and continue under `set -e`; the runtime
+    # falls back to the code default and a later redeploy re-seeds it.
+    if ! t3 teatree config_setting seed "$1" "$2"; then
+        echo "teatree-init: WARNING seed of '$1' failed ('t3 teatree config_setting seed' exited non-zero); continuing — the runtime uses the code default for it. Fix and re-run Deploy to persist an override." >&2
+    fi
 }
 
 # Fleet role split: this instance must run its own loops and NOT the loops another
