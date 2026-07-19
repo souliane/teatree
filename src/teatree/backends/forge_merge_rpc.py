@@ -48,9 +48,7 @@ def gh_runner(token: str) -> Runner:
     def run(argv: list[str]) -> tuple[int, str, str]:
         gh = shutil.which("gh") or "gh"
         env = {**os.environ, "GH_TOKEN": token} if token else None
-        result = run_allowed_to_fail(
-            [gh, *argv], expected_codes=None, env=env, timeout=_FORGE_MERGE_TIMEOUT_SECONDS
-        )
+        result = run_allowed_to_fail([gh, *argv], expected_codes=None, env=env, timeout=_FORGE_MERGE_TIMEOUT_SECONDS)
         return result.returncode, result.stdout, result.stderr
 
     return run

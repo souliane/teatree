@@ -94,12 +94,10 @@ class DetectComplianceFailuresTestCase(TestCase):
         # merely happens to share a common word — the correction is still a compliance
         # failure, just a first-occurrence directive, not a memory recurrence.
         memory = (
-            "name: feedback_provision_lease\n"
-            "The worktree provision lease claims a pid guard before owner liveness.\n"
+            "name: feedback_provision_lease\nThe worktree provision lease claims a pid guard before owner liveness.\n"
         )
         violation = (
-            '{"type": "user", "content": "stop touching the worktree without asking, '
-            'you do not follow instructions!!"}'
+            '{"type": "user", "content": "stop touching the worktree without asking, you do not follow instructions!!"}'
         )
         extract = _extract(
             _memory_snippet("feedback_provision_lease.md", memory),

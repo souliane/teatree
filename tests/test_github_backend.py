@@ -35,9 +35,7 @@ def _reviewthreads_stdout(*, unresolved: int = 0, resolved: int = 0) -> str:
 class TestGetMrApprovals:
     """GitHub aggregate ``reviewDecision`` mapped to an ``ApprovalState`` (#8, F8.3)."""
 
-    def _run_gh_routing(
-        self, *, decision_stdout: str, threads_stdout: str
-    ) -> AbstractContextManager[MagicMock]:
+    def _run_gh_routing(self, *, decision_stdout: str, threads_stdout: str) -> AbstractContextManager[MagicMock]:
         """Route the two ``gh`` calls get_mr_approvals now makes.
 
         ``get_mr_approvals`` reads ``reviewDecision`` (``gh pr view``) AND the
@@ -1524,9 +1522,7 @@ class TestListMyPrsEnrichment:
     def test_enrichment_failure_leaves_hit_unenriched(self) -> None:
         with (
             patch.object(github_mod, "_gh_api_search_paginated", return_value=[self._search_hit()]),
-            patch.object(
-                github_mod, "_run_gh", side_effect=utils_run_mod.CommandFailedError(["gh"], 1, "", "boom")
-            ),
+            patch.object(github_mod, "_run_gh", side_effect=utils_run_mod.CommandFailedError(["gh"], 1, "", "boom")),
         ):
             prs = GitHubCodeHost().list_my_prs(author="alice")
         # Unenriched — no fabricated pipeline field, so the scanner surfaces the gap.
@@ -1582,9 +1578,7 @@ class TestDirectRunGhTimeouts:
 
     def test_delete_issue_comment_bounds_timeout(self) -> None:
         with patch.object(github_mod, "_run_gh", return_value=_completed("")) as mock_run:
-            GitHubCodeHost().delete_issue_comment(
-                issue_url="https://github.com/o/r/issues/3", comment_id=5
-            )
+            GitHubCodeHost().delete_issue_comment(issue_url="https://github.com/o/r/issues/3", comment_id=5)
         assert mock_run.call_args.kwargs["timeout"] == _FORGE_READ_TIMEOUT_SECONDS
 
 

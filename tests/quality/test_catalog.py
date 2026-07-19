@@ -51,13 +51,9 @@ class TestSchemaInvariants:
     def test_waivers_only_on_judgement_entries(self, catalog: tuple[AntiPatternEntry, ...]) -> None:
         for entry in catalog:
             if entry.waivers:
-                assert entry.detection == "judgement", (
-                    f"{entry.id}: waivers are only meaningful on a judgement entry"
-                )
+                assert entry.detection == "judgement", f"{entry.id}: waivers are only meaningful on a judgement entry"
 
-    def test_float_for_money_carries_the_telemetry_waiver(
-        self, catalog: tuple[AntiPatternEntry, ...]
-    ) -> None:
+    def test_float_for_money_carries_the_telemetry_waiver(self, catalog: tuple[AntiPatternEntry, ...]) -> None:
         by_id = {e.id: e for e in catalog}
         entry = by_id["float-for-money"]
         assert entry.waivers, "float-for-money must record its accepted telemetry waiver"

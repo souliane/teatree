@@ -51,9 +51,7 @@ def drop_orphaned_stashes(repo: str) -> list[str]:
     }
     try:
         default = (
-            git.run_strict(repo=repo, args=["rev-parse", "--abbrev-ref", "origin/HEAD"])
-            .strip()
-            .removeprefix("origin/")
+            git.run_strict(repo=repo, args=["rev-parse", "--abbrev-ref", "origin/HEAD"]).strip().removeprefix("origin/")
         )
     except CommandFailedError:
         # STRICT so a missing ``origin/HEAD`` actually raises (the lenient runner
