@@ -2,7 +2,10 @@
 
 ``deploy/claude-settings.template.json`` is the single source of truth for the
 managed Claude Code config — model, ``permissions.defaultMode`` /
-``permissions.allow``, ``autoMode.allow``, and the tool-use-concurrency env. The
+``permissions.allow``, ``autoMode.allow``, ``enabledPlugins`` (the ``t3@souliane``
+skills plugin), and the managed ``env`` (tool-use concurrency plus ``TMPDIR`` /
+``PYTEST_DEBUG_TEMPROOT`` routing agent and pytest scratch to DISK, off the box's
+small RAM-backed ``/tmp`` tmpfs). The
 worker containers seed it into ``~/.claude/settings.json`` in
 ``deploy/entrypoint.sh`` (``seed_claude_settings``); this module gives the HOST
 the identical merge so the interactive box and the containers can never drift.
@@ -47,6 +50,9 @@ MANAGED_KEY_PATHS: tuple[tuple[str, ...], ...] = (
     ("permissions", "allow"),
     ("autoMode", "allow"),
     ("env", "CLAUDE_CODE_MAX_TOOL_USE_CONCURRENCY"),
+    ("env", "TMPDIR"),
+    ("env", "PYTEST_DEBUG_TEMPROOT"),
+    ("enabledPlugins", "t3@souliane"),
 )
 
 # The managed allow-list paths carrying set-union / superset semantics: the

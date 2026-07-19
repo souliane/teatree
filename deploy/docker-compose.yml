@@ -135,6 +135,10 @@ services:
         condition: service_completed_successfully
     restart: unless-stopped
     network_mode: host
+    # 512m is correct: the admin is a lean Django web-UI server (gunicorn) — the
+    # heavy CLI/commit/agent work (headless agents + their ty-check/lint hooks)
+    # belongs in the WORKER (18g), never here. The `_check_worker_memory_cap`
+    # doctor gate warns only when the WORKER's cap is under-sized, not this one.
     mem_limit: 512m
     cpus: "0.5"
 
