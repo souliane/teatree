@@ -27,7 +27,7 @@ The stack is five services from one image (`deploy/Dockerfile`), selected by
 | Service | Role | Restart | Notes |
 | --- | --- | --- | --- |
 | `teatree-init` | one-shot prep | `no` | clone + editable install + `t3 setup` + DB config; exits 0 |
-| `teatree-worker` | `t3 worker` | `unless-stopped` | the loop cadence owner; `DEBUG` off |
+| `teatree-worker` | `t3 worker` | `unless-stopped` | the loop cadence owner; `DEBUG` off; CPU/RAM caps derived from the host at deploy time (see [Worker sizing](#worker-sizing-derived-from-the-host)) |
 | `teatree-admin` | `t3 admin` | `unless-stopped` | Django admin under gunicorn on the box loopback `127.0.0.1:8000` (host networking); `DEBUG` off |
 | `teatree-slack-listener` | `t3 slack listen` | `unless-stopped` | Socket-Mode receiver; harmless no-op-retry on a box with no Slack overlay |
 | `teatree-watchdog` | `watchdog.sh --loop` | `always` | the in-daemon self-heal sidecar (docker socket + read-only checkout; no secrets); see [Self-heal watchdog](#self-heal-watchdog-h24-owner-directive-10) |
@@ -54,6 +54,21 @@ happened when #3262 moved the data dir to a bind mount while these paths still
 pointed inside it). Secrets stay gpg-encrypted on the host disk, outside the
 backed-up data dir. A box using the `CLAUDE_CODE_OAUTH_TOKEN` env path instead just
 leaves these dirs empty (`deploy.sh` pre-creates them owned by the deploy user).
+
+### Worker sizing: derived from the host
+
+The worker reads its own **cgroup-capped** CPU/RAM view, so a host-derived
+provision-concurrency default (`nCPU/2`) is a no-op unless the cgroup cap itself
+reflects the host. So `deploy/deploy.sh` — which runs **uncapped on the host** —
+reads the real host cores/RAM via `src/teatree/utils/ram_probe.py` and exports
+`TEATREE_WORKER_CPUS` / `TEATREE_WORKER_MEM_LIMIT` before `docker compose up`. The
+compose worker service interpolates them (`cpus: "${TEATREE_WORKER_CPUS:-3.0}"`,
+`mem_limit: "${TEATREE_WORKER_MEM_LIMIT:-18g}"`), so the cgroup cap tracks the box
+and `available_cpu_count` inside the worker derives concurrency from the host, not
+a baked-in 3-core cap. When `python3` is absent or RAM is unreadable — or on a bare
+`docker compose up` — the in-file defaults (`3.0` / `18g`, sized for a ~30GB host)
+apply. The watchdog's `up -d --no-recreate` does not re-size a running worker; the
+next deploy re-asserts the derived caps.
 
 ### External DB — one DB on the host disk
 
@@ -397,5 +412,13 @@ sudo systemctl disable --now teatree-watchdog.timer && sudo rm -f /etc/systemd/s
   growth; `/admin/` mounts independent of `DEBUG`, so nothing here relies on it.
 - **The OAuth token shares your weekly Claude quota and does not auto-refresh** —
   rotate `CLAUDE_CODE_OAUTH_TOKEN` manually and re-run the workflow when it expires.
+- **Config seeds carry provenance and never freeze a changed default.** The init
+  role seeds DB config via the provenance-aware `t3 teatree config_setting seed`
+  (`deploy/entrypoint.sh`): it never writes a value equal to the code default
+  (which would only freeze a future default change), preserves any operator
+  override, and re-seeds a row it still owns when the shipped default changes.
+  A plain `t3 doctor` never mutates the DB; `t3 doctor check --repair` may clear
+  a stale **entrypoint-seeded** `provision_max_concurrency` pin (never an
+  operator's deliberate one).
 - **teatree-only:** this deployment never clones or references any customer or
   product overlay — only the built-in `t3-teatree`.

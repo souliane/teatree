@@ -59,6 +59,24 @@ install -d -m 700 "$HOME/.password-store" "$HOME/.gnupg"
 # user — dockerd would otherwise create the missing bind source ROOT-owned.
 install -d "$HOME/.claude/projects"
 
+# Derive the worker container's compose CPU/RAM caps from the REAL host at deploy
+# time (#3432). deploy.sh runs UNCAPPED on the host, so ram_probe reads true host
+# cores/RAM; the worker's cgroup cap then reflects the host, and inside it
+# `available_cpu_count` derives concurrency from the host instead of a baked-in
+# 3-core cap that made host-derived concurrency a no-op. python3 is present on the
+# box; if it is somehow absent, or RAM is unreadable, the vars stay empty and
+# compose falls back to its in-file defaults (${TEATREE_WORKER_CPUS:-3.0} /
+# ${TEATREE_WORKER_MEM_LIMIT:-18g}). The watchdog's `up -d --no-recreate` does not
+# export these, but --no-recreate never re-sizes a running worker; the next deploy
+# re-asserts them.
+TEATREE_WORKER_CPUS="${TEATREE_WORKER_CPUS:-}"
+TEATREE_WORKER_MEM_LIMIT="${TEATREE_WORKER_MEM_LIMIT:-}"
+if command -v python3 >/dev/null 2>&1; then
+    eval "$(python3 "$REPO_ROOT/src/teatree/utils/ram_probe.py" compose-sizing 2>/dev/null || true)"
+fi
+export TEATREE_WORKER_CPUS TEATREE_WORKER_MEM_LIMIT
+echo "deploy: worker sizing — cpus=${TEATREE_WORKER_CPUS:-<default>} mem_limit=${TEATREE_WORKER_MEM_LIMIT:-<default>}"
+
 # Surface the WHY on a build/up failure — `set -e` would otherwise exit before
 # the Action log sees anything but "exited (1)".
 docker compose -f "$COMPOSE_FILE" up -d --build || {

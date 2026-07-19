@@ -140,7 +140,11 @@ def check(
     repair: bool = typer.Option(
         False,
         "--repair",
-        help="Re-point a relocated/hijacked t3 editable install at the expected checkout (#3231).",
+        help=(
+            "Allow doctor to APPLY fixes that mutate state: re-point a relocated/hijacked "
+            "t3 editable install (#3231) AND clear a stale entrypoint-seeded "
+            "provision_max_concurrency pin (#3434). A plain run never mutates."
+        ),
     ),
     slack_roundtrip: bool = typer.Option(
         False,
@@ -278,10 +282,11 @@ def run_doctor_checks(*, repair: bool = False, slack_roundtrip: bool = False) ->
 
     # Fresh-box bootstrap-hardening gates (umbrella #3404): the GitHub token lacks a
     # write permission the loop needs (#3405, hard FAIL); a stale small-box
-    # provision_max_concurrency pin carried onto a bigger host (#3409, auto-clear);
-    # host ~/.claude/settings.json drifted from the committed template (#3410, WARN).
-    # Post-ensure_django — the concurrency autofix reads the ORM.
-    ok = run_bootstrap_checks() and ok
+    # provision_max_concurrency pin carried onto a bigger host (#3409/#3434,
+    # entrypoint-seeded pins auto-cleared ONLY under --repair; an operator pin is
+    # WARNed, never deleted); host ~/.claude/settings.json drifted from the committed
+    # template (#3410, WARN). Post-ensure_django — the concurrency autofix reads the ORM.
+    ok = run_bootstrap_checks(repair=repair) and ok
 
     # Pre-investigation stale-clone hard-fail gate (#948). Surfaces at
     # session start so a bug-investigation sub-agent cannot start root-

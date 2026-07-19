@@ -6,9 +6,10 @@ box into loud, up-front ones:
 - :func:`_check_gh_token_permissions` (#3405) — the GitHub token authenticates but
     is missing a write permission the loop needs (``issues``/``pull_requests``/
     ``contents``). Mirrors ``deploy/entrypoint.sh``'s ``init_preflight`` probe.
-- :func:`_check_provision_concurrency_from_host` (#3409) — a stale small-box
-    ``provision_max_concurrency`` pin throttling a more capable host; auto-clears
-    it so the runtime auto-derives from the host.
+- :func:`_check_provision_concurrency_from_host` (#3409/#3434) — a stale small-box
+    ``provision_max_concurrency`` pin throttling a more capable host. It only
+    auto-clears a pin the ENTRYPOINT seeded (never an operator's deliberate one),
+    and only under ``t3 doctor --repair`` — a plain ``t3 doctor`` never mutates.
 - :func:`_check_claude_settings_drift` (#3410) — the host ``~/.claude/settings.json``
     managed keys disagree with the one committed template the containers seed from.
 
@@ -106,35 +107,64 @@ def _check_gh_token_permissions() -> bool:
     return False
 
 
-def _check_provision_concurrency_from_host(*, apply: bool = True) -> bool:
-    """Auto-clear a stale small-box ``provision_max_concurrency`` pin on a bigger host (#3409).
+def _check_provision_concurrency_from_host(*, repair: bool = False) -> bool:
+    """Surface — and under ``--repair`` clear — a stale entrypoint-seeded concurrency pin (#3409/#3434).
 
-    A box migrated onto more cores must not silently keep the old box's
-    hard-serialized ``provision_max_concurrency`` pin. When the DB carries an
-    explicit pin STRICTLY BELOW the host-derived auto value (``nCPU/2``,
-    cgroup-aware), this clears the row so the runtime auto-derives from the host,
-    and WARNs (a green, surfacing-only outcome — the pin is fixed). A pin at or
-    above the host auto, or no pin at all, passes silently. Reads the ORM, so it
-    runs post-``ensure_django``. Crash-proof.
+    A box migrated onto more cores must not silently keep an old box's
+    hard-serialized ``provision_max_concurrency`` pin. When the DB carries a pin
+    STRICTLY BELOW the host-derived auto value (``nCPU/2``, cgroup-aware):
+
+    * a pin the ENTRYPOINT seeded and the operator never touched (``seeded_by
+        == entrypoint`` AND ``value == seed_value``) is a stale-migration
+        artifact — cleared under ``repair=True`` so the runtime auto-derives,
+        WARNed otherwise;
+    * a pin with any other provenance is an operator's deliberate choice —
+        WARNed, NEVER deleted, regardless of ``repair``.
+
+    A plain ``t3 doctor`` (``repair=False``) therefore NEVER mutates the DB. A pin
+    at/above the host auto, or no pin, passes silently. Reads the ORM, so it runs
+    post-``ensure_django``. Crash-proof. Always returns ``True`` — surfacing-only.
     """
-    from teatree.core.models.config_setting import ConfigSetting  # noqa: PLC0415 — deferred (ORM)
+    from teatree.core.models.config_setting import (  # noqa: PLC0415 — deferred (ORM)
+        ENTRYPOINT_SEEDER,
+        GLOBAL_SCOPE,
+        ConfigSetting,
+    )
     from teatree.utils.ram_probe import default_provision_concurrency  # noqa: PLC0415 — deferred import
 
     try:
-        pinned = ConfigSetting.objects.get_effective("provision_max_concurrency")
+        row = ConfigSetting.objects.filter(scope=GLOBAL_SCOPE, key="provision_max_concurrency").first()
+        if row is None:
+            return True
+        pinned = row.value
         if not isinstance(pinned, int) or isinstance(pinned, bool) or pinned <= 0:
             return True
         host_auto = default_provision_concurrency()
         if pinned >= host_auto:
             return True
-        if apply:
+        entrypoint_seeded = row.seeded_by == ENTRYPOINT_SEEDER and row.value == row.seed_value
+        if not entrypoint_seeded:
+            typer.echo(
+                f"WARN  provision_max_concurrency={pinned} is pinned below this host's auto-derived "
+                f"{host_auto} (nCPU/2), but the pin was NOT set by the deploy seed — it looks like a "
+                f"deliberate operator choice, so it is left untouched. Clear it with "
+                f"`t3 teatree config_setting clear provision_max_concurrency` if it is stale."
+            )
+            return True
+        if repair:
             ConfigSetting.objects.clear("provision_max_concurrency")
-        typer.echo(
-            f"WARN  Cleared a stale provision_max_concurrency={pinned} pin below this host's "
-            f"auto-derived {host_auto} (nCPU/2) — it hard-serialized provisioning carried over "
-            f"from a smaller box. Concurrency now auto-derives from the host; re-pin explicitly "
-            f"with `t3 teatree config_setting set provision_max_concurrency <N>` if intended."
-        )
+            typer.echo(
+                f"WARN  Cleared a stale entrypoint-seeded provision_max_concurrency={pinned} pin below this "
+                f"host's auto-derived {host_auto} (nCPU/2) — it hard-serialized provisioning carried over "
+                f"from a smaller box. Concurrency now auto-derives from the host; re-pin explicitly with "
+                f"`t3 teatree config_setting set provision_max_concurrency <N>` if intended."
+            )
+        else:
+            typer.echo(
+                f"WARN  A stale entrypoint-seeded provision_max_concurrency={pinned} pin is below this host's "
+                f"auto-derived {host_auto} (nCPU/2). Run `t3 doctor check --repair` to clear it so concurrency "
+                f"auto-derives from the host."
+            )
     except Exception as exc:  # noqa: BLE001 — a doctor check must never crash the run
         typer.echo(f"WARN  provision-concurrency check crashed: {exc.__class__.__name__}: {exc}")
     return True
@@ -173,16 +203,17 @@ def _check_claude_settings_drift() -> bool:
     return True
 
 
-def run_bootstrap_checks(*, apply: bool = True) -> bool:
+def run_bootstrap_checks(*, repair: bool = False) -> bool:
     """Run every bootstrap-hardening check; return ``False`` iff a hard gate fails.
 
     Only the token-permission gate (#3405) affects the verdict — the concurrency
-    autofix (#3409) and the settings-drift check (#3410) are surfacing-only and
-    always pass. Runs post-``ensure_django`` (the concurrency autofix reads the
-    ORM). ``apply`` is threaded to the concurrency autofix for tests.
+    autofix (#3409/#3434) and the settings-drift check (#3410) are surfacing-only
+    and always pass. Runs post-``ensure_django`` (the concurrency autofix reads the
+    ORM). ``repair`` gates the concurrency autofix's one mutation: a plain
+    ``t3 doctor`` (``repair=False``) inspects and WARNs but NEVER writes.
     """
     ok = _check_gh_token_permissions()
-    _check_provision_concurrency_from_host(apply=apply)
+    _check_provision_concurrency_from_host(repair=repair)
     _check_claude_settings_drift()
     return ok
 

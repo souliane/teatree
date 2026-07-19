@@ -357,3 +357,44 @@ class TestConfigSettingExport(TestCase):
         assert doc["overlays"]["myproj"]["mode"] == "interactive"
         # The global scope is excluded when a single overlay is requested.
         assert "teatree" not in doc
+
+
+class TestConfigSettingSeed(TestCase):
+    """`config_setting seed` — the provenance-aware DEPLOY seed (#3435).
+
+    Distinct from `set`: it skips a value equal to the code default, preserves an
+    operator override, and stamps provenance the doctor autofix reads.
+    """
+
+    def _seed(self, key: str, value: str) -> str:
+        out = StringIO()
+        call_command("config_setting", "seed", key, value, stdout=out)
+        return out.getvalue()
+
+    def test_seed_below_default_creates_row(self) -> None:
+        # provision_ram_ceiling_percent code default is 85; 75 differs, so it seeds.
+        text = self._seed("provision_ram_ceiling_percent", "75")
+        assert ConfigSetting.objects.get_effective("provision_ram_ceiling_percent") == 75
+        assert "created" in text
+        row = ConfigSetting.objects.get(key="provision_ram_ceiling_percent")
+        assert row.seeded_by == "entrypoint"
+        assert row.seed_value == 75
+
+    def test_seed_equal_to_code_default_writes_nothing(self) -> None:
+        # provision_max_concurrency code default is 0; seeding 0 is a documented no-op.
+        text = self._seed("provision_max_concurrency", "0")
+        assert ConfigSetting.objects.filter(key="provision_max_concurrency").exists() is False
+        assert "skipped-equals-default" in text
+
+    def test_seed_preserves_operator_override(self) -> None:
+        call_command("config_setting", "set", "provision_ram_ceiling_percent", "90")
+        self._seed("provision_ram_ceiling_percent", "75")
+        assert ConfigSetting.objects.get_effective("provision_ram_ceiling_percent") == 90
+
+    def test_seed_refuses_unknown_key(self) -> None:
+        with pytest.raises(SystemExit):
+            call_command("config_setting", "seed", "not_a_setting", "1")
+
+    def test_seed_refuses_invalid_json(self) -> None:
+        with pytest.raises(SystemExit):
+            call_command("config_setting", "seed", "provision_ram_ceiling_percent", "not-json")

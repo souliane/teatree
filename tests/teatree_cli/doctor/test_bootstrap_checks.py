@@ -1,5 +1,7 @@
 """Tests for the fresh-box bootstrap-hardening doctor checks (#3405/#3409/#3410)."""
 
+import contextlib
+import io
 import json
 from pathlib import Path
 from unittest.mock import patch
@@ -66,30 +68,55 @@ class TestGhTokenPermissionsCheck:
 
 
 class TestProvisionConcurrencyFromHost(TestCase):
-    def test_clears_stale_pin_below_host_auto(self) -> None:
-        ConfigSetting.objects.set_value("provision_max_concurrency", 1)
+    """The pin autofix (#3409/#3434) mutates only under ``repair`` and provenance.
+
+    Mutation is gated behind ``repair=True`` AND the pin's ENTRYPOINT provenance,
+    so a plain doctor never mutates and an operator's deliberate pin is never
+    deleted.
+    """
+
+    def _seed_entrypoint_pin(self, value: int) -> None:
+        ConfigSetting.objects.seed("provision_max_concurrency", value, code_default=0)
+
+    def test_repair_clears_stale_entrypoint_seeded_pin(self) -> None:
+        self._seed_entrypoint_pin(1)
         with patch("teatree.utils.ram_probe.default_provision_concurrency", return_value=4):
-            ok = _check_provision_concurrency_from_host()
+            ok = _check_provision_concurrency_from_host(repair=True)
         assert ok is True
-        # The stale small-box pin is cleared so the runtime auto-derives.
+        # The stale entrypoint-seeded pin is cleared so the runtime auto-derives.
         assert ConfigSetting.objects.get_effective("provision_max_concurrency") is None
 
-    def test_leaves_pin_at_or_above_host_auto(self) -> None:
-        ConfigSetting.objects.set_value("provision_max_concurrency", 8)
+    def test_plain_run_never_mutates_even_for_a_seeded_pin(self) -> None:
+        self._seed_entrypoint_pin(1)
         with patch("teatree.utils.ram_probe.default_provision_concurrency", return_value=4):
-            _check_provision_concurrency_from_host()
+            ok = _check_provision_concurrency_from_host(repair=False)
+        assert ok is True
+        # A plain `t3 doctor` inspects and WARNs but writes nothing.
+        assert ConfigSetting.objects.get_effective("provision_max_concurrency") == 1
+
+    def test_operator_pin_is_never_deleted_even_under_repair(self) -> None:
+        # A `set_value` pin carries no ENTRYPOINT provenance — a deliberate operator
+        # choice that must be WARNed, never deleted, even with --repair.
+        ConfigSetting.objects.set_value("provision_max_concurrency", 1)
+        captured = io.StringIO()
+        with (
+            patch("teatree.utils.ram_probe.default_provision_concurrency", return_value=4),
+            contextlib.redirect_stdout(captured),
+        ):
+            _check_provision_concurrency_from_host(repair=True)
+        assert ConfigSetting.objects.get_effective("provision_max_concurrency") == 1
+        assert "WARN" in captured.getvalue()
+
+    def test_leaves_pin_at_or_above_host_auto(self) -> None:
+        self._seed_entrypoint_pin(8)
+        with patch("teatree.utils.ram_probe.default_provision_concurrency", return_value=4):
+            _check_provision_concurrency_from_host(repair=True)
         assert ConfigSetting.objects.get_effective("provision_max_concurrency") == 8
 
     def test_noop_when_unpinned(self) -> None:
         with patch("teatree.utils.ram_probe.default_provision_concurrency", return_value=4):
-            assert _check_provision_concurrency_from_host() is True
+            assert _check_provision_concurrency_from_host(repair=True) is True
         assert ConfigSetting.objects.get_effective("provision_max_concurrency") is None
-
-    def test_apply_false_reports_without_clearing(self) -> None:
-        ConfigSetting.objects.set_value("provision_max_concurrency", 1)
-        with patch("teatree.utils.ram_probe.default_provision_concurrency", return_value=4):
-            _check_provision_concurrency_from_host(apply=False)
-        assert ConfigSetting.objects.get_effective("provision_max_concurrency") == 1
 
 
 class TestClaudeSettingsDrift:

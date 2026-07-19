@@ -10,6 +10,7 @@ returns its stored value.
 from django.test import TestCase
 
 from teatree.core.models import ConfigSetting
+from teatree.core.models.config_setting import ENTRYPOINT_SEEDER, SeedOutcome
 
 
 class TestConfigSettingStore(TestCase):
@@ -97,3 +98,69 @@ class TestConfigSettingScope(TestCase):
     def test_str_names_overlay_scope(self) -> None:
         row = ConfigSetting.objects.set_value("issue_implementer_enabled", value=True, scope="my-overlay")
         assert "my-overlay" in str(row)
+
+
+class TestSeedProvenance(TestCase):
+    """Provenance-aware deploy seed (#3435).
+
+    A changed shipped default reaches an existing box, a code-default seed is
+    never written, and an operator override is always preserved.
+    """
+
+    def test_seed_below_default_creates_with_provenance(self) -> None:
+        outcome = ConfigSetting.objects.seed("provision_max_concurrency", 1, code_default=0)
+        assert outcome is SeedOutcome.CREATED
+        row = ConfigSetting.objects.get(key="provision_max_concurrency")
+        assert row.value == 1
+        assert row.seed_value == 1
+        assert row.seeded_by == ENTRYPOINT_SEEDER
+
+    def test_seed_equal_to_code_default_is_not_written(self) -> None:
+        outcome = ConfigSetting.objects.seed("provision_max_concurrency", 0, code_default=0)
+        assert outcome is SeedOutcome.SKIPPED_DEFAULT
+        assert ConfigSetting.objects.filter(key="provision_max_concurrency").exists() is False
+
+    def test_reseed_same_value_is_a_noop(self) -> None:
+        ConfigSetting.objects.seed("provision_ram_ceiling_percent", 75, code_default=85)
+        outcome = ConfigSetting.objects.seed("provision_ram_ceiling_percent", 75, code_default=85)
+        assert outcome is SeedOutcome.UNCHANGED
+        assert ConfigSetting.objects.get_effective("provision_ram_ceiling_percent") == 75
+
+    def test_changed_shipped_seed_reseeds_an_unchanged_row(self) -> None:
+        # An old deploy seeded 70; the row still equals that seed (operator never
+        # touched it), so a new deploy shipping 75 must update it.
+        ConfigSetting.objects.seed("provision_ram_ceiling_percent", 70, code_default=85)
+        outcome = ConfigSetting.objects.seed("provision_ram_ceiling_percent", 75, code_default=85)
+        assert outcome is SeedOutcome.UPDATED
+        row = ConfigSetting.objects.get(key="provision_ram_ceiling_percent")
+        assert row.value == 75
+        assert row.seed_value == 75
+
+    def test_operator_override_is_preserved_across_reseed(self) -> None:
+        ConfigSetting.objects.seed("provision_ram_ceiling_percent", 70, code_default=85)
+        # The operator pins their own value via the admin `set` path.
+        ConfigSetting.objects.set_value("provision_ram_ceiling_percent", 90)
+        outcome = ConfigSetting.objects.seed("provision_ram_ceiling_percent", 75, code_default=85)
+        assert outcome is SeedOutcome.PRESERVED
+        assert ConfigSetting.objects.get_effective("provision_ram_ceiling_percent") == 90
+
+    def test_reseed_equal_to_default_removes_an_owned_row(self) -> None:
+        # A row this seeder owns whose shipped seed now equals the code default is
+        # DROPPED so the live code default flows through (never frozen).
+        ConfigSetting.objects.seed("provision_ram_ceiling_percent", 70, code_default=85)
+        outcome = ConfigSetting.objects.seed("provision_ram_ceiling_percent", 85, code_default=85)
+        assert outcome is SeedOutcome.REMOVED
+        assert ConfigSetting.objects.filter(key="provision_ram_ceiling_percent").exists() is False
+
+    def test_row_seeded_by_another_marker_is_preserved(self) -> None:
+        ConfigSetting.objects.seed("provision_ram_ceiling_percent", 70, code_default=85, seeded_by="other")
+        outcome = ConfigSetting.objects.seed("provision_ram_ceiling_percent", 75, code_default=85)
+        assert outcome is SeedOutcome.PRESERVED
+        assert ConfigSetting.objects.get_effective("provision_ram_ceiling_percent") == 70
+
+    def test_set_value_clears_seed_provenance(self) -> None:
+        ConfigSetting.objects.seed("provision_ram_ceiling_percent", 75, code_default=85)
+        ConfigSetting.objects.set_value("provision_ram_ceiling_percent", 75)
+        row = ConfigSetting.objects.get(key="provision_ram_ceiling_percent")
+        assert row.seeded_by == ""
+        assert row.seed_value is None

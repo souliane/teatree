@@ -187,14 +187,14 @@ seed_claude_settings() {
     echo "teatree-init: provisioned ~/.claude/settings.json (model=$(jq -r .model "$target"), mode=$(jq -r .permissions.defaultMode "$target"))"
 }
 
-# Seed a config value only when the operator has NOT already overridden it, so a
-# re-deploy never clobbers an operator's change (e.g. loop_runner_enabled=false).
+# Seed a config value through the provenance-aware DEPLOY seed (#3435). The ORM
+# command NEVER writes a value equal to the code default (a code-default seed only
+# FREEZES a future default change), PRESERVES any operator override, re-seeds a row
+# this deploy still owns when the SHIPPED default changed, and records provenance
+# so a later `t3 doctor --repair` clears only an entrypoint-seeded pin — never an
+# operator's deliberate one. Idempotent across redeploys.
 seed_setting() {
-    if t3 teatree config_setting get "$1" 2>/dev/null | grep -q 'source: db'; then
-        echo "teatree-init: $1 already set (operator override preserved) - skipping"
-    else
-        t3 teatree config_setting set "$1" "$2"
-    fi
+    t3 teatree config_setting seed "$1" "$2"
 }
 
 # Fleet role split: this instance must run its own loops and NOT the loops another
@@ -413,10 +413,12 @@ init)
     seed_setting agent_harness '"claude_sdk"'
     seed_setting agent_runtime '"headless"'
     seed_setting loop_runner_enabled true
-    # #3409: seed provision concurrency as 0 = AUTO so the runtime derives it from
-    # THIS host (nCPU/2, cgroup-aware) instead of pinning a per-box value that a
-    # migration onto a bigger box would carry forward as a stale serialization.
-    # `t3 doctor` additionally auto-clears a stale small-box pin left in the DB.
+    # #3409/#3435: provision concurrency 0 = AUTO EQUALS the code default, so the
+    # provenance-aware seeder intentionally SKIPS it — the runtime already
+    # auto-derives from THIS host (nCPU/2, cgroup-aware), and the worker's compose
+    # `cpus` cap is itself host-derived at deploy time (#3432) so that cgroup view
+    # reflects the real host instead of a baked-in cap. `t3 doctor --repair` clears
+    # ONLY a stale ENTRYPOINT-seeded pin, never an operator's deliberate one (#3434).
     seed_setting provision_max_concurrency 0
     seed_setting provision_ram_ceiling_percent 75
     seed_setting max_concurrent_local_stacks 1
