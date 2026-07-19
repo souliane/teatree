@@ -46,6 +46,9 @@ def _no_clusters(_extract: ConsolidationExtract) -> list[DistilledCluster]:
 
 
 class RunConsolidationSeamTestCase(TestCase):
+    def setUp(self) -> None:
+        self.tmp = Path(self.enterContext(tempfile.TemporaryDirectory()))
+
     def test_returns_dream_run_result(self) -> None:
         result = run_consolidation(overlay="", since=None, dry_run=False, distiller=_no_clusters)
         assert isinstance(result, DreamRunResult)
@@ -61,6 +64,29 @@ class RunConsolidationSeamTestCase(TestCase):
     def test_no_clusters_distiller_writes_no_rows(self) -> None:
         run_consolidation(overlay="", since=None, dry_run=False, distiller=_no_clusters)
         assert ConsolidatedMemory.objects.count() == 0
+
+    def test_truncated_extract_is_threaded_into_the_result_and_warned(self) -> None:
+        # F6.7: ConsolidationExtract.truncated was computed and propagated but never
+        # read. A pass that clipped/dropped high-signal drift for prompt budget now
+        # surfaces it — threaded onto the result and logged at WARNING.
+        big = "x" * 1_000_000
+        members = [TranscriptMember(path=self.tmp / f"feedback_{i}.md", kind="memory") for i in range(50)]
+        for member in members:
+            member.path.write_text(big)
+        with (
+            patch.object(engine, "enumerate_members", return_value=members),
+            self.assertLogs("teatree.loops.dream.engine", level="WARNING") as logs,
+        ):
+            result = run_consolidation(overlay="", since=None, dry_run=True, distiller=_no_clusters)
+        assert result.extract_truncated is True
+        assert any("TRUNCATED" in line for line in logs.output)
+
+    def test_untruncated_extract_leaves_the_result_flag_false(self) -> None:
+        members = [TranscriptMember(path=self.tmp / "feedback_a.md", kind="memory")]
+        members[0].path.write_text("BINDING: short lesson")
+        with patch.object(engine, "enumerate_members", return_value=members):
+            result = run_consolidation(overlay="", since=None, dry_run=True, distiller=_no_clusters)
+        assert result.extract_truncated is False
 
     def test_injected_distiller_receives_extract(self) -> None:
         seen: list[ConsolidationExtract] = []
@@ -1015,6 +1041,28 @@ class ChunkedDistillTestCase(TestCase):
             run_consolidation(overlay="", since=None, dry_run=True, distiller=_spy)
 
         assert batch_count["n"] > 1
+
+    def test_one_failing_batch_is_isolated_and_counted_not_fatal(self) -> None:
+        # F6.4: a batch whose distiller call RAISES must not discard the clusters
+        # already distilled from the other batches (paid LLM work). The failure is
+        # isolated per batch, counted, and the surviving clusters still land.
+        members = _many_members(self.tmp, 9)
+        extract = build_extract(members)
+        calls = {"n": 0}
+
+        def _spy(batch: ConsolidationExtract) -> list[DistilledCluster]:
+            calls["n"] += 1
+            if calls["n"] == 2:  # the middle batch blows up
+                msg = "distiller boom"
+                raise RuntimeError(msg)
+            return [_cluster_for(TranscriptMember(path=batch.snippets[0].path, kind="memory"), key=f"k{calls['n']}")]
+
+        with patch.dict(os.environ, {"T3_DREAM_MAX_DISTILL_MEMBERS": "3"}):
+            outcome = distill.distill_in_batches(extract, distiller=_spy)
+
+        assert calls["n"] == 3  # all three batches were attempted, the failure did not abort
+        assert outcome.failed_batches == 1
+        assert {c.cluster_key for c in outcome.clusters} == {"k1", "k3"}  # the survivors landed
 
 
 class SilentEmptyBatchTestCase(TestCase):

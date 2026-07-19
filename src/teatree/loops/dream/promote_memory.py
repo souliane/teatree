@@ -135,22 +135,42 @@ def file_core_gap_tickets(
     Each untriaged row is classified (via the injected *classifier*, default the
     ``durable_destination``-hint one). A user-specific row advances to
     ``USER_SPECIFIC_KEEP`` and does nothing further. A core-gap row advances to
-    ``CORE_GAP_NEEDS_TICKET``; then (unless *dry_run*) it is PROMOTED to a fix —
-    a checkbox is upserted under the standing umbrella issue (*umbrella_url*, deduped
-    by the row's ``cluster_key``) and a coding task is scheduled for the fix. The gap
-    no longer files a fresh ``needs-triage`` issue that the scanner skips. A rendered
-    title that would leak a banned term / bare reference is withheld — never written.
-    Returns one outcome per core-gap row (user-specific rows yield no outcome).
+    ``CORE_GAP_NEEDS_TICKET`` and is PROMOTED to a fix in the SAME pass — a checkbox
+    is upserted under the standing umbrella issue (*umbrella_url*, deduped by the row's
+    ``cluster_key``) and a coding task is scheduled for the fix. The gap no longer files
+    a fresh ``needs-triage`` issue that the scanner skips. A rendered title that would
+    leak a banned term / bare reference is withheld — never written.
+
+    Under *dry_run* NOTHING is written — no disposition advance, no umbrella edit, no
+    scheduled task — so a preview never STRANDS a detected gap: the disposition write
+    used to land BEFORE the dry-run guard, moving the row out of ``untriaged()`` while
+    its promotion was skipped, so the gap sat in ``CORE_GAP_NEEDS_TICKET`` with no drain
+    and was silently detected but never fixed.
+
+    Before the untriaged queue, any core-gap row a prior pass classified but never
+    promoted (:meth:`ConsolidatedMemory.objects.needs_ticket` — no ticket recorded) is
+    drained first, so such a stranded gap is picked up and promoted rather than left
+    forever. Returns one outcome per promoted core-gap row (user-specific rows and a
+    dry-run yield no outcome).
     """
     classify = classifier or triage_disposition
     outcomes: list[TicketOutcome] = []
+    if dry_run:
+        # A preview must not mutate: classify nothing, promote nothing. The untriaged
+        # rows stay untriaged so the next real pass drains them faithfully.
+        return outcomes
+    # Drain gaps a prior pass classified but never promoted (e.g. stranded by an older
+    # dry-run) FIRST, before this pass classifies any new core gap — reading the queue
+    # up front means a row classified below is never re-drained in the same pass.
+    outcomes.extend(
+        _promote_one_gap(host, stranded, umbrella_url=umbrella_url)
+        for stranded in ConsolidatedMemory.objects.needs_ticket()
+    )
     for row in ConsolidatedMemory.objects.untriaged():
         if classify(row) is MemoryDisposition.USER_SPECIFIC:
             row.classify_user_specific()
             continue
         row.classify_core_gap()
-        if dry_run:
-            continue
         outcomes.append(_promote_one_gap(host, row, umbrella_url=umbrella_url))
     return outcomes
 

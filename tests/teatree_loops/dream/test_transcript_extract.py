@@ -214,10 +214,18 @@ class HighSignalLinesTestCase(TestCase):
         raw = f'{repeated}\n{repeated}\n{repeated}\n{{"type":"assistant","text":"neutral"}}'
         assert "the authoring UI is still missing" in high_signal_lines(raw)
 
-    def test_user_turn_seen_twice_is_not_yet_repeated(self) -> None:
+    def test_user_turn_seen_twice_is_repeated(self) -> None:
+        # F6.10: the threshold is "at least 2" (the documented contract), so a turn seen
+        # exactly twice IS a repeat and is kept — the old `> 2` needed three and let a
+        # twice-repeated correction slip past the keeper.
+        twice = '{"type":"user","text":"a neutral request with no cue at all here"}'
+        raw = f"{twice}\n{twice}"
+        assert "a neutral request with no cue at all here" in high_signal_lines(raw)
+
+    def test_user_turn_seen_once_is_not_repeated(self) -> None:
+        # A single, cue-free user turn is not a repeat — nothing keeps it.
         once = '{"type":"user","text":"a neutral request with no cue at all here"}'
-        raw = f"{once}\n{once}"
-        assert high_signal_lines(raw) == ""
+        assert high_signal_lines(once) == ""
 
     def test_keeps_user_ask_prose_for_automation_clustering(self) -> None:
         # A directive ask carries no correction cue and no keyword signal, but the

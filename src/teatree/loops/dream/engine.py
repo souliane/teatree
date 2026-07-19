@@ -80,6 +80,14 @@ from enum import StrEnum
 from pathlib import Path
 from typing import TYPE_CHECKING, ClassVar, Protocol
 
+from teatree.loops.dream._shared import WEIGHT_BINDING as _WEIGHT_BINDING
+from teatree.loops.dream._shared import WEIGHT_COLD_REVIEW as _WEIGHT_COLD_REVIEW
+from teatree.loops.dream._shared import WEIGHT_CORRECTION as _WEIGHT_CORRECTION
+from teatree.loops.dream._shared import WEIGHT_DENY_STREAK as _WEIGHT_DENY_STREAK
+from teatree.loops.dream._shared import WEIGHT_FEEDBACK as _WEIGHT_FEEDBACK
+from teatree.loops.dream._shared import WEIGHT_OTHER as _WEIGHT_OTHER
+from teatree.loops.dream._shared import WEIGHT_RETRO as _WEIGHT_RETRO
+from teatree.loops.dream._shared import is_binding_text
 from teatree.loops.dream.transcript_extract import high_signal_lines, looks_like_user_correction
 
 if TYPE_CHECKING:
@@ -89,21 +97,13 @@ logger = logging.getLogger(__name__)
 
 _DEFAULT_LOOKBACK_HOURS = 48
 
-#: Weight floors per member, highest signal first. The ladder is KIND-AWARE
-#: (:func:`_member_weight`): the ``BINDING`` / ``feedback_`` doctrine floors are
-#: reserved for CURATED MEMORY files, so a transcript that merely QUOTES a BINDING
-#: rule can never outrank the memory that owns it. A fresh user-correction turn in a
-#: transcript carries its own high floor (``_WEIGHT_CORRECTION``, just under feedback)
-#: — the day's highest-signal drift. Retro / cold-review / deny-streak markers rank
-#: below, then anything else — so the bounded extract keeps the highest-signal
-#: members when it truncates.
-_WEIGHT_BINDING = 100
-_WEIGHT_FEEDBACK = 90
-_WEIGHT_CORRECTION = 80
-_WEIGHT_RETRO = 70
-_WEIGHT_COLD_REVIEW = 50
-_WEIGHT_DENY_STREAK = 40
-_WEIGHT_OTHER = 10
+# The member weight ladder (teatree.loops.dream._shared.WEIGHT_*, shared with the merge
+# phase) is KIND-AWARE at _member_weight: the BINDING / feedback_ doctrine floors are
+# reserved for CURATED MEMORY files, so a transcript that merely QUOTES a BINDING rule can
+# never outrank the memory that owns it. A fresh user-correction turn in a transcript
+# carries its own high floor (_WEIGHT_CORRECTION, just under feedback) — the day's
+# highest-signal drift. Retro / cold-review / deny-streak markers rank below, then
+# anything else — so the bounded extract keeps the highest-signal members when it truncates.
 
 #: Per-memory text cap; combines with the extract ceiling to bound the prompt. A
 #: curated memory file is dense doctrine, so a tight cap keeps any single memory
@@ -236,6 +236,11 @@ class DreamRunResult:
     snippets_distilled: int = 0
     #: How many candidate clusters the ledger-write reject guard dropped as ungrounded.
     clusters_rejected: int = 0
+    #: Whether the bounded extract had to CLIP or DROP a member for lack of budget —
+    #: threaded from ``ConsolidationExtract.truncated`` and WARNED by
+    #: :func:`run_consolidation` (F6.7), so a pass that silently dropped high-signal
+    #: drift for prompt budget is a visible signal, not a value computed and ignored.
+    extract_truncated: bool = False
     #: The bounded extract this pass built, so the command can reuse it for the
     #: compliance-measurement and automatable-ask phases instead of re-enumerating +
     #: re-reading every member a second time. ``None`` only on a pass that built none.
@@ -326,7 +331,7 @@ def _member_weight(member: TranscriptMember, text: str) -> int:
     name = member.path.name.lower()
     body = text.lower()
     if member.kind == "memory":
-        if "binding" in body:
+        if is_binding_text(text):
             return _WEIGHT_BINDING
         if name.startswith("feedback_"):
             return _WEIGHT_FEEDBACK
@@ -588,6 +593,12 @@ def run_consolidation(
 
     members = enumerate_members(since=since)
     extract = build_extract(members)
+    if extract.truncated:
+        logger.warning(
+            "dream extract TRUNCATED — a member was clipped or dropped for prompt budget over "
+            "%d snippet(s); the highest-signal members were kept, but some drift did not reach the distiller.",
+            len(extract.snippets),
+        )
     distill = distiller or sdk_distill
     outcome = distill_in_batches(extract, distiller=distill)
     clusters = outcome.clusters
@@ -606,6 +617,7 @@ def run_consolidation(
         empty_batches=outcome.empty_batches,
         snippets_distilled=len(extract.snippets),
         clusters_rejected=write_outcome.rejected,
+        extract_truncated=extract.truncated,
         extract=extract,
     )
 

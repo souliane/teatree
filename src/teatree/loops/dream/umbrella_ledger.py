@@ -32,6 +32,8 @@ import logging
 import re
 from dataclasses import dataclass
 
+from django.utils import timezone
+
 from teatree.core.backend_protocols import CodeHostBackend
 from teatree.core.models import ConsolidatedMemory
 from teatree.core.models.task import Task
@@ -51,6 +53,10 @@ _GAP_MARKER_PREFIX = "dream-gap"
 _GAP_KEY = "dream_gap_key"
 _CLUSTER_KEY = "dream_memory_cluster_key"
 _UMBRELLA_KEY = "dream_umbrella_url"
+#: Stamped on a gap-fix Ticket's ``extra`` once its merge has been reconciled (checkbox
+#: checked + memory retired), so :func:`reconcile_merged_gaps` skips it on every later
+#: pass instead of re-reading the forge for the same merged gap forever (F6.9).
+_RECONCILED_KEY = "dream_gap_reconciled_at"
 
 
 @dataclass(frozen=True, slots=True)
@@ -263,8 +269,17 @@ def promote_gap(host: CodeHostBackend, *, umbrella_url: str, gap: GapSpec, dry_r
 
 
 def _in_flight_gap_tickets() -> list[Ticket]:
-    """Every Ticket scheduled to fix a dream gap (those carrying the gap-key marker)."""
-    return list(Ticket.objects.exclude(extra__dream_gap_key__isnull=True).exclude(extra__dream_gap_key=""))
+    """Every not-yet-reconciled Ticket scheduled to fix a dream gap (carrying the gap-key marker).
+
+    Excludes tickets already stamped :data:`_RECONCILED_KEY`: once a merged gap has been
+    reconciled (checkbox checked, memory retired) there is nothing left to do, so it is
+    dropped from the scan rather than re-read from the forge every pass forever (F6.9).
+    """
+    return list(
+        Ticket.objects.exclude(extra__dream_gap_key__isnull=True)
+        .exclude(extra__dream_gap_key="")
+        .filter(extra__dream_gap_reconciled_at__isnull=True)
+    )
 
 
 def _merged_pr_url(ticket: Ticket) -> str:
@@ -300,9 +315,26 @@ def reconcile_merged_gaps(host: CodeHostBackend, *, umbrella_url: str) -> list[T
         check_gap_checkbox(host, umbrella_url=umbrella_url, gap_key=gap_key)
         if _stamp_memory_merged(cluster_key, merged_url=merged_url):
             merged_memory_urls.add(merged_url)
+        _stamp_ticket_reconciled(ticket)
         reconciled.append(ticket)
     retire_resolved_memories(host, is_resolved=lambda url: url in merged_memory_urls)
     return reconciled
+
+
+def _stamp_ticket_reconciled(ticket: Ticket) -> None:
+    """Mark a gap-fix Ticket reconciled so later passes skip it (F6.9).
+
+    Records :data:`_RECONCILED_KEY` in the ticket's ``extra``; the next
+    :func:`_in_flight_gap_tickets` scan excludes it, so a merged gap is reconciled once,
+    not re-read from the forge on every pass forever. Idempotent — an already-stamped
+    ticket is left untouched.
+    """
+    extra = dict(ticket.extra or {})
+    if extra.get(_RECONCILED_KEY):
+        return
+    extra[_RECONCILED_KEY] = timezone.now().isoformat()
+    ticket.extra = extra
+    ticket.save(update_fields=["extra"])
 
 
 def _stamp_memory_merged(cluster_key: str, *, merged_url: str) -> bool:

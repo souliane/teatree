@@ -24,6 +24,7 @@ if TYPE_CHECKING:
     from teatree.core.backend_protocols import CodeHostBackend
     from teatree.core.models import ConsolidatedMemory
     from teatree.loops.dream.decay import ArchivedMemory
+    from teatree.loops.dream.gates import MemorySnapshot
     from teatree.loops.dream.merge import BindingConflict
 
 #: Resolve the teatree backlog code host + repo slug for ticket filing.
@@ -47,26 +48,40 @@ class MemoryPhaseRunner:
         self._backlog_host_resolver = backlog_host_resolver
 
     def run_memory_phases(self, *, dry_run: bool) -> str:
-        """Run phases 4-6 over every discovered memory dir, fault-isolated.
+        """Run phases 4-6 over every discovered memory dir, then grade any mutation.
 
-        The quiet-night path (0 transcript members): no gates, just the file-side
-        maintenance over the discovered ``~/.claude`` memory dirs.
+        The quiet-night path (0 transcript members): the SAME budget-aware phase
+        machinery the gated path uses (:meth:`_run_phases`, which runs decay with the
+        #2723 ``BudgetTier`` policy), not a policy-less near-copy. Because those phases
+        MUTATE the memory files ungated, the §4 acceptance gates now run on ANY
+        non-dry-run file mutation (F6.2) — a quiet-night decay/merge that loses a lesson
+        is caught rather than silently laundered. The gate verdict is informational
+        here (the command marks the pass attempted regardless); its clause rides the
+        returned summary. A pass that mutated nothing, or a dry run, is left ungraded.
         """
+        from teatree.loops.dream import gates  # noqa: PLC0415 — deferred: loaded at tick time, not import
         from teatree.memory_audit import discover_memory_dirs  # noqa: PLC0415 — deferred: loaded at tick time
 
         memory_dirs = discover_memory_dirs()
         if not memory_dirs:
             return ""
-        cross_link_part = self._phase_summary("cross-link", self._cross_link_one, memory_dirs, dry_run=dry_run)[0]
-        merge_part = self._merge_dirs(memory_dirs, dry_run=dry_run)[0]
-        reindex_part = self._phase_summary("re-index", self._reindex_one, memory_dirs, dry_run=dry_run)[0]
-        decay_part, archived = self._phase_summary("decay", self._decay_one, memory_dirs, dry_run=dry_run)
-        parts = [cross_link_part, merge_part, reindex_part, decay_part]
-        if archived and not dry_run:
-            # A FINAL re-index drops the archived files' pointers so MEMORY.md falls
-            # back under budget in the SAME pass — parity with the gated path.
-            parts.append(self._phase_summary("re-index", self._reindex_one, memory_dirs, dry_run=dry_run)[0])
-        return "".join(part for part in parts if part)
+        before = {d: gates.snapshot_memory_dir(d) for d in memory_dirs}
+        schema_before = self._ledger_schema_count()
+        phase_summary, archived_by_dir, maintenance_performed = self._run_phases(memory_dirs, dry_run=dry_run)
+        if dry_run or not maintenance_performed:
+            return phase_summary
+        schema_after = self._ledger_schema_count()
+        _all_passed, gate_summary = self._grade_dirs(
+            before,
+            memory_dirs,
+            archived_by_dir=archived_by_dir,
+            schema_before=schema_before,
+            schema_after=schema_after,
+            clusters_recorded=0,
+            maintenance_performed=maintenance_performed,
+            dry_run=dry_run,
+        )
+        return f"{phase_summary}{gate_summary}"
 
     def run_memory_phases_and_gates(self, *, clusters_recorded: int, dry_run: bool) -> "tuple[str, bool, str]":
         """Run phases 4-6 then the §4 acceptance gates, gating success on the gates (#2545).
@@ -82,8 +97,7 @@ class MemoryPhaseRunner:
         disables the gate must never be laundered into an accepted pass. It still never
         crashes — the failure degrades to a WARN clause and a failed verdict.
         """
-        from teatree.loops.dream import acceptance, gates  # noqa: PLC0415 — deferred: loaded at tick time, not import
-        from teatree.loops.dream.decay import ARCHIVE_DIRNAME  # noqa: PLC0415 — deferred: loaded at tick time
+        from teatree.loops.dream import gates  # noqa: PLC0415 — deferred: loaded at tick time, not import
         from teatree.memory_audit import discover_memory_dirs  # noqa: PLC0415 — deferred: loaded at tick time
 
         memory_dirs = discover_memory_dirs()
@@ -94,6 +108,43 @@ class MemoryPhaseRunner:
         schema_before = self._ledger_schema_count()
         phase_summary, archived_by_dir, maintenance_performed = self._run_phases(memory_dirs, dry_run=dry_run)
         schema_after = self._ledger_schema_count()
+
+        all_passed, gate_summary = self._grade_dirs(
+            before,
+            memory_dirs,
+            archived_by_dir=archived_by_dir,
+            schema_before=schema_before,
+            schema_after=schema_after,
+            clusters_recorded=clusters_recorded,
+            maintenance_performed=maintenance_performed,
+            dry_run=dry_run,
+        )
+        return phase_summary, all_passed, gate_summary
+
+    @staticmethod
+    # ast-grep-ignore: ac-django-no-complexity-suppressions
+    def _grade_dirs(  # noqa: PLR0913 — kwargs-only §4 gate inputs, threaded verbatim into run_acceptance_pass.
+        before: "dict[Path, MemorySnapshot]",
+        memory_dirs: list[Path],
+        *,
+        archived_by_dir: "dict[Path, tuple[ArchivedMemory, ...]]",
+        schema_before: int,
+        schema_after: int,
+        clusters_recorded: int,
+        maintenance_performed: bool,
+        dry_run: bool,
+    ) -> tuple[bool, str]:
+        """Run the §4 acceptance gates per dir and aggregate the verdict + summary clause.
+
+        The ONE gate-grading loop shared by the gated full path and the quiet-night
+        path (F6.2), so both grade a file mutation identically. A gate-evaluation
+        failure for one dir is reported and FAILS CLOSED (that dir's verdict is FAIL,
+        never a laundered pass): the gates exist to catch a lossy consolidation, so a
+        transient read error that disables the gate must never be accepted. It still
+        never crashes — the failure degrades to a WARN clause and a failed verdict.
+        """
+        from teatree.loops.dream import acceptance, gates  # noqa: PLC0415 — deferred: loaded at tick time, not import
+        from teatree.loops.dream.decay import ARCHIVE_DIRNAME  # noqa: PLC0415 — deferred: loaded at tick time
 
         all_passed = True
         clauses: list[str] = []
@@ -121,7 +172,7 @@ class MemoryPhaseRunner:
                 failed = ", ".join(g.name for g in report.gate_results if not g.passed)
                 clauses.append(f"gates FAILED ({failed})")
         gate_summary = f"; {'; '.join(clauses)}" if clauses else "; all acceptance gates passed"
-        return phase_summary, all_passed, gate_summary
+        return all_passed, gate_summary
 
     def _run_phases(
         self, memory_dirs: list[Path], *, dry_run: bool
@@ -284,15 +335,6 @@ class MemoryPhaseRunner:
         if not reindex_enabled():
             return 0
         return 1 if reindex.reindex_memory(d, dry_run=dry_run).changed else 0
-
-    @staticmethod
-    def _decay_one(d: Path, *, dry_run: bool) -> int:
-        from teatree.loops.dream import decay  # noqa: PLC0415 — deferred: loaded at tick time, not import
-        from teatree.loops.dream.loop import decay_enabled  # noqa: PLC0415 — deferred: loaded at tick time, not import
-
-        if not decay_enabled():
-            return 0
-        return decay.decay_memories(d, dry_run=dry_run).archived_count
 
 
 __all__ = ["BacklogHostResolver", "MemoryPhaseRunner"]

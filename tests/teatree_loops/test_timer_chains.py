@@ -218,13 +218,32 @@ class TestLoopTimerBody(django.test.TestCase):
         def _timed_out(name: str, *, deadline: float) -> dict[str, object]:
             return {"timed_out": True, "returncode": None}
 
-        marker = "[loop-tick-timeout loop=inbox]"
+        marker = "loop-tick-timeout loop=inbox"
         with pytest.MonkeyPatch.context() as mp:
             mp.setattr(timer_chains, "run_deadlined_tick", _timed_out)
             _fire("inbox")
-            assert DeferredQuestion.objects.filter(question__contains=marker).count() == 1
-            _fire("inbox")  # a second timeout must NOT spawn a second question
-        assert DeferredQuestion.objects.filter(question__contains=marker).count() == 1
+            assert DeferredQuestion.objects.filter(dedupe_marker=marker).count() == 1
+            _fire("inbox")  # a second timeout must NOT spawn a second OPEN question
+        assert DeferredQuestion.objects.filter(dedupe_marker=marker).count() == 1
+
+    def test_tick_timeout_escalation_dedups_only_open_questions(self) -> None:
+        # F6.12: the escalation dedups only OPEN (unanswered) questions. Two timeouts
+        # while the question is pending collapse to one row; but once the user ANSWERS
+        # it, a subsequent timeout raises a FRESH escalation — the old
+        # `question__contains` dedup masked answered rows too, so a loop that kept
+        # timing out after being answered fell silent forever.
+        from teatree.core.models.deferred_question import DeferredQuestion  # noqa: PLC0415
+
+        marker = "loop-tick-timeout loop=inbox"
+        timer_chains._escalate_tick_timeout("inbox", deadline=300.0)
+        timer_chains._escalate_tick_timeout("inbox", deadline=300.0)  # still open → deduped
+        assert DeferredQuestion.objects.filter(dedupe_marker=marker).count() == 1
+
+        first = DeferredQuestion.objects.get(dedupe_marker=marker)
+        DeferredQuestion.consume(first.pk, answer="raise the deadline")
+        timer_chains._escalate_tick_timeout("inbox", deadline=300.0)  # answered → re-escalate
+        assert DeferredQuestion.objects.filter(dedupe_marker=marker).count() == 2
+        assert DeferredQuestion.objects.filter(dedupe_marker=marker, answered_at__isnull=True).count() == 1
 
     def test_concurrent_running_duplicate_with_lower_id_dedups_this_fire(self) -> None:
         # Two racing RUNNING timers: the lower-id one survives, the higher-id one dedups —
