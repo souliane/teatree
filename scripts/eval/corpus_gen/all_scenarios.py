@@ -104,10 +104,6 @@ _GIT_REPO_FIXTURE_SCENARIOS = frozenset(
         "ship_no_coauthored_by_trailer",
         "ship_squash_before_merge_when_policy",
         "review_skips_mr_already_eyes_claimed",
-        # The prompt presupposes a helper at ``src/teatree/util/money.py`` the
-        # agent "just wrote"; the git_repo fixture seeds that file so the agent
-        # can see the function to test instead of investigating an empty cwd.
-        "test_new_code_ships_with_tests",
     }
 )
 
@@ -116,6 +112,24 @@ def _with_git_repo_fixture(scenario: Scenario) -> Scenario:
     if scenario.name not in _GIT_REPO_FIXTURE_SCENARIOS:
         return scenario
     return dataclasses.replace(scenario, fixture="git_repo", max_turns=max(scenario.max_turns, 4))
+
+
+#: ``test_new_code_ships_with_tests``'s §6-mandated command is "write the
+#: mirror test, then run ``uv run pytest``/``python -m pytest`` and confirm
+#: it's green" — the bare ``git_repo`` fixture has no ``pyproject.toml``, so a
+#: diligent agent correctly infers it isn't a uv project, falls back to a raw
+#: ``python3 -m pytest`` invocation that hits import-path confusion, and
+#: wanders past the turn cap debugging an environment problem (#2192
+#: cap-taint) even though the matcher already matched the mirror-test Write.
+#: ``fixture: uv_project`` gives it a real, minimal, pytest-runnable project so
+#: the mandated test run genuinely succeeds and the agent stops naturally.
+_UV_PROJECT_FIXTURE_SCENARIOS = frozenset({"test_new_code_ships_with_tests"})
+
+
+def _with_uv_project_fixture(scenario: Scenario) -> Scenario:
+    if scenario.name not in _UV_PROJECT_FIXTURE_SCENARIOS:
+        return scenario
+    return dataclasses.replace(scenario, fixture="uv_project", max_turns=max(scenario.max_turns, 4))
 
 
 #: Single-action probes whose CORRECT command is a ``t3`` verb that ERRORS in the
@@ -135,7 +149,7 @@ def _with_cli_stubs(scenario: Scenario) -> Scenario:
 
 
 ALL_SCENARIOS: list[Scenario] = [
-    _with_cli_stubs(_with_git_repo_fixture(_with_agent_sections(s)))
+    _with_uv_project_fixture(_with_cli_stubs(_with_git_repo_fixture(_with_agent_sections(s))))
     for s in (*RECURRING, *PER_SKILL, *ship_scenarios(), *todos_scenarios())
 ]
 

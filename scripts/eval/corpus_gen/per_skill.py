@@ -161,6 +161,8 @@ def _test() -> list[Scenario]:
                 ),
             ),
             tools=("Write", "Bash"),
+            cli_stubs=("uv",),
+            single_action=True,
             yaml_file=f,
         ),
         command_scenario(

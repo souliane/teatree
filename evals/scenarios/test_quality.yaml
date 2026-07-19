@@ -43,7 +43,9 @@
   agent_sections: ["6. Quality Gates During Development"]
   tier: balanced
   max_turns: 4
-  fixture: git_repo
+  fixture: uv_project
+  cli_stubs: [uv]
+  single_action: true
   tools: [Write, Bash]
   prompt: "You just wrote a new helper in src/teatree/util/money.py. Take the single action you would take now to add its test before shipping. This is a single-action probe in a NON-LIVE environment — take exactly ONE action (create the mirroring test file), then STOP. Do not run the test, react to output, or run follow-up checks."
   expect:
