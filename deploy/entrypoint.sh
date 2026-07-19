@@ -340,6 +340,43 @@ ensure_clone() {
     git clone "$REPO_URL" "$CLONE_DIR"
 }
 
+# Drain + 👀-ack inbound Slack on a cadence, SURFACING failures (#3443). The old
+# `t3 slack check >/dev/null 2>&1 || true` swallowed every error, so a drain that
+# could not boot Django looked identical to a healthy one and nobody ever saw it.
+#
+# `t3 slack check` exits 0 when it drained messages and 1 with NO output when the
+# queue was empty (the common, healthy case on a quiet box) — so a non-zero exit
+# is NOT itself a failure. A REAL failure is a non-zero exit that ALSO produced
+# output (a Django boot traceback, a DB error). Those increment a consecutive-
+# failure counter and are logged to stderr (visible in `docker compose logs
+# teatree-slack-listener`); an empty-queue exit never does.
+#
+# Each pass rewrites a heartbeat file that `t3 doctor` reads from another
+# container to surface a stuck/failed drain (self_heal `_check_slack_drain_alive`).
+# The heartbeat path mirrors teatree.paths.DATA_DIR ($HOME/.local/share/teatree) —
+# the filename is pinned to the doctor side by tests/test_deploy_slack_listener.py.
+slack_drain_loop() {
+    local interval="${SLACK_CHECK_INTERVAL_SECONDS:-15}"
+    local heartbeat="${SLACK_DRAIN_HEARTBEAT:-$HOME/.local/share/teatree/slack-drain-heartbeat.json}"
+    local consecutive=0 last_ok=null now out rc
+    mkdir -p "$(dirname "$heartbeat")"
+    while true; do
+        now="$(date +%s)"
+        out="$(t3 slack check 2>&1)" && rc=0 || rc=$?
+        if [ "$rc" -eq 0 ] || { [ "$rc" -eq 1 ] && [ -z "$out" ]; }; then
+            consecutive=0
+            last_ok="$now"
+        else
+            consecutive=$((consecutive + 1))
+            echo "entrypoint: slack drain (t3 slack check) FAILED rc=$rc (consecutive=$consecutive):" >&2
+            printf '%s\n' "$out" >&2
+        fi
+        printf '{"updated_at": %s, "interval_seconds": %s, "consecutive_failures": %s, "last_ok_at": %s}\n' \
+            "$now" "$interval" "$consecutive" "$last_ok" >"$heartbeat"
+        sleep "$interval"
+    done
+}
+
 case "$ROLE" in
 init)
     init_preflight
@@ -402,11 +439,11 @@ slack-listener)
     # slot is not bootstrapped under `t3 worker` in headless, so the listener's
     # captures would never reach an observable state without this. `t3 slack
     # check` drains the JSONL queue and, unlike the drain-queue loop, is NOT
-    # gated by the worker singleton. Failure-tolerant (`|| true`) and
-    # backgrounded so a non-zero check never trips `set -e` or crashes the
-    # foreground listener.
-    SLACK_CHECK_INTERVAL_SECONDS=15
-    ( while true; do t3 slack check >/dev/null 2>&1 || true; sleep "$SLACK_CHECK_INTERVAL_SECONDS"; done ) &
+    # gated by the worker singleton. `slack_drain_loop` backgrounds the cadence
+    # (so `exec t3 slack listen` stays the foreground process), never trips
+    # `set -e`, and — unlike the old `|| true` — logs real failures to stderr and
+    # writes a heartbeat `t3 doctor` reads to catch a stuck/failed drain (#3443).
+    slack_drain_loop &
     exec t3 slack listen
     ;;
 admin)

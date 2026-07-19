@@ -91,6 +91,28 @@ notify_owner() {
   fi
 }
 
+# Run `t3 doctor check --json` in the first REACHABLE exec service, capturing its
+# stdout into DOCTOR_RAW regardless of doctor's exit code. This is the heart of
+# the #3440 fix: a red-findings verdict exits NON-ZERO yet is a healthy RUN of
+# doctor, so the watchdog must NOT read a non-zero exit as "unreachable" (that
+# made the red-findings DM path below dead code). Reachability is probed
+# separately (a trivial `exec ... true`); only a genuinely unreachable service
+# falls through to the next one. Returns 0 when a service was reached (DOCTOR_RAW
+# set, possibly empty), 125 when NO exec service could be reached at all.
+run_doctor() {
+  local svc
+  DOCTOR_RAW=""
+  for svc in $EXEC_SERVICES; do
+    if compose exec -T "$svc" true >/dev/null 2>&1; then
+      # `|| true`: doctor exits non-zero on red findings; keep its stdout, drop
+      # the exit code (set -e must not abort, and the code is NOT the signal).
+      DOCTOR_RAW="$(compose exec -T "$svc" t3 doctor check --json 2>/dev/null || true)"
+      return 0
+    fi
+  done
+  return 125
+}
+
 run_pass() {
   log "restarting any down services (gated on init state)"
   if ! restart_down_services; then
@@ -100,18 +122,28 @@ run_pass() {
     return 0
   fi
 
-  local raw
-  if ! raw="$(exec_in_stack t3 doctor check --json)"; then
-    printf 'teatree watchdog: could not run `t3 doctor` in any service (%s) — the stack is unreachable even after `up -d`. SSH in and inspect `docker compose -p %s ps`.' "$EXEC_SERVICES" "$PROJECT" \
+  if ! run_doctor; then
+    # No exec service could be reached at all — a genuine transport failure, the
+    # ONLY case that is truly "unreachable" (distinct from doctor running and
+    # returning a red verdict, which is handled below).
+    printf 'teatree watchdog: could not exec `t3 doctor` in any service (%s) — the stack is unreachable even after `up -d`. SSH in and inspect `docker compose -p %s ps`.' "$EXEC_SERVICES" "$PROJECT" \
       | notify_owner "watchdog:doctor-unreachable:$(date -u +%Y%m%d%H)"
     return 0
   fi
 
-  # Keep only the JSON line (doctor may print incidental lines before it).
+  # Branch on the PRESENCE of a parseable JSON verdict, NOT on doctor's exit code
+  # (#3440). Keep only the JSON line (doctor may print incidental lines before it).
+  # `|| true`: no match makes the pipeline exit non-zero under `set -o pipefail`,
+  # which would abort here before the no-verdict branch could fire.
   local json
-  json="$(printf '%s\n' "$raw" | grep '"ok"' | tail -n 1)"
+  json="$(printf '%s\n' "$DOCTOR_RAW" | grep '"ok"' | tail -n 1 || true)"
   if [ -z "$json" ]; then
-    log "doctor produced no JSON verdict — treating as healthy"
+    # Doctor was reachable but emitted no parseable verdict: a half-crashed doctor
+    # is itself a RED condition, not a healthy pass (the old code treated it as
+    # healthy and stayed silent). DM once per hour so a persistent breakage is seen.
+    log "doctor reachable but produced no JSON verdict — treating as RED"
+    printf 'teatree watchdog: `t3 doctor check --json` ran but produced NO parseable verdict — doctor may be crashing on the box. SSH in and run `t3 doctor check` in `docker compose -p %s exec teatree-admin`.' "$PROJECT" \
+      | notify_owner "watchdog:doctor-no-verdict:$(date -u +%Y%m%d%H)"
     return 0
   fi
 
@@ -143,11 +175,14 @@ run_loop() {
   done
 }
 
-# Extract the FAIL messages from the doctor JSON. Uses python3 (present on the box)
-# and degrades to a generic body when it is absent.
+# Extract the FAIL messages from the doctor JSON (read on stdin). Uses python3
+# (present on the box) and degrades to a generic body when it is absent. Uses
+# `python3 -c` rather than a `-` heredoc: a `python3 - <<'PY'` feeds the heredoc
+# as the PROGRAM on stdin, leaving `sys.stdin` at EOF so the piped verdict is
+# never read — the body would always be the generic fallback.
 _extract_fail_body() {
   if command -v python3 >/dev/null 2>&1; then
-    python3 - <<'PY'
+    python3 -c '
 import json, sys
 try:
     data = json.load(sys.stdin)
@@ -155,7 +190,7 @@ try:
 except Exception:
     fails = []
 print("\n".join(f"- {m}" for m in fails) if fails else "- (see `t3 doctor check` on the box for detail)")
-PY
+'
   else
     printf '%s' "- one or more red findings (install python3 on the box for detail, or run \`t3 doctor check\`)"
   fi
@@ -170,8 +205,14 @@ _stable_key() {
   fi
 }
 
-if [ "${1:-}" = "--loop" ]; then
-  run_loop
-else
-  run_pass
+# Run the dispatch only when EXECUTED, not when sourced — so a test can source
+# this file and drive `run_pass` / `run_doctor` in isolation with stubbed docker.
+# `run_loop` re-invokes the script with `bash "$SELF"`, which is an execution, so
+# the default single pass still fires there.
+if [ "${BASH_SOURCE[0]}" = "${0}" ]; then
+  if [ "${1:-}" = "--loop" ]; then
+    run_loop
+  else
+    run_pass
+  fi
 fi
