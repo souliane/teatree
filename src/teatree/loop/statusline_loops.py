@@ -1,5 +1,5 @@
 from collections.abc import Callable
-from datetime import datetime, timedelta
+from datetime import datetime
 from typing import TYPE_CHECKING
 
 from teatree.loop.loop_cadences import (
@@ -8,22 +8,9 @@ from teatree.loop.loop_cadences import (
     self_improve_cadence_seconds,
     slack_answer_cadence_seconds,
 )
-from teatree.loop.loop_scoping import (
-    current_session_owned_per_loop_slots,
-    is_per_loop_owner_slot,
-    is_transient_tick_mutex,
-    loop_is_actively_ticking,
-    per_loop_chunk_visible,
-)
-from teatree.loop.statusline_palette import (
-    _ANSI_DIM,
-    _ANSI_GREEN,
-    _ANSI_RED,
-    _ANSI_YELLOW,
-    _RECENCY_GREEN_FRACTION,
-    _RECENCY_YELLOW_FRACTION,
-    _SECONDS_PER_MINUTE,
-)
+from teatree.loop.loop_scoping import current_session_owned_per_loop_slots
+from teatree.loop.statusline_loop_chunks import LeaseRenderContext, _colorize_chunk, lease_chunks, mini_loop_chunks
+from teatree.loop.statusline_palette import _ANSI_GREEN, _ANSI_RED, _ANSI_YELLOW
 
 if TYPE_CHECKING:
     from teatree.core.availability import Resolution
@@ -243,6 +230,53 @@ def _preset_segment() -> str:
         return ""
 
 
+# The set of manually-overridden loop names (#3248) is resolved up-stack in
+# :func:`teatree.loops.preset_status.overridden_loop_names` (the resolver lives
+# in ``teatree.loops``), injected through the same seam as the preset segment.
+# It gates the per-loop-lease collapse: a routine ``loop:<name>`` owner slot —
+# claimed for EVERY enabled loop by the shared ``loop_runner`` — is folded into
+# the preset/schedule handle unless it is manually overridden away from that
+# handle (or due to fire now). Absent injection (a quiet machine, a unit test)
+# the default reader signals ``None`` and NOTHING is collapsed — today's full
+# per-loop render — so the collapse never activates without the preset handle
+# that represents the folded loops also being present (both are injected
+# together by the ``loops_tick`` per-loop command).
+type OverriddenLoopsReader = Callable[[], set[str]]
+
+
+_overridden_loops_reader: OverriddenLoopsReader | None = None
+
+
+def set_overridden_loops_reader(reader: OverriddenLoopsReader | None) -> None:
+    """Install the up-stack manually-overridden-loop-names reader (``None`` resets to uninjected).
+
+    Mirrors :func:`set_preset_segment_reader`; the ``loops_tick`` per-loop
+    command installs it alongside the preset segment reader so the collapse and
+    the ``ovr:`` handle are always rendered together, then resets it after the
+    tick so the process-global seam never leaks.
+    """
+    global _overridden_loops_reader  # noqa: PLW0603 — process-global injection seam, mirrors set_preset_segment_reader
+    _overridden_loops_reader = reader
+
+
+def _overridden_loops() -> set[str] | None:
+    """Return the manually-overridden loop names, or ``None`` when no collapse applies.
+
+    ``None`` is the fail-open sentinel: no reader injected (a quiet machine, a
+    unit test) OR a resolver error. The caller reads ``None`` as "do not collapse
+    — keep every per-loop chunk", i.e. today's behavior, so a broken override
+    read can never hide a loop the operator expects to see. A resolved set
+    (possibly empty) activates the #3248 per-loop-lease collapse.
+    """
+    reader = _overridden_loops_reader
+    if reader is None:
+        return None
+    try:
+        return reader()
+    except Exception:  # noqa: BLE001 — rendering is best-effort; a failure degrades to no collapse
+        return None
+
+
 # Per-loop cadence resolution (#1400). Each named loop ticks on its own
 # schedule, so the next-tick countdown is ``acquired_at + cadence`` with the
 # loop's own cadence — not a single shared value. Unknown / future loops fall
@@ -274,42 +308,6 @@ def _cadence_seconds() -> int:
     return cadence_seconds()
 
 
-def _loop_recency_color(seconds_until_tick: float | None, cadence_seconds: int) -> str:
-    """Map a loop's imminence to an ANSI color, RELATIVE to its own cadence.
-
-    The color tracks the fraction of the loop's cadence still remaining until
-    its next tick (``seconds_until_tick / cadence_seconds``): green when over
-    half the cadence is left (just ticked / plenty of time), yellow as it
-    approaches, red when it is about to tick or already overdue. Judging the
-    fraction rather than absolute seconds keeps the signal relative — the same
-    "120s until tick" reads green on an hourly loop and red on a 150s loop.
-
-    ``None`` seconds (no acquire instant / never fired) and a non-positive
-    cadence both fail safe to red (overdue / unknown).
-    """
-    if seconds_until_tick is None or cadence_seconds <= 0:
-        return _ANSI_RED
-    fraction = seconds_until_tick / cadence_seconds
-    if fraction >= _RECENCY_GREEN_FRACTION:
-        return _ANSI_GREEN
-    if fraction >= _RECENCY_YELLOW_FRACTION:
-        return _ANSI_YELLOW
-    return _ANSI_RED
-
-
-def _colorize_chunk(text: str, color: str, *, colorize: bool) -> str:
-    """Wrap *text* in *color*, resetting to the line's dim baseline (not full reset).
-
-    The whole loop line is wrapped in :data:`_ANSI_DIM` by
-    :func:`teatree.loop.statusline_render.render`, so a colored chunk resets
-    back to dim — never a full ANSI reset — to keep the ` · ` separators,
-    availability, and waiting segments dim around it.
-    """
-    if not colorize or not color:
-        return text
-    return f"{color}{text}{_ANSI_DIM}"
-
-
 def loop_owner_anchor(status: "OwnershipStatus", this_session: str) -> tuple[str, str]:
     """Return ``(zone, line)`` for the foreign-hijack RED line (#1073, #1156).
 
@@ -339,84 +337,30 @@ def loop_owner_anchor(status: "OwnershipStatus", this_session: str) -> tuple[str
     return "action_needed", f"t3-master=session {short8} (NOT this session)"
 
 
-def _live_lease_chunks(*, colorize: bool = False) -> list[str]:
+def _live_lease_chunks(*, colorize: bool = False, handle_present: bool = False) -> list[str]:
     """Return one ``<short-name> <next-tick>`` chunk per live LoopLease this session shows.
 
-    The ``t3-master`` lease is excluded: it is a session-ownership token,
-    not a work loop, and its countdown is meaningless in the shared zones
-    file (the per-session owner badge in ``statusline.sh`` replaces that
-    signal). The transient per-loop tick mutex ``loop-tick:<name>`` (#2650) is
-    excluded too: it is a concurrency lock held only for the beat, and while it
-    is held the matching ``loop:<name>`` owner lease is held as well — so
-    rendering it would show the currently-ticking loop twice, once as
-    ``tick:<name>`` and once as ``loop:<name>``. The dedicated-loop
-    ``loop:<name>`` leases (#1834) are **per-session scoped** via
-    :mod:`teatree.loop.loop_scoping` — only the loops THIS session owns survive
-    (fail-open, byte-identical under the single-owner default). When *colorize*
-    is set, each chunk is wrapped in its recency color
-    (:func:`_loop_recency_color`); fails open to ``[]``.
+    The DB-read seam of the per-loop lease list: it reads the live leases, the
+    driver map, this session's owned ``loop:<name>`` slots, and — only when
+    *handle_present* (a governing preset/schedule segment is on the line to
+    represent the folded loops) — the injected override set, then hands them plus
+    the cadence resolver to :func:`teatree.loop.statusline_loop_chunks.lease_chunks`
+    for the pure formatting + #3248 collapse. With no handle (or no injected
+    selector) every lease surfaces — today's behavior — so a routine loop is never
+    hidden without the handle that represents it. Fails open to ``[]`` on a
+    lease-read error.
     """
     try:
         leases = _live_loop_leases()
     except Exception:  # noqa: BLE001 — rendering is best-effort; a lease-read failure degrades to no rows
         return []
-    owned_per_loop = current_session_owned_per_loop_slots()
-    drivers = _live_lease_drivers()
-    return [
-        _colorize_chunk(
-            _loop_chunk(name, acquired_at),
-            _lease_recency_color(name, acquired_at),
-            colorize=colorize,
-        )
-        + _driver_suffix(name, drivers, colorize=colorize)
-        for name, acquired_at in leases
-        if name != "t3-master" and not is_transient_tick_mutex(name) and per_loop_chunk_visible(name, owned_per_loop)
-    ]
-
-
-def _driver_suffix(name: str, drivers: dict[str, tuple[str, str]], *, colorize: bool) -> str:
-    """Return the ``·<driver>`` / ``·DRIVERLESS`` suffix for a per-loop owner chunk.
-
-    Only ``loop:<name>`` per-loop owner leases carry a driver chip in the shared
-    loop line (``t3-master`` has its own anchor; infra leases never do — pinning
-    edge-case 6, e.g. ``loop-reinstall`` renders no chip). An owned row (non-empty
-    ``session_id``) with a registered driver renders ``·<driver>`` palette-neutral;
-    an unowned row renders nothing.
-
-    A blank stored driver only warrants the ``·DRIVERLESS`` alert when the loop is
-    genuinely not ticking. A worker/cron tick runs anonymously (empty
-    ``session_id``), so :meth:`LoopLeaseQuerySet.claim_ownership` never rewrites the
-    owner lease and its stored ``driver`` fossilises blank while the loop ticks fine
-    (#3366). ``·DRIVERLESS`` means "claimed but never ticks", so a loop the cadence
-    ledger shows ticking (:func:`loop_is_actively_ticking`) suppresses the alert.
-    """
-    if not is_per_loop_owner_slot(name):
-        return ""
-    session_id, driver = drivers.get(name, ("", ""))
-    if not session_id:
-        return ""
-    if driver:
-        return f"·{driver}"
-    if loop_is_actively_ticking(name):
-        return ""
-    return "·" + _colorize_chunk("DRIVERLESS", _ANSI_YELLOW, colorize=colorize)
-
-
-def _lease_recency_color(name: str, acquired_at: datetime | None) -> str:
-    """Resolve the recency color for an infra lease from its own cadence."""
-    try:
-        cadence = _cadence_for_loop(name)
-    except Exception:  # noqa: BLE001 — an unresolvable cadence degrades to the red recency color
-        return _ANSI_RED
-    seconds_until = _seconds_until(acquired_at + timedelta(seconds=cadence)) if acquired_at is not None else None
-    return _loop_recency_color(seconds_until, cadence)
-
-
-def _seconds_until(next_fire_at: datetime) -> float:
-    """Return seconds from now until *next_fire_at* (negative once overdue)."""
-    from django.utils import timezone  # noqa: PLC0415 — deferred: Django import at call time
-
-    return (next_fire_at - timezone.now()).total_seconds()
+    context = LeaseRenderContext(
+        drivers=_live_lease_drivers(),
+        owned_per_loop=current_session_owned_per_loop_slots(),
+        overridden=_overridden_loops() if handle_present else None,
+        cadence_of=_cadence_for_loop,
+    )
+    return lease_chunks(leases, context, colorize=colorize)
 
 
 def live_loops_anchor(*, colorize: bool = False) -> list[str]:
@@ -468,14 +412,21 @@ def live_loops_anchor(*, colorize: bool = False) -> list[str]:
     :func:`teatree.loop.tick.run_tick`) pass the ``NO_COLOR``-resolved value.
     The availability and waiting segments stay the line's baseline dim.
 
-    Returns ``[]`` when neither an infra lease nor an enabled mini-loop is
-    active — silences the line entirely on a quiet machine. Fails open: any
-    DB / import error degrades to ``[]`` (or, for an individual segment,
-    drops just that segment) so a broken read can never blank the statusline.
+    Returns ``[]`` when no infra lease, no enabled mini-loop, and no governing
+    preset/schedule handle is active — silences the line entirely on a quiet
+    machine. When the routine per-loop leases are all folded into the preset
+    handle (#3248) but that handle is present, the line still renders the handle
+    (it represents the folded loops). Fails open: any DB / import error degrades
+    to ``[]`` (or, for an individual segment, drops just that segment) so a
+    broken read can never blank the statusline.
     """
-    leases = _live_lease_chunks(colorize=colorize)
+    # Resolve the preset/schedule handle first: it both leads the collapse
+    # decision (a routine per-loop lease is only folded when a handle is present
+    # to represent it) and keeps the line alive when every lease has folded away.
+    preset = _preset_segment()
+    leases = _live_lease_chunks(colorize=colorize, handle_present=bool(preset))
     due = _mini_loop_chunks(colorize=colorize)
-    if not leases and not due:
+    if not leases and not due and not preset:
         return []
 
     # Due-soon mini-loops ride a single ``due:`` section (#3248) rather than the
@@ -483,7 +434,6 @@ def live_loops_anchor(*, colorize: bool = False) -> list[str]:
     parts = [*leases]
     if due:
         parts.append("due: " + " ".join(due))
-    preset = _preset_segment()
     if preset:
         parts.append(preset)
     availability = _availability_segment()
@@ -538,95 +488,20 @@ def _waiting_count() -> int:
     return len(gather_waiting(""))
 
 
-def _short_loop_name(name: str) -> str:
-    """Strip the ``loop-`` prefix so ``loop-my-prs`` reads as ``my-prs``."""
-    return name.removeprefix("loop-")
-
-
-def _loop_chunk(name: str, acquired_at: datetime | None) -> str:
-    """Render one ``<short-name> <next-tick>`` chunk for a live loop."""
-    tick = _next_tick_minutes(name, acquired_at)
-    suffix = f" {tick}" if tick else ""
-    return f"{_short_loop_name(name)}{suffix}"
-
-
-def _next_tick_minutes(name: str, acquired_at: datetime | None) -> str:
-    """Return *name*'s relative next-tick as whole minutes (``11m`` / ``due``).
-
-    Empty string when nothing useful is queryable (no acquire timestamp, no
-    resolvable cadence) — the caller then renders a name-only chunk rather
-    than invent a duration. Fails open on every config read.
-    """
-    if acquired_at is None:
-        return ""
-    try:
-        cadence = _cadence_for_loop(name)
-    except Exception:  # noqa: BLE001 — rendering is best-effort; a failure degrades to empty
-        return ""
-    return _relative_minutes(acquired_at + timedelta(seconds=cadence))
-
-
-def _relative_minutes(next_fire_at: datetime) -> str:
-    """Return the relative whole-minute countdown to *next_fire_at* (``11m`` / ``due``).
-
-    ``due`` once the instant is in the past — the loop fires on the
-    orchestrator's next tick. Always derived from the live clock at render
-    time so the value counts down across successive renders rather than
-    freezing on a cached string.
-    """
-    from django.utils import timezone  # noqa: PLC0415 — deferred: Django import at call time
-
-    delta_seconds = int((next_fire_at - timezone.now()).total_seconds())
-    if delta_seconds <= 0:
-        return "due"
-    minutes = max(1, round(delta_seconds / _SECONDS_PER_MINUTE))
-    return f"{minutes}m"
-
-
-def _mini_loop_chunk(name: str, next_fire_at: datetime | None) -> str:
-    """Render one ``<name> <next-tick>`` chunk for an enabled mini-loop.
-
-    ``due`` when the loop has never fired (no marker → ``next_fire_at`` is
-    ``None``) or is already overdue; otherwise the relative whole-minute
-    countdown derived live from ``next_fire_at``.
-    """
-    tick = "due" if next_fire_at is None else _relative_minutes(next_fire_at)
-    return f"{name} {tick}"
-
-
-# Only loops due now (never-fired / overdue) or within this horizon appear on
-# the loop line (#3248) — the ``due:`` section replaces the full ~25-loop dump;
-# presets/schedules are the handle, so the line shows only what is imminent.
-_DUE_SOON_SECONDS = 300
-
-
 def _mini_loop_chunks(*, colorize: bool = False) -> list[str]:
     """Return a ``<name> <next-tick>`` chunk per DUE-SOON domain mini-loop (#3248).
 
-    Companion to :func:`_live_lease_chunks`: where that renders the infra
-    leases (``loop-tick`` and friends), this renders the enabled domain crons
-    from the cadence ledger (:func:`_mini_loop_schedules`) that are due now
-    (never fired / overdue) or within :data:`_DUE_SOON_SECONDS` — NOT the full
-    loop list (presets/schedules are the handle). Each carries its own
-    next-tick countdown and (when *colorize* is set) its cadence-relative
-    recency color. Composed into the ``due:`` section of :func:`live_loops_anchor`.
-
-    Returns ``[]`` when no mini-loop is due soon, or fails open to ``[]`` on any
-    DB / config read error so a broken ledger never blanks the line.
+    The DB-read seam of the ``due:`` section: reads the cadence ledger
+    (:func:`_mini_loop_schedules`) then hands the schedules to
+    :func:`teatree.loop.statusline_loop_chunks.mini_loop_chunks` for the due-soon
+    filter + formatting. Fails open to ``[]`` on any DB / config read error so a
+    broken ledger never blanks the line.
     """
     try:
         schedules = _mini_loop_schedules()
     except Exception:  # noqa: BLE001 — rendering is best-effort; a failure degrades to no chunks
         return []
-    return [
-        _colorize_chunk(
-            _mini_loop_chunk(name, next_fire_at),
-            _loop_recency_color(None if next_fire_at is None else _seconds_until(next_fire_at), cadence),
-            colorize=colorize,
-        )
-        for name, next_fire_at, cadence in schedules
-        if next_fire_at is None or _seconds_until(next_fire_at) <= _DUE_SOON_SECONDS
-    ]
+    return mini_loop_chunks(schedules, colorize=colorize)
 
 
 def mini_loops_anchor() -> list[str]:

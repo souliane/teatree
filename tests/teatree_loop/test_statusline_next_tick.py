@@ -20,8 +20,8 @@ from unittest.mock import patch
 
 from teatree.loop.dispatch import DispatchAction
 from teatree.loop.rendering import zones_for
-from teatree.loop.statusline import live_loops_anchor, mini_loops_anchor, render
-from teatree.loop.statusline_loops import _mini_loop_chunk
+from teatree.loop.statusline import live_loops_anchor, mini_loops_anchor, render, set_overridden_loops_reader
+from teatree.loop.statusline_loop_chunks import _mini_loop_chunk
 from teatree.loop.statusline_render import _format_duration
 
 
@@ -215,6 +215,97 @@ class TestLoopLineComposesLeasesAndMiniLoops:
         ):
             lines = live_loops_anchor(colorize=False)
         assert lines == ["due: resource_pressure 1m"], lines
+
+
+class TestPerLoopLeaseCollapse:
+    """#3248: the ``loop_runner`` drives a ``loop:<name>`` lease for EVERY enabled loop.
+
+    Rendering one chunk per live lease listed the whole loop table — the spam the
+    owner complained about. Under the injected override selector the loop line
+    keeps a per-loop chunk ONLY for a manually-overridden or due-now loop; every
+    routine ``loop_runner``-driven loop is folded into the preset/schedule handle.
+    """
+
+    @staticmethod
+    def _render_with_overridden(overridden: set[str] | None, leases: list[tuple[str, datetime]]) -> str:
+        """Render the loop line for *leases* with *overridden* injected (``None`` = uninjected)."""
+        with (
+            patch("teatree.loop.statusline_loops._live_loop_leases", return_value=leases),
+            patch("teatree.loop.statusline_loops._live_lease_drivers", return_value={}),
+            patch("teatree.loop.statusline_loops.current_session_owned_per_loop_slots", return_value=None),
+            patch("teatree.loop.statusline_loops._cadence_for_loop", return_value=600),
+            patch("teatree.loop.statusline_loops._mini_loop_schedules", return_value=[]),
+            patch("teatree.loop.statusline_loops._availability_segment", return_value=""),
+            patch("teatree.loop.statusline_loops._waiting_clause", return_value=""),
+            patch("teatree.loop.statusline_loops._preset_segment", return_value="preset engaged · ovr: audit+"),
+        ):
+            set_overridden_loops_reader((lambda: overridden) if overridden is not None else None)
+            try:
+                lines = live_loops_anchor(colorize=False)
+            finally:
+                set_overridden_loops_reader(None)
+        assert lines, "expected a loop line"
+        return lines[0]
+
+    def test_n_leased_only_one_overridden_shows_preset_plus_the_override(self) -> None:
+        # Five loop_runner-driven per-loop leases; only ``audit`` is manually
+        # overridden. The routine four (acquired now, next fire +600s, well past
+        # the due-soon horizon) must be folded into the preset handle — NOT listed.
+        now = datetime.now(UTC)
+        leases = [
+            ("loop:audit", now),  # overridden -> surfaces
+            ("loop:dispatch", now),  # routine -> folded away
+            ("loop:tickets", now),  # routine -> folded away
+            ("loop:ship", now),  # routine -> folded away
+            ("loop:inbox", now),  # routine -> folded away
+        ]
+        line = self._render_with_overridden({"audit"}, leases)
+        # The preset handle represents the folded loops:
+        assert "preset engaged" in line, line
+        # The single manual override surfaces:
+        assert "loop:audit" in line, line
+        # The routine loop_runner-driven, non-overridden loops are folded away:
+        for folded in ("loop:dispatch", "loop:tickets", "loop:ship", "loop:inbox"):
+            assert folded not in line, f"{folded} must be folded into the handle: {line}"
+
+    def test_due_now_loop_still_surfaces_even_when_not_overridden(self) -> None:
+        # ``due-only`` spec: a loop about to fire surfaces regardless of override.
+        now = datetime.now(UTC)
+        leases = [
+            ("loop:housekeeping", now - timedelta(seconds=595)),  # next fire +5s -> due -> surfaces
+            ("loop:tickets", now),  # +600s -> folded away
+        ]
+        line = self._render_with_overridden(set(), leases)
+        assert "loop:housekeeping" in line, line
+        assert "loop:tickets" not in line, line
+
+    def test_no_overrides_no_due_collapses_to_handle_only(self) -> None:
+        # No override, nothing due: the per-loop list is empty and only the
+        # preset handle remains (no per-loop spam).
+        now = datetime.now(UTC)
+        leases = [("loop:dispatch", now), ("loop:tickets", now), ("loop:ship", now)]
+        line = self._render_with_overridden(set(), leases)
+        assert "loop:" not in line, line
+        assert "preset engaged" in line, line
+
+    def test_infra_leases_always_survive_the_collapse(self) -> None:
+        # Infra / master leases (``loop-tick`` -> ``tick``, ``reinstall``) are not
+        # ``loop:<name>`` owner slots and always surface, even with overrides active.
+        now = datetime.now(UTC)
+        leases = [("loop-tick", now), ("reinstall", now), ("loop:dispatch", now)]
+        line = self._render_with_overridden(set(), leases)
+        assert "tick" in line, line
+        assert "reinstall" in line, line
+        assert "loop:dispatch" not in line, line
+
+    def test_fails_open_to_full_list_when_selector_uninjected(self) -> None:
+        # No reader injected (``None``): the collapse never activates, so every
+        # per-loop lease surfaces — today's behavior, never a hidden loop.
+        now = datetime.now(UTC)
+        leases = [("loop:dispatch", now), ("loop:tickets", now)]
+        line = self._render_with_overridden(None, leases)
+        assert "loop:dispatch" in line, line
+        assert "loop:tickets" in line, line
 
 
 class TestMiniLoopChunk:

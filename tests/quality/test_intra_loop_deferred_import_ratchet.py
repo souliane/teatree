@@ -285,9 +285,10 @@ class TestLoopStatuslineLoopsNode:
     filter — so ``statusline`` could not be a declared node (any eager edge into
     it would surface the cycle). PR-4 extracts the four pure ``os.environ``
     cadence readers into the ``teatree.loop.loop_cadences`` leaf; ``statusline_loops``
-    now reaches them, ``loop_scoping``, and the ``statusline_palette`` leaf via
-    eager DOWN edges, so the whole ``statusline`` facade is declarable and the
-    back-edge is structurally forbidden, not merely deferred out of sight.
+    now reaches them, ``loop_scoping``, the ``statusline_palette`` leaf, and the
+    ``statusline_loop_chunks`` chunk-formatter leaf via eager DOWN edges, so the whole
+    ``statusline`` facade is declarable and the back-edge is structurally forbidden,
+    not merely deferred out of sight.
     """
 
     def test_loop_cadences_is_a_pure_leaf_node(self) -> None:
@@ -312,12 +313,23 @@ class TestLoopStatuslineLoopsNode:
         # `loop_scoping` never reaches the orchestration-top parent.
         assert "teatree.loop" not in deps
 
+    def test_statusline_loop_chunks_is_a_leaf_over_scoping_and_palette(self) -> None:
+        # The pure chunk-formatter leaf (#3248): `statusline_loops` reaches it for the
+        # per-loop lease / mini-loop chunk rendering. It reaches only the two lower
+        # leaves it formats against and never the orchestration-top parent.
+        entry = _module_entry("teatree.loop.statusline_loop_chunks")
+        assert entry["layer"] == "domain"
+        deps = set(_depends_on("teatree.loop.statusline_loop_chunks"))
+        assert deps == {"teatree.loop.loop_scoping", "teatree.loop.statusline_palette"}
+        assert "teatree.loop" not in deps
+
     def test_statusline_loops_depends_only_on_declared_leaves(self) -> None:
         entry = _module_entry("teatree.loop.statusline_loops")
         assert entry["layer"] == "domain"
         loop_deps = {d for d in _depends_on("teatree.loop.statusline_loops") if d.startswith("teatree.loop")}
         assert loop_deps == {
             "teatree.loop.statusline_palette",
+            "teatree.loop.statusline_loop_chunks",
             "teatree.loop.loop_cadences",
             "teatree.loop.loop_scoping",
         }
@@ -340,6 +352,7 @@ class TestLoopStatuslineLoopsNode:
             "teatree.loop.session_identity",
             "teatree.loop.loop_scoping",
             "teatree.loop.statusline_loops",
+            "teatree.loop.statusline_loop_chunks",
             "teatree.loop.statusline",
         ):
             assert child in deps, child
