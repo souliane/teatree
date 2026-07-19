@@ -170,14 +170,15 @@ seed_claude_settings() {
     fi
     mkdir -p "$HOME/.claude"
     local managed
-    managed="$(jq \
-        --arg model "${TEATREE_CLAUDE_MODEL:-}" \
-        --arg mode "${TEATREE_CLAUDE_PERMISSION_MODE:-}" \
-        --arg conc "${TEATREE_CLAUDE_TOOL_CONCURRENCY:-}" \
-        '(if $model != "" then .model = $model else . end)
-        | (if $mode != "" then .permissions.defaultMode = $mode else . end)
-        | (if $conc != "" then .env.CLAUDE_CODE_MAX_TOOL_USE_CONCURRENCY = $conc else . end)' \
-        "$template")"
+    # Apply the TEATREE_CLAUDE_* box-knob overrides via the ONE shared resolver in
+    # cli/setup/claude_settings.py, so this seed and the host-side `t3 doctor` drift
+    # check (managed_key_drift) resolve the SAME effective config (#3437). The module
+    # is pure-stdlib, so `python3 <file>` runs it without importing the teatree CLI.
+    local resolver="$CLONE_DIR/src/teatree/cli/setup/claude_settings.py"
+    if ! managed="$(python3 "$resolver" "$template")"; then
+        echo "teatree-init: failed to resolve claude-settings template - skipping" >&2
+        return 0
+    fi
     if [ -f "$target" ]; then
         jq -s '.[0] * .[1]' "$target" <(printf '%s' "$managed") >"$target.tmp" && mv "$target.tmp" "$target"
     else
