@@ -325,7 +325,7 @@ class TestEnabledPluginsManagedConfig:
 
     def test_drift_detected_when_plugin_key_absent_on_host(self, tmp_path: Path) -> None:
         target = self._committed()
-        del target["enabledPlugins"]  # type: ignore[misc]  # host never registered the plugin
+        del target["enabledPlugins"]  # host never registered the plugin
         target_path = _write(tmp_path / "t.json", target)
         assert "enabledPlugins.t3@souliane" in managed_key_drift(_COMMITTED_TEMPLATE, target_path, env={})
 

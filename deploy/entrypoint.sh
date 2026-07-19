@@ -292,6 +292,21 @@ prepare_claude_runtime() {
     t3 setup
 }
 
+# VERIFY the agent's skills are actually available after `prepare_claude_runtime`:
+# the ``t3@souliane`` plugin is registered in ~/.claude/plugins/installed_plugins.json
+# with a resolvable install path AND enabled in ~/.claude/settings.json. Returns
+# non-zero when any signal is missing — the exact "agents would run SKILL-LESS"
+# condition. The worker treats this as a HARD startup precondition (owner directive:
+# PREFER HARD FAIL over silently running with a critical capability missing).
+verify_agent_skills() {
+    local settings="$HOME/.claude/settings.json"
+    local installed="$HOME/.claude/plugins/installed_plugins.json"
+    jq -e '.enabledPlugins."t3@souliane" == true' "$settings" >/dev/null 2>&1 || return 1
+    local install_path
+    install_path="$(jq -r '(.plugins."t3@souliane" // [])[0].installPath // empty' "$installed" 2>/dev/null)" || return 1
+    [ -n "$install_path" ] && [ -d "$install_path" ]
+}
+
 # Seed a config value through the provenance-aware DEPLOY seed (#3435). The ORM
 # command NEVER writes a value equal to the code default (a code-default seed only
 # FREEZES a future default change), PRESERVES any operator override, re-seeds a row
@@ -596,9 +611,17 @@ init)
     ;;
 worker)
     # ~/.claude is per-container ephemeral, so the agent's plugin/skill registration
-    # from init never reaches this container — re-run it here (non-fatal: a degraded
-    # setup must not crash-loop the loop owner; init already proved setup works).
-    prepare_claude_runtime || echo "entrypoint: WARNING prepare_claude_runtime failed in worker - agent skills may be unavailable until restart" >&2
+    # from init never reaches this container — re-run it here. For the WORKER, skills
+    # are a HARD startup precondition: the loop spawns headless agents, and a worker
+    # that spawns them with ZERO skills is the exact silent outage we refuse (owner
+    # directive: PREFER HARD FAIL over running with a critical capability missing). So
+    # `t3 setup` failing (set -e) OR the post-setup skills verification failing REFUSES
+    # to start, loudly and specifically, rather than serving a skill-less loop.
+    prepare_claude_runtime
+    if ! verify_agent_skills; then
+        echo "entrypoint: FATAL worker refusing to start: the t3 skills plugin is NOT registered (t3@souliane missing from ~/.claude/plugins/installed_plugins.json or not enabled in ~/.claude/settings.json) — the loop's agents would run SKILL-LESS. Re-run \`t3 setup\` in this container (or redeploy) and check \`t3 doctor check\`." >&2
+        exit 1
+    fi
     exec t3 worker
     ;;
 slack-listener)

@@ -13,7 +13,7 @@ import os
 from pathlib import Path
 from unittest.mock import patch
 
-from teatree.cli.doctor.checks_environment import _check_tmp_tmpfs_headroom, _tmp_mount_fstype, _tmpfs_warn_percent
+from teatree.cli.doctor.checks_resources import _check_tmp_tmpfs_headroom, _tmp_mount_fstype, _tmpfs_warn_percent
 
 
 def _mounts(tmp_path: Path, fstype: str, mount_point: str = "/tmp") -> Path:
