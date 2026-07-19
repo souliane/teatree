@@ -223,6 +223,12 @@ depends_on = [
   "teatree.verification"
 ]
 
+# NOTE: `depends_on` is NOT an exhaustive import list. In tach's layered mode a
+# module may import any module in a LOWER layer without declaring it, so only
+# SAME-layer edges bind here. teatree.mcp (integration) also imports teatree.config
+# (platform), teatree.backends.types (domain), and broad teatree.core.* (domain) —
+# all downward cross-layer edges, permitted implicitly. teatree.mcp has no
+# same-layer (integration→integration) dependency, so this list stays minimal.
 [[modules]]
 path = "teatree.mcp"
 layer = "integration"
