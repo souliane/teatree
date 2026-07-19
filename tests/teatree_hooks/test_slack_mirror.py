@@ -17,6 +17,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from teatree.hooks import slack_mirror
+from teatree.hooks.slack_mirror import slack_config_from_registry
 
 
 def _no_thread(_channel: str) -> str:
@@ -282,17 +283,17 @@ class TestConfigFromRegistry:
         }
         fake_cfg = SimpleNamespace(raw={"overlays": overlays})
         with patch("teatree.config.load_config", return_value=fake_cfg):
-            assert slack_mirror.slack_config_from_registry() == ("secret/acme", "U9")
+            assert slack_config_from_registry() == ("secret/acme", "U9")
 
     def test_none_when_no_overlays(self) -> None:
         fake_cfg = SimpleNamespace(raw={})
         with patch("teatree.config.load_config", return_value=fake_cfg):
-            assert slack_mirror.slack_config_from_registry() is None
+            assert slack_config_from_registry() is None
 
     def test_none_when_no_slack_overlay(self) -> None:
         fake_cfg = SimpleNamespace(raw={"overlays": {"acme": {"messaging_backend": "console"}}})
         with patch("teatree.config.load_config", return_value=fake_cfg):
-            assert slack_mirror.slack_config_from_registry() is None
+            assert slack_config_from_registry() is None
 
 
 class TestPerformSlackPostInjectsDependencies:

@@ -12,6 +12,7 @@ from django.test import TestCase
 
 from teatree.core.models import IncomingEvent, PullRequest, Task, Ticket
 from teatree.mcp import search
+from teatree.mcp.search import CappedLimit
 from tests.factories import (
     IncomingEventFactory,
     PullRequestFactory,
@@ -33,6 +34,17 @@ class TestCapped:
 
     def test_oversized_limit_is_clamped_to_max(self) -> None:
         assert search._capped(10_000, 50) == search._MAX_LIMIT
+
+
+class TestCappedLimit:
+    """The directly-imported ``CappedLimit`` named tuple pairs the cap with its clamp flag."""
+
+    def test_fields_are_positional_limit_then_truncated(self) -> None:
+        cap = CappedLimit(limit=200, truncated=True)
+        assert cap.limit == 200
+        assert cap.truncated is True
+        # NamedTuple positional contract: (limit, truncated).
+        assert tuple(cap) == (200, True)
 
 
 class TestCappedPage:

@@ -28,7 +28,7 @@ from django.test import TestCase
 
 from teatree.core.cleanup.cleanup import CleanupResult, cleanup_worktree
 from teatree.core.models import Ticket, Worktree
-from teatree.core.worktree.branch_classification import content_equivalence_blockers
+from teatree.core.worktree.branch_classification import content_equivalence_blockers, effective_default_target
 from teatree.utils.run import CommandFailedError
 from tests.teatree_core.cleanup._shared import _GIT, _clean_env, _run_git
 
@@ -279,3 +279,31 @@ class TestCleanAllRefusesSubjectCollision(TestCase):
         assert result.clean is True, f"unexpected errors cleaning a squash-merged branch: {result.errors}"
         assert not wt_path.exists(), "worktree should have been removed for a content-upstream branch"
         assert not Worktree.objects.filter(pk=worktree.pk).exists()
+
+
+class TestEffectiveDefaultTarget(TestCase):
+    """The shared base-ref resolver the content probes compare against (#2609)."""
+
+    @pytest.fixture(autouse=True)
+    def _tmp(self, tmp_path: Path) -> None:
+        self.tmp = tmp_path
+
+    def test_resolves_the_repos_real_default_branch(self) -> None:
+        # A repo whose ``origin/HEAD`` points at a non-``main`` default must resolve to
+        # that branch as an ``origin/<default>`` ref — comparing a ``develop``-default
+        # repo against ``origin/main`` (a base it lacks) would make ``git cherry`` fail.
+        repo = self.tmp / "repo"
+        _init_repo(repo)
+        _run_git("commit", "--allow-empty", "-q", "-m", "init", cwd=repo)
+        head = _git_out("rev-parse", "HEAD", cwd=repo)
+        _run_git("update-ref", "refs/remotes/origin/develop", head, cwd=repo)
+        _run_git("symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/develop", cwd=repo)
+
+        assert effective_default_target(str(repo)) == "origin/develop"
+
+    def test_fails_safe_to_origin_main_when_unresolvable(self) -> None:
+        # An unresolvable default (a non-repo dir) must fall back to ``origin/main`` so the
+        # downstream content gate fails CLOSED (keep the branch) rather than mis-measure.
+        not_a_repo = self.tmp / "plain"
+        not_a_repo.mkdir()
+        assert effective_default_target(str(not_a_repo)) == "origin/main"

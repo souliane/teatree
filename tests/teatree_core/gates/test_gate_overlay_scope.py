@@ -22,6 +22,12 @@ from teatree.core.gates import (
     rubric_gate,
     spec_coverage_gate,
 )
+from teatree.core.gates.anti_vacuity_gate import anti_vacuity_required
+from teatree.core.gates.integration_review_gate import integration_review_required
+from teatree.core.gates.review_context_gate import review_context_required
+from teatree.core.gates.review_request_state_gate import reviewed_state_required
+from teatree.core.gates.rubric_gate import rubric_gate_required
+from teatree.core.gates.spec_coverage_gate import spec_coverage_required
 
 # (module, required-fn name, the UserSettings field it reads)
 _REQUIRED_CASES = [
@@ -32,6 +38,38 @@ _REQUIRED_CASES = [
     (spec_coverage_gate, "spec_coverage_required", "require_spec_coverage"),
     (integration_review_gate, "integration_review_required", "require_integration_review"),
 ]
+
+
+# (module, the directly-imported required-fn, the UserSettings field it reads).
+# Directly imported (not name-strings) so a revert of any ``*_required`` body — or a
+# re-point to the wrong setting field — turns these red (§17.6.3 anti-vacuity).
+_DIRECT_REQUIRED_CASES = [
+    (rubric_gate, rubric_gate_required, "require_rubric_verification"),
+    (anti_vacuity_gate, anti_vacuity_required, "require_anti_vacuity_attestation"),
+    (review_context_gate, review_context_required, "require_review_context"),
+    (review_request_state_gate, reviewed_state_required, "require_reviewed_state_for_review_request"),
+    (spec_coverage_gate, spec_coverage_required, "require_spec_coverage"),
+    (integration_review_gate, integration_review_required, "require_integration_review"),
+]
+
+
+@pytest.mark.parametrize(("module", "func", "field"), _DIRECT_REQUIRED_CASES)
+def test_required_returns_its_own_setting_field(module: object, func: object, field: str) -> None:
+    """Each ``*_required`` returns exactly the boolean of the setting field it binds.
+
+    Exercises the real contract on the directly-imported symbol: with the resolver
+    forced to a namespace whose bound field is True/False, the gate helper mirrors
+    that value. Mis-pointing a helper at a sibling setting (e.g. rubric reading the
+    spec-coverage flag) would leave the bound field absent and raise here.
+    """
+    for expected in (True, False):
+        forced = SimpleNamespace(**{field: expected})
+
+        def _fake(_overlay: str | None = None, _forced: SimpleNamespace = forced) -> SimpleNamespace:
+            return _forced
+
+        with patch.object(module, "get_effective_settings", _fake):
+            assert func("acme-overlay") is expected  # type: ignore[operator]
 
 
 @pytest.mark.parametrize(("module", "func", "field"), _REQUIRED_CASES)

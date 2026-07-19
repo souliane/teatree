@@ -10,6 +10,7 @@ from django.test import TestCase
 from django.utils import timezone
 
 from teatree.core.models import Session, Task, TaskAttempt, Ticket
+from teatree.core.models.types import PRApprovalsSerialized, PRDiscussionSerialized
 from teatree.core.selectors import _check_pr, build_action_required, build_automation_summary
 
 if TYPE_CHECKING:
@@ -102,6 +103,30 @@ class TestCheckPr(TestCase):
         }
         items = _check_pr(pr, self.ticket)
         assert any(item.kind == "needs_approval" for item in items)
+
+    def test_typed_approvals_and_discussions_flow_through(self) -> None:
+        """The denormalized approval/discussion TypedDicts (F1.7) drive the action items.
+
+        Builds the tally and thread entry as their declared ``PRApprovalsSerialized`` /
+        ``PRDiscussionSerialized`` shapes and asserts ``_check_pr`` reads the tally
+        (``count < required`` -> needs_approval) and the unresolved thread (needs_reply).
+        """
+        approvals = PRApprovalsSerialized(count=0, required=2)
+        discussion = PRDiscussionSerialized(status="needs_reply", detail="address the review")
+        pr = {
+            "draft": False,
+            "repo": "backend",
+            "iid": 10,
+            "url": "https://gitlab.com/org/backend/-/merge_requests/10",
+            "pipeline_status": "success",
+            "review_requested": True,
+            "review_permalink": "https://slack.com/x",
+            "approvals": approvals,
+            "discussions": [discussion],
+        }
+        kinds = {item.kind for item in _check_pr(pr, self.ticket)}
+        assert "needs_approval" in kinds
+        assert "needs_reply" in kinds
 
     def test_non_dict_approvals(self) -> None:
         """Non-dict approvals should be treated as empty."""
