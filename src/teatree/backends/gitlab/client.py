@@ -1,3 +1,4 @@
+import logging
 import re
 from pathlib import Path
 from typing import TypedDict, cast
@@ -21,6 +22,9 @@ from teatree.core.backend_protocols import (
     UploadVerification,
 )
 from teatree.types import RawAPIDict
+from teatree.utils.throttled_log import warn_throttled
+
+logger = logging.getLogger(__name__)
 
 _ISSUE_URL_RE = re.compile(r"^/(?P<path>.+?)/-/issues/(?P<iid>\d+)/?$")
 _MR_URL_RE = re.compile(r"^/(?P<path>.+?)/-/merge_requests/(?P<iid>\d+)/?$")
@@ -530,7 +534,18 @@ class GitLabCodeHost:  # noqa: PLR0904 — method count reflects the CodeHostBac
         """
         project = self._resolve_project(repo)
         if project is None:
-            return ApprovalState(approvals_left=0, approved_by=[], unresolved_resolvable=0)
+            # MERGE-AUTHORISING read: an unresolvable project must NOT degrade to
+            # ``approvals_left=0`` (which reads as "approved, safe to merge").
+            # Fail closed — one outstanding approval, no approvers — so an
+            # unresolvable slug can never authorise an auto-merge. Mirrors the
+            # GitHub sibling's fail-closed ``approvals_left=1``.
+            warn_throttled(
+                logger,
+                f"gitlab-approvals-unresolved:{repo}",
+                "GitLab approvals read could not resolve project %r — failing closed (approvals_left=1)",
+                repo,
+            )
+            return ApprovalState(approvals_left=1, approved_by=[], unresolved_resolvable=0)
 
         raw = self._client.get_mr_approvals(project.project_id, pr_iid)
         approved_by_raw = raw.get("approved_by", [])

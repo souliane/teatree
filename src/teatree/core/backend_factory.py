@@ -5,7 +5,10 @@ This module bridges ``teatree.core`` (overlay registry) and
 need to extract tokens or branch on platform themselves.
 """
 
+import logging
 import os
+import time
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -23,6 +26,25 @@ from teatree.paths import find_overlay_db
 from teatree.types import SharePointRemoteSpec
 from teatree.utils import git
 from teatree.utils.forge import forge_from_remote
+from teatree.utils.throttled_log import warn_throttled
+
+logger = logging.getLogger(__name__)
+
+type OverlayTomlConfig = Mapping[str, object]
+"""One overlay's parsed TOML config block (``[overlays.<name>]``) — string keys,
+heterogeneous values (strings, lists, nested tables). Read-only at every callsite."""
+
+
+def _cfg_str(cfg: OverlayTomlConfig, key: str, default: str = "") -> str:
+    """Read a string config value from a heterogeneous TOML overlay block.
+
+    ``OverlayTomlConfig`` values are ``object`` (TOML admits strings, ints,
+    lists, tables), so a raw ``cfg.get`` cannot be handed to a ``str``-typed
+    seam. This narrows to ``str`` — a non-string / absent value falls back to
+    *default* — giving every token/url read one typed accessor.
+    """
+    value = cfg.get(key, default)
+    return value if isinstance(value, str) else default
 
 
 @dataclass(frozen=True, slots=True)
@@ -63,8 +85,18 @@ class OverlayBackends:
         return self.hosts[0] if self.hosts else None
 
 
-_code_host_cache: dict[str, CodeHostBackend | None] = {}
-_messaging_cache: dict[str, MessagingBackend | None] = {}
+_code_host_cache: dict[str, CodeHostBackend] = {}
+_messaging_cache: dict[str, MessagingBackend] = {}
+
+# A resolved backend is cached for the process lifetime; a ``None`` result is
+# cached only for this brief monotonic window (F4.5). A single transient tick
+# where credentials momentarily fail to resolve returned ``None`` — which the
+# old permanent-cache pinned for the whole loop's life, disabling the code host /
+# messaging until a restart. Re-resolving after a short TTL lets the next tick
+# recover on its own; a genuinely-unconfigured overlay just pays a cheap re-read.
+_ERROR_NONE_TTL_SECONDS = 30.0
+_code_host_none_until: dict[str, float] = {}
+_messaging_none_until: dict[str, float] = {}
 
 
 def _active_overlay_name(overlay_name: str | None) -> str:
@@ -95,9 +127,28 @@ def code_host_from_overlay(overlay_name: str | None = None) -> CodeHostBackend |
     key = _active_overlay_name(overlay_name)
     if key in _code_host_cache:
         return _code_host_cache[key]
+    if _none_still_fresh(_code_host_none_until, key):
+        return None
     backend = _build_code_host(key)
+    if backend is None:
+        _code_host_none_until[key] = time.monotonic() + _ERROR_NONE_TTL_SECONDS
+        warn_throttled(
+            logger,
+            f"code-host-none:{key}",
+            "code host for overlay %r resolved to None — re-resolving after %.0fs (not cached for the process life)",
+            key or "<default>",
+            _ERROR_NONE_TTL_SECONDS,
+        )
+        return None
     _code_host_cache[key] = backend
+    _code_host_none_until.pop(key, None)
     return backend
+
+
+def _none_still_fresh(deadlines: dict[str, float], key: str) -> bool:
+    """Whether a cached ``None`` for *key* is still inside its short TTL window."""
+    deadline = deadlines.get(key)
+    return deadline is not None and time.monotonic() < deadline
 
 
 def _build_code_host(overlay_name: str) -> CodeHostBackend | None:
@@ -143,8 +194,21 @@ def messaging_from_overlay(overlay_name: str | None = None) -> MessagingBackend 
     key = _active_overlay_name(overlay_name)
     if key in _messaging_cache:
         return _messaging_cache[key]
+    if _none_still_fresh(_messaging_none_until, key):
+        return None
     backend = _build_messaging(key)
+    if backend is None:
+        _messaging_none_until[key] = time.monotonic() + _ERROR_NONE_TTL_SECONDS
+        warn_throttled(
+            logger,
+            f"messaging-none:{key}",
+            "messaging for overlay %r resolved to None — re-resolving after %.0fs (not cached for the process life)",
+            key or "<default>",
+            _ERROR_NONE_TTL_SECONDS,
+        )
+        return None
     _messaging_cache[key] = backend
+    _messaging_none_until.pop(key, None)
     return backend
 
 
@@ -431,14 +495,14 @@ def _backends_from_toml(
     return result
 
 
-def _find_external_db(name: str, cfg: dict) -> Path | None:
+def _find_external_db(name: str, cfg: OverlayTomlConfig) -> Path | None:
     project_path = cfg.get("path", "")
-    if not project_path:
+    if not isinstance(project_path, str) or not project_path:
         return None
     return find_overlay_db(name, project_path)
 
 
-def _hosts_from_toml(cfg: dict) -> list[CodeHostBackend]:
+def _hosts_from_toml(cfg: OverlayTomlConfig) -> list[CodeHostBackend]:
     """Return every code-host backend a TOML overlay opts into.
 
     Pre-#976 the loop only constructed one host per TOML overlay, so an
@@ -450,14 +514,14 @@ def _hosts_from_toml(cfg: dict) -> list[CodeHostBackend]:
 
     provider = get_backend_provider()
     hosts: list[CodeHostBackend] = []
-    github_token_ref = cfg.get("github_token_ref", "")
+    github_token_ref = _cfg_str(cfg, "github_token_ref")
     if github_token_ref:
         token = read_posting_credential(github_token_ref)
         if token:
             hosts.append(provider.build_github_host(token=token))
 
-    gitlab_token_ref = cfg.get("gitlab_token_ref", "")
-    gitlab_url = cfg.get("gitlab_url", "https://gitlab.com")
+    gitlab_token_ref = _cfg_str(cfg, "gitlab_token_ref")
+    gitlab_url = _cfg_str(cfg, "gitlab_url", "https://gitlab.com")
     if gitlab_token_ref:
         token = read_posting_credential(gitlab_token_ref)
         if token:
@@ -465,7 +529,7 @@ def _hosts_from_toml(cfg: dict) -> list[CodeHostBackend]:
     return hosts
 
 
-def _host_from_toml(cfg: dict) -> CodeHostBackend | None:
+def _host_from_toml(cfg: OverlayTomlConfig) -> CodeHostBackend | None:
     """Single-host shim — first matching host per TOML overlay.
 
     Pre-#976 callers consumed exactly one host per TOML overlay. Kept so
@@ -476,7 +540,7 @@ def _host_from_toml(cfg: dict) -> CodeHostBackend | None:
     return hosts[0] if hosts else None
 
 
-def _host_from_toml_for_repo(cfg: dict, repo_path: str) -> CodeHostBackend | None:
+def _host_from_toml_for_repo(cfg: OverlayTomlConfig, repo_path: str) -> CodeHostBackend | None:
     """Build the TOML overlay's host for *repo_path*'s origin forge (#2025).
 
     Mirrors :func:`teatree.backends.loader.get_code_host_for_repo` for the
@@ -495,15 +559,15 @@ def _host_from_toml_for_repo(cfg: dict, repo_path: str) -> CodeHostBackend | Non
 
     provider = get_backend_provider()
     if forge == "github":
-        github_token_ref = cfg.get("github_token_ref", "")
+        github_token_ref = _cfg_str(cfg, "github_token_ref")
         token = read_posting_credential(github_token_ref)
         if token:
             return provider.build_github_host(token=token)
     else:
-        gitlab_token_ref = cfg.get("gitlab_token_ref", "")
+        gitlab_token_ref = _cfg_str(cfg, "gitlab_token_ref")
         token = read_posting_credential(gitlab_token_ref)
         if token:
-            return provider.build_gitlab_host(token=token, base_url=cfg.get("gitlab_url", "https://gitlab.com"))
+            return provider.build_gitlab_host(token=token, base_url=_cfg_str(cfg, "gitlab_url", "https://gitlab.com"))
 
     msg = (
         f"repo origin resolves to the {forge} forge ({remote!r}) but the TOML overlay "
@@ -513,24 +577,24 @@ def _host_from_toml_for_repo(cfg: dict, repo_path: str) -> CodeHostBackend | Non
     raise BackendResolutionError(msg)
 
 
-def _messaging_from_toml(cfg: dict) -> MessagingBackend | None:
+def _messaging_from_toml(cfg: OverlayTomlConfig) -> MessagingBackend | None:
     if cfg.get("messaging_backend") != "slack":
         return None
     from teatree.core.messaging_tokens import resolve_messaging_tokens  # noqa: PLC0415 — deferred: pre-app-registry
 
-    token_ref = cfg.get("slack_token_ref", "")
+    token_ref = _cfg_str(cfg, "slack_token_ref")
     if not token_ref:
         return None
-    tokens = resolve_messaging_tokens(slack_token_ref=token_ref, user_token_ref=cfg.get("user_token_ref", ""))
+    tokens = resolve_messaging_tokens(slack_token_ref=token_ref, user_token_ref=_cfg_str(cfg, "user_token_ref"))
     bot_token = tokens.bot
     app_token = tokens.app
     user_token = tokens.user
-    user_id = cfg.get("slack_user_id", "")
+    user_id = _cfg_str(cfg, "slack_user_id")
     # Setup-time provisioned IM channel id (#1342). When set, threads into
     # the Slack bot so its ``open_dm`` short-circuits the live
     # ``conversations.open`` for the configured user, routing DMs through this
     # bot's IM instead of failing ``channel_not_found``.
-    dm_channel_id = cfg.get("slack_dm_channel_id", "")
+    dm_channel_id = _cfg_str(cfg, "slack_dm_channel_id")
     if bot_token:
         # Loop construction path — a malformed user token degrades to
         # bot-only instead of crashing the tick (see ``get_messaging``).
@@ -575,6 +639,8 @@ def reset_backend_caches() -> None:
     """
     _code_host_cache.clear()
     _messaging_cache.clear()
+    _code_host_none_until.clear()
+    _messaging_none_until.clear()
     get_backend_provider().reset_caches()
 
 

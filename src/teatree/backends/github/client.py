@@ -1,6 +1,7 @@
 """GitHub backend — code host via the ``gh`` CLI."""
 
 import json
+import logging
 import re
 from typing import cast
 from urllib.parse import quote_plus, urlparse
@@ -8,6 +9,7 @@ from urllib.parse import quote_plus, urlparse
 from teatree.backends import forge_merge_rpc as _forge_merge
 from teatree.backends.errors import IssueNotFoundError
 from teatree.backends.github.api import (
+    _FORGE_READ_TIMEOUT_SECONDS,
     _gh_api_get,
     _gh_api_get_paginated,
     _gh_api_patch,
@@ -24,6 +26,7 @@ from teatree.backends.github.payloads import (
     pr_open_state_from_payload,
     reviewer_is_requested,
 )
+from teatree.backends.types import dig
 from teatree.core.backend_protocols import (
     ApprovalState,
     ForgeMergeResult,
@@ -36,9 +39,76 @@ from teatree.core.backend_protocols import (
 from teatree.types import RawAPIDict
 from teatree.utils import git
 from teatree.utils.run import CommandFailedError
+from teatree.utils.throttled_log import warn_throttled
+
+logger = logging.getLogger(__name__)
 
 _ISSUE_URL_RE = re.compile(r"^/(?P<owner>[^/]+)/(?P<repo>[^/]+)/issues/(?P<number>\d+)/?$")
 _PR_URL_RE = re.compile(r"^/(?P<owner>[^/]+)/(?P<repo>[^/]+)/pulls?/(?P<number>\d+)/?$")
+
+# One bounded read of a PR's review threads — GitHub DOES enforce conversation
+# resolution as a merge gate (unlike the stale docstring's "GitHub lacks it"),
+# so the unresolved-thread count must be surfaced, not hard-coded to zero.
+_REVIEW_THREADS_QUERY = """\
+query {{
+  repository(owner: "{owner}", name: "{repo}") {{
+    pullRequest(number: {number}) {{
+      reviewThreads(first: 100) {{
+        nodes {{ isResolved }}
+      }}
+    }}
+  }}
+}}"""
+
+
+# CheckRun conclusions / StatusContext states that count as a hard failure — the
+# my_pr.failed auto-debug lane must fire on these. Everything COMPLETED-and-not-here
+# (SUCCESS / NEUTRAL / SKIPPED) is treated as passing.
+_ROLLUP_FAIL_CONCLUSIONS = frozenset(
+    {"FAILURE", "CANCELLED", "TIMED_OUT", "ACTION_REQUIRED", "STARTUP_FAILURE", "STALE"}
+)
+_ROLLUP_FAIL_STATES = frozenset({"FAILURE", "ERROR"})
+_ROLLUP_PENDING_STATES = frozenset({"PENDING", "EXPECTED"})
+
+
+def _rollup_state(rollup: object) -> str:
+    """Aggregate a GitHub ``statusCheckRollup`` list into one my_prs status word.
+
+    ``gh pr view --json statusCheckRollup`` returns a list of ``CheckRun`` and
+    ``StatusContext`` nodes, not a single verdict. This collapses them to the
+    vocabulary :func:`teatree.loop.scanners.my_prs._pipeline_status` speaks:
+    ``"failure"`` when any required check failed (→ the my_pr.failed lane fires),
+    ``"pending"`` when any check is still running, ``"success"`` when every check
+    passed, and ``""`` for a PR with no checks at all (a no-CI repo — never
+    action-needed). A failing check dominates a pending one dominates success.
+    """
+    if not isinstance(rollup, list) or not rollup:
+        return ""
+    any_pending = False
+    for node in rollup:
+        if not isinstance(node, dict):
+            continue
+        entry = cast("RawAPIDict", node)
+        status = str(entry.get("status") or "").upper()
+        conclusion = str(entry.get("conclusion") or "").upper()
+        state = str(entry.get("state") or "").upper()
+        if conclusion in _ROLLUP_FAIL_CONCLUSIONS or state in _ROLLUP_FAIL_STATES:
+            return "failure"
+        if state in _ROLLUP_PENDING_STATES or (status and status != "COMPLETED"):
+            any_pending = True
+    return "pending" if any_pending else "success"
+
+
+def _is_not_found(exc: CommandFailedError) -> bool:
+    """Whether a failed ``gh api`` call was a genuine HTTP 404.
+
+    ``gh api`` exits non-zero for EVERY HTTP error (404, 401, 403, 5xx alike)
+    with returncode 1, so the only reliable signal for a permanent "no such
+    resource" is the literal ``HTTP 404`` string in stderr — the same probe
+    :meth:`GitHubCodeHost.get_issue` uses. Everything else is an indeterminate
+    failure the caller must NOT swallow as an empty result.
+    """
+    return "HTTP 404" in exc.stderr
 
 
 def issue_repo_short(url: str) -> str:
@@ -85,7 +155,7 @@ class GitHubCodeHost:  # noqa: PLR0904 — method count reflects the CodeHostBac
         if spec.draft:
             cmd.append("--draft")
 
-        result = _run_gh(*cmd, token=self._token)
+        result = _run_gh(*cmd, token=self._token, timeout=_FORGE_READ_TIMEOUT_SECONDS)
         # #1222 / #1226: align with the cross-host canonical key (``web_url``)
         # that ``ShipExecutor`` reads — returning ``url`` silently produced
         # empty PR rows because the consumer never looked at that field. The
@@ -122,22 +192,111 @@ class GitHubCodeHost:  # noqa: PLR0904 — method count reflects the CodeHostBac
         if not slug or not login:
             return False
         try:
-            _run_gh("gh", "api", f"repos/{slug}/assignees/{login}", "--silent", token=self._token)
+            _run_gh(
+                "gh",
+                "api",
+                f"repos/{slug}/assignees/{login}",
+                "--silent",
+                token=self._token,
+                timeout=_FORGE_READ_TIMEOUT_SECONDS,
+            )
         except CommandFailedError:
             return False
         return True
 
     def list_my_prs(self, *, author: str, updated_after: str | None = None) -> list[RawAPIDict]:
+        """Open PRs authored by *author*, ENRICHED with head SHA + CI rollup (#7).
+
+        The ``search/issues`` API carries no pipeline fields, so a bare search hit
+        drives ``MyPrsScanner``'s red-pipeline lane with an empty status — the
+        my_pr.failed auto-debug lane was structurally inert on GitHub (this
+        deployment's forge). Each hit is enriched with one bounded
+        ``gh pr view --json headRefOid,statusCheckRollup,mergeable,mergeStateStatus``
+        so ``head_sha`` and the aggregate CI state reach the scanner. An
+        enrichment that fails (auth/network/unknown PR) leaves the hit unenriched
+        — the scanner then warns about the gap rather than silently reading "".
+        """
         terms = [f"is:pr is:open author:{author}"]
         if updated_after:
             terms.append(f"updated:>={updated_after}")
         query = quote_plus(" ".join(terms))
-        return _gh_api_search_paginated(f"search/issues?q={query}&per_page=100", token=self._token)
+        hits = _gh_api_search_paginated(f"search/issues?q={query}&per_page=100", token=self._token)
+        return [self._enrich_pr_pipeline(hit) for hit in hits]
+
+    def _enrich_pr_pipeline(self, hit: RawAPIDict) -> RawAPIDict:
+        """Fold a PR's head SHA and aggregate CI state into a search hit.
+
+        Returns *hit* unchanged when the slug/number cannot be parsed or the
+        ``gh pr view`` read fails — the caller keeps the raw hit so the downstream
+        scanner surfaces the enrichment gap rather than treating an unread PR as
+        "no CI".
+        """
+        html_url = hit.get("html_url")
+        match = _PR_URL_RE.match(urlparse(html_url).path) if isinstance(html_url, str) else None
+        if match is None:
+            return hit
+        slug = f"{match['owner']}/{match['repo']}"
+        number = match["number"]
+        try:
+            result = _run_gh(
+                "gh",
+                "pr",
+                "view",
+                number,
+                "--repo",
+                slug,
+                "--json",
+                "headRefOid,statusCheckRollup,mergeable,mergeStateStatus",
+                token=self._token,
+                timeout=_FORGE_READ_TIMEOUT_SECONDS,
+            )
+        except CommandFailedError:
+            warn_throttled(
+                logger,
+                f"github-pr-enrich-failed:{slug}",
+                "could not enrich PR %s#%s pipeline state — my_pr.failed lane runs blind for it",
+                slug,
+                number,
+            )
+            return hit
+        try:
+            detail = json.loads(result.stdout or "{}")
+        except json.JSONDecodeError:
+            return hit
+        if not isinstance(detail, dict):
+            return hit
+        enriched: RawAPIDict = dict(hit)
+        head_oid = detail.get("headRefOid")
+        if isinstance(head_oid, str) and head_oid:
+            enriched["sha"] = head_oid
+        # Present the aggregate CI verdict under the key the scanner already reads.
+        enriched["status_check_rollup"] = {"state": _rollup_state(detail.get("statusCheckRollup"))}
+        # Kept for `raw`-payload consumers; NOT fed into ``mergeable_state`` — the
+        # scanner treats that as a pipeline word and "clean"/"blocked" would misfire.
+        enriched["mergeable"] = detail.get("mergeable")
+        enriched["merge_state_status"] = detail.get("mergeStateStatus")
+        return enriched
 
     def list_my_merged_prs(self, *, author: str, updated_after: str | None = None) -> list[RawAPIDict]:
+        """List merged PRs authored by *author*.
+
+        GitHub's search API caps EVERY query at 1000 results regardless of
+        pagination, so without an *updated_after* cutoff a prolific author's
+        merged-PR history silently truncates at the 1000 most recent. Callers
+        that need completeness must pass a recent *updated_after*; an uncut call
+        warns (throttled) so the truncation is visible rather than silent.
+        """
         terms = [f"is:pr is:merged author:{author}"]
         if updated_after:
             terms.append(f"updated:>={updated_after}")
+        else:
+            warn_throttled(
+                logger,
+                f"github-merged-prs-uncapped:{author}",
+                "list_my_merged_prs(%r) has no updated_after cutoff — GitHub search caps at 1000 results, "
+                "older merged PRs may be silently truncated",
+                author,
+            )
         query = quote_plus(" ".join(terms))
         return _gh_api_search_paginated(f"search/issues?q={query}&per_page=100", token=self._token)
 
@@ -172,20 +331,32 @@ class GitHubCodeHost:  # noqa: PLR0904 — method count reflects the CodeHostBac
     def get_pr_diff(self, *, repo: str, pr_iid: int) -> list[RawAPIDict]:
         """Return the PR's changed files (path + per-file additions/deletions/patch).
 
-        Returns ``[]`` when the PR/repo cannot be read — an unknown PR degrades to
-        a caught empty result rather than crashing the caller.
+        Returns ``[]`` ONLY for a genuine HTTP 404 (unknown PR/repo) — a real
+        "no such PR" degrades to a caught empty result. Every OTHER failure
+        (auth, rate-limit, network, 5xx) RE-RAISES: an empty diff read as data
+        would let a reviewer sign off on a lie ("this PR touches nothing"), so an
+        indeterminate read must surface, not masquerade as an empty PR.
         """
         try:
             return _gh_api_get_paginated(f"repos/{repo}/pulls/{pr_iid}/files?per_page=100", token=self._token)
-        except CommandFailedError:
-            return []
+        except CommandFailedError as exc:
+            if _is_not_found(exc):
+                return []
+            raise
 
     def list_pr_commits(self, *, repo: str, pr_iid: int) -> list[RawAPIDict]:
-        """Return the commits on the PR; ``[]`` when the PR/repo cannot be read."""
+        """Return the commits on the PR; ``[]`` ONLY for a genuine HTTP 404.
+
+        Like :meth:`get_pr_diff`, an unknown PR degrades to ``[]`` but any other
+        failure (auth/rate-limit/network/5xx) re-raises rather than being read as
+        an empty commit list.
+        """
         try:
             return _gh_api_get_paginated(f"repos/{repo}/pulls/{pr_iid}/commits?per_page=100", token=self._token)
-        except CommandFailedError:
-            return []
+        except CommandFailedError as exc:
+            if _is_not_found(exc):
+                return []
+            raise
 
     def get_repo(self, *, repo: str) -> RawAPIDict:
         """Return ``owner/repo`` metadata (default branch, visibility, …).
@@ -233,12 +404,16 @@ class GitHubCodeHost:  # noqa: PLR0904 — method count reflects the CodeHostBac
         return _gh_api_get_paginated(f"repos/{repo}/issues/{pr_iid}/comments?per_page=100", token=self._token)
 
     def list_pr_discussions(self, *, repo: str, pr_iid: int) -> list[RawAPIDict]:  # noqa: PLR6301 — instance method to satisfy the CodeHostBackend Protocol.
-        """No thread-structured resolvable-discussion read on GitHub (#3340).
+        """No STALE-BOT-thread filtering surface on GitHub (#3340).
 
-        GitHub has no resolvable-thread merge block like GitLab's "must resolve"
-        policy (mirrors :meth:`get_mr_approvals`, which reports
-        ``unresolved_resolvable=0`` here), so there is no stale-bot-thread count
-        to filter. Returns ``[]`` — a caller iterating it selects nothing.
+        This method backs GitLab's stale-bot-thread exclusion
+        (:func:`thread_opened_solely_by`), which keys on the per-note authorship
+        the GitLab discussions endpoint exposes. GitHub's aggregate unresolved
+        count is read directly in :meth:`get_mr_approvals` via
+        ``reviewThreads(isResolved:false)`` (GitHub DOES enforce conversation
+        resolution as a merge gate), so no per-note thread list is assembled
+        here. Returns ``[]`` — a caller iterating it for the stale-bot filter
+        selects nothing.
         """
         _ = (repo, pr_iid)
         return []
@@ -441,6 +616,7 @@ class GitHubCodeHost:  # noqa: PLR0904 — method count reflects the CodeHostBac
             "--header",
             "Accept: application/vnd.github+json",
             token=self._token,
+            timeout=_FORGE_READ_TIMEOUT_SECONDS,
         )
         return {}
 
@@ -452,20 +628,84 @@ class GitHubCodeHost:  # noqa: PLR0904 — method count reflects the CodeHostBac
         merge-authorising signal — ``APPROVED`` means every required review is
         satisfied. Maps to ``approvals_left=0`` on ``APPROVED`` and ``1``
         otherwise, so a not-yet-approved (or a payload with no decision) is
-        never mis-read as merge-authorised. ``unresolved_resolvable`` is ``0``:
-        GitHub has no resolvable-thread merge block like GitLab's "must resolve"
-        policy, so nothing there gates the M7 waiting lane.
+        never mis-read as merge-authorised.
+
+        ``unresolved_resolvable`` is the count of the PR's UNRESOLVED review
+        threads, read via one bounded ``reviewThreads(isResolved:false)`` GraphQL
+        query (:meth:`_count_unresolved_review_threads`). GitHub DOES enforce
+        conversation resolution as a merge gate ("Require conversation resolution
+        before merging"), so a positive count must gate the M7 waiting lane just
+        as GitLab's does — the old hard-coded ``0`` let teatree loop trying to
+        merge a PR the forge was refusing over an open conversation. When the
+        thread read cannot be completed the count fails CLOSED to ``1`` so an
+        indeterminate conversation state never authorises the merge.
         """
-        result = _run_gh("gh", "pr", "view", str(pr_iid), "--repo", repo, "--json", "reviewDecision", token=self._token)
+        result = _run_gh(
+            "gh",
+            "pr",
+            "view",
+            str(pr_iid),
+            "--repo",
+            repo,
+            "--json",
+            "reviewDecision",
+            token=self._token,
+            timeout=_FORGE_READ_TIMEOUT_SECONDS,
+        )
         try:
             data = json.loads(result.stdout or "{}")
         except json.JSONDecodeError:
             data = {}
         decision = str(data.get("reviewDecision") or "").upper() if isinstance(data, dict) else ""
+        unresolved = self._count_unresolved_review_threads(repo=repo, pr_iid=pr_iid)
+        if unresolved is None:
+            warn_throttled(
+                logger,
+                f"github-review-threads-unreadable:{repo}#{pr_iid}",
+                "GitHub review-thread read failed for %s#%s — failing closed (unresolved_resolvable=1)",
+                repo,
+                pr_iid,
+            )
         return ApprovalState(
             approvals_left=0 if decision == "APPROVED" else 1,
             approved_by=[],
-            unresolved_resolvable=0,
+            unresolved_resolvable=1 if unresolved is None else unresolved,
+        )
+
+    def _count_unresolved_review_threads(self, *, repo: str, pr_iid: int) -> int | None:
+        """Count the PR's UNRESOLVED review threads via one bounded GraphQL read.
+
+        Returns the number of ``reviewThreads`` whose ``isResolved`` is ``false``,
+        or ``None`` when the read could not be completed — a malformed ``repo``
+        slug, a non-zero ``gh`` exit (auth/network/ratelimit), an unparsable body,
+        or an unexpected shape. ``None`` lets :meth:`get_mr_approvals` fail closed
+        rather than report a fabricated zero unresolved threads.
+        """
+        owner, _, name = repo.partition("/")
+        if not owner or not name:
+            return None
+        query = _REVIEW_THREADS_QUERY.format(owner=owner, repo=name, number=pr_iid)
+        try:
+            result = _run_gh(
+                "gh",
+                "api",
+                "graphql",
+                "-f",
+                f"query={query}",
+                token=self._token,
+                timeout=_FORGE_READ_TIMEOUT_SECONDS,
+            )
+        except CommandFailedError:
+            return None
+        try:
+            payload = json.loads(result.stdout or "{}")
+        except json.JSONDecodeError:
+            return None
+        nodes = dig(payload, "data", "repository", "pullRequest", "reviewThreads", "nodes")
+        if not isinstance(nodes, list):
+            return None
+        return sum(
+            1 for node in nodes if isinstance(node, dict) and cast("RawAPIDict", node).get("isResolved") is False
         )
 
     def get_review_state(self, *, pr_url: str, reviewer: str) -> ReviewState:
