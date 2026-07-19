@@ -329,7 +329,9 @@ def deliver_user_dm(
     still-open question can never retire it.
     """
     config = _resolve_speak_safe()
-    audio_body = _maybe_post_with_audio(backend, config, channel=channel, text=text, thread_ts=thread_ts)
+    audio_body = (
+        _maybe_post_with_audio(backend, channel=channel, text=text, thread_ts=thread_ts) if config.slack else None
+    )
     if audio_body is not None:
         response = audio_body
     else:
@@ -344,34 +346,44 @@ def deliver_user_dm_sidecar(
     channel: str,
     text: str,
     thread_ts: str = "",
+    initial_comment: str | None = None,
 ) -> None:
-    """Run the speak side-effects for a bot→user DM — never raises (#2054).
+    """Run the speak side-effects for an already-delivered bot→user DM — never raises (#2054).
 
-    Called by :func:`teatree.core.notify._deliver_dm` AFTER the canonical
-    ``post_message`` delivery has already landed and its ``ts`` has been
-    captured. This function owns the two enrichment arms that do NOT
+    Called AFTER the canonical text delivery has already landed and its ``ts``
+    has been captured. This function owns the two enrichment arms that do NOT
     produce the delivery ``ts``:
 
     *   **Slack audio attachment** — when ``slack`` is on, attach a spoken
         audio file to the DM via ``post_audio_dm``. The attachment is a
         pure enhancement; if it fails the text DM already exists. The
         ``post_audio_dm`` response is intentionally ignored here: the caller
-        already has the ``ts`` from ``post_message`` and does not need it.
+        already has the ``ts`` from the text delivery and does not need it.
     *   **Local playback** — play the text through the machine's speakers
         when ``local`` is ``dm`` or ``all``.
 
+    ``initial_comment`` controls the text posted ALONGSIDE the audio (F4.4).
+    ``None`` (the default) reuses ``text`` as the audio DM's ``initial_comment``
+    — the ``t3 speak-dm`` path, whose audio DM stands on its own. The
+    :func:`teatree.core.notify._deliver_dm` caller passes ``""`` together with
+    ``thread_ts`` set to the delivered message's ``ts``, so the audio threads
+    UNDER the text DM that already landed with NO repeated text — the text is
+    delivered exactly once. In every case the audio is still synthesised from
+    the full ``text``.
+
     Both arms are best-effort: any exception is swallowed so a speak failure
     can NEVER retroactively break a text DM that has already landed. The
-    caller (:func:`teatree.core.notify._deliver_dm`) wraps this call inside
-    its own ``except`` block, so a raise here would be caught before the
-    delivery outcome is affected — but returning ``None`` without raising is
-    the cleaner contract.
+    caller also guards this call, so returning ``None`` without raising is the
+    cleaner contract.
     """
     config = _resolve_speak_safe()
-    try:
-        _maybe_post_with_audio(backend, config, channel=channel, text=text, thread_ts=thread_ts)
-    except Exception as exc:  # noqa: BLE001 — sidecar must never break the delivered text DM
-        logger.debug("deliver_user_dm_sidecar audio attach failed: %s", exc)
+    if config.slack:
+        try:
+            _maybe_post_with_audio(
+                backend, channel=channel, text=text, thread_ts=thread_ts, initial_comment=initial_comment
+            )
+        except Exception as exc:  # noqa: BLE001 — sidecar must never break the delivered text DM
+            logger.debug("deliver_user_dm_sidecar audio attach failed: %s", exc)
     _maybe_speak_local(config, text)
 
 
@@ -406,29 +418,36 @@ def _resolve_speak_safe() -> SpeakConfig:
 
 def _maybe_post_with_audio(
     backend: MessagingBackend,
-    config: SpeakConfig,
     *,
     channel: str,
     text: str,
     thread_ts: str,
+    initial_comment: str | None = None,
 ) -> RawAPIDict | None:
-    """Post ``text`` + an inline audio attachment, or ``None`` to degrade to text-only.
+    """Post an inline audio attachment (with ``text``), or ``None`` to degrade to text-only.
 
-    Returns the ``post_audio_dm`` body on a successful attach (the caller
-    uses it as the delivery response), or ``None`` when ``slack`` is off,
-    synthesis fails, or the attach returns a non-ok body — in every ``None``
-    case the caller falls back to a text-only post so the DM is never dropped.
-    A non-ok attach body additionally surfaces the failure once per error
-    class so a missing ``files:write`` scope is visible.
+    Callers gate this on ``config.slack`` — it is only reached when the Slack
+    audio arm is on. Returns the ``post_audio_dm`` body on a successful attach
+    (the caller uses it as the delivery response), or ``None`` when synthesis
+    fails or the attach returns a non-ok body — in every ``None`` case the
+    caller falls back to a text-only post so the DM is never dropped. A non-ok
+    attach body additionally surfaces the failure once per error class so a
+    missing ``files:write`` scope is visible.
+
+    The audio is always synthesised from the full ``text``. ``initial_comment``
+    is the text posted ALONGSIDE the audio: ``None`` (default) reuses ``text``
+    (the single-message :func:`deliver_user_dm` path), while an explicit ``""``
+    posts the audio with no comment — used when the text has already been
+    delivered separately and the audio only threads under it (F4.4), so the
+    body is never sent twice.
     """
-    if not config.slack:
-        return None
+    comment = text if initial_comment is None else initial_comment
     try:
         audio_path = synthesise(clean_for_speech(text))
         if audio_path is None:
             return None
         try:
-            body = backend.post_audio_dm(channel=channel, filepath=str(audio_path), text=text, thread_ts=thread_ts)
+            body = backend.post_audio_dm(channel=channel, filepath=str(audio_path), text=comment, thread_ts=thread_ts)
         finally:
             shutil.rmtree(audio_path.parent, ignore_errors=True)
     except Exception as exc:  # noqa: BLE001 — a failed attach must degrade to a text DM, never drop it
@@ -473,22 +492,26 @@ def _speaker_lock_path() -> Path:
 
 @contextmanager
 def _serial_speaker() -> Iterator[bool]:
-    """Try to hold the cross-process speaker lock for one ``say`` — best-effort (#2152).
+    """Hold the cross-process speaker lock for one ``say`` if it can — best-effort (#2152).
 
-    Yields ``True`` always — either with the lock held (serialized, no
-    overlap), or without it (fail-open: lock unavailable or budget elapsed).
-    Yields ``False`` to signal to the caller that serialization was skipped so
-    it can log accordingly; ``False`` does NOT mean the read is dropped.
+    A context manager whose body ALWAYS plays: the yielded bool never gates the
+    read (the caller plays regardless), it only reports whether serialization
+    was achieved so the caller can log the unserialized case. The value is:
 
-    The lock prevents two ``say`` calls from overlapping when acquired within
-    the budget. If the budget elapses (speaker still busy) the read falls
-    through and plays anyway — a brief overlap is better than a silenced read,
-    and the budget keeps the wait from blocking the daemon thread indefinitely.
+    *   ``True`` — either the exclusive lock is HELD for the ``with`` body
+        (serialized, no overlap), OR the lockfile could not be opened at all
+        (no state dir / permissions) so serialization is impossible. Both are
+        the "nothing more to wait on, just play" case, so they share ``True``;
+        the lockfile-open failure is already noted at debug on its own.
+    *   ``False`` — the lockfile opened but the wait budget
+        (:data:`_SPEAKER_LOCK_WAIT_BUDGET_S`) elapsed before the lock came free
+        (the speaker is genuinely saturated). The read still plays, unserialized;
+        ``False`` lets the caller log that it fell through.
 
-    Best-effort: if the lockfile cannot be opened (no state dir, permissions)
-    the read still plays — a lock error must never mute audio. Runs INSIDE the
-    daemon thread, never on the caller's egress path, so the bounded wait
-    never delays a DM or turn.
+    So a brief overlap is possible whenever the lock is not held — strictly
+    better than a silenced or minutes-late read. The bounded wait keeps the
+    daemon thread from blocking indefinitely, and this runs INSIDE the daemon
+    thread, never on the caller's egress path, so it never delays a DM or turn.
     """
     try:
         lock_path = _speaker_lock_path()

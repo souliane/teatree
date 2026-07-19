@@ -19,7 +19,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 from django.core.management import call_command
 
-from teatree.core.availability import MODE_AWAY, MODE_PRESENT, load_override, write_override
+from teatree.core.availability import MODE_AUTONOMOUS_AWAY, MODE_AWAY, MODE_PRESENT, load_override, write_override
 from teatree.core.models import BotPing
 from teatree.core.models.deferred_question import DeferredQuestion
 
@@ -53,6 +53,22 @@ class TestAwayToPresentAutoDrains:
         posted = [c.kwargs["text"] for c in backend.post_message.call_args_list]
         assert any("First?" in t for t in posted)
         assert any("Second?" in t for t in posted)
+
+    def test_setting_present_from_autonomous_away_also_drains(self, override_file: Path) -> None:
+        """F4.9: autonomous_away→present drains symmetrically with away→present.
+
+        Both ``away`` and ``autonomous_away`` are deferring modes (questions
+        pile up in the backlog), so returning to ``present`` from EITHER must
+        auto-repost the backlog — the prior_mode trigger keys on the deferring
+        set, not a bare ``away`` comparison.
+        """
+        write_override(MODE_AUTONOMOUS_AWAY)
+        DeferredQuestion.record("Deferred while autonomous?", session_id="s-auto")
+        backend = _backend()
+        with patch("teatree.core.notify.messaging_from_overlay", return_value=backend):
+            write_override(MODE_PRESENT, user_id="U_ME")
+        posted = [c.kwargs["text"] for c in backend.post_message.call_args_list]
+        assert any("Deferred while autonomous?" in t for t in posted)
 
     def test_present_from_present_does_not_drain(self, override_file: Path) -> None:
         write_override(MODE_PRESENT)

@@ -16,10 +16,12 @@ from unittest.mock import MagicMock, patch
 import pytest
 from django.test import TestCase, override_settings
 
+from teatree.core.modelkit.notify_policy import NotifyAudience
 from teatree.core.provision.provision_timebox import (
     DEFAULT_FAST_STEP_TIMEOUT_SECONDS,
     DEFAULT_STEP_TIMEOUT_SECONDS,
     ProgressAlert,
+    alert_provision_user,
     detect_migration_conflict,
     resolve_step_timeout_seconds,
     run_timeboxed_callable,
@@ -48,6 +50,27 @@ class TestDetectMigrationConflict(TestCase):
 
     def test_empty_output_is_not_a_conflict(self) -> None:
         assert detect_migration_conflict("") is None
+
+
+class TestAlertProvisionUser(TestCase):
+    """The #2220 loud alert is OWNER_ESCALATION so it actually leaves the machine (F4.2)."""
+
+    @patch("teatree.core.provision.provision_timebox.notify_user")
+    def test_alert_uses_owner_escalation_audience(self, mock_notify: MagicMock) -> None:
+        alert_provision_user(step="migrate", repo="acme/app", detail="exceeded 1800s and was aborted")
+        assert mock_notify.called
+        # An INTERNAL audience short-circuits notify_user BEFORE any backend
+        # resolution — the loud alert would degrade to a log line and never
+        # reach the away user. It must be OWNER_ESCALATION.
+        assert mock_notify.call_args.kwargs["audience"] is NotifyAudience.OWNER_ESCALATION
+
+    @patch("teatree.core.provision.provision_timebox.notify_user")
+    def test_timeout_alert_is_owner_escalation(self, mock_notify: MagicMock) -> None:
+        with patch("teatree.core.provision.provision_timebox.run_allowed_to_fail") as mock_run:
+            mock_run.side_effect = subprocess.TimeoutExpired(cmd=["migrate"], timeout=1)
+            run_timeboxed_step("migrate", ["manage.py", "migrate"], timeout=1)
+        assert mock_notify.called
+        assert mock_notify.call_args.kwargs["audience"] is NotifyAudience.OWNER_ESCALATION
 
 
 class TestResolveStepTimeout(TestCase):
