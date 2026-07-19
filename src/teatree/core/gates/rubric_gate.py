@@ -42,9 +42,14 @@ class RubricNotSatisfiedError(RuntimeError):
     """A merge was refused because the ticket's rubric is not fully PASS at the head SHA."""
 
 
-def rubric_gate_required() -> bool:
-    """Whether the rubric done-gate is in force (overlay -> global)."""
-    return get_effective_settings().require_rubric_verification
+def rubric_gate_required(overlay: str | None = None) -> bool:
+    """Whether the rubric done-gate is in force for *overlay* (overlay -> global).
+
+    *overlay* threads the ticket's own overlay so a per-overlay opt-in binds even
+    when the evaluating process has no ambient ``T3_OVERLAY_NAME`` (the merge
+    keystone runs env-less). ``None`` resolves the ambient overlay as before.
+    """
+    return get_effective_settings(overlay).require_rubric_verification
 
 
 def latest_rubric(ticket: "Ticket") -> "Rubric | None":
@@ -94,7 +99,7 @@ def check_rubric_satisfied(ticket: "Ticket", head_sha: str, *, transition: str) 
     (teatree#2263 trigger #4 backstop) for the ticket's active session before
     raising, so the next verification spawn routes to the most-honest model.
     """
-    if not rubric_gate_required():
+    if not rubric_gate_required(ticket.overlay or None):
         return
     rubric = latest_rubric(ticket)
     if rubric is not None and rubric.is_fully_passed_at(head_sha):

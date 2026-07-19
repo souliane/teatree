@@ -299,9 +299,13 @@ class Command(TyperCommand):
             check_anti_vacuity_attestation,
         )
 
-        if not anti_vacuity_required():
-            return ""
+        # Without a ticket-id there is no ticket overlay to read, so the ambient
+        # overlay decides whether the gate is even on; once a ticket resolves, the
+        # gate is re-evaluated under the TICKET's own overlay (a per-overlay opt-in
+        # binds even from an env-less process — the #F2.3 fail-toward-green hole).
         if not ticket_id.strip() or not head_sha.strip():
+            if not anti_vacuity_required():
+                return ""
             return (
                 "request review refused (require_anti_vacuity_attestation): pass --ticket-id and "
                 "--head-sha so the anti-vacuity attestation can be verified SHA-bound. Record it first "
@@ -312,6 +316,8 @@ class Command(TyperCommand):
             ticket = Ticket.objects.resolve(ticket_id)
         except Ticket.DoesNotExist:
             return f"request review refused: ticket {ticket_id!r} not found (anti-vacuity gate needs a ticket)."
+        if not anti_vacuity_required(ticket.overlay or None):
+            return ""
         try:
             check_anti_vacuity_attestation(ticket, head_sha, transition="request review")
         except AntiVacuityAttestationError as exc:
@@ -327,9 +333,12 @@ class Command(TyperCommand):
         ticket's FSM state and its review-evidence artifact); a missing or
         unknown ticket is itself a block with actionable steering.
         """
-        if not reviewed_state_required():
-            return ""
+        # Without a ticket-id there is no ticket overlay to read, so the ambient
+        # overlay decides whether the gate is even on; once a ticket resolves, the
+        # gate is re-evaluated under the TICKET's own overlay (#F2.3).
         if not ticket_id.strip():
+            if not reviewed_state_required():
+                return ""
             return (
                 "request review refused (require_reviewed_state_for_review_request): pass --ticket-id so "
                 "the gate can verify the ticket is REVIEWED with a recorded review-evidence artifact."

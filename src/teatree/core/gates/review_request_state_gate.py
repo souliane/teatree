@@ -51,9 +51,14 @@ if TYPE_CHECKING:
     from teatree.core.models.ticket import Ticket
 
 
-def reviewed_state_required() -> bool:
-    """Whether the review-state gate is in force (overlay -> global)."""
-    return get_effective_settings().require_reviewed_state_for_review_request
+def reviewed_state_required(overlay: str | None = None) -> bool:
+    """Whether the review-state gate is in force for *overlay* (overlay -> global).
+
+    *overlay* threads the ticket's own overlay so a per-overlay opt-in binds even
+    when the evaluating process has no ambient ``T3_OVERLAY_NAME``. ``None``
+    resolves the ambient overlay as before.
+    """
+    return get_effective_settings(overlay).require_reviewed_state_for_review_request
 
 
 def has_review_evidence(ticket: "Ticket") -> bool:
@@ -80,7 +85,7 @@ def check_reviewed_state(ticket: "Ticket") -> str:
     ticket already advanced to SHIPPED/IN_REVIEW by the time its broadcast fires
     is not over-blocked (PR-08b).
     """
-    if not reviewed_state_required():
+    if not reviewed_state_required(ticket.overlay or None):
         return ""
 
     if not has_passed_review(ticket):

@@ -113,3 +113,56 @@ def test_overlay_redact_rules_read_from_resolved_overlay_config(monkeypatch: pyt
     config = SimpleNamespace(privacy_redact_terms=[REDACT], privacy_block_patterns=["custom-pattern"])
     monkeypatch.setattr(privacy_gate, "get_overlay", lambda *_a, **_k: SimpleNamespace(config=config))
     assert privacy_gate._overlay_privacy_rules() == ([REDACT], ["custom-pattern"])
+
+
+# --- F2.2: overlay-rule RESOLUTION FAILURE fails the public publish CLOSED + loud ---
+
+_RESOLUTION_FAILURE_MSG = "overlay registry wedged"
+
+
+def test_overlay_rules_none_on_genuine_resolution_failure(monkeypatch: pytest.MonkeyPatch) -> None:
+    # An overlay IS present but reading it raises an UNEXPECTED error (not the
+    # ImproperlyConfigured that means "no single overlay"). The overlay's own
+    # redact/block rules would silently vanish, so the resolver returns None.
+    def _boom(*_a: object, **_k: object) -> object:
+        raise RuntimeError(_RESOLUTION_FAILURE_MSG)
+
+    monkeypatch.setattr(privacy_gate, "get_overlay", _boom)
+    assert privacy_gate._overlay_privacy_rules() is None
+
+
+def test_overlay_rules_none_when_config_fields_unreadable(monkeypatch: pytest.MonkeyPatch) -> None:
+    # get_overlay() resolves, but reading the privacy fields off the config raises
+    # → a present-but-unreadable overlay is a resolution failure → None (fail closed).
+    class _AngryConfig:
+        @property
+        def privacy_redact_terms(self) -> list[str]:
+            raise RuntimeError(_RESOLUTION_FAILURE_MSG)
+
+        @property
+        def privacy_block_patterns(self) -> list[str]:
+            return []
+
+    monkeypatch.setattr(privacy_gate, "get_overlay", lambda *_a, **_k: SimpleNamespace(config=_AngryConfig()))
+    assert privacy_gate._overlay_privacy_rules() is None
+
+
+def test_public_publish_refused_when_overlay_rules_unresolvable(monkeypatch: pytest.MonkeyPatch) -> None:
+    # The confidentiality boundary: a PUBLIC target whose overlay rules cannot be
+    # resolved is REFUSED (fail closed + loud), NOT scanned with only the built-ins.
+    monkeypatch.setattr(privacy_gate, "_target_is_public", lambda _repo, _forge: True)
+    monkeypatch.setattr(privacy_gate, "_overlay_privacy_rules", lambda: None)
+    result = scan_outbound_text(text="A perfectly ordinary note.", target_repo=REAL_PUBLIC, forge="github")
+    assert result.refused
+    assert result.is_public
+    assert any(match.pattern_name == "overlay-rules-unresolvable" for match in result.matches)
+
+
+def test_private_target_not_refused_even_when_rules_unresolvable(monkeypatch: pytest.MonkeyPatch) -> None:
+    # A provably-PRIVATE target is a clean pass regardless of rule resolution —
+    # the fail-closed refusal is scoped to public targets only.
+    monkeypatch.setattr(privacy_gate, "_target_is_public", lambda _repo, _forge: False)
+    monkeypatch.setattr(privacy_gate, "_overlay_privacy_rules", lambda: None)
+    result = scan_outbound_text(text="A note.", target_repo="acme/private", forge="github")
+    assert not result.refused
+    assert result.is_public is False

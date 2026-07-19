@@ -273,7 +273,12 @@ def acquire_or_enqueue(candidate: Worktree | None, *, write_out: Callable[[str],
     else:
         return True
 
-    reap_idle_stacks(overlay=candidate.overlay, write_out=write_out)
+    # Scope the reap by the TICKET's overlay (falling back to the worktree's own),
+    # matching the cap-count scoping in ``check_local_stack_limit`` (:169): a row
+    # auto-detected via cwd can carry an empty ``Worktree.overlay`` while its ticket
+    # carries the real overlay, so reaping by ``candidate.overlay`` alone would free
+    # nothing and needlessly re-enqueue (#F2.11).
+    reap_idle_stacks(overlay=candidate.ticket.overlay or candidate.overlay, write_out=write_out)
     try:
         check_local_stack_limit(candidate)
     except LocalStackLimitExceededError as exc:
