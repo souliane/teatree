@@ -601,7 +601,12 @@ class TestHookHandlerFailOpenWithoutTeatreeImport:
         assert blocked is False
         captured = capsys.readouterr()
         assert captured.out == ""
-        assert captured.err == ""
+        # The fail-open is NOT silent (#F7.9): a loud stderr NOTE names the gate
+        # + the fail-open so a broken scanner is diagnosable, mirroring the
+        # banned-terms sibling. It never lands on stdout (that would corrupt the
+        # PreToolUse JSON channel).
+        assert "quote-scanner gate" in captured.err
+        assert "failed open" in captured.err
 
     def test_handler_returns_false_on_arbitrary_internal_exception(
         self, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
@@ -617,7 +622,9 @@ class TestHookHandlerFailOpenWithoutTeatreeImport:
         assert blocked is False
         captured = capsys.readouterr()
         assert captured.out == ""
-        assert captured.err == ""
+        # Fail-open names the error loudly on stderr (#F7.9), never on stdout.
+        assert "quote-scanner gate" in captured.err
+        assert "synthetic" in captured.err
 
     def test_subprocess_invocation_without_teatree_on_path_does_not_traceback(self, tmp_path: Path) -> None:
         # End-to-end reproducer for #1314: invoke the hook script as a
@@ -1653,3 +1660,42 @@ class TestFormatHelpers:
         result = ScanResult(findings=[Finding(name="per-user-direction", severity=quote_scanner.MEDIUM, excerpt="x")])
         message = quote_scanner.format_warn_message(result)
         assert "per-user-direction" in message
+
+
+class TestOpaqueTransportFailsClosedOnQuoteGate:
+    """#F7.1: a wrapper-hidden forge post fails closed on the QUOTE gate too.
+
+    The opaque-transport sentinel used to be appended only for the destination-
+    aware banned-terms gate (``fail_closed_body_file=True``); the quote gate
+    (``fail_closed_body_file=False``) saw an empty payload and ALLOWED an
+    unscannable interpreter-hidden publish. The sentinel is now emitted for both
+    gate modes, so an ``sh -c "gh ..."`` / ``eval`` / ``ssh host gh`` publish the
+    quote scanner cannot read hard-blocks.
+    """
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            'sh -c "gh pr create --body some quote"',
+            'bash -lc "gh issue create --body some quote"',
+            'eval "gh pr comment 5 --body some quote"',
+            "ssh host gh pr create --body quote",
+        ],
+    )
+    def test_interpreter_hidden_publish_yields_sentinel_and_high(self, command: str) -> None:
+        payload = extract_publish_payload("Bash", {"command": command})
+        assert payload is not None
+        assert is_fail_closed_sentinel(payload)
+        assert scan_text(payload).has_high is True
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            'grep "gh pr create --body x" notes.md',
+            "rg 'sh -c \"gh\"' src/",
+        ],
+    )
+    def test_read_only_inspection_is_not_a_publish(self, command: str) -> None:
+        # Over-block guard: a read-only inspection that quotes the forge string is
+        # not a publish, so the quote gate returns its pass-through ``None``.
+        assert extract_publish_payload("Bash", {"command": command}) is None

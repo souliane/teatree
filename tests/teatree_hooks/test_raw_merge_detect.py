@@ -96,6 +96,12 @@ class TestMergeApiWrite:
             "gh api repos/o/r/pulls/12/merge -XPUT",
             "gh api repos/o/r/pulls/12/merge -f merge_method=squash",
             "glab api projects/9/merge_requests/3/merge -X PUT",
+            # F7.8: a VARIABLE / templated iid resolves to a real merge at run
+            # time; the numeric-only pattern used to let it evade the hard-deny.
+            "gh api -X PUT repos/o/r/pulls/$PR/merge",
+            "gh api --method PUT repos/o/r/pulls/{id}/merge",
+            "glab api -X PUT projects/9/merge_requests/$IID/merge",
+            "gh api -X PUT repos/o/r/pulls/${PR_NUMBER}/merge",
         ],
     )
     def test_write_to_merge_endpoint_is_detected(self, command: str) -> None:
@@ -108,6 +114,8 @@ class TestMergeApiWrite:
             "gh api repos/o/r/pulls/12/merge -X GET",
             "gh api repos/o/r/pulls/12/merge -X PUT -X GET",  # last-wins GET
             "gh api repos/o/r/pulls/12/comments -X POST",  # not a merge endpoint
+            "gh api repos/o/r/pulls/$PR/merge",  # F7.8: variable iid but a GET read
+            "gh api repos/o/r/pulls/$PR/merge -X GET",  # variable iid, explicit GET
             "ls",  # not an api command
             "",
         ],

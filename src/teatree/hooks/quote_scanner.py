@@ -38,7 +38,7 @@ import sys
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Final, TypedDict
+from typing import Final, Literal, TypedDict
 
 from teatree.hooks._command_parser import FAIL_CLOSED_SENTINEL as _FAIL_CLOSED_SENTINEL
 from teatree.hooks._command_parser import extract_bash_payload as _extract_bash_payload
@@ -49,7 +49,7 @@ from teatree.hooks._publish_detection import segment_word_lists_raw as _segment_
 
 _QUOTE_OK_ENV = "QUOTE_OK"
 
-Severity = str  # "high" | "medium"
+type Severity = Literal["high", "medium"]
 
 
 class ToolInput(TypedDict, total=False):

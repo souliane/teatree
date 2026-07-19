@@ -213,6 +213,38 @@ class TestApiWriteUnresolvableDoesNotSkip:
         assert self._skips(cmd, monkeypatch, "PUBLIC") is False
 
 
+class TestUnresolvedStructuredWriteDoesNotSkip:
+    """#F7.2: a ``gh``/``glab`` structured WRITE whose destination did NOT resolve SCANS.
+
+    An unresolved ``gh``/``glab`` publish is NOT provably non-public, so it must
+    FAIL CLOSED (scan), never skip. The old fallback returned ``_SKIP_PUBLISH`` for
+    any ``gh``/``glab``-led segment even when the destination was ``None`` -- so a
+    ``gh pr review 5 --body <HIGH quote>`` (a verb not resolved to the current
+    repo) skipped the leak scan entirely. Only a RESOLVED provably-non-public
+    destination earns a skip.
+    """
+
+    @staticmethod
+    def _skips(command: str, monkeypatch: pytest.MonkeyPatch, verdict: str | None) -> bool:
+        monkeypatch.setattr(_repo_visibility, "probe_visibility", lambda _slug: verdict)
+        # No cwd -> a flagless verb cannot resolve a current-repo destination.
+        return public_visibility.gate_skips_for_visibility(command, cwd=None)
+
+    def test_flagless_pr_review_does_not_skip(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        cmd = 'gh pr review 5 --body "please ship now"'
+        assert self._skips(cmd, monkeypatch, None) is False
+
+    def test_flagless_pr_create_with_no_cwd_does_not_skip(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        cmd = 'gh pr create --title t --body "please ship now"'
+        assert self._skips(cmd, monkeypatch, None) is False
+
+    def test_resolved_private_flag_target_still_skips(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        # Over-block guard: a RESOLVED, probe-confirmed-private ``--repo`` target
+        # still skips -- the fail-closed change only affects UNRESOLVED dests.
+        cmd = 'gh pr review 5 --repo owner/private-svc --body "note"'
+        assert self._skips(cmd, monkeypatch, "PRIVATE") is True
+
+
 class TestInertSubstitutionMarkerInBodyValue:
     """A substitution marker forces a SCAN only when bash would EXPAND it (#3357).
 

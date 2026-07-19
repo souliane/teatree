@@ -216,7 +216,13 @@ def _segment_visibility_verdict(
     if dest is not None:
         return _visibility_segment_verdict(dest, config_path=config_path)
     if rest and rest[0] in {"gh", "glab"}:
-        return _SKIP_PUBLISH
+        # A ``gh``/``glab`` WRITE whose destination did NOT resolve (a flagless
+        # verb with no resolvable cwd remote, a ``gh pr review 5 --body …`` shape)
+        # is NOT provably non-public, so it FAILS CLOSED to a scan -- it is never
+        # skip-eligible. Only a RESOLVED, provably-non-public dest (handled above)
+        # earns ``_SKIP_PUBLISH`` (#F7.2). Previously this returned
+        # ``_SKIP_PUBLISH`` and let an unresolved public post skip the leak scan.
+        return _SCAN
     return _SKIP_INERT if _segment_is_skip_inert(words) else _SCAN
 
 

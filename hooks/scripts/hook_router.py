@@ -2067,7 +2067,19 @@ def handle_quote_scanner_pretool(data: dict) -> bool:
             sys.path.insert(0, str(src_dir))
             added = True
         return _run_quote_scanner_pretool(data)
-    except Exception:  # noqa: BLE001 — crash-proof hook: any failure degrades silently, never breaks the tool call
+    except Exception as exc:  # noqa: BLE001 — crash-proof hook: any failure degrades, never breaks the tool call
+        # Fail OPEN on any internal error (a crashing hook is worse than no
+        # scan), but NOT silently: an unscanned body on the PUBLIC-egress publish
+        # path is exactly the leak this gate exists to catch, so name the failure
+        # loudly on stderr (mirroring the banned-terms gate, #F7.9). A failed
+        # stderr write must itself never break the tool call.
+        with contextlib.suppress(OSError):
+            sys.stderr.write(
+                "[teatree] NOTE: pre-publish quote-scanner gate (#1213) failed open on an internal error "
+                f"({type(exc).__name__}: {exc}); the publish body was NOT scanned for verbatim user quotes. "
+                "This is a fail-open safeguard (a crashing hook is worse than no scan), NOT a clean scan — "
+                "fix the underlying error, or verify the body by hand before it reaches a public surface.\n"
+            )
         return False
     finally:
         if added:
@@ -5366,9 +5378,9 @@ def _active_dm_thread_for_channel(channel: str) -> str:
 
 
 def _slack_config_from_toml() -> tuple[str, str] | None:
-    from teatree.hooks.slack_mirror import slack_config_from_toml  # noqa: PLC0415 — deferred: cold-hook import
+    from teatree.hooks.slack_mirror import slack_config_from_registry  # noqa: PLC0415 — deferred: cold-hook import
 
-    return slack_config_from_toml()
+    return slack_config_from_registry()
 
 
 def _perform_slack_post(slack_cfg: tuple[str, str], questions: list[dict]) -> str:

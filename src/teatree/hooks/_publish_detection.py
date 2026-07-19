@@ -34,6 +34,7 @@ persistent flag -- the closed inversion the anti-whack-a-mole doctrine requires.
 
 import re
 from itertools import starmap
+from pathlib import PurePosixPath
 from typing import Final
 
 from teatree.hooks._gh_glab_hiding import token_has_substitution_marker
@@ -59,6 +60,32 @@ _GIT_COMMIT_BODY_ATTACHED: Final[tuple[str, ...]] = ("-m", "-F", "--message=", "
 # arg, an ``eval``/``ssh``/``xargs`` wrapper) is an OPAQUE forge transport the
 # walkers cannot reach -- so the body the post carries is unscannable.
 _PARSEABLE_FORGE_LEADERS: Final[frozenset[str]] = frozenset({"gh", "glab", "git", "curl"})
+
+# Transparent argv wrappers whose first non-flag operand IS the real executed
+# program (``xargs gh``, ``env GH_PAGER= gh``, ``command gh``, ``nohup gh``,
+# ``time gh``, ``exec gh``). Mirrors ``raw_merge_detect._WRAPPER_PROGRAMS`` -- the
+# frozenset is defined LOCALLY so ``raw_merge_detect`` stays a leaf. After the
+# wrapper is stripped the leader canonicalises to the real forge tool, so a
+# wrapper-hidden ``gh``/``glab`` post is a PARSEABLE forge segment the body
+# walkers descend into (its body IS extracted and scanned), not an unscannable
+# opaque transport that fails closed.
+_WRAPPER_PROGRAMS: Final[frozenset[str]] = frozenset({"command", "time", "nohup", "exec", "xargs", "env"})
+
+# Command-string INTERPRETERS / remote-exec whose forge operand is a quoted
+# command STRING the body walkers cannot descend into (``sh -c "gh ..."``,
+# ``bash -lc "gh ..."``, ``eval "gh ..."``, ``ssh host gh ...``). Distinct from
+# the transparent argv wrappers above: the forge invocation hides inside an
+# opaque argument, so the destination-aware gates fail closed on it rather than
+# scan an unreachable body. This is the closed POSITIVE proof that a
+# non-forge-leader segment executes a nested forge command -- a read-only
+# inspection tool (``grep``/``rg``/``cat``) that merely QUOTES a forge token in a
+# search pattern is NOT one of these, so it is never misclassified as a hidden
+# forge post. That over-block guard is as load-bearing as the leak detection: a
+# broad "any non-forge leader carrying a forge marker" rule would flag every
+# ``grep "gh pr create"`` as a publish.
+_OPAQUE_TRANSPORT_LEADERS: Final[frozenset[str]] = frozenset(
+    {"sh", "bash", "zsh", "dash", "ksh", "eval", "ssh"},
+)
 
 # Contiguous-substring publish spellings, keyed by the LEADING executable that
 # owns each (the first word of the substring -- ``chat.postMessage`` is a Slack
@@ -189,8 +216,13 @@ def segment_is_api_call(words: list[str]) -> bool:
     is robust to flag ordering without enumerating every persistent flag; a
     quoted flag VALUE that merely contains the text ``api`` is a single distinct
     token, so it does not match.
+
+    The leader is canonicalised (transparent wrapper stripped, basename taken) so
+    ``xargs gh api ...`` / ``/usr/bin/gh api ...`` / ``env gh api ...`` are seen as
+    the same ``gh`` raw-REST call the bare ``gh api`` is (#F7.1).
     """
-    return bool(words) and words[0] in {"gh", "glab"} and "api" in words[1:]
+    rest = _strip_wrapper_prefix(words)
+    return bool(rest) and _canonical_leader(rest[0]) in {"gh", "glab"} and "api" in rest[1:]
 
 
 def _api_effective_method(words: list[str]) -> str:
@@ -265,9 +297,13 @@ def _segment_is_git_commit_publish(words: list[str]) -> bool:
     contiguous ``git commit -m`` substring broke on the interspersed flag. A
     commit publishes (to public history) only when it carries an inline message /
     file flag; a flagless ``git commit`` is interactive and out of scope here.
+
+    The leader is canonicalised (transparent wrapper stripped, basename taken) so
+    ``xargs git commit -m ...`` / ``/usr/bin/git commit -m ...`` reach the same
+    ``git`` publish surface the bare ``git commit`` is (#F7.1).
     """
-    rest = _strip_cd_prefix(words)
-    if not rest or rest[0] != "git":
+    rest = _strip_wrapper_prefix(words)
+    if not rest or _canonical_leader(rest[0]) != "git":
         return False
     i = 1
     while i < len(rest):
@@ -290,24 +326,74 @@ def _token_is_commit_body_flag(token: str) -> bool:
     )
 
 
-def _strip_cd_prefix(words: list[str]) -> list[str]:
-    rest = words
-    while rest and rest[0] in {"cd", "pushd"} and len(rest) >= 2:  # noqa: PLR2004 — self-documenting literal in this context
-        rest = rest[2:]
-    return rest
+def _canonical_leader(word: str) -> str:
+    """Return the basename of a program word (``/usr/bin/gh`` → ``gh``, ``./gh`` → ``gh``).
+
+    A path-qualified or relative program word names the SAME executable as its
+    bare basename, so the leak/publish detectors compare on the basename to close
+    the ``/usr/bin/gh`` / ``./gh`` path-form bypass. Mirrors
+    :func:`raw_merge_detect._basename`.
+    """
+    return PurePosixPath(word).name
 
 
-def _strip_cd_env_prefix(words: list[str]) -> list[str]:
-    rest = words
-    while rest:
-        if _ENV_ASSIGNMENT_RE.fullmatch(rest[0]):
-            rest = rest[1:]
+def _strip_wrapper_prefix(words: list[str]) -> list[str]:
+    """Strip leading env-assignments, ``cd``/``pushd`` nav, and ONE transparent wrapper.
+
+    Mirrors :func:`raw_merge_detect._program_words`: consumes a leading
+    ``NAME=val`` env run (case-insensitive per :data:`_ENV_ASSIGNMENT_RE`, so a
+    lowercase ``foo=1 gh`` is stripped too), a ``cd``/``pushd`` navigation pair,
+    and one transparent argv wrapper (``command``/``time``/``nohup``/``exec``/
+    ``xargs``/``env``) WITH that wrapper's own leading ``NAME=val`` args (so
+    ``env GH_PAGER= gh`` reaches ``gh``). The returned list LEADS with the real
+    executed program word (its path form intact; :func:`_canonical_leader`
+    reduces it to the basename at the compare site). A read-only inspection
+    leader (``grep``/``rg``/``cat``) is not a wrapper, so the list is returned
+    unchanged and its leader stays non-forge.
+    """
+    index = 0
+    consumed_wrapper = False
+    n = len(words)
+    while index < n:
+        word = words[index]
+        if _ENV_ASSIGNMENT_RE.fullmatch(word):
+            index += 1
             continue
-        if rest[0] in {"cd", "pushd"} and len(rest) >= 2:  # noqa: PLR2004 — self-documenting literal in this context
-            rest = rest[2:]
+        if word in {"cd", "pushd"} and index + 1 < n:
+            index += 2
+            continue
+        if not consumed_wrapper and _canonical_leader(word) in _WRAPPER_PROGRAMS:
+            consumed_wrapper = True
+            index += 1
             continue
         break
-    return rest
+    return words[index:]
+
+
+def wrapper_prefix_len(words: list[str]) -> int:
+    """Number of leading env/cd/wrapper tokens :func:`_strip_wrapper_prefix` consumes.
+
+    Lets a caller slice a PARALLEL list (the verbatim ``raw`` spans the body
+    resolver reads) by the same amount as ``words`` so the two stay index-aligned
+    after the benign-prefix strip -- the body walkers then see the real forge
+    argv with its ``raw`` spans intact.
+    """
+    return len(words) - len(_strip_wrapper_prefix(words))
+
+
+def canonical_forge_leader(words: list[str]) -> str:
+    """Return the canonical (basename) leader of a segment after wrapper/env strip.
+
+    The single canonicalisation the publish/leak detectors share: strip a benign
+    env/cd/wrapper prefix (:func:`_strip_wrapper_prefix`) then take the executed
+    program's basename (:func:`_canonical_leader`). ``""`` when the segment has no
+    program word after stripping. Used at every leader-compare site so detection
+    and body/secret EXTRACTION agree on which tool a segment invokes -- the
+    canonicalisation whose absence let ``xargs gh`` / ``/usr/bin/gh`` / ``env gh``
+    evade the gates (#F7.1).
+    """
+    rest = _strip_wrapper_prefix(words)
+    return _canonical_leader(rest[0]) if rest else ""
 
 
 def segment_is_opaque_forge_transport(words: list[str]) -> bool:
@@ -324,14 +410,22 @@ def segment_is_opaque_forge_transport(words: list[str]) -> bool:
     a segment so the unscannable post HARD-BLOCKS rather than slips through
     unread -- mirroring the prove-pure-or-fail-closed inversion.
 
-    A plain ``gh``/``glab``/``git``/``curl`` invocation at ``words[0]`` is NOT
-    opaque (the walkers parse its body); a forge-free segment (``git push``,
-    ``echo done``) is NOT a transport.
+    A plain ``gh``/``glab``/``git``/``curl`` invocation at ``words[0]`` -- bare,
+    path-form (``/usr/bin/gh``), or behind a transparent wrapper (``xargs gh``,
+    ``env gh``) -- is NOT opaque (the walkers parse its body once the leader is
+    canonicalised); a forge-free segment (``git push``, ``echo done``) is NOT a
+    transport; and a read-only inspection tool that merely QUOTES a forge token
+    (``grep "gh pr create"``, ``rg 'sh -c "gh"'``) is NOT one either -- the forge
+    marker only makes a segment opaque when its leader is a command-string
+    INTERPRETER (:data:`_OPAQUE_TRANSPORT_LEADERS`) that would EXECUTE the nested
+    forge call. A live substitution (``$(gh ...)``) is opaque regardless of
+    leader.
     """
-    rest = _strip_cd_env_prefix(words)
-    if not rest or rest[0] in _PARSEABLE_FORGE_LEADERS:
+    rest = _strip_wrapper_prefix(words)
+    if not rest or _canonical_leader(rest[0]) in _PARSEABLE_FORGE_LEADERS:
         return False
-    carries_forge = any(_token_carries_forge_marker(token) for token in rest)
+    leader = _canonical_leader(rest[0])
+    carries_forge = leader in _OPAQUE_TRANSPORT_LEADERS and any(_token_carries_forge_marker(token) for token in rest)
     carries_substitution = any(token_has_substitution_marker(token) for token in rest)
     return carries_forge or carries_substitution
 
@@ -350,11 +444,11 @@ def segment_is_substring_publish(words: list[str]) -> bool:
     which already iterates segments (mirroring :func:`segment_is_api_write` and
     the other per-segment predicates).
     """
-    rest = _strip_cd_env_prefix(words)
+    rest = _strip_wrapper_prefix(words)
     if not rest:
         return False
-    leader = rest[0]
-    joined = " ".join(rest)
+    leader = _canonical_leader(rest[0])
+    joined = " ".join([leader, *rest[1:]])
     return any(needle in joined for own_leader, needle in _LEADER_PUBLISH_SUBSTRINGS if own_leader == leader)
 
 
@@ -428,12 +522,15 @@ def _segment_is_opaque_forge_transport_raw(words: list[str], raws: list[str]) ->
     leader/forge-marker checks; the parallel ``raws`` drive the inert-vs-live
     substitution test.
     """
-    rest_words = _strip_cd_env_prefix(words)
-    if not rest_words or rest_words[0] in _PARSEABLE_FORGE_LEADERS:
+    rest_words = _strip_wrapper_prefix(words)
+    if not rest_words or _canonical_leader(rest_words[0]) in _PARSEABLE_FORGE_LEADERS:
         return False
     skipped = len(words) - len(rest_words)
     rest_raws = raws[skipped:]
-    carries_forge = any(_token_carries_forge_marker(token) for token in rest_words)
+    leader = _canonical_leader(rest_words[0])
+    carries_forge = leader in _OPAQUE_TRANSPORT_LEADERS and any(
+        _token_carries_forge_marker(token) for token in rest_words
+    )
     carries_live_substitution = any(_raw_has_live_substitution(raw) for raw in rest_raws)
     return carries_forge or carries_live_substitution
 
@@ -449,6 +546,39 @@ def command_has_opaque_forge_transport(command: str) -> bool:
     word_segments = segment_word_lists(command)
     raw_segments = _segment_raws(command)
     return any(starmap(_segment_is_opaque_forge_transport_raw, zip(word_segments, raw_segments, strict=True)))
+
+
+def _segment_is_interpreter_forge_transport(words: list[str]) -> bool:
+    """Return True iff a segment EXECUTES a forge call hidden in an interpreter arg.
+
+    The NARROW half of the opaque-transport concept used to BOOTSTRAP publish
+    detection: the segment's canonical leader is a command-string interpreter /
+    remote-exec (:data:`_OPAQUE_TRANSPORT_LEADERS` -- ``sh -c``, ``bash -lc``,
+    ``eval``, ``ssh host gh``) AND it carries a forge-tool marker. Unlike the
+    broad :func:`command_has_opaque_forge_transport`, it does NOT fire on a bare
+    live ``$(...)`` substitution behind an arbitrary leader (``echo $(date)`` is
+    not a publish) -- so promoting it to :func:`is_publish_command` proves a
+    STANDALONE ``sh -c "gh ..."`` IS a publish without wrongly classifying a
+    benign substitution or a read-only ``grep "gh ..."`` as one.
+    """
+    rest = _strip_wrapper_prefix(words)
+    if not rest or _canonical_leader(rest[0]) not in _OPAQUE_TRANSPORT_LEADERS:
+        return False
+    return any(_token_carries_forge_marker(token) for token in rest)
+
+
+def command_has_interpreter_forge_transport(command: str) -> bool:
+    """Return True iff any segment executes a forge call hidden inside an interpreter arg.
+
+    The publish-DETECTION complement that catches a STANDALONE wrapper-hidden
+    forge post the substring / api / git-commit detectors miss because the forge
+    tool never reaches an argv position they parse (``sh -c "gh pr create
+    --body X"``, ``eval "gh ..."``, ``ssh host gh ...``). Consumed by
+    :func:`_command_parser.is_publish_command`. A read-only inspection that merely
+    QUOTES a forge token (``rg 'sh -c "gh"'``) has leader ``rg`` -- not an
+    interpreter -- so it is NOT a publish (the load-bearing over-block guard).
+    """
+    return any(_segment_is_interpreter_forge_transport(words) for words in segment_word_lists(command))
 
 
 def _forge_title_value(words: list[str]) -> str | None:
@@ -509,11 +639,12 @@ def extract_title_fragments(command: str) -> list[str]:
     """
     fragments: list[str] = []
     for words in segment_word_lists(command):
-        if words[0] in {"gh", "glab"}:
+        leader = canonical_forge_leader(words)
+        if leader in {"gh", "glab"}:
             title = _forge_title_value(words)
             if title is not None:
                 fragments.append(title)
-        elif words[0] == "git":
+        elif leader == "git":
             subject = _git_commit_subject(words)
             if subject is not None:
                 fragments.append(subject)

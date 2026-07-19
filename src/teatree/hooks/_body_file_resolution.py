@@ -15,10 +15,12 @@ the real body and the private-repo carve-out can downgrade it instead of
 fail-closing on an unread body. A body file that exists nowhere still fails
 closed, and a PUBLIC-repo body file still hard-blocks.
 
-The matching primitives (``FAIL_CLOSED_SENTINEL``, ``_read_file_arg``,
-``_attached_value``) stay in :mod:`_command_parser`; this module imports them
-one-directionally. ``_command_parser`` calls back into here via a lazy import
-(at call time, not module load) so no cycle forms.
+The matching primitives (``FAIL_CLOSED_SENTINEL``, ``read_file_arg``,
+``attached_value``) live in the dependency-free :mod:`_parser_primitives` leaf;
+BOTH this module and :mod:`_command_parser` import DOWN into that leaf, so
+``_command_parser`` can import this resolver at module load (no cycle, no lazy
+call-time imports) instead of the reach-sideways cycle the primitives previously
+forced (#F7.9).
 """
 
 import os
@@ -27,7 +29,7 @@ from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Final
 
-from teatree.hooks._command_parser import (
+from teatree.hooks._parser_primitives import (
     FAIL_CLOSED_SENTINEL,
     UNAVAILABLE_BODY_SOURCE_SENTINEL,
     attached_value,
@@ -115,6 +117,26 @@ def _raw_substitution_is_live(raw: str) -> bool:
     return raw_substitution_sees_live(raw, ("$(",))
 
 
+def _var_ref_is_live(raw: str) -> bool:
+    """Return True iff a whole-value ``$VAR`` in ``raw`` is one bash would EXPAND.
+
+    A ``$VAR`` / ``${VAR}`` reference is expanded by bash when it is DOUBLE-quoted
+    (``"$VAR"``) or UNQUOTED (a bare ``$VAR`` argument) -- both live, so the env
+    resolver reads the value. Inside SINGLE quotes (``'$VAR'``) it is inert
+    literal text bash passes verbatim: the ``$VAR`` string IS the published body
+    (documenting a flag), so it must NOT be env-resolved. An empty ``raw`` (an
+    in-process caller with no source span) is treated as live (conservative).
+
+    Closes the #F7.4 fail-open where an UNQUOTED ``--body $LEAKVAR`` was scanned
+    as the literal token ``$LEAKVAR`` instead of the live env value -- only the
+    double-quoted form was resolved before, so an unquoted live env body
+    published unscanned.
+    """
+    if not raw:
+        return True
+    return bool(_DOUBLE_QUOTED_VAR_REF_RE.match(raw) or _VAR_REF_RE.match(raw))
+
+
 def resolve_inline_body_value(value: str, base: Path | None, raw: str = "") -> str:
     """Resolve a ``--description``/``--body`` value's indirection to the real body.
 
@@ -128,9 +150,10 @@ def resolve_inline_body_value(value: str, base: Path | None, raw: str = "") -> s
         the hook subprocess env; absent yields the UNAVAILABLE-body-source
         sentinel (the value does not exist before the command runs, so the gate
         renders the actionable "write the body to an absolute file" message,
-        #2369). Only the DOUBLE-quoted (``"$VAR"``) live form env-resolves -- a
+        #2369). Both the DOUBLE-quoted (``"$VAR"``) and the UNQUOTED (bare
+        ``$VAR``) live forms env-resolve (:func:`_var_ref_is_live`); only a
         single-quoted ``'$VAR'`` is inert literal text bash never expands, so it
-        is the published body and is scanned verbatim.
+        is the published body and is scanned verbatim (#F7.4).
     - anything else -- returned verbatim (a normal inline body).
 
     A value that STILL carries an embedded ``$(...)`` command-substitution
@@ -166,7 +189,7 @@ def resolve_inline_body_value(value: str, base: Path | None, raw: str = "") -> s
     if _CAT_HEREDOC_SUBST_RE.match(value) is not None:
         return ""
     var_match = _VAR_REF_RE.match(value)
-    if var_match is not None and (not raw or _DOUBLE_QUOTED_VAR_REF_RE.match(raw)):
+    if var_match is not None and _var_ref_is_live(raw):
         resolved = os.environ.get(var_match.group("name"))
         return resolved if resolved is not None else UNAVAILABLE_BODY_SOURCE_SENTINEL
     if "$(" in value and _raw_substitution_is_live(raw):
@@ -174,8 +197,15 @@ def resolve_inline_body_value(value: str, base: Path | None, raw: str = "") -> s
     return value
 
 
+# The terminator is EXACT-LINE anchored: ``\n<delim>`` followed only by optional
+# trailing spaces/tabs then end-of-line or end-of-string. The old ``\n<delim>\b``
+# terminated on a mere word boundary, so a body line that BEGINS with the delim
+# (``EOF and rest: leak``) matched and TRUNCATED the scanned body -- the leak
+# after the delim word published unscanned. A heredoc terminator must sit ALONE
+# on its line, so the exact-line anchor is both correct and closes the bypass
+# (#F7.5).
 _HEREDOC_RE: Final[re.Pattern[str]] = re.compile(
-    r"<<-?\s*['\"]?(\w+)['\"]?\s*\n(.*?)\n\1\b",
+    r"<<-?\s*['\"]?(\w+)['\"]?\s*\n(.*?)\n\1[ \t]*(?=\n|$)",
     re.DOTALL,
 )
 
@@ -188,7 +218,8 @@ _HEREDOC_RE: Final[re.Pattern[str]] = re.compile(
 # with the heredoc delimiter so a later ``-F``/``--body-file <path>`` reference
 # resolves to the body the command is about to write there (#126).
 _HEREDOC_TO_FILE_RE: Final[re.Pattern[str]] = re.compile(
-    r">{1,2}\|?\s*(?P<path>'[^']+'|\"[^\"]+\"|\S+)\s+<<-?\s*['\"]?(?P<delim>\w+)['\"]?\s*\n(?P<body>.*?)\n(?P=delim)\b",
+    r">{1,2}\|?\s*(?P<path>'[^']+'|\"[^\"]+\"|\S+)\s+<<-?\s*['\"]?(?P<delim>\w+)['\"]?\s*\n"
+    r"(?P<body>.*?)\n(?P=delim)[ \t]*(?=\n|$)",
     re.DOTALL,
 )
 
@@ -632,10 +663,21 @@ def _append_file_payload(
         # gh/glab's body-file stdin follows the destination-aware fail_closed policy.
         _append_stdin_body(payloads, ctx, fail_closed=leader == "git" or fail_closed)
         return
-    content = read_file_arg(path, ctx.base)
-    if content is None:
-        content = ctx.heredoc_files.get(path)
-    if content is not None:
-        payloads.append(content)
-    elif fail_closed:
+    # Consult the in-command heredoc/redirect body FIRST and the on-disk file
+    # SECOND, appending BOTH when both resolve (a conservative SUPERSET scan). A
+    # pre-existing REUSED temp path could otherwise let a STALE clean on-disk file
+    # shadow the real body the command is about to write there via ``> path <<EOF``
+    # -- the gate scanned the stale content and the live body published unscanned
+    # (#F7.6). Scanning both closes that: a banned term / user quote in EITHER the
+    # heredoc body or the on-disk file is a substring of the joined payload.
+    heredoc_body = ctx.heredoc_files.get(path)
+    disk_content = read_file_arg(path, ctx.base)
+    appended = False
+    if heredoc_body is not None:
+        payloads.append(heredoc_body)
+        appended = True
+    if disk_content is not None:
+        payloads.append(disk_content)
+        appended = True
+    if not appended and fail_closed:
         payloads.append(FAIL_CLOSED_SENTINEL)
