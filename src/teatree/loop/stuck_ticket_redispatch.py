@@ -31,6 +31,7 @@ from teatree.core.models.deferred_question import DeferredQuestion
 from teatree.core.models.errors import InvalidTransitionError
 from teatree.core.models.usage_window_state import LIMIT_PARKED_PREFIX
 from teatree.core.repair_loop import IterationStalled, MaxIterationsExceeded, requeue_verdict
+from teatree.llm.anthropic_limits import recoverable_exhaustion_cause
 
 logger = logging.getLogger(__name__)
 
@@ -183,15 +184,24 @@ def _budget_halt_reason(ticket: Ticket, *, phase: str) -> str | None:
 
 
 def _phase_attempts(ticket: Ticket, *, phase: str) -> list[TaskAttempt]:
-    """WORK attempts of *ticket*'s ``(ticket, normalized-phase)``, oldest first (limit-parks excluded)."""
-    return list(
+    """WORK attempts of *ticket*'s ``(ticket, normalized-phase)``, oldest first.
+
+    Both a usage-window limit-PARK (``LIMIT_PARKED_PREFIX``) and a window-recoverable
+    exhaustion FAILURE (session/weekly/rate-limit — see
+    :func:`~teatree.llm.anthropic_limits.recoverable_exhaustion_cause`) are excluded: a
+    capacity dip never executed a work iteration, so it must not burn the repair budget
+    nor trip the identical-failure stall — otherwise two limit hits spuriously halt the
+    re-dispatch and page a human. API-credit exhaustion (no timed reset) still counts.
+    """
+    attempts = (
         TaskAttempt.objects.filter(
             task__ticket_id=ticket.pk,
             task__phase__in=phase_spellings(normalize_phase(phase)),
         )
         .exclude(error__startswith=LIMIT_PARKED_PREFIX)
-        .order_by("pk"),
+        .order_by("pk")
     )
+    return [attempt for attempt in attempts if recoverable_exhaustion_cause(attempt.error) is None]
 
 
 def _escalate_once(ticket: Ticket, *, reason: str) -> None:
