@@ -560,3 +560,8 @@ def cadence_seconds() -> int:
         except ValueError:
             return 720
     return max(60, get_effective_settings().loop_cadence_seconds)
+
+
+def worker_is_quiescing() -> bool:
+    """True when the worker is draining for a deploy — admit NO new claims (read at the claim chokepoint only)."""
+    return get_effective_settings().worker_quiescing

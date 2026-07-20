@@ -162,6 +162,57 @@ def ensure_command(*, json_output: bool = typer.Option(False, "--json", help="Em
     _emit_ensure(json_output=json_output, action="spawned", detail="spawned a detached worker")
 
 
+#: Exit code for a drain that hit its grace window with work still in flight —
+#: distinct from 0 (drained) and from ensure's 1/2, so deploy.sh can tell the two
+#: apart and proceed knowing a stuck task re-queues via its lease lapse.
+_GRACE_EXCEEDED_EXIT = 3
+
+
+@worker_app.command("drain")
+def drain_command(
+    *,
+    timeout: int = typer.Option(1800, "--timeout", help="Grace seconds to wait for in-flight tasks to finish."),
+    poll_interval: float = typer.Option(5.0, "--poll-interval", help="Seconds between in-flight checks."),
+    json_output: bool = typer.Option(False, "--json", help="Emit the outcome as JSON."),
+) -> None:
+    """Quiesce the worker and wait for in-flight tasks to finish (drain-then-deploy).
+
+    Sets ``worker_quiescing`` ON so the claim/admission path admits ZERO new work,
+    then waits up to ``--timeout`` seconds for every live CLAIMED lease to clear —
+    the supervisor is never stopped and no in-flight sub-agent is killed. Exits 0
+    when the worker is drained; exits ``_GRACE_EXCEEDED_EXIT`` (naming the still-
+    CLAIMED task pks) when the grace lapses, so a deploy can proceed knowing a stuck
+    task re-queues via its lease lapse. The fresh worker's init clears the gate.
+    """
+    from teatree.utils.django_bootstrap import ensure_django  # noqa: PLC0415 (deferred: no Django/DB at CLI import)
+
+    ensure_django()
+
+    from teatree.loop.drain import DrainOutcome, drain_worker  # noqa: PLC0415 (deferred: no Django/DB at CLI import)
+
+    report = drain_worker(timeout=timeout, poll_interval=poll_interval)
+    if json_output:
+        typer.echo(
+            json.dumps(
+                {
+                    "outcome": report.outcome.value,
+                    "waited_seconds": round(report.waited_seconds, 3),
+                    "still_claimed": report.still_claimed,
+                }
+            )
+        )
+    elif report.outcome is DrainOutcome.DRAINED:
+        typer.echo(f"drained: no in-flight tasks after {report.waited_seconds:.0f}s — safe to deploy")
+    else:
+        pks = ", ".join(str(pk) for pk in report.still_claimed) or "(none listed)"
+        typer.echo(
+            f"grace-exceeded: {len(report.still_claimed)} task(s) still CLAIMED after "
+            f"{report.waited_seconds:.0f}s: {pks}"
+        )
+    if report.outcome is DrainOutcome.GRACE_EXCEEDED:
+        raise SystemExit(_GRACE_EXCEEDED_EXIT)
+
+
 def _emit_ensure(*, json_output: bool, action: str, detail: str) -> None:
     if json_output:
         typer.echo(json.dumps({"action": action, "detail": detail}))
