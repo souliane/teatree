@@ -284,6 +284,35 @@ class TestScanningNewsEnvelopeChannel(TestCase):
         assert {row.overlay for row in rows} == {"acme"}
         assert {row.status for row in rows} == {PendingArticleSuggestion.Status.PENDING}
 
+    @patch("teatree.core.models.pending_article_suggestion.check_url")
+    def test_recorded_batch_surfaces_one_owner_approval_dm(self, check_url: object) -> None:
+        # The shell-denied agent cannot post the approval DM itself, so the server
+        # DMs ONE owner-audience batch listing the candidates it just recorded.
+        check_url.return_value = UrlCheckResult(url="", status=UrlCheckStatus.OK, http_status=200)
+        task = self._claimed()
+        record_result_envelope(
+            task,
+            {
+                "summary": "1 candidate",
+                "article_suggestions": [{"title": "Agent evals", "url": "https://ex.com/a", "rationale": "why"}],
+            },
+        )
+        question = DeferredQuestion.objects.get()
+        assert question.is_pending
+        assert question.audience == DeferredQuestion.Audience.OWNER_QUESTION
+        assert question.parked_task_id is None
+        assert "https://ex.com/a" in question.question
+
+    @patch("teatree.core.models.pending_article_suggestion.check_url")
+    def test_no_new_candidates_posts_no_dm(self, check_url: object) -> None:
+        # A re-scan that records zero NEW rows (all deduped) must not re-nag.
+        check_url.return_value = UrlCheckResult(url="", status=UrlCheckStatus.OK, http_status=200)
+        blob = {"summary": "1", "article_suggestions": [{"title": "A", "url": "https://ex.com/a", "rationale": "w"}]}
+        record_result_envelope(self._claimed(), blob)
+        DeferredQuestion.objects.all().delete()
+        record_result_envelope(self._claimed(), blob)  # same URL → deduped, zero new rows
+        assert DeferredQuestion.objects.count() == 0
+
     def test_summary_only_scanning_news_is_refused(self) -> None:
         task = self._claimed()
         record_result_envelope(task, {"summary": "nothing found today"})

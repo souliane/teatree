@@ -106,7 +106,7 @@
     },
     {
       "name": "scanning-news",
-      "summary": "Scans today's TLDR AI and The Rundown AI editions for ideas that could improve teatree, fetches the full article for promising items, queues each concrete t3-improvement candidate behind an ask-gate (PendingArticleSuggestion) for per-article user approval before any souliane/teatree issue is filed, and posts a terse Slack DM summary"
+      "summary": "Scans today's TLDR AI and The Rundown AI editions for ideas that could improve teatree, fetches the full article for promising items, and hands each concrete t3-improvement candidate back through the result envelope's article_suggestions field. The loop queues each behind the ask-gate (PendingArticleSuggestion) for per-article user approval before any souliane/teatree issue is filed, and DMs the batch to the user"
     },
     {
       "name": "setup",

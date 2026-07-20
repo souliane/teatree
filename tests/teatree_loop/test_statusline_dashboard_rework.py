@@ -204,6 +204,7 @@ class TestLoopLineStateAndWaiting:
         with (
             patch("teatree.loop.statusline_loops._live_loop_leases", return_value=leases),
             patch("teatree.loop.statusline_loops._cadence_for_loop", return_value=720),
+            patch("teatree.loop.statusline_loops._availability_segment", return_value=""),
             patch("teatree.loop.statusline_loops._waiting_count", return_value=0),
         ):
             lines = live_loops_anchor()
@@ -220,7 +221,7 @@ class TestLoopLineStateAndWaiting:
             patch("teatree.loop.statusline_loops._waiting_count", return_value=2),
         ):
             lines = live_loops_anchor()
-        assert "waiting=2" in lines[0], lines[0]
+        assert "2 waiting" in lines[0], lines[0]
 
     def test_no_waiting_clause_when_no_pending(self) -> None:
         acquired_at = datetime.now(UTC) - timedelta(seconds=60)
@@ -239,6 +240,7 @@ class TestLoopLineStateAndWaiting:
         with (
             patch("teatree.loop.statusline_loops._live_loop_leases", return_value=leases),
             patch("teatree.loop.statusline_loops._cadence_for_loop", return_value=720),
+            patch("teatree.loop.statusline_loops._availability_segment", return_value=""),
             patch("teatree.loop.statusline_loops._waiting_count", side_effect=RuntimeError("db down")),
         ):
             lines = live_loops_anchor()

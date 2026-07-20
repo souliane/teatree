@@ -191,3 +191,60 @@ class TestTrackedWorktreeNeverReapedAsOrphan(_OrphanWorktreeFixture):
 
         assert wt_path.exists(), "a DB-tracked worktree must never be reaped by the orphan pass"
         assert not any("tracked-feat" in line for line in results)
+
+
+class TestStaleRemoteTrackingRefNeverReaped(_OrphanWorktreeFixture):
+    """The reaper must not read a stale tracking ref as proof the work is pushed.
+
+    ``commits_absent_from_all_remotes`` is a local graph query over
+    ``refs/remotes/*``. When a branch is deleted upstream by anything other than
+    this clone — a forge's auto-delete-on-merge, or a sibling clone — the local
+    tracking ref survives and still contains the tip, so the probe reports "on a
+    remote" for work that exists on no remote at all. That misread reaped
+    branches carrying real unmerged work.
+    """
+
+    def _delete_upstream_only(self, branch: str) -> None:
+        """Delete ``branch`` in the bare origin, leaving this clone's tracking ref stale.
+
+        Deliberately NOT ``git push --delete`` from the clone: that removes the
+        local tracking ref too, which self-heals the bug and would make this test
+        pass against the unfixed code.
+        """
+        _run_git("update-ref", "-d", f"refs/heads/{branch}", cwd=self.origin)
+
+    def test_unmerged_work_is_kept_when_its_tracking_ref_is_stale(self) -> None:
+        wt_path = self._add_orphan("review-fixes", files={"important.txt": "unmerged work"})
+        _run_git("push", "-q", "-u", "origin", "review-fixes", cwd=wt_path)
+        self._delete_upstream_only("review-fixes")
+
+        results = self._reap()
+
+        assert wt_path.exists(), "orphan holding unmerged work was reaped on a STALE tracking ref"
+        assert str(wt_path) in self._registered_paths()
+        assert any("unpushed work not on any remote" in line for line in results), results
+
+    def test_branch_merged_upstream_is_still_reaped(self) -> None:
+        """The fix must not turn every deleted-upstream branch into a keeper."""
+        wt_path = self._add_orphan("shipped-feat", files={"shipped.txt": "work that landed"})
+        _run_git("push", "-q", "-u", "origin", "shipped-feat", cwd=wt_path)
+        # Fast-forward main upstream to the branch tip, then delete the branch: the
+        # commits stay reachable from origin/main, so the worktree IS redundant.
+        _run_git("push", "-q", "origin", "HEAD:main", cwd=wt_path)
+        self._delete_upstream_only("shipped-feat")
+
+        results = self._reap()
+
+        assert not wt_path.exists(), "orphan whose work is on origin/main should still be reaped"
+        assert any("Reaped orphan worktree (work already on remote)" in line for line in results), results
+
+    def test_unreachable_remote_fails_closed_and_reaps_nothing(self) -> None:
+        """An unrefreshable clone keeps every orphan — unknown remote state never authorises deletion."""
+        wt_path = self._add_orphan("offline-feat", files={"o.txt": "work"})
+        _run_git("push", "-q", "-u", "origin", "offline-feat", cwd=wt_path)
+        _run_git("remote", "set-url", "origin", str(self.workspace / "gone.git"), cwd=self.repo_main)
+
+        results = self._reap()
+
+        assert wt_path.exists(), "a clone whose remote refs could not be refreshed must keep its orphans"
+        assert any("could not refresh remote refs" in line for line in results), results

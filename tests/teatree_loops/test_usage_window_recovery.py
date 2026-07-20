@@ -115,6 +115,31 @@ class TestReArmsOnlyAfterReset(django.test.TestCase):
         recover_windows(reset)
         assert BotPing.objects.filter(idempotency_key__startswith="usage_window_recovered:").exists()
 
+    def test_a_clear_that_released_nothing_is_silent(self) -> None:
+        """No parked task released → no owner DM. The message claims "resumed the loop".
+
+        This is the shape of every message in the observed flood (313 windows opened in 24h,
+        315 DMs, ``released 0 parked task(s)`` on every single one): a window that opens and
+        clears without ever gating work is bookkeeping, not news. The clear still happens and
+        is still logged — only the Slack line is withheld.
+        """
+        now = timezone.now()
+        reset = now + timedelta(hours=5)
+        window = UsageWindowState.record_limit(
+            lane=TaskAttempt.Lane.SUBSCRIPTION,
+            cause=LimitCause.SUBSCRIPTION_SESSION.value,
+            resets_at=reset,
+            now=now,
+        )
+
+        outcome = recover_windows(reset)  # no parked task seeded
+
+        assert outcome.cleared == [window.pk], "the window still clears"
+        assert outcome.released == 0
+        window.refresh_from_db()
+        assert window.cleared_at is not None, "clearing is unaffected — only the DM is withheld"
+        assert not BotPing.objects.filter(idempotency_key__startswith="usage_window_recovered:").exists()
+
     def test_all_accounts_exhausted_park_auto_resumes_at_reset(self) -> None:
         # A task parked because every configured account drained must auto-resume at its reset.
         from teatree.agents.usage_window import park_task_on_all_exhausted  # noqa: PLC0415 — test-local

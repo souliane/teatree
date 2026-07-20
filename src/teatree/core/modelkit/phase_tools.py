@@ -111,12 +111,18 @@ _TOOLS_BY_PHASE: Final[dict[str, frozenset[str]]] = {
     # read-only fallback resolving a dispatchable phase silently.
     #
     # ``architectural_review`` (the periodic ``ac-reviewing-codebase`` pass) is a
-    # REVIEWED read-only+web policy, not the fallback accident the guard used to let
-    # slip: its skill walks the tree (Read/Grep) and files tickets through the
-    # teatree MCP write tools — MCP-server tools that are never in this built-in
-    # disallow complement — so it needs NO shell/write/edit to do its job. Same
-    # read-mostly shape as the reviewer phases, minus the cold-review-checkout shell.
-    "architectural_review": _READ_ONLY | _WEB,
+    # genuine review-WORK phase, so it gets the SAME read-mostly-with-shell shape as
+    # the reviewer phases: its skill walks the whole tree (Read/Grep), does git/PR
+    # archaeology (``git log``, merge-count since the last review), runs
+    # ``t3 tool verify-gates``, and files findings through the normal ticket pipeline
+    # — none of which the earlier NO-shell grant could do, which is exactly why a
+    # dispatched review stalled and leaked an "I lack shell + have no checkout"
+    # question to the owner. It keeps NO write/edit — a review produces tickets, not
+    # commits (a BLUEPRINT staleness fix goes through the normal pipeline) — so it
+    # stays least-privilege while being ABLE to complete the review. The dispatch
+    # resolves its ``cwd`` to the overlay's main clone (``_resolve_task_cwd``), the
+    # checkout the shell then reads and cold-worktrees from.
+    "architectural_review": _READ_ONLY | _WEB | {"shell"},
     # ``dogfood_smoke`` shells out to ``t3 dogfood overlay-provision-smoke`` to run
     # the provision smoke, so it needs the shell (read-only+shell, mirroring
     # ``bughunt``/``shipping``); it never mutates source through the write tools.

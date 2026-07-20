@@ -5,7 +5,12 @@ ref relative to a remote (or merges/rebases onto a target), all via the
 :mod:`teatree.utils.git_run` runners.
 """
 
-from teatree.utils.git_run import check, run, run_strict
+import subprocess
+
+from teatree.utils.git_run import check, git_env_without_overrides, run, run_strict
+from teatree.utils.run import run_allowed_to_fail
+
+FETCH_PRUNE_TIMEOUT_SECONDS = 120.0
 
 
 def fetch(repo: str = ".", remote: str = "origin", ref: str = "") -> None:
@@ -13,6 +18,41 @@ def fetch(repo: str = ".", remote: str = "origin", ref: str = "") -> None:
     if ref:
         args.append(ref)
     run(repo=repo, args=args)
+
+
+def fetch_all_prune(repo: str = ".") -> bool:
+    """``git fetch --all --prune`` — the freshness precondition for the #706 data-loss gate.
+
+    :func:`teatree.utils.git_worktree.commits_absent_from_all_remotes` answers
+    "is this commit on a remote?" by a purely LOCAL graph query over
+    ``refs/remotes/*``. Those refs go STALE the moment a branch is deleted
+    upstream by anything other than this clone — the ordinary post-merge case
+    (a forge's auto-delete-on-merge, or a sibling clone). A stale tracking ref
+    makes an unpushed tip look reachable-from-a-remote, so a destructive caller
+    reads genuinely-unmerged work as "already pushed" and reaps the last copy.
+    Pruning first removes exactly that false evidence.
+
+    ``--all`` because the gate's contract is "absent from ALL remotes", so every
+    remote must be refreshed, not just ``origin``.
+
+    **Every destructive caller MUST fail closed on ``False``** — keep the
+    worktree/branch, delete nothing — because a failed refresh means remote
+    state is unknown, and "unknown" must never authorise a deletion. Returns
+    ``True`` only on a clean exit; a non-zero exit or a timeout yields ``False``.
+    ``GIT_TERMINAL_PROMPT=0`` ensures a remote demanding interactive credentials
+    fails fast instead of hanging the sweep on a password prompt.
+    """
+    env = git_env_without_overrides() | {"GIT_TERMINAL_PROMPT": "0"}
+    try:
+        result = run_allowed_to_fail(
+            ["git", "-C", repo, "fetch", "--all", "--prune", "--quiet"],
+            expected_codes=None,
+            env=env,
+            timeout=FETCH_PRUNE_TIMEOUT_SECONDS,
+        )
+    except subprocess.TimeoutExpired:
+        return False
+    return result.returncode == 0
 
 
 def rebase(repo: str = ".", target: str = "") -> None:
