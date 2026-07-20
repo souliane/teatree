@@ -16,9 +16,15 @@ helper that:
 The turn is CLEAN-ROOM: an empty ``setting_sources`` and empty ``settings`` (no
 hooks), no tools, and a single ``max_turns`` so the model answers from the
 supplied prompt alone — the developer's personal context never biases the
-result, and the model cannot run a tool or read code. Any failure (a missing
-``claude`` binary, a credential problem, a timeout, an SDK/provider error)
-degrades to ``None`` so a best-effort aux turn never breaks its caller.
+result, and the model cannot run a tool or read code. Any failure of the turn
+itself (a missing ``claude`` binary, a timeout, an SDK/provider error) degrades
+to ``None`` so a best-effort aux turn never breaks its caller.
+
+A refused ambient environment is the ONE exception and RAISES
+:class:`~teatree.llm.credentials.CredentialError` instead: it is checked while
+building the options, before the turn is attempted, so it never reaches the
+degrade-to-``None`` handler. A base-URL redirect that silently answered ``None``
+would strand every caller on its fallback forever with nothing naming the cause.
 """
 
 import asyncio
@@ -102,9 +108,14 @@ def run_one_shot(prompt: str, spec: OneShotSpec, *, harness: Harness | None = No
     Resolves the harness (:func:`~teatree.agents.harness.resolve_harness`, or the
     injected *harness* for tests) and drives a single clean-room turn built from
     *spec*. Returns the stripped assistant text, or ``None`` when the turn
-    produced nothing OR any failure occurred (a missing ``claude`` binary, a
-    credential problem, a timeout, an SDK/provider error) — a best-effort aux
-    turn must degrade quietly, never break its caller.
+    produced nothing OR the turn failed (a missing ``claude`` binary, a timeout,
+    an SDK/provider error) — a best-effort aux turn must degrade quietly, never
+    break its caller.
+
+    RAISES :class:`~teatree.llm.credentials.CredentialError` when the ambient
+    environment is refused. :func:`_clean_room_options` runs that check before the
+    ``try``, deliberately: a misrouted base URL is a configuration fault the
+    operator must see, not a turn that quietly produced no answer.
     """
     options = _clean_room_options(spec)
     resolved = harness if harness is not None else resolve_harness()

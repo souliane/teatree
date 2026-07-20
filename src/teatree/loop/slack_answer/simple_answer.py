@@ -106,9 +106,14 @@ def _run_cheap_turn(question: str, digest: str) -> str:
     No skills, no tools, no loop context — a single stateless turn resolved to
     the ``cheap`` tier and routed through the active harness
     (:func:`teatree.agents.one_shot.run_one_shot`). A missing ``claude`` child,
-    any backend/credential error, or a timeout yields ``None`` from the seam,
-    which collapses to the NEEDS_WORK sentinel so the caller falls through to
-    delegation rather than posting a broken answer.
+    a backend error, or a timeout yields ``None`` from the seam, which collapses
+    to the NEEDS_WORK sentinel so the caller falls through to delegation rather
+    than posting a broken answer.
+
+    A refused ambient environment does NOT collapse that way — the seam raises
+    :class:`~teatree.llm.credentials.CredentialError` and it propagates through
+    this function, failing the cycle loudly. Answering NEEDS_WORK on a misrouted
+    base URL would delegate every question forever with nothing naming why.
     """
     prompt = f"Question: {question}\n\nCompact teatree state:\n{digest}"
     answer = run_one_shot(

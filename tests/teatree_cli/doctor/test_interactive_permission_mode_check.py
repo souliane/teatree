@@ -69,12 +69,17 @@ class TestInteractivePermissionModeCheck:
         assert _check_interactive_permission_mode() is True
         assert capsys.readouterr().out == ""
 
-    def test_unreadable_settings_degrades_to_a_warn_not_a_crash(
+    def test_unreadable_settings_degrades_silently_not_a_crash(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
     ) -> None:
+        # Shares `_read_json_object` with the other checks that read this file, so a
+        # corrupt settings.json reads as "no mode configured" and this check stays
+        # quiet. Deliberate: two sibling checks already read the same file and degrade
+        # the same way, and a third voice reporting one corrupt file is noise, not
+        # signal. What must never happen is a crash — the doctor run has to finish.
         claude = tmp_path / ".claude"
         claude.mkdir(parents=True)
         (claude / "settings.json").write_text("{not json", encoding="utf-8")
         monkeypatch.setenv("HOME", str(tmp_path))
         assert _check_interactive_permission_mode() is True
-        assert "WARN" in capsys.readouterr().out
+        assert capsys.readouterr().out == ""

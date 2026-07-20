@@ -349,12 +349,18 @@ class AnthropicSubscriptionCredential(Credential):
 def reject_ambient_base_url_redirect() -> None:
     """Refuse an ambient-auth ``claude`` spawn that also carries a base-URL redirect.
 
-    THE guard for every seam that spawns a ``claude`` child WITHOUT pinning a
-    credential onto its env — the headless dispatch's unpinned default, the
-    clean-room one-shot turn, and the maker pane. Those children authenticate
+    The guard for every AUTONOMOUS seam that spawns a ``claude`` child WITHOUT
+    pinning a credential onto its env — the headless dispatch's unpinned default,
+    the clean-room one-shot turn, and the maker pane. Those children authenticate
     however the CLI's own login state resolves, which this process cannot observe,
     and both the CLI and the Anthropic SDK read
     :data:`ANTHROPIC_BASE_URL_ENV` from the inherited env.
+
+    Deliberately NOT covered: the three ``exec``-family spawns an operator invokes
+    by hand — ``t3 agent``, ``t3 loop start``, and the dashboard's ttyd debug
+    session. Each replaces this process rather than dispatching work under it, so
+    the operator sees the child's own auth behaviour directly and a refusal here
+    would only obscure an environment they set themselves.
 
     The one unambiguously sanctioned shape passes: a metered key with no
     subscription token beside it — an operator pointing their OWN API key at a

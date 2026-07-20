@@ -233,15 +233,18 @@ Set `permissions.defaultMode` to `auto` in `~/.claude/settings.json` for the ses
 
 This is a suggestion, not a gate: the mode is Claude Code's setting, not teatree's, so `t3 doctor check` only advises when it sees `bypassPermissions` and stays silent when no mode is configured.
 
-**Changing it does not reach headless runs, even though they read the same file.** A headless child loads the same user settings (the SDK defaults `setting_sources` to user+project), but every headless dispatch pins `permission_mode` explicitly and the SDK passes it as `--permission-mode`, which overrides the settings default. That explicit pin is the only thing separating the two — it is asserted by `tests/teatree_agents/test_headless_least_privilege.py`, so removing it fails a test rather than silently classifier-gating unattended writes.
+**Changing it reaches only the session you drive, even though every lane reads the same file.** `defaultMode` is one global key, so the separation cannot come from the settings — it comes from each unattended lane pinning `--permission-mode` for itself. Headless dispatch pins it in `ClaudeAgentOptions` (the SDK emits the flag), and `t3 loop start` pins the same flag on the argv it execs. A pinned flag beats the settings default, so neither lane inherits your choice here.
 
-Three modes, three contexts — do not generalise one to the others:
+Those pins are the only thing separating the lanes, and both are asserted — `tests/teatree_agents/test_headless_least_privilege.py` and `tests/teatree_cli/test_cli_loop.py` — so removing either fails a test rather than silently classifier-gating unattended work.
+
+Four contexts — do not generalise one to the others:
 
 | Context | Mode | Why |
 |---|---|---|
 | Interactive session (you are present) | `auto` | classifier gates each call; no prompt spam, not allow-all |
-| Headless write phases (`coding` / `planning` / `shipping` / `reviewing`) | `bypassPermissions` | no human to approve a `Write`; narrowing it strands the run |
-| The quarantined reader phase | `dontAsk` | its tool set is meant to be empty, so default-deny is correct |
+| The `t3 loop start` session | `bypassPermissions` (pinned) | drives the autonomous loop; unattended under `autonomous_away`, so a classifier denial has nobody to override it |
+| Headless write phases (`coding` / `planning` / `shipping` / `reviewing`) | `bypassPermissions` (pinned) | no human to approve a `Write`; narrowing it strands the run |
+| The quarantined reader phase | `dontAsk` (pinned) | its tool set is meant to be empty, so default-deny is correct |
 
 ## Step 5: Generate an Overlay Package
 

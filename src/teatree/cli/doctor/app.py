@@ -229,10 +229,12 @@ def _check_claude_session_posture() -> bool:
     teatree's own state, and both must run AFTER ``ensure_django`` — the
     account-switch probe builds messaging backends through the overlay factory to
     live-probe connector reachability once the cache is invalidated. Only the
-    account-switch half can hard-FAIL; the permission-mode half is advisory.
+    account-switch half can hard-FAIL; the permission-mode half advises and its
+    return value is deliberately discarded, so it cannot become a gate by accident.
     """
     ok = _check_account_switch()
-    return _check_interactive_permission_mode() and ok
+    _check_interactive_permission_mode()
+    return ok
 
 
 def run_doctor_checks(*, repair: bool = False, slack_roundtrip: bool = False) -> bool:

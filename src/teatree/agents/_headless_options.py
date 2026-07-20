@@ -17,6 +17,7 @@ from typing import cast
 from claude_agent_sdk import ClaudeAgentOptions
 from claude_agent_sdk.types import EffortLevel, SystemPromptPreset, ThinkingConfig
 
+from teatree.agents import permission_modes
 from teatree.agents.model_tiering import model_supports_thinking, resolve_spawn_effort, resolve_spawn_model
 from teatree.agents.reader_profile import is_reader_phase
 from teatree.agents.sdk_tool_map import sdk_disallowed_tools_for_phase
@@ -24,15 +25,8 @@ from teatree.core.models import Task
 from teatree.core.models.worktree import Worktree
 from teatree.llm.builtin_tools import KNOWN_BUILTIN_TOOLS
 
-# Headless agent default permission mode: a detached run has no human to grant
-# tool permissions, so it bypasses the per-tool prompt and runs unattended.
-_PERMISSION_MODE = "bypassPermissions"
-# The #116 quarantined reader's mode. ``dontAsk`` denies anything not pre-approved
-# by an allow rule instead of auto-approving it; the reader defines no allow rules,
-# so its effective tool set is empty by DEFAULT rather than by naming every tool in
-# ``disallowed_tools``. Applied only to the reader — every write phase needs
-# ``bypassPermissions`` to act unattended.
-_READER_PERMISSION_MODE = "dontAsk"
+_PERMISSION_MODE = permission_modes.UNATTENDED
+_READER_PERMISSION_MODE = permission_modes.READER_DEFAULT_DENY
 # The SDK spawns no max-turns ceiling of its own; the loop watchdog bounds a
 # runaway. ``0`` leaves the SDK uncapped (the watchdog is the real bound).
 _MAX_TURNS = 0
