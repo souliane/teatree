@@ -7976,8 +7976,8 @@ Usage: t3 teatree pr post-test-plan [OPTIONS] MR_IID
  Post a test plan as a PR comment. Uploads files and updates existing notes.
 
  A thin delegator to the shared gated engine
- (:func:`teatree.core.management.commands._test_plan.post.post_mr_test_plan_com
- meant`),
+ (:func:`teatree.core.management.commands._test_plan.mr_post.post_mr_test_plan_
+ comment`),
  so the MR path gets the SAME gates as the ticket/issue poster (F3.1) and
  can no longer drift: files (screenshots, videos) are uploaded and each one
  passes the #2156 ``verify_upload`` existence check before it is embedded

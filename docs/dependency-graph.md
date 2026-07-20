@@ -52,6 +52,7 @@ graph TD
     teatree.core --> teatree.core.modelkit
     teatree.core --> teatree.core.models.errors
     teatree.core --> teatree.core.models
+    teatree.core --> teatree.core.managers
     teatree.core --> teatree.core.loop_lease_manager
     teatree.core --> teatree.core.session_identity
     teatree.core --> teatree.loop.loop_cadences
@@ -199,6 +200,7 @@ graph TD
     teatree.loop --> teatree.loop.loop_scoping
     teatree.loop --> teatree.loop.statusline
     teatree.loop --> teatree.loop.statusline_loops
+    teatree.loop --> teatree.loop.statusline_loop_chunks
     teatree.loop --> teatree.loop.statusline_palette
     teatree.loop --> teatree.loop.statusline_render
     teatree.loop --> teatree.loop.url_specificity
@@ -223,10 +225,13 @@ graph TD
     teatree.loop.session_identity --> teatree.core.session_identity
     teatree.loop.loop_scoping --> teatree.core.loop_lease_manager
     teatree.loop.loop_scoping --> teatree.loop.session_identity
+    teatree.loop.statusline_loop_chunks --> teatree.loop.loop_scoping
+    teatree.loop.statusline_loop_chunks --> teatree.loop.statusline_palette
     teatree.loop.statusline_loops --> teatree.config
     teatree.loop.statusline_loops --> teatree.core
     teatree.loop.statusline_loops --> teatree.loop.loop_cadences
     teatree.loop.statusline_loops --> teatree.loop.loop_scoping
+    teatree.loop.statusline_loops --> teatree.loop.statusline_loop_chunks
     teatree.loop.statusline_loops --> teatree.loop.statusline_palette
     teatree.loop.statusline --> teatree.loop.statusline_loops
     teatree.loop.statusline --> teatree.loop.statusline_render
