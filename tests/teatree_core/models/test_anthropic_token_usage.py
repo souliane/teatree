@@ -121,6 +121,45 @@ class TestRowHealthAccessors(TestCase):
         row = AnthropicTokenUsage.objects.record("anthropic/acct/oauth", _reading(), now=_NOW)
         assert row.earliest_reset is None
 
+    def test_frees_up_at_ignores_an_idle_window_whose_reset_is_sooner(self) -> None:
+        """The live flood signature: rejected on 7d, idle 5h rolling over every few minutes.
+
+        ``earliest_reset`` points at the idle 5h window — an instant already in the PAST —
+        so parking on it produced a window that self-cleared on the next recovery tick and
+        DM'd the owner, once a minute. ``frees_up_at`` must name the 7-day window that is
+        actually blocking.
+        """
+        stale_5h = _NOW - dt.timedelta(minutes=1)
+        blocking_7d = _NOW + dt.timedelta(hours=14)
+        row = AnthropicTokenUsage.objects.record(
+            "anthropic/acct/oauth",
+            _reading(u5=0.0, u7=1.0, s7="rejected", reset_5h=stale_5h, reset_7d=blocking_7d),
+            now=_NOW,
+        )
+        assert row.is_exhausted, "a rejected 7-day window is exhaustion"
+        assert row.earliest_reset == stale_5h, "the display accessor still reports the soonest reset on record"
+        assert row.frees_up_at == blocking_7d, "the account re-arms when its BLOCKING window clears"
+        assert row.frees_up_at > _NOW, "a blocking reset is never already in the past"
+
+    def test_frees_up_at_is_the_latest_when_both_windows_block(self) -> None:
+        reset_5h = _NOW + dt.timedelta(hours=2)
+        reset_7d = _NOW + dt.timedelta(days=3)
+        row = AnthropicTokenUsage.objects.record(
+            "anthropic/acct/oauth",
+            _reading(u5=0.99, u7=1.0, s7="rejected", reset_5h=reset_5h, reset_7d=reset_7d),
+            now=_NOW,
+        )
+        assert row.frees_up_at == reset_7d, "both must clear before the account is usable"
+
+    def test_frees_up_at_is_none_for_a_healthy_account(self) -> None:
+        row = AnthropicTokenUsage.objects.record(
+            "anthropic/acct/oauth",
+            _reading(reset_5h=_NOW + dt.timedelta(hours=2)),
+            now=_NOW,
+        )
+        assert not row.is_exhausted
+        assert row.frees_up_at is None, "nothing is blocking, so there is nothing to re-arm to"
+
     def test_str_includes_pass_path_and_both_utilizations(self) -> None:
         rendered = str(
             AnthropicTokenUsage(pass_path="anthropic/x/oauth", utilization_5h=0.3, utilization_7d=0.8, valid_until=_NOW)

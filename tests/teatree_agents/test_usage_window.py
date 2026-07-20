@@ -428,3 +428,21 @@ class TestParkTaskOnAllExhausted(django.test.TestCase):
         task = _claimed_task()
         assert park_task_on_all_exhausted(task, resets_at=None, lane="subscription") is None
         assert not UsageWindowState.objects.exists()
+
+    def test_an_already_elapsed_reset_is_not_parked(self) -> None:
+        """A park keyed on a past instant is dead on arrival — refuse it.
+
+        The recovery chain would clear such a window on its very next tick and DM the owner
+        "usage window restored"; a caller that keeps re-deriving an elapsed reset therefore
+        floods the owner at the poll cadence instead of surfacing the real failure.
+        """
+        _set_autorecovery(on=True)
+        now = timezone.now()
+        task = _claimed_task()
+
+        parked = park_task_on_all_exhausted(
+            task, resets_at=now - timedelta(seconds=1), lane=TaskAttempt.Lane.SUBSCRIPTION, now=now
+        )
+
+        assert parked is None, "the caller falls back to its terminal path rather than parking"
+        assert not UsageWindowState.objects.exists(), "no self-clearing window is written"
