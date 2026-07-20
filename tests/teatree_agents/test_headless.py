@@ -768,6 +768,46 @@ class TestResolveTaskCwd(TestCase):
         Worktree.objects.create(ticket=ticket, repo_path="/nonexistent/repo/path")
         assert _resolve_task_cwd(task) is None
 
+    def test_architectural_review_with_no_worktree_falls_back_to_t3_repo_clone(self) -> None:
+        # The architectural-review daemon's synthetic ticket carries no worktree; the
+        # dispatch must start the review IN the teatree main clone so it can Read the
+        # tree and run git / `t3 tool verify-gates`. This closes the leaked "no
+        # accessible checkout of the teatree repo" half of the bug.
+        import tempfile  # noqa: PLC0415
+
+        from teatree.agents._headless_options import _resolve_task_cwd  # noqa: PLC0415
+
+        ticket = Ticket.objects.create()
+        session = Session.objects.create(ticket=ticket)
+        task = Task.objects.create(ticket=ticket, session=session, phase="architectural_review")
+        with tempfile.TemporaryDirectory() as clone_dir:
+            (Path(clone_dir) / ".git").mkdir()
+            with patch.dict(os.environ, {"T3_REPO": clone_dir}):
+                assert _resolve_task_cwd(task) == clone_dir
+
+    def test_architectural_review_falls_back_to_clone_root_scan_without_t3_repo(self) -> None:
+        from teatree.agents._headless_options import _resolve_task_cwd  # noqa: PLC0415
+
+        ticket = Ticket.objects.create()
+        session = Session.objects.create(ticket=ticket)
+        task = Task.objects.create(ticket=ticket, session=session, phase="architectural_review")
+        with (
+            patch.dict(os.environ, {"T3_REPO": ""}),
+            patch("teatree.core.worktree.clone_paths.find_clone_path", return_value=Path("/ws/souliane/teatree")),
+        ):
+            assert _resolve_task_cwd(task) == "/ws/souliane/teatree"
+
+    def test_non_dispatch_phase_with_no_worktree_keeps_unset_cwd(self) -> None:
+        # Only the scanner-dispatched review phase falls back to the main clone; every
+        # other phase keeps the historical ``None`` when it has no ticket worktree.
+        from teatree.agents._headless_options import _resolve_task_cwd  # noqa: PLC0415
+
+        ticket = Ticket.objects.create()
+        session = Session.objects.create(ticket=ticket)
+        task = Task.objects.create(ticket=ticket, session=session, phase="coding")
+        with patch.dict(os.environ, {"T3_REPO": "/does/not/matter"}):
+            assert _resolve_task_cwd(task) is None
+
 
 def test_collect_ignores_messages_that_are_neither_assistant_nor_result() -> None:
     from teatree.agents.headless import _collect  # noqa: PLC0415
