@@ -2,7 +2,8 @@
   "model": "claude-opus-4-8",
   "autoCompactEnabled": true,
   "enabledPlugins": {
-    "t3@souliane": true
+    "t3@souliane": true,
+    "pyright-lsp@claude-plugins-official": true
   },
   "permissions": {
     "defaultMode": "acceptEdits",

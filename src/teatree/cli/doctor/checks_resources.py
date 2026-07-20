@@ -10,6 +10,8 @@ hygiene) so each module stays a single concern under the module-health LOC cap.
 
 import json
 import os
+import shutil
+from collections.abc import Callable
 from pathlib import Path
 from typing import cast
 
@@ -30,6 +32,13 @@ _MIN_MOUNT_FIELDS = 3
 # small — and not needing the loop's skills — is correct and must NOT be flagged.
 _AGENT_ROLE = "worker"
 _CLAUDE_PLUGIN_ID = "t3@souliane"
+
+# The external pyright-lsp plugin + the language-server binary it drives. ADVISORY
+# only (a productivity aid, never a worker gate): `t3 setup` registers + enables the
+# plugin, and the npm `pyright` package (baked into the image) provides
+# `pyright-langserver`, which the plugin execs to deliver live type diagnostics.
+_PYRIGHT_PLUGIN_ID = "pyright-lsp@claude-plugins-official"
+_PYRIGHT_LANGSERVER = "pyright-langserver"
 _DEFAULT_WORKER_FLOOR_GIB = 4
 _BYTES_PER_GIB = 1024**3
 # cgroup v1's "unlimited" is a near-2**63 page-aligned sentinel, and cgroup v2 uses
@@ -235,3 +244,37 @@ def _check_worker_skills_present(*, role: str | None = None, home: Path | None =
         "container (or redeploy); the worker entrypoint now refuses to start without it."
     )
     return False
+
+
+def _check_pyright_lsp_plugin(*, home: Path | None = None, which: Callable[[str], str | None] | None = None) -> bool:
+    """ADVISORY: verify the pyright-lsp plugin is enabled AND its langserver is on PATH.
+
+    pyright-lsp gives factory agents LIVE pyright type diagnostics while coding, so a
+    type error surfaces in-session instead of only at CI. It is a productivity aid,
+    NOT a worker gate — every finding is a WARN and this NEVER gates the doctor exit
+    code (always returns ``True``), matching the sibling advisory checks. ``t3 setup``
+    registers + enables the plugin; its language server (``pyright-langserver``, from
+    the npm ``pyright`` package baked into the image) must be on PATH for the plugin to
+    start. WARNs with an actionable remediation when either is missing. ``which`` is
+    injectable for tests (defaults to :func:`shutil.which`). Crash-proof — any read
+    error degrades to a silent pass so this diagnostic never aborts the doctor run.
+    """
+    resolve = shutil.which if which is None else which
+    try:
+        enabled = _read_json_object((home or Path.home()) / ".claude" / "settings.json").get("enabledPlugins")
+    except OSError:
+        return True
+    if not (isinstance(enabled, dict) and cast("JsonObject", enabled).get(_PYRIGHT_PLUGIN_ID) is True):
+        typer.echo(
+            "WARN  pyright-lsp plugin is not enabled — factory agents get no LIVE pyright type "
+            "diagnostics while coding (type errors surface only at CI). Run `t3 setup` to register "
+            "+ enable it (advisory only; nothing is gated)."
+        )
+        return True
+    if resolve(_PYRIGHT_LANGSERVER) is None:
+        typer.echo(
+            f"WARN  pyright-lsp plugin is enabled but `{_PYRIGHT_LANGSERVER}` is not on PATH — the "
+            "language server cannot start, so there are no live type diagnostics. Install it with "
+            "`npm install -g pyright` (advisory only; nothing is gated)."
+        )
+    return True

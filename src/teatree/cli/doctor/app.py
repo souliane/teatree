@@ -46,6 +46,7 @@ from teatree.cli.doctor.checks_mcp import (
     _check_teatree_mcp_registration,
 )
 from teatree.cli.doctor.checks_resources import (
+    _check_pyright_lsp_plugin,
     _check_tmp_tmpfs_headroom,
     _check_worker_memory_cap,
     _check_worker_skills_present,
@@ -110,6 +111,7 @@ __all__ = (
     "_check_marker_jam",
     "_check_mcp_connectivity",
     "_check_provision_concurrency_from_host",
+    "_check_pyright_lsp_plugin",
     "_check_single_db",
     "_check_singletons",
     "_check_skills",
@@ -186,11 +188,14 @@ def _optional_tooling_advisories() -> None:
     container and on a host that never opted in. The tmpfs-headroom check WARNs when
     a RAM-backed ``/tmp`` is filling toward ENOSPC (the fill that wedges the box);
     runtime temp is routed to disk and the watchdog trims stale scratch on a cadence.
+    The pyright-lsp advisory WARNs when the plugin that gives agents live pyright type
+    diagnostics is not enabled, or its ``pyright-langserver`` is missing from PATH.
     (The critical worker gates — skills-present and memory-adequate — are HARD FAILs
     in :func:`run_doctor_checks`, not advisories here.)
     """
     _check_ttyd_for_dashboard()
     _check_chrome_devtools_mcp_suggestion()
+    _check_pyright_lsp_plugin()
     _check_docker_workflow_wired()
     _check_tmp_tmpfs_headroom()
 

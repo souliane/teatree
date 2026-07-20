@@ -20,7 +20,7 @@ from teatree.cli.setup.apm import ApmInstaller, strip_apm_hooks
 from teatree.cli.setup.clone import find_main_clone, validate_repo
 from teatree.cli.setup.docker_alias import DockerAliasInstaller
 from teatree.cli.setup.mcp_registrar import McpServerRegistrar
-from teatree.cli.setup.plugin_registrar import PluginRegistrar
+from teatree.cli.setup.plugin_registrar import PluginRegistrar, PyrightPluginRegistrar
 from teatree.cli.setup.skill_linker import CORE_EXCLUDED_SKILLS, SkillLinker
 from teatree.cli.setup.statusline_installer import StatuslineInstall, install_statusline
 from teatree.cli.setup.tool_installer import ToolInstaller
@@ -168,6 +168,12 @@ def run(
 
     if not skip_plugin:
         PluginRegistrar(repo).install()
+        # Register + enable the external pyright-lsp plugin (anthropics/claude-plugins-official)
+        # so factory agents get LIVE pyright type diagnostics while coding, instead of
+        # shipping type errors that only CI catches. Best-effort/offline-safe — an
+        # unreachable marketplace WARNs and continues; its `pyright-langserver` runtime
+        # dep is baked into the image and advisory-checked by `t3 doctor`.
+        PyrightPluginRegistrar().install()
         # Confirm the structured-search MCP server (`t3 mcp serve`, #1023) is
         # still wired via the plugin-bundled `.mcp.json` (#2863) — read-only,
         # idempotent, warns loudly rather than silently regressing agents back
