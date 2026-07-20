@@ -73,7 +73,12 @@ _CORE_DIR = Path(__file__).resolve().parents[2] / "src" / "teatree" / "core"
 # sits beside speak.py; toml_backends (the path-only-TOML backend construction) sits
 # beside backend_factory.py. Neither is owned by an existing subpackage — both are
 # leaf helpers of a flat root hub, mirroring notify_targets.py beside notify.py.
-PINNED_FLAT_CORE_MODULES = 77
+# 78: +managers_overlay.py (PR #3479 WP9 F1.6) — the overlay-scope Q-builders
+# (overlay_scope_q + for_overlay) carved out of managers.py to hold it under the
+# 500-LOC module-health cap. A leaf helper of the flat root managers.py hub,
+# consumed by managers.py and selectors._filters; owned by no existing subpackage,
+# mirroring speak_cleaning.py beside speak.py.
+PINNED_FLAT_CORE_MODULES = 78
 
 
 def _flat_core_modules() -> list[str]:
