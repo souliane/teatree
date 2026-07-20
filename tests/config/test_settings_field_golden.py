@@ -119,6 +119,7 @@ GOLDEN_USER_SETTINGS_FIELDS: frozenset[str] = frozenset(
         "orca_router_name",
         "orca_router_pass_path",
         "orchestrate_claim_enabled",
+        "worker_quiescing",
         "orchestrator_bash_gate_enabled",
         "outer_loop_enabled",
         "outer_loop_max_per_week",

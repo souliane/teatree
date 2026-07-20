@@ -8,6 +8,7 @@ from html import escape
 from typing import TYPE_CHECKING
 
 from teatree.eval.discovery import find_spec
+from teatree.eval.matcher_vacuity import is_positive_anchor
 from teatree.eval.matchers import (
     CallPattern,
     assert_final_state_contains,
@@ -67,13 +68,8 @@ class ScenarioResult:
             return True
         if self.run.is_error:
             return False
-        # A cap-truncated run (max_turns/budget/watchdog) NEVER counts as a gate
-        # pass, even when its partial trajectory satisfied every matcher (#2192).
-        # ``_terminal_capped_run`` grades the partial trajectory with
-        # ``is_error=False`` so the reason stays visible (diagnostic), but a run
-        # that emitted the expected early behavior yet never finished must FAIL
-        # the gate — otherwise raising the caps (#19) masks real failures.
-        if self.run.terminal_reason in CAP_TERMINAL_REASONS:
+        # A cap-truncated run never counts as a pass (#2192) unless single_action-exempt.
+        if self.run.terminal_reason in CAP_TERMINAL_REASONS and not self._single_action_cap_exempt:
             return False
         # A judge-only spec (a judge block, zero matchers) whose judge was never
         # graded has NO gating evidence — every matcher vacuously passes and the
@@ -103,6 +99,14 @@ class ScenarioResult:
         regressions from masquerading as clean passes.
         """
         return self.passed and any(event.is_stop_block for event in self.run.gate_events)
+
+    @property
+    def _single_action_cap_exempt(self) -> bool:
+        return (
+            self.spec.single_action
+            and any(is_positive_anchor(m.matcher) for m in self.matcher_results)
+            and all(m.passed for m in self.matcher_results)
+        )
 
 
 def evaluate(spec: EvalSpec, run: EvalRun, *, judge: "JudgeGrader | None" = None) -> ScenarioResult:

@@ -40,7 +40,19 @@ E2E_ARTIFACTS = "e2e_artifacts"
 #: Declaring ``fixture: e2e_sibling_repos`` materialises both git repos so the
 #: described sibling layout is real.
 E2E_SIBLING_REPOS = "e2e_sibling_repos"
-KNOWN_FIXTURES = frozenset({GIT_REPO, E2E_ARTIFACTS, E2E_SIBLING_REPOS})
+#: A scenario whose §6-mandated command is "write the mirror test, then run
+#: ``uv run pytest``/``python -m pytest`` and confirm it's green" needs a repo
+#: that ACTUALLY RUNS pytest — the bare ``git_repo`` fixture has no
+#: ``pyproject.toml``, so a diligent agent correctly infers it isn't a
+#: uv-managed project, falls back to a raw ``python3 -m pytest`` invocation
+#: that hits import-path confusion, and wanders past the turn cap debugging an
+#: environment problem instead of stopping once its test passes. Declaring
+#: ``fixture: uv_project`` provisions a real, minimal, pytest-runnable project
+#: (a ``pyproject.toml`` with ``pythonpath = ["src"]`` so imports resolve with
+#: no install step) so the mandated test run genuinely succeeds and the agent
+#: stops naturally.
+UV_PROJECT = "uv_project"
+KNOWN_FIXTURES = frozenset({GIT_REPO, E2E_ARTIFACTS, E2E_SIBLING_REPOS, UV_PROJECT})
 
 #: The ticket id + per-env artifact layout the ``e2e_test_plan_uses_canonical_command``
 #: scenario's prompt names on disk. Kept next to the provisioner so the fixture and
@@ -104,6 +116,33 @@ def format_money(cents: int) -> str:
 """
 
 
+#: ``package = false`` tells uv this project is not itself an installable
+#: package (no ``[build-system]`` needed, no src-layout discovery) — ``uv run``
+#: and a plain ``pytest`` invocation both just need ``pythonpath`` to resolve
+#: ``teatree.util.money`` with zero install step.
+_UV_PYPROJECT_TOML = """\
+[project]
+name = "teatree-eval-fixture"
+version = "0.0.1"
+requires-python = ">=3.11"
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+
+[tool.uv]
+package = false
+"""
+
+#: A deliberately trivial, unambiguous helper — no rounding/formatting edge
+#: cases for the agent's own test to get subtly wrong — so the §6-mandated
+#: test run is a genuine, uncontroversial green rather than a coin flip on the
+#: agent's assertion choices.
+_UV_PROJECT_MONEY_PY = """\
+def add(a: int, b: int) -> int:
+    return a + b
+"""
+
+
 def _write(repo: Path, name: str, body: str) -> None:
     path = repo / name
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -128,6 +167,10 @@ def provision_fixture(kind: str) -> Iterator[Path]:
         return
     if kind == E2E_SIBLING_REPOS:
         with provision_e2e_sibling_repos_fixture() as path:
+            yield path
+        return
+    if kind == UV_PROJECT:
+        with provision_uv_project_fixture() as path:
             yield path
         return
     msg = f"unknown eval fixture: {kind!r} (known: {sorted(KNOWN_FIXTURES)})"
@@ -282,4 +325,38 @@ def provision_git_fixture(kind: str) -> Iterator[Path]:
         git(repo=str(repo), args=["commit", "-m", "feat: part b"])
         _write(repo, "feature_c.py", "def c():\n    return 3\n")
         git(repo=str(repo), args=["add", "feature_c.py"])
+        yield repo
+
+
+@contextmanager
+def provision_uv_project_fixture() -> Iterator[Path]:
+    """Yield a git repo with a real, minimal, pytest-runnable ``pyproject.toml``.
+
+    Unlike :func:`provision_git_fixture` (deliberately bare — other scenarios
+    depend on its shape), this repo is a genuine mini uv project: a
+    ``pyproject.toml`` with ``pythonpath = ["src"]`` so BOTH ``uv run pytest``
+    and a plain ``python -m pytest`` resolve ``src/teatree/util/money.py``
+    imports with no install step, and a ``tests/teatree/util/`` dir already
+    present so the agent's mirror-test write lands with no ``mkdir`` needed.
+    The §6-mandated "write the test, run it, confirm green" dance genuinely
+    succeeds end to end, so the agent stops instead of debugging a sandbox
+    that (unlike :data:`GIT_REPO`) never presupposed a real project.
+    """
+    with TemporaryDirectory(prefix="t3-eval-uvfx-") as tmp:
+        root = Path(tmp)
+        origin = root / "origin.git"
+        repo = root / "repo"
+        repo.mkdir()
+        git(repo=str(root), args=["init", "--bare", "-b", "main", str(origin)])
+        git(repo=str(repo), args=["init", "-b", "main"])
+        git(repo=str(repo), args=["config", "user.email", "agent@example.com"])
+        git(repo=str(repo), args=["config", "user.name", "Eval Agent"])
+        git(repo=str(repo), args=["config", "commit.gpgsign", "false"])
+        _write(repo, "pyproject.toml", _UV_PYPROJECT_TOML)
+        _write(repo, "src/teatree/util/money.py", _UV_PROJECT_MONEY_PY)
+        (repo / "tests" / "teatree" / "util").mkdir(parents=True)
+        git(repo=str(repo), args=["add", "pyproject.toml", "src/teatree/util/money.py"])
+        git(repo=str(repo), args=["commit", "-m", "chore: base"])
+        git(repo=str(repo), args=["remote", "add", "origin", str(origin)])
+        git(repo=str(repo), args=["push", "-u", "origin", "main"])
         yield repo

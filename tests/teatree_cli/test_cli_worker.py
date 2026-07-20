@@ -10,11 +10,13 @@ import json
 from unittest import mock
 
 import django.test
+import pytest
 from typer.testing import CliRunner
 
 import teatree.cli.worker as worker_cli
 from teatree.cli.doctor.checks_runtime import _check_worker_running
 from teatree.cli.worker import worker_app
+from teatree.loop.drain import DrainOutcome, DrainReport
 
 runner = CliRunner()
 
@@ -80,6 +82,34 @@ class TestWorkerEnsure(django.test.TestCase):
             result = runner.invoke(worker_app, ["ensure"])
         assert result.exit_code == 1
         assert "error" in result.stdout
+
+
+class TestWorkerDrain(django.test.TestCase):
+    """`t3 worker drain` — quiesce + wait, exit 0 on drained, 3 on grace-exceeded."""
+
+    def test_drained_exits_zero(self) -> None:
+        report = DrainReport(outcome=DrainOutcome.DRAINED, waited_seconds=1.0)
+        with mock.patch("teatree.loop.drain.drain_worker", return_value=report):
+            result = runner.invoke(worker_app, ["drain", "--timeout", "30"])
+        assert result.exit_code == 0
+        assert "drained" in result.stdout
+
+    def test_grace_exceeded_exits_distinct_code_and_lists_tasks(self) -> None:
+        report = DrainReport(outcome=DrainOutcome.GRACE_EXCEEDED, waited_seconds=30.0, still_claimed=[7, 9])
+        with mock.patch("teatree.loop.drain.drain_worker", return_value=report):
+            result = runner.invoke(worker_app, ["drain", "--timeout", "30"])
+        assert result.exit_code == worker_cli._GRACE_EXCEEDED_EXIT
+        assert result.exit_code != 0
+        assert "7, 9" in result.stdout
+
+    def test_json_shape(self) -> None:
+        report = DrainReport(outcome=DrainOutcome.GRACE_EXCEEDED, waited_seconds=30.5, still_claimed=[7])
+        with mock.patch("teatree.loop.drain.drain_worker", return_value=report):
+            result = runner.invoke(worker_app, ["drain", "--json"])
+        payload = json.loads(result.stdout)
+        assert payload["outcome"] == "grace_exceeded"
+        assert payload["still_claimed"] == [7]
+        assert payload["waited_seconds"] == pytest.approx(30.5)
 
 
 class TestDoctorWorkerCheck(django.test.TestCase):

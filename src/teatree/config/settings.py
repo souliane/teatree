@@ -88,6 +88,7 @@ OVERLAY_OVERRIDABLE_SETTINGS: dict[str, Callable[[Any], Any]] = {
     "excluded_skills": _parse_str_list,
     "loop_cadence_seconds": _parse_strict_int,
     "loop_runner_enabled": _parse_strict_bool,
+    "worker_quiescing": _parse_strict_bool,
     "teams_enabled": _parse_strict_bool,
     "teams_max_panes": _parse_overridable_positive_int(1),
     "teams_idle_minutes": _parse_overridable_positive_int(30),
@@ -348,6 +349,7 @@ ENV_SETTING_OVERRIDES: dict[str, tuple[str, Callable[[str], Any]]] = {
     "T3_LIMIT_AUTORECOVERY_ENABLED": ("limit_autorecovery_enabled", _parse_env_bool),
     "T3_BOOST_CONCURRENCY": ("boost_concurrency", _parse_strict_int),
     "T3_LOOP_RUNNER_ENABLED": ("loop_runner_enabled", _parse_env_bool),
+    "T3_WORKER_QUIESCING": ("worker_quiescing", _parse_env_bool),
     "T3_TEAMS_ENABLED": ("teams_enabled", _parse_env_bool),
     "T3_TEAMS_MAX_PANES": ("teams_max_panes", _parse_env_positive_int(1)),
     "T3_TEAMS_IDLE_MINUTES": ("teams_idle_minutes", _parse_env_positive_int(30)),
@@ -603,6 +605,18 @@ class _LoopAndTeamsSettings:
     # The worker_supervisor cold-read default is pinned equal to this by
     # `tests/config/test_worker_default_parity.py` so a fresh install spawns a worker.
     loop_runner_enabled: bool = True
+    # The drain-then-deploy admission gate (rolling/zero-downtime deploy). Default
+    # OFF: the worker admits new work normally. `t3 worker drain` flips it ON for the
+    # deploy window so the claim/admission path admits ZERO new tasks — the CAS
+    # `claim_next_pending` and the `_claimable_for_target` query both short-circuit —
+    # while in-flight CLAIMED leases keep renewing and finish. It is READ only at the
+    # claim chokepoint; it deliberately does NOT feed the worker supervisor's
+    # `loop_runner_enabled` stop condition, so quiescing never stops the supervisor or
+    # kills a live sub-agent. The FRESH worker's init clears it so admission resumes.
+    # DB-home (#1775): resolved from the `ConfigSetting` store (global + overlay rows)
+    # + `T3_WORKER_QUIESCING` env; a TOML value is ignored on read. Set via `t3 worker
+    # drain` (which writes it) or `config_setting set worker_quiescing`.
+    worker_quiescing: bool = False
     # #1838 Track-B PR#6 — the inert agent-teams WORK layer. When false (the
     # default, fail-OFF), the team-role registry (`teatree.teams.roles`) is
     # PURE DATA referenced by nothing in the loop/dispatch/claim path: the

@@ -4660,6 +4660,8 @@ Usage: t3 worker [OPTIONS] COMMAND [ARGS]...
 │         tier, timer counts.                                                  │
 │ ensure  Spawn a detached worker iff ``loop_runner_enabled`` is ON and the    │
 │         flock is free.                                                       │
+│ drain   Quiesce the worker and wait for in-flight tasks to finish            │
+│         (drain-then-deploy).                                                 │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -4706,6 +4708,32 @@ Usage: t3 worker ensure [OPTIONS]
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --json          Emit the outcome as JSON.                                    │
 │ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+#### `t3 worker drain`
+
+```
+Usage: t3 worker drain [OPTIONS]
+
+ Quiesce the worker and wait for in-flight tasks to finish (drain-then-deploy).
+
+ Sets ``worker_quiescing`` ON so the claim/admission path admits ZERO new work,
+ then waits up to ``--timeout`` seconds for every live CLAIMED lease to clear —
+ the supervisor is never stopped and no in-flight sub-agent is killed. Exits 0
+ when the worker is drained; exits ``_GRACE_EXCEEDED_EXIT`` (naming the still-
+ CLAIMED task pks) when the grace lapses, so a deploy can proceed knowing a
+ stuck
+ task re-queues via its lease lapse. The fresh worker's init clears the gate.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --timeout              INTEGER  Grace seconds to wait for in-flight tasks to │
+│                                 finish.                                      │
+│                                 [default: 1800]                              │
+│ --poll-interval        FLOAT    Seconds between in-flight checks.            │
+│                                 [default: 5.0]                               │
+│ --json                          Emit the outcome as JSON.                    │
+│ --help                          Show this message and exit.                  │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 

@@ -37,6 +37,27 @@ if [ -n "${GNUPGHOME:-}" ] && [ -d "$GNUPGHOME" ] && [ -w "$GNUPGHOME" ]; then
     chmod 700 "$GNUPGHOME"
 fi
 
+# Route ALL runtime temp to DISK, never the box's small RAM-backed tmpfs. The
+# host /tmp is a ~16G tmpfs; the spawned headless `claude` sessions, `pytest`, and
+# `uv` write scratch there and can fill it to 100% (ENOSPC), wedging the whole box.
+# The container root is a large overlay DISK, so ``/var/tmp`` (always present,
+# world-writable+sticky, disk-backed on both host and container) is a safe temp
+# root that never touches the RAM tmpfs. Exported for EVERY non-watchdog role
+# BEFORE the role `exec`s, so the role process and its children — the headless
+# `claude` subprocess (which inherits every non-``GIT_*`` var, see
+# teatree.utils.git_run.git_env_without_overrides), pytest, and uv — all land their
+# scratch on disk. The container settings.json seed (from the image-baked template)
+# also carries ``TMPDIR``/``PYTEST_DEBUG_TEMPROOT`` so an agent's Bash tool inherits
+# it too; this export additionally covers the role process itself. Overridable via
+# ``TEATREE_DISK_TMPDIR`` for a box whose disk temp lives elsewhere.
+setup_disk_tmpdir() {
+    local tmproot="${TEATREE_DISK_TMPDIR:-/var/tmp}"
+    mkdir -p "$tmproot"
+    export TMPDIR="$tmproot"
+    export PYTEST_DEBUG_TEMPROOT="$tmproot"
+}
+setup_disk_tmpdir
+
 # Source a runtime secret from the box pass store when its env var is unset,
 # keeping the plaintext out of teatree.env and off argv/logs (#3454). An env
 # value always wins (eval/CI paths and a deliberate literal override); the pass
@@ -228,9 +249,12 @@ init_preflight() {
 # deploy/claude-settings.template.json; three env vars override the box-specific knobs.
 # Deploy-managed keys WIN over an existing file (a redeploy re-asserts the intended
 # config) while UNMANAGED keys the later `t3 setup` adds — notably statusLine — are
-# preserved (`jq '.[0] * .[1]'` deep-merges, right wins). MUST run before `t3 setup`.
+# preserved (`jq '.[0] * .[1]'` deep-merges, right wins). A pre-existing INVALID
+# settings.json is REPLACED with the managed config (the merge cannot parse it, and a
+# corrupt file downstream bricks `t3 setup` / the `claude` CLI). MUST run before
+# `t3 setup`.
 seed_claude_settings() {
-    local template="/usr/local/share/teatree/claude-settings.template.json"
+    local template="${TEATREE_CLAUDE_SETTINGS_TEMPLATE:-/usr/local/share/teatree/claude-settings.template.json}"
     local target="$HOME/.claude/settings.json"
     if [ ! -f "$template" ]; then
         echo "teatree-init: no claude-settings template at $template - skipping (agent runs on CLI defaults)" >&2
@@ -247,12 +271,57 @@ seed_claude_settings() {
         echo "teatree-init: failed to resolve claude-settings template - skipping" >&2
         return 0
     fi
-    if [ -f "$target" ]; then
-        jq -s '.[0] * .[1]' "$target" <(printf '%s' "$managed") >"$target.tmp" && mv "$target.tmp" "$target"
+    # Deep-merge over an EXISTING valid file (right wins) so unmanaged keys survive;
+    # but a pre-existing INVALID settings.json cannot be parsed by the merge and, left
+    # in place, bricks `t3 setup` / the `claude` CLI and silently drops the managed
+    # config. Validate first and REPLACE a corrupt (or unmergeable) file with the
+    # managed config rather than aborting init or leaving it broken.
+    if [ -f "$target" ] && jq -e . "$target" >/dev/null 2>&1; then
+        if jq -s '.[0] * .[1]' "$target" <(printf '%s' "$managed") >"$target.tmp" 2>/dev/null; then
+            mv "$target.tmp" "$target"
+        else
+            rm -f "$target.tmp"
+            echo "teatree-init: could not merge existing ~/.claude/settings.json - replacing it with the managed config" >&2
+            printf '%s\n' "$managed" >"$target"
+        fi
     else
+        if [ -f "$target" ]; then
+            echo "teatree-init: existing ~/.claude/settings.json is not valid JSON - replacing it with the managed config" >&2
+        fi
         printf '%s\n' "$managed" >"$target"
     fi
     echo "teatree-init: provisioned ~/.claude/settings.json (model=$(jq -r .model "$target"), mode=$(jq -r .permissions.defaultMode "$target"))"
+}
+
+# Provision the per-container Claude runtime the spawned `claude` agent needs:
+# ~/.claude/settings.json (seed_claude_settings) AND `t3 setup` (skill links, the
+# t3@souliane plugin registration via PluginRegistrar.install, statusLine, MCP
+# registration). This MUST run in EVERY agent-spawning role, not just init: the
+# `~/.claude` dir is PER-CONTAINER ephemeral (docker-compose.yml bind-mounts only
+# ~/.claude/projects — credentials stay host-only), so init's registration lands in
+# the init container's throwaway ~/.claude and never reaches worker/admin/slack-
+# listener. Without this, the worker's `claude` has no ~/.claude/plugins and no
+# enabledPlugins, so factory agents load ZERO skills. `t3 setup` is idempotent and
+# claude-env-focused, and these roles `depends_on` a completed init (shared clone +
+# editable install on the teatree_uv volume are present), so it is safe per-role.
+prepare_claude_runtime() {
+    seed_claude_settings
+    t3 setup
+}
+
+# VERIFY the agent's skills are actually available after `prepare_claude_runtime`:
+# the ``t3@souliane`` plugin is registered in ~/.claude/plugins/installed_plugins.json
+# with a resolvable install path AND enabled in ~/.claude/settings.json. Returns
+# non-zero when any signal is missing — the exact "agents would run SKILL-LESS"
+# condition. The worker treats this as a HARD startup precondition (owner directive:
+# PREFER HARD FAIL over silently running with a critical capability missing).
+verify_agent_skills() {
+    local settings="$HOME/.claude/settings.json"
+    local installed="$HOME/.claude/plugins/installed_plugins.json"
+    jq -e '.enabledPlugins."t3@souliane" == true' "$settings" >/dev/null 2>&1 || return 1
+    local install_path
+    install_path="$(jq -r '(.plugins."t3@souliane" // [])[0].installPath // empty' "$installed" 2>/dev/null)" || return 1
+    [ -n "$install_path" ] && [ -d "$install_path" ]
 }
 
 # Seed a config value through the provenance-aware DEPLOY seed (#3435). The ORM
@@ -533,10 +602,10 @@ init)
     ( cd "$CLONE_DIR" && prek install -f \
         && sed -i 's#^PREK="/opt/teatree/uv/tools/prek/bin/prek"#PREK="prek"#' \
             .git/hooks/pre-push .git/hooks/pre-commit .git/hooks/commit-msg 2>/dev/null )
-    # Provision the agent's ~/.claude/settings.json BEFORE `t3 setup` — setup's
-    # statusLine writer merges into (never clobbers) the file this seeds (#3359).
-    seed_claude_settings
-    t3 setup
+    # Provision the agent's ~/.claude/settings.json + `t3 setup` (skill links, the
+    # t3@souliane plugin registration, statusLine, MCP). setup's statusLine writer
+    # merges into (never clobbers) the file the seed writes (#3359).
+    prepare_claude_runtime
     t3 teatree db migrate
     # Values are JSON: enum strings are quoted, booleans and ints are bare.
     seed_setting agent_harness '"claude_sdk"'
@@ -554,10 +623,32 @@ init)
     # The admin binds the box loopback (host networking), so auto-login fires for
     # the SSH-tunnelled 127.0.0.1 request — no admin password behind the tunnel.
     seed_setting admin_autologin_enabled true
+    # Clear any drain-set quiescing flag so the FRESH worker RESUMES admission after a
+    # rolling deploy (drain-then-deploy). This is a HARD `set false`, NOT a provenance
+    # `seed`: `t3 worker drain` writes worker_quiescing via `config_setting set` (a
+    # durable operator-style row), and a `seed false` — equal to the code default — is
+    # a no-op that would leave the fresh worker quiesced and admitting nothing. NON-FATAL
+    # like the seeds: a transient failure must not brick the stack (a warn, then the
+    # operator can clear it via `t3 worker status` / `config_setting set`).
+    if ! t3 teatree config_setting set worker_quiescing false; then
+        echo "teatree-init: WARNING could not clear worker_quiescing ('t3 teatree config_setting set' failed); the worker may stay quiesced and admit no new work — clear it manually with 't3 teatree config_setting set worker_quiescing false' and check 't3 worker status'." >&2
+    fi
     apply_fleet_loop_policy
     echo "teatree-init: complete"
     ;;
 worker)
+    # ~/.claude is per-container ephemeral, so the agent's plugin/skill registration
+    # from init never reaches this container — re-run it here. For the WORKER, skills
+    # are a HARD startup precondition: the loop spawns headless agents, and a worker
+    # that spawns them with ZERO skills is the exact silent outage we refuse (owner
+    # directive: PREFER HARD FAIL over running with a critical capability missing). So
+    # `t3 setup` failing (set -e) OR the post-setup skills verification failing REFUSES
+    # to start, loudly and specifically, rather than serving a skill-less loop.
+    prepare_claude_runtime
+    if ! verify_agent_skills; then
+        echo "entrypoint: FATAL worker refusing to start: the t3 skills plugin is NOT registered (t3@souliane missing from ~/.claude/plugins/installed_plugins.json or not enabled in ~/.claude/settings.json) — the loop's agents would run SKILL-LESS. Re-run \`t3 setup\` in this container (or redeploy) and check \`t3 doctor check\`." >&2
+        exit 1
+    fi
     exec t3 worker
     ;;
 slack-listener)
@@ -575,10 +666,19 @@ slack-listener)
     # (so `exec t3 slack listen` stays the foreground process), never trips
     # `set -e`, and — unlike the old `|| true` — logs real failures to stderr and
     # writes a heartbeat `t3 doctor` reads to catch a stuck/failed drain (#3443).
+    #
+    # ~/.claude is per-container ephemeral, so re-run the agent plugin/skill
+    # registration here too (non-fatal — a listener must keep draining Slack even if
+    # setup hiccups; init already proved setup works).
+    prepare_claude_runtime || echo "entrypoint: WARNING prepare_claude_runtime failed in slack-listener - agent skills may be unavailable until restart" >&2
     slack_drain_loop &
     exec t3 slack listen
     ;;
 admin)
+    # ~/.claude is per-container ephemeral, so re-run the agent plugin/skill
+    # registration here too (non-fatal — the admin UI must serve even if setup
+    # hiccups; init already proved setup works).
+    prepare_claude_runtime || echo "entrypoint: WARNING prepare_claude_runtime failed in admin - agent skills may be unavailable until restart" >&2
     # Bind the box loopback (the service uses host networking) so the SSH-tunnel
     # request arrives as 127.0.0.1 and clears the middleware's loopback check.
     exec t3 admin --host 127.0.0.1 --port 8000 --no-browser

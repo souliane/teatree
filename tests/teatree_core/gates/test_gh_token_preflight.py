@@ -108,6 +108,70 @@ class TestProbeTokenPermissions:
         assert "gh" in probe.indeterminate_reason.lower()
 
 
+class TestWriteProbeIndeterminate:
+    """A write probe that fails to REACH a verdict is INDETERMINATE, not present.
+
+    The per-route write probe reads a genuine grant as a 404 (resource absent) and
+    a missing permission as a 403 ``not accessible``. A TRANSIENT/network failure of
+    a write probe returns NEITHER string, so the old loop — which only appended to
+    ``missing`` on the 403 signal and discarded the return code — silently recorded
+    the failed probe as permission PRESENT. A token genuinely missing the permission
+    then passed preflight and failed mid-run. The fix treats a probe that reached no
+    definitive 403/404 verdict as indeterminate (fail closed to a skip/warn, never a
+    false grant).
+    """
+
+    def test_transient_write_probe_is_indeterminate_not_present(self) -> None:
+        # RED before the fix: the transient issues probe (no `not accessible`, no
+        # reached-route signal) was counted as PRESENT, so probe.ok was True.
+        run = _runner(
+            {
+                "repos/souliane/teatree": (0, "{}"),
+                "issues/0": (1, "error connecting to api.github.com: connection reset by peer"),
+                "pulls/0": (1, _NOT_FOUND),
+                "refs/heads": (1, _NOT_FOUND),
+            }
+        )
+        with patch("teatree.core.gates.gh_token_preflight.shutil.which", return_value="/usr/bin/gh"):
+            probe = probe_token_permissions(_SLUG, run=run)
+        assert probe.missing == ()
+        assert probe.indeterminate_reason is not None
+        assert "issues: write" in probe.indeterminate_reason
+        assert not probe.ok
+
+    def test_genuine_denial_takes_precedence_over_transient(self) -> None:
+        # A real 403 denial must be reported (loud FAIL) even when another probe is
+        # transient — the denial is a definite gap, not masked by the indeterminate.
+        run = _runner(
+            {
+                "repos/souliane/teatree": (0, "{}"),
+                "issues/0": (1, _NOT_ACCESSIBLE),
+                "pulls/0": (1, "curl: (6) could not resolve host"),
+                "refs/heads": (1, _NOT_FOUND),
+            }
+        )
+        with patch("teatree.core.gates.gh_token_preflight.shutil.which", return_value="/usr/bin/gh"):
+            probe = probe_token_permissions(_SLUG, run=run)
+        assert probe.missing == ("issues: write",)
+        assert not probe.ok
+
+    def test_http_status_marker_counts_as_reached(self) -> None:
+        # Real `gh` prints `(HTTP 404)` on a reached route; that is present, not
+        # indeterminate, even without the bare `Not Found` JSON body.
+        run = _runner(
+            {
+                "repos/souliane/teatree": (0, "{}"),
+                "issues/0": (1, "gh: Sub-issues are disabled (HTTP 422)"),
+                "pulls/0": (1, "gh: Not Found (HTTP 404)"),
+                "refs/heads": (1, "gh: Not Found (HTTP 404)"),
+            }
+        )
+        with patch("teatree.core.gates.gh_token_preflight.shutil.which", return_value="/usr/bin/gh"):
+            probe = probe_token_permissions(_SLUG, run=run)
+        assert probe.ok
+        assert probe.missing == ()
+
+
 class TestClassicPatScope:
     """A classic PAT is judged by its ``X-OAuth-Scopes`` header.
 

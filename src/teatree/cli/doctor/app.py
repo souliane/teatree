@@ -45,6 +45,12 @@ from teatree.cli.doctor.checks_mcp import (
     _check_mcp_connectivity,
     _check_teatree_mcp_registration,
 )
+from teatree.cli.doctor.checks_resources import (
+    _check_pyright_lsp_plugin,
+    _check_tmp_tmpfs_headroom,
+    _check_worker_memory_cap,
+    _check_worker_skills_present,
+)
 from teatree.cli.doctor.checks_runtime import _check_singletons, _check_ttyd_for_dashboard, _check_worker_running
 from teatree.cli.doctor.checks_session import _check_account_switch, _check_agent_session_pins, _check_slack_socket_mode
 from teatree.cli.doctor.checks_slack_roundtrip import check_slack_roundtrip
@@ -105,6 +111,7 @@ __all__ = (
     "_check_marker_jam",
     "_check_mcp_connectivity",
     "_check_provision_concurrency_from_host",
+    "_check_pyright_lsp_plugin",
     "_check_single_db",
     "_check_singletons",
     "_check_skills",
@@ -113,8 +120,11 @@ __all__ = (
     "_check_stale_uv_venv",
     "_check_t3_shim_receipt",
     "_check_teatree_mcp_registration",
+    "_check_tmp_tmpfs_headroom",
     "_check_ttyd_for_dashboard",
+    "_check_worker_memory_cap",
     "_check_worker_running",
+    "_check_worker_skills_present",
     "_do_ensure_plugin_registered",
     "_ensure_plugin_registered",
     "_find_host_project_root",
@@ -175,11 +185,35 @@ def _optional_tooling_advisories() -> None:
     MCP). #3232 WARNs when the operator opted into the containerized ``t3`` workflow
     but a piece the wrapper depends on (compose stack, the executable ``deploy/t3``
     entry, the docker CLI, a non-drifted alias path) is missing — silent inside a
-    container and on a host that never opted in.
+    container and on a host that never opted in. The tmpfs-headroom check WARNs when
+    a RAM-backed ``/tmp`` is filling toward ENOSPC (the fill that wedges the box);
+    runtime temp is routed to disk and the watchdog trims stale scratch on a cadence.
+    The pyright-lsp advisory WARNs when the plugin that gives agents live pyright type
+    diagnostics is not enabled, or its ``pyright-langserver`` is missing from PATH.
+    (The critical worker gates — skills-present and memory-adequate — are HARD FAILs
+    in :func:`run_doctor_checks`, not advisories here.)
     """
     _check_ttyd_for_dashboard()
     _check_chrome_devtools_mcp_suggestion()
+    _check_pyright_lsp_plugin()
     _check_docker_workflow_wired()
+    _check_tmp_tmpfs_headroom()
+
+
+def _run_worker_gates() -> bool:
+    """The worker-role gates: flock liveness + the CRITICAL skills/memory HARD gates.
+
+    ``_check_worker_running`` warns when the loop is enabled but no worker holds
+    the flock. ``_check_worker_skills_present`` / ``_check_worker_memory_cap`` are the
+    role-aware HARD FAILs (worker only, else OK) that refuse to let a skill-less or
+    OOM-prone worker read as healthy — mirroring the entrypoint's worker startup
+    precondition. Each runs independently (no short-circuit) so every finding is emitted;
+    returns their AND for the caller's ``ok`` aggregation.
+    """
+    running = _check_worker_running()
+    skills = _check_worker_skills_present()
+    memory = _check_worker_memory_cap()
+    return running and skills and memory
 
 
 def run_doctor_checks(*, repair: bool = False, slack_roundtrip: bool = False) -> bool:
@@ -248,9 +282,10 @@ def run_doctor_checks(*, repair: bool = False, slack_roundtrip: bool = False) ->
 
     ok = doctor_check_self_db_migrations() and ok
 
-    # PR-28: warn when the loop worker is enabled but no worker holds the flock —
-    # the default-ON loops are silently dead until `t3 worker ensure` spawns one.
-    ok = _check_worker_running() and ok
+    # Worker-role gates: flock liveness (advisory) + the CRITICAL skills-present
+    # and memory-adequate HARD FAILs (role-aware no-ops off the worker). See
+    # :func:`_run_worker_gates` — each is evaluated independently so every finding shows.
+    ok = _run_worker_gates() and ok
 
     # Optional-tooling advisories (ttyd / chrome-devtools MCP / containerized-t3
     # wiring) — all surfacing-only, never gating the exit code.

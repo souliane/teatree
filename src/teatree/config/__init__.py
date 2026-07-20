@@ -52,6 +52,7 @@ from teatree.config.resolution import (
     _overlay_overrides_by_name,
     cadence_seconds,
     get_effective_settings,
+    worker_is_quiescing,
 )
 from teatree.config.setting_parsers import (
     _default_handover_mirror_path,
@@ -140,5 +141,6 @@ __all__ = [
     "resolve_mr_reminder",
     "resolve_speak",
     "speak_from_subtable",
+    "worker_is_quiescing",
     "worktree_root",
 ]
