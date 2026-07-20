@@ -14,7 +14,7 @@ from unittest.mock import patch
 import pytest
 
 from teatree.utils.git_sync import fetch_all_prune
-from tests.teatree_core.cleanup._shared import _run_git
+from tests.teatree_core.cleanup._shared import _GIT, _clean_env, _run_git
 
 
 class TestFetchAllPrune:
@@ -36,10 +36,11 @@ class TestFetchAllPrune:
 
     def _tracking_refs(self) -> str:
         return subprocess.run(
-            ["git", "-C", str(self.repo), "for-each-ref", "--format=%(refname)", "refs/remotes"],
+            [_GIT, "-C", str(self.repo), "for-each-ref", "--format=%(refname)", "refs/remotes"],
             check=True,
             capture_output=True,
             text=True,
+            env=_clean_env(),
         ).stdout
 
     def test_prunes_a_tracking_ref_left_stale_by_an_upstream_deletion(self) -> None:
