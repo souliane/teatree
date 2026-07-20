@@ -22,26 +22,13 @@ from django.utils import timezone
 
 from teatree.agents.landing_verification import landing_verification_error
 from teatree.agents.outage_classifier import outage_signature
-from teatree.agents.result_schema import (
-    RESULT_JSON_SCHEMA,
-    AgentResultBlob,
-    AnswerEnvelope,
-    ArticleSuggestion,
-    ReviewVerdictEnvelope,
-    TriageRecommendation,
-    answer_text,
-    check_evidence,
-    recommendation_issue_url,
-    suggestion_url,
-)
+from teatree.agents.reactive_envelope_recorders import record_reactive_envelopes
+from teatree.agents.result_schema import RESULT_JSON_SCHEMA, AgentResultBlob, ReviewVerdictEnvelope, check_evidence
 from teatree.core.gates.critic_gate import record_returned_critic_verdict
 from teatree.core.gates.directive_interpret_gate import record_returned_directive_interpretation
 from teatree.core.modelkit.phases import normalize_phase
 from teatree.core.models import (
-    DeferredQuestion,
     Finding,
-    PendingArticleSuggestion,
-    PendingTriageRecommendation,
     ReviewLoop,
     ReviewLoopRound,
     ReviewVerdict,
@@ -174,9 +161,7 @@ def record_result_envelope(
         return _record_failure(task, error=server_side_error, result=result)
 
     _maybe_record_plan_artifact(task, result, phase=phase)
-    _maybe_record_article_suggestions(task, result, phase=phase)
-    _maybe_record_triage_recommendations(task, result, phase=phase)
-    _maybe_record_answer_draft(task, result, phase=phase)
+    record_reactive_envelopes(task, result, phase=phase)
 
     attempt = TaskAttempt.objects.create(
         task=task,
@@ -351,172 +336,6 @@ def _maybe_record_plan_artifact(task: Task, result: AgentResultBlob, *, phase: s
         base_sha=base_sha if isinstance(base_sha, str) else "",
         adequacy=adequacy if isinstance(adequacy, dict) else None,
     )
-
-
-#: Shell-denied reactive phases whose headless agent hands its work back through
-#: a typed envelope channel (#9): the agent cannot run the ``t3`` CLI, so the
-#: recorder is the server-side half that persists the returned structure. The
-#: ``PHASE_REQUIRED_EVIDENCE`` gate has already refused a summary-only run before
-#: these fire, so the channel field is present and non-empty here.
-_SCANNING_NEWS_PHASE = "scanning_news"
-_TRIAGE_ASSESSING_PHASE = "triage_assessing"
-_ANSWERING_PHASE = "answering"
-
-
-def _maybe_record_article_suggestions(task: Task, result: AgentResultBlob, *, phase: str) -> None:
-    """Persist a scanning_news agent's returned ``article_suggestions`` (corr-11, #9).
-
-    One ``PENDING`` :class:`PendingArticleSuggestion` per candidate, idempotent by
-    source URL (a re-scan never duplicates) and behind the same ask-gate the
-    scanner used to enqueue directly — the shell-denied agent hands the batch
-    back, the server persists it. A non-scanning_news phase or a result with no
-    ``article_suggestions`` list is a no-op.
-    """
-    if normalize_phase(phase or task.phase) != _SCANNING_NEWS_PHASE:
-        return
-    suggestions = result.get("article_suggestions")
-    if not isinstance(suggestions, list):
-        return
-    overlay = task.ticket.overlay
-    for raw_item in suggestions:
-        url = suggestion_url(raw_item)
-        if not url:
-            continue
-        item = cast("ArticleSuggestion", raw_item)
-        PendingArticleSuggestion.record_candidate(
-            url=url,
-            title=str(item.get("title") or ""),
-            summary=str(item.get("rationale") or ""),
-            overlay=overlay,
-        )
-
-
-def _maybe_record_triage_recommendations(task: Task, result: AgentResultBlob, *, phase: str) -> None:
-    """Persist a triage_assessing agent's returned ``triage_recommendations`` (corr-11, #9).
-
-    One ``PENDING`` :class:`PendingTriageRecommendation` per assessed issue, idempotent
-    by issue URL (a re-assessment never duplicates) and fail-closed on an unknown
-    verdict — the shell-denied assessor hands the batch back and the server persists
-    it. After at least one row is recorded, ONE
-    :class:`DeferredQuestion` DMs the user the batch summary (correlated to the task
-    via ``parked_task``, deduped per task so a resume never re-asks). **Nothing acts
-    autonomously**: the interactive ``t3:triaging-issues`` skill approves/acts. A
-    non-triage_assessing phase or a result with no ``triage_recommendations`` list is
-    a no-op.
-    """
-    if normalize_phase(phase or task.phase) != _TRIAGE_ASSESSING_PHASE:
-        return
-    recommendations = result.get("triage_recommendations")
-    if not isinstance(recommendations, list):
-        return
-    overlay = task.ticket.overlay
-    recorded = 0
-    for raw_item in recommendations:
-        issue_url = recommendation_issue_url(raw_item)
-        if not issue_url:
-            continue
-        item = cast("TriageRecommendation", raw_item)
-        raw_labels = item.get("suggested_labels")
-        labels = [s for s in raw_labels if isinstance(s, str)] if isinstance(raw_labels, list) else []
-        row = PendingTriageRecommendation.record_candidate(
-            issue_url=issue_url,
-            verdict=str(item.get("verdict") or ""),
-            title=str(item.get("title") or ""),
-            suggested_labels=labels,
-            priority=str(item.get("priority") or ""),
-            duplicate_of=str(item.get("duplicate_of") or ""),
-            rationale=str(item.get("rationale") or ""),
-            overlay=overlay,
-        )
-        if row is not None:
-            recorded += 1
-    if recorded == 0:
-        return
-    DeferredQuestion.record(
-        question=(
-            f"Triaged {recorded} open needs-triage issue(s). Review and approve/reject each "
-            f"recommendation with /t3:triaging-issues — nothing is acted on until you approve."
-        ),
-        session_id=task.claimed_by_session or "",
-        parked_task=task,
-        dedupe_marker=f"triage-batch-{task.pk}",
-    )
-
-
-def _maybe_record_answer_draft(task: Task, result: AgentResultBlob, *, phase: str) -> None:
-    """Deliver an answering agent's returned ``answer`` draft (corr-11, #9).
-
-    A reply to the OWNER's own inbound DM (an answering task the reactive
-    Slack-answer cycle delegated, carrying its ``slack_answer`` context on the
-    ticket) is SENT immediately, threaded under the owner's message — answering
-    the owner is never a post *on the owner's behalf*, so it must never route
-    through the away/approval defer gate that parks the box's self-initiated
-    questions. Deferring the owner's own reply is exactly the bug where an owner
-    DM in ``autonomous_away`` got a "Approve this drafted reply?" pending
-    question parked instead of an answer.
-
-    Any other answering task (a colleague/channel thread the agent answers on
-    the user's behalf) still hands the draft back through a
-    :class:`DeferredQuestion` (correlated via ``parked_task``) for approval —
-    that on-behalf gate is unchanged. A non-answering phase or a result with no
-    ``answer`` text is a no-op.
-    """
-    if normalize_phase(phase or task.phase) != _ANSWERING_PHASE:
-        return
-    raw_answer = result.get("answer")
-    text = answer_text(raw_answer)
-    if not text:
-        return
-    if _post_owner_dm_reply(task, text):
-        return
-    answer = cast("AnswerEnvelope", raw_answer)
-    thread_ref = str(answer.get("thread_ref") or "").strip()
-    where = f" (thread {thread_ref})" if thread_ref else ""
-    DeferredQuestion.record(
-        question=f"Approve this drafted reply{where}?\n\n{text}",
-        session_id=task.claimed_by_session or "",
-        parked_task=task,
-    )
-
-
-def _post_owner_dm_reply(task: Task, text: str) -> bool:
-    """Send *text* as a threaded reply to the owner's inbound DM; ``True`` if sent.
-
-    The reactive Slack-answer cycle stamps the authoritative Slack coordinates
-    onto the delegated ticket as ``extra["slack_answer"]`` — ``channel`` and the
-    owner-message ``slack_ts``. Posting with ``ts=slack_ts`` threads the reply
-    under the owner's own message (a top-level DM roots on its own ts), so the
-    answer lands in the owner's thread, not as a new root or under a stale DM
-    cache. The ticket's ``slack_ts`` is the authoritative thread target — the
-    agent-returned ``thread_ref`` is advisory and may be blank or wrong.
-
-    Returns ``False`` (so the caller falls back to the on-behalf approval path,
-    losing nothing) when the ticket carries no ``slack_answer`` context, the
-    coordinates are incomplete, no messaging backend resolves, or the post does
-    not confirm ``ok``. On a confirmed send the owner-question row is stamped
-    ``answered_at`` so the #1063 turn-end gate stops nagging for it.
-    """
-    from teatree.core.backend_factory import messaging_from_overlay  # noqa: PLC0415 — deferred: call-time import
-    from teatree.core.models import PendingChatInjection  # noqa: PLC0415 — deferred: call-time import
-
-    slack_answer = (task.ticket.extra or {}).get("slack_answer")
-    if not isinstance(slack_answer, dict):
-        return False
-    channel = str(slack_answer.get("channel") or "").strip()
-    slack_ts = str(slack_answer.get("slack_ts") or "").strip()
-    if not channel or not slack_ts:
-        return False
-    backend = messaging_from_overlay(task.ticket.overlay or None)
-    if backend is None:
-        return False
-    try:
-        resp = backend.post_reply(channel=channel, ts=slack_ts, text=text)
-    except Exception:  # noqa: BLE001 — a Slack failure falls back to the approval path, never drops the reply
-        return False
-    if not isinstance(resp, dict) or resp.get("ok") is not True:
-        return False
-    PendingChatInjection.agent_answered_question(slack_ts)
-    return True
 
 
 #: Phases whose landed commit can back-fill a missing ``files_modified`` envelope.

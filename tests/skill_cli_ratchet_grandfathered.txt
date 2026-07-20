@@ -67,7 +67,6 @@ skills/rules/SKILL.md::glab api
 skills/rules/SKILL.md::glab ci status
 skills/rules/SKILL.md::glab issue view
 skills/rules/SKILL.md::glab mr view
-skills/scanning-news/SKILL.md::gh issue create
 skills/scanning-news/SKILL.md::gh issue list
 skills/setup/SKILL.md::gh auth status
 skills/setup/SKILL.md::glab auth status
