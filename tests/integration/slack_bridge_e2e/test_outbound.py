@@ -11,6 +11,7 @@ from teatree.backends.slack import http as slack_http
 from teatree.backends.slack.bot import SlackBotBackend
 from teatree.core import backend_factory
 from teatree.core import notify as core_notify
+from teatree.core import toml_backends
 from teatree.core import speak as core_speak
 from teatree.core.backend_factory import iter_overlay_backends, messaging_from_overlay
 from teatree.core.modelkit.notify_policy import NotifyAudience
@@ -104,13 +105,15 @@ class TestOutboundBridgeEndToEnd:
         }
 
         # Justified scaffolding (#1066 nit 2): patching the config-resolution
-        # seam (``_messaging_from_toml`` / ``teatree.config.load_config`` /
+        # seam (``toml_backends._messaging_from_toml`` / ``teatree.config.load_config`` /
         # ``get_overlay``) is how multiple synthetic per-overlay configs are
         # injected — they are not expressible via a single real
         # config store. ``httpx`` stays the only real external. See
         # the conftest module docstring; do not rewrite this to real-TOML.
+        # ``_messaging_from_toml`` is patched at ``toml_backends`` — the module
+        # that DEFINES it and where ``_messaging_from_toml_overlay`` looks it up.
         with (
-            patch.object(backend_factory, "_messaging_from_toml", side_effect=fake_messaging_from_toml),
+            patch.object(toml_backends, "_messaging_from_toml", side_effect=fake_messaging_from_toml),
             patch("teatree.config.load_config", return_value=_FakeConfig(raw={"overlays": cfg_overlays})),
             patch.object(backend_factory, "get_overlay", side_effect=ImproperlyConfigured),
         ):
