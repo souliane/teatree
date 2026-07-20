@@ -6,11 +6,8 @@ plus the interpreter-transport complement that catches a forge call hidden insid
 an interpreter arg. Synthetic term only.
 """
 
-from teatree.hooks._publish_detection import (
-    canonical_forge_leader,
-    command_has_interpreter_forge_transport,
-    wrapper_prefix_len,
-)
+from teatree.hooks._parser_primitives import canonical_forge_leader, wrapper_prefix_len
+from teatree.hooks._publish_detection import command_has_interpreter_forge_transport
 
 # Built from a fragment so the literal merge-class phrase never appears in source
 # (the PreToolUse forge gate pattern-matches it).
