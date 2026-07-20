@@ -7,9 +7,21 @@ from pathlib import Path
 
 import typer
 
+from teatree.utils.run import TimeoutExpired, run_allowed_to_fail
+
 _PLUGIN_NAME = "t3"
 _MARKETPLACE_NAME = "souliane"
 _PLUGIN_ID = f"{_PLUGIN_NAME}@{_MARKETPLACE_NAME}"
+
+_PYRIGHT_MARKETPLACE = "claude-plugins-official"
+_PYRIGHT_MARKETPLACE_SOURCE = "anthropics/claude-plugins-official"
+_PYRIGHT_PLUGIN_NAME = "pyright-lsp"
+_PYRIGHT_PLUGIN_ID = f"{_PYRIGHT_PLUGIN_NAME}@{_PYRIGHT_MARKETPLACE}"
+
+# Bound for a ``claude plugin`` CLI call — it clones + validates the remote
+# marketplace / plugin, so an unreachable network must time out and continue
+# rather than hang setup.
+_CLAUDE_CLI_TIMEOUT_S = 120
 
 
 def _read_json(path: Path) -> dict:
@@ -30,6 +42,29 @@ def _settings_path() -> Path:
     """Return the resolved settings.json path (follows symlinks)."""
     path = Path.home() / ".claude" / "settings.json"
     return path.resolve() if path.is_file() else path
+
+
+def _set_enabled_plugin(plugin_id: str) -> bool:
+    """Ensure ``plugin_id`` is enabled in settings.json; return True when it changed."""
+    resolved = _settings_path()
+    data = _read_json(resolved)
+    plugins = data.setdefault("enabledPlugins", {})
+    if plugins.get(plugin_id) is True:
+        return False
+    plugins[plugin_id] = True
+    _write_json(resolved, data)
+    return True
+
+
+def _plugin_installed(plugin_id: str) -> bool:
+    """True when ``plugin_id`` has an installed_plugins.json entry with a live ``installPath``."""
+    plugins = _read_json(Path.home() / ".claude" / "plugins" / "installed_plugins.json").get("plugins", {})
+    entries = plugins.get(plugin_id) if isinstance(plugins, dict) else None
+    if not (isinstance(entries, list) and entries):
+        return False
+    first = entries[0]
+    install_path = first.get("installPath") if isinstance(first, dict) else None
+    return isinstance(install_path, str) and bool(install_path) and Path(install_path).is_dir()
 
 
 class PluginRegistrar:
@@ -139,3 +174,61 @@ class PluginRegistrar:
             "lastUpdated": now,
         }
         _write_json(marketplaces_json, data)
+
+
+class PyrightPluginRegistrar:
+    """Register + enable the external ``pyright-lsp`` plugin for live type diagnostics.
+
+    Unlike :class:`PluginRegistrar` — which writes the plugin JSON directly for the
+    LOCAL ``souliane`` marketplace clone — ``pyright-lsp`` lives in the remote
+    ``anthropics/claude-plugins-official`` marketplace, whose on-disk cache is a git
+    clone Claude Code manages. Registration therefore goes through the ``claude
+    plugin`` CLI (the same mechanism Claude Code itself uses): ``marketplace add``
+    clones + validates the marketplace, ``install`` clones the plugin into the cache
+    and enables it. Both are idempotent. Offline-safe: an unreachable marketplace
+    WARNs and returns ``False`` (setup continues) rather than aborting — matching the
+    other best-effort setup steps.
+
+    The plugin gives factory agents LIVE pyright type diagnostics while coding, so a
+    type error surfaces in-session instead of only at CI. Its language server
+    (``pyright-langserver``, from the npm ``pyright`` package) must be on PATH for the
+    plugin to start — ``t3 doctor`` advisory-WARNs when it is not.
+    """
+
+    def install(self) -> bool:
+        """Register + enable ``pyright-lsp`` via the ``claude plugin`` CLI (idempotent, offline-safe)."""
+        if _plugin_installed(_PYRIGHT_PLUGIN_ID):
+            _set_enabled_plugin(_PYRIGHT_PLUGIN_ID)
+            typer.echo(f"OK    Plugin {_PYRIGHT_PLUGIN_ID} already registered — enabled.")
+            return True
+        claude = shutil.which("claude")
+        if claude is None:
+            typer.echo("WARN  `claude` not on PATH — skipped pyright-lsp plugin registration; setup continues.")
+            return False
+        if not self._run_claude(claude, "plugin", "marketplace", "add", _PYRIGHT_MARKETPLACE_SOURCE):
+            typer.echo(
+                f"WARN  Could not add the {_PYRIGHT_MARKETPLACE} marketplace (offline?) — "
+                "pyright-lsp skipped; setup continues.",
+            )
+            return False
+        if not self._run_claude(claude, "plugin", "install", _PYRIGHT_PLUGIN_ID):
+            typer.echo("WARN  Could not install pyright-lsp (offline?) — skipped; setup continues.")
+            return False
+        _set_enabled_plugin(_PYRIGHT_PLUGIN_ID)
+        typer.echo(f"OK    Plugin {_PYRIGHT_PLUGIN_ID} registered + enabled for live pyright diagnostics.")
+        return True
+
+    @staticmethod
+    def _run_claude(claude: str, *args: str) -> bool:
+        """Run ``claude <args>`` via the audited wrapper; return True on exit 0.
+
+        ``expected_codes=None`` accepts any exit code (this method judges success on
+        the return code itself), so a non-zero exit is a non-fatal ``False`` rather
+        than a raise. A timeout or spawn error (``claude`` vanished) is likewise a
+        non-fatal ``False`` so an unreachable marketplace never aborts setup.
+        """
+        try:
+            result = run_allowed_to_fail([claude, *args], expected_codes=None, timeout=_CLAUDE_CLI_TIMEOUT_S)
+        except (OSError, TimeoutExpired):
+            return False
+        return result.returncode == 0

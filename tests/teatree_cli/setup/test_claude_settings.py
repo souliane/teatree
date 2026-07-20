@@ -330,6 +330,42 @@ class TestEnabledPluginsManagedConfig:
         assert "enabledPlugins.t3@souliane" in managed_key_drift(_COMMITTED_TEMPLATE, target_path, env={})
 
 
+class TestPyrightLspPluginManagedConfig:
+    """The committed template enables ``pyright-lsp@claude-plugins-official``, managed + drift-guarded.
+
+    The pyright-lsp plugin gives factory agents LIVE pyright type diagnostics while
+    coding. The template pins it enabled and it is managed, so every seeded container
+    enables it and the host drift check re-asserts it (mirroring the t3 skills plugin).
+    """
+
+    _PLUGIN_PATH: tuple[str, ...] = ("enabledPlugins", "pyright-lsp@claude-plugins-official")
+
+    def _committed(self) -> dict[str, object]:
+        return json.loads(_COMMITTED_TEMPLATE.read_text(encoding="utf-8"))
+
+    def test_template_enables_the_pyright_plugin(self) -> None:
+        assert _dig(self._committed(), self._PLUGIN_PATH) is True
+
+    def test_enabled_plugin_path_is_managed(self) -> None:
+        assert self._PLUGIN_PATH in MANAGED_KEY_PATHS
+
+    def test_drift_detected_when_plugin_disabled_on_host(self, tmp_path: Path) -> None:
+        target = self._committed()
+        target["enabledPlugins"]["pyright-lsp@claude-plugins-official"] = False  # type: ignore[index]
+        target_path = _write(tmp_path / "t.json", target)
+        assert "enabledPlugins.pyright-lsp@claude-plugins-official" in managed_key_drift(
+            _COMMITTED_TEMPLATE, target_path, env={}
+        )
+
+    def test_drift_preserves_pyright_entry_alongside_t3(self, tmp_path: Path) -> None:
+        # Both managed plugin keys are asserted; a host enabling both drifts on neither.
+        target = self._committed()
+        target_path = _write(tmp_path / "t.json", target)
+        drift = managed_key_drift(_COMMITTED_TEMPLATE, target_path, env={})
+        assert "enabledPlugins.t3@souliane" not in drift
+        assert "enabledPlugins.pyright-lsp@claude-plugins-official" not in drift
+
+
 class TestMainScript:
     def test_renders_resolved_template_to_stdout(
         self, tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
