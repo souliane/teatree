@@ -371,10 +371,41 @@ printf '%s' "<admin-password>"  | pass insert -m -f teatree/admin-password
 printf '%s' "<oauth-token>"     | pass insert -m -f anthropic/<account>/oauth-token
 ```
 
-The `TEATREE_GH_TOKEN` still needs **write** on `issues`, `pull_requests`, and
-`contents` (plus `metadata: read`); `init` preflights the token and fails loud when
-a permission is missing (#3405, #3436). A classic PAT satisfies this with the single
-`repo` scope.
+The `TEATREE_GH_TOKEN` needs a **required** set and a **recommended** set of
+permissions. `init` preflights both (#3405, #3436, #3477):
+
+- **Required** — `metadata: read`, `issues: write`, `pull_requests: write`,
+  `contents: write`. A gap here **fails the deploy loud** (`exit 1`): the loop
+  cannot boot without them. A classic PAT satisfies the whole set with the
+  single `repo` scope.
+- **Recommended** — `workflows: write` (pushing a PR that touches
+  `.github/workflows/*`), `actions: write` (`t3 eval ci-trigger`'s `gh workflow
+  run` dispatch), `actions: read` (`t3 eval ci-status`'s `gh run list/view/
+  download`), `checks: read` (the required-checks rollup auto-merge reads —
+  **strongly recommended**, auto-merge fails closed without it), `statuses:
+  read` (legacy commit-status rollup completeness), and `projects: read`
+  (GitHub Projects v2 board sync, probed only when the overlay configures a
+  board). A gap here **only WARNs** — the deploy still boots and the gated
+  feature simply degrades (a CI-eval command errors, auto-merge treats the
+  rollup as not-yet-green, board sync no-ops). A classic PAT adds this set
+  with the `workflow` and `read:project` scopes alongside `repo`.
+
+GitHub exposes no API to widen an existing token's scopes/permissions — the
+preflight's remediation is always "recreate the token with the right grant".
+For a classic PAT, create a new one with every scope teatree uses:
+`https://github.com/settings/tokens/new?scopes=repo,workflow,read:project&description=teatree`.
+For a fine-grained PAT, recreate it at
+`https://github.com/settings/personal-access-tokens` with the missing
+permission(s) the WARN names added — a fine-grained token cannot be widened
+via the API either.
+
+`workflows: write` is the one permission the fine-grained preflight cannot
+actively probe (GitHub enforces it specifically on `.github/workflows/*`
+writes, and the route-level 403-vs-404 ordering for a denied token could not
+be confirmed without a restricted token to test against — see the gate's
+module docstring for the full reasoning). It is always listed in the WARN
+output so the operator verifies it manually; a classic PAT's `workflow` scope
+is checked deterministically instead.
 
 **Secrets-only rotation** — no SSH edit of `teatree.env`, no host file surgery:
 

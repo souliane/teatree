@@ -104,43 +104,32 @@ gh_repo_slug() {
     fi
 }
 
-# True (0) when a metadata-read failure carries a genuine token-DENIAL signal (a
-# permission/credential fault), as opposed to a transient network fault. Mirrors
-# the Python gate's _DENIED_SIGNALS so the two reach the SAME verdict on an
-# unreadable read: a denial blocks, anything else is indeterminate (retry/warn).
+# True (0) on a genuine token-DENIAL signal (vs a transient fault) — mirrors the Python gate's _DENIED_SIGNALS.
 _gh_metadata_denied() {
     grep -qiE 'not accessible|not found|bad credentials|requires authentication|must be authenticated' <<<"$1"
 }
 
-# True (0) when a side-effect-free write probe is DENIED — i.e. the token lacks
-# the permission. GitHub returns "Resource not accessible by personal access
-# token" at the route level for a missing write permission, before it validates
-# the (non-existent) target, so nothing is ever created or changed.
-_gh_write_probe_denied() {
+# True (0) when a side-effect-free probe is DENIED — one check covers write and read probes alike (see gh_token_preflight's module docstring).
+_gh_probe_denied() {
     local out
-    out="$(gh api --method "$1" "$2" 2>&1 || true)"
+    out="$(gh api "$@" 2>&1 || true)"
     grep -qi "not accessible" <<<"$out"
 }
 
-# Probe that TEATREE_GH_TOKEN carries the WRITE permissions the loop actually
-# needs (#3405). ``gh auth status`` only proves the token authenticates — a token
-# that reads but cannot write passes it, then every ``gh issue edit/close`` /
-# ``gh pr merge`` / push fails LATE, mid-run, with "Resource not accessible by
-# personal access token" — a silent block on autonomy. Mirrors the verdict
-# SEMANTICS of ``teatree.core.gates.gh_token_preflight`` (pinned by a test):
-#
-#   * A genuine DENIAL (cannot read the repo, a fine-grained token lacks a write
-#     permission, or a classic token lacks the ``repo`` scope) FAILS loudly.
-#   * A TRANSIENT/indeterminate probe failure (network) is retried with backoff,
-#     then WARNED past — never an ``exit 1`` that crash-loops ``init`` (#3436).
-#
-# Token class matters: a fine-grained PAT returns the route-level 403 the write
-# probe reads, but a CLASSIC PAT does NOT (the probe fails OPEN for it), so a
-# classic token — identified by the ``X-OAuth-Scopes`` response header a
-# fine-grained token omits — is judged by REQUIRING the write-granting ``repo``
-# scope instead.
+# Extract `default_branch` from the `-i` metadata read's body — mirrors gh_token_preflight._parse_default_branch.
+_gh_default_branch() {
+    local body
+    body="$(sed -n '/^\r\{0,1\}$/,$p' <<<"$1" | tail -n +2)"
+    jq -r '.default_branch // empty' <<<"$body" 2>/dev/null
+}
+
+# GitHub has no API to widen a token's grant — mirrors gh_token_preflight's URL constants.
+_GH_CLASSIC_TOKEN_URL="https://github.com/settings/tokens/new?scopes=repo,workflow,read:project&description=teatree"
+_GH_FINE_GRAINED_TOKENS_URL="https://github.com/settings/personal-access-tokens"
+
+# Mirrors gh_token_preflight's verdict semantics (#3405/#3436/#3477, pinned by a test): a REQUIRED denial exits 1 (never-lockout: only these four), a RECOMMENDED gap only WARNs, a transient failure retries then WARNs.
 assert_gh_token_permissions() {
-    local slug meta rc scopes attempt missing=()
+    local slug meta rc scopes attempt missing=() warn_missing=() default_branch scope_body
     local backoff="${TEATREE_GH_PREFLIGHT_BACKOFF_SECONDS:-2}"
     slug="$(gh_repo_slug)"
     if [ -z "$slug" ]; then
@@ -148,9 +137,7 @@ assert_gh_token_permissions() {
         return 0
     fi
 
-    # Metadata read with -i so the X-OAuth-Scopes header comes back. Retry a
-    # TRANSIENT failure so a network blip cannot crash-loop init; only a genuine
-    # DENIAL blocks the deploy.
+    # Metadata read with -i so the X-OAuth-Scopes header comes back; retry a transient failure.
     rc=0
     for attempt in 1 2 3; do
         meta="$(gh api -i "repos/$slug" 2>&1)" && rc=0 && break || rc=$?
@@ -168,28 +155,48 @@ assert_gh_token_permissions() {
         return 0
     fi
 
-    # Classic PAT? Judge it by the write-granting ``repo`` scope from the
-    # X-OAuth-Scopes header (the per-route probe below fails OPEN for it). Match
-    # ``repo`` as an exact scope token so ``repo:status`` / ``public_repo`` never
-    # count as write.
+    default_branch="$(_gh_default_branch "$meta")"
+
+    # Classic PAT? The per-route probe fails OPEN for it — judge by exact scope-token membership instead.
     if scopes="$(grep -i '^x-oauth-scopes:' <<<"$meta")"; then
-        if grep -qE '(^|[[:space:],])repo([[:space:],]|$)' <<<"${scopes#*:}"; then
-            echo "teatree-init: GitHub token permissions verified (classic PAT with 'repo' scope on $slug)"
-            return 0
+        scope_body="${scopes#*:}"
+        if ! grep -qE '(^|[[:space:],])repo([[:space:],]|$)' <<<"$scope_body"; then
+            echo "entrypoint: TEATREE_GH_TOKEN is a classic PAT WITHOUT the 'repo' scope - the loop's 'gh issue'/'gh pr'/push writes will fail mid-run with 'Resource not accessible by personal access token'. Grant the 'repo' scope on the token and re-run Deploy" >&2
+            exit 1
         fi
-        echo "entrypoint: TEATREE_GH_TOKEN is a classic PAT WITHOUT the 'repo' scope - the loop's 'gh issue'/'gh pr'/push writes will fail mid-run with 'Resource not accessible by personal access token'. Grant the 'repo' scope on the token and re-run Deploy" >&2
-        exit 1
+        grep -qE '(^|[[:space:],])workflow([[:space:],]|$)' <<<"$scope_body" || warn_missing+=("workflows: write")
+        grep -qE '(^|[[:space:],])read:project([[:space:],]|$)' <<<"$scope_body" || warn_missing+=("projects: read")
+        if [ ${#warn_missing[@]} -gt 0 ]; then
+            echo "entrypoint: WARN TEATREE_GH_TOKEN (classic PAT) is missing recommended permission(s): ${warn_missing[*]} - workflows:write gates pushing PRs that touch .github/workflows/*, projects:read gates GitHub Projects board sync; neither blocks boot. Classic tokens cannot be widened via the API - create a new one: $_GH_CLASSIC_TOKEN_URL" >&2
+        fi
+        echo "teatree-init: GitHub token permissions verified (classic PAT with 'repo' scope on $slug)"
+        return 0
     fi
 
-    # Fine-grained PAT: per-permission route probes (403 = missing, 404 = present).
-    _gh_write_probe_denied PATCH "repos/$slug/issues/0" && missing+=("issues: write")
-    _gh_write_probe_denied PATCH "repos/$slug/pulls/0" && missing+=("pull_requests: write")
-    _gh_write_probe_denied PATCH "repos/$slug/git/refs/heads/teatree-preflight-nonexistent" && missing+=("contents: write")
+    # Fine-grained PAT: REQUIRED per-permission route probes (403 = missing, 404 = present).
+    _gh_probe_denied --method PATCH "repos/$slug/issues/0" -f state=open && missing+=("issues: write")
+    _gh_probe_denied --method PATCH "repos/$slug/pulls/0" -f state=open && missing+=("pull_requests: write")
+    _gh_probe_denied --method PATCH "repos/$slug/git/refs/heads/teatree-preflight-nonexistent" && missing+=("contents: write")
     if [ ${#missing[@]} -gt 0 ]; then
         echo "entrypoint: TEATREE_GH_TOKEN is missing GitHub permission(s): ${missing[*]} - the loop's 'gh issue'/'gh pr'/push writes will fail mid-run with 'Resource not accessible by personal access token'. Grant them on the token and re-run Deploy" >&2
         exit 1
     fi
-    echo "teatree-init: GitHub token permissions verified (issues/pull_requests/contents write present on $slug)"
+
+    # RECOMMENDED (WARN-tier) probes — never exit 1. workflows:write is never actively probed (see above).
+    warn_missing=("workflows: write")
+    _gh_probe_denied --method POST "repos/$slug/actions/workflows/0/dispatches" -f ref=teatree-preflight-nonexistent &&
+        warn_missing+=("actions: write")
+    _gh_probe_denied "repos/$slug/actions/artifacts?per_page=1" && warn_missing+=("actions: read")
+    if [ -n "$default_branch" ]; then
+        _gh_probe_denied "repos/$slug/commits/$default_branch/check-runs?per_page=1" && warn_missing+=("checks: read")
+        _gh_probe_denied "repos/$slug/commits/$default_branch/status" && warn_missing+=("statuses: read")
+    fi
+    # projects: read needs an overlay's configured Projects-v2 board, which this
+    # bash preflight cannot see — `t3 doctor check` probes it when configured.
+    if [ ${#warn_missing[@]} -gt 0 ]; then
+        echo "entrypoint: WARN TEATREE_GH_TOKEN is missing recommended permission(s): ${warn_missing[*]} - these degrade optional features (CI trigger/status, auto-merge's required-checks rollup, workflow-file pushes) but do NOT block boot. Fine-grained tokens cannot be widened via the API either - recreate it with these permissions added: $_GH_FINE_GRAINED_TOKENS_URL" >&2
+    fi
+    echo "teatree-init: GitHub token permissions verified (required issues/pull_requests/contents write present on $slug)"
 }
 
 # Fail loud, early, and actionably when a required runtime token is missing or
