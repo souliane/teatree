@@ -168,9 +168,11 @@ depends_on = [
   "teatree.core.modelkit",
   "teatree.core.models.errors",
   "teatree.core.models",
-  # selectors reuse the single-source overlay Q-builder that lives with the
-  # managers (F1.6) — a downward edge, mirroring teatree.core.models → managers.
+  # selectors reuse the single-source overlay Q-builder that lives in its own
+  # managers_overlay leaf (F1.6) — a downward edge, mirroring teatree.core.models
+  # → managers.
   "teatree.core.managers",
+  "teatree.core.managers_overlay",
   "teatree.core.loop_lease_manager",
   "teatree.core.session_identity",
   "teatree.loop.loop_cadences"
@@ -207,6 +209,11 @@ layer = "domain"
 depends_on = []
 
 [[modules]]
+path = "teatree.core.managers_overlay"
+layer = "domain"
+depends_on = []
+
+[[modules]]
 path = "teatree.core.managers"
 layer = "domain"
 depends_on = [
@@ -215,6 +222,7 @@ depends_on = [
   "teatree.core.modelkit",
   "teatree.core.models.errors",
   "teatree.core.loop_lease_manager",
+  "teatree.core.managers_overlay",
   "teatree.core.repair_loop",
   "teatree.core.session_handover_manager"
 ]
