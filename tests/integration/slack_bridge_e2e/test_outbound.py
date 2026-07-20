@@ -9,9 +9,8 @@ from inline_snapshot import snapshot
 
 from teatree.backends.slack import http as slack_http
 from teatree.backends.slack.bot import SlackBotBackend
-from teatree.core import backend_factory
+from teatree.core import backend_factory, toml_backends
 from teatree.core import notify as core_notify
-from teatree.core import toml_backends
 from teatree.core import speak as core_speak
 from teatree.core.backend_factory import iter_overlay_backends, messaging_from_overlay
 from teatree.core.modelkit.notify_policy import NotifyAudience
