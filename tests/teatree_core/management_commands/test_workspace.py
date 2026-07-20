@@ -2155,6 +2155,7 @@ class TestPruneBranchesPassOneAndTwo(TestCase):
 
         with (
             patch.object(git_mod, "run", side_effect=fake_run),
+            patch.object(git_mod, "fetch_all_prune", return_value=True),
             patch.object(git_mod, "current_branch", return_value="main"),
             patch.object(git_mod, "default_branch", return_value="main"),
             patch.object(git_mod, "branch_delete") as mock_del,
@@ -2165,6 +2166,18 @@ class TestPruneBranchesPassOneAndTwo(TestCase):
 
         mock_del.assert_called_once_with("/repo", "stale-feature")
         assert any("gone" in c and "stale-feature" in c for c in cleaned)
+
+    def test_failed_remote_refresh_deletes_no_branch(self) -> None:
+        """Every pass presumes fresh tracking refs — an unrefreshable repo prunes nothing."""
+        with (
+            patch.object(git_mod, "run", return_value=""),
+            patch.object(git_mod, "fetch_all_prune", return_value=False),
+            patch.object(git_mod, "branch_delete") as mock_del,
+        ):
+            cleaned = ws_cleanup_mod.prune_branches("/repo")
+
+        mock_del.assert_not_called()
+        assert any("could not refresh remote refs" in c for c in cleaned), cleaned
 
     def test_pass2_deletes_merged_branch_and_skips_protected(self) -> None:
         def fake_run(*, repo: str = ".", args: list[str]) -> str:
@@ -2178,6 +2191,7 @@ class TestPruneBranchesPassOneAndTwo(TestCase):
 
         with (
             patch.object(git_mod, "run", side_effect=fake_run),
+            patch.object(git_mod, "fetch_all_prune", return_value=True),
             patch.object(git_mod, "current_branch", return_value="main"),
             patch.object(git_mod, "default_branch", return_value="main"),
             patch.object(git_mod, "branch_delete") as mock_del,

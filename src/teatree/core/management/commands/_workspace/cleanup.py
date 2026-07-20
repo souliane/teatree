@@ -287,7 +287,12 @@ def prune_branches(repo: str) -> list[str]:
         for line in pre_prune_remote.splitlines()
         if line.strip() not in {"", "origin/HEAD"}
     }
-    git.run(repo=repo, args=["fetch", "--prune"])
+    # Fail CLOSED on a failed refresh: every pass below (gone-branch detection,
+    # --merged, the squash pass) presumes fresh remote-tracking refs, and against
+    # stale ones they read unpushed work as shipped. Unknown remote state must
+    # never authorise a branch deletion, so do nothing at all.
+    if not git.fetch_all_prune(repo):
+        return [f"SKIPPED branch prune for {repo}: could not refresh remote refs — nothing deleted"]
     git.run(repo=repo, args=["worktree", "prune"])
 
     current = git.current_branch(repo)
