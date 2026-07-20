@@ -9,6 +9,7 @@ from django.db.models import Q
 from django.db.models.expressions import BaseExpression
 from django.utils import timezone
 
+from teatree.config import worker_is_quiescing
 from teatree.core.loop_lease_manager import (
     PER_LOOP_OWNER_PREFIX,
     T3_MASTER_SLOT,
@@ -74,20 +75,6 @@ def _claimable_now_q(now: datetime) -> Q:
     drift between "is there work" and the actual claim.
     """
     return Q(not_before__isnull=True) | Q(not_before__lte=now)
-
-
-def _worker_quiescing() -> bool:
-    """True when the worker is draining for a deploy — admit NO new claims.
-
-    Read at the claim/admission chokepoint ONLY (``claim_next_pending`` and
-    ``_claimable_for_target``), never by the worker supervisor's stop condition:
-    quiescing admits zero new work while in-flight CLAIMED leases keep renewing and
-    finish, so a rolling deploy never kills a live sub-agent. Resolved through the
-    same ``ConfigSetting`` + ``T3_WORKER_QUIESCING`` env tier as ``loop_runner_enabled``.
-    """
-    from teatree.config import get_effective_settings  # noqa: PLC0415 — deferred: call-time config read
-
-    return get_effective_settings().worker_quiescing
 
 
 def _for_overlay(qs: models.QuerySet, overlay: str | None) -> models.QuerySet:
@@ -363,7 +350,7 @@ class TaskQuerySet(models.QuerySet):
         # Drain gate (rolling deploy): while the worker is quiescing, admit NO new
         # task — the CAS never fires, so claimed ≡ spawned stays true and in-flight
         # CLAIMED leases (which renew via ``renew_lease``, not this path) are untouched.
-        if _worker_quiescing():
+        if worker_is_quiescing():
             return None
         now = timezone.now()
         candidates = self.filter(status=task_model.Status.PENDING).filter(_claimable_now_q(now))
@@ -601,7 +588,7 @@ class TaskQuerySet(models.QuerySet):
         # the interactive/headless claim commands admit zero new tasks during the
         # deploy window. Orthogonal to the supervisor's stop condition — in-flight
         # leases keep renewing.
-        if _worker_quiescing():
+        if worker_is_quiescing():
             return self.none()
         now = timezone.now()
         qs = (
