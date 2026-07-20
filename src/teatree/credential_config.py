@@ -109,8 +109,10 @@ class AllTokensExhaustedError(CredentialError):
 
     def __init__(self, message: str, *, earliest_reset: dt.datetime | None = None) -> None:
         super().__init__(message)
-        #: The soonest an account frees up — the earliest window reset across all exhausted
-        #: accounts, or ``None`` when no reset is known. NOT a token; a schedule instant.
+        #: The soonest an account frees up — the MINIMUM over exhausted accounts of each
+        #: account's own ``frees_up_at`` (itself the LATEST of that account's blocking-window
+        #: resets, since all of them must clear before it is usable). ``None`` when no
+        #: blocking window has a known reset. NOT a token; a schedule instant.
         self.earliest_reset = earliest_reset
 
 
@@ -368,8 +370,8 @@ def record_reactive_exhaustion_and_reselect(
 
     * returns the next healthy account's ``pass_path`` — another account is available, so the
         caller REQUEUES the task to rotate onto it rather than parking the whole lane;
-    * raises :class:`AllTokensExhaustedError` (carrying the earliest reset) when every account
-        is now exhausted, so the caller parks the lane for auto-resume at the soonest reset;
+    * raises :class:`AllTokensExhaustedError` (carrying the soonest instant any account frees
+        up) when every account is now exhausted, so the caller parks the lane for auto-resume;
     * returns ``None`` when nothing is routed (no sticky account — an ambient-env or single
         unrouted credential), so the caller falls back to the existing lane park unchanged.
     """
