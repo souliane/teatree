@@ -7,11 +7,17 @@ so ``from teatree.agents.headless import _provider_child_env`` stays valid.
 """
 
 import logging
+import os
 
 from teatree.config import AgentHarness, AgentHarnessProvider, get_effective_settings
 from teatree.core.models import Task
 from teatree.credential_config import resolve_api_key_credential, resolve_subscription_credential
-from teatree.llm.credentials import CredentialError
+from teatree.llm.credentials import (
+    ANTHROPIC_BASE_URL_ENV,
+    AnthropicApiKeyCredential,
+    AnthropicSubscriptionCredential,
+    CredentialError,
+)
 from teatree.utils.git_run import git_env_without_overrides
 
 logger = logging.getLogger(__name__)
@@ -26,6 +32,43 @@ def _overlay_scope(task: Task) -> str:
     return task.ticket.overlay or ""
 
 
+def _reject_ambient_base_url_redirect() -> None:
+    """Refuse an ambient-auth dispatch that also carries a base-URL redirect.
+
+    With no Layer-2 pin the spawned ``claude`` CLI authenticates however its own
+    login state resolves — which this process cannot observe. Both the CLI and the
+    Anthropic SDK read :data:`~teatree.llm.credentials.ANTHROPIC_BASE_URL_ENV` from
+    the inherited env, so an ambient value silently redirects that child.
+
+    The one shape that is unambiguously sanctioned is a metered key with no
+    subscription token beside it: an operator pointing their OWN API key at a
+    gateway, Bedrock/Vertex, or an Anthropic-compatible third-party provider. That
+    passes. Every other combination — a subscription token present, both present,
+    or neither (the CLI falls back to its stored login, which on a plan deployment
+    is the subscription) — refuses, because the redirect would or might carry plan
+    auth to a non-Anthropic endpoint.
+
+    The pinned-provider paths need no check here: they build their env through
+    :meth:`~teatree.llm.credentials.Credential.child_env`, whose ``forbidden_vars``
+    rule already refuses the same combination at the credential itself.
+    """
+    if not os.environ.get(ANTHROPIC_BASE_URL_ENV, "").strip():
+        return
+    has_api_key = bool(os.environ.get(AnthropicApiKeyCredential.spec.env_var, "").strip())
+    has_subscription = bool(os.environ.get(AnthropicSubscriptionCredential.spec.env_var, "").strip())
+    if has_api_key and not has_subscription:
+        return
+    msg = (
+        f"{ANTHROPIC_BASE_URL_ENV} is set and no agent_harness_provider is pinned, so the "
+        f"spawned claude CLI would be redirected while authenticating with whatever login "
+        f"state it holds — which on a subscription deployment is plan auth, valid only "
+        f"against Anthropic's own endpoint. Either unset {ANTHROPIC_BASE_URL_ENV}, or pin "
+        f"agent_harness_provider=api_key so a metered key routes through that endpoint "
+        f"deterministically."
+    )
+    raise CredentialError(msg)
+
+
 def _provider_child_env(provider: AgentHarnessProvider | None, *, scope: str = "") -> dict[str, str] | None:
     """The child-process env that pins the Layer-2 credential for a ``claude_sdk`` dispatch (#2887).
 
@@ -33,7 +76,10 @@ def _provider_child_env(provider: AgentHarnessProvider | None, *, scope: str = "
     ``None``: the ambient environment is used UNCHANGED, so an operator who
     never configured ``agent_harness_provider`` is never forced through an
     eager credential lookup — the ``claude`` CLI's own ambient auth state
-    (however it was set up) applies, exactly as before #2887. An explicit
+    (however it was set up) applies, exactly as before #2887. The ONE ambient
+    combination refused is a base-URL redirect that would carry unobservable
+    (and on a plan deployment, subscription) auth to a non-Anthropic endpoint —
+    see :func:`_reject_ambient_base_url_redirect`. An explicit
     ``api_key`` forces the metered ``ANTHROPIC_API_KEY`` (stripping the
     subscription token); an explicit ``subscription_oauth`` forces the
     subscription ``CLAUDE_CODE_OAUTH_TOKEN`` (stripping the API key) so the
@@ -52,6 +98,7 @@ def _provider_child_env(provider: AgentHarnessProvider | None, *, scope: str = "
     fails loud.
     """
     if provider is None:
+        _reject_ambient_base_url_redirect()
         return None
     valid = AgentHarnessProvider.valid_for(AgentHarness.CLAUDE_SDK)
     if provider not in valid:
@@ -93,6 +140,7 @@ def system_child_env() -> dict[str, str] | None:
     """
     provider = get_effective_settings().agent_harness_provider
     if provider is None:
+        _reject_ambient_base_url_redirect()
         return None
     if provider not in AgentHarnessProvider.valid_for(AgentHarness.CLAUDE_SDK):
         logger.warning(
@@ -100,5 +148,6 @@ def system_child_env() -> dict[str, str] | None:
             "subprocess falls back to the ambient environment's auth state",
             provider.value,
         )
+        _reject_ambient_base_url_redirect()
         return None
     return _provider_child_env(provider, scope="")

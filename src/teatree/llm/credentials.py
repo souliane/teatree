@@ -12,7 +12,11 @@ The two concrete rules are mirror images. :class:`AnthropicApiKeyCredential` set
 ``ANTHROPIC_API_KEY`` and strips the subscription ``CLAUDE_CODE_OAUTH_TOKEN``;
 :class:`AnthropicSubscriptionCredential` sets ``CLAUDE_CODE_OAUTH_TOKEN`` and strips
 ``ANTHROPIC_API_KEY`` (the bundled CLI prefers a credential only when the others are
-absent). NO credential carries a built-in default ``pass`` path — each resolves only
+absent). The subscription rule additionally FORBIDS ``ANTHROPIC_BASE_URL``
+(:data:`ANTHROPIC_BASE_URL_ENV`) rather than stripping it: plan auth is valid only
+against Anthropic's own endpoint, so a base-URL redirect alongside it is a
+misconfiguration to surface, not a fallback to remove — see ``CredentialSpec``'s
+``forbidden_vars``. NO credential carries a built-in default ``pass`` path — each resolves only
 from its env var or an explicitly configured per-account entry, and fails loud (naming
 the setting to configure) when neither is present rather than reading a dead default.
 Which one the automated eval lane rides is the ``eval_credential`` knob's
@@ -72,6 +76,18 @@ class CredentialSpec:
     the others are absent, so stripping the conflicts is what makes "use THIS
     credential, exclusively" actually hold.
 
+    *forbidden_vars* are environment variables that must NOT be present when this
+    credential is applied — :meth:`Credential.child_env` RAISES on them rather than
+    stripping them. The distinction from *conflicting_vars* is deliberate and is the
+    whole point of the separate field: a conflicting credential is silently removed
+    (the child simply must not fall back to it), whereas a forbidden var names an
+    operator misconfiguration that must be surfaced, not papered over. The concrete
+    case is ``ANTHROPIC_BASE_URL`` on the subscription credential — redirecting a
+    plan-authenticated ``claude`` child at a third-party endpoint is never what the
+    operator meant, and silently dropping the redirect would leave them believing a
+    gateway was in use. It stays legal on the API-key credential, which is why it is
+    not a conflict of the pair.
+
     *pass_path* is ``None`` for a credential that has NO built-in default entry:
     it then resolves only from *env_var* or an INJECTED per-account
     ``pass_path_override``, and :meth:`Credential.resolve` fails loud when neither
@@ -84,6 +100,7 @@ class CredentialSpec:
     conflicting_vars: tuple[str, ...]
     pass_path: str | None = None
     routing_setting: str | None = None
+    forbidden_vars: tuple[str, ...] = ()
 
 
 @runtime_checkable
@@ -208,15 +225,40 @@ class Credential:
         The resolved value is written under :attr:`spec`'s ``env_var`` and every
         ``conflicting_vars`` entry is REMOVED, so the spawned SDK / CLI child
         authenticates with exactly this credential and cannot fall back to a
-        conflicting one. *base* is never mutated. Raises :class:`CredentialError`
-        when no value is resolvable (the loud refusal propagates to the caller).
+        conflicting one. *base* is never mutated.
+
+        A ``forbidden_vars`` entry present in *base* RAISES :class:`CredentialError`
+        before anything is resolved — a forbidden var is an operator misconfiguration
+        this credential refuses to run under, not a fallback to quietly remove. Raises
+        :class:`CredentialError` too when no value is resolvable (the loud refusal
+        propagates to the caller).
         """
+        self._reject_forbidden(base)
         value = self.resolve()
         child = dict(base)
         for conflicting in self.spec.conflicting_vars:
             child.pop(conflicting, None)
         child[self.spec.env_var] = value
         return child
+
+    def _reject_forbidden(self, base: Mapping[str, str]) -> None:
+        """Raise when *base* carries a var this credential refuses to run alongside.
+
+        Checked BEFORE :meth:`resolve` so the refusal names the misconfiguration
+        rather than a downstream missing-token error. Empty values are treated as
+        absent — an exported-but-blank var expresses no redirect.
+        """
+        present = [var for var in self.spec.forbidden_vars if base.get(var, "").strip()]
+        if not present:
+            return
+        names = ", ".join(present)
+        msg = (
+            f"{names} is set, but {self.spec.env_var} authenticates against the Anthropic "
+            f"subscription, which is only valid against Anthropic's own endpoint. Redirecting a "
+            f"plan-authenticated child at another endpoint is refused. Either unset {names}, or "
+            f"pin agent_harness_provider=api_key to route a metered key through that endpoint."
+        )
+        raise CredentialError(msg)
 
     @staticmethod
     def _missing_message(spec: CredentialSpec, context: str | None = None) -> str:
@@ -238,6 +280,14 @@ class Credential:
             f"vars {spec.conflicting_vars} are stripped from the child env), so a "
             "misconfigured run fails loud here rather than authenticating as the wrong one."
         )
+
+
+#: The Anthropic SDK / ``claude`` CLI base-URL override. Both read it natively, and a
+#: spawned CLI child inherits it from the ambient env, so it silently redirects every
+#: request the child makes. Legal on the metered API key (a gateway, Bedrock/Vertex, or
+#: an Anthropic-compatible third-party provider on ITS OWN key); forbidden alongside the
+#: subscription token, whose plan auth is only valid against Anthropic's own endpoint.
+ANTHROPIC_BASE_URL_ENV = "ANTHROPIC_BASE_URL"
 
 
 class AnthropicApiKeyCredential(Credential):
@@ -278,6 +328,13 @@ class AnthropicSubscriptionCredential(Credential):
     eval load spreads across multiple subscription accounts. With neither an env value
     nor a configured account, :meth:`resolve` fails loud (naming ``anthropic_oauth_pass_paths``)
     rather than reading a dead built-in entry.
+
+    It additionally FORBIDS :data:`ANTHROPIC_BASE_URL_ENV`: plan auth is only valid
+    against Anthropic's own endpoint, and both the SDK and the ``claude`` CLI read that
+    variable natively from an inherited env — so an ambient value would otherwise
+    redirect a plan-authenticated child at an arbitrary host with nothing failing loud.
+    :meth:`~Credential.child_env` raises instead of stripping, because the operator who
+    exported it meant something by it and deserves to be told which credential refused.
     """
 
     spec = CredentialSpec(
@@ -285,6 +342,7 @@ class AnthropicSubscriptionCredential(Credential):
         conflicting_vars=("ANTHROPIC_API_KEY",),
         pass_path=None,
         routing_setting="anthropic_oauth_pass_paths",
+        forbidden_vars=(ANTHROPIC_BASE_URL_ENV,),
     )
 
 

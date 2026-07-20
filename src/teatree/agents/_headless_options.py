@@ -27,6 +27,12 @@ from teatree.llm.builtin_tools import KNOWN_BUILTIN_TOOLS
 # Headless agent default permission mode: a detached run has no human to grant
 # tool permissions, so it bypasses the per-tool prompt and runs unattended.
 _PERMISSION_MODE = "bypassPermissions"
+# The #116 quarantined reader's mode. ``dontAsk`` denies anything not pre-approved
+# by an allow rule instead of auto-approving it; the reader defines no allow rules,
+# so its effective tool set is empty by DEFAULT rather than by naming every tool in
+# ``disallowed_tools``. Applied only to the reader — every write phase needs
+# ``bypassPermissions`` to act unattended.
+_READER_PERMISSION_MODE = "dontAsk"
 # The SDK spawns no max-turns ceiling of its own; the loop watchdog bounds a
 # runaway. ``0`` leaves the SDK uncapped (the watchdog is the real bound).
 _MAX_TURNS = 0
@@ -115,7 +121,20 @@ def _build_options(
         # system_prompt maps to --system-prompt (the deleted ``claude -p`` path
         # used --append-system-prompt), which would drop the Claude Code preset
         # on every production headless run.
-        system_prompt=SystemPromptPreset(type="preset", preset="claude_code", append=system_context),
+        #
+        # ``exclude_dynamic_sections`` strips the preset's per-run content (cwd,
+        # git status, auto-memory) out of the system prefix and re-injects it into
+        # the first user message. Prompt caching on this lane is CLI-internal and
+        # exposes no ``cache_control`` surface, so prefix STABILITY is the only
+        # lever teatree has over the hit rate: without this, git status churning
+        # between dispatches in the same worktree invalidates the cached prefix
+        # every time. Older CLIs ignore the option silently.
+        system_prompt=SystemPromptPreset(
+            type="preset",
+            preset="claude_code",
+            append=system_context,
+            exclude_dynamic_sections=True,
+        ),
         model=spawn_model or None,
         cwd=cwd,
         add_dirs=add_dirs,
@@ -183,10 +202,17 @@ def _apply_reader_tool_lockdown(options: ClaudeAgentOptions) -> None:
     any origin. An empty ``allowed_tools`` is NOT the mechanism — the SDK omits the
     ``--allowedTools`` flag when the list is empty, so it would be a silent no-op; the
     closure is source-suppression, verified against the SDK transport.
+
+    :data:`_READER_PERMISSION_MODE` closes the same residual from the other side.
+    ``bypassPermissions`` auto-approves whatever survives; ``dontAsk`` denies anything
+    not pre-approved by an allow rule, and the reader carries none — so an unnamed tool
+    reaching the reader by any route is refused by DEFAULT rather than by enumeration.
+    Source-suppression and default-deny are independent, and the reader keeps both.
     """
     options.setting_sources = []
     options.mcp_servers = {}
     options.strict_mcp_config = True
+    options.permission_mode = _READER_PERMISSION_MODE
 
 
 def _resolve_task_cwd(task: Task) -> str | None:
