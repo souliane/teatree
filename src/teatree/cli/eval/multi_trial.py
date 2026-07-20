@@ -6,9 +6,10 @@ aggregates across trials/models, a distinct concern from the default
 single-pass grade.
 """
 
+import dataclasses
 import json
 import sys
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from pathlib import Path
 
 import typer
@@ -27,12 +28,20 @@ from teatree.cli.eval.run_modes import (
 from teatree.eval.api_runner import MAX_BUDGET_USD
 from teatree.eval.backends import API_BACKEND, ApiRunnerParams, EvalRunner, make_runner
 from teatree.eval.matrix import MatrixRow, render_matrix_html, render_matrix_json, render_matrix_text
+from teatree.eval.model_resolution import resolve_eval_model
 from teatree.eval.model_variant import ModelVariantError, parse_model_variants
 from teatree.eval.models import EvalSpec
 from teatree.eval.pass_at_k import PassAtKResult, run_pass_at_k
 from teatree.eval.pass_at_k_html import render_pass_at_k_html
+from teatree.eval.presets import Preset, PresetError, resolve_preset, resolve_preset_model
 from teatree.eval.report import ScenarioResult, evaluate, render_summary_markdown
 from teatree.eval.summary_json import write_summary_json
+
+#: The column name ``--presets`` recognises for "no preset" — each scenario's
+#: own tier/phase, the same resolution ``t3 eval run`` uses with no ``--preset``
+#: active. Distinct from any registered :class:`~teatree.eval.presets.Preset`
+#: name, so it never collides with ``cheap``/``frontier``/``baseline``.
+DEFAULT_PRESET_COLUMN_NAME = "default"
 
 #: How many extra attempts a single matrix/benchmark cell gets after its first
 #: failure. A clean-room scenario is idempotent (re-running costs only extra
@@ -301,6 +310,67 @@ def run_model_matrix_lane(  # noqa: PLR0913 — each kwarg threads one `eval run
         sys.exit(1)
 
 
+@dataclasses.dataclass(frozen=True)
+class MatrixColumn:
+    """One matrix/benchmark column: a display ``tag`` + how it resolves a spec's model.
+
+    A plain model/tag column (``--models opus,sonnet``) resolves every spec to
+    the SAME tag (:func:`_uniform_column`). A PRESET column
+    (:func:`preset_column`) resolves each spec through the preset's own
+    precedence — two scenarios under the same preset ``tag`` (e.g.
+    ``"baseline"``) can genuinely run different models. ``MatrixRow.model`` is
+    stamped with ``tag`` (never the per-spec resolved model), so grouping by
+    ``row.model`` still identifies the COLUMN, not the incidental model a given
+    scenario happened to run under it.
+    """
+
+    tag: str
+    model_for: Callable[[EvalSpec], str]
+
+
+def _uniform_column(tag: str) -> MatrixColumn:
+    """A column that resolves every spec to the same *tag* — the plain ``--models`` shape."""
+    return MatrixColumn(tag=tag, model_for=lambda _spec: tag)
+
+
+def preset_column(preset: Preset) -> MatrixColumn:
+    """A column that resolves each spec through *preset* — the ``--presets`` shape."""
+    return MatrixColumn(tag=preset.name, model_for=lambda spec: resolve_preset_model(spec, preset))
+
+
+def _default_column() -> MatrixColumn:
+    """The ``--presets ...,default,...`` column: each scenario's own tier/phase, no preset."""
+    return MatrixColumn(tag=DEFAULT_PRESET_COLUMN_NAME, model_for=resolve_eval_model)
+
+
+def _as_column(column: "str | MatrixColumn") -> MatrixColumn:
+    return column if isinstance(column, MatrixColumn) else _uniform_column(column)
+
+
+def parse_preset_columns(presets: str) -> list[MatrixColumn]:
+    """Parse ``--presets`` (comma-separated preset names) into matrix columns, or exit 2.
+
+    Each name resolves to a :class:`MatrixColumn` via :func:`preset_column`,
+    except :data:`DEFAULT_PRESET_COLUMN_NAME` (``"default"``) — the no-preset
+    baseline comparison column, each scenario's own tier/phase.
+    """
+    names = [name.strip() for name in presets.split(",") if name.strip()]
+    if not names:
+        typer.echo(f"--presets was empty; pass e.g. --presets cheap,baseline,{DEFAULT_PRESET_COLUMN_NAME}", err=True)
+        raise typer.Exit(code=2)
+    columns: list[MatrixColumn] = []
+    for name in names:
+        if name == DEFAULT_PRESET_COLUMN_NAME:
+            columns.append(_default_column())
+            continue
+        try:
+            columns.append(preset_column(resolve_preset(name)))
+        except PresetError as exc:
+            typer.echo(str(exc), err=True)
+            raise typer.Exit(code=2) from None
+    return columns
+
+
 def parse_model_tags(models: str) -> list[str]:
     """Parse ``--models`` into validated variant tags, or exit 2 with the parse error.
 
@@ -320,35 +390,56 @@ def parse_model_tags(models: str) -> list[str]:
 
 
 # ast-grep-ignore: ac-django-no-complexity-suppressions
+@dataclasses.dataclass(frozen=True)
+class _MatrixCell:
+    """One matrix cell to execute: *spec* (its column model already applied) + the column's *tag*.
+
+    Bundles what would otherwise be 3 separate keyword args (``tag``/``trials``/
+    ``require``) threaded through :func:`_resilient_matrix_trial` /
+    :func:`_matrix_trial`, keeping both under the project's arg-count lint floor.
+    """
+
+    spec: EvalSpec
+    tag: str
+    trials: int
+    require: str
+
+
 def collect_matrix_rows(  # noqa: PLR0913 — each kwarg threads one matrix/benchmark CLI flag through the shared loop.
     specs: list[EvalSpec],
-    model_tags: list[str],
+    columns: "Sequence[str | MatrixColumn]",
     *,
     runner: EvalRunner,
     trials: int,
     require: str,
     grader=None,  # noqa: ANN001 — JudgeGrader | None, kept local to the CLI.
 ) -> list[MatrixRow]:
-    """Run every scenario against every variant tag — the shared matrix/benchmark loop.
+    """Run every scenario against every column — the shared matrix/benchmark loop.
 
+    *columns* accepts a plain model/tag string (wrapped via
+    :func:`_uniform_column`, the existing ``--models``/``--benchmark`` shape) or
+    an explicit :class:`MatrixColumn` (the ``--presets`` shape, where each
+    scenario may resolve to a different concrete model under the same column).
     Each cell goes through :func:`_resilient_matrix_trial`, so one cell's
     transient runner exception is isolated (retried, then recorded as an ERRORED
     row) and never aborts the whole comparison — the full table is always
     produced.
     """
     return [
-        _resilient_matrix_trial(runner, with_model(spec, tag), trials=trials, require=require, grader=grader)
-        for tag in model_tags
+        _resilient_matrix_trial(
+            runner,
+            _MatrixCell(spec=with_model(spec, column.model_for(spec)), tag=column.tag, trials=trials, require=require),
+            grader=grader,
+        )
+        for column in (_as_column(column) for column in columns)
         for spec in specs
     ]
 
 
 def _resilient_matrix_trial(
     runner: EvalRunner,
-    spec: EvalSpec,
+    cell: _MatrixCell,
     *,
-    trials: int,
-    require: str,
     grader=None,  # noqa: ANN001 — JudgeGrader | None, kept local to the CLI.
 ) -> MatrixRow:
     """Run one cell with bounded retries; on persistent failure, an ERRORED row.
@@ -366,23 +457,24 @@ def _resilient_matrix_trial(
     last_exc: Exception | None = None
     for attempt in range(MAX_MATRIX_CELL_RETRIES + 1):
         try:
-            return _matrix_trial(runner, spec, trials=trials, require=require, grader=grader)
+            return _matrix_trial(runner, cell, grader=grader)
         except typer.Exit:
             raise
         except Exception as exc:  # noqa: BLE001 — isolate THIS cell; genuine errors already re-raised in run().
             last_exc = exc
             print(  # noqa: T201 — loud per-attempt visibility on stderr, never swallowed.
-                f"WARNING cell {spec.name} @ {spec.model} attempt {attempt + 1}/"
+                f"WARNING cell {cell.spec.name} @ {cell.spec.model} attempt {attempt + 1}/"
                 f"{MAX_MATRIX_CELL_RETRIES + 1} raised: {exc}",
                 file=sys.stderr,
             )
     print(  # noqa: T201 — give-up record is loud; the cell becomes ERRORED, not lost.
-        f"ERROR cell {spec.name} @ {spec.model} failed after {MAX_MATRIX_CELL_RETRIES + 1} attempts: {last_exc}",
+        f"ERROR cell {cell.spec.name} @ {cell.spec.model} failed after "
+        f"{MAX_MATRIX_CELL_RETRIES + 1} attempts: {last_exc}",
         file=sys.stderr,
     )
     return MatrixRow(
-        scenario=spec.name,
-        model=spec.model,
+        scenario=cell.spec.name,
+        model=cell.tag,
         passed=False,
         score=0.0,
         trials=1,
@@ -394,17 +486,18 @@ def _resilient_matrix_trial(
 
 def _matrix_trial(
     runner: EvalRunner,
-    spec: EvalSpec,
+    cell: _MatrixCell,
     *,
-    trials: int,
-    require: str,
     grader=None,  # noqa: ANN001 — JudgeGrader | None, kept local to the CLI.
 ) -> MatrixRow:
-    if trials > 1:
-        result = run_pass_at_k(spec, lambda s: evaluate(s, runner.run(s), judge=grader), k=trials, require=require)
+    spec = cell.spec
+    if cell.trials > 1:
+        result = run_pass_at_k(
+            spec, lambda s: evaluate(s, runner.run(s), judge=grader), k=cell.trials, require=cell.require
+        )
         return MatrixRow(
             scenario=spec.name,
-            model=spec.model,
+            model=cell.tag,
             passed=result.ok and not result.skipped,
             score=0.0 if result.skipped else result.pass_rate,
             trials=result.trials,
@@ -422,7 +515,7 @@ def _matrix_trial(
     run = scenario_result.run
     return MatrixRow(
         scenario=spec.name,
-        model=spec.model,
+        model=cell.tag,
         passed=scenario_result.passed and not scenario_result.skipped,
         score=0.0 if scenario_result.skipped else (1.0 if scenario_result.passed else 0.0),
         trials=1,

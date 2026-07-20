@@ -13,12 +13,15 @@ The benchmark is metered, so it defaults to running IN the CI container
 the docker runner sets makes the in-container re-invocation run in-process.
 """
 
+from collections.abc import Sequence
+from typing import cast
+
 import typer
 
 from teatree.cli._format_opts import require_valid_format
 from teatree.cli.eval.docker import DockerUnavailableError, run_eval_in_docker
 from teatree.cli.eval.metered_routing import should_route_to_docker, warn_local_metered
-from teatree.cli.eval.multi_trial import collect_matrix_rows, parse_model_tags
+from teatree.cli.eval.multi_trial import MatrixColumn, collect_matrix_rows, parse_model_tags, parse_preset_columns
 from teatree.cli.eval.run_modes import RunGuards, persist_matrix_run
 from teatree.eval.backends import API_BACKEND, ApiRunnerParams, make_runner
 from teatree.eval.benchmark import render_benchmark_json, render_benchmark_text, summarize_benchmark
@@ -37,12 +40,24 @@ BENCHMARK_DEFAULT_BUDGET_USD = 2.0
 
 # ast-grep-ignore: ac-django-no-complexity-suppressions
 def benchmark(  # noqa: PLR0913, PLR0917 — typer command: each param maps 1:1 to a public ``t3 eval benchmark`` flag.
-    models: str = typer.Option(
-        ...,
+    models: str | None = typer.Option(
+        None,
         "--models",
         help=(
             "Comma-separated model@effort variants to compare, e.g. "
-            "claude-opus-4-8@xhigh,claude-sonnet-5@medium (a plain model name = default effort)."
+            "claude-opus-4-8@xhigh,claude-sonnet-5@medium (a plain model name = default effort). "
+            "Exactly one of --models/--presets is required."
+        ),
+    ),
+    presets: str | None = typer.Option(
+        None,
+        "--presets",
+        help=(
+            "Comma-separated PRESET names to compare instead of raw model@effort variants, e.g. "
+            "cheap,baseline,default ('default' = each scenario's own tier/phase — the same "
+            "resolution `t3 eval run` uses with no preset active; 'baseline' is the file-backed "
+            "evals/presets/baseline.yaml per-scenario map). Exactly one of --models/--presets is "
+            "required."
         ),
     ),
     scenarios: str | None = typer.Option(
@@ -96,9 +111,11 @@ def benchmark(  # noqa: PLR0913, PLR0917 — typer command: each param maps 1:1 
     ``--local`` for an explicit host run. The container is ephemeral, so a
     Docker-routed run is forced ``--no-persist``.
     """
+    _require_exactly_one_of_models_or_presets(models=models, presets=presets)
     if should_route_to_docker(metered=True, local=local):
         _dispatch_to_docker(
             models=models,
+            presets=presets,
             scenarios=scenarios,
             trials=trials,
             max_turns=max_turns,
@@ -110,13 +127,13 @@ def benchmark(  # noqa: PLR0913, PLR0917 — typer command: each param maps 1:1 
         warn_local_metered(metered=True)
     ensure_django()
     require_valid_format(output_format)
-    tags = parse_model_tags(models)
+    columns, tags = _resolve_columns(models=models, presets=presets)
     specs = _select_specs(scenarios)
     runner = make_runner(
         API_BACKEND,
         ApiRunnerParams(max_turns_override=max_turns, require_executed=True, max_budget_usd=max_budget_usd),
     )
-    rows = collect_matrix_rows(specs, tags, runner=runner, trials=trials, require="any")
+    rows = collect_matrix_rows(specs, columns, runner=runner, trials=trials, require="any")
     RunGuards.executed(executed=sum(1 for row in rows if not row.skipped), collected=len(rows), required=True)
     # The benchmark is always api-metered, yet (unlike the single-run lane and the
     # suite) it lacked the unmetered-$0 guard: an executed-but-$0 run (auth ok but
@@ -143,10 +160,39 @@ def benchmark(  # noqa: PLR0913, PLR0917 — typer command: each param maps 1:1 
         raise typer.Exit(code=1)
 
 
+def _require_exactly_one_of_models_or_presets(*, models: str | None, presets: str | None) -> None:
+    """Fail fast (exit 2) unless exactly one of ``--models``/``--presets`` is given.
+
+    Checked BEFORE the docker-routing decision, not just in :func:`_resolve_columns`
+    — a bad flag combo must never reach the container re-invocation.
+    """
+    active = [name for name, on in (("--models", models is not None), ("--presets", presets is not None)) if on]
+    if len(active) != 1:
+        typer.echo("exactly one of --models/--presets is required.", err=True)
+        raise typer.Exit(code=2)
+
+
+def _resolve_columns(*, models: str | None, presets: str | None) -> tuple[Sequence[str | MatrixColumn], list[str]]:
+    """Resolve the validated ``--models``/``--presets`` into matrix columns + their tags.
+
+    Returns the columns :func:`~teatree.cli.eval.multi_trial.collect_matrix_rows`
+    consumes alongside the plain tag list ``summarize_benchmark``/the renderers
+    key their comparison off — ``--models`` needs no tag list distinct from the
+    columns themselves (each IS its own tag), while ``--presets`` resolves each
+    name to a :class:`MatrixColumn` up front so the tag list matches exactly.
+    """
+    if models is not None:
+        tags = parse_model_tags(models)
+        return tags, tags
+    columns = parse_preset_columns(cast("str", presets))  # caller already required exactly one of the two.
+    return columns, [column.tag for column in columns]
+
+
 # ast-grep-ignore: ac-django-no-complexity-suppressions
 def _dispatch_to_docker(  # noqa: PLR0913 — each kwarg is one benchmark flag threaded into the container.
     *,
-    models: str,
+    models: str | None,
+    presets: str | None,
     scenarios: str | None,
     trials: int,
     max_turns: int | None,
@@ -163,6 +209,7 @@ def _dispatch_to_docker(  # noqa: PLR0913 — each kwarg is one benchmark flag t
             code=run_eval_in_docker(
                 _docker_passthrough(
                     models=models,
+                    presets=presets,
                     scenarios=scenarios,
                     trials=trials,
                     max_turns=max_turns,
@@ -179,7 +226,8 @@ def _dispatch_to_docker(  # noqa: PLR0913 — each kwarg is one benchmark flag t
 # ast-grep-ignore: ac-django-no-complexity-suppressions
 def _docker_passthrough(  # noqa: PLR0913 — each kwarg is one benchmark flag threaded into the container.
     *,
-    models: str,
+    models: str | None,
+    presets: str | None,
     scenarios: str | None,
     trials: int,
     max_turns: int | None,
@@ -187,7 +235,9 @@ def _docker_passthrough(  # noqa: PLR0913 — each kwarg is one benchmark flag t
     output_format: str,
 ) -> list[str]:
     """Build the ``benchmark …`` argv re-invoked in the container (forced ``--no-persist``)."""
-    args = ["benchmark", "--models", models]
+    # The caller already ran _require_exactly_one_of_models_or_presets, so exactly
+    # one of the two is non-None here.
+    args = ["benchmark", *(["--models", models] if models is not None else ["--presets", cast("str", presets)])]
     if scenarios is not None:
         args += ["--scenarios", scenarios]
     if trials != 1:
