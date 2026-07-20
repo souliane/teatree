@@ -76,7 +76,7 @@ from teatree.cli.doctor.service import (
     IntrospectionHelpers,
     agent_skill_dirs,
 )
-from teatree.cli.doctor.statusline import check_statusline
+from teatree.cli.doctor.statusline import check_statusline, check_statusline_freshness
 from teatree.cli.recommended_authorizations import authorizations, report_missing_authorizations
 from teatree.cli.slack.dm_doctor import check_and_render_dm_ready
 from teatree.utils.django_bootstrap import ensure_django
@@ -140,6 +140,7 @@ __all__ = (
     "check",
     "check_slack_roundtrip",
     "check_statusline",
+    "check_statusline_freshness",
     "doctor_app",
 )
 
@@ -269,10 +270,15 @@ def run_doctor_checks(*, repair: bool = False, slack_roundtrip: bool = False) ->
     ok = _check_stale_uv_venv() and ok
     ok = _check_stale_path_t3() and ok
     ok = _check_agent_session_pins() and ok
-    # Verify the Claude Code statusLine block (PR-17): present, absolute path,
-    # executable target — with exact remediation. A missing block is a WARN
-    # (`t3 setup` installs it); a relative/non-executable one is a hard FAIL.
-    ok = check_statusline() and ok
+    # Verify the Claude Code statusLine block (PR-17: present, absolute path, executable
+    # target — a missing block WARNs, a relative/non-executable one hard-FAILs) AND its
+    # freshness. The freshness backstop hard-FAILs a pre-rendered statusline gone stale past
+    # the readers' own cutoff while autoload is on — a headless render chain that stopped
+    # keeping the file fresh, never an unnoticed regression. Both run unconditionally (the
+    # ``all`` tuple calls both before short-circuiting) so a config FAIL never masks a
+    # freshness FAIL; the freshness read of the ConfigSetting ``autoload`` flag runs after
+    # the ensure_django() above.
+    ok = all((check_statusline(), check_statusline_freshness())) and ok
 
     # Django was configured above (before the editable-sanity check) so the
     # self-DB schema guard reports the REAL pending-migration state rather than

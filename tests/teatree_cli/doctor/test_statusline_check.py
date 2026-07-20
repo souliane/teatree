@@ -1,11 +1,21 @@
-"""`t3 doctor` verifies the statusLine block: presence/absolute/executable (PR-17)."""
+"""`t3 doctor` verifies the statusLine block: presence/absolute/executable (PR-17).
+
+Plus the silent-freeze backstop (:func:`check_statusline_freshness`): a stale pre-rendered
+statusline while ``autoload`` is ON is a hard FAIL, so a headless render chain that stopped
+keeping the file fresh can never regress unnoticed.
+"""
 
 import io
 import json
 from contextlib import redirect_stdout
 from pathlib import Path
 
-from teatree.cli.doctor.statusline import check_statusline
+import django.test
+from django.utils import timezone
+
+from teatree.cli.doctor.statusline import check_statusline, check_statusline_freshness
+from teatree.core.models.config_setting import ConfigSetting
+from teatree.loop.statusline_staleness import FLOOR_SECONDS
 
 
 def _run(settings: Path) -> tuple[bool, str]:
@@ -112,3 +122,58 @@ class TestPluginSettingsHasNoStatusline:
         assert settings.is_file()
         data = json.loads(settings.read_text(encoding="utf-8"))
         assert "statusLine" not in data
+
+
+@django.test.override_settings(USE_TZ=True)
+class TestCheckStatuslineFreshness(django.test.TestCase):
+    """The silent-freeze backstop: a stale statusline FAILs only while autoload is ON."""
+
+    def _write_meta(self, tmp_path: Path, *, rendered_at: float) -> Path:
+        statusline = tmp_path / "statusline.txt"
+        statusline.with_name("tick-meta.json").write_text(json.dumps({"rendered_at": rendered_at}), encoding="utf-8")
+        return statusline
+
+    def _run(self, statusline: Path, *, now: float) -> tuple[bool, str]:
+        out = io.StringIO()
+        with redirect_stdout(out):
+            ok = check_statusline_freshness(statusline_path=statusline, now=now)
+        return ok, out.getvalue()
+
+    def test_stale_file_fails_when_autoload_on(self) -> None:
+        ConfigSetting.objects.set_value("autoload", value=True, scope="")
+        now = timezone.now().timestamp()
+        statusline = self._write_meta(Path(self._make_tmp()), rendered_at=now - 10 * FLOOR_SECONDS)
+        ok, message = self._run(statusline, now=now)
+        assert ok is False
+        assert "STALE" in message
+
+    def test_stale_file_is_ignored_when_autoload_off(self) -> None:
+        ConfigSetting.objects.set_value("autoload", value=False, scope="")
+        now = timezone.now().timestamp()
+        statusline = self._write_meta(Path(self._make_tmp()), rendered_at=now - 10 * FLOOR_SECONDS)
+        ok, message = self._run(statusline, now=now)
+        assert ok is True  # a colleague / opted-out box: a frozen file is expected, not a fault
+        assert "STALE" not in message
+
+    def test_fresh_file_passes(self) -> None:
+        ConfigSetting.objects.set_value("autoload", value=True, scope="")
+        now = timezone.now().timestamp()
+        statusline = self._write_meta(Path(self._make_tmp()), rendered_at=now - 5)
+        ok, message = self._run(statusline, now=now)
+        assert ok is True
+        assert "FAIL" not in message
+
+    def test_never_rendered_is_not_a_failure(self) -> None:
+        ConfigSetting.objects.set_value("autoload", value=True, scope="")
+        now = timezone.now().timestamp()
+        statusline = Path(self._make_tmp()) / "statusline.txt"  # no tick-meta sidecar
+        ok, message = self._run(statusline, now=now)
+        assert ok is True  # fail-open: an unknown render age never fabricates a FAIL
+        assert "FAIL" not in message
+
+    def _make_tmp(self) -> str:
+        import tempfile  # noqa: PLC0415 — test-local
+
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        return tmp.name
