@@ -115,3 +115,62 @@ def _check_slack_socket_mode() -> bool:
     for finding in outcome.findings:
         typer.echo(f"{finding.level.value:<5} [{finding.overlay}] {finding.message}")
     return True
+
+
+#: Claude Code's interactive permission mode, read from ``~/.claude/settings.json``.
+#: ``auto`` routes every tool call past a model classifier — no prompt on each call,
+#: but not blanket approval either. ``bypassPermissions`` allows everything, which is
+#: correct for a HEADLESS dispatch (no human is present to approve a write) and a
+#: needlessly wide posture for an interactive session where the operator IS present.
+_INTERACTIVE_PERMISSION_MODE_KEY = "defaultMode"
+_CLASSIFIER_GATED_MODE = "auto"
+_ALLOW_ALL_MODE = "bypassPermissions"
+
+
+def _check_interactive_permission_mode() -> bool:
+    """Advise when the interactive session runs wider than it needs to (#3497).
+
+    ADVISORY ONLY — always returns ``True``. The mode lives in the operator's own
+    Claude Code settings, not in teatree's dispatch options, so teatree can suggest
+    but never enforce it. Silent when no mode is configured: an absent key means the
+    Claude Code default applies, which is not teatree's business to nag about.
+
+    Changing this does NOT reach the headless lane, though the two share the file:
+    a headless child loads the same user settings (the SDK defaults
+    ``setting_sources`` to user+project), but every headless dispatch pins
+    ``permission_mode`` explicitly, which the SDK passes as ``--permission-mode`` and
+    the flag beats the settings default. That explicit pin is the ONLY thing keeping
+    the two apart — ``tests/teatree_agents/test_headless_least_privilege.py`` asserts
+    the write phases still carry ``bypassPermissions``, so dropping the pin fails
+    loudly rather than silently classifier-gating unattended writes.
+    """
+    try:
+        import json  # noqa: PLC0415 — lazy CLI import
+        from pathlib import Path  # noqa: PLC0415 — lazy CLI import
+
+        settings = Path.home() / ".claude" / "settings.json"
+        if not settings.is_file():
+            return True
+        mode = (
+            json.loads(settings.read_text(encoding="utf-8"))
+            .get("permissions", {})
+            .get(_INTERACTIVE_PERMISSION_MODE_KEY)
+        )
+    except Exception as exc:  # noqa: BLE001 — doctor check must never crash the run
+        typer.echo(f"WARN  Interactive permission-mode check crashed: {exc.__class__.__name__}: {exc}")
+        return True
+    if mode == _CLASSIFIER_GATED_MODE:
+        typer.echo(
+            f"OK    Interactive permission mode is {_CLASSIFIER_GATED_MODE} — each tool call is classifier-gated."
+        )
+        return True
+    if mode == _ALLOW_ALL_MODE:
+        typer.echo(
+            f"WARN  Interactive permission mode is {_ALLOW_ALL_MODE}, which approves every tool call. "
+            f"For a session where you are present, {_CLASSIFIER_GATED_MODE} is the safer default — a model "
+            f"classifier approves or denies each call, so you still get an unprompted flow without blanket "
+            f"approval. Set permissions.{_INTERACTIVE_PERMISSION_MODE_KEY} in ~/.claude/settings.json. "
+            f"(Headless dispatch reads the same file but pins --permission-mode per run, so it stays on "
+            f"bypassPermissions and is unaffected.)",
+        )
+    return True

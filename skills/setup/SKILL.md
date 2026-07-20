@@ -227,6 +227,22 @@ Run `t3 doctor authorizations` (also surfaced by `t3 doctor check` and at the en
 
 For the broader picture — operating mode (DB-home `mode`, set via `t3 <overlay> config_setting set mode …`), the `auto`-mode training wheels, how overlays declare their MCP/messaging integration, and the post-setup permission state — see [`references/agent-mode-and-mcp-config.md`](references/agent-mode-and-mcp-config.md). It maps each config surface to the module that owns it so the docs cannot drift from the code.
 
+### Interactive permission mode
+
+Set `permissions.defaultMode` to `auto` in `~/.claude/settings.json` for the session you drive teatree from. `auto` sends every tool call past a model classifier, so the session flows without a prompt on each call but nothing is blanket-approved. `bypassPermissions` approves everything — a wider posture than an interactive session needs, since you are present.
+
+This is a suggestion, not a gate: the mode is Claude Code's setting, not teatree's, so `t3 doctor check` only advises when it sees `bypassPermissions` and stays silent when no mode is configured.
+
+**Changing it does not reach headless runs, even though they read the same file.** A headless child loads the same user settings (the SDK defaults `setting_sources` to user+project), but every headless dispatch pins `permission_mode` explicitly and the SDK passes it as `--permission-mode`, which overrides the settings default. That explicit pin is the only thing separating the two — it is asserted by `tests/teatree_agents/test_headless_least_privilege.py`, so removing it fails a test rather than silently classifier-gating unattended writes.
+
+Three modes, three contexts — do not generalise one to the others:
+
+| Context | Mode | Why |
+|---|---|---|
+| Interactive session (you are present) | `auto` | classifier gates each call; no prompt spam, not allow-all |
+| Headless write phases (`coding` / `planning` / `shipping` / `reviewing`) | `bypassPermissions` | no human to approve a `Write`; narrowing it strands the run |
+| The quarantined reader phase | `dontAsk` | its tool set is meant to be empty, so default-deny is correct |
+
 ## Step 5: Generate an Overlay Package
 
 Use the TeaTree bootstrap CLI, not shell overlay scaffolding.
