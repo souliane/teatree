@@ -454,6 +454,12 @@ class ApiRunnerParams:
     #: resolved eval credential's ``spec.conflicting_vars``; the default preserves
     #: the pre-#2707-reversal metered strip for direct callers.
     conflicting_vars: tuple[str, ...] = _DEFAULT_CONFLICTING_VARS
+    #: The SELECTED eval credential's forbidden vars — REFUSED rather than stripped,
+    #: because they name an operator misconfiguration this credential will not run
+    #: under. Empty for the metered key (a base-URL redirect is legal there); the
+    #: subscription credential forbids ``ANTHROPIC_BASE_URL``, whose plan auth is
+    #: valid only against Anthropic's own endpoint.
+    forbidden_vars: tuple[str, ...] = ()
     #: Throttle-retry seams threaded to :class:`~teatree.eval.throttle_retry.ThrottleRetryDriver`.
     #: ``sleep`` / ``rand`` (the jitter RNG returning ``[0, 1)``) are injectable so a
     #: test asserts the backoff schedule without real time or a real RNG; ``None``
@@ -476,6 +482,7 @@ class ApiInProcessRunner:
         self._max_budget_usd = params.max_budget_usd
         self._effort = params.effort
         self._conflicting_vars = params.conflicting_vars
+        self._forbidden_vars = params.forbidden_vars
         # Resolve the env-overridable knobs at CONSTRUCTION, not module import, so a
         # T3_EVAL_* override set after ``import teatree.eval.api_runner`` (a test, a
         # runtime reconfigure) is honored rather than frozen to its import-time value.
@@ -634,7 +641,7 @@ class ApiInProcessRunner:
         matchers still grade the CALL, so negatives keep full teeth.
         """
         with ExitStack() as stack:
-            env, cwd = stack.enter_context(isolated_claude_env(self._conflicting_vars))
+            env, cwd = stack.enter_context(isolated_claude_env(self._conflicting_vars, self._forbidden_vars))
             if spec.production_hooks:
                 # Pin the loop/hook state roots inside the sandbox home BEFORE any
                 # further env overlay, so the #807 Stop gate sees a fresh owner-less

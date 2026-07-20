@@ -175,7 +175,14 @@ class ClaudeJudge:
             self._budget.consume()
         prompt = build_judge_prompt(spec, run)
         try:
-            structured = asyncio.run(_drive_judge(prompt, spec.judge.model, credential.spec.conflicting_vars))
+            structured = asyncio.run(
+                _drive_judge(
+                    prompt,
+                    spec.judge.model,
+                    credential.spec.conflicting_vars,
+                    credential.spec.forbidden_vars,
+                )
+            )
         except TimeoutError:
             return JudgeVerdict(passed=False, skipped=False, rationale="judge timed out")
         except Exception as exc:
@@ -186,8 +193,13 @@ class ClaudeJudge:
         return _verdict_from_structured(structured)
 
 
-async def _drive_judge(prompt: str, judge_model: str, conflicting_vars: tuple[str, ...]) -> StructuredVerdict | None:
-    with isolated_claude_env(conflicting_vars) as (env, cwd):
+async def _drive_judge(
+    prompt: str,
+    judge_model: str,
+    conflicting_vars: tuple[str, ...],
+    forbidden_vars: tuple[str, ...] = (),
+) -> StructuredVerdict | None:
+    with isolated_claude_env(conflicting_vars, forbidden_vars) as (env, cwd):
         options = _judge_options(model=judge_model, cwd=cwd, env=env)
         return await asyncio.wait_for(_judge_result(prompt, options), timeout=WATCHDOG_SECONDS)
 

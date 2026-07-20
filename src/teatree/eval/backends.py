@@ -144,7 +144,13 @@ def make_runner(
 
         credential = resolve_eval_credential()
         credential.export()
-        return ApiInProcessRunner(dataclasses.replace(params, conflicting_vars=credential.spec.conflicting_vars))
+        return ApiInProcessRunner(
+            dataclasses.replace(
+                params,
+                conflicting_vars=credential.spec.conflicting_vars,
+                forbidden_vars=credential.spec.forbidden_vars,
+            )
+        )
     if backend == ANTHROPIC_API_BACKEND:
         # The CLI-free Claude lane: runs the model through the Anthropic Messages API
         # directly, no ``claude`` binary. The ``ANTHROPIC_API_KEY`` credential is

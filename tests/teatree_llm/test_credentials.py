@@ -385,3 +385,41 @@ class TestResolveOrcaRouterProviderConfig:
         monkeypatch.setenv(_ORCA_ENV, "orca-key-from-real-env")
         config = resolve_orca_router_provider_config()
         assert config.api_key == "orca-key-from-real-env"
+
+
+class TestForbiddenVarsRefuseRatherThanStrip:
+    """``forbidden_vars`` names a misconfiguration to surface, not a fallback to remove.
+
+    The subscription credential forbids ``ANTHROPIC_BASE_URL``: plan auth is valid
+    only against Anthropic's own endpoint, and the ``claude`` CLI reads that variable
+    from an inherited env. Stripping it silently would leave an operator believing a
+    gateway was in use, so ``child_env`` raises instead.
+    """
+
+    def test_subscription_child_env_refuses_a_base_url_redirect(self) -> None:
+        credential = AnthropicSubscriptionCredential(sources=[_FakeEnvSource({_OAUTH_ENV: "oat-1"})])
+        with pytest.raises(CredentialError) as excinfo:
+            credential.child_env({"ANTHROPIC_BASE_URL": "https://gateway.example.invalid/v1"})
+        assert "ANTHROPIC_BASE_URL" in str(excinfo.value)
+        assert "api_key" in str(excinfo.value), "the refusal must name the sanctioned remedy"
+
+    def test_the_refusal_precedes_resolution_so_it_names_the_real_problem(self) -> None:
+        # No credential is resolvable either; the base-URL refusal must still win, or
+        # the operator is sent chasing a missing token instead of the redirect.
+        credential = AnthropicSubscriptionCredential(sources=[_FakeEnvSource({}), _FakePassSource({})])
+        with pytest.raises(CredentialError) as excinfo:
+            credential.child_env({"ANTHROPIC_BASE_URL": "https://gateway.example.invalid/v1"})
+        assert "ANTHROPIC_BASE_URL" in str(excinfo.value)
+
+    def test_an_empty_redirect_value_expresses_nothing_and_is_allowed(self) -> None:
+        credential = AnthropicSubscriptionCredential(sources=[_FakeEnvSource({_OAUTH_ENV: "oat-1"})])
+        env = credential.child_env({"ANTHROPIC_BASE_URL": "   "})
+        assert env[_OAUTH_ENV] == "oat-1"
+
+    def test_the_metered_key_still_carries_a_redirect_through(self) -> None:
+        # The sanctioned gateway / Bedrock / third-party-provider shape: legal here,
+        # which is exactly why this is not a conflict of the credential pair.
+        credential = AnthropicApiKeyCredential(sources=[_FakeEnvSource({_API_KEY_ENV: "sk-ant-key"})])
+        env = credential.child_env({"ANTHROPIC_BASE_URL": "https://gateway.example.invalid/v1"})
+        assert env["ANTHROPIC_BASE_URL"] == "https://gateway.example.invalid/v1"
+        assert env[_API_KEY_ENV] == "sk-ant-key"

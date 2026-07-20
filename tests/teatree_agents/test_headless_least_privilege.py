@@ -116,3 +116,33 @@ class TestBuildOptionsHarnessPin(TestCase):
         # The quarantined reader stays hermetic: no MCP config of any origin,
         # including teatree's own server.
         assert self._options_for("directive_reading").mcp_servers == {}
+
+
+class TestReaderPermissionModeIsDefaultDeny(TestCase):
+    """The #116 reader denies by DEFAULT, not by enumerating every tool.
+
+    ``bypassPermissions`` auto-approves whatever survives the denylist, so a tool the
+    denylist does not name — an MCP-server tool, a custom slash command — would still
+    run. ``dontAsk`` denies anything not pre-approved by an allow rule, and the reader
+    carries none. Source-suppression (no settings, no MCP config) is the independent
+    other half; the reader keeps both.
+    """
+
+    @classmethod
+    def setUpTestData(cls) -> None:
+        cls.ticket = Ticket.objects.create()
+
+    def _options_for_phase(self, phase: str) -> object:
+        session = Session.objects.create(ticket=self.ticket)
+        task = Task.objects.create(ticket=self.ticket, session=session)
+        return _build_options(task, "ctx", phase=phase, skills=[])
+
+    def test_reader_phase_denies_anything_not_pre_approved(self) -> None:
+        options = self._options_for_phase("directive_reading")
+        assert options.permission_mode == "dontAsk"
+
+    def test_write_phases_keep_bypass_so_they_can_act_unattended(self) -> None:
+        # A detached write run has no human to grant permissions; downgrading these
+        # to dontAsk would deny every edit and silently strand the factory.
+        for phase in ("coding", "planning", "shipping", "reviewing"):
+            assert self._options_for_phase(phase).permission_mode == "bypassPermissions", phase
