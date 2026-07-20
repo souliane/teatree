@@ -23,6 +23,7 @@ from teatree.core.backend_protocols import CodeHostBackend
 from teatree.core.e2e_scenario import Scenario
 from teatree.core.intake.e2e_workitem import load_recipe
 from teatree.core.intake.resolve import WorktreeNotFoundError, resolve_worktree
+from teatree.core.management.commands._shared_code_host import NO_CODE_HOST_MESSAGE
 from teatree.core.management.commands._test_plan.post import (
     _ON_BEHALF_ACTION,
     PostTestPlanResult,
@@ -188,7 +189,7 @@ def run_from_seams(
     """
     host = code_host_from_overlay()
     if host is None:
-        write_err("No code host configured (check overlay GitLab/GitHub token).")
+        write_err(NO_CODE_HOST_MESSAGE)
         raise SystemExit(1)
     try:
         result = _assemble_and_post(host, request)

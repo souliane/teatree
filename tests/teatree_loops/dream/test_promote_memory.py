@@ -142,17 +142,49 @@ class FileCoreGapTicketsTestCase(TestCase):
         host.update_issue.assert_not_called()
         assert not Ticket.objects.filter(extra__dream_gap_key="k1").exists()
 
-    def test_dry_run_classifies_but_neither_edits_nor_schedules(self) -> None:
+    def test_dry_run_writes_nothing_and_never_strands_the_gap(self) -> None:
+        # F6.1: a preview must NOT advance the disposition. Advancing it before the
+        # dry-run guard moved the row out of untriaged() while its promotion was
+        # skipped, so the gap sat in CORE_GAP_NEEDS_TICKET with no drain — detected but
+        # never fixed. A dry run now leaves the row UNTRIAGED so the next real pass
+        # drains it faithfully, and writes no umbrella edit / task.
         from teatree.core.models.ticket import Ticket  # noqa: PLC0415
 
         row = _row(destination="skills/ship/SKILL.md")
         host = _fake_host()
-        file_core_gap_tickets(host, umbrella_url=UMBRELLA, dry_run=True)
+        outcomes = file_core_gap_tickets(host, umbrella_url=UMBRELLA, dry_run=True)
         row.refresh_from_db()
-        # The classification still advances (cheap, reversible), but nothing is promoted.
-        assert row.disposition == ConsolidatedMemory.Disposition.CORE_GAP_NEEDS_TICKET
+        assert outcomes == []
+        assert row.disposition == ConsolidatedMemory.Disposition.UNTRIAGED
         host.update_issue.assert_not_called()
         assert not Ticket.objects.filter(extra__dream_gap_key="k1").exists()
+
+    def test_stranded_core_gap_row_is_drained_and_promoted(self) -> None:
+        # F6.1(b): a row a PRIOR pass classified CORE_GAP_NEEDS_TICKET but never
+        # promoted (no ticket recorded) is drained by needs_ticket() and driven onto
+        # the umbrella — so a detected gap can never sit un-promoted forever.
+        from teatree.core.models.task import Task  # noqa: PLC0415
+        from teatree.core.models.ticket import Ticket  # noqa: PLC0415
+
+        row = _row(destination="skills/ship/SKILL.md")
+        row.classify_core_gap()  # prior pass left it here with no ticket + no promotion
+        assert not ConsolidatedMemory.objects.untriaged().exists()  # not in the untriaged queue
+        host = _fake_host()
+        outcomes = file_core_gap_tickets(host, umbrella_url=UMBRELLA)
+        assert len(outcomes) == 1
+        assert outcomes[0].filed is True
+        host.update_issue.assert_called_once()
+        assert Ticket.objects.filter(extra__dream_gap_key="k1").exists()
+        assert Task.objects.filter(phase="coding").exists()
+
+    def test_a_new_core_gap_is_not_double_promoted_in_one_pass(self) -> None:
+        # The needs_ticket() drain reads the queue BEFORE the untriaged loop classifies
+        # a new core gap, so a row classified this pass is promoted exactly once, never
+        # re-drained into a second outcome.
+        _row(destination="skills/ship/SKILL.md")
+        host = _fake_host()
+        outcomes = file_core_gap_tickets(host, umbrella_url=UMBRELLA)
+        assert len(outcomes) == 1
 
 
 def _conflict(survivor: str = "feedback_bind_one", absorbed: str = "feedback_bind_two") -> BindingConflict:

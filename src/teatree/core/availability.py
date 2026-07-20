@@ -368,9 +368,10 @@ def write_override(
 ) -> Path:
     """Write the override atomically via ``tmp.replace``.
 
-    ``mode`` must be one of ``"present"`` / ``"away"``. ``until`` is an
-    optional aware-datetime; ``None`` means the override never expires
-    on its own (it is cleared explicitly with :func:`clear_override`).
+    ``mode`` must be one of :data:`VALID_MODES` — ``"present"`` / ``"away"`` /
+    ``"autonomous_away"``. ``until`` is an optional aware-datetime; ``None``
+    means the override never expires on its own (it is cleared explicitly with
+    :func:`clear_override`).
 
     Setting ``present`` from a prior deferring mode (``away`` /
     ``autonomous_away``) is the canonical away→present transition: it
@@ -384,10 +385,17 @@ def write_override(
     forwarded to the drain for DM targeting and per-overlay bot routing.
     """
     if mode not in VALID_MODES:
-        msg = f"mode must be 'present' or 'away', got {mode!r}"
+        allowed = ", ".join(repr(valid) for valid in sorted(VALID_MODES))
+        msg = f"mode must be one of {allowed}, got {mode!r}"
         raise ValueError(msg)
     target = path or override_path()
-    prior_mode = resolve_mode().mode if mode == MODE_PRESENT else None
+    # The away→present drain fires when returning to a REACHABLE mode from a
+    # deferring one. Keyed on the ``_DEFERRING_MODES`` set (not a bare
+    # ``mode == MODE_PRESENT``) so ``away`` and ``autonomous_away`` are handled
+    # symmetrically as both source (below, via the set) and — should another
+    # reachable mode ever join ``present`` — target. ``present`` is the only
+    # non-deferring mode today, so this is behaviour-preserving.
+    prior_mode = resolve_mode().mode if mode not in _DEFERRING_MODES else None
     target.parent.mkdir(parents=True, exist_ok=True)
     payload: dict[str, str] = {"mode": mode}
     if until is not None:

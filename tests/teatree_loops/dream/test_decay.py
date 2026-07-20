@@ -647,9 +647,13 @@ class SignalScoreTestCase(SimpleTestCase):
         assert decay._resolved_type(self._mem("misc", "metadata:\n  node_type: memory\n")) == "other"
 
     def test_binding_detection_matches_binding_and_non_negotiable(self) -> None:
-        assert decay._is_binding_text("this is a BINDING rule")
-        assert decay._is_binding_text("a Non-Negotiable directive")
-        assert not decay._is_binding_text("an ordinary lesson")
+        # The binding heuristic now lives once in the shared leaf (F6.11); decay's
+        # signal score reads it through the import.
+        from teatree.loops.dream._shared import is_binding_text  # noqa: PLC0415
+
+        assert is_binding_text("this is a BINDING rule")
+        assert is_binding_text("a Non-Negotiable directive")
+        assert not is_binding_text("an ordinary lesson")
 
     def test_recency_within_window_is_max_then_decays_to_floor(self) -> None:
         retention = timedelta(days=30)

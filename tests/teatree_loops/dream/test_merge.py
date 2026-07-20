@@ -68,6 +68,45 @@ class MergeTestCase(SimpleTestCase):
         assert "merged into" in archived.read_text(encoding="utf-8")
         assert not (a if absorbed == "feedback_dup_a" else b).exists()
 
+    def test_distinct_lines_excludes_the_absorbed_frontmatter(self) -> None:
+        # F6.8: the absorbed file's own frontmatter (name:/type:/---) must NOT be
+        # carried into the survivor body — appending `name: <absorbed>` would let the
+        # survivor NAME resolve to the absorbed slug and skew refcount/score. Only the
+        # absorbed LESSON body is distinct-diffed into the survivor.
+        from datetime import UTC, datetime  # noqa: PLC0415
+
+        from teatree.loops.dream.decay import _MemoryFile  # noqa: PLC0415
+
+        now = datetime.now(tz=UTC)
+        survivor = _MemoryFile(
+            path=self.dir / "s.md", name="s", text="---\nname: s\ntype: feedback\n---\nsurvivor body\n", mtime=now
+        )
+        absorbed = _MemoryFile(
+            path=self.dir / "a.md",
+            name="a",
+            text="---\nname: absorbed_slug\ntype: feedback\n---\nunique absorbed lesson line\n",
+            mtime=now,
+        )
+        lines = merge._distinct_lines(survivor, absorbed)
+        assert "unique absorbed lesson line" in lines
+        assert not any("name: absorbed_slug" in line for line in lines)
+        assert not any(line.strip() == "---" for line in lines)
+
+    def test_survivor_name_does_not_resolve_to_the_absorbed_slug_after_merge(self) -> None:
+        # F6.8 end-to-end: after a real merge the survivor still resolves to its OWN
+        # name, never the absorbed file's slug appended into its body.
+        from teatree.loops.dream.decay import _memory_name  # noqa: PLC0415
+
+        self._write("feedback_dup_a", _TOPIC + " and the FIRST distinct detail", frontmatter="type: feedback\n")
+        self._write("feedback_dup_b", _TOPIC + " and the SECOND distinct detail", frontmatter="type: feedback\n")
+        merge_memories(self.dir)
+        survivors = {p.name for p in self.dir.glob("*.md") if p.name != "MEMORY.md"}
+        survivor_name = next(iter(survivors))
+        text = (self.dir / survivor_name).read_text(encoding="utf-8")
+        absorbed_stem = "feedback_dup_b" if survivor_name == "feedback_dup_a.md" else "feedback_dup_a"
+        assert f"name: {absorbed_stem}" not in text
+        assert _memory_name(self.dir / survivor_name, text) == survivor_name.removesuffix(".md")
+
     def test_merely_related_files_are_not_merged(self) -> None:
         # Related enough to cross-link (some shared tokens) but below the near-dup
         # floor -> NOT merged.

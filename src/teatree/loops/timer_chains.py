@@ -260,21 +260,21 @@ def _escalate_tick_timeout(name: str, *, deadline: float) -> None:
     ``build_loop_table_jobs``), so this run's work is lost until the next slot — for a
     daily loop, a full 24 h, repeatable forever. That is exactly the "never silently
     freeze" invariant: the timeout must surface loudly, not sit behind a lone
-    ``logger.warning``. Idempotent — a per-loop marker in the question text dedups
-    across ALL questions (answered or not) so a repeatedly-timing-out loop escalates
-    once, not every fire.
+    ``logger.warning``. Deduped through the sanctioned ``dedupe_marker`` seam, which
+    collapses only OPEN (unanswered, undismissed) escalations — so a repeatedly-timing-
+    out loop escalates once WHILE the question is pending, but a NEW timeout AFTER the
+    user has answered/dismissed the last one re-escalates rather than being masked
+    forever by the resolved row (F6.12).
     """
     from teatree.core.models.deferred_question import DeferredQuestion  # noqa: PLC0415 — deferred: ORM import
 
-    marker = f"[loop-tick-timeout loop={name}]"
-    if DeferredQuestion.objects.filter(question__contains=marker).exists():
-        return
+    marker = f"loop-tick-timeout loop={name}"
     question = (
-        f"{marker} Loop {name!r} tick exceeded its {deadline:.0f}s deadline and was killed; its cadence "
+        f"Loop {name!r} tick exceeded its {deadline:.0f}s deadline and was killed; its cadence "
         "anchor was already consumed, so this run's work is lost until the next slot. Raise the loop's "
         "deadline or investigate why the tick hangs — how should it proceed?"
     )
-    DeferredQuestion.record(question, session_id="")
+    DeferredQuestion.record(question, session_id="", dedupe_marker=marker)
 
 
 def loop_admitted(name: str, now: dt.datetime) -> bool:

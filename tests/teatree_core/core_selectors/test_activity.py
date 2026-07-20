@@ -189,6 +189,109 @@ class TestBuildActiveSessions(TestCase):
         assert result == []
 
 
+class TestBuildActiveSessionsCorrectness(TestCase):
+    """F1.8: no N+1 over active tasks, active-driving wins over the finished exclusion, corrupt JSON logs."""
+
+    @pytest.fixture(autouse=True)
+    def _setup_fixtures(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+        self.monkeypatch = monkeypatch
+        self.tmp_path = tmp_path
+
+    def _sessions_dir(self) -> Path:
+        sessions_dir = self.tmp_path / "sessions"
+        sessions_dir.mkdir()
+        self.monkeypatch.setattr("teatree.core.selectors.activity._CLAUDE_SESSIONS_DIR", sessions_dir)
+        return sessions_dir
+
+    @staticmethod
+    def _active_task_with_attempt(agent_session_id: str = "") -> Task:
+        ticket = Ticket.objects.create(state=Ticket.State.STARTED)
+        session = Session.objects.create(ticket=ticket, agent_id="agent")
+        task = Task.objects.create(
+            ticket=ticket,
+            session=session,
+            status=Task.Status.CLAIMED,
+            claimed_by="worker",
+            phase="coding",
+            execution_target=Task.ExecutionTarget.HEADLESS,
+        )
+        TaskAttempt.objects.create(
+            task=task,
+            execution_target=task.execution_target,
+            agent_session_id=agent_session_id,
+        )
+        return task
+
+    def test_query_count_is_constant_across_active_task_count(self) -> None:
+        """The latest-attempt lookup is one query, not one-per-task (no N+1)."""
+        from django.db import connection  # noqa: PLC0415
+        from django.test.utils import CaptureQueriesContext  # noqa: PLC0415
+
+        self._sessions_dir()  # empty dir — the DB queries run regardless of session files
+
+        self._active_task_with_attempt("s-1")
+        with CaptureQueriesContext(connection) as first:
+            build_active_sessions()
+        baseline = len(first.captured_queries)
+
+        # Three more active tasks, each with its own attempt.
+        for i in range(3):
+            self._active_task_with_attempt(f"s-extra-{i}")
+        with CaptureQueriesContext(connection) as second:
+            build_active_sessions()
+
+        # No per-task growth: the pre-fix loop issued one attempts query per task.
+        assert len(second.captured_queries) == baseline
+
+    def test_active_driving_session_wins_over_finished_exclusion(self) -> None:
+        """A session that finished task A but drives active task B must still surface."""
+        import json  # noqa: PLC0415
+        import os  # noqa: PLC0415
+
+        sessions_dir = self._sessions_dir()
+        current_pid = os.getpid()
+        (sessions_dir / f"{current_pid}.json").write_text(
+            json.dumps({"pid": current_pid, "sessionId": "shared", "startedAt": 0}),
+            encoding="utf-8",
+        )
+
+        # Task A finished under session "shared" -> "shared" is in finished_session_ids.
+        finished_ticket = Ticket.objects.create(state=Ticket.State.STARTED)
+        finished_session = Session.objects.create(ticket=finished_ticket, agent_id="agent")
+        finished_task = Task.objects.create(
+            ticket=finished_ticket,
+            session=finished_session,
+            status=Task.Status.COMPLETED,
+            phase="coding",
+        )
+        TaskAttempt.objects.create(
+            task=finished_task,
+            execution_target=finished_task.execution_target,
+            agent_session_id="shared",
+        )
+        # Task B is active and its latest attempt is driven by the SAME session.
+        active_task = self._active_task_with_attempt("shared")
+
+        result = build_active_sessions()
+
+        assert len(result) == 1
+        assert result[0].session_id == "shared"
+        assert result[0].task_id == active_task.pk
+
+    def test_corrupt_session_file_logs_warning_with_path(self) -> None:
+        import json  # noqa: PLC0415
+
+        sessions_dir = self._sessions_dir()
+        (sessions_dir / "bad.json").write_text("not valid json", encoding="utf-8")
+        (sessions_dir / "ok.json").write_text(json.dumps({"sessionId": "x"}), encoding="utf-8")
+
+        with self.assertLogs("teatree.core.selectors.activity", level="WARNING") as captured:
+            result = build_active_sessions()
+
+        assert result == []
+        assert any("bad.json" in message for message in captured.output)
+
+
 class TestBuildRecentActivity(TestCase):
     def test_returns_ended_attempts(self) -> None:
         ticket = Ticket.objects.create(state=Ticket.State.STARTED)

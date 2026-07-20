@@ -128,3 +128,83 @@ class TestNotifyUserSpeaks(TestCase):
             )
         assert sent is True
         backend.post_message.assert_called_once()
+
+    def test_audio_threads_under_delivered_ts_without_repeating_text(self) -> None:
+        """F4.4: the text lands exactly once; audio threads under it with no repeat.
+
+        Pre-fix the sidecar posted the audio DM with the SAME text as its
+        ``initial_comment``, so with ``slack`` on the body was delivered twice
+        (``post_message`` body + the audio DM's identical comment). The fix
+        threads the audio under the delivered ``ts`` (``thread_ts=posted_ts``)
+        with an EMPTY ``initial_comment`` — text delivered once via
+        ``post_message``, audio a threaded enhancement.
+        """
+        backend = _backend()
+        with (
+            patch("teatree.core.speak.resolve_speak", return_value=SpeakConfig(slack=True)),
+            patch("teatree.core.speak.synthesise", return_value=__import__("pathlib").Path("/tmp/x/speech.m4a")),
+            patch("teatree.core.speak.shutil.rmtree"),
+        ):
+            sent = notify_user(
+                "tests are green",
+                kind=NotifyKind.INFO,
+                idempotency_key="notify-single-delivery",
+                audience=NotifyAudience.OWNER_DELIVERY,
+                backend=backend,
+                user_id="U_ME",
+            )
+        assert sent is True
+        # The canonical text delivery goes out exactly ONCE.
+        backend.post_message.assert_called_once()
+        # The audio attaches exactly once, threaded under the delivered message
+        # (``thread_ts`` == the ``post_message`` ts) with NO repeated text.
+        backend.post_audio_dm.assert_called_once()
+        audio_kwargs = backend.post_audio_dm.call_args.kwargs
+        assert audio_kwargs["thread_ts"] == "1700000000.000000"
+        assert audio_kwargs["text"] == "", "audio DM must not repeat the text body (empty initial_comment)"
+
+    def test_no_audio_when_delivery_reports_not_ok(self) -> None:
+        """F4.4: the sidecar runs ONLY after the ok/ts check succeeds.
+
+        Pre-fix the sidecar fired before the ``ok:false`` check, so a failed
+        ``post_message`` still attached audio to a DM that never landed — and
+        the FAILED finalize then drove a retry that re-attached, tripling it.
+        With ``slack`` on and an ``ok:false`` post, no audio must be attached.
+        """
+        backend = _backend()
+        backend.post_message.return_value = {"ok": False, "error": "channel_not_found"}
+        with (
+            patch("teatree.core.speak.resolve_speak", return_value=SpeakConfig(slack=True)),
+            patch("teatree.core.speak.synthesise", return_value=__import__("pathlib").Path("/tmp/x/speech.m4a")),
+            patch("teatree.core.speak.shutil.rmtree"),
+        ):
+            sent = notify_user(
+                "tests are green",
+                kind=NotifyKind.INFO,
+                idempotency_key="notify-no-audio-on-failure",
+                audience=NotifyAudience.OWNER_DELIVERY,
+                backend=backend,
+                user_id="U_ME",
+            )
+        assert sent is False
+        backend.post_audio_dm.assert_not_called()
+
+    def test_no_audio_when_post_returns_ok_but_no_ts(self) -> None:
+        """F4.4: an ``ok:true`` with no ``ts`` is a non-delivery — no audio sidecar."""
+        backend = _backend()
+        backend.post_message.return_value = {"ok": True}
+        with (
+            patch("teatree.core.speak.resolve_speak", return_value=SpeakConfig(slack=True)),
+            patch("teatree.core.speak.synthesise", return_value=__import__("pathlib").Path("/tmp/x/speech.m4a")),
+            patch("teatree.core.speak.shutil.rmtree"),
+        ):
+            sent = notify_user(
+                "tests are green",
+                kind=NotifyKind.INFO,
+                idempotency_key="notify-no-audio-no-ts",
+                audience=NotifyAudience.OWNER_DELIVERY,
+                backend=backend,
+                user_id="U_ME",
+            )
+        assert sent is False
+        backend.post_audio_dm.assert_not_called()

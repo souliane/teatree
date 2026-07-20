@@ -67,7 +67,18 @@ _CORE_DIR = Path(__file__).resolve().parents[2] / "src" / "teatree" / "core"
 # genuine new root concern bridging two flat root leaves — handover.py (the
 # hand-off record + mirror) and fast_push.py (the leak-gated ship lane) — owned by
 # no existing subpackage (merge/ is the keystone transition, not the hand-off seam).
-PINNED_FLAT_CORE_MODULES = 75
+# 77: +speak_cleaning.py / toml_backends.py (PR #3479 module-health split) — each a
+# flat sibling of the root leaf it was carved out of to hold it under the 500-LOC
+# module-health cap. speak_cleaning (the spoken-text cleaning regexes + clean_for_speech)
+# sits beside speak.py; toml_backends (the path-only-TOML backend construction) sits
+# beside backend_factory.py. Neither is owned by an existing subpackage — both are
+# leaf helpers of a flat root hub, mirroring notify_targets.py beside notify.py.
+# 78: +managers_overlay.py (PR #3479 WP9 F1.6) — the overlay-scope Q-builders
+# (overlay_scope_q + for_overlay) carved out of managers.py to hold it under the
+# 500-LOC module-health cap. A leaf helper of the flat root managers.py hub,
+# consumed by managers.py and selectors._filters; owned by no existing subpackage,
+# mirroring speak_cleaning.py beside speak.py.
+PINNED_FLAT_CORE_MODULES = 78
 
 
 def _flat_core_modules() -> list[str]:

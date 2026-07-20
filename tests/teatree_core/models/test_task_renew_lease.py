@@ -67,3 +67,27 @@ class TestRenewLeaseCas(TestCase):
         task.complete()
         with pytest.raises(LeaseLostError):
             worker.renew_lease()
+
+    def test_renew_lease_predicate_honours_claimed_by_session(self) -> None:
+        """The CAS filters on ``claimed_by_session`` and ``claim`` now writes it — so it is truthful (F1.5).
+
+        A heartbeat whose in-memory ``claimed_by_session`` diverges from the
+        row's persisted session is locked out even when every other
+        claim-generation field matches; the live owner (session in step with
+        the row ``claim`` wrote) still renews.
+        """
+        ticket = Ticket.objects.create()
+        session = Session.objects.create(ticket=ticket, agent_id="a")
+        task = Task.objects.create(ticket=ticket, session=session, phase="coding")
+        task.claim(claimed_by="worker", claimed_by_session="sess-live", lease_seconds=300)
+
+        # An impostor identical on every claim-generation field EXCEPT the session.
+        impostor = Task.objects.get(pk=task.pk)
+        impostor.claimed_by_session = "sess-stale"
+        with pytest.raises(LeaseLostError):
+            impostor.renew_lease(lease_seconds=600)
+
+        # The live owner's session matches the row ``claim`` persisted, so it renews.
+        task.renew_lease(lease_seconds=600)
+        task.refresh_from_db()
+        assert task.claimed_by_session == "sess-live"

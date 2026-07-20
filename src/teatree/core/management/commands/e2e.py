@@ -1,6 +1,7 @@
 """E2E test commands: trigger CI, run from external repo, run from project."""
 
 import os
+import shlex
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Annotated
@@ -359,7 +360,9 @@ class Command(TyperCommand):
         )
 
         overlay_args = get_overlay().e2e.playwright_args(test_path)
-        caller_args = playwright_args.split() if playwright_args else []
+        # shlex.split, not str.split: a quoted flag value (``--grep "smoke test"``)
+        # must stay ONE Playwright argument, not fracture on the inner space (F3.6).
+        caller_args = shlex.split(playwright_args) if playwright_args else []
         opts = PlaywrightOptions(
             test_path=test_path,
             update_snapshots=update_snapshots,

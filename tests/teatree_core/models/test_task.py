@@ -151,6 +151,78 @@ class TestTask(TestCase):
             task.reopen()
 
 
+class TestClaimedBySessionPersistence(TestCase):
+    """``claimed_by_session`` is written by ``claim`` and blanked on every return/terminal path (F1.5).
+
+    Pre-fix ``claim`` never SET the column and the ``complete``/``fail``/``park``/
+    ``_route`` ``update_fields`` lists omitted it, so ``_clear_claim`` blanked it
+    only in memory — the DB kept a stale attribution and the ``renew_lease``
+    claim-generation CAS (which filters on ``claimed_by_session``) operated on it.
+    """
+
+    def _task(self) -> Task:
+        ticket = Ticket.objects.create()
+        session = Session.objects.create(ticket=ticket, agent_id="agent")
+        return Task.objects.create(ticket=ticket, session=session)
+
+    def _db_session(self, task: Task) -> str:
+        # Read the persisted column directly — never the in-memory instance.
+        return Task.objects.values_list("claimed_by_session", flat=True).get(pk=task.pk)
+
+    def test_claim_persists_session_to_db(self) -> None:
+        task = self._task()
+        task.claim(claimed_by="worker", claimed_by_session="sess-1")
+        assert self._db_session(task) == "sess-1"
+        # claim() ends with refresh_from_db, so the instance agrees with the row.
+        assert task.claimed_by_session == "sess-1"
+
+    def test_claim_defaults_session_to_empty(self) -> None:
+        task = self._task()
+        task.claim(claimed_by="worker")
+        assert self._db_session(task) == ""
+
+    def test_complete_blanks_session_in_db(self) -> None:
+        task = self._task()
+        task.claim(claimed_by="worker", claimed_by_session="sess-1")
+        task.complete()
+        assert self._db_session(task) == ""
+
+    def test_complete_surfacing_advance_failure_blanks_session_in_db(self) -> None:
+        task = self._task()
+        task.claim(claimed_by="worker", claimed_by_session="sess-1")
+        task.complete_surfacing_advance_failure()
+        assert self._db_session(task) == ""
+
+    def test_fail_blanks_session_in_db(self) -> None:
+        task = self._task()
+        task.claim(claimed_by="worker", claimed_by_session="sess-1")
+        task.fail()
+        assert self._db_session(task) == ""
+
+    def test_park_blanks_session_in_db(self) -> None:
+        task = self._task()
+        task.claim(claimed_by="worker", claimed_by_session="sess-1")
+        task.park(not_before=timezone.now() + timezone.timedelta(minutes=5))
+        assert self._db_session(task) == ""
+
+    def test_route_blanks_session_in_db(self) -> None:
+        task = self._task()
+        task.claim(claimed_by="worker", claimed_by_session="sess-1")
+        task.route_to_headless(reason="retry")
+        assert self._db_session(task) == ""
+
+    def test_reclaim_overwrites_stale_session_in_db(self) -> None:
+        # A CLAIMED task whose lease has expired is reclaimable; a fresh claim
+        # must overwrite the dead owner's session so the row's attribution is
+        # truthful (renew_lease's CAS filters on it).
+        task = self._task()
+        task.claim(claimed_by="worker-A", claimed_by_session="sess-A")
+        Task.objects.filter(pk=task.pk).update(lease_expires_at=timezone.now() - timezone.timedelta(minutes=5))
+        reclaimer = Task.objects.get(pk=task.pk)
+        reclaimer.claim(claimed_by="worker-B", claimed_by_session="sess-B")
+        assert self._db_session(task) == "sess-B"
+
+
 class TestNeedsUserInputHeadlessLane(TestCase):
     """A headless ``needs_user_input`` parks a correlated DeferredQuestion, not an interactive task.
 

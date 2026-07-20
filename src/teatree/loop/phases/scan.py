@@ -40,6 +40,18 @@ def scan_phase(
     until the shared deadline; a job past it is recorded as a timed-out error for that
     scanner label and the tick continues.  The pool is shut down without waiting for
     still-running threads so a hung scanner cannot freeze the tick.
+
+    Abandoned-thread behaviour (F5.9): ``pool.shutdown(wait=False, cancel_futures=True)``
+    drops only the futures that have not STARTED running. A scanner thread already
+    executing past the deadline cannot be interrupted — Python has no thread-kill — so it
+    is ABANDONED: it keeps running to completion in the background while the tick moves on.
+    Two consequences the caller must be aware of, since there is (deliberately, for now) no
+    in-flight guard: (a) the abandoned thread may still mutate shared state (DB rows, forge
+    reads) after the tick that spawned it has ended, and (b) the NEXT tick will schedule the
+    same scanner again, so a chronically-slow scanner can have two instances of itself
+    running concurrently. The timed-out error is labelled ``(abandoned, still running)`` so
+    the tick report / statusline surfaces the still-running state rather than implying the
+    scanner simply stopped.
     """
     outcome = ScanOutcome()
     if not jobs:
@@ -60,7 +72,10 @@ def scan_phase(
                 if error:
                     outcome.errors[job_label] = error
             except TimeoutError:
-                outcome.errors[label] = f"scanner timed out after {per_job_timeout}s"
+                # F5.9: the thread is not cancelled — it is abandoned and keeps
+                # running in the background. Label it so the error output makes the
+                # still-running state explicit (a next tick may start a 2nd instance).
+                outcome.errors[label] = f"scanner timed out after {per_job_timeout}s (abandoned, still running)"
             except Exception as exc:  # noqa: BLE001 — a scanner failure is recorded per-label, never aborts the scan phase
                 outcome.errors[label] = f"{type(exc).__name__}: {exc}"
     finally:

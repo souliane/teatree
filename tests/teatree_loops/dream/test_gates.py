@@ -565,6 +565,31 @@ class TestRunAcceptancePass(TestCase):
         run_acceptance_pass(snap, snap, overlay="acme", archived=[], schema_before=0, schema_after=1, persist=False)
         assert DreamQaProbe.objects.count() == 0
 
+    def test_interference_replays_the_recorded_prior_probe_set_distinct_from_monotonicity(self) -> None:
+        # F6.3: gate (b) interference replays the ACTUAL recorded prior-session probe
+        # SET against the AFTER snapshot — not the current derived probes — so a
+        # regression of an OLD answer is caught even when the current corpus changed and
+        # the current-probe monotonicity is fine. This restores the two gates from
+        # collapsing onto one predicate that never replayed the persisted corpus.
+        old = _snapshot({"old.md": "name: old\nthe OLD durable fact\n"}, index="- the OLD durable fact\n")
+        # Two recordings mark the 'old.md' probe is_prior_session, so it becomes the
+        # replayed prior corpus for later passes.
+        run_acceptance_pass(old, old, overlay="acme", archived=[], schema_before=0, schema_after=1)
+        run_acceptance_pass(old, old, overlay="acme", archived=[], schema_before=1, schema_after=2)
+        assert DreamQaProbe.objects.prior_session_probes("acme").count() == 1
+
+        # A later pass over a DIFFERENT current corpus whose AFTER snapshot no longer
+        # holds the OLD fact: the current probe (new.md) is retained (retention +
+        # monotonicity pass), but the REPLAYED prior set regresses -> interference fails.
+        new = _snapshot({"new.md": "name: new\na FRESH unrelated lesson\n"}, index="- a FRESH unrelated lesson\n")
+        report = run_acceptance_pass(
+            new, new, overlay="acme", archived=[], schema_before=2, schema_after=3, clusters_recorded=1
+        )
+        failed = {g.name for g in report.gate_results if not g.passed}
+        assert "interference" in failed
+        assert "monotonicity" not in failed  # distinct predicate: current-probe rate did not regress
+        assert "retention" not in failed  # the current probe is retained
+
     def test_reindex_clipping_a_long_curated_summary_still_passes(self) -> None:
         # End-to-end #2545 staleness defect: re-index (phase 5) clips a >200-char
         # curated MEMORY.md summary, the gate flagged the old long line as an unhomed

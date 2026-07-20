@@ -22,12 +22,8 @@ from django.db import OperationalError
 from django.test import TestCase
 
 from teatree.core.models import ScannedBroadcast
-from teatree.loop.scanners.slack_broadcasts import (
-    ConnectChannelBotRestrictedError,
-    GlabGhMrStateClassifier,
-    MrState,
-    SlackBroadcastsScanner,
-)
+from teatree.loop.scanners.slack_broadcast_mr_classifier import GlabGhMrStateClassifier
+from teatree.loop.scanners.slack_broadcasts import ConnectChannelBotRestrictedError, MrState, SlackBroadcastsScanner
 from teatree.types import RawAPIDict
 from tests.teatree_core._on_behalf_gate_helpers import disable_on_behalf_gate
 

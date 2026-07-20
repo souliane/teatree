@@ -5,24 +5,36 @@ This module bridges ``teatree.core`` (overlay registry) and
 need to extract tokens or branch on platform themselves.
 """
 
+import logging
 import os
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING
 
 from django.core.exceptions import ImproperlyConfigured
 
-from teatree.core.backend_protocols import BackendResolutionError, CIService, CodeHostBackend, MessagingBackend
+from teatree.core.backend_protocols import CIService, CodeHostBackend, MessagingBackend
 from teatree.core.backend_registry import get_backend_provider
 
 if TYPE_CHECKING:
     from teatree.core.backend_registry import NotionPageClient, SentryReadClient, SharePointReadClient
 from teatree.core.overlay import OverlayBase
 from teatree.core.overlay_loader import get_all_overlays, get_overlay
-from teatree.paths import find_overlay_db
+from teatree.core.toml_backends import (
+    _apply_voice_classifier_mode,
+    _code_host_from_toml_overlay,
+    _code_host_from_toml_overlay_for_repo,
+    _find_external_db,
+    _hosts_from_toml,
+    _messaging_from_toml,
+    _messaging_from_toml_overlay,
+    _toml_messaging_backend,
+)
 from teatree.types import SharePointRemoteSpec
-from teatree.utils import git
-from teatree.utils.forge import forge_from_remote
+from teatree.utils.throttled_log import warn_throttled
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True, slots=True)
@@ -63,8 +75,18 @@ class OverlayBackends:
         return self.hosts[0] if self.hosts else None
 
 
-_code_host_cache: dict[str, CodeHostBackend | None] = {}
-_messaging_cache: dict[str, MessagingBackend | None] = {}
+_code_host_cache: dict[str, CodeHostBackend] = {}
+_messaging_cache: dict[str, MessagingBackend] = {}
+
+# A resolved backend is cached for the process lifetime; a ``None`` result is
+# cached only for this brief monotonic window (F4.5). A single transient tick
+# where credentials momentarily fail to resolve returned ``None`` — which the
+# old permanent-cache pinned for the whole loop's life, disabling the code host /
+# messaging until a restart. Re-resolving after a short TTL lets the next tick
+# recover on its own; a genuinely-unconfigured overlay just pays a cheap re-read.
+_ERROR_NONE_TTL_SECONDS = 30.0
+_code_host_none_until: dict[str, float] = {}
+_messaging_none_until: dict[str, float] = {}
 
 
 def _active_overlay_name(overlay_name: str | None) -> str:
@@ -95,9 +117,28 @@ def code_host_from_overlay(overlay_name: str | None = None) -> CodeHostBackend |
     key = _active_overlay_name(overlay_name)
     if key in _code_host_cache:
         return _code_host_cache[key]
+    if _none_still_fresh(_code_host_none_until, key):
+        return None
     backend = _build_code_host(key)
+    if backend is None:
+        _code_host_none_until[key] = time.monotonic() + _ERROR_NONE_TTL_SECONDS
+        warn_throttled(
+            logger,
+            f"code-host-none:{key}",
+            "code host for overlay %r resolved to None — re-resolving after %.0fs (not cached for the process life)",
+            key or "<default>",
+            _ERROR_NONE_TTL_SECONDS,
+        )
+        return None
     _code_host_cache[key] = backend
+    _code_host_none_until.pop(key, None)
     return backend
+
+
+def _none_still_fresh(deadlines: dict[str, float], key: str) -> bool:
+    """Whether a cached ``None`` for *key* is still inside its short TTL window."""
+    deadline = deadlines.get(key)
+    return deadline is not None and time.monotonic() < deadline
 
 
 def _build_code_host(overlay_name: str) -> CodeHostBackend | None:
@@ -143,8 +184,21 @@ def messaging_from_overlay(overlay_name: str | None = None) -> MessagingBackend 
     key = _active_overlay_name(overlay_name)
     if key in _messaging_cache:
         return _messaging_cache[key]
+    if _none_still_fresh(_messaging_none_until, key):
+        return None
     backend = _build_messaging(key)
+    if backend is None:
+        _messaging_none_until[key] = time.monotonic() + _ERROR_NONE_TTL_SECONDS
+        warn_throttled(
+            logger,
+            f"messaging-none:{key}",
+            "messaging for overlay %r resolved to None — re-resolving after %.0fs (not cached for the process life)",
+            key or "<default>",
+            _ERROR_NONE_TTL_SECONDS,
+        )
+        return None
     _messaging_cache[key] = backend
+    _messaging_none_until.pop(key, None)
     return backend
 
 
@@ -185,19 +239,6 @@ def _resolved_messaging_backend(overlay_name: str | None) -> str:
     except ImproperlyConfigured:
         return _toml_messaging_backend(key)
     return overlay.config.messaging_backend or ""
-
-
-def _toml_messaging_backend(overlay_name: str) -> str:
-    """The ``messaging_backend`` value of a path-only TOML overlay entry (``""`` when absent)."""
-    if not overlay_name:
-        return ""
-    from teatree.config import load_config  # noqa: PLC0415 — deferred: call-time import, kept lazy
-
-    overlays = load_config().raw.get("overlays") or {}
-    cfg = overlays.get(overlay_name)
-    if not isinstance(cfg, dict):
-        return ""
-    return str(cfg.get("messaging_backend", "") or "")
 
 
 def ci_service_from_overlay(overlay_name: str | None = None) -> CIService | None:
@@ -286,56 +327,6 @@ def sharepoint_client_from_overlay(overlay_name: str | None = None) -> "SharePoi
             library_path=os.environ.get("TEATREE_SHAREPOINT_LIBRARY_PATH", ""),
         ),
     )
-
-
-def _messaging_from_toml_overlay(overlay_name: str) -> MessagingBackend | None:
-    """Build a messaging backend from a path-only TOML overlay entry.
-
-    Used by the fallback in :func:`messaging_from_overlay` so wrapper
-    scripts that opt into an overlay without a registered Python class
-    still route to its credentials. Mirrors the discovery shape of
-    ``_backends_from_toml``.
-    """
-    if not overlay_name:
-        return None
-    from teatree.config import load_config  # noqa: PLC0415 — deferred: call-time import, kept lazy
-
-    overlays = load_config().raw.get("overlays") or {}
-    cfg = overlays.get(overlay_name)
-    if not isinstance(cfg, dict):
-        return None
-    return _messaging_from_toml(cfg)
-
-
-def _code_host_from_toml_overlay(overlay_name: str) -> CodeHostBackend | None:
-    """Build a code-host backend from a path-only TOML overlay entry."""
-    if not overlay_name:
-        return None
-    from teatree.config import load_config  # noqa: PLC0415 — deferred: call-time import, kept lazy
-
-    overlays = load_config().raw.get("overlays") or {}
-    cfg = overlays.get(overlay_name)
-    if not isinstance(cfg, dict):
-        return None
-    return _host_from_toml(cfg)
-
-
-def _code_host_from_toml_overlay_for_repo(overlay_name: str, repo_path: str) -> CodeHostBackend | None:
-    """Per-repo code host from a path-only TOML overlay entry (#2025).
-
-    The path-only fallback must derive the forge from *repo_path*'s origin
-    host too — otherwise the original #2025 token-precedence bug survives
-    for TOML-only overlays (``_host_from_toml`` is GitHub-first).
-    """
-    if not overlay_name:
-        return None
-    from teatree.config import load_config  # noqa: PLC0415 — deferred: call-time import, kept lazy
-
-    overlays = load_config().raw.get("overlays") or {}
-    cfg = overlays.get(overlay_name)
-    if not isinstance(cfg, dict):
-        return None
-    return _host_from_toml_for_repo(cfg, repo_path)
 
 
 def iter_overlay_backends() -> list[OverlayBackends]:
@@ -431,142 +422,6 @@ def _backends_from_toml(
     return result
 
 
-def _find_external_db(name: str, cfg: dict) -> Path | None:
-    project_path = cfg.get("path", "")
-    if not project_path:
-        return None
-    return find_overlay_db(name, project_path)
-
-
-def _hosts_from_toml(cfg: dict) -> list[CodeHostBackend]:
-    """Return every code-host backend a TOML overlay opts into.
-
-    Pre-#976 the loop only constructed one host per TOML overlay, so an
-    entry with both ``gitlab_token_ref`` and ``github_token_ref`` silently
-    dropped one platform. Build both when both resolve so the loop can
-    scan each forge independently.
-    """
-    from teatree.core.send_proxy import read_posting_credential  # noqa: PLC0415 — deferred: ORM model, pre-app-registry
-
-    provider = get_backend_provider()
-    hosts: list[CodeHostBackend] = []
-    github_token_ref = cfg.get("github_token_ref", "")
-    if github_token_ref:
-        token = read_posting_credential(github_token_ref)
-        if token:
-            hosts.append(provider.build_github_host(token=token))
-
-    gitlab_token_ref = cfg.get("gitlab_token_ref", "")
-    gitlab_url = cfg.get("gitlab_url", "https://gitlab.com")
-    if gitlab_token_ref:
-        token = read_posting_credential(gitlab_token_ref)
-        if token:
-            hosts.append(provider.build_gitlab_host(token=token, base_url=gitlab_url))
-    return hosts
-
-
-def _host_from_toml(cfg: dict) -> CodeHostBackend | None:
-    """Single-host shim — first matching host per TOML overlay.
-
-    Pre-#976 callers consumed exactly one host per TOML overlay. Kept so
-    code paths outside the loop scanner stack don't need to learn the
-    multi-host shape just to read out the legacy default.
-    """
-    hosts = _hosts_from_toml(cfg)
-    return hosts[0] if hosts else None
-
-
-def _host_from_toml_for_repo(cfg: dict, repo_path: str) -> CodeHostBackend | None:
-    """Build the TOML overlay's host for *repo_path*'s origin forge (#2025).
-
-    Mirrors :func:`teatree.backends.loader.get_code_host_for_repo` for the
-    path-only TOML overlay: the forge is the repo's origin host, not
-    token-presence order. Raises :class:`BackendResolutionError` when the
-    repo's forge has no token ref configured on the overlay; falls back to
-    the overlay default only when the repo has no origin / an unrecognised
-    host.
-    """
-    from teatree.core.send_proxy import read_posting_credential  # noqa: PLC0415 — deferred: ORM model, pre-app-registry
-
-    remote = git.remote_url(repo=repo_path)
-    forge = forge_from_remote(remote) if remote else ""
-    if not forge:
-        return _host_from_toml(cfg)
-
-    provider = get_backend_provider()
-    if forge == "github":
-        github_token_ref = cfg.get("github_token_ref", "")
-        token = read_posting_credential(github_token_ref)
-        if token:
-            return provider.build_github_host(token=token)
-    else:
-        gitlab_token_ref = cfg.get("gitlab_token_ref", "")
-        token = read_posting_credential(gitlab_token_ref)
-        if token:
-            return provider.build_gitlab_host(token=token, base_url=cfg.get("gitlab_url", "https://gitlab.com"))
-
-    msg = (
-        f"repo origin resolves to the {forge} forge ({remote!r}) but the TOML overlay "
-        f"has no {forge} token configured — cannot open a PR. "
-        f"Configure {forge}_token_ref for this overlay."
-    )
-    raise BackendResolutionError(msg)
-
-
-def _messaging_from_toml(cfg: dict) -> MessagingBackend | None:
-    if cfg.get("messaging_backend") != "slack":
-        return None
-    from teatree.core.messaging_tokens import resolve_messaging_tokens  # noqa: PLC0415 — deferred: pre-app-registry
-
-    token_ref = cfg.get("slack_token_ref", "")
-    if not token_ref:
-        return None
-    tokens = resolve_messaging_tokens(slack_token_ref=token_ref, user_token_ref=cfg.get("user_token_ref", ""))
-    bot_token = tokens.bot
-    app_token = tokens.app
-    user_token = tokens.user
-    user_id = cfg.get("slack_user_id", "")
-    # Setup-time provisioned IM channel id (#1342). When set, threads into
-    # the Slack bot so its ``open_dm`` short-circuits the live
-    # ``conversations.open`` for the configured user, routing DMs through this
-    # bot's IM instead of failing ``channel_not_found``.
-    dm_channel_id = cfg.get("slack_dm_channel_id", "")
-    if bot_token:
-        # Loop construction path — a malformed user token degrades to
-        # bot-only instead of crashing the tick (see ``get_messaging``).
-        backend = get_backend_provider().build_slack_messaging(
-            bot_token=bot_token,
-            app_token=app_token or "",
-            user_token=user_token,
-            user_id=user_id,
-            dm_channel_id=dm_channel_id,
-        )
-        _apply_voice_classifier_mode(backend)
-        return backend
-    return None
-
-
-def _apply_voice_classifier_mode(backend: "MessagingBackend | None") -> None:
-    """Resolve the voice/token classifier mode from config (#1395).
-
-    Reads the effective setting (env / per-overlay / global) and
-    threads it into a :class:`SlackBotBackend` via its setter. Noop
-    backends and missing-credentials cases are skipped. Tolerates
-    fake configs that don't carry a ``user`` attribute (path-only TOML
-    fallback test fixtures) by leaving the backend on its default
-    :attr:`SlackVoiceClassifierMode.WARN`.
-    """
-    setter = getattr(backend, "set_voice_classifier_mode", None)
-    if setter is None or not callable(setter):
-        return
-    try:
-        from teatree.config import get_effective_settings  # noqa: PLC0415 — deferred: call-time import, kept lazy
-
-        setter(get_effective_settings().slack_voice_classifier_mode)
-    except (AttributeError, ImportError):
-        return
-
-
 def reset_backend_caches() -> None:
     """Clear all per-overlay backend caches.
 
@@ -575,6 +430,8 @@ def reset_backend_caches() -> None:
     """
     _code_host_cache.clear()
     _messaging_cache.clear()
+    _code_host_none_until.clear()
+    _messaging_none_until.clear()
     get_backend_provider().reset_caches()
 
 

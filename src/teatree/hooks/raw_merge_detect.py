@@ -31,8 +31,15 @@ from teatree.hooks._shell_lexer import split_commands, tokenize
 
 # A ``gh``/``glab api`` REST call — the out-of-band merge/mutation surface.
 _GLAB_GH_API_RE = re.compile(r"\b(?:glab|gh)\s+api\b")
-# The REST merge endpoint: ``(merge_requests|pulls)/<n>/merge`` (GitLab + GitHub shapes).
-_MERGE_ENDPOINT_RE = re.compile(r"(?:merge_requests|pulls)/\d+/merge\b")
+# The REST merge endpoint: ``(merge_requests|pulls)/<iid>/merge`` (GitLab + GitHub
+# shapes). The iid is ``[^/\s]+`` -- ANY non-slash, non-space token -- not just a
+# numeric ``\d+``: a shell-variable or brace-templated iid
+# (``pulls/$PR/merge``, ``pulls/{id}/merge``, ``merge_requests/$IID/merge``)
+# resolves to a real merge at run time, so the numeric-only pattern let it evade
+# the out-of-band-merge hard-deny (#F7.8). Errs toward BLOCK, consistent with the
+# fail-closed doctrine; a GET to the same endpoint is still allowed via the
+# effective-method check.
+_MERGE_ENDPOINT_RE = re.compile(r"(?:merge_requests|pulls)/[^/\s]+/merge\b")
 # GitHub GraphQL merge-effecting mutations (each merges a PR / branch out of band).
 _GRAPHQL_MERGE_MUTATION_RE = re.compile(r"(?:mergePullRequest|enablePullRequestAutoMerge|mergeBranch)\s*\(")
 # The gh/glab HTTP-method flag, both empirically-valid forms: spaced/``=`` (``-X PUT``,

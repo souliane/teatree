@@ -53,3 +53,8 @@
   issue: BLOCKING-NOW
   status: blocking
   file: .ast-grep/blocking/gate-conflates-scanner-error-with-finding.yml
+
+- id: lenient-git-run-dead-except
+  issue: BLOCKING-NOW
+  status: blocking
+  file: .ast-grep/blocking/lenient-git-run-dead-except.yml

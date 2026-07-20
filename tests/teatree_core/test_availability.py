@@ -19,9 +19,11 @@ import pytest
 from teatree.core import availability
 from teatree.core.availability import (
     LIVE_TURN_FRESHNESS,
+    MODE_AUTONOMOUS_AWAY,
     MODE_AWAY,
     MODE_PRESENT,
     PRESENCE_FRESHNESS,
+    VALID_MODES,
     Override,
     PresenceHeartbeat,
     Schedule,
@@ -209,6 +211,25 @@ class TestOverrideRoundTrip:
     def test_invalid_mode_raises(self, override_file: Path) -> None:
         with pytest.raises(ValueError, match="mode"):
             write_override("nope")
+
+    def test_invalid_mode_error_names_every_valid_mode(self, override_file: Path) -> None:
+        """F4.9: the rejection message enumerates all of ``VALID_MODES``, incl. autonomous_away.
+
+        The old message hard-coded only ``'present' / 'away'``, so a user who
+        mistyped ``autonomous_away`` was told the correct value was not allowed.
+        """
+        with pytest.raises(ValueError, match="mode") as exc_info:
+            write_override("nope")
+        message = str(exc_info.value)
+        for valid in VALID_MODES:
+            assert valid in message, f"rejection message omits the valid mode {valid!r}"
+
+    def test_autonomous_away_round_trips(self, override_file: Path) -> None:
+        """F4.9: ``autonomous_away`` is a first-class writable mode, not just a read value."""
+        write_override(MODE_AUTONOMOUS_AWAY)
+        loaded = load_override()
+        assert loaded is not None
+        assert loaded.mode == MODE_AUTONOMOUS_AWAY
 
     def test_load_returns_none_when_absent(self, override_file: Path) -> None:
         assert load_override() is None

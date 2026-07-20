@@ -138,7 +138,8 @@ class TestGitLabAPICacheHits:
     def test_get_draft_notes_count_returns_cached(self, monkeypatch: pytest.MonkeyPatch) -> None:
         client = gitlab_api.GitLabAPI(token="t")
         calls = []
-        monkeypatch.setattr(client, "get_json", lambda ep: calls.append(1) or [{"id": 1}, {"id": 2}])
+        # get_draft_notes_count paginates (F8.7): the cached count comes off get_json_paginated.
+        monkeypatch.setattr(client, "get_json_paginated", lambda ep: calls.append(1) or [{"id": 1}, {"id": 2}])
         client.get_draft_notes_count(1, 1)
         result = client.get_draft_notes_count(1, 1)
         assert result == 2

@@ -792,15 +792,15 @@ class TestMrLabel:
     """The MR link rendering is a pure helper."""
 
     def test_gitlab_mr_renders_repo_bang_num(self) -> None:
-        line = _test_plan.render_mrs_line(("https://gitlab.com/grp/sub/client/-/merge_requests/6331",))
+        line = _render.render_mrs_line(("https://gitlab.com/grp/sub/client/-/merge_requests/6331",))
         assert line == "Repos & MRs: [client!6331](https://gitlab.com/grp/sub/client/-/merge_requests/6331)"
 
     def test_github_pr_renders_repo_hash_num(self) -> None:
-        line = _test_plan.render_mrs_line(("https://github.com/owner/product/pull/7585",))
+        line = _render.render_mrs_line(("https://github.com/owner/product/pull/7585",))
         assert line == "Repos & MRs: [product#7585](https://github.com/owner/product/pull/7585)"
 
     def test_non_url_ref_shown_verbatim(self) -> None:
-        line = _test_plan.render_mrs_line(("client!6331",))
+        line = _render.render_mrs_line(("client!6331",))
         assert line == "Repos & MRs: client!6331"
 
 
@@ -1184,7 +1184,7 @@ class TestPureHelpers:
     """The marker / state-blob / existing-note helpers are independently testable."""
 
     def test_marker_round_trip(self) -> None:
-        marker = _test_plan.test_plan_marker(ticket_id="8521")
+        marker = _render.test_plan_marker(ticket_id="8521")
         assert _render.find_ticket_marker(f"prefix {marker} suffix", ticket_id="8521") is True
         assert _render.find_ticket_marker(f"{marker}", ticket_id="9999") is False
 

@@ -49,6 +49,11 @@ def _render_entry(e: AntiPatternEntry) -> list[str]:
         f"**Preferred.** {e.preferred_pattern}",
         "",
     ]
+    if e.waivers:
+        lines.append("**Accepted waivers.**")
+        lines.append("")
+        lines.extend(f"- {waiver}" for waiver in e.waivers)
+        lines.append("")
     return lines
 
 

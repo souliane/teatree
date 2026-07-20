@@ -87,37 +87,61 @@ class SalvageResult:
     errors: list[str] = field(default_factory=list)
 
 
-def _unique_content_texts(repo: str, source_ref: str, target: str) -> list[str]:
-    """The commit messages + diff of ``source_ref`` against ``target`` for the banned scan."""
+def _unique_content_texts(repo: str, source_ref: str, target: str) -> list[str] | None:
+    """The commit messages + diff of ``source_ref`` against ``target`` for the banned scan.
+
+    Runs through the STRICT runner and returns ``None`` — NOT ``[]`` — when the
+    content could not be read (unresolvable ``target``/ref, corrupt repo). With
+    the LENIENT runner a failure degraded to ``["", ""]``, which the banned-terms
+    scanner reads as "scanned clean" and lets the salvage PUSH the ref to a public
+    PR completely unscanned (#F4.6 leak). ``None`` is the honest "could not scan"
+    signal the caller MUST fail closed on.
+    """
     try:
         return [
-            git.run(repo=repo, args=["log", f"{target}..{source_ref}", "--format=%B"]),
-            git.run(repo=repo, args=["diff", f"{target}...{source_ref}"]),
+            git.run_strict(repo=repo, args=["log", f"{target}..{source_ref}", "--format=%B"]),
+            git.run_strict(repo=repo, args=["diff", f"{target}...{source_ref}"]),
         ]
     except CommandFailedError as exc:
         logger.warning("salvage: could not read unique content of %s (%s)", source_ref, exc)
-        return []
+        return None
+
+
+def _banned_clean_refusal(request: SalvageRequest) -> str | None:
+    """The final safety-gate refusal reason, or ``None`` when it is safe to salvage.
+
+    Fails CLOSED on an inconclusive scan (#F4.6 leak). ``contains`` names the
+    banned terms; ``unknown`` — the content could not be READ (unreadable ref/repo)
+    or resolved to nothing to scan — refuses rather than push an UNSCANNED branch
+    to a public PR. ``clean`` (or ``require_banned_clean=False``) returns ``None``.
+    """
+    if not request.require_banned_clean:
+        return None
+    texts = _unique_content_texts(request.repo, request.source_ref, request.target)
+    status, found = banned_terms_status(texts) if texts is not None else ("unknown", [])
+    if status == "contains":
+        return f"refused: banned terms present ({', '.join(found)}) — clean before salvage"
+    if status == "unknown":
+        return (
+            "refused: could not read the source content to scan for banned terms — "
+            "salvage aborted so unscanned content is never pushed to a public PR"
+        )
+    return None
 
 
 def salvage_item(request: SalvageRequest, hooks: SalvageHooks) -> SalvageResult:
     """Capture ``source_ref``'s unique content to a PR, verify it landed, then delete the source.
 
-    Ordered, fail-safe: (1) refuse if banned terms remain (final gate); (2) create
-    ``salvage_branch`` at ``source_ref`` (non-destructive — a new ref); (3) push;
-    (4) open the PR; (5) verify the forge has it; (6) ONLY then delete the source.
-    Any failure before a verified landing returns early WITHOUT deleting — the
-    source work is never lost on a salvage failure.
+    Ordered, fail-safe: (1) refuse if banned terms remain OR are unscannable (final
+    gate); (2) create ``salvage_branch`` at ``source_ref`` (non-destructive — a new
+    ref); (3) push; (4) open the PR; (5) verify the forge has it; (6) ONLY then
+    delete the source. Any failure before a verified landing returns early WITHOUT
+    deleting — the source work is never lost on a salvage failure.
     """
     repo, branch = request.repo, request.salvage_branch
-    if request.require_banned_clean:
-        status, found = banned_terms_status(_unique_content_texts(repo, request.source_ref, request.target))
-        if status == "contains":
-            return SalvageResult(
-                salvaged=False,
-                deleted=False,
-                salvage_branch=branch,
-                errors=[f"refused: banned terms present ({', '.join(found)}) — clean before salvage"],
-            )
+    refusal = _banned_clean_refusal(request)
+    if refusal is not None:
+        return SalvageResult(salvaged=False, deleted=False, salvage_branch=branch, errors=[refusal])
 
     if not git.check(repo=repo, args=["branch", "-f", branch, request.source_ref]):
         return SalvageResult(

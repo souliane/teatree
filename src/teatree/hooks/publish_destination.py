@@ -128,7 +128,13 @@ _FORGE_URL_SLUG_RE: Final[re.Pattern[str]] = re.compile(
 
 # ``gh``/``glab`` create/comment verbs whose target, when no ``--repo``/``-R``
 # flag is present, is the CURRENT repo (resolved from the git remote).
-_CURRENT_REPO_VERBS: Final[frozenset[tuple[str, str]]] = _GH_ELIGIBLE_VERBS | _GLAB_ELIGIBLE_VERBS
+# ``("pr", "review")`` is included so a flagless ``gh pr review 5 --body …``
+# (an approve/request-changes body that publishes a HIGH verbatim quote) resolves
+# to the current repo and is visibility-classified rather than treated as an
+# unresolved destination the leak gate skipped (#F7.2).
+_CURRENT_REPO_VERBS: Final[frozenset[tuple[str, str]]] = (
+    _GH_ELIGIBLE_VERBS | _GLAB_ELIGIBLE_VERBS | frozenset({("pr", "review")})
+)
 
 # Flags whose VALUE is the next token in a ``gh``/``glab api`` call -- skipped
 # (flag + value) so the bare endpoint URL is found regardless of ordering.
