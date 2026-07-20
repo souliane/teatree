@@ -91,16 +91,16 @@ def _is_self_authored(post: ReviewRequestPost, host: CodeHostBackend | None, ide
 
     Returns:
     * ``True`` — the author RESOLVED to one of the user's identities. The
-      reaction is skipped and the row is closed (self-authored).
+        reaction is skipped and the row is closed (self-authored).
     * ``False`` — the author resolved to someone else (or there is no
-      self-identity to protect). The colleague path proceeds and the row
-      may be reacted on.
+        self-identity to protect). The colleague path proceeds and the row
+        may be reacted on.
     * ``None`` — the author lookup FAILED (the backend raised, or returned
-      ``""`` for a transient failure / unparsable URL). This is a *transient*
-      outcome, not a verdict: the caller skips this tick WITHOUT stamping
-      ``done_at`` so a later tick retries (F5.2). Permanently closing the row
-      here would abandon a colleague's merged review-request on one bad forge
-      read.
+        ``""`` for a transient failure / unparsable URL). This is a *transient*
+        outcome, not a verdict: the caller skips this tick WITHOUT stamping
+        ``done_at`` so a later tick retries (F5.2). Permanently closing the row
+        here would abandon a colleague's merged review-request on one bad forge
+        read.
     """
     self_identities = _resolve_self_identities(host, identities)
     if not self_identities or host is None:

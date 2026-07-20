@@ -4,13 +4,13 @@ Two invariants beyond the classification tests in
 ``tests/teatree_loop/test_slack_broadcasts_classify.py``:
 
 * **F5.3** — ``GlabGhMrStateClassifier`` must distinguish a *verdict*
-  (``glab``/``gh`` ran and the MR is not merged → ``merged=False``) from a
-  *failure to reach a verdict* (binary missing / bad token / rc≠0 / garbage
-  output → :class:`ScannerError`). Classifying an unreadable — possibly
-  MERGED — MR as open would nag reviewers about already-landed work.
+    (``glab``/``gh`` ran and the MR is not merged → ``merged=False``) from a
+    *failure to reach a verdict* (binary missing / bad token / rc≠0 / garbage
+    output → :class:`ScannerError`). Classifying an unreadable — possibly
+    MERGED — MR as open would nag reviewers about already-landed work.
 * **F5.5** — one channel's fetch/handle failure must not starve the channels
-  queued after it (per-channel isolation), while a classifier
-  :class:`ScannerError` and the DB-not-migrated errors still propagate.
+    queued after it (per-channel isolation), while a classifier
+    :class:`ScannerError` and the DB-not-migrated errors still propagate.
 """
 
 import subprocess

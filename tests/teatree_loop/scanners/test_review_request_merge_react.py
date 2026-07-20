@@ -5,8 +5,8 @@
 * ``True``  — author RESOLVED to a user identity → close the row (self-authored).
 * ``False`` — author resolved to someone else → the colleague react path proceeds.
 * ``None``  — author lookup FAILED (raised or empty) → skip the tick WITHOUT
-  stamping ``done_at`` so a later tick retries. A transient forge read must
-  never permanently close a colleague's merged review-request.
+    stamping ``done_at`` so a later tick retries. A transient forge read must
+    never permanently close a colleague's merged review-request.
 """
 
 from dataclasses import dataclass

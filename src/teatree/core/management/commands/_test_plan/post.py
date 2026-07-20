@@ -415,15 +415,15 @@ def post_mr_test_plan_comment(
     (F3.1):
 
     * the non-consuming on-behalf peek fires FIRST — before any host call — so a
-      blocked post touches no upload/list/comment API;
+        blocked post touches no upload/list/comment API;
     * every uploaded artifact passes the #2156 :meth:`verify_upload` existence
-      check (:func:`_verified_embed`), never a blind ``upload["markdown"]`` that
-      could reference a broken upload;
+        check (:func:`_verified_embed`), never a blind ``upload["markdown"]`` that
+        could reference a broken upload;
     * the assembled body is run through :func:`check_blocked_body_from_config`
-      and the scanned forge-write seam (public-repo leak gate + #117 send-proxy);
+        and the scanned forge-write seam (public-repo leak gate + #117 send-proxy);
     * the existing note is matched by THIS MR's hidden idempotency marker (via
-      :func:`find_existing_note`), never a naive ``"## Test Plan" in body`` scan
-      that could clobber a colleague's comment.
+        :func:`find_existing_note`), never a naive ``"## Test Plan" in body`` scan
+        that could clobber a colleague's comment.
 
     The overlay's CI project path is a bare slug, so ``forge`` is left
     unqualified in the forge-write call: the leak gate then fails CLOSED (scans)

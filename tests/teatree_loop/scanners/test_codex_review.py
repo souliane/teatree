@@ -1,11 +1,11 @@
 """Truncation-visibility + per-PR fault isolation for ``codex_review`` (F5.4, F5.6).
 
 * **F5.4** — ``GhCodexPrApi.list_open_self_prs`` passes an explicit high
-  ``--limit`` (the ``gh`` default of 30 would silently drop the overflow) and
-  warns when the returned page fills to the cap, so a genuine >200-PR repo is
-  visible rather than silently truncated.
+    ``--limit`` (the ``gh`` default of 30 would silently drop the overflow) and
+    warns when the returned page fills to the cap, so a genuine >200-PR repo is
+    visible rather than silently truncated.
 * **F5.6** — a single PR whose classification raises must not drop the codex
-  dispatch for the other PRs in the sweep.
+    dispatch for the other PRs in the sweep.
 """
 
 import logging

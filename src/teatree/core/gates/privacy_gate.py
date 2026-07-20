@@ -175,17 +175,17 @@ def _overlay_privacy_rules() -> tuple[list[str], list[str]] | None:
     confidentiality boundary never silently loses the overlay's own rules:
 
     * **No single overlay resolves** — none installed, several with no
-      ``T3_OVERLAY_NAME`` to disambiguate, an unknown name, or Django not yet set
-      up (:class:`ImproperlyConfigured`, exactly what :func:`get_overlay` raises).
-      There ARE no overlay rules to lose, so both lists are empty ``([], [])`` and
-      only the built-in detectors apply — the gate still scans a public target.
+        ``T3_OVERLAY_NAME`` to disambiguate, an unknown name, or Django not yet set
+        up (:class:`ImproperlyConfigured`, exactly what :func:`get_overlay` raises).
+        There ARE no overlay rules to lose, so both lists are empty ``([], [])`` and
+        only the built-in detectors apply — the gate still scans a public target.
 
     * **A genuine resolution FAILURE** — an overlay IS present but its
-      ``config`` / ``privacy_redact_terms`` / ``privacy_block_patterns`` could not
-      be read (an unexpected error). The overlay's redact list + block patterns
-      would silently vanish from the scan, so this returns ``None``: the caller
-      fails CLOSED and LOUD (refuses a public publish) rather than scanning with
-      only the two generic built-ins.
+        ``config`` / ``privacy_redact_terms`` / ``privacy_block_patterns`` could not
+        be read (an unexpected error). The overlay's redact list + block patterns
+        would silently vanish from the scan, so this returns ``None``: the caller
+        fails CLOSED and LOUD (refuses a public publish) rather than scanning with
+        only the two generic built-ins.
     """
     try:
         config = get_overlay().config

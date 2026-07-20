@@ -51,13 +51,13 @@ _PR_URL_RE = re.compile(r"^/(?P<owner>[^/]+)/(?P<repo>[^/]+)/pulls?/(?P<number>\
 # so the unresolved-thread count must be surfaced, not hard-coded to zero.
 _REVIEW_THREADS_QUERY = """\
 query {{
-  repository(owner: "{owner}", name: "{repo}") {{
-    pullRequest(number: {number}) {{
-      reviewThreads(first: 100) {{
-        nodes {{ isResolved }}
-      }}
+    repository(owner: "{owner}", name: "{repo}") {{
+        pullRequest(number: {number}) {{
+            reviewThreads(first: 100) {{
+                nodes {{ isResolved }}
+            }}
+        }}
     }}
-  }}
 }}"""
 
 
