@@ -1,8 +1,11 @@
-"""The doctor's statusLine configuration check (PR-17).
+"""The doctor's statusLine configuration + freshness checks (PR-17).
 
 Kept in its own module by concern: everything statusline lives here, next to the
 installer (:mod:`teatree.cli.setup.statusline_installer`) that writes the block
-this check verifies.
+:func:`check_statusline` verifies. :func:`check_statusline_freshness` is the
+silent-freeze guard: it FAILs when the pre-rendered ``statusline.txt`` has aged past
+the same stale cutoff the readers use while ``autoload`` is ON, so a headless render
+chain that has stopped keeping the file fresh can never regress unnoticed.
 """
 
 from pathlib import Path
@@ -10,6 +13,11 @@ from pathlib import Path
 import typer
 
 _STATUSLINE_REMEDY = "run `t3 setup` to (re)install it"
+
+_FRESHNESS_REMEDY = (
+    "the `t3 worker` render chain (teatree.loops.statusline_refresh) is not keeping it "
+    "fresh — check `t3 worker status` and the worker logs"
+)
 
 
 def _statusline_command(path: Path) -> str | None:
@@ -87,6 +95,58 @@ def _validate_executable(token: str) -> bool:
     if not os.access(target, os.X_OK):
         typer.echo(
             f"FAIL  statusLine command is not executable: {target} — `chmod +x {target}` or {_STATUSLINE_REMEDY}.",
+        )
+        return False
+    return True
+
+
+def _autoload_on() -> bool:
+    """Whether the ``autoload`` #256 owner flag resolves ON. Fail-safe OFF.
+
+    A colleague / opted-out box (``autoload`` off) shows no loop statusline at all, so a
+    frozen file there is expected, not a fault — the freshness check is a no-op unless the
+    owner has engaged the statusline. A settings-read failure degrades to OFF (skip).
+    """
+    try:
+        from teatree.config import get_effective_settings  # noqa: PLC0415 — deferred, matching the sibling probes
+
+        return bool(get_effective_settings().autoload)
+    except Exception:  # noqa: BLE001 — a broken config read must never turn the check into a spurious FAIL
+        return False
+
+
+def check_statusline_freshness(statusline_path: Path | None = None, *, now: float | None = None) -> bool:
+    """FAIL when the pre-rendered statusline is stale while ``autoload`` is ON.
+
+    The shell hook and ``t3 loop status`` read ``statusline.txt`` verbatim, so a render
+    chain that has stopped keeping it fresh leaves every reader showing a confident,
+    hours-old loop line with no other signal. This check is the silent-freeze backstop: it
+    resolves the render age from the SAME ``tick-meta.json`` source and the SAME
+    :func:`~teatree.loop.statusline_staleness.stale_cutoff_seconds` math the readers'
+    stale banner uses, and hard-FAILs past the cutoff so the never-freeze invariant is
+    machine-checked. A no-op (OK) when ``autoload`` is OFF (a box with no loop statusline)
+    or when the age cannot be determined (never rendered — a fresh box; fail-open, matching
+    the readers). ``statusline_path`` / ``now`` are parameterised for tests.
+    """
+    if not _autoload_on():
+        return True
+
+    from teatree.config import cadence_seconds  # noqa: PLC0415 — deferred, matching the sibling probes
+    from teatree.loop.statusline import default_path  # noqa: PLC0415 — deferred, matching the sibling probes
+    from teatree.loop.statusline_staleness import (  # noqa: PLC0415 — deferred, matching the sibling probes
+        render_age_seconds,
+        stale_cutoff_seconds,
+    )
+
+    path = statusline_path or default_path()
+    age = render_age_seconds(path, now=now)
+    if age is None:
+        return True
+    cutoff = stale_cutoff_seconds(cadence_seconds())
+    if age > cutoff:
+        typer.echo(
+            f"FAIL  statusline is STALE — last rendered {int(age)}s ago (cutoff {cutoff}s) while autoload is on; "
+            f"{_FRESHNESS_REMEDY}.",
         )
         return False
     return True

@@ -99,6 +99,22 @@ def _rendered_at(meta_path: Path) -> float | None:
     return None
 
 
+def render_age_seconds(statusline_path: Path, *, now: float | None = None) -> float | None:
+    """The age in seconds of *statusline_path*'s last render, or ``None`` when unknown.
+
+    Reads the ``rendered_at`` epoch from the ``tick-meta.json`` sidecar next to
+    *statusline_path* — the single source both the stale-banner readers and the
+    headless render-refresh chain share, so a "how old is the statusline" decision
+    can never drift between the writer that keeps it fresh and the probes that flag
+    it stale. Fails open to ``None`` (age unknown) on a missing/unreadable sidecar
+    or an absent ``rendered_at``, exactly like :func:`staleness_banner_for`.
+    """
+    rendered_at = _rendered_at(_meta_path(statusline_path))
+    if rendered_at is None:
+        return None
+    return (time.time() if now is None else now) - rendered_at
+
+
 def staleness_banner_for(
     statusline_path: Path,
     *,
@@ -113,10 +129,7 @@ def staleness_banner_for(
     Fails open to ``""`` (no banner) whenever the render time cannot be
     determined — a freshness probe must never suppress real content.
     """
-    rendered_at = _rendered_at(_meta_path(statusline_path))
-    if rendered_at is None:
-        return ""
-    age = (time.time() if now is None else now) - rendered_at
-    if age <= stale_cutoff_seconds(cadence_seconds):
+    age = render_age_seconds(statusline_path, now=now)
+    if age is None or age <= stale_cutoff_seconds(cadence_seconds):
         return ""
     return staleness_banner(int(age), colorize=colorize)
