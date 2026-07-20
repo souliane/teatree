@@ -131,10 +131,19 @@ def _wake_loops(now: dt.datetime) -> None:
 
 
 def _notify_recovered(*, cleared_pks: list[int], released: int, now: dt.datetime) -> None:
-    """Post ONE bot→user Slack line that the window(s) recovered — no-op-safe, never raises."""
+    """Post ONE bot→user Slack line that the window(s) recovered — no-op-safe, never raises.
+
+    Silent when the clear RELEASED NOTHING. The line's whole claim is "resumed the loop", so
+    with zero released tasks it reports a state change the owner cannot act on and did not
+    lose anything to. That is the shape every message in the observed flood had (313 windows,
+    315 DMs, ``released 0`` on every one): whatever re-opens a window in a tight loop, an
+    owner DM per cycle is noise. The INFO log below still records every clear for audit.
+    """
     from teatree.core.modelkit.notify_policy import NotifyAudience  # noqa: PLC0415 — deferred (cycle-safe)
     from teatree.core.notify import NotifyKind, notify_user  # noqa: PLC0415 — deferred import (cycle-safe / task-body)
 
+    if released == 0:
+        return
     key = "usage_window_recovered:" + "-".join(str(pk) for pk in sorted(cleared_pks))
     text = (
         f"Usage window restored {now:%H:%M} — cleared {len(cleared_pks)} window(s), "

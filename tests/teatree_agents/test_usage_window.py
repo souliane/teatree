@@ -13,6 +13,7 @@ from django.utils import timezone
 
 import teatree.agents.usage_window as usage_window_mod
 from teatree.agents.usage_window import (
+    ELAPSED_RESET_GRACE,
     effective_resets_at,
     maybe_park_for_active_window,
     park_or_rotate_on_limit,
@@ -429,12 +430,14 @@ class TestParkTaskOnAllExhausted(django.test.TestCase):
         assert park_task_on_all_exhausted(task, resets_at=None, lane="subscription") is None
         assert not UsageWindowState.objects.exists()
 
-    def test_an_already_elapsed_reset_is_not_parked(self) -> None:
-        """A park keyed on a past instant is dead on arrival — refuse it.
+    def test_an_already_elapsed_reset_is_clamped_forward_not_refused(self) -> None:
+        """A past reset still PARKS — clamped ahead — because refusing costs SEVEN DAYS.
 
-        The recovery chain would clear such a window on its very next tick and DM the owner
-        "usage window restored"; a caller that keeps re-deriving an elapsed reset therefore
-        floods the owner at the poll cadence instead of surfacing the real failure.
+        Parking on a past instant would be dead on arrival (the recovery chain clears it on
+        its very next tick and re-parks at the poll cadence). But refusing outright is worse:
+        the caller records a terminal FAILED whose ``all tokens exhausted`` signature maps to
+        ``SUBSCRIPTION_WEEKLY``, so the transient-requeue horizon becomes 7 days for what is
+        normally a minutes-long outage artefact.
         """
         _set_autorecovery(on=True)
         now = timezone.now()
@@ -444,5 +447,22 @@ class TestParkTaskOnAllExhausted(django.test.TestCase):
             task, resets_at=now - timedelta(seconds=1), lane=TaskAttempt.Lane.SUBSCRIPTION, now=now
         )
 
-        assert parked is None, "the caller falls back to its terminal path rather than parking"
-        assert not UsageWindowState.objects.exists(), "no self-clearing window is written"
+        assert parked is not None, "still parked — a stale reset must not become a terminal FAILED"
+        window = UsageWindowState.objects.active_for_lane(TaskAttempt.Lane.SUBSCRIPTION)
+        assert window is not None
+        assert window.resets_at == now + ELAPSED_RESET_GRACE, "clamped to the grace horizon"
+        assert not window.should_clear(now), "keyed in the FUTURE, so no instant self-clear + DM"
+        task.refresh_from_db()
+        assert task.status == Task.Status.PENDING, "quiesced, not failed"
+
+    def test_a_future_reset_is_left_untouched(self) -> None:
+        _set_autorecovery(on=True)
+        now = timezone.now()
+        reset = now + timedelta(hours=3)
+        task = _claimed_task()
+
+        park_task_on_all_exhausted(task, resets_at=reset, lane=TaskAttempt.Lane.SUBSCRIPTION, now=now)
+
+        window = UsageWindowState.objects.active_for_lane(TaskAttempt.Lane.SUBSCRIPTION)
+        assert window is not None
+        assert window.resets_at == reset, "a real future reset is never clamped"
