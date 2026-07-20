@@ -275,14 +275,36 @@ def lease_chunks(
     ]
 
 
+def _mini_loop_due_soon(next_fire_at: datetime | None) -> bool:
+    """Whether a mini-loop is a ``due:`` candidate: never fired, overdue, or due-soon.
+
+    The section only ever shows crons whose next fire is now or within
+    :data:`_DUE_SOON_SECONDS` — the same horizon :func:`_lease_is_due_now`
+    applies to the per-loop leases, so the two due views stay consistent.
+    """
+    return next_fire_at is None or _seconds_until(next_fire_at) <= _DUE_SOON_SECONDS
+
+
+def _mini_loop_overdue(next_fire_at: datetime | None) -> bool:
+    """Whether a mini-loop is GENUINELY late: never fired, or its fire instant is now/past.
+
+    The exception the collapsed ``overdue:`` section surfaces by name — a cron
+    that has slipped its cadence (or never fired at all), NOT one merely due-soon
+    on its normal cadence (which the engaged preset handle already represents).
+    """
+    return next_fire_at is None or _seconds_until(next_fire_at) <= 0
+
+
 def mini_loop_chunks(schedules: list[tuple[str, datetime | None, int]], *, colorize: bool = False) -> list[str]:
     """Return a ``<name> <next-tick>`` chunk per DUE-SOON domain mini-loop (#3248).
 
-    Companion to :func:`lease_chunks`: this renders the enabled domain crons from
-    the cadence ledger that are due now (never fired / overdue) or within
-    :data:`_DUE_SOON_SECONDS` — NOT the full loop list (presets/schedules are the
-    handle). Each carries its own next-tick countdown and (when *colorize* is set)
-    its cadence-relative recency color.
+    Companion to :func:`lease_chunks` and the no-preset ``due:`` path: renders the
+    enabled domain crons from the cadence ledger that are due now (never fired /
+    overdue) or within :data:`_DUE_SOON_SECONDS` — NOT the full loop list. Each
+    carries its own next-tick countdown and (when *colorize* is set) its
+    cadence-relative recency color. When a preset governs the line the caller
+    instead surfaces only the overdue exceptions by name via
+    :func:`overdue_mini_loop_names`.
     """
     return [
         _colorize_chunk(
@@ -291,5 +313,18 @@ def mini_loop_chunks(schedules: list[tuple[str, datetime | None, int]], *, color
             colorize=colorize,
         )
         for name, next_fire_at, cadence in schedules
-        if next_fire_at is None or _seconds_until(next_fire_at) <= _DUE_SOON_SECONDS
+        if _mini_loop_due_soon(next_fire_at)
     ]
+
+
+def overdue_mini_loop_names(schedules: list[tuple[str, datetime | None, int]]) -> list[str]:
+    """Return the names of genuinely-overdue / never-fired domain mini-loops (#3494).
+
+    The engaged-preset ``overdue:`` path: the domain crons collapse into the
+    preset handle and only the exceptions the handle does NOT represent — the ones
+    that have slipped their cadence or never fired (:func:`_mini_loop_overdue`) —
+    surface, by bare name (no per-item countdown; they are all past due). The
+    schedule source already returns the crons sorted by name, so the order is
+    deterministic.
+    """
+    return [name for name, next_fire_at, _cadence in schedules if _mini_loop_overdue(next_fire_at)]

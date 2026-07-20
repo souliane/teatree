@@ -23,6 +23,7 @@ different zone (``action_needed``).
 """
 
 from datetime import timedelta
+from unittest.mock import patch
 
 import pytest
 from django.utils import timezone
@@ -51,12 +52,13 @@ class TestLiveLoopsAnchor:
         _make_lease("loop-self-improve", expires_in=timedelta(minutes=30))
         _make_lease("loop-slack-answer", expires_in=timedelta(minutes=30))
 
-        lines = live_loops_anchor()
+        with patch("teatree.loop.statusline_loops._availability_segment", return_value=""):
+            lines = live_loops_anchor()
 
         assert len(lines) == 1, repr(lines)
         line = lines[0]
-        # The redundant leading state word is gone — the line leads with a
-        # loop chunk (leases sort by name → ``self-improve`` first here).
+        # The redundant leading state word is gone — with no other segments the
+        # line leads with a loop chunk (leases sort by name → ``self-improve``).
         assert "loop running" not in line, line
         assert line.startswith("self-improve"), line
         # The useless headline count is gone; each loop's short name appears.

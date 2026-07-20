@@ -1,4 +1,5 @@
 from collections.abc import Callable
+from dataclasses import dataclass
 from datetime import datetime
 from typing import TYPE_CHECKING
 
@@ -9,7 +10,13 @@ from teatree.loop.loop_cadences import (
     slack_answer_cadence_seconds,
 )
 from teatree.loop.loop_scoping import current_session_owned_per_loop_slots
-from teatree.loop.statusline_loop_chunks import LeaseRenderContext, _colorize_chunk, lease_chunks, mini_loop_chunks
+from teatree.loop.statusline_loop_chunks import (
+    LeaseRenderContext,
+    _colorize_chunk,
+    lease_chunks,
+    mini_loop_chunks,
+    overdue_mini_loop_names,
+)
 from teatree.loop.statusline_palette import _ANSI_GREEN, _ANSI_RED, _ANSI_YELLOW
 
 if TYPE_CHECKING:
@@ -18,12 +25,14 @@ if TYPE_CHECKING:
 
 
 def availability_segment(resolution: "Resolution") -> str:
-    """Return the loop line's availability segment (#58, #1678).
+    """Return the loop line's availability segment (#58, #1678, #3494).
 
-    Renders ``availability: <present|away> (<source>)`` so the user reads the
-    currently-resolved availability and which layer decided it (override /
-    schedule / default) at a glance, as one ``·``-separated segment of the
-    dedicated loop line.
+    Renders ``availability: <present|away>`` — spelled out, so the user reads the
+    currently-resolved availability at a glance as one ``·``-separated segment of
+    the dedicated loop line. The deciding layer (override / schedule / default) is
+    intentionally NOT shown here: the owner's clarified layout keeps the segment to
+    the bare state, and the ``preset:`` / ``schedule:`` handles already surface the
+    governing layer.
 
     The ``availability:`` label is deliberately distinct from the config
     ``Mode`` enum (auto/interactive) and other ``mode=`` usages, which the bare
@@ -33,7 +42,7 @@ def availability_segment(resolution: "Resolution") -> str:
 
     if resolution.mode not in VALID_MODES:
         return ""
-    return f"availability: {resolution.mode} ({resolution.source})"
+    return f"availability: {resolution.mode}"
 
 
 def _configured_overlay_names() -> list[str]:
@@ -197,37 +206,60 @@ def _mini_loop_schedules() -> list[MiniLoopSchedule]:
     return _mini_loop_schedules_reader()
 
 
-# The active-preset statusline segment (#3159) is resolved up-stack in
-# :func:`teatree.loops.preset_status.statusline_chunk` (the resolver lives in
-# ``teatree.loops``), injected here through the same seam as the mini-loop
-# reader. Absent injection (a quiet machine, a unit test) the default reader
-# returns ``""`` and the preset segment is simply omitted — never a crash.
-type PresetSegmentReader = Callable[[], str]
+@dataclass(frozen=True, slots=True)
+class PresetLineHandles:
+    """The three ordered handles the loop line renders around the loop chunks (#3494).
+
+    The summary handles LEAD the line and the per-loop overrides trail the loops,
+    so the single up-stack reader resolves the three sub-segments separately
+    rather than pre-joining them:
+
+    *   ``schedule`` — the active weekly schedule, spelled out:
+        ``schedule: standard`` or ``schedule: none active`` (always shown).
+    *   ``preset`` — the governing preset: ``preset: <name>`` (schedule-driven)
+        or ``preset: manual`` (manual override); ``""`` when none governs.
+    *   ``override`` — the ``forced ON: <names>`` / ``forced OFF: <names>``
+        per-loop manual-override segment; ``""`` when none diverge.
+
+    The renderer drops the empty ones.
+    """
+
+    schedule: str
+    preset: str
+    override: str
 
 
-def _empty_preset_segment() -> str:
-    return ""
+# The active preset/schedule/override handles (#3159, #3248, #3494) are resolved
+# up-stack in :func:`teatree.loops.preset_status.preset_line_handles` (the resolver
+# lives in ``teatree.loops``), injected here through the same seam as the mini-loop
+# reader. Absent injection (a quiet machine, a unit test) the default reader returns
+# empty handles and the preset segments are simply omitted — never a crash.
+type PresetLineReader = Callable[[], PresetLineHandles]
 
 
-_preset_segment_reader: PresetSegmentReader = _empty_preset_segment
+def _empty_preset_handles() -> PresetLineHandles:
+    return PresetLineHandles(schedule="", preset="", override="")
 
 
-def set_preset_segment_reader(reader: PresetSegmentReader | None) -> None:
-    """Install the up-stack active-preset segment reader (``None`` resets to empty)."""
-    global _preset_segment_reader  # noqa: PLW0603 — process-global injection seam, mirrors set_mini_loop_schedules_reader
-    _preset_segment_reader = reader or _empty_preset_segment
+_preset_line_reader: PresetLineReader = _empty_preset_handles
 
 
-def _preset_segment() -> str:
-    """Return the active-preset statusline segment (``preset heads-down →19:00``), or ``""``.
+def set_preset_line_reader(reader: PresetLineReader | None) -> None:
+    """Install the up-stack preset-line handles reader (``None`` resets to empty)."""
+    global _preset_line_reader  # noqa: PLW0603 — process-global injection seam, mirrors set_mini_loop_schedules_reader
+    _preset_line_reader = reader or _empty_preset_handles
 
-    Fails open to ``""`` on any read error so a broken preset resolver never
-    blanks the loop line.
+
+def _preset_line_handles() -> PresetLineHandles:
+    """Return the active schedule / preset / override handles, or empty ones.
+
+    Fails open to empty handles on any read error so a broken preset resolver
+    never blanks the loop line.
     """
     try:
-        return _preset_segment_reader()
-    except Exception:  # noqa: BLE001 — rendering is best-effort; a failure degrades to empty
-        return ""
+        return _preset_line_reader()
+    except Exception:  # noqa: BLE001 — rendering is best-effort; a failure degrades to empty handles
+        return _empty_preset_handles()
 
 
 # The set of manually-overridden loop names (#3248) is resolved up-stack in
@@ -250,12 +282,12 @@ _overridden_loops_reader: OverriddenLoopsReader | None = None
 def set_overridden_loops_reader(reader: OverriddenLoopsReader | None) -> None:
     """Install the up-stack manually-overridden-loop-names reader (``None`` resets to uninjected).
 
-    Mirrors :func:`set_preset_segment_reader`; the ``loops_tick`` per-loop
-    command installs it alongside the preset segment reader so the collapse and
+    Mirrors :func:`set_preset_line_reader`; the ``loops_tick`` per-loop
+    command installs it alongside the preset-line reader so the collapse and
     the ``ovr:`` handle are always rendered together, then resets it after the
     tick so the process-global seam never leaks.
     """
-    global _overridden_loops_reader  # noqa: PLW0603 — process-global injection seam, mirrors set_preset_segment_reader
+    global _overridden_loops_reader  # noqa: PLW0603 — process-global injection seam, mirrors set_preset_line_reader
     _overridden_loops_reader = reader
 
 
@@ -367,81 +399,105 @@ def live_loops_anchor(*, colorize: bool = False) -> list[str]:
     """Return the single dedicated loop line for the dashboard (#1400, #130).
 
     Single line, prepended at the top of the statusline so the user's
-    "which loops are running, when does each tick next, and am I blocked?"
-    question is answered with one glance:
+    "what governs now, what's overdue, and am I blocked?" question is answered
+    with one glance. Spelled-out, labeled order (#3494):
 
-        ``tick 11m · dispatch 2m · tickets 4m · news 18m · waiting: 2 questions``
+        ``schedule: none active · preset: manual · overdue: snapshot_warmer,
+        triage_assessor · forced ON: triage_assessor · availability: present ·
+        4 waiting``
 
-    Shape:
+    Shape, in render order:
 
-    *   the line leads with the live loops' own chunks. The line is only
-        ever rendered when at least one loop or cron is active; when none
-        is, the function returns ``[]`` and the line is silenced entirely
-        (no ``idle`` line is shown). The ``tick <next-tick>`` chunk already
-        carries the loop's liveness, so no separate ``loop running`` state
-        word precedes it. The foreign-hijack case is NOT shown here — it is
-        RED and routed to the action line by :func:`loop_owner_anchor`.
-    *   one ``<short-name> <next-tick>`` chunk per live infra
-        :class:`~teatree.core.models.LoopLease` (``tick``,
-        ``self-improve``, ``slack-answer``) — see :func:`_live_lease_chunks`.
-    *   one ``<name> <next-tick>`` chunk per ENABLED domain mini-loop /
-        cron (``dispatch``, ``tickets``, ``review``, ``ship``, ``inbox``,
-        ``resource_pressure``, …) — see :func:`_mini_loop_chunks`. Every
-        chunk's ``<next-tick>`` is the RELATIVE whole-minute countdown to
-        THAT loop's own next fire (``2m``), derived live from its own
-        cadence and last-fired instant — not one shared constant — so a
-        fast 60s cron and a slow 1h cron show different countdowns and the
-        whole line counts down across renders. ``due`` replaces the
-        duration when a loop is overdue or has never fired.
-    *   ``availability: <present|away> (<source>)`` — the currently-resolved
-        availability, read live at render time (:func:`_availability_segment`)
-        so the user always sees the present/away value and which layer decided
-        it, never a cached one.
-    *   ``waiting=N`` — appended ONLY when N > 0 things are waiting on the
-        user across the durable waiting-on-you lane (unresolved questions,
-        PRs awaiting a merge authorization, pending review requests, manual
-        items — :func:`teatree.core.waiting.gather_waiting`), so the dashboard
-        surfaces "you owe N things" without the user hunting for them.
+    *   ``schedule: <name>`` / ``schedule: none active`` — the active weekly
+        schedule, always spelled out (:func:`teatree.loops.preset_status.schedule_chunk`).
+    *   ``preset: <name>`` (schedule-driven) / ``preset: manual`` (manual
+        override) — the governing preset, or omitted when none governs. An
+        ENGAGED preset is the summary handle the domain loops fold under.
+    *   the loop section:
 
-    Each per-loop chunk is colored by its imminence relative to its own
-    cadence (:func:`_loop_recency_color`) when *colorize* is on — green when
-    it just ticked / has plenty of time, yellow as it approaches, red when it
-    is about to tick or overdue — so the user reads at a glance which loops
-    are fresh and which are due. *colorize* defaults to ``False`` (the
-    plain-text builder output); the render orchestrators (:func:`zones_for`,
-    :func:`teatree.loop.tick.run_tick`) pass the ``NO_COLOR``-resolved value.
-    The availability and waiting segments stay the line's baseline dim.
+        -   with a preset engaged, ``overdue: <name>, <name>`` — ONLY the
+            genuinely-overdue / never-fired domain crons; the routine due-soon
+            ones fold into the preset handle (:func:`_overdue_mini_loop_names`).
+        -   with no preset, the full due-soon ``due: <name> <next-tick> …``
+            countdown list (:func:`_mini_loop_chunks`) — every chunk's
+            ``<next-tick>`` is the RELATIVE whole-minute countdown to THAT loop's
+            own next fire, so a fast 60s cron and a slow 1h cron differ and the
+            line counts down across renders.
+    *   ``forced ON: <names>`` / ``forced OFF: <names>`` — the per-loop manual
+        overrides that diverge from the preset/base verdict.
+    *   ``availability: <present|away>`` — the currently-resolved availability,
+        read live at render time (:func:`_availability_segment`).
+    *   ``N waiting`` — appended ONLY when N > 0 things are waiting on the user
+        across the durable waiting-on-you lane (unresolved questions, PRs awaiting
+        a merge authorization, pending review requests, manual items —
+        :func:`teatree.core.waiting.gather_waiting`).
+    *   the live infra :class:`~teatree.core.models.LoopLease` chunks (``tick``,
+        ``self-improve``, ``slack-answer``, ``reinstall``) — kept unobtrusive at
+        the TAIL (:func:`_live_lease_chunks`), never between the preset and the
+        loops. The per-loop ``loop:<name>`` owner leases fold into the preset
+        handle (#3248); the foreign-hijack case is NOT shown here — it is RED and
+        routed to the action line by :func:`loop_owner_anchor`.
 
-    Returns ``[]`` when no infra lease, no enabled mini-loop, and no governing
-    preset/schedule handle is active — silences the line entirely on a quiet
-    machine. When the routine per-loop leases are all folded into the preset
-    handle (#3248) but that handle is present, the line still renders the handle
-    (it represents the folded loops). Fails open: any DB / import error degrades
-    to ``[]`` (or, for an individual segment, drops just that segment) so a
-    broken read can never blank the statusline.
+    Each chunk is colored by its imminence relative to its own cadence
+    (:func:`_loop_recency_color`) when *colorize* is on. *colorize* defaults to
+    ``False`` (the plain-text builder output); the render orchestrators
+    (:func:`zones_for`, :func:`teatree.loop.tick.run_tick`) pass the
+    ``NO_COLOR``-resolved value.
+
+    Returns ``[]`` when nothing substantive is live — no schedule / preset /
+    override handle, no loop section, and no infra lease — silencing the line on a
+    quiet machine (the availability and waiting decorations never keep an
+    otherwise-empty line alive). Fails open: any DB / import error degrades to
+    ``[]`` (or, for an individual segment, drops just that segment) so a broken
+    read can never blank the statusline.
     """
-    # Resolve the preset/schedule handle first: it both leads the collapse
-    # decision (a routine per-loop lease is only folded when a handle is present
-    # to represent it) and keeps the line alive when every lease has folded away.
-    preset = _preset_segment()
-    leases = _live_lease_chunks(colorize=colorize, handle_present=bool(preset))
-    due = _mini_loop_chunks(colorize=colorize)
-    if not leases and not due and not preset:
+    # Resolve the schedule / preset / override handles first. The schedule and
+    # preset lead the line as the summary handles the loops fold under, and an
+    # ENGAGED PRESET (manual override or a schedule-driven one) drives the collapse
+    # decision — a routine per-loop lease is only folded when a preset is present
+    # to represent it, and the domain crons then show only their genuinely-overdue
+    # exceptions. The override segment trails the loops it annotates.
+    handles = _preset_line_handles()
+    governing = bool(handles.preset)
+    leases = _live_lease_chunks(colorize=colorize, handle_present=governing)
+
+    # Under an engaged preset the domain crons collapse to a single ``overdue:``
+    # label listing only the genuinely-overdue / never-fired exceptions; with no
+    # preset the full due-soon ``due:`` countdown list renders (today's behavior).
+    if governing:
+        overdue = _overdue_mini_loop_names()
+        loop_section = "overdue: " + ", ".join(overdue) if overdue else ""
+    else:
+        due = _mini_loop_chunks(colorize=colorize)
+        loop_section = "due: " + " ".join(due) if due else ""
+
+    # The line is silenced only when nothing substantive is live — no schedule /
+    # preset / override handle, no loop section, and no infra lease. The
+    # availability and waiting segments are trailing decorations that never keep
+    # an otherwise-empty line alive (a quiet machine shows no loop line).
+    substantive = handles.schedule or handles.preset or handles.override or loop_section or leases
+    if not substantive:
         return []
 
-    # Due-soon mini-loops ride a single ``due:`` section (#3248) rather than the
-    # old full per-loop dump; the infra leases keep leading the line.
-    parts = [*leases]
-    if due:
-        parts.append("due: " + " ".join(due))
-    if preset:
-        parts.append(preset)
+    # Order (#3494): schedule -> preset -> loops (overdue/due) -> overrides ->
+    # availability -> waiting -> infra leases (kept unobtrusive at the tail, never
+    # between the preset and the loops).
+    parts: list[str] = []
+    if handles.schedule:
+        parts.append(handles.schedule)
+    if handles.preset:
+        parts.append(handles.preset)
+    if loop_section:
+        parts.append(loop_section)
+    if handles.override:
+        parts.append(handles.override)
     availability = _availability_segment()
     if availability:
         parts.append(availability)
     waiting = _waiting_clause()
     if waiting:
         parts.append(waiting)
+    parts.extend(leases)
     return [" · ".join(parts)]
 
 
@@ -462,7 +518,7 @@ def _availability_segment() -> str:
 
 
 def _waiting_clause() -> str:
-    """Return ``waiting=N`` when N > 0 things wait on the user, else ``""`` (PR-21).
+    """Return ``N waiting`` when N > 0 things wait on the user, else ``""`` (PR-21).
 
     Fails open to ``""`` (no clause) on any read error so a broken
     :func:`teatree.core.waiting.gather_waiting` read never blanks the loop line.
@@ -473,7 +529,7 @@ def _waiting_clause() -> str:
         return ""
     if count <= 0:
         return ""
-    return f"waiting={count}"
+    return f"{count} waiting"
 
 
 def _waiting_count() -> int:
@@ -491,8 +547,8 @@ def _waiting_count() -> int:
 def _mini_loop_chunks(*, colorize: bool = False) -> list[str]:
     """Return a ``<name> <next-tick>`` chunk per DUE-SOON domain mini-loop (#3248).
 
-    The DB-read seam of the ``due:`` section: reads the cadence ledger
-    (:func:`_mini_loop_schedules`) then hands the schedules to
+    The DB-read seam of the ``due:`` section (the no-preset path): reads the
+    cadence ledger (:func:`_mini_loop_schedules`) then hands the schedules to
     :func:`teatree.loop.statusline_loop_chunks.mini_loop_chunks` for the due-soon
     filter + formatting. Fails open to ``[]`` on any DB / config read error so a
     broken ledger never blanks the line.
@@ -502,6 +558,23 @@ def _mini_loop_chunks(*, colorize: bool = False) -> list[str]:
     except Exception:  # noqa: BLE001 — rendering is best-effort; a failure degrades to no chunks
         return []
     return mini_loop_chunks(schedules, colorize=colorize)
+
+
+def _overdue_mini_loop_names() -> list[str]:
+    """Return the names of genuinely-overdue / never-fired domain mini-loops (#3494).
+
+    The DB-read seam of the ``overdue:`` section (the engaged-preset path): reads
+    the cadence ledger (:func:`_mini_loop_schedules`) then hands the schedules to
+    :func:`teatree.loop.statusline_loop_chunks.overdue_mini_loop_names` — the
+    collapsed exceptions the preset handle does NOT already represent. Fails open
+    to ``[]`` on any DB / config read error so a broken ledger never blanks the
+    line.
+    """
+    try:
+        schedules = _mini_loop_schedules()
+    except Exception:  # noqa: BLE001 — rendering is best-effort; a failure degrades to no names
+        return []
+    return overdue_mini_loop_names(schedules)
 
 
 def mini_loops_anchor() -> list[str]:
