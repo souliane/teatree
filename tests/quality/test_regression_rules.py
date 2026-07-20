@@ -238,6 +238,23 @@ class TestEachRuleFiresOnItsTarget:
                 "    return False\n"
             ),
         },
+        "lenient-git-run-dead-except": {
+            "path": "src/teatree/core/cleanup/cleanup_salvage.py",
+            "bad": (
+                "def probe(repo, ref):\n"
+                "    try:\n"
+                '        return git.run(repo=repo, args=["cherry", ref])\n'
+                "    except CommandFailedError:\n"
+                '        return ""\n'
+            ),
+            "good": (
+                "def probe(repo, ref):\n"
+                "    try:\n"
+                '        return git.run_strict(repo=repo, args=["cherry", ref])\n'
+                "    except CommandFailedError:\n"
+                '        return ""\n'
+            ),
+        },
     }
 
     def _scan_fixture(self, rule: RegressionRule, tmp_path: Path, source: str) -> list[dict]:

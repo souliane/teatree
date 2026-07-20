@@ -33,6 +33,11 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 
+from teatree.loops.dream._shared import WEIGHT_BINDING as _WEIGHT_BINDING
+from teatree.loops.dream._shared import WEIGHT_FEEDBACK as _WEIGHT_FEEDBACK
+from teatree.loops.dream._shared import WEIGHT_OTHER as _WEIGHT_OTHER
+from teatree.loops.dream._shared import WEIGHT_RETRO as _WEIGHT_RETRO
+from teatree.loops.dream._shared import is_binding_text
 from teatree.loops.dream.cross_link import _jaccard, _topic_tokens
 from teatree.loops.dream.decay import _archive_one, _load_memory_files, _MemoryFile
 from teatree.loops.dream.reindex import _strip_frontmatter
@@ -43,14 +48,10 @@ _NEAR_DUPLICATE_FLOOR = 0.85
 
 _WIKILINK_PREFIX = "Related:"
 
-#: Weight floors mirroring the engine's member ranking, applied to a file body +
-#: name so the higher-signal file of a pair is the survivor. A BINDING rule
-#: outranks a ``feedback_*`` file, which outranks a retro finding, then anything
-#: else — so binding doctrine is never the side that gets absorbed.
-_WEIGHT_BINDING = 100
-_WEIGHT_FEEDBACK = 90
-_WEIGHT_RETRO = 70
-_WEIGHT_OTHER = 10
+# The survivor of a pair is the higher-weight file on the SHARED member weight ladder
+# (teatree.loops.dream._shared.WEIGHT_*, the same floors the engine ranks by): a BINDING
+# rule outranks a feedback_ file, which outranks a retro finding, then anything else — so
+# binding doctrine is never the side that gets absorbed.
 
 
 @dataclass(frozen=True, slots=True)
@@ -89,7 +90,7 @@ class MergeResult:
 def _file_weight(memory: _MemoryFile) -> int:
     body = memory.text.lower()
     name = memory.path.name.lower()
-    if "binding" in body:
+    if is_binding_text(memory.text):
         return _WEIGHT_BINDING
     if name.startswith("feedback_"):
         return _WEIGHT_FEEDBACK
@@ -99,7 +100,7 @@ def _file_weight(memory: _MemoryFile) -> int:
 
 
 def _is_binding(memory: _MemoryFile) -> bool:
-    return "binding" in memory.text.lower()
+    return is_binding_text(memory.text)
 
 
 def _family(memory: _MemoryFile) -> str:
@@ -168,9 +169,18 @@ def _order_by_weight(a: _MemoryFile, b: _MemoryFile) -> tuple[_MemoryFile, _Memo
 
 
 def _distinct_lines(survivor: _MemoryFile, absorbed: _MemoryFile) -> list[str]:
-    """The absorbed file's body lines not already present in the survivor."""
+    """The absorbed file's BODY lines not already present in the survivor.
+
+    The absorbed file's frontmatter is STRIPPED before the diff (F6.8): appending its
+    own ``name:`` / ``type:`` identity lines into the survivor body would make the
+    survivor NAME resolve to the absorbed slug (:func:`_memory_name` reads the first
+    ``name:`` it finds), skewing refcount / signal score. Only the absorbed lesson
+    body is carried into the survivor; its metadata identity stays with the archived
+    copy.
+    """
     have = {line.strip() for line in survivor.text.splitlines() if line.strip()}
-    return [raw for raw in absorbed.text.splitlines() if raw.strip() and raw.strip() not in have]
+    _front, absorbed_body = _strip_frontmatter(absorbed.text)
+    return [raw for raw in absorbed_body.splitlines() if raw.strip() and raw.strip() not in have]
 
 
 def _merge_provenance(absorbed: _MemoryFile, now: datetime) -> str:

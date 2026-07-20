@@ -2,7 +2,11 @@ from unittest.mock import MagicMock, patch
 
 from teatree.backends.gitlab import GitLabCodeHost
 from teatree.backends.gitlab.api import GitLabAPI, ProjectInfo
-from teatree.backends.gitlab.client import _count_unresolved_resolvable_threads, _note_author, thread_opened_solely_by
+from teatree.backends.gitlab.discussions import (
+    _count_unresolved_resolvable_threads,
+    _note_author,
+    thread_opened_solely_by,
+)
 from teatree.core.backend_protocols import PullRequestSpec
 
 
@@ -1429,3 +1433,157 @@ def test_get_repo_unresolvable_project_returns_structured_error() -> None:
     assert GitLabCodeHost(client=client).get_repo(repo="org/missing") == {
         "error": "Could not resolve project: org/missing"
     }
+
+
+# --- F8.2 resolve_project error semantics ------------------------------------
+
+import httpx  # noqa: E402
+import pytest  # noqa: E402
+
+from teatree.core.backend_protocols import ApprovalState  # noqa: E402
+from teatree.utils.throttled_log import reset_throttle  # noqa: E402
+
+
+def _response(status: int, *, json_body: object = None) -> httpx.Response:
+    request = httpx.Request("GET", "https://gitlab.example.com/api/v4/projects/org%2Frepo")
+    if json_body is not None:
+        return httpx.Response(status, json=json_body, request=request)
+    return httpx.Response(status, request=request)
+
+
+def _api() -> GitLabAPI:
+    return GitLabAPI(token="tok", base_url="https://gitlab.example.com/api/v4")
+
+
+def test_resolve_project_returns_none_on_404() -> None:
+    # F8.2: get_json now raises on 404 (raise_for_status); the documented
+    # None-degrade for an unknown/private slug must survive that.
+    api = _api()
+    with patch("httpx.get", return_value=_response(404)):
+        assert api.resolve_project("org/repo") is None
+
+
+def test_resolve_project_does_not_cache_none_from_404() -> None:
+    # F4.5: a 404 seen once (possibly during an outage) must not pin the slug
+    # unresolvable for the process life — the next call re-resolves.
+    api = _api()
+    with patch("httpx.get", return_value=_response(404)):
+        assert api.resolve_project("org/repo") is None
+    with patch("httpx.get", return_value=_response(200, json_body=_PROJECT_JSON)) as second:
+        assert api.resolve_project("org/repo") is not None
+        second.assert_called()  # the None was NOT cached — a real request went out
+
+
+def test_resolve_project_reraises_non_404_status() -> None:
+    # An auth/5xx failure is an outage, never "unknown project" — it must surface.
+    api = _api()
+    with patch("httpx.get", return_value=_response(403)), pytest.raises(httpx.HTTPStatusError):
+        api.resolve_project("org/repo")
+
+
+def test_resolve_project_caches_successful_resolution() -> None:
+    api = _api()
+    with patch("httpx.get", return_value=_response(200, json_body=_PROJECT_JSON)) as first:
+        assert api.resolve_project("org/repo") is not None
+    with patch("httpx.get", return_value=_response(500)) as second:
+        # Second call is served from the project cache — no request issued.
+        assert api.resolve_project("org/repo") is not None
+        second.assert_not_called()
+    first.assert_called()
+
+
+_PROJECT_JSON = {
+    "id": 42,
+    "path_with_namespace": "org/repo",
+    "path": "repo",
+    "default_branch": "main",
+}
+
+
+# --- F8.1 get_mr_approvals fails closed on unresolvable project --------------
+
+
+def test_get_mr_approvals_fails_closed_when_project_unresolved() -> None:
+    # F8.1: approvals_left=0 is MERGE-AUTHORISING. An unresolvable project must
+    # fail CLOSED (one approval outstanding), never authorise the merge.
+    reset_throttle()
+    client = MagicMock(spec=GitLabAPI)
+    client.resolve_project.return_value = None
+    state = GitLabCodeHost(client=client).get_mr_approvals(repo="org/repo", pr_iid=12)
+    assert state == ApprovalState(approvals_left=1, approved_by=[], unresolved_resolvable=0)
+    client.get_mr_approvals.assert_not_called()
+
+
+# --- F8.10 resolve_user_id_by_username url-encodes the username --------------
+
+
+def test_resolve_user_id_url_encodes_username() -> None:
+    api = _api()
+    resp = _response(200, json_body=[{"id": 7}])
+    with patch("httpx.get", return_value=resp) as mock_get:
+        assert api.resolve_user_id_by_username("a b+c") == 7
+    called_url = mock_get.call_args.args[0]
+    assert "a+b%2Bc" in called_url or "a%20b%2Bc" in called_url
+
+
+# --- F8.6 cancel_pipelines paginates -----------------------------------------
+
+
+def test_cancel_pipelines_walks_every_page() -> None:
+    # F8.6: a busy ref with >10 in-flight pipelines must not leave the overflow
+    # running. cancel_pipelines paginates rather than reading page 1 only.
+    api = _api()
+    page1 = [{"id": i} for i in range(1, 101)]
+    page2 = [{"id": 101}]
+
+    def _get(url: str, **_: object) -> httpx.Response:
+        request = httpx.Request("GET", url)
+        if "status=running" not in url:  # only the running status has pipelines
+            return httpx.Response(200, json=[], headers={"x-next-page": ""}, request=request)
+        if "page=2" in url:
+            return httpx.Response(200, json=page2, headers={"x-next-page": ""}, request=request)
+        return httpx.Response(200, json=page1, headers={"x-next-page": "2"}, request=request)
+
+    with patch("httpx.get", side_effect=_get), patch("httpx.post", return_value=_response(201, json_body={})):
+        cancelled = api.cancel_pipelines(42, "main", statuses=("running",))
+    assert len(cancelled) == 101
+    assert 101 in cancelled
+
+
+# --- F8.7 get_draft_notes_count paginates ------------------------------------
+
+
+def test_get_draft_notes_count_paginates() -> None:
+    api = _api()
+    page1 = [{"id": i} for i in range(100)]
+    page2 = [{"id": 100}, {"id": 101}]
+    with patch("httpx.get", side_effect=_two_page_http_side_effect(page1, page2)):
+        assert api.get_draft_notes_count(42, 7) == 102
+
+
+# --- F8.9 list_recently_merged_mrs single page without cutoff ----------------
+
+
+def test_list_recently_merged_without_cutoff_reads_one_page() -> None:
+    # F8.9: without updated_after, only the most-recent page is fetched — not a
+    # walk to _MAX_PAGES (which read up to 10k rows every tick).
+    api = _api()
+    request = httpx.Request("GET", "https://gitlab.example.com/api/v4/merge_requests")
+
+    def _get(url: str, **_: object) -> httpx.Response:
+        # Advertise a next page; the single-page read must ignore it.
+        return httpx.Response(200, json=[{"iid": 1}], headers={"x-next-page": "2"}, request=request)
+
+    with patch("httpx.get", side_effect=_get) as mock_get:
+        result = api.list_recently_merged_mrs("alice")
+    assert result == [{"iid": 1}]
+    assert mock_get.call_count == 1
+
+
+def test_list_recently_merged_with_cutoff_paginates() -> None:
+    api = _api()
+    page1 = [{"iid": i} for i in range(100)]
+    page2 = [{"iid": 100}]
+    with patch("httpx.get", side_effect=_two_page_http_side_effect(page1, page2)):
+        result = api.list_recently_merged_mrs("alice", updated_after="2026-01-01T00:00:00Z")
+    assert len(result) == 101

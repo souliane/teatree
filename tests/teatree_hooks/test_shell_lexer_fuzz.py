@@ -38,6 +38,7 @@ every token in a split segment is drawn from the original token list.
 
 import pytest
 
+from teatree.hooks._command_parser import is_publish_command
 from teatree.hooks._shell_lexer import Token, is_command_separator, raw_substitution_sees_live, split_commands, tokenize
 
 # A metachar-dense alphabet: single chars plus the multi-char openers that
@@ -167,3 +168,46 @@ class TestShellLexerFuzzCorpus:
         _assert_all_invariants("$(" * 500)
         _assert_all_invariants("`" * 500)
         _assert_all_invariants("a | " * 500)
+
+
+# Stackable leading ``NAME=val`` env-assignment prefixes (case-insensitive per
+# the permissive env regex, #F7.3). Any number may precede the program word.
+_ENV_PREFIXES: tuple[str, ...] = ("", "foo=1 ", "Foo_bar=2 ", "FOO=1 BAR=2 ")
+# Transparent argv wrappers -- AT MOST ONE strips (mirroring
+# ``raw_merge_detect._program_words``). ``env`` may carry its own assignment.
+_WRAPPER_PREFIXES: tuple[str, ...] = ("", "xargs ", "command ", "nohup ", "exec ", "time ", "env ", "env GH_PAGER= ")
+# Path spellings of the ``gh`` program word -- all name the same executable.
+_GH_SPELLINGS: tuple[str, ...] = ("gh", "/usr/bin/gh", "/opt/homebrew/bin/gh", "./gh")
+
+# Fixed forge invocation whose publish-classification must survive any wrapping.
+_FIXED_FORGE_TAIL = "pr create -R o/r --body X"
+
+
+class TestWrapperPathEnvPublishInvariant:
+    """#F7.1/#F7.3: a wrapped / path-form / env-prefixed forge post stays a publish."""
+
+    def test_every_prefix_and_path_spelling_is_a_publish(self) -> None:
+        for env in _ENV_PREFIXES:
+            for wrapper in _WRAPPER_PREFIXES:
+                for gh in _GH_SPELLINGS:
+                    command = f"{env}{wrapper}{gh} {_FIXED_FORGE_TAIL}"
+                    assert is_publish_command(command) is True, f"detection lost for: {command!r}"
+
+    def test_seeded_random_prefix_composition_stays_a_publish(self) -> None:
+        # An env-assignment run (0-2), then at most one transparent wrapper, then a
+        # random gh path spelling; the publish classification is invariant.
+        rng = _Lcg(_SEED ^ 0x5151)
+        for _ in range(500):
+            env = "".join(_ENV_PREFIXES[rng.next_int(len(_ENV_PREFIXES))] for _ in range(rng.next_int(3)))
+            wrapper = _WRAPPER_PREFIXES[rng.next_int(len(_WRAPPER_PREFIXES))]
+            gh = _GH_SPELLINGS[rng.next_int(len(_GH_SPELLINGS))]
+            command = f"{env}{wrapper}{gh} {_FIXED_FORGE_TAIL}"
+            assert is_publish_command(command) is True, f"detection lost for: {command!r}"
+
+    @pytest.mark.parametrize("reader", ["grep", "rg", "cat", "awk", "sed"])
+    def test_read_only_reader_quoting_the_forge_string_is_not_a_publish(self, reader: str) -> None:
+        # The over-block guard: a read-only inspection tool that merely QUOTES the
+        # forge invocation in an argument is NOT a publish (its leader is not an
+        # interpreter, so it never bootstraps detection).
+        command = f'{reader} "gh {_FIXED_FORGE_TAIL}" notes.md'
+        assert is_publish_command(command) is False, f"over-detected: {command!r}"

@@ -27,6 +27,7 @@ Opt-in + misconfig guard:
 *   verdict ``unknown`` → raise :class:`UnownedRepoError` (block-with-remediation).
 """
 
+import logging
 from enum import StrEnum
 from pathlib import Path
 from typing import TYPE_CHECKING, Protocol, TypedDict
@@ -37,6 +38,9 @@ from teatree.core.intake.repo_scope import (
     repo_identity_for_cwd,
     repo_scope,
 )
+from teatree.utils.throttled_log import warn_throttled
+
+logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from teatree.core.overlay import OverlayBase
@@ -185,6 +189,13 @@ def classify_active_push(cwd: Path) -> PushScopeVerdict:
         overlays = get_all_overlays()
         path_only_scopes = OverlayConfigResolver.path_only_owned_scopes()
     except Exception:  # noqa: BLE001 — broken overlay must not wedge a push; fail OPEN.
+        warn_throttled(
+            logger,
+            "owned_repo_guard:classify_active_push",
+            "owned-repo scope gate: overlay resolution failed while classifying a push — failing OPEN "
+            "(the scope gate is disabled until the overlay registry loads); fix the overlay so pushes are scoped",
+            exc_info=True,
+        )
         return PushScopeVerdict.ALLOW
     return classify_push_for_overlays(cwd, overlays, path_only_scopes=path_only_scopes)
 
@@ -269,6 +280,14 @@ def merge_clear_refusal(clear: "_MergeClearLike", *, approved: bool) -> MergeKey
             path_only_scopes=OverlayConfigResolver.path_only_owned_scopes(),
         )
     except Exception:  # noqa: BLE001 — a resolver error must never wedge a merge; fail OPEN.
+        warn_throttled(
+            logger,
+            "owned_repo_guard:merge_clear_refusal",
+            "owned-repo scope gate: overlay resolution failed while classifying a keystone merge target — "
+            "failing OPEN (the scope gate is disabled until the overlay registry loads); the merge's other "
+            "gates (cold-review, SHA-bind, substrate) remain in force",
+            exc_info=True,
+        )
         return None
     if verdict is not PushScopeVerdict.REQUIRE_APPROVAL:
         return None

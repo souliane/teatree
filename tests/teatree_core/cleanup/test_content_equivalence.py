@@ -28,7 +28,8 @@ from django.test import TestCase
 
 from teatree.core.cleanup.cleanup import CleanupResult, cleanup_worktree
 from teatree.core.models import Ticket, Worktree
-from teatree.core.worktree.branch_classification import content_equivalence_blockers
+from teatree.core.worktree.branch_classification import content_equivalence_blockers, effective_default_target
+from teatree.utils.run import CommandFailedError
 from tests.teatree_core.cleanup._shared import _GIT, _clean_env, _run_git
 
 
@@ -237,6 +238,28 @@ class TestCleanAllRefusesSubjectCollision(TestCase):
         assert head == _git_out("rev-parse", head, cwd=self.repo_main)
         assert Worktree.objects.filter(pk=worktree.pk).exists()
 
+    def test_probe_failure_does_not_early_return_and_still_fails_closed(self) -> None:
+        """#F4.3 — a FAILED unsynced-commits probe must NOT skip the content gate.
+
+        The old lenient ``unsynced_commits`` degraded a git failure to ``[]``, which
+        made ``_raise_if_genuinely_ahead`` early-return and SKIP the fail-closed
+        content gate → force-delete of genuine work. With the strict probe a git
+        failure raises, the flow falls through to ``content_equivalence_blockers``
+        (itself fail-closed), and the destroy is refused.
+        """
+        worktree, wt_path, _head = self._make_pushed_worktree(
+            branch="f43-probe-fail", subject="feat: genuine work", content="genuine un-upstreamed content\n"
+        )
+        boom = CommandFailedError(["git", "log"], 128, "", "fatal: bad revision")
+        with (
+            patch("teatree.core.cleanup.cleanup.git.unsynced_commits", side_effect=boom),
+            pytest.raises(RuntimeError, match="not provably on origin/main"),
+        ):
+            self._cleanup(worktree)
+
+        assert wt_path.exists(), "a probe failure must keep the worktree, not force-delete it"
+        assert Worktree.objects.filter(pk=worktree.pk).exists()
+
     def test_deletes_genuinely_upstreamed_branch(self) -> None:
         """A branch whose commit is content-equivalent upstream (real squash-merge) IS cleaned.
 
@@ -256,3 +279,31 @@ class TestCleanAllRefusesSubjectCollision(TestCase):
         assert result.clean is True, f"unexpected errors cleaning a squash-merged branch: {result.errors}"
         assert not wt_path.exists(), "worktree should have been removed for a content-upstream branch"
         assert not Worktree.objects.filter(pk=worktree.pk).exists()
+
+
+class TestEffectiveDefaultTarget(TestCase):
+    """The shared base-ref resolver the content probes compare against (#2609)."""
+
+    @pytest.fixture(autouse=True)
+    def _tmp(self, tmp_path: Path) -> None:
+        self.tmp = tmp_path
+
+    def test_resolves_the_repos_real_default_branch(self) -> None:
+        # A repo whose ``origin/HEAD`` points at a non-``main`` default must resolve to
+        # that branch as an ``origin/<default>`` ref — comparing a ``develop``-default
+        # repo against ``origin/main`` (a base it lacks) would make ``git cherry`` fail.
+        repo = self.tmp / "repo"
+        _init_repo(repo)
+        _run_git("commit", "--allow-empty", "-q", "-m", "init", cwd=repo)
+        head = _git_out("rev-parse", "HEAD", cwd=repo)
+        _run_git("update-ref", "refs/remotes/origin/develop", head, cwd=repo)
+        _run_git("symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/develop", cwd=repo)
+
+        assert effective_default_target(str(repo)) == "origin/develop"
+
+    def test_fails_safe_to_origin_main_when_unresolvable(self) -> None:
+        # An unresolvable default (a non-repo dir) must fall back to ``origin/main`` so the
+        # downstream content gate fails CLOSED (keep the branch) rather than mis-measure.
+        not_a_repo = self.tmp / "plain"
+        not_a_repo.mkdir()
+        assert effective_default_target(str(not_a_repo)) == "origin/main"

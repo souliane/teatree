@@ -12,7 +12,7 @@ from pathlib import Path
 
 import pytest
 
-from teatree.core.review.review_message_cache import persist_review_message
+from teatree.core.review.review_message_cache import ReviewMessageCacheError, persist_review_message
 
 _MR_385 = "https://gitlab.com/org/repo/-/merge_requests/385"
 _MR_386 = "https://gitlab.com/org/repo/-/merge_requests/386"
@@ -111,3 +111,50 @@ def test_reposting_same_mr_overwrites_only_its_own_entry() -> None:
     payload = json.loads(path.read_text())
     assert payload[_MR_385]["permalink"] == "new"
     assert payload[_MR_386]["permalink"] == "sibling"
+
+
+# --- F2.10: fail SOFT on a corrupt record + a NAMED error when T3_DATA_DIR is unset ---
+
+
+def test_corrupt_existing_record_is_moved_aside_and_write_proceeds(
+    data_dir: Path,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    # A truncated / non-JSON record must NOT permanently crash the sanctioned post
+    # path — it is renamed to *.corrupt and the write proceeds from empty.
+    target = data_dir / "tickets" / "385" / "mr_review_messages.json"
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text('{"partial": ')  # truncated JSON
+
+    with caplog.at_level("WARNING"):
+        path = persist_review_message(
+            mr_url=_MR_385,
+            iid="385",
+            permalink="link-385",
+            channel="C1",
+            when=_WHEN,
+        )
+
+    payload = json.loads(path.read_text())
+    assert set(payload) == {_MR_385}  # proceeded from empty, then wrote this entry
+    assert (data_dir / "tickets" / "385" / "mr_review_messages.json.corrupt").exists()
+    assert any("corrupt" in rec.message for rec in caplog.records)
+
+
+def test_non_dict_json_is_treated_as_empty(data_dir: Path) -> None:
+    # A syntactically-valid but wrong-shape record (a JSON list) is not a mapping —
+    # treated as empty rather than crashing on the ``payload[mr_url] =`` write.
+    target = data_dir / "tickets" / "385" / "mr_review_messages.json"
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text("[1, 2, 3]")
+
+    path = persist_review_message(mr_url=_MR_385, iid="385", permalink="p", channel="C1", when=_WHEN)
+    payload = json.loads(path.read_text())
+    assert set(payload) == {_MR_385}
+
+
+def test_missing_data_dir_raises_named_error(monkeypatch: pytest.MonkeyPatch) -> None:
+    # ``T3_DATA_DIR`` unset raises a CLEAR named error, not a bare KeyError.
+    monkeypatch.delenv("T3_DATA_DIR", raising=False)
+    with pytest.raises(ReviewMessageCacheError, match="T3_DATA_DIR"):
+        persist_review_message(mr_url=_MR_385, iid="385", permalink="p", channel="C1", when=_WHEN)

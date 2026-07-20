@@ -41,17 +41,16 @@ Both the per-channel message fetcher and the MR-state classifier are
 function parameters on the scanner, not protocol methods on the
 backend. This keeps the scanner unit-testable without expanding the
 :class:`MessagingBackend` protocol or shelling out to ``glab`` in tests.
-The production wiring (channel-history fetcher on the Slack backend,
-``glab mr view`` based classifier) lands in follow-up #1131-wiring once
-the overlay extension point ``get_review_broadcast_channels()`` is
-designed and merged.
+The production wiring is :class:`BackendChannelHistoryFetcher` (delegating
+to :meth:`MessagingBackend.fetch_channel_history`) and
+:class:`teatree.loop.scanners.slack_broadcast_mr_classifier.GlabGhMrStateClassifier`
+(``glab mr view`` / ``gh pr view``); the tick-jobs builder resolves the
+overlay's broadcast channel list and passes it in, keeping the scanner
+overlay-agnostic.
 """
 
-import json
 import logging
-import os
 import re
-import shutil
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from typing import Protocol
@@ -69,9 +68,9 @@ from teatree.loop.review_claim_signals import (
     record_reaction_claim,
 )
 from teatree.loop.review_request_tracker import record_review_request_post
-from teatree.loop.scanners.base import ScanSignal
+from teatree.loop.scanners.base import ScannerError, ScanSignal
 from teatree.types import RawAPIDict
-from teatree.url_classify import Forge, find_pr_urls, forge_of, repo_and_iid
+from teatree.url_classify import find_pr_urls
 from teatree.utils.url_slug import pr_ref_from_url
 
 logger = logging.getLogger(__name__)
@@ -238,7 +237,19 @@ class SlackBroadcastsScanner:
         signals: list[ScanSignal] = []
         try:
             for channel in self.channels:
-                signals.extend(self._scan_channel(channel))
+                # F5.5: isolate each channel — one channel's fetch/handle failure
+                # must not starve the channels queued after it. ScannerError
+                # (auth / rate-limit from the classifier) and the DB-not-migrated
+                # OperationalError/ProgrammingError still propagate: they are
+                # not per-channel faults and belong to the dispatcher's #1287
+                # error surface / the pre-migration skip below.
+                try:
+                    signals.extend(self._scan_channel(channel))
+                except (ConnectChannelBotRestrictedError, ScannerError, OperationalError, ProgrammingError):
+                    raise
+                except Exception:
+                    logger.exception("SlackBroadcastsScanner failed on channel %s", channel)
+                    continue
         except (OperationalError, ProgrammingError):
             # ``ScannedBroadcast`` lives in core migration 0028; an
             # install that hasn't run migrations yet raises "no such
@@ -263,7 +274,11 @@ class SlackBroadcastsScanner:
             ts = message.get("ts", "<unknown>")
             try:
                 signals.extend(self._handle_message(channel, message))
-            except ConnectChannelBotRestrictedError:
+            except (ConnectChannelBotRestrictedError, ScannerError):
+                # F5.3: a classifier auth / rate-limit failure is a recoverable
+                # scanner-wide error, not a per-message parse fault — surface it
+                # to the dispatcher (#1287) instead of masking it as a skipped
+                # message. Connect-restriction is likewise loud (#1131).
                 raise
             except Exception:
                 logger.exception("SlackBroadcastsScanner failed on message %s in %s", ts, channel)
@@ -509,109 +524,6 @@ class BackendChannelHistoryFetcher:
 
     def __call__(self, *, channel: str) -> list[RawAPIDict]:
         return self.backend.fetch_channel_history(channel=channel, limit=self.limit)
-
-
-@dataclass(slots=True)
-class GlabGhMrStateClassifier:
-    """Production :class:`MrStateClassifier` — shells out to ``glab`` / ``gh``.
-
-    Each URL is dispatched by host: ``glab mr view <url> -F json`` for
-    GitLab merge requests, ``gh pr view <url> --json …`` for GitHub
-    pulls. The classifier reads ``state`` (merged-or-not) and a coarse
-    approval flag (GitLab ``upvotes > 0``, GitHub
-    ``reviewDecision == APPROVED``). Any URL that fails to parse or
-    whose subprocess returns non-zero is treated as
-    ``merged=False, approved=False`` so the scanner falls through to
-    "open MR — please review" — the safe default for a broadcast we
-    couldn't confirm.
-
-    Tokens are optional: when set they're exported as ``GITLAB_TOKEN`` /
-    ``GH_TOKEN`` for each subprocess so a private-repo overlay can
-    classify on behalf of its own PAT.
-    """
-
-    glab_token: str = ""
-    github_token: str = ""
-
-    def __call__(self, urls: Sequence[str]) -> list[MrState]:
-        return [self._classify_one(url) for url in urls]
-
-    def _classify_one(self, url: str) -> MrState:
-        forge = forge_of(url)
-        if forge is Forge.GITLAB:
-            return self._classify_gitlab(url)
-        if forge is Forge.GITHUB:
-            return self._classify_github(url)
-        return MrState(url=url, merged=False, approved=False)
-
-    def _classify_gitlab(self, url: str) -> MrState:
-        from teatree.utils.run import run_allowed_to_fail  # noqa: PLC0415 — deferred: loaded at tick time, not import
-
-        parsed = repo_and_iid(url)
-        if parsed is None:
-            return MrState(url=url, merged=False, approved=False)
-        project, iid_num = parsed
-        iid = str(iid_num)
-        glab = shutil.which("glab") or "glab"
-        env = {**os.environ, "GITLAB_TOKEN": self.glab_token} if self.glab_token else None
-        try:
-            # ``-R <project>`` makes glab resolve the MR against an explicit
-            # project path instead of the current cwd's git remote — the
-            # scanner runs from the loop process which has no repo cwd, so
-            # ``glab mr view <url>`` (URL-only) silently exits non-zero and
-            # every broadcast is dropped. With ``-R`` + numeric IID glab
-            # routes the API call directly.
-            result = run_allowed_to_fail(
-                [glab, "mr", "view", "-R", project, iid, "-F", "json"],
-                expected_codes=None,
-                env=env,
-            )
-        except FileNotFoundError:
-            return MrState(url=url, merged=False, approved=False)
-        if result.returncode != 0 or not result.stdout.strip():
-            return MrState(url=url, merged=False, approved=False)
-        try:
-            data = json.loads(result.stdout)
-        except json.JSONDecodeError:
-            return MrState(url=url, merged=False, approved=False)
-        if not isinstance(data, dict):
-            return MrState(url=url, merged=False, approved=False)
-        state = str(data.get("state", "")).lower()
-        merged = state in {"merged", "closed_as_merged"}
-        upvotes = int(data.get("upvotes", 0) or 0)
-        approved = upvotes > 0 or merged
-        author = data.get("author")
-        author_username = str(author.get("username", "")) if isinstance(author, dict) else ""
-        return MrState(url=url, merged=merged, approved=approved, author_username=author_username)
-
-    def _classify_github(self, url: str) -> MrState:
-        from teatree.utils.run import run_allowed_to_fail  # noqa: PLC0415 — deferred: loaded at tick time, not import
-
-        gh = shutil.which("gh") or "gh"
-        env = {**os.environ, "GH_TOKEN": self.github_token} if self.github_token else None
-        try:
-            result = run_allowed_to_fail(
-                [gh, "pr", "view", url, "--json", "state,reviewDecision,author"],
-                expected_codes=None,
-                env=env,
-            )
-        except FileNotFoundError:
-            return MrState(url=url, merged=False, approved=False)
-        if result.returncode != 0 or not result.stdout.strip():
-            return MrState(url=url, merged=False, approved=False)
-        try:
-            data = json.loads(result.stdout)
-        except json.JSONDecodeError:
-            return MrState(url=url, merged=False, approved=False)
-        if not isinstance(data, dict):
-            return MrState(url=url, merged=False, approved=False)
-        state = str(data.get("state", "")).upper()
-        review_decision = str(data.get("reviewDecision", "")).upper()
-        merged = state == "MERGED"
-        approved = review_decision == "APPROVED" or merged
-        author = data.get("author")
-        author_username = str(author.get("login", "")) if isinstance(author, dict) else ""
-        return MrState(url=url, merged=merged, approved=approved, author_username=author_username)
 
 
 def _signal_for_pending_mr(state: MrState, row: ScannedBroadcast, *, overlay: str) -> ScanSignal:

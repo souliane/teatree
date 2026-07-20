@@ -202,6 +202,10 @@ holistic (`ac-reviewing-codebase`).
 
 **Preferred.** Use DecimalField (with explicit max_digits/decimal_places) for monetary values; consider a money type that carries the currency code.
 
+**Accepted waivers.**
+
+- TaskAttempt.cost_usd, EvalScenarioResult.cost_usd/main_cost_usd/aux_cost_usd — provider-cost telemetry, never invoicing; accepted 2026-07 full-tree review (F1.1/F1.2/F9.2). Revisit if these ever feed billing or exact-equality gates.
+
 ## GET request with side effects
 
 <a id="get-with-side-effects"></a>

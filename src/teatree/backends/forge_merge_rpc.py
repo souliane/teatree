@@ -27,19 +27,28 @@ from teatree.utils.run import run_allowed_to_fail
 
 Runner = Callable[[list[str]], tuple[int, str, str]]
 
+# Bound every merge-RPC subprocess so a stalled TLS handshake or a hung read on
+# the KEYSTONE MERGE path degrades (raises ``TimeoutExpired``) instead of wedging
+# the single-threaded loop indefinitely. Mirrors the read-side bound
+# ``github.api._FORGE_READ_TIMEOUT_SECONDS`` — an unbounded ``gh``/``glab`` merge
+# call was the one hole left on the merge transport.
+_FORGE_MERGE_TIMEOUT_SECONDS = 60.0
+
 
 def gh_runner(token: str) -> Runner:
     """A ``gh`` allow-to-fail runner — auth via ``GH_TOKEN`` when *token* is set.
 
     Distinct from ``github._run_gh`` (which uses ``run_checked`` and raises on
     non-zero): the merge-RPC methods inspect the return code, so they need the
-    ``(rc, out, err)`` shape :func:`run_allowed_to_fail` returns.
+    ``(rc, out, err)`` shape :func:`run_allowed_to_fail` returns. Every call is
+    timeout-bounded (:data:`_FORGE_MERGE_TIMEOUT_SECONDS`) so a hung keystone
+    merge never stalls the loop.
     """
 
     def run(argv: list[str]) -> tuple[int, str, str]:
         gh = shutil.which("gh") or "gh"
         env = {**os.environ, "GH_TOKEN": token} if token else None
-        result = run_allowed_to_fail([gh, *argv], expected_codes=None, env=env)
+        result = run_allowed_to_fail([gh, *argv], expected_codes=None, env=env, timeout=_FORGE_MERGE_TIMEOUT_SECONDS)
         return result.returncode, result.stdout, result.stderr
 
     return run
@@ -50,12 +59,14 @@ def glab_runner() -> Runner:
 
     The §17.4.3 merge path uses the ``glab`` subprocess (not the httpx
     ``GitLabAPI`` client) so the SHA-bind behaviour and error strings match what
-    the keystone tests pin.
+    the keystone tests pin. Every call is timeout-bounded
+    (:data:`_FORGE_MERGE_TIMEOUT_SECONDS`) so a hung keystone merge never stalls
+    the loop.
     """
 
     def run(argv: list[str]) -> tuple[int, str, str]:
         glab = shutil.which("glab") or "glab"
-        result = run_allowed_to_fail([glab, *argv], expected_codes=None)
+        result = run_allowed_to_fail([glab, *argv], expected_codes=None, timeout=_FORGE_MERGE_TIMEOUT_SECONDS)
         return result.returncode, result.stdout, result.stderr
 
     return run

@@ -61,6 +61,20 @@ class ConsolidatedMemoryManager(models.Manager["ConsolidatedMemory"]):
         """Rows the Pass-2 promote pass has not yet classified (the queue to drain)."""
         return self.filter(disposition=ConsolidatedMemory.Disposition.UNTRIAGED)
 
+    def needs_ticket(self) -> "models.QuerySet[ConsolidatedMemory]":
+        """Core-gap rows classified but not yet promoted to a fix — the drain queue.
+
+        A row Pass 2 moved to ``CORE_GAP_NEEDS_TICKET`` that still carries NO tracking
+        ticket (``ticket_url``): the gap was detected but its fix was never driven onto
+        the umbrella. The promote pass drains these alongside :meth:`untriaged` so a
+        core gap a prior run classified — e.g. one an old dry-run stranded — is never
+        left permanently un-promoted, silently detected but never fixed.
+        """
+        return self.filter(
+            disposition=ConsolidatedMemory.Disposition.CORE_GAP_NEEDS_TICKET,
+            ticket_url="",
+        )
+
     def awaiting_ticket_close(self) -> "models.QuerySet[ConsolidatedMemory]":
         """TICKETED rows whose linked teatree ticket may now be closed → retirable."""
         return self.filter(disposition=ConsolidatedMemory.Disposition.TICKETED).exclude(ticket_url="")

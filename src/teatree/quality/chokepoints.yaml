@@ -106,6 +106,7 @@
     - teatree.core.management.commands.pr
     - teatree.core.management.commands.ticket
     - teatree.core.management.commands._test_plan.post
+    - teatree.core.management.commands._test_plan.mr_post
     - teatree.loop.mechanical
     - teatree.loops.dream.promote_memory
     - teatree.loops.dream.umbrella_ledger

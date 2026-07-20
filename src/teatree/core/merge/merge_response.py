@@ -4,8 +4,11 @@ Split out of :mod:`execution` (the module-health LOC cap): deciding whether a
 non-zero ``gh``/``glab`` merge response is a momentary transport failure (retry),
 a policy refusal (a verdict, never retried), or a head-moved (fail closed) is a
 distinct concern from the keystone orchestration. The byte-for-byte forge error
-f-strings the keystone tests pin live here; ``execution`` imports the two entry
-points back so ``execution._is_transient_merge_response`` still resolves.
+f-strings the keystone tests pin live here. ``execution`` imports the single
+public entry point :func:`_raise_bound_merge_failure`; the transient/refusal
+classifier :func:`_is_transient_merge_response` is a private helper of THIS
+module that :func:`_raise_bound_merge_failure` calls — ``execution`` does not
+re-export it (``execution._is_transient_merge_response`` does not resolve).
 """
 
 from teatree.core.backend_protocols import ForgeMergeResult

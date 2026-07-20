@@ -9,7 +9,9 @@ keeps working.
 
 import re
 from typing import SupportsInt, TypedDict, cast
-from urllib.parse import urlencode
+from urllib.parse import quote_plus, urlencode
+
+import httpx
 
 from teatree.backends.gitlab.http_client import _MAX_PAGES, GitLabHTTPClient, ProjectInfo, RawMR, _resolve_token
 from teatree.backends.gitlab.payloads import WORK_ITEM_STATUS_QUERY, status_from_work_item_payload
@@ -56,10 +58,28 @@ class GitLabAPI(GitLabHTTPClient):
         return result
 
     def resolve_project(self, repo_path: str) -> ProjectInfo | None:
+        """Resolve a project slug to its :class:`ProjectInfo`, or ``None`` when unknown.
+
+        ``get_json`` now applies ``raise_for_status``, so an unknown / private
+        slug surfaces as an ``httpx.HTTPStatusError`` (HTTP 404), not a silent
+        empty read. A 404 is the documented "no such project" degrade → return
+        ``None`` so every ``if project is None`` guard downstream stays live;
+        any OTHER status (401/403/5xx) is a genuine outage and re-raises so a
+        credential/transport failure is never mistaken for "unknown project".
+
+        The ``None`` verdict is deliberately NOT cached (mirrors F4.5): a 404
+        seen during a transient outage must not pin the slug as unresolvable for
+        the process lifetime — only a successfully-resolved project is cached.
+        """
         if repo_path in self._project_cache:
             return self._project_cache[repo_path]
 
-        data = self.get_json(f"projects/{repo_path.replace('/', '%2F')}")
+        try:
+            data = self.get_json(f"projects/{repo_path.replace('/', '%2F')}")
+        except httpx.HTTPStatusError as exc:
+            if exc.response.status_code == httpx.codes.NOT_FOUND:
+                return None
+            raise
         if not isinstance(data, dict):
             return None
 
@@ -210,6 +230,14 @@ class GitLabAPI(GitLabHTTPClient):
         updated_after: str | None,
         per_page: int,
     ) -> list[RawMR]:
+        """List terminal (merged/closed) MRs, newest first.
+
+        With *updated_after* the query is server-side bounded to that cutoff, so
+        every matching page is walked. WITHOUT a cutoff only the single most
+        recent page (``per_page`` rows) is fetched — walking all pages to
+        ``_MAX_PAGES`` there meant up to ``100 * per_page`` rows (10k items) read
+        every tick for a callsite that only wants the recent terminal MRs.
+        """
         query: dict[str, str | int] = {
             "state": state,
             "author_username": author,
@@ -220,8 +248,9 @@ class GitLabAPI(GitLabHTTPClient):
         }
         if updated_after:
             query["updated_after"] = updated_after
-        params = urlencode(query)
-        return self.get_json_paginated(f"merge_requests?{params}")
+            return self.get_json_paginated(f"merge_requests?{urlencode(query)}")
+        data = self.get_json(f"merge_requests?{urlencode(query)}")
+        return data if isinstance(data, list) else []
 
     def get_mr_pipeline(self, project_id: int, mr_iid: int) -> dict[str, str | None]:
         """Return the latest pipeline status and URL for an MR."""
@@ -297,13 +326,18 @@ class GitLabAPI(GitLabHTTPClient):
         return result
 
     def get_draft_notes_count(self, project_id: int, mr_iid: int) -> int:
-        """Return the number of unpublished draft notes on a merge request."""
+        """Return the number of unpublished draft notes on a merge request.
+
+        Paginates to completion: a single ``per_page=100`` page capped the count
+        at 100, so an MR with more than 100 draft notes reported a floor, not the
+        real total. ``get_json_paginated`` walks every page so the count is exact.
+        """
         cache_key = f"draft_notes:{project_id}:{mr_iid}"
         cached: int | None = self._get_cached(cache_key, _TTL_DISCUSSIONS)
         if cached is not None:
             return cached
-        data = self.get_json(f"projects/{project_id}/merge_requests/{mr_iid}/draft_notes?per_page=100")
-        count = len(data) if isinstance(data, list) else 0
+        data = self.get_json_paginated(f"projects/{project_id}/merge_requests/{mr_iid}/draft_notes?per_page=100")
+        count = len(data)
         self._set_cached(cache_key, count)
         return count
 
@@ -314,13 +348,16 @@ class GitLabAPI(GitLabHTTPClient):
         *,
         statuses: tuple[str, ...] = ("running", "pending"),
     ) -> list[int]:
+        """Cancel every running/pending pipeline on *ref*, returning their ids.
+
+        Walks EVERY page of the pipeline list per status (``get_json_paginated``):
+        the old ``per_page=10`` page-1-only read left the 11th-onward pipeline
+        running silently when a busy ref had more than ten in-flight pipelines.
+        """
         cancelled: list[int] = []
         for status in statuses:
-            params = urlencode({"ref": ref, "status": status, "per_page": 10})
-            data = self.get_json(f"projects/{project_id}/pipelines?{params}")
-            if not isinstance(data, list):
-                continue
-            for pipeline in data:
+            params = urlencode({"ref": ref, "status": status, "per_page": 100})
+            for pipeline in self.get_json_paginated(f"projects/{project_id}/pipelines?{params}"):
                 pipeline_id = _as_int(pipeline["id"])
                 self.post_json(f"projects/{project_id}/pipelines/{pipeline_id}/cancel")
                 cancelled.append(pipeline_id)
@@ -335,7 +372,7 @@ class GitLabAPI(GitLabHTTPClient):
         """
         if not username:
             return 0
-        data = self.get_json(f"users?username={username}")
+        data = self.get_json(f"users?username={quote_plus(username)}")
         if not isinstance(data, list) or not data:
             return 0
         first = data[0]

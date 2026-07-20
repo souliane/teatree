@@ -60,6 +60,12 @@ _RECURRENCE_MARKER = "compliance-recurrence"
 #: "the"/"not" with a memory is not a recurrence of that memory's rule.
 _MIN_TOKEN_LEN = 5
 
+#: A correction must share at least this many DISTINCTIVE tokens with a memory to be
+#: attributed as a recurrence of that memory's rule (F6.5). A single incidental shared
+#: token ("worktree", "review") is noise that misattributes the recurrence to an
+#: arbitrary memory; requiring two topical tokens keeps the attribution honest.
+_MIN_SHARED_TOKENS = 2
+
 #: Words that are frequent in BOTH memory bodies and correction prose and so are
 #: non-discriminating — they must not, on their own, match a correction to a memory.
 _STOPWORDS = frozenset(
@@ -168,15 +174,21 @@ def _memory_slug(snippet: WeightedSnippet) -> str:
 
 
 def _memory_rules(extract: ConsolidationExtract) -> list[_MemoryRule]:
-    """Every memory snippet as a (slug, distinctive-tokens) rule available this pass."""
-    rules: list[_MemoryRule] = []
+    """Every memory available this pass as a (slug, distinctive-tokens) rule, indexed by slug.
+
+    A COMPLETE index over the pass's memory members keyed by slug (F6.5), not a
+    first-wins sample: a memory whose snippet recurs (or whose slug collides) unions
+    its distinctive tokens onto ONE rule rather than spawning two half-populated rules
+    the attribution could pick between arbitrarily.
+    """
+    by_slug: dict[str, set[str]] = {}
     for snippet in extract.snippets:
         if snippet.kind != "memory":
             continue
         slug = _memory_slug(snippet)
         tokens = _significant_tokens(snippet.text) | _significant_tokens(slug)
-        rules.append(_MemoryRule(slug=slug, tokens=frozenset(tokens)))
-    return rules
+        by_slug.setdefault(slug, set()).update(tokens)
+    return [_MemoryRule(slug=slug, tokens=frozenset(tokens)) for slug, tokens in by_slug.items()]
 
 
 def _correction_lines(extract: ConsolidationExtract) -> list[str]:
@@ -196,12 +208,29 @@ def _directive_identity(line: str) -> str:
 
 
 def _backing_memory(line: str, memory_rules: Sequence[_MemoryRule]) -> _MemoryRule | None:
-    """The memory rule whose distinctive tokens the correction line shares, if any."""
+    """The memory rule the correction line most overlaps, or ``None`` (F6.5).
+
+    Attribution is BEST-match, not first-match, and requires at least
+    :data:`_MIN_SHARED_TOKENS` distinctive shared tokens: the rule with the most
+    shared tokens wins, ties broken by the higher Jaccard (so a small, tightly-matching
+    memory beats a large one that merely happens to share the same count). A single
+    incidental shared token no longer attributes a recurrence to an arbitrary memory —
+    the misattribution the old first-token-wins scan produced.
+    """
     line_tokens = _significant_tokens(line)
+    if not line_tokens:
+        return None
+    best: _MemoryRule | None = None
+    best_key = (0, 0.0)
     for rule in memory_rules:
-        if rule.tokens & line_tokens:
-            return rule
-    return None
+        shared = rule.tokens & line_tokens
+        if len(shared) < _MIN_SHARED_TOKENS:
+            continue
+        union = rule.tokens | line_tokens
+        key = (len(shared), len(shared) / len(union) if union else 0.0)
+        if key > best_key:
+            best, best_key = rule, key
+    return best
 
 
 def detect_compliance_failures(extract: ConsolidationExtract) -> list[ComplianceFinding]:

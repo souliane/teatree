@@ -238,6 +238,32 @@ class ReconcileMergedGapsTestCase(TestCase):
         memory = ConsolidatedMemory.objects.get(cluster_key="gap-1")
         assert memory.disposition == ConsolidatedMemory.Disposition.RESOLVED_RETIRED
 
+    def test_reconciled_gap_is_stamped_and_not_re_read_next_pass(self) -> None:
+        # F6.9: once a merged gap is reconciled (checkbox checked, memory retired) the
+        # gap-fix ticket is STAMPED reconciled, so the next reconcile pass skips it
+        # instead of re-reading the forge for the same merged gap forever.
+        ticket = self._scheduled_gap()
+        ticket.pull_requests.create(
+            url="https://github.com/souliane/teatree/pull/9100", repo=REPO, iid="9100", state="merged"
+        )
+        ticket.state = Ticket.State.MERGED
+        ticket.save()
+        existing = "## Open gaps\n- [x] Fix the gate <!-- dream-gap gap-1 -->\n"
+        host = _fake_host(body=existing)
+        host.get_issue.return_value = {"body": existing, "state": "merged"}
+
+        first = ul.reconcile_merged_gaps(host, umbrella_url=UMBRELLA)
+        assert len(first) == 1
+        ticket.refresh_from_db()
+        assert ticket.extra.get("dream_gap_reconciled_at")  # stamped reconciled
+
+        # A second pass over the same merged gap does NOT touch it again.
+        host2 = _fake_host(body=existing)
+        host2.get_issue.return_value = {"body": existing, "state": "merged"}
+        second = ul.reconcile_merged_gaps(host2, umbrella_url=UMBRELLA)
+        assert second == []
+        host2.get_issue.assert_not_called()  # no forge re-read for the already-reconciled gap
+
     def test_unmerged_gap_is_left_alone(self) -> None:
         self._scheduled_gap()
         host = _fake_host(body="## Open gaps\n- [ ] Fix the gate <!-- dream-gap gap-1 -->\n")

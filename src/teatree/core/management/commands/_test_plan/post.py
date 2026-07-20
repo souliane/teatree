@@ -24,12 +24,12 @@ from teatree.core.evidence import test_plan_validation as _tpv
 from teatree.core.evidence import video_evidence as _vev
 from teatree.core.evidence.test_plan_blocked_gate import BlockedTestPlanPostError, check_blocked_body_from_config
 from teatree.core.intake.resolve import WorktreeNotFoundError, resolve_worktree
+from teatree.core.management.commands._shared_code_host import NO_CODE_HOST_MESSAGE
 from teatree.core.management.commands._test_plan.render import (
     SideManifest,
     TestPlanManifest,
     TestPlanState,
     TestPlanValidationError,
-    WorkflowArtifacts,
     WorkflowEmbed,
     empty_state,
     find_ticket_marker,
@@ -37,8 +37,6 @@ from teatree.core.management.commands._test_plan.render import (
     parse_manifest,
     parse_state_blob,
     render_body,
-    render_mrs_line,
-    test_plan_marker,
     validate_template,
 )
 from teatree.core.models import Ticket, Worktree
@@ -51,32 +49,24 @@ from teatree.core.on_behalf_post_receipt import notify_user_on_behalf_post
 from teatree.core.send_proxy import forge_from_url, route_forge_write
 from teatree.types import RawAPIDict
 
-# Re-exports so callers/tests import the test-plan surface from one module.
+# The public surface of the ticket/issue test-plan path. The MR/PR poster
+# (``MrTestPlanPost`` / ``post_mr_test_plan_comment``) lives in the sibling
+# :mod:`.mr_post` module; the pure render/state symbols are imported from
+# :mod:`.render` directly by their callers, not re-exported here.
 __all__ = [
     "PostTestPlanResult",
-    "SideManifest",
     "TestPlanFlags",
-    "TestPlanManifest",
     "TestPlanMediaError",
     "TestPlanPost",
     "TestPlanResolutionError",
-    "TestPlanState",
     "TestPlanValidationError",
-    "WorkflowArtifacts",
     "WorktreeNotFoundError",
     "build_validated_post",
     "find_existing_note",
-    "merge_state",
-    "parse_manifest",
-    "parse_state_blob",
     "post_body_file_comment",
     "post_test_plan_comment",
-    "render_body",
-    "render_mrs_line",
     "run_post_test_plan",
     "run_retract_evidence",
-    "test_plan_marker",
-    "validate_template",
 ]
 
 _ON_BEHALF_ACTION = "post_e2e_evidence"
@@ -361,7 +351,7 @@ def run_post_test_plan(  # noqa: PLR0913 — the CLI flags map 1:1 to a single s
 
     host = code_host_from_overlay()
     if host is None:
-        write_err("No code host configured (check overlay GitLab/GitHub token).")
+        write_err(NO_CODE_HOST_MESSAGE)
         raise SystemExit(1)
 
     if body_file:
@@ -566,7 +556,7 @@ def run_retract_evidence(
 ) -> None:
     host = code_host_from_overlay()
     if host is None:
-        write_err("No code host configured (check overlay GitLab/GitHub token).")
+        write_err(NO_CODE_HOST_MESSAGE)
         raise SystemExit(1)
     try:
         worktree = resolve_worktree()

@@ -209,6 +209,12 @@
   refs: ["ac-django-antipatterns-22"]
   linter: null
   eval_invariant: null
+  waivers:
+    - >-
+      TaskAttempt.cost_usd, EvalScenarioResult.cost_usd/main_cost_usd/aux_cost_usd
+      — provider-cost telemetry, never invoicing; accepted 2026-07 full-tree
+      review (F1.1/F1.2/F9.2). Revisit if these ever feed billing or
+      exact-equality gates.
 
 - id: get-with-side-effects
   name: GET request with side effects

@@ -34,7 +34,7 @@ from django.test import TestCase
 
 from teatree.core.merge import MergePreconditionError, assert_merge_preconditions, merge_ticket_pr, resolve_pr_repo_slug
 from teatree.core.merge.authorization import assert_review_verdict_gate
-from teatree.core.models import ConfigSetting, MergeAudit, MergeClear, ReviewVerdict, Ticket
+from teatree.core.models import ClearIssuanceError, ConfigSetting, MergeAudit, MergeClear, ReviewVerdict, Ticket
 from teatree.utils.pr_ref import PrRef
 from tests.teatree_core.conftest import seed_merge_safe_verdict
 
@@ -175,6 +175,37 @@ class TestClearIssuanceSeam(TestCase):
         ticket.refresh_from_db()
         assert merged["merged"]
         assert ticket.state == Ticket.State.MERGED
+
+    def test_verdict_record_failure_rolls_back_the_issued_clear(self) -> None:
+        """F3.2: issuance + verdict are atomic — a verdict failure leaves NO phantom CLEAR.
+
+        Before the fix, ``MergeClear.issue`` committed the row, then a
+        ``ReviewVerdict.record`` failure surfaced as a raw traceback — leaving an
+        issued CLEAR with no matching merge-safe verdict (a phantom ``review
+        status`` would later read as merge-safe). Now both run inside one
+        ``transaction.atomic``, so the CLEAR is rolled back with the verdict.
+        """
+        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.IN_REVIEW)
+        with patch.object(ReviewVerdict, "record", side_effect=ClearIssuanceError("verdict store unavailable")):
+            result = cast(
+                "dict[str, object]",
+                call_command(
+                    "ticket",
+                    "clear",
+                    "864",
+                    "souliane/teatree",
+                    reviewed_sha=_SHA,
+                    reviewer_identity="cold-reviewer",
+                    gh_verify_result="green",
+                    blast_class="docs",
+                    ticket_id=int(ticket.pk),
+                ),
+            )
+        assert not result["issued"]
+        assert "verdict store unavailable" in str(result["error"])
+        # The CLEAR row was rolled back with the failed verdict — no orphan.
+        assert MergeClear.objects.count() == 0
+        assert ReviewVerdict.objects.count() == 0
 
     def test_clear_issuer_equal_to_executing_loop_is_refused(self) -> None:
         """§17.8 clause 3: a CLEAR cannot be issued by the loop that will execute it."""

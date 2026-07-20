@@ -45,6 +45,27 @@ class MemoryPhaseRunnerTestCase(TestCase):
         assert "cross-linked" in out
         assert "re-indexed" in out
 
+    def test_quiet_night_grades_the_gates_on_a_file_mutation(self) -> None:
+        # F6.2: the quiet-night path was ungated — its decay/merge could lose a lesson
+        # with no §4 gate to catch it. It now grades the acceptance gates on ANY
+        # non-dry-run file mutation (cross-link/re-index here do real work), persisting
+        # the DreamQaProbe corpus and riding the gate clause on the summary.
+        from teatree.core.models import DreamQaProbe  # noqa: PLC0415
+
+        with self._patch_dirs():
+            out = self.runner.run_memory_phases(dry_run=False)
+        assert "gate" in out.lower()  # the gate clause is appended
+        assert DreamQaProbe.objects.count() > 0  # gates ran and populated the corpus
+
+    def test_quiet_night_dry_run_neither_grades_nor_persists(self) -> None:
+        # A preview mutates nothing, so there is nothing to grade and no probe is persisted.
+        from teatree.core.models import DreamQaProbe  # noqa: PLC0415
+
+        with self._patch_dirs():
+            out = self.runner.run_memory_phases(dry_run=True)
+        assert "gate" not in out.lower()
+        assert DreamQaProbe.objects.count() == 0
+
     def test_decay_failure_is_warned_not_fatal(self) -> None:
         with (
             self._patch_dirs(),

@@ -926,6 +926,19 @@ class TestLoopWatchdog(TestCase):
         assert watchdog.max_turns == 0
         assert watchdog.max_cost_usd == pytest.approx(0.0)
 
+    def test_from_settings_reads_the_db_home_config_tier(self) -> None:
+        # F9.5: an explicit ConfigSetting row is the authoritative source (visible to
+        # config_setting get) and wins over the Django-settings fallback for that
+        # dimension; unconfigured dimensions still fall back to the Django-settings value.
+        ConfigSetting.objects.set_value("watchdog_max_turns", 250, scope="")
+        with override_settings(
+            TEATREE_LOOP_WATCHDOG={"max_runtime_seconds": 42, "max_turns": 7, "max_cost_usd": 1.5},
+        ):
+            watchdog = LoopWatchdog.from_settings()
+        assert watchdog.max_turns == 250  # config row wins over the fallback's 7
+        assert watchdog.max_runtime_seconds == 42  # unconfigured -> Django fallback
+        assert watchdog.max_cost_usd == pytest.approx(1.5)  # unconfigured -> Django fallback
+
 
 class TestDriveWithHeartbeat(TestCase):
     """The SDK driver renews the lease and honours the watchdog (#882, #997)."""
@@ -1031,6 +1044,52 @@ class TestDriveWithHeartbeat(TestCase):
         assert elapsed < 10
         assert outcome.stuck_reason is not None
         assert "lease lost" in outcome.stuck_reason
+
+
+class TestWatchdogResamplesUsageMidRun(TestCase):
+    """The heartbeat re-samples usage each tick so a mid-run cost spike is caught (F9.3)."""
+
+    def setUp(self) -> None:
+        self.ticket = Ticket.objects.create()
+        self.session = Session.objects.create(ticket=self.ticket)
+        self.task = Task.objects.create(ticket=self.ticket, session=self.session)
+        self.task.renew_lease = lambda **_kw: None
+
+    def _options(self) -> Any:
+        return headless_mod._build_options(self.task, "ctx", phase="coding", skills=[])
+
+    def test_cost_spike_after_the_pre_run_snapshot_interrupts(self) -> None:
+        # The pre-run snapshot is UNDER the ceiling; the spend then spikes over it while
+        # the run is in flight. With the old static-snapshot code the watchdog would never
+        # observe the spike and the never-terminating stream would drain; re-sampling each
+        # heartbeat catches it and interrupts fast.
+        call_count = 0
+
+        def growing(task: Task) -> TaskUsage:
+            nonlocal call_count
+            call_count += 1
+            # Call 1 is the pre-run sample (under 5.0); every heartbeat re-sample after it
+            # observes the spiked spend (over 5.0).
+            return TaskUsage(turns=0, cost_usd=1.0 if call_count == 1 else 6.0)
+
+        watchdog = LoopWatchdog(max_runtime_seconds=0, max_turns=0, max_cost_usd=5.0)
+        messages = [_assistant_text("step") for _ in range(1000)]
+        start = time.monotonic()
+        with (
+            _fake_sdk(messages, delay=0.05),
+            patch.object(headless_mod, "_sample_usage_closing_connection", growing),
+            patch.object(headless_mod, "_HEARTBEAT_INTERVAL", 0.02),
+        ):
+            outcome = asyncio.run(
+                _drive_with_heartbeat(self.task, "p", self._options(), ClaudeSdkHarness(), watchdog=watchdog)
+            )
+        elapsed = time.monotonic() - start
+
+        assert outcome.stuck_reason is not None
+        assert "cost" in outcome.stuck_reason
+        assert "6" in outcome.stuck_reason
+        assert call_count >= 2, "the watchdog never re-sampled usage after the pre-run snapshot"
+        assert elapsed < 10, f"watchdog did not interrupt on the mid-run spike: {elapsed:.1f}s"
 
 
 class TestUsageSampleClosesWorkerConnection(TestCase):

@@ -9,7 +9,7 @@ The data-loss guards and the worktree-teardown orchestration live here.
 """
 
 import logging
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -22,6 +22,7 @@ from teatree.config import clone_root
 from teatree.core import prek_hook
 from teatree.core.cleanup.cleanup_busy_guards import WorktreeBusyError, guard_live_worktree
 from teatree.core.cleanup.cleanup_orphan_ref import raise_or_reap_orphan_ref
+from teatree.core.cleanup.cleanup_result import CleanupResult
 from teatree.core.cleanup.working_tree_dirt import real_uncommitted_reasons
 from teatree.core.models import Worktree
 from teatree.core.overlay_loader import get_overlay_for_worktree
@@ -30,6 +31,7 @@ from teatree.core.worktree.branch_classification import (
     _branch_pr_is_merged,
     _branch_tree_matches_squash,
     content_equivalence_blockers,
+    effective_default_target,
 )
 from teatree.core.worktree.clone_paths import resolve_clone_path
 from teatree.core.worktree.worktree_env import compose_project, worktree_pg_connection
@@ -53,37 +55,6 @@ _SUBJECT_PREVIEW_LIMIT = 3
 # A full git sha is 40 hex chars; below this a "sha" is a fail-closed diagnostic
 # string (e.g. "(git cherry failed …)") surfaced verbatim, not sliced.
 _SHORT_SHA_LEN = 7
-
-
-@dataclass(slots=True)
-class CleanupResult:
-    """Outcome of a single :func:`cleanup_worktree` teardown.
-
-    ``label`` is the human-readable summary (still printed by the
-    interactive ``clean-all`` / ``clean-merged`` callers and surfaced as
-    the runner ``detail``). ``errors`` is the structured, machine-readable
-    channel: every teardown step that failed appends a descriptive string
-    here instead of crashing mid-teardown or being swallowed by a
-    ``suppress(Exception)`` (#877).
-
-    #932's lesson — a swallowed string the caller never inspects is not
-    surfacing. Sync backends push ``errors`` into ``SyncResult.errors`` and
-    runners fold it into their failure detail, so a teardown failure
-    actually reaches the operator/exit path.
-    """
-
-    label: str
-    errors: list[str] = field(default_factory=list)
-
-    @property
-    def clean(self) -> bool:
-        """True when every teardown step succeeded."""
-        return not self.errors
-
-    def __str__(self) -> str:
-        if self.errors:
-            return f"{self.label} [with errors: {'; '.join(self.errors)}]"
-        return self.label
 
 
 @dataclass(frozen=True)
@@ -178,13 +149,24 @@ def _raise_if_genuinely_ahead(repo_main: str, worktree: Worktree, target: _Effec
     """
     branch = target.branch_to_delete
     if branch is None:
-        # Detached HEAD: no named branch to classify against origin/main. The
+        # Detached HEAD: no named branch to classify against the default. The
         # #706 unpushed guard already probed HEAD in the worktree dir, so any
         # work-to-lose was caught there.
         return
-    if not git.unsynced_commits(repo_main, branch):
+    # Resolve the repo's REAL default (master/develop repos are not measured
+    # against an origin/main they do not have) and probe with the STRICT twin so
+    # a git failure cannot masquerade as "no unsynced commits" (#F4.3). On a probe
+    # FAILURE do NOT early-return — fall through to the fail-closed content gate
+    # (``content_equivalence_blockers`` itself reports a blocker on any git error,
+    # so an inconclusive probe REFUSES the destroy rather than skipping the gate).
+    default_target = effective_default_target(repo_main)
+    try:
+        has_unsynced = bool(git.unsynced_commits(repo_main, branch, default_target, strict=True))
+    except CommandFailedError:
+        has_unsynced = True
+    if not has_unsynced:
         return
-    blockers = content_equivalence_blockers(repo_main, branch)
+    blockers = content_equivalence_blockers(repo_main, branch, default_target)
     if not blockers:
         return
     if _branch_tree_matches_squash(repo_main, branch):
@@ -360,8 +342,8 @@ def _resolve_worktree_path(workspace: Path, worktree: Worktree) -> str:
 
 def _run_data_loss_guards(
     repo_main: Path,
-    wt_path: str,
     worktree: Worktree,
+    target: _EffectiveTarget,
     *,
     force: bool,
     strict_hygiene: bool,
@@ -378,6 +360,12 @@ def _run_data_loss_guards(
     abandon). A missing source repo skips the guards — there is no repo to run
     the origin-relative probe in and nothing to remove.
 
+    ``target`` is the git-resolved effective target, computed ONCE by
+    :func:`cleanup_worktree` and threaded through every guard + the removal step
+    (#F4.10) so the teardown probes the same branch/HEAD the dirty-worktree guard
+    and ``git worktree remove`` do — no per-call re-resolution (a TOCTOU window +
+    redundant ``git`` subprocesses).
+
     #706 — the data-loss guard is the seam every Worktree-row-driven teardown
     caller funnels through (execute_teardown / WorktreeTeardown,
     WorktreeTeardownRunner, clean-merged, clean-all, sync-backend merge cleanup,
@@ -393,13 +381,12 @@ def _run_data_loss_guards(
     """
     if force or not repo_main.is_dir():
         return
-    target = _effective_target(str(repo_main), wt_path, worktree)
     _raise_if_unpushed(str(repo_main), worktree, target)
     if strict_hygiene:
         _raise_if_genuinely_ahead(str(repo_main), worktree, target)
 
 
-def _remove_git_worktree(repo_main: Path, wt_path: str, worktree: Worktree) -> list[str]:
+def _remove_git_worktree(repo_main: Path, wt_path: str, target: _EffectiveTarget) -> list[str]:
     """Remove the git worktree + branch from the source repo, returning any error messages.
 
     Returns an empty list on success. The source repo missing, the git worktree
@@ -407,15 +394,16 @@ def _remove_git_worktree(repo_main: Path, wt_path: str, worktree: Worktree) -> l
     are surfaced (not raised) so unrelated cleanup steps still run. The data-loss
     guards (:func:`_run_data_loss_guards`) already ran ahead of this step, so
     removal is unconditional here.
+
+    ``target`` is the git-resolved effective target computed ONCE by
+    :func:`cleanup_worktree` and shared with the guards (#F4.10). ``Worktree.branch``
+    (the DB slug) can drift from the branch actually checked out in the worktree;
+    trusting it makes ``branch -D`` no-op on a phantom slug, leaving the real
+    branch dangling after its worktree is removed — so the removal deletes the
+    branch ``target`` resolved, not the slug.
     """
     if not repo_main.is_dir():
         return [f"source repo missing at {repo_main}"]
-    # Resolve the teardown target from git ONCE, then operate on it throughout.
-    # ``Worktree.branch`` (the DB slug) can drift from the branch actually
-    # checked out in the worktree; trusting it makes ``branch -D`` no-op on a
-    # phantom slug, leaving the real branch dangling after its worktree is
-    # removed.
-    target = _effective_target(str(repo_main), wt_path, worktree)
     errors: list[str] = []
     if not git.worktree_remove(str(repo_main), wt_path):
         errors.append(f"git worktree remove failed for {wt_path}")
@@ -594,7 +582,7 @@ def cleanup_worktree(
     # (immune to a drifted DB slug, aware of a dangling post-merge HEAD).
     target = _effective_target(str(repo_main), wt_path, worktree)
     _guard_or_warn_dirty_worktree(worktree, wt_path, target, keep_if_dirty=keep_if_dirty, force=force)
-    _run_data_loss_guards(repo_main, wt_path, worktree, force=force, strict_hygiene=strict_hygiene)
+    _run_data_loss_guards(repo_main, worktree, target, force=force, strict_hygiene=strict_hygiene)
 
     # Stop the docker compose project so containers don't leak when this path is
     # reached outside the WorktreeTeardownRunner (#1306) — the FSM teardown,
@@ -609,7 +597,7 @@ def cleanup_worktree(
     step_errors: list[str] = []
     run_overlay_cleanup_steps(overlay, worktree, step_errors)
 
-    step_errors.extend(_remove_git_worktree(repo_main, wt_path, worktree))
+    step_errors.extend(_remove_git_worktree(repo_main, wt_path, target))
 
     _drop_worktree_db(overlay, worktree, step_errors)
     _remove_overlay_pass_entry(overlay, worktree, step_errors)
