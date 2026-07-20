@@ -19,6 +19,7 @@ import logging
 from datetime import datetime
 from typing import ClassVar
 
+from django.core.exceptions import ValidationError
 from django.db import models
 from django.utils import timezone
 
@@ -50,12 +51,38 @@ class LoopPresetManager(models.Manager["LoopPreset"]):
 
 
 class LoopPreset(models.Model):
-    """One named loop-state mask: a tri-state per-loop opinion plus optional pins."""
+    """One named operating **mode** (#61 merge): a tri-state per-loop opinion,
+    an overlay scope, AND the intrinsic availability posture that used to live in
+    the standalone :mod:`teatree.core.availability` string modes.
+
+    The three booleans ARE the availability payload — a mode's reachability is
+    fully expressed by them (the merge's key finding: availability adds no state a
+    preset can't carry, only two booleans plus a presence rule):
+
+    * ``defers_questions`` — the user is unreachable NOW: ``AskUserQuestion``
+      defers to the durable backlog, local TTS is silenced, colleague-facing
+      loops are gated off, and returning to a non-deferring mode drains the
+      backlog. Maps to the old ``away`` + ``autonomous_away`` modes.
+    * ``pauses_self_pump`` — stop self-driving too (holiday): the loop tick parks.
+      Maps to the old ``away`` mode only. Requires ``defers_questions`` (the
+      nonsensical "pump paused but questions answered" 4th point is unrepresentable).
+    * ``presence_sensitive`` — a fresh keystroke upgrades an away-class mode
+      reached *by schedule/default* to the configured ``presence_upgrade_mode``.
+      Defaults ``True`` so any scheduled away honours a live keystroke, exactly as
+      the old presence rule did.
+
+    The legacy ``availability_mode`` string is retained during the merge only to
+    seed/back-fill the booleans and to keep the deprecation aliases working; it is
+    scheduled for deletion once every consumer reads the booleans.
+    """
 
     name = models.SlugField(max_length=64, unique=True)
     description = models.TextField(blank=True, default="")
     entries = models.JSONField(default=dict)
     availability_mode = models.CharField(max_length=32, blank=True, default="")
+    defers_questions = models.BooleanField(default=False)
+    pauses_self_pump = models.BooleanField(default=False)
+    presence_sensitive = models.BooleanField(default=True)
     overlay_scope = models.JSONField(default=list)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
@@ -68,6 +95,20 @@ class LoopPreset(models.Model):
 
     def __str__(self) -> str:
         return f"loop-preset<{self.name} ({self.entry_count} entries)>"
+
+    def clean(self) -> None:
+        """A paused self-pump must also defer questions (§0.4 invariant).
+
+        The reachable state space is the three points ``(F,F)`` present,
+        ``(T,F)`` autonomous-away and ``(T,T)`` holiday-away; the fourth point
+        ``(F,T)`` — the pump paused while questions still answer in-band — is
+        nonsensical and rejected here (and asserted by a model test).
+        """
+        super().clean()
+        if self.pauses_self_pump and not self.defers_questions:
+            raise ValidationError(
+                {"pauses_self_pump": "pauses_self_pump requires defers_questions (a paused pump must also defer)."}
+            )
 
     def state_for(self, loop_name: str) -> bool | None:
         """The tri-state opinion for *loop_name*: ``True``/``False`` forced, ``None`` = inherit.

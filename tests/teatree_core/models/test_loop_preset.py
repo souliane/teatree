@@ -8,10 +8,28 @@ manager methods (#3159 item 6).
 import datetime as dt
 
 import django.test
+import pytest
+from django.core.exceptions import ValidationError
 from django.utils import timezone
 
 from teatree.core import availability
 from teatree.core.models import PIN_MODES, ConfigSetting, LoopPreset, LoopPresetOverride
+
+
+class TestModeBooleans(django.test.SimpleTestCase):
+    """#61 merge: the three intrinsic booleans ARE the availability payload."""
+
+    def test_pauses_requires_defers_is_rejected_by_clean(self) -> None:
+        # The nonsensical 4th point (pump paused but questions answered in-band).
+        with pytest.raises(ValidationError):
+            LoopPreset(name="bad", pauses_self_pump=True, defers_questions=False).clean()
+
+    def test_reachable_postures_pass_clean(self) -> None:
+        for defers, pauses in [(False, False), (True, False), (True, True)]:
+            LoopPreset(name="ok", defers_questions=defers, pauses_self_pump=pauses).clean()
+
+    def test_presence_sensitive_defaults_true(self) -> None:
+        assert LoopPreset(name="x").presence_sensitive is True
 
 
 class TestPinModesCanonical(django.test.SimpleTestCase):

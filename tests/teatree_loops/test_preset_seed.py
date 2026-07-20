@@ -15,7 +15,7 @@ from teatree.loop.preset_resolution import ACTIVE_SCHEDULE_SETTING
 from teatree.loops.preset_seed import seed_default_presets_and_schedules
 from teatree.loops.seed import DEFAULT_LOOPS
 
-_EXPECTED_PRESETS = {"engaged", "heads-down", "unattended", "maintenance", "low-power", "off"}
+_EXPECTED_PRESETS = {"engaged", "heads-down", "unattended", "maintenance", "low-power", "off", "offline"}
 _EXPECTED_SCHEDULES = {"standard", "always-unattended"}
 
 
@@ -49,6 +49,27 @@ class TestSeedDefaultPresets(django.test.TestCase):
     def test_unattended_pins_autonomous_away(self) -> None:
         seed_default_presets_and_schedules()
         assert LoopPreset.objects.get(name="unattended").availability_pin == "autonomous_away"
+
+    def test_mode_booleans_seeded_per_recommended_table(self) -> None:
+        seed_default_presets_and_schedules()
+        # present-class: never defers.
+        for name in ("engaged", "heads-down", "off"):
+            preset = LoopPreset.objects.get(name=name)
+            assert preset.defers_questions is False
+            assert preset.pauses_self_pump is False
+        # away-class autonomous: defers, keeps pumping.
+        for name in ("unattended", "maintenance", "low-power"):
+            preset = LoopPreset.objects.get(name=name)
+            assert preset.defers_questions is True
+            assert preset.pauses_self_pump is False
+
+    def test_offline_is_the_holiday_away_mode(self) -> None:
+        seed_default_presets_and_schedules()
+        offline = LoopPreset.objects.get(name="offline")
+        assert offline.defers_questions is True
+        assert offline.pauses_self_pump is True
+        assert offline.presence_sensitive is False
+        assert all(value is False for value in offline.entries.values())
 
     def test_destructive_loops_inherit_in_engaged(self) -> None:
         seed_default_presets_and_schedules()
