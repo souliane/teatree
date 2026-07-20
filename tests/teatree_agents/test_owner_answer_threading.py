@@ -1,10 +1,10 @@
 """Invariants for the owner-answer egress (slack-comms design, Phase 1/4).
 
 - I4: an owner reply threads on the OWNER's own message ts (the authoritative
-  ticket ``slack_answer.slack_ts``), never a stale DM-thread or a new root.
+    ticket ``slack_answer.slack_ts``), never a stale DM-thread or a new root.
 - I1: the owner answer is posted regardless of availability mode — patching
-  ``resolve_mode`` to ``autonomous_away`` must not suppress the post (the path
-  must never consult availability).
+    ``resolve_mode`` to ``autonomous_away`` must not suppress the post (the path
+    must never consult availability).
 """
 
 from unittest.mock import MagicMock, patch
