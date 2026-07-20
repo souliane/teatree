@@ -66,3 +66,14 @@ class TestDispatchablePhaseTotality:
             assert "read_file" in tools, phase
             assert "write_file" not in tools, phase
             assert "shell" not in tools, phase
+
+    def test_architectural_review_gets_shell_but_never_writes(self) -> None:
+        # The periodic ac-reviewing-codebase pass is a genuine review-WORK phase:
+        # it walks the tree (Read/Grep), does git archaeology, and runs
+        # `t3 tool verify-gates` — all of which need the shell. Without it the
+        # dispatched review stalled and leaked an "I lack shell + no checkout"
+        # question to the owner. Like the reviewer phases it never mutates source.
+        tools = tools_for_phase("architectural_review")
+        assert {"read_file", "search_files", "shell"} <= tools
+        assert "write_file" not in tools
+        assert "edit_file" not in tools

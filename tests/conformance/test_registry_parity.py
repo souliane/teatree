@@ -290,12 +290,14 @@ class TestPhaseToolsTotalityParity:
         assert "write_file" not in tools
         assert "edit_file" not in tools
 
-    def test_architectural_review_is_an_explicit_read_only_policy(self) -> None:
-        # A REVIEWED read-only+web allowance (the MCP-write carve-out), not the
-        # deny-by-default accident it used to be.
+    def test_architectural_review_is_an_explicit_shell_review_policy(self) -> None:
+        # A REVIEWED read-mostly-with-shell allowance, the same shape as the reviewer
+        # phases: the periodic ac-reviewing-codebase pass walks the tree, does git
+        # archaeology, and runs `t3 tool verify-gates`, so it needs the shell — a
+        # NO-shell grant is what stalled a dispatched review and leaked an "I lack
+        # shell + no checkout" question to the owner. It never mutates source.
         tools = tools_for_phase("architectural_review")
-        assert {"read_file", "search_files"} <= tools
-        assert "shell" not in tools
+        assert {"read_file", "search_files", "shell"} <= tools
         assert "write_file" not in tools
         assert "edit_file" not in tools
 
