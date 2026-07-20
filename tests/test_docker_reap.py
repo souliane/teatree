@@ -16,6 +16,7 @@ import pytest
 from teatree.docker.reap import (
     ReapResult,
     _parse_docker_timestamp,
+    is_worktree_compose_project,
     list_compose_projects,
     project_last_activity,
     reap_compose_project,
@@ -362,24 +363,24 @@ class TestProjectLastActivity:
 class TestStaleComposeProjects:
     def test_old_unowned_stack_is_selected_and_reaped(self, monkeypatch: pytest.MonkeyPatch) -> None:
         fake = _FakeDocker(
-            containers={"abandoned-test": ["c1"]},
-            enumerated=["abandoned-test"],
+            containers={"abandoned-wt42": ["c1"]},
+            enumerated=["abandoned-wt42"],
             inspect={"c1": f"{_OLD}|{_OLD}|{_OLD}"},
         )
         _patch(monkeypatch, fake)
 
         selected = stale_compose_projects(set(), min_age_minutes=240, now=_NOW)
-        assert selected == ["abandoned-test"]
+        assert selected == ["abandoned-wt42"]
 
         results = reap_stale_compose_projects(set(), min_age_minutes=240, now=_NOW)
-        assert [r.project for r in results] == ["abandoned-test"]
+        assert [r.project for r in results] == ["abandoned-wt42"]
         assert fake.removed_containers == ["c1"]
 
     def test_fresh_unowned_stack_is_kept(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """A parallel session's just-started manual stack must never be torn down."""
         fake = _FakeDocker(
-            containers={"parallel-test": ["c1"]},
-            enumerated=["parallel-test"],
+            containers={"parallel-wt3": ["c1"]},
+            enumerated=["parallel-wt3"],
             inspect={"c1": f"{_OLD}|{_FRESH}|{_ZERO}"},
         )
         _patch(monkeypatch, fake)
@@ -390,8 +391,8 @@ class TestStaleComposeProjects:
 
     def test_unknown_age_fails_safe_to_keep(self, monkeypatch: pytest.MonkeyPatch) -> None:
         fake = _FakeDocker(
-            containers={"mystery": ["c1"]},
-            enumerated=["mystery"],
+            containers={"mystery-wt7": ["c1"]},
+            enumerated=["mystery-wt7"],
             inspect={"c1": f"{_ZERO}|{_ZERO}|{_ZERO}"},
         )
         _patch(monkeypatch, fake)
@@ -412,12 +413,76 @@ class TestStaleComposeProjects:
 
     def test_dry_selection_removes_nothing(self, monkeypatch: pytest.MonkeyPatch) -> None:
         fake = _FakeDocker(
-            containers={"abandoned-test": ["c1"]},
-            enumerated=["abandoned-test"],
+            containers={"abandoned-wt42": ["c1"]},
+            enumerated=["abandoned-wt42"],
             inspect={"c1": f"{_OLD}|{_OLD}|{_OLD}"},
         )
         _patch(monkeypatch, fake)
 
-        assert stale_compose_projects(set(), min_age_minutes=240, now=_NOW) == ["abandoned-test"]
+        assert stale_compose_projects(set(), min_age_minutes=240, now=_NOW) == ["abandoned-wt42"]
         assert fake.removed_containers == []
         assert fake.removed_images == []
+
+
+class TestForeignStackOwnershipGate:
+    """A compose project teatree did not provision is never a reap candidate.
+
+    The keep set can only ever name projects teatree still tracks, so
+    "everything on the host minus mine" classifies every foreign stack as an
+    orphan. Both the deploy stack (``teatree``) and an unrelated user project
+    (``openclaw``) were torn down that way. Ownership is decided by the name
+    teatree itself mints -- ``<repo>-wt<ticket-pk>`` -- so these pin the two
+    literal names from the incident.
+    """
+
+    def test_foreign_stacks_survive_the_clean_all_flavour(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        fake = _FakeDocker(
+            containers={"teatree": ["deploy-1"], "openclaw": ["signal-daemon"], "backend-wt9": ["c1"]},
+            images={"teatree": ["sha256:deploy"], "backend-wt9": ["sha256:img1"]},
+            enumerated=["teatree", "openclaw", "backend-wt9"],
+        )
+        _patch(monkeypatch, fake)
+
+        results = reap_orphan_compose_projects(set())
+
+        assert [r.project for r in results] == ["backend-wt9"]
+        assert fake.removed_containers == ["c1"]
+        assert fake.removed_images == ["sha256:img1"]
+
+    def test_foreign_stacks_survive_the_automatic_stale_sweep(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """The worse flavour: this one fires on provision/start with no user action."""
+        fake = _FakeDocker(
+            containers={"teatree": ["deploy-1"], "openclaw": ["signal-daemon"]},
+            enumerated=["teatree", "openclaw"],
+            inspect={"deploy-1": f"{_OLD}|{_OLD}|{_OLD}", "signal-daemon": f"{_OLD}|{_OLD}|{_OLD}"},
+        )
+        _patch(monkeypatch, fake)
+
+        assert stale_compose_projects(set(), min_age_minutes=240, now=_NOW) == []
+        assert reap_stale_compose_projects(set(), min_age_minutes=240, now=_NOW) == []
+        assert fake.removed_containers == []
+        assert fake.removed_images == []
+
+    @pytest.mark.parametrize("project", ["backend-wt1", "teatree-wt123", "a-b-c-wt42"])
+    def test_teatree_provisioned_names_are_owned(self, project: str) -> None:
+        assert is_worktree_compose_project(project)
+
+    @pytest.mark.parametrize(
+        "project",
+        ["teatree", "openclaw", "signal-daemon", "backend-wt", "backend-wt5x", "wt5", ""],
+    )
+    def test_foreign_names_are_not_owned(self, project: str) -> None:
+        assert not is_worktree_compose_project(project)
+
+    def test_deploy_stack_is_kept_while_its_worktree_sibling_is_reaped(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """``teatree`` is the deploy stack; ``teatree-wt7`` is a real worktree stack."""
+        fake = _FakeDocker(
+            containers={"teatree": ["deploy-1"], "teatree-wt7": ["c1"]},
+            enumerated=["teatree", "teatree-wt7"],
+            inspect={"deploy-1": f"{_OLD}|{_OLD}|{_OLD}", "c1": f"{_OLD}|{_OLD}|{_OLD}"},
+        )
+        _patch(monkeypatch, fake)
+
+        assert stale_compose_projects(set(), min_age_minutes=240, now=_NOW) == ["teatree-wt7"]
+        assert [r.project for r in reap_orphan_compose_projects(set())] == ["teatree-wt7"]
+        assert fake.removed_containers == ["c1"]
