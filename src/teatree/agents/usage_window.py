@@ -193,11 +193,24 @@ def park_task_on_all_exhausted(
     lane keyed on *resets_at* (the earliest reset across accounts) so the existing
     ``usage_window_recovery`` chain auto-resumes the task when the soonest account frees up — a
     quiesce, NOT a human escalation. ``None`` (caller records a terminal FAILED, as today) when
-    the flag is OFF or no reset is known (nothing to re-arm to).
+    the flag is OFF, no reset is known (nothing to re-arm to), or the reset has ALREADY
+    PASSED — a park keyed on an elapsed instant is dead on arrival: the recovery chain clears
+    it on its very next tick and posts a "window restored" line, so a caller that keeps
+    re-deriving an elapsed reset would flood the owner with restore notifications at the poll
+    cadence. Refusing the park surfaces the real failure instead of hiding it behind a
+    self-clearing window.
     """
     if not autorecovery_enabled() or resets_at is None:
         return None
     moment = now or timezone.now()
+    if resets_at <= moment:
+        logger.warning(
+            "Task %s NOT parked — all %s accounts exhausted but the reported reset %s has already passed",
+            task.pk,
+            lane or "ambient",
+            resets_at.isoformat(),
+        )
+        return None
     UsageWindowState.record_limit(lane=lane, cause=_ALL_EXHAUSTED_CAUSE, resets_at=resets_at, now=moment)
     _auto_engage_low_power(resets_at, moment)
     logger.warning(

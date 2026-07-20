@@ -276,7 +276,12 @@ class PassPathSelector:
     def _all_exhausted_error(kind: TokenKind) -> AllTokensExhaustedError:
         candidates = PassPathSelector._all_configured_paths(kind)
         rows = AnthropicTokenUsage.objects.filter(pass_path__in=candidates)
-        resets = [row.earliest_reset for row in rows if row.is_exhausted and row.earliest_reset is not None]
+        # ``frees_up_at``, not ``earliest_reset``: the answer is when an account actually
+        # re-arms (its blocking windows all clear), not the soonest reset it happens to
+        # have on record. An account rejected on its 7-day window whose idle 5h window
+        # rolls over every few minutes would otherwise report a reset in the PAST, and the
+        # caller would park behind an instant that has already happened.
+        resets = [row.frees_up_at for row in rows if row.is_exhausted and row.frees_up_at is not None]
         earliest = min(resets) if resets else None
         when = f" — earliest reset {earliest.isoformat()}" if earliest is not None else ""
         # Name the candidate accounts so the operator knows exactly which ones to
