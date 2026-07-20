@@ -22,6 +22,7 @@ home (``teatree.loop.statusline``); identity is preserved so
 """
 
 from teatree.loop.statusline_loops import (
+    PresetLineHandles,
     availability_segment,
     dashboard_head_anchor,
     health_chip,
@@ -31,7 +32,7 @@ from teatree.loop.statusline_loops import (
     overlays_anchor,
     set_mini_loop_schedules_reader,
     set_overridden_loops_reader,
-    set_preset_segment_reader,
+    set_preset_line_reader,
 )
 from teatree.loop.statusline_render import (
     StatuslineEntry,
@@ -45,6 +46,7 @@ from teatree.loop.statusline_render import (
 )
 
 __all__ = [
+    "PresetLineHandles",
     "StatuslineEntry",
     "StatuslineZones",
     "ZoneItem",
@@ -61,6 +63,6 @@ __all__ = [
     "render",
     "set_mini_loop_schedules_reader",
     "set_overridden_loops_reader",
-    "set_preset_segment_reader",
+    "set_preset_line_reader",
     "statusline_for_slack",
 ]

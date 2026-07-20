@@ -62,7 +62,8 @@ class TestLoopRunningTokenDropped:
             patch("teatree.loop.statusline_loops._waiting_count", return_value=2),
         ):
             lines = live_loops_anchor()
-        assert lines == ["tick 10m · waiting=2"], lines
+        # #3494: ``N waiting`` spelled out; infra leases kept at the tail.
+        assert lines == ["2 waiting · tick 10m"], lines
 
     def test_still_empty_when_no_loops_live(self) -> None:
         with (

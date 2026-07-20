@@ -19,6 +19,7 @@ from django.utils import timezone
 
 from teatree.loop.loop_state_db import control_planes_in_db, loop_state_admits
 from teatree.loop.preset_resolution import ActivePreset, preset_state_for, resolve_active_preset
+from teatree.loop.statusline_loops import PresetLineHandles
 
 
 @dataclass(frozen=True, slots=True)
@@ -71,32 +72,41 @@ def effective_verdicts(now: dt.datetime | None = None) -> list[LoopVerdict]:
 
 
 def statusline_chunk(now: dt.datetime | None = None) -> str:
-    """The one-chunk preset segment, or ``""`` when no preset governs.
+    """The one-chunk preset segment, or ``""`` when no preset governs (#3494).
 
-    Schedule-governed → ``preset engaged →19:00``. A MANUAL override (#3248) is
-    flagged ``preset ⚠heads-down (manual →21:00)`` so the operator sees the
-    active schedule is NOT the one governing. Sourced from the SAME resolver as
-    ``preset show`` so the two never disagree.
+    Spelled out for the loop line: a MANUAL override renders ``preset: manual``
+    (the layer, not the underlying preset name — the operator's cue that the
+    active schedule is NOT the one governing); a schedule-driven preset renders
+    ``preset: <name>``. A boundary is appended when the preset expires at a known
+    time (``preset: manual →21:00``). Sourced from the SAME resolver as ``preset
+    show`` so the two never disagree.
     """
     summary = active_summary(now)
     if summary is None:
         return ""
     boundary = _boundary_hhmm(summary.until)
     if summary.layer == "override":
-        return f"preset ⚠{summary.name} (manual{boundary})"
-    return f"preset {summary.name}{boundary}"
+        return f"preset: manual{boundary}"
+    return f"preset: {summary.name}{boundary}"
 
 
 def schedule_chunk() -> str:
-    """The active-schedule segment ``sched standard``, or ``""`` when no schedule is active."""
+    """The active-schedule segment, always spelled out (#3494).
+
+    ``schedule: <name>`` when a weekly schedule is active, else ``schedule: none
+    active`` — the schedule handle is always shown so the operator reads the
+    schedule state at a glance even when none governs. Fails open to ``schedule:
+    none active`` on a broken read.
+    """
     from teatree.core.models import ConfigSetting  # noqa: PLC0415 — deferred import (cycle-safe / pre-app-registry)
     from teatree.loop.preset_resolution import ACTIVE_SCHEDULE_SETTING  # noqa: PLC0415 — deferred: cycle-safe
 
     try:
         raw = ConfigSetting.objects.get_effective(ACTIVE_SCHEDULE_SETTING)
-    except Exception:  # noqa: BLE001 — rendering is best-effort; a broken read degrades to no segment
-        return ""
-    return f"sched {raw.strip()}" if isinstance(raw, str) and raw.strip() else ""
+    except Exception:  # noqa: BLE001 — rendering is best-effort; a broken read degrades to "none active"
+        return "schedule: none active"
+    name = raw.strip() if isinstance(raw, str) else ""
+    return f"schedule: {name}" if name else "schedule: none active"
 
 
 def manual_override_entries(now: dt.datetime | None = None) -> list[tuple[str, bool]]:
@@ -104,8 +114,9 @@ def manual_override_entries(now: dt.datetime | None = None) -> list[tuple[str, b
 
     Returns ``(loop_name, forced_on)`` for every loop whose live FORCED value
     differs from what the preset (else base ``Loop.enabled``) would decide - the
-    ``ovr:`` statusline section. A force that agrees with the underlying verdict
-    is not surfaced (it changes nothing). Sorted by name; fails open to ``[]``.
+    ``forced ON:`` / ``forced OFF:`` statusline section. A force that agrees with
+    the underlying verdict is not surfaced (it changes nothing). Sorted by name;
+    fails open to ``[]``.
     """
     from teatree.core.models import Loop  # noqa: PLC0415 — deferred import (cycle-safe / pre-app-registry)
 
@@ -125,11 +136,23 @@ def manual_override_entries(now: dt.datetime | None = None) -> list[tuple[str, b
 
 
 def manual_override_chunk(now: dt.datetime | None = None) -> str:
-    """The ``ovr: review- news+`` per-loop manual-override segment, or ``""`` when none diverge."""
+    """The spelled-out per-loop manual-override segment, or ``""`` when none diverge (#3494).
+
+    Splits the diverging forces into ``forced ON: <names>`` and ``forced OFF:
+    <names>`` (each a comma-separated, name-sorted list), joined with the loop
+    line's mid-dot when both are present — e.g. ``forced ON: triage_assessor``.
+    """
     entries = manual_override_entries(now)
     if not entries:
         return ""
-    return "ovr: " + " ".join(f"{name}{'+' if on else '-'}" for name, on in entries)
+    on = [name for name, forced_on in entries if forced_on]
+    off = [name for name, forced_on in entries if not forced_on]
+    parts = []
+    if on:
+        parts.append("forced ON: " + ", ".join(on))
+    if off:
+        parts.append("forced OFF: " + ", ".join(off))
+    return " · ".join(parts)
 
 
 def overridden_loop_names(now: dt.datetime | None = None) -> set[str]:
@@ -139,20 +162,40 @@ def overridden_loop_names(now: dt.datetime | None = None) -> set[str]:
     (:func:`teatree.loop.statusline_loops.live_loops_anchor`) keeps a
     ``loop:<name>`` chunk only for a manually-overridden loop; this is the
     injected selector it reads. Sharing :func:`manual_override_entries`'
-    divergence logic keeps the surfaced lease chunks and the ``ovr:`` segment
-    from ever disagreeing about which loops diverge from the handle.
+    divergence logic keeps the surfaced lease chunks and the ``forced ON:`` /
+    ``forced OFF:`` segment from ever disagreeing about which loops diverge from
+    the handle.
     """
     return {name for name, _ in manual_override_entries(now)}
 
 
-def preset_line_chunk(now: dt.datetime | None = None) -> str:
-    """The composed schedule/preset/override statusline segment (#3248), or ``""`` when nothing governs.
+def preset_line_handles(now: dt.datetime | None = None) -> PresetLineHandles:
+    """The three ordered loop-line handles (#3494): schedule, preset, per-loop overrides.
 
-    Joins the non-empty ``sched``, ``preset`` (with the ⚠manual marker), and
-    ``ovr:`` sub-segments with the mid-dot. The single injected preset-segment
-    reader the loop line renders, replacing the bare ``statusline_chunk``.
+    The injected reader the statusline loop line renders (installed by the
+    ``loops_tick`` per-loop command). Sourced from the SAME resolvers as
+    ``preset show`` / ``loops list``, so the observability surfaces never
+    disagree. The renderer places the schedule and preset handles ahead of the
+    loop chunks and the ``forced ON:`` / ``forced OFF:`` overrides after them.
     """
-    parts = [chunk for chunk in (schedule_chunk(), statusline_chunk(now), manual_override_chunk(now)) if chunk]
+    return PresetLineHandles(
+        schedule=schedule_chunk(),
+        preset=statusline_chunk(now),
+        override=manual_override_chunk(now),
+    )
+
+
+def preset_line_chunk(now: dt.datetime | None = None) -> str:
+    """The composed schedule/preset/override statusline segment (#3248, #3494).
+
+    Joins the non-empty ``schedule:``, ``preset:``, and ``forced ON:`` /
+    ``forced OFF:`` sub-segments with the mid-dot — the single-string bundled
+    view of :func:`preset_line_handles` for surfaces that want one flat segment.
+    Always at least ``schedule: none active`` (the schedule handle is always
+    shown).
+    """
+    handles = preset_line_handles(now)
+    parts = [chunk for chunk in (handles.schedule, handles.preset, handles.override) if chunk]
     return " · ".join(parts)
 
 
@@ -185,6 +228,7 @@ __all__ = [
     "manual_override_entries",
     "overridden_loop_names",
     "preset_line_chunk",
+    "preset_line_handles",
     "schedule_chunk",
     "statusline_chunk",
 ]
