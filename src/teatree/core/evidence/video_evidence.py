@@ -119,7 +119,7 @@ def _probe_duration(ffprobe: str, video: Path) -> float:
     ``expected_codes=None`` accepts any exit code, so ffprobe erroring does not
     raise ``CommandFailedError`` — the REAL uncaught exception from ``timeout=`` is
     :class:`subprocess.TimeoutExpired` (a hung/pathological input). Both are caught
-    to ``0.0`` (unknown duration, the same fail-safe value an unparseable ``stdout``
+    to ``0.0`` (unknown duration, the same fail-safe value an unparsable ``stdout``
     yields) so a probe timeout — or a tightened ``expected_codes`` — can never
     surface as a raw traceback out of the post path.
     """

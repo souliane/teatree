@@ -588,7 +588,7 @@ class GlabGhMrStateClassifier:
     the classifier raises :class:`ScannerError` so the dispatcher records
     the degradation (#1287) and skips the tick, instead of silently
     classifying a possibly-MERGED MR as open — which would nag reviewers
-    about already-landed work. A URL that is not a recognised MR (unparseable
+    about already-landed work. A URL that is not a recognised MR (unparsable
     forge / IID) stays ``merged=False`` (it is a deterministic non-match, not
     a transient failure).
 

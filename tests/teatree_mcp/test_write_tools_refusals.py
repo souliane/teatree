@@ -138,7 +138,7 @@ class TestRefuseReason:
 
     def test_safety_posture_refusal_names_the_authorization_effect(self) -> None:
         # The refusal message must name the EFFECT (F9.1), not a name-glob, for at least
-        # the keys reached via the SAFETY_POSTURE_KEYS clause (not pre-empted by another).
+        # the keys reached via the SAFETY_POSTURE_KEYS clause (not preempted by another).
         assert "authorization" in refuse_reason("substrate_auto_merge_authorized_by")
         assert "authorization" in refuse_reason("trusted_issue_authors")
 
