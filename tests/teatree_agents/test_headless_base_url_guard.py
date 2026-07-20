@@ -17,6 +17,7 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from unittest.mock import patch
 
+import pytest
 from django.test import TestCase
 
 import teatree.agents.harness as harness_mod
@@ -54,23 +55,26 @@ class TestAmbientDispatchRefusesBaseUrlRedirect(TestCase):
     """No Layer-2 pin: the CLI's own login state is unobservable, so the guard is conservative."""
 
     def test_refuses_when_a_subscription_token_rides_alongside_the_redirect(self) -> None:
-        with _ambient(**{ANTHROPIC_BASE_URL_ENV: _GATEWAY, _OAUTH: "sk-ant-oat01-x"}):
-            with self.assertRaises(CredentialError) as caught:
-                _provider_child_env(None)
-        assert ANTHROPIC_BASE_URL_ENV in str(caught.exception)
-        assert "api_key" in str(caught.exception), "the refusal must name the sanctioned remedy"
+        with (
+            _ambient(**{ANTHROPIC_BASE_URL_ENV: _GATEWAY, _OAUTH: "sk-ant-oat01-x"}),
+            pytest.raises(CredentialError) as caught,
+        ):
+            _provider_child_env(None)
+        assert ANTHROPIC_BASE_URL_ENV in str(caught.value)
+        assert "api_key" in str(caught.value), "the refusal must name the sanctioned remedy"
 
     def test_refuses_when_no_credential_is_ambient_because_the_cli_falls_back_to_its_login(self) -> None:
         # Nothing in the env names a credential, so the CLI uses its stored login —
         # on a plan deployment that is the subscription. Refuse rather than guess.
-        with _ambient(**{ANTHROPIC_BASE_URL_ENV: _GATEWAY}):
-            with self.assertRaises(CredentialError):
-                _provider_child_env(None)
+        with _ambient(**{ANTHROPIC_BASE_URL_ENV: _GATEWAY}), pytest.raises(CredentialError):
+            _provider_child_env(None)
 
     def test_refuses_when_both_credentials_are_ambient(self) -> None:
-        with _ambient(**{ANTHROPIC_BASE_URL_ENV: _GATEWAY, _API_KEY: "sk-ant-key", _OAUTH: "sk-ant-oat01-x"}):
-            with self.assertRaises(CredentialError):
-                _provider_child_env(None)
+        with (
+            _ambient(**{ANTHROPIC_BASE_URL_ENV: _GATEWAY, _API_KEY: "sk-ant-key", _OAUTH: "sk-ant-oat01-x"}),
+            pytest.raises(CredentialError),
+        ):
+            _provider_child_env(None)
 
     def test_allows_a_metered_key_pointed_at_a_gateway(self) -> None:
         # The sanctioned shape: an operator's OWN API key routed through a gateway,
@@ -91,10 +95,12 @@ class TestPinnedProviderRefusesBaseUrlRedirect(TestCase):
     """With a pin, the credential's own ``forbidden_vars`` rule is what refuses."""
 
     def test_subscription_pin_refuses_the_redirect(self) -> None:
-        with _ambient(**{ANTHROPIC_BASE_URL_ENV: _GATEWAY, _OAUTH: "sk-ant-oat01-x"}):
-            with self.assertRaises(CredentialError) as caught:
-                _provider_child_env(AgentHarnessProvider.SUBSCRIPTION_OAUTH)
-        assert ANTHROPIC_BASE_URL_ENV in str(caught.exception)
+        with (
+            _ambient(**{ANTHROPIC_BASE_URL_ENV: _GATEWAY, _OAUTH: "sk-ant-oat01-x"}),
+            pytest.raises(CredentialError) as caught,
+        ):
+            _provider_child_env(AgentHarnessProvider.SUBSCRIPTION_OAUTH)
+        assert ANTHROPIC_BASE_URL_ENV in str(caught.value)
 
     def test_api_key_pin_carries_the_redirect_through_to_the_child(self) -> None:
         with _ambient(**{ANTHROPIC_BASE_URL_ENV: _GATEWAY, _API_KEY: "sk-ant-key"}):

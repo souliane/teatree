@@ -1487,17 +1487,17 @@ Usage: t3 eval [OPTIONS] COMMAND [ARGS]...
 │                                  already-recorded in-session transcripts, $0 │
 │                                  extra), 'api' (RUN the Claude model fresh   │
 │                                  in-process via the Agent SDK, on the        │
-│                                  credential the eval_credential knob selects │
-│                                  — default subscription OAuth (#2707         │
-│                                  reversal), or the metered API key; the      │
-│                                  explicit opt-in), 'anthropic_api' (RUN the  │
-│                                  same Claude model fresh through the         │
-│                                  Anthropic Messages API DIRECTLY, no         │
-│                                  `claude` CLI child — the CLI-free lane,     │
-│                                  metered on ANTHROPIC_API_KEY), or           │
-│                                  'pydantic_ai' (RUN a non-Claude model       │
-│                                  through the provider-agnostic harness seam, │
-│                                  OrcaRouter BYOK).                           │
+│                                  credential agent_harness_provider selects — │
+│                                  default subscription OAuth, or the metered  │
+│                                  API key; the explicit opt-in),              │
+│                                  'anthropic_api' (RUN the same Claude model  │
+│                                  fresh through the Anthropic Messages API    │
+│                                  DIRECTLY, no `claude` CLI child — the       │
+│                                  CLI-free lane, metered on                   │
+│                                  ANTHROPIC_API_KEY), or 'pydantic_ai' (RUN a │
+│                                  non-Claude model through the                │
+│                                  provider-agnostic harness seam, OrcaRouter  │
+│                                  BYOK).                                      │
 │                                  [default: transcript]                       │
 │ --transcript-dir        PATH     Directory of <scenario>.jsonl transcripts   │
 │                                  for the AI lane (default: cwd).             │
@@ -1860,7 +1860,7 @@ Usage: t3 eval ci-trigger [OPTIONS]
 │    --scenarios         TEXT  Comma-joined scenario names to run (the red     │
 │                              subset). Empty (default) = the full suite.      │
 │    --credential        TEXT  Eval credential: subscription_oauth (default,   │
-│                              no per-token bill) | metered_api_key.           │
+│                              no per-token bill) | api_key (metered).         │
 │                              [default: subscription_oauth]                   │
 │    --repo              TEXT  owner/repo the eval-ci-heal workflow lives in.  │
 │                              [default: souliane/teatree]                     │
@@ -2057,12 +2057,15 @@ Usage: t3 eval run [OPTIONS] [NAME]
  its on-disk transcript — ``$0`` extra, no model run (produce the transcripts
  in-session via ``t3 eval prepare-transcript`` first for the prompts + expected
  paths). ``--backend api`` RUNS the model fresh in-process via the Agent SDK
- (which spawns the ``claude`` CLI as its child), on the credential the
- ``eval_credential`` knob selects — default subscription OAuth (#2707
- reversal),
- or the metered API key; CI passes ``--backend api`` explicitly via the
- standalone ``eval.yml`` job. ``--trials``/``--models`` require the fresh-run
- ``api`` runner and reject the transcript backend.
+ (which spawns the ``claude`` CLI as its child), on the credential
+ ``agent_harness_provider`` selects — default subscription OAuth, or the
+ metered
+ API key; CI passes ``--backend api`` explicitly via the standalone
+ ``eval.yml``
+ job. ``--credential {subscription_oauth,api_key}`` pins THIS run's credential
+ instead, so an operator on an OAuth loop can run a one-off metered eval.
+ ``--trials``/``--models`` require the fresh-run ``api`` runner and reject the
+ transcript backend.
 
  ``--require-executed`` fails the run when the suite collected scenarios but
  executed none (every scenario skipped — typically ``claude`` not on PATH /
@@ -2265,24 +2268,24 @@ Usage: t3 eval run [OPTIONS] [NAME]
 │                                                     'api' (RUN the model     │
 │                                                     fresh in-process via the │
 │                                                     Agent SDK, on the        │
-│                                                     credential the           │
-│                                                     eval_credential knob     │
+│                                                     credential               │
+│                                                     agent_harness_provider   │
 │                                                     selects — default        │
-│                                                     subscription OAuth       │
-│                                                     (#2707 reversal), or the │
-│                                                     metered API key; runs    │
-│                                                     in-container by default  │
-│                                                     or directly on the host  │
-│                                                     with --local) or         │
-│                                                     'anthropic_api' (RUN the │
-│                                                     same Claude model fresh  │
-│                                                     through the Anthropic    │
-│                                                     Messages API DIRECTLY,   │
-│                                                     no `claude` CLI child —  │
-│                                                     the CLI-free lane for a  │
-│                                                     harness that forbids the │
-│                                                     Claude Code CLI, metered │
-│                                                     on ANTHROPIC_API_KEY) or │
+│                                                     subscription OAuth, or   │
+│                                                     the metered API key;     │
+│                                                     runs in-container by     │
+│                                                     default or directly on   │
+│                                                     the host with --local)   │
+│                                                     or 'anthropic_api' (RUN  │
+│                                                     the same Claude model    │
+│                                                     fresh through the        │
+│                                                     Anthropic Messages API   │
+│                                                     DIRECTLY, no `claude`    │
+│                                                     CLI child — the CLI-free │
+│                                                     lane for a harness that  │
+│                                                     forbids the Claude Code  │
+│                                                     CLI, metered on          │
+│                                                     ANTHROPIC_API_KEY) or    │
 │                                                     'pydantic_ai' (RUN a     │
 │                                                     non-Claude model through │
 │                                                     the provider-agnostic    │
@@ -2297,6 +2300,21 @@ Usage: t3 eval run [OPTIONS] [NAME]
 │                                                     transcripts for the      │
 │                                                     'transcript' backend     │
 │                                                     (default: cwd).          │
+│ --credential                               TEXT     Authenticate THIS run on │
+│                                                     one credential           │
+│                                                     (subscription_oauth |    │
+│                                                     api_key), overriding     │
+│                                                     agent_harness_provider   │
+│                                                     for this process only.   │
+│                                                     subscription_oauth draws │
+│                                                     no per-token bill but    │
+│                                                     rides the plan's         │
+│                                                     depleting usage window;  │
+│                                                     api_key is per-token     │
+│                                                     cost, no window. Omit to │
+│                                                     follow the configured    │
+│                                                     provider (default:       │
+│                                                     subscription OAuth).     │
 │ --require-executed                                  Fail when the suite      │
 │                                                     collected scenarios but  │
 │                                                     executed none (all       │

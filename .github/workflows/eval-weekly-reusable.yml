@@ -24,14 +24,14 @@
 #   discovery resolves the overlay scenarios; `assert-scenarios` lists the names
 #   `t3 eval list` MUST discover before any API spend (broken wiring fails RED).
 #
-# AUTH (`credential` input, mirrors `eval.yml`'s `T3_EVAL_CREDENTIAL` knob)
+# AUTH (`credential` input, mirrors `eval.yml`'s `T3_AGENT_HARNESS_PROVIDER` provider pin)
 #   DEFAULT `subscription_oauth` — the plan's `CLAUDE_CODE_OAUTH_TOKEN` secret
 #   (`subscription-oauth-token`). No repo carries a metered `ANTHROPIC_API_KEY`
 #   secret by default, so a caller with only the subscription token still gets a
-#   runnable benchmark; select `metered_api_key` (`anthropic-api-key`) for a
+#   runnable benchmark; select `api_key` (`anthropic-api-key`) for a
 #   per-token run with no depleting usage window. Both secrets are wired so the
 #   knob is a pure config flip — docker forwards ONLY the selected credential's
-#   var into the container, mirroring `eval.yml`'s `T3_EVAL_CREDENTIAL`
+#   var into the container, mirroring `eval.yml`'s `T3_AGENT_HARNESS_PROVIDER`
 #   resolution exactly.
 #
 # PUBLISH — the `publish` job collects every shard's SANITIZED benchmark matrix
@@ -51,7 +51,7 @@ on:
         default: false
         type: boolean
       credential:
-        description: "Eval credential (subscription_oauth | metered_api_key). Default subscription_oauth — mirrors eval.yml's `credential` input/`T3_EVAL_CREDENTIAL` knob, since no repo here carries a metered ANTHROPIC_API_KEY secret by default. subscription_oauth draws no per-token bill but rides a depleting usage window (keep the fan-out small); metered_api_key is per-token cost, no window."
+        description: "Eval credential (subscription_oauth | api_key). Default subscription_oauth — mirrors eval.yml's `credential` input/`T3_AGENT_HARNESS_PROVIDER` provider pin, since no repo here carries a metered ANTHROPIC_API_KEY secret by default. subscription_oauth draws no per-token bill but rides a depleting usage window (keep the fan-out small); api_key is per-token cost, no window."
         required: false
         default: "subscription_oauth"
         type: string
@@ -100,7 +100,7 @@ on:
         description: "The plan's CLAUDE_CODE_OAUTH_TOKEN, used when `credential` is subscription_oauth (the default)."
         required: false
       anthropic-api-key:
-        description: "The metered API key (sk-ant-api03…), used when `credential` is metered_api_key."
+        description: "The metered API key (sk-ant-api03…), used when `credential` is api_key."
         required: false
 
 jobs:
@@ -283,7 +283,7 @@ jobs:
           echo "suffix=$SUFFIX" >> "$GITHUB_OUTPUT"
       # `--docker` routes the lane THROUGH the CI container; the SELECTED
       # credential (below) is forwarded in via docker's `-e` pass-through, mirroring
-      # `eval.yml`'s `T3_EVAL_CREDENTIAL` resolution exactly. `--benchmark` runs
+      # `eval.yml`'s `T3_AGENT_HARNESS_PROVIDER` resolution exactly. `--benchmark` runs
       # every (lane/shard-filtered) scenario against ALL THREE tier models
       # (frontier/balanced/cheap, resolved through the single TIER_MODELS constant)
       # and renders the comparison matrix + a self-contained HTML dashboard — the
@@ -295,13 +295,13 @@ jobs:
         uses: nick-fields/retry@ad984534de44a9489a53aefd81eb77f87c70dc60  # v4
         env:
           # Both credentials are wired so the `credential` knob is a pure config
-          # flip, exactly like `eval.yml`. `T3_EVAL_CREDENTIAL` selects which one
+          # flip, exactly like `eval.yml`. `T3_AGENT_HARNESS_PROVIDER` selects which one
           # every eval chokepoint (make_runner, the judge, the docker `-e`
           # passthrough) resolves; docker forwards only the SELECTED credential's
           # var into the container.
           CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.subscription-oauth-token }}
           ANTHROPIC_API_KEY: ${{ secrets.anthropic-api-key }}
-          T3_EVAL_CREDENTIAL: ${{ inputs.credential || 'subscription_oauth' }}
+          T3_AGENT_HARNESS_PROVIDER: ${{ inputs.credential || 'subscription_oauth' }}
           EVAL_LANE: ${{ matrix.lane }}
           EVAL_SHARD: ${{ matrix.shard }}
           EVAL_EFFORT: ${{ matrix.effort }}

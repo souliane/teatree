@@ -53,7 +53,8 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 #: The $0 credential the observe loop always dispatches with (issue #3201): the
-#: behavioral eval runs on the subscription, never a per-token metered key.
+#: behavioral eval runs on the subscription, never a per-token metered key. Matches
+#: the ``eval-ci-heal`` workflow's ``credential`` input vocabulary.
 _DISPATCH_CREDENTIAL = "subscription_oauth"
 
 #: The per-session dedup marker so one HALTED session escalates exactly once — a

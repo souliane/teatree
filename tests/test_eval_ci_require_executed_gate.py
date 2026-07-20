@@ -9,7 +9,7 @@ the guard only when a credential was set, i.e. gated on the exact condition it
 exists to catch) and installs + asserts the Claude CLI so a missing binary FAILS
 the job.
 
-Auth is the ``eval_credential`` knob's call — #2707 is REVERSED, so the eval lane
+Auth is ``agent_harness_provider``'s call — the eval lane
 DEFAULTS to the subscription ``CLAUDE_CODE_OAUTH_TOKEN`` (both secrets wired so the
 metered ``ANTHROPIC_API_KEY`` stays selectable via the knob).
 
@@ -109,7 +109,7 @@ class TestGitHubRequireExecutedUnconditional:
 
     def test_default_wires_the_oauth_token_and_keeps_the_metered_key_selectable(self) -> None:
         # #2707 is REVERSED: the eval lane DEFAULTS to the subscription OAuth token.
-        # Both secrets are wired so the `credential` knob (T3_EVAL_CREDENTIAL) is a
+        # Both secrets are wired so the `credential` input (T3_AGENT_HARNESS_PROVIDER) is a
         # pure config flip; the default resolves subscription_oauth.
         env = _gh_eval_step_env()
         assert env.get("CLAUDE_CODE_OAUTH_TOKEN") == "${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}", (
@@ -117,10 +117,10 @@ class TestGitHubRequireExecutedUnconditional:
             "lane defaults to the subscription OAuth token (#2707 reversal)."
         )
         assert env.get("ANTHROPIC_API_KEY") == "${{ secrets.ANTHROPIC_API_KEY }}", (
-            "The metered ANTHROPIC_API_KEY must stay wired so `metered_api_key` is selectable "
+            "The metered ANTHROPIC_API_KEY must stay wired so `api_key` is selectable "
             "via the credential knob without editing the workflow."
         )
-        assert env.get("T3_EVAL_CREDENTIAL") == "${{ inputs.credential || 'subscription_oauth' }}", (
+        assert env.get("T3_AGENT_HARNESS_PROVIDER") == "${{ inputs.credential || 'subscription_oauth' }}", (
             "The eval step must resolve the credential knob (default subscription_oauth)."
         )
 

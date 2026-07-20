@@ -156,7 +156,7 @@ class ClaudeJudge:
             return JudgeVerdict(passed=True, skipped=True, rationale="claude binary not on PATH")
         # The judge is itself a Claude call, so route it through the SAME credential
         # chokepoint as make_runner: resolve the SELECTED eval credential (the
-        # ``eval_credential`` knob — default subscription OAuth, #2707 reversal),
+        # ``agent_harness_provider``'s call — default subscription OAuth),
         # export it (env wins, else the pass store), and FAIL LOUD with
         # CredentialError when none is resolvable. This runs only past the skip guards
         # above — a transcript-grade-only / keyless SKIP path (no judge block, skipped

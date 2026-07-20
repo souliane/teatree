@@ -19,10 +19,10 @@ misconfiguration to surface, not a fallback to remove — see ``CredentialSpec``
 ``forbidden_vars``. NO credential carries a built-in default ``pass`` path — each resolves only
 from its env var or an explicitly configured per-account entry, and fails loud (naming
 the setting to configure) when neither is present rather than reading a dead default.
-Which one the automated eval lane rides is the ``eval_credential`` knob's
-call, resolved through ``teatree.credential_config.resolve_eval_credential``: the
-default is the subscription credential, reversing [#2707](https://github.com/souliane/teatree/issues/2707)'s
-metered-exclusive lock (the metered key is still selectable via the knob). The
+Which one the automated eval lane rides is ``agent_harness_provider``'s call,
+resolved through ``teatree.credential_config.resolve_eval_credential``: the default
+is the subscription credential, with the metered key selectable per run via
+``t3 eval run --credential api_key``. The
 subscription credential also backs the non-eval Claude invocations (the headless
 loop). This module stays foundation-pure — it enforces "use THIS credential,
 exclusively", not which one the eval lane picks.
@@ -293,8 +293,8 @@ ANTHROPIC_BASE_URL_ENV = "ANTHROPIC_BASE_URL"
 class AnthropicApiKeyCredential(Credential):
     """The metered Anthropic API key — strips the subscription OAuth token.
 
-    The metered credential the eval lane rides when ``eval_credential`` is set to
-    ``metered_api_key`` (per-token cost, no usage window). Its child env sets
+    The metered credential the eval lane rides under an ``api_key`` provider
+    (per-token cost, no usage window). Its child env sets
     ``ANTHROPIC_API_KEY`` and removes ``CLAUDE_CODE_OAUTH_TOKEN`` so the SDK /
     bundled CLI authenticates with exactly this key. It has NO built-in default
     ``pass`` path: it resolves only from its env var or an injected per-account

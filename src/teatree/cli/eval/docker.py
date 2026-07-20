@@ -7,17 +7,17 @@ the reproducible gate must never accidentally run a model on the host. The free 
 deterministic lanes stay host-default; ``--local`` is the explicit host escape
 hatch for durable-history gates or quick checks. No PyPI — the image installs
 the working tree via the mounted repo and ``uv``. The fresh-run lane authenticates
-with the credential the ``eval_credential`` knob selects — the subscription OAuth
-token by DEFAULT (reversing #2707) or the metered ``ANTHROPIC_API_KEY`` under the
-``metered_api_key`` knob.
+with the credential ``agent_harness_provider`` selects (default: subscription OAuth;
+``t3 eval run --credential`` overrides per run).
 
 The fresh-run AI lane drives the in-process ``claude-agent-sdk`` (NOT ``claude -p``)
 inside the container, authenticated by the SELECTED eval credential (resolved via
 :func:`~teatree.credential_config.resolve_eval_credential`).
-:func:`_auth_passthrough_flags` forwards the host's credential var (plus the
-``T3_EVAL_CREDENTIAL`` knob override) via ``docker run -e VARNAME`` — the value
-travels through the container env, never argv, so it never lands in the process
-list or logs. The default subscription lane must be right-sized (single effort
+:func:`_auth_passthrough_flags` forwards the host's credential var via ``docker run
+-e VARNAME`` — the value travels through the container env, never argv, so it never
+lands in the process list or logs. That forwarded var is ALSO what tells the
+in-container resolution which credential kind the host picked, so no knob travels
+alongside it. The default subscription lane must be right-sized (single effort
 tier, smaller trial count, per-account OAuth routing) so its usage window is not
 throttled mid-run; the metered lane has a per-token cost instead. ``HOME=/tmp``
 keeps the virgin isolation (issue #1805).
@@ -40,11 +40,6 @@ from teatree.utils.run import run_allowed_to_fail, run_streamed
 
 DOCKER_IMAGE = "teatree-test"
 _DOCKERFILE = "dev/Dockerfile.test"
-#: The ``eval_credential`` knob env override. Forwarded into the container (when set
-#: on the host) so the in-container ``make_runner`` re-invocation resolves the SAME
-#: credential KIND — CI wires it so the choice is deterministic without depending on
-#: a ``ConfigSetting`` row inside the ephemeral container.
-EVAL_CREDENTIAL_ENV_VAR = "T3_EVAL_CREDENTIAL"
 #: The eval subcommands that are ALWAYS a fresh metered run regardless of an
 #: explicit ``--backend`` flag. ``benchmark`` never passes a backend — it is an
 #: sdk fresh-run by construction — so the eval-credential pre-export must fire for
@@ -58,17 +53,17 @@ ARTIFACTS_MOUNT = "/artifacts"
 
 
 def _auth_passthrough_flags(auth_env_vars: tuple[str, ...]) -> list[str]:
-    """``-e VARNAME`` flags forwarding the SELECTED eval credential + the knob override.
+    """``-e VARNAME`` flags forwarding the SELECTED eval credential into the container.
 
     Forwards each var in *auth_env_vars* (the resolved eval credential's env var —
-    ``CLAUDE_CODE_OAUTH_TOKEN`` by default, ``ANTHROPIC_API_KEY`` under the metered
-    knob) present on the host, plus the ``T3_EVAL_CREDENTIAL`` knob override so the
-    in-container re-invocation resolves the same credential kind. The VALUE travels
-    through the container env (docker's ``-e VARNAME`` reads it from the host env),
-    never argv — so the secret never lands in the process list or logs.
+    ``CLAUDE_CODE_OAUTH_TOKEN`` by default, ``ANTHROPIC_API_KEY`` for the metered
+    lane) present on the host. The VALUE travels through the container env (docker's
+    ``-e VARNAME`` reads it from the host env), never argv — so the secret never lands
+    in the process list or logs. Exactly one Anthropic var is forwarded (the host's
+    ``export`` strips the conflicting one), which is how the in-container resolution
+    recovers the host's credential kind without a knob.
     """
-    forward = (*auth_env_vars, EVAL_CREDENTIAL_ENV_VAR)
-    return [flag for var in forward if os.environ.get(var) for flag in ("-e", var)]
+    return [flag for var in auth_env_vars if os.environ.get(var) for flag in ("-e", var)]
 
 
 #: The CI checkout SHA the ``--summary-json`` artifact records as ``head_sha`` — it
@@ -177,16 +172,15 @@ def run_eval_in_docker(eval_args: list[str], *, artifacts_dir: Path | None = Non
 
     For the fresh-run ``api`` lane, resolve the SELECTED eval credential first via
     the single seam (:func:`~teatree.credential_config.resolve_eval_credential` —
-    default subscription OAuth, reversing #2707; env wins, else exported from the
-    ``pass`` store; a missing credential fails loud with
+    ``agent_harness_provider``'s call, default subscription OAuth; env wins, else
+    exported from the ``pass`` store; a missing credential fails loud with
     :class:`~teatree.llm.credentials.CredentialError`) so
     :func:`_auth_passthrough_flags` forwards its env var with ``-e`` and the
     in-process Agent SDK's ``claude`` child authenticates in-container on the
-    selected credential — the run just works without a manual ``export``. The
-    ``T3_EVAL_CREDENTIAL`` knob override is forwarded alongside so the in-container
-    ``make_runner`` resolves the same kind. The free / transcript lanes never
-    authenticate ``claude``, so the secret store is not touched for them (empty
-    ``auth_env_vars``).
+    selected credential — the run just works without a manual ``export``. That one
+    forwarded var is also what the in-container ``make_runner`` reads back to resolve
+    the same kind. The free / transcript lanes never authenticate ``claude``, so the
+    secret store is not touched for them (empty ``auth_env_vars``).
 
     ``artifacts_dir`` (when set) is bind-mounted WRITABLE at
     :data:`ARTIFACTS_MOUNT` so an in-container run that emits an artifact (the

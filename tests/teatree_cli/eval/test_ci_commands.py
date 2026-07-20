@@ -57,11 +57,11 @@ class _FakeClient:
 class TestCiTriggerService:
     def test_dispatches_the_workflow_with_scenarios_and_credential(self) -> None:
         client = _FakeClient()
-        result = trigger_ci_eval(client, ref="fix-branch", scenarios="a,b", credential="metered_api_key")
+        result = trigger_ci_eval(client, ref="fix-branch", scenarios="a,b", credential="api_key")
         assert client.triggered == {
             "workflow": "eval-ci-heal.yml",
             "ref": "fix-branch",
-            "inputs": {"scenarios": "a,b", "credential": "metered_api_key", "pr_ref": "fix-branch"},
+            "inputs": {"scenarios": "a,b", "credential": "api_key", "pr_ref": "fix-branch"},
         }
         assert result.head_sha == _SHA
         assert result.triggered is True

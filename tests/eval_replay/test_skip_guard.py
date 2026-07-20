@@ -54,12 +54,12 @@ class TestAssertSdkRunWasMetered:
         assert "metered" in str(exc.value).lower() or "$0" in str(exc.value)
 
     def test_unmetered_message_names_the_oauth_window_throttle_cause(self) -> None:
-        # The DEFAULT eval lane runs on subscription OAuth (T3_EVAL_CREDENTIAL=
+        # The DEFAULT eval lane runs on subscription OAuth (agent_harness_provider=
         # subscription_oauth, the #2707 REVERSAL), whose depleting 5h/7d usage
         # window throttles a full run to $0. The message must name that cause so a
         # throttled run is NOT misdiagnosed as a missing API key (the old message
         # named ANTHROPIC_API_KEY as the sole cause, misreading every OAuth
-        # throttle). The key-absent case — the only cause on a metered_api_key run
+        # throttle). The key-absent case — the only cause on a metered api_key run
         # — is still surfaced as the secondary cause.
         with pytest.raises(UnmeteredApiRunError) as exc:
             assert_api_run_was_metered(backend="api", executed=10, total_cost_usd=0.0)

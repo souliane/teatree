@@ -5,7 +5,7 @@ The fresh-run ``api`` runner is constructed ONLY through
 ``tests/quality/test_metered_runner_chokepoint.py``). That factory resolves the eval
 credential through :func:`teatree.credential_config.resolve_eval_credential` — the
 DEFAULT is the subscription OAuth token (reversing #2707), and the metered
-``ANTHROPIC_API_KEY`` is selectable via the ``eval_credential`` knob — before the
+``ANTHROPIC_API_KEY`` is selectable via ``agent_harness_provider`` — before the
 runner exists. With no credential available the construction fails loud with
 :class:`~teatree.llm.credentials.CredentialError`: the eval lane refuses to run
 authenticated as nothing rather than silently falling back.
@@ -30,7 +30,7 @@ class TestMakeRunnerEvalAuth(TestCase):
     @pytest.fixture(autouse=True)
     def _isolate_config(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.delenv("T3_OVERLAY_NAME", raising=False)
-        monkeypatch.delenv("T3_EVAL_CREDENTIAL", raising=False)
+        monkeypatch.delenv("T3_AGENT_HARNESS_PROVIDER", raising=False)
 
     def test_default_api_backend_resolves_the_oauth_token_before_building_the_runner(self) -> None:
         with patch.object(AnthropicSubscriptionCredential, "export", return_value="oauth-sub") as export:
@@ -40,7 +40,7 @@ class TestMakeRunnerEvalAuth(TestCase):
         assert runner._conflicting_vars == (_API_KEY_ENV,)
 
     def test_metered_knob_resolves_the_api_key_before_building_the_runner(self) -> None:
-        ConfigSetting.objects.set_value("eval_credential", "metered_api_key")
+        ConfigSetting.objects.set_value("agent_harness_provider", "api_key")
         with patch.object(AnthropicApiKeyCredential, "export", return_value="sk-key") as export:
             runner = make_runner(API_BACKEND)
         export.assert_called_once_with()

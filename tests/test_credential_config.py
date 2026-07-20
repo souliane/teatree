@@ -19,7 +19,7 @@ from django.db.utils import OperationalError
 from django.test import TestCase
 from django.utils import timezone
 
-from teatree.config import EvalCredential
+from teatree.config import AgentHarnessProvider
 from teatree.core.models import AnthropicActivePick, AnthropicTokenUsage, ConfigSetting
 from teatree.core.models.anthropic_token_usage import HEALTH_TTL, REJECTED_STATUS, TokenHealthReading
 from teatree.core.models.config_setting import GLOBAL_SCOPE
@@ -430,16 +430,15 @@ class TestFactoryWiring(TestCase):
         assert isinstance(resolve_subscription_credential(), AnthropicSubscriptionCredential)
 
 
-class TestInContainerNeverTouchesConfigSetting(TestCase):
-    """Per-account routing must never touch ``ConfigSetting`` in-container.
+class TestInContainerSniffsTheForwardedCredential(TestCase):
+    """In-container the eval credential is read off the ONE var the host forwarded.
 
     Inside the ephemeral eval Docker container the SQLite DB has zero tables
-    (never migrated) — a live ``ConfigSetting`` read there is a guaranteed
-    crash, not a degraded path. ``docker.py`` already forwards the HOST's
-    selected credential env var into the container (its own docstring states
-    the intent), so the factory must reuse that env-var passthrough instead of
-    re-running the per-account routing selector against a DB that structurally
-    cannot exist in-container.
+    (never migrated), so both a ``ConfigSetting`` read and a settings read are a
+    guaranteed crash rather than a degraded path. The host resolves the credential,
+    ``export``s it (setting its own var and STRIPPING the conflicting one), and
+    forwards that single var via ``docker run -e`` — so which var is present IS the
+    host's choice, and sniffing it needs no config read and no forwarded knob.
     """
 
     @contextmanager
@@ -449,22 +448,30 @@ class TestInContainerNeverTouchesConfigSetting(TestCase):
         # a raise here means the fix regressed, not that the DB was "empty".
         db_has_no_tables = OperationalError("no such table: teatree_config_setting")
         with (
-            patch.dict(os.environ, {IN_CONTAINER_ENV_VAR: "1", **extra_env}),
+            patch.dict(os.environ, {IN_CONTAINER_ENV_VAR: "1", **extra_env}, clear=True),
             patch("teatree.credential_config.ConfigSetting.objects.get_effective", side_effect=db_has_no_tables),
         ):
             yield
 
-    def test_subscription_resolver_never_touches_configsetting_in_container(self) -> None:
+    def test_a_forwarded_oauth_token_resolves_the_subscription_credential(self) -> None:
         with self._in_container(CLAUDE_CODE_OAUTH_TOKEN="host-forwarded-oauth-token"):
-            credential = resolve_subscription_credential()
+            credential = resolve_eval_credential()
             assert isinstance(credential, AnthropicSubscriptionCredential)
             assert credential.resolve() == "host-forwarded-oauth-token", "the host-forwarded env var must win"
 
-    def test_api_key_resolver_never_touches_configsetting_in_container(self) -> None:
+    def test_a_forwarded_api_key_resolves_the_metered_credential(self) -> None:
         with self._in_container(ANTHROPIC_API_KEY="host-forwarded-api-key"):
-            credential = resolve_api_key_credential()
+            credential = resolve_eval_credential()
             assert isinstance(credential, AnthropicApiKeyCredential)
             assert credential.resolve() == "host-forwarded-api-key"
+
+    def test_the_sniff_ignores_a_stored_contradicting_provider(self) -> None:
+        # The container's own config plane is unreadable, so the forwarded var — not a
+        # provider pin — decides. A stored api_key provider must not flip a container
+        # the host forwarded an OAuth token into.
+        ConfigSetting.objects.set_value("agent_harness_provider", "api_key")
+        with self._in_container(CLAUDE_CODE_OAUTH_TOKEN="host-forwarded-oauth-token"):
+            assert isinstance(resolve_eval_credential(), AnthropicSubscriptionCredential)
 
     def test_outside_the_container_the_selector_still_runs_and_would_crash(self) -> None:
         # Control: WITHOUT the in-container marker, the same "no such table" DB
@@ -528,38 +535,38 @@ class TestSubscriptionRequiresConfiguredOAuthAccount(TestCase):
 
 
 class TestResolveEvalCredential(TestCase):
-    """``resolve_eval_credential`` picks the credential KIND the eval lane rides (#2707 reversal).
+    """``resolve_eval_credential`` derives the eval lane's credential from the provider.
 
-    THE single seam every eval chokepoint routes through — flipping the knob must
-    switch the whole lane at once. The default reverses #2707: the eval lane rides
-    the subscription OAuth token, not the metered API key.
+    THE single seam every eval chokepoint routes through — one provider change must
+    switch the whole lane at once. With no provider pinned the eval lane rides the
+    subscription OAuth token.
     """
 
     @pytest.fixture(autouse=True)
     def _isolate_config(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.delenv("T3_OVERLAY_NAME", raising=False)
-        monkeypatch.delenv("T3_EVAL_CREDENTIAL", raising=False)
+        monkeypatch.delenv("T3_AGENT_HARNESS_PROVIDER", raising=False)
 
-    def test_default_setting_rides_the_subscription_oauth_token(self) -> None:
+    def test_unpinned_provider_rides_the_subscription_oauth_token(self) -> None:
         credential = resolve_eval_credential()
         assert isinstance(credential, AnthropicSubscriptionCredential)
         assert credential.spec.env_var == "CLAUDE_CODE_OAUTH_TOKEN"
         assert credential.spec.conflicting_vars == ("ANTHROPIC_API_KEY",)
 
-    def test_stored_metered_setting_rides_the_api_key(self) -> None:
-        ConfigSetting.objects.set_value("eval_credential", "metered_api_key")
+    def test_stored_api_key_provider_rides_the_api_key(self) -> None:
+        ConfigSetting.objects.set_value("agent_harness_provider", "api_key")
         credential = resolve_eval_credential()
         assert isinstance(credential, AnthropicApiKeyCredential)
         assert credential.spec.env_var == "ANTHROPIC_API_KEY"
         assert credential.spec.conflicting_vars == ("CLAUDE_CODE_OAUTH_TOKEN",)
 
     def test_explicit_kind_wins_over_the_setting(self) -> None:
-        ConfigSetting.objects.set_value("eval_credential", "subscription_oauth")
-        assert isinstance(resolve_eval_credential(kind=EvalCredential.METERED_API_KEY), AnthropicApiKeyCredential)
+        ConfigSetting.objects.set_value("agent_harness_provider", "subscription_oauth")
+        assert isinstance(resolve_eval_credential(kind=AgentHarnessProvider.API_KEY), AnthropicApiKeyCredential)
 
     def test_env_var_wins_over_the_store(self) -> None:
-        ConfigSetting.objects.set_value("eval_credential", "subscription_oauth")
-        with patch.dict(os.environ, {"T3_EVAL_CREDENTIAL": "metered_api_key"}):
+        ConfigSetting.objects.set_value("agent_harness_provider", "subscription_oauth")
+        with patch.dict(os.environ, {"T3_AGENT_HARNESS_PROVIDER": "api_key"}):
             assert isinstance(resolve_eval_credential(), AnthropicApiKeyCredential)
 
 
@@ -577,7 +584,7 @@ class TestResolveEvalCredentialUsesActiveOverlayScope(TestCase):
 
     @pytest.fixture(autouse=True)
     def _isolate_config(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.delenv("T3_EVAL_CREDENTIAL", raising=False)
+        monkeypatch.delenv("T3_AGENT_HARNESS_PROVIDER", raising=False)
 
     def test_overlay_scoped_routing_resolves_when_global_is_empty(self) -> None:
         # anthropic_oauth_pass_paths set ONLY at the overlay scope; the global list is empty.

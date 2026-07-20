@@ -49,7 +49,7 @@ def _gh_eval_run_command() -> str:
 class TestGitHubEvalDefaultsToSubscriptionOAuth:
     def test_credential_input_defaults_to_subscription_oauth(self) -> None:
         credential = _gh_inputs().get("credential")
-        assert credential is not None, "the workflow must expose a `credential` input (the eval_credential knob)."
+        assert credential is not None, "the workflow must expose a `credential` input (the agent_harness_provider pin)."
         assert credential["default"] == "subscription_oauth", (
             "the eval lane must DEFAULT to subscription_oauth (reverses #2707)."
         )
@@ -58,7 +58,7 @@ class TestGitHubEvalDefaultsToSubscriptionOAuth:
         env = _gh_eval_step_env()
         assert env.get("CLAUDE_CODE_OAUTH_TOKEN") == "${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}"
         assert env.get("ANTHROPIC_API_KEY") == "${{ secrets.ANTHROPIC_API_KEY }}"
-        assert env.get("T3_EVAL_CREDENTIAL") == "${{ inputs.credential || 'subscription_oauth' }}"
+        assert env.get("T3_AGENT_HARNESS_PROVIDER") == "${{ inputs.credential || 'subscription_oauth' }}"
 
 
 class TestGitHubOAuthLaneIsRightSized:
@@ -101,16 +101,16 @@ class TestGitHubPrEvalRidesSubscriptionOAuth:
         env: dict[str, str] = {}
         for step in cast("list[dict[str, Any]]", _load(_GH_EVAL_PR)["jobs"]["eval"]["steps"]):
             env.update(cast("dict[str, str]", step.get("env", {})))
-        assert env.get("T3_EVAL_CREDENTIAL") == "subscription_oauth"
+        assert env.get("T3_AGENT_HARNESS_PROVIDER") == "subscription_oauth"
         assert env.get("CLAUDE_CODE_OAUTH_TOKEN") == "${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}"
 
 
 class TestGitLabCostAuditLaneStaysMetered:
     def test_gitlab_explicitly_selects_the_metered_key(self) -> None:
         # The GitLab lane runs the persisted `--gate-cost-bounds` cost audit, which
-        # needs per-token cost — so it EXPLICITLY selects metered_api_key via the
+        # needs per-token cost — so it EXPLICITLY selects the metered api_key via the
         # knob (a subscription run bills $0 and would fail the cost gate).
         config = _load(_GITLAB_CI)
-        assert config["variables"]["T3_EVAL_CREDENTIAL"] == "metered_api_key"
+        assert config["variables"]["T3_AGENT_HARNESS_PROVIDER"] == "api_key"
         joined = "\n".join(cast("list[str]", config[".eval-suite"]["script"]))
         assert "--gate-cost-bounds" in joined, "the metered cost-audit gate must stay on the GitLab lane."

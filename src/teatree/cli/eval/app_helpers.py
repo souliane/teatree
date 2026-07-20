@@ -6,6 +6,7 @@ domain value, or exits 2 (usage error) naming the valid choices.
 """
 
 import dataclasses
+import os
 from pathlib import Path
 from typing import cast
 
@@ -26,6 +27,15 @@ from teatree.eval.summary_json import write_summary_json
 #: the single TIER_MODELS constant at run time — so the benchmark adopts a new
 #: model the instant TIER_MODELS (or [agent.tier_models]) changes, no flag edit.
 BENCHMARK_TIERS: tuple[str, ...] = ("frontier", "balanced", "cheap")
+
+#: The ``agent_harness_provider`` values ``t3 eval run --credential`` accepts — the two
+#: Anthropic-authenticating providers. The other providers name non-Anthropic routers,
+#: which the eval lane has no credential for.
+EVAL_CREDENTIALS: tuple[str, ...] = ("subscription_oauth", "api_key")
+
+#: The env tier ``--credential`` writes to pin the provider for this process (the same
+#: var ``ENV_SETTING_OVERRIDES`` maps onto ``agent_harness_provider``).
+PROVIDER_ENV_VAR = "T3_AGENT_HARNESS_PROVIDER"
 
 
 def benchmark_models() -> str:
@@ -94,6 +104,24 @@ def require_effort(effort: str) -> EffortLevel:
         typer.echo(f"unknown --effort {effort!r}; known levels: {', '.join(EFFORT_LEVELS)}", err=True)
         raise typer.Exit(code=2)
     return cast("EffortLevel", effort)
+
+
+def apply_credential_override(credential: str | None) -> None:
+    """Pin THIS run's eval credential by overriding ``agent_harness_provider`` in-process.
+
+    The eval lane's credential is ``agent_harness_provider``'s call, so a per-run
+    override is that setting's documented env tier (``T3_AGENT_HARNESS_PROVIDER``) set
+    for this process only — an operator on an OAuth loop still gets a one-off metered
+    eval without mutating stored config. The value need not be forwarded into the eval
+    container: the host resolves and exports the chosen credential, and the container
+    reads the kind back off the one forwarded credential var.
+    """
+    if credential is None:
+        return
+    if credential not in EVAL_CREDENTIALS:
+        typer.echo(f"unknown --credential {credential!r}; use one of {', '.join(EVAL_CREDENTIALS)}", err=True)
+        raise typer.Exit(code=2)
+    os.environ[PROVIDER_ENV_VAR] = credential
 
 
 def require_api_backend_for_fresh_run(*, backend: str, trials: int, models: str | None) -> None:

@@ -343,9 +343,11 @@ class TestForbiddenVarRefusesTheIsolatedEvalEnv:
     def test_subscription_eval_lane_refuses_a_base_url_redirect(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv("ANTHROPIC_BASE_URL", "https://gateway.example.invalid/v1")
         spec = AnthropicSubscriptionCredential().spec
-        with pytest.raises(CredentialError) as excinfo:
-            with isolated_claude_env(spec.conflicting_vars, spec.forbidden_vars):
-                pass  # pragma: no cover - the context must never open
+        with (
+            pytest.raises(CredentialError) as excinfo,
+            isolated_claude_env(spec.conflicting_vars, spec.forbidden_vars),
+        ):
+            pass  # pragma: no cover - the context must never open
         assert "ANTHROPIC_BASE_URL" in str(excinfo.value)
 
     def test_metered_eval_lane_still_runs_against_a_gateway(self, monkeypatch: pytest.MonkeyPatch) -> None:

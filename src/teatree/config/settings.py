@@ -12,13 +12,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Final
 
-from teatree.config.agent_enums import (
-    AgentHarness,
-    AgentHarnessProvider,
-    AgentRuntime,
-    EvalCredential,
-    parse_harness_name,
-)
+from teatree.config.agent_enums import AgentHarness, AgentHarnessProvider, AgentRuntime, parse_harness_name
 from teatree.config.enums import (
     Autonomy,
     CriticGateMode,
@@ -83,7 +77,6 @@ OVERLAY_OVERRIDABLE_SETTINGS: dict[str, Callable[[Any], Any]] = {
     "orca_router_pass_path": _parse_strict_str,
     "orca_router_lane": _parse_strict_str,
     "orca_router_name": _parse_strict_str,
-    "eval_credential": EvalCredential.parse,
     "contribute": _parse_strict_bool,
     "excluded_skills": _parse_str_list,
     "loop_cadence_seconds": _parse_strict_int,
@@ -333,7 +326,6 @@ ENV_SETTING_OVERRIDES: dict[str, tuple[str, Callable[[str], Any]]] = {
     "T3_ENFORCE_REGULATED_PATH": ("enforce_regulated_path", _parse_env_bool),
     "T3_ORCA_ROUTER_LANE": ("orca_router_lane", str),
     "T3_ORCA_ROUTER_NAME": ("orca_router_name", str),
-    "T3_EVAL_CREDENTIAL": ("eval_credential", EvalCredential.parse),
     "T3_ON_BEHALF_POST_MODE": ("on_behalf_post_mode", OnBehalfPostMode.parse),
     "T3_MISSING_ISSUE_POLICY": ("missing_issue_ref_policy", MissingIssuePolicy.parse),
     "T3_ON_BEHALF_AUTO_ACTIONS": ("on_behalf_auto_actions", _parse_env_str_list),
@@ -547,14 +539,6 @@ class _ModeHarnessSettings:
     # until an overlay opts into ``agent_harness=pydantic_ai``. Per-overlay overridable;
     # ``T3_ORCA_ROUTER_NAME`` env wins.
     orca_router_name: str = ""
-    # Which Anthropic credential the automated eval lane (the metered ``api``
-    # backend + the LLM judge) authenticates with. ``subscription_oauth`` (default,
-    # reverses #2707) rides the plan's OAuth token — no per-token bill, but a
-    # depleting usage window, so the CI lane is right-sized (single effort tier,
-    # smaller trial count, per-account routing via ``anthropic_oauth_pass_paths``).
-    # ``metered_api_key`` rides the metered key (per-token cost, no window) and stays
-    # selectable. Per-overlay overridable; ``T3_EVAL_CREDENTIAL`` env wins over both.
-    eval_credential: EvalCredential = EvalCredential.SUBSCRIPTION_OAUTH
     # Absolute per-RUN watchdog ceilings for the headless ``claude_sdk`` lane (#882,
     # F9.5). Folded off the former Django-settings ``TEATREE_LOOP_WATCHDOG`` dict into
     # the DB-home config tier so ``config_setting get`` sees them (the third config

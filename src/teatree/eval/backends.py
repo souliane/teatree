@@ -27,9 +27,9 @@ the *execution* is swappable behind one ``EvalRunner`` protocol. Three backends:
     model is verifiable by the same scenarios.
 
 Credential: the fresh-run ``api`` backend authenticates with the credential the
-``eval_credential`` knob selects (default subscription ``CLAUDE_CODE_OAUTH_TOKEN``,
+``agent_harness_provider`` selects (default subscription ``CLAUDE_CODE_OAUTH_TOKEN``,
 reversing [#2707](https://github.com/souliane/teatree/issues/2707); metered
-``ANTHROPIC_API_KEY`` when the knob is ``metered_api_key``), resolved through the
+``ANTHROPIC_API_KEY`` under an ``api_key`` provider), resolved through the
 single ``teatree.credential_config.resolve_eval_credential`` seam. ``transcript``
 runs no model and authenticates nothing; ``pydantic_ai`` carries its own OrcaRouter
 BYOK credential, resolved lazily inside the harness.
@@ -93,8 +93,8 @@ def make_runner(
     ``pydantic_ai`` lane reads *params*' ``max_turns_override`` / ``effort``.
 
     ``"api"`` → the in-process Agent-SDK runner that RUNS the model fresh, on the
-    credential the ``eval_credential`` knob selects (default subscription OAuth,
-    reversing #2707; ``metered_api_key`` for the metered key). Resolves it through
+    credential ``agent_harness_provider`` selects (default subscription OAuth;
+    ``api_key`` for the metered key). Resolves it through
     ``resolve_eval_credential`` (env wins for CI, else exports it from the ``pass``
     store for local) so the runner's isolated-env copy and the docker pass-through
     both carry it without a manual ``export``, and hands the runner the credential's
@@ -130,8 +130,8 @@ def make_runner(
     """
     params = params or ApiRunnerParams()
     if backend == API_BACKEND:
-        # Resolve the SELECTED eval credential (the ``eval_credential`` knob — default
-        # subscription OAuth, reversing #2707) and export it, so the isolated child
+        # Resolve the SELECTED eval credential (``agent_harness_provider``'s call —
+        # default subscription OAuth) and export it, so the isolated child
         # env and the docker pass-through carry it; a missing credential fails loud
         # with CredentialError before the runner exists. The runner is then handed the
         # credential's ``spec.conflicting_vars`` so ``isolated_claude_env`` strips the

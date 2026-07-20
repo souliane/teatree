@@ -19,7 +19,7 @@ from teatree.backends.github.ci_eval_client import (
 )
 from teatree.types import RawAPIDict
 
-_CREDENTIALS = ("subscription_oauth", "metered_api_key")
+_CREDENTIALS = ("subscription_oauth", "api_key")
 
 
 @dataclasses.dataclass(frozen=True)
@@ -76,7 +76,7 @@ def ci_trigger(
     credential: str = typer.Option(
         "subscription_oauth",
         "--credential",
-        help="Eval credential: subscription_oauth (default, no per-token bill) | metered_api_key.",
+        help="Eval credential: subscription_oauth (default, no per-token bill) | api_key (metered).",
     ),
     repo: str = typer.Option(DEFAULT_CI_EVAL_REPO, "--repo", help="owner/repo the eval-ci-heal workflow lives in."),
 ) -> None:
