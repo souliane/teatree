@@ -2,7 +2,11 @@ from unittest.mock import MagicMock, patch
 
 from teatree.backends.gitlab import GitLabCodeHost
 from teatree.backends.gitlab.api import GitLabAPI, ProjectInfo
-from teatree.backends.gitlab.client import _count_unresolved_resolvable_threads, _note_author, thread_opened_solely_by
+from teatree.backends.gitlab.discussions import (
+    _count_unresolved_resolvable_threads,
+    _note_author,
+    thread_opened_solely_by,
+)
 from teatree.core.backend_protocols import PullRequestSpec
 
 

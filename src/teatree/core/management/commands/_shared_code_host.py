@@ -14,17 +14,16 @@ control-flow shape — a ``{"error": ...}`` dict, a ``(None, error)`` tuple, or
 ``write_err`` + ``SystemExit``) and sources only the message from here.
 """
 
-from typing import Final
+from typing import Final, TypedDict
+
+
+class CodeHostErrorPayload(TypedDict):
+    error: str
+
 
 #: The one canonical "no code host" message every preamble now shares.
 NO_CODE_HOST_MESSAGE: Final = "No code host configured (check overlay GitLab/GitHub token)."
 
 
-def no_code_host_error() -> dict[str, object]:
-    """The canonical ``{"error": <no code host>}`` payload for dict-returning commands.
-
-    Typed ``dict[str, object]`` (not ``dict[str, str]``) so the payload is
-    assignable to the ``dict[str, object]`` return contract every dict-returning
-    command declares — ``dict`` is invariant in its value type.
-    """
+def no_code_host_error() -> CodeHostErrorPayload:
     return {"error": NO_CODE_HOST_MESSAGE}

@@ -10,6 +10,7 @@ import pytest
 
 import teatree.backends.github.api as github_api_mod
 import teatree.backends.github.client as github_mod
+import teatree.backends.github.pr_reads as github_pr_reads_mod
 import teatree.backends.github.projects as github_projects_mod
 import teatree.utils.run as utils_run_mod
 from teatree.backends.github import GitHubCodeHost, ProjectItem, fetch_project_items, issue_repo_short
@@ -47,7 +48,7 @@ class TestGetMrApprovals:
             stdout = threads_stdout if "graphql" in args else decision_stdout
             return subprocess.CompletedProcess([], 0, stdout, "")
 
-        return patch.object(github_mod, "_run_gh", side_effect=_route)
+        return patch.object(github_pr_reads_mod, "_run_gh", side_effect=_route)
 
     def _run_gh_returning(self, stdout: str) -> AbstractContextManager[MagicMock]:
         return self._run_gh_routing(decision_stdout=stdout, threads_stdout=_reviewthreads_stdout())
@@ -108,7 +109,7 @@ class TestGetMrApprovals:
                 raise utils_run_mod.CommandFailedError(["gh"], 1, "", "HTTP 502")
             return subprocess.CompletedProcess([], 0, json.dumps({"reviewDecision": "APPROVED"}), "")
 
-        with patch.object(github_mod, "_run_gh", side_effect=_route):
+        with patch.object(github_pr_reads_mod, "_run_gh", side_effect=_route):
             state = GitHubCodeHost().get_mr_approvals(repo="o/r", pr_iid=9)
         assert state["unresolved_resolvable"] == 1
 
@@ -1155,7 +1156,7 @@ class TestGitHubCodeHost:
     def test_get_pr_open_state_maps_open_to_open(self) -> None:
         from teatree.core.backend_protocols import PrOpenState  # noqa: PLC0415
 
-        with patch.object(github_mod, "_gh_api_get", return_value={"state": "open"}) as mock_get:
+        with patch.object(github_pr_reads_mod, "_gh_api_get", return_value={"state": "open"}) as mock_get:
             host = GitHubCodeHost(token="tok")
             assert host.get_pr_open_state(pr_url="https://github.com/o/r/pull/7") == PrOpenState.OPEN
         mock_get.assert_called_once_with("repos/o/r/pulls/7", token="tok")
@@ -1163,35 +1164,35 @@ class TestGitHubCodeHost:
     def test_get_pr_open_state_maps_merged_true_to_merged(self) -> None:
         from teatree.core.backend_protocols import PrOpenState  # noqa: PLC0415
 
-        with patch.object(github_mod, "_gh_api_get", return_value={"state": "closed", "merged": True}):
+        with patch.object(github_pr_reads_mod, "_gh_api_get", return_value={"state": "closed", "merged": True}):
             host = GitHubCodeHost()
             assert host.get_pr_open_state(pr_url="https://github.com/o/r/pull/7") == PrOpenState.MERGED
 
     def test_get_pr_open_state_maps_closed_unmerged_to_closed(self) -> None:
         from teatree.core.backend_protocols import PrOpenState  # noqa: PLC0415
 
-        with patch.object(github_mod, "_gh_api_get", return_value={"state": "closed", "merged": False}):
+        with patch.object(github_pr_reads_mod, "_gh_api_get", return_value={"state": "closed", "merged": False}):
             host = GitHubCodeHost()
             assert host.get_pr_open_state(pr_url="https://github.com/o/r/pull/7") == PrOpenState.CLOSED
 
     def test_get_pr_open_state_unrecognised_payload_is_unknown(self) -> None:
         from teatree.core.backend_protocols import PrOpenState  # noqa: PLC0415
 
-        with patch.object(github_mod, "_gh_api_get", return_value={"state": "draft"}):
+        with patch.object(github_pr_reads_mod, "_gh_api_get", return_value={"state": "draft"}):
             host = GitHubCodeHost()
             assert host.get_pr_open_state(pr_url="https://github.com/o/r/pull/7") == PrOpenState.UNKNOWN
 
     def test_get_pr_open_state_non_dict_payload_is_unknown(self) -> None:
         from teatree.core.backend_protocols import PrOpenState  # noqa: PLC0415
 
-        with patch.object(github_mod, "_gh_api_get", return_value=["not", "a", "dict"]):
+        with patch.object(github_pr_reads_mod, "_gh_api_get", return_value=["not", "a", "dict"]):
             host = GitHubCodeHost()
             assert host.get_pr_open_state(pr_url="https://github.com/o/r/pull/7") == PrOpenState.UNKNOWN
 
     def test_get_pr_open_state_unparsable_url_is_unknown(self) -> None:
         from teatree.core.backend_protocols import PrOpenState  # noqa: PLC0415
 
-        with patch.object(github_mod, "_gh_api_get") as mock_get:
+        with patch.object(github_pr_reads_mod, "_gh_api_get") as mock_get:
             host = GitHubCodeHost()
             assert host.get_pr_open_state(pr_url="https://gitlab.com/o/r/-/merge_requests/7") == PrOpenState.UNKNOWN
         mock_get.assert_not_called()
@@ -1199,34 +1200,34 @@ class TestGitHubCodeHost:
     def test_get_pr_open_state_any_exception_fails_open_to_unknown(self) -> None:
         from teatree.core.backend_protocols import PrOpenState  # noqa: PLC0415
 
-        with patch.object(github_mod, "_gh_api_get", side_effect=RuntimeError("gh api auth failure")):
+        with patch.object(github_pr_reads_mod, "_gh_api_get", side_effect=RuntimeError("gh api auth failure")):
             host = GitHubCodeHost()
             assert host.get_pr_open_state(pr_url="https://github.com/o/r/pull/7") == PrOpenState.UNKNOWN
 
     def test_get_pr_author_returns_login(self) -> None:
-        with patch.object(github_mod, "_gh_api_get", return_value={"user": {"login": "souliane"}}) as mock_get:
+        with patch.object(github_pr_reads_mod, "_gh_api_get", return_value={"user": {"login": "souliane"}}) as mock_get:
             host = GitHubCodeHost(token="tok")
             assert host.get_pr_author(pr_url="https://github.com/o/r/pull/7") == "souliane"
         mock_get.assert_called_once_with("repos/o/r/pulls/7", token="tok")
 
     def test_get_pr_author_author_less_payload_is_empty(self) -> None:
-        with patch.object(github_mod, "_gh_api_get", return_value={"state": "open"}):
+        with patch.object(github_pr_reads_mod, "_gh_api_get", return_value={"state": "open"}):
             host = GitHubCodeHost()
             assert host.get_pr_author(pr_url="https://github.com/o/r/pull/7") == ""
 
     def test_get_pr_author_non_dict_payload_is_empty(self) -> None:
-        with patch.object(github_mod, "_gh_api_get", return_value=["not", "a", "dict"]):
+        with patch.object(github_pr_reads_mod, "_gh_api_get", return_value=["not", "a", "dict"]):
             host = GitHubCodeHost()
             assert host.get_pr_author(pr_url="https://github.com/o/r/pull/7") == ""
 
     def test_get_pr_author_unparsable_url_is_empty(self) -> None:
-        with patch.object(github_mod, "_gh_api_get") as mock_get:
+        with patch.object(github_pr_reads_mod, "_gh_api_get") as mock_get:
             host = GitHubCodeHost()
             assert host.get_pr_author(pr_url="https://gitlab.com/o/r/-/merge_requests/7") == ""
         mock_get.assert_not_called()
 
     def test_get_pr_author_any_exception_fails_safe_to_empty(self) -> None:
-        with patch.object(github_mod, "_gh_api_get", side_effect=RuntimeError("gh api auth failure")):
+        with patch.object(github_pr_reads_mod, "_gh_api_get", side_effect=RuntimeError("gh api auth failure")):
             host = GitHubCodeHost()
             assert host.get_pr_author(pr_url="https://github.com/o/r/pull/7") == ""
 
@@ -1439,36 +1440,36 @@ class TestRollupState:
     """F5.1 — aggregate a GitHub statusCheckRollup list into one my_prs word."""
 
     def test_empty_or_non_list_is_blank(self) -> None:
-        assert github_mod._rollup_state([]) == ""
-        assert github_mod._rollup_state(None) == ""
+        assert github_pr_reads_mod.rollup_state([]) == ""
+        assert github_pr_reads_mod.rollup_state(None) == ""
 
     def test_all_success_is_success(self) -> None:
         rollup = [
             {"__typename": "CheckRun", "status": "COMPLETED", "conclusion": "SUCCESS"},
             {"__typename": "StatusContext", "state": "SUCCESS"},
         ]
-        assert github_mod._rollup_state(rollup) == "success"
+        assert github_pr_reads_mod.rollup_state(rollup) == "success"
 
     def test_any_failure_dominates(self) -> None:
         rollup = [
             {"__typename": "CheckRun", "status": "COMPLETED", "conclusion": "SUCCESS"},
             {"__typename": "CheckRun", "status": "COMPLETED", "conclusion": "FAILURE"},
         ]
-        assert github_mod._rollup_state(rollup) == "failure"
+        assert github_pr_reads_mod.rollup_state(rollup) == "failure"
 
     def test_in_progress_without_failure_is_pending(self) -> None:
         rollup = [
             {"__typename": "CheckRun", "status": "IN_PROGRESS", "conclusion": None},
             {"__typename": "StatusContext", "state": "SUCCESS"},
         ]
-        assert github_mod._rollup_state(rollup) == "pending"
+        assert github_pr_reads_mod.rollup_state(rollup) == "pending"
 
     def test_neutral_and_skipped_count_as_passing(self) -> None:
         rollup = [
             {"__typename": "CheckRun", "status": "COMPLETED", "conclusion": "NEUTRAL"},
             {"__typename": "CheckRun", "status": "COMPLETED", "conclusion": "SKIPPED"},
         ]
-        assert github_mod._rollup_state(rollup) == "success"
+        assert github_pr_reads_mod.rollup_state(rollup) == "success"
 
 
 class TestListMyPrsEnrichment:
@@ -1488,7 +1489,7 @@ class TestListMyPrsEnrichment:
         )
         with (
             patch.object(github_mod, "_gh_api_search_paginated", return_value=[self._search_hit()]),
-            patch.object(github_mod, "_run_gh", return_value=_completed(detail)) as mock_run,
+            patch.object(github_pr_reads_mod, "_run_gh", return_value=_completed(detail)) as mock_run,
         ):
             prs = GitHubCodeHost(token="tok").list_my_prs(author="alice")
         assert prs[0]["sha"] == "cafef00d"
@@ -1512,7 +1513,7 @@ class TestListMyPrsEnrichment:
                 hit = {"number": 9, "title": "x", "html_url": "https://github.com/o/r/pull/9"}
                 with (
                     patch.object(github_mod, "_gh_api_search_paginated", return_value=[hit]),
-                    patch.object(github_mod, "_run_gh", return_value=_completed(detail)),
+                    patch.object(github_pr_reads_mod, "_run_gh", return_value=_completed(detail)),
                 ):
                     return GitHubCodeHost().list_my_prs(author=author)
 
@@ -1520,9 +1521,10 @@ class TestListMyPrsEnrichment:
         assert [s.kind for s in signals] == ["my_pr.failed"]
 
     def test_enrichment_failure_leaves_hit_unenriched(self) -> None:
+        boom = utils_run_mod.CommandFailedError(["gh"], 1, "", "boom")
         with (
             patch.object(github_mod, "_gh_api_search_paginated", return_value=[self._search_hit()]),
-            patch.object(github_mod, "_run_gh", side_effect=utils_run_mod.CommandFailedError(["gh"], 1, "", "boom")),
+            patch.object(github_pr_reads_mod, "_run_gh", side_effect=boom),
         ):
             prs = GitHubCodeHost().list_my_prs(author="alice")
         # Unenriched — no fabricated pipeline field, so the scanner surfaces the gap.
@@ -1532,7 +1534,7 @@ class TestListMyPrsEnrichment:
     def test_unparseable_html_url_is_left_unenriched(self) -> None:
         with (
             patch.object(github_mod, "_gh_api_search_paginated", return_value=[{"number": 1, "html_url": "not-a-url"}]),
-            patch.object(github_mod, "_run_gh") as mock_run,
+            patch.object(github_pr_reads_mod, "_run_gh") as mock_run,
         ):
             prs = GitHubCodeHost().list_my_prs(author="alice")
         mock_run.assert_not_called()

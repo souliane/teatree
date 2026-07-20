@@ -44,12 +44,12 @@ def _no_unpushed(mock_git: MagicMock) -> None:
     mock; without this the #706 guard sees a truthy ``MagicMock`` and refuses
     spuriously. The #2609 content gate (``content_equivalence_blockers``) lives in
     ``branch_classification`` and runs real ``git`` — so it is short-circuited here
-    by defaulting ``unsynced_commits_strict`` to empty (a fully-synced branch never
+    by defaulting ``unsynced_commits`` to empty (a fully-synced branch never
     reaches the content gate). Tests that target a guard override the relevant value
     after calling this.
     """
     mock_git.commits_absent_from_all_remotes.return_value = []
-    mock_git.unsynced_commits_strict.return_value = []
+    mock_git.unsynced_commits.return_value = []
 
 
 def _mock_workspace(mock_config: MagicMock) -> None:
@@ -85,7 +85,7 @@ class TestCleanupWorktree(TestCase):
         _no_unpushed(mock_git)
         mock_overlay.return_value.provisioning.cleanup_steps.return_value = []
         mock_git.status_porcelain.return_value = ""
-        mock_git.unsynced_commits_strict.return_value = []
+        mock_git.unsynced_commits.return_value = []
 
         wt = self._make_worktree(wt_path="/tmp/wt/org/repo")
         wt_id = wt.pk
@@ -294,7 +294,7 @@ class TestCleanupWorktree(TestCase):
         _no_unpushed(mock_git)
         mock_overlay.return_value.provisioning.cleanup_steps.return_value = []
         mock_git.status_porcelain.return_value = ""
-        mock_git.unsynced_commits_strict.return_value = ["abc123 chore: cve fix"]
+        mock_git.unsynced_commits.return_value = ["abc123 chore: cve fix"]
         mock_content.return_value = ["abc123"]  # patch NOT upstream → blocker
 
         wt = self._make_worktree(wt_path="/tmp/wt/org/repo")
@@ -330,7 +330,7 @@ class TestCleanupWorktree(TestCase):
         _no_unpushed(mock_git)
         mock_overlay.return_value.provisioning.cleanup_steps.return_value = []
         mock_git.status_porcelain.return_value = ""
-        mock_git.unsynced_commits_strict.return_value = ["abc123 retro: post-merge docs"]
+        mock_git.unsynced_commits.return_value = ["abc123 retro: post-merge docs"]
         mock_content.return_value = ["abc123"]  # patch differs from squash → blocker
 
         wt = self._make_worktree(wt_path="/tmp/wt/org/repo")
@@ -358,7 +358,7 @@ class TestCleanupWorktree(TestCase):
         _no_unpushed(mock_git)
         mock_overlay.return_value.provisioning.cleanup_steps.return_value = []
         mock_git.status_porcelain.return_value = ""
-        mock_git.unsynced_commits_strict.return_value = ["abc123 feat: new work"]
+        mock_git.unsynced_commits.return_value = ["abc123 feat: new work"]
         mock_content.return_value = ["abc123"]
 
         wt = self._make_worktree(wt_path="/tmp/wt/org/repo")
@@ -390,7 +390,7 @@ class TestCleanupWorktree(TestCase):
         _no_unpushed(mock_git)
         mock_overlay.return_value.provisioning.cleanup_steps.return_value = []
         mock_git.status_porcelain.return_value = ""
-        mock_git.unsynced_commits_strict.return_value = ["abc123 feat: squashed on main"]
+        mock_git.unsynced_commits.return_value = ["abc123 feat: squashed on main"]
         mock_content.return_value = []  # content proven upstream
 
         wt = self._make_worktree(wt_path="/tmp/wt/org/repo")
@@ -421,7 +421,7 @@ class TestCleanupWorktree(TestCase):
         _no_unpushed(mock_git)
         mock_overlay.return_value.provisioning.cleanup_steps.return_value = []
         mock_git.status_porcelain.return_value = ""
-        mock_git.unsynced_commits_strict.return_value = ["abc123 feat: shipped via squash long ago"]
+        mock_git.unsynced_commits.return_value = ["abc123 feat: shipped via squash long ago"]
         mock_content.return_value = ["abc123"]
 
         wt = self._make_worktree(wt_path="/tmp/wt/org/repo")
@@ -455,7 +455,7 @@ class TestCleanupWorktree(TestCase):
         _no_unpushed(mock_git)
         mock_overlay.return_value.provisioning.cleanup_steps.return_value = []
         mock_git.status_porcelain.return_value = ""
-        mock_git.unsynced_commits_strict.return_value = ["abc123 feat: genuine unpushed work"]
+        mock_git.unsynced_commits.return_value = ["abc123 feat: genuine unpushed work"]
         mock_content.return_value = ["abc123"]
 
         wt = self._make_worktree(wt_path="/tmp/wt/org/repo")
@@ -489,7 +489,7 @@ class TestCleanupWorktree(TestCase):
         _no_unpushed(mock_git)
         mock_overlay.return_value.provisioning.cleanup_steps.return_value = []
         mock_git.status_porcelain.return_value = ""
-        mock_git.unsynced_commits_strict.return_value = []
+        mock_git.unsynced_commits.return_value = []
         mock_git.commits_absent_from_all_remotes.return_value = ["abc1234 feat: squashed onto main"]
 
         wt = self._make_worktree(wt_path="/tmp/wt/org/repo")
@@ -542,7 +542,7 @@ class TestCleanupWorktree(TestCase):
         _no_unpushed(mock_git)
         mock_overlay.return_value.provisioning.cleanup_steps.return_value = []
         mock_git.status_porcelain.return_value = ""
-        mock_git.unsynced_commits_strict.return_value = ["abc123 chore: cve fix"]
+        mock_git.unsynced_commits.return_value = ["abc123 chore: cve fix"]
 
         wt = self._make_worktree(wt_path="/tmp/wt/org/repo")
         cleanup_worktree(wt, force=True)
@@ -647,7 +647,7 @@ class TestCleanupWorktree(TestCase):
         mock_overlay.return_value.provisioning.cleanup_steps.return_value = []
         mock_git.status_porcelain.return_value = ""
         mock_git.commits_absent_from_all_remotes.return_value = []  # pushed → data-loss guard passes
-        mock_git.unsynced_commits_strict.return_value = ["abc123 feat: pushed not merged"]
+        mock_git.unsynced_commits.return_value = ["abc123 feat: pushed not merged"]
         mock_content.return_value = ["abc123"]  # content not on origin/main
 
         wt = self._make_worktree(wt_path="/tmp/wt/org/repo")
@@ -681,7 +681,7 @@ class TestCleanupWorktree(TestCase):
         mock_overlay.return_value.provisioning.cleanup_steps.return_value = []
         mock_git.status_porcelain.return_value = ""
         mock_git.commits_absent_from_all_remotes.return_value = []  # pushed
-        mock_git.unsynced_commits_strict.return_value = ["abc123 feat: pushed not merged"]
+        mock_git.unsynced_commits.return_value = ["abc123 feat: pushed not merged"]
         mock_content.return_value = ["abc123"]  # would block under strict hygiene
 
         wt = self._make_worktree(wt_path="/tmp/wt/org/repo")
@@ -702,7 +702,7 @@ class TestCleanupWorktree(TestCase):
         _no_unpushed(mock_git)
         mock_overlay.return_value.provisioning.cleanup_steps.return_value = []
         mock_git.status_porcelain.return_value = ""
-        mock_git.unsynced_commits_strict.return_value = []
+        mock_git.unsynced_commits.return_value = []
 
         wt = self._make_worktree(wt_path="/tmp/wt/org/repo")
         cleanup_worktree(wt)
@@ -769,7 +769,7 @@ class TestCleanupWorktreeSurvivesMissingProvisionTimebox(TestCase):
         ):
             _no_unpushed(mock_git)
             mock_git.status_porcelain.return_value = ""
-            mock_git.unsynced_commits_strict.return_value = []
+            mock_git.unsynced_commits.return_value = []
             result = cleanup_worktree(wt, strict_hygiene=False)
 
         mock_drop.assert_called_once()
@@ -835,7 +835,7 @@ class TestCleanupWorktreeSurvivesVanishedHookPath(TestCase):
         ):
             _no_unpushed(mock_git)
             mock_git.status_porcelain.return_value = ""
-            mock_git.unsynced_commits_strict.return_value = []
+            mock_git.unsynced_commits.return_value = []
             result = cleanup_worktree(wt, strict_hygiene=False)
 
         mock_drop.assert_called_once()
@@ -890,7 +890,7 @@ class TestCleanupWorktreeLoudTeardown(TestCase):
         mock_overlay.return_value.provisioning.cleanup_steps.return_value = []
         mock_overlay.return_value.config.teardown_removes_pass_entries = True
         mock_git.status_porcelain.return_value = ""
-        mock_git.unsynced_commits_strict.return_value = []
+        mock_git.unsynced_commits.return_value = []
 
         wt = self._make_worktree(db_name="wt_99")
         wt_id = wt.pk
@@ -930,7 +930,7 @@ class TestCleanupWorktreeLoudTeardown(TestCase):
         mock_overlay.return_value.provisioning.cleanup_steps.return_value = []
         mock_overlay.return_value.config.teardown_removes_pass_entries = True
         mock_git.status_porcelain.return_value = ""
-        mock_git.unsynced_commits_strict.return_value = []
+        mock_git.unsynced_commits.return_value = []
 
         wt = self._make_worktree(db_name="")
         wt_id = wt.pk
@@ -969,7 +969,7 @@ class TestCleanupWorktreeLoudTeardown(TestCase):
         failing_step.description = "stop docker stack"
         mock_overlay.return_value.provisioning.cleanup_steps.return_value = [failing_step]
         mock_git.status_porcelain.return_value = ""
-        mock_git.unsynced_commits_strict.return_value = []
+        mock_git.unsynced_commits.return_value = []
 
         wt = self._make_worktree(db_name="")
         result = cleanup_worktree(wt)
@@ -991,7 +991,7 @@ class TestCleanupWorktreeLoudTeardown(TestCase):
         _no_unpushed(mock_git)
         mock_overlay.return_value.provisioning.cleanup_steps.return_value = []
         mock_git.status_porcelain.return_value = ""
-        mock_git.unsynced_commits_strict.return_value = []
+        mock_git.unsynced_commits.return_value = []
 
         wt = self._make_worktree(db_name="")
         with patch("teatree.core.cleanup.cleanup.drop_db"):
@@ -1080,7 +1080,7 @@ class TestCleanupWorktreeMultiOverlay(TestCase):
         _mock_workspace(mock_config)
         mock_git.commits_absent_from_all_remotes.return_value = []
         mock_git.status_porcelain.return_value = ""
-        mock_git.unsynced_commits_strict.return_value = []
+        mock_git.unsynced_commits.return_value = []
 
         # cleanup_worktree calls overlay.provisioning.cleanup_steps — wire it on a
         # per-instance facet so overlay_a/overlay_b don't share the class-level default.
@@ -1111,7 +1111,7 @@ class TestCleanupWorktreeMultiOverlay(TestCase):
         _mock_workspace(mock_config)
         mock_git.commits_absent_from_all_remotes.return_value = []
         mock_git.status_porcelain.return_value = ""
-        mock_git.unsynced_commits_strict.return_value = []
+        mock_git.unsynced_commits.return_value = []
 
         a_called: list[bool] = []
         b_called: list[bool] = []

@@ -9,7 +9,7 @@ The data-loss guards and the worktree-teardown orchestration live here.
 """
 
 import logging
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -22,6 +22,7 @@ from teatree.config import clone_root
 from teatree.core import prek_hook
 from teatree.core.cleanup.cleanup_busy_guards import WorktreeBusyError, guard_live_worktree
 from teatree.core.cleanup.cleanup_orphan_ref import raise_or_reap_orphan_ref
+from teatree.core.cleanup.cleanup_result import CleanupResult
 from teatree.core.cleanup.working_tree_dirt import real_uncommitted_reasons
 from teatree.core.models import Worktree
 from teatree.core.overlay_loader import get_overlay_for_worktree
@@ -54,37 +55,6 @@ _SUBJECT_PREVIEW_LIMIT = 3
 # A full git sha is 40 hex chars; below this a "sha" is a fail-closed diagnostic
 # string (e.g. "(git cherry failed …)") surfaced verbatim, not sliced.
 _SHORT_SHA_LEN = 7
-
-
-@dataclass(slots=True)
-class CleanupResult:
-    """Outcome of a single :func:`cleanup_worktree` teardown.
-
-    ``label`` is the human-readable summary (still printed by the
-    interactive ``clean-all`` / ``clean-merged`` callers and surfaced as
-    the runner ``detail``). ``errors`` is the structured, machine-readable
-    channel: every teardown step that failed appends a descriptive string
-    here instead of crashing mid-teardown or being swallowed by a
-    ``suppress(Exception)`` (#877).
-
-    #932's lesson — a swallowed string the caller never inspects is not
-    surfacing. Sync backends push ``errors`` into ``SyncResult.errors`` and
-    runners fold it into their failure detail, so a teardown failure
-    actually reaches the operator/exit path.
-    """
-
-    label: str
-    errors: list[str] = field(default_factory=list)
-
-    @property
-    def clean(self) -> bool:
-        """True when every teardown step succeeded."""
-        return not self.errors
-
-    def __str__(self) -> str:
-        if self.errors:
-            return f"{self.label} [with errors: {'; '.join(self.errors)}]"
-        return self.label
 
 
 @dataclass(frozen=True)
@@ -191,7 +161,7 @@ def _raise_if_genuinely_ahead(repo_main: str, worktree: Worktree, target: _Effec
     # so an inconclusive probe REFUSES the destroy rather than skipping the gate).
     default_target = effective_default_target(repo_main)
     try:
-        has_unsynced = bool(git.unsynced_commits_strict(repo_main, branch, default_target))
+        has_unsynced = bool(git.unsynced_commits(repo_main, branch, default_target, strict=True))
     except CommandFailedError:
         has_unsynced = True
     if not has_unsynced:

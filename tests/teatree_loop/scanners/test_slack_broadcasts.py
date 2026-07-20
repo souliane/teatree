@@ -21,7 +21,8 @@ from unittest.mock import patch
 import pytest
 
 from teatree.loop.scanners.base import ScannerError, ScannerErrorClass
-from teatree.loop.scanners.slack_broadcasts import GlabGhMrStateClassifier, MrState, SlackBroadcastsScanner
+from teatree.loop.scanners.slack_broadcast_mr_classifier import GlabGhMrStateClassifier
+from teatree.loop.scanners.slack_broadcasts import MrState, SlackBroadcastsScanner
 from teatree.types import RawAPIDict
 
 _GITLAB_MR = "https://gitlab.com/acme/app/-/merge_requests/7"

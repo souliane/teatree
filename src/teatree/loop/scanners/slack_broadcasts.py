@@ -43,19 +43,17 @@ backend. This keeps the scanner unit-testable without expanding the
 :class:`MessagingBackend` protocol or shelling out to ``glab`` in tests.
 The production wiring is :class:`BackendChannelHistoryFetcher` (delegating
 to :meth:`MessagingBackend.fetch_channel_history`) and
-:class:`GlabGhMrStateClassifier` (``glab mr view`` / ``gh pr view``); the
-tick-jobs builder resolves the overlay's broadcast channel list and passes
-it in, keeping the scanner overlay-agnostic.
+:class:`teatree.loop.scanners.slack_broadcast_mr_classifier.GlabGhMrStateClassifier`
+(``glab mr view`` / ``gh pr view``); the tick-jobs builder resolves the
+overlay's broadcast channel list and passes it in, keeping the scanner
+overlay-agnostic.
 """
 
-import json
 import logging
-import os
 import re
-import shutil
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
-from typing import Protocol, cast
+from typing import Protocol
 
 from django.db import OperationalError, ProgrammingError
 
@@ -70,9 +68,9 @@ from teatree.loop.review_claim_signals import (
     record_reaction_claim,
 )
 from teatree.loop.review_request_tracker import record_review_request_post
-from teatree.loop.scanners.base import ScannerError, ScannerErrorClass, ScanSignal, classify_gh_stderr
+from teatree.loop.scanners.base import ScannerError, ScanSignal
 from teatree.types import RawAPIDict
-from teatree.url_classify import Forge, find_pr_urls, forge_of, repo_and_iid
+from teatree.url_classify import find_pr_urls
 from teatree.utils.url_slug import pr_ref_from_url
 
 logger = logging.getLogger(__name__)
@@ -526,153 +524,6 @@ class BackendChannelHistoryFetcher:
 
     def __call__(self, *, channel: str) -> list[RawAPIDict]:
         return self.backend.fetch_channel_history(channel=channel, limit=self.limit)
-
-
-def _classifier_error(error_class: ScannerErrorClass, detail: str) -> ScannerError:
-    """Build the :class:`ScannerError` the classifier raises on a non-verdict failure (F5.3)."""
-    return ScannerError(scanner="slack_broadcasts", error_class=error_class, detail=detail)
-
-
-def _parse_classifier_json(stdout: str, *, tool: str, url: str) -> RawAPIDict:
-    """Parse a classifier subprocess's JSON object, raising :class:`ScannerError` on garbage (F5.3).
-
-    Empty output, non-JSON text, and a well-formed-but-non-object payload are
-    all failures-to-reach-a-verdict, not "not merged": the caller must not read
-    ``merged=False`` out of them. Only a parsed JSON *object* is a verdict.
-    """
-    if not stdout.strip():
-        raise _classifier_error(ScannerErrorClass.UNKNOWN, f"{tool} {url!r} returned empty output")
-    try:
-        data = json.loads(stdout)
-    except json.JSONDecodeError as exc:
-        raise _classifier_error(ScannerErrorClass.UNKNOWN, f"{tool} {url!r} returned non-JSON output: {exc}") from exc
-    if not isinstance(data, dict):
-        raise _classifier_error(ScannerErrorClass.UNKNOWN, f"{tool} {url!r} returned non-object JSON")
-    return cast("RawAPIDict", data)
-
-
-def _classifier_str(data: RawAPIDict, key: str) -> str:
-    value = data.get(key)
-    return value if isinstance(value, str) else ""
-
-
-def _classifier_int(data: RawAPIDict, key: str) -> int:
-    value = data.get(key)
-    return value if isinstance(value, int) else 0
-
-
-def _classifier_author(data: RawAPIDict, *, key: str) -> str:
-    """The forge author's username from ``data["author"][key]`` (GitLab ``username`` / GitHub ``login``)."""
-    author = data.get("author")
-    if not isinstance(author, dict):
-        return ""
-    value = cast("RawAPIDict", author).get(key)
-    return value if isinstance(value, str) else ""
-
-
-@dataclass(slots=True)
-class GlabGhMrStateClassifier:
-    """Production :class:`MrStateClassifier` — shells out to ``glab`` / ``gh``.
-
-    Each URL is dispatched by host: ``glab mr view <url> -F json`` for
-    GitLab merge requests, ``gh pr view <url> --json …`` for GitHub
-    pulls. The classifier reads ``state`` (merged-or-not) and a coarse
-    approval flag (GitLab ``upvotes > 0``, GitHub
-    ``reviewDecision == APPROVED``).
-
-    Transient vs verdict (F5.3): ``merged=False`` is a *verdict* — the tool
-    ran, returned a parseable payload, and the MR was not merged — so the
-    scanner may safely dispatch a reviewer / seed a nag row for it. A
-    FAILURE to reach that verdict (the binary is missing, the token is
-    expired / rc≠0, or the output is not parseable JSON) is NOT a verdict:
-    the classifier raises :class:`ScannerError` so the dispatcher records
-    the degradation (#1287) and skips the tick, instead of silently
-    classifying a possibly-MERGED MR as open — which would nag reviewers
-    about already-landed work. A URL that is not a recognised MR (unparsable
-    forge / IID) stays ``merged=False`` (it is a deterministic non-match, not
-    a transient failure).
-
-    Tokens are optional: when set they're exported as ``GITLAB_TOKEN`` /
-    ``GH_TOKEN`` for each subprocess so a private-repo overlay can
-    classify on behalf of its own PAT.
-    """
-
-    glab_token: str = ""
-    github_token: str = ""
-
-    def __call__(self, urls: Sequence[str]) -> list[MrState]:
-        return [self._classify_one(url) for url in urls]
-
-    def _classify_one(self, url: str) -> MrState:
-        forge = forge_of(url)
-        if forge is Forge.GITLAB:
-            return self._classify_gitlab(url)
-        if forge is Forge.GITHUB:
-            return self._classify_github(url)
-        return MrState(url=url, merged=False, approved=False)
-
-    def _classify_gitlab(self, url: str) -> MrState:
-        from teatree.utils.run import run_allowed_to_fail  # noqa: PLC0415 — deferred: loaded at tick time, not import
-
-        parsed = repo_and_iid(url)
-        if parsed is None:
-            return MrState(url=url, merged=False, approved=False)
-        project, iid_num = parsed
-        iid = str(iid_num)
-        glab = shutil.which("glab") or "glab"
-        env = {**os.environ, "GITLAB_TOKEN": self.glab_token} if self.glab_token else None
-        try:
-            # ``-R <project>`` makes glab resolve the MR against an explicit
-            # project path instead of the current cwd's git remote — the
-            # scanner runs from the loop process which has no repo cwd, so
-            # ``glab mr view <url>`` (URL-only) silently exits non-zero and
-            # every broadcast is dropped. With ``-R`` + numeric IID glab
-            # routes the API call directly.
-            result = run_allowed_to_fail(
-                [glab, "mr", "view", "-R", project, iid, "-F", "json"],
-                expected_codes=None,
-                env=env,
-            )
-        except FileNotFoundError as exc:
-            raise _classifier_error(ScannerErrorClass.UNKNOWN, f"glab not installed for {url!r}: {exc}") from exc
-        if result.returncode != 0:
-            raise _classifier_error(
-                classify_gh_stderr(result.stderr),
-                f"glab mr view {url!r} rc={result.returncode}: {result.stderr.strip()[:200]}",
-            )
-        data = _parse_classifier_json(result.stdout, tool="glab mr view", url=url)
-        state = _classifier_str(data, "state").lower()
-        merged = state in {"merged", "closed_as_merged"}
-        upvotes = _classifier_int(data, "upvotes")
-        approved = upvotes > 0 or merged
-        author_username = _classifier_author(data, key="username")
-        return MrState(url=url, merged=merged, approved=approved, author_username=author_username)
-
-    def _classify_github(self, url: str) -> MrState:
-        from teatree.utils.run import run_allowed_to_fail  # noqa: PLC0415 — deferred: loaded at tick time, not import
-
-        gh = shutil.which("gh") or "gh"
-        env = {**os.environ, "GH_TOKEN": self.github_token} if self.github_token else None
-        try:
-            result = run_allowed_to_fail(
-                [gh, "pr", "view", url, "--json", "state,reviewDecision,author"],
-                expected_codes=None,
-                env=env,
-            )
-        except FileNotFoundError as exc:
-            raise _classifier_error(ScannerErrorClass.UNKNOWN, f"gh not installed for {url!r}: {exc}") from exc
-        if result.returncode != 0:
-            raise _classifier_error(
-                classify_gh_stderr(result.stderr),
-                f"gh pr view {url!r} rc={result.returncode}: {result.stderr.strip()[:200]}",
-            )
-        data = _parse_classifier_json(result.stdout, tool="gh pr view", url=url)
-        state = _classifier_str(data, "state").upper()
-        review_decision = _classifier_str(data, "reviewDecision").upper()
-        merged = state == "MERGED"
-        approved = review_decision == "APPROVED" or merged
-        author_username = _classifier_author(data, key="login")
-        return MrState(url=url, merged=merged, approved=approved, author_username=author_username)
 
 
 def _signal_for_pending_mr(state: MrState, row: ScannedBroadcast, *, overlay: str) -> ScanSignal:

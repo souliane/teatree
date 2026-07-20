@@ -15,7 +15,7 @@ import logging
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-from teatree.core import availability, presence
+from teatree.core import availability, presence, speak_cleaning
 from teatree.core import speak as speak_mod
 from teatree.types import LocalPlayback, SpeakConfig
 
@@ -215,7 +215,7 @@ class TestCleanForSpeech:
 
     def test_caps_length_on_word_boundary(self) -> None:
         out = speak_mod.clean_for_speech("word " * 400)
-        assert len(out) <= speak_mod._MAX_SPEAK_CHARS + 1
+        assert len(out) <= speak_cleaning._MAX_SPEAK_CHARS + 1
         assert out.endswith("…")
 
     def test_blank_after_strip(self) -> None:

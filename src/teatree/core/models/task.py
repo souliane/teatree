@@ -1,4 +1,4 @@
-from datetime import datetime, timedelta
+from datetime import datetime
 from typing import TYPE_CHECKING, cast
 
 from django.apps import apps
@@ -10,9 +10,11 @@ from django_fsm import FSMField, TransitionNotAllowed
 from teatree.core.managers import TaskManager
 from teatree.core.modelkit.phases import SUBAGENT_BY_PHASE, phase_spellings
 from teatree.core.models.auto_implement import is_auto_implement
-from teatree.core.models.errors import InvalidTransitionError, LeaseLostError
+from teatree.core.models.errors import InvalidTransitionError
 from teatree.core.models.external_delivery import not_under_external_delivery_q
 from teatree.core.models.session import Session
+from teatree.core.models.task_claim import claim as _claim_task
+from teatree.core.models.task_claim import renew_lease as _renew_task_lease
 from teatree.core.models.task_phase_disposition import (
     dispose_unshippable_review,
     escalate_unmatched_phase_transition,
@@ -189,92 +191,10 @@ class Task(models.Model):
             self.execution_reason = "Loop-dispatched phase — in-session sub-agent (agent_runtime=interactive)"
 
     def claim(self, *, claimed_by: str, claimed_by_session: str = "", lease_seconds: int = 300) -> None:
-        """Atomically claim this task — exactly one concurrent claimer wins (#786 shape).
-
-        A single guarded conditional ``UPDATE ... WHERE pk=self AND <claimable>``
-        whose affected-row count is the compare-and-swap token — NOT a
-        read-then-write. The previous shape (``select_for_update().get()`` then
-        an unconditional ``save()``) raced on the production SQLite backend:
-        ``has_select_for_update`` is ``False`` there, so ``select_for_update``
-        is a silent no-op (the #786 B1 lesson the sibling ``claim_next_pending``
-        / ``reap_stale_claims`` / ``LoopLease.acquire`` paths already heed). Two
-        concurrent sessions both passed the in-Python guard on the same stale
-        view and both wrote, each believing it owned the task — so two sessions
-        worked the same unit. The conditional UPDATE re-evaluates ``<claimable>``
-        at write time and is atomic on SQLite AND Postgres: exactly one writer
-        matches one row, the loser updates zero.
-
-        ``<claimable>`` is PENDING, or CLAIMED with an absent/expired lease (a
-        dead owner's orphan — reclaimable). A CLAIMED task whose lease is still
-        live is NOT claimable, so a healthy owner's claim is never stolen; a
-        terminal task is never re-claimed. On a lost claim the current row is
-        read back ONLY to raise the matching typed error — the claim *decision*
-        is the atomic UPDATE's row count, never the read-back.
-
-        ``claimed_by_session`` rides the SET clause only — never the
-        ``<claimable>`` CAS predicate — exactly as ``claim_next_pending`` does,
-        so the claim semantics are byte-identical with or without a session.
-        Writing it here (rather than leaving it untouched) is what keeps
-        ``renew_lease``'s claim-generation CAS truthful: a re-claim of an
-        expired-lease orphan overwrites the dead owner's stale session instead
-        of leaving it to falsely satisfy the heartbeat predicate.
-        """
-        now = timezone.now()
-        claimable = Q(status=self.Status.PENDING) | (
-            Q(status=self.Status.CLAIMED) & (Q(lease_expires_at__isnull=True) | Q(lease_expires_at__lte=now))
-        )
-        won = (
-            Task.objects.filter(pk=self.pk)
-            .filter(claimable)
-            .update(
-                status=self.Status.CLAIMED,
-                claimed_by=claimed_by,
-                claimed_by_session=claimed_by_session,
-                claimed_at=now,
-                heartbeat_at=now,
-                lease_expires_at=now + timedelta(seconds=lease_seconds),
-            )
-        )
-        if won != 1:
-            self.refresh_from_db()
-            if self.status in self.Status.terminal():
-                msg = "Task already finished"
-                raise InvalidTransitionError(msg)
-            msg = "Task already claimed"
-            raise InvalidTransitionError(msg)
-        self.refresh_from_db()
+        _claim_task(self, claimed_by=claimed_by, claimed_by_session=claimed_by_session, lease_seconds=lease_seconds)
 
     def renew_lease(self, *, lease_seconds: int = 300) -> None:
-        """Heartbeat this worker's claim — a compare-and-swap, not a blind write (#786 shape).
-
-        The renewal is guarded by the CLAIM GENERATION — ``status=CLAIMED`` AND
-        the ``(claimed_by, claimed_by_session, claimed_at)`` this worker took the
-        task under. ``claimed_at`` is re-stamped on every (re)claim, so once the
-        lease lapsed and another worker reclaimed the row (``reclaim_orphaned_claims``
-        → PENDING → a fresh ``claim`` with a new ``claimed_at``), this worker's
-        predicate matches ZERO rows and it must NOT re-stamp the lease. The
-        previous unconditional ``save(update_fields=…)`` re-stamped
-        ``lease_expires_at`` with no WHERE predicate, resurrecting an expired
-        claim after a rival had already taken over — two workers then drove the
-        same unit (double-spend, racing ``complete()``). Zero rows → raise
-        :class:`LeaseLostError` so the heartbeating worker aborts.
-        """
-        now = timezone.now()
-        expires = now + timedelta(seconds=lease_seconds)
-        renewed = (
-            Task.objects.filter(pk=self.pk, status=self.Status.CLAIMED)
-            .filter(
-                claimed_by=self.claimed_by,
-                claimed_by_session=self.claimed_by_session,
-                claimed_at=self.claimed_at,
-            )
-            .update(heartbeat_at=now, lease_expires_at=expires)
-        )
-        if renewed != 1:
-            msg = f"lease lost for task {self.pk}: claim generation moved on (re-claimed or terminal)"
-            raise LeaseLostError(msg)
-        self.heartbeat_at = now
-        self.lease_expires_at = expires
+        _renew_task_lease(self, lease_seconds=lease_seconds)
 
     def route_to_headless(self, *, reason: str = "") -> None:
         self._route(self.ExecutionTarget.HEADLESS, reason)

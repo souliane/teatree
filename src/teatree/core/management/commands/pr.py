@@ -55,11 +55,8 @@ from teatree.core.management.commands._ship.gates import run_e2e_mandatory_gate 
 from teatree.core.management.commands._ship.gates import run_fleet_claim_fence_gate as _run_fleet_claim_fence_gate
 from teatree.core.management.commands._ship.gates import run_pr_budget_gate as _run_pr_budget_gate
 from teatree.core.management.commands._ship.gates import run_visual_qa_gate as _run_visual_qa_gate
-from teatree.core.management.commands._test_plan.post import (
-    MrTestPlanPost,
-    TestPlanMediaError,
-    post_mr_test_plan_comment,
-)
+from teatree.core.management.commands._test_plan.mr_post import MrTestPlanPost, post_mr_test_plan_comment
+from teatree.core.management.commands._test_plan.post import TestPlanMediaError
 from teatree.core.modelkit.phases import normalize_phase
 from teatree.core.models import Ticket, Worktree
 from teatree.core.on_behalf_gate_recorded import OnBehalfPostBlockedError
@@ -505,7 +502,7 @@ class Command(TyperCommand):
         """Fetch issue details with embedded image URLs and external links."""
         host = code_host_from_overlay()
         if host is None:
-            return no_code_host_error()
+            return {**no_code_host_error()}
         issue = host.get_issue(issue_url)
         description = str(issue.get("description", ""))
 
@@ -550,7 +547,7 @@ class Command(TyperCommand):
         """
         host = code_host_from_overlay()
         if host is None:
-            return no_code_host_error()
+            return {**no_code_host_error()}
 
         author = get_overlay().config.get_gitlab_username() or host.current_user()
         if not author:
@@ -574,7 +571,7 @@ class Command(TyperCommand):
         """Post a test plan as a PR comment. Uploads files and updates existing notes.
 
         A thin delegator to the shared gated engine
-        (:func:`teatree.core.management.commands._test_plan.post.post_mr_test_plan_comment`),
+        (:func:`teatree.core.management.commands._test_plan.mr_post.post_mr_test_plan_comment`),
         so the MR path gets the SAME gates as the ticket/issue poster (F3.1) and
         can no longer drift: files (screenshots, videos) are uploaded and each one
         passes the #2156 ``verify_upload`` existence check before it is embedded
@@ -599,7 +596,7 @@ class Command(TyperCommand):
         """
         host = code_host_from_overlay()
         if host is None:
-            return no_code_host_error()
+            return {**no_code_host_error()}
 
         repo_path = repo or get_overlay().metadata.get_ci_project_path()
         try:

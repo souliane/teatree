@@ -25,9 +25,7 @@ from typing import TYPE_CHECKING
 
 from claude_agent_sdk import AssistantMessage, ClaudeAgentOptions, RateLimitEvent, ResultMessage, TextBlock
 from claude_agent_sdk.types import RateLimitInfo
-from django.conf import settings
-from django.db import close_old_connections, connection
-from django.db.models import Sum
+from django.db import close_old_connections
 from django.utils import timezone
 
 from teatree.agents._headless_env import _overlay_scope, _provider_child_env
@@ -36,6 +34,7 @@ from teatree.agents.harness import Harness, HarnessSession, pydantic_ai_thread, 
 from teatree.agents.harness_registry import InvalidHarnessProviderError, UnknownHarnessError
 from teatree.agents.headless_budget import TicketBudget
 from teatree.agents.headless_usage import _attempt_usage
+from teatree.agents.headless_watchdog import LoopWatchdog, TaskUsage, _sample_usage_closing_connection
 from teatree.agents.pydantic_ai_resume import maybe_persist_on_park
 from teatree.agents.reader_profile import is_reader_phase, reader_child_env, reader_env_hermetic
 from teatree.agents.skill_bundle import active_overlay_stage_skills, resolve_skill_bundle
@@ -44,7 +43,7 @@ from teatree.agents.usage_window import (
     park_or_rotate_on_limit,
     park_task_on_all_exhausted,
 )
-from teatree.config import AgentHarnessProvider, UserSettings, get_effective_settings
+from teatree.config import AgentHarnessProvider, get_effective_settings
 from teatree.core.models import LeaseLostError, Task, TaskAttempt
 from teatree.core.models.ticket_worktree_checks import dispatch_worktree_path
 from teatree.credential_config import AllTokensExhaustedError
@@ -59,119 +58,12 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+# ``LoopWatchdog`` / ``TaskUsage`` moved to ``headless_watchdog`` but stay part of
+# this module's public surface (overlay_sdk re-exports ``LoopWatchdog``; tests patch
+# ``headless.TaskUsage.for_task`` / ``headless._sample_usage_closing_connection``).
+__all__ = ["HarnessOutcome", "LoopWatchdog", "TaskUsage", "run_headless"]
+
 _HEARTBEAT_INTERVAL = 60  # seconds
-
-# Conservative documented default (#882): a generous wall-clock ceiling that
-# only trips on a genuinely runaway agent that never returns — the canonical
-# "Claude session spins on the same error" symptom. Absolute turn/cost budget
-# caps are #398-4's responsibility, so they default off here.
-_DEFAULT_WATCHDOG = {
-    "max_runtime_seconds": 3 * 60 * 60,  # 3h — well past any healthy phase task
-    "max_turns": 0,  # 0 = disabled
-    "max_cost_usd": 0.0,  # 0 = disabled
-}
-
-
-def _config_or_fallback(configured: float, default: float, fallback: float) -> float:
-    """The config value when explicitly set, else the documented Django-settings fallback.
-
-    A config field still at its dataclass *default* is "unconfigured", so the legacy
-    Django-settings *fallback* supplies the dimension; any other config value wins (F9.5).
-    """
-    return configured if configured != default else fallback
-
-
-@dataclass(frozen=True)
-class TaskUsage:
-    """Accumulated ``TaskAttempt`` deltas for one task.
-
-    Sampled once on the main thread before the agent starts: ``num_turns`` /
-    ``cost_usd`` only land in the DB *after* an attempt completes, so
-    prior-attempt totals are static for the current run.
-    """
-
-    turns: int
-    cost_usd: float
-
-    @classmethod
-    def for_task(cls, task: Task) -> "TaskUsage":
-        attempts = task.attempts  # ty: ignore[unresolved-attribute]
-        totals = attempts.aggregate(turns=Sum("num_turns"), cost=Sum("cost_usd"))
-        return cls(turns=totals["turns"] or 0, cost_usd=totals["cost"] or 0.0)
-
-
-@dataclass(frozen=True)
-class LoopWatchdog:
-    """Detects a stuck loop / cost spike during the heartbeat loop (#882).
-
-    Evaluates the running task's wall-clock runtime plus the accumulated
-    ``TaskAttempt.num_turns`` / ``cost_usd`` deltas. When a ceiling is
-    crossed the heartbeat loop interrupts the agent and a ``stuck_loop``
-    ``TaskAttempt`` failure is recorded with the observed deltas. A ceiling
-    of ``0`` disables that dimension.
-    """
-
-    max_runtime_seconds: float
-    max_turns: int
-    max_cost_usd: float
-
-    @classmethod
-    def from_settings(cls) -> "LoopWatchdog":
-        """Build the watchdog from the DB-home config tier; Django-settings as fallback.
-
-        The ceilings resolve through ``get_effective_settings()`` (the #1775 config tier —
-        env -> ConfigSetting -> dataclass default), so ``config_setting get`` sees them
-        (F9.5). The legacy Django-settings ``TEATREE_LOOP_WATCHDOG`` dict stays a documented
-        fallback: it supplies a dimension only while the config value is still at its
-        dataclass default (unconfigured), so an explicit DB / env config always wins.
-        """
-        effective = get_effective_settings()
-        fallback = getattr(settings, "TEATREE_LOOP_WATCHDOG", None) or _DEFAULT_WATCHDOG
-        defaults = UserSettings()
-        return cls(
-            max_runtime_seconds=float(
-                _config_or_fallback(
-                    effective.watchdog_max_runtime_seconds,
-                    defaults.watchdog_max_runtime_seconds,
-                    fallback.get("max_runtime_seconds", 0),
-                )
-            ),
-            max_turns=int(
-                _config_or_fallback(
-                    effective.watchdog_max_turns,
-                    defaults.watchdog_max_turns,
-                    fallback.get("max_turns", 0),
-                )
-            ),
-            max_cost_usd=float(
-                _config_or_fallback(
-                    effective.watchdog_max_cost_usd,
-                    defaults.watchdog_max_cost_usd,
-                    fallback.get("max_cost_usd", 0.0),
-                )
-            ),
-        )
-
-    def breach_reason(self, task: Task, *, elapsed_seconds: float, usage: TaskUsage | None = None) -> str | None:
-        """Return a reason string with observed deltas, or ``None`` if healthy.
-
-        *usage* is the pre-sampled accumulated delta snapshot; when omitted
-        it is read from *task* (convenience for callers outside the loop).
-        """
-        if self.max_runtime_seconds and elapsed_seconds > self.max_runtime_seconds:
-            return (
-                f"runtime ceiling exceeded: ran {elapsed_seconds:.0f}s "
-                f"> {self.max_runtime_seconds:.0f}s without exiting"
-            )
-        if self.max_turns or self.max_cost_usd:
-            if usage is None:
-                usage = TaskUsage.for_task(task)
-            if self.max_turns and usage.turns > self.max_turns:
-                return f"turns ceiling exceeded: {usage.turns} turns > {self.max_turns} without progress"
-            if self.max_cost_usd and usage.cost_usd > self.max_cost_usd:
-                return f"cost ceiling exceeded: ${usage.cost_usd:.2f} > ${self.max_cost_usd:.2f} without progress"
-        return None
-
 
 _STUCK_LOOP_PREFIX = "stuck_loop: "
 _RESULT_ERROR_PREFIX = "result_error: "
@@ -496,24 +388,6 @@ def _resolve_dispatch_lane(harness: Harness, provider: AgentHarnessProvider | No
     # broad ``except Exception`` in ``tasks.py``'s SDK executor and record
     # an otherwise-successful, already-billed run as a FAILED attempt.
     return _LANE_BY_PROVIDER.get(provider, "")
-
-
-def _sample_usage_closing_connection(task: Task) -> TaskUsage:
-    """Sample :meth:`TaskUsage.for_task` and close THIS thread's DB connection.
-
-    Run as an :func:`asyncio.to_thread` worker: the aggregate query opens a
-    Django connection bound to the worker thread, which never closes itself.
-    ``close_old_connections`` would NOT reap a fresh, healthy connection (it
-    only closes ones past ``CONN_MAX_AGE`` / marked unusable), so close the
-    thread-local connection explicitly — otherwise it outlives the thread and
-    surfaces as a ``ResourceWarning: unclosed database`` when the thread is
-    GC'd (an order-dependent test flake, and a real connection leak in
-    production).
-    """
-    try:
-        return TaskUsage.for_task(task)
-    finally:
-        connection.close()
 
 
 async def _drive_with_heartbeat(

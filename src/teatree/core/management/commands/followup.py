@@ -125,7 +125,7 @@ class Command(TyperCommand):
         """
         host = code_host_from_overlay()
         if host is None:
-            return no_code_host_error()
+            return {**no_code_host_error()}
 
         author = get_overlay().config.get_gitlab_username() or host.current_user()
         if not author:

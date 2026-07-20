@@ -252,7 +252,7 @@ class TestCleanAllRefusesSubjectCollision(TestCase):
         )
         boom = CommandFailedError(["git", "log"], 128, "", "fatal: bad revision")
         with (
-            patch("teatree.core.cleanup.cleanup.git.unsynced_commits_strict", side_effect=boom),
+            patch("teatree.core.cleanup.cleanup.git.unsynced_commits", side_effect=boom),
             pytest.raises(RuntimeError, match="not provably on origin/main"),
         ):
             self._cleanup(worktree)
