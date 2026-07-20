@@ -51,6 +51,40 @@ def question_fingerprint(text: str) -> str:
     return hashlib.sha256(normalized.encode("utf-8")).hexdigest()[:32]
 
 
+#: Signals in an agent's own ``needs_user_input`` reason that mark it a tool-lack /
+#: wrong-toolset DISPATCH fault — "this session has no shell/gh to do its job",
+#: "hand off to a session with the standard toolset" — rather than a genuine
+#: decision the owner must make. A capability negation (lack/no/without/missing/
+#: denied) sitting next to a tool word (shell/bash/gh/tool/toolset), the bare
+#: "shell-denied", or the "needs a session with tools" hand-off phrasing all match.
+_TOOL_LACK_SELFREPORT_RE = re.compile(
+    r"(?:"
+    r"\b(?:lack|lacks|lacking|no|without|missing|denied|deprived of)\b[^.]{0,40}?"
+    r"\b(?:shell|bash|gh|tool|tools|toolset)\b"
+    r"|\bshell[- ]?denied\b"
+    r"|\bneeds?\b[^.]{0,40}?\bsession\b[^.]{0,40}?\btool"
+    r"|\bsession with (?:the )?(?:standard )?tool"
+    r"|\bpicked up by (?:a )?session\b"
+    r")",
+    re.IGNORECASE,
+)
+
+
+def is_tool_lack_selfreport(text: str) -> bool:
+    """True if *text* is an agent's own "I lack the tools to proceed" dispatch fault.
+
+    An agent that stops with ``needs_user_input`` because its session was
+    dispatched WITHOUT the shell / ``gh`` / toolset its own work needs is reporting
+    a DISPATCH fault — a phase mis-provisioned for its job — not asking the owner to
+    decide anything. Surfacing that self-report to the owner's DM is the exact leak
+    this classifier defends (it reached the owner as "*Pending question* … This
+    session lacks any shell/write tool …"): the box asking the owner to compensate
+    for its own mis-provisioning. Such a reason is recorded ``INTERNAL`` — logged /
+    statusline-only, re-routed — never surfaced as an owner question.
+    """
+    return bool(_TOOL_LACK_SELFREPORT_RE.search(_WHITESPACE_RE.sub(" ", text.strip())))
+
+
 class DeferredQuestionError(ValueError):
     """A :class:`DeferredQuestion` was rejected at record time — contract failed."""
 
