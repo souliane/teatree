@@ -38,7 +38,7 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
 
-from teatree.llm.credentials import AnthropicApiKeyCredential, CredentialError
+from teatree.llm.credentials import AnthropicApiKeyCredential, CredentialError, base_url_refusal
 
 _HOME_ANCHORED_VARS = ("HOME", "XDG_CONFIG_HOME", "CLAUDE_CONFIG_DIR")
 
@@ -90,14 +90,13 @@ def _reject_forbidden(forbidden_vars: tuple[str, ...]) -> None:
     present = [var for var in forbidden_vars if os.environ.get(var, "").strip()]
     if not present:
         return
-    names = ", ".join(present)
-    msg = (
-        f"{names} is set, but the selected eval credential authenticates against the "
-        f"Anthropic subscription, which is only valid against Anthropic's own endpoint. "
-        f"Unset {names}, or select the metered API key for this eval lane to route it "
-        f"through that endpoint."
+    raise CredentialError(
+        base_url_refusal(
+            present,
+            authenticator="the selected eval credential authenticates against the Anthropic subscription",
+            remedy="select the metered API key for this eval lane to route it through that endpoint",
+        )
     )
-    raise CredentialError(msg)
 
 
 __all__ = ["isolated_claude_env"]

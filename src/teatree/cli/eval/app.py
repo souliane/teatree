@@ -25,12 +25,12 @@ from teatree.cli.eval.metered_routing import warn_local_metered
 from teatree.cli.eval.run_dispatch import ResolvedRun, dispatch_resolved_run
 from teatree.cli.eval.run_docker import RunDockerArgs, route_to_docker_if_needed
 from teatree.cli.eval.run_modes import DEFAULT_COST_REGRESSION_TOLERANCE, make_grader, require_persist_for_history_gates
-from teatree.eval.api_runner import resolve_max_turns_override, resolve_metered_budget_usd, resolve_metered_effort
 from teatree.eval.backends import API_BACKEND, FRESH_CLAUDE_BACKENDS, TRANSCRIPT_BACKEND
 from teatree.eval.discovery import discover_specs
 from teatree.eval.lane_shard import ShardSpecError, filter_specs_by_shard
 from teatree.eval.model_variant import EFFORT_LEVELS
 from teatree.eval.parallel import DEFAULT_PARALLEL
+from teatree.eval.resource_caps import resolve_max_turns_override, resolve_metered_budget_usd, resolve_metered_effort
 from teatree.utils.django_bootstrap import ensure_django
 
 _RUN_FORMATS = (*VALID_FORMATS, "html")

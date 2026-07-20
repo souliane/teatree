@@ -251,14 +251,13 @@ class Credential:
         present = [var for var in self.spec.forbidden_vars if base.get(var, "").strip()]
         if not present:
             return
-        names = ", ".join(present)
-        msg = (
-            f"{names} is set, but {self.spec.env_var} authenticates against the Anthropic "
-            f"subscription, which is only valid against Anthropic's own endpoint. Redirecting a "
-            f"plan-authenticated child at another endpoint is refused. Either unset {names}, or "
-            f"pin agent_harness_provider=api_key to route a metered key through that endpoint."
+        raise CredentialError(
+            base_url_refusal(
+                present,
+                authenticator=f"{self.spec.env_var} authenticates against the Anthropic subscription",
+                remedy="pin agent_harness_provider=api_key to route a metered key through that endpoint",
+            )
         )
-        raise CredentialError(msg)
 
     @staticmethod
     def _missing_message(spec: CredentialSpec, context: str | None = None) -> str:
@@ -288,6 +287,26 @@ class Credential:
 #: an Anthropic-compatible third-party provider on ITS OWN key); forbidden alongside the
 #: subscription token, whose plan auth is only valid against Anthropic's own endpoint.
 ANTHROPIC_BASE_URL_ENV = "ANTHROPIC_BASE_URL"
+
+
+def base_url_refusal(present: Sequence[str], *, authenticator: str, remedy: str) -> str:
+    """The shared wording for every base-URL redirect refusal.
+
+    Three seams enforce this policy over different inputs — a credential's own
+    ``child_env`` mapping, the eval lane's ambient env, and the unpinned-spawn
+    guard — but an operator reading any of them needs the same two facts: which
+    variable is refused, and what to do instead. Templated here so a changed
+    remedy cannot land in one seam and go stale in the other two.
+
+    *authenticator* names what is authenticating and why the redirect is refused;
+    *remedy* is the alternative, phrased to follow "or".
+    """
+    names = ", ".join(present)
+    return (
+        f"{names} is set, but {authenticator}, which is only valid against Anthropic's own "
+        f"endpoint. Redirecting a plan-authenticated child at another endpoint is refused. "
+        f"Either unset {names}, or {remedy}."
+    )
 
 
 class AnthropicApiKeyCredential(Credential):
@@ -379,14 +398,18 @@ def reject_ambient_base_url_redirect() -> None:
     has_subscription = bool(os.environ.get(AnthropicSubscriptionCredential.spec.env_var, "").strip())
     if has_api_key and not has_subscription:
         return
-    msg = (
-        f"{ANTHROPIC_BASE_URL_ENV} is set and no credential is pinned, so the spawned claude "
-        f"CLI would be redirected while authenticating with whatever login state it holds — "
-        f"which on a subscription deployment is plan auth, valid only against Anthropic's own "
-        f"endpoint. Either unset {ANTHROPIC_BASE_URL_ENV}, or pin agent_harness_provider=api_key "
-        f"so a metered key routes through that endpoint deterministically."
+    raise CredentialError(
+        base_url_refusal(
+            [ANTHROPIC_BASE_URL_ENV],
+            authenticator=(
+                "no credential is pinned, so the spawned claude CLI authenticates with whatever "
+                "login state it holds — on a subscription deployment that is plan auth"
+            ),
+            remedy=(
+                "pin agent_harness_provider=api_key so a metered key routes through that endpoint deterministically"
+            ),
+        )
     )
-    raise CredentialError(msg)
 
 
 class OrcaRouterCredential(Credential):

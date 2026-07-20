@@ -33,15 +33,10 @@ from typing import TYPE_CHECKING, Any, cast
 
 from claude_agent_sdk import ClaudeAgentOptions, ResultMessage, query
 
-from teatree.eval.api_runner import (
-    CleanRoomConfig,
-    build_sdk_options,
-    classify_terminal_error,
-    env_float,
-    is_success_result_error,
-)
+from teatree.eval.api_runner import CleanRoomConfig, build_sdk_options, classify_terminal_error, is_success_result_error
 from teatree.eval.isolation import isolated_claude_env
 from teatree.eval.models import EvalRun, EvalSpec
+from teatree.eval.resource_caps import env_float
 
 if TYPE_CHECKING:
     from collections.abc import Mapping

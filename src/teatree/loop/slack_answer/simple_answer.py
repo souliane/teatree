@@ -111,9 +111,11 @@ def _run_cheap_turn(question: str, digest: str) -> str:
     than posting a broken answer.
 
     A refused ambient environment does NOT collapse that way — the seam raises
-    :class:`~teatree.llm.credentials.CredentialError` and it propagates through
-    this function, failing the cycle loudly. Answering NEEDS_WORK on a misrouted
-    base URL would delegate every question forever with nothing naming why.
+    :class:`~teatree.llm.credentials.CredentialError`, which propagates out of
+    this function to the cycle's per-unit handler. Every unit hits the same
+    misconfiguration, so the observable result is one WARNING per unit naming the
+    cause and an ``errors`` count, rather than a silent delegation that looks
+    like the model simply had nothing to say.
     """
     prompt = f"Question: {question}\n\nCompact teatree state:\n{digest}"
     answer = run_one_shot(

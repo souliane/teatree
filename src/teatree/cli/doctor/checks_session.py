@@ -152,14 +152,10 @@ def _check_interactive_permission_mode() -> bool:
     """
     from teatree.cli.doctor.checks_resources import _read_json_object  # noqa: PLC0415 — lazy CLI import
 
-    try:
-        permissions = _read_json_object(Path.home() / ".claude" / "settings.json").get("permissions")
-        if not isinstance(permissions, dict):
-            return True
-        mode = cast("JsonObject", permissions).get(_INTERACTIVE_PERMISSION_MODE_KEY)
-    except Exception as exc:  # noqa: BLE001 — doctor check must never crash the run
-        typer.echo(f"WARN  Interactive permission-mode check crashed: {exc.__class__.__name__}: {exc}")
+    permissions = _read_json_object(Path.home() / ".claude" / "settings.json").get("permissions")
+    if not isinstance(permissions, dict):
         return True
+    mode = cast("JsonObject", permissions).get(_INTERACTIVE_PERMISSION_MODE_KEY)
     if mode == _CLASSIFIER_GATED_MODE:
         typer.echo(
             f"OK    Interactive permission mode is {_CLASSIFIER_GATED_MODE} — each tool call is classifier-gated."
