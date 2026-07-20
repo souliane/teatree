@@ -346,6 +346,43 @@ class AnthropicSubscriptionCredential(Credential):
     )
 
 
+def reject_ambient_base_url_redirect() -> None:
+    """Refuse an ambient-auth ``claude`` spawn that also carries a base-URL redirect.
+
+    THE guard for every seam that spawns a ``claude`` child WITHOUT pinning a
+    credential onto its env — the headless dispatch's unpinned default, the
+    clean-room one-shot turn, and the maker pane. Those children authenticate
+    however the CLI's own login state resolves, which this process cannot observe,
+    and both the CLI and the Anthropic SDK read
+    :data:`ANTHROPIC_BASE_URL_ENV` from the inherited env.
+
+    The one unambiguously sanctioned shape passes: a metered key with no
+    subscription token beside it — an operator pointing their OWN API key at a
+    gateway, Bedrock/Vertex, or an Anthropic-compatible third-party provider. Every
+    other combination raises: a subscription token present, both present, or neither
+    (the CLI falls back to its stored login, which on a plan deployment is the
+    subscription).
+
+    Seams that DO pin a credential need no call here — they build their env through
+    :meth:`Credential.child_env`, whose ``forbidden_vars`` rule refuses the same
+    combination at the credential itself.
+    """
+    if not os.environ.get(ANTHROPIC_BASE_URL_ENV, "").strip():
+        return
+    has_api_key = bool(os.environ.get(AnthropicApiKeyCredential.spec.env_var, "").strip())
+    has_subscription = bool(os.environ.get(AnthropicSubscriptionCredential.spec.env_var, "").strip())
+    if has_api_key and not has_subscription:
+        return
+    msg = (
+        f"{ANTHROPIC_BASE_URL_ENV} is set and no credential is pinned, so the spawned claude "
+        f"CLI would be redirected while authenticating with whatever login state it holds — "
+        f"which on a subscription deployment is plan auth, valid only against Anthropic's own "
+        f"endpoint. Either unset {ANTHROPIC_BASE_URL_ENV}, or pin agent_harness_provider=api_key "
+        f"so a metered key routes through that endpoint deterministically."
+    )
+    raise CredentialError(msg)
+
+
 class OrcaRouterCredential(Credential):
     """The OrcaRouter BYOK metered API key — the ``pydantic_ai`` harness's Layer-2 provider.
 

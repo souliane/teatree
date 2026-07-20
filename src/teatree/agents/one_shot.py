@@ -28,6 +28,7 @@ from claude_agent_sdk import AssistantMessage, ClaudeAgentOptions, TextBlock
 
 from teatree.agents.harness import Harness, resolve_harness
 from teatree.agents.model_tiering import resolve_tier
+from teatree.llm.credentials import reject_ambient_base_url_redirect
 
 # The empty-hooks ``settings`` blob that, with ``setting_sources=[]``, keeps the
 # clean-room turn from picking up the developer's hooks/personal context.
@@ -61,7 +62,14 @@ def _clean_room_options(spec: OneShotSpec) -> ClaudeAgentOptions:
     DB row reaches the turn. ``setting_sources=[]`` + ``settings`` (empty hooks) +
     ``strict_mcp_config`` keep the run virgin; an empty ``tools`` allowlist and a
     single ``max_turns`` bound it to one context-free answer.
+
+    This turn pins no credential, so the spawned child inherits the ambient auth
+    state AND an ambient ``ANTHROPIC_BASE_URL``. The redirect guard runs HERE rather
+    than inside :func:`run_one_shot`'s try, which swallows every exception: a
+    misconfiguration that silently routed a plan-authenticated turn to a third-party
+    endpoint is the one failure this helper must NOT degrade quietly into ``None``.
     """
+    reject_ambient_base_url_redirect()
     return ClaudeAgentOptions(
         model=resolve_tier(spec.tier),
         system_prompt=spec.system_prompt,

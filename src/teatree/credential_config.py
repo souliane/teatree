@@ -430,21 +430,38 @@ def _active_overlay_scope() -> str:
     return os.environ.get("T3_OVERLAY_NAME", "") or GLOBAL_SCOPE
 
 
+#: Appended to the loud failure when NO credential var reached the eval container. The
+#: credential's own message names ``anthropic_oauth_pass_paths``, a host-side routing
+#: setting the container cannot read — so the actionable remedy is named here instead.
+_CONTAINER_MISSING_NOTE = (
+    "(inside the eval container: the host forwarded no Anthropic credential var — "
+    "fix the host's credential selection, not any in-container config)"
+)
+
+
 def _forwarded_container_credential() -> Credential:
     """The credential the HOST forwarded into the ephemeral eval container.
 
     Inside the container the per-account DB routing is unavailable — the container's
     SQLite has zero tables (never migrated), so a ``ConfigSetting`` query there is a
-    guaranteed ``OperationalError``, not a degraded-but-safe read. The HOST already
-    selected the account and forwarded exactly ONE Anthropic credential var via
-    ``docker run -e`` (``teatree.cli.eval.docker``); ``Credential.export`` sets its own
-    var and STRIPS the conflicting one, so which var is present IS the host's choice.
-    Sniffing it here keeps the container's credential kind faithful with no config read
-    and no knob to forward.
+    guaranteed ``OperationalError``, not a degraded-but-safe read.
+
+    What makes the sniff sound is the FORWARDING, not the export: ``docker.py`` builds
+    its pass-through flags from ``auth_env_vars = (credential.spec.env_var,)`` — the
+    SELECTED credential's var alone — so exactly one Anthropic credential var crosses
+    into the container. (``Credential.export`` does NOT strip its conflict; on a CI
+    runner holding both secrets the HOST process legitimately carries both. Only the
+    single-var forward narrows it.) A change that ever forwards a second credential var
+    would silently flip the container's credential kind, so that one-var invariant is
+    the thing to preserve.
+
+    With NO credential var forwarded the subscription credential is returned and its
+    own ``resolve`` fails loud — correct, since a container with no forwarded token
+    can do nothing useful.
     """
     if os.environ.get(AnthropicApiKeyCredential.spec.env_var):
         return AnthropicApiKeyCredential()
-    return AnthropicSubscriptionCredential()
+    return AnthropicSubscriptionCredential(missing_context=_CONTAINER_MISSING_NOTE)
 
 
 def resolve_eval_credential(*, kind: "AgentHarnessProvider | None" = None, scope: str | None = None) -> Credential:

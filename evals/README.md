@@ -594,6 +594,11 @@ per token with no usage window — is selectable per run via `t3 eval run
 --credential api_key` (or durably via `config_setting set agent_harness_provider
 api_key`) for a lane that needs per-token cost accounting (e.g. GitLab's
 cost-audit lane).
+
+The eval lane and the dispatch lane now share ONE knob, so a deployment that
+pins `agent_harness_provider = api_key` for its dispatch lane moves eval spend
+onto the metered key too. Use the per-run `--credential subscription_oauth` to
+keep an individual eval run on the plan under such a pin.
 Both credentials work in every environment without seeded login state: a clean
 container or CI runner with the credential as a pure env var (no
 `~/.claude.json`, no keychain, no `/login`) authenticates. `make_runner`

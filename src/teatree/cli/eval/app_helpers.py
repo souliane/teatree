@@ -115,6 +115,11 @@ def apply_credential_override(credential: str | None) -> None:
     eval without mutating stored config. The value need not be forwarded into the eval
     container: the host resolves and exports the chosen credential, and the container
     reads the kind back off the one forwarded credential var.
+
+    The accepted values are the two ``claude_sdk``-valid providers, because that is the
+    harness the fresh-run eval lane drives. ``AgentHarnessProvider.valid_for`` makes
+    provider validity harness-DEPENDENT, so this pin is scoped to the eval CLI process
+    and is deliberately not a general way to set the setting.
     """
     if credential is None:
         return
