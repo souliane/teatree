@@ -678,7 +678,13 @@ class TestGitHubCodeHost:
             {"number": 1, "title": "first", "html_url": "https://github.com/org/repo/pull/1"},
             {"number": 2, "title": "second", "html_url": "https://github.com/org/other/pull/2"},
         ]
-        with patch.object(github_mod, "_gh_api_search_paginated", return_value=items) as mock_search:
+        enrich_stdout = json.dumps(
+            {"headRefOid": "abc123", "statusCheckRollup": [], "mergeable": "MERGEABLE", "mergeStateStatus": "CLEAN"}
+        )
+        with (
+            patch.object(github_mod, "_gh_api_search_paginated", return_value=items) as mock_search,
+            patch.object(github_pr_reads_mod, "_run_gh", return_value=MagicMock(stdout=enrich_stdout)),
+        ):
             host = GitHubCodeHost(token="tok")
             result = host.list_my_prs(author="alice")
         assert len(result) == 2
@@ -692,6 +698,22 @@ class TestGitHubCodeHost:
         with patch.object(github_mod, "_gh_api_search_paginated", return_value=[]):
             host = GitHubCodeHost()
             assert host.list_my_prs(author="alice") == []
+
+    def test_list_my_prs_survives_enrichment_when_gh_absent(self) -> None:
+        # A missing ``gh`` binary makes the per-hit pipeline enrichment raise
+        # FileNotFoundError; the scan must still return the un-enriched rows
+        # (the my_pr.failed lane warns on the missing pipeline fields) rather
+        # than crashing the whole list.
+        items = [{"number": 1, "title": "first", "html_url": "https://github.com/org/repo/pull/1"}]
+        with (
+            patch.object(github_mod, "_gh_api_search_paginated", return_value=items),
+            patch.object(github_pr_reads_mod, "_run_gh", side_effect=FileNotFoundError("gh")),
+        ):
+            host = GitHubCodeHost(token="tok")
+            result = host.list_my_prs(author="alice")
+        assert len(result) == 1
+        assert result[0]["number"] == 1
+        assert "status_check_rollup" not in result[0]
 
     def test_list_my_prs_paginates_beyond_first_page(self) -> None:
         # A factory with >100 open PRs hits GitHub search's 100-item cap; items

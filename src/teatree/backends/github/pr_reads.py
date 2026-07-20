@@ -114,7 +114,10 @@ def enrich_pr_pipeline(hit: RawAPIDict, *, token: str) -> RawAPIDict:
     Returns *hit* unchanged when the slug/number cannot be parsed or the
     ``gh pr view`` read fails — the caller keeps the raw hit so the downstream
     scanner surfaces the enrichment gap rather than treating an unread PR as
-    "no CI".
+    "no CI". A ``gh`` read fails either with a non-zero exit
+    (:class:`CommandFailedError`) or an absent binary
+    (:class:`FileNotFoundError`); both degrade to the un-enriched hit so a
+    missing ``gh`` can never crash the whole ``list_my_prs`` scan.
     """
     html_url = hit.get("html_url")
     match = PR_URL_RE.match(urlparse(html_url).path) if isinstance(html_url, str) else None
@@ -135,7 +138,7 @@ def enrich_pr_pipeline(hit: RawAPIDict, *, token: str) -> RawAPIDict:
             token=token,
             timeout=_FORGE_READ_TIMEOUT_SECONDS,
         )
-    except CommandFailedError:
+    except (CommandFailedError, FileNotFoundError):
         warn_throttled(
             logger,
             f"github-pr-enrich-failed:{slug}",
