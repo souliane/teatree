@@ -29,12 +29,6 @@ def _package_sources() -> list[tuple[str, str]]:
 class TestReactiveCycleIgnoresAvailability:
     def test_no_module_references_availability(self) -> None:
         offenders: list[str] = [
-            f"{name}:{token}"
-            for name, source in _package_sources()
-            for token in _FORBIDDEN
-            if token in source
+            f"{name}:{token}" for name, source in _package_sources() for token in _FORBIDDEN if token in source
         ]
-        assert offenders == [], (
-            "the reactive Slack-answer cycle must never consult availability — "
-            f"found: {offenders}"
-        )
+        assert offenders == [], f"the reactive Slack-answer cycle must never consult availability — found: {offenders}"
