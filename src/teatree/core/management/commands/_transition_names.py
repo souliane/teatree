@@ -1,11 +1,14 @@
-"""The CLI-allowed ticket transition names.
+"""The CLI-allowed ticket transition names — the single source of truth.
 
-Split out of ``ticket.py`` (the cap-bound command god-module) as a pure data
-constant the ``transition`` command validates against — the FSM owns the actual
+Split out of ``ticket.py`` (the cap-bound command god-module) as pure data the
+``transition`` command validates against AND derives its ``--help`` text from, so
+the allow-list and the documented list can never drift. The FSM owns the actual
 transitions; this is only the CLI's allow-list of names it will dispatch.
 """
 
-ALLOWED_TRANSITIONS = {
+# Ordered in FSM-ladder order so the derived help reads top-to-bottom; the
+# validated allow-list below is this same set.
+ALLOWED_TRANSITION_NAMES: tuple[str, ...] = (
     "scope",
     "start",
     "plan",
@@ -34,4 +37,10 @@ ALLOWED_TRANSITIONS = {
     # the CLI merely refused to dispatch.
     "ignore",
     "unignore",
-}
+)
+
+ALLOWED_TRANSITIONS = frozenset(ALLOWED_TRANSITION_NAMES)
+
+TRANSITION_HELP = (
+    "Transition a ticket to a new state. Allowed transition names: " + ", ".join(ALLOWED_TRANSITION_NAMES) + "."
+)
