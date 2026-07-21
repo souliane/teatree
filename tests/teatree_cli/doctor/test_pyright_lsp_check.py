@@ -1,10 +1,10 @@
-"""Tests for ``_check_pyright_lsp_plugin`` — advisory live-type-diagnostics aid.
+"""Tests for ``_check_pyright_lsp_plugin`` — enabled-but-unprovisioned LSP gate (#3568).
 
-pyright-lsp gives factory agents LIVE pyright type diagnostics while coding, so a
-type error surfaces in-session instead of only at CI. It is a productivity aid, not
-a worker gate: the check WARNs when the plugin is not enabled, or when its
-``pyright-langserver`` is missing from PATH, but NEVER gates the doctor exit code
-(always returns ``True``) and never FAILs.
+pyright-lsp gives factory agents LIVE pyright type diagnostics while coding. Under
+the epic #3445 "enabled but not provisioned → FAIL" principle the check hard-FAILs
+when the plugin is ENABLED but its ``pyright-langserver`` binary is not on PATH — the
+LSP would silently never start. The plugin merely being disabled is a config choice,
+so that case stays an advisory WARN.
 """
 
 import io
@@ -48,17 +48,22 @@ class TestCheckPyrightLspPlugin:
         assert "t3 setup" in message
         assert "FAIL" not in message
 
-    def test_warns_when_langserver_missing_from_path(self, tmp_path: Path) -> None:
+    def test_fails_when_enabled_but_langserver_missing(self, tmp_path: Path) -> None:
         _write_settings(tmp_path, {_PLUGIN_ID: True})
         ok, message = _run(tmp_path, langserver_on_path=False)
-        assert ok is True  # advisory only — never gates
-        assert "WARN" in message
+        assert ok is False  # enabled-but-unprovisioned is a hard FAIL (#3568)
+        assert "FAIL" in message
         assert "pyright-langserver" in message
-        assert "npm install -g pyright" in message
-        assert "FAIL" not in message
+        assert "npm install -g --prefix ~/.local pyright" in message
 
     def test_never_gates_when_settings_absent(self, tmp_path: Path) -> None:
         # No ~/.claude/settings.json at all → treated as "not enabled", WARN only.
         ok, message = _run(tmp_path, langserver_on_path=True)
+        assert ok is True
+        assert "FAIL" not in message
+
+    def test_never_gates_when_settings_absent_even_without_langserver(self, tmp_path: Path) -> None:
+        # Plugin disabled AND no binary → the disabled config choice never FAILs.
+        ok, message = _run(tmp_path, langserver_on_path=False)
         assert ok is True
         assert "FAIL" not in message

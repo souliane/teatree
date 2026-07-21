@@ -12,9 +12,13 @@ import subprocess
 from unittest.mock import patch
 
 import hooks.scripts.hook_router as router
+from hooks.scripts import gate_result, mr_validator
 from hooks.scripts.hook_router import handle_validate_mr_metadata
+from teatree.config import COLD_HOOK_SETTINGS
 from teatree.core.review.mr_metadata import validate_mr_metadata
 from teatree.types import DEFAULT_MR_TITLE_REGEX
+
+_ALLOWANCE_KEY = "hook_validator_timeout_seconds"
 
 
 def _verdict(command: str) -> list[str] | None:
@@ -99,16 +103,6 @@ class TestDefaultOverlayValidation:
         monkeypatch.setattr(router.shutil, "which", lambda _: None)
         assert handle_validate_mr_metadata(_glab_create("bad", "bad")) is False
 
-    def test_fails_closed_when_validator_times_out(self, monkeypatch, capsys):
-        monkeypatch.delenv("T3_MR_VALIDATE_SCRIPT", raising=False)
-        monkeypatch.delenv("T3_MR_VALIDATE_ALLOW_BROKEN_ENV", raising=False)
-        monkeypatch.setattr(router.shutil, "which", lambda _: "/usr/local/bin/t3")
-        with patch.object(router.subprocess, "run", side_effect=subprocess.TimeoutExpired(cmd="t3", timeout=10)):
-            blocked = handle_validate_mr_metadata(_glab_create("fix: x (p#1)", "fix: x (p#1)"))
-        assert blocked is True
-        out = json.loads(capsys.readouterr().out)
-        assert out["permissionDecision"] == "deny"
-
     def test_fails_closed_when_validator_binary_missing(self, monkeypatch, capsys):
         monkeypatch.delenv("T3_MR_VALIDATE_SCRIPT", raising=False)
         monkeypatch.delenv("T3_MR_VALIDATE_ALLOW_BROKEN_ENV", raising=False)
@@ -173,6 +167,92 @@ class TestValidatorCrashIsNotADeny:
         assert blocked is True
         out = json.loads(capsys.readouterr().out)
         assert out["permissionDecision"] == "deny"
+
+
+class TestValidatorTimeoutIsNotADeny:
+    """A validator that ran out of TIME is cannot-evaluate → warn+allow, never a deny.
+
+    The allowance was a hardcoded ``timeout=10`` while ``t3 tool validate-mr``
+    takes ~13s cold on an unloaded box and 25-50s under concurrent load, so the
+    subprocess ALWAYS timed out and every ``gh``/``glab`` MR body edit was denied
+    — a PR body could not be corrected at all. "Too slow to evaluate" is the same
+    class as "ran but crashed" (crash ≠ deny, #1528), not a policy rejection.
+    """
+
+    def _timeout_run(self, monkeypatch, allowance: int = 60):
+        monkeypatch.delenv("T3_MR_VALIDATE_SCRIPT", raising=False)
+        monkeypatch.delenv("T3_MR_VALIDATE_ALLOW_BROKEN_ENV", raising=False)
+        monkeypatch.setattr(router.shutil, "which", lambda _: "/usr/local/bin/t3")
+        return patch.object(
+            router.subprocess, "run", side_effect=subprocess.TimeoutExpired(cmd="t3", timeout=allowance)
+        )
+
+    def test_timeout_allows_with_a_loud_warn_naming_the_timeout(self, monkeypatch, capsys):
+        with self._timeout_run(monkeypatch):
+            blocked = handle_validate_mr_metadata(_glab_create("fix: x (p#1)", "fix: x (p#1)"))
+        assert blocked is False, "a timed-out validator must not deny (fail-open-with-warn)"
+        captured = capsys.readouterr()
+        assert captured.out.strip() == "", "a timeout must emit no deny JSON on stdout"
+        err = captured.err.lower()
+        assert "validator" in err
+        assert "did not finish" in err, "the warn must name the timeout as the reason, not a rejection"
+        assert str(gate_result.validator_timeout_seconds()) in captured.err, "the warn must name the allowance"
+        assert "hook_validator_timeout_seconds" in captured.err, "the warn must name the knob that raises it"
+        assert "invalid" not in err, "the warn must not read as a content rejection"
+        assert "rejected" not in err, "the warn must not read as a content rejection"
+
+    def test_rejection_still_denies_after_the_timeout_change(self, monkeypatch, capsys):
+        # Anti-vacuity: only the CANNOT_EVALUATE path moved. A validator that RAN
+        # and REJECTED keeps its teeth.
+        monkeypatch.delenv("T3_MR_VALIDATE_SCRIPT", raising=False)
+        monkeypatch.setattr(router.shutil, "which", lambda _: "/usr/local/bin/t3")
+        rejected = subprocess.CompletedProcess(args=[], returncode=1, stdout="", stderr="Title is empty.")
+        with patch.object(router.subprocess, "run", return_value=rejected):
+            blocked = handle_validate_mr_metadata(_glab_create("", ""))
+        assert blocked is True
+        out = json.loads(capsys.readouterr().out)
+        assert out["permissionDecision"] == "deny"
+        assert "Title is empty." in out["permissionDecisionReason"]
+
+    def test_pass_still_allows(self, monkeypatch, capsys):
+        monkeypatch.delenv("T3_MR_VALIDATE_SCRIPT", raising=False)
+        monkeypatch.setattr(router.shutil, "which", lambda _: "/usr/local/bin/t3")
+        ok = subprocess.CompletedProcess(args=[], returncode=0, stdout="", stderr="")
+        with patch.object(router.subprocess, "run", return_value=ok):
+            blocked = handle_validate_mr_metadata(_glab_create("fix: x (p#1)", "fix: x (p#1)"))
+        assert blocked is False
+        assert capsys.readouterr().err.strip() == "", "a clean pass must be silent"
+
+
+class TestValidatorTimeoutAllowanceIsConfigurable:
+    """The allowance is a DB-home cold-hook budget, not a magic number in the gate."""
+
+    def test_default_allowance_covers_the_measured_validator_cost(self):
+        # ~13s cold, 25-50s under load on the reference box — the default must
+        # clear the loaded range with headroom, or it rots into a false deny again.
+        assert gate_result._HOOK_VALIDATOR_TIMEOUT_DEFAULT_SECONDS >= 60
+
+    def test_configured_allowance_is_passed_to_the_subprocess(self, monkeypatch):
+        monkeypatch.delenv("T3_MR_VALIDATE_SCRIPT", raising=False)
+        monkeypatch.setattr(router.shutil, "which", lambda _: "/usr/local/bin/t3")
+        monkeypatch.setattr(mr_validator, "validator_timeout_seconds", lambda: 123)
+        ok = subprocess.CompletedProcess(args=[], returncode=0, stdout="", stderr="")
+        with patch.object(router.subprocess, "run", return_value=ok) as run:
+            handle_validate_mr_metadata(_glab_create("fix: x (p#1)", "fix: x (p#1)"))
+        assert run.call_args.kwargs["timeout"] == 123
+
+    def test_allowance_resolves_from_the_cold_db_budget(self, monkeypatch):
+        monkeypatch.setattr(
+            gate_result, "teatree_int_setting", lambda name, **kwargs: 77 if name == _ALLOWANCE_KEY else 0
+        )
+        assert gate_result.validator_timeout_seconds() == 77
+
+    def test_allowance_is_a_registered_cold_hook_budget(self):
+        # The no-silent-drop registry: an unregistered cold budget is dropped by
+        # the TOML->DB import and silently reverts to its in-code default.
+        setting = COLD_HOOK_SETTINGS[_ALLOWANCE_KEY]
+        assert setting.default == gate_result._HOOK_VALIDATOR_TIMEOUT_DEFAULT_SECONDS
+        assert setting.scope == ""
 
 
 class TestFileBasedDescriptionIsRead:

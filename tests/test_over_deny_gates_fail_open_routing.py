@@ -73,7 +73,7 @@ class TestValidateMrBrokenEnvRouting:
     def test_denies_on_broken_env_when_fail_open_off(self, home: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         _write_fail_open(home, on=False)
         # Force the "validator unresolvable" broken-env branch.
-        monkeypatch.setattr(router, "_mr_validate_argv", lambda: None)
+        monkeypatch.setattr(router, "mr_validate_argv", lambda: None)
         monkeypatch.delenv("T3_MR_VALIDATE_ALLOW_BROKEN_ENV", raising=False)
         blocked, payload = _capture(handle_validate_mr_metadata, _mr_create())
         assert blocked is True
@@ -82,7 +82,7 @@ class TestValidateMrBrokenEnvRouting:
 
     def test_passes_through_on_broken_env_when_fail_open_on(self, home: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         _write_fail_open(home, on=True)
-        monkeypatch.setattr(router, "_mr_validate_argv", lambda: None)
+        monkeypatch.setattr(router, "mr_validate_argv", lambda: None)
         monkeypatch.delenv("T3_MR_VALIDATE_ALLOW_BROKEN_ENV", raising=False)
         blocked, payload = _capture(handle_validate_mr_metadata, _mr_create())
         assert blocked is False

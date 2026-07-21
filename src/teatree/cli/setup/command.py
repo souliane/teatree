@@ -19,6 +19,7 @@ from teatree.cli.doctor import agent_skill_dirs
 from teatree.cli.setup.apm import ApmInstaller, strip_apm_hooks
 from teatree.cli.setup.clone import find_main_clone, validate_repo
 from teatree.cli.setup.docker_alias import DockerAliasInstaller
+from teatree.cli.setup.git_hooks_installer import GitHooksInstaller
 from teatree.cli.setup.mcp_registrar import McpServerRegistrar
 from teatree.cli.setup.plugin_registrar import PluginRegistrar, PyrightPluginRegistrar
 from teatree.cli.setup.skill_linker import CORE_EXCLUDED_SKILLS, SkillLinker
@@ -122,6 +123,16 @@ def run(
 
     ApmInstaller(repo).install()
 
+    # A checkout whose hooks were never installed pushes with the whole local gate
+    # layer absent (leak gate, banned-terms, dev/push-gate.sh) and nothing errors.
+    # `prek_hook.install` routes through `run_step`'s optional time-box, which
+    # imports `provision_timebox` -> `notify` -> `teatree.core.models` at call
+    # time — Django must be configured before this runs, or that import raises
+    # `ImproperlyConfigured` (`ensure_django()` is idempotent, so the later call
+    # before DM provisioning is a no-op repeat).
+    ensure_django()
+    GitHooksInstaller(repo).install(echo=typer.echo)
+
     settings_json = Path.home() / ".claude" / "settings.json"
     stripped = strip_apm_hooks(settings_json)
     if stripped:
@@ -174,6 +185,10 @@ def run(
         # unreachable marketplace WARNs and continues; its `pyright-langserver` runtime
         # dep is baked into the image and advisory-checked by `t3 doctor`.
         PyrightPluginRegistrar().install()
+        # #3568: register+enable is not enough — the plugin execs `pyright-langserver`,
+        # so provision that binary (npm `pyright` into ~/.local) when it is missing.
+        # Idempotent (skips when already on PATH) and offline-safe (WARNs, continues).
+        PyrightPluginRegistrar.ensure_langserver()
         # Confirm the structured-search MCP server (`t3 mcp serve`, #1023) is
         # still wired via the plugin-bundled `.mcp.json` (#2863) — read-only,
         # idempotent, warns loudly rather than silently regressing agents back

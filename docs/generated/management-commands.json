@@ -1060,7 +1060,7 @@
           "name": "plan"
         },
         {
-          "help": "Transition a ticket to a new state",
+          "help": "Transition a ticket to a new state. Allowed transition names: scope, start, plan, code, test, review, ship, request_review, mark_merged, retrospect, mark_delivered, rework, mark_review_no_action, reconcile_reviewed, ignore, unignore",
           "name": "transition"
         },
         {

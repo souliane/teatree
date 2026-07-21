@@ -29,10 +29,14 @@ def _check_chrome_devtools_mcp_suggestion(*, home: Path | None = None, cwd: Path
         return True
     if _CHROME_DEVTOOLS_MCP_NAME in names:
         return True
+    from teatree.core.evidence.browser_diagnosis import (  # noqa: PLC0415 — deferred: light import
+        chrome_devtools_add_command,
+    )
+
     typer.echo(
         "INFO  chrome-devtools MCP is an OPTIONAL aid for authoring/debugging Playwright "
         "e2e specs (live DOM, console, network, screenshots). Enable it with "
-        "`claude mcp add chrome-devtools -- npx -y chrome-devtools-mcp@latest` (needs a "
+        f"`{chrome_devtools_add_command()}` (needs a "
         "Chrome executable). It is never required — its absence gates nothing."
     )
     return True

@@ -20,7 +20,7 @@
 
 ## Doc-Only "Fix" Propagates a Broken CLI Reference
 
-- **Symptom:** A docs-only commit replaces a stale bare CLI invocation with an overlay-prefixed form (e.g. retargeting `t3 <overlay> lifecycle setup`) but every reader who copy-pastes the new form still gets `Unknown command`.
+- **Symptom:** A docs-only commit replaces a stale bare CLI invocation with an overlay-prefixed form (e.g. retargeting a bare `lifecycle setup` to its `t3 <overlay> …` form) but every reader who copy-pastes the new form still gets `Unknown command`.
 - **Cause:** The retarget assumed the new command exists because the old one used to. When the underlying Django command (or bridge entry) was deleted in a prior PR, prose retargeting alone can't make the new invocation work — it just relocates the broken reference.
 - **Fix:** Before shipping a doc-only retarget of a CLI invocation, smoke-test the new form with `t3 <overlay> <group> <sub> --help`. If the call fails, the docs aren't stale — the CLI is broken, and the right scope is "fix the CLI bridge **and** the docs in one PR".
 - **Prevention:** Treat "stale `t3` reference" findings as a tripwire, not a docs typo. Always check `cli/overlay.py:DJANGO_GROUPS` and `core/management/commands/` before shipping the retarget.

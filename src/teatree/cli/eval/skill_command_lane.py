@@ -89,9 +89,11 @@ def skill_command_validity(
 
     Tier-1 (deterministic, free, no ``claude`` run): each ``skills/<name>/`` doc's
     backticked ``t3 …`` commands are token-walked against the live typer command
-    tree. A command that no longer resolves (a CLI rename left the doc stale) is a
-    violation — the "no stale references" rule — and exits non-zero. Generic
-    placeholder mentions (``t3 …`` / ``t3 <overlay> …``) are skipped.
+    tree. A leading ``t3 <overlay>`` is resolved to a representative overlay so an
+    overlay-scoped ``t3 <overlay> <group> <sub>`` is validated too. A command that
+    no longer resolves (a CLI rename left the doc stale) is a violation — the "no
+    stale references" rule — and exits non-zero. A generic mention whose command
+    path is a placeholder (``t3 …``, ``t3 <overlay> …``) is skipped.
     """
     ensure_django()
     require_valid_format(output_format)

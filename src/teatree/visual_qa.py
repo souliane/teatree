@@ -186,7 +186,7 @@ def run_check(targets: list[str], base_url: str, screenshot_dir: str = DEFAULT_S
 
     try:
         with sync_playwright() as pw:
-            browser = pw.chromium.launch()
+            browser = pw.chromium.launch(headless=True)
             context = browser.new_context(viewport={"width": 1280, "height": 900})
             for index, target in enumerate(targets[:MAX_PAGES]):
                 if time.monotonic() >= deadline:

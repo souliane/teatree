@@ -117,6 +117,7 @@ OVERLAY_OVERRIDABLE_SETTINGS: dict[str, Callable[[Any], Any]] = {
     "gate_relaxation_gate_enabled": _parse_strict_bool,
     "incremental_push_gate": _parse_strict_bool,
     "chrome_devtools_mcp_enabled": _parse_strict_bool,
+    "chrome_devtools_headless": _parse_strict_bool,
     "colleague_repo_url_pattern": _parse_strict_str,
     "solo_repo_url_pattern": _parse_strict_str,
     "require_anti_vacuity_attestation": _parse_strict_bool,
@@ -1381,6 +1382,10 @@ class _PrePublishGateSettings:
     # the deterministic Playwright lane, never this server. Per-overlay
     # overridable (DB-home) — turn OFF only on a host that cannot run the server.
     chrome_devtools_mcp_enabled: bool = True
+    # Upstream chrome-devtools-mcp launches a VISIBLE Chrome by default. teatree runs
+    # 100% headless, so the registration line passes `--headless=true` unless an
+    # operator explicitly opts into a headed browser. Per-overlay overridable (DB-home).
+    chrome_devtools_headless: bool = True
     colleague_repo_url_pattern: str = ""
     solo_repo_url_pattern: str = ""
     # Conventional-Commits title pattern enforced at ``pr create`` BEFORE the
