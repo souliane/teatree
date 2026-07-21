@@ -1,11 +1,14 @@
 """Fresh-box bootstrap-hardening doctor checks (umbrella #3404).
 
-Three gates that turn silent late failures on a freshly-provisioned or migrated
+Four gates that turn silent late failures on a freshly-provisioned or migrated
 box into loud, up-front ones:
 
 - :func:`_check_gh_token_permissions` (#3405/#3477) — a missing REQUIRED permission
     is a hard FAIL; a missing RECOMMENDED one is a WARN with remediation, never a fail.
     Mirrors ``deploy/entrypoint.sh``'s ``init_preflight`` probe.
+- :func:`_check_git_hooks_installed` — a checkout whose git hooks were never
+    installed pushes with the whole local gate layer absent. A hard FAIL naming the
+    missing hooks; a deliberate ``core.hooksPath`` override only WARNs.
 - :func:`_check_provision_concurrency_from_host` (#3409/#3434) — a stale small-box
     ``provision_max_concurrency`` pin throttling a more capable host. It only
     auto-clears a pin the ENTRYPOINT seeded (never an operator's deliberate one),
@@ -119,6 +122,43 @@ def _check_gh_token_permissions() -> bool:
     return False
 
 
+def _check_git_hooks_installed() -> bool:
+    """FAIL when ANY checkout teatree commits from has no git hooks installed.
+
+    A ``.git/hooks`` holding only ``*.sample`` files is a silent-broken install of
+    the same class as #3523's PAT scopes: every push from that checkout — and from
+    every worktree sharing its git dir — runs with the local gate layer absent.
+    The check spans every discovered checkout precisely because the real failure is
+    hooks landing in one clone while work happens in another: judging only the
+    installed clone reads green while another pushes ungated. A deliberate
+    ``core.hooksPath`` override is reported, never failed on.
+    """
+    from teatree.core.gates.git_checkouts import discover_checkouts  # noqa: PLC0415 — deferred (ORM)
+    from teatree.core.gates.git_hooks_preflight import (  # noqa: PLC0415 — deferred import
+        format_remediation,
+        probe_checkouts,
+    )
+
+    try:
+        probes = probe_checkouts(discover_checkouts())
+    except Exception as exc:  # noqa: BLE001 — a probe failure warns and passes, never blocks doctor
+        typer.echo(f"WARN  Could not probe the git hooks: {exc.__class__.__name__}: {exc}")
+        return True
+
+    ok = True
+    for probe in probes:
+        if probe.custom_hooks_path is not None:
+            typer.echo(
+                f"WARN  {probe.checkout}: core.hooksPath points at {probe.custom_hooks_path} — teatree leaves "
+                f"that directory to you and cannot verify the commit/push gates are installed there."
+            )
+        remediation = format_remediation(probe)
+        ok = ok and not remediation
+        for line in remediation:
+            typer.echo(f"FAIL  {line}")
+    return ok
+
+
 def _check_provision_concurrency_from_host(*, repair: bool = False) -> bool:
     """Surface — and under ``--repair`` clear — a stale entrypoint-seeded concurrency pin (#3409/#3434).
 
@@ -218,21 +258,25 @@ def _check_claude_settings_drift() -> bool:
 def run_bootstrap_checks(*, repair: bool = False) -> bool:
     """Run every bootstrap-hardening check; return ``False`` iff a hard gate fails.
 
-    Only the token-permission gate (#3405) affects the verdict — the concurrency
-    autofix (#3409/#3434) and the settings-drift check (#3410) are surfacing-only
-    and always pass. Runs post-``ensure_django`` (the concurrency autofix reads the
+    Only the token-permission gate (#3405) and the git-hooks gate affect the
+    verdict — the concurrency autofix (#3409/#3434) and the settings-drift check
+    (#3410) are surfacing-only and always pass. Every check runs before the verdict
+    is returned, so one failure never masks another's output. Runs
+    post-``ensure_django`` (the concurrency autofix reads the
     ORM). ``repair`` gates the concurrency autofix's one mutation: a plain
     ``t3 doctor`` (``repair=False``) inspects and WARNs but NEVER writes.
     """
     ok = _check_gh_token_permissions()
+    hooks_ok = _check_git_hooks_installed()
     _check_provision_concurrency_from_host(repair=repair)
     _check_claude_settings_drift()
-    return ok
+    return ok and hooks_ok
 
 
 __all__ = [
     "_check_claude_settings_drift",
     "_check_gh_token_permissions",
+    "_check_git_hooks_installed",
     "_check_provision_concurrency_from_host",
     "run_bootstrap_checks",
 ]
