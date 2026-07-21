@@ -38,7 +38,7 @@ class TestReviewPhaseKeepsShellDeniesWrite:
     @pytest.mark.parametrize("phase", sorted(VERDICT_REVIEW_PHASES))
     def test_every_verdict_review_phase_keeps_bash_and_denies_write(self, phase: str) -> None:
         # The Lane-A translation of the SSOT: a phase that must RECORD a verdict
-        # (`t3 review record` / `t3 review post-comment` off a cold checkout) is
+        # (`t3 teatree review record` / `t3 teatree review post-comment` off a cold checkout) is
         # dispatched with Bash reachable, and never with Write/Edit.
         disallowed = set(sdk_disallowed_tools_for_phase(phase))
         assert "Bash" not in disallowed, phase

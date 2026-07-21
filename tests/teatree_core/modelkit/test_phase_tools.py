@@ -68,16 +68,26 @@ class TestDispatchablePhaseTotality:
 
     @pytest.mark.parametrize("phase", sorted(VERDICT_REVIEW_PHASES))
     def test_every_verdict_review_phase_gets_the_shell_never_write(self, phase: str) -> None:
-        # A review phase's deliverable is a RECORDED verdict, and every recording
-        # path is a shell call (`t3 review record` / `t3 review post-comment`,
-        # bound to a `git rev-parse HEAD` sha) off a `git worktree add --detach`
-        # cold checkout. A shell-less review phase can read a diff but can never
-        # deliver — it stalls and leaks an "I have no Bash/git/gh" question to the
-        # owner instead of a merge_safe/hold. It still never mutates source.
+        # Each verdict-review phase's deliverable is a RECORDED verdict. The
+        # `codex_*` variants have NO server-side envelope seam and the MCP post
+        # path is GitLab-only, so on a GitHub PR the shell (`t3 teatree review
+        # record` / `t3 teatree review post-comment`, bound to a `git rev-parse
+        # HEAD` sha off a `git worktree add --detach` cold checkout) is their only
+        # way to deliver — a shell-less codex member stalls and leaks an "I have no
+        # Bash/git/gh" question to the owner. It still never mutates source.
         tools = tools_for_phase(phase)
         assert {"read_file", "search_files", "shell"} <= tools, phase
         assert "write_file" not in tools, phase
         assert "edit_file" not in tools, phase
+
+    def test_verdict_review_phases_membership_is_exactly_the_four(self) -> None:
+        # Pin the exact membership: the set drives the `dict.fromkeys` shell grant
+        # in the table, so adding e.g. `scoping` here would silently hand it the
+        # shell. This closes that gap — a membership change must update this test.
+        assert (
+            frozenset({"reviewing", "codex_reviewing", "codex_adversarial_reviewing", "e2e_reviewing"})
+            == VERDICT_REVIEW_PHASES
+        )
 
     def test_codex_review_variants_share_one_toolset(self) -> None:
         # Both variants come out of the SAME dispatch handler
