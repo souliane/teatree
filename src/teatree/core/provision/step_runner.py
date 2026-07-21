@@ -15,6 +15,7 @@ from typing import TYPE_CHECKING
 
 from teatree.core.provision.provision_report import ProvisionReport, StepReporter, StepResult
 from teatree.utils.run import run_allowed_to_fail
+from teatree.utils.thread_db import close_thread_db_connections
 
 if TYPE_CHECKING:
     from teatree.types import ProvisionStep
@@ -317,10 +318,18 @@ def _run_group_concurrently(group: "list[ProvisionStep]", *, write: Callable[[st
     # Hoisting the read keeps the workers ORM-free, exactly as _run_single_step's
     # "subprocess_only steps touch no ORM" contract promises.
     timeouts = [_resolve_step_timeout(step) for step in group]
+
+    def _run_member(step: "ProvisionStep", timeout: float | None) -> StepResult:
+        # Hoisting the timeout read keeps the HAPPY path ORM-free, but the
+        # time-box's failure paths still notify the user (an ORM write) on this
+        # worker thread — so close the thread's handle either way.
+        try:
+            return _run_single_step(step, write=write, timeout=timeout)
+        finally:
+            close_thread_db_connections()
+
     with ThreadPoolExecutor(max_workers=len(group)) as pool:
-        return list(
-            pool.map(lambda step, timeout: _run_single_step(step, write=write, timeout=timeout), group, timeouts)
-        )
+        return list(pool.map(_run_member, group, timeouts))
 
 
 def _resolve_step_timeout(step: "ProvisionStep") -> float | None:
