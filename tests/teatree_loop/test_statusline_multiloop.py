@@ -23,7 +23,6 @@ different zone (``action_needed``).
 """
 
 from datetime import timedelta
-from unittest.mock import patch
 
 import pytest
 from django.utils import timezone
@@ -52,8 +51,7 @@ class TestLiveLoopsAnchor:
         _make_lease("loop-self-improve", expires_in=timedelta(minutes=30))
         _make_lease("loop-slack-answer", expires_in=timedelta(minutes=30))
 
-        with patch("teatree.loop.statusline_loops._availability_segment", return_value=""):
-            lines = live_loops_anchor()
+        lines = live_loops_anchor()
 
         assert len(lines) == 1, repr(lines)
         line = lines[0]

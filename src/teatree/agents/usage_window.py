@@ -25,7 +25,7 @@ from datetime import UTC, datetime, timedelta
 from django.utils import timezone
 
 from teatree.config import get_effective_settings
-from teatree.core.models import LIMIT_PARKED_PREFIX, LoopPresetOverride, Task, TaskAttempt, UsageWindowState
+from teatree.core.models import LIMIT_PARKED_PREFIX, ModeOverride, Task, TaskAttempt, UsageWindowState
 from teatree.llm.anthropic_limits import LimitCause, LimitMatch, window_horizon
 
 logger = logging.getLogger(__name__)
@@ -246,7 +246,7 @@ def park_task_on_all_exhausted(
 
 def _auto_engage_low_power(reset: datetime, moment: datetime) -> None:
     try:
-        LoopPresetOverride.objects.auto_engage_low_power(resets_at=reset, now=moment)
+        ModeOverride.objects.auto_engage_low_power(resets_at=reset, now=moment)
     except Exception:
         logger.warning("low-power auto-engage failed on park — continuing", exc_info=True)
 

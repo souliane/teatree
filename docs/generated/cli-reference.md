@@ -1554,6 +1554,8 @@ Usage: t3 eval [OPTIONS] COMMAND [ARGS]...
 │                         §2.4 JSON (to --out or stdout).                      │
 │ prepare-transcript      Emit the per-scenario prompts for a LOCAL            │
 │                         transcript-backend eval run.                         │
+│ set-baseline            Regenerate the ``baseline`` preset file from a       │
+│                         model-matrix JSON run.                               │
 │ history                 Show recent eval runs and per-scenario pass-rate     │
 │                         over time.                                           │
 │ list                    List discovered eval scenarios as a table (Name,     │
@@ -1604,47 +1606,55 @@ Usage: t3 eval benchmark [OPTIONS]
  Docker-routed run is forced ``--no-persist``.
 
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
-│ *  --models                            TEXT     Comma-separated model@effort │
-│                                                 variants to compare, e.g.    │
-│                                                 claude-opus-4-8@xhigh,claud… │
-│                                                 (a plain model name =        │
-│                                                 default effort).             │
-│                                                 [required]                   │
-│    --scenarios                         TEXT     Comma-separated scenario     │
-│                                                 names to benchmark (default: │
-│                                                 the whole suite).            │
-│    --trials                            INTEGER  Re-run each (scenario,       │
-│                                                 variant) cell this many      │
-│                                                 times.                       │
-│                                                 [default: 1]                 │
-│    --max-turns                         INTEGER  Override every scenario's    │
-│                                                 max_turns (per-invocation).  │
-│    --max-budget-usd                    FLOAT    Per-run USD budget circuit   │
-│                                                 breaker (default 2.0 —       │
-│                                                 generous so even an          │
-│                                                 opus@xhigh scenario          │
-│                                                 COMPLETES rather than        │
-│                                                 truncating; a truncated run  │
-│                                                 measures the cap, not the    │
-│                                                 model). An over-budget cell  │
-│                                                 is recorded as a             │
-│                                                 budget_exceeded FAIL, not a  │
-│                                                 crash.                       │
-│                                                 [default: 2.0]               │
-│    --format                            TEXT     Report format: text or json. │
-│                                                 [default: text]              │
-│    --persist           --no-persist             Persist the underlying       │
-│                                                 matrix run into the          │
-│                                                 run-history ledger (`t3 eval │
-│                                                 history`).                   │
-│                                                 [default: persist]           │
-│    --local                                      Run on the HOST instead of   │
-│                                                 the default CI container — a │
-│                                                 quick local check only. A    │
-│                                                 host run is NOT the          │
-│                                                 reproducible regression gate │
-│                                                 (use Docker/CI for that).    │
-│    --help                                       Show this message and exit.  │
+│ --models                            TEXT     Comma-separated model@effort    │
+│                                              variants to compare, e.g.       │
+│                                              claude-opus-4-8@xhigh,claude-s… │
+│                                              (a plain model name = default   │
+│                                              effort). Exactly one of         │
+│                                              --models/--presets is required. │
+│ --presets                           TEXT     Comma-separated PRESET names to │
+│                                              compare instead of raw          │
+│                                              model@effort variants, e.g.     │
+│                                              cheap,baseline,default          │
+│                                              ('default' = each scenario's    │
+│                                              own tier/phase — the same       │
+│                                              resolution `t3 eval run` uses   │
+│                                              with no preset active;          │
+│                                              'baseline' is the file-backed   │
+│                                              evals/presets/baseline.yaml     │
+│                                              per-scenario map). Exactly one  │
+│                                              of --models/--presets is        │
+│                                              required.                       │
+│ --scenarios                         TEXT     Comma-separated scenario names  │
+│                                              to benchmark (default: the      │
+│                                              whole suite).                   │
+│ --trials                            INTEGER  Re-run each (scenario, variant) │
+│                                              cell this many times.           │
+│                                              [default: 1]                    │
+│ --max-turns                         INTEGER  Override every scenario's       │
+│                                              max_turns (per-invocation).     │
+│ --max-budget-usd                    FLOAT    Per-run USD budget circuit      │
+│                                              breaker (default 2.0 — generous │
+│                                              so even an opus@xhigh scenario  │
+│                                              COMPLETES rather than           │
+│                                              truncating; a truncated run     │
+│                                              measures the cap, not the       │
+│                                              model). An over-budget cell is  │
+│                                              recorded as a budget_exceeded   │
+│                                              FAIL, not a crash.              │
+│                                              [default: 2.0]                  │
+│ --format                            TEXT     Report format: text or json.    │
+│                                              [default: text]                 │
+│ --persist           --no-persist             Persist the underlying matrix   │
+│                                              run into the run-history ledger │
+│                                              (`t3 eval history`).            │
+│                                              [default: persist]              │
+│ --local                                      Run on the HOST instead of the  │
+│                                              default CI container — a quick  │
+│                                              local check only. A host run is │
+│                                              NOT the reproducible regression │
+│                                              gate (use Docker/CI for that).  │
+│ --help                                       Show this message and exit.     │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -1999,6 +2009,38 @@ Usage: t3 eval prepare-transcript [OPTIONS] [NAME]
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
+#### `t3 eval set-baseline`
+
+```
+Usage: t3 eval set-baseline [OPTIONS]
+
+ Regenerate the ``baseline`` preset file from a model-matrix JSON run.
+
+ For each scenario in *from_matrix* that is still discovered, picks the
+ cheapest tier whose cell passed (not skipped, not errored). A scenario
+ failing every tier is skipped with a warning — never guessed. A scenario in
+ the matrix that is no longer discovered (renamed/removed) is pruned. Output
+ is deterministic: scenario keys sorted, ``frontier_ok`` sorted.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ *  --from                  PATH  Matrix JSON to derive the baseline from —   │
+│                                  the output of `t3 eval run --models <tier   │
+│                                  models> --format json` (or `t3 eval         │
+│                                  benchmark --format json`).                  │
+│                                  [required]                                  │
+│    --allow-frontier              Permit assigning the frontier tier to a     │
+│                                  scenario that only passed there. Without    │
+│                                  this, such a scenario aborts the write      │
+│                                  (exit 2) rather than silently pinning the   │
+│                                  most expensive tier. When passed, the       │
+│                                  scenario is ALSO recorded under frontier_ok │
+│                                  in the same file.                           │
+│    --out                   PATH  Baseline file to write (default:            │
+│                                  evals/presets/baseline.yaml).               │
+│    --help                        Show this message and exit.                 │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
 #### `t3 eval history`
 
 ```
@@ -2047,6 +2089,14 @@ Usage: t3 eval run [OPTIONS] [NAME]
  aggregated by ``--require`` (``any`` = pass@k, ``all`` = pass^k). ``--models``
  runs the suite once per model and renders a comparison matrix. A single trial
  against the default backend is the legacy behavior.
+
+ ``--preset NAME`` applies a named model-tier PRESET at the per-scenario seam
+ (``cheap``/``frontier`` — a uniform tier for every scenario — or ``baseline``,
+ the file-backed per-scenario map in ``evals/presets/baseline.yaml``) instead
+ of each scenario's own ``tier``/``phase``. A scenario declaring an explicit
+ ``model:`` still wins over the preset, and a scenario absent from the
+ ``baseline`` map falls through to its own YAML resolution unchanged. Mutually
+ exclusive with ``--benchmark``/``--model``/``--models``.
 
  Each run is recorded into the run-history ledger (``t3 eval history``) unless
  ``--no-persist`` is given. ``--baseline`` marks the persisted run as the
@@ -2440,7 +2490,30 @@ Usage: t3 eval run [OPTIONS] [NAME]
 │                                                     suite on a candidate     │
 │                                                     model. Mutually          │
 │                                                     exclusive with           │
-│                                                     --benchmark/--models.    │
+│                                                     --benchmark/--models/--… │
+│ --preset                                   TEXT     Apply a named model-tier │
+│                                                     PRESET at the            │
+│                                                     per-scenario seam        │
+│                                                     instead of each          │
+│                                                     scenario's own           │
+│                                                     tier/phase:              │
+│                                                     'cheap'/'frontier'       │
+│                                                     (uniform tier, every     │
+│                                                     scenario) or 'baseline'  │
+│                                                     (the file-backed         │
+│                                                     evals/presets/baseline.… │
+│                                                     per-scenario map — a     │
+│                                                     scenario absent from it  │
+│                                                     falls through to its own │
+│                                                     YAML tier, never         │
+│                                                     silently cheapened).     │
+│                                                     Forces the metered api   │
+│                                                     backend (a preset        │
+│                                                     changes what model runs, │
+│                                                     so a transcript replay   │
+│                                                     can't reflect it).       │
+│                                                     Mutually exclusive with  │
+│                                                     --benchmark/--model/--m… │
 │ --escalate-on-fail                                  ADAPTIVE escalation for  │
 │                                                     the cheap single-trial   │
 │                                                     PR lane: a scenario that │
@@ -9665,7 +9738,8 @@ Usage: t3 teatree availability [OPTIONS] COMMAND [ARGS]...
 ```
 Usage: t3 teatree availability away [OPTIONS]
 
- Force away-mode (deferred questions) until *until* — or forever.
+ Alias: set the holiday ``offline`` mode (defer + pause) until *until* — or
+ forever.
 
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --until        TEXT  ISO8601 timestamp when the override expires (e.g.       │
@@ -9683,7 +9757,8 @@ Usage: t3 teatree availability autonomous-away [OPTIONS]
 
  Unlike ``away`` (which also pauses the factory), autonomous-away is the
  unattended-run state: ``AskUserQuestion`` calls defer to the durable
- backlog while the Stop self-pump keeps driving the loop.
+ backlog while the Stop self-pump keeps driving the loop. Alias for the
+ ``unattended`` merged mode.
 
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --until        TEXT  ISO8601 timestamp when the override expires (e.g.       │
@@ -9697,11 +9772,11 @@ Usage: t3 teatree availability autonomous-away [OPTIONS]
 ```
 Usage: t3 teatree availability present [OPTIONS]
 
- Force present-mode (interactive questions) until *until* — or forever.
+ Alias: set the ``engaged`` present-class mode until *until* — or forever.
 
- Coming back from away auto-drains the deferred-question backlog to
- the user's Slack DM (handled in :func:`write_override`), so the user
- is re-asked everything they missed without any manual step.
+ Coming back from an away-class mode auto-drains the deferred-question
+ backlog to the user's Slack DM (handled in the mode-override chokepoint),
+ so the user is re-asked everything they missed without any manual step.
 
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --until          TEXT  ISO8601 timestamp when the override expires.          │
@@ -9718,7 +9793,7 @@ Usage: t3 teatree availability present [OPTIONS]
 ```
 Usage: t3 teatree availability auto [OPTIONS]
 
- Clear the manual override; the cron schedule decides again.
+ Clear the manual mode override; the schedule / default mode decides again.
 
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --help          Show this message and exit.                                  │

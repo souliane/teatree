@@ -20,7 +20,7 @@ from django.db import connection
 from django.test.utils import CaptureQueriesContext
 from django.utils import timezone
 
-from teatree.core.models import Loop, LoopPreset, LoopPresetOverride, LoopState, Prompt
+from teatree.core.models import Loop, LoopState, Mode, ModeOverride, Prompt
 from teatree.core.models.loop_lease import LoopLease
 from teatree.loops.live import STALL_FACTOR, LoopKind, LoopStatusEntry, build_report, owned_per_loop_owners
 
@@ -377,8 +377,8 @@ class TestMiniEntriesAdmittedFoldsPresetMask(django.test.TestCase):
         return Loop.objects.create(name=name, delay_seconds=120, prompt=prompt, enabled=enabled)
 
     def _activate(self, preset_name: str, entries: dict[str, bool]) -> None:
-        LoopPreset.objects.create(name=preset_name, entries=entries)
-        LoopPresetOverride.objects.set_override(preset_name)
+        Mode.objects.create(name=preset_name, entries=entries)
+        ModeOverride.objects.set_override(preset_name)
 
     def test_enabled_loop_with_no_preset_is_admitted(self) -> None:
         self._loop("demo-admit-base")

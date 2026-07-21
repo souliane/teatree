@@ -16,7 +16,7 @@ import typer
 from django.utils import timezone
 from django_typer.management import TyperCommand, command
 
-from teatree.core.models import PIN_MODES, Loop, LoopPreset, LoopPresetOverride
+from teatree.core.models import PIN_MODES, Loop, Mode, ModeOverride
 from teatree.loop.preset_resolution import next_boundary
 from teatree.loops.preset_status import active_summary, effective_verdicts
 
@@ -85,7 +85,7 @@ class Command(TyperCommand):
         """List every preset with its pin, scope, entry count, and the ACTIVE marker."""
         active = active_summary()
         active_name = active.name if active is not None else ""
-        presets = list(LoopPreset.objects.all())
+        presets = list(Mode.objects.all())
         if json_output:
             payload = [_preset_row(preset, active_name) for preset in presets]
             self.stdout.write(json.dumps({"active": active_name, "presets": payload}, indent=2))
@@ -126,10 +126,10 @@ class Command(TyperCommand):
         json_output: Annotated[bool, typer.Option("--json", help="Emit JSON.")] = False,
     ) -> None:
         """Activate *name* as the L3 manual override (default: until the next scheduled boundary)."""
-        if LoopPreset.objects.by_name(name) is None:
+        if Mode.objects.by_name(name) is None:
             self._refuse(f"no preset named {name!r} — run `t3 loop preset list`", json_output=json_output)
         until_dt = self._resolve_until(expiry=expiry, hold=hold, json_output=json_output)
-        LoopPresetOverride.objects.set_override(name, until=until_dt, reason=reason)
+        ModeOverride.objects.set_override(name, until=until_dt, reason=reason)
         window = "held until cleared" if until_dt is None else f"until {until_dt.isoformat()}"
         self._emit(
             {"preset": name, "until": until_dt.isoformat() if until_dt else None, "reason": reason},
@@ -140,7 +140,7 @@ class Command(TyperCommand):
     @command(name="auto")
     def auto(self, *, json_output: Annotated[bool, typer.Option("--json", help="Emit JSON.")] = False) -> None:
         """Clear the manual override so the active schedule decides again."""
-        cleared = LoopPresetOverride.objects.clear()
+        cleared = ModeOverride.objects.clear()
         message = (
             "cleared the manual override — the schedule decides again." if cleared else "no manual override was set."
         )
@@ -157,9 +157,9 @@ class Command(TyperCommand):
         scope: Annotated[str, typer.Option("--scope", help="Comma-separated overlay allowlist.")] = "",
     ) -> None:
         """Create a new preset from ``--set`` entries, optional pin and overlay scope."""
-        if LoopPreset.objects.by_name(name) is not None:
+        if Mode.objects.by_name(name) is not None:
             self._refuse(f"preset {name!r} already exists — use `edit`", json_output=False)
-        preset = LoopPreset.objects.create(
+        preset = Mode.objects.create(
             name=name,
             entries=self._entries_from_edits({}, set_, json_output=False),
             description=description,
@@ -179,7 +179,7 @@ class Command(TyperCommand):
         scope: Annotated[str, typer.Option("--scope", help="Replace the overlay allowlist.")] = "",
     ) -> None:
         """Edit a preset's entries / description / pin / scope in place."""
-        preset = LoopPreset.objects.by_name(name)
+        preset = Mode.objects.by_name(name)
         if preset is None:
             self._refuse(f"no preset named {name!r}", json_output=False)
         preset.entries = self._entries_from_edits(preset.entries, set_, json_output=False)
@@ -200,13 +200,13 @@ class Command(TyperCommand):
         json_output: Annotated[bool, typer.Option("--json", help="Emit JSON.")] = False,
     ) -> None:
         """Delete a preset (a slot/override still pointing at it fails open to base config)."""
-        deleted, _ = LoopPreset.objects.filter(name=name).delete()
+        deleted, _ = Mode.objects.filter(name=name).delete()
         if not deleted:
             self._refuse(f"no preset named {name!r}", json_output=json_output)
         self._emit({"deleted": name}, f"deleted preset {name!r}.", json_output=json_output)
 
     def _show_named(self, name: str, *, json_output: bool) -> None:
-        preset = LoopPreset.objects.by_name(name)
+        preset = Mode.objects.by_name(name)
         if preset is None:
             self._refuse(f"no preset named {name!r}", json_output=json_output)
         unknown = _unknown_entry_loops(preset.entries)
@@ -271,7 +271,7 @@ class Command(TyperCommand):
             self._refuse(f"invalid --pin {pin!r}; use present|away|autonomous_away", json_output=json_output)
         return value
 
-    def _emit_preset_saved(self, preset: LoopPreset, *, json_output: bool) -> None:
+    def _emit_preset_saved(self, preset: Mode, *, json_output: bool) -> None:
         unknown = _unknown_entry_loops(preset.entries)
         message = f"saved preset {preset.name!r} ({preset.entry_count} entries)."
         if unknown:
@@ -286,7 +286,7 @@ class Command(TyperCommand):
         raise SystemExit(2)
 
 
-def _preset_row(preset: LoopPreset, active_name: str) -> dict[str, Any]:
+def _preset_row(preset: Mode, active_name: str) -> dict[str, Any]:
     return {
         "name": preset.name,
         "description": preset.description,
@@ -297,7 +297,7 @@ def _preset_row(preset: LoopPreset, active_name: str) -> dict[str, Any]:
     }
 
 
-def _preset_detail(preset: LoopPreset, unknown: list[str]) -> dict[str, Any]:
+def _preset_detail(preset: Mode, unknown: list[str]) -> dict[str, Any]:
     return {
         "name": preset.name,
         "description": preset.description,

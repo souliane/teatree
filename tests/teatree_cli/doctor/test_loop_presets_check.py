@@ -8,7 +8,7 @@ from unittest.mock import patch
 import django.test
 
 from teatree.cli.doctor.checks_loop import _check_loop_presets
-from teatree.core.models import ConfigSetting, Loop, LoopPreset, LoopPresetOverride, LoopSchedule, LoopScheduleSlot
+from teatree.core.models import ConfigSetting, Loop, Mode, ModeOverride, ModeSchedule, ModeScheduleSlot
 from teatree.loop.preset_resolution import ACTIVE_SCHEDULE_SETTING
 
 
@@ -18,22 +18,22 @@ class TestLoopPresetsDoctorCheck(django.test.TestCase):
         assert _check_loop_presets() is True
 
     def test_override_naming_deleted_preset_warns(self) -> None:
-        LoopPresetOverride.objects.set_override("ghost")
+        ModeOverride.objects.set_override("ghost")
         assert _check_loop_presets() is False
 
     def test_slot_naming_deleted_preset_warns(self) -> None:
-        schedule = LoopSchedule.objects.create(name="standard", timezone="UTC")
-        LoopScheduleSlot.objects.create(schedule=schedule, days=[0], start_time=dt.time(8, 0), preset_name="ghost")
+        schedule = ModeSchedule.objects.create(name="standard", timezone="UTC")
+        ModeScheduleSlot.objects.create(schedule=schedule, days=[0], start_time=dt.time(8, 0), preset_name="ghost")
         assert _check_loop_presets() is False
 
     def test_entry_naming_deleted_loop_warns(self) -> None:
-        LoopPreset.objects.create(name="p", entries={"nonexistent_loop": False})
+        Mode.objects.create(name="p", entries={"nonexistent_loop": False})
         assert _check_loop_presets() is False
 
     def test_known_references_pass(self) -> None:
         Loop.objects.create(name="kr-review", delay_seconds=60, script="src/teatree/loops/kr-review/loop.py")
-        LoopPreset.objects.create(name="heads-down", entries={"kr-review": False})
-        LoopPresetOverride.objects.set_override("heads-down")
+        Mode.objects.create(name="heads-down", entries={"kr-review": False})
+        ModeOverride.objects.set_override("heads-down")
         assert _check_loop_presets() is True
 
     def test_active_schedule_naming_unknown_warns(self) -> None:

@@ -72,22 +72,25 @@ def effective_verdicts(now: dt.datetime | None = None) -> list[LoopVerdict]:
 
 
 def statusline_chunk(now: dt.datetime | None = None) -> str:
-    """The one-chunk preset segment, or ``""`` when no preset governs (#3494).
+    """The one-chunk merged ``mode:`` segment (#3494, #61).
 
-    Spelled out for the loop line: a MANUAL override renders ``preset: manual``
-    (the layer, not the underlying preset name — the operator's cue that the
-    active schedule is NOT the one governing); a schedule-driven preset renders
-    ``preset: <name>``. A boundary is appended when the preset expires at a known
-    time (``preset: manual →21:00``). Sourced from the SAME resolver as ``preset
-    show`` so the two never disagree.
+    Collapses the old ``preset:`` + ``availability:`` handles into ONE ``mode:``
+    handle — the mode name now conveys reachability (``unattended`` / ``offline``
+    read as away; ``engaged`` / ``heads-down`` as present), so the separate
+    availability segment is gone. Spelled out for the loop line: a MANUAL override
+    renders ``mode: manual`` (the operator's cue that the active schedule is NOT
+    governing); a schedule-driven or default mode renders ``mode: <name>``. A
+    boundary is appended when the mode expires at a known time (``mode: manual
+    →21:00``). Sourced from the SAME resolver every consumer reads
+    (:func:`teatree.core.mode_resolution.resolve_active_mode`), so nothing drifts.
     """
-    summary = active_summary(now)
-    if summary is None:
-        return ""
-    boundary = _boundary_hhmm(summary.until)
-    if summary.layer == "override":
-        return f"preset: manual{boundary}"
-    return f"preset: {summary.name}{boundary}"
+    from teatree.core.mode_resolution import resolve_active_mode  # noqa: PLC0415 — deferred: cycle-safe
+
+    resolved = resolve_active_mode(now)
+    boundary = _boundary_hhmm(resolved.until)
+    if resolved.source == "override":
+        return f"mode: manual{boundary}"
+    return f"mode: {resolved.name}{boundary}"
 
 
 def schedule_chunk() -> str:
@@ -170,32 +173,33 @@ def overridden_loop_names(now: dt.datetime | None = None) -> set[str]:
 
 
 def preset_line_handles(now: dt.datetime | None = None) -> PresetLineHandles:
-    """The three ordered loop-line handles (#3494): schedule, preset, per-loop overrides.
+    """The three ordered loop-line handles (#3494, #61): schedule, mode, per-loop overrides.
 
     The injected reader the statusline loop line renders (installed by the
     ``loops_tick`` per-loop command). Sourced from the SAME resolvers as
     ``preset show`` / ``loops list``, so the observability surfaces never
-    disagree. The renderer places the schedule and preset handles ahead of the
-    loop chunks and the ``forced ON:`` / ``forced OFF:`` overrides after them.
+    disagree. The renderer places the schedule and merged ``mode:`` handles ahead
+    of the loop chunks and the ``forced ON:`` / ``forced OFF:`` overrides after
+    them — the separate ``availability:`` segment is gone (folded into ``mode:``).
     """
     return PresetLineHandles(
         schedule=schedule_chunk(),
-        preset=statusline_chunk(now),
+        mode=statusline_chunk(now),
         override=manual_override_chunk(now),
     )
 
 
 def preset_line_chunk(now: dt.datetime | None = None) -> str:
-    """The composed schedule/preset/override statusline segment (#3248, #3494).
+    """The composed schedule/mode/override statusline segment (#3248, #3494, #61).
 
-    Joins the non-empty ``schedule:``, ``preset:``, and ``forced ON:`` /
+    Joins the non-empty ``schedule:``, merged ``mode:``, and ``forced ON:`` /
     ``forced OFF:`` sub-segments with the mid-dot — the single-string bundled
     view of :func:`preset_line_handles` for surfaces that want one flat segment.
-    Always at least ``schedule: none active`` (the schedule handle is always
-    shown).
+    Always at least ``schedule: none active · mode: <default>`` (both handles are
+    always shown).
     """
     handles = preset_line_handles(now)
-    parts = [chunk for chunk in (handles.schedule, handles.preset, handles.override) if chunk]
+    parts = [chunk for chunk in (handles.schedule, handles.mode, handles.override) if chunk]
     return " · ".join(parts)
 
 

@@ -51,6 +51,7 @@ from teatree.cli.doctor.app import (
     agent_skill_dirs,
     check,
     check_statusline,
+    check_statusline_freshness,
     doctor_app,
     run_doctor_checks,
 )
@@ -97,6 +98,7 @@ __all__ = [
     "agent_skill_dirs",
     "check",
     "check_statusline",
+    "check_statusline_freshness",
     "doctor_app",
     "run_doctor_checks",
 ]

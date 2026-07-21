@@ -1,11 +1,8 @@
-"""Tests for the availability segment on the loop line (#58, #1678, #3494).
+"""The loop line's merged ``mode:`` handle + waiting count (#58, #1678, #3494, #61).
 
-The loop line carries an ``availability: <present|away>`` segment reflecting
-the currently-resolved availability, read live at render time. The deciding
-layer is intentionally not shown (the owner's spelled-out layout keeps the
-segment to the bare state). The label is deliberately distinct from the config
-``Mode`` enum (auto/interactive) and from other ``mode=`` usages, and the
-old standalone ``mode=away`` line is gone.
+The old separate ``availability: <present|away>`` segment is GONE — availability is
+now intrinsic to the operating mode, so the loop line carries ONE ``mode:`` handle
+(the collapse the owner asked for) and never a redundant ``availability:`` segment.
 """
 
 from datetime import UTC, datetime, timedelta
@@ -14,31 +11,22 @@ from unittest.mock import patch
 
 import pytest
 
-from teatree.core.availability import MODE_AWAY, MODE_PRESENT, Resolution, write_override
+from teatree.core.models import ConfigSetting, Mode, ModeOverride
 from teatree.core.models.deferred_question import DeferredQuestion
 from teatree.core.models.waiting_item import WaitingItem
-from teatree.loop.statusline import availability_segment, live_loops_anchor
+from teatree.loop.statusline import live_loops_anchor, set_preset_line_reader
+from teatree.loops.preset_status import preset_line_handles
 
 
-class TestAvailabilitySegment:
-    def test_present_segment_shows_explicit_label(self) -> None:
-        assert availability_segment(Resolution(mode="present", source="default")) == "availability: present"
-
-    def test_away_segment_shows_explicit_label(self) -> None:
-        assert availability_segment(Resolution(mode="away", source="schedule")) == "availability: away"
-
-    def test_label_is_unambiguous_not_bare_mode(self) -> None:
-        segment = availability_segment(Resolution(mode="away", source="override"))
-        assert segment.startswith("availability: ")
-        assert "mode=" not in segment
-
-    def test_unknown_mode_is_empty(self) -> None:
-        assert availability_segment(Resolution(mode="???", source="default")) == ""
+def _reset_reader() -> None:
+    set_preset_line_reader(None)
 
 
 # ast-grep-ignore: ac-django-no-pytest-django-db
 @pytest.mark.django_db
-class TestAvailabilitySegmentRidesLoopLineLive:
+class TestModeHandleRidesLoopLine:
+    """The merged ``mode:`` handle rides the loop line; ``availability:`` is gone."""
+
     @pytest.fixture
     def override_file(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
         target = tmp_path / "availability_override.json"
@@ -47,27 +35,34 @@ class TestAvailabilitySegmentRidesLoopLineLive:
 
     def _loop_line(self) -> str:
         acquired_at = datetime.now(UTC) - timedelta(seconds=120)
-        with (
-            patch("teatree.loop.statusline_loops._live_loop_leases", return_value=[("loop-tick", acquired_at)]),
-            patch("teatree.loop.statusline_loops._cadence_for_loop", return_value=720),
-        ):
-            lines = live_loops_anchor()
+        set_preset_line_reader(preset_line_handles)
+        try:
+            with (
+                patch("teatree.loop.statusline_loops._live_loop_leases", return_value=[("loop-tick", acquired_at)]),
+                patch("teatree.loop.statusline_loops._cadence_for_loop", return_value=720),
+            ):
+                lines = live_loops_anchor()
+        finally:
+            _reset_reader()
         assert len(lines) == 1, lines
         return lines[0]
 
-    def test_segment_tracks_a_live_away_then_present_flip(self, override_file: Path) -> None:
-        write_override(MODE_AWAY)
-        away_line = self._loop_line()
-        # Infra leases sit at the tail; the availability segment reads the bare
-        # state with no deciding-layer source.
-        assert away_line.endswith("tick 10m"), away_line
-        assert "availability: away" in away_line, away_line
-        assert "(override)" not in away_line, away_line
+    def test_manual_override_renders_mode_manual_never_availability(self, override_file: Path) -> None:
+        Mode.objects.update_or_create(
+            name="offline", defaults={"entries": {}, "defers_questions": True, "pauses_self_pump": True}
+        )
+        ModeOverride.objects.set_override("offline")
+        line = self._loop_line()
+        assert "mode: manual" in line, line
+        assert "availability:" not in line, line
+        assert "preset:" not in line, line
 
-        write_override(MODE_PRESENT)
-        present_line = self._loop_line()
-        assert "availability: present" in present_line, present_line
-        assert "away" not in present_line, present_line
+    def test_default_mode_renders_its_name(self, override_file: Path) -> None:
+        Mode.objects.update_or_create(name="engaged", defaults={"entries": {}, "defers_questions": False})
+        ConfigSetting.objects.set_value("default_mode", "engaged")
+        line = self._loop_line()
+        assert "mode: engaged" in line, line
+        assert "availability:" not in line, line
 
 
 # ast-grep-ignore: ac-django-no-pytest-django-db
@@ -80,7 +75,6 @@ class TestWaitingCountCoversAllKinds:
         with (
             patch("teatree.loop.statusline_loops._live_loop_leases", return_value=[("loop-tick", acquired_at)]),
             patch("teatree.loop.statusline_loops._cadence_for_loop", return_value=720),
-            patch("teatree.loop.statusline_loops._availability_segment", return_value=""),
         ):
             lines = live_loops_anchor()
         assert len(lines) == 1, lines

@@ -15,13 +15,9 @@ import logging
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-from teatree.core import availability, presence, speak_cleaning
+from teatree.core import presence, speak_cleaning
 from teatree.core import speak as speak_mod
 from teatree.types import LocalPlayback, SpeakConfig
-
-
-def _resolution(mode: str) -> availability.Resolution:
-    return availability.Resolution(mode=mode, source="override")
 
 
 class TestBinaryGate:
@@ -57,11 +53,12 @@ class TestResolveSpeak:
     """``resolve_speak()`` returns the user's config unchanged — availability is not consulted."""
 
     def test_away_does_not_mutate_local(self) -> None:
+        # resolve_speak returns the user's config unchanged — it never consults the
+        # operating mode at all (the away gate lives at the playback call site).
         configured = SpeakConfig(local=LocalPlayback.ALL, slack=True)
         with (
             patch.object(speak_mod, "binary_available", return_value=True),
             patch.object(speak_mod, "get_effective_settings", return_value=MagicMock(speak=configured)),
-            patch.object(availability, "resolve_mode", return_value=_resolution(availability.MODE_AWAY)),
         ):
             resolved = speak_mod.resolve_speak()
         assert resolved.local is LocalPlayback.ALL, "away must not mutate the configured local value"
@@ -72,18 +69,6 @@ class TestResolveSpeak:
         with (
             patch.object(speak_mod, "binary_available", return_value=True),
             patch.object(speak_mod, "get_effective_settings", return_value=MagicMock(speak=configured)),
-            patch.object(availability, "resolve_mode", return_value=_resolution(availability.MODE_PRESENT)),
-        ):
-            resolved = speak_mod.resolve_speak()
-        assert resolved.local is LocalPlayback.ALL
-        assert resolved.slack is True
-
-    def test_availability_raising_returns_configured(self) -> None:
-        configured = SpeakConfig(local=LocalPlayback.ALL, slack=True)
-        with (
-            patch.object(speak_mod, "binary_available", return_value=True),
-            patch.object(speak_mod, "get_effective_settings", return_value=MagicMock(speak=configured)),
-            patch.object(availability, "resolve_mode", side_effect=RuntimeError("boom")),
         ):
             resolved = speak_mod.resolve_speak()
         assert resolved.local is LocalPlayback.ALL
@@ -102,7 +87,7 @@ class TestAwayGateAtPlayback:
         with (
             patch.object(speak_mod.shutil, "which", return_value="/usr/bin/say"),
             patch.object(speak_mod, "_speaker_lock_path", return_value=tmp_path / "speaker.lock"),
-            patch.object(availability, "resolve_mode", return_value=_resolution(availability.MODE_AWAY)),
+            patch.object(speak_mod, "_is_away", return_value=True),
             patch.object(speak_mod, "run_allowed_to_fail") as run,
         ):
             speak_mod._speak_local("hello while away")
@@ -112,7 +97,7 @@ class TestAwayGateAtPlayback:
         with (
             patch.object(speak_mod.shutil, "which", return_value="/usr/bin/say"),
             patch.object(speak_mod, "_speaker_lock_path", return_value=tmp_path / "speaker.lock"),
-            patch.object(availability, "resolve_mode", return_value=_resolution(availability.MODE_PRESENT)),
+            patch.object(speak_mod, "_is_away", return_value=False),
             patch.object(speak_mod, "_in_meeting", return_value=False),
             patch.object(speak_mod, "run_allowed_to_fail") as run,
         ):
@@ -123,7 +108,7 @@ class TestAwayGateAtPlayback:
         with (
             patch.object(speak_mod.shutil, "which", return_value="/usr/bin/say"),
             patch.object(speak_mod, "_speaker_lock_path", return_value=tmp_path / "speaker.lock"),
-            patch.object(availability, "resolve_mode", side_effect=RuntimeError("boom")),
+            patch("teatree.core.mode_resolution.resolve_active_mode", side_effect=RuntimeError("boom")),
             patch.object(speak_mod, "_in_meeting", return_value=False),
             patch.object(speak_mod, "run_allowed_to_fail") as run,
         ):
@@ -156,7 +141,7 @@ class TestMeetingGateAtPlayback:
         with (
             patch.object(speak_mod.shutil, "which", return_value="/usr/bin/say"),
             patch.object(speak_mod, "_speaker_lock_path", return_value=tmp_path / "speaker.lock"),
-            patch.object(availability, "resolve_mode", return_value=_resolution(availability.MODE_PRESENT)),
+            patch.object(speak_mod, "_is_away", return_value=False),
             patch.object(presence, "current_presence", return_value=presence.Presence.IN_MEETING),
             patch.object(speak_mod, "run_allowed_to_fail") as run,
         ):
@@ -167,7 +152,7 @@ class TestMeetingGateAtPlayback:
         with (
             patch.object(speak_mod.shutil, "which", return_value="/usr/bin/say"),
             patch.object(speak_mod, "_speaker_lock_path", return_value=tmp_path / "speaker.lock"),
-            patch.object(availability, "resolve_mode", return_value=_resolution(availability.MODE_PRESENT)),
+            patch.object(speak_mod, "_is_away", return_value=False),
             patch.object(presence, "current_presence", return_value=presence.Presence.FREE),
             patch.object(speak_mod, "run_allowed_to_fail") as run,
         ):
@@ -178,7 +163,7 @@ class TestMeetingGateAtPlayback:
         with (
             patch.object(speak_mod.shutil, "which", return_value="/usr/bin/say"),
             patch.object(speak_mod, "_speaker_lock_path", return_value=tmp_path / "speaker.lock"),
-            patch.object(availability, "resolve_mode", return_value=_resolution(availability.MODE_PRESENT)),
+            patch.object(speak_mod, "_is_away", return_value=False),
             patch.object(presence, "current_presence", return_value=presence.Presence.UNKNOWN),
             patch.object(speak_mod, "run_allowed_to_fail") as run,
         ):

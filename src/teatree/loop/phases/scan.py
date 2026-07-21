@@ -25,6 +25,38 @@ class ScanOutcome:
     errors: dict[str, str] = field(default_factory=dict)
 
 
+def _run_job_closing_connections(job: _ScannerJob) -> tuple[str, list[ScanSignal], str]:
+    """Run one scan job on a pool worker, then close that worker's DB connections.
+
+    A scanner that touches the ORM opens a thread-local Django connection on its
+    pool worker. Nothing else closes it: ``pool.shutdown(wait=False)`` never joins
+    the worker, so the orphaned ``sqlite3`` connection is finalized at GC time and
+    emits a ``ResourceWarning`` — which, under a Django ``TestCase`` (the pool
+    thread is not the test's transaction-owning thread), surfaces as an
+    unraisable-exception error in an unrelated later test. This mirrors the
+    per-thread connection hygiene :func:`teatree.loops.worker._spawn_executor_thread`
+    applies to its own worker thread, and is a no-op for a scanner that never
+    opened a connection.
+
+    The raw DB-API connection is closed directly rather than via
+    ``connection.close()``: Django keeps an in-memory (``:memory:``) SQLite
+    connection open on ``close()`` because closing it would discard the database
+    — so under the in-memory test DB ``close()`` alone leaves the handle open.
+    Closing the underlying connection releases it on both the in-memory test DB
+    and a production file DB. The worker thread is discarded after the job, so
+    the wrapper is never reused.
+    """
+    try:
+        return _run_job(job)
+    finally:
+        from django.db import connections  # noqa: PLC0415 — deferred Django import at call time
+
+        for conn in connections.all():
+            if conn.connection is not None:
+                conn.connection.close()
+                conn.connection = None
+
+
 def scan_phase(
     jobs: list[_ScannerJob],
     *,
@@ -60,7 +92,7 @@ def scan_phase(
     max_workers = min(len(jobs), cpu * _POOL_WORKERS_PER_CPU)
     pool = ThreadPoolExecutor(max_workers=max(1, max_workers))
     future_to_label: dict[Future[tuple[str, list[ScanSignal], str]], str] = {
-        pool.submit(_run_job, job): job.scanner.name for job in jobs
+        pool.submit(_run_job_closing_connections, job): job.scanner.name for job in jobs
     }
     deadline = time.monotonic() + per_job_timeout
     try:

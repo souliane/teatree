@@ -129,6 +129,11 @@ class PresetSpec:
     description: str
     entries: dict[str, bool]
     availability_mode: str = ""
+    # The intrinsic availability posture (#61 merge, design §7-A). ``present_sensitive``
+    # defaults True so any scheduled away honours a live keystroke (today's behaviour).
+    defers_questions: bool = False
+    pauses_self_pump: bool = False
+    presence_sensitive: bool = True
 
 
 @dataclass(frozen=True, slots=True)
@@ -159,21 +164,33 @@ def default_preset_specs() -> tuple[PresetSpec, ...]:
             "The factory keeps producing while the human is unreachable; colleague-facing loops off.",
             dict(_UNATTENDED),
             availability_mode="autonomous_away",
+            defers_questions=True,
         ),
         PresetSpec(
             "maintenance",
             "Nights: self-maintenance + self-improvement only, no ticket/colleague/delivery work.",
             dict(_MAINTENANCE),
+            defers_questions=True,
         ),
         PresetSpec(
             "low-power",
             "Token-budget guard: only deterministic model-free local loops stay up.",
             {name: name in _LOW_POWER_ON for name in names},
+            defers_questions=True,
         ),
         PresetSpec(
             "off",
             "Every Loop-table loop off (the reversible 'calendar says nothing runs' mode).",
             dict.fromkeys(names, False),
+        ),
+        PresetSpec(
+            "offline",
+            "Holiday: every loop off, questions defer AND the self-pump pauses (was 'off' preset + 'away').",
+            dict.fromkeys(names, False),
+            availability_mode="away",
+            defers_questions=True,
+            pauses_self_pump=True,
+            presence_sensitive=False,
         ),
     )
 
@@ -215,32 +232,35 @@ def seed_default_presets_and_schedules() -> PresetSeedResult:
     a fresh install is fully opt-in.
     """
     from teatree.core.models import (  # noqa: PLC0415 — deferred import (cycle-safe / pre-app-registry)
-        LoopPreset,
-        LoopSchedule,
-        LoopScheduleSlot,
+        Mode,
+        ModeSchedule,
+        ModeScheduleSlot,
     )
 
     presets_created = 0
     for spec in default_preset_specs():
-        _, made = LoopPreset.objects.get_or_create(
+        _, made = Mode.objects.get_or_create(
             name=spec.name,
             defaults={
                 "entries": spec.entries,
                 "description": spec.description,
                 "availability_mode": spec.availability_mode,
+                "defers_questions": spec.defers_questions,
+                "pauses_self_pump": spec.pauses_self_pump,
+                "presence_sensitive": spec.presence_sensitive,
             },
         )
         presets_created += int(made)
 
     schedules_created = 0
     for spec in default_schedule_specs():
-        schedule, made = LoopSchedule.objects.get_or_create(
+        schedule, made = ModeSchedule.objects.get_or_create(
             name=spec.name, defaults={"description": spec.description, "timezone": ""}
         )
         schedules_created += int(made)
         if made:
-            LoopScheduleSlot.objects.bulk_create(
-                LoopScheduleSlot(
+            ModeScheduleSlot.objects.bulk_create(
+                ModeScheduleSlot(
                     schedule=schedule, days=slot.days, start_time=slot.start_time, preset_name=slot.preset_name
                 )
                 for slot in spec.slots

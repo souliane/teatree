@@ -17,9 +17,9 @@ Edit the source command, not this file.
 
 | Subcommand | Description |
 | --- | --- |
-| `away` | Force away-mode (deferred questions) until *until* — or forever |
-| `present` | Force present-mode (interactive questions) until *until* — or forever |
-| `auto` | Clear the manual override; the cron schedule decides again |
+| `away` | Alias: set the holiday ``offline`` mode (defer + pause) until *until* — or forever |
+| `present` | Alias: set the ``engaged`` present-class mode until *until* — or forever |
+| `auto` | Clear the manual mode override; the schedule / default mode decides again |
 | `show` | Print the current resolved mode and which layer decided it |
 | `autonomous-away` | Force autonomous-away — defer questions but KEEP self-pumping (#2544) |
 

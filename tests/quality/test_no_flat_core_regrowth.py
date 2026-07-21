@@ -78,7 +78,13 @@ _CORE_DIR = Path(__file__).resolve().parents[2] / "src" / "teatree" / "core"
 # 500-LOC module-health cap. A leaf helper of the flat root managers.py hub,
 # consumed by managers.py and selectors._filters; owned by no existing subpackage,
 # mirroring speak_cleaning.py beside speak.py.
-PINNED_FLAT_CORE_MODULES = 78
+# 79: +mode_resolution.py (#61 availability+preset merge) — the unified operating-mode
+# resolver (resolve_active_mode + the set/clear override chokepoint). A genuine new
+# core concern that MUST live at the core root: its domain-layer consumers speak.py and
+# stop_snapshot.py cannot import the orchestration layer, so the resolver cannot live in
+# teatree.loop; and it composes teatree.core.models + teatree.core.availability (the
+# presence heartbeat) + teatree.loop.preset_resolution, fitting no existing subpackage.
+PINNED_FLAT_CORE_MODULES = 79
 
 
 def _flat_core_modules() -> list[str]:

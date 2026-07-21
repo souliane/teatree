@@ -15,14 +15,21 @@ from django.db import connection
 from django.test.utils import CaptureQueriesContext
 from django.utils import timezone
 
-from teatree.core.availability import Resolution
-from teatree.core.models import Loop, LoopState, Prompt
+from teatree.core.mode_resolution import ResolvedMode
+from teatree.core.models import Loop, LoopState, Mode, ModeOverride, Prompt
 from teatree.loops.base import MiniLoop
 from teatree.loops.loop_table import admitted_loop_names, build_loop_table_jobs
 from teatree.loops.seed import seed_default_loops_and_prompts
 
 if TYPE_CHECKING:
     from teatree.loop.job_identity import _ScannerJob
+
+_MODE_SEAM = "teatree.loops.loop_table.resolve_active_mode"
+
+
+def _resolved(*, defers: bool, source: str = "override") -> ResolvedMode:
+    """A ResolvedMode carrying only the availability posture (no loop-mask opinion)."""
+    return ResolvedMode(mode=Mode(name="m", entries={}, defers_questions=defers), source=source, until=None)
 
 
 def _mini(name: str) -> MiniLoop:
@@ -463,22 +470,20 @@ class TestColleagueFacingAvailabilityGate(django.test.TestCase):
     def test_colleague_facing_loop_skipped_when_away(self) -> None:
         now = timezone.now()
         Loop.objects.create(name="cf-review", delay_seconds=60, prompt=_prompt(), colleague_facing=True)
-        resolution = Resolution(mode="away", source="override")
         with (
-            patch("teatree.core.availability.resolve_mode", return_value=resolution),
+            patch(_MODE_SEAM, return_value=_resolved(defers=True)),
             patch("teatree.loops.loop_table.iter_loops", return_value=(_mini("cf-review"),)),
         ):
             jobs = build_loop_table_jobs({}, now=now)
         assert jobs == []
 
     def test_colleague_facing_loop_skipped_when_autonomous_away(self) -> None:
-        # The whole point of #2904: autonomous_away keeps every OTHER loop
-        # self-pumping, but a colleague_facing loop must still not fire.
+        # An autonomous-away mode keeps every OTHER loop self-pumping, but a
+        # colleague_facing loop must still not fire (defers_questions gates it).
         now = timezone.now()
         Loop.objects.create(name="cf-followup", delay_seconds=60, prompt=_prompt(), colleague_facing=True)
-        resolution = Resolution(mode="autonomous_away", source="override")
         with (
-            patch("teatree.core.availability.resolve_mode", return_value=resolution),
+            patch(_MODE_SEAM, return_value=_resolved(defers=True)),
             patch("teatree.loops.loop_table.iter_loops", return_value=(_mini("cf-followup"),)),
         ):
             jobs = build_loop_table_jobs({}, now=now)
@@ -487,9 +492,8 @@ class TestColleagueFacingAvailabilityGate(django.test.TestCase):
     def test_colleague_facing_loop_runs_when_present(self) -> None:
         now = timezone.now()
         Loop.objects.create(name="cf-present", delay_seconds=60, prompt=_prompt(), colleague_facing=True)
-        resolution = Resolution(mode="present", source="default")
         with (
-            patch("teatree.core.availability.resolve_mode", return_value=resolution),
+            patch(_MODE_SEAM, return_value=_resolved(defers=False, source="default")),
             patch("teatree.loops.loop_table.iter_loops", return_value=(_mini("cf-present"),)),
         ):
             jobs = build_loop_table_jobs({}, now=now)
@@ -498,33 +502,20 @@ class TestColleagueFacingAvailabilityGate(django.test.TestCase):
     def test_non_colleague_facing_loop_is_unaffected_by_away(self) -> None:
         now = timezone.now()
         Loop.objects.create(name="cf-internal", delay_seconds=60, prompt=_prompt(), colleague_facing=False)
-        resolution = Resolution(mode="away", source="override")
         with (
-            patch("teatree.core.availability.resolve_mode", return_value=resolution),
+            patch(_MODE_SEAM, return_value=_resolved(defers=True)),
             patch("teatree.loops.loop_table.iter_loops", return_value=(_mini("cf-internal"),)),
         ):
             jobs = build_loop_table_jobs({}, now=now)
         assert "job-cf-internal" in jobs
-
-    def test_non_colleague_facing_loop_is_unaffected_by_autonomous_away(self) -> None:
-        now = timezone.now()
-        Loop.objects.create(name="cf-internal-auto", delay_seconds=60, prompt=_prompt(), colleague_facing=False)
-        resolution = Resolution(mode="autonomous_away", source="override")
-        with (
-            patch("teatree.core.availability.resolve_mode", return_value=resolution),
-            patch("teatree.loops.loop_table.iter_loops", return_value=(_mini("cf-internal-auto"),)),
-        ):
-            jobs = build_loop_table_jobs({}, now=now)
-        assert "job-cf-internal-auto" in jobs
 
     def test_gated_colleague_facing_loop_cadence_anchor_is_not_consumed(self) -> None:
         # Mirrors the LoopState-held pattern: gated-off means NOT admitted, so
         # the cadence anchor must be preserved (the gate runs before the CAS claim).
         now = timezone.now()
         Loop.objects.create(name="cf-anchor", delay_seconds=60, prompt=_prompt(), colleague_facing=True)
-        resolution = Resolution(mode="away", source="override")
         with (
-            patch("teatree.core.availability.resolve_mode", return_value=resolution),
+            patch(_MODE_SEAM, return_value=_resolved(defers=True)),
             patch("teatree.loops.loop_table.iter_loops", return_value=(_mini("cf-anchor"),)),
         ):
             build_loop_table_jobs({}, now=now)
@@ -535,9 +526,8 @@ class TestColleagueFacingAvailabilityGate(django.test.TestCase):
         # never drift between build_loop_table_jobs and admitted_loop_names.
         now = timezone.now()
         Loop.objects.create(name="cf-beat", delay_seconds=60, prompt=_prompt(), colleague_facing=True)
-        resolution = Resolution(mode="autonomous_away", source="override")
         with (
-            patch("teatree.core.availability.resolve_mode", return_value=resolution),
+            patch(_MODE_SEAM, return_value=_resolved(defers=True)),
             patch("teatree.loops.loop_table.iter_loops", return_value=(_mini("cf-beat"),)),
         ):
             names = admitted_loop_names(now)
@@ -546,19 +536,23 @@ class TestColleagueFacingAvailabilityGate(django.test.TestCase):
 
 @django.test.override_settings(USE_TZ=True)
 class TestAutoMergePathAdmittedUnderAutonomousAway(django.test.TestCase):
-    """#3274: the seeded merge path (`ship`) is admitted under `autonomous_away`.
+    """#3274/#61: the seeded merge path (`ship`) is admitted under an away-class mode.
 
-    End-to-end over the REAL seed + registry (no `iter_loops` stub): a green own-PR
+    End-to-end over the REAL seed + registry + resolver (no stub): a green own-PR
     still gets its review verdict and auto-merges while the owner is away, because
-    the merge sweep lives on the non-colleague-facing `ship` loop (#3244). The
-    colleague-facing `review` loop stays deferred in the same tick.
+    the merge sweep lives on the non-colleague-facing `ship` loop (#3244). Auto-merge
+    is loop-membership, NOT an availability read — the merge must not regress it. The
+    away-class posture comes from a real `unattended` mode override (defers=True).
     """
 
     def test_ship_admitted_review_deferred_under_autonomous_away(self) -> None:
         seed_default_loops_and_prompts()
+        # A real away-class mode: defers questions but keeps the factory pumping.
+        Mode.objects.update_or_create(
+            name="unattended", defaults={"entries": {}, "defers_questions": True, "pauses_self_pump": False}
+        )
+        ModeOverride.objects.set_override("unattended")
         Loop.objects.filter(name__in=["ship", "review"]).update(enabled=True, last_run_at=None)
-        resolution = Resolution(mode="autonomous_away", source="override")
-        with patch("teatree.core.availability.resolve_mode", return_value=resolution):
-            admitted = admitted_loop_names(timezone.now())
+        admitted = admitted_loop_names(timezone.now())
         assert "ship" in admitted
         assert "review" not in admitted

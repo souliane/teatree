@@ -7,15 +7,15 @@ firing this command scoped to its own row on its own cadence. Invoking
 ``t3 loops tick`` with NO ``--loop`` is a hard error pointing at the per-loop
 usage, so neither a human nor an agent can start a fat fan-out tick.
 
-Each per-loop tick first reconciles availability (#2544): both drivers that fire
-this command — the ``t3 worker``'s deadlined subprocess timer tick
+Each per-loop tick first reconciles the operating mode (#2544, #61): both drivers
+that fire this command — the ``t3 worker``'s deadlined subprocess timer tick
 (``python -m teatree loops_tick --loop <name>``) and a manual by-hand
 ``t3 loops tick --loop <name>`` — converge here, so consulting
-:func:`teatree.core.availability.resolve_mode` in ONE place reconciles both drivers
-identically. When the resolved mode's ``pauses_self_pump`` is true
-(holiday-``away`` only), the tick is skipped silently (parked) before any lease
-is claimed or overlay is preflighted; ``autonomous_away`` defers questions like
-``away`` but does NOT pause here, so an unattended run keeps self-pumping.
+:func:`teatree.core.mode_resolution.resolve_active_mode` in ONE place reconciles both
+drivers identically. When the resolved mode's ``pauses_self_pump`` is true (a
+holiday-away mode only), the tick is skipped silently (parked) before any lease is
+claimed or overlay is preflighted; an autonomous-away mode defers questions but does
+NOT pause here, so an unattended run keeps self-pumping.
 
 Otherwise the tick scopes the jobs builder to that ONE enabled, due row, claims
 the disjoint per-loop ``loop:<name>`` lease (so the N per-loop loops run in
@@ -52,9 +52,9 @@ from typing import TYPE_CHECKING, Annotated, Any
 import typer
 from django_typer.management import TyperCommand
 
-from teatree.core import availability
 from teatree.core.backend_factory import code_host_from_overlay, iter_overlay_backends, messaging_from_overlay
 from teatree.core.loop_lease_manager import PER_LOOP_TICK_MUTEX_PREFIX, per_loop_owner_slot
+from teatree.core.mode_resolution import resolve_active_mode
 from teatree.core.models import LoopLease
 from teatree.loop.loop_cadences import loop_owner_ttl_seconds
 from teatree.loop.preset_resolution import active_overlay_scope
@@ -243,10 +243,10 @@ class Command(TyperCommand):
         # here reconciles both with zero duplicated logic. Only holiday-`away`
         # pauses the self-pump; `autonomous_away` defers questions but keeps the
         # factory self-pumping, so it must NOT park here.
-        resolution = availability.resolve_mode()
-        if resolution.pauses_self_pump:
+        resolved = resolve_active_mode()
+        if resolved.pauses_self_pump:
             self._emit_skip(
-                f"availability={resolution.mode} ({resolution.source}) — self-pump paused, tick parked",
+                f"mode={resolved.name} ({resolved.source}) — self-pump paused, tick parked",
                 json_output=json_output,
                 statusline_file=statusline_file,
             )

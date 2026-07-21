@@ -5,7 +5,7 @@ layer with an opinion wins:
 
 * **L4 LoopState hold** — the emergency brake, applied by the ``held`` arm of
     :func:`teatree.loop.loop_state_db.loop_state_admits`; **never** touched here.
-* **L3 manual override** — a live :class:`teatree.core.models.LoopPresetOverride`.
+* **L3 manual override** — a live :class:`teatree.core.models.ModeOverride`.
 * **L2 active schedule slot** — the ``active_loop_schedule`` calendar's governing
     slot at *t* (the latest slot-start ≤ *t*, searching back across week wrap).
 * **L1 base config** — ``Loop.enabled``, the fallback when no preset has an opinion.
@@ -37,7 +37,7 @@ from typing import TYPE_CHECKING
 from django.utils import timezone
 
 if TYPE_CHECKING:
-    from teatree.core.models import LoopPreset, LoopSchedule, LoopScheduleSlot
+    from teatree.core.models import Mode, ModeSchedule, ModeScheduleSlot
 
 logger = logging.getLogger(__name__)
 
@@ -52,7 +52,7 @@ _LOOKBACK_DAYS = 7
 class ActivePreset:
     """The preset governing now, the layer that chose it, and when its tenure ends."""
 
-    preset: "LoopPreset"
+    preset: "Mode"
     layer: str  # "override" | "schedule"
     reason: str
     until: dt.datetime | None
@@ -126,32 +126,32 @@ def consistency_findings() -> list[str]:
     from teatree.core.models import (  # noqa: PLC0415 — deferred import (cycle-safe / pre-app-registry)
         ConfigSetting,
         Loop,
-        LoopPreset,
-        LoopPresetOverride,
-        LoopSchedule,
-        LoopScheduleSlot,
+        Mode,
+        ModeOverride,
+        ModeSchedule,
+        ModeScheduleSlot,
     )
 
     findings: list[str] = []
-    preset_names = set(LoopPreset.objects.values_list("name", flat=True))
+    preset_names = set(Mode.objects.values_list("name", flat=True))
     loop_names = set(Loop.objects.values_list("name", flat=True))
 
-    override = LoopPresetOverride.objects.order_by("-set_at").first()
+    override = ModeOverride.objects.order_by("-set_at").first()
     if override is not None and override.preset_name not in preset_names:
         findings.append(f"manual override names deleted preset {override.preset_name!r} (fails open to base config)")
 
     findings.extend(
         f"schedule {slot.schedule.name!r} slot names deleted preset {slot.preset_name!r} (fails open to base config)"
-        for slot in LoopScheduleSlot.objects.exclude(preset_name__in=preset_names).select_related("schedule")
+        for slot in ModeScheduleSlot.objects.exclude(preset_name__in=preset_names).select_related("schedule")
     )
 
-    for preset in LoopPreset.objects.all():
+    for preset in Mode.objects.all():
         unknown = sorted(name for name in preset.entries if name not in loop_names)
         if unknown:
             findings.append(f"preset {preset.name!r} entries name unknown loops: {', '.join(unknown)}")
 
     active = ConfigSetting.objects.get_effective(ACTIVE_SCHEDULE_SETTING)
-    if isinstance(active, str) and active.strip() and not LoopSchedule.objects.filter(name=active.strip()).exists():
+    if isinstance(active, str) and active.strip() and not ModeSchedule.objects.filter(name=active.strip()).exists():
         findings.append(f"active_loop_schedule names unknown schedule {active.strip()!r} (no L2 layer applies)")
 
     return findings
@@ -159,13 +159,13 @@ def consistency_findings() -> list[str]:
 
 def _resolve_active_preset(now: dt.datetime) -> ActivePreset | None:
     from teatree.core.models import (  # noqa: PLC0415 — deferred import (cycle-safe / pre-app-registry)
-        LoopPreset,
-        LoopPresetOverride,
+        Mode,
+        ModeOverride,
     )
 
-    override = LoopPresetOverride.objects.current(now)
+    override = ModeOverride.objects.current(now)
     if override is not None:
-        preset = LoopPreset.objects.by_name(override.preset_name)
+        preset = Mode.objects.by_name(override.preset_name)
         if preset is None:
             logger.warning(
                 "loop preset override names deleted preset %r — failing open to base config", override.preset_name
@@ -179,7 +179,7 @@ def _resolve_active_preset(now: dt.datetime) -> ActivePreset | None:
     slot, boundary = _governing_and_next(schedule, now)
     if slot is None:
         return None
-    preset = LoopPreset.objects.by_name(slot.preset_name)
+    preset = Mode.objects.by_name(slot.preset_name)
     if preset is None:
         logger.warning(
             "loop schedule %r slot names deleted preset %r — failing open to base config",
@@ -191,25 +191,25 @@ def _resolve_active_preset(now: dt.datetime) -> ActivePreset | None:
     return ActivePreset(preset=preset, layer="schedule", reason=reason, until=boundary)
 
 
-def _active_schedule() -> "LoopSchedule | None":
-    """The ``LoopSchedule`` the ``active_loop_schedule`` setting selects, or ``None``."""
+def _active_schedule() -> "ModeSchedule | None":
+    """The ``ModeSchedule`` the ``active_loop_schedule`` setting selects, or ``None``."""
     from teatree.core.models import (  # noqa: PLC0415 — deferred import (cycle-safe / pre-app-registry)
         ConfigSetting,
-        LoopSchedule,
+        ModeSchedule,
     )
 
     raw = ConfigSetting.objects.get_effective(ACTIVE_SCHEDULE_SETTING)
     if not isinstance(raw, str) or not raw.strip():
         return None
-    schedule = LoopSchedule.objects.filter(name=raw.strip()).first()
+    schedule = ModeSchedule.objects.filter(name=raw.strip()).first()
     if schedule is None:
         logger.warning("active_loop_schedule names unknown schedule %r — failing open to base config", raw)
     return schedule
 
 
 def _governing_and_next(
-    schedule: "LoopSchedule", now: dt.datetime
-) -> "tuple[LoopScheduleSlot | None, dt.datetime | None]":
+    schedule: "ModeSchedule", now: dt.datetime
+) -> "tuple[ModeScheduleSlot | None, dt.datetime | None]":
     """The slot governing *now* (latest start ≤ now) and the next start after it.
 
     Slot starts are the schedule's local wall-clock times materialised as aware
@@ -218,7 +218,7 @@ def _governing_and_next(
     """
     tz = _schedule_zone(schedule.timezone)
     now_local = now.astimezone(tz)
-    governing: tuple[dt.datetime, LoopScheduleSlot] | None = None
+    governing: tuple[dt.datetime, ModeScheduleSlot] | None = None
     boundary: dt.datetime | None = None
     for slot_start, slot in _candidate_starts(schedule, now_local, tz):
         if slot_start <= now and (governing is None or slot_start > governing[0]):
@@ -229,8 +229,8 @@ def _governing_and_next(
 
 
 def _candidate_starts(
-    schedule: "LoopSchedule", now_local: dt.datetime, tz: dt.tzinfo
-) -> "list[tuple[dt.datetime, LoopScheduleSlot]]":
+    schedule: "ModeSchedule", now_local: dt.datetime, tz: dt.tzinfo
+) -> "list[tuple[dt.datetime, ModeScheduleSlot]]":
     slots = list(schedule.slots.all())  # ty: ignore[unresolved-attribute]  # Django reverse FK (related_name="slots")
     days = [(now_local + dt.timedelta(days=offset)).date() for offset in range(-_LOOKBACK_DAYS, _LOOKBACK_DAYS + 1)]
     return [
@@ -251,7 +251,7 @@ def _schedule_zone(name: str) -> dt.tzinfo:
     return timezone.get_current_timezone()
 
 
-def _slot_label(slot: "LoopScheduleSlot") -> str:
+def _slot_label(slot: "ModeScheduleSlot") -> str:
     days = ",".join(_WEEKDAY_NAMES[day] for day in sorted(slot.weekdays))
     return f"{days} {slot.start_time.strftime('%H:%M')}"
 

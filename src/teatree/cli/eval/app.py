@@ -304,7 +304,20 @@ def run(  # noqa: PLR0913, PLR0917 — typer command: each param maps 1:1 to a p
             "Force the WHOLE suite onto one model[@effort], overriding every "
             "scenario's tier/phase. A single-trial metered run against that one "
             "model — e.g. spot-check the suite on a candidate model. Mutually "
-            "exclusive with --benchmark/--models."
+            "exclusive with --benchmark/--models/--preset."
+        ),
+    ),
+    preset: str | None = typer.Option(
+        None,
+        "--preset",
+        help=(
+            "Apply a named model-tier PRESET at the per-scenario seam instead of "
+            "each scenario's own tier/phase: 'cheap'/'frontier' (uniform tier, every "
+            "scenario) or 'baseline' (the file-backed evals/presets/baseline.yaml "
+            "per-scenario map — a scenario absent from it falls through to its own "
+            "YAML tier, never silently cheapened). Forces the metered api backend "
+            "(a preset changes what model runs, so a transcript replay can't reflect "
+            "it). Mutually exclusive with --benchmark/--model/--models."
         ),
     ),
     escalate_on_fail: bool = typer.Option(  # noqa: FBT001 — typer boolean flag, not a positional bool foot-gun.
@@ -335,6 +348,14 @@ def run(  # noqa: PLR0913, PLR0917 — typer command: each param maps 1:1 to a p
     aggregated by ``--require`` (``any`` = pass@k, ``all`` = pass^k). ``--models``
     runs the suite once per model and renders a comparison matrix. A single trial
     against the default backend is the legacy behavior.
+
+    ``--preset NAME`` applies a named model-tier PRESET at the per-scenario seam
+    (``cheap``/``frontier`` — a uniform tier for every scenario — or ``baseline``,
+    the file-backed per-scenario map in ``evals/presets/baseline.yaml``) instead
+    of each scenario's own ``tier``/``phase``. A scenario declaring an explicit
+    ``model:`` still wins over the preset, and a scenario absent from the
+    ``baseline`` map falls through to its own YAML resolution unchanged. Mutually
+    exclusive with ``--benchmark``/``--model``/``--models``.
 
     Each run is recorded into the run-history ledger (``t3 eval history``) unless
     ``--no-persist`` is given. ``--baseline`` marks the persisted run as the
@@ -385,18 +406,25 @@ def run(  # noqa: PLR0913, PLR0917 — typer command: each param maps 1:1 to a p
     effort_level = require_effort(effort)
     max_turns = resolve_max_turns_override(max_turns)
     # --benchmark expands to the three tier models (matrix lane + HTML); --model
-    # forces the whole suite onto one model. At most one of benchmark/model/models
-    # may be set. The benchmark HTML dashboard is written to --transcript-html.
-    selection = resolve_benchmark_selection(benchmark=benchmark, model=model, models=models, html_out=transcript_html)
+    # forces the whole suite onto one model; --preset applies a named model-tier
+    # preset per scenario. At most one of benchmark/model/models/preset may be
+    # set. The benchmark HTML dashboard is written to --transcript-html.
+    selection = resolve_benchmark_selection(
+        benchmark=benchmark, model=model, models=models, preset=preset, html_out=transcript_html
+    )
     models = selection.models
-    # --benchmark (the 3-tier matrix) and --model (force one model) both run a
-    # fresh metered pass, so the metered api backend is implied — a transcript
-    # grade of a freshly-forced model is nonsensical. Mirror how --models always
-    # drives the api matrix lane.
-    if benchmark or selection.model_override is not None:
+    # --benchmark (the 3-tier matrix), --model (force one model), and --preset
+    # (a named tier profile) all run a fresh metered pass, so the metered api
+    # backend is implied — a transcript grade of a freshly-forced/preset model is
+    # nonsensical. Mirror how --models always drives the api matrix lane.
+    if benchmark or selection.model_override is not None or selection.preset is not None:
         backend = API_BACKEND
     metered = (
-        backend in FRESH_CLAUDE_BACKENDS or trials > 1 or models is not None or selection.model_override is not None
+        backend in FRESH_CLAUDE_BACKENDS
+        or trials > 1
+        or models is not None
+        or selection.model_override is not None
+        or selection.preset is not None
     )
     require_api_backend_for_fresh_run(backend=backend, trials=trials, models=models)
     escalation = resolve_escalation(
@@ -432,6 +460,7 @@ def run(  # noqa: PLR0913, PLR0917 — typer command: each param maps 1:1 to a p
             summary_json=summary_json,
             benchmark=benchmark,
             model=model,
+            preset=preset,
             escalate_on_fail=escalate_on_fail,
             escalate_trials=escalate_trials,
         ),
@@ -476,7 +505,11 @@ def run(  # noqa: PLR0913, PLR0917 — typer command: each param maps 1:1 to a p
     # that executes nothing must fail loud, never pass. --require-executed stays only
     # as the opt-in knob for the transcript backend's legitimate pre-transcript all-skip.
     api_metered = (
-        backend in FRESH_CLAUDE_BACKENDS or trials > 1 or models is not None or selection.model_override is not None
+        backend in FRESH_CLAUDE_BACKENDS
+        or trials > 1
+        or models is not None
+        or selection.model_override is not None
+        or selection.preset is not None
     )
     require_executed = require_executed or api_metered
     dispatch_resolved_run(
@@ -507,6 +540,7 @@ def run(  # noqa: PLR0913, PLR0917 — typer command: each param maps 1:1 to a p
             gate_cost_bounds=gate_cost_bounds,
             model_override=selection.model_override,
             benchmark_html=selection.benchmark_html,
+            preset=selection.preset,
         ),
         grader=grader,
         escalation=escalation,

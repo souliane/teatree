@@ -19,6 +19,7 @@ import yaml
 _WORKFLOWS = Path(__file__).resolve().parents[3] / ".github" / "workflows"
 _PR = _WORKFLOWS / "eval-pr-reusable.yml"
 _WEEKLY = _WORKFLOWS / "eval-weekly-reusable.yml"
+_BENCHMARK = _WORKFLOWS / "eval-benchmark.yml"
 
 
 def _load(path: Path) -> dict[str, Any]:
@@ -52,6 +53,16 @@ class TestReusableContract:
         assert "force" in inputs
         assert "dashboard-path" in inputs
 
+    def test_weekly_exposes_shards_defaulting_to_unfiltered(self) -> None:
+        inputs = _on(_load(_WEEKLY))["workflow_call"]["inputs"]
+        assert inputs["shards"]["default"] == ""
+
+    def test_benchmark_caller_exposes_shards_and_threads_it_to_the_reusable(self) -> None:
+        dispatch_inputs = _on(_load(_BENCHMARK))["workflow_dispatch"]["inputs"]
+        assert dispatch_inputs["shards"]["default"] == ""
+        benchmark_job = _load(_BENCHMARK)["jobs"]["benchmark"]
+        assert benchmark_job["with"]["shards"] == "${{ inputs.shards }}"
+
 
 class TestNoSilentGreen:
     def test_both_assert_claude_cli_and_require_executed(self) -> None:
@@ -82,8 +93,17 @@ class TestInjectionSafety:
         # The env-var-safe pattern: a caller-supplied value (assert-scenarios,
         # lane) is bound to an env var and referenced as $VAR in the shell, never
         # interpolated as ${{ inputs.* }} directly inside a `run:` body.
-        for path in (_PR, _WEEKLY):
+        for path in (_PR, _WEEKLY, _BENCHMARK):
             for line in path.read_text(encoding="utf-8").splitlines():
                 stripped = line.strip()
                 if stripped.startswith(("uv run", "echo ", "grep ", "git ")):
                     assert "${{ inputs." not in stripped, f"{path.name}: inlined input in a run line — {stripped!r}"
+
+    def test_shards_is_routed_through_env_not_inlined_into_run(self) -> None:
+        text = _WEEKLY.read_text(encoding="utf-8")
+        assert "EVAL_SHARDS: ${{ inputs.shards }}" in text
+        assert '--shards "$EVAL_SHARDS"' in text
+        for line in text.splitlines():
+            stripped = line.strip()
+            if stripped.startswith(("uv run", "echo ", "grep ", "git ")):
+                assert "${{ inputs.shards" not in stripped, f"inlined shards input in a run line — {stripped!r}"
