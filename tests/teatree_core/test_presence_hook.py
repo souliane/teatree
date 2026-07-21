@@ -50,9 +50,7 @@ class TestRecordPresenceHook:
         assert handle_record_presence({"prompt": "hi", "session_id": "s1"}) is None
 
     @pytest.mark.django_db  # ast-grep-ignore: ac-django-no-pytest-django-db
-    def test_stamped_heartbeat_upgrades_away_mode_to_present(
-        self, presence: availability.PresenceHeartbeat
-    ) -> None:
+    def test_stamped_heartbeat_upgrades_away_mode_to_present(self, presence: availability.PresenceHeartbeat) -> None:
         # End-to-end: the hook records, the unified resolver upgrades. A default
         # away-class mode (presence-sensitive) is upgraded to the present-class mode
         # by the fresh keystroke the hook just stamped.
