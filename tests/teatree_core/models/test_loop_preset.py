@@ -12,7 +12,6 @@ import pytest
 from django.core.exceptions import ValidationError
 from django.utils import timezone
 
-from teatree.core import availability
 from teatree.core.models import PIN_MODES, ConfigSetting, Mode, ModeOverride
 
 
@@ -35,12 +34,10 @@ class TestModeBooleans(django.test.SimpleTestCase):
 class TestPinModesCanonical(django.test.SimpleTestCase):
     """LP-5: ONE canonical ``PIN_MODES`` drives pin validation (was triplicated + a dead copy)."""
 
-    def test_pin_modes_are_the_availability_modes(self) -> None:
-        # The pin set IS the availability-mode set; pinning to the canonical
-        # ``VALID_MODES`` (not a hand-built copy) means a NEW availability mode
-        # turns this red until the pin set adopts it — the two layer-separated
-        # constants can never silently drift.
-        assert PIN_MODES == availability.VALID_MODES
+    def test_pin_modes_are_the_legacy_availability_tokens(self) -> None:
+        # The pin set is the legacy availability-mode token set (the merged mode's
+        # ``availability_mode`` seed field validates against it during the merge).
+        assert frozenset({"present", "away", "autonomous_away"}) == PIN_MODES
 
     def test_model_pin_validation_accepts_exactly_the_canonical_set(self) -> None:
         for mode in PIN_MODES:

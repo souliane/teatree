@@ -8,9 +8,9 @@ import pytest
 from django.core.management import call_command
 from typer.testing import CliRunner
 
-from teatree.core.availability import MODE_AWAY, MODE_PRESENT, load_override
 from teatree.core.management.commands.availability import Command as AvailabilityCommand
-from teatree.core.models import Mode
+from teatree.core.mode_resolution import resolve_active_mode
+from teatree.core.models import Mode, ModeOverride
 from teatree.core.models.deferred_question import DeferredQuestion
 
 # ast-grep-ignore: ac-django-no-pytest-django-db
@@ -39,33 +39,28 @@ def _call(*args: str) -> str:
 
 
 class TestAvailabilityCommand:
-    def test_away_writes_override(self, override_file: Path) -> None:
+    def test_away_sets_the_offline_mode_override(self, override_file: Path) -> None:
         out = _call("availability", "away")
         assert "mode=offline" in out
-        loaded = load_override()
-        assert loaded is not None
-        assert loaded.mode == MODE_AWAY
+        assert ModeOverride.objects.current().preset_name == "offline"
+        assert resolve_active_mode().name == "offline"
 
     def test_away_with_until_persists_expiry(self, override_file: Path) -> None:
         until = (datetime.now(tz=UTC) + timedelta(hours=2)).isoformat()
         _call("availability", "away", "--until", until)
-        loaded = load_override()
-        assert loaded is not None
-        assert loaded.until is not None
+        assert ModeOverride.objects.current().until is not None
 
-    def test_present_writes_override(self, override_file: Path) -> None:
+    def test_present_sets_the_engaged_mode_override(self, override_file: Path) -> None:
         out = _call("availability", "present")
         assert "mode=engaged" in out
-        loaded = load_override()
-        assert loaded is not None
-        assert loaded.mode == MODE_PRESENT
+        assert resolve_active_mode().name == "engaged"
 
     def test_auto_clears_override(self, override_file: Path) -> None:
         _call("availability", "away")
-        assert load_override() is not None
+        assert ModeOverride.objects.current() is not None
         out = _call("availability", "auto")
         assert "cleared" in out or "mode=" in out
-        assert load_override() is None
+        assert ModeOverride.objects.current() is None
 
     def test_show_prints_current_resolution(self, override_file: Path) -> None:
         out = _call("availability", "show")

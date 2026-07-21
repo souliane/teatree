@@ -1,8 +1,8 @@
-"""Tests for the ``handle_record_presence`` UserPromptSubmit hook (#58).
+"""Tests for the ``handle_record_presence`` UserPromptSubmit hook (#58, #61).
 
-A prompt is direct evidence the user is at the keyboard. The hook stamps
-a live-presence heartbeat that ``availability.resolve_mode`` reads to
-upgrade a schedule-derived ``away`` to ``present`` — so a user actively
+A prompt is direct evidence the user is at the keyboard. The hook stamps a
+live-presence heartbeat that the unified ``resolve_active_mode`` reads to upgrade a
+schedule/default away-class mode to the present-class mode — so a user actively
 typing outside their configured work hours is never silently muted.
 """
 
@@ -14,6 +14,8 @@ import pytest
 import hooks.scripts.hook_router as router
 from hooks.scripts.hook_router import _LOOP_PROMPT, _is_live_user_turn, handle_record_presence
 from teatree.core import availability
+from teatree.core.mode_resolution import resolve_active_mode
+from teatree.core.models import ConfigSetting, Mode
 
 
 @pytest.fixture
@@ -47,22 +49,20 @@ class TestRecordPresenceHook:
         # UserPromptSubmit handlers are void — only PreToolUse denies return True.
         assert handle_record_presence({"prompt": "hi", "session_id": "s1"}) is None
 
-    def test_stamped_heartbeat_upgrades_schedule_away_to_present(
+    @pytest.mark.django_db  # ast-grep-ignore: ac-django-no-pytest-django-db
+    def test_stamped_heartbeat_upgrades_away_mode_to_present(
         self, presence: availability.PresenceHeartbeat
     ) -> None:
-        # End-to-end: the hook records, the resolver upgrades. A user typing at
-        # 22:00 on a Tuesday — outside "* 9-16 * * 1-5" — stays present.
-        evening = datetime(2026, 6, 2, 22, 0, tzinfo=UTC)
+        # End-to-end: the hook records, the unified resolver upgrades. A default
+        # away-class mode (presence-sensitive) is upgraded to the present-class mode
+        # by the fresh keystroke the hook just stamped.
+        Mode.objects.create(name="engaged", entries={}, defers_questions=False)
+        Mode.objects.create(name="unattended", entries={}, defers_questions=True, presence_sensitive=True)
+        ConfigSetting.objects.set_value("default_mode", "unattended")
         handle_record_presence({"prompt": "ship it?", "session_id": "s1"})
-        # The hook stamps "now"; assert the live upgrade with an explicit
-        # fresh presence so the test is clock-independent.
-        schedule = availability.Schedule(timezone="UTC", windows=("* 9-16 * * 1-5",))
-        resolution = availability.resolve_mode(
-            now=evening, schedule=schedule, override=None, presence=evening - timedelta(minutes=1)
-        )
-        assert resolution.mode == availability.MODE_PRESENT
-        assert resolution.source == "live"
-        # And the hook's own stamp is fresh enough that a same-clock resolve upgrades too.
+        resolved = resolve_active_mode()
+        assert resolved.name == "engaged"
+        assert resolved.source == "live"
         assert presence.last_seen() is not None
 
     def test_record_failure_never_raises(

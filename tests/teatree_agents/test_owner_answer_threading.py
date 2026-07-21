@@ -12,7 +12,6 @@ from unittest.mock import MagicMock, patch
 from django.test import TestCase
 
 from teatree.agents.attempt_recorder import record_result_envelope
-from teatree.core import availability
 from teatree.core.mode_resolution import set_mode_override
 from teatree.core.models import DeferredQuestion, Mode, ModeOverride, PendingChatInjection, Session, Task, Ticket
 
@@ -45,25 +44,6 @@ class TestOwnerAnswerThreading(TestCase):
         _, kwargs = backend.post_reply.call_args
         assert kwargs["ts"] == owner_ts
         assert kwargs["channel"] == channel
-
-    def test_answer_posts_under_autonomous_away(self) -> None:
-        channel, owner_ts = "D0OWNER", "1700000000.000100"
-        task = self._owner_dm_task(channel=channel, slack_ts=owner_ts)
-        PendingChatInjection.objects.create(overlay="acme", channel=channel, slack_ts=owner_ts, text="hi")
-        backend = MagicMock()
-        backend.post_reply.return_value = {"ok": True, "ts": "1700000000.000200"}
-        away = availability.Resolution(mode=availability.MODE_AUTONOMOUS_AWAY, source="override")
-        with (
-            patch("teatree.core.backend_factory.messaging_from_overlay", return_value=backend),
-            patch.object(availability, "resolve_mode", return_value=away),
-        ):
-            record_result_envelope(
-                task,
-                {"summary": "drafted", "answer": {"text": "still answered", "thread_ref": ""}},
-            )
-        backend.post_reply.assert_called_once()
-        assert DeferredQuestion.objects.count() == 0
-        assert PendingChatInjection.objects.get().answered_at is not None
 
     def test_answer_posts_under_the_merged_offline_mode(self) -> None:
         # #61 invariant: the merge must not re-route owner replies through the
