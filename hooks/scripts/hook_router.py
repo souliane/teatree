@@ -99,7 +99,13 @@ from hooks.scripts.forge_api_detect import (
     _effective_method_is_write,  # noqa: F401 re-export for test access
     _is_api_create_endpoint_write,
 )
-from hooks.scripts.gate_result import GateOutcome, classify_validator_run
+from hooks.scripts.gate_result import (
+    GateOutcome,
+    ValidatorTimedOut,
+    classify_validator_run,
+    validator_timeout_seconds,
+    warn_validator_timed_out,
+)
 from hooks.scripts.handlers.classifier_denial import (
     handle_classifier_deny_stop_gate,
     handle_clear_classifier_deny_marker,
@@ -127,6 +133,7 @@ from hooks.scripts.mr_cli_fields import (
     extract_mr_target_repo,
     merge_target_managed_state,
 )
+from hooks.scripts.mr_validator import mr_validate_argv, run_mr_validator
 from hooks.scripts.no_self_reviewer_assign import handle_block_self_reviewer_assign
 from hooks.scripts.orchestration_boundary_signals import PYTEST_VERB_FINDER as _PYTEST_VERB_FINDER
 from hooks.scripts.orchestration_boundary_signals import PYTEST_VERB_RE as _PYTEST_VERB_RE
@@ -1682,36 +1689,16 @@ def _extract_mr_fields(data: dict) -> tuple[str, str] | None:
     return None
 
 
-def _mr_validate_argv() -> list[str] | None:
-    """Resolve the command that validates MR metadata.
-
-    Default (no opt-in): ``t3 tool validate-mr`` — runs the active
-    overlay's ``validate_pr``, the same verdict ``t3 <overlay> pr create``
-    uses, so a bad title/description is rejected BEFORE the push every time
-    (#119). ``T3_MR_VALIDATE_SCRIPT`` remains an explicit override escape
-    hatch. Returns ``None`` when no validator is resolvable (fail open —
-    don't block the agent on a broken environment, matching the other
-    t3-shelling hooks).
-    """
-    script = os.environ.get("T3_MR_VALIDATE_SCRIPT", "")
-    if script and Path(script).is_file():
-        return ["python3", script]
-    t3_bin = shutil.which("t3")
-    if t3_bin:
-        return [t3_bin, "tool", "validate-mr"]
-    return None
-
-
 _MR_VALIDATE_BROKEN_ENV_DENY = (
     "Cannot validate MR title/description — the overlay validator "
-    "(`t3 tool validate-mr`) is not resolvable or crashed. Refusing to create "
+    "(`t3 tool validate-mr`) is not resolvable. Refusing to create "
     "the MR with unvalidated metadata (fail closed). Fix the environment, or "
     "set T3_MR_VALIDATE_ALLOW_BROKEN_ENV=1 to deliberately bypass."
 )
 
 
 def _handle_broken_validate_env(data: dict) -> bool:
-    """Decide the gate's action when the validator can't run.
+    """Decide the gate's action when no validator could be resolved.
 
     The MR-metadata gate FAILS CLOSED by default (deny): a non-compliant title
     must never reach GitLab just because the env could not validate it. The
@@ -1725,56 +1712,11 @@ def _handle_broken_validate_env(data: dict) -> bool:
     return _fail_open_or_deny(data, _MR_VALIDATE_BROKEN_ENV_DENY)
 
 
-def _run_mr_validator(
-    argv: list[str], title: str, description: str, target_repo: str | None = None, *, sections_optional: bool = False
-) -> "subprocess.CompletedProcess[str] | None":
-    """Run the validator, or ``None`` if the env is broken (timeout/missing).
-
-    ``target_repo`` (when parseable) is forwarded as ``--repo <slug>`` so the
-    validator keys overlay resolution to the MR's TARGET, not the agent's cwd.
-    ``sections_optional`` forwards ``--sections-optional`` for a title-only
-    update whose description is untouched (#3254).
-    """
-    repo_args = ["--repo", target_repo] if target_repo else []
-    section_args = ["--sections-optional"] if sections_optional else []
-    try:
-        return subprocess.run(  # noqa: S603 — trusted internal subprocess; fixed argv, no shell
-            [*argv, "--title", title, "--description", description, *repo_args, *section_args],
-            capture_output=True,
-            text=True,
-            check=False,
-            timeout=10,
-        )
-    except (subprocess.TimeoutExpired, FileNotFoundError):
-        return None
-
-
-def handle_validate_mr_metadata(data: dict) -> bool:
-    """Block a non-compliant ``glab mr``/``gh pr`` create/update before it runs.
-
-    Validates by default via the TARGET overlay's ``validate_pr`` (no env-var
-    opt-in) so the pre-push gate is always live (#119 Part 3). The MR's TARGET
-    repo is parsed from the command and threaded as ``--repo`` so an MR is graded
-    against the TARGET overlay's rules, not the cwd overlay's weaker ones. A
-    validator that RAN but crashed is CANNOT_EVALUATE — crash ≠ deny (#1528): it
-    warns and allows, with the remote CI job as backstop. Only the
-    unresolvable/timed-out validator (the ``None`` broken-env path) FAILS CLOSED;
-    the ``T3_MR_VALIDATE_ALLOW_BROKEN_ENV`` opt-in restores fail-open there.
-    """
-    fields = _extract_mr_fields(data)
-    if fields is None:
+def _mr_validator_verdict(data: dict, result: "subprocess.CompletedProcess[str] | ValidatorTimedOut | None") -> bool:
+    """Map a validator run (or its failure to run) to the gate's block decision."""
+    if isinstance(result, ValidatorTimedOut):
+        warn_validator_timed_out("MR-metadata", result.allowance_seconds)
         return False
-    title, description = fields
-    command = data.get("tool_input", {}).get("command", "") if data.get("tool_name") == "Bash" else ""
-    target_repo = extract_mr_target_repo(command) if command else None
-    # Title-only update: no description touched → skip required-section check (#3254).
-    sections_optional = bool(command) and cli_update_is_title_only(command)
-
-    argv = _mr_validate_argv()
-    if argv is None:
-        return _handle_broken_validate_env(data)
-
-    result = _run_mr_validator(argv, title, description, target_repo, sections_optional=sections_optional)
     if result is None:
         return _handle_broken_validate_env(data)
 
@@ -1794,6 +1736,38 @@ def handle_validate_mr_metadata(data: dict) -> bool:
             (result.stderr or result.stdout or "").strip() or "MR title/description failed overlay validation."
         )
     return False
+
+
+def handle_validate_mr_metadata(data: dict) -> bool:
+    """Block a non-compliant ``glab mr``/``gh pr`` create/update before it runs.
+
+    Validates by default via the TARGET overlay's ``validate_pr`` (no env-var
+    opt-in) so the pre-push gate is always live (#119 Part 3). The MR's TARGET
+    repo is parsed from the command and threaded as ``--repo`` so an MR is graded
+    against the TARGET overlay's rules, not the cwd overlay's weaker ones. A
+    validator that RAN but crashed, and one too SLOW to finish inside its
+    allowance, are both CANNOT_EVALUATE — crash ≠ deny (#1528), and neither is a
+    timeout: each warns and allows, with the remote CI job as backstop. Only the
+    UNRESOLVABLE validator (no ``t3``, no script — the ``None`` broken-env path)
+    FAILS CLOSED; the ``T3_MR_VALIDATE_ALLOW_BROKEN_ENV`` opt-in restores
+    fail-open there.
+    """
+    fields = _extract_mr_fields(data)
+    if fields is None:
+        return False
+    title, description = fields
+    command = data.get("tool_input", {}).get("command", "") if data.get("tool_name") == "Bash" else ""
+    target_repo = extract_mr_target_repo(command) if command else None
+    # Title-only update: no description touched → skip required-section check (#3254).
+    sections_optional = bool(command) and cli_update_is_title_only(command)
+
+    argv = mr_validate_argv()
+    if argv is None:
+        return _handle_broken_validate_env(data)
+
+    return _mr_validator_verdict(
+        data, run_mr_validator(argv, title, description, target_repo, sections_optional=sections_optional)
+    )
 
 
 # ── PreToolUse: block-ai-signature (#836 §17.6 gate 15) ─────────────
@@ -1963,6 +1937,7 @@ def _run_block_ai_signature(data: dict) -> bool:
     if payload is None or argv is None:
         return False
 
+    allowance = validator_timeout_seconds()
     try:
         result = subprocess.run(  # noqa: S603 — trusted internal subprocess; fixed argv, no shell
             argv,
@@ -1970,9 +1945,12 @@ def _run_block_ai_signature(data: dict) -> bool:
             capture_output=True,
             text=True,
             check=False,
-            timeout=10,
+            timeout=allowance,
         )
-    except (subprocess.TimeoutExpired, FileNotFoundError):
+    except subprocess.TimeoutExpired:
+        warn_validator_timed_out("AI-signature", allowance)
+        return False
+    except FileNotFoundError:
         return False
 
     finding = _ai_sig_finding(result.stdout or "")
