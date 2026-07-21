@@ -20,18 +20,23 @@ from teatree.cli.eval.run_modes import DEFAULT_COST_REGRESSION_TOLERANCE, with_m
 from teatree.cli.eval.single_trial import SingleTrialGates, run_single_trial
 from teatree.eval.model_resolution import resolve_eval_model
 from teatree.eval.models import EvalSpec
+from teatree.eval.presets import Preset, resolve_preset_model
 from teatree.eval.report import JudgeGrader
 
 
-def _resolve_per_scenario_model(spec: EvalSpec) -> EvalSpec:
+def _resolve_per_scenario_model(spec: EvalSpec, *, preset: Preset | None) -> EvalSpec:
     """Carry the resolved concrete model id on *spec* for the per-tier lanes.
 
     The default single-trial and pass@k lanes run each scenario at its own
-    tier/phase, so the model is resolved from the single TIER_MODELS constant
-    here — before the runner — so every consumer (runner, ledger label, report)
-    sees a concrete model id. The matrix / ``--model`` lanes set the model
-    upstream (``with_model``), so they never reach this path.
+    tier/phase, so the model is resolved here — before the runner — so every
+    consumer (runner, ledger label, report) sees a concrete model id. With no
+    *preset*, that is :func:`resolve_eval_model` unchanged; with a *preset*
+    active, resolution goes through the preset composition layer
+    (:func:`resolve_preset_model`) instead. The matrix / ``--model`` lanes set
+    the model upstream (``with_model``), so they never reach this path.
     """
+    if preset is not None:
+        return with_model(spec, resolve_preset_model(spec, preset))
     return with_model(spec, resolve_eval_model(spec))
 
 
@@ -72,6 +77,11 @@ class ResolvedRun:
     #: ``--benchmark`` — write the self-contained matrix HTML dashboard here (the
     #: matrix lane is selected by ``models`` being the resolved tier set).
     benchmark_html: Path | None = None
+    #: ``--preset`` — apply a model-tier PRESET at the per-scenario seam instead
+    #: of the default ``resolve_eval_model``. Mutually exclusive with ``--model``/
+    #: ``--models``/``--benchmark`` (enforced at CLI argument resolution), so it
+    #: only ever reaches the pass@k / single-trial per-scenario lanes below.
+    preset: Preset | None = None
 
 
 def dispatch_resolved_run(
@@ -139,8 +149,9 @@ def dispatch_resolved_run(
         )
         return
     # The remaining lanes (pass@k, single-trial) run each scenario at its OWN
-    # tier/phase — resolve each to a concrete model id here, the single seam.
-    specs = [_resolve_per_scenario_model(spec) for spec in specs]
+    # tier/phase (or its preset entry) — resolve each to a concrete model id
+    # here, the single seam.
+    specs = [_resolve_per_scenario_model(spec, preset=run.preset) for spec in specs]
     if run.trials > 1:
         run_pass_at_k_lane(
             specs,

@@ -40,6 +40,7 @@ class RunDockerArgs:
     summary_json: Path | None = None
     benchmark: bool = False
     model: str | None = None
+    preset: str | None = None
     escalate_on_fail: bool = False
     escalate_trials: int = 3
 
@@ -96,6 +97,7 @@ class RunDockerArgs:
             ["--shard", self.shard] if self.shard is not None else [],
             ["--benchmark"] if self.benchmark else [],
             ["--model", self.model] if self.model is not None else [],
+            ["--preset", self.preset] if self.preset is not None else [],
             ["--format", self.output_format] if self.output_format != "text" else [],
             ["--max-turns", str(self.max_turns)] if self.max_turns is not None else [],
         ]

@@ -18,6 +18,7 @@ from teatree.eval.backends import FRESH_CLAUDE_BACKENDS
 from teatree.eval.discovery import discover_specs, find_spec
 from teatree.eval.model_variant import EFFORT_LEVELS
 from teatree.eval.models import EvalSpec
+from teatree.eval.presets import Preset, PresetError, resolve_preset
 from teatree.eval.report import ScenarioResult, render_html, render_summary_markdown
 from teatree.eval.summary_json import write_summary_json
 
@@ -41,32 +42,41 @@ def benchmark_models() -> str:
 
 @dataclasses.dataclass(frozen=True)
 class BenchmarkSelection:
-    """The model-lane selection resolved from ``--benchmark`` / ``--model`` / ``--models``.
+    """The model-lane selection resolved from ``--benchmark``/``--model``/``--models``/``--preset``.
 
-    Exactly one of the three (or none) may be active. ``models`` is the resolved
+    Exactly one of the four (or none) may be active. ``models`` is the resolved
     comma-list for the matrix lane (the benchmark expands to the three tier
     models); ``model_override`` forces the whole suite onto one model;
-    ``benchmark_html`` is the HTML artifact path the benchmark renders.
+    ``benchmark_html`` is the HTML artifact path the benchmark renders;
+    ``preset`` is the resolved model-tier preset applied at the per-scenario seam.
     """
 
     models: str | None
     model_override: str | None
     benchmark_html: Path | None
+    preset: Preset | None = None
 
 
 def resolve_benchmark_selection(
-    *, benchmark: bool, model: str | None, models: str | None, html_out: Path | None
+    *, benchmark: bool, model: str | None, models: str | None, preset: str | None, html_out: Path | None
 ) -> BenchmarkSelection:
-    """Validate ``--benchmark``/``--model``/``--models`` are mutually exclusive, then resolve.
+    """Validate ``--benchmark``/``--model``/``--models``/``--preset`` are mutually exclusive, then resolve.
 
     ``--benchmark`` expands to the three tier models (the matrix lane) and renders
     the HTML dashboard at *html_out*. ``--model`` forces the whole suite onto one
-    model. ``--models`` is the explicit matrix list (unchanged). At most one may
-    be set; combining any two is a usage error (exit 2).
+    model. ``--models`` is the explicit matrix list (unchanged). ``--preset``
+    resolves a named model-tier preset (``cheap``/``frontier``/``baseline``),
+    applied per-scenario downstream. At most one may be set; combining any two is
+    a usage error (exit 2); an unknown ``--preset`` name is also exit 2.
     """
     active = [
         name
-        for name, on in (("--benchmark", benchmark), ("--model", model is not None), ("--models", models is not None))
+        for name, on in (
+            ("--benchmark", benchmark),
+            ("--model", model is not None),
+            ("--models", models is not None),
+            ("--preset", preset is not None),
+        )
         if on
     ]
     if len(active) > 1:
@@ -74,6 +84,13 @@ def resolve_benchmark_selection(
         raise typer.Exit(code=2)
     if benchmark:
         return BenchmarkSelection(models=benchmark_models(), model_override=None, benchmark_html=html_out)
+    if preset is not None:
+        try:
+            resolved_preset = resolve_preset(preset)
+        except PresetError as exc:
+            typer.echo(str(exc), err=True)
+            raise typer.Exit(code=2) from None
+        return BenchmarkSelection(models=None, model_override=None, benchmark_html=None, preset=resolved_preset)
     return BenchmarkSelection(models=models, model_override=model, benchmark_html=None)
 
 

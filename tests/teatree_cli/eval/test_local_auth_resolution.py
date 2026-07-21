@@ -109,6 +109,7 @@ class TestBenchmarkLaneResolvesEvalCredential(TestCase):
         ):
             benchmark(
                 models="claude-opus-4-8@xhigh",
+                presets=None,
                 scenarios=None,
                 trials=1,
                 max_turns=None,
