@@ -117,7 +117,12 @@ def _cheapest_passing_tier(results: dict[str, MatrixCell | None]) -> str | None:
     known = [model for model in passing_models if model in _TIER_BY_MODEL]
     if not known:
         return None
-    return _TIER_BY_MODEL[min(known, key=tier_rank)]
+    return _TIER_BY_MODEL[min(known, key=_model_tier_rank)]
+
+
+def _model_tier_rank(model: str) -> int:
+    """``tier_rank`` narrowed to a required model id, so ``min`` still returns ``str``."""
+    return tier_rank(model)
 
 
 def _write_baseline(path: Path, scenario_tiers: dict[str, str], frontier_ok: set[str]) -> None:

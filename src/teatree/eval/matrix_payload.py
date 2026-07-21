@@ -9,7 +9,9 @@ the baseline derivation.
 
 import dataclasses
 import json
+from collections.abc import Mapping
 from pathlib import Path
+from typing import cast
 
 
 class MatrixPayloadError(RuntimeError):
@@ -64,16 +66,25 @@ def load_matrix_payload(path: Path) -> MatrixPayload:
     return MatrixPayload(models=models, scenarios=[_parse_scenario_entry(path, entry) for entry in scenarios_raw])
 
 
+def _as_json_object(value: object) -> Mapping[str, object] | None:
+    """A decoded JSON object as a string-keyed mapping, or ``None`` if *value* is not one."""
+    if not isinstance(value, dict):
+        return None
+    # json.loads only ever produces str keys, so this is total for our input.
+    return cast("Mapping[str, object]", value)
+
+
 def _parse_scenario_entry(path: Path, entry: object) -> MatrixScenarioEntry:
-    if not isinstance(entry, dict):
+    fields = _as_json_object(entry)
+    if fields is None:
         msg = f"{path}: each scenario entry must be an object"
         raise MatrixPayloadError(msg)
-    name = entry.get("name")
+    name = fields.get("name")
     if not isinstance(name, str):
         msg = f"{path}: scenario entry missing a string 'name'"
         raise MatrixPayloadError(msg)
-    results = entry.get("results")
-    if not isinstance(results, dict):
+    results = _as_json_object(fields.get("results"))
+    if results is None:
         msg = f"{path}: scenario {name!r} is missing a 'results' object"
         raise MatrixPayloadError(msg)
     return MatrixScenarioEntry(
@@ -86,15 +97,16 @@ def _parse_cell(path: Path, scenario: str, model: str, cell: object) -> MatrixCe
     if cell is None:
         return None
     where = f"{path}: scenario {scenario!r}, model {model!r}"
-    if not isinstance(cell, dict):
+    fields = _as_json_object(cell)
+    if fields is None:
         msg = f"{where}: each result cell must be an object or null"
         raise MatrixPayloadError(msg)
     return MatrixCell(
-        passed=_parse_bool(where, "passed", cell.get("passed")),
-        skipped=_parse_bool(where, "skipped", cell.get("skipped")),
-        errored=_parse_bool(where, "errored", cell.get("errored")),
-        score=_parse_score(where, cell.get("score", 0.0)),
-        trials=_parse_trials(where, cell.get("trials", 1)),
+        passed=_parse_bool(where, "passed", fields.get("passed")),
+        skipped=_parse_bool(where, "skipped", fields.get("skipped")),
+        errored=_parse_bool(where, "errored", fields.get("errored")),
+        score=_parse_score(where, fields.get("score")),
+        trials=_parse_trials(where, fields.get("trials")),
     )
 
 
@@ -106,6 +118,8 @@ def _parse_bool(where: str, field: str, value: object) -> bool:
 
 
 def _parse_score(where: str, value: object) -> float:
+    if value is None:
+        return 0.0
     # bool is an int subclass — reject it explicitly so `true` is not read as 1.0.
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         msg = f"{where}: cell 'score' must be a number"
@@ -114,6 +128,8 @@ def _parse_score(where: str, value: object) -> float:
 
 
 def _parse_trials(where: str, value: object) -> int:
+    if value is None:
+        return 1
     if isinstance(value, bool) or not isinstance(value, int):
         msg = f"{where}: cell 'trials' must be an integer"
         raise MatrixPayloadError(msg)
