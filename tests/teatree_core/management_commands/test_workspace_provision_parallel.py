@@ -1,10 +1,13 @@
 """Parallel cross-worktree provisioning (souliane/teatree#2949)."""
 
+import sqlite3
 import sys
 import threading
 import time
 from unittest.mock import MagicMock, patch
 
+import pytest
+from django.db import connection
 from django.test import TestCase
 
 from teatree.core.gates.provision_admission_gate import ProvisionAdmissionVerdict
@@ -264,3 +267,33 @@ class TestRenderWorktreeReport(TestCase):
         assert "backend" in rendered
         assert "[OK] a" in rendered
         assert "1/1 steps succeeded" in rendered
+
+
+class TestProvisionPoolConnectionHygiene(TestCase):
+    """A pool worker that touches the ORM must not leak its DB connection.
+
+    The executor reads and writes ``Worktree`` rows, so it opens a thread-local
+    Django connection on its pool worker. Left open, that handle is finalized at an
+    arbitrary later GC as a ``ResourceWarning`` which — under ``filterwarnings =
+    error`` — fails whatever unrelated test is running in that xdist worker.
+    """
+
+    def setUp(self) -> None:
+        self.ticket = Ticket.objects.create(overlay="test", issue_url="https://example.com/issues/hygiene")
+
+    def test_pool_worker_db_connection_is_closed(self) -> None:
+        worktree = Worktree.objects.create(
+            ticket=self.ticket, repo_path="r", branch="b", extra={"worktree_path": "/tmp/r"}
+        )
+        raw_connections: list[sqlite3.Connection] = []
+
+        def orm_touching_executor(wt: Worktree) -> WorktreeProvisionResult:
+            connection.ensure_connection()
+            raw_connections.append(connection.connection)
+            return WorktreeProvisionResult(worktree_id=wt.pk, repo_path=wt.repo_path, ok=True, detail="ok")
+
+        run_worktree_provisions_in_parallel([worktree], executor=orm_touching_executor)
+
+        assert raw_connections, "the executor never opened a connection"
+        with pytest.raises(sqlite3.ProgrammingError):
+            raw_connections[0].execute("SELECT 1")

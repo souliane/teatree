@@ -9,9 +9,11 @@ stop signal tears the pool down.
 import contextlib
 import datetime as dt
 import os
+import sqlite3
 
 import pytest
-from django.test import override_settings
+from django.db import connection
+from django.test import TestCase, override_settings
 from django.utils import timezone
 from django_tasks.base import TaskResultStatus
 from django_tasks_db.models import DBTaskResult
@@ -270,3 +272,31 @@ class TestStartupExpiryBeforeSpawn:
         assert DBTaskResult.objects.get(id=job_id).status == TaskResultStatus.FAILED
         assert statuses_at_spawn  # executors were built
         assert all(status == TaskResultStatus.FAILED for status in statuses_at_spawn)
+
+
+class TestExecutorThreadConnectionHygiene(TestCase):
+    """A spawned executor thread must release its raw DB handle on exit.
+
+    ``connections.close_all()`` — what this thread used to call — is a documented
+    no-op for an in-memory sqlite database, so it left the handle stranded for a
+    later GC to finalize as a ``ResourceWarning``. Under ``filterwarnings = error``
+    that fails an unrelated test in the same xdist worker.
+    """
+
+    def test_spawned_thread_closes_its_raw_db_handle(self) -> None:
+        raw_connections: list[sqlite3.Connection] = []
+
+        class _OrmTouchingExecutor:
+            def run(self) -> None:
+                connection.ensure_connection()
+                raw_connections.append(connection.connection)
+
+            def stop(self) -> None:
+                return None
+
+        thread = worker_mod._spawn_executor_thread(_OrmTouchingExecutor())
+        thread.join(timeout=10)
+
+        assert raw_connections, "the executor never opened a connection"
+        with pytest.raises(sqlite3.ProgrammingError):
+            raw_connections[0].execute("SELECT 1")

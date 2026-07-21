@@ -71,6 +71,7 @@ from teatree.core.speak_cleaning import clean_for_speech
 from teatree.paths import get_data_dir
 from teatree.types import RawAPIDict, SpeakConfig
 from teatree.utils.run import CommandFailedError, TimeoutExpired, run_allowed_to_fail, run_checked
+from teatree.utils.thread_db import close_thread_db_connections
 
 logger = logging.getLogger(__name__)
 
@@ -162,6 +163,19 @@ def _in_meeting() -> bool:
         return False
 
 
+def _speak_local_closing_connections(text: str) -> None:
+    """The daemon-thread entry point for :func:`_speak_local`.
+
+    The away gate resolves the active mode from the ``ConfigSetting`` store, so
+    a playback thread opens its OWN Django connection — close it here or the
+    thread strands the raw handle (see :mod:`teatree.utils.thread_db`).
+    """
+    try:
+        _speak_local(text)
+    finally:
+        close_thread_db_connections()
+
+
 def speak(text: str, *, block: bool = False) -> None:
     """Read ``text`` aloud through the LOCAL speakers — never raises (#2060).
 
@@ -186,7 +200,7 @@ def speak(text: str, *, block: bool = False) -> None:
     if block:
         _speak_local(cleaned)
         return
-    thread = threading.Thread(target=_speak_local, args=(cleaned,), daemon=True)
+    thread = threading.Thread(target=_speak_local_closing_connections, args=(cleaned,), daemon=True)
     thread.start()
 
 
@@ -369,7 +383,7 @@ def _maybe_speak_local(config: SpeakConfig, text: str) -> None:
     cleaned = clean_for_speech(text)
     if not cleaned:
         return
-    thread = threading.Thread(target=_speak_local, args=(cleaned,), daemon=True)
+    thread = threading.Thread(target=_speak_local_closing_connections, args=(cleaned,), daemon=True)
     thread.start()
 
 

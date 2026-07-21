@@ -32,6 +32,7 @@ from contextlib import contextmanager
 from teatree.eval.backends import EvalRunner
 from teatree.eval.models import EvalRun, EvalSpec
 from teatree.llm.anthropic_limits import CreditExhaustedError
+from teatree.utils.thread_db import close_thread_db_connections
 
 #: Raised by a worker that found the abort flag already set — a sibling scenario
 #: exhausted the metered key's credit, so this one short-circuits BEFORE touching
@@ -169,8 +170,13 @@ def run_specs(runner: EvalRunner, specs: list[EvalSpec], *, parallel: int = DEFA
         except CreditExhaustedError:
             aborted.set()
             raise
-        governor.record_completion(run)
-        return run
+        else:
+            governor.record_completion(run)
+            return run
+        finally:
+            # A runner resolves its model tier and effective settings from the
+            # ConfigSetting store — an ORM read on this pool worker thread.
+            close_thread_db_connections()
 
     with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as pool:
         futures = {pool.submit(_guarded, spec): index for index, spec in enumerate(specs)}
