@@ -1,4 +1,4 @@
-"""teatree.loop.mode_resolution — the unified operating-mode resolver (#61).
+"""teatree.core.mode_resolution — the unified operating-mode resolver (#61).
 
 Proves the merged ``resolve_active_mode`` satisfies BOTH old surfaces (the
 availability ``.defers_questions`` / ``.pauses_self_pump`` predicates and the
@@ -15,7 +15,7 @@ from django.utils import timezone
 
 from teatree.core import availability
 from teatree.core.models import ConfigSetting, LoopPreset, LoopPresetOverride
-from teatree.loop.mode_resolution import clear_mode_override, resolve_active_mode, set_mode_override
+from teatree.core.mode_resolution import clear_mode_override, resolve_active_mode, set_mode_override
 
 _DRAIN = "teatree.core.notify_question_drains.drain_deferred_questions"
 

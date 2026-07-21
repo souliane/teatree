@@ -24,7 +24,7 @@ from teatree.dash.loop_control import (
 )
 from teatree.dash.views.access import require_loopback_or_staff
 from teatree.dash.views.base import actor, nav_context
-from teatree.loop.mode_resolution import clear_mode_override, set_mode_override
+from teatree.core.mode_resolution import clear_mode_override, set_mode_override
 
 if TYPE_CHECKING:
     from django.http import HttpRequest, HttpResponse
@@ -77,7 +77,7 @@ def availability(request: "HttpRequest") -> "HttpResponse":
 
     The standalone availability modes are gone: each switch now sets (or clears) a
     ``ModeOverride`` to the corresponding merged mode via
-    :func:`teatree.loop.mode_resolution.set_mode_override` /
+    :func:`teatree.core.mode_resolution.set_mode_override` /
     :func:`clear_mode_override`, keeping the return-to-reachable deferred-question
     drain firing exactly like the ``t3 mode`` CLI.
     """

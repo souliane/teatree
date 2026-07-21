@@ -123,7 +123,7 @@ class TestAwayGateAtPlayback:
         with (
             patch.object(speak_mod.shutil, "which", return_value="/usr/bin/say"),
             patch.object(speak_mod, "_speaker_lock_path", return_value=tmp_path / "speaker.lock"),
-            patch("teatree.loop.mode_resolution.resolve_active_mode", side_effect=RuntimeError("boom")),
+            patch("teatree.core.mode_resolution.resolve_active_mode", side_effect=RuntimeError("boom")),
             patch.object(speak_mod, "_in_meeting", return_value=False),
             patch.object(speak_mod, "run_allowed_to_fail") as run,
         ):

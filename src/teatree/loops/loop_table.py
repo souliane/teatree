@@ -41,7 +41,7 @@ drive the loop — exactly one wins the claim and dispatches.
 
 **Colleague-facing loops defer while the mode is unreachable (#2904, #61).** A row
 with ``Loop.colleague_facing`` set is additionally gated on the single active
-:class:`~teatree.loop.mode_resolution.ResolvedMode`: whenever the resolved mode
+:class:`~teatree.core.mode_resolution.ResolvedMode`: whenever the resolved mode
 ``defers_questions`` (an away-class mode — the same axis that defers user-directed
 questions), the row is NOT admitted, cadence-bumped, or dispatched — colleague-facing
 work should not fire while the user is unreachable to weigh in, even in an
@@ -65,13 +65,13 @@ from typing import TYPE_CHECKING
 
 from teatree.loop.job_identity import _ScannerJob
 from teatree.loop.loop_state_db import control_planes_in_db, loop_state_admits
-from teatree.loop.mode_resolution import resolve_active_mode
+from teatree.core.mode_resolution import resolve_active_mode
 from teatree.loops.base import BuildJobsContext, MiniLoop
 from teatree.loops.registry import iter_loops
 
 if TYPE_CHECKING:
     from teatree.core.models import Loop
-    from teatree.loop.mode_resolution import ResolvedMode
+    from teatree.core.mode_resolution import ResolvedMode
 
 logger = logging.getLogger(__name__)
 

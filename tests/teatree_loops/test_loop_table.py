@@ -16,7 +16,7 @@ from django.test.utils import CaptureQueriesContext
 from django.utils import timezone
 
 from teatree.core.models import Loop, LoopPreset, LoopPresetOverride, LoopState, Prompt
-from teatree.loop.mode_resolution import ResolvedMode
+from teatree.core.mode_resolution import ResolvedMode
 from teatree.loops.base import MiniLoop
 from teatree.loops.loop_table import admitted_loop_names, build_loop_table_jobs
 from teatree.loops.seed import seed_default_loops_and_prompts
