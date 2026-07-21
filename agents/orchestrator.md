@@ -10,6 +10,7 @@ tools:
   - Glob
   - Bash
   - Agent
+  - Skill
 skills:
   - rules
   - workspace

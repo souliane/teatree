@@ -8,6 +8,7 @@ tools:
   - Bash
   - Grep
   - Glob
+  - Skill
 skills:
   - rules
   - debug
