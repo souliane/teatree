@@ -243,13 +243,16 @@ def start_command(
 def _session_pin_flags() -> list[str]:
     """The loop session's ``--permission-mode`` / ``--model`` / ``--effort`` pins.
 
-    The mode is pinned UNCONDITIONALLY. This session drives the autonomous loop
-    and runs unattended under ``autonomous_away``, so it must not inherit the
+    The mode is pinned UNCONDITIONALLY. This session is attended at LAUNCH —
+    ``start_command`` refuses a non-terminal stdin, and the operator is there to
+    see the child's own auth behaviour, which is why the base-URL guard
+    deliberately skips this exec. But it long outlives that moment: it drives the
+    autonomous loop and keeps ticking unattended under ``autonomous_away``, with
+    nobody present to override a classifier denial. So it must not inherit the
     operator's ``permissions.defaultMode`` — ``t3 doctor check`` advises ``auto``
-    there, and a classifier denial in this session has nobody to override it.
-    Pinning here is what makes that advice safe to follow; it is the same
-    :data:`~teatree.agents.permission_modes.UNATTENDED` the headless dispatch
-    options pin, so the two unattended lanes cannot drift apart.
+    there, and pinning here is what makes that advice safe to follow. It is the
+    same :data:`~teatree.agents.permission_modes.UNATTENDED` the headless dispatch
+    options pin, so the unattended lanes cannot drift apart.
 
     Model and effort are session-level pins so the user never runs ``/model`` (or
     sets the effort) by hand. They are injected ONLY into the interactive

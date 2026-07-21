@@ -47,6 +47,7 @@ from pathlib import Path
 from claude_agent_sdk import AgentDefinition, ClaudeAgentOptions, Message, query
 from claude_agent_sdk.types import EffortLevel, SdkPluginConfig
 
+from teatree.agents import permission_modes
 from teatree.eval.api_errors import (
     BUDGET_EXCEEDED_REASON,
     SuccessMislabelResultError,
@@ -295,7 +296,7 @@ def build_sdk_options(config: CleanRoomConfig) -> ClaudeAgentOptions:
         allowed_tools=list(config.allowed_tools),
         disallowed_tools=list(config.disallowed_tools),
         agents=config.agents,
-        permission_mode="bypassPermissions",
+        permission_mode=permission_modes.UNATTENDED,
         max_turns=config.max_turns,
         max_budget_usd=config.max_budget_usd,
         model=config.model,

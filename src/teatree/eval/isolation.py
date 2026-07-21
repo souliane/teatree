@@ -43,9 +43,10 @@ from teatree.llm.credentials import AnthropicApiKeyCredential, CredentialError, 
 _HOME_ANCHORED_VARS = ("HOME", "XDG_CONFIG_HOME", "CLAUDE_CONFIG_DIR")
 
 #: The strip set a caller gets when it passes no ``conflicting_vars`` — the metered
-#: lane's conflicts (strip the subscription OAuth token). Non-eval callers of
-#: :func:`isolated_claude_env` (e.g. ``ticket_short_describe``) keep this default; the
-#: eval chokepoints pass the SELECTED eval credential's ``spec.conflicting_vars``.
+#: lane's conflicts (strip the subscription OAuth token). Both current callers (the
+#: judge and the API runner) pass the SELECTED eval credential's
+#: ``spec.conflicting_vars`` explicitly, so this default is the safe floor for a
+#: future caller rather than a set anything relies on today.
 _DEFAULT_CONFLICTING_VARS = AnthropicApiKeyCredential().spec.conflicting_vars
 
 

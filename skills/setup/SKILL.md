@@ -233,15 +233,19 @@ Set `permissions.defaultMode` to `auto` in `~/.claude/settings.json` for the ses
 
 This is a suggestion, not a gate: the mode is Claude Code's setting, not teatree's, so `t3 doctor check` only advises when it sees `bypassPermissions` and stays silent when no mode is configured.
 
-**Changing it reaches only the session you drive, even though every lane reads the same file.** `defaultMode` is one global key, so the separation cannot come from the settings — it comes from each unattended lane pinning `--permission-mode` for itself. Headless dispatch pins it in `ClaudeAgentOptions` (the SDK emits the flag), and `t3 loop start` pins the same flag on the argv it execs. A pinned flag beats the settings default, so neither lane inherits your choice here.
+**Changing it reaches only the session you drive, even though every lane reads the same file.** `defaultMode` is one global key, so the separation cannot come from the settings — it comes from each unattended lane pinning `--permission-mode` for itself. Headless dispatch pins it in `ClaudeAgentOptions` (the SDK emits the flag); `t3 loop start` pins the same flag on the argv it execs; and `t3 agent "<task>"` pins it on the `-p` argv it execs. A pinned flag beats the settings default, so none of those lanes inherits your choice here.
 
-Those pins are the only thing separating the lanes, and both are asserted — `tests/teatree_agents/test_headless_least_privilege.py` and `tests/teatree_cli/test_cli_loop.py` — so removing either fails a test rather than silently classifier-gating unattended work.
+Those pins are the only thing separating the lanes, and each is asserted — `tests/teatree_agents/test_headless_least_privilege.py`, `tests/teatree_cli/test_cli_loop.py`, and `tests/teatree_cli/test_cli_agent.py` — so removing one fails a test rather than silently classifier-gating unattended work.
 
-Four contexts — do not generalise one to the others:
+Note the split inside `t3 agent`: with a task argument it execs `claude -p`, which is headless and therefore pinned; with no task it execs an interactive `claude` and pins nothing, because you are the human sitting in front of it.
+
+Five contexts — do not generalise one to the others:
 
 | Context | Mode | Why |
 |---|---|---|
 | Interactive session (you are present) | `auto` | classifier gates each call; no prompt spam, not allow-all |
+| Bare `t3 agent` (no task argument) | unpinned — inherits your `defaultMode` | execs an interactive `claude`; the session is attended, so the mode is yours to choose |
+| `t3 agent "<task>"` | `bypassPermissions` (pinned) | execs `claude -p`; print-mode runs headless with nobody present to answer a denial |
 | The `t3 loop start` session | `bypassPermissions` (pinned) | drives the autonomous loop; unattended under `autonomous_away`, so a classifier denial has nobody to override it |
 | Headless write phases (`coding` / `planning` / `shipping` / `reviewing`) | `bypassPermissions` (pinned) | no human to approve a `Write`; narrowing it strands the run |
 | The quarantined reader phase | `dontAsk` (pinned) | its tool set is meant to be empty, so default-deny is correct |

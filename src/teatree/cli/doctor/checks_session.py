@@ -144,17 +144,20 @@ def _check_interactive_permission_mode() -> bool:
     Changing this reaches ONLY the session the operator drives. Every unattended lane
     reads the same file but pins its own mode, so none of them inherit this key:
     headless dispatch pins it in ``ClaudeAgentOptions`` (the SDK emits
-    ``--permission-mode``) and ``t3 loop start`` pins the same flag on its argv. Those
-    pins are the ONLY thing keeping the lanes apart —
-    ``tests/teatree_agents/test_headless_least_privilege.py`` and
-    ``tests/teatree_cli/test_cli_loop.py`` assert both, so dropping either fails
-    loudly rather than silently classifier-gating unattended work.
+    ``--permission-mode``), ``t3 loop start`` pins the same flag on its argv, and
+    ``t3 agent`` pins it on the ``-p`` argv it execs. Those pins are the ONLY thing
+    keeping the lanes apart — ``tests/teatree_agents/test_headless_least_privilege.py``,
+    ``tests/teatree_cli/test_cli_loop.py``, and ``tests/teatree_cli/test_cli_agent.py``
+    assert each, so dropping one fails loudly rather than silently classifier-gating
+    unattended work.
     """
     from teatree.cli.doctor.checks_resources import _read_json_object  # noqa: PLC0415 — lazy CLI import
 
     permissions = _read_json_object(Path.home() / ".claude" / "settings.json").get("permissions")
     if not isinstance(permissions, dict):
         return True
+    # The cast is load-bearing, not decorative: `isinstance(permissions, dict)` narrows
+    # the JSON-value union to `dict[Never, Never]`, so a bare `.get(str)` is a type error.
     mode = cast("JsonObject", permissions).get(_INTERACTIVE_PERMISSION_MODE_KEY)
     if mode == _CLASSIFIER_GATED_MODE:
         typer.echo(
@@ -168,6 +171,7 @@ def _check_interactive_permission_mode() -> bool:
             f"classifier approves or denies each call, so you still get an unprompted flow without blanket "
             f"approval. Set permissions.{_INTERACTIVE_PERMISSION_MODE_KEY} in ~/.claude/settings.json. "
             f"(Every unattended lane reads the same file but pins --permission-mode of its own — headless "
-            f"dispatch and `t3 loop start` alike — so they stay on {_ALLOW_ALL_MODE} and are unaffected.)",
+            f'dispatch, `t3 loop start`, and `t3 agent "<task>"` alike — so they stay on {_ALLOW_ALL_MODE} '
+            f"and are unaffected.)",
         )
     return True

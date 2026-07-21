@@ -375,11 +375,15 @@ def reject_ambient_base_url_redirect() -> None:
     and both the CLI and the Anthropic SDK read
     :data:`ANTHROPIC_BASE_URL_ENV` from the inherited env.
 
-    Deliberately NOT covered: the three ``exec``-family spawns an operator invokes
-    by hand — ``t3 agent``, ``t3 loop start``, and the dashboard's ttyd debug
-    session. Each replaces this process rather than dispatching work under it, so
-    the operator sees the child's own auth behaviour directly and a refusal here
-    would only obscure an environment they set themselves.
+    Also called by ``t3 agent`` on its ``-p`` branch: that exec replaces this
+    process, but the child runs headless with nobody watching its auth behaviour,
+    which is the condition this guard exists for — not whether the spawn is an exec.
+
+    Deliberately NOT covered: the ``exec``-family spawns that leave a human in front
+    of the child — bare interactive ``t3 agent``, ``t3 loop start``, and the
+    dashboard's ttyd debug session. The operator sees the child's own auth behaviour
+    directly there, so a refusal would only obscure an environment they set
+    themselves.
 
     The one unambiguously sanctioned shape passes: a metered key with no
     subscription token beside it — an operator pointing their OWN API key at a
