@@ -18,9 +18,19 @@ import django.test
 import pytest
 from django.core.management import call_command
 
-from teatree.core.availability import Resolution
 from teatree.core.management.commands.loops_tick import Command
-from teatree.core.models import Loop, LoopLease, Worktree
+from teatree.core.mode_resolution import ResolvedMode
+from teatree.core.models import Loop, LoopLease, Mode, Worktree
+
+_MODE_SEAM = "teatree.core.management.commands.loops_tick.resolve_active_mode"
+
+
+def _resolved(*, pauses: bool, name: str = "offline") -> ResolvedMode:
+    return ResolvedMode(
+        mode=Mode(name=name, entries={}, defers_questions=pauses, pauses_self_pump=pauses),
+        source="override",
+        until=None,
+    )
 from teatree.core.overlay import OverlayBase, OverlayConnectors, ProvisionStep
 from teatree.loop.tick import TickReport
 from teatree.loops.timer_chains import TICK_SUBPROCESS_ENV_MARKER
@@ -231,9 +241,8 @@ class TestAvailabilityPauseReconciliation(django.test.TestCase):
     """
 
     def test_holiday_away_parks_the_tick_before_claiming_any_lease(self) -> None:
-        resolution = Resolution(mode="away", source="override")
         with (
-            patch("teatree.core.availability.resolve_mode", return_value=resolution),
+            patch(_MODE_SEAM, return_value=_resolved(pauses=True)),
             patch.object(LoopLease.objects, "claim_ownership") as claim,
             patch("teatree.loop.tick.run_tick") as run_tick,
         ):
@@ -242,13 +251,12 @@ class TestAvailabilityPauseReconciliation(django.test.TestCase):
         run_tick.assert_not_called()
         payload = json.loads(out)
         assert payload["skipped"] is True
-        assert "away" in payload["skipped_reason"]
+        assert "self-pump paused" in payload["skipped_reason"]
 
     def test_autonomous_away_does_not_park_the_tick(self) -> None:
         report = TickReport(started_at=dt.datetime.now(dt.UTC))
-        resolution = Resolution(mode="autonomous_away", source="override")
         with (
-            patch("teatree.core.availability.resolve_mode", return_value=resolution),
+            patch(_MODE_SEAM, return_value=_resolved(pauses=False, name="unattended")),
             patch.object(LoopLease.objects, "claim_ownership", return_value=(True, "me")),
             patch.object(LoopLease.objects, "acquire", return_value=True),
             patch.object(LoopLease.objects, "release"),
@@ -256,15 +264,14 @@ class TestAvailabilityPauseReconciliation(django.test.TestCase):
             patch("teatree.loop.tick.run_tick", return_value=report) as run_tick,
         ):
             _run(loop="inbox")
-        # The whole point of #2544: unlike holiday-away, autonomous-away must
+        # The whole point of #2544: unlike holiday-away, an autonomous-away mode must
         # NOT park the tick — the factory keeps self-pumping.
         run_tick.assert_called_once()
 
     def test_present_does_not_park_the_tick(self) -> None:
         report = TickReport(started_at=dt.datetime.now(dt.UTC))
-        resolution = Resolution(mode="present", source="default")
         with (
-            patch("teatree.core.availability.resolve_mode", return_value=resolution),
+            patch(_MODE_SEAM, return_value=_resolved(pauses=False, name="engaged")),
             patch.object(LoopLease.objects, "claim_ownership", return_value=(True, "me")),
             patch.object(LoopLease.objects, "acquire", return_value=True),
             patch.object(LoopLease.objects, "release"),
