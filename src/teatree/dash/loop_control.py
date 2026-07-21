@@ -14,10 +14,10 @@ import logging
 from dataclasses import dataclass
 
 from teatree.config import get_effective_settings
+from teatree.core.mode_resolution import resolve_active_mode
 from teatree.core.models.loop import Loop
 from teatree.core.models.loop_state import LoopState, LoopStatus
 from teatree.dash.gate_state import dash_gate_fail_open
-from teatree.core.mode_resolution import resolve_active_mode
 from teatree.loops.preset_status import LoopVerdict, effective_verdicts
 
 logger = logging.getLogger(__name__)

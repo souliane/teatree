@@ -11,6 +11,7 @@ from django.http import HttpResponseBadRequest
 from django.shortcuts import redirect, render
 from django.views.decorators.http import require_GET, require_POST
 
+from teatree.core.mode_resolution import clear_mode_override, set_mode_override
 from teatree.core.models.config_setting import ConfigSetting
 from teatree.dash import audit
 from teatree.dash.loop_control import (
@@ -24,7 +25,6 @@ from teatree.dash.loop_control import (
 )
 from teatree.dash.views.access import require_loopback_or_staff
 from teatree.dash.views.base import actor, nav_context
-from teatree.core.mode_resolution import clear_mode_override, set_mode_override
 
 if TYPE_CHECKING:
     from django.http import HttpRequest, HttpResponse

@@ -37,7 +37,7 @@ class _TmpStateMixin(django.test.TestCase):
         tmp = Path(tempfile.mkdtemp())
         for patcher in (
             mock.patch.object(availability, "PRESENCE", availability.PresenceHeartbeat(lambda: tmp / "presence")),
-            mock.patch.object(availability, "override_path", lambda: tmp / "availability_override.json"),
+            mock.patch.object(availability, "override_path", return_value=tmp / "availability_override.json"),
         ):
             patcher.start()
             self.addCleanup(patcher.stop)

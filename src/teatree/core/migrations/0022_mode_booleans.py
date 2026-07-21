@@ -56,7 +56,7 @@ def _seed_offline_mode(apps, schema_editor):
     Loop = apps.get_model("core", "Loop")
     if LoopPreset.objects.filter(name="offline").exists():
         return
-    all_off = {name: False for name in Loop.objects.values_list("name", flat=True)}
+    all_off = dict.fromkeys(Loop.objects.values_list("name", flat=True), False)
     LoopPreset.objects.create(
         name="offline",
         description=_OFFLINE_DESCRIPTION,

@@ -19,13 +19,13 @@ from django.utils import timezone
 from teatree.config import get_effective_settings
 from teatree.core.cost import CostReport, cycle_start, cycle_start_datetime
 from teatree.core.factory.operational_health import read_health
+from teatree.core.mode_resolution import resolve_active_mode
 from teatree.core.models.anthropic_token_usage import AnthropicTokenUsage
 from teatree.core.models.known_issue import KnownIssue
 from teatree.core.models.task_attempt import TaskAttempt
 from teatree.core.models.usage_window_state import UsageWindowState
 from teatree.core.selectors import build_headless_queue, build_interactive_queue
 from teatree.dash.gate_state import dash_gate_fail_open
-from teatree.core.mode_resolution import resolve_active_mode
 from teatree.loops.live import LoopStatusReport, build_report
 
 logger = logging.getLogger(__name__)

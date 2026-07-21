@@ -5,11 +5,11 @@ import re
 from django.test import Client, TestCase
 from django.urls import reverse
 
+from teatree.core.mode_resolution import clear_mode_override, resolve_active_mode
 from teatree.core.models.config_setting import ConfigSetting
 from teatree.core.models.loop import Loop
 from teatree.core.models.loop_state import LoopState, LoopStatus
 from teatree.dash.loop_control import AVAILABILITY_ACTIONS, LOOP_ACTIONS
-from teatree.core.mode_resolution import clear_mode_override, resolve_active_mode
 
 
 def _make_loop(name: str = "dashloop") -> Loop:

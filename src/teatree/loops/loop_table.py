@@ -63,15 +63,15 @@ import logging
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
+from teatree.core.mode_resolution import resolve_active_mode
 from teatree.loop.job_identity import _ScannerJob
 from teatree.loop.loop_state_db import control_planes_in_db, loop_state_admits
-from teatree.core.mode_resolution import resolve_active_mode
 from teatree.loops.base import BuildJobsContext, MiniLoop
 from teatree.loops.registry import iter_loops
 
 if TYPE_CHECKING:
-    from teatree.core.models import Loop
     from teatree.core.mode_resolution import ResolvedMode
+    from teatree.core.models import Loop
 
 logger = logging.getLogger(__name__)
 
