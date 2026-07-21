@@ -1,10 +1,12 @@
 """Bounded concurrent driver for the sequential claude -p eval runner."""
 
+import sqlite3
 import threading
 import time
 from pathlib import Path
 
 import pytest
+from django.test import TestCase
 
 from teatree.eval.models import EvalRun, EvalSpec, Matcher
 from teatree.eval.parallel import DEFAULT_PARALLEL, ConcurrencyGovernor, run_specs
@@ -255,3 +257,47 @@ class TestRunSpecsGovernorIntegration:
 
         runs = run_specs(_AlwaysThrottled(), specs, parallel=4)
         assert [r.spec_name for r in runs] == [s.name for s in specs]
+
+
+class TestPoolWorkerConnectionHygiene(TestCase):
+    """A pool worker that touches the ORM must not strand its raw DB handle.
+
+    A real runner resolves its model tier and effective settings from the
+    ``ConfigSetting`` store, so each worker opens its OWN thread-local Django
+    connection. ``close()`` is a documented no-op on the in-memory test database,
+    so the raw DB-API handle is closed directly — otherwise it is finalized at a
+    later GC as a ``ResourceWarning: unclosed database`` charged to an unrelated
+    test, and is a real connection leak in production.
+    """
+
+    def test_workers_leave_no_open_handle(self) -> None:
+        specs = [
+            EvalSpec(
+                name=f"s{i}",
+                scenario="s",
+                agent_path="agent.md",
+                prompt="p",
+                matchers=(),
+                source_path=Path("spec.yaml"),
+            )
+            for i in range(3)
+        ]
+        raws: list[sqlite3.Connection] = []
+        lock = threading.Lock()
+
+        class _OrmTouchingRunner:
+            def run(self, spec: EvalSpec) -> EvalRun:
+                from django.db import connection  # noqa: PLC0415 — the WORKER thread's connection
+
+                connection.ensure_connection()
+                with lock:
+                    raws.append(connection.connection)
+                return _completed(spec.name)
+
+        runs = run_specs(_OrmTouchingRunner(), specs, parallel=3)
+
+        assert [r.spec_name for r in runs] == [s.name for s in specs]
+        assert len(raws) == 3, f"the runner never opened a connection per worker: {raws}"
+        for raw in raws:
+            with pytest.raises(sqlite3.ProgrammingError):
+                raw.execute("SELECT 1")
