@@ -1,9 +1,19 @@
 """Reap a worktree's per-compose-project docker containers and images.
 
-Docker Compose stamps every container *and* every image it builds for a
-project with the ``com.docker.compose.project=<project>`` label. That single
-label is the safety boundary: filtering by it reaps exactly the artifacts a
-worktree's stack created and nothing else. Base / official images
+Two boundaries keep a reap inside teatree's own footprint.
+
+*Which artifacts* — Docker Compose stamps every container *and* every image it
+builds for a project with the ``com.docker.compose.project=<project>`` label;
+filtering by it reaps exactly the artifacts a stack created and nothing else.
+
+*Which projects* — the label alone does not say whose stack it is, so
+enumerating every labelled project and subtracting the ones still live treats
+the deploy stack and unrelated user projects as orphans. Candidate selection
+therefore also requires teatree's own naming scheme
+(:func:`is_worktree_compose_project`), applied in the single seam
+:func:`_reapable_candidates` that both reaping flavours share.
+
+Base / official images
 (``postgres``, ``python``, ``node``, ``redis``, ``nginx``) and the single
 master ``{image_name}:base`` image are built via ``docker build`` (see
 :mod:`teatree.docker.build`), not compose, so they carry no compose-project
@@ -28,6 +38,11 @@ logger = logging.getLogger(__name__)
 _PROJECT_LABEL = "com.docker.compose.project"
 _LIST_TIMEOUT = 30
 _REMOVE_TIMEOUT = 60
+
+# Teatree's own compose-project naming scheme (``<repo_path>-wt<ticket.pk>``,
+# minted by ``Worktree._build_compose_project``) — the ownership marker that
+# keeps foreign stacks off every reap candidate list.
+_WORKTREE_PROJECT_RE = re.compile(r"-wt\d+$")
 
 
 @dataclass(frozen=True, slots=True)
@@ -132,13 +147,48 @@ def _image_project_labels() -> list[str]:
 
 
 def list_compose_projects() -> set[str]:
+    """Every compose project on the host — UNFILTERED, including foreign ones.
+
+    Raw enumeration for diagnostics. NEVER feed this to a reaper: it sees the
+    deploy stack and unrelated user projects too. Destructive callers go
+    through :func:`_reapable_candidates`.
+    """
     return {name for name in (*_container_project_labels(), *_image_project_labels()) if name}
 
 
+def is_worktree_compose_project(project: str) -> bool:
+    """Whether *project* is named the way teatree provisions worktree stacks.
+
+    ``Worktree._build_compose_project`` mints ``<repo_path>-wt<ticket.pk>`` and
+    freezes it on the row, and ``Worktree.ticket`` is non-nullable, so every
+    stack teatree has ever provisioned matches. Being a name test rather than a
+    label test, it also covers stacks provisioned before this gate existed --
+    an ownership label could not see those.
+
+    A foreign project coincidentally named ``*-wt<digits>`` would still pass;
+    that residual is accepted because the alternative (deriving from live rows)
+    cannot work for the orphan case, whose whole premise is that the row is
+    already gone.
+    """
+    return bool(_WORKTREE_PROJECT_RE.search(project))
+
+
+def _reapable_candidates(live_projects: set[str]) -> list[str]:
+    """Reap candidates: teatree-provisioned projects that are no longer live.
+
+    The single seam both reaping flavours share, so ownership cannot be
+    bypassed by adding a caller. Previously each selector computed
+    ``list_compose_projects() - live_projects`` -- "everything on the host
+    minus what I can currently prove is mine" -- which made every foreign
+    stack an orphan and tore down the deploy stack and an unrelated user
+    project. The set must be "mine, minus what is still live".
+    """
+    return sorted(p for p in list_compose_projects() - live_projects if is_worktree_compose_project(p))
+
+
 def reap_orphan_compose_projects(live_projects: set[str]) -> list[ReapResult]:
-    orphans = sorted(list_compose_projects() - live_projects)
     results: list[ReapResult] = []
-    for project in orphans:
+    for project in _reapable_candidates(live_projects):
         result = reap_compose_project(project)
         if not result.is_noop:
             results.append(result)
@@ -147,10 +197,11 @@ def reap_orphan_compose_projects(live_projects: set[str]) -> list[ReapResult]:
 
 # ── Stale-stack reaping (age-keyed orphan teardown, #2207) ──────────────────
 #
-# A compose stack with NO live worktree row is not necessarily safe to tear
-# down at any moment: a parallel session may have hand-started it minutes ago
-# (a `docker compose -f docker-compose.test.yml` run mid-flight). The stale
-# reaper therefore keys on AGE: an unowned project is reaped only when its
+# A teatree-provisioned stack with NO live worktree row is not necessarily safe
+# to tear down at any moment: a parallel session may have hand-started it
+# minutes ago inside a worktree (a `docker compose -f docker-compose.test.yml`
+# run mid-flight, inheriting the worktree's COMPOSE_PROJECT_NAME). The stale
+# reaper therefore keys on AGE: such a project is reaped only when its
 # newest container lifecycle event (created / started / finished) is older
 # than the threshold. Anything younger — or whose age cannot be determined —
 # is KEPT (fail-safe). This makes the orphan reap safe to invoke automatically
@@ -212,16 +263,17 @@ def stale_compose_projects(
     min_age_minutes: int,
     now: "datetime | None" = None,
 ) -> list[str]:
-    """The unowned compose projects whose newest activity is older than the threshold.
+    """The teatree-provisioned compose projects whose newest activity is older than the threshold.
 
     Pure selection (no teardown) so callers can dry-run. Fail-safe: a project
-    whose age cannot be determined, or with any activity younger than
+    that teatree did not provision (:func:`is_worktree_compose_project`), whose
+    age cannot be determined, or with any activity younger than
     ``min_age_minutes``, is never selected.
     """
     moment = now or datetime.now(tz=UTC)
     cutoff = moment - timedelta(minutes=min_age_minutes)
     stale: list[str] = []
-    for project in sorted(list_compose_projects() - live_projects):
+    for project in _reapable_candidates(live_projects):
         last_activity = project_last_activity(project)
         if last_activity is None:
             logger.info("stale-stack reaper: keeping %r (age unknown — fail-safe)", project)
