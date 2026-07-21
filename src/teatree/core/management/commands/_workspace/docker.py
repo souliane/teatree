@@ -5,13 +5,16 @@ stays under the module-health function cap. The per-worktree (on-teardown)
 half lives on the overlay hook ``provisioning.reap_external_resources``; this is
 the orphan half — compose projects whose worktree directory is already gone.
 
-Two reaping flavours share the same keep set (:func:`_live_compose_projects`):
+Two reaping flavours share the same keep set (:func:`_live_compose_projects`).
+Both draw candidates from ``teatree.docker.reap._reapable_candidates``, which
+admits only projects teatree itself provisioned, so a stack it did not create
+is never reachable from either:
 
 - :func:`reap_orphan_worktree_docker` — the ``clean-all`` deep clean: every
-    unowned project goes, regardless of age (the user explicitly asked for a
-    full cleanup).
+    teatree-provisioned project with no live worktree goes, regardless of age
+    (the user explicitly asked for a full cleanup).
 - :func:`reap_stale_local_stacks` — the AUTOMATIC pre-start/pre-provision
-    sweep (#2207): age-keyed, so a parallel session's fresh hand-rolled stack
+    sweep (#2207): age-keyed, so a parallel session's fresh in-worktree stack
     (a ``docker compose -f docker-compose.test.yml`` run minutes ago) is never
     torn down, while an abandoned stack squatting host CPU/RAM for hours is.
 """
@@ -53,13 +56,14 @@ def reap_orphan_worktree_docker() -> list[str]:
 def reap_stale_local_stacks(write_out: Callable[[str], object] | None = None) -> int:
     """Tear down ABANDONED unowned docker stacks before starting/provisioning (#2207).
 
-    The automatic, age-guarded sweep: an unowned compose project (no live
-    ``Worktree`` row) is reaped only when its newest container lifecycle event
-    is older than ``stale_stack_min_age_minutes`` (``0``, the default, keeps
-    the sweep opt-in). Frees the host CPU/RAM that abandoned hand-rolled test
-    stacks otherwise squat for the whole day, without ever touching a live
+    The automatic, age-guarded sweep: a teatree-provisioned compose project
+    with no live ``Worktree`` row is reaped only when its newest container
+    lifecycle event is older than ``stale_stack_min_age_minutes`` (``0``, the
+    default, keeps the sweep opt-in). Frees the host CPU/RAM that abandoned
+    test stacks otherwise squat for the whole day, without ever touching a live
     parallel session's fresh stack (younger than the threshold ⇒ kept;
-    unknown age ⇒ kept). Returns the number of projects reaped.
+    unknown age ⇒ kept) or a project teatree did not provision. Returns the
+    number of projects reaped.
     """
     min_age_minutes = int(get_effective_settings().stale_stack_min_age_minutes)
     if min_age_minutes <= 0:

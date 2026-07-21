@@ -142,6 +142,16 @@ set. If you exported it once for a debugging session, every later tick will
 keep showing it — `unset T3_OVERLAY_NAME` before a multi-overlay tick or
 you'll think the multi-overlay path is broken.
 
+**A justified `# noqa: CODE — reason` past 120 cols silently loses its
+reason (or the whole comment).** The anti-relaxation commit gate demands a
+reason on any new `# noqa`, but `pyproject.toml` sets `fix = true`, so a
+plain `ruff check` auto-applies fixes. If the reason text pushes the line
+past `line-length = 120`, ruff's import-sorter (I001) reflows the import
+into multi-line form and can drop the trailing comment across repeated
+`ruff check` runs. Keep the whole `# noqa: CODE — reason` under 120 cols;
+verify with `uv run ruff check --no-fix <file>` first (shows the true
+diagnostic without ruff rewriting anything).
+
 ## Mode: Verify a Change
 
 Apply this checklist whenever you modify CLI commands, loop scanners,

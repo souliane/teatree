@@ -1925,6 +1925,9 @@ class TestWorkspaceCleanAll(TestCase):
         assert any("Reaped docker project teatree-wt99" in c for c in cleaned)
 
 
+_COMPOSE_LABEL = "com.docker.compose.project"
+
+
 class TestReapOrphanWorktreeDocker(TestCase):
     """#1523 orphan reaper: a worktree whose dir is gone is not live, so its docker is reaped.
 
@@ -1965,6 +1968,44 @@ class TestReapOrphanWorktreeDocker(TestCase):
 
         assert lines == [str(result)]
         assert "backend-wt9" in lines[0]
+
+    def test_foreign_stacks_survive_end_to_end(self) -> None:
+        """The whole path -- keep set, ownership gate, engine -- against a faked daemon.
+
+        Mocks only the docker subprocess, so a regression anywhere between
+        ``_live_compose_projects`` and the reap engine turns this red. Pins the
+        two project names from the incident: the deploy stack and the user's
+        unrelated project were both torn down by a single ``clean-all``.
+        """
+        removed: list[list[str]] = []
+
+        def fake_docker(cmd, *, expected_codes=None, timeout=None, **_kwargs):
+            del expected_codes, timeout
+            cmd = list(cmd)
+            label = f"label={_COMPOSE_LABEL}="
+            scoped = next((a.removeprefix(label) for a in cmd if a.startswith(label)), "")
+            if cmd[:3] in (["docker", "rm", "-f"], ["docker", "rmi", "-f"]):
+                removed.extend([cmd[3:]])
+                return subprocess.CompletedProcess(cmd, 0, "\n".join(cmd[3:]) + "\n", "")
+            if cmd[:2] == ["docker", "images"] and not scoped:
+                return subprocess.CompletedProcess(cmd, 0, "", "")
+            if not scoped:
+                return subprocess.CompletedProcess(cmd, 0, "teatree\nopenclaw\nbackend-wt1\nbackend-wt9\n", "")
+            containers = {"teatree": ["deploy-1"], "openclaw": ["signal-daemon"], "backend-wt9": ["c9"]}
+            ids = containers.get(scoped, []) if cmd[:2] == ["docker", "ps"] else []
+            return subprocess.CompletedProcess(cmd, 0, "\n".join(ids) + "\n", "")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            live_dir = Path(tmp) / "live"
+            live_dir.mkdir()
+            self._worktree(repo="backend", number="1", wt_path=str(live_dir))
+            self._worktree(repo="backend", number="9", wt_path=str(Path(tmp) / "gone"))
+
+            with patch("teatree.docker.reap.run_allowed_to_fail", fake_docker):
+                lines = ws_docker_mod.reap_orphan_worktree_docker()
+
+        assert [line.split()[3] for line in lines] == ["backend-wt9:"]
+        assert removed == [["c9"]]
 
 
 class TestWorkspaceCleanMerged(TestCase):
