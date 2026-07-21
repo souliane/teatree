@@ -11,11 +11,11 @@ from django.http import HttpResponseBadRequest
 from django.shortcuts import redirect, render
 from django.views.decorators.http import require_GET, require_POST
 
-from teatree.core.availability import clear_override, write_override
 from teatree.core.models.config_setting import ConfigSetting
 from teatree.dash import audit
 from teatree.dash.loop_control import (
     AVAILABILITY_ACTIONS,
+    AVAILABILITY_MODE_MAP,
     GATE_CONFIRM_PHRASE,
     LoopActionError,
     LoopControlView,
@@ -24,6 +24,7 @@ from teatree.dash.loop_control import (
 )
 from teatree.dash.views.access import require_loopback_or_staff
 from teatree.dash.views.base import actor, nav_context
+from teatree.loop.mode_resolution import clear_mode_override, set_mode_override
 
 if TYPE_CHECKING:
     from django.http import HttpRequest, HttpResponse
@@ -72,19 +73,21 @@ def loop_action(request: "HttpRequest") -> "HttpResponse":
 @require_loopback_or_staff
 @require_POST
 def availability(request: "HttpRequest") -> "HttpResponse":
-    """POST an availability-mode switch through the ``write_override`` chokepoint.
+    """POST an availability switch through the merged mode-override chokepoint (#61).
 
-    Routing every switch through ``write_override`` (or ``clear_override`` for
-    ``auto``) keeps the away→present deferred-question drain firing, exactly like
-    the ``t3 teatree availability`` CLI.
+    The standalone availability modes are gone: each switch now sets (or clears) a
+    ``ModeOverride`` to the corresponding merged mode via
+    :func:`teatree.loop.mode_resolution.set_mode_override` /
+    :func:`clear_mode_override`, keeping the return-to-reachable deferred-question
+    drain firing exactly like the ``t3 mode`` CLI.
     """
     mode = request.POST.get("mode", "").strip()
     if mode not in AVAILABILITY_ACTIONS:
         return HttpResponseBadRequest(f"unknown availability mode {mode!r}")
     if mode == "auto":
-        clear_override()
+        clear_mode_override(user_id=actor(request))
     else:
-        write_override(mode, user_id=actor(request))
+        set_mode_override(AVAILABILITY_MODE_MAP[mode], user_id=actor(request))
     audit.record(actor=actor(request), action="availability", after=mode)
     return redirect("dash:loops")
 

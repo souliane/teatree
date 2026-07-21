@@ -144,14 +144,16 @@ def _pending_questions_lines() -> list[str]:
 
 
 def _availability_lines() -> list[str]:
-    resolution = availability.resolve_mode()
-    schedule = availability.load_schedule()
+    from teatree.loop.mode_resolution import resolve_active_mode  # noqa: PLC0415 — deferred: call-time import
+    from teatree.loops.preset_status import schedule_chunk  # noqa: PLC0415 — deferred: call-time import
+
+    resolved = resolve_active_mode()
     return [
-        "## Availability / schedule",
-        f"- mode: {resolution.mode} (source: {resolution.source})",
-        f"- defers questions: {resolution.defers_questions}",
-        f"- pauses self-pump: {resolution.pauses_self_pump}",
-        f"- schedule windows: {len(schedule.windows)}",
+        "## Mode / schedule",
+        f"- mode: {resolved.name} (source: {resolved.source})",
+        f"- defers questions: {resolved.defers_questions}",
+        f"- pauses self-pump: {resolved.pauses_self_pump}",
+        f"- {schedule_chunk()}",
     ]
 
 

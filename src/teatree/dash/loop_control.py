@@ -14,10 +14,10 @@ import logging
 from dataclasses import dataclass
 
 from teatree.config import get_effective_settings
-from teatree.core.availability import resolve_mode
 from teatree.core.models.loop import Loop
 from teatree.core.models.loop_state import LoopState, LoopStatus
 from teatree.dash.gate_state import dash_gate_fail_open
+from teatree.loop.mode_resolution import resolve_active_mode
 from teatree.loops.preset_status import LoopVerdict, effective_verdicts
 
 logger = logging.getLogger(__name__)
@@ -29,9 +29,17 @@ logger = logging.getLogger(__name__)
 LOOP_ACTIONS: frozenset[str] = frozenset({"pause", "resume", "disable", "enable"})
 
 
-# Availability modes the header switch offers: the three write_override targets
-# plus "auto" (clear the override so the schedule decides again).
-AVAILABILITY_ACTIONS: frozenset[str] = frozenset({"present", "away", "autonomous_away", "auto"})
+# Availability modes the header switch offers, mapped to the merged Mode they now
+# set as an override (#61): the standalone availability string modes are gone —
+# ``present`` is the ``engaged`` present-class mode, ``away`` the holiday ``offline``
+# mode (defers + pauses), ``autonomous_away`` the ``unattended`` mode. ``auto``
+# clears the override so the schedule / default decides again.
+AVAILABILITY_MODE_MAP: dict[str, str] = {
+    "present": "engaged",
+    "away": "offline",
+    "autonomous_away": "unattended",
+}
+AVAILABILITY_ACTIONS: frozenset[str] = frozenset({*AVAILABILITY_MODE_MAP, "auto"})
 
 # The exact phrase the operator must type to flip the master fail-open switch —
 # the one switch that relaxes every over-deny gate must never be a one-click toggle.
@@ -60,11 +68,11 @@ class LoopControlView:
 
 def build_loop_control() -> LoopControlView:
     """The whole loop-control page read model: loop rows + header control state."""
-    resolution = resolve_mode()
+    resolved = resolve_active_mode()
     return LoopControlView(
         loops=build_loop_rows(),
-        availability_mode=resolution.mode,
-        availability_source=resolution.source,
+        availability_mode=resolved.name,
+        availability_source=resolved.source,
         gate_fail_open=dash_gate_fail_open(),
         runner_enabled=_runner_enabled(),
     )

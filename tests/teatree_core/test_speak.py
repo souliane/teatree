@@ -102,7 +102,7 @@ class TestAwayGateAtPlayback:
         with (
             patch.object(speak_mod.shutil, "which", return_value="/usr/bin/say"),
             patch.object(speak_mod, "_speaker_lock_path", return_value=tmp_path / "speaker.lock"),
-            patch.object(availability, "resolve_mode", return_value=_resolution(availability.MODE_AWAY)),
+            patch.object(speak_mod, "_is_away", return_value=True),
             patch.object(speak_mod, "run_allowed_to_fail") as run,
         ):
             speak_mod._speak_local("hello while away")
@@ -112,7 +112,7 @@ class TestAwayGateAtPlayback:
         with (
             patch.object(speak_mod.shutil, "which", return_value="/usr/bin/say"),
             patch.object(speak_mod, "_speaker_lock_path", return_value=tmp_path / "speaker.lock"),
-            patch.object(availability, "resolve_mode", return_value=_resolution(availability.MODE_PRESENT)),
+            patch.object(speak_mod, "_is_away", return_value=False),
             patch.object(speak_mod, "_in_meeting", return_value=False),
             patch.object(speak_mod, "run_allowed_to_fail") as run,
         ):
@@ -123,7 +123,7 @@ class TestAwayGateAtPlayback:
         with (
             patch.object(speak_mod.shutil, "which", return_value="/usr/bin/say"),
             patch.object(speak_mod, "_speaker_lock_path", return_value=tmp_path / "speaker.lock"),
-            patch.object(availability, "resolve_mode", side_effect=RuntimeError("boom")),
+            patch("teatree.loop.mode_resolution.resolve_active_mode", side_effect=RuntimeError("boom")),
             patch.object(speak_mod, "_in_meeting", return_value=False),
             patch.object(speak_mod, "run_allowed_to_fail") as run,
         ):
@@ -156,7 +156,7 @@ class TestMeetingGateAtPlayback:
         with (
             patch.object(speak_mod.shutil, "which", return_value="/usr/bin/say"),
             patch.object(speak_mod, "_speaker_lock_path", return_value=tmp_path / "speaker.lock"),
-            patch.object(availability, "resolve_mode", return_value=_resolution(availability.MODE_PRESENT)),
+            patch.object(speak_mod, "_is_away", return_value=False),
             patch.object(presence, "current_presence", return_value=presence.Presence.IN_MEETING),
             patch.object(speak_mod, "run_allowed_to_fail") as run,
         ):
@@ -167,7 +167,7 @@ class TestMeetingGateAtPlayback:
         with (
             patch.object(speak_mod.shutil, "which", return_value="/usr/bin/say"),
             patch.object(speak_mod, "_speaker_lock_path", return_value=tmp_path / "speaker.lock"),
-            patch.object(availability, "resolve_mode", return_value=_resolution(availability.MODE_PRESENT)),
+            patch.object(speak_mod, "_is_away", return_value=False),
             patch.object(presence, "current_presence", return_value=presence.Presence.FREE),
             patch.object(speak_mod, "run_allowed_to_fail") as run,
         ):
@@ -178,7 +178,7 @@ class TestMeetingGateAtPlayback:
         with (
             patch.object(speak_mod.shutil, "which", return_value="/usr/bin/say"),
             patch.object(speak_mod, "_speaker_lock_path", return_value=tmp_path / "speaker.lock"),
-            patch.object(availability, "resolve_mode", return_value=_resolution(availability.MODE_PRESENT)),
+            patch.object(speak_mod, "_is_away", return_value=False),
             patch.object(presence, "current_presence", return_value=presence.Presence.UNKNOWN),
             patch.object(speak_mod, "run_allowed_to_fail") as run,
         ):

@@ -39,17 +39,18 @@ silently consumed. The fan-out then ATOMICALLY claims an admitted loop's ``last_
 BEFORE building its jobs, so two ticks that read the same anchor cannot both
 drive the loop — exactly one wins the claim and dispatches.
 
-**Colleague-facing loops defer to availability (#2904).** A row with
-``Loop.colleague_facing`` set is additionally gated on
-:func:`teatree.core.availability.resolve_mode`: whenever the resolved mode
-``defers_questions`` (holiday-``away`` or ``autonomous_away`` — the same
-BLUEPRINT §17.1 invariant 9 axis that defers user-directed questions in that
-mode), the row is NOT admitted, cadence-bumped, or dispatched — colleague-facing
-work should not fire while the user is unreachable to weigh in, even in
-``autonomous_away`` where every other loop keeps self-pumping (the #2544
-``pauses_self_pump``/``defers_questions`` split). This
-is the SAME unified verdict both :func:`build_loop_table_jobs` and
-:func:`admitted_loop_names` gate on, so the axis can never drift between them.
+**Colleague-facing loops defer while the mode is unreachable (#2904, #61).** A row
+with ``Loop.colleague_facing`` set is additionally gated on the single active
+:class:`~teatree.loop.mode_resolution.ResolvedMode`: whenever the resolved mode
+``defers_questions`` (an away-class mode — the same axis that defers user-directed
+questions), the row is NOT admitted, cadence-bumped, or dispatched — colleague-facing
+work should not fire while the user is unreachable to weigh in, even in an
+autonomous-away mode where every other loop keeps self-pumping (the
+``pauses_self_pump``/``defers_questions`` split). The loop mask AND the
+availability posture now come from the SAME resolved mode (the #61 merge), so the
+two can never drift. Auto-merge under away is preserved as loop membership, not an
+availability read: ``pr_sweep`` is a non-``colleague_facing`` ship-domain scanner,
+so it keeps running while the review loop (``colleague_facing``) is deferred.
 
 This is the ``jobs_builder`` the per-loop tick (``t3 loops tick --loop <name>``)
 injects into the shared :func:`teatree.loop.tick.run_tick` pipeline, so reap +
@@ -62,17 +63,15 @@ import logging
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
-from teatree.core import availability
 from teatree.loop.job_identity import _ScannerJob
 from teatree.loop.loop_state_db import control_planes_in_db, loop_state_admits
-from teatree.loop.preset_resolution import preset_state_for, resolve_active_preset
+from teatree.loop.mode_resolution import resolve_active_mode
 from teatree.loops.base import BuildJobsContext, MiniLoop
 from teatree.loops.registry import iter_loops
 
 if TYPE_CHECKING:
-    from teatree.core.availability import Resolution
     from teatree.core.models import Loop
-    from teatree.loop.preset_resolution import ActivePreset
+    from teatree.loop.mode_resolution import ResolvedMode
 
 logger = logging.getLogger(__name__)
 
@@ -81,14 +80,13 @@ logger = logging.getLogger(__name__)
 class _TickAdmission:
     """The per-tick inputs the unified verdict shares across every loop this pass.
 
-    Resolved ONCE per tick (availability, the L3/L2 preset mask, the bulk
-    ``LoopState`` hold set) so a fan-out of N loops issues those reads once, not
-    per loop (#2584 / #3159).
+    Resolved ONCE per tick (the single active :class:`ResolvedMode` — its loop
+    mask AND its availability booleans — plus the bulk ``LoopState`` hold set) so a
+    fan-out of N loops issues those reads once, not per loop (#2584 / #3159 / #61).
     """
 
     now: dt.datetime
-    resolution: "Resolution"
-    active_preset: "ActivePreset | None"
+    resolved: "ResolvedMode"
     held: set[str]
     forced: dict[str, bool]
 
@@ -97,8 +95,7 @@ class _TickAdmission:
         held, forced = control_planes_in_db()
         return cls(
             now=now,
-            resolution=availability.resolve_mode(),
-            active_preset=resolve_active_preset(now),
+            resolved=resolve_active_mode(now),
             held=held,
             forced=forced,
         )
@@ -140,12 +137,12 @@ def _loop_admitted(row: "Loop | None", loop: MiniLoop, ctx: _TickAdmission) -> b
         return False
     if row is None or not row.is_due(ctx.now):
         return False
-    if row.colleague_facing and ctx.resolution.defers_questions:
+    if row.colleague_facing and ctx.resolved.defers_questions:
         return False
     return loop_state_admits(
         configured_enabled=row.enabled,
         held=loop.name in ctx.held,
-        preset_state=preset_state_for(ctx.active_preset, loop.name),
+        preset_state=ctx.resolved.state_for(loop.name),
         forced=ctx.forced.get(loop.name),
     )
 
