@@ -252,7 +252,7 @@ def _oauth_scopes(headers_text: str) -> frozenset[str] | None:
 
 
 def _parse_default_branch(meta_out: str) -> str | None:
-    """Extract ``default_branch`` from the ``-i`` metadata read's JSON body; ``None`` if unparseable."""
+    """Extract ``default_branch`` from the ``-i`` metadata read's JSON body; ``None`` if unparsable."""
     body = meta_out.rsplit("\n\n", 1)[-1]
     try:
         data = json.loads(body)
