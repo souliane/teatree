@@ -6,7 +6,14 @@ names the new module's public symbols directly so the per-diff coverage sees the
 seam that owns them; the DB-backed evaluation stays in ``test_headless.py``.
 """
 
-from teatree.agents.headless_watchdog import LoopWatchdog, TaskUsage
+import sqlite3
+import threading
+from unittest.mock import patch
+
+import pytest
+from django.test import TestCase
+
+from teatree.agents.headless_watchdog import LoopWatchdog, TaskUsage, _sample_usage_closing_connection
 from teatree.core.models import Task
 
 
@@ -44,3 +51,46 @@ class TestBreachReasonWithExplicitUsage:
     def test_under_thresholds_no_breach(self) -> None:
         watchdog = LoopWatchdog(max_runtime_seconds=600, max_turns=200, max_cost_usd=5.0)
         assert watchdog.breach_reason(Task(), elapsed_seconds=60, usage=TaskUsage(turns=10, cost_usd=0.5)) is None
+
+
+class TestUsageSampleConnectionHygiene(TestCase):
+    """The offloaded usage sampler must not strand its worker thread's DB handle.
+
+    ``_drive_with_heartbeat`` samples the aggregate in an ``asyncio.to_thread``
+    worker, which gets its OWN thread-local Django connection. ``connection.close()``
+    is a documented no-op on the in-memory test database, so the raw handle has to
+    be closed directly — otherwise it is finalized at a later GC as a
+    ``ResourceWarning: unclosed database`` charged to an unrelated test.
+
+    The aggregate itself is stubbed: a worker thread cannot read the rows this
+    ``TestCase`` holds in an uncommitted transaction, and the contract under test
+    is the connection hygiene, not the query.
+    """
+
+    def test_sampler_closes_its_worker_threads_raw_handle(self) -> None:
+        raws: list[sqlite3.Connection] = []
+
+        def _touch_the_orm(_task: Task) -> TaskUsage:
+            from django.db import connection  # noqa: PLC0415 — the WORKER thread's connection
+
+            connection.ensure_connection()
+            raws.append(connection.connection)
+            return TaskUsage(turns=3, cost_usd=1.0)
+
+        errors: list[BaseException] = []
+
+        def _sample_on_worker() -> None:
+            try:
+                _sample_usage_closing_connection(Task())
+            except BaseException as exc:  # noqa: BLE001 — surfaced to the parent as an assertion
+                errors.append(exc)
+
+        with patch.object(TaskUsage, "for_task", staticmethod(_touch_the_orm)):
+            thread = threading.Thread(target=_sample_on_worker)
+            thread.start()
+            thread.join()
+
+        assert not errors, errors
+        assert raws, "the sampler never opened the worker thread's connection"
+        with pytest.raises(sqlite3.ProgrammingError):
+            raws[0].execute("SELECT 1")
