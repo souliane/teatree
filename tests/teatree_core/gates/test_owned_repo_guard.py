@@ -9,18 +9,25 @@ clean ``unknown`` verdict — the OPPOSITE polarity to the visibility gate.
 import os
 import subprocess
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
+from teatree.core import overlay_loader
 from teatree.core.gates.owned_repo_guard import (
     PushScopeVerdict,
     UnownedRepoError,
+    classify_active_push,
     classify_push_for_overlays,
+    merge_clear_refusal,
     merge_scope_verdict,
     require_owned_or_approved,
 )
 from teatree.core.overlay import OverlayBase, OverlayConfig
 from teatree.core.review.review_candidate import should_review_candidate
+from teatree.utils.throttled_log import reset_throttle
+
+_RESOLVER_ERROR_MSG = "overlay registry wedged"
 
 
 class _Overlay(OverlayBase):
@@ -160,3 +167,58 @@ class TestPathOnlyOwnedScope:
             path_only_scopes=[_ACME_PATH_ONLY],
         )
         assert verdict is PushScopeVerdict.REQUIRE_APPROVAL
+
+
+class TestScopeGateFailsOpenButWarns:
+    """F2.5: a resolver EXCEPTION keeps the gate fail-OPEN but now WARNS (throttled).
+
+    A broken overlay registry must never wedge a push / merge (never-lockout), but
+    the prior code swallowed the exception with ZERO logging — a permanently broken
+    resolver disabled the scope gate silently forever. The fix keeps fail-open and
+    surfaces the fault at a throttled warning.
+    """
+
+    def test_classify_active_push_warns_and_allows_on_resolver_error(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        reset_throttle()
+
+        def _boom() -> dict[str, object]:
+            raise RuntimeError(_RESOLVER_ERROR_MSG)
+
+        monkeypatch.setattr(overlay_loader, "get_all_overlays", _boom)
+        with caplog.at_level("WARNING"):
+            verdict = classify_active_push(Path("/tmp"))
+        assert verdict is PushScopeVerdict.ALLOW
+        assert any("scope gate" in rec.message and "failing OPEN" in rec.message for rec in caplog.records)
+
+    def test_merge_clear_refusal_warns_and_proceeds_on_resolver_error(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        reset_throttle()
+
+        def _boom() -> dict[str, object]:
+            raise RuntimeError(_RESOLVER_ERROR_MSG)
+
+        monkeypatch.setattr(overlay_loader, "get_all_overlays", _boom)
+        clear = _ClearLike(slug="randomuser/randomrepo", pr_id=7)
+        with caplog.at_level("WARNING"):
+            result = merge_clear_refusal(clear, approved=False)
+        assert result is None  # fail OPEN — the merge proceeds, other gates hold
+        assert any("scope gate" in rec.message and "failing OPEN" in rec.message for rec in caplog.records)
+
+
+class _ClearLike:
+    """A minimal ``_MergeClearLike`` stand-in for the merge-scope refusal path."""
+
+    def __init__(self, *, slug: str, pr_id: int) -> None:
+        self.slug = slug
+        self.pr_id = pr_id
+        self.ticket = SimpleNamespace(issue_url="")
+
+    def is_substrate(self) -> bool:
+        return False

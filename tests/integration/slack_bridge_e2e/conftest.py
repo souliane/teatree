@@ -21,7 +21,7 @@ removal would turn it RED. The PR body records that line-to-test
 mapping plus the actual RED runs that confirm the guard.
 
 Justified scaffolding (#1066 nit 2): the per-overlay routing tests
-deliberately patch ``backend_factory._messaging_from_toml`` /
+deliberately patch ``toml_backends._messaging_from_toml`` /
 ``teatree.config.load_config`` / ``backend_factory.get_overlay``
 rather than only ``httpx``. Exercising per-overlay token isolation
 needs multiple synthetic overlay configs that are not expressible via

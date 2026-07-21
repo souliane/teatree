@@ -19,7 +19,7 @@ import pytest
 from teatree.backends.github import GitHubCodeHost
 from teatree.backends.gitlab import GitLabCodeHost
 from teatree.backends.slack.bot import SlackBotBackend
-from teatree.core import backend_factory
+from teatree.core import backend_factory, toml_backends
 
 
 @dataclass
@@ -164,7 +164,7 @@ class TestHostFromToml:
     def test_returns_gitlab_host_when_token_available(self) -> None:
         cfg = {"gitlab_token_ref": "ref/gitlab", "gitlab_url": "https://gl.example"}
         with patch("teatree.utils.secrets.read_pass", return_value="tok"):
-            host = backend_factory._host_from_toml(cfg)
+            host = toml_backends._host_from_toml(cfg)
         assert isinstance(host, GitLabCodeHost)
 
     def test_returns_github_host_when_only_github_token_set(self) -> None:
@@ -174,16 +174,16 @@ class TestHostFromToml:
             return "tok" if key == "ref/github" else ""
 
         with patch("teatree.utils.secrets.read_pass", side_effect=fake_read):
-            host = backend_factory._host_from_toml(cfg)
+            host = toml_backends._host_from_toml(cfg)
         assert isinstance(host, GitHubCodeHost)
 
     def test_returns_none_when_token_ref_set_but_pass_empty(self) -> None:
         cfg = {"gitlab_token_ref": "ref"}
         with patch("teatree.utils.secrets.read_pass", return_value=""):
-            assert backend_factory._host_from_toml(cfg) is None
+            assert toml_backends._host_from_toml(cfg) is None
 
     def test_returns_none_when_no_token_refs_in_config(self) -> None:
-        assert backend_factory._host_from_toml({}) is None
+        assert toml_backends._host_from_toml({}) is None
 
 
 class TestMessagingFromToml:

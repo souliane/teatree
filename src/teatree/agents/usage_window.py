@@ -20,7 +20,7 @@ to today. This module owns the ``LimitCause`` → horizon resolution (it imports
 """
 
 import logging
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 from django.utils import timezone
 
@@ -39,6 +39,13 @@ _ROTATABLE_SUBSCRIPTION_CAUSES: frozenset[LimitCause] = frozenset(
 #: The ``UsageWindowState.cause`` recorded when the WHOLE subscription lane parked because
 #: every account drained — distinct from a single-account cause for audit / notify wording.
 _ALL_EXHAUSTED_CAUSE = "all_accounts_exhausted"
+#: How far ahead an ALREADY-ELAPSED reset is clamped when parking. A park keyed on a past
+#: instant is dead on arrival — ``usage_window_recovery`` clears it on its very next tick, so
+#: a caller that keeps re-deriving an elapsed reset re-parks at the poll cadence. A stale
+#: reset means the true re-arm instant is UNKNOWN (an outage artefact, a clock skew, an SDK
+#: processing delay), not that the lane is free, so the park is kept — just pushed far enough
+#: ahead to be a real quiesce and re-checked soon after.
+ELAPSED_RESET_GRACE = timedelta(minutes=5)
 
 
 def autorecovery_enabled() -> bool:
@@ -69,6 +76,18 @@ def effective_resets_at(cause: LimitCause, sdk_resets_at: datetime | None, now: 
     if horizon is None:
         return None
     return sdk_resets_at if sdk_resets_at is not None else now + horizon
+
+
+def _future_park_instant(reset: datetime, moment: datetime) -> datetime:
+    """*reset* if it is still ahead, else *moment* + :data:`ELAPSED_RESET_GRACE`.
+
+    The one clamp both park writers apply, so neither can persist a
+    :class:`~teatree.core.models.UsageWindowState` that the recovery chain clears on its very
+    next tick (a self-clearing window notifies the owner and re-parks at the poll cadence).
+    An elapsed reset is not evidence the lane is usable — only that the recorded instant is
+    stale — so the window is kept and re-checked after the grace, never dropped.
+    """
+    return reset if reset > moment else moment + ELAPSED_RESET_GRACE
 
 
 def _epoch_to_datetime(epoch: int | None) -> datetime | None:
@@ -103,6 +122,10 @@ def park_task_on_limit(
     reset = effective_resets_at(match.cause, _epoch_to_datetime(sdk_resets_at), moment)
     if reset is None:
         return None
+    # The SDK's own ``resets_at`` can arrive already elapsed (processing delay, clock skew),
+    # which would write a window the recovery chain clears immediately — same self-clearing
+    # class the all-exhausted path guards. Clamp here too so BOTH writers are covered.
+    reset = _future_park_instant(reset, moment)
     UsageWindowState.record_limit(lane=lane, cause=match.cause.value, resets_at=reset, now=moment)
     # #3159 item 6: auto-engage the low-power preset for the parked window's tenure
     # (default-off flag; never overwrites a live user override). Fail-soft — a park
@@ -190,24 +213,35 @@ def park_task_on_all_exhausted(
     """Park *task* behind an ALL-ACCOUNTS-exhausted lane (multi-account #C2) — or ``None``.
 
     Every configured account is spent, so there is no account to rotate to: park the WHOLE
-    lane keyed on *resets_at* (the earliest reset across accounts) so the existing
+    lane keyed on *resets_at* (the soonest instant ANY account frees up — see
+    ``AnthropicTokenUsage.frees_up_at``) so the existing
     ``usage_window_recovery`` chain auto-resumes the task when the soonest account frees up — a
-    quiesce, NOT a human escalation. ``None`` (caller records a terminal FAILED, as today) when
-    the flag is OFF or no reset is known (nothing to re-arm to).
+    quiesce, NOT a human escalation. ``None`` (caller records a terminal FAILED, as today) only
+    when the flag is OFF or no reset is known at all (nothing to re-arm to).
+
+    An ALREADY-ELAPSED *resets_at* is clamped to :data:`ELAPSED_RESET_GRACE` ahead rather than
+    refused. Parking on a past instant would be dead on arrival — the recovery chain clears it
+    on its very next tick — but REFUSING outright is worse than the churn it prevents: the
+    caller then records a terminal FAILED whose ``all tokens exhausted`` signature maps to
+    :attr:`LimitCause.SUBSCRIPTION_WEEKLY`, so the transient-requeue horizon is SEVEN DAYS. A
+    stale reset is normally an outage artefact that clears in minutes, so the grace clamp keeps
+    recovery at minutes scale while still keying the window in the FUTURE (no instant
+    self-clear).
     """
     if not autorecovery_enabled() or resets_at is None:
         return None
     moment = now or timezone.now()
-    UsageWindowState.record_limit(lane=lane, cause=_ALL_EXHAUSTED_CAUSE, resets_at=resets_at, now=moment)
-    _auto_engage_low_power(resets_at, moment)
+    reset = _future_park_instant(resets_at, moment)
+    UsageWindowState.record_limit(lane=lane, cause=_ALL_EXHAUSTED_CAUSE, resets_at=reset, now=moment)
+    _auto_engage_low_power(reset, moment)
     logger.warning(
         "Task %s parked — all %s accounts exhausted; auto-resume at %s",
         task.pk,
         lane or "ambient",
-        resets_at.isoformat(),
+        reset.isoformat(),
     )
     reason = f"{LIMIT_PARKED_PREFIX}all configured subscription accounts exhausted — auto-resume at reset"
-    return _record_park(task, reason=reason, not_before=resets_at)
+    return _record_park(task, reason=reason, not_before=reset)
 
 
 def _auto_engage_low_power(reset: datetime, moment: datetime) -> None:

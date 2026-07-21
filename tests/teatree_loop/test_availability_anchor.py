@@ -1,8 +1,9 @@
-"""Tests for the availability segment on the loop line (#58, #1678).
+"""Tests for the availability segment on the loop line (#58, #1678, #3494).
 
-The loop line carries an ``availability: <present|away>
-(<source>)`` segment reflecting the currently-resolved availability, read
-live at render time. The label is deliberately distinct from the config
+The loop line carries an ``availability: <present|away>`` segment reflecting
+the currently-resolved availability, read live at render time. The deciding
+layer is intentionally not shown (the owner's spelled-out layout keeps the
+segment to the bare state). The label is deliberately distinct from the config
 ``Mode`` enum (auto/interactive) and from other ``mode=`` usages, and the
 old standalone ``mode=away`` line is gone.
 """
@@ -20,11 +21,11 @@ from teatree.loop.statusline import availability_segment, live_loops_anchor
 
 
 class TestAvailabilitySegment:
-    def test_present_segment_shows_explicit_label_and_source(self) -> None:
-        assert availability_segment(Resolution(mode="present", source="default")) == "availability: present (default)"
+    def test_present_segment_shows_explicit_label(self) -> None:
+        assert availability_segment(Resolution(mode="present", source="default")) == "availability: present"
 
-    def test_away_segment_shows_explicit_label_and_source(self) -> None:
-        assert availability_segment(Resolution(mode="away", source="schedule")) == "availability: away (schedule)"
+    def test_away_segment_shows_explicit_label(self) -> None:
+        assert availability_segment(Resolution(mode="away", source="schedule")) == "availability: away"
 
     def test_label_is_unambiguous_not_bare_mode(self) -> None:
         segment = availability_segment(Resolution(mode="away", source="override"))
@@ -57,19 +58,22 @@ class TestAvailabilitySegmentRidesLoopLineLive:
     def test_segment_tracks_a_live_away_then_present_flip(self, override_file: Path) -> None:
         write_override(MODE_AWAY)
         away_line = self._loop_line()
-        assert away_line.startswith("tick "), away_line
-        assert "· availability: away (override)" in away_line, away_line
+        # Infra leases sit at the tail; the availability segment reads the bare
+        # state with no deciding-layer source.
+        assert away_line.endswith("tick 10m"), away_line
+        assert "availability: away" in away_line, away_line
+        assert "(override)" not in away_line, away_line
 
         write_override(MODE_PRESENT)
         present_line = self._loop_line()
-        assert "· availability: present (override)" in present_line, present_line
+        assert "availability: present" in present_line, present_line
         assert "away" not in present_line, present_line
 
 
 # ast-grep-ignore: ac-django-no-pytest-django-db
 @pytest.mark.django_db
 class TestWaitingCountCoversAllKinds:
-    """The loop-line ``waiting=N`` counts the whole waiting-on-you lane (PR-21)."""
+    """The loop-line ``N waiting`` counts the whole waiting-on-you lane (PR-21)."""
 
     def _loop_line(self) -> str:
         acquired_at = datetime.now(UTC) - timedelta(seconds=120)
@@ -89,4 +93,4 @@ class TestWaitingCountCoversAllKinds:
         WaitingItem.objects.add("chase finance")
         DeferredQuestion.record("deploy now?")
         # Two distinct kinds → the count is all-kinds, not questions-only.
-        assert "waiting=2" in self._loop_line()
+        assert "2 waiting" in self._loop_line()

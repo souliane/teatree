@@ -15,7 +15,8 @@ FSM-guarded ``t3`` CLI per BLUEPRINT's orchestrator-decides / loop-executes
 topology.
 """
 
-from typing import Any
+import logging
+from typing import Any, NamedTuple
 
 from django.db.models import Count, Q
 
@@ -33,20 +34,56 @@ from teatree.mcp.serializers import (
     serialize_worktree,
 )
 
+logger = logging.getLogger(__name__)
+
 _DEFAULT_TICKET_LIMIT = 50
 _DEFAULT_EVENT_LIMIT = 20
 _DEFAULT_TASK_LIMIT = 50
 _MAX_LIMIT = 200
 
 
-def _capped(limit: int, default: int) -> int:
-    """A bounded row cap for a page request.
+class CappedLimit(NamedTuple):
+    """The applied row cap plus whether the caller's request was clamped down.
 
-    A non-positive request falls back to *default*, and any request is clamped
-    to ``_MAX_LIMIT`` so a client cannot ask the read-only server for an
-    unbounded page.
+    ``truncated`` is ``True`` when a positive request exceeded ``_MAX_LIMIT`` and was
+    clamped — i.e. rows the caller explicitly asked for are being withheld (the
+    ``limit=500 -> 200`` case, F9.4). It stays ``False`` for an in-range request and
+    for the non-positive-falls-back-to-default case (no rows were withheld there).
     """
-    return min(limit if limit and limit > 0 else default, _MAX_LIMIT)
+
+    limit: int
+    truncated: bool
+
+
+def _capped_page(limit: int, default: int) -> CappedLimit:
+    """Resolve the bounded row cap for a page request and report over-limit clamping.
+
+    A non-positive request falls back to *default*; any request is clamped to
+    ``_MAX_LIMIT`` so a client cannot ask the read-only server for an unbounded page.
+    An over-``_MAX_LIMIT`` request is no longer clamped SILENTLY (F9.4): it is reported
+    via :attr:`CappedLimit.truncated` and logged, so a caller asking for more than the
+    server will return is not misled into reading a short page as complete.
+    """
+    requested = limit if limit and limit > 0 else default
+    capped = min(requested, _MAX_LIMIT)
+    truncated = requested > _MAX_LIMIT
+    if truncated:
+        logger.warning(
+            "structured-search page request for %d rows exceeds the %d-row cap; returning %d",
+            requested,
+            _MAX_LIMIT,
+            capped,
+        )
+    return CappedLimit(limit=capped, truncated=truncated)
+
+
+def _capped(limit: int, default: int) -> int:
+    """The applied row cap for a page request (the clamped, always-bounded limit).
+
+    Thin accessor over :func:`_capped_page` for the slice sites that only need the
+    integer bound; the truncation signal lives on :func:`_capped_page`.
+    """
+    return _capped_page(limit, default).limit
 
 
 # ast-grep-ignore: ac-django-no-complexity-suppressions

@@ -150,8 +150,34 @@ def test_list_open_mrs_as_reviewer_follows_pagination(monkeypatch: pytest.Monkey
     assert [mr["iid"] for mr in result] == [20, 21, 22]
 
 
-def test_list_recently_merged_mrs_follows_pagination(monkeypatch: pytest.MonkeyPatch) -> None:
-    """_list_terminal_mrs (via list_recently_merged_mrs) returns both pages."""
+def test_list_recently_merged_mrs_follows_pagination_when_cutoff_given(monkeypatch: pytest.MonkeyPatch) -> None:
+    """With an ``updated_after`` cutoff, ``_list_terminal_mrs`` walks every page.
+
+    The cutoff bounds the result server-side, so the walk is safe and complete;
+    ``get_json_paginated`` follows ``x-next-page`` and accumulates both pages.
+    """
+    requested: list[str] = []
+    pages = {
+        "1": _PagedResponse([{"iid": 30}, {"iid": 31}], next_page="2"),
+        "2": _PagedResponse([{"iid": 32}], next_page=""),
+    }
+    monkeypatch.setattr(gitlab_http.httpx, "get", _two_page_httpx_get(pages, requested))
+
+    client = gitlab_api.GitLabAPI(token="test-token")
+    result = client.list_recently_merged_mrs("adrien", updated_after="2024-01-01T00:00:00Z")
+
+    assert [mr["iid"] for mr in result] == [30, 31, 32]
+    assert any("page=2" in url for url in requested)
+
+
+def test_list_recently_merged_mrs_reads_single_page_without_cutoff(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Without a cutoff, only the most-recent page is fetched (F8.9).
+
+    An unbounded ``merged`` query ordered newest-first can span up to
+    ``_MAX_PAGES`` pages (10k rows) every tick; the callsites only want the
+    recent terminal MRs, so ``_list_terminal_mrs`` reads a single page here and
+    never walks ``x-next-page``. This locks that new contract.
+    """
     requested: list[str] = []
     pages = {
         "1": _PagedResponse([{"iid": 30}, {"iid": 31}], next_page="2"),
@@ -162,7 +188,8 @@ def test_list_recently_merged_mrs_follows_pagination(monkeypatch: pytest.MonkeyP
     client = gitlab_api.GitLabAPI(token="test-token")
     result = client.list_recently_merged_mrs("adrien")
 
-    assert [mr["iid"] for mr in result] == [30, 31, 32]
+    assert [mr["iid"] for mr in result] == [30, 31]
+    assert not any("page=2" in url for url in requested)
 
 
 def test_list_all_open_mrs_with_updated_after(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -270,10 +297,11 @@ def test_list_open_issues_for_author_scopes_to_projects(monkeypatch: pytest.Monk
 
 
 def test_list_recently_merged_mrs_returns_data(monkeypatch: pytest.MonkeyPatch) -> None:
+    # Without a cutoff the terminal-MR list reads a single page via ``get_json`` (F8.9).
     client = gitlab_api.GitLabAPI(token="test-token")
     monkeypatch.setattr(
         client,
-        "get_json_paginated",
+        "get_json",
         lambda endpoint: [{"iid": 10, "state": "merged"}],
     )
 
@@ -300,7 +328,7 @@ def test_list_recently_merged_mrs_with_updated_after(monkeypatch: pytest.MonkeyP
 
 def test_list_recently_merged_mrs_returns_empty_when_no_pages(monkeypatch: pytest.MonkeyPatch) -> None:
     client = gitlab_api.GitLabAPI(token="test-token")
-    monkeypatch.setattr(client, "get_json_paginated", lambda endpoint: [])
+    monkeypatch.setattr(client, "get_json", lambda endpoint: [])
 
     result = client.list_recently_merged_mrs("adrien")
 
@@ -327,7 +355,7 @@ def test_list_recently_closed_mrs_queries_state_closed(monkeypatch: pytest.Monke
 
 def test_list_recently_closed_mrs_returns_empty_when_no_pages(monkeypatch: pytest.MonkeyPatch) -> None:
     client = gitlab_api.GitLabAPI(token="test-token")
-    monkeypatch.setattr(client, "get_json_paginated", lambda _endpoint: [])
+    monkeypatch.setattr(client, "get_json", lambda _endpoint: [])
 
     assert client.list_recently_closed_mrs("adrien") == []
 
@@ -446,11 +474,11 @@ def test_cancel_pipelines_url_encodes_ref(monkeypatch: pytest.MonkeyPatch) -> No
     client = gitlab_api.GitLabAPI(token="test-token")
     seen: list[str] = []
 
-    def fake_get_json(endpoint: str) -> list[dict[str, object]]:
+    def fake_get_json_paginated(endpoint: str) -> list[dict[str, object]]:
         seen.append(endpoint)
         return []
 
-    monkeypatch.setattr(client, "get_json", fake_get_json)
+    monkeypatch.setattr(client, "get_json_paginated", fake_get_json_paginated)
 
     client.cancel_pipelines(42, "release+1.2", statuses=("running",))
 
@@ -503,10 +531,12 @@ def test_get_mr_discussions_returns_empty_when_no_pages(monkeypatch: pytest.Monk
 
 
 def test_get_draft_notes_count_returns_count(monkeypatch: pytest.MonkeyPatch) -> None:
+    # get_draft_notes_count paginates to completion (F8.7), so the count comes
+    # off get_json_paginated (which always yields a list).
     client = gitlab_api.GitLabAPI(token="test-token")
     monkeypatch.setattr(
         client,
-        "get_json",
+        "get_json_paginated",
         lambda endpoint: [{"id": 1}, {"id": 2}, {"id": 3}],
     )
 
@@ -515,9 +545,9 @@ def test_get_draft_notes_count_returns_count(monkeypatch: pytest.MonkeyPatch) ->
     assert result == 3
 
 
-def test_get_draft_notes_count_returns_zero_when_not_a_list(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_get_draft_notes_count_returns_zero_when_empty(monkeypatch: pytest.MonkeyPatch) -> None:
     client = gitlab_api.GitLabAPI(token="test-token")
-    monkeypatch.setattr(client, "get_json", lambda endpoint: None)
+    monkeypatch.setattr(client, "get_json_paginated", lambda endpoint: [])
 
     result = client.get_draft_notes_count(42, 1)
 

@@ -27,7 +27,9 @@ _ROUTER = pathlib.Path(__file__).resolve().parent.parent / "hooks" / "scripts" /
 # (effective-method + endpoint regexes/classifiers) into hooks/scripts/forge_api_detect.py.
 # Lowered by #3343, which moved the tri-state cwd-managed classifier into the
 # managed_repo sibling (cwd_teatree_managed_state).
-_CEILING_LOC = 4493
+# Lowered by #F7.9, which extracted the resolved-verdict router-side I/O into the
+# quote_scanner_verdict_io sibling (the quote-gate fail-open NOTE stays in the router).
+_CEILING_LOC = 4487
 
 
 def _count_loc(text: str) -> int:

@@ -26,6 +26,33 @@ class VisualQASummary(TypedDict, total=False):
     details: list[VisualQAPageDetail]
 
 
+class PRApprovalsSerialized(TypedDict, total=False):
+    """The approval tally denormalized onto a ``PREntrySerialized`` (F1.7).
+
+    ``count`` is how many approvals the PR currently carries; ``required`` is
+    the threshold the forge enforces (defaults to 1 when absent). Read by the
+    dashboard ``_check_pr`` selector to raise a ``needs_approval`` action item
+    while ``count < required``.
+    """
+
+    count: int
+    required: int
+
+
+class PRDiscussionSerialized(TypedDict, total=False):
+    """One denormalized review-thread entry on a ``PREntrySerialized`` (F1.7).
+
+    ``status`` is the thread's resolution state (``waiting_reviewer`` /
+    ``needs_reply`` / ``addressed``); ``detail`` is the short human-readable
+    summary the dashboard surfaces. Structurally mirrors the read-model
+    ``selectors._types.DiscussionData`` but is declared here so ``core.models``
+    keeps no backwards edge onto ``core.selectors``.
+    """
+
+    status: str
+    detail: str
+
+
 class PREntrySerialized(TypedDict, total=False):
     url: str
     title: str
@@ -39,6 +66,16 @@ class PREntrySerialized(TypedDict, total=False):
     reviewer_names: list[str]
     head_sha: str
     last_reviewed_sha: str
+    # Denormalized action-required inputs read by the dashboard ``_check_pr``
+    # selector (F1.7): the forge lifecycle state, the review Slack permalink,
+    # the approval tally, the review-thread entries, and the pending-draft
+    # review-comment signals.
+    state: str
+    review_permalink: str
+    approvals: PRApprovalsSerialized
+    discussions: list[PRDiscussionSerialized]
+    draft_comments_pending: bool
+    draft_comments_count: int
 
 
 class TicketExtra(TypedDict, total=False):
@@ -48,6 +85,13 @@ class TicketExtra(TypedDict, total=False):
     # ship can tell whether the *current* invoking branch's PR exists,
     # without short-circuiting on the truthiness of the shared ``pr_urls``.
     pr_url_by_branch: dict[str, str]
+    # ARBITER (F1.3): the ``PullRequest`` rows are the system of record for PR
+    # facts (their FSM ``state`` is the authority). This ``prs`` map is a
+    # DENORMALIZED SYNC CACHE — a JSON snapshot the dashboard read-model
+    # (``selectors.automation._check_pr``) consumes so it need not re-query the
+    # forge. When the two disagree, the ``PullRequest`` row wins; a stale entry
+    # here is a cache-refresh gap, never a source of truth. Read-path
+    # unification onto the rows is deferred.
     prs: dict[str, PREntrySerialized]
     pr_title_override: str
     ship_invoking_branch: str

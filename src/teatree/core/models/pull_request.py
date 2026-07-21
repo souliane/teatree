@@ -6,6 +6,18 @@ from django_fsm import FSMField, transition
 
 
 class PullRequest(models.Model):
+    """The system of record for a ticket's pull requests — the PR-facts ARBITER (F1.3).
+
+    A ``PullRequest`` row (its FSM ``state`` in particular) is the AUTHORITY for
+    PR facts. ``Ticket.extra['prs']`` (see ``PREntrySerialized``) is a
+    DENORMALIZED SYNC CACHE: a JSON snapshot the dashboard read-model consumes,
+    kept in step with these rows but never co-equal with them. When the two
+    disagree the row wins; a stale ``extra['prs']`` entry is a cache-refresh gap,
+    not a rival source of truth. Read-path unification of the two stores is
+    deferred — this declaration records the arbiter so the ambiguity is at least
+    documented in the interim.
+    """
+
     class State(models.TextChoices):
         OPEN = "open", "Open"
         REVIEW_REQUESTED = "review_requested", "Review requested"

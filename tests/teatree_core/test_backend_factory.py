@@ -610,3 +610,54 @@ class TestActiveOverlayName:
         env = {k: v for k, v in os.environ.items() if k != "T3_OVERLAY_NAME"}
         with patch.dict(os.environ, env, clear=True):
             assert backend_factory._active_overlay_name(None) == ""
+
+
+# --- F4.5: a transient None must not be cached for the process lifetime -------
+
+
+def test_transient_none_code_host_is_not_cached_permanently(monkeypatch) -> None:
+    # A one-tick None (credentials momentarily unresolved) must not disable the
+    # code host until restart — the next call past the short TTL re-resolves.
+    monkeypatch.setattr(backend_factory, "_ERROR_NONE_TTL_SECONDS", 0.0)
+    real = GitHubCodeHost(token="tok")
+    with patch.object(backend_factory, "_build_code_host", side_effect=[None, real]) as build:
+        assert code_host_from_overlay("x") is None
+        assert code_host_from_overlay("x") is real
+    assert build.call_count == 2
+
+
+def test_none_code_host_is_served_from_the_short_ttl_window() -> None:
+    # Within the TTL the None is reused — the factory does not rebuild every call.
+    with patch.object(backend_factory, "_build_code_host", side_effect=[None]) as build:
+        assert code_host_from_overlay("y") is None
+        assert code_host_from_overlay("y") is None
+    assert build.call_count == 1
+
+
+def test_resolved_code_host_is_cached_for_the_process_life() -> None:
+    real = GitHubCodeHost(token="tok")
+    with patch.object(backend_factory, "_build_code_host", side_effect=[real]) as build:
+        assert code_host_from_overlay("z") is real
+        assert code_host_from_overlay("z") is real
+    assert build.call_count == 1
+
+
+def test_transient_none_messaging_is_not_cached_permanently(monkeypatch) -> None:
+    from unittest.mock import MagicMock  # noqa: PLC0415
+
+    from teatree.core.backend_protocols import MessagingBackend  # noqa: PLC0415
+
+    monkeypatch.setattr(backend_factory, "_ERROR_NONE_TTL_SECONDS", 0.0)
+    real = MagicMock(spec=MessagingBackend)
+    with patch.object(backend_factory, "_build_messaging", side_effect=[None, real]) as build:
+        assert messaging_from_overlay("mx") is None
+        assert messaging_from_overlay("mx") is real
+    assert build.call_count == 2
+
+
+def test_reset_clears_the_none_ttl_maps() -> None:
+    with patch.object(backend_factory, "_build_code_host", side_effect=[None, GitHubCodeHost(token="t")]):
+        assert code_host_from_overlay("r") is None
+        reset_backend_caches()
+        # After a reset the stale-None window is gone — the next call rebuilds.
+        assert code_host_from_overlay("r") is not None

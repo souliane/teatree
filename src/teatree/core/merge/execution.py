@@ -184,6 +184,9 @@ def assert_merge_preconditions(
         msg = f"could not resolve the live head SHA for {slug}#{pr_id} (§17.4.3 step 2)"
         raise MergePreconditionError(msg)
     if not verify_sha_bound(cleared_sha=authorized_clear.reviewed_sha, live_sha=live_sha):
+        # A SHA mismatch fails CLOSED: the merge is REFUSED here and now, never
+        # retried against the moved head and never self-healed with a fresh CLEAR —
+        # the loop re-escalates and a human re-reviews the new tree (§17.4.3 step 2).
         # Show full SHAs (not [:8] prefixes) so a length-mismatch or any other
         # silent difference is obvious in the diagnostic (#1162).
         reviewed = authorized_clear.reviewed_sha
@@ -490,9 +493,13 @@ def record_merge_and_advance(
             # re-review at a moved head issues a fresh CLEAR at the new SHA,
             # leaving the older one unconsumed. Once THIS merge consumes one, its
             # siblings are no longer a stalled merge, so consume them in the same
-            # atomic block (single serialized UPDATE) under the row lock.
+            # atomic block (single serialized UPDATE) under the row lock. The slug
+            # is matched case-INSENSITIVELY (``slug__iexact``): a forge slug is
+            # case-insensitive, so a sibling CLEAR recorded with a differently-cased
+            # ``owner/Repo`` must NOT survive to keep ratcheting the S4 hard-red gate
+            # forever (the rest of the pipeline resolves slugs with ``__iexact``).
             MergeClear.objects.filter(
-                slug=locked.slug,
+                slug__iexact=locked.slug,
                 pr_id=locked.pr_id,
                 consumed_at__isnull=True,
             ).exclude(pk=locked.pk).update(consumed_at=locked.consumed_at)

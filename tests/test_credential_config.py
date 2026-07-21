@@ -210,6 +210,51 @@ class TestSelectorRouting(TestCase):
         assert soon.isoformat() in message, "the loud error names the soonest an account frees up"
         assert caught.value.earliest_reset == soon, "the earliest reset is carried as a datetime for the C2 park"
 
+    def test_earliest_reset_ignores_an_idle_windows_elapsed_reset(self) -> None:
+        """The DM-flood signature: rejected on 7d, idle 5h whose reset has already rolled past.
+
+        Pins the selector seam itself. Every other fixture here gives an account the SAME
+        instant for both windows, so ``earliest_reset`` and ``frees_up_at`` coincide and the
+        load-bearing ``_all_exhausted_error`` line could be reverted with the suite still
+        green. Here they diverge: the naive min-of-resets answer is the PAST 5h instant, which
+        is what parked a dead-on-arrival window and DM'd the owner once a minute.
+        """
+        now = timezone.now()
+        stale_5h = now - dt.timedelta(minutes=1)
+        blocking_7d = now + dt.timedelta(hours=14)
+        far_7d = now + dt.timedelta(days=3)
+        ConfigSetting.objects.set_value(_OAUTH_SETTING, ["anthropic/a/oauth", "anthropic/b/oauth"])
+        reader = _FakeReader(
+            {
+                "anthropic/a/oauth": RateLimitSnapshot(
+                    organization_id="org-1",
+                    unified_5h_status="allowed",
+                    unified_5h_utilization=0.0,  # idle — this window blocks NOTHING
+                    unified_5h_reset=stale_5h,
+                    unified_7d_status="rejected",
+                    unified_7d_utilization=1.0,
+                    unified_7d_reset=blocking_7d,
+                    retry_after=None,
+                ),
+                "anthropic/b/oauth": RateLimitSnapshot(
+                    organization_id="org-1",
+                    unified_5h_status="allowed",
+                    unified_5h_utilization=0.0,
+                    unified_5h_reset=stale_5h,
+                    unified_7d_status="rejected",
+                    unified_7d_utilization=1.0,
+                    unified_7d_reset=far_7d,
+                    retry_after=None,
+                ),
+            }
+        )
+
+        with _pass_echoes_path(), pytest.raises(AllTokensExhaustedError) as caught:
+            PassPathSelector(reader=reader).select(TokenKind.OAUTH)
+
+        assert caught.value.earliest_reset == blocking_7d, "the soonest BLOCKING window, not the idle 5h one"
+        assert caught.value.earliest_reset > now, "a park keyed on this must never be already elapsed"
+
 
 class TestSelectorRescueReprobe(TestCase):
     """#3406: a cached-exhausted verdict outlives a rolling window's real recovery.

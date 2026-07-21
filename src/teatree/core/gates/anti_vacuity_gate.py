@@ -50,9 +50,14 @@ class AntiVacuityAttestationError(RuntimeError):
     """A review-request / merge lacked a SHA-bound anti-vacuity attestation."""
 
 
-def anti_vacuity_required() -> bool:
-    """Whether the anti-vacuity gate is in force (overlay -> global)."""
-    return get_effective_settings().require_anti_vacuity_attestation
+def anti_vacuity_required(overlay: str | None = None) -> bool:
+    """Whether the anti-vacuity gate is in force for *overlay* (overlay -> global).
+
+    *overlay* threads the ticket's own overlay so a per-overlay opt-in binds even
+    when the evaluating process has no ambient ``T3_OVERLAY_NAME`` (the merge
+    keystone runs env-less). ``None`` resolves the ambient overlay as before.
+    """
+    return get_effective_settings(overlay).require_anti_vacuity_attestation
 
 
 def recorded_attestation(ticket: "Ticket") -> AntiVacuityAttestation:
@@ -101,7 +106,7 @@ def check_anti_vacuity_attestation(ticket: "Ticket", head_sha: str, *, transitio
     re-attested. ``transition`` names the gated action (e.g. ``"request
     review"`` / ``"merge"``) for the remediation message.
     """
-    if not anti_vacuity_required():
+    if not anti_vacuity_required(ticket.overlay or None):
         return
     attestation = recorded_attestation(ticket)
     if is_complete(attestation) and is_bound_to(attestation, head_sha):

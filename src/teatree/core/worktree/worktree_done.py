@@ -49,6 +49,7 @@ from teatree.core.worktree.branch_classification import (
     _branch_tree_matches_squash,
     branch_redundancy,
     content_equivalence_blockers,
+    effective_default_target,
     is_squash_merged,
 )
 from teatree.core.worktree.clone_paths import resolve_clone_path
@@ -70,20 +71,14 @@ _FALLBACK_DEFAULT_TARGET = "origin/main"
 def _effective_default_target(repo: Path) -> str:
     """Resolve ``repo``'s REAL default branch as an ``origin/<default>`` ref.
 
-    Done-detection (:func:`_branch_squash_merged`) and the orphan/branch-prune
-    passes already resolve the repo's real default via :func:`git.default_branch`;
-    the redundancy/emit probes must compare against that SAME base, not a hardcoded
-    ``origin/main``, so a ``master``/``develop``-default repo is not measured
-    against a base it does not have. Fail-safe to ``origin/main`` on an
-    unresolvable default — the downstream content gate fails CLOSED (an
-    unresolvable target makes ``git cherry`` inconclusive), so a wrong/missing
-    base keeps the worktree rather than wiping it.
+    Thin ``Path``-taking adapter over the shared
+    :func:`branch_classification.effective_default_target` so done-detection, the
+    redundancy/emit probes, and :func:`cleanup._raise_if_genuinely_ahead` all
+    resolve the base the SAME way (a ``master``/``develop``-default repo is never
+    measured against a base it does not have). Fail-safe to ``origin/main`` on an
+    unresolvable default — the downstream content gate fails CLOSED there.
     """
-    try:
-        default = git.default_branch(str(repo))
-    except (RuntimeError, CommandFailedError):
-        return _FALLBACK_DEFAULT_TARGET
-    return f"origin/{default}"
+    return effective_default_target(str(repo))
 
 
 @dataclass(frozen=True, slots=True)
@@ -294,10 +289,14 @@ def _build_emit_record(worktree: Worktree, *, workspace: Path, liveness: str) ->
     verdict = branch_redundancy(probe_repo, ref, default_target)
     try:
         texts = [
-            git.run(repo=probe_repo, args=["log", f"{default_target}..{ref}", "--format=%B"]),
-            git.run(repo=probe_repo, args=["diff", f"{default_target}...{ref}"]),
+            git.run_strict(repo=probe_repo, args=["log", f"{default_target}..{ref}", "--format=%B"]),
+            git.run_strict(repo=probe_repo, args=["diff", f"{default_target}...{ref}"]),
         ]
     except CommandFailedError:
+        # STRICT so the failure is real, not a lenient "" degrade. Unreadable
+        # content emits banned_terms_status "unknown" — the judgment skill treats
+        # an unknown-scan item conservatively (clean before salvage), never as
+        # "scanned clean".
         texts = []
     status, found = banned_terms_status(texts)
     owner = git.run(repo=probe_repo, args=["log", "-1", "--format=%an", ref])

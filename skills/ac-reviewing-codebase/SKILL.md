@@ -27,6 +27,10 @@ The first two tiers are per-change and catch what a single diff introduces. Neit
 
 You are dispatched by `ArchitecturalReviewScanner` (`src/teatree/loop/scanners/architectural_review.py`) as a headless `architectural_review`-phase Task, firing after `architectural_review_cadence_hours` (default 168h) or `architectural_review_after_merge_count` (default 25) merges, whichever comes first. There is no user prompt to parse — the trigger IS the instruction. Anchor to `Ticket.issue_url == "architectural-review://<overlay>"`, the synthetic per-overlay tracking ticket the scanner creates.
 
+## Environment
+
+You run **shell-enabled** (`read_file`/`search_files`/`shell`/`web` — the same least-privilege shape as the reviewer phases, no `write_file`/`edit_file`), starting in the overlay's **main teatree clone** (the dispatch resolves your `cwd` there). Read the tree, run read-only `git` (`git log`, merge-count since the last review) and `t3 tool verify-gates` directly. The main-clone guard blocks any git mutation of the shared clone, so for a heavy cold read — or the one write case below, a BLUEPRINT.md staleness edit — cut your own throwaway checkout with `git worktree add --detach ../ac-review origin/main` and work there. If you ever find yourself with no shell or no checkout, that is a dispatch fault, not a question for the owner: STOP and return `needs_user_input` with the reason (it is classified INTERNAL, never DM'd).
+
 ## What to do
 
 ### 1. Walk the judgement-tier anti-pattern catalog

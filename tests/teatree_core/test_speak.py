@@ -15,7 +15,7 @@ import logging
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-from teatree.core import availability, presence
+from teatree.core import availability, presence, speak_cleaning
 from teatree.core import speak as speak_mod
 from teatree.types import LocalPlayback, SpeakConfig
 
@@ -215,7 +215,7 @@ class TestCleanForSpeech:
 
     def test_caps_length_on_word_boundary(self) -> None:
         out = speak_mod.clean_for_speech("word " * 400)
-        assert len(out) <= speak_mod._MAX_SPEAK_CHARS + 1
+        assert len(out) <= speak_cleaning._MAX_SPEAK_CHARS + 1
         assert out.endswith("…")
 
     def test_blank_after_strip(self) -> None:
@@ -534,6 +534,54 @@ class TestDeliverUserDmAttachAudio:
         for name in dir(models):
             assert "utterance" not in name.lower()
             assert "spokentext" not in name.lower()
+
+
+class TestDeliverUserDmSidecarInitialComment:
+    """F4.4: the sidecar attaches audio to an ALREADY-delivered DM.
+
+    ``initial_comment`` controls the text posted alongside the audio: ``None``
+    (default) reuses ``text`` (the ``t3 speak-dm`` standalone path), while ``""``
+    posts NO comment so the notify path — which already delivered the text via
+    ``post_message`` — does not send the body a second time. The audio is
+    always synthesised from the full ``text`` either way.
+    """
+
+    def test_default_reuses_text_as_initial_comment(self, tmp_path: Path) -> None:
+        audio = tmp_path / "speech.m4a"
+        audio.write_bytes(b"x")
+        backend = _backend()
+        with (
+            patch.object(speak_mod, "resolve_speak", return_value=SpeakConfig(slack=True)),
+            patch.object(speak_mod, "synthesise", return_value=audio),
+        ):
+            speak_mod.deliver_user_dm_sidecar(backend, channel="D-USER", text="hi there", thread_ts="T1")
+        backend.post_audio_dm.assert_called_once()
+        kwargs = backend.post_audio_dm.call_args.kwargs
+        assert kwargs["text"] == "hi there"
+        assert kwargs["thread_ts"] == "T1"
+        # A sidecar never posts a standalone text message — that is the caller's job.
+        backend.post_message.assert_not_called()
+
+    def test_empty_initial_comment_attaches_audio_without_repeating_text(self, tmp_path: Path) -> None:
+        audio = tmp_path / "speech.m4a"
+        audio.write_bytes(b"x")
+        backend = _backend()
+        synth = MagicMock(return_value=audio)
+        with (
+            patch.object(speak_mod, "resolve_speak", return_value=SpeakConfig(slack=True)),
+            patch.object(speak_mod, "synthesise", synth),
+        ):
+            speak_mod.deliver_user_dm_sidecar(
+                backend, channel="D-USER", text="tests are green", thread_ts="1700.5", initial_comment=""
+            )
+        # Audio still synthesised from the FULL text (post-clean) ...
+        assert "tests are green" in synth.call_args.args[0]
+        backend.post_audio_dm.assert_called_once()
+        kwargs = backend.post_audio_dm.call_args.kwargs
+        # ... but posted with an EMPTY comment, threaded under the delivered ts.
+        assert kwargs["text"] == ""
+        assert kwargs["thread_ts"] == "1700.5"
+        backend.post_message.assert_not_called()
 
 
 class TestSpeakLocal:

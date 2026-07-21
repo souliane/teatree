@@ -32,6 +32,7 @@ from teatree.hooks._command_parser import (
     UNAVAILABLE_BODY_SOURCE_SENTINEL,
     is_unavailable_body_source_sentinel,
 )
+from teatree.hooks._publish_detection import command_has_opaque_forge_transport
 from teatree.hooks.banned_terms_scanner import format_unavailable_body_source_message
 
 
@@ -1146,6 +1147,64 @@ class TestDoubleQuotedApostropheLiveSubstitutionFailsClosed:
         payload = banned_terms_scanner.extract_publish_payload("Bash", {"command": cmd})
         assert payload is not None
         assert FAIL_CLOSED_SENTINEL not in payload
+
+
+class TestEnvAssignmentSubstitutionPreambleIsNotOpaque:
+    """A ``KEY="$(pass show ...)"`` auth preamble in front of a forge write is scanned, not blocked.
+
+    The authed-``gh`` idiom on this box is ``export GH_TOKEN="$(pass show
+    forge/token)" && gh pr create …`` — the credential is fetched via a live
+    ``$(pass show …)`` substitution in an env-assignment segment whose leader
+    (``export``) is neither a parseable forge tool nor a command-string
+    interpreter, and whose assignment token carries no forge marker. The gate
+    used to classify that preamble as an OPAQUE forge transport purely because it
+    held a live ``$(…)``, inject the fail-closed sentinel, and hard-block EVERY
+    authed write with "publish body could not be read" (#1415). The live-subst arm
+    is now gated PER-TOKEN: a substitution only makes a non-forge segment opaque
+    when the leader is an interpreter (which WOULD execute it) or the carrying
+    token itself carries a forge marker (``echo "$(gh … leak)"``). The credential
+    preamble is neither, so the real ``gh`` write's body is scanned normally.
+    """
+
+    def test_export_subst_preamble_inline_body_scans_clean(self, capsys: pytest.CaptureFixture[str]) -> None:
+        cmd = 'export GH_TOKEN="$(pass show forge/token)" && gh pr create -R o/r --title t --body "Closes #3478"'
+        payload = banned_terms_scanner.extract_publish_payload("Bash", {"command": cmd})
+        assert payload is not None
+        assert FAIL_CLOSED_SENTINEL not in payload
+        assert "Closes #3478" in payload
+        assert handle_banned_terms_pretool(_bash(cmd)) is False
+        assert capsys.readouterr().out == ""
+
+    def test_export_subst_preamble_direct_predicate_is_not_opaque(self) -> None:
+        # The per-diff-named direct assertion: the bare credential preamble segment
+        # carries a live ``$(…)`` but is NOT an opaque forge transport.
+        preamble = 'export GH_TOKEN="$(pass show forge/token)"'
+        assert command_has_opaque_forge_transport(preamble) is False
+
+    def test_export_subst_preamble_body_file_scans_clean(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        body_file = tmp_path / "pr_body.md"
+        body_file.write_text("a clean release note about the docs refresh\n", encoding="utf-8")
+        cmd = f'export GH_TOKEN="$(pass show forge/token)" && gh pr create -R o/r --title t --body-file {body_file}'
+        payload = banned_terms_scanner.extract_publish_payload("Bash", {"command": cmd})
+        assert payload is not None
+        assert FAIL_CLOSED_SENTINEL not in payload
+        assert "a clean release note" in payload
+        assert handle_banned_terms_pretool(_bash(cmd)) is False
+        assert capsys.readouterr().out == ""
+
+    def test_forge_call_inside_assignment_substitution_still_fails_closed(self) -> None:
+        # Regression guard: the per-token gate must NOT weaken detection of a real
+        # forge call hidden inside a live substitution. When the carrying token
+        # itself carries a forge marker (``$(gh … )``), the segment is still an
+        # opaque transport the gate cannot scan, so the sentinel is STILL injected.
+        cmd = 'gh pr create -R o/r --title t --body ok && echo "leak $(gh pr comment 5 -R o/pub --body acmecorp)"'
+        payload = banned_terms_scanner.extract_publish_payload("Bash", {"command": cmd})
+        assert payload is not None
+        assert FAIL_CLOSED_SENTINEL in payload
+        # And the direct predicate agrees the forge-marker substitution is opaque.
+        assert command_has_opaque_forge_transport('echo "leak $(gh pr comment 5 -R o/pub --body acmecorp)"') is True
 
 
 class TestReadOnlyCommandsAreNotPublishes:

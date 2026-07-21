@@ -16,6 +16,16 @@ KEPT with a warning (salvage it by pushing the branch — the snapshot-then-reap
 path is gone; potentially-needed work is never destroyed). An
 *uncommitted-changes* orphan (a live worktree an agent may be mid-task in) is
 always KEPT — a clean removal would lose the dirty diff.
+
+**Remote-state freshness is a precondition of every disposition here.** The
+"is it on a remote?" probe is a local graph query over ``refs/remotes/*``, and
+those refs go stale when a branch is deleted upstream by anything other than
+this clone (a forge's auto-delete-on-merge, or a sibling clone). A stale
+tracking ref makes unpushed work look pushed, which reaped genuinely-unmerged
+branches. So each clone's remote-tracking refs are refreshed via
+:func:`teatree.utils.git.fetch_all_prune` BEFORE any orphan in it is classified,
+and a failed refresh fails CLOSED — every orphan in that clone is kept and
+nothing is removed.
 """
 
 import logging
@@ -103,6 +113,11 @@ def _branch_has_unique_work(repo: str, branch: str, wt_path: str) -> bool:
     HEAD is meaningful only in the worktree dir, so it is probed there. Fails
     CLOSED — an inconclusive absence probe (corrupt repo, unknown ref) reads as
     "has unique work" so the worktree is kept, never reaped on uncertainty.
+
+    Assumes the caller has already refreshed ``repo``'s remote-tracking refs
+    (:func:`reap_orphan_raw_worktrees` does). Called against stale refs this
+    returns ``False`` for work that exists on no remote at all — the misread
+    that reaps unmerged branches.
     """
     probe_repo = wt_path if branch == git.DETACHED_HEAD else repo
     try:
@@ -152,6 +167,14 @@ def reap_orphan_raw_worktrees(workspace: Path) -> list[str]:
     orphan with unpushed work or uncommitted changes is KEPT (never destroyed).
     The pass is resilient: a clone whose worktree registry cannot be read (corrupt
     / origin-less) is skipped with a warning rather than aborting the run.
+
+    Before classifying ANY orphan in a clone, that clone's remote-tracking refs
+    are refreshed (:func:`teatree.utils.git.fetch_all_prune`) so the
+    absent-from-all-remotes probe cannot be fooled by a ref left stale by an
+    upstream deletion. The fetch runs only for a clone that actually has orphan
+    candidates, so a sweep with nothing to do stays offline-silent. A failed
+    refresh fails CLOSED: the clone is skipped whole and none of its orphans are
+    touched, because unknown remote state must never authorise a deletion.
     """
     tracked = _db_tracked_paths()
     cleaned: list[str] = []
@@ -161,8 +184,19 @@ def reap_orphan_raw_worktrees(workspace: Path) -> list[str]:
         except CommandFailedError as exc:
             cleaned.append(f"SKIPPED clone {repo}: could not list worktrees ({exc})")
             continue
-        for wt_path, branch in sorted(worktrees.items()):
-            if any(paths_match(wt_path, t) for t in tracked):
-                continue
+        orphans = [
+            (wt_path, branch)
+            for wt_path, branch in sorted(worktrees.items())
+            if not any(paths_match(wt_path, t) for t in tracked)
+        ]
+        if not orphans:
+            continue
+        if not git.fetch_all_prune(repo):
+            cleaned.append(
+                f"SKIPPED clone {repo}: could not refresh remote refs (fetch --prune failed) — "
+                f"keeping {len(orphans)} orphan(s), nothing reaped"
+            )
+            continue
+        for wt_path, branch in orphans:
             cleaned.append(_reap_one_orphan(repo, wt_path, branch))
     return cleaned

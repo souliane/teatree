@@ -11,6 +11,7 @@ from dataclasses import dataclass
 from django.conf import settings
 from django.db.models import Sum
 
+from teatree.config import UserSettings, get_effective_settings
 from teatree.core.models import TaskAttempt, Ticket
 
 # Conservative documented default (#885 / #398-4): the per-ticket cumulative
@@ -41,8 +42,20 @@ class TicketBudget:
 
     @classmethod
     def from_settings(cls) -> "TicketBudget":
-        configured = getattr(settings, "TEATREE_TICKET_BUDGET", None) or _DEFAULT_TICKET_BUDGET
-        return cls(max_cost_usd=float(configured.get("max_cost_usd", 0.0)))
+        """Build the budget from the DB-home config tier; Django-settings as fallback.
+
+        The cap resolves through ``get_effective_settings()`` (the #1775 config tier), so
+        ``config_setting get`` sees it (F9.5). The legacy Django-settings
+        ``TEATREE_TICKET_BUDGET`` dict stays a documented fallback: it supplies the value
+        only while the config field is still at its dataclass default (unconfigured), so an
+        explicit DB / env config always wins.
+        """
+        effective = get_effective_settings()
+        fallback = getattr(settings, "TEATREE_TICKET_BUDGET", None) or _DEFAULT_TICKET_BUDGET
+        default = UserSettings().ticket_budget_max_cost_usd
+        configured = effective.ticket_budget_max_cost_usd
+        value = configured if configured != default else fallback.get("max_cost_usd", 0.0)
+        return cls(max_cost_usd=float(value))
 
     def breach_reason(self, ticket: Ticket) -> str | None:
         """Return a reason string with the observed total, or ``None`` if healthy."""

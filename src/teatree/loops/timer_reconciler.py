@@ -20,7 +20,10 @@ backlog draining and re-enqueues runs a dead worker abandoned. A tight-cadence
 👀-receipt + reply/delegate machinery that only ran in an interactive owner
 session's ``/loop`` slot before), guarded by the SAME ``loop-slack-answer``
 :class:`LoopLease` the ``loop_slack_answer`` mgmt command takes so the worker and an
-interactive owner session can never double-post. The maintenance chains are seeded by
+interactive owner session can never double-post. A :func:`render_statusline` chain
+(:mod:`teatree.loops.statusline_refresh`) keeps ``statusline.txt`` fresh on a short
+cadence even when no domain loop is admitted-and-ticking, so the pre-rendered loop line
+never freezes headless. The maintenance chains are seeded by
 :func:`ensure_maintenance_chains` at worker startup and self-perpetuate, so a worker
 restart re-arms them.
 """
@@ -377,9 +380,10 @@ def run_slack_answer() -> dict[str, int]:
 
 
 def ensure_maintenance_chains() -> None:
-    """Seed reconcile / prune / expire / drain / slack-answer / usage-window / preset chains if absent."""
+    """Seed reconcile / prune / expire / drain / slack-answer / usage-window / preset / statusline chains if absent."""
     from teatree.loop.loop_cadences import slack_answer_cadence_seconds  # noqa: PLC0415 — deferred: tick-time import
     from teatree.loops.preset_transitions import ensure_preset_transitions_chain  # noqa: PLC0415 — cycle-safe
+    from teatree.loops.statusline_refresh import ensure_statusline_refresh_chain  # noqa: PLC0415 — cycle-safe
     from teatree.loops.usage_window_recovery import ensure_usage_window_recovery_chain  # noqa: PLC0415 — cycle-safe
 
     now = timezone.now()
@@ -406,3 +410,7 @@ def ensure_maintenance_chains() -> None:
     # #3159: the preset-transition side-effect chain (override reap, availability pin,
     # one Slack line per switch). Inert with no active preset — a cheap keepalive.
     ensure_preset_transitions_chain()
+    # The headless statusline-render chain — keeps ``statusline.txt`` fresh on a short
+    # cadence even when NO domain loop is admitted-and-ticking (the true cause of the
+    # long-standing stale-loop-line complaint), gated by the ``autoload`` #256 flag.
+    ensure_statusline_refresh_chain()

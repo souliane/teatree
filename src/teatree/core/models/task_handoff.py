@@ -10,7 +10,7 @@ LOC cap) — the thin ``Task`` call sites delegate here. The functions take a
 """
 
 from teatree.config import AgentRuntime, get_effective_settings
-from teatree.core.models.deferred_question import DeferredQuestion, question_fingerprint
+from teatree.core.models.deferred_question import DeferredQuestion, is_tool_lack_selfreport, question_fingerprint
 from teatree.core.models.session import Session
 from teatree.core.models.task import Task
 
@@ -57,10 +57,20 @@ def record_deferred_question(task: Task) -> DeferredQuestion:
     DM and stamps the mirror coordinates. ``run_id`` carries the resumable agent
     session for traceability; ``parked_task`` is the canonical correlation the
     reply scanner walks back to re-queue a headless resume.
+
+    A reason that is the agent's own "I lack the shell/gh/toolset to do my job"
+    self-report is a DISPATCH fault, not an owner decision, so it is recorded
+    ``INTERNAL`` (logged / statusline-only, never DM'd) — a mis-provisioned phase
+    must never nag the owner to compensate for its own missing tools.
     """
     last = task.attempts.order_by("-pk").first()  # ty: ignore[unresolved-attribute]
     reason = str(last.result.get("user_input_reason", _DEFAULT_REASON)) if last else "Agent needs input"
     agent_session_id = last.agent_session_id if last else ""
+    audience = (
+        DeferredQuestion.Audience.INTERNAL
+        if is_tool_lack_selfreport(reason)
+        else DeferredQuestion.Audience.OWNER_QUESTION
+    )
     # Collapse identical needs-input reasons (e.g. the eight "I lack tools" review
     # failures) to one queued question via a normalized-text fingerprint.
     return DeferredQuestion.record(
@@ -69,6 +79,7 @@ def record_deferred_question(task: Task) -> DeferredQuestion:
         run_id=agent_session_id or "",
         dedupe_marker=f"needs-input:{question_fingerprint(reason)}",
         parked_task=task,
+        audience=audience,
     )
 
 

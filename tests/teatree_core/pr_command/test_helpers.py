@@ -279,3 +279,35 @@ class TestAssertCommitsAheadOfBase(TestCase):
                 assert _assert_commits_ahead_of_base(wt) is None, (
                     "rev_count ValueError is unverifiable → MUST proceed (None)"
                 )
+
+    def test_unverifiable_git_error_logs_a_warning(self) -> None:
+        """F3.3: the fail-open path leaves a warning breadcrumb, not silence.
+
+        A git-introspection failure looks exactly like a clean pass on the CLI;
+        keeping #788's fail-open posture is right, but it must now log a warning
+        naming the branch/repo so a mistaken SHIPPED whose hollowness could not
+        be confirmed is traceable.
+        """
+        import tempfile  # noqa: PLC0415
+
+        from teatree.utils import git as git_mod  # noqa: PLC0415
+        from teatree.utils.run import CommandFailedError  # noqa: PLC0415
+
+        with tempfile.TemporaryDirectory() as root:
+            self._git(root, "init", "-q", "-b", "main")
+            self._git(root, "config", "user.email", "t@example.com")
+            self._git(root, "config", "user.name", "t")
+            (Path(root) / "a").write_text("1", encoding="utf-8")
+            self._git(root, "add", "-A")
+            self._git(root, "commit", "-q", "-m", "base")
+            self._git(root, "update-ref", "refs/remotes/origin/main", "HEAD")
+            wt = self._wt(root, "main")
+
+            with (
+                patch.object(git_mod, "default_branch", side_effect=CommandFailedError(["git"], 1, "", "boom")),
+                self.assertLogs("teatree.core.management.commands._ship.gates", level="WARNING") as logs,
+            ):
+                assert _assert_commits_ahead_of_base(wt) is None
+        joined = "\n".join(logs.output)
+        assert "could not verify commits ahead of base" in joined
+        assert "main" in joined

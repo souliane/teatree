@@ -74,6 +74,17 @@ class TestGateStatus:
         assert result.exit_code == 0, result.output
         assert "ENABLED" in result.output
 
+    def test_heavy_bash_status_keeps_its_own_wording_after_shared_refactor(self, app: typer.Typer) -> None:
+        """F3.4: the top-level heavy-Bash gate now shares ``_attach_gate_commands``.
+
+        The extraction must leave its distinctive enabled-status wording intact —
+        the keyed gates echo a bare ``gate ENABLED``, but this one keeps its
+        ``heavy orchestrator bash blocked`` qualifier.
+        """
+        result = CliRunner().invoke(app, ["gate", "status"])
+        assert result.exit_code == 0, result.output
+        assert "heavy orchestrator bash blocked" in result.output
+
     def test_status_reports_disabled_after_disable(self, app: typer.Typer, canonical_db: Path) -> None:
         assert CliRunner().invoke(app, ["gate", "disable"]).exit_code == 0
         result = CliRunner().invoke(app, ["gate", "status"])

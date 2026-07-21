@@ -109,8 +109,10 @@ class AllTokensExhaustedError(CredentialError):
 
     def __init__(self, message: str, *, earliest_reset: dt.datetime | None = None) -> None:
         super().__init__(message)
-        #: The soonest an account frees up — the earliest window reset across all exhausted
-        #: accounts, or ``None`` when no reset is known. NOT a token; a schedule instant.
+        #: The soonest an account frees up — the MINIMUM over exhausted accounts of each
+        #: account's own ``frees_up_at`` (itself the LATEST of that account's blocking-window
+        #: resets, since all of them must clear before it is usable). ``None`` when no
+        #: blocking window has a known reset. NOT a token; a schedule instant.
         self.earliest_reset = earliest_reset
 
 
@@ -276,7 +278,12 @@ class PassPathSelector:
     def _all_exhausted_error(kind: TokenKind) -> AllTokensExhaustedError:
         candidates = PassPathSelector._all_configured_paths(kind)
         rows = AnthropicTokenUsage.objects.filter(pass_path__in=candidates)
-        resets = [row.earliest_reset for row in rows if row.is_exhausted and row.earliest_reset is not None]
+        # ``frees_up_at``, not ``earliest_reset``: the answer is when an account actually
+        # re-arms (its blocking windows all clear), not the soonest reset it happens to
+        # have on record. An account rejected on its 7-day window whose idle 5h window
+        # rolls over every few minutes would otherwise report a reset in the PAST, and the
+        # caller would park behind an instant that has already happened.
+        resets = [row.frees_up_at for row in rows if row.is_exhausted and row.frees_up_at is not None]
         earliest = min(resets) if resets else None
         when = f" — earliest reset {earliest.isoformat()}" if earliest is not None else ""
         # Name the candidate accounts so the operator knows exactly which ones to
@@ -363,8 +370,8 @@ def record_reactive_exhaustion_and_reselect(
 
     * returns the next healthy account's ``pass_path`` — another account is available, so the
         caller REQUEUES the task to rotate onto it rather than parking the whole lane;
-    * raises :class:`AllTokensExhaustedError` (carrying the earliest reset) when every account
-        is now exhausted, so the caller parks the lane for auto-resume at the soonest reset;
+    * raises :class:`AllTokensExhaustedError` (carrying the soonest instant any account frees
+        up) when every account is now exhausted, so the caller parks the lane for auto-resume;
     * returns ``None`` when nothing is routed (no sticky account — an ambient-env or single
         unrouted credential), so the caller falls back to the existing lane park unchanged.
     """

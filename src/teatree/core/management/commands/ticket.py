@@ -66,6 +66,13 @@ class E2EBypassResult(TypedDict, total=False):
     approver: str
 
 
+# The 8-mixin base list is a django-typer requirement, not a composition-bar
+# violation: django-typer discovers ``@command``-decorated methods by walking the
+# Command class's own MRO, so each cohesive command group (rubric, plan, show,
+# context, close, attachment, merge-keystone, sweep) MUST be a base class of the
+# single ``Command`` rather than a plain collaborator it delegates to — a helper
+# object's methods would never register as CLI subcommands. The mixins stay
+# single-concern; only their registration is inheritance-shaped.
 class Command(
     RubricCommands,
     PlanCommands,
@@ -340,31 +347,41 @@ class Command(
         # issue_url, no clone origin), and resolving it after MergeClear.issue()
         # persisted the row would orphan an already-issued CLEAR behind a traceback.
         # Issue runs only when resolution succeeds, so neither failure persists a row.
+        #
+        # Issue + record the sibling verdict inside ONE transaction (F3.2): the
+        # CLEAR and its read-side ReviewVerdict are two halves of one atomic
+        # keystone step. If ``ReviewVerdict.record`` raises AFTER ``issue()``
+        # persisted the row, the outer atomic rolls the CLEAR back too — so a
+        # verdict failure can never leave an issued CLEAR with no matching verdict
+        # (a phantom that `review status` would later read as merge-safe).
         try:
             verdict_slug = resolve_pr_repo_slug(request)
-            clear = MergeClear.issue(request)
+            with transaction.atomic():
+                clear = MergeClear.issue(request)
+                # Record the durable read-side sibling (a merge-safe judgment by
+                # construction — issuance refused any non-green verdict) so a later
+                # `review status` answers "safe to approve at the current head?".
+                # Key it under verdict_slug — where the merge gate queries — not
+                # the workstream slug.
+                verdict = ReviewVerdict.record(
+                    pr_id=clear.pr_id,
+                    slug=verdict_slug,
+                    reviewed_sha=clear.reviewed_sha,
+                    verdict=ReviewVerdict.Verdict.MERGE_SAFE,
+                    reviewer_identity=clear.reviewer_identity,
+                    blast_class=clear.blast_class,
+                    gh_verify_result=clear.gh_verify_result,
+                    ticket=resolved_ticket,
+                    # A pending expedite CLEAR records the sibling merge_safe verdict
+                    # on PENDING checks; the flag lets ``record`` accept it
+                    # (§17.4.3 / PR-07).
+                    expedited=bool(clear.expedite_authorizer),
+                )
         except (MergePreconditionError, ClearIssuanceError) as exc:
             self.stdout.write(f"  CLEAR refused: {exc}")
             return {"issued": False, "error": str(exc)}
 
         self.stdout.write(f"  issued CLEAR {clear.pk} for {clear.slug}#{clear.pr_id}@{clear.reviewed_sha[:8]}")
-        # Record the durable read-side sibling (a merge-safe judgment by
-        # construction — issuance refused any non-green verdict) so a later
-        # `review status` answers "safe to approve at the current head?". Key it
-        # under verdict_slug — where the merge gate queries — not the workstream slug.
-        verdict = ReviewVerdict.record(
-            pr_id=clear.pr_id,
-            slug=verdict_slug,
-            reviewed_sha=clear.reviewed_sha,
-            verdict=ReviewVerdict.Verdict.MERGE_SAFE,
-            reviewer_identity=clear.reviewer_identity,
-            blast_class=clear.blast_class,
-            gh_verify_result=clear.gh_verify_result,
-            ticket=resolved_ticket,
-            # A pending expedite CLEAR records the sibling merge_safe verdict on
-            # PENDING checks; the flag lets ``record`` accept it (§17.4.3 / PR-07).
-            expedited=bool(clear.expedite_authorizer),
-        )
         result: ClearIssueResult = {
             "issued": True,
             "clear_id": int(clear.pk),

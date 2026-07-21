@@ -118,7 +118,7 @@ def _t3_review_note_body(words: list[str], raws: list[str], verb_index: int) -> 
     merely MENTIONS is scanned verbatim rather than fail-closed (#1415);
     consistent with the inline body flags.
     """
-    from teatree.hooks._body_file_resolution import resolve_inline_body_value  # noqa: PLC0415 — lazy import
+    from teatree.hooks._inline_body_resolution import resolve_inline_body_value  # noqa: PLC0415 — lazy import
 
     positionals: list[tuple[str, str]] = []
     i = verb_index + 1

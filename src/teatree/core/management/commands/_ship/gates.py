@@ -10,6 +10,7 @@ orchestrator (so the existing ``patch.object(pr, "_run_visual_qa_gate")`` test
 seams keep resolving against ``pr``'s namespace).
 """
 
+import logging
 from typing import TypedDict, cast
 
 from teatree import visual_qa
@@ -28,6 +29,8 @@ from teatree.core.runners.ship import resolve_ship_worktree
 from teatree.core.worktree.branch_currency import require_current_branch
 from teatree.utils import git
 from teatree.utils.run import CommandFailedError
+
+_log = logging.getLogger(__name__)
 
 
 class VisualQAGateFailure(TypedDict):
@@ -86,7 +89,19 @@ def assert_commits_ahead_of_base(worktree: Worktree) -> NoCommitsAheadError | No
     try:
         base = f"origin/{git.default_branch(repo=repo)}"
         ahead = git.rev_count(repo=repo, range_spec=f"{base}..{branch}")
-    except (CommandFailedError, RuntimeError, ValueError):
+    except (CommandFailedError, RuntimeError, ValueError) as exc:
+        # #788 fails OPEN on an unverifiable probe (proceed), but the previous
+        # silence hid a real risk: a git-introspection failure looks exactly
+        # like a clean pass on the CLI (F3.3). Log a warning so a mistaken
+        # SHIPPED whose hollowness could not be confirmed leaves a breadcrumb —
+        # the async ``execute_ship`` still re-checks and fails loudly if hollow.
+        _log.warning(
+            "assert_commits_ahead_of_base: could not verify commits ahead of base for branch %r in %r "
+            "(%s) — proceeding fail-open; execute_ship re-checks.",
+            branch,
+            repo,
+            exc,
+        )
         return None  # unverifiable ≠ the confirmed-zero bug — do not block
     if ahead > 0:
         return None

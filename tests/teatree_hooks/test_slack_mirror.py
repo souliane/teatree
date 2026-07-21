@@ -17,6 +17,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from teatree.hooks import slack_mirror
+from teatree.hooks.slack_mirror import slack_config_from_registry
 
 
 def _no_thread(_channel: str) -> str:
@@ -275,24 +276,24 @@ class TestWriteCacheNeverRaises:
         slack_mirror.write_dm_channel_cache("U1", "D1")  # must not raise
 
 
-class TestConfigFromToml:
+class TestConfigFromRegistry:
     def test_returns_ref_and_uid_for_slack_overlay(self) -> None:
         overlays = {
             "acme": {"messaging_backend": "slack", "slack_token_ref": "secret/acme", "slack_user_id": "U9"},
         }
         fake_cfg = SimpleNamespace(raw={"overlays": overlays})
         with patch("teatree.config.load_config", return_value=fake_cfg):
-            assert slack_mirror.slack_config_from_toml() == ("secret/acme", "U9")
+            assert slack_config_from_registry() == ("secret/acme", "U9")
 
     def test_none_when_no_overlays(self) -> None:
         fake_cfg = SimpleNamespace(raw={})
         with patch("teatree.config.load_config", return_value=fake_cfg):
-            assert slack_mirror.slack_config_from_toml() is None
+            assert slack_config_from_registry() is None
 
     def test_none_when_no_slack_overlay(self) -> None:
         fake_cfg = SimpleNamespace(raw={"overlays": {"acme": {"messaging_backend": "console"}}})
         with patch("teatree.config.load_config", return_value=fake_cfg):
-            assert slack_mirror.slack_config_from_toml() is None
+            assert slack_config_from_registry() is None
 
 
 class TestPerformSlackPostInjectsDependencies:

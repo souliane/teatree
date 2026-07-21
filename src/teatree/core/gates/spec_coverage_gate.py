@@ -70,9 +70,14 @@ class SpecCoverageDodError(InvalidTransitionError):
     """
 
 
-def spec_coverage_required() -> bool:
-    """Whether the spec-coverage DoD gate is in force (overlay -> global)."""
-    return get_effective_settings().require_spec_coverage
+def spec_coverage_required(overlay: str | None = None) -> bool:
+    """Whether the spec-coverage DoD gate is in force for *overlay* (overlay -> global).
+
+    *overlay* threads the ticket's own overlay so a per-overlay opt-in binds even
+    when the evaluating process has no ambient ``T3_OVERLAY_NAME``. ``None``
+    resolves the ambient overlay as before.
+    """
+    return get_effective_settings(overlay).require_spec_coverage
 
 
 def acceptance_criteria(ticket: "Ticket") -> list["AcceptanceCriterion"]:
@@ -136,7 +141,7 @@ def check_spec_coverage(ticket: "Ticket") -> None:
     4. No manifest at all → raise (zero ACs proven is the partial subset the gate forecloses).
     5. One or more uncovered ACs → raise, naming them.
     """
-    if not spec_coverage_required():
+    if not spec_coverage_required(ticket.overlay or None):
         return
     reason = override_reason(ticket)
     if reason:

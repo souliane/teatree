@@ -35,6 +35,7 @@ from django.core.management import call_command
 from mcp.server.fastmcp import FastMCP
 from mcp.types import ToolAnnotations
 
+from teatree.config import SAFETY_POSTURE_KEYS
 from teatree.config.cold_hook_settings import COLD_HOOK_SETTINGS
 from teatree.config.feature_flags import is_feature_flag
 from teatree.config.registries import COLD_SETTINGS, REGISTRY_KEYS
@@ -116,19 +117,46 @@ def _run_emitting_command(command: str, *args: object, **kwargs: object) -> dict
 # Bash ``t3 <overlay> config_setting set`` path, per the no-unilateral-gate-flip rule.
 _REFUSED_KEY_GLOBS = ("*_gate_enabled", "require_*")
 
+# Reviewed carve-out (F9.1): fields whose NAME matches the delegation/allowlist
+# heuristics the conformance test walks (``*allowlist``, ``*_threshold``…) but whose
+# EFFECT is an ordinary local-maintenance / quality tuning knob, NOT an authorization,
+# an intake/egress boundary, or an autonomy-posture change — so the MCP surface may set
+# them. Each entry is a DELIBERATE, human-reviewed classification: ``disk_cache_allowlist``
+# / ``ram_kill_allowlist`` bound the LOCAL resource-pressure reaper (already gated behind
+# their own ``allow_destructive_*`` opt-in, no delegation of authority); ``e2e_confidence_threshold``
+# is a quality/telemetry tunable. The conformance test
+# (``tests/teatree_mcp/test_write_tools_refusals.py``) fails CLOSED if a heuristic-matched
+# field is in NEITHER this set NOR :data:`~teatree.config.SAFETY_POSTURE_KEYS`, so adding a
+# new authorization-shaped field forces an explicit reviewed classification here or there.
+MCP_SETTABLE_OK: frozenset[str] = frozenset(
+    {
+        "disk_cache_allowlist",
+        "ram_kill_allowlist",
+        "e2e_confidence_threshold",
+    }
+)
+
 
 def refuse_reason(key: str) -> str:
-    """Why the MCP surface refuses to set *key* (empty string = allowed)."""
-    if key in COLD_HOOK_SETTINGS:
-        return "cold-hook gate wire — flip via the CLI, never via MCP"
-    if is_feature_flag(key):
-        return "feature flag — directive-/lifecycle-governed, human/CLI-only"
-    if key in REGISTRY_KEYS:
-        return "registry row — redirects overlay code paths, human/CLI-only"
-    if key in COLD_SETTINGS:
-        return "cold-read key — leak-scrub list / fail-open switch / agent routing, human/CLI-only"
-    if any(fnmatch(key, glob) for glob in _REFUSED_KEY_GLOBS):
-        return "safety-gate key — flip via the CLI, never via MCP"
+    """Why the MCP surface refuses to set *key* (empty string = allowed).
+
+    Each clause is a distinct refusal LANE. The ``SAFETY_POSTURE_KEYS`` clause is the
+    effect-based one (F9.1): setting one of those IS an authorization / delegation /
+    fail-closed-boundary act (e.g. self-granting substrate-merge delegation, widening the
+    fail-closed intake allowlist), so it stays a human/CLI act even though its name matches
+    no ``*_gate_enabled`` glob that the last, name-shaped clause would catch.
+    """
+    lanes: tuple[tuple[bool, str], ...] = (
+        (key in COLD_HOOK_SETTINGS, "cold-hook gate wire — flip via the CLI, never via MCP"),
+        (is_feature_flag(key), "feature flag — directive-/lifecycle-governed, human/CLI-only"),
+        (key in REGISTRY_KEYS, "registry row — redirects overlay code paths, human/CLI-only"),
+        (key in COLD_SETTINGS, "cold-read key — leak-scrub list / fail-open switch / agent routing, human/CLI-only"),
+        (key in SAFETY_POSTURE_KEYS, "safety-posture key — its write IS an authorization; human/CLI-only"),
+        (any(fnmatch(key, glob) for glob in _REFUSED_KEY_GLOBS), "safety-gate key — flip via the CLI, never via MCP"),
+    )
+    for matched, reason in lanes:
+        if matched:
+            return reason
     return ""
 
 
@@ -211,7 +239,11 @@ async def _config_setting_set(key: str, value: str, *, overlay: str = "") -> dic
     canonical-value storage). Gate keys (``*_gate_enabled``, ``require_*``,
     feature flags, cold-hook wires, registry rows, and the cold-read leak-scrub
     lists / fail-open switch / agent-routing tables) are refused: flipping a
-    safety gate — or emptying a leak-scrub list — stays a human/CLI act.
+    safety gate — or emptying a leak-scrub list — stays a human/CLI act. Refused
+    ALSO by declared EFFECT (F9.1): the :data:`~teatree.config.SAFETY_POSTURE_KEYS`
+    delegation / authorization / fail-closed-allowlist fields (e.g.
+    ``substrate_auto_merge_authorized_by``, ``trusted_issue_authors``) whose write
+    IS the authorization, which no name-glob would catch.
     """
     if reason := refuse_reason(key):
         msg = f"refused: {key} is not MCP-settable ({reason})"
@@ -456,8 +488,10 @@ _TOOLS: tuple[_WriteTool, ...] = (
         "call_command('config_setting', 'set', …) + gate-key refuse list",
         "- config_setting_set(key, value, overlay): set a plain config setting; "
         "REFUSES safety-gate keys (*_gate_enabled, require_*, feature flags, "
-        "cold-hook wires, registry rows, and the cold-read leak-scrub lists / "
-        "fail-open switch / agent-routing tables) — those stay human/CLI-only.",
+        "cold-hook wires, registry rows, the cold-read leak-scrub lists / "
+        "fail-open switch / agent-routing tables, AND the safety-posture "
+        "delegation/authorization/allowlist keys whose write IS the authorization) "
+        "— those stay human/CLI-only.",
     ),
     _WriteTool(
         "task_create",

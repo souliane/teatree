@@ -48,9 +48,14 @@ class IntegrationReviewError(InvalidTransitionError):
     """
 
 
-def integration_review_required() -> bool:
-    """Whether the integration-review gate is in force (overlay -> global)."""
-    return get_effective_settings().require_integration_review
+def integration_review_required(overlay: str | None = None) -> bool:
+    """Whether the integration-review gate is in force for *overlay* (overlay -> global).
+
+    *overlay* threads the ticket's own overlay so a per-overlay opt-in binds even
+    when the evaluating process has no ambient ``T3_OVERLAY_NAME``. ``None``
+    resolves the ambient overlay as before.
+    """
+    return get_effective_settings(overlay).require_integration_review
 
 
 def distinct_repos(ticket: "Ticket") -> list[str]:
@@ -80,7 +85,7 @@ def check_integration_review(ticket: "Ticket") -> None:
     4. An integration-review artifact covering every repo → pass.
     5. Otherwise → raise :class:`IntegrationReviewError`.
     """
-    if not integration_review_required():
+    if not integration_review_required(ticket.overlay or None):
         return
     repos = distinct_repos(ticket)
     if len(repos) < _MIN_CROSS_REPO:

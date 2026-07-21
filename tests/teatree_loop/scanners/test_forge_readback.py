@@ -6,6 +6,7 @@ double-claim window the local claim ledger cannot see. It must match only within
 the issue's own repo and must never let a forge error block the claim path.
 """
 
+import logging
 from dataclasses import dataclass, field
 
 from teatree.loop.scanners.forge_readback import existing_work_for_issue, fetch_merged_prs, fetch_open_prs, issue_number
@@ -188,6 +189,16 @@ class TestFetchOpenPrs:
     def test_forge_error_degrades_to_empty_never_raises(self) -> None:
         host = _Host(raises=True)
         assert fetch_open_prs(host, authors=("alice",)) == []
+
+    def test_forge_error_logs_warning_naming_author(self, caplog) -> None:
+        # F5.10: a degraded read-back NET is surfaced at warning (not debug) so a
+        # systematically failing author/token is visible, and the author is named.
+        host = _Host(raises=True)
+        with caplog.at_level(logging.WARNING, logger="teatree.loop.scanners.forge_readback"):
+            assert fetch_open_prs(host, authors=("alice",)) == []
+        warnings = [rec for rec in caplog.records if rec.levelno == logging.WARNING]
+        assert warnings
+        assert any("alice" in rec.getMessage() for rec in warnings)
 
     def test_urlless_pr_is_kept_without_dedup(self) -> None:
         host = _Host(prs=[{"head": {"ref": "x"}}])

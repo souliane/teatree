@@ -1,4 +1,5 @@
 import json
+import logging
 import os
 
 from teatree.core.models import Task, TaskAttempt
@@ -6,6 +7,8 @@ from teatree.core.models import Task, TaskAttempt
 from ._filters import _task_overlay_q
 from ._helpers import _CLAUDE_SESSIONS_DIR, _display_id, _uptime_from_epoch_ms
 from ._types import ActiveSessionRow, RecentActivityRow
+
+logger = logging.getLogger(__name__)
 
 _RECENT_ACTIVITY_LIMIT = 10
 
@@ -18,12 +21,20 @@ def build_active_sessions() -> list[ActiveSessionRow]:
     active_statuses = Task.Status.active()
     active_tasks = {t.pk: t for t in Task.objects.filter(status__in=active_statuses).select_related("ticket")}
 
-    # Match tasks to sessions by agent_session_id
-    session_to_task: dict[str, Task] = {}
-    for task in active_tasks.values():
-        last_attempt = task.attempts.order_by("-pk").first()
-        if last_attempt and last_attempt.agent_session_id:
-            session_to_task[last_attempt.agent_session_id] = task
+    # Match tasks to sessions by the LATEST attempt's agent_session_id. One
+    # ordered query over every active task's attempts (highest pk first) then a
+    # single Python pass keeps the first — the latest — per task; the previous
+    # ``task.attempts...first()`` inside the loop was an N+1 round-trip per task.
+    latest_session_by_task: dict[int, str] = {}
+    for task_id, agent_session_id in (
+        TaskAttempt.objects.filter(task_id__in=active_tasks).order_by("-pk").values_list("task_id", "agent_session_id")
+    ):
+        latest_session_by_task.setdefault(task_id, agent_session_id)
+    session_to_task: dict[str, Task] = {
+        agent_session_id: active_tasks[task_id]
+        for task_id, agent_session_id in latest_session_by_task.items()
+        if agent_session_id
+    }
 
     # Collect session IDs for finished tasks so we can exclude them
     finished_statuses = Task.Status.terminal()
@@ -39,7 +50,8 @@ def build_active_sessions() -> list[ActiveSessionRow]:
     for session_file in _CLAUDE_SESSIONS_DIR.glob("*.json"):
         try:
             data = json.loads(session_file.read_text(encoding="utf-8"))
-        except (json.JSONDecodeError, OSError):
+        except (json.JSONDecodeError, OSError) as exc:
+            logger.warning("skipping unreadable claude session file %s: %s", session_file, exc)
             continue
 
         pid = data.get("pid")
@@ -53,9 +65,13 @@ def build_active_sessions() -> list[ActiveSessionRow]:
             continue
 
         session_id = str(data.get("sessionId", ""))
-        if session_id and session_id in finished_session_ids:
-            continue
         task = session_to_task.get(session_id)
+        # Active-driving wins over the finished-session exclusion: a session
+        # that finished task A but is now the latest driver of active task B
+        # must still surface. Only exclude a session with no active task of its
+        # own — otherwise the terminal-attempt id would hide live work.
+        if task is None and session_id and session_id in finished_session_ids:
+            continue
 
         sessions.append(
             ActiveSessionRow(
