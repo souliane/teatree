@@ -15,8 +15,9 @@ from typer.testing import CliRunner
 
 from teatree.agents.model_tiering import TIER_MODELS
 from teatree.cli import app
+from teatree.cli.eval.app import eval_app
 from teatree.cli.eval.docker import DockerUnavailableError
-from teatree.cli.eval.ladder import _docker_passthrough, _LadderFlags
+from teatree.cli.eval.ladder import _docker_passthrough, _LadderFlags, ladder
 from teatree.eval.models import EvalRun, EvalSpec
 
 _HAIKU = TIER_MODELS["cheap"]
@@ -57,6 +58,13 @@ def _invoke(args: list[str], *, specs: list[EvalSpec], passing: dict[str, set[st
         patch("teatree.cli.eval.ladder.make_runner", return_value=_FakeRunner(passing)),
     ):
         return CliRunner().invoke(app, ["eval", "ladder", *args])
+
+
+class TestRegistration:
+    def test_ladder_command_is_registered_on_the_eval_app(self) -> None:
+        names = {command.name for command in eval_app.registered_commands}
+        assert "ladder" in names
+        assert callable(ladder)
 
 
 class TestHelp:
