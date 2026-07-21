@@ -54,6 +54,8 @@ from typing import ClassVar
 from django.db import models
 from django.utils import timezone
 
+from teatree.core.models.task import Task
+
 
 @dataclass(frozen=True, slots=True)
 class BroadcastObservation:
@@ -190,8 +192,6 @@ class ScannedBroadcast(models.Model):
             return False
         if not self.reviewer_task_id.isdigit():
             return True
-        from teatree.core.models.task import Task  # noqa: PLC0415 — lazy: avoids the models import cycle
-
         return not Task.objects.filter(pk=self.reviewer_task_id).exclude(status=Task.Status.FAILED).exists()
 
     def attach_reviewer_task(self, task_id: str) -> bool:

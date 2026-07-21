@@ -20,6 +20,7 @@ import logging
 import traceback
 from collections.abc import Callable
 
+from teatree.core.management.commands.ticket_short_describe import describe_ticket
 from teatree.core.modelkit.phases import SHORT_DESCRIBE_PHASE, normalize_phase
 from teatree.core.models import Task
 
@@ -32,10 +33,6 @@ PhaseRunner = Callable[[Task], str]
 
 
 def _run_short_describe(task: Task) -> str:
-    from teatree.core.management.commands.ticket_short_describe import (  # noqa: PLC0415 — deferred: Django app registry
-        describe_ticket,
-    )
-
     lines: list[str] = []
     describe_ticket(int(task.ticket_id), stdout_write=lines.append)  # ty: ignore[unresolved-attribute]
     return "\n".join(lines)
