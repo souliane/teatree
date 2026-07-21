@@ -129,35 +129,27 @@ Completed:
 - Full pre-commit hook suite on commit — all passed (tach, import-linter, jscpd,
   module-health, banned-terms, BLUEPRINT gate, etc.).
 
-**NOT completed — this is the gap:**
+- **Repeat runs, post-restore: 7 consecutive iterations, 92 passed each.** The guard set
+  plus BOTH victim files (`test_run.py`, `test_retro_gate_failures.py`) under xdist. The
+  loop was still going when I stopped; 7 confirmed green is the number to quote.
+- Branch pushed. All pre-push gates passed, no bypass.
+- **PR: <https://github.com/souliane/teatree/pull/3536>** (non-draft).
 
-1. I started a 10-iteration repeat loop of the guard set + both victim files
-   (`test_run.py`, `test_retro_gate_failures.py`) under xdist **after** restoring the
-   helper. It was still running when I was told to wind down. **Zero iterations were
-   confirmed.** So the post-restore code has passed lint/type/hooks but its test run
-   is unconfirmed.
-2. `bash dev/ci-parity-fast.sh` — never run.
-3. `bash dev/ci-parity.sh` — never run.
-4. Branch not pushed at the time of writing; see the report for the final push status.
+**NOT completed:**
+
+1. `bash dev/ci-parity-fast.sh` — never run.
+2. `bash dev/ci-parity.sh` — never run. CI is the check for the 93% floor.
 
 ## What the next person must do
 
-1. `cd ~/.local/share/teatree-worktrees/scanner-conn-hygiene`
-2. Confirm the helper is restored: `grep -n "ANTI-VACUITY" src/teatree/utils/thread_db.py`
-   must print nothing.
-3. Run the guard set once to close the gap above:
-   `uv run pytest tests/teatree_utils/test_thread_db.py tests/teatree_core/worktree/test_readiness.py tests/teatree_core/management_commands/test_workspace_provision_parallel.py tests/teatree_loops/test_worker.py tests/teatree_loop/phases/test_scan.py -q`
-   Expect 66 passed.
-4. Repeat it ~10x under xdist (it is nondeterministic; one green proves nothing). Also
-   run both victim files in the same invocation:
-   `tests/teatree_core/management_commands/test_run.py` and
-   `tests/teatree_core/management_commands/test_retro_gate_failures.py`.
-5. `bash dev/ci-parity-fast.sh`, then `bash dev/ci-parity.sh` (src-touching change).
-6. Push and open a **non-draft** PR (never a draft — it blocks the autonomous merge loop).
-   PR body must say this unblocks a RED `main`, and must state that `8a35ea35` was
-   already on `main` and incomplete.
-7. Watch CI across several shards, not one — the failure is nondeterministic and
-   shard-dependent.
+1. Watch CI on [#3536](https://github.com/souliane/teatree/pull/3536) across **several
+   shards**, not one — the failure is nondeterministic and shard-dependent, so a single
+   green shard is not evidence.
+2. If a shard still reds with `PytestUnraisableExceptionWarning`, the next suspect is
+   `src/teatree/backends/slack/receiver.py:207` (see below). Localise it with a per-site
+   guard test, not a whole-suite tracemalloc run.
+3. Optionally run `bash dev/ci-parity.sh` locally if CI reds on coverage rather than on
+   the warning.
 
 ## Things that did NOT work — do not retry
 
