@@ -216,6 +216,41 @@ def _overlay_privacy_rules() -> tuple[list[str], list[str]] | None:
         return None
 
 
+def _db_banned_terms() -> tuple[str, ...] | None:
+    """The DB-home ``banned_terms`` list to union into a PUBLIC-target scan, or ``None`` to fail CLOSED.
+
+    The customer codenames live in the DB-home ``banned_terms`` list (the source
+    the shell/CI gates scan), NOT in the overlay ``privacy_redact_terms`` (empty
+    by default). So the egress chokepoint scans a public body against the SAME
+    fail-closed source via :func:`teatree.hooks.banned_terms_cli.resolve_banned_terms`.
+    Posture mirrors that gate exactly:
+
+    * a resolved list (including the deliberate empty ``[]``) → those terms;
+    * a genuinely UNSET list (:class:`BannedTermsUnsetError`) → fail CLOSED
+        (``None``) only when ``banned_terms_required``, else the dev/solo no-op (``()``);
+    * any OTHER read failure → fail CLOSED (``None``): an unreadable ban source
+        must never silently degrade to "no terms" on a public target.
+    """
+    from teatree.hooks.banned_terms_cli import (  # noqa: PLC0415 — deferred hooks edge
+        banned_terms_required,
+        resolve_banned_terms,
+    )
+    from teatree.hooks.banned_terms_tree_scan import BannedTermsUnsetError  # noqa: PLC0415 — deferred hooks edge
+
+    try:
+        return resolve_banned_terms()
+    except BannedTermsUnsetError:
+        return None if banned_terms_required() else ()
+    except Exception as exc:  # noqa: BLE001 — an unreadable ban source fails CLOSED, never scan-less.
+        warn_throttled(
+            logger,
+            "privacy_gate:banned-terms-unreadable",
+            "publication privacy gate: banned-terms list unreadable (%s) — failing CLOSED",
+            exc,
+        )
+        return None
+
+
 def scan_outbound_text(*, text: str, target_repo: str, forge: str = "") -> PrivacyGateResult:
     """Scan outbound *text* bound for *target_repo* against the publication rules.
 
@@ -226,12 +261,19 @@ def scan_outbound_text(*, text: str, target_repo: str, forge: str = "") -> Priva
     CLOSED (scanned). *forge* (``"github"``/``"gitlab"``) routes a bare-slug
     visibility probe to the right tool.
 
-    When the target is public but the overlay's privacy rules cannot be resolved
-    (:func:`_overlay_privacy_rules` returns ``None`` — an overlay is present but
-    its redact/block rules could not be read), the gate REFUSES the publish with a
-    synthetic ``overlay-rules-unresolvable`` match: a confidentiality boundary must
-    fail CLOSED and loud, never scan a public target with only the two generic
-    built-ins while the overlay's own rules silently vanish.
+    On a PUBLIC target the scan vocabulary is the overlay's ``privacy_redact_terms``
+    UNIONED with the DB-home ``banned_terms`` list (:func:`_db_banned_terms`) — the
+    latter is where the customer codenames actually live, so scanning only the
+    overlay terms let a banned codename leak to a public forge. Both feed the same
+    whole-token :mod:`teatree.hooks.term_match` matcher via :func:`scan_for_publication`.
+
+    Two fail-CLOSED refusals guard a public target: when the overlay's privacy
+    rules cannot be resolved (:func:`_overlay_privacy_rules` returns ``None``) the
+    gate REFUSES with a synthetic ``overlay-rules-unresolvable`` match, and when the
+    banned-terms source is unreadable (:func:`_db_banned_terms` returns ``None``) it
+    REFUSES with a ``banned-terms-unresolvable`` match — a confidentiality boundary
+    must fail CLOSED and loud, never scan a public target while a configured term
+    source silently vanishes.
     """
     if not _target_is_public(target_repo, forge):
         return PrivacyGateResult(target_repo=target_repo, is_public=False)
@@ -249,11 +291,25 @@ def scan_outbound_text(*, text: str, target_repo: str, forge: str = "") -> Priva
             is_public=True,
             matches=(PrivacyMatch(pattern_name="overlay-rules-unresolvable", matched_text="", position=0),),
         )
+    banned = _db_banned_terms()
+    if banned is None:
+        warn_throttled(
+            logger,
+            f"privacy_gate:refuse-banned-unresolvable:{target_repo}",
+            "publication privacy gate: REFUSING public publish to %s — banned-terms list unresolvable "
+            "(failing CLOSED so a configured banned term cannot silently leak)",
+            target_repo,
+        )
+        return PrivacyGateResult(
+            target_repo=target_repo,
+            is_public=True,
+            matches=(PrivacyMatch(pattern_name="banned-terms-unresolvable", matched_text="", position=0),),
+        )
     redact_terms, block_patterns = rules
     return scan_for_publication(
         text=text,
         target_repo=target_repo,
         public_repos=[target_repo],
-        redact_terms=redact_terms,
+        redact_terms=list(dict.fromkeys([*redact_terms, *banned])),
         block_patterns=block_patterns,
     )

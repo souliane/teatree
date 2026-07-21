@@ -25,6 +25,9 @@ from teatree.core.send_proxy import (
     forge_from_url,
     route_forge_write,
 )
+from teatree.hooks.banned_terms_tree_scan import BannedTermsUnsetError
+
+_BANNED_SOURCE_READ_FAILURE = "banned-terms DB read wedged"
 
 # These tests need pytest's monkeypatch + patch of privacy_gate internals, which
 # django.test.TestCase cannot provide — so pytest.mark.django_db is the right tool.
@@ -84,6 +87,118 @@ class TestRouteForgeWriteLeakGate:
     def test_leak_error_is_an_outbound_blocked_error(self) -> None:
         assert issubclass(OutboundLeakError, OutboundBlockedError)
         assert issubclass(SendBlockedError, OutboundBlockedError)
+
+
+class TestRouteForgeWriteBannedTermsLeakGate:
+    """The DB ``banned_terms`` list is scanned on the PUBLIC forge-write seam (security fix).
+
+    Reproduces the production config that leaked: the overlay's
+    ``privacy_redact_terms`` is EMPTY, but the customer codename lives in the
+    DB-home ``banned_terms`` list. The forge-write seam must union that list into
+    the public-target scan — the synthetic term ``acme`` stands in for the real
+    codename that leaked.
+    """
+
+    def test_db_banned_term_blocks_public_forge_write_with_empty_redact_terms(self) -> None:
+        with (
+            patch("teatree.core.gates.privacy_gate._target_is_public", return_value=True),
+            patch("teatree.core.gates.privacy_gate._overlay_privacy_rules", return_value=([], [])),
+            patch("teatree.hooks.banned_terms_cli.resolve_banned_terms", return_value=("acme",)),
+            pytest.raises(OutboundLeakError, match="privacy gate refused"),
+        ):
+            route_forge_write(
+                forge="github",
+                repo="souliane/teatree",
+                text="rolling out the acme-fork migration",
+                action="github_issue_create",
+                target="souliane/teatree",
+            )
+        assert SendAudit.objects.count() == 0
+
+    def test_clean_body_passes_when_banned_terms_set(self) -> None:
+        with (
+            patch("teatree.core.gates.privacy_gate._target_is_public", return_value=True),
+            patch("teatree.core.gates.privacy_gate._overlay_privacy_rules", return_value=([], [])),
+            patch("teatree.hooks.banned_terms_cli.resolve_banned_terms", return_value=("acme",)),
+        ):
+            out = route_forge_write(
+                forge="github",
+                repo="souliane/teatree",
+                text="rolling out a routine migration",
+                action="github_issue_create",
+                target="souliane/teatree",
+            )
+        assert out == "rolling out a routine migration"
+
+    def test_private_target_not_blocked_by_banned_term(self) -> None:
+        with (
+            patch("teatree.core.gates.privacy_gate._target_is_public", return_value=False),
+            patch("teatree.hooks.banned_terms_cli.resolve_banned_terms", return_value=("acme",)),
+        ):
+            out = route_forge_write(
+                forge="github",
+                repo="acme/private",
+                text="rolling out the acme-fork migration",
+                action="github_issue_create",
+                target="acme/private",
+            )
+        assert out == "rolling out the acme-fork migration"
+
+    def test_unreadable_banned_source_fails_closed_on_public_target(self) -> None:
+        def _boom() -> tuple[str, ...]:
+            raise RuntimeError(_BANNED_SOURCE_READ_FAILURE)
+
+        with (
+            patch("teatree.core.gates.privacy_gate._target_is_public", return_value=True),
+            patch("teatree.core.gates.privacy_gate._overlay_privacy_rules", return_value=([], [])),
+            patch("teatree.hooks.banned_terms_cli.resolve_banned_terms", side_effect=_boom),
+            pytest.raises(OutboundLeakError, match="banned-terms-unresolvable"),
+        ):
+            route_forge_write(
+                forge="github",
+                repo="souliane/teatree",
+                text="a perfectly ordinary note",
+                action="github_issue_create",
+                target="souliane/teatree",
+            )
+
+    def test_unset_not_required_is_a_dev_noop(self) -> None:
+        with (
+            patch("teatree.core.gates.privacy_gate._target_is_public", return_value=True),
+            patch("teatree.core.gates.privacy_gate._overlay_privacy_rules", return_value=([], [])),
+            patch(
+                "teatree.hooks.banned_terms_cli.resolve_banned_terms",
+                side_effect=BannedTermsUnsetError.for_key("banned_terms"),
+            ),
+            patch("teatree.hooks.banned_terms_cli.banned_terms_required", return_value=False),
+        ):
+            out = route_forge_write(
+                forge="github",
+                repo="souliane/teatree",
+                text="a perfectly ordinary note",
+                action="github_issue_create",
+                target="souliane/teatree",
+            )
+        assert out == "a perfectly ordinary note"
+
+    def test_unset_required_fails_closed_on_public_target(self) -> None:
+        with (
+            patch("teatree.core.gates.privacy_gate._target_is_public", return_value=True),
+            patch("teatree.core.gates.privacy_gate._overlay_privacy_rules", return_value=([], [])),
+            patch(
+                "teatree.hooks.banned_terms_cli.resolve_banned_terms",
+                side_effect=BannedTermsUnsetError.for_key("banned_terms"),
+            ),
+            patch("teatree.hooks.banned_terms_cli.banned_terms_required", return_value=True),
+            pytest.raises(OutboundLeakError, match="banned-terms-unresolvable"),
+        ):
+            route_forge_write(
+                forge="github",
+                repo="souliane/teatree",
+                text="a perfectly ordinary note",
+                action="github_issue_create",
+                target="souliane/teatree",
+            )
 
 
 class TestRouteForgeWriteSendProxy:
