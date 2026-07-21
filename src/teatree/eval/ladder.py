@@ -27,12 +27,21 @@ like the full-matrix benchmark.
 """
 
 import dataclasses
+import sys
 
 from teatree.agents.model_tiering import TIER_MODELS
 from teatree.core.cost import tier_rank
 from teatree.eval.matrix import MatrixRow
 from teatree.eval.models import EvalSpec
-from teatree.eval.pass_at_k import PassAtKResult, TrialRunner, run_pass_at_k
+from teatree.eval.pass_at_k import PassAtKResult, TrialRunner, run_pass_at_k, validate_pass_at_k_args
+
+#: Bounded retries for one ladder cell (a tier's whole pass@k run) before it is
+#: recorded ERRORED — mirrors ``teatree.cli.eval.multi_trial.MAX_MATRIX_CELL_RETRIES``.
+#: The ladder can run a whole (sharded) suite in one process; without this, a
+#: single transient runner exception (a throttle that outlasts its own retry
+#: budget, a network blip) would crash the entire invocation and lose every
+#: already-paid-for cheaper-tier result for every OTHER scenario in the shard.
+MAX_LADDER_CELL_RETRIES = 2
 
 
 @dataclasses.dataclass(frozen=True)
@@ -76,23 +85,63 @@ def run_escalation_ladder(
     *models* is the tier model id list in cheapest-first order (see
     :func:`laddered_tier_models`). For each spec, a tier is dispatched ONLY when
     every cheaper tier FAILED the scenario — so a scenario haiku already passes
-    never dispatches sonnet or opus. Escalation stops on a pass or a skip (a skip
-    is "not provisioned", never a capability failure); only a graded FAIL climbs
-    to the next tier. Returns the flat :class:`~teatree.eval.matrix.MatrixRow`
-    list of the cells actually run — the never-reached tiers have no row, which
+    never dispatches sonnet or opus. Escalation stops on a pass, a skip (a skip
+    is "not provisioned", never a capability failure), or an error (an
+    unexpected runner exception survives bounded retries — infra noise, not a
+    capability signal); only a graded FAIL climbs to the next tier. Returns the
+    flat :class:`~teatree.eval.matrix.MatrixRow` list of the cells actually run —
+    the never-reached tiers have no row, which
     :func:`~teatree.eval.matrix.render_matrix_json` renders as an absent cell.
     """
+    validate_pass_at_k_args(k=policy.trials, require=policy.require)
     rows: list[MatrixRow] = []
     for spec in specs:
         for model in models:
-            result = run_pass_at_k(
-                dataclasses.replace(spec, model=model), run_trial, k=policy.trials, require=policy.require
-            )
-            row = _row_from(result, model=model)
+            row = _resilient_ladder_cell(spec, model, run_trial=run_trial, policy=policy)
             rows.append(row)
             if not _is_graded_fail(row):
                 break
     return rows
+
+
+def _resilient_ladder_cell(spec: EvalSpec, model: str, *, run_trial: TrialRunner, policy: LadderPolicy) -> MatrixRow:
+    """Run one tier's whole pass@k cell with bounded retries; on persistent failure, an ERRORED row.
+
+    Mirrors ``teatree.cli.eval.multi_trial._resilient_matrix_trial``: only an
+    *unexpected* ``Exception`` from the runner is caught and retried; after
+    :data:`MAX_LADDER_CELL_RETRIES` retries still fail, the cell is logged loudly
+    to stderr and recorded ``errored=True`` so the rest of the ladder (every
+    other scenario, and this scenario's already-recorded cheaper-tier rows)
+    survives instead of the whole invocation crashing.
+    """
+    last_exc: Exception | None = None
+    for attempt in range(MAX_LADDER_CELL_RETRIES + 1):
+        try:
+            result = run_pass_at_k(
+                dataclasses.replace(spec, model=model), run_trial, k=policy.trials, require=policy.require
+            )
+            return _row_from(result, model=model)
+        except Exception as exc:  # noqa: BLE001 — isolate THIS cell; genuine errors already re-raised in run().
+            last_exc = exc
+            print(  # noqa: T201 — loud per-attempt visibility on stderr, never swallowed.
+                f"WARNING ladder cell {spec.name} @ {model} attempt {attempt + 1}/"
+                f"{MAX_LADDER_CELL_RETRIES + 1} raised: {exc}",
+                file=sys.stderr,
+            )
+    print(  # noqa: T201 — give-up record is loud; the cell becomes ERRORED, not lost.
+        f"ERROR ladder cell {spec.name} @ {model} failed after {MAX_LADDER_CELL_RETRIES + 1} attempts: {last_exc}",
+        file=sys.stderr,
+    )
+    return MatrixRow(
+        scenario=spec.name,
+        model=model,
+        passed=False,
+        score=0.0,
+        trials=1,
+        skipped=False,
+        cost_usd=0.0,
+        errored=True,
+    )
 
 
 def resolve_ladder_tiers(rows: list[MatrixRow]) -> dict[str, str | None]:
@@ -100,10 +149,11 @@ def resolve_ladder_tiers(rows: list[MatrixRow]) -> dict[str, str | None]:
 
     Relies on the escalation invariant: the ladder stops at the first pass, so the
     LAST recorded row for a scenario is its deciding cell — a pass names the
-    cheapest passing tier; a fail (every tier failed) or a skip (not provisioned)
-    yields ``None`` (no baseline tier, surfaced rather than tiered to frontier).
-    This mirrors what ``t3 eval set-baseline`` derives from the emitted matrix
-    JSON; it exists for the command's human-readable summary.
+    cheapest passing tier; a fail (every tier failed), a skip (not provisioned),
+    or an error (infra noise, not a capability signal) yields ``None`` (no
+    baseline tier, surfaced rather than tiered to frontier). This mirrors what
+    ``t3 eval set-baseline`` derives from the emitted matrix JSON; it exists for
+    the command's human-readable summary.
     """
     tiers: dict[str, str | None] = {}
     for row in rows:
@@ -113,7 +163,7 @@ def resolve_ladder_tiers(rows: list[MatrixRow]) -> dict[str, str | None]:
 
 def _is_graded_fail(row: MatrixRow) -> bool:
     """A genuine capability FAIL — the only outcome that escalates to the next tier."""
-    return not row.passed and not row.skipped
+    return not row.passed and not row.skipped and not row.errored
 
 
 def _row_from(result: PassAtKResult, *, model: str) -> MatrixRow:

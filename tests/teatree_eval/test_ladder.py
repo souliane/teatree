@@ -73,6 +73,9 @@ class _RecordingTrial:
         index = min(self._cursor[key], len(script) - 1)
         self._cursor[key] += 1
         outcome = script[index]
+        if outcome == "raise":
+            msg = "transient runner blip"
+            raise RuntimeError(msg)
         if outcome == "skip":
             return _result(spec, passed=False, skipped=True)
         return _result(spec, passed=bool(outcome))
@@ -187,6 +190,30 @@ class TestResolveLadderTiers:
 
     def test_a_skipped_scenario_has_no_tier(self) -> None:
         trial = _RecordingTrial({("alpha", _HAIKU): ["skip"]})
+        rows = run_escalation_ladder([_spec("alpha")], _LADDER, run_trial=trial)
+        assert resolve_ladder_tiers(rows) == {"alpha": None}
+
+
+class TestResilientCellSurvivesTransientExceptions:
+    def test_a_transient_exception_is_retried_and_the_cell_recovers(self) -> None:
+        # First attempt raises, second attempt (the retry) passes -> the cell
+        # is recorded as a normal PASS, no ERRORED row, no escalation.
+        trial = _RecordingTrial({("alpha", _HAIKU): ["raise", True]})
+        rows = run_escalation_ladder([_spec("alpha")], _LADDER, run_trial=trial)
+        assert [(r.model, r.passed, r.errored) for r in rows] == [(_HAIKU, True, False)]
+        assert _SONNET not in trial.models_for("alpha")
+
+    def test_persistent_exceptions_record_an_errored_row_and_stop_escalation(self) -> None:
+        # Every attempt (MAX_LADDER_CELL_RETRIES + 1 = 3) raises -> the cell
+        # gives up and is recorded ERRORED, and — like a skip — an infra error
+        # is not a capability signal, so it never escalates to sonnet/opus.
+        trial = _RecordingTrial({("alpha", _HAIKU): ["raise", "raise", "raise"]})
+        rows = run_escalation_ladder([_spec("alpha")], _LADDER, run_trial=trial)
+        assert trial.models_for("alpha") == [_HAIKU, _HAIKU, _HAIKU]
+        assert [(r.model, r.passed, r.errored) for r in rows] == [(_HAIKU, False, True)]
+
+    def test_an_errored_scenario_has_no_baseline_tier(self) -> None:
+        trial = _RecordingTrial({("alpha", _HAIKU): ["raise", "raise", "raise"]})
         rows = run_escalation_ladder([_spec("alpha")], _LADDER, run_trial=trial)
         assert resolve_ladder_tiers(rows) == {"alpha": None}
 
