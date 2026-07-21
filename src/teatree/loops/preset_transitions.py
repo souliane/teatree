@@ -1,25 +1,25 @@
-"""The self-rescheduling preset-transition chain — side-effects only (#3159).
+"""The self-rescheduling mode-transition chain — side-effects only (#3159, #61).
 
-Preset resolution is entirely read-time: a scheduled switch costs zero writes and
+Mode resolution is entirely read-time: a scheduled switch costs zero writes and
 zero tokens (the mask simply resolves differently once the clock crosses a
 boundary). This chain handles the *side-effects* of a switch, and nothing the
-resolution itself depends on — so if the chain is down, loops still switch on
-time; only the notification / availability-pin lag (fail-soft). One
-self-rescheduling ``preset_transitions`` job on the existing ``LOOPS_QUEUE`` (the
+resolution itself depends on — so if the chain is down, modes still switch on
+time; only the notification / drain lags (fail-soft). One self-rescheduling
+``preset_transitions`` job on the existing ``LOOPS_QUEUE`` (the
 ``usage_window_recovery`` pattern, NO OS cron, ~0 tokens idle) that on each fire:
 
 1. reaps a manual override whose ``until`` has passed (it is already inert at read
     time; this deletes the stale row);
-2. detects "the resolved preset changed since the last stamp" and, on a change,
-    applies / clears the active preset's **availability pin** through the existing
-    :func:`teatree.core.availability.write_override` chokepoint (so the away→present
-    question-drain keeps firing) — never overwriting a pin the *user* wrote;
+2. detects "the resolved mode changed since the last stamp" and, on a change that
+    RETURNS the box to reachable (the resolved ``defers_questions`` flips T→F, e.g.
+    a scheduled ``offline``→``engaged`` boundary), fires the deferred-question drain.
+    The availability-pin push is GONE (#61): the mode IS availability, so there is no
+    separate pin to write — the intrinsic booleans already carry the posture;
 3. posts ONE Slack line per switch.
 
-The transition stamps are internal runtime state kept in ``ConfigSetting`` rows
-(no extra migration): the last-applied preset name and the availability mode the
-preset last pinned. Fail-soft throughout — any error is logged and the chain
-re-schedules.
+The transition stamp is internal runtime state kept in a ``ConfigSetting`` row
+(no extra migration): the last-applied mode name. Fail-soft throughout — any error
+is logged and the chain re-schedules.
 """
 
 import datetime as dt
@@ -31,10 +31,11 @@ from django.utils import timezone
 from django_tasks.base import TaskResultStatus
 from django_tasks_db.models import DBTaskResult
 
-from teatree.core import availability
+from teatree.core.mode_resolution import resolve_active_mode
 from teatree.core.modelkit.notify_policy import NotifyAudience
-from teatree.core.models import ConfigSetting, LoopPresetOverride
+from teatree.core.models import ConfigSetting, LoopPreset, LoopPresetOverride
 from teatree.core.notify import NotifyKind, notify_user
+from teatree.core.notify_question_drains import drain_deferred_questions
 from teatree.loop.preset_resolution import ActivePreset, resolve_active_preset
 from teatree.loops.timer_chains import LOOPS_QUEUE
 
@@ -43,11 +44,10 @@ logger = logging.getLogger(__name__)
 TRANSITION_POLL_SECONDS = 60
 
 _STAMP_KEY = "loop_preset_transition_stamp"
-_PIN_STAMP_KEY = "loop_preset_pin_stamp"
 
 
 def apply_preset_transition(now: dt.datetime) -> dict[str, Any]:
-    """Run one transition pass: reap expired override, apply pin + Slack line on a switch.
+    """Run one transition pass: reap expired override, drain + Slack line on a switch.
 
     Idempotent: with no change since the last stamp, only the expired-override reap
     runs and the pass is otherwise a no-op. Fail-soft — a side-effect failure is
@@ -56,10 +56,11 @@ def apply_preset_transition(now: dt.datetime) -> dict[str, Any]:
     reaped = _reap_expired_overrides(now)
     active = resolve_active_preset(now)
     current_name = active.preset.name if active is not None else ""
-    if current_name == _read_stamp(_STAMP_KEY):
+    prior_name = _read_stamp(_STAMP_KEY)
+    if current_name == prior_name:
         return {"reaped": reaped, "unchanged": 1}
 
-    _apply_availability_pin(active)
+    _drain_on_scheduled_return(prior_name)
     _post_switch_line(active, now)
     _write_stamp(_STAMP_KEY, current_name)
     return {"reaped": reaped, "switched": current_name}
@@ -70,30 +71,24 @@ def _reap_expired_overrides(now: dt.datetime) -> int:
     return deleted
 
 
-def _apply_availability_pin(active: ActivePreset | None) -> None:
-    """Apply the new preset's availability pin, or clear a pin the preset previously wrote.
+def _drain_on_scheduled_return(prior_name: str) -> None:
+    """Fire the deferred-question drain when a scheduled switch returns to reachable.
 
-    A pin the USER wrote manually is never overwritten: the on-disk availability
-    override is only touched when it is absent or still equals the mode this chain
-    last pinned. Otherwise the user override outranks and the chain stops tracking.
+    The merge folds availability into the mode, so a scheduled boundary crossing (an
+    ``offline`` / ``unattended`` window ending) is the equivalent of the old
+    away→present transition: when the PRIOR mode deferred questions and the newly
+    resolved mode does not, the durable backlog drains to the user's Slack DM. The
+    manual-override path drains in its own chokepoint; this covers schedule / default
+    flips. Fail-open — a drain failure never blocks the transition.
     """
-    desired = active.preset.availability_pin if active is not None else None
-    prior_pin = _read_stamp(_PIN_STAMP_KEY)
-    current = availability.load_override()
-    current_mode = current.mode if current is not None else ""
-    preset_owns = current is None or (bool(prior_pin) and current_mode == prior_pin)
-
-    if desired:
-        if preset_owns:
-            until = active.until if active is not None else None
-            availability.write_override(desired, until=until)
-            _write_stamp(_PIN_STAMP_KEY, desired)
-        else:
-            _write_stamp(_PIN_STAMP_KEY, "")
+    prior = LoopPreset.objects.by_name(prior_name) if prior_name else None
+    prior_defers = bool(prior.defers_questions) if prior is not None else False
+    if not prior_defers or resolve_active_mode().defers_questions:
         return
-    if prior_pin and preset_owns and current is not None:
-        availability.clear_override()
-    _write_stamp(_PIN_STAMP_KEY, "")
+    try:
+        drain_deferred_questions()
+    except Exception as exc:  # noqa: BLE001 — drain is best-effort; never block the transition
+        logger.warning("scheduled return→reachable auto-drain failed: %s", exc)
 
 
 def _post_switch_line(active: ActivePreset | None, now: dt.datetime) -> None:
