@@ -135,7 +135,7 @@ def render_matrix_html(rows: list[MatrixRow], models: list[str], specs: list[Eva
         f"<tbody>{''.join(body_rows)}</tbody></table>"
         "<h2>Per-model tally</h2><table><thead><tr><th>model</th><th>passed</th>"
         "<th>failed</th><th>skipped</th><th>errored</th><th>cost</th></tr></thead>"
-        f"<tbody>{''.join(tally_rows)}</tbody></table></body></html>"
+        f"<tbody>{''.join(tally_rows)}</tbody></table></body></html>\n"
     )
 
 
