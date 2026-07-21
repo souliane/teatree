@@ -95,7 +95,9 @@ class TestStaleOverrideFinding:
         assert msg is not None
         assert "unattended" in msg
         assert "followup, review" in msg
-        assert "t3 mode auto" in msg
+        # The remediation points at the real mode-set command (``t3 mode`` is not a
+        # typer leaf; the mode IS the loop preset post-merge).
+        assert "t3 loop preset auto" in msg
 
     def test_old_no_expiry_pausing_notes_self_pump_park(self) -> None:
         msg = self._finding(defers=True, pauses=True, mode_name="offline", set_at=self._NOW - timedelta(hours=30))
