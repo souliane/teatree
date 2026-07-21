@@ -70,7 +70,7 @@ The repo's `AGENTS.md` § "Test-Writing Doctrine" carries the authoritative rule
 
 ### Fast Local Test Selection (opt-in, #113)
 
-`t3 tool affected-tests` selects only the pytest tests a diff affects, for a fast local inner loop on the teatree repo. It is **safety-biased**: it over-selects (never under-selects) and degrades to the whole-tree run on anything it cannot prove local. It is **opt-in local tooling** — the whole-tree 4-shard CI run stays the merge/coverage gate, and the selector is **never** wired into the pre-push gate.
+`t3 tool affected-tests` selects only the pytest tests a diff affects, for a fast local inner loop on the teatree repo. It is **safety-biased**: it over-selects (never under-selects) and degrades to the whole-tree run on anything it cannot prove local. It is **opt-in local tooling** — the whole-tree 12-shard CI run stays the merge/coverage gate, and the selector is **never** wired into the pre-push gate.
 
 ```bash
 t3 tool affected-tests                 # human report: SCOPED (N files + floor) or FULL + reason

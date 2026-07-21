@@ -279,3 +279,35 @@ class TestBuildSelectionFailSafe:
 
         monkeypatch.setattr(mod, "run_tach_dependents_map", _must_not_run)
         assert build_selection(Path("/nonexistent"), base_ref="origin/main").full
+
+
+class TestRunTachDependentsMapResolution:
+    """An absent ``tach`` binary is a TachUnavailableError (→ FULL), never a raw crash.
+
+    A globally-installed ``t3`` whose venv predates the ``tach`` dependency has no
+    ``tach`` on PATH nor beside its interpreter. The fail-safe contract says an
+    unavailable tach map degrades to a whole-tree FULL run; a raw ``FileNotFoundError``
+    escaping the selector crashes ``dev/test-affected.sh`` (and thus the mandated
+    ``dev/ci-parity-fast.sh``) instead.
+    """
+
+    def test_missing_tach_degrades_to_tach_unavailable(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+        # No tach on PATH, and none beside the interpreter.
+        monkeypatch.setenv("PATH", str(tmp_path))
+        monkeypatch.setattr(mod.sys, "executable", str(tmp_path / "python"))
+        with pytest.raises(TachUnavailableError):
+            mod.run_tach_dependents_map(tmp_path)
+
+    def test_tach_beside_the_interpreter_is_used_when_off_path(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        # The uv-tool-installed t3 keeps tach in its venv bin (beside python) but not
+        # on PATH; the resolver must find it there so the selection can still scope.
+        interpreter = tmp_path / "python"
+        interpreter.touch()
+        adjacent_tach = tmp_path / "tach"
+        adjacent_tach.write_text("#!/bin/sh\necho '{}'\n")
+        adjacent_tach.chmod(0o755)
+        monkeypatch.setenv("PATH", "")
+        monkeypatch.setattr(mod.sys, "executable", str(interpreter))
+        assert mod.run_tach_dependents_map(tmp_path) == {}

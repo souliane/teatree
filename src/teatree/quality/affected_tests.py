@@ -16,6 +16,8 @@ changed-set + FULL-trigger normalizer this builds on.
 
 import ast
 import json
+import shutil
+import sys
 from collections import deque
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
@@ -343,9 +345,22 @@ def _read_text(path: Path) -> str:
         return ""
 
 
+def _resolve_tach() -> str | None:
+    """The tach executable — on PATH, else beside the interpreter (a uv-tool venv bin)."""
+    on_path = shutil.which("tach")
+    if on_path is not None:
+        return on_path
+    adjacent = Path(sys.executable).parent / "tach"
+    return str(adjacent) if adjacent.is_file() else None
+
+
 def run_tach_dependents_map(root: Path) -> dict[str, list[str]]:
     """The ``tach map --direction dependents`` file-level reverse-adjacency, freshly built."""
-    result = run_allowed_to_fail(["tach", "map", "--direction", "dependents"], expected_codes=None, cwd=root)
+    tach = _resolve_tach()
+    if tach is None:
+        message = "tach executable not found on PATH or beside the interpreter"
+        raise TachUnavailableError(message)
+    result = run_allowed_to_fail([tach, "map", "--direction", "dependents"], expected_codes=None, cwd=root)
     if result.returncode != 0:
         message = f"tach map failed ({result.returncode}): {result.stderr.strip()[:200]}"
         raise TachUnavailableError(message)

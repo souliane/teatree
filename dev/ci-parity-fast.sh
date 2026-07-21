@@ -16,8 +16,11 @@ uv run prek run
 echo "=== [2/3] makemigrations --check --dry-run -- migration-graph linearity ==="
 uv run python manage.py makemigrations --check --dry-run
 
-echo "=== [3/3] scoped tests/quality + incremental push gate (scoped doctest + ast-grep) ==="
-uv run pytest tests/quality -m "not push_heavy" -q
+echo "=== [3/3] affected tests + incremental push gate (scoped doctest + ast-grep) ==="
+# The affected-tests selector runs only the tests a diff touches, degrading to the
+# WHOLE suite on any unclassifiable change (over-run is free, under-run is a false
+# green). CI's sharded `test (3.13)` lane stays the whole-tree authority either way.
+bash dev/test-affected.sh
 uv run t3 tool push-gate --run
 
-echo "=== ci-parity-fast: scoped inner-loop checks passed (NO coverage floor -- run dev/ci-parity.sh before push) ==="
+echo "=== ci-parity-fast: scoped pre-push checks passed (NO coverage floor -- CI's required test lane owns it) ==="
