@@ -9647,7 +9647,8 @@ Usage: t3 teatree availability [OPTIONS] COMMAND [ARGS]...
 ```
 Usage: t3 teatree availability away [OPTIONS]
 
- Force away-mode (deferred questions) until *until* — or forever.
+ Alias: set the holiday ``offline`` mode (defer + pause) until *until* — or
+ forever.
 
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --until        TEXT  ISO8601 timestamp when the override expires (e.g.       │
@@ -9665,7 +9666,8 @@ Usage: t3 teatree availability autonomous-away [OPTIONS]
 
  Unlike ``away`` (which also pauses the factory), autonomous-away is the
  unattended-run state: ``AskUserQuestion`` calls defer to the durable
- backlog while the Stop self-pump keeps driving the loop.
+ backlog while the Stop self-pump keeps driving the loop. Alias for the
+ ``unattended`` merged mode.
 
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --until        TEXT  ISO8601 timestamp when the override expires (e.g.       │
@@ -9679,11 +9681,11 @@ Usage: t3 teatree availability autonomous-away [OPTIONS]
 ```
 Usage: t3 teatree availability present [OPTIONS]
 
- Force present-mode (interactive questions) until *until* — or forever.
+ Alias: set the ``engaged`` present-class mode until *until* — or forever.
 
- Coming back from away auto-drains the deferred-question backlog to
- the user's Slack DM (handled in :func:`write_override`), so the user
- is re-asked everything they missed without any manual step.
+ Coming back from an away-class mode auto-drains the deferred-question
+ backlog to the user's Slack DM (handled in the mode-override chokepoint),
+ so the user is re-asked everything they missed without any manual step.
 
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --until          TEXT  ISO8601 timestamp when the override expires.          │
@@ -9700,7 +9702,7 @@ Usage: t3 teatree availability present [OPTIONS]
 ```
 Usage: t3 teatree availability auto [OPTIONS]
 
- Clear the manual override; the cron schedule decides again.
+ Clear the manual mode override; the schedule / default mode decides again.
 
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --help          Show this message and exit.                                  │
