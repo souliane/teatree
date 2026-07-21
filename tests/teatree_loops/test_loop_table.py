@@ -16,7 +16,7 @@ from django.test.utils import CaptureQueriesContext
 from django.utils import timezone
 
 from teatree.core.mode_resolution import ResolvedMode
-from teatree.core.models import Loop, LoopPreset, LoopPresetOverride, LoopState, Prompt
+from teatree.core.models import Loop, LoopState, Mode, ModeOverride, Prompt
 from teatree.loops.base import MiniLoop
 from teatree.loops.loop_table import admitted_loop_names, build_loop_table_jobs
 from teatree.loops.seed import seed_default_loops_and_prompts
@@ -29,7 +29,7 @@ _MODE_SEAM = "teatree.loops.loop_table.resolve_active_mode"
 
 def _resolved(*, defers: bool, source: str = "override") -> ResolvedMode:
     """A ResolvedMode carrying only the availability posture (no loop-mask opinion)."""
-    return ResolvedMode(mode=LoopPreset(name="m", entries={}, defers_questions=defers), source=source, until=None)
+    return ResolvedMode(mode=Mode(name="m", entries={}, defers_questions=defers), source=source, until=None)
 
 
 def _mini(name: str) -> MiniLoop:
@@ -548,10 +548,10 @@ class TestAutoMergePathAdmittedUnderAutonomousAway(django.test.TestCase):
     def test_ship_admitted_review_deferred_under_autonomous_away(self) -> None:
         seed_default_loops_and_prompts()
         # A real away-class mode: defers questions but keeps the factory pumping.
-        LoopPreset.objects.update_or_create(
+        Mode.objects.update_or_create(
             name="unattended", defaults={"entries": {}, "defers_questions": True, "pauses_self_pump": False}
         )
-        LoopPresetOverride.objects.set_override("unattended")
+        ModeOverride.objects.set_override("unattended")
         Loop.objects.filter(name__in=["ship", "review"]).update(enabled=True, last_run_at=None)
         admitted = admitted_loop_names(timezone.now())
         assert "ship" in admitted

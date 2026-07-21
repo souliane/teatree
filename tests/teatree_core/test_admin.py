@@ -12,15 +12,7 @@ from django.contrib import admin
 from django.contrib.auth import get_user_model
 from django.urls import reverse
 
-from teatree.core.models import (
-    ConfigSetting,
-    Loop,
-    LoopPreset,
-    LoopPresetOverride,
-    LoopSchedule,
-    LoopScheduleSlot,
-    Prompt,
-)
+from teatree.core.models import ConfigSetting, Loop, Mode, ModeOverride, ModeSchedule, ModeScheduleSlot, Prompt
 
 
 def _prompt(name: str = "demo-prompt") -> Prompt:
@@ -79,24 +71,24 @@ class TestPresetScheduleAdminRegistered:
     """
 
     def test_loop_preset_registered(self) -> None:
-        assert LoopPreset in admin.site._registry
+        assert Mode in admin.site._registry
 
     def test_loop_preset_override_registered(self) -> None:
-        assert LoopPresetOverride in admin.site._registry
+        assert ModeOverride in admin.site._registry
 
     def test_loop_schedule_registered(self) -> None:
-        assert LoopSchedule in admin.site._registry
+        assert ModeSchedule in admin.site._registry
 
     def test_loop_schedule_slot_registered(self) -> None:
-        assert LoopScheduleSlot in admin.site._registry
+        assert ModeScheduleSlot in admin.site._registry
 
     def test_slots_editable_inline_under_schedule(self) -> None:
         # The cheapest slot-editing surface: a slot inline under its schedule so
         # days/start_time/preset are edited in place without a standalone add.
-        model_admin = admin.site._registry[LoopSchedule]
+        model_admin = admin.site._registry[ModeSchedule]
         inline_models = [inline.model for inline in model_admin.inlines]
-        assert LoopScheduleSlot in inline_models
-        slot_inline = next(inline for inline in model_admin.inlines if inline.model is LoopScheduleSlot)
+        assert ModeScheduleSlot in inline_models
+        slot_inline = next(inline for inline in model_admin.inlines if inline.model is ModeScheduleSlot)
         for field in ("days", "start_time", "preset_name"):
             assert field in slot_inline.fields
 
@@ -117,26 +109,26 @@ class TestPresetScheduleAdminChangelistsLoad(django.test.TestCase):
         assert self.client.get(url).status_code == 200
 
     def test_loop_preset_changelist_loads(self) -> None:
-        LoopPreset.objects.create(name="heads-down", entries={"review": False})
-        self._assert_changelist_loads(LoopPreset)
+        Mode.objects.create(name="heads-down", entries={"review": False})
+        self._assert_changelist_loads(Mode)
 
     def test_loop_preset_override_changelist_loads(self) -> None:
-        LoopPresetOverride.objects.set_override("heads-down", reason="deep work")
-        self._assert_changelist_loads(LoopPresetOverride)
+        ModeOverride.objects.set_override("heads-down", reason="deep work")
+        self._assert_changelist_loads(ModeOverride)
 
     def test_loop_schedule_changelist_loads(self) -> None:
-        schedule = LoopSchedule.objects.create(name="standard", timezone="UTC")
-        LoopScheduleSlot.objects.create(schedule=schedule, days=[0, 1, 2], start_time=dt.time(8, 0), preset_name="x")
-        self._assert_changelist_loads(LoopSchedule)
+        schedule = ModeSchedule.objects.create(name="standard", timezone="UTC")
+        ModeScheduleSlot.objects.create(schedule=schedule, days=[0, 1, 2], start_time=dt.time(8, 0), preset_name="x")
+        self._assert_changelist_loads(ModeSchedule)
 
     def test_loop_schedule_slot_changelist_loads(self) -> None:
-        schedule = LoopSchedule.objects.create(name="standard", timezone="UTC")
-        LoopScheduleSlot.objects.create(schedule=schedule, days=[0, 1, 2], start_time=dt.time(8, 0), preset_name="x")
-        self._assert_changelist_loads(LoopScheduleSlot)
+        schedule = ModeSchedule.objects.create(name="standard", timezone="UTC")
+        ModeScheduleSlot.objects.create(schedule=schedule, days=[0, 1, 2], start_time=dt.time(8, 0), preset_name="x")
+        self._assert_changelist_loads(ModeScheduleSlot)
 
     def test_loop_schedule_change_form_shows_slot_inline(self) -> None:
-        schedule = LoopSchedule.objects.create(name="standard", timezone="UTC")
-        LoopScheduleSlot.objects.create(schedule=schedule, days=[0], start_time=dt.time(8, 0), preset_name="engaged")
+        schedule = ModeSchedule.objects.create(name="standard", timezone="UTC")
+        ModeScheduleSlot.objects.create(schedule=schedule, days=[0], start_time=dt.time(8, 0), preset_name="engaged")
         url = reverse("admin:core_loopschedule_change", args=[schedule.pk])
         response = self.client.get(url)
         assert response.status_code == 200

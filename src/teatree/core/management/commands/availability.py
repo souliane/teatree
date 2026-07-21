@@ -1,6 +1,6 @@
 """``t3 teatree availability`` — deprecated aliases onto the merged Mode (#58, #61).
 
-Availability and loop presets are now ONE concept (:class:`teatree.core.models.LoopPreset`,
+Availability and loop presets are now ONE concept (:class:`teatree.core.models.Mode`,
 the merged *Mode*). These subcommands remain as backward-compatible aliases that set
 a ``ModeOverride`` to the corresponding merged mode instead of the retired standalone
 availability file:

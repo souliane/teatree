@@ -11,15 +11,7 @@ import datetime as dt
 import django.test
 from django.utils import timezone
 
-from teatree.core.models import (
-    ConfigSetting,
-    Loop,
-    LoopPreset,
-    LoopPresetOverride,
-    LoopSchedule,
-    LoopScheduleSlot,
-    LoopState,
-)
+from teatree.core.models import ConfigSetting, Loop, LoopState, Mode, ModeOverride, ModeSchedule, ModeScheduleSlot
 from teatree.loop.preset_resolution import ACTIVE_SCHEDULE_SETTING
 from teatree.loops.preset_status import (
     active_summary,
@@ -48,23 +40,23 @@ class TestEffectiveVerdicts(django.test.TestCase):
     def test_hold_layer_wins_over_preset(self) -> None:
         _loop("ps-review")
         LoopState.objects.pause("ps-review")
-        LoopPreset.objects.create(name="engaged", entries={"ps-review": True})
-        LoopPresetOverride.objects.set_override("engaged")
+        Mode.objects.create(name="engaged", entries={"ps-review": True})
+        ModeOverride.objects.set_override("engaged")
         verdicts = {v.name: v for v in effective_verdicts()}
         assert verdicts["ps-review"].layer == "hold"
         assert verdicts["ps-review"].admitted is False
 
     def test_override_masks_a_loop_off(self) -> None:
         _loop("ps-review2")
-        LoopPreset.objects.create(name="heads-down", entries={"ps-review2": False})
-        LoopPresetOverride.objects.set_override("heads-down")
+        Mode.objects.create(name="heads-down", entries={"ps-review2": False})
+        ModeOverride.objects.set_override("heads-down")
         verdicts = {v.name: v for v in effective_verdicts()}
         assert verdicts["ps-review2"].layer == "override"
         assert verdicts["ps-review2"].admitted is False
 
     def test_summary_reports_active_preset(self) -> None:
-        LoopPreset.objects.create(name="heads-down", entries={})
-        LoopPresetOverride.objects.set_override("heads-down")
+        Mode.objects.create(name="heads-down", entries={})
+        ModeOverride.objects.set_override("heads-down")
         summary = active_summary()
         assert summary is not None
         assert summary.name == "heads-down"
@@ -84,14 +76,14 @@ class TestStatuslineChunk(django.test.TestCase):
     def test_manual_override_reads_mode_manual(self) -> None:
         # A manual override (#3494, #61) reads ``mode: manual`` — the layer, not
         # the mode name — so the operator sees the schedule is not governing.
-        LoopPreset.objects.create(name="heads-down", entries={})
-        LoopPresetOverride.objects.set_override("heads-down")
+        Mode.objects.create(name="heads-down", entries={})
+        ModeOverride.objects.set_override("heads-down")
         assert statusline_chunk() == "mode: manual"
 
     def test_manual_override_includes_the_boundary_when_bounded(self) -> None:
-        LoopPreset.objects.create(name="heads-down", entries={})
+        Mode.objects.create(name="heads-down", entries={})
         until = timezone.now() + dt.timedelta(hours=3)
-        LoopPresetOverride.objects.create(preset_name="heads-down", until=until)
+        ModeOverride.objects.create(preset_name="heads-down", until=until)
         chunk = statusline_chunk()
         assert chunk.startswith("mode: manual →")
 
@@ -111,8 +103,8 @@ class TestScheduleAndOverrideChunks(django.test.TestCase):
 
         _loop("ov-review", enabled=True)
         _loop("ov-news", enabled=True)
-        LoopPreset.objects.create(name="engaged", entries={"ov-news": False})
-        LoopPresetOverride.objects.set_override("engaged")
+        Mode.objects.create(name="engaged", entries={"ov-news": False})
+        ModeOverride.objects.set_override("engaged")
         # review forced OFF (diverges from base ON); news forced ON (diverges
         # from the preset's OFF).
         LoopState.objects.override("ov-review", on=False)
@@ -154,8 +146,8 @@ class TestPresetLineChunk(django.test.TestCase):
     def test_preset_line_handles_resolves_the_three_handles(self) -> None:
         _loop("plh-review", enabled=True)
         ConfigSetting.objects.set_value(ACTIVE_SCHEDULE_SETTING, "standard")
-        LoopPreset.objects.create(name="heads-down", entries={})
-        LoopPresetOverride.objects.set_override("heads-down")
+        Mode.objects.create(name="heads-down", entries={})
+        ModeOverride.objects.set_override("heads-down")
         LoopState.objects.override("plh-review", on=False)
         handles = preset_line_handles()
         assert handles.schedule == "schedule: standard"
@@ -171,16 +163,16 @@ class TestPresetLineChunk(django.test.TestCase):
     def test_composes_schedule_mode_and_overrides(self) -> None:
         _loop("pl-review", enabled=True)
         ConfigSetting.objects.set_value(ACTIVE_SCHEDULE_SETTING, "standard")
-        LoopPreset.objects.create(name="heads-down", entries={})
-        LoopPresetOverride.objects.set_override("heads-down")
+        Mode.objects.create(name="heads-down", entries={})
+        ModeOverride.objects.set_override("heads-down")
         LoopState.objects.override("pl-review", on=False)
         chunk = preset_line_chunk()
         assert chunk == "schedule: standard · mode: manual · forced OFF: pl-review"
 
     def test_schedule_governed_names_the_mode_not_manual(self) -> None:
-        LoopPreset.objects.create(name="engaged", entries={})
-        schedule = LoopSchedule.objects.create(name="standard", timezone="UTC")
-        LoopScheduleSlot.objects.create(
+        Mode.objects.create(name="engaged", entries={})
+        schedule = ModeSchedule.objects.create(name="standard", timezone="UTC")
+        ModeScheduleSlot.objects.create(
             schedule=schedule, days=[0, 1, 2, 3, 4, 5, 6], start_time=dt.time(0, 0), preset_name="engaged"
         )
         ConfigSetting.objects.set_value(ACTIVE_SCHEDULE_SETTING, "standard")

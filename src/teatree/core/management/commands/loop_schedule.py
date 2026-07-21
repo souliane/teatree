@@ -13,7 +13,7 @@ from typing import Annotated, Any, NoReturn
 import typer
 from django_typer.management import TyperCommand, command
 
-from teatree.core.models import ConfigSetting, LoopSchedule
+from teatree.core.models import ConfigSetting, ModeSchedule
 from teatree.loop.preset_resolution import ACTIVE_SCHEDULE_SETTING
 
 _WEEKDAY_NAMES = ("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun")
@@ -37,7 +37,7 @@ class Command(TyperCommand):
     ) -> None:
         """List every schedule with its timezone, slot count, and the ACTIVE marker."""
         active = _active_schedule_name()
-        schedules = list(LoopSchedule.objects.all())
+        schedules = list(ModeSchedule.objects.all())
         if json_output:
             payload = [
                 {
@@ -73,7 +73,7 @@ class Command(TyperCommand):
         resolved = name or _active_schedule_name()
         if not resolved:
             self._refuse("no schedule named and none active", json_output=json_output)
-        schedule = LoopSchedule.objects.filter(name=resolved).first()
+        schedule = ModeSchedule.objects.filter(name=resolved).first()
         if schedule is None:
             self._refuse(f"no schedule named {resolved!r}", json_output=json_output)
         slots = list(schedule.slots.all())
@@ -108,7 +108,7 @@ class Command(TyperCommand):
         json_output: Annotated[bool, typer.Option("--json", help="Emit JSON.")] = False,
     ) -> None:
         """Activate *name* — the single ``active_loop_schedule`` write that switches calendars."""
-        if LoopSchedule.objects.filter(name=name).first() is None:
+        if ModeSchedule.objects.filter(name=name).first() is None:
             self._refuse(f"no schedule named {name!r} — run `t3 loop schedule list`", json_output=json_output)
         ConfigSetting.objects.set_value(ACTIVE_SCHEDULE_SETTING, name)
         self._emit({"active": name}, f"active schedule is now {name!r}.", json_output=json_output)

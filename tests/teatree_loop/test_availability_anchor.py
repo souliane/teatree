@@ -11,7 +11,7 @@ from unittest.mock import patch
 
 import pytest
 
-from teatree.core.models import ConfigSetting, LoopPreset, LoopPresetOverride
+from teatree.core.models import ConfigSetting, Mode, ModeOverride
 from teatree.core.models.deferred_question import DeferredQuestion
 from teatree.core.models.waiting_item import WaitingItem
 from teatree.loop.statusline import live_loops_anchor, set_preset_line_reader
@@ -48,17 +48,17 @@ class TestModeHandleRidesLoopLine:
         return lines[0]
 
     def test_manual_override_renders_mode_manual_never_availability(self, override_file: Path) -> None:
-        LoopPreset.objects.update_or_create(
+        Mode.objects.update_or_create(
             name="offline", defaults={"entries": {}, "defers_questions": True, "pauses_self_pump": True}
         )
-        LoopPresetOverride.objects.set_override("offline")
+        ModeOverride.objects.set_override("offline")
         line = self._loop_line()
         assert "mode: manual" in line, line
         assert "availability:" not in line, line
         assert "preset:" not in line, line
 
     def test_default_mode_renders_its_name(self, override_file: Path) -> None:
-        LoopPreset.objects.update_or_create(name="engaged", defaults={"entries": {}, "defers_questions": False})
+        Mode.objects.update_or_create(name="engaged", defaults={"entries": {}, "defers_questions": False})
         ConfigSetting.objects.set_value("default_mode", "engaged")
         line = self._loop_line()
         assert "mode: engaged" in line, line

@@ -10,7 +10,7 @@ from typer.testing import CliRunner
 
 from teatree.core.availability import MODE_AWAY, MODE_PRESENT, load_override
 from teatree.core.management.commands.availability import Command as AvailabilityCommand
-from teatree.core.models import LoopPreset
+from teatree.core.models import Mode
 from teatree.core.models.deferred_question import DeferredQuestion
 
 # ast-grep-ignore: ac-django-no-pytest-django-db
@@ -24,11 +24,11 @@ def override_file(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     # The availability aliases now set a ModeOverride to a merged mode; seed the
     # three modes the aliases target (offline is migration-seeded, but keep it
     # explicit so the test is self-contained).
-    LoopPreset.objects.update_or_create(
+    Mode.objects.update_or_create(
         name="offline", defaults={"entries": {}, "defers_questions": True, "pauses_self_pump": True}
     )
-    LoopPreset.objects.update_or_create(name="unattended", defaults={"entries": {}, "defers_questions": True})
-    LoopPreset.objects.update_or_create(name="engaged", defaults={"entries": {}, "defers_questions": False})
+    Mode.objects.update_or_create(name="unattended", defaults={"entries": {}, "defers_questions": True})
+    Mode.objects.update_or_create(name="engaged", defaults={"entries": {}, "defers_questions": False})
     return target
 
 

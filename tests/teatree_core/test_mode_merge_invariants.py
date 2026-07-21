@@ -1,6 +1,6 @@
 """The non-negotiable invariants the availability+preset merge must not regress (#61).
 
-Locks the five owner-flagged invariants around the merged :class:`LoopPreset` (Mode):
+Locks the five owner-flagged invariants around the merged :class:`Mode` (Mode):
 
 1.  Owner-reply ALWAYS-ON — the reactive owner-DM reply recorder never consults the
     merged-mode resolver / defer predicate (static guard; the functional proof lives
@@ -21,7 +21,7 @@ from pathlib import Path
 import django.test
 
 from teatree.core.availability import PresenceHeartbeat
-from teatree.core.models import LoopPreset
+from teatree.core.models import Mode
 
 
 class TestOwnerReplyAlwaysOn(django.test.SimpleTestCase):
@@ -41,7 +41,7 @@ class TestRequireHumanApprovalStaysSeparate(django.test.SimpleTestCase):
     """Invariant 5: the merge-approval knob is NOT an attribute of the merged Mode."""
 
     def test_mode_has_no_merge_approval_field(self) -> None:
-        field_names = {field.name for field in LoopPreset._meta.get_fields()}
+        field_names = {field.name for field in Mode._meta.get_fields()}
         assert "require_human_approval_to_merge" not in field_names
         # The merged Mode carries only the loop mask + the three availability booleans.
         assert {"defers_questions", "pauses_self_pump", "presence_sensitive"} <= field_names

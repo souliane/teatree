@@ -232,14 +232,14 @@ def seed_default_presets_and_schedules() -> PresetSeedResult:
     a fresh install is fully opt-in.
     """
     from teatree.core.models import (  # noqa: PLC0415 — deferred import (cycle-safe / pre-app-registry)
-        LoopPreset,
-        LoopSchedule,
-        LoopScheduleSlot,
+        Mode,
+        ModeSchedule,
+        ModeScheduleSlot,
     )
 
     presets_created = 0
     for spec in default_preset_specs():
-        _, made = LoopPreset.objects.get_or_create(
+        _, made = Mode.objects.get_or_create(
             name=spec.name,
             defaults={
                 "entries": spec.entries,
@@ -254,13 +254,13 @@ def seed_default_presets_and_schedules() -> PresetSeedResult:
 
     schedules_created = 0
     for spec in default_schedule_specs():
-        schedule, made = LoopSchedule.objects.get_or_create(
+        schedule, made = ModeSchedule.objects.get_or_create(
             name=spec.name, defaults={"description": spec.description, "timezone": ""}
         )
         schedules_created += int(made)
         if made:
-            LoopScheduleSlot.objects.bulk_create(
-                LoopScheduleSlot(
+            ModeScheduleSlot.objects.bulk_create(
+                ModeScheduleSlot(
                     schedule=schedule, days=slot.days, start_time=slot.start_time, preset_name=slot.preset_name
                 )
                 for slot in spec.slots

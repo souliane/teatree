@@ -17,7 +17,7 @@ from django.utils import timezone
 
 from teatree.core import availability
 from teatree.core.mode_resolution import clear_mode_override, resolve_active_mode, set_mode_override
-from teatree.core.models import ConfigSetting, LoopPreset, LoopPresetOverride
+from teatree.core.models import ConfigSetting, Mode, ModeOverride
 
 _DRAIN = "teatree.core.notify_question_drains.drain_deferred_questions"
 
@@ -41,21 +41,21 @@ class _TmpStateMixin(django.test.TestCase):
         ):
             patcher.start()
             self.addCleanup(patcher.stop)
-        LoopPreset.objects.all().delete()
-        LoopPresetOverride.objects.all().delete()
+        Mode.objects.all().delete()
+        ModeOverride.objects.all().delete()
 
 
 @django.test.override_settings(USE_TZ=True, TIME_ZONE="UTC")
 class TestResolveActiveMode(_TmpStateMixin):
     def setUp(self) -> None:
         super().setUp()
-        self.engaged = LoopPreset.objects.create(
+        self.engaged = Mode.objects.create(
             name="engaged", entries={"review": True}, defers_questions=False, pauses_self_pump=False
         )
-        self.unattended = LoopPreset.objects.create(
+        self.unattended = Mode.objects.create(
             name="unattended", entries={"review": False}, defers_questions=True, pauses_self_pump=False
         )
-        self.offline = LoopPreset.objects.create(
+        self.offline = Mode.objects.create(
             name="offline",
             entries={"review": False},
             defers_questions=True,
@@ -88,7 +88,7 @@ class TestResolveActiveMode(_TmpStateMixin):
         assert resolved.pauses_self_pump is False
 
     def test_missing_default_mode_fails_open_to_present(self) -> None:
-        LoopPreset.objects.all().delete()
+        Mode.objects.all().delete()
         resolved = resolve_active_mode()
         assert resolved.defers_questions is False
         assert resolved.pauses_self_pump is False
@@ -99,9 +99,9 @@ class TestResolveActiveMode(_TmpStateMixin):
 class TestPresenceUpgrade(_TmpStateMixin):
     def setUp(self) -> None:
         super().setUp()
-        LoopPreset.objects.create(name="engaged", entries={}, defers_questions=False)
+        Mode.objects.create(name="engaged", entries={}, defers_questions=False)
         # A default away-class mode that IS presence-sensitive.
-        self.away_sensitive = LoopPreset.objects.create(
+        self.away_sensitive = Mode.objects.create(
             name="unattended", entries={}, defers_questions=True, presence_sensitive=True
         )
         ConfigSetting.objects.set_value("default_mode", "unattended")
@@ -142,8 +142,8 @@ class TestPresenceUpgrade(_TmpStateMixin):
 class TestReturnToReachableDrain(_TmpStateMixin):
     def setUp(self) -> None:
         super().setUp()
-        LoopPreset.objects.create(name="engaged", entries={}, defers_questions=False)
-        LoopPreset.objects.create(name="offline", entries={}, defers_questions=True, pauses_self_pump=True)
+        Mode.objects.create(name="engaged", entries={}, defers_questions=False)
+        Mode.objects.create(name="offline", entries={}, defers_questions=True, pauses_self_pump=True)
 
     def test_returning_from_deferring_mode_drains_the_backlog(self) -> None:
         set_mode_override("offline")

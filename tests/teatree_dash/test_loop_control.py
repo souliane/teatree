@@ -6,7 +6,7 @@ from unittest.mock import patch
 import pytest
 from django.test import TestCase, override_settings
 
-from teatree.core.models import ConfigSetting, LoopPreset, LoopPresetOverride, LoopSchedule, LoopScheduleSlot
+from teatree.core.models import ConfigSetting, Mode, ModeOverride, ModeSchedule, ModeScheduleSlot
 from teatree.core.models.loop import Loop
 from teatree.core.models.loop_state import LoopState, LoopStatus
 from teatree.dash import loop_control
@@ -44,8 +44,8 @@ class LoopRowsPresetMaskTestCase(TestCase):
     """The dashboard verdict honours the #3159 preset mask, not just enabled+held."""
 
     def _activate(self, preset_name: str, entries: dict[str, bool]) -> None:
-        LoopPreset.objects.create(name=preset_name, entries=entries)
-        LoopPresetOverride.objects.set_override(preset_name)
+        Mode.objects.create(name=preset_name, entries=entries)
+        ModeOverride.objects.set_override(preset_name)
 
     def test_preset_masked_off_loop_is_not_effective(self) -> None:
         _make_loop()
@@ -80,10 +80,10 @@ class LoopRowsPresetMaskTestCase(TestCase):
     @override_settings(USE_TZ=True, TIME_ZONE="UTC")
     def test_active_schedule_slot_decides_at_l2(self) -> None:
         _make_loop()
-        LoopPreset.objects.create(name="heads-down", entries={"dashloop": False})
-        schedule = LoopSchedule.objects.create(name="standard", timezone="UTC")
+        Mode.objects.create(name="heads-down", entries={"dashloop": False})
+        schedule = ModeSchedule.objects.create(name="standard", timezone="UTC")
         # An all-day, every-weekday slot always governs "now".
-        LoopScheduleSlot.objects.create(
+        ModeScheduleSlot.objects.create(
             schedule=schedule, days=[0, 1, 2, 3, 4, 5, 6], start_time=dt.time(0, 0), preset_name="heads-down"
         )
         ConfigSetting.objects.set_value(ACTIVE_SCHEDULE_SETTING, "standard")

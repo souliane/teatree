@@ -10,7 +10,7 @@ import django.test
 
 from teatree.core.backend_factory import OverlayBackends
 from teatree.core.management.commands.loops_tick import _focus_scoped_backends
-from teatree.core.models import LoopPreset, LoopPresetOverride
+from teatree.core.models import Mode, ModeOverride
 
 _FLEET = [OverlayBackends(name="primary"), OverlayBackends(name="dayjob")]
 
@@ -18,8 +18,8 @@ _FLEET = [OverlayBackends(name="primary"), OverlayBackends(name="dayjob")]
 @django.test.override_settings(USE_TZ=True, TIME_ZONE="UTC")
 class TestFocusScopedBackends(django.test.TestCase):
     def _activate(self, scope: list[str]) -> None:
-        LoopPreset.objects.create(name="focus:primary", entries={}, overlay_scope=scope)
-        LoopPresetOverride.objects.set_override("focus:primary")
+        Mode.objects.create(name="focus:primary", entries={}, overlay_scope=scope)
+        ModeOverride.objects.set_override("focus:primary")
 
     def test_no_preset_scans_the_whole_fleet(self) -> None:
         with patch("teatree.core.management.commands.loops_tick.iter_overlay_backends", return_value=_FLEET):

@@ -90,10 +90,10 @@ def _clear_auto_engaged_low_power() -> None:
     Best-effort — a user override is never touched, and a failure here must never
     break usage-window recovery (a lingering override also expires at its ``until``).
     """
-    from teatree.core.models import LoopPresetOverride  # noqa: PLC0415 — deferred import (cycle-safe / task-body)
+    from teatree.core.models import ModeOverride  # noqa: PLC0415 — deferred import (cycle-safe / task-body)
 
     try:
-        LoopPresetOverride.objects.clear_auto_engaged_low_power()
+        ModeOverride.objects.clear_auto_engaged_low_power()
     except Exception:
         logger.debug("low-power auto-engage clear failed during recovery", exc_info=True)
 

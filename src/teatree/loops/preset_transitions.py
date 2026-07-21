@@ -33,7 +33,7 @@ from django_tasks_db.models import DBTaskResult
 
 from teatree.core.mode_resolution import resolve_active_mode
 from teatree.core.modelkit.notify_policy import NotifyAudience
-from teatree.core.models import ConfigSetting, LoopPreset, LoopPresetOverride
+from teatree.core.models import ConfigSetting, Mode, ModeOverride
 from teatree.core.notify import NotifyKind, notify_user
 from teatree.core.notify_question_drains import drain_deferred_questions
 from teatree.loop.preset_resolution import ActivePreset, resolve_active_preset
@@ -67,7 +67,7 @@ def apply_preset_transition(now: dt.datetime) -> dict[str, Any]:
 
 
 def _reap_expired_overrides(now: dt.datetime) -> int:
-    deleted, _ = LoopPresetOverride.objects.filter(until__isnull=False, until__lte=now).delete()
+    deleted, _ = ModeOverride.objects.filter(until__isnull=False, until__lte=now).delete()
     return deleted
 
 
@@ -81,7 +81,7 @@ def _drain_on_scheduled_return(prior_name: str) -> None:
     manual-override path drains in its own chokepoint; this covers schedule / default
     flips. Fail-open — a drain failure never blocks the transition.
     """
-    prior = LoopPreset.objects.by_name(prior_name) if prior_name else None
+    prior = Mode.objects.by_name(prior_name) if prior_name else None
     prior_defers = bool(prior.defers_questions) if prior is not None else False
     if not prior_defers or resolve_active_mode().defers_questions:
         return

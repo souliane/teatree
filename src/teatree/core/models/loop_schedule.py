@@ -1,7 +1,7 @@
 """Weekly loop-preset schedule — the L2 calendar layer (#3159).
 
-A :class:`LoopSchedule` is a named weekly calendar; each
-:class:`LoopScheduleSlot` is a **start point** (a set of weekdays at a local
+A :class:`ModeSchedule` is a named weekly calendar; each
+:class:`ModeScheduleSlot` is a **start point** (a set of weekdays at a local
 wall-clock time) that names the preset governing from that instant until the
 next slot start. Slots partition the week by coverage, not by cron spans: the
 governing slot at instant *t* is simply the latest slot-start ≤ *t* (searching
@@ -17,7 +17,7 @@ from typing import ClassVar
 from django.db import models
 
 
-class LoopSchedule(models.Model):
+class ModeSchedule(models.Model):
     """A named weekly calendar whose slots pick the active preset by day and time."""
 
     name = models.SlugField(max_length=64, unique=True)
@@ -37,14 +37,14 @@ class LoopSchedule(models.Model):
 _MAX_WEEKDAY = 6  # Python weekday(): Sunday
 
 
-class LoopScheduleSlot(models.Model):
+class ModeScheduleSlot(models.Model):
     """One weekly start point: weekdays at a local start time, the preset it activates.
 
     ``days`` are Python ``weekday()`` ints (Mon=0 .. Sun=6); ``start_time`` is a
     local wall-clock time in the owning schedule's ``timezone``.
     """
 
-    schedule = models.ForeignKey(LoopSchedule, on_delete=models.CASCADE, related_name="slots")
+    schedule = models.ForeignKey(ModeSchedule, on_delete=models.CASCADE, related_name="slots")
     days = models.JSONField()
     start_time = models.TimeField()
     preset_name = models.CharField(max_length=64)

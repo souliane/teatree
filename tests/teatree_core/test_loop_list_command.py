@@ -21,7 +21,7 @@ import django.test
 from django.core.management import call_command
 from django.utils import timezone
 
-from teatree.core.models import Loop, LoopPreset, LoopPresetOverride, LoopState, Prompt
+from teatree.core.models import Loop, LoopState, Mode, ModeOverride, Prompt
 from teatree.core.models.loop_lease import LoopLease
 
 _LIVE_PID = os.getpid()
@@ -211,8 +211,8 @@ class TestLoopListReflectsPresetMask(django.test.TestCase):
     """
 
     def _activate(self, preset_name: str, entries: dict[str, bool]) -> None:
-        LoopPreset.objects.create(name=preset_name, entries=entries)
-        LoopPresetOverride.objects.set_override(preset_name)
+        Mode.objects.create(name=preset_name, entries=entries)
+        ModeOverride.objects.set_override(preset_name)
 
     def test_masked_off_loop_shows_masked(self) -> None:
         Loop.objects.all().delete()

@@ -2,13 +2,13 @@
 
 Availability (``present`` / ``autonomous_away`` / ``away``) and loop presets
 (#3159) were two parallel override→schedule→default machines over different
-substrate. They are now ONE: a :class:`~teatree.core.models.LoopPreset` (the
+substrate. They are now ONE: a :class:`~teatree.core.models.Mode` (the
 merged *Mode*) carries both the loop mask AND the three intrinsic availability
 booleans, and this module resolves the single active mode every consumer reads.
 
 The precedence chain (design §2.3) reuses the DB override/schedule resolver that
 already backs presets — :func:`teatree.loop.preset_resolution.resolve_active_preset`
-(L3 manual :class:`LoopPresetOverride` row → L2 active-schedule slot) — and adds
+(L3 manual :class:`ModeOverride` row → L2 active-schedule slot) — and adds
 the two pieces availability contributed:
 
 *   **L0 default** — the configured ``default_mode`` ``ConfigSetting`` (default
@@ -43,7 +43,7 @@ from django.utils import timezone
 from teatree.loop.preset_resolution import resolve_active_preset
 
 if TYPE_CHECKING:
-    from teatree.core.models import LoopPreset
+    from teatree.core.models import Mode
 
 logger = logging.getLogger(__name__)
 
@@ -68,7 +68,7 @@ class ResolvedMode:
     ``.state_for`` per-loop opinion / ``.until`` boundary.
     """
 
-    mode: "LoopPreset"
+    mode: "Mode"
     source: str  # "override" | "schedule" | "live" | "default"
     until: dt.datetime | None
 
@@ -144,7 +144,7 @@ def _fresh_keystroke(now: dt.datetime) -> bool:
     return last_seen is not None and now - last_seen <= PRESENCE_FRESHNESS
 
 
-def _default_mode() -> "LoopPreset":
+def _default_mode() -> "Mode":
     """The configured L0 default mode row, or a synthesized present-class fallback."""
     return _mode_by_name(_default_mode_name()) or _synthetic_default_mode()
 
@@ -164,10 +164,10 @@ def _setting_name(key: str, fallback: str) -> str:
     return raw.strip() if isinstance(raw, str) and raw.strip() else fallback
 
 
-def _mode_by_name(name: str) -> "LoopPreset | None":
-    from teatree.core.models import LoopPreset  # noqa: PLC0415 — deferred: ORM needs the app registry
+def _mode_by_name(name: str) -> "Mode | None":
+    from teatree.core.models import Mode  # noqa: PLC0415 — deferred: ORM needs the app registry
 
-    return LoopPreset.objects.by_name(name)
+    return Mode.objects.by_name(name)
 
 
 def set_mode_override(
@@ -182,26 +182,26 @@ def set_mode_override(
 
     The single L3 override write chokepoint the CLI (``t3 mode use`` / the
     ``t3 availability`` aliases) and the dash switch route through — replacing both
-    the old ``LoopPresetOverride.set_override`` and ``availability.write_override``
+    the old ``ModeOverride.set_override`` and ``availability.write_override``
     file write. When the switch makes the resolved mode stop deferring
     (``defers_questions`` T→F, e.g. ``offline``→``engaged``), the deferred-question
     backlog auto-drains to the user's Slack DM, exactly as returning to ``present``
     did. Fail-open: a drain failure never blocks the override write.
     """
-    from teatree.core.models import LoopPresetOverride  # noqa: PLC0415 — deferred: ORM needs the app registry
+    from teatree.core.models import ModeOverride  # noqa: PLC0415 — deferred: ORM needs the app registry
 
     before = resolve_active_mode().defers_questions
-    LoopPresetOverride.objects.set_override(name, until=until, reason=reason)
+    ModeOverride.objects.set_override(name, until=until, reason=reason)
     _mirror_posture_to_fast_hook_file(until=until)
     _drain_if_returned(before_defers=before, user_id=user_id, overlay=overlay)
 
 
 def clear_mode_override(*, user_id: str = "", overlay: str = "") -> bool:
     """Clear the manual mode override; drain the backlog if that returns to reachable."""
-    from teatree.core.models import LoopPresetOverride  # noqa: PLC0415 — deferred: ORM needs the app registry
+    from teatree.core.models import ModeOverride  # noqa: PLC0415 — deferred: ORM needs the app registry
 
     before = resolve_active_mode().defers_questions
-    cleared = LoopPresetOverride.objects.clear()
+    cleared = ModeOverride.objects.clear()
     _mirror_posture_to_fast_hook_file(until=None)
     _drain_if_returned(before_defers=before, user_id=user_id, overlay=overlay)
     return cleared
@@ -284,7 +284,7 @@ def _drain_if_returned(*, before_defers: bool, user_id: str, overlay: str) -> No
         logger.warning("mode return→reachable auto-drain failed: %s", exc)
 
 
-def _synthetic_default_mode() -> "LoopPreset":
+def _synthetic_default_mode() -> "Mode":
     """An UNSAVED present-class mode: no loop opinion (inherit base), never defers.
 
     The fail-open default when the configured default mode row is missing (a fresh
@@ -292,9 +292,9 @@ def _synthetic_default_mode() -> "LoopPreset":
     ``state_for == None`` → inherit ``Loop.enabled``, i.e. byte-for-byte today's
     no-preset verdict; the booleans are present-class so nothing is muted.
     """
-    from teatree.core.models import LoopPreset  # noqa: PLC0415 — deferred: ORM needs the app registry
+    from teatree.core.models import Mode  # noqa: PLC0415 — deferred: ORM needs the app registry
 
-    return LoopPreset(
+    return Mode(
         name=_FALLBACK_DEFAULT_MODE,
         entries={},
         defers_questions=False,

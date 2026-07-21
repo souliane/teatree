@@ -1,6 +1,6 @@
 """Loop presets + the manual override row — the read-time mask layer (#3159).
 
-A :class:`LoopPreset` is a named, owner-editable, DB-stored loop-state
+A :class:`Mode` is a named, owner-editable, DB-stored loop-state
 configuration: its ``entries`` map is a **tri-state** opinion per loop
 (``true`` = force on, ``false`` = force off, *absent* = inherit the base
 ``Loop.enabled``). Presets never rewrite ``Loop``/``LoopState`` rows — a preset
@@ -10,7 +10,7 @@ referenced **by name** (JSON map keys, not FKs): a deleted or renamed loop leave
 an inert key that is ignored at read time and surfaced by ``t3 doctor``, exactly
 as :class:`teatree.core.models.loop_state.LoopState` already references loops.
 
-A :class:`LoopPresetOverride` (≤1 live row) is the manual L3 layer: a preset the
+A :class:`ModeOverride` (≤1 live row) is the manual L3 layer: a preset the
 owner activated by hand, optionally with a TTL. It stores the preset **by name**
 so a deleted preset fails open to base config rather than cascading.
 """
@@ -45,12 +45,12 @@ _DEFAULT_LOW_POWER_PRESET = "low-power"
 _AUTO_LOW_POWER_REASON = "auto:low-power (usage window parked)"
 
 
-class LoopPresetManager(models.Manager["LoopPreset"]):
-    def by_name(self, name: str) -> "LoopPreset | None":
+class ModeManager(models.Manager["Mode"]):
+    def by_name(self, name: str) -> "Mode | None":
         return self.filter(name=name).first()
 
 
-class LoopPreset(models.Model):
+class Mode(models.Model):
     """One named operating **mode** (#61 merge).
 
     A tri-state per-loop opinion, an overlay scope, AND the intrinsic availability
@@ -89,7 +89,7 @@ class LoopPreset(models.Model):
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
-    objects: ClassVar[LoopPresetManager] = LoopPresetManager()
+    objects: ClassVar[ModeManager] = ModeManager()
 
     class Meta:
         db_table = "teatree_loop_preset"
@@ -140,8 +140,8 @@ class LoopPreset(models.Model):
         return [entry for entry in scope if isinstance(entry, str) and entry]
 
 
-class LoopPresetOverrideManager(models.Manager["LoopPresetOverride"]):
-    def current(self, now: datetime | None = None) -> "LoopPresetOverride | None":
+class ModeOverrideManager(models.Manager["ModeOverride"]):
+    def current(self, now: datetime | None = None) -> "ModeOverride | None":
         """The single live override, or ``None`` when absent or expired.
 
         An expired row (``until`` passed) is inert — it is left for the
@@ -152,9 +152,7 @@ class LoopPresetOverrideManager(models.Manager["LoopPresetOverride"]):
             return None
         return row if row.is_active(now or timezone.now()) else None
 
-    def set_override(
-        self, preset_name: str, *, until: datetime | None = None, reason: str = ""
-    ) -> "LoopPresetOverride":
+    def set_override(self, preset_name: str, *, until: datetime | None = None, reason: str = "") -> "ModeOverride":
         """Replace any existing override with a single fresh row (the ≤1-row invariant)."""
         self.all().delete()
         return self.create(preset_name=preset_name, until=until, reason=reason)
@@ -176,7 +174,7 @@ class LoopPresetOverrideManager(models.Manager["LoopPresetOverride"]):
         if not _low_power_auto_engage_enabled():
             return False
         preset_name = _low_power_preset_name()
-        if LoopPreset.objects.by_name(preset_name) is None:
+        if Mode.objects.by_name(preset_name) is None:
             logger.warning("low_power_auto_engage on but preset %r is absent — not engaging", preset_name)
             return False
         if self.current(now or timezone.now()) is not None:
@@ -197,7 +195,7 @@ class LoopPresetOverrideManager(models.Manager["LoopPresetOverride"]):
         return self.clear()
 
 
-class LoopPresetOverride(models.Model):
+class ModeOverride(models.Model):
     """The manual L3 override — at most one live row, pointing at a preset by name."""
 
     preset_name = models.CharField(max_length=64)
@@ -205,7 +203,7 @@ class LoopPresetOverride(models.Model):
     reason = models.TextField(blank=True, default="")
     set_at = models.DateTimeField(auto_now_add=True)
 
-    objects: ClassVar[LoopPresetOverrideManager] = LoopPresetOverrideManager()
+    objects: ClassVar[ModeOverrideManager] = ModeOverrideManager()
 
     class Meta:
         db_table = "teatree_loop_preset_override"
