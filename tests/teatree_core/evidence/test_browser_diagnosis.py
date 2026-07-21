@@ -18,9 +18,29 @@ class TestResolveBrowserDiagnosis(TestCase):
         assert registration.enabled is True
         assert (
             registration.add_command
-            == f"claude mcp add {CHROME_DEVTOOLS_SERVER_NAME} -- npx -y chrome-devtools-mcp@latest"
+            == f"claude mcp add {CHROME_DEVTOOLS_SERVER_NAME} -- npx -y chrome-devtools-mcp@latest --headless=true"
         )
         assert registration.add_command in registration.message
+
+
+class TestBrowserDiagnosisHeadless(TestCase):
+    """teatree runs 100% headless, so the registered server must never open a visible Chrome.
+
+    Upstream chrome-devtools-mcp defaults to a *visible* browser, so the flag has to be
+    passed explicitly; ``chrome_devtools_headless`` is the operator's opt-out.
+    """
+
+    def test_headless_flag_passed_by_default(self) -> None:
+        assert get_effective_settings(None).chrome_devtools_headless is True
+        assert "--headless=true" in resolve_browser_diagnosis(None).add_command
+
+    def test_headed_only_when_explicitly_opted_in(self) -> None:
+        ConfigSetting.objects.set_value("chrome_devtools_headless", value=False)
+        assert "--headless" not in resolve_browser_diagnosis(None).add_command
+
+    def test_headless_flag_survives_the_enablement_flag(self) -> None:
+        ConfigSetting.objects.set_value("chrome_devtools_mcp_enabled", value=False)
+        assert "--headless=true" in resolve_browser_diagnosis(None).add_command
 
     def test_claude_chrome_disabled_by_default(self) -> None:
         assert get_effective_settings(None).claude_chrome is False
