@@ -209,6 +209,7 @@ t3 eval label review                          # validate every label loads + eve
 t3 eval changed-scenarios < changed-files.txt # CI primitive: print the scenario names a PR's STDIN diff touched (selective-PR gate); exit --skip-code when none
 t3 eval merged-prs-since --prs-file prs.json --days 7  # CI primitive: exit 0 iff any PR merged in the window (the scheduled-eval no-PR guard); else --skip-code
 t3 eval merge-summaries summaries/ --run-url … --sha … --generated-at …  # CI primitive: merge per-shard sanitized summaries into one weekly dashboard
+t3 eval verify-benchmark-publish <dir>        # CI primitive: refuse the weekly dashboard publish when any collected eval-benchmark-*.html shard records graded verdicts at $0.0000 (an exhausted OAuth window); exit 1 naming the shard + zero-cost models
 t3 eval merge-summary-json shards/ --sha … --generated-at … --out eval-heal-<sha>.json  # CI heal loop: fold per-shard publish-safe --summary-json artifacts into one eval-heal-<sha> JSON (totals summed, scenarios concatenated)
 t3 eval green-proof eval-heal-<sha>.json    # CI heal loop: assert the merged full-suite eval-heal JSON is the green proof — an executed, red-free run (0 behavioral/infra/judge/no_coverage reds, total > 0); non-zero on any red or an empty run
 t3 eval ci-trigger --ref <pr-branch>          # CI heal loop: dispatch eval-ci-heal (workflow_dispatch, scenarios/shards/credential/pr_ref inputs) against a PR branch; prints the head SHA the run keys on (non-blocking)
@@ -218,10 +219,12 @@ t3 eval ci-heal list                          # CI heal loop: list recent heal s
 t3 eval ci-heal advance                       # CI heal loop: run ONE advance pass over every open session by hand (operator dry-run; reaches gh) — GREEN or HALT+escalate, never a fix
 ```
 
-`changed-scenarios`, `merged-prs-since`, and `merge-summaries` are the reusable
-CI primitives an overlay's eval workflow consumes (`changed-scenarios` selects a
-PR's scenarios, `merged-prs-since` guards the weekly cron, `merge-summaries`
-builds the public dashboard) — the same logic the host's `scripts/eval/*.py`
+`changed-scenarios`, `merged-prs-since`, `merge-summaries`, and
+`verify-benchmark-publish` are the reusable CI primitives an overlay's eval
+workflow consumes (`changed-scenarios` selects a PR's scenarios,
+`merged-prs-since` guards the weekly cron, `merge-summaries` builds the public
+dashboard, `verify-benchmark-publish` gates the benchmark dashboard commit on
+real metered spend) — the same logic the host's `scripts/eval/*.py`
 workflow shims and the reusable `eval-pr-reusable.yml` /
 `eval-weekly-reusable.yml` (`workflow_call`) workflows delegate to, so an overlay
 reuses teatree's eval CI instead of duplicating it.

@@ -33,6 +33,7 @@ from teatree.cli.eval.set_baseline import set_baseline
 from teatree.cli.eval.skill_command_lane import skill_command_validity
 from teatree.cli.eval.skill_prose_lane import skill_prose_judge
 from teatree.cli.eval.transcript_replay import transcript_replay
+from teatree.cli.eval.verify_benchmark_publish import verify_benchmark_publish
 
 
 def register_imported_commands(eval_app: typer.Typer) -> None:
@@ -53,6 +54,7 @@ def register_imported_commands(eval_app: typer.Typer) -> None:
     eval_app.add_typer(ci_account_app, name="ci-account")
     eval_app.command("green-proof")(green_proof)
     eval_app.command("merged-prs-since")(merged_prs_since)
+    eval_app.command("verify-benchmark-publish")(verify_benchmark_publish)
     eval_app.command("merge-summaries")(merge_summaries)
     eval_app.command("merge-summary-json")(merge_summary_json)
     eval_app.command("prepare-transcript")(prepare_transcript)
