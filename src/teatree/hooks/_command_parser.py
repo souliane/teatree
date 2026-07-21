@@ -186,6 +186,12 @@ _BODY_FLAG_NAMES: Final[frozenset[str]] = frozenset(
 # Short body-bearing flags used by ``gh`` / ``glab`` / ``git commit``.
 _BODY_SHORT_FLAGS: Final[frozenset[str]] = frozenset({"-m", "-b"})
 
+# ``glab`` spells the MR/issue description short flag ``-d`` on ``create`` and
+# ``update``; ``gh`` uses ``-d`` for the boolean ``--draft``, so this short flag
+# is scoped to the ``glab`` leader only — extracting the next token as a body
+# for ``gh -d`` would misread its boolean draft switch.
+_GLAB_BODY_SHORT_FLAGS: Final[frozenset[str]] = frozenset({"-d"})
+
 # Long options for ``gh api`` / ``glab api`` field assignments.
 _API_FIELD_LONG_FLAGS: Final[frozenset[str]] = frozenset({"--field", "--raw-field"})
 _API_FIELD_SHORT_FLAGS: Final[frozenset[str]] = frozenset({"-f", "-F"})
@@ -215,7 +221,7 @@ def _walk_python_script(words: list[str], payloads: list[str]) -> None:
         i += 1
 
 
-def _walk_body_flags(words: list[str], raws: list[str], payloads: list[str], base: "Path | None") -> None:
+def _walk_body_flags(words: list[str], raws: list[str], payloads: list[str], base: "Path | None", leader: str) -> None:
     """Extract ``--body``/``--description``/``--message``/``--title``/``-m``/``-b`` payloads.
 
     Handles both space-separated (``--body "x"``) and equals-separated
@@ -229,7 +235,12 @@ def _walk_body_flags(words: list[str], raws: list[str], payloads: list[str], bas
     ``words``) so the resolver can tell a single-quoted INERT ``$(...)`` (the body
     is the literal text — scanned) from a live one — an embedded substitution in a
     body the gate can read is no longer mis-flagged as unresolvable.
+
+    ``leader`` selects the short-flag grammar: ``glab`` adds the ``-d``
+    description short flag it uses on ``mr``/``issue`` ``create``/``update``,
+    which ``gh`` uses for the boolean ``--draft`` and so is glab-only.
     """
+    short_flags = _BODY_SHORT_FLAGS | _GLAB_BODY_SHORT_FLAGS if leader == "glab" else _BODY_SHORT_FLAGS
     i = 0
     n = len(words)
     while i < n:
@@ -248,7 +259,7 @@ def _walk_body_flags(words: list[str], raws: list[str], payloads: list[str], bas
         if attached_handled:
             i += 1
             continue
-        if word in _BODY_SHORT_FLAGS and i + 1 < n:
+        if word in short_flags and i + 1 < n:
             payloads.append(resolve_inline_body_value(words[i + 1], base, raws[i + 1]))
             i += 2
             continue
@@ -362,8 +373,9 @@ def _walk_command_segment(segment: list[Token], payloads: list[str], ctx: "BodyF
         return
     first = canonical_forge_leader(all_words)
     # All segments get the generic body-flag walker since gh, glab, git,
-    # and t3 all accept ``--body``/``--message``/``-m``/``-b``.
-    _walk_body_flags(words, raws, payloads, ctx.base)
+    # and t3 all accept ``--body``/``--message``/``-m``/``-b``. The canonical
+    # leader selects glab's extra ``-d`` description short flag.
+    _walk_body_flags(words, raws, payloads, ctx.base, first)
     # ``t3 review`` posts carry the body as the positional NOTE (or the #32
     # ``--body-file``) and use ``--file`` as a diff ANCHOR, not a body-file —
     # extract the NOTE + ``--body-file`` body and SKIP the generic body-file
