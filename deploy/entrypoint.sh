@@ -208,6 +208,12 @@ assert_gh_token_permissions() {
     _gh_probe_denied --method POST "repos/$slug/actions/workflows/0/dispatches" -f ref=teatree-preflight-nonexistent &&
         warn_missing+=("actions: write")
     _gh_probe_denied "repos/$slug/actions/artifacts?per_page=1" && warn_missing+=("actions: read")
+    # `gh secret set` / `gh variable set` PUT these routes; DELETE hits the same write gate,
+    # so a sentinel name that never exists probes the grant with no side effect.
+    _gh_probe_denied --method DELETE "repos/$slug/actions/secrets/TEATREE_PREFLIGHT_NONEXISTENT" &&
+        warn_missing+=("secrets: write")
+    _gh_probe_denied --method DELETE "repos/$slug/actions/variables/TEATREE_PREFLIGHT_NONEXISTENT" &&
+        warn_missing+=("variables: write")
     if [ -n "$default_branch" ]; then
         _gh_probe_denied "repos/$slug/commits/$default_branch/check-runs?per_page=1" && warn_missing+=("checks: read")
         _gh_probe_denied "repos/$slug/commits/$default_branch/status" && warn_missing+=("statuses: read")
@@ -215,7 +221,7 @@ assert_gh_token_permissions() {
     # projects: read needs an overlay's configured Projects-v2 board, which this
     # bash preflight cannot see — `t3 doctor check` probes it when configured.
     if [ ${#warn_missing[@]} -gt 0 ]; then
-        echo "entrypoint: WARN TEATREE_GH_TOKEN is missing recommended permission(s): ${warn_missing[*]} - these degrade optional features (CI trigger/status, auto-merge's required-checks rollup, workflow-file pushes) but do NOT block boot. Fine-grained tokens cannot be widened via the API either - recreate it with these permissions added: $_GH_FINE_GRAINED_TOKENS_URL" >&2
+        echo "entrypoint: WARN TEATREE_GH_TOKEN is missing recommended permission(s): ${warn_missing[*]} - these degrade optional features (CI trigger/status, auto-merge's required-checks rollup, workflow-file pushes, the CI OAuth-account switch) but do NOT block boot. Fine-grained tokens cannot be widened via the API either - recreate it with these permissions added: $_GH_FINE_GRAINED_TOKENS_URL" >&2
     fi
     echo "teatree-init: GitHub token permissions verified (required issues/pull_requests/contents write present on $slug)"
 }

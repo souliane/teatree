@@ -140,6 +140,8 @@ class TestRecommendedPermissions:
             "artifacts": (0, "{}"),
             "check-runs": (0, "{}"),
             "main/status": (0, "{}"),
+            "actions/secrets/": (1, _NOT_FOUND),
+            "actions/variables/": (1, _NOT_FOUND),
         }
 
     def test_all_recommended_present_ok_and_no_recommended_gaps_except_workflows(self) -> None:
@@ -160,6 +162,41 @@ class TestRecommendedPermissions:
         assert probe.ok  # recommended gaps never flip ok
         assert probe.missing == ()
         assert "actions: write" in probe.missing_recommended
+
+    def test_missing_secrets_write_reported_recommended_never_required(self) -> None:
+        """`gh secret set` needs it; a gap must WARN, never fail the never-lockout deploy."""
+        responses = self._base_responses()
+        responses["actions/secrets/"] = (1, _NOT_ACCESSIBLE)
+        run = _runner(responses)
+        with patch("teatree.core.gates.gh_token_preflight.shutil.which", return_value="/usr/bin/gh"):
+            probe = probe_token_permissions(_SLUG, run=run)
+        assert probe.ok
+        assert "secrets: write" in probe.missing_recommended
+        assert "secrets: write" not in probe.missing
+
+    def test_missing_variables_write_reported(self) -> None:
+        responses = self._base_responses()
+        responses["actions/variables/"] = (1, _NOT_ACCESSIBLE)
+        run = _runner(responses)
+        with patch("teatree.core.gates.gh_token_preflight.shutil.which", return_value="/usr/bin/gh"):
+            probe = probe_token_permissions(_SLUG, run=run)
+        assert probe.ok
+        assert "variables: write" in probe.missing_recommended
+
+    def test_the_secret_probe_targets_a_sentinel_that_never_exists(self) -> None:
+        """A DELETE probe must never be able to remove a real secret."""
+        seen: list[str] = []
+
+        def run(args: list[str]) -> tuple[int, str]:
+            seen.append(" ".join(args))
+            return (0, _fine_grained_meta()) if "-i" in args else (1, _NOT_FOUND)
+
+        with patch("teatree.core.gates.gh_token_preflight.shutil.which", return_value="/usr/bin/gh"):
+            probe_token_permissions(_SLUG, run=run)
+
+        deletes = [call for call in seen if "DELETE" in call]
+        assert deletes
+        assert all("TEATREE_PREFLIGHT_NONEXISTENT" in call for call in deletes)
 
     def test_missing_actions_read_reported(self) -> None:
         responses = self._base_responses()
@@ -237,6 +274,8 @@ class TestProjectsReadProbe:
             "artifacts": (0, "{}"),
             "check-runs": (0, "{}"),
             "main/status": (0, "{}"),
+            "actions/secrets/": (1, _NOT_FOUND),
+            "actions/variables/": (1, _NOT_FOUND),
         }
 
     def test_not_probed_when_board_unconfigured(self) -> None:
@@ -442,6 +481,8 @@ class TestRecommendedLabels:
             "checks: read",
             "statuses: read",
             "projects: read",
+            "secrets: write",
+            "variables: write",
         )
 
     def test_never_overlaps_required(self) -> None:

@@ -1564,6 +1564,8 @@ Usage: t3 eval [OPTIONS] COMMAND [ARGS]...
 │                         name is given.                                       │
 │ ci-heal                 Operator control of the CI-eval self-healing loop    │
 │                         (open sessions, list, dry-run advance).              │
+│ ci-account              Inspect / switch the Anthropic account CI's OAuth    │
+│                         secret holds.                                        │
 │ corpus                  Ground-truth corpus curation: list, inspect, and     │
 │                         grade captured sessions.                             │
 │ label                   Corpus-label curation: list nominations, scaffold a  │
@@ -2603,6 +2605,61 @@ Usage: t3 eval ci-heal advance [OPTIONS]
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --json          Emit the advance outcomes as a JSON array.                   │
 │ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+#### `t3 eval ci-account`
+
+```
+Usage: t3 eval ci-account [OPTIONS] COMMAND [ARGS]...
+
+ Inspect / switch the Anthropic account CI's OAuth secret holds.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Commands ───────────────────────────────────────────────────────────────────╮
+│ show    Report which account CI's OAuth secret holds, and every account's    │
+│         headroom.                                                            │
+│ switch  Point CI's OAuth secret at the healthiest account; exit 1 when none  │
+│         can serve a run.                                                     │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 eval ci-account show`
+
+```
+Usage: t3 eval ci-account show [OPTIONS]
+
+ Report which account CI's OAuth secret holds, and every account's headroom.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --repo        TEXT  The repo whose Actions secret to read/write.             │
+│                     [default: souliane/teatree]                              │
+│ --json              Emit the report as JSON.                                 │
+│ --help              Show this message and exit.                              │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 eval ci-account switch`
+
+```
+Usage: t3 eval ci-account switch [OPTIONS]
+
+ Point CI's OAuth secret at the healthiest account; exit 1 when none can serve
+ a run.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --repo               TEXT     The repo whose Actions secret to read/write.   │
+│                               [default: souliane/teatree]                    │
+│ --json                        Emit the report as JSON.                       │
+│ --starting-in        INTEGER  Minutes until the run starts. A 5h window that │
+│                               resets before then counts as fully free, so an │
+│                               account can be scored for a run scheduled      │
+│                               after its reset.                               │
+│                               [default: 0]                                   │
+│ --dry-run                     Report the switch without writing anything.    │
+│ --help                        Show this message and exit.                    │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 

@@ -383,9 +383,11 @@ permissions. `init` preflights both (#3405, #3436, #3477):
   run` dispatch), `actions: read` (`t3 eval ci-status`'s `gh run list/view/
   download`), `checks: read` (the required-checks rollup auto-merge reads —
   **strongly recommended**, auto-merge fails closed without it), `statuses:
-  read` (legacy commit-status rollup completeness), and `projects: read`
-  (GitHub Projects v2 board sync, probed only when the overlay configures a
-  board). A gap here **only WARNs** — the deploy still boots and the gated
+  read` (legacy commit-status rollup completeness), `projects: read` (GitHub
+  Projects v2 board sync, probed only when the overlay configures a board), and
+  `secrets: write` + `variables: write` (`t3 eval ci-account switch` rotating
+  `CLAUDE_CODE_OAUTH_TOKEN` onto a healthier account and recording which account
+  it holds). A gap here **only WARNs** — the deploy still boots and the gated
   feature simply degrades (a CI-eval command errors, auto-merge treats the
   rollup as not-yet-green, board sync no-ops). A classic PAT adds this set
   with the `workflow` and `read:project` scopes alongside `repo`.
