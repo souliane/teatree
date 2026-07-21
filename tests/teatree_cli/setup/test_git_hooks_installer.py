@@ -21,9 +21,9 @@ from tests._git_repo import make_git_repo, run_git
 _MINIMAL_PREK_CONFIG = """\
 default_install_hook_types: [pre-commit, pre-push]
 repos:
-  - repo: local
+-   repo: local
     hooks:
-      - id: noop
+    -   id: noop
         name: noop
         language: system
         entry: "true"
