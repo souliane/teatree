@@ -79,7 +79,7 @@ def availability(request: "HttpRequest") -> "HttpResponse":
     ``ModeOverride`` to the corresponding merged mode via
     :func:`teatree.core.mode_resolution.set_mode_override` /
     :func:`clear_mode_override`, keeping the return-to-reachable deferred-question
-    drain firing exactly like the ``t3 mode`` CLI.
+    drain firing exactly like the ``t3 loop preset`` CLI.
     """
     mode = request.POST.get("mode", "").strip()
     if mode not in AVAILABILITY_ACTIONS:

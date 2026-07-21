@@ -62,7 +62,7 @@ def stale_override_finding(
     return (
         f"WARN  mode override {posture.mode_name!r} has had NO expiry for ~{hours}h — it "
         f"silently defers questions and suppresses the colleague-facing loops ({loops}).{pausing} "
-        f"If unintended, clear it with `t3 mode auto`. (#3274)"
+        f"If unintended, clear it with `t3 loop preset auto`. (#3274)"
     )
 
 

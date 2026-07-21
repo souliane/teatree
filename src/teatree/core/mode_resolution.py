@@ -180,9 +180,9 @@ def set_mode_override(
 ) -> None:
     """Set the manual mode override to *name*, draining the backlog on a return to reachable.
 
-    The single L3 override write chokepoint the CLI (``t3 mode use`` / the
-    ``t3 availability`` aliases) and the dash switch route through — it sets the DB
-    ``ModeOverride`` row (authoritative) and mirrors the posture to the fast-hook
+    The single L3 override write chokepoint the CLI (``t3 loop preset use`` and the
+    deprecated availability aliases) and the dash switch route through — it sets the
+    DB ``ModeOverride`` row (authoritative) and mirrors the posture to the fast-hook
     file. When the switch makes the resolved mode stop deferring
     (``defers_questions`` T→F, e.g. ``offline``→``engaged``), the deferred-question
     backlog auto-drains to the user's Slack DM, exactly as returning to ``present``
