@@ -176,7 +176,8 @@ t3 eval run --backend api --trials 3 --require all  # pass^k: regression gate, a
 t3 eval run --backend api --models opus,sonnet,haiku  # model-regression matrix (per-model columns)
 t3 eval run --preset cheap                    # apply a model-tier PRESET per scenario (cheap/frontier/baseline) instead of each scenario's own tier/phase; mutually exclusive with --model/--models/--benchmark
 t3 eval benchmark --presets cheap,baseline,default  # compare PRESETS (not raw model@effort variants) — 'default' = each scenario's own resolution, no preset
-t3 eval set-baseline --from matrix.json       # regenerate evals/presets/baseline.yaml: each scenario's cheapest PASSING tier from a --models/--benchmark matrix JSON run
+t3 eval ladder --format json > matrix.json    # CHEAP cheapest-green producer: escalate each scenario cheapest-first (haiku->sonnet->opus), opus ONLY on the scenarios both cheaper tiers failed; emits the set-baseline matrix JSON
+t3 eval set-baseline --from matrix.json       # regenerate evals/presets/baseline.yaml: each scenario's cheapest PASSING tier from a ladder / --models / --benchmark matrix JSON run
 t3 eval ci-account show                      # report which pass-stored OAuth account the CI secret should use, and why (--json, --starting-in)
 t3 eval ci-account switch                    # write the healthiest eligible account's token to the CI secret (--dry-run, --repo)
 t3 eval run --judge                           # also grade judge-opted scenarios with an LLM judge

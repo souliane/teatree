@@ -97,6 +97,23 @@ class PassAtKResult:
         return self.passes >= 1
 
 
+def validate_pass_at_k_args(*, k: int, require: str) -> None:
+    """Raise ``ValueError`` for a bad ``(k, require)`` pair.
+
+    Split out from :func:`run_pass_at_k` so a caller that wraps it in a
+    retry-on-exception layer (the escalation ladder's per-cell resilience) can
+    validate the policy ONCE, eagerly, before any dispatch — a config mistake
+    like ``k=0`` must fail loud immediately, never be absorbed as a retryable
+    runner error.
+    """
+    if k < 1:
+        msg = f"k must be >= 1, got {k}"
+        raise ValueError(msg)
+    if require not in {"any", "all"}:
+        msg = f"require must be 'any' or 'all', got {require!r}"
+        raise ValueError(msg)
+
+
 def run_pass_at_k(
     spec: EvalSpec,
     runner: TrialRunner,
@@ -104,12 +121,7 @@ def run_pass_at_k(
     k: int,
     require: str = "any",
 ) -> PassAtKResult:
-    if k < 1:
-        msg = f"k must be >= 1, got {k}"
-        raise ValueError(msg)
-    if require not in {"any", "all"}:
-        msg = f"require must be 'any' or 'all', got {require!r}"
-        raise ValueError(msg)
+    validate_pass_at_k_args(k=k, require=require)
     passes = 0
     skipped_all = True
     cost_usd = 0.0
