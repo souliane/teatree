@@ -10,6 +10,7 @@ table is a fail-loud :class:`MatrixTallyError` rather than a silent empty list.
 
 import dataclasses
 from html.parser import HTMLParser
+from typing import override
 
 TALLY_HEADER = ("model", "passed", "failed", "skipped", "errored", "cost")
 #: The renderer formats cost as ``$%.4f``, so anything below this is indistinguishable
@@ -52,12 +53,14 @@ class _TableRowExtractor(HTMLParser):
         self._row: list[str] | None = None
         self._cell: list[str] | None = None
 
-    def handle_starttag(self, tag: str, _attrs: list[tuple[str, str | None]]) -> None:
+    @override
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
         if tag == "tr":
             self._row = []
         elif tag in {"td", "th"} and self._row is not None:
             self._cell = []
 
+    @override
     def handle_endtag(self, tag: str) -> None:
         if tag in {"td", "th"} and self._cell is not None and self._row is not None:
             self._row.append("".join(self._cell).strip())
@@ -66,6 +69,7 @@ class _TableRowExtractor(HTMLParser):
             self.rows.append(self._row)
             self._row = None
 
+    @override
     def handle_data(self, data: str) -> None:
         if self._cell is not None:
             self._cell.append(data)
