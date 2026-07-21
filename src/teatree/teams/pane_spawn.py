@@ -41,6 +41,7 @@ from teatree.config.settings import UserSettings
 from teatree.core.cost import tier_rank
 from teatree.core.models import Task
 from teatree.core.models.ticket_worktree_checks import dispatch_worktree_path
+from teatree.llm.credentials import reject_ambient_base_url_redirect
 from teatree.skill_support.loading import SkillLoadingPolicy
 from teatree.teams.guardrails import assert_pane_claim_allowed, live_owner_blocks_pane
 from teatree.teams.panes import TeammatePane
@@ -122,6 +123,11 @@ def build_pane_options(task: Task, *, role: TeamRole) -> ClaudeAgentOptions:
     through the Agent-SDK param surface.
     """
     _reject_reviewer(role)
+    # A pane pins no credential, so its child inherits the ambient auth state AND an
+    # ambient base-URL redirect. Refused here for the same reason the headless
+    # ambient path refuses it: a long-lived autonomous maker is the last place a
+    # silently redirected plan-authenticated session should be able to open.
+    reject_ambient_base_url_redirect()
     skills = _resolve_pane_skills(task)
     system_context = _build_pane_system_context(task, skills=skills)
     cwd = _resolve_task_cwd(task)
@@ -135,7 +141,14 @@ def build_pane_options(task: Task, *, role: TeamRole) -> ClaudeAgentOptions:
     return ClaudeAgentOptions(
         # APPEND to the claude_code preset, never REPLACE it (the headless path's
         # rationale): a plain-str system_prompt would drop the preset.
-        system_prompt=SystemPromptPreset(type="preset", preset="claude_code", append=system_context),
+        # ``exclude_dynamic_sections`` keeps the cached prefix stable across a
+        # long-lived pane's turns in one worktree, where git status churns most.
+        system_prompt=SystemPromptPreset(
+            type="preset",
+            preset="claude_code",
+            append=system_context,
+            exclude_dynamic_sections=True,
+        ),
         model=_floor_teammate_model(
             resolve_spawn_model(
                 _MAKER_PANE_PHASE,

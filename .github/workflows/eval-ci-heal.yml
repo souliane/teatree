@@ -33,16 +33,16 @@
 #                  subset is NOT sharded — one leg runs the named subset loop.
 #   * shards     — how many parallel legs the full suite fans out across (default 8;
 #                  ignored when `scenarios` is non-empty).
-#   * credential — subscription_oauth (default, no per-token bill) | metered_api_key.
+#   * credential — subscription_oauth (default, no per-token bill) | api_key.
 #   * pr_ref     — the branch to check out and eval (default: the dispatched ref),
 #                  so the workflow definition can live on main while the eval runs
 #                  against a branch that predates it.
 #
-# AUTH — the `eval_credential` knob (mirrors eval.yml)
+# AUTH — `agent_harness_provider` selects the eval credential (mirrors eval.yml)
 #   Both repo secrets are wired so the `credential` input is a pure config flip:
 #   the DEFAULT subscription OAuth token (CLAUDE_CODE_OAUTH_TOKEN — no per-token
 #   bill, a depleting usage window) or the metered ANTHROPIC_API_KEY (per-token, no
-#   window). `T3_EVAL_CREDENTIAL` selects which one every eval chokepoint resolves,
+#   window). `T3_AGENT_HARNESS_PROVIDER` selects which one every eval chokepoint resolves,
 #   and docker forwards ONLY the selected credential's var into the container.
 #
 # NO-SILENT-GREEN
@@ -74,7 +74,7 @@ on:
         default: "8"
         type: string
       credential:
-        description: "Eval credential (subscription_oauth | metered_api_key). Default subscription_oauth — no per-token bill, a depleting usage window; metered_api_key is per-token cost, no window."
+        description: "Eval credential (subscription_oauth | api_key). Default subscription_oauth — no per-token bill, a depleting usage window; api_key is per-token cost, no window."
         required: false
         default: "subscription_oauth"
         type: string
@@ -186,7 +186,7 @@ jobs:
         env:
           CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
-          T3_EVAL_CREDENTIAL: ${{ inputs.credential || 'subscription_oauth' }}
+          T3_AGENT_HARNESS_PROVIDER: ${{ inputs.credential || 'subscription_oauth' }}
           GITHUB_SHA: ${{ needs.prepare.outputs.sha }}
           EVAL_SCENARIOS: ${{ inputs.scenarios }}
           EVAL_SHARD: ${{ matrix.shard }}

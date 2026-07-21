@@ -33,7 +33,7 @@ from teatree.eval.isolation import isolated_claude_env
 from teatree.eval.judge import ClaudeJudge
 from teatree.eval.models import EvalRun, EvalSpec, EvalToolCall, JudgeSpec, Matcher
 from teatree.eval.system_prompt_file import resolve_system_prompt
-from teatree.llm.credentials import AnthropicSubscriptionCredential
+from teatree.llm.credentials import AnthropicSubscriptionCredential, CredentialError
 
 
 def _runner_spec(tmp_path: Path) -> EvalSpec:
@@ -329,3 +329,34 @@ class TestCanaryNeverReachesChild:
         result = ApiInProcessRunner(ApiRunnerParams(workspace=project)).run(spec)
         assert CANARY not in result.raw_stdout
         assert CANARY not in result.raw_stderr
+
+
+class TestForbiddenVarRefusesTheIsolatedEvalEnv:
+    """The in-process eval env is a COPY of the parent's, so a redirect would ride along.
+
+    ``isolated_claude_env`` redirects the personal-context roots but otherwise inherits
+    ``os.environ``. An ambient ``ANTHROPIC_BASE_URL`` would therefore point a
+    subscription-authenticated eval child at a third-party endpoint. The subscription
+    credential's ``forbidden_vars`` refuses it, matching the dispatch lane's behaviour.
+    """
+
+    def test_subscription_eval_lane_refuses_a_base_url_redirect(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("ANTHROPIC_BASE_URL", "https://gateway.example.invalid/v1")
+        spec = AnthropicSubscriptionCredential().spec
+        with (
+            pytest.raises(CredentialError) as excinfo,
+            isolated_claude_env(spec.conflicting_vars, spec.forbidden_vars),
+        ):
+            pass  # pragma: no cover - the context must never open
+        assert "ANTHROPIC_BASE_URL" in str(excinfo.value)
+
+    def test_metered_eval_lane_still_runs_against_a_gateway(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("ANTHROPIC_BASE_URL", "https://gateway.example.invalid/v1")
+        with isolated_claude_env(("CLAUDE_CODE_OAUTH_TOKEN",), ()) as (env, _cwd):
+            assert env["ANTHROPIC_BASE_URL"] == "https://gateway.example.invalid/v1"
+
+    def test_an_empty_redirect_value_expresses_nothing(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("ANTHROPIC_BASE_URL", "  ")
+        spec = AnthropicSubscriptionCredential().spec
+        with isolated_claude_env(spec.conflicting_vars, spec.forbidden_vars) as (env, _cwd):
+            assert env is not None

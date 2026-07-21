@@ -33,15 +33,10 @@ from typing import TYPE_CHECKING, Any, cast
 
 from claude_agent_sdk import ClaudeAgentOptions, ResultMessage, query
 
-from teatree.eval.api_runner import (
-    CleanRoomConfig,
-    build_sdk_options,
-    classify_terminal_error,
-    env_float,
-    is_success_result_error,
-)
+from teatree.eval.api_runner import CleanRoomConfig, build_sdk_options, classify_terminal_error, is_success_result_error
 from teatree.eval.isolation import isolated_claude_env
 from teatree.eval.models import EvalRun, EvalSpec
+from teatree.eval.resource_caps import env_float
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
@@ -156,7 +151,7 @@ class ClaudeJudge:
             return JudgeVerdict(passed=True, skipped=True, rationale="claude binary not on PATH")
         # The judge is itself a Claude call, so route it through the SAME credential
         # chokepoint as make_runner: resolve the SELECTED eval credential (the
-        # ``eval_credential`` knob — default subscription OAuth, #2707 reversal),
+        # ``agent_harness_provider``'s call — default subscription OAuth),
         # export it (env wins, else the pass store), and FAIL LOUD with
         # CredentialError when none is resolvable. This runs only past the skip guards
         # above — a transcript-grade-only / keyless SKIP path (no judge block, skipped
@@ -175,7 +170,14 @@ class ClaudeJudge:
             self._budget.consume()
         prompt = build_judge_prompt(spec, run)
         try:
-            structured = asyncio.run(_drive_judge(prompt, spec.judge.model, credential.spec.conflicting_vars))
+            structured = asyncio.run(
+                _drive_judge(
+                    prompt,
+                    spec.judge.model,
+                    credential.spec.conflicting_vars,
+                    credential.spec.forbidden_vars,
+                )
+            )
         except TimeoutError:
             return JudgeVerdict(passed=False, skipped=False, rationale="judge timed out")
         except Exception as exc:
@@ -186,8 +188,13 @@ class ClaudeJudge:
         return _verdict_from_structured(structured)
 
 
-async def _drive_judge(prompt: str, judge_model: str, conflicting_vars: tuple[str, ...]) -> StructuredVerdict | None:
-    with isolated_claude_env(conflicting_vars) as (env, cwd):
+async def _drive_judge(
+    prompt: str,
+    judge_model: str,
+    conflicting_vars: tuple[str, ...],
+    forbidden_vars: tuple[str, ...] = (),
+) -> StructuredVerdict | None:
+    with isolated_claude_env(conflicting_vars, forbidden_vars) as (env, cwd):
         options = _judge_options(model=judge_model, cwd=cwd, env=env)
         return await asyncio.wait_for(_judge_result(prompt, options), timeout=WATCHDOG_SECONDS)
 

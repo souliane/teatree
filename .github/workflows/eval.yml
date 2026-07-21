@@ -54,11 +54,11 @@
 #   off the per-PR path. A maintainer can also run it on the host against the
 #   accumulated ledger: `t3 eval run --backend api --local --gate-cost-bounds`.
 #
-# AUTH — the `eval_credential` knob (default subscription OAuth, reverses #2707)
+# AUTH — `agent_harness_provider` selects the eval credential
 #   The `credential` input picks which credential the eval lane rides, wired into
-#   the eval step as `T3_EVAL_CREDENTIAL`; every eval chokepoint (make_runner, the
-#   judge, the docker `-e` passthrough) resolves it through
-#   `resolve_eval_credential`. Both repo secrets are wired so the knob is a pure
+#   the eval step as `T3_AGENT_HARNESS_PROVIDER`; every eval chokepoint (make_runner,
+#   the judge, the docker `-e` passthrough) resolves it through
+#   `resolve_eval_credential`. Both repo secrets are wired so the provider is a pure
 #   config flip:
 #     * DEFAULT `subscription_oauth` — the plan's `CLAUDE_CODE_OAUTH_TOKEN` (repo
 #       secret). Draws no per-token bill, so the metered lane that drained
@@ -70,9 +70,9 @@
 #       the `efforts` default is a SINGLE tier (`high`, not `low,medium,high`), the
 #       `trials` default is 2 (was 3), and per-account OAuth routing
 #       (`anthropic_oauth_pass_paths`) spreads load across subscription accounts.
-#     * `metered_api_key` — the `ANTHROPIC_API_KEY` repo secret (per-token cost, no
-#       usage window). Still selectable via the `credential` input; raise `efforts`
-#       / `trials` for a metered run since it has no window to throttle.
+#     * `api_key` — the `ANTHROPIC_API_KEY` repo secret (per-token cost, no usage
+#       window). Selectable via the `credential` input; raise `efforts` / `trials`
+#       for a metered run since it has no window to throttle.
 #   docker forwards ONLY the selected credential's var into the container, and the
 #   isolation env strips the conflicting one, so the lane authenticates exclusively
 #   with the selected credential.
@@ -120,7 +120,7 @@ on:
         default: ""
         type: string
       credential:
-        description: "Eval credential (subscription_oauth | metered_api_key). Default subscription_oauth (reverses #2707). subscription_oauth draws no per-token bill but a depleting usage window — keep the fan-out small; metered_api_key is per-token cost, no window."
+        description: "Eval credential (subscription_oauth | api_key). Default subscription_oauth. subscription_oauth draws no per-token bill but a depleting usage window — keep the fan-out small; api_key is per-token cost, no window."
         required: false
         default: "subscription_oauth"
         type: string
@@ -130,12 +130,12 @@ on:
         default: "high"
         type: string
       trials:
-        description: "Trials per scenario (pass@k). Default 2 — smaller than the pre-#2707-reversal 3 to keep the subscription lane inside the usage window. Raise it for a metered_api_key run (no window)."
+        description: "Trials per scenario (pass@k). Default 2 — small enough to keep the subscription lane inside the usage window. Raise it for an api_key run (no window)."
         required: false
         default: "2"
         type: string
       backend:
-        description: "Execution backend. Default 'api' — the in-process Agent SDK, which spawns the `claude` CLI child (teatree's default). 'anthropic_api' runs the SAME Claude model through the Anthropic Messages API DIRECTLY (no `claude` CLI child, #3222) — the CLI-free lane; it authenticates on ANTHROPIC_API_KEY, so pair it with `credential: metered_api_key`. The CLI install step is skipped for a non-'api' backend."
+        description: "Execution backend. Default 'api' — the in-process Agent SDK, which spawns the `claude` CLI child (teatree's default). 'anthropic_api' runs the SAME Claude model through the Anthropic Messages API DIRECTLY (no `claude` CLI child, #3222) — the CLI-free lane; it authenticates on ANTHROPIC_API_KEY, so pair it with `credential: api_key`. The CLI install step is skipped for a non-'api' backend."
         required: false
         default: "api"
         type: string
@@ -213,8 +213,8 @@ jobs:
       # triple the spend) — a manual workflow_dispatch run with an empty
       # `efforts` field falls back to the single 'high' tier. Pass a comma-
       # separated list (e.g. 'low,medium,high') to fan each {lane, shard} leg
-      # across multiple reasoning-effort tiers instead (a `metered_api_key` run
-      # has no window to throttle). An unknown lane or effort fails loud here
+      # across multiple reasoning-effort tiers instead (an `api_key` run has no
+      # window to throttle). An unknown lane or effort fails loud here
       # rather than producing an empty/invalid matrix. Both inputs are routed
       # through `env:` vars (never inlined) and validated by lane_matrix.py.
       - name: Compute the lane+shard+effort matrix
@@ -229,7 +229,7 @@ jobs:
           # suite. The 3-tier default is keyed on the schedule EVENT (not a
           # blanket `|| 'low,medium,high'`, which would fan a blank manual field
           # 3x and triple the spend). Override the `efforts` input explicitly
-          # for a metered_api_key run, which has no window to throttle.
+          # for an `api_key` run, which has no window to throttle.
           EVAL_EFFORTS: ${{ inputs.efforts || (github.event_name == 'schedule' && 'low,medium,high' || 'high') }}
         run: |
           MATRIX="$(uv run python scripts/eval/lane_matrix.py --lane "$EVAL_LANE" --efforts "$EVAL_EFFORTS")"
@@ -321,14 +321,14 @@ jobs:
       # SELECTED credential (below) is forwarded in via docker's `-e` pass-through.
       # `--backend "$EVAL_BACKEND"` threads the selected backend (DEFAULT 'api' — the
       # in-process Agent-SDK path); `EVAL_TRIALS` (default 2, below) drives `--trials`.
-      # Auth rides the `eval_credential` knob (`T3_EVAL_CREDENTIAL`, below) — DEFAULT the
-      # subscription OAuth token (reverses #2707; no per-token bill, right-sized fan-out
-      # to fit the plan's usage window), with the metered ANTHROPIC_API_KEY still
+      # Auth rides `agent_harness_provider` (`T3_AGENT_HARNESS_PROVIDER`, below) —
+      # DEFAULT the subscription OAuth token (no per-token bill, right-sized fan-out
+      # to fit the plan's usage window), with the metered ANTHROPIC_API_KEY
       # selectable via the `credential` input.
       # `--require-executed` is passed UNCONDITIONALLY (never key-gated): a collected-but-
       # all-skipped run exits non-zero, so the suite can never pass green with zero coverage.
       # The end-of-run cost summary (report.py `_cost_summary`) prints the spend ($0 on
-      # the subscription lane; API spend on a metered_api_key run).
+      # the subscription lane; API spend on an api_key run).
       #
       # `--transcript-html` makes THIS run emit the per-trial transcript report
       # itself, written from its own in-memory results — NO separate render step
@@ -357,17 +357,17 @@ jobs:
       - name: Behavioral eval suite (in Docker; pass@k; --require-executed always armed)
         uses: nick-fields/retry@ad984534de44a9489a53aefd81eb77f87c70dc60  # v4
         env:
-          # Both credentials are wired so the `credential` knob is a pure config flip.
-          # The DEFAULT lane (subscription_oauth, #2707 reversal) authenticates via
-          # CLAUDE_CODE_OAUTH_TOKEN; a metered_api_key run authenticates via
-          # ANTHROPIC_API_KEY. `T3_EVAL_CREDENTIAL` selects which one every eval
+          # Both credentials are wired so the `credential` input is a pure config flip.
+          # The DEFAULT lane (subscription_oauth) authenticates via
+          # CLAUDE_CODE_OAUTH_TOKEN; an api_key run authenticates via
+          # ANTHROPIC_API_KEY. `T3_AGENT_HARNESS_PROVIDER` selects which one every eval
           # chokepoint (make_runner, the judge, the docker `-e` passthrough) resolves,
           # and docker forwards only the SELECTED credential's var into the container.
           CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
-          T3_EVAL_CREDENTIAL: ${{ inputs.credential || 'subscription_oauth' }}
-          # Trials per scenario — default 2 (smaller than the pre-#2707-reversal 3) so
-          # the subscription lane stays inside the plan's usage window.
+          T3_AGENT_HARNESS_PROVIDER: ${{ inputs.credential || 'subscription_oauth' }}
+          # Trials per scenario — default 2, so the subscription lane stays inside
+          # the plan's usage window.
           EVAL_TRIALS: ${{ inputs.trials || '2' }}
           # This leg meters exactly ONE shard of ONE lane (the matrix values), so the
           # per-shard subset is bounded by the LANE's ceiling — clean_room ≤14,
@@ -384,7 +384,7 @@ jobs:
           # Execution backend — DEFAULT 'api' (the CLI-backed Agent SDK, teatree's
           # default). 'anthropic_api' runs the same Claude model through the Anthropic
           # Messages API directly, no `claude` CLI child (#3222); it authenticates on
-          # ANTHROPIC_API_KEY, so pair it with `credential: metered_api_key`.
+          # ANTHROPIC_API_KEY, so pair it with `credential: api_key`.
           EVAL_BACKEND: ${{ inputs.backend || 'api' }}
           # Optional single-model override — forces the WHOLE suite onto one model id,
           # overriding every scenario's own tier (single-trial). Empty (the default) is

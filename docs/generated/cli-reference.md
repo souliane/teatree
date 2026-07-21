@@ -1487,17 +1487,17 @@ Usage: t3 eval [OPTIONS] COMMAND [ARGS]...
 │                                  already-recorded in-session transcripts, $0 │
 │                                  extra), 'api' (RUN the Claude model fresh   │
 │                                  in-process via the Agent SDK, on the        │
-│                                  credential the eval_credential knob selects │
-│                                  — default subscription OAuth (#2707         │
-│                                  reversal), or the metered API key; the      │
-│                                  explicit opt-in), 'anthropic_api' (RUN the  │
-│                                  same Claude model fresh through the         │
-│                                  Anthropic Messages API DIRECTLY, no         │
-│                                  `claude` CLI child — the CLI-free lane,     │
-│                                  metered on ANTHROPIC_API_KEY), or           │
-│                                  'pydantic_ai' (RUN a non-Claude model       │
-│                                  through the provider-agnostic harness seam, │
-│                                  OrcaRouter BYOK).                           │
+│                                  credential agent_harness_provider selects — │
+│                                  default subscription OAuth, or the metered  │
+│                                  API key; the explicit opt-in),              │
+│                                  'anthropic_api' (RUN the same Claude model  │
+│                                  fresh through the Anthropic Messages API    │
+│                                  DIRECTLY, no `claude` CLI child — the       │
+│                                  CLI-free lane, metered on                   │
+│                                  ANTHROPIC_API_KEY), or 'pydantic_ai' (RUN a │
+│                                  non-Claude model through the                │
+│                                  provider-agnostic harness seam, OrcaRouter  │
+│                                  BYOK).                                      │
 │                                  [default: transcript]                       │
 │ --transcript-dir        PATH     Directory of <scenario>.jsonl transcripts   │
 │                                  for the AI lane (default: cwd).             │
@@ -1520,58 +1520,60 @@ Usage: t3 eval [OPTIONS] COMMAND [ARGS]...
 │ --help                           Show this message and exit.                 │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ╭─ Commands ───────────────────────────────────────────────────────────────────╮
-│ negative-control        Self-test the harness: plant a known violation and   │
-│                         assert it is caught (token-free).                    │
-│ benchmark               Benchmark cost AND pass-rate of model@effort         │
-│                         variants against the eval suite.                     │
-│ capture-subagent        Copy the freshest in-session sub-agent JSONL to a    │
-│                         scenario's transcript path.                          │
-│ transcript-replay       Replay a real session transcript against teatree     │
-│                         behavioural invariants.                              │
-│ coverage                Report per-skill behavioral-eval coverage: every     │
-│                         skill is covered or eval_exempt.                     │
-│ pinned-regressions      Run the deterministic regression corpus over the     │
-│                         real gate/checker code paths.                        │
-│ skill-command-validity  Validate every backticked ``t3 …`` in the skill docs │
-│                         against the live CLI registry.                       │
-│ skill-prose-judge       Score each skill's prose for clarity/actionability   │
-│                         via the LLM judge (ADVISORY).                        │
-│ audit                   Audit captured sessions into the durable ledger and  │
-│                         print per-session verdicts.                          │
-│ changed-scenarios       Print the scenario names a PR's STDIN diff touched;  │
-│                         exit --skip-code when none.                          │
-│ ci-trigger              Dispatch ``eval-ci-heal.yml`` for a PR branch and    │
-│                         print the head SHA it keys on.                       │
-│ ci-status               Resolve one eval-ci-heal run's verdict (and, on      │
-│                         failure, its triaged reds).                          │
-│ green-proof             Assert the merged eval-heal JSON proves a full-suite │
-│                         green (executed, 0 reds).                            │
-│ merged-prs-since        Exit 0 if any PR merged in the last --days, else     │
-│                         --skip-code (non-list payload exits 2).              │
-│ merge-summaries         Merge per-shard summary markdown into one dashboard  │
-│                         (to --out or stdout).                                │
-│ merge-summary-json      Merge per-shard eval-heal summary JSONs into one     │
-│                         §2.4 JSON (to --out or stdout).                      │
-│ prepare-transcript      Emit the per-scenario prompts for a LOCAL            │
-│                         transcript-backend eval run.                         │
-│ set-baseline            Regenerate the ``baseline`` preset file from a       │
-│                         model-matrix JSON run.                               │
-│ ladder                  Generate the cheapest-green baseline via a tier      │
-│                         escalation ladder (no full matrix).                  │
-│ history                 Show recent eval runs and per-scenario pass-rate     │
-│                         over time.                                           │
-│ list                    List discovered eval scenarios as a table (Name,     │
-│                         Scenario, Agent, File, Asserts).                     │
-│ run                     Run one scenario by name, or all scenarios when no   │
-│                         name is given.                                       │
-│ ci-heal                 Operator control of the CI-eval self-healing loop    │
-│                         (open sessions, list, dry-run advance).              │
-│ ci-account              Inspect / switch the Anthropic account CI's OAuth    │
-│                         secret holds.                                        │
-│ corpus                  Ground-truth corpus curation: list, inspect, and     │
-│                         grade captured sessions.                             │
-│ label                   Corpus-label curation: list nominations, scaffold a  │
-│                         label, review the corpus.                            │
+│ negative-control          Self-test the harness: plant a known violation and │
+│                           assert it is caught (token-free).                  │
+│ benchmark                 Benchmark cost AND pass-rate of model@effort       │
+│                           variants against the eval suite.                   │
+│ capture-subagent          Copy the freshest in-session sub-agent JSONL to a  │
+│                           scenario's transcript path.                        │
+│ transcript-replay         Replay a real session transcript against teatree   │
+│                           behavioural invariants.                            │
+│ coverage                  Report per-skill behavioral-eval coverage: every   │
+│                           skill is covered or eval_exempt.                   │
+│ pinned-regressions        Run the deterministic regression corpus over the   │
+│                           real gate/checker code paths.                      │
+│ skill-command-validity    Validate every backticked ``t3 …`` in the skill    │
+│                           docs against the live CLI registry.                │
+│ skill-prose-judge         Score each skill's prose for clarity/actionability │
+│                           via the LLM judge (ADVISORY).                      │
+│ audit                     Audit captured sessions into the durable ledger    │
+│                           and print per-session verdicts.                    │
+│ changed-scenarios         Print the scenario names a PR's STDIN diff         │
+│                           touched; exit --skip-code when none.               │
+│ ci-trigger                Dispatch ``eval-ci-heal.yml`` for a PR branch and  │
+│                           print the head SHA it keys on.                     │
+│ ci-status                 Resolve one eval-ci-heal run's verdict (and, on    │
+│                           failure, its triaged reds).                        │
+│ green-proof               Assert the merged eval-heal JSON proves a          │
+│                           full-suite green (executed, 0 reds).               │
+│ merged-prs-since          Exit 0 if any PR merged in the last --days, else   │
+│                           --skip-code (non-list payload exits 2).            │
+│ verify-benchmark-publish  Exit 1 when any collected benchmark shard is not   │
+│                           backed by real metered spend.                      │
+│ merge-summaries           Merge per-shard summary markdown into one          │
+│                           dashboard (to --out or stdout).                    │
+│ merge-summary-json        Merge per-shard eval-heal summary JSONs into one   │
+│                           §2.4 JSON (to --out or stdout).                    │
+│ prepare-transcript        Emit the per-scenario prompts for a LOCAL          │
+│                           transcript-backend eval run.                       │
+│ set-baseline              Regenerate the ``baseline`` preset file from a     │
+│                           model-matrix JSON run.                             │
+│ ladder                    Generate the cheapest-green baseline via a tier    │
+│                           escalation ladder (no full matrix).                │
+│ history                   Show recent eval runs and per-scenario pass-rate   │
+│                           over time.                                         │
+│ list                      List discovered eval scenarios as a table (Name,   │
+│                           Scenario, Agent, File, Asserts).                   │
+│ run                       Run one scenario by name, or all scenarios when no │
+│                           name is given.                                     │
+│ ci-heal                   Operator control of the CI-eval self-healing loop  │
+│                           (open sessions, list, dry-run advance).            │
+│ ci-account                Inspect / switch the Anthropic account CI's OAuth  │
+│                           secret holds.                                      │
+│ corpus                    Ground-truth corpus curation: list, inspect, and   │
+│                           grade captured sessions.                           │
+│ label                     Corpus-label curation: list nominations, scaffold  │
+│                           a label, review the corpus.                        │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -1876,7 +1878,7 @@ Usage: t3 eval ci-trigger [OPTIONS]
 │    --scenarios         TEXT  Comma-joined scenario names to run (the red     │
 │                              subset). Empty (default) = the full suite.      │
 │    --credential        TEXT  Eval credential: subscription_oauth (default,   │
-│                              no per-token bill) | metered_api_key.           │
+│                              no per-token bill) | api_key (metered).         │
 │                              [default: subscription_oauth]                   │
 │    --repo              TEXT  owner/repo the eval-ci-heal workflow lives in.  │
 │                              [default: souliane/teatree]                     │
@@ -1937,6 +1939,23 @@ Usage: t3 eval merged-prs-since [OPTIONS]
 │                                [default: 1]                                  │
 │    --now              TEXT     Override 'now' (ISO-8601); for testing.       │
 │    --help                      Show this message and exit.                   │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+#### `t3 eval verify-benchmark-publish`
+
+```
+Usage: t3 eval verify-benchmark-publish [OPTIONS] DASHBOARD_DIR
+
+ Exit 1 when any collected benchmark shard is not backed by real metered spend.
+
+╭─ Arguments ──────────────────────────────────────────────────────────────────╮
+│ *    dashboard_dir      PATH  Directory holding the collected                │
+│                               eval-benchmark-*.html shards.                  │
+│                               [required]                                     │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                  │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -2165,12 +2184,15 @@ Usage: t3 eval run [OPTIONS] [NAME]
  its on-disk transcript — ``$0`` extra, no model run (produce the transcripts
  in-session via ``t3 eval prepare-transcript`` first for the prompts + expected
  paths). ``--backend api`` RUNS the model fresh in-process via the Agent SDK
- (which spawns the ``claude`` CLI as its child), on the credential the
- ``eval_credential`` knob selects — default subscription OAuth (#2707
- reversal),
- or the metered API key; CI passes ``--backend api`` explicitly via the
- standalone ``eval.yml`` job. ``--trials``/``--models`` require the fresh-run
- ``api`` runner and reject the transcript backend.
+ (which spawns the ``claude`` CLI as its child), on the credential
+ ``agent_harness_provider`` selects — default subscription OAuth, or the
+ metered
+ API key; CI passes ``--backend api`` explicitly via the standalone
+ ``eval.yml``
+ job. ``--credential {subscription_oauth,api_key}`` pins THIS run's credential
+ instead, so an operator on an OAuth loop can run a one-off metered eval.
+ ``--trials``/``--models`` require the fresh-run ``api`` runner and reject the
+ transcript backend.
 
  ``--require-executed`` fails the run when the suite collected scenarios but
  executed none (every scenario skipped — typically ``claude`` not on PATH /
@@ -2373,24 +2395,24 @@ Usage: t3 eval run [OPTIONS] [NAME]
 │                                                     'api' (RUN the model     │
 │                                                     fresh in-process via the │
 │                                                     Agent SDK, on the        │
-│                                                     credential the           │
-│                                                     eval_credential knob     │
+│                                                     credential               │
+│                                                     agent_harness_provider   │
 │                                                     selects — default        │
-│                                                     subscription OAuth       │
-│                                                     (#2707 reversal), or the │
-│                                                     metered API key; runs    │
-│                                                     in-container by default  │
-│                                                     or directly on the host  │
-│                                                     with --local) or         │
-│                                                     'anthropic_api' (RUN the │
-│                                                     same Claude model fresh  │
-│                                                     through the Anthropic    │
-│                                                     Messages API DIRECTLY,   │
-│                                                     no `claude` CLI child —  │
-│                                                     the CLI-free lane for a  │
-│                                                     harness that forbids the │
-│                                                     Claude Code CLI, metered │
-│                                                     on ANTHROPIC_API_KEY) or │
+│                                                     subscription OAuth, or   │
+│                                                     the metered API key;     │
+│                                                     runs in-container by     │
+│                                                     default or directly on   │
+│                                                     the host with --local)   │
+│                                                     or 'anthropic_api' (RUN  │
+│                                                     the same Claude model    │
+│                                                     fresh through the        │
+│                                                     Anthropic Messages API   │
+│                                                     DIRECTLY, no `claude`    │
+│                                                     CLI child — the CLI-free │
+│                                                     lane for a harness that  │
+│                                                     forbids the Claude Code  │
+│                                                     CLI, metered on          │
+│                                                     ANTHROPIC_API_KEY) or    │
 │                                                     'pydantic_ai' (RUN a     │
 │                                                     non-Claude model through │
 │                                                     the provider-agnostic    │
@@ -2405,6 +2427,21 @@ Usage: t3 eval run [OPTIONS] [NAME]
 │                                                     transcripts for the      │
 │                                                     'transcript' backend     │
 │                                                     (default: cwd).          │
+│ --credential                               TEXT     Authenticate THIS run on │
+│                                                     one credential           │
+│                                                     (subscription_oauth |    │
+│                                                     api_key), overriding     │
+│                                                     agent_harness_provider   │
+│                                                     for this process only.   │
+│                                                     subscription_oauth draws │
+│                                                     no per-token bill but    │
+│                                                     rides the plan's         │
+│                                                     depleting usage window;  │
+│                                                     api_key is per-token     │
+│                                                     cost, no window. Omit to │
+│                                                     follow the configured    │
+│                                                     provider (default:       │
+│                                                     subscription OAuth).     │
 │ --require-executed                                  Fail when the suite      │
 │                                                     collected scenarios but  │
 │                                                     executed none (all       │

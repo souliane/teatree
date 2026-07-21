@@ -17,15 +17,15 @@
 #   changed) the `eval` job is skipped entirely — a PR that touches no scenario
 #   spends zero API budget here.
 #
-# AUTH — the `eval_credential` knob (default subscription OAuth, reverses #2707)
-#   The eval step wires `T3_EVAL_CREDENTIAL` (default `subscription_oauth`) and both
+# AUTH — `agent_harness_provider` selects the eval credential
+#   The eval step wires `T3_AGENT_HARNESS_PROVIDER` (`subscription_oauth`) and both
 #   repo secrets; every eval chokepoint resolves the selected credential through
 #   `resolve_eval_credential`. The DEFAULT rides the subscription
 #   `CLAUDE_CODE_OAUTH_TOKEN` (no per-token bill). This PR lane is inherently tiny —
 #   only the scenarios a PR changed, at a SINGLE trial (`--trials 1`) with
-#   escalate-on-fail — so it barely touches the subscription's usage window.
-#   `metered_api_key` stays selectable (flip `T3_EVAL_CREDENTIAL`). Until the
-#   selected credential's secret is set the eval job correctly fails RED.
+#   escalate-on-fail — so it barely touches the subscription's usage window. The
+#   metered `api_key` provider stays selectable. Until the selected credential's
+#   secret is set the eval job correctly fails RED.
 #
 # NO-SILENT-GREEN
 #   `--require-executed` is passed unconditionally and `claude --version` is
@@ -169,12 +169,12 @@ jobs:
       - name: Metered behavioral eval — the changed scenarios (in Docker)
         uses: nick-fields/retry@ad984534de44a9489a53aefd81eb77f87c70dc60  # v4
         env:
-          # Both credentials wired so the knob is a pure config flip; the DEFAULT
-          # rides CLAUDE_CODE_OAUTH_TOKEN (subscription, #2707 reversal), docker
-          # forwards only the selected one and the isolation env strips the other.
+          # Both credentials wired so the provider is a pure config flip; the
+          # DEFAULT rides CLAUDE_CODE_OAUTH_TOKEN (subscription), docker forwards
+          # only the selected one and the isolation env strips the other.
           CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
-          T3_EVAL_CREDENTIAL: subscription_oauth
+          T3_AGENT_HARNESS_PROVIDER: subscription_oauth
           EVAL_NAMES: ${{ needs.detect.outputs.names }}
         with:
           timeout_minutes: 80

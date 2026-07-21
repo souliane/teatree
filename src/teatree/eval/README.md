@@ -21,10 +21,11 @@ The short version of the split:
 - **evals** — a live model + grader, run on a cadence and fail-loud (the
   `--backend api` AI lane, `--judge`/`judge:` oracles, `benchmark`,
   `skill-prose-judge`). The `api` backend RUNS the model fresh on the credential
-  the `eval_credential` knob selects — DEFAULT the subscription OAuth token
-  (reversing #2707; no per-token bill, so the CI lane is right-sized — single
-  effort tier, smaller trial count, per-account OAuth routing — to stay inside the
-  plan's usage window), with the metered `ANTHROPIC_API_KEY` still selectable; the
+  `agent_harness_provider` selects — DEFAULT the subscription OAuth token (no
+  per-token bill, so the CI lane is right-sized — single effort tier, smaller trial
+  count, per-account OAuth routing — to stay inside the plan's usage window), with
+  the metered `ANTHROPIC_API_KEY` selectable per run via `t3 eval run --credential
+  api_key`; the
   `anthropic_api` backend runs the SAME Claude model through the Anthropic Messages
   API DIRECTLY (no `claude` CLI child, #3222 — the CLI-free lane, metered on
   `ANTHROPIC_API_KEY`); the `transcript` backend REUSES a recorded run and

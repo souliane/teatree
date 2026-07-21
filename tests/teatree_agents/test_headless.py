@@ -1326,6 +1326,10 @@ class TestBuildOptions(TestCase):
             "type": "preset",
             "preset": "claude_code",
             "append": "my context",
+            # Prompt caching on this lane is CLI-internal with no ``cache_control``
+            # surface, so prefix stability is the only available lever: the preset's
+            # per-run sections (cwd, git status) must not sit inside the cached prefix.
+            "exclude_dynamic_sections": True,
         }
 
 

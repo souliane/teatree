@@ -30,9 +30,9 @@ Two buckets under one umbrella. The free deterministic lanes are **tests** — t
 | kind | lane | command surface | cost |
 |------|------|-----------------|------|
 | **test** (deterministic, no model) | pinned-regressions (regression corpus) | `t3 eval pinned-regressions` | free |
-| **eval** (fresh model run) | AI/trajectory (api, CI cadence) | `t3 eval run --backend api` | on the `eval_credential` credential — default subscription OAuth (#2707 reversal; right-sized CI lane), metered `ANTHROPIC_API_KEY` selectable |
+| **eval** (fresh model run) | AI/trajectory (api, CI cadence) | `t3 eval run --backend api` | on the `agent_harness_provider` credential — default subscription OAuth (right-sized CI lane), metered `ANTHROPIC_API_KEY` selectable via `--credential api_key` |
 
-The default backend is `transcript` — it REUSES an already-recorded run by grading its on-disk transcript ($0 extra, no model run); the in-session step this skill drives produces that transcript (`prepare-transcript` → dispatch sub-agent → `capture-subagent` → `run --backend transcript`). The `--backend api` path RUNS the model fresh on the credential the `eval_credential` knob selects — DEFAULT the subscription OAuth token (reversing #2707; no per-token bill, so the CI lane is right-sized — single effort tier, smaller trial count, per-account OAuth routing — to stay inside the plan's usage window), with the metered `ANTHROPIC_API_KEY` still selectable. It is **never** a silent fallback — the `api` backend runs only when passed explicitly (CI's cadence). The `transcript` backend runs no model, so it authenticates nothing.
+The default backend is `transcript` — it REUSES an already-recorded run by grading its on-disk transcript ($0 extra, no model run); the in-session step this skill drives produces that transcript (`prepare-transcript` → dispatch sub-agent → `capture-subagent` → `run --backend transcript`). The `--backend api` path RUNS the model fresh on the credential `agent_harness_provider` selects — DEFAULT the subscription OAuth token (no per-token bill, so the CI lane is right-sized — single effort tier, smaller trial count, per-account OAuth routing — to stay inside the plan's usage window), with the metered `ANTHROPIC_API_KEY` selectable per run via `--credential api_key`. It is **never** a silent fallback — the `api` backend runs only when passed explicitly (CI's cadence). The `transcript` backend runs no model, so it authenticates nothing.
 
 ## What this skill auto-drives
 
@@ -58,7 +58,7 @@ The captured transcript is the on-disk session schema (`isSidechain`/`agentId`, 
 t3 eval
 t3 eval --transcript-dir ./transcripts
 
-# Explicit fresh-run opt-in (CI; on the eval_credential credential, default subscription OAuth).
+# Explicit fresh-run opt-in (CI; on the agent_harness_provider credential, default subscription OAuth).
 t3 eval --backend api
 ```
 

@@ -88,7 +88,17 @@ def _launch_claude(
             cmd.extend(["--plugin-dir", str(teatree_root)])
 
     if task:
-        cmd.extend(["-p", task])
+        # `-p` turns this exec into a headless print-mode run: the operator typed the
+        # command, but nobody is present for the run itself. So this branch — unlike
+        # the interactive one below it — pins the unattended mode and takes the same
+        # base-URL guard as every other seam that spawns a child no human can watch.
+        from teatree.agents import permission_modes  # noqa: PLC0415 — deferred: keeps CLI startup light
+        from teatree.llm.credentials import (  # noqa: PLC0415 — deferred: keeps CLI startup light
+            reject_ambient_base_url_redirect,
+        )
+
+        reject_ambient_base_url_redirect()
+        cmd.extend(["-p", task, "--permission-mode", permission_modes.UNATTENDED])
 
     typer.echo(f"Launching Claude Code in {project_root}...")
     os.execvp(claude_bin, cmd)  # noqa: S606 — argv list, no shell

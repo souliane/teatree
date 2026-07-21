@@ -68,7 +68,7 @@ from teatree.llm.rate_limits import (
 from teatree.utils.eval_container import in_container
 
 if TYPE_CHECKING:
-    from teatree.config.agent_enums import EvalCredential
+    from teatree.config.agent_enums import AgentHarnessProvider
 
 logger = logging.getLogger(__name__)
 
@@ -396,17 +396,7 @@ def resolve_subscription_credential(*, scope: str = GLOBAL_SCOPE) -> AnthropicSu
     it never lands on a dead default. The scope is threaded in as ``missing_context`` so
     the loud error names it without this factory itself having to fail eagerly (a caller
     that only inspects or patches the credential is never blocked at construction).
-
-    Inside the ephemeral eval container (:func:`~teatree.utils.eval_container.in_container`),
-    the per-account DB routing is short-circuited: the HOST already selected an
-    account and forwarded its resolved ``CLAUDE_CODE_OAUTH_TOKEN`` via ``docker
-    run -e`` (see ``teatree.cli.eval.docker``), so the credential's own
-    env-then-``pass`` resolution picks that up with no DB read — the container's
-    SQLite has zero tables (never migrated), so a DB query there is a guaranteed
-    ``OperationalError``, not a degraded-but-safe read.
     """
-    if in_container():
-        return AnthropicSubscriptionCredential()
     override = _SELECTOR.select(TokenKind.OAUTH, scope)
     missing_context = None if override is not None else _empty_routing_note("OAuth", scope)
     return AnthropicSubscriptionCredential(pass_path_override=override, missing_context=missing_context)
@@ -432,13 +422,7 @@ def resolve_api_key_credential(*, scope: str = GLOBAL_SCOPE) -> AnthropicApiKeyC
     :meth:`~teatree.llm.credentials.Credential.resolve` fails loud naming the setting
     (and the empty scope, threaded in via ``missing_context``) rather than reading a
     dead default.
-
-    Inside the ephemeral eval container, the per-account DB routing is
-    short-circuited the same way as :func:`resolve_subscription_credential` —
-    the HOST-forwarded ``ANTHROPIC_API_KEY`` env var is reused instead.
     """
-    if in_container():
-        return AnthropicApiKeyCredential()
     override = _SELECTOR.select(TokenKind.API_KEY, scope)
     missing_context = None if override is not None else _empty_routing_note("API-key", scope)
     return AnthropicApiKeyCredential(pass_path_override=override, missing_context=missing_context)
@@ -453,16 +437,62 @@ def _active_overlay_scope() -> str:
     return os.environ.get("T3_OVERLAY_NAME", "") or GLOBAL_SCOPE
 
 
-def resolve_eval_credential(*, kind: "EvalCredential | None" = None, scope: str | None = None) -> Credential:
-    """The credential the automated eval lane rides, selected by the ``eval_credential`` knob.
+#: Appended to the loud failure when NO credential var reached the eval container. The
+#: credential's own message names ``anthropic_oauth_pass_paths``, a host-side routing
+#: setting the container cannot read — so the actionable remedy is named here instead.
+_CONTAINER_MISSING_NOTE = (
+    "(inside the eval container: the host forwarded no Anthropic credential var — "
+    "fix the host's credential selection, not any in-container config)"
+)
 
-    THE single seam that reverses #2707's metered-exclusive lock: the eval backend,
-    the judge, and the Docker auth-passthrough all resolve their credential HERE, so
-    flipping the knob switches every eval chokepoint at once (never a per-call-site
-    edit). ``kind`` (an explicit :class:`~teatree.config.enums.EvalCredential`) wins;
-    ``None`` (the default) reads the DB-home ``eval_credential`` setting via
-    :func:`~teatree.config.get_effective_settings` (``T3_EVAL_CREDENTIAL`` env → the
-    ``ConfigSetting`` store → the default :attr:`EvalCredential.SUBSCRIPTION_OAUTH`).
+
+def _forwarded_container_credential() -> Credential:
+    """The credential the HOST forwarded into the ephemeral eval container.
+
+    Inside the container the per-account DB routing is unavailable — the container's
+    SQLite has zero tables (never migrated), so a ``ConfigSetting`` query there is a
+    guaranteed ``OperationalError``, not a degraded-but-safe read.
+
+    What makes the sniff sound is the FORWARDING, not the export: ``docker.py`` builds
+    its pass-through flags from ``auth_env_vars = (credential.spec.env_var,)`` — the
+    SELECTED credential's var alone — so exactly one Anthropic credential var crosses
+    into the container. (``Credential.export`` does NOT strip its conflict; on a CI
+    runner holding both secrets the HOST process legitimately carries both. Only the
+    single-var forward narrows it.) A change that ever forwards a second credential var
+    would silently flip the container's credential kind, so that one-var invariant is
+    the thing to preserve.
+
+    With NO credential var forwarded the subscription credential is returned and its
+    own ``resolve`` fails loud — correct, since a container with no forwarded token
+    can do nothing useful.
+    """
+    if os.environ.get(AnthropicApiKeyCredential.spec.env_var):
+        return AnthropicApiKeyCredential()
+    return AnthropicSubscriptionCredential(missing_context=_CONTAINER_MISSING_NOTE)
+
+
+def resolve_eval_credential(*, kind: "AgentHarnessProvider | None" = None, scope: str | None = None) -> Credential:
+    """The credential the automated eval lane rides, derived from ``agent_harness_provider``.
+
+    THE single seam every eval chokepoint (the eval backend, the judge, the Docker
+    auth-passthrough) resolves through, so the lane's credential switches in one place
+    rather than per call site. ``kind`` is the per-run override ``t3 eval run
+    --credential`` supplies; ``None`` (the default) reads the DB-home
+    ``agent_harness_provider`` setting via :func:`~teatree.config.get_effective_settings`.
+
+    The provider→credential mapping:
+
+    *   ``None`` (no provider pinned) → subscription OAuth. The eval lane's default: it
+        draws no per-token bill, so the automated lane MUST stay right-sized (a single
+        effort tier, a smaller trial count, per-account routing) or a full fan-out
+        throttles the plan's 5h/7d window mid-run AND starves the main loop.
+    *   :attr:`AgentHarnessProvider.SUBSCRIPTION_OAUTH` → subscription OAuth.
+    *   :attr:`AgentHarnessProvider.API_KEY` / :attr:`AgentHarnessProvider.ANTHROPIC_API`
+        → the metered ``ANTHROPIC_API_KEY`` (per-token cost, no usage window).
+    *   :attr:`AgentHarnessProvider.ORCA_ROUTER_BYOK` → subscription OAuth with a
+        WARNING: the eval lane authenticates against Anthropic, so a BYOK router pin
+        has no eval credential of its own; falling back keeps the lane runnable rather
+        than failing a validly-configured ``pydantic_ai`` deployment.
 
     ``scope`` (``None``, the default) resolves to the ACTIVE OVERLAY (``T3_OVERLAY_NAME``)
     via :func:`_active_overlay_scope`, so the per-account routing reads the overlay-scoped
@@ -476,19 +506,28 @@ def resolve_eval_credential(*, kind: "EvalCredential | None" = None, scope: str 
     fallback still finds an overlay-scoped account — so a bare ``t3 eval`` shell routes
     without a manual ``CLAUDE_CODE_OAUTH_TOKEN`` export.
 
-    :attr:`EvalCredential.SUBSCRIPTION_OAUTH` → :func:`resolve_subscription_credential`
-    (per-account OAuth routing via ``anthropic_oauth_pass_paths`` for the same
-    *scope*, spreading a right-sized lane across accounts so its usage window is not
-    throttled). :attr:`EvalCredential.METERED_API_KEY` → :func:`resolve_api_key_credential`.
-    Imported at call time so the eval CLI import chain stays Django-free until Django
-    is up (the resolvers already require it).
+    In-container the whole derivation is short-circuited by
+    :func:`_forwarded_container_credential`. The settings import is deferred so the eval
+    CLI import chain stays Django-free until Django is up (the resolvers already
+    require it).
     """
-    from teatree.config import EvalCredential, get_effective_settings  # noqa: PLC0415 — deferred: call-time import
+    if in_container():
+        return _forwarded_container_credential()
+    from teatree.config import (  # noqa: PLC0415 — deferred: call-time import
+        AgentHarnessProvider,
+        get_effective_settings,
+    )
 
     if scope is None:
         scope = _active_overlay_scope()
     if kind is None:
-        kind = get_effective_settings().eval_credential
-    if kind is EvalCredential.METERED_API_KEY:
+        kind = get_effective_settings().agent_harness_provider
+    if kind in {AgentHarnessProvider.API_KEY, AgentHarnessProvider.ANTHROPIC_API}:
         return resolve_api_key_credential(scope=scope)
+    if kind is AgentHarnessProvider.ORCA_ROUTER_BYOK:
+        logger.warning(
+            "agent_harness_provider=%s pins a non-Anthropic router; the eval lane "
+            "falls back to the subscription OAuth credential",
+            kind.value,
+        )
     return resolve_subscription_credential(scope=scope)
