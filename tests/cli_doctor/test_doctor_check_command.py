@@ -53,6 +53,15 @@ def _isolate_environment_dependent_gates(monkeypatch):
     # tests/cli_doctor/test_configured_review_skills_check.py; pin it to a pass
     # here so this aggregation smoke test stays deterministic.
     monkeypatch.setattr(teatree_cli_doctor, "_check_configured_review_skills", lambda: True)
+    # The git-hooks gate probes the checkouts the runner really lives in — on a CI
+    # runner (and any fresh clone) `.git/hooks` holds only samples, so it FAILs
+    # deterministically off-box. It is exercised end-to-end in
+    # tests/teatree_cli/doctor/test_bootstrap_checks.py against staged checkouts;
+    # pin it to a pass here so this aggregation smoke test stays deterministic.
+    monkeypatch.setattr(
+        "teatree.cli.doctor.checks_bootstrap._check_git_hooks_installed",
+        lambda: True,
+    )
 
 
 class TestDoctorCheckCommand:
