@@ -54,6 +54,7 @@ GOLDEN_USER_SETTINGS_FIELDS: frozenset[str] = frozenset(
         "bulk_close_threshold",
         "check_updates",
         "chrome_devtools_mcp_enabled",
+        "chrome_devtools_headless",
         "claude_chrome",
         "clean_ignore",
         "colleague_repo_url_pattern",

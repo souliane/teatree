@@ -33,12 +33,15 @@ _MIN_MOUNT_FIELDS = 3
 _AGENT_ROLE = "worker"
 _CLAUDE_PLUGIN_ID = "t3@souliane"
 
-# The external pyright-lsp plugin + the language-server binary it drives. ADVISORY
-# only (a productivity aid, never a worker gate): `t3 setup` registers + enables the
-# plugin, and the npm `pyright` package (baked into the image) provides
-# `pyright-langserver`, which the plugin execs to deliver live type diagnostics.
+# The external pyright-lsp plugin + the language-server binary it drives. `t3 setup`
+# registers + enables the plugin AND provisions `pyright-langserver` (npm `pyright`),
+# which the plugin execs to deliver live type diagnostics. Enabled-but-unprovisioned
+# is a HARD FAIL (#3568): the plugin then silently never starts, so a green doctor
+# would misreport a dead LSP as healthy. A merely-disabled plugin is a config choice
+# and stays an advisory WARN.
 _PYRIGHT_PLUGIN_ID = "pyright-lsp@claude-plugins-official"
 _PYRIGHT_LANGSERVER = "pyright-langserver"
+_PYRIGHT_INSTALL_CMD = "npm install -g --prefix ~/.local pyright"
 _DEFAULT_WORKER_FLOOR_GIB = 4
 _BYTES_PER_GIB = 1024**3
 # cgroup v1's "unlimited" is a near-2**63 page-aligned sentinel, and cgroup v2 uses
@@ -247,17 +250,17 @@ def _check_worker_skills_present(*, role: str | None = None, home: Path | None =
 
 
 def _check_pyright_lsp_plugin(*, home: Path | None = None, which: Callable[[str], str | None] | None = None) -> bool:
-    """ADVISORY: verify the pyright-lsp plugin is enabled AND its langserver is on PATH.
+    """FAIL when the pyright-lsp plugin is enabled but its langserver is not provisioned (#3568).
 
-    pyright-lsp gives factory agents LIVE pyright type diagnostics while coding, so a
-    type error surfaces in-session instead of only at CI. It is a productivity aid,
-    NOT a worker gate — every finding is a WARN and this NEVER gates the doctor exit
-    code (always returns ``True``), matching the sibling advisory checks. ``t3 setup``
-    registers + enables the plugin; its language server (``pyright-langserver``, from
-    the npm ``pyright`` package baked into the image) must be on PATH for the plugin to
-    start. WARNs with an actionable remediation when either is missing. ``which`` is
-    injectable for tests (defaults to :func:`shutil.which`). Crash-proof — any read
-    error degrades to a silent pass so this diagnostic never aborts the doctor run.
+    pyright-lsp gives factory agents LIVE pyright type diagnostics while coding. The
+    enabled plugin execs ``pyright-langserver`` (npm ``pyright``); when that binary is
+    missing the LSP silently never starts, so the enabled-but-unprovisioned state is a
+    HARD FAIL (returns ``False``) under the epic #3445 "enabled but not provisioned →
+    FAIL" principle — otherwise a green doctor misreports a dead LSP as healthy. The
+    plugin merely being disabled is a config choice, so that stays an advisory WARN
+    (returns ``True``). ``which`` is injectable for tests (defaults to
+    :func:`shutil.which`). Crash-proof — any read error degrades to a silent pass so
+    this diagnostic never aborts the doctor run.
     """
     resolve = shutil.which if which is None else which
     try:
@@ -273,8 +276,9 @@ def _check_pyright_lsp_plugin(*, home: Path | None = None, which: Callable[[str]
         return True
     if resolve(_PYRIGHT_LANGSERVER) is None:
         typer.echo(
-            f"WARN  pyright-lsp plugin is enabled but `{_PYRIGHT_LANGSERVER}` is not on PATH — the "
-            "language server cannot start, so there are no live type diagnostics. Install it with "
-            "`npm install -g pyright` (advisory only; nothing is gated)."
+            f"FAIL  pyright-lsp plugin is enabled but `{_PYRIGHT_LANGSERVER}` is not on PATH — the "
+            "language server cannot start, so the enabled LSP silently delivers no live type "
+            f"diagnostics. Install it: `{_PYRIGHT_INSTALL_CMD}` (or re-run `t3 setup`)."
         )
+        return False
     return True

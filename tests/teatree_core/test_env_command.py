@@ -1,6 +1,8 @@
 """Integration tests for ``t3 env`` management command."""
 
+import json
 from dataclasses import dataclass
+from io import StringIO
 from pathlib import Path
 from unittest.mock import patch
 
@@ -33,6 +35,7 @@ class TestEnvShow(TestCase):
     def test_show_renders_env_from_db(self) -> None:
         ticket = _make_ticket()
         wt = _make_worktree(ticket)
+        out = StringIO()
         with (
             patch("teatree.core.management.commands.env.resolve_worktree", return_value=wt),
             patch(
@@ -40,25 +43,37 @@ class TestEnvShow(TestCase):
                 return_value=_FakeSpec("# header\n\nFOO=bar\nBAZ=qux"),
             ),
         ):
-            call_command("env", "show", "--path", "/tmp/wt/repo")
+            result = call_command("env", "show", "--path", "/tmp/wt/repo", stdout=out)
+        assert result == 0
+        rendered = out.getvalue()
+        # Comment/blank lines are dropped; each KEY=VALUE pair is printed verbatim.
+        assert "FOO=bar" in rendered
+        assert "BAZ=qux" in rendered
+        assert "# header" not in rendered
 
     def test_show_json_format(self) -> None:
         ticket = _make_ticket()
         wt = _make_worktree(ticket)
+        out = StringIO()
         with (
             patch("teatree.core.management.commands.env.resolve_worktree", return_value=wt),
             patch("teatree.core.management.commands.env.render_env_cache", return_value=_FakeSpec("FOO=bar")),
         ):
-            call_command("env", "show", "--path", "/tmp/wt/repo", "--format", "json")
+            result = call_command("env", "show", "--path", "/tmp/wt/repo", "--format", "json", stdout=out)
+        assert result == 0
+        assert json.loads(out.getvalue()) == {"FOO": "bar"}
 
     def test_show_returns_error_when_not_provisioned(self) -> None:
         ticket = _make_ticket()
         wt = _make_worktree(ticket)
+        err = StringIO()
         with (
             patch("teatree.core.management.commands.env.resolve_worktree", return_value=wt),
             patch("teatree.core.management.commands.env.render_env_cache", return_value=None),
         ):
-            call_command("env", "show", "--path", "/tmp/wt/repo")
+            result = call_command("env", "show", "--path", "/tmp/wt/repo", stderr=err)
+        assert result == 1
+        assert "not provisioned" in err.getvalue()
 
 
 class TestEnvSetVar(TestCase):
@@ -73,16 +88,22 @@ class TestEnvSetVar(TestCase):
             mock_set.assert_called_once_with(wt, "MY_KEY", "my_value")
 
     def test_set_var_rejects_missing_equals(self) -> None:
-        call_command("env", "set-var", "NOEQUALS", "--path", "/tmp/wt/repo")
+        err = StringIO()
+        result = call_command("env", "set-var", "NOEQUALS", "--path", "/tmp/wt/repo", stderr=err)
+        assert result == 2
+        assert "expected KEY=VALUE" in err.getvalue()
 
     def test_set_var_reports_value_error(self) -> None:
         ticket = _make_ticket()
         wt = _make_worktree(ticket)
+        err = StringIO()
         with (
             patch("teatree.core.management.commands.env.resolve_worktree", return_value=wt),
             patch("teatree.core.management.commands.env.set_override", side_effect=ValueError("core key")),
         ):
-            call_command("env", "set-var", "BAD=val", "--path", "/tmp/wt/repo")
+            result = call_command("env", "set-var", "BAD=val", "--path", "/tmp/wt/repo", stderr=err)
+        assert result == 1
+        assert "core key" in err.getvalue()
 
 
 class TestEnvUnset(TestCase):
@@ -100,28 +121,39 @@ class TestEnvUnset(TestCase):
     def test_unset_nonexistent_key(self) -> None:
         ticket = _make_ticket()
         wt = _make_worktree(ticket)
+        err = StringIO()
         with patch("teatree.core.management.commands.env.resolve_worktree", return_value=wt):
-            call_command("env", "unset", "NOPE", "--path", "/tmp/wt/repo")
+            result = call_command("env", "unset", "NOPE", "--path", "/tmp/wt/repo", stderr=err)
+        assert result == 1
+        assert "no override named NOPE" in err.getvalue()
 
 
 class TestEnvOverrides(TestCase):
     def test_lists_overrides(self) -> None:
         ticket = _make_ticket()
         wt = _make_worktree(ticket)
+        out = StringIO()
         with (
             patch("teatree.core.management.commands.env.resolve_worktree", return_value=wt),
             patch("teatree.core.management.commands.env.load_overrides", return_value={"A": "1", "B": "2"}),
         ):
-            call_command("env", "overrides", "--path", "/tmp/wt/repo")
+            result = call_command("env", "overrides", "--path", "/tmp/wt/repo", stdout=out)
+        assert result == 0
+        rendered = out.getvalue()
+        assert "A=1" in rendered
+        assert "B=2" in rendered
 
     def test_lists_empty_overrides(self) -> None:
         ticket = _make_ticket()
         wt = _make_worktree(ticket)
+        out = StringIO()
         with (
             patch("teatree.core.management.commands.env.resolve_worktree", return_value=wt),
             patch("teatree.core.management.commands.env.load_overrides", return_value={}),
         ):
-            call_command("env", "overrides", "--path", "/tmp/wt/repo")
+            result = call_command("env", "overrides", "--path", "/tmp/wt/repo", stdout=out)
+        assert result == 0
+        assert "(no overrides)" in out.getvalue()
 
 
 class TestEnvSystemCheckCollision(TestCase):
@@ -159,20 +191,26 @@ class TestEnvCheck(TestCase):
     def test_check_in_sync(self) -> None:
         ticket = _make_ticket()
         wt = _make_worktree(ticket)
+        out = StringIO()
         with (
             patch("teatree.core.management.commands.env.resolve_worktree", return_value=wt),
             patch("teatree.core.management.commands.env.detect_drift", return_value=(False, "/tmp/cache")),
         ):
-            call_command("env", "check", "--path", "/tmp/wt/repo")
+            result = call_command("env", "check", "--path", "/tmp/wt/repo", stdout=out)
+        assert result == 0
+        assert "env cache in sync with DB" in out.getvalue()
 
     def test_check_drifted(self) -> None:
         ticket = _make_ticket()
         wt = _make_worktree(ticket)
+        err = StringIO()
         with (
             patch("teatree.core.management.commands.env.resolve_worktree", return_value=wt),
             patch("teatree.core.management.commands.env.detect_drift", return_value=(True, "/tmp/cache")),
         ):
-            call_command("env", "check", "--path", "/tmp/wt/repo")
+            result = call_command("env", "check", "--path", "/tmp/wt/repo", stderr=err)
+        assert result == 1
+        assert "env cache stale at /tmp/cache" in err.getvalue()
 
 
 class TestEnvMigrateSecrets(TestCase):

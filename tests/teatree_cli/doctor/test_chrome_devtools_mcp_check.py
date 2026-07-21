@@ -13,6 +13,7 @@ from contextlib import redirect_stdout
 from pathlib import Path
 
 from teatree.cli.doctor.checks_mcp import _check_chrome_devtools_mcp_suggestion
+from teatree.core.evidence.browser_diagnosis import chrome_devtools_add_command
 
 
 def _run(home: Path) -> tuple[bool, str]:
@@ -33,6 +34,17 @@ class TestCheckChromeDevtoolsMcpSuggestion:
         assert ok is True
         assert "INFO" in message
         assert "chrome-devtools" in message
+
+    def test_suggested_command_is_headless(self, tmp_path: Path) -> None:
+        _write_claude_json(tmp_path, {})
+        _, message = _run(tmp_path)
+        assert "--headless=true" in message
+
+    def test_suggested_command_tracks_the_shared_constant(self, tmp_path: Path) -> None:
+        # A hardcoded duplicate of the registration line silently drifts from the canonical one.
+        _write_claude_json(tmp_path, {})
+        _, message = _run(tmp_path)
+        assert chrome_devtools_add_command() in message
 
     def test_never_warns_or_fails_when_absent(self, tmp_path: Path) -> None:
         _write_claude_json(tmp_path, {})

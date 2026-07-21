@@ -36,6 +36,24 @@ Load `ac-python` and `ac-django` — all code must follow their review checklist
 4. **Close stale issues** that are already resolved in the codebase.
 5. **Report** what was done and what was skipped (with reasons) at the end.
 
+## Reserving tickets from the live factory (collision-safe burst)
+
+When batch work runs **interactively while the headless factory is also live**, a ticket you pick up can be claimed by the factory at the same time — the ticket/worktree lease keys on the FSM claim, not on raw `git`/PR work done outside it, so an interactive burst and the loop are invisible to each other (souliane/teatree#3561). Reserve every ticket **before** touching it, and confirm the factory hasn't already claimed it.
+
+- **Reserve with a generic label, not a harness-specific one.** Add the `interactive-implementation` label (generic and harness-agnostic — describes *why* it's held, not *who* holds it; do not overload `needs-triage`, which means "maintainer review required"). Keeping the issue **unassigned** is the second guard: the factory's `assigned_issues` scanner auto-starts only *assigned* issues.
+- **The label must be honoured by the factory to be load-bearing.** Both intake paths (`assigned_issues` `exclude_labels`, and the trusted-author `issue_implementer`) need wiring to skip a reserved label; until that lands, *unassigned* is the real guard and the label is advisory. Tracking: souliane/teatree#3573 (consolidate the two intake paths into one scanner with a single `exclude_labels` gate).
+- **Check-first, before implementing.** Confirm no loop worktree or task already owns the ticket: `t3 teatree worktree status <ticket>` (empty = unclaimed) and `t3 teatree tasks list` (no pending/claimed task for it). If the factory already holds it, pick another ticket — never race it.
+- **Release on completion.** Remove the `interactive-implementation` label once the PR merges, so the ticket rejoins the factory's view if follow-up is needed.
+
+### Sequential by default; parallel only for disjoint files
+
+Reserving from the factory is orthogonal to how many burst coders run at once. Merge conflicts are the *second* collision axis (burst coders vs each other):
+
+- **Default sequential** — the singleton delivery rule below stands: each PR merges before the next ticket starts, so burst PRs can never conflict at merge.
+- **Parallelise only a disjoint-file set.** When several reserved tickets provably touch **non-overlapping files**, spawn one delivery sub-agent per ticket with `isolation: "worktree"` (each gets an isolated checkout, so writes never collide) and let their PRs land independently. Group tickets by file-overlap first; any two that touch the same file stay in the same sequential lane. When in doubt, sequential.
+
+This whole pattern should compound into a single `t3` command (reserve + check + burst + release) rather than a hand-run query sequence — the interim queries above are the spec for it.
+
 ## Handling User Requests Mid-Session
 
 During batch/quickwin sessions, the user may send new requests (bug reports, feature ideas, feedback) while you're implementing a ticket. When this happens:

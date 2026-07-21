@@ -11,12 +11,14 @@ from django.test import TestCase
 from teatree.cli.doctor.checks_bootstrap import (
     _check_claude_settings_drift,
     _check_gh_token_permissions,
+    _check_git_hooks_installed,
     _check_provision_concurrency_from_host,
     _resolve_projects_config,
     _slug_from_repo_url,
 )
 from teatree.core.gates.gh_token_preflight import GhTokenProbe
 from teatree.core.models.config_setting import ConfigSetting
+from tests._git_repo import make_git_repo, run_git
 
 
 class TestSlugFromRepoUrl:
@@ -160,6 +162,78 @@ class TestProvisionConcurrencyFromHost(TestCase):
         with patch("teatree.utils.ram_probe.default_provision_concurrency", return_value=4):
             assert _check_provision_concurrency_from_host(repair=True) is True
         assert ConfigSetting.objects.get_effective("provision_max_concurrency") is None
+
+
+class TestGitHooksInstalledCheck:
+    """The check spans every checkout teatree commits from, not just the installed clone."""
+
+    @staticmethod
+    def _make_checkout(path: Path, *, hooks: bool) -> Path:
+        repo = make_git_repo(path)
+        (repo / ".pre-commit-config.yaml").write_text("repos: []\n", encoding="utf-8")
+        if hooks:
+            hooks_dir = repo / ".git" / "hooks"
+            hooks_dir.mkdir(parents=True, exist_ok=True)
+            for name in ("pre-commit", "pre-push"):
+                hook = hooks_dir / name
+                hook.write_text("#!/usr/bin/env bash\nexit 0\n", encoding="utf-8")
+                hook.chmod(0o755)
+        return repo
+
+    @staticmethod
+    def _run(*checkouts: Path) -> bool:
+        with patch("teatree.core.gates.git_checkouts.discover_checkouts", return_value=list(checkouts)):
+            return _check_git_hooks_installed()
+
+    def test_fails_loud_and_names_the_remediation(self, tmp_path: Path, capsys) -> None:
+        repo = self._make_checkout(tmp_path / "repo", hooks=False)
+
+        ok = self._run(repo)
+
+        out = capsys.readouterr().out
+        assert ok is False
+        assert "FAIL" in out
+        assert str(repo) in out
+        assert "pre-commit" in out
+        assert "pre-push" in out
+        assert "t3 setup" in out
+
+    def test_a_protected_clone_does_not_mask_an_unprotected_one(self, tmp_path: Path, capsys) -> None:
+        container = self._make_checkout(tmp_path / "container-clone", hooks=True)
+        host = self._make_checkout(tmp_path / "host-checkout", hooks=False)
+
+        ok = self._run(container, host)
+
+        out = capsys.readouterr().out
+        assert ok is False
+        assert str(host) in out
+        assert f"FAIL  {container}" not in out
+
+    def test_passes_when_every_checkout_is_protected(self, tmp_path: Path, capsys) -> None:
+        first = self._make_checkout(tmp_path / "a", hooks=True)
+        second = self._make_checkout(tmp_path / "b", hooks=True)
+
+        assert self._run(first, second) is True
+        assert capsys.readouterr().out == ""
+
+    def test_deliberate_hooks_path_warns_but_never_fails(self, tmp_path: Path, capsys) -> None:
+        repo = self._make_checkout(tmp_path / "repo", hooks=False)
+        elsewhere = tmp_path / "operator-hooks"
+        elsewhere.mkdir()
+        run_git(repo, "config", "core.hooksPath", str(elsewhere))
+
+        ok = self._run(repo)
+
+        out = capsys.readouterr().out
+        assert ok is True
+        assert "WARN" in out
+        assert str(elsewhere) in out
+
+    def test_non_repo_is_indeterminate_and_passes(self, tmp_path: Path, capsys) -> None:
+        (tmp_path / ".pre-commit-config.yaml").write_text("repos: []\n", encoding="utf-8")
+
+        assert self._run(tmp_path) is True
+        assert "FAIL" not in capsys.readouterr().out
 
 
 class TestClaudeSettingsDrift:

@@ -1,5 +1,6 @@
 """Tests for the structured step execution engine."""
 
+import sqlite3
 import subprocess
 import threading
 from functools import partial
@@ -763,3 +764,41 @@ class TestHeavyFlagPropagation(TestCase):
     # anti-vacuity proof is TestDagConcurrency.test_independent_subprocess_steps_run_concurrently
     # above, which uses a threading.Barrier(2) so a serialized (non-concurrent)
     # run deadlocks and fails outright — no wall clock involved.
+
+
+class TestConcurrentWaveWorkerClosesItsDbHandle(TestCase):
+    """A pool worker that DOES touch the ORM must not strand its raw handle.
+
+    ``TestConcurrentWaveWorkersAreOrmFree`` above pins the happy path (the
+    time-box ceiling is resolved on the caller thread). It cannot cover the
+    failure paths: a step's own ``skip_probe`` and the time-box's loud
+    ``alert_provision_user`` DM both run ON the pool worker and write to the DB.
+    So the worker closes its raw DB-API handle in a ``finally`` — ``close()``
+    alone is a documented no-op on the in-memory test database, and a stranded
+    handle is finalized at a later GC as a ``ResourceWarning: unclosed database``
+    charged to an unrelated test.
+    """
+
+    def test_a_worker_that_touched_the_orm_leaves_no_open_handle(self) -> None:
+        raws: list[sqlite3.Connection] = []
+        lock = threading.Lock()
+
+        def _orm_touching_probe() -> bool:
+            from django.db import connection  # noqa: PLC0415 — the WORKER thread's connection
+
+            connection.ensure_connection()
+            with lock:
+                raws.append(connection.connection)
+            return False
+
+        steps = [
+            ProvisionStep(name="a", callable=lambda: None, subprocess_only=True, skip_probe=_orm_touching_probe),
+            ProvisionStep(name="b", callable=lambda: None, subprocess_only=True, skip_probe=_orm_touching_probe),
+        ]
+        report = run_provision_steps(steps)
+
+        assert report.success is True
+        assert len(raws) == 2, f"the probes never ran on the pool: {raws}"
+        for raw in raws:
+            with pytest.raises(sqlite3.ProgrammingError):
+                raw.execute("SELECT 1")

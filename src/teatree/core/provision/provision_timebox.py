@@ -43,6 +43,7 @@ from teatree.core.notify import NotifyKind, notify_user
 from teatree.core.provision.provision_report import StepResult
 from teatree.core.provision.step_runner import run_callable_step
 from teatree.utils.run import run_allowed_to_fail
+from teatree.utils.thread_db import close_thread_db_connections
 
 logger = logging.getLogger(__name__)
 
@@ -292,7 +293,15 @@ def _join_callable_on_ceiling(
     start = time.monotonic()
     done = threading.Event()
     beat = progress.heartbeat or _log_heartbeat
-    worker = threading.Thread(target=invoke, daemon=True)
+
+    def _invoke_closing_connections() -> None:
+        """A callable provisioning step may touch the ORM — see :mod:`teatree.utils.thread_db`."""
+        try:
+            invoke()
+        finally:
+            close_thread_db_connections()
+
+    worker = threading.Thread(target=_invoke_closing_connections, daemon=True)
     pulse = threading.Thread(
         target=_emit_heartbeats,
         kwargs={"step": name, "interval": progress.interval, "done": done, "heartbeat": beat},

@@ -171,9 +171,11 @@ Verify the registration: `t3 doctor check` (it reports the registered plugin and
 plugin (from the `anthropics/claude-plugins-official` marketplace) via the `claude
 plugin` CLI, so agents get LIVE pyright type diagnostics while coding instead of only
 catching type errors at CI. It is best-effort/offline-safe (an unreachable marketplace
-WARNs and continues) and needs `pyright-langserver` (npm `pyright`, baked into the
-deploy image) on PATH — `t3 doctor check` advisory-WARNs when the plugin is disabled or
-the langserver is missing. Both plugins are pinned in the managed
+WARNs and continues) and needs `pyright-langserver` on PATH — setup provisions it
+idempotently (`npm install -g --prefix ~/.local pyright`, skipped when already present).
+`t3 doctor check` advisory-WARNs when the plugin is disabled, but HARD-FAILs when the
+plugin is enabled and the langserver is missing (the enabled LSP would silently never
+start). Both plugins are pinned in the managed
 `deploy/claude-settings.template.json` `enabledPlugins`, so every seeded container
 enables them and the host drift check re-asserts them.
 

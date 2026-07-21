@@ -87,6 +87,11 @@ layer = "domain"
 depends_on = ["teatree.core.models", "teatree.credential_config", "teatree.llm", "teatree.utils"]
 
 [[modules]]
+path = "teatree.ci_oauth_switch"
+layer = "domain"
+depends_on = ["teatree.credential_config", "teatree.token_report", "teatree.utils"]
+
+[[modules]]
 path = "teatree.teams"
 layer = "domain"
 depends_on = ["teatree.core", "teatree.core.models", "teatree.core.loop_lease_manager", "teatree.config", "teatree.agents", "teatree.skill_support", "teatree.utils"]
@@ -395,9 +400,11 @@ path = "teatree.cli.eval"
 layer = "interface"
 depends_on = [
   "teatree.cli._format_opts",
+  "teatree.ci_oauth_switch",
   "teatree.core",
   "teatree.credential_config",
   "teatree.eval",
+  "teatree.token_report",
   "teatree.utils",
   "teatree.claude_sessions",
   "teatree.llm",

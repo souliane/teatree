@@ -107,3 +107,69 @@ class TestPyrightPluginRegistrarInstall:
 
         monkeypatch.setattr("subprocess.run", _timeout)
         assert PyrightPluginRegistrar._run_claude("/usr/bin/claude", "plugin", "list") is False
+
+
+def _enable_plugin(home: Path) -> None:
+    settings = home / ".claude"
+    settings.mkdir(parents=True, exist_ok=True)
+    (settings / "settings.json").write_text(json.dumps({"enabledPlugins": {_PLUGIN_ID: True}}), encoding="utf-8")
+
+
+class TestPyrightLangserverProvision:
+    """``ensure_langserver`` installs the npm ``pyright`` binary the enabled plugin execs (#3568)."""
+
+    def test_noop_when_langserver_already_present(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr("pathlib.Path.home", classmethod(lambda cls: tmp_path))
+        _enable_plugin(tmp_path)
+        monkeypatch.setattr("shutil.which", lambda name: f"/usr/bin/{name}")  # everything present
+
+        def _boom(*_args: object, **_kwargs: object) -> object:
+            msg = "npm must not run when pyright-langserver is already on PATH"
+            raise AssertionError(msg)
+
+        monkeypatch.setattr("subprocess.run", _boom)
+        assert PyrightPluginRegistrar().ensure_langserver() is True
+
+    def test_installs_via_npm_when_missing(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr("pathlib.Path.home", classmethod(lambda cls: tmp_path))
+        _enable_plugin(tmp_path)
+
+        def _which(name: str) -> str | None:
+            return "/usr/bin/npm" if name == "npm" else None  # langserver missing, npm present
+
+        monkeypatch.setattr("shutil.which", _which)
+
+        calls: list[list[str]] = []
+
+        class _Result:
+            returncode = 0
+
+        def _run(cmd: list[str], **_kwargs: object) -> _Result:
+            calls.append(cmd)
+            return _Result()
+
+        monkeypatch.setattr("subprocess.run", _run)
+
+        assert PyrightPluginRegistrar().ensure_langserver() is True
+        assert calls == [["/usr/bin/npm", "install", "-g", "--prefix", str(tmp_path / ".local"), "pyright"]]
+
+    def test_skips_when_plugin_not_enabled(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr("pathlib.Path.home", classmethod(lambda cls: tmp_path))
+        # No settings.json → plugin not enabled → nothing to provision.
+
+        def _boom(*_args: object, **_kwargs: object) -> object:
+            msg = "no npm/which lookup when the plugin is not enabled"
+            raise AssertionError(msg)
+
+        monkeypatch.setattr("subprocess.run", _boom)
+        assert PyrightPluginRegistrar().ensure_langserver() is False
+
+    def test_warns_and_continues_when_npm_missing(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        monkeypatch.setattr("pathlib.Path.home", classmethod(lambda cls: tmp_path))
+        _enable_plugin(tmp_path)
+        monkeypatch.setattr("shutil.which", lambda _name: None)  # neither langserver nor npm
+
+        assert PyrightPluginRegistrar().ensure_langserver() is False
+        assert "WARN" in capsys.readouterr().out

@@ -3,6 +3,7 @@ import json
 import os
 import sqlite3
 import tempfile
+import threading
 import time
 from pathlib import Path
 from typing import Any
@@ -1092,36 +1093,49 @@ class TestWatchdogResamplesUsageMidRun(TestCase):
         assert elapsed < 10, f"watchdog did not interrupt on the mid-run spike: {elapsed:.1f}s"
 
 
-class TestUsageSampleClosesWorkerConnection(TestCase):
-    """The pre-run usage sample must close its worker-thread DB connection.
+class TestHeartbeatLeaseRenewalConnectionHygiene(TestCase):
+    """The heartbeat's offloaded lease renewal must close its worker thread's handle.
 
-    ``_drive_with_heartbeat`` samples ``TaskUsage.for_task`` in an
-    ``asyncio.to_thread`` worker. That worker opens its OWN Django connection
-    (a thread-local), which — pre-fix — was never closed, so a file-backed
-    sqlite connection (the production config) surfaced as a
-    ``ResourceWarning: unclosed database`` when the thread was GC'd — the
-    order-dependent ``test_tasks.py`` flake. The in-memory test DB cannot
-    reproduce the GC warning (its connection is deliberately persistent), so
-    the guard asserts the fix's contract directly: the sampler closes the
-    thread-local connection it used. RED before the fix: ``close`` is never
-    called.
+    ``_drive_with_heartbeat`` renews the lease in an ``asyncio.to_thread`` worker,
+    which gets its OWN thread-local Django connection. Neither
+    ``close_old_connections`` nor ``connection.close()`` releases it (the former
+    only reaps aged/unusable connections, the latter is a no-op on the in-memory
+    database), so the raw handle has to be closed directly — otherwise it is
+    finalized at a later GC as a ``ResourceWarning: unclosed database`` charged to
+    an unrelated test, and is a real connection leak in production.
+
+    The lease write itself is stubbed: a worker thread cannot see the rows this
+    ``TestCase`` holds in an uncommitted transaction, and the contract under test
+    is the connection hygiene, not the write.
     """
 
-    def test_sampler_closes_its_thread_connection(self) -> None:
-        from django.db import connection  # noqa: PLC0415
+    def test_lease_renewal_closes_its_worker_threads_raw_handle(self) -> None:
+        raws: list[sqlite3.Connection] = []
 
-        from teatree.agents.headless import _sample_usage_closing_connection  # noqa: PLC0415
+        def _touch_the_orm(_self: Task, **_kwargs: object) -> None:
+            from django.db import connection  # noqa: PLC0415 — the WORKER thread's connection
 
-        ticket = Ticket.objects.create()
-        session = Session.objects.create(ticket=ticket, agent_id="agent-1")
-        task = Task.objects.create(ticket=ticket, session=session)
-        TaskAttempt.objects.create(task=task, num_turns=3, cost_usd=1.0)
+            connection.ensure_connection()
+            raws.append(connection.connection)
 
-        with patch.object(connection, "close", wraps=connection.close) as close_spy:
-            usage = _sample_usage_closing_connection(task)
+        task = Task()
+        errors: list[BaseException] = []
 
-        assert usage.turns == 3
-        close_spy.assert_called_once()
+        def _renew_on_worker() -> None:
+            try:
+                headless_mod._renew_lease_closing_connection(task)
+            except BaseException as exc:  # noqa: BLE001 — surfaced to the parent as an assertion
+                errors.append(exc)
+
+        with patch.object(Task, "renew_lease", _touch_the_orm):
+            thread = threading.Thread(target=_renew_on_worker)
+            thread.start()
+            thread.join()
+
+        assert not errors, errors
+        assert raws, "the renewal never opened the worker thread's connection"
+        with pytest.raises(sqlite3.ProgrammingError):
+            raws[0].execute("SELECT 1")
 
 
 class TestRunHeadlessRecordsStuckLoop(TestCase):

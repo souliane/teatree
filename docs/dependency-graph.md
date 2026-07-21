@@ -12,6 +12,9 @@ graph TD
     teatree.token_report --> teatree.credential_config
     teatree.token_report --> teatree.llm
     teatree.token_report --> teatree.utils
+    teatree.ci_oauth_switch --> teatree.credential_config
+    teatree.ci_oauth_switch --> teatree.token_report
+    teatree.ci_oauth_switch --> teatree.utils
     teatree.teams --> teatree.core
     teatree.teams --> teatree.core.models
     teatree.teams --> teatree.core.loop_lease_manager
@@ -155,9 +158,11 @@ graph TD
     teatree.cli --> teatree.mcp
     teatree.cli --> teatree.cli.eval
     teatree.cli.eval --> teatree.cli._format_opts
+    teatree.cli.eval --> teatree.ci_oauth_switch
     teatree.cli.eval --> teatree.core
     teatree.cli.eval --> teatree.credential_config
     teatree.cli.eval --> teatree.eval
+    teatree.cli.eval --> teatree.token_report
     teatree.cli.eval --> teatree.utils
     teatree.cli.eval --> teatree.claude_sessions
     teatree.cli.eval --> teatree.llm

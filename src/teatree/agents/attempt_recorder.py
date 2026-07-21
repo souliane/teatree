@@ -203,8 +203,17 @@ def _record_returned_envelopes(task: Task, result: AgentResultBlob, *, phase: st
 
 
 #: Reviewing phases whose returned ``review_verdict`` the orchestrator records
-#: server-side (corr-11). These phases are denied the shell (PR-11), so their
-#: reviewer hands the verdict back instead of running ``t3 <overlay> review record``.
+#: server-side (corr-11) — the shell-free envelope seam. Both members now ALSO
+#: carry the shell (``phase_tools.VERDICT_REVIEW_PHASES``). ``reviewing`` still
+#: hands the verdict back through this seam: its headless brief
+#: (``prompt._REVIEW_VERDICT_RETURN_LINES``) returns the envelope rather than
+#: shelling out. ``e2e_reviewing``'s live recording path is instead the shell
+#: ``t3 <overlay> review record`` from its ``/t3:e2e-review`` skill; its envelope
+#: membership here is currently dormant (nothing in production returns an
+#: ``e2e_reviewing`` verdict — ``ReviewLoop.start_external_loop`` has no caller),
+#: so exactly one recording path fires per run and no double-record occurs. The
+#: ``codex_*`` variants are deliberately absent: no server-side envelope seam,
+#: shell-only.
 _REVIEW_VERDICT_PHASES = frozenset({"reviewing", "e2e_reviewing"})
 #: Default reviewer identity when the envelope omits one — a non-maker/loop token
 #: (``ReviewVerdict.record`` refuses a maker/coding/loop identity, §17.8 clause 3).

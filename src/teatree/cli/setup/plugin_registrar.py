@@ -17,11 +17,16 @@ _PYRIGHT_MARKETPLACE = "claude-plugins-official"
 _PYRIGHT_MARKETPLACE_SOURCE = "anthropics/claude-plugins-official"
 _PYRIGHT_PLUGIN_NAME = "pyright-lsp"
 _PYRIGHT_PLUGIN_ID = f"{_PYRIGHT_PLUGIN_NAME}@{_PYRIGHT_MARKETPLACE}"
+# The binary the enabled plugin execs; provisioned from the npm ``pyright`` package
+# into ``~/.local`` (a user-writable prefix on PATH) so no root/global write is needed.
+_PYRIGHT_LANGSERVER = "pyright-langserver"
 
 # Bound for a ``claude plugin`` CLI call — it clones + validates the remote
 # marketplace / plugin, so an unreachable network must time out and continue
 # rather than hang setup.
 _CLAUDE_CLI_TIMEOUT_S = 120
+# ``npm install`` fetches + builds the package; a longer bound than the CLI calls.
+_NPM_INSTALL_TIMEOUT_S = 300
 
 
 def _read_json(path: Path) -> dict:
@@ -54,6 +59,12 @@ def _set_enabled_plugin(plugin_id: str) -> bool:
     plugins[plugin_id] = True
     _write_json(resolved, data)
     return True
+
+
+def _plugin_enabled(plugin_id: str) -> bool:
+    """True when ``plugin_id`` is enabled in the managed settings.json."""
+    enabled = _read_json(_settings_path()).get("enabledPlugins", {})
+    return isinstance(enabled, dict) and enabled.get(plugin_id) is True
 
 
 def _plugin_installed(plugin_id: str) -> bool:
@@ -191,8 +202,9 @@ class PyrightPluginRegistrar:
 
     The plugin gives factory agents LIVE pyright type diagnostics while coding, so a
     type error surfaces in-session instead of only at CI. Its language server
-    (``pyright-langserver``, from the npm ``pyright`` package) must be on PATH for the
-    plugin to start — ``t3 doctor`` advisory-WARNs when it is not.
+    (``pyright-langserver``, npm ``pyright``) must be on PATH for the plugin to start;
+    :meth:`ensure_langserver` provisions it, and ``t3 doctor`` HARD-FAILs when the
+    plugin is enabled but the binary is missing (#3568).
     """
 
     def install(self) -> bool:
@@ -216,6 +228,49 @@ class PyrightPluginRegistrar:
             return False
         _set_enabled_plugin(_PYRIGHT_PLUGIN_ID)
         typer.echo(f"OK    Plugin {_PYRIGHT_PLUGIN_ID} registered + enabled for live pyright diagnostics.")
+        return True
+
+    @staticmethod
+    def ensure_langserver() -> bool:
+        """Provision ``pyright-langserver`` when the enabled plugin's binary is missing (#3568).
+
+        The enabled plugin execs ``pyright-langserver``; without it on PATH the LSP
+        silently never starts and agents get no live type diagnostics. Installs it
+        idempotently from the npm ``pyright`` package into ``~/.local`` (a user-writable
+        prefix on PATH). A no-op when the plugin is not enabled or the binary is already
+        present. Offline-safe: a missing ``npm`` or a failed/timed-out install WARNs and
+        continues, matching the other best-effort setup steps. Returns True only when
+        the binary is present (already, or after a successful install).
+        """
+        if not _plugin_enabled(_PYRIGHT_PLUGIN_ID):
+            return False
+        if shutil.which(_PYRIGHT_LANGSERVER) is not None:
+            typer.echo(f"OK    {_PYRIGHT_LANGSERVER} already on PATH — skipped npm install.")
+            return True
+        npm = shutil.which("npm")
+        if npm is None:
+            typer.echo(
+                f"WARN  `npm` not on PATH — cannot install {_PYRIGHT_LANGSERVER}; the enabled "
+                "pyright-lsp LSP will not start. Setup continues."
+            )
+            return False
+        prefix = str(Path.home() / ".local")
+        try:
+            result = run_allowed_to_fail(
+                [npm, "install", "-g", "--prefix", prefix, "pyright"],
+                expected_codes=None,
+                timeout=_NPM_INSTALL_TIMEOUT_S,
+            )
+        except (OSError, TimeoutExpired):
+            typer.echo(f"WARN  `npm install` for pyright did not run — {_PYRIGHT_LANGSERVER} missing; setup continues.")
+            return False
+        if result.returncode != 0:
+            typer.echo(
+                f"WARN  `npm install -g --prefix {prefix} pyright` failed (offline?) — "
+                f"{_PYRIGHT_LANGSERVER} missing; setup continues."
+            )
+            return False
+        typer.echo(f"OK    Installed pyright ({_PYRIGHT_LANGSERVER}) via npm for the pyright-lsp LSP.")
         return True
 
     @staticmethod
