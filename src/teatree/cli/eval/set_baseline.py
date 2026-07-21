@@ -49,10 +49,11 @@ def set_baseline(
             "under frontier_ok in the same file."
         ),
     ),
-    out: Path = typer.Option(
-        BASELINE_PRESET_PATH,
+    out: Path | None = typer.Option(
+        None,
         "--out",
         help="Baseline file to write (default: evals/presets/baseline.yaml).",
+        show_default=False,
     ),
 ) -> None:
     """Regenerate the ``baseline`` preset file from a model-matrix JSON run.
@@ -63,6 +64,10 @@ def set_baseline(
     the matrix that is no longer discovered (renamed/removed) is pruned. Output
     is deterministic: scenario keys sorted, ``frontier_ok`` sorted.
     """
+    # Resolved at call time (not as the Option default) so the rendered CLI-reference
+    # help stays byte-deterministic — an absolute ``__file__``-derived default differs
+    # per environment and would break the docs-drift gate.
+    out = out if out is not None else BASELINE_PRESET_PATH
     ensure_django()
     try:
         payload = load_matrix_payload(from_matrix)
