@@ -8,7 +8,7 @@ import django.test
 import pytest
 from django.core.management import call_command
 
-from teatree.core.models import ConfigSetting, LoopSchedule, LoopScheduleSlot
+from teatree.core.models import ConfigSetting, ModeSchedule, ModeScheduleSlot
 from teatree.loop.preset_resolution import ACTIVE_SCHEDULE_SETTING
 
 
@@ -20,9 +20,9 @@ def _run(*args: str, **kwargs: object) -> str:
 
 @django.test.override_settings(USE_TZ=True, TIME_ZONE="UTC")
 class TestLoopScheduleCommand(django.test.TestCase):
-    def _schedule(self, name: str) -> LoopSchedule:
-        schedule = LoopSchedule.objects.create(name=name, timezone="UTC")
-        LoopScheduleSlot.objects.create(
+    def _schedule(self, name: str) -> ModeSchedule:
+        schedule = ModeSchedule.objects.create(name=name, timezone="UTC")
+        ModeScheduleSlot.objects.create(
             schedule=schedule, days=[0, 1, 2, 3, 4], start_time=dt.time(8, 0), preset_name="engaged"
         )
         return schedule

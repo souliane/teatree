@@ -80,36 +80,36 @@ class TestLoopEnabledCombinedVerdict(django.test.TestCase):
 
     def test_active_preset_force_off_masks_an_enabled_loop(self) -> None:
         from teatree.core.models import (  # noqa: PLC0415 — deferred import (cycle-safe / pre-app-registry)
-            LoopPreset,
-            LoopPresetOverride,
+            Mode,
+            ModeOverride,
         )
 
         self._loop("le-masked")
-        LoopPreset.objects.create(name="heads-down", entries={"le-masked": False})
-        LoopPresetOverride.objects.set_override("heads-down")
+        Mode.objects.create(name="heads-down", entries={"le-masked": False})
+        ModeOverride.objects.set_override("heads-down")
         assert loop_enabled("le-masked") is False
 
     def test_active_preset_force_on_admits_a_disabled_loop(self) -> None:
         from teatree.core.models import (  # noqa: PLC0415 — deferred import (cycle-safe / pre-app-registry)
-            LoopPreset,
-            LoopPresetOverride,
+            Mode,
+            ModeOverride,
         )
 
         self._loop("le-forced", enabled=False)
-        LoopPreset.objects.create(name="engaged", entries={"le-forced": True})
-        LoopPresetOverride.objects.set_override("engaged")
+        Mode.objects.create(name="engaged", entries={"le-forced": True})
+        ModeOverride.objects.set_override("engaged")
         assert loop_enabled("le-forced") is True
 
     def test_hold_beats_a_force_on_preset(self) -> None:
         from teatree.core.models import (  # noqa: PLC0415 — deferred import (cycle-safe / pre-app-registry)
-            LoopPreset,
-            LoopPresetOverride,
+            Mode,
+            ModeOverride,
         )
 
         self._loop("le-held-forced", enabled=False)
         LoopState.objects.disable("le-held-forced")
-        LoopPreset.objects.create(name="engaged", entries={"le-held-forced": True})
-        LoopPresetOverride.objects.set_override("engaged")
+        Mode.objects.create(name="engaged", entries={"le-held-forced": True})
+        ModeOverride.objects.set_override("engaged")
         assert loop_enabled("le-held-forced") is False
 
 

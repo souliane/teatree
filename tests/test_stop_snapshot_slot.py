@@ -13,7 +13,6 @@ from pathlib import Path
 import pytest
 
 import hooks.scripts.stop_snapshot_slot as slot
-from teatree.core.availability import MODE_AWAY, Resolution
 
 
 @pytest.fixture(autouse=True)
@@ -59,12 +58,8 @@ class TestSlotThrottle:
 
 
 class TestSlotIndependentOfAvailability:
-    def test_runs_even_when_availability_is_away(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """The slot must fire while loops are paused — it never consults availability."""
-        monkeypatch.setattr(
-            "teatree.core.availability.resolve_mode",
-            lambda **_: Resolution(mode=MODE_AWAY, source="override"),
-        )
+    def test_runs_regardless_of_mode(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """The slot must fire while loops are paused — it never consults the mode."""
         calls: list[str] = []
         monkeypatch.setattr(slot, "_slot_enabled", lambda: True)
         monkeypatch.setattr(slot, "_run_prepare_stop", lambda sid, _d: calls.append(sid))

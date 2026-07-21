@@ -27,7 +27,7 @@ class PerBandFailOpenTestCase(TestCase):
         assert view.mode.error is None
 
     def test_raising_mode_reader_degrades_only_its_band(self) -> None:
-        with patch.object(health_bands, "resolve_mode", side_effect=RuntimeError("mode boom")):
+        with patch.object(health_bands, "resolve_active_mode", side_effect=RuntimeError("mode boom")):
             view = health_bands.build_health_view()
         assert view.mode.error is not None
         assert view.verdict.error is None

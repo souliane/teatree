@@ -68,7 +68,6 @@ class TestColoredChunksRideTheLoopLine:
         with (
             patch("teatree.loop.statusline_loops._live_loop_leases", return_value=[("loop-tick", acquired_at)]),
             patch("teatree.loop.statusline_loops._cadence_for_loop", return_value=720),
-            patch("teatree.loop.statusline_loops._availability_segment", return_value=""),
             patch("teatree.loop.statusline_loops._waiting_count", return_value=0),
         ):
             lines = live_loops_anchor(colorize=True)
@@ -81,7 +80,6 @@ class TestColoredChunksRideTheLoopLine:
         with (
             patch("teatree.loop.statusline_loops._live_loop_leases", return_value=[("loop-tick", acquired_at)]),
             patch("teatree.loop.statusline_loops._cadence_for_loop", return_value=720),
-            patch("teatree.loop.statusline_loops._availability_segment", return_value=""),
             patch("teatree.loop.statusline_loops._waiting_count", return_value=0),
         ):
             lines = live_loops_anchor(colorize=True)
@@ -92,7 +90,6 @@ class TestColoredChunksRideTheLoopLine:
         with (
             patch("teatree.loop.statusline_loops._live_loop_leases", return_value=[("loop-tick", acquired_at)]),
             patch("teatree.loop.statusline_loops._cadence_for_loop", return_value=720),
-            patch("teatree.loop.statusline_loops._availability_segment", return_value=""),
             patch("teatree.loop.statusline_loops._waiting_count", return_value=0),
         ):
             lines = live_loops_anchor(colorize=False)
@@ -110,7 +107,6 @@ class TestColoredChunksRideTheLoopLine:
         with (
             patch("teatree.loop.statusline_loops._live_loop_leases", return_value=[]),
             patch("teatree.loop.statusline_loops._mini_loop_schedules", return_value=schedules),
-            patch("teatree.loop.statusline_loops._availability_segment", return_value=""),
             patch("teatree.loop.statusline_loops._waiting_count", return_value=0),
         ):
             lines = live_loops_anchor(colorize=True)
@@ -121,7 +117,6 @@ class TestColoredChunksRideTheLoopLine:
         with (
             patch("teatree.loop.statusline_loops._live_loop_leases", return_value=[]),
             patch("teatree.loop.statusline_loops._mini_loop_schedules", return_value=[("inbox", None, 300)]),
-            patch("teatree.loop.statusline_loops._availability_segment", return_value=""),
             patch("teatree.loop.statusline_loops._waiting_count", return_value=0),
         ):
             lines = live_loops_anchor(colorize=True)
@@ -139,7 +134,6 @@ class TestColoredChunksRideTheLoopLine:
         with (
             patch("teatree.loop.statusline_loops._live_loop_leases", return_value=leases),
             patch("teatree.loop.statusline_loops._cadence_for_loop", return_value=720),
-            patch("teatree.loop.statusline_loops._availability_segment", return_value=""),
             patch("teatree.loop.statusline_loops._waiting_count", return_value=0),
         ):
             lines = live_loops_anchor(colorize=True)

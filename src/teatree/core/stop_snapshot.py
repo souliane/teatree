@@ -144,14 +144,19 @@ def _pending_questions_lines() -> list[str]:
 
 
 def _availability_lines() -> list[str]:
-    resolution = availability.resolve_mode()
-    schedule = availability.load_schedule()
+    from teatree.core.mode_resolution import resolve_active_mode  # noqa: PLC0415 — deferred: call-time import
+    from teatree.core.models import ConfigSetting  # noqa: PLC0415 — deferred: call-time import
+    from teatree.loop.preset_resolution import ACTIVE_SCHEDULE_SETTING  # noqa: PLC0415 — deferred: call-time import
+
+    resolved = resolve_active_mode()
+    raw_schedule = ConfigSetting.objects.get_effective(ACTIVE_SCHEDULE_SETTING)
+    schedule = raw_schedule.strip() if isinstance(raw_schedule, str) and raw_schedule.strip() else "none active"
     return [
-        "## Availability / schedule",
-        f"- mode: {resolution.mode} (source: {resolution.source})",
-        f"- defers questions: {resolution.defers_questions}",
-        f"- pauses self-pump: {resolution.pauses_self_pump}",
-        f"- schedule windows: {len(schedule.windows)}",
+        "## Mode / schedule",
+        f"- mode: {resolved.name} (source: {resolved.source})",
+        f"- defers questions: {resolved.defers_questions}",
+        f"- pauses self-pump: {resolved.pauses_self_pump}",
+        f"- schedule: {schedule}",
     ]
 
 

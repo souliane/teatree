@@ -1,19 +1,21 @@
-"""``t3 teatree availability`` — manage the 24/7 dual question-mode (#58, §17.3 C3).
+"""``t3 teatree availability`` — deprecated aliases onto the merged Mode (#58, #61).
 
-Three subcommands manipulate the durable override file that takes
-priority over the cron schedule (BLUEPRINT §17.1 invariant 9 / §5.6.3):
+Availability and loop presets are now ONE concept (:class:`teatree.core.models.Mode`,
+the merged *Mode*). These subcommands remain as backward-compatible aliases that set
+a ``ModeOverride`` to the corresponding merged mode instead of the retired standalone
+availability file:
 
-* ``t3 teatree availability away [--until ISO8601]`` — holiday-away: defer
-    questions AND pause the self-pump, until the optional expiry.
-* ``t3 teatree availability autonomous-away [--until ISO8601]`` — unattended
-    run: defer questions but KEEP self-pumping (#2544).
-* ``t3 teatree availability present [--until ISO8601]`` — force the agent
-    into present-mode (interactive questions).
-* ``t3 teatree availability auto`` — clear the override; the cron schedule
+* ``t3 teatree availability away [--until ISO8601]`` → the holiday ``offline`` mode
+    (defer questions AND pause the self-pump).
+* ``t3 teatree availability autonomous-away [--until ISO8601]`` → the ``unattended``
+    mode (defer questions but KEEP self-pumping).
+* ``t3 teatree availability present [--until ISO8601]`` → the ``engaged`` mode
+    (interactive questions).
+* ``t3 teatree availability auto`` — clear the override; the schedule / default mode
     decides again.
 
-The command also prints the current resolution (mode + source) so
-the user can confirm the effect.
+Prefer ``t3 loop preset use <mode>`` / ``t3 loop preset auto`` — the mode IS the
+availability. The command prints the resolved mode + source so the effect is clear.
 """
 
 import json
@@ -23,14 +25,12 @@ from typing import Annotated
 import typer
 from django_typer.management import TyperCommand, command, initialize
 
-from teatree.core.availability import (
-    MODE_AUTONOMOUS_AWAY,
-    MODE_AWAY,
-    MODE_PRESENT,
-    clear_override,
-    resolve_mode,
-    write_override,
-)
+from teatree.core.mode_resolution import clear_mode_override, resolve_active_mode, set_mode_override
+
+# The standalone availability modes map onto the merged modes (design §4.2).
+_AWAY_MODE = "offline"
+_AUTONOMOUS_AWAY_MODE = "unattended"
+_PRESENT_MODE = "engaged"
 
 
 def _parse_until(raw: str) -> datetime | None:
@@ -47,8 +47,8 @@ def _parse_until(raw: str) -> datetime | None:
 
 
 def _render(prefix: str = "") -> str:
-    resolution = resolve_mode()
-    line = f"availability: mode={resolution.mode} source={resolution.source}"
+    resolved = resolve_active_mode()
+    line = f"availability: mode={resolved.name} source={resolved.source}"
     return f"{prefix}{line}" if prefix else line
 
 
@@ -65,8 +65,8 @@ class Command(TyperCommand):
             typer.Option(help="ISO8601 timestamp when the override expires (e.g. 2026-05-19T18:00:00+02:00)."),
         ] = "",
     ) -> str:
-        """Force away-mode (deferred questions) until *until* — or forever."""
-        write_override(MODE_AWAY, until=_parse_until(until))
+        """Alias: set the holiday ``offline`` mode (defer + pause) until *until* — or forever."""
+        set_mode_override(_AWAY_MODE, until=_parse_until(until))
         return _render(prefix="set away. ")
 
     @command(name="autonomous-away")
@@ -81,9 +81,10 @@ class Command(TyperCommand):
 
         Unlike ``away`` (which also pauses the factory), autonomous-away is the
         unattended-run state: ``AskUserQuestion`` calls defer to the durable
-        backlog while the Stop self-pump keeps driving the loop.
+        backlog while the Stop self-pump keeps driving the loop. Alias for the
+        ``unattended`` merged mode.
         """
-        write_override(MODE_AUTONOMOUS_AWAY, until=_parse_until(until))
+        set_mode_override(_AUTONOMOUS_AWAY_MODE, until=_parse_until(until))
         return _render(prefix="set autonomous-away. ")
 
     @command()
@@ -102,19 +103,19 @@ class Command(TyperCommand):
             typer.Option("--overlay", help="Set T3_OVERLAY_NAME for the drain (per-overlay bot routing)."),
         ] = "",
     ) -> str:
-        """Force present-mode (interactive questions) until *until* — or forever.
+        """Alias: set the ``engaged`` present-class mode until *until* — or forever.
 
-        Coming back from away auto-drains the deferred-question backlog to
-        the user's Slack DM (handled in :func:`write_override`), so the user
-        is re-asked everything they missed without any manual step.
+        Coming back from an away-class mode auto-drains the deferred-question
+        backlog to the user's Slack DM (handled in the mode-override chokepoint),
+        so the user is re-asked everything they missed without any manual step.
         """
-        write_override(MODE_PRESENT, until=_parse_until(until), user_id=user_id, overlay=overlay)
+        set_mode_override(_PRESENT_MODE, until=_parse_until(until), user_id=user_id, overlay=overlay)
         return _render(prefix="set present. ")
 
     @command()
     def auto(self) -> str:
-        """Clear the manual override; the cron schedule decides again."""
-        removed = clear_override()
+        """Clear the manual mode override; the schedule / default mode decides again."""
+        removed = clear_mode_override()
         prefix = "cleared override. " if removed else "no override set. "
         return _render(prefix=prefix)
 
@@ -128,7 +129,7 @@ class Command(TyperCommand):
         ] = False,
     ) -> str:
         """Print the current resolved mode and which layer decided it."""
+        resolved = resolve_active_mode()
         if json_output:
-            resolution = resolve_mode()
-            return json.dumps({"mode": resolution.mode, "source": resolution.source})
+            return json.dumps({"mode": resolved.name, "source": resolved.source})
         return _render()

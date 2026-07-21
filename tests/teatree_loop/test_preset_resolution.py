@@ -1,6 +1,6 @@
 """teatree.loop.preset_resolution — the read-time preset mask (L3 override, L2 schedule).
 
-Resolution order: a live ``LoopPresetOverride`` (L3) wins; else the active
+Resolution order: a live ``ModeOverride`` (L3) wins; else the active
 schedule's governing slot (L2, the latest slot-start ≤ now); else no opinion. Every
 layer fails open to ``None`` (base config) so a deleted preset / broken schedule /
 unreadable DB can never brick the loop fleet. The empty-table no-op invariant lives
@@ -13,7 +13,7 @@ import zoneinfo
 import django.test
 from django.utils import timezone
 
-from teatree.core.models import ConfigSetting, LoopPreset, LoopPresetOverride, LoopSchedule, LoopScheduleSlot
+from teatree.core.models import ConfigSetting, Mode, ModeOverride, ModeSchedule, ModeScheduleSlot
 from teatree.loop.preset_resolution import (
     ACTIVE_SCHEDULE_SETTING,
     active_overlay_scope,
@@ -23,8 +23,8 @@ from teatree.loop.preset_resolution import (
 )
 
 
-def _preset(name: str, entries: dict[str, bool], **kwargs: object) -> LoopPreset:
-    return LoopPreset.objects.create(name=name, entries=entries, **kwargs)
+def _preset(name: str, entries: dict[str, bool], **kwargs: object) -> Mode:
+    return Mode.objects.create(name=name, entries=entries, **kwargs)
 
 
 def _activate_schedule(name: str) -> None:
@@ -57,7 +57,7 @@ class TestManualOverride(django.test.TestCase):
 
     def test_override_selects_the_preset(self) -> None:
         _preset("heads-down", {"review": False, "dispatch": True})
-        LoopPresetOverride.objects.set_override("heads-down")
+        ModeOverride.objects.set_override("heads-down")
         active = resolve_active_preset()
         assert active is not None
         assert active.layer == "override"
@@ -66,29 +66,29 @@ class TestManualOverride(django.test.TestCase):
 
     def test_absent_entry_is_inherit_not_off(self) -> None:
         _preset("heads-down", {"review": False})
-        LoopPresetOverride.objects.set_override("heads-down")
+        ModeOverride.objects.set_override("heads-down")
         assert resolve_preset_state("issue_implementer") is None
 
     def test_expired_override_is_inert(self) -> None:
         _preset("off", {"review": False})
         past = timezone.now() - dt.timedelta(hours=1)
-        LoopPresetOverride.objects.create(preset_name="off", until=past)
+        ModeOverride.objects.create(preset_name="off", until=past)
         assert resolve_active_preset() is None
 
     def test_override_naming_deleted_preset_fails_open(self) -> None:
-        LoopPresetOverride.objects.set_override("ghost")
+        ModeOverride.objects.set_override("ghost")
         assert resolve_active_preset() is None
         assert resolve_preset_state("review") is None
 
     def test_override_outranks_the_schedule(self) -> None:
         _preset("engaged", {"review": True})
         _preset("off", {"review": False})
-        schedule = LoopSchedule.objects.create(name="standard", timezone="UTC")
-        LoopScheduleSlot.objects.create(
+        schedule = ModeSchedule.objects.create(name="standard", timezone="UTC")
+        ModeScheduleSlot.objects.create(
             schedule=schedule, days=[0, 1, 2, 3, 4, 5, 6], start_time=dt.time(0, 0), preset_name="engaged"
         )
         _activate_schedule("standard")
-        LoopPresetOverride.objects.set_override("off")
+        ModeOverride.objects.set_override("off")
         assert resolve_preset_state("review") is False
 
 
@@ -99,12 +99,12 @@ class TestScheduleSlots(django.test.TestCase):
     def setUp(self) -> None:
         _preset("engaged", {"review": True})
         _preset("maintenance", {"review": False, "dream": True})
-        self.schedule = LoopSchedule.objects.create(name="standard", timezone="UTC")
+        self.schedule = ModeSchedule.objects.create(name="standard", timezone="UTC")
         # Weekday day → engaged at 08:00, evening → maintenance at 19:00.
-        LoopScheduleSlot.objects.create(
+        ModeScheduleSlot.objects.create(
             schedule=self.schedule, days=[0, 1, 2, 3, 4], start_time=dt.time(8, 0), preset_name="engaged"
         )
-        LoopScheduleSlot.objects.create(
+        ModeScheduleSlot.objects.create(
             schedule=self.schedule, days=[0, 1, 2, 3, 4], start_time=dt.time(19, 0), preset_name="maintenance"
         )
         _activate_schedule("standard")
@@ -133,7 +133,7 @@ class TestScheduleSlots(django.test.TestCase):
         assert resolve_active_preset(now=self._monday(10)) is None
 
     def test_slot_naming_deleted_preset_fails_open(self) -> None:
-        LoopScheduleSlot.objects.create(
+        ModeScheduleSlot.objects.create(
             schedule=self.schedule, days=[0, 1, 2, 3, 4], start_time=dt.time(9, 0), preset_name="ghost"
         )
         assert resolve_active_preset(now=self._monday(9, 30)) is None
@@ -156,10 +156,10 @@ class TestScheduleSlotsAcrossDstBoundaries(django.test.TestCase):
     def _schedule_with_slots(self, tz_name: str) -> None:
         _preset("early", {"review": True})
         _preset("late", {"review": False})
-        schedule = LoopSchedule.objects.create(name="dst", timezone=tz_name)
+        schedule = ModeSchedule.objects.create(name="dst", timezone=tz_name)
         # Both slots fire on Sunday only (weekday 6) — the DST-transition day.
-        LoopScheduleSlot.objects.create(schedule=schedule, days=[6], start_time=dt.time(1, 0), preset_name="early")
-        LoopScheduleSlot.objects.create(schedule=schedule, days=[6], start_time=dt.time(2, 30), preset_name="late")
+        ModeScheduleSlot.objects.create(schedule=schedule, days=[6], start_time=dt.time(1, 0), preset_name="early")
+        ModeScheduleSlot.objects.create(schedule=schedule, days=[6], start_time=dt.time(2, 30), preset_name="late")
         _activate_schedule("dst")
 
     def test_spring_forward_gap_slot_uses_pre_transition_offset(self) -> None:
@@ -206,11 +206,11 @@ class TestScheduleTimezone(django.test.TestCase):
     def test_wall_clock_is_the_schedule_zone(self) -> None:
         _preset("engaged", {"review": True})
         _preset("maintenance", {"review": False})
-        schedule = LoopSchedule.objects.create(name="tz", timezone="Europe/Zurich")
-        LoopScheduleSlot.objects.create(
+        schedule = ModeSchedule.objects.create(name="tz", timezone="Europe/Zurich")
+        ModeScheduleSlot.objects.create(
             schedule=schedule, days=[0, 1, 2, 3, 4], start_time=dt.time(8, 0), preset_name="engaged"
         )
-        LoopScheduleSlot.objects.create(
+        ModeScheduleSlot.objects.create(
             schedule=schedule, days=[0, 1, 2, 3, 4], start_time=dt.time(19, 0), preset_name="maintenance"
         )
         _activate_schedule("tz")

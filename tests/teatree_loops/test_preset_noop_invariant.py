@@ -12,7 +12,7 @@ import datetime as dt
 import django.test
 from django.utils import timezone
 
-from teatree.core.models import Loop, LoopPreset, LoopState
+from teatree.core.models import Loop, LoopState, Mode
 from teatree.loop.loop_state_db import loop_state_admits
 from teatree.loops.loop_table import admitted_loop_names
 from teatree.loops.registry import iter_loops
@@ -60,6 +60,6 @@ class TestEmptyTableNoOpInvariant(django.test.TestCase):
         before = set(admitted_loop_names(now)) & set(self.names)
         # A preset that would force everything off — but it is NOT activated
         # (no override, no active schedule), so admission is unchanged.
-        LoopPreset.objects.create(name="off", entries=dict.fromkeys(self.names, False))
+        Mode.objects.create(name="off", entries=dict.fromkeys(self.names, False))
         after = set(admitted_loop_names(now)) & set(self.names)
         assert after == before == self._base_expected(now)

@@ -23,15 +23,15 @@
       "name": "availability",
       "subcommands": [
         {
-          "help": "Force away-mode (deferred questions) until *until* \u2014 or forever",
+          "help": "Alias: set the holiday ``offline`` mode (defer + pause) until *until* \u2014 or forever",
           "name": "away"
         },
         {
-          "help": "Force present-mode (interactive questions) until *until* \u2014 or forever",
+          "help": "Alias: set the ``engaged`` present-class mode until *until* \u2014 or forever",
           "name": "present"
         },
         {
-          "help": "Clear the manual override; the cron schedule decides again",
+          "help": "Clear the manual mode override; the schedule / default mode decides again",
           "name": "auto"
         },
         {

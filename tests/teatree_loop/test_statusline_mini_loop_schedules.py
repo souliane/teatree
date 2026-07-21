@@ -19,7 +19,7 @@ import datetime as dt
 import django.test
 from django.utils import timezone
 
-from teatree.core.models import Loop, LoopPreset, LoopPresetOverride, LoopState, Prompt
+from teatree.core.models import Loop, LoopState, Mode, ModeOverride, Prompt
 from teatree.loop.statusline import mini_loops_anchor, set_mini_loop_schedules_reader
 from teatree.loops.schedule import mini_loop_schedules
 
@@ -99,8 +99,8 @@ class TestMiniLoopSchedulesHonourPresetMask(django.test.TestCase):
     """
 
     def _activate(self, preset_name: str, entries: dict[str, bool]) -> None:
-        LoopPreset.objects.create(name=preset_name, entries=entries)
-        LoopPresetOverride.objects.set_override(preset_name)
+        Mode.objects.create(name=preset_name, entries=entries)
+        ModeOverride.objects.set_override(preset_name)
 
     def test_preset_masked_off_loop_is_excluded(self) -> None:
         Loop.objects.all().delete()
