@@ -22,6 +22,7 @@ from teatree.cli.eval.corpus import corpus_app
 from teatree.cli.eval.green_proof import green_proof
 from teatree.cli.eval.history import history_command
 from teatree.cli.eval.label import label_app
+from teatree.cli.eval.ladder import ladder
 from teatree.cli.eval.lanes import coverage, pinned_regressions
 from teatree.cli.eval.merge_summaries import merge_summaries
 from teatree.cli.eval.merge_summary_json import merge_summary_json
@@ -55,6 +56,7 @@ def register_imported_commands(eval_app: typer.Typer) -> None:
     eval_app.command("merge-summary-json")(merge_summary_json)
     eval_app.command("prepare-transcript")(prepare_transcript)
     eval_app.command("set-baseline")(set_baseline)
+    eval_app.command("ladder")(ladder)
     eval_app.command("history")(history_command)
     eval_app.add_typer(corpus_app, name="corpus")
     eval_app.add_typer(label_app, name="label")

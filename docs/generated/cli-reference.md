@@ -1556,6 +1556,8 @@ Usage: t3 eval [OPTIONS] COMMAND [ARGS]...
 │                         transcript-backend eval run.                         │
 │ set-baseline            Regenerate the ``baseline`` preset file from a       │
 │                         model-matrix JSON run.                               │
+│ ladder                  Generate the cheapest-green baseline via a tier      │
+│                         escalation ladder (no full matrix).                  │
 │ history                 Show recent eval runs and per-scenario pass-rate     │
 │                         over time.                                           │
 │ list                    List discovered eval scenarios as a table (Name,     │
@@ -2024,9 +2026,11 @@ Usage: t3 eval set-baseline [OPTIONS]
 
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ *  --from                  PATH  Matrix JSON to derive the baseline from —   │
-│                                  the output of `t3 eval run --models <tier   │
-│                                  models> --format json` (or `t3 eval         │
-│                                  benchmark --format json`).                  │
+│                                  the output of `t3 eval ladder --format      │
+│                                  json` (the cheap escalation-ladder          │
+│                                  producer) or a full matrix from `t3 eval    │
+│                                  run --models <tier models> --format json` / │
+│                                  `t3 eval benchmark --format json`.          │
 │                                  [required]                                  │
 │    --allow-frontier              Permit assigning the frontier tier to a     │
 │                                  scenario that only passed there. Without    │
@@ -2038,6 +2042,56 @@ Usage: t3 eval set-baseline [OPTIONS]
 │    --out                   PATH  Baseline file to write (default:            │
 │                                  evals/presets/baseline.yaml).               │
 │    --help                        Show this message and exit.                 │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+#### `t3 eval ladder`
+
+```
+Usage: t3 eval ladder [OPTIONS]
+
+ Generate the cheapest-green baseline via a tier escalation ladder (no full
+ matrix).
+
+ Escalates each (sharded) scenario cheapest-first and stops at the first tier
+ it passes: sonnet runs only on haiku's failures, opus only on the scenarios
+ that failed both. ``--format json`` emits the matrix payload
+ ``t3 eval set-baseline --from`` consumes; ``--format text`` prints the
+ per-scenario cheapest tier plus the scenarios no tier passed (surfaced as a
+ genuine failure, never tiered to frontier).
+
+ Metered, so it defaults to the CI container; pass ``--local`` for a host run.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --shard                 TEXT     Ladder only the index/total shard of the    │
+│                                  suite, e.g. '2/6' — a deterministic         │
+│                                  partition by scenario name. Each shard      │
+│                                  escalates its OWN subset in-process, so the │
+│                                  sharded fan-out parallelises across         │
+│                                  scenarios while staying inside one          │
+│                                  account's usage window.                     │
+│ --trials                INTEGER  Re-run each tier this many times; a tier    │
+│                                  counts as PASSED only when EVERY trial      │
+│                                  passed (require=all), so a flaky scenario   │
+│                                  escalates rather than being tiered to the   │
+│                                  cheaper model. Single-trial results are     │
+│                                  noisy — raise this to make the baseline     │
+│                                  decision robust.                            │
+│                                  [default: 1]                                │
+│ --max-budget-usd        FLOAT    Per-run USD budget circuit breaker (default │
+│                                  2.0 — generous so a finishing cell          │
+│                                  COMPLETES rather than truncating). An       │
+│                                  over-budget cell is recorded as a           │
+│                                  budget_exceeded FAIL, which escalates to    │
+│                                  the next tier.                              │
+│                                  [default: 2.0]                              │
+│ --format                TEXT     Report format: 'text' (a per-scenario       │
+│                                  cheapest-tier summary) or 'json' (the       │
+│                                  matrix payload for set-baseline).           │
+│                                  [default: text]                             │
+│ --local                          Run on the HOST instead of the default CI   │
+│                                  container — a quick local check only.       │
+│ --help                           Show this message and exit.                 │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
