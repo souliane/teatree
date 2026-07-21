@@ -15,7 +15,8 @@ resource that never exists — 403 "not accessible" = denied, 404/200 = present
 ``read:project`` recommended — the rest is bundled into ``repo``).
 
 Each write permission is checked with a side-effect-free mutation aimed at a
-resource number that never exists (issue/PR ``0``, a bogus ref): a token that
+resource that never exists (issue/PR ``0``, a bogus ref, a sentinel
+secret/variable name): a token that
 *has* the permission gets a harmless ``404``, a token that *lacks* it gets the
 ``403`` GitHub returns before it ever loads the resource. Nothing is created,
 edited, or deleted either way. A write probe that reaches NEITHER verdict -- a
@@ -59,6 +60,8 @@ RECOMMENDED_PERMISSION_LABELS: tuple[str, ...] = (
     "checks: read",
     "statuses: read",
     "projects: read",
+    "secrets: write",
+    "variables: write",
 )
 
 # One-line "what breaks without this" per permission, both tiers.
@@ -79,6 +82,8 @@ FEATURE_BY_PERMISSION: dict[str, str] = {
     ),
     "statuses: read": "legacy commit-status rollup completeness alongside checks",
     "projects: read": "GitHub Projects v2 board sync (probed only when a board is configured)",
+    "secrets: write": "`t3 eval ci-account switch` rotating CLAUDE_CODE_OAUTH_TOKEN onto a healthier account",
+    "variables: write": "recording which account CLAUDE_CODE_OAUTH_TOKEN holds (the benchmark's cost basis)",
 }
 
 # Metadata-read denial signals — a permission/visibility fault, not a transient network one.
@@ -175,6 +180,21 @@ _PROBES: tuple[Probe, ...] = (
         "read",
     ),
     Probe("statuses: read", "recommended", ("repos/{slug}/commits/{default_branch}/status",), "read"),
+    # `gh secret set` / `gh variable set` PUT these routes; DELETE hits the same
+    # write-authorization gate, so a sentinel name that never exists probes the grant
+    # with no side effect — 404 when permitted, 403 when denied.
+    Probe(
+        "secrets: write",
+        "recommended",
+        ("--method", "DELETE", "repos/{slug}/actions/secrets/TEATREE_PREFLIGHT_NONEXISTENT"),
+        "mutate",
+    ),
+    Probe(
+        "variables: write",
+        "recommended",
+        ("--method", "DELETE", "repos/{slug}/actions/variables/TEATREE_PREFLIGHT_NONEXISTENT"),
+        "mutate",
+    ),
 )
 
 # Derived from _PROBES so the two never drift.
