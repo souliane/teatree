@@ -9145,11 +9145,10 @@ Usage: t3 teatree ticket [OPTIONS] COMMAND [ARGS]...
 ```
 Usage: t3 teatree ticket transition [OPTIONS] TICKET_ID TRANSITION_NAME
 
- Transition a ticket to a new state.
-
- Accepts any of the allowed transition names: scope, start, code, test,
- review, ship, request_review, mark_merged, retrospect, mark_delivered,
- rework, mark_review_no_action.
+ Transition a ticket to a new state. Allowed transition names: scope, start,
+ plan, code, test, review, ship, request_review, mark_merged, retrospect,
+ mark_delivered, rework, mark_review_no_action, reconcile_reviewed, ignore,
+ unignore.
 
 ╭─ Arguments ──────────────────────────────────────────────────────────────────╮
 │ *    ticket_id            INTEGER  [required]                                │
