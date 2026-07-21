@@ -125,6 +125,12 @@ def run(
 
     # A checkout whose hooks were never installed pushes with the whole local gate
     # layer absent (leak gate, banned-terms, dev/push-gate.sh) and nothing errors.
+    # `prek_hook.install` routes through `run_step`'s optional time-box, which
+    # imports `provision_timebox` -> `notify` -> `teatree.core.models` at call
+    # time — Django must be configured before this runs, or that import raises
+    # `ImproperlyConfigured` (`ensure_django()` is idempotent, so the later call
+    # before DM provisioning is a no-op repeat).
+    ensure_django()
     GitHooksInstaller(repo).install(echo=typer.echo)
 
     settings_json = Path.home() / ".claude" / "settings.json"
