@@ -29,6 +29,7 @@ from pathlib import Path
 
 import typer
 
+from teatree.agents import permission_modes
 from teatree.cli.loop.claim_next import claim_next_command
 from teatree.cli.loop.drain_queue import drain_queue_app
 from teatree.cli.loop.listing import list_command
@@ -240,21 +241,31 @@ def start_command(
 
 
 def _session_pin_flags() -> list[str]:
-    """The interactive main-agent ``--model`` / ``--effort`` pins from ``[agent]``.
+    """The loop session's ``--permission-mode`` / ``--model`` / ``--effort`` pins.
 
-    These are session-level pins so the user never runs ``/model`` (or sets the
-    effort) by hand. They are injected ONLY into the interactive ``claude``
-    spawn argv here — never into ``claude -p`` headless (effort is session-wide,
-    not per-sub-agent). Absent settings inject nothing, so the spawn is
-    byte-for-byte today's behaviour. Effort is validated at parse time
-    (``config.agent_spawn.resolve_agent_config``), so an off-scale value fails
-    loudly rather than reaching the CLI.
+    The mode is pinned UNCONDITIONALLY. This session is attended at LAUNCH —
+    ``start_command`` refuses a non-terminal stdin, and the operator is there to
+    see the child's own auth behaviour, which is why the base-URL guard
+    deliberately skips this exec. But it long outlives that moment: it drives the
+    autonomous loop and keeps ticking unattended under ``autonomous_away``, with
+    nobody present to override a classifier denial. So it must not inherit the
+    operator's ``permissions.defaultMode`` — ``t3 doctor check`` advises ``auto``
+    there, and pinning here is what makes that advice safe to follow. It is the
+    same :data:`~teatree.agents.permission_modes.UNATTENDED` the headless dispatch
+    options pin, so the unattended lanes cannot drift apart.
+
+    Model and effort are session-level pins so the user never runs ``/model`` (or
+    sets the effort) by hand. They are injected ONLY into the interactive
+    ``claude`` spawn argv here — never into ``claude -p`` headless (effort is
+    session-wide, not per-sub-agent). Absent settings inject neither. Effort is
+    validated at parse time (``config.agent_spawn.resolve_agent_config``), so an
+    off-scale value fails loudly rather than reaching the CLI.
     """
     from teatree.config.agent_spawn import resolve_agent_config  # noqa: PLC0415 — deferred: interactive-spawn path only
 
     cfg = resolve_agent_config()
     session_model = cfg.session_model
-    flags: list[str] = []
+    flags: list[str] = ["--permission-mode", permission_modes.UNATTENDED]
     if session_model:
         flags.extend(["--model", session_model])
     if cfg.session_effort:

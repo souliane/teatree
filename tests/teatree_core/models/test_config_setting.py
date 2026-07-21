@@ -7,10 +7,12 @@ is the canonical override tier (mirrors ``MergeClear`` / ``DbApproval`` —
 returns its stored value.
 """
 
+import pytest
+from django.core.exceptions import ValidationError
 from django.test import TestCase
 
 from teatree.core.models import ConfigSetting
-from teatree.core.models.config_setting import ENTRYPOINT_SEEDER, SeedOutcome
+from teatree.core.models.config_setting import ENTRYPOINT_SEEDER, GLOBAL_SCOPE, SeedOutcome
 
 
 class TestConfigSettingStore(TestCase):
@@ -164,3 +166,23 @@ class TestSeedProvenance(TestCase):
         row = ConfigSetting.objects.get(key="provision_ram_ceiling_percent")
         assert row.seeded_by == ""
         assert row.seed_value is None
+
+
+class TestConfigSettingValueValidation(TestCase):
+    """``full_clean`` accepts every legitimately-empty JSON value but refuses ``None``.
+
+    Any ``ModelForm`` over this store (the Django admin included) resolves the
+    empty-vs-required question here, so the model — not a per-form override —
+    is what keeps ``[]`` savable and a blank submission out of the NOT NULL
+    column.
+    """
+
+    def test_full_clean_accepts_legitimately_empty_values(self) -> None:
+        for value in ([], {}, "", 0, False):
+            ConfigSetting(scope=GLOBAL_SCOPE, key="statusline_chain", value=value).full_clean()
+
+    def test_full_clean_rejects_none_as_a_value_field_error(self) -> None:
+        row = ConfigSetting(scope=GLOBAL_SCOPE, key="statusline_chain", value=None)
+        with pytest.raises(ValidationError) as caught:
+            row.full_clean()
+        assert "value" in caught.value.message_dict

@@ -5,10 +5,16 @@ the default browser tool. The resolver emits the exact ``claude mcp add``
 registration line; an operator who opts out gets the re-enable hint instead.
 """
 
-from django.test import TestCase
+from django.test import SimpleTestCase, TestCase
 
 from teatree.config import get_effective_settings
-from teatree.core.evidence.browser_diagnosis import CHROME_DEVTOOLS_SERVER_NAME, resolve_browser_diagnosis
+from teatree.core.evidence.browser_diagnosis import (
+    CHROME_DEVTOOLS_LAUNCH,
+    CHROME_DEVTOOLS_SERVER_NAME,
+    chrome_devtools_add_command,
+    chrome_devtools_launch,
+    resolve_browser_diagnosis,
+)
 from teatree.core.models.config_setting import ConfigSetting
 
 
@@ -18,10 +24,32 @@ class TestResolveBrowserDiagnosis(TestCase):
         assert registration.enabled is True
         assert (
             registration.add_command
-            == f"claude mcp add {CHROME_DEVTOOLS_SERVER_NAME} -- npx -y chrome-devtools-mcp@latest"
+            == f"claude mcp add {CHROME_DEVTOOLS_SERVER_NAME} -- npx -y chrome-devtools-mcp@latest --headless=true"
         )
         assert registration.add_command in registration.message
 
+
+class TestBrowserDiagnosisHeadless(TestCase):
+    """teatree runs 100% headless, so the registered server must never open a visible Chrome.
+
+    Upstream chrome-devtools-mcp defaults to a *visible* browser, so the flag has to be
+    passed explicitly; ``chrome_devtools_headless`` is the operator's opt-out.
+    """
+
+    def test_headless_flag_passed_by_default(self) -> None:
+        assert get_effective_settings(None).chrome_devtools_headless is True
+        assert "--headless=true" in resolve_browser_diagnosis(None).add_command
+
+    def test_headed_only_when_explicitly_opted_in(self) -> None:
+        ConfigSetting.objects.set_value("chrome_devtools_headless", value=False)
+        assert "--headless" not in resolve_browser_diagnosis(None).add_command
+
+    def test_headless_flag_survives_the_enablement_flag(self) -> None:
+        ConfigSetting.objects.set_value("chrome_devtools_mcp_enabled", value=False)
+        assert "--headless=true" in resolve_browser_diagnosis(None).add_command
+
+
+class TestResolveBrowserDiagnosisFlag(TestCase):
     def test_claude_chrome_disabled_by_default(self) -> None:
         assert get_effective_settings(None).claude_chrome is False
 
@@ -38,3 +66,18 @@ class TestResolveBrowserDiagnosis(TestCase):
         ConfigSetting.objects.set_value("chrome_devtools_mcp_enabled", value=False)
         off = resolve_browser_diagnosis(None)
         assert off.add_command == on.add_command
+
+
+class TestChromeDevtoolsLaunchArgs(SimpleTestCase):
+    """The launch args are the seam every caller renders from — the doctor included."""
+
+    def test_headless_appended_by_default(self) -> None:
+        assert chrome_devtools_launch() == (*CHROME_DEVTOOLS_LAUNCH, "--headless=true")
+
+    def test_headed_returns_the_bare_upstream_args(self) -> None:
+        assert chrome_devtools_launch(headless=False) == CHROME_DEVTOOLS_LAUNCH
+
+    def test_add_command_renders_the_launch_args(self) -> None:
+        assert chrome_devtools_add_command() == f"claude mcp add {CHROME_DEVTOOLS_SERVER_NAME} -- " + " ".join(
+            chrome_devtools_launch()
+        )

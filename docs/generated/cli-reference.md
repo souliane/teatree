@@ -1487,17 +1487,17 @@ Usage: t3 eval [OPTIONS] COMMAND [ARGS]...
 │                                  already-recorded in-session transcripts, $0 │
 │                                  extra), 'api' (RUN the Claude model fresh   │
 │                                  in-process via the Agent SDK, on the        │
-│                                  credential the eval_credential knob selects │
-│                                  — default subscription OAuth (#2707         │
-│                                  reversal), or the metered API key; the      │
-│                                  explicit opt-in), 'anthropic_api' (RUN the  │
-│                                  same Claude model fresh through the         │
-│                                  Anthropic Messages API DIRECTLY, no         │
-│                                  `claude` CLI child — the CLI-free lane,     │
-│                                  metered on ANTHROPIC_API_KEY), or           │
-│                                  'pydantic_ai' (RUN a non-Claude model       │
-│                                  through the provider-agnostic harness seam, │
-│                                  OrcaRouter BYOK).                           │
+│                                  credential agent_harness_provider selects — │
+│                                  default subscription OAuth, or the metered  │
+│                                  API key; the explicit opt-in),              │
+│                                  'anthropic_api' (RUN the same Claude model  │
+│                                  fresh through the Anthropic Messages API    │
+│                                  DIRECTLY, no `claude` CLI child — the       │
+│                                  CLI-free lane, metered on                   │
+│                                  ANTHROPIC_API_KEY), or 'pydantic_ai' (RUN a │
+│                                  non-Claude model through the                │
+│                                  provider-agnostic harness seam, OrcaRouter  │
+│                                  BYOK).                                      │
 │                                  [default: transcript]                       │
 │ --transcript-dir        PATH     Directory of <scenario>.jsonl transcripts   │
 │                                  for the AI lane (default: cwd).             │
@@ -1520,54 +1520,60 @@ Usage: t3 eval [OPTIONS] COMMAND [ARGS]...
 │ --help                           Show this message and exit.                 │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ╭─ Commands ───────────────────────────────────────────────────────────────────╮
-│ negative-control        Self-test the harness: plant a known violation and   │
-│                         assert it is caught (token-free).                    │
-│ benchmark               Benchmark cost AND pass-rate of model@effort         │
-│                         variants against the eval suite.                     │
-│ capture-subagent        Copy the freshest in-session sub-agent JSONL to a    │
-│                         scenario's transcript path.                          │
-│ transcript-replay       Replay a real session transcript against teatree     │
-│                         behavioural invariants.                              │
-│ coverage                Report per-skill behavioral-eval coverage: every     │
-│                         skill is covered or eval_exempt.                     │
-│ pinned-regressions      Run the deterministic regression corpus over the     │
-│                         real gate/checker code paths.                        │
-│ skill-command-validity  Validate every backticked ``t3 …`` in the skill docs │
-│                         against the live CLI registry.                       │
-│ skill-prose-judge       Score each skill's prose for clarity/actionability   │
-│                         via the LLM judge (ADVISORY).                        │
-│ audit                   Audit captured sessions into the durable ledger and  │
-│                         print per-session verdicts.                          │
-│ changed-scenarios       Print the scenario names a PR's STDIN diff touched;  │
-│                         exit --skip-code when none.                          │
-│ ci-trigger              Dispatch ``eval-ci-heal.yml`` for a PR branch and    │
-│                         print the head SHA it keys on.                       │
-│ ci-status               Resolve one eval-ci-heal run's verdict (and, on      │
-│                         failure, its triaged reds).                          │
-│ green-proof             Assert the merged eval-heal JSON proves a full-suite │
-│                         green (executed, 0 reds).                            │
-│ merged-prs-since        Exit 0 if any PR merged in the last --days, else     │
-│                         --skip-code (non-list payload exits 2).              │
-│ merge-summaries         Merge per-shard summary markdown into one dashboard  │
-│                         (to --out or stdout).                                │
-│ merge-summary-json      Merge per-shard eval-heal summary JSONs into one     │
-│                         §2.4 JSON (to --out or stdout).                      │
-│ prepare-transcript      Emit the per-scenario prompts for a LOCAL            │
-│                         transcript-backend eval run.                         │
-│ set-baseline            Regenerate the ``baseline`` preset file from a       │
-│                         model-matrix JSON run.                               │
-│ history                 Show recent eval runs and per-scenario pass-rate     │
-│                         over time.                                           │
-│ list                    List discovered eval scenarios as a table (Name,     │
-│                         Scenario, Agent, File, Asserts).                     │
-│ run                     Run one scenario by name, or all scenarios when no   │
-│                         name is given.                                       │
-│ ci-heal                 Operator control of the CI-eval self-healing loop    │
-│                         (open sessions, list, dry-run advance).              │
-│ corpus                  Ground-truth corpus curation: list, inspect, and     │
-│                         grade captured sessions.                             │
-│ label                   Corpus-label curation: list nominations, scaffold a  │
-│                         label, review the corpus.                            │
+│ negative-control          Self-test the harness: plant a known violation and │
+│                           assert it is caught (token-free).                  │
+│ benchmark                 Benchmark cost AND pass-rate of model@effort       │
+│                           variants against the eval suite.                   │
+│ capture-subagent          Copy the freshest in-session sub-agent JSONL to a  │
+│                           scenario's transcript path.                        │
+│ transcript-replay         Replay a real session transcript against teatree   │
+│                           behavioural invariants.                            │
+│ coverage                  Report per-skill behavioral-eval coverage: every   │
+│                           skill is covered or eval_exempt.                   │
+│ pinned-regressions        Run the deterministic regression corpus over the   │
+│                           real gate/checker code paths.                      │
+│ skill-command-validity    Validate every backticked ``t3 …`` in the skill    │
+│                           docs against the live CLI registry.                │
+│ skill-prose-judge         Score each skill's prose for clarity/actionability │
+│                           via the LLM judge (ADVISORY).                      │
+│ audit                     Audit captured sessions into the durable ledger    │
+│                           and print per-session verdicts.                    │
+│ changed-scenarios         Print the scenario names a PR's STDIN diff         │
+│                           touched; exit --skip-code when none.               │
+│ ci-trigger                Dispatch ``eval-ci-heal.yml`` for a PR branch and  │
+│                           print the head SHA it keys on.                     │
+│ ci-status                 Resolve one eval-ci-heal run's verdict (and, on    │
+│                           failure, its triaged reds).                        │
+│ green-proof               Assert the merged eval-heal JSON proves a          │
+│                           full-suite green (executed, 0 reds).               │
+│ merged-prs-since          Exit 0 if any PR merged in the last --days, else   │
+│                           --skip-code (non-list payload exits 2).            │
+│ verify-benchmark-publish  Exit 1 when any collected benchmark shard is not   │
+│                           backed by real metered spend.                      │
+│ merge-summaries           Merge per-shard summary markdown into one          │
+│                           dashboard (to --out or stdout).                    │
+│ merge-summary-json        Merge per-shard eval-heal summary JSONs into one   │
+│                           §2.4 JSON (to --out or stdout).                    │
+│ prepare-transcript        Emit the per-scenario prompts for a LOCAL          │
+│                           transcript-backend eval run.                       │
+│ set-baseline              Regenerate the ``baseline`` preset file from a     │
+│                           model-matrix JSON run.                             │
+│ ladder                    Generate the cheapest-green baseline via a tier    │
+│                           escalation ladder (no full matrix).                │
+│ history                   Show recent eval runs and per-scenario pass-rate   │
+│                           over time.                                         │
+│ list                      List discovered eval scenarios as a table (Name,   │
+│                           Scenario, Agent, File, Asserts).                   │
+│ run                       Run one scenario by name, or all scenarios when no │
+│                           name is given.                                     │
+│ ci-heal                   Operator control of the CI-eval self-healing loop  │
+│                           (open sessions, list, dry-run advance).            │
+│ ci-account                Inspect / switch the Anthropic account CI's OAuth  │
+│                           secret holds.                                      │
+│ corpus                    Ground-truth corpus curation: list, inspect, and   │
+│                           grade captured sessions.                           │
+│ label                     Corpus-label curation: list nominations, scaffold  │
+│                           a label, review the corpus.                        │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -1775,9 +1781,11 @@ Usage: t3 eval skill-command-validity [OPTIONS]
 
  Tier-1 (deterministic, free, no ``claude`` run): each ``skills/<name>/`` doc's
  backticked ``t3 …`` commands are token-walked against the live typer command
- tree. A command that no longer resolves (a CLI rename left the doc stale) is a
- violation — the "no stale references" rule — and exits non-zero. Generic
- placeholder mentions (``t3 …`` / ``t3 <overlay> …``) are skipped.
+ tree. A leading ``t3 <overlay>`` is resolved to a representative overlay so an
+ overlay-scoped ``t3 <overlay> <group> <sub>`` is validated too. A command that
+ no longer resolves (a CLI rename left the doc stale) is a violation — the "no
+ stale references" rule — and exits non-zero. A generic mention whose command
+ path is a placeholder (``t3 …``, ``t3 <overlay> …``) is skipped.
 
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --format        TEXT  Report format: text or json. [default: text]           │
@@ -1870,7 +1878,7 @@ Usage: t3 eval ci-trigger [OPTIONS]
 │    --scenarios         TEXT  Comma-joined scenario names to run (the red     │
 │                              subset). Empty (default) = the full suite.      │
 │    --credential        TEXT  Eval credential: subscription_oauth (default,   │
-│                              no per-token bill) | metered_api_key.           │
+│                              no per-token bill) | api_key (metered).         │
 │                              [default: subscription_oauth]                   │
 │    --repo              TEXT  owner/repo the eval-ci-heal workflow lives in.  │
 │                              [default: souliane/teatree]                     │
@@ -1931,6 +1939,23 @@ Usage: t3 eval merged-prs-since [OPTIONS]
 │                                [default: 1]                                  │
 │    --now              TEXT     Override 'now' (ISO-8601); for testing.       │
 │    --help                      Show this message and exit.                   │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+#### `t3 eval verify-benchmark-publish`
+
+```
+Usage: t3 eval verify-benchmark-publish [OPTIONS] DASHBOARD_DIR
+
+ Exit 1 when any collected benchmark shard is not backed by real metered spend.
+
+╭─ Arguments ──────────────────────────────────────────────────────────────────╮
+│ *    dashboard_dir      PATH  Directory holding the collected                │
+│                               eval-benchmark-*.html shards.                  │
+│                               [required]                                     │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                  │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -2024,9 +2049,11 @@ Usage: t3 eval set-baseline [OPTIONS]
 
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ *  --from                  PATH  Matrix JSON to derive the baseline from —   │
-│                                  the output of `t3 eval run --models <tier   │
-│                                  models> --format json` (or `t3 eval         │
-│                                  benchmark --format json`).                  │
+│                                  the output of `t3 eval ladder --format      │
+│                                  json` (the cheap escalation-ladder          │
+│                                  producer) or a full matrix from `t3 eval    │
+│                                  run --models <tier models> --format json` / │
+│                                  `t3 eval benchmark --format json`.          │
 │                                  [required]                                  │
 │    --allow-frontier              Permit assigning the frontier tier to a     │
 │                                  scenario that only passed there. Without    │
@@ -2038,6 +2065,56 @@ Usage: t3 eval set-baseline [OPTIONS]
 │    --out                   PATH  Baseline file to write (default:            │
 │                                  evals/presets/baseline.yaml).               │
 │    --help                        Show this message and exit.                 │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+#### `t3 eval ladder`
+
+```
+Usage: t3 eval ladder [OPTIONS]
+
+ Generate the cheapest-green baseline via a tier escalation ladder (no full
+ matrix).
+
+ Escalates each (sharded) scenario cheapest-first and stops at the first tier
+ it passes: sonnet runs only on haiku's failures, opus only on the scenarios
+ that failed both. ``--format json`` emits the matrix payload
+ ``t3 eval set-baseline --from`` consumes; ``--format text`` prints the
+ per-scenario cheapest tier plus the scenarios no tier passed (surfaced as a
+ genuine failure, never tiered to frontier).
+
+ Metered, so it defaults to the CI container; pass ``--local`` for a host run.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --shard                 TEXT     Ladder only the index/total shard of the    │
+│                                  suite, e.g. '2/6' — a deterministic         │
+│                                  partition by scenario name. Each shard      │
+│                                  escalates its OWN subset in-process, so the │
+│                                  sharded fan-out parallelises across         │
+│                                  scenarios while staying inside one          │
+│                                  account's usage window.                     │
+│ --trials                INTEGER  Re-run each tier this many times; a tier    │
+│                                  counts as PASSED only when EVERY trial      │
+│                                  passed (require=all), so a flaky scenario   │
+│                                  escalates rather than being tiered to the   │
+│                                  cheaper model. Single-trial results are     │
+│                                  noisy — raise this to make the baseline     │
+│                                  decision robust.                            │
+│                                  [default: 1]                                │
+│ --max-budget-usd        FLOAT    Per-run USD budget circuit breaker (default │
+│                                  2.0 — generous so a finishing cell          │
+│                                  COMPLETES rather than truncating). An       │
+│                                  over-budget cell is recorded as a           │
+│                                  budget_exceeded FAIL, which escalates to    │
+│                                  the next tier.                              │
+│                                  [default: 2.0]                              │
+│ --format                TEXT     Report format: 'text' (a per-scenario       │
+│                                  cheapest-tier summary) or 'json' (the       │
+│                                  matrix payload for set-baseline).           │
+│                                  [default: text]                             │
+│ --local                          Run on the HOST instead of the default CI   │
+│                                  container — a quick local check only.       │
+│ --help                           Show this message and exit.                 │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -2107,12 +2184,15 @@ Usage: t3 eval run [OPTIONS] [NAME]
  its on-disk transcript — ``$0`` extra, no model run (produce the transcripts
  in-session via ``t3 eval prepare-transcript`` first for the prompts + expected
  paths). ``--backend api`` RUNS the model fresh in-process via the Agent SDK
- (which spawns the ``claude`` CLI as its child), on the credential the
- ``eval_credential`` knob selects — default subscription OAuth (#2707
- reversal),
- or the metered API key; CI passes ``--backend api`` explicitly via the
- standalone ``eval.yml`` job. ``--trials``/``--models`` require the fresh-run
- ``api`` runner and reject the transcript backend.
+ (which spawns the ``claude`` CLI as its child), on the credential
+ ``agent_harness_provider`` selects — default subscription OAuth, or the
+ metered
+ API key; CI passes ``--backend api`` explicitly via the standalone
+ ``eval.yml``
+ job. ``--credential {subscription_oauth,api_key}`` pins THIS run's credential
+ instead, so an operator on an OAuth loop can run a one-off metered eval.
+ ``--trials``/``--models`` require the fresh-run ``api`` runner and reject the
+ transcript backend.
 
  ``--require-executed`` fails the run when the suite collected scenarios but
  executed none (every scenario skipped — typically ``claude`` not on PATH /
@@ -2315,24 +2395,24 @@ Usage: t3 eval run [OPTIONS] [NAME]
 │                                                     'api' (RUN the model     │
 │                                                     fresh in-process via the │
 │                                                     Agent SDK, on the        │
-│                                                     credential the           │
-│                                                     eval_credential knob     │
+│                                                     credential               │
+│                                                     agent_harness_provider   │
 │                                                     selects — default        │
-│                                                     subscription OAuth       │
-│                                                     (#2707 reversal), or the │
-│                                                     metered API key; runs    │
-│                                                     in-container by default  │
-│                                                     or directly on the host  │
-│                                                     with --local) or         │
-│                                                     'anthropic_api' (RUN the │
-│                                                     same Claude model fresh  │
-│                                                     through the Anthropic    │
-│                                                     Messages API DIRECTLY,   │
-│                                                     no `claude` CLI child —  │
-│                                                     the CLI-free lane for a  │
-│                                                     harness that forbids the │
-│                                                     Claude Code CLI, metered │
-│                                                     on ANTHROPIC_API_KEY) or │
+│                                                     subscription OAuth, or   │
+│                                                     the metered API key;     │
+│                                                     runs in-container by     │
+│                                                     default or directly on   │
+│                                                     the host with --local)   │
+│                                                     or 'anthropic_api' (RUN  │
+│                                                     the same Claude model    │
+│                                                     fresh through the        │
+│                                                     Anthropic Messages API   │
+│                                                     DIRECTLY, no `claude`    │
+│                                                     CLI child — the CLI-free │
+│                                                     lane for a harness that  │
+│                                                     forbids the Claude Code  │
+│                                                     CLI, metered on          │
+│                                                     ANTHROPIC_API_KEY) or    │
 │                                                     'pydantic_ai' (RUN a     │
 │                                                     non-Claude model through │
 │                                                     the provider-agnostic    │
@@ -2347,6 +2427,21 @@ Usage: t3 eval run [OPTIONS] [NAME]
 │                                                     transcripts for the      │
 │                                                     'transcript' backend     │
 │                                                     (default: cwd).          │
+│ --credential                               TEXT     Authenticate THIS run on │
+│                                                     one credential           │
+│                                                     (subscription_oauth |    │
+│                                                     api_key), overriding     │
+│                                                     agent_harness_provider   │
+│                                                     for this process only.   │
+│                                                     subscription_oauth draws │
+│                                                     no per-token bill but    │
+│                                                     rides the plan's         │
+│                                                     depleting usage window;  │
+│                                                     api_key is per-token     │
+│                                                     cost, no window. Omit to │
+│                                                     follow the configured    │
+│                                                     provider (default:       │
+│                                                     subscription OAuth).     │
 │ --require-executed                                  Fail when the suite      │
 │                                                     collected scenarios but  │
 │                                                     executed none (all       │
@@ -2601,6 +2696,61 @@ Usage: t3 eval ci-heal advance [OPTIONS]
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --json          Emit the advance outcomes as a JSON array.                   │
 │ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+#### `t3 eval ci-account`
+
+```
+Usage: t3 eval ci-account [OPTIONS] COMMAND [ARGS]...
+
+ Inspect / switch the Anthropic account CI's OAuth secret holds.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Commands ───────────────────────────────────────────────────────────────────╮
+│ show    Report which account CI's OAuth secret holds, and every account's    │
+│         headroom.                                                            │
+│ switch  Point CI's OAuth secret at the healthiest account; exit 1 when none  │
+│         can serve a run.                                                     │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 eval ci-account show`
+
+```
+Usage: t3 eval ci-account show [OPTIONS]
+
+ Report which account CI's OAuth secret holds, and every account's headroom.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --repo        TEXT  The repo whose Actions secret to read/write.             │
+│                     [default: souliane/teatree]                              │
+│ --json              Emit the report as JSON.                                 │
+│ --help              Show this message and exit.                              │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 eval ci-account switch`
+
+```
+Usage: t3 eval ci-account switch [OPTIONS]
+
+ Point CI's OAuth secret at the healthiest account; exit 1 when none can serve
+ a run.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --repo               TEXT     The repo whose Actions secret to read/write.   │
+│                               [default: souliane/teatree]                    │
+│ --json                        Emit the report as JSON.                       │
+│ --starting-in        INTEGER  Minutes until the run starts. A 5h window that │
+│                               resets before then counts as fully free, so an │
+│                               account can be scored for a run scheduled      │
+│                               after its reset.                               │
+│                               [default: 0]                                   │
+│ --dry-run                     Report the switch without writing anything.    │
+│ --help                        Show this message and exit.                    │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -7936,6 +8086,8 @@ Usage: t3 teatree pr [OPTIONS] COMMAND [ARGS]...
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ╭─ Commands ───────────────────────────────────────────────────────────────────╮
 │ create          Create a pull request for the ticket's branch.               │
+│ merge           [Removed] Refuses with a redirect to the §17.4 keystone      │
+│                 (`ticket clear` + `ticket merge`).                           │
 │ ensure-pr       Create a PR for an orphan branch (idempotent).               │
 │ check-gates     Check whether session gates allow a phase transition.        │
 │ fetch-issue     Fetch issue details from the configured tracker.             │
@@ -7999,6 +8151,32 @@ Usage: t3 teatree pr create [OPTIONS] TICKET_ID
 │                                                        no-adopt-worktree]    │
 │ --help                                                 Show this message and │
 │                                                        exit.                 │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 teatree pr merge`
+
+```
+Usage: t3 teatree pr merge [OPTIONS] PR SLUG
+
+ REMOVED — FSM-incoherent post-#863; refuses with a redirect to the §17.4
+ keystone.
+
+ The old LOCAL-squash/server-side path bypassed ``MergeClear``
+ validation, the ``expected_head_oid`` SHA-binding, the atomic
+ CLEAR-consume + ``MergeAudit`` + attestation + ``mark_merged()``.
+ It refuses symmetrically with the raw-merge prohibition guard so
+ no out-of-band path survives (BLUEPRINT §17.1 invariant 8 / §17.4).
+ Use ``ticket clear`` then ``ticket merge`` instead.
+
+╭─ Arguments ──────────────────────────────────────────────────────────────────╮
+│ *    pr        INTEGER  [required]                                           │
+│ *    slug      TEXT     [required]                                           │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --repo-path                 TEXT                                             │
+│ --auto         --no-auto          [default: no-auto]                         │
+│ --help                            Show this message and exit.                │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -8818,6 +8996,8 @@ Usage: t3 teatree lifecycle [OPTIONS] COMMAND [ARGS]...
 │                          (reviewing-phase gate).                             │
 │ record-review-context    Record referenced-context retrieval before          │
 │                          reviewing (deep-retrieval gate).                    │
+│ record-e2e-run           Record a green E2E run + posted evidence, clearing  │
+│                          the mandatory-E2E gate (#1967).                     │
 │ record-anti-vacuity      Record the SHA-bound anti-vacuity attestation       │
 │                          before review-request/merge.                        │
 ╰──────────────────────────────────────────────────────────────────────────────╯
@@ -8930,6 +9110,36 @@ Usage: t3 teatree lifecycle record-review-context [OPTIONS] TICKET_ID
 │ --analysis         TEXT  How the implementation was analyzed against the     │
 │                          specified requirements + rules.                     │
 │ --help                   Show this message and exit.                         │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 teatree lifecycle record-e2e-run`
+
+```
+Usage: t3 teatree lifecycle record-e2e-run [OPTIONS] TICKET_ID
+
+ Record SHA-bound, POSTED E2E evidence for the mandatory-E2E gate (#1967).
+
+ Writes an :class:`~teatree.core.models.e2e_mandatory_run.E2eMandatoryRun`
+ for the ticket at ``--head-sha``. A green run satisfies the mandatory-E2E
+ gate at ``pr create`` and the §17.4 CLEAR **only when** ``--posted-url``
+ is given — recorded E2E evidence is not enough, it must be POSTED (the
+ SHA-bound ``e2e post-test-plan`` ticket comment). A green run at any other
+ SHA does not carry. Re-recording the same spec at the same tree updates
+ the row in place (idempotent). A red run, or a green run with no
+ ``--posted-url``, records provenance without satisfying the gate.
+
+╭─ Arguments ──────────────────────────────────────────────────────────────────╮
+│ *    ticket_id      TEXT  [required]                                         │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --spec              TEXT  Path to the E2E spec that ran.                     │
+│ --result            TEXT  Run result: green or red. [default: green]         │
+│ --head-sha          TEXT  Full 40-char hex SHA of the reviewed tree the run  │
+│                           executed against.                                  │
+│ --posted-url        TEXT  URL of the posted `e2e post-test-plan` comment;    │
+│                           required for a green run to satisfy the gate.      │
+│ --help                    Show this message and exit.                        │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -9145,11 +9355,10 @@ Usage: t3 teatree ticket [OPTIONS] COMMAND [ARGS]...
 ```
 Usage: t3 teatree ticket transition [OPTIONS] TICKET_ID TRANSITION_NAME
 
- Transition a ticket to a new state.
-
- Accepts any of the allowed transition names: scope, start, code, test,
- review, ship, request_review, mark_merged, retrospect, mark_delivered,
- rework, mark_review_no_action.
+ Transition a ticket to a new state. Allowed transition names: scope, start,
+ plan, code, test, review, ship, request_review, mark_merged, retrospect,
+ mark_delivered, rework, mark_review_no_action, reconcile_reviewed, ignore,
+ unignore.
 
 ╭─ Arguments ──────────────────────────────────────────────────────────────────╮
 │ *    ticket_id            INTEGER  [required]                                │

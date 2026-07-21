@@ -535,7 +535,7 @@ The ``ticket rubric-set`` / ``rubric-grade`` commands, mounted via MRO inheritan
 | `show` | Show a ticket's state plus the per-phase ``attempt N/max`` budget (#2009) |
 | `expedite` | Flag a ticket as expedite/release-blocker (``--off`` clears it) (PR-07) |
 | `plan` | Record a PlanArtifact and advance the ticket STARTED → PLANNED |
-| `transition` | Transition a ticket to a new state |
+| `transition` | Transition a ticket to a new state. Allowed transition names: scope, start, plan, code, test, review, ship, request_review, mark_merged, retrospect, mark_delivered, rework, mark_review_no_action, reconcile_reviewed, ignore, unignore |
 | `clear` | Issue a per-diff CLEAR — the orchestrator's only merge output (BLUEPRINT §17.4.2) |
 | `comment` | Post a comment to an issue or work item by its URL |
 | `sync-completions` | Check post-ship tickets against upstream issues and advance completed ones |

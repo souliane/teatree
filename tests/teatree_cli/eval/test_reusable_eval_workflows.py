@@ -88,6 +88,24 @@ class TestReusesCliPrimitives:
         assert "eval-benchmark-" in text
 
 
+class TestPublishGuard:
+    """The publish job refuses shards not backed by metered spend, before it commits."""
+
+    def _publish_step_names(self) -> list[str]:
+        steps = _load(_WEEKLY)["jobs"]["publish"]["steps"]
+        return [step.get("name", "") for step in steps]
+
+    def test_guard_runs_before_the_dashboard_is_written_or_committed(self) -> None:
+        names = self._publish_step_names()
+        guard = next(i for i, name in enumerate(names) if "not backed by metered spend" in name)
+        collect = next(i for i, name in enumerate(names) if "Collect the shard matrices" in name)
+        commit = next(i for i, name in enumerate(names) if name.startswith("Commit and push"))
+        assert guard < collect < commit
+
+    def test_guard_invokes_the_cli_primitive(self) -> None:
+        assert "t3 eval verify-benchmark-publish" in _WEEKLY.read_text(encoding="utf-8")
+
+
 class TestInjectionSafety:
     def test_caller_values_are_routed_through_env_not_inlined_into_run(self) -> None:
         # The env-var-safe pattern: a caller-supplied value (assert-scenarios,

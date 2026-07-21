@@ -52,7 +52,12 @@ from teatree.cli.doctor.checks_resources import (
     _check_worker_skills_present,
 )
 from teatree.cli.doctor.checks_runtime import _check_singletons, _check_ttyd_for_dashboard, _check_worker_running
-from teatree.cli.doctor.checks_session import _check_account_switch, _check_agent_session_pins, _check_slack_socket_mode
+from teatree.cli.doctor.checks_session import (
+    _check_account_switch,
+    _check_agent_session_pins,
+    _check_interactive_permission_mode,
+    _check_slack_socket_mode,
+)
 from teatree.cli.doctor.checks_slack_roundtrip import check_slack_roundtrip
 from teatree.cli.doctor.dev_sources import (
     _find_host_project_root,
@@ -106,6 +111,7 @@ __all__ = (
     "_check_editable_sanity",
     "_check_entrypoint_is_primary_clone",
     "_check_gh_token_permissions",
+    "_check_interactive_permission_mode",
     "_check_legacy_overlay_alias",
     "_check_loop_presets",
     "_check_marker_jam",
@@ -189,14 +195,12 @@ def _optional_tooling_advisories() -> None:
     container and on a host that never opted in. The tmpfs-headroom check WARNs when
     a RAM-backed ``/tmp`` is filling toward ENOSPC (the fill that wedges the box);
     runtime temp is routed to disk and the watchdog trims stale scratch on a cadence.
-    The pyright-lsp advisory WARNs when the plugin that gives agents live pyright type
-    diagnostics is not enabled, or its ``pyright-langserver`` is missing from PATH.
-    (The critical worker gates — skills-present and memory-adequate — are HARD FAILs
-    in :func:`run_doctor_checks`, not advisories here.)
+    (The critical worker gates — skills-present, memory-adequate, and the enabled
+    pyright-lsp plugin's langserver being provisioned — are HARD FAILs in
+    :func:`run_doctor_checks`, not advisories here.)
     """
     _check_ttyd_for_dashboard()
     _check_chrome_devtools_mcp_suggestion()
-    _check_pyright_lsp_plugin()
     _check_docker_workflow_wired()
     _check_tmp_tmpfs_headroom()
 
@@ -215,6 +219,36 @@ def _run_worker_gates() -> bool:
     skills = _check_worker_skills_present()
     memory = _check_worker_memory_cap()
     return running and skills and memory
+
+
+def _check_claude_session_posture() -> bool:
+    """The Claude-session checks: account-switch recovery, then permission posture.
+
+    Grouped because both read the operator's live Claude session rather than
+    teatree's own state, and both must run AFTER ``ensure_django`` — the
+    account-switch probe builds messaging backends through the overlay factory to
+    live-probe connector reachability once the cache is invalidated. Only the
+    account-switch half can hard-FAIL; the permission-mode half advises and its
+    return value is deliberately discarded, so it cannot become a gate by accident.
+    """
+    ok = _check_account_switch()
+    _check_interactive_permission_mode()
+    return ok
+
+
+def _check_enabled_but_unprovisioned() -> bool:
+    """The "enabled but not provisioned → FAIL" family (epic #3445).
+
+    A dependency the operator ENABLED but nothing installed reads as configured while
+    silently doing nothing: a ``review_skill`` naming an absent SKILL.md (#3352), or the
+    ``pyright-lsp`` plugin enabled without its ``pyright-langserver`` binary (#3568, the
+    LSP never starts). Both HARD-FAIL. Each runs independently (no short-circuit) so
+    every finding is emitted; returns their AND. The review-skill check reads the
+    ConfigSetting store, so the caller runs this after :func:`ensure_django`.
+    """
+    review_skills = _check_configured_review_skills()
+    pyright_lsp = _check_pyright_lsp_plugin()
+    return review_skills and pyright_lsp
 
 
 def run_doctor_checks(*, repair: bool = False, slack_roundtrip: bool = False) -> bool:
@@ -265,7 +299,11 @@ def run_doctor_checks(*, repair: bool = False, slack_roundtrip: bool = False) ->
     # must resolve to an installed SKILL.md. Runs after ensure_django() above — it
     # reads the effective ConfigSetting-store values, whose DB tier is live only
     # once Django is configured.
-    ok = _check_configured_review_skills() and ok
+    # #3352 + #3568: the "enabled but not provisioned → FAIL" gates (epic #3445) —
+    # a configured-but-absent review skill, or the pyright-lsp plugin enabled without
+    # its `pyright-langserver` binary (the LSP then silently never starts). Runs after
+    # ensure_django() above: the review-skill check reads the ConfigSetting store.
+    ok = _check_enabled_but_unprovisioned() and ok
     ok = _check_single_db() and ok
     ok = _check_stale_uv_venv() and ok
     ok = _check_stale_path_t3() and ok
@@ -382,10 +420,7 @@ def run_doctor_checks(*, repair: bool = False, slack_roundtrip: bool = False) ->
     # auth.test. A silent no-op with no Slack-backed overlay (Slack stays optional).
     ok = check_slack_roundtrip(deep=slack_roundtrip) and ok
 
-    # In-session `/login` account-switch recovery (#1916). Runs after
-    # ``ensure_django`` because it builds messaging backends via the overlay
-    # factory to live-probe connector reachability post cache-invalidation.
-    ok = _check_account_switch() and ok
+    ok = _check_claude_session_posture() and ok
 
     # Enabled-MCP connectivity + declared-provider check (#2282). Runs after the
     # account-switch gate (which invalidates the backend cache on a `/login`), so

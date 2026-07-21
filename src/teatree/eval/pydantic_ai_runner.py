@@ -43,12 +43,13 @@ from teatree.agents.pydantic_ai_config import LANE_EVAL, OrcaLaneConfig
 from teatree.agents.pydantic_ai_session import PydanticAiHarnessSession
 from teatree.agents.regulated_path import assert_model_allowed_on_regulated_path
 from teatree.config import get_effective_settings
-from teatree.eval.api_runner import load_agent_definition, resolve_watchdog_seconds
+from teatree.eval.api_runner import load_agent_definition
 from teatree.eval.message_mapping import eval_run_from_messages
 from teatree.eval.model_resolution import resolve_eval_model
 from teatree.eval.model_variant import parse_model_variant
 from teatree.eval.models import EvalRun, EvalSpec
 from teatree.eval.prompt_framing import LIVE_ENV_FRAMING
+from teatree.eval.resource_caps import resolve_watchdog_seconds
 from teatree.eval.under_load import build_system_prompt, build_user_prompt
 from teatree.llm.credentials import OrcaRouterCredential, resolve_orca_router_provider_config
 

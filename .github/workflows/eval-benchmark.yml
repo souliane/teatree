@@ -8,7 +8,7 @@
 # has never actually been dispatchable here. This file is that missing caller.
 #
 # CHOSEN APPROACH: (a) thread `credential` through the reusable workflow itself
-# (see `eval-weekly-reusable.yml`'s `credential` input / `T3_EVAL_CREDENTIAL`
+# (see `eval-weekly-reusable.yml`'s `credential` input / `T3_AGENT_HARNESS_PROVIDER`
 # wiring), not (b) a standalone workflow that reimplements the reusable's
 # prepare/eval/publish jobs. (a) is lower-risk: it reuses the reusable's
 # already-proven guard + shard-matrix + publish logic byte-for-byte and only
@@ -23,7 +23,7 @@
 # only the subscription `CLAUDE_CODE_OAUTH_TOKEN` is available. Defaulting
 # `credential` to `subscription_oauth` here (mirrors `eval.yml`) makes the
 # benchmark runnable on the credential this environment actually has, while
-# `metered_api_key` stays selectable wherever the metered secret does exist.
+# `api_key` stays selectable wherever the metered secret does exist.
 # ============================================================
 
 name: Behavioral benchmark
@@ -42,7 +42,7 @@ on:
         default: ""
         type: string
       credential:
-        description: "Eval credential (subscription_oauth | metered_api_key). Default subscription_oauth — this environment has no metered ANTHROPIC_API_KEY secret, only the subscription CLAUDE_CODE_OAUTH_TOKEN. subscription_oauth draws no per-token bill but rides a depleting usage window; metered_api_key is per-token cost, no window."
+        description: "Eval credential (subscription_oauth | api_key). Default subscription_oauth — this environment has no metered ANTHROPIC_API_KEY secret, only the subscription CLAUDE_CODE_OAUTH_TOKEN. subscription_oauth draws no per-token bill but rides a depleting usage window; api_key is per-token cost, no window."
         required: false
         default: "subscription_oauth"
         type: string

@@ -19,7 +19,8 @@ from claude_agent_sdk import ClaudeAgentOptions
 from pydantic_ai.models.test import TestModel
 
 from teatree.agents.harness import PydanticAiHarness
-from teatree.agents.one_shot import OneShotSpec, run_one_shot
+from teatree.agents.one_shot import OneShotSpec, _clean_room_options, run_one_shot
+from teatree.llm.credentials import CredentialError
 from tests.teatree_agents._sdk_fake import FakeHarness, assistant_text, result_message
 
 
@@ -109,3 +110,27 @@ class TestRunOneShotPydanticAiBackend:
         harness = PydanticAiHarness(model=TestModel(custom_output_text="answer from pydantic_ai"))
         result = run_one_shot("q", OneShotSpec(system_prompt="p"), harness=harness)
         assert result == "answer from pydantic_ai"
+
+
+class TestOneShotRefusesBaseUrlRedirect:
+    """A clean-room turn pins no credential, so it inherits an ambient redirect.
+
+    ``run_one_shot`` swallows every exception to degrade quietly, so the guard runs in
+    ``_clean_room_options`` — OUTSIDE that try — or a misconfigured turn would silently
+    return ``None`` while having been redirected. Its callers post on the user's behalf
+    (``simple_answer``) and describe tickets, so a silent redirect is the worst shape.
+    """
+
+    def test_the_refusal_escapes_rather_than_degrading_to_none(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("ANTHROPIC_BASE_URL", "https://gateway.example.invalid/v1")
+        monkeypatch.setenv("CLAUDE_CODE_OAUTH_TOKEN", "sk-ant-oat01-x")
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+        with pytest.raises(CredentialError) as excinfo:
+            run_one_shot("hi", OneShotSpec(system_prompt="s"))
+        assert "ANTHROPIC_BASE_URL" in str(excinfo.value)
+
+    def test_a_metered_key_at_a_gateway_is_allowed_through(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("ANTHROPIC_BASE_URL", "https://gateway.example.invalid/v1")
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-key")
+        monkeypatch.delenv("CLAUDE_CODE_OAUTH_TOKEN", raising=False)
+        _clean_room_options(OneShotSpec(system_prompt="s"))

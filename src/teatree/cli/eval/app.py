@@ -9,7 +9,9 @@ from teatree.cli._format_opts import VALID_FORMATS, require_valid_format
 from teatree.cli.eval._registration import register_imported_commands
 from teatree.cli.eval.all import build_scenarios_table
 from teatree.cli.eval.app_helpers import (
+    EVAL_CREDENTIALS,
     RunReportPaths,
+    apply_credential_override,
     reject_unsupported_run_output,
     require_api_backend_for_fresh_run,
     require_effort,
@@ -23,12 +25,12 @@ from teatree.cli.eval.metered_routing import warn_local_metered
 from teatree.cli.eval.run_dispatch import ResolvedRun, dispatch_resolved_run
 from teatree.cli.eval.run_docker import RunDockerArgs, route_to_docker_if_needed
 from teatree.cli.eval.run_modes import DEFAULT_COST_REGRESSION_TOLERANCE, make_grader, require_persist_for_history_gates
-from teatree.eval.api_runner import resolve_max_turns_override, resolve_metered_budget_usd, resolve_metered_effort
 from teatree.eval.backends import API_BACKEND, FRESH_CLAUDE_BACKENDS, TRANSCRIPT_BACKEND
 from teatree.eval.discovery import discover_specs
 from teatree.eval.lane_shard import ShardSpecError, filter_specs_by_shard
 from teatree.eval.model_variant import EFFORT_LEVELS
 from teatree.eval.parallel import DEFAULT_PARALLEL
+from teatree.eval.resource_caps import resolve_max_turns_override, resolve_metered_budget_usd, resolve_metered_effort
 from teatree.utils.django_bootstrap import ensure_django
 
 _RUN_FORMATS = (*VALID_FORMATS, "html")
@@ -192,8 +194,8 @@ def run(  # noqa: PLR0913, PLR0917 — typer command: each param maps 1:1 to a p
             "Execution backend for a single-trial run: 'transcript' (default — REUSE an "
             "already-recorded run by grading its on-disk transcript, $0 extra; see "
             "`t3 eval prepare-transcript`) or 'api' (RUN the model fresh in-process via the "
-            "Agent SDK, on the credential the eval_credential knob selects — default "
-            "subscription OAuth (#2707 reversal), or the metered API key; runs in-container "
+            "Agent SDK, on the credential agent_harness_provider selects — default "
+            "subscription OAuth, or the metered API key; runs in-container "
             "by default or directly on the host with --local) or 'anthropic_api' (RUN the "
             "same Claude model fresh through the Anthropic Messages API DIRECTLY, no `claude` "
             "CLI child — the CLI-free lane for a harness that forbids the Claude Code CLI, "
@@ -206,6 +208,16 @@ def run(  # noqa: PLR0913, PLR0917 — typer command: each param maps 1:1 to a p
         None,
         "--transcript-dir",
         help="Directory of <scenario>.jsonl transcripts for the 'transcript' backend (default: cwd).",
+    ),
+    credential: str | None = typer.Option(
+        None,
+        "--credential",
+        help=(
+            f"Authenticate THIS run on one credential ({' | '.join(EVAL_CREDENTIALS)}), overriding "
+            "agent_harness_provider for this process only. subscription_oauth draws no per-token "
+            "bill but rides the plan's depleting usage window; api_key is per-token cost, no "
+            "window. Omit to follow the configured provider (default: subscription OAuth)."
+        ),
     ),
     require_executed: bool = typer.Option(  # noqa: FBT001 — typer boolean flag, not a positional bool foot-gun.
         False,
@@ -354,11 +366,13 @@ def run(  # noqa: PLR0913, PLR0917 — typer command: each param maps 1:1 to a p
     its on-disk transcript — ``$0`` extra, no model run (produce the transcripts
     in-session via ``t3 eval prepare-transcript`` first for the prompts + expected
     paths). ``--backend api`` RUNS the model fresh in-process via the Agent SDK
-    (which spawns the ``claude`` CLI as its child), on the credential the
-    ``eval_credential`` knob selects — default subscription OAuth (#2707 reversal),
-    or the metered API key; CI passes ``--backend api`` explicitly via the
-    standalone ``eval.yml`` job. ``--trials``/``--models`` require the fresh-run
-    ``api`` runner and reject the transcript backend.
+    (which spawns the ``claude`` CLI as its child), on the credential
+    ``agent_harness_provider`` selects — default subscription OAuth, or the metered
+    API key; CI passes ``--backend api`` explicitly via the standalone ``eval.yml``
+    job. ``--credential {subscription_oauth,api_key}`` pins THIS run's credential
+    instead, so an operator on an OAuth loop can run a one-off metered eval.
+    ``--trials``/``--models`` require the fresh-run ``api`` runner and reject the
+    transcript backend.
 
     ``--require-executed`` fails the run when the suite collected scenarios but
     executed none (every scenario skipped — typically ``claude`` not on PATH /
@@ -385,6 +399,10 @@ def run(  # noqa: PLR0913, PLR0917 — typer command: each param maps 1:1 to a p
     # accidentally run on the host. --docker forces the container for any backend;
     # the T3_EVAL_IN_CONTAINER marker the docker runner sets keeps the in-container
     # re-invocation in-process (no re-route loop).
+    # Applied FIRST so the host's pre-docker credential resolution already sees the
+    # per-run pin; the container recovers the kind from the forwarded credential var,
+    # so --credential itself is never re-passed to the in-container invocation.
+    apply_credential_override(credential)
     effort_level = require_effort(effort)
     max_turns = resolve_max_turns_override(max_turns)
     # --benchmark expands to the three tier models (matrix lane + HTML); --model

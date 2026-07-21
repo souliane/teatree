@@ -1,14 +1,16 @@
 """Per-phase tool least-privilege at the headless harness (PR-11).
 
 ``_build_options`` injects the per-phase disallow list on the ``ClaudeAgentOptions``
-it hands the SDK. A review-phase dispatch must be UNABLE to invoke git-write
-tools — the cold-review lockout that keeps the transcript at its verdict, denied
-at the harness. A write phase's options are byte-identical to before the lever.
+it hands the SDK. A verdict-producing review-phase dispatch must come up WITH the
+shell it needs to cold-check-out the head and record its verdict, and UNABLE to
+mutate source (``Write``/``Edit``) — the lockout that keeps the transcript at that
+verdict. A write phase's options are byte-identical to before the lever.
 """
 
 from django.test import TestCase
 
 from teatree.agents._headless_options import _build_options, _disallowed_tools_for_phase
+from teatree.core.modelkit.phase_tools import VERDICT_REVIEW_PHASES
 from teatree.core.models import Session, Task, Ticket
 from teatree.llm.builtin_tools import KNOWN_BUILTIN_TOOLS
 
@@ -78,8 +80,22 @@ class TestBuildOptionsHarnessPin(TestCase):
         ):
             assert tool not in options.disallowed_tools, tool
 
-    def test_e2e_review_dispatch_cannot_invoke_git_write(self) -> None:
-        assert "Bash" in self._options_for("e2e_reviewing").disallowed_tools
+    def test_every_verdict_review_dispatch_comes_up_with_a_shell(self) -> None:
+        # End-to-end regression for the live outage: two auto-dispatched
+        # `codex_adversarial_reviewing` runs came up with Bash denied, could not
+        # check out the head or run `t3 tool verify-gates`, and filed deferred
+        # questions ("no Bash, Write, Edit, or git/gh access") instead of a
+        # verdict. Assert the whole option build, not just the table, since the
+        # dispatch is what the agent actually receives.
+        for phase in sorted(VERDICT_REVIEW_PHASES):
+            disallowed = self._options_for(phase).disallowed_tools
+            assert "Bash" not in disallowed, phase
+            assert "Write" in disallowed, phase
+            assert "Edit" in disallowed, phase
+
+    def test_requesting_review_dispatch_cannot_invoke_git_write(self) -> None:
+        # Control: the non-verdict review phase is still shell-denied at dispatch.
+        assert "Bash" in self._options_for("requesting_review").disallowed_tools
 
     def test_coding_dispatch_keeps_full_shell_access(self) -> None:
         options = self._options_for("coding")
@@ -116,3 +132,33 @@ class TestBuildOptionsHarnessPin(TestCase):
         # The quarantined reader stays hermetic: no MCP config of any origin,
         # including teatree's own server.
         assert self._options_for("directive_reading").mcp_servers == {}
+
+
+class TestReaderPermissionModeIsDefaultDeny(TestCase):
+    """The #116 reader denies by DEFAULT, not by enumerating every tool.
+
+    ``bypassPermissions`` auto-approves whatever survives the denylist, so a tool the
+    denylist does not name — an MCP-server tool, a custom slash command — would still
+    run. ``dontAsk`` denies anything not pre-approved by an allow rule, and the reader
+    carries none. Source-suppression (no settings, no MCP config) is the independent
+    other half; the reader keeps both.
+    """
+
+    @classmethod
+    def setUpTestData(cls) -> None:
+        cls.ticket = Ticket.objects.create()
+
+    def _options_for_phase(self, phase: str) -> object:
+        session = Session.objects.create(ticket=self.ticket)
+        task = Task.objects.create(ticket=self.ticket, session=session)
+        return _build_options(task, "ctx", phase=phase, skills=[])
+
+    def test_reader_phase_denies_anything_not_pre_approved(self) -> None:
+        options = self._options_for_phase("directive_reading")
+        assert options.permission_mode == "dontAsk"
+
+    def test_write_phases_keep_bypass_so_they_can_act_unattended(self) -> None:
+        # A detached write run has no human to grant permissions; downgrading these
+        # to dontAsk would deny every edit and silently strand the factory.
+        for phase in ("coding", "planning", "shipping", "reviewing"):
+            assert self._options_for_phase(phase).permission_mode == "bypassPermissions", phase

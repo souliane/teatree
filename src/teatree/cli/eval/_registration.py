@@ -15,6 +15,7 @@ from teatree.cli.eval.audit import audit
 from teatree.cli.eval.benchmark import benchmark
 from teatree.cli.eval.capture_subagent import capture_subagent
 from teatree.cli.eval.changed_scenarios import changed_scenarios
+from teatree.cli.eval.ci_account import ci_account_app
 from teatree.cli.eval.ci_heal import ci_heal_app
 from teatree.cli.eval.ci_status import ci_status
 from teatree.cli.eval.ci_trigger import ci_trigger
@@ -22,6 +23,7 @@ from teatree.cli.eval.corpus import corpus_app
 from teatree.cli.eval.green_proof import green_proof
 from teatree.cli.eval.history import history_command
 from teatree.cli.eval.label import label_app
+from teatree.cli.eval.ladder import ladder
 from teatree.cli.eval.lanes import coverage, pinned_regressions
 from teatree.cli.eval.merge_summaries import merge_summaries
 from teatree.cli.eval.merge_summary_json import merge_summary_json
@@ -32,6 +34,7 @@ from teatree.cli.eval.set_baseline import set_baseline
 from teatree.cli.eval.skill_command_lane import skill_command_validity
 from teatree.cli.eval.skill_prose_lane import skill_prose_judge
 from teatree.cli.eval.transcript_replay import transcript_replay
+from teatree.cli.eval.verify_benchmark_publish import verify_benchmark_publish
 
 
 def register_imported_commands(eval_app: typer.Typer) -> None:
@@ -49,12 +52,15 @@ def register_imported_commands(eval_app: typer.Typer) -> None:
     eval_app.command("ci-trigger")(ci_trigger)
     eval_app.command("ci-status")(ci_status)
     eval_app.add_typer(ci_heal_app, name="ci-heal")
+    eval_app.add_typer(ci_account_app, name="ci-account")
     eval_app.command("green-proof")(green_proof)
     eval_app.command("merged-prs-since")(merged_prs_since)
+    eval_app.command("verify-benchmark-publish")(verify_benchmark_publish)
     eval_app.command("merge-summaries")(merge_summaries)
     eval_app.command("merge-summary-json")(merge_summary_json)
     eval_app.command("prepare-transcript")(prepare_transcript)
     eval_app.command("set-baseline")(set_baseline)
+    eval_app.command("ladder")(ladder)
     eval_app.command("history")(history_command)
     eval_app.add_typer(corpus_app, name="corpus")
     eval_app.add_typer(label_app, name="label")

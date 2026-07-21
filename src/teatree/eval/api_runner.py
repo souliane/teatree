@@ -38,7 +38,6 @@ The async ``query`` is bridged to the sync :meth:`ApiInProcessRunner.run` via
 import asyncio
 import dataclasses
 import functools
-import os
 import shutil
 import time
 from collections.abc import Callable, Iterator
@@ -48,6 +47,7 @@ from pathlib import Path
 from claude_agent_sdk import AgentDefinition, ClaudeAgentOptions, Message, query
 from claude_agent_sdk.types import EffortLevel, SdkPluginConfig
 
+from teatree.agents import permission_modes
 from teatree.eval.api_errors import (
     BUDGET_EXCEEDED_REASON,
     SuccessMislabelResultError,
@@ -68,6 +68,7 @@ from teatree.eval.model_variant import parse_model_variant
 from teatree.eval.models import CLEAN_ROOM_LANE, CLEAN_ROOM_MIN_TURNS, EvalRun, EvalSpec
 from teatree.eval.production_hooks import has_hook_events, hooked_env, t3_plugin, teatree_root
 from teatree.eval.prompt_framing import LIVE_ENV_FRAMING
+from teatree.eval.resource_caps import resolve_watchdog_seconds
 from teatree.eval.system_prompt_file import spill_system_prompt
 from teatree.eval.throttle_retry import ThrottleRetryDriver, ThrottleRetryHandlers, resolve_throttle_retries
 from teatree.eval.toolset import (
@@ -87,14 +88,6 @@ from teatree.llm.credentials import AnthropicApiKeyCredential
 #: metered strip so isolation-only tests are unchanged.
 _DEFAULT_CONFLICTING_VARS = AnthropicApiKeyCredential().spec.conflicting_vars
 
-#: Env var names for the metered lane's GENEROUS, configurable resource caps. A
-#: truncated run measures the cap, not behaviour (the first full metered run lost
-#: ~18 scenarios to cap truncation — a false negative), so each default is
-#: generous and overridable.
-_WATCHDOG_ENV_VAR = "T3_EVAL_WATCHDOG_SECONDS"
-_MAX_TURNS_ENV_VAR = "T3_EVAL_MAX_TURNS"
-_METERED_BUDGET_ENV_VAR = "T3_EVAL_MAX_BUDGET_USD"
-_METERED_EFFORT_ENV_VAR = "T3_EVAL_EFFORT"
 
 #: ``shutil.which("claude")`` transiently returns ``None`` when the bundled Claude
 #: Code CLI auto-updates MID-RUN — the nvm symlink is swapped out for a moment, so
@@ -105,95 +98,6 @@ _METERED_EFFORT_ENV_VAR = "T3_EVAL_EFFORT"
 #: genuinely-absent binary still fails after the bounded attempts are exhausted.
 CLAUDE_RESOLVE_MAX_ATTEMPTS = 4
 CLAUDE_RESOLVE_BACKOFF_SECONDS = 0.5
-
-#: GENEROUS per-scenario wall-clock watchdog (seconds). 120s was too tight for
-#: sub-agent-spawning scenarios (an orchestrator that delegates an investigation
-#: timed out before it finished), so the default is raised. Override via
-#: ``T3_EVAL_WATCHDOG_SECONDS``.
-#:
-#: In the EVAL lane, COST ($) and TURNS are the meaningful gates — a
-#: behaviourally-correct trajectory bounded by its ``max_budget_usd`` /
-#: ``max_turns`` must NOT be falsely red'd by latency alone (#2192: a
-#: ``timeout`` cap-taints the pass@k aggregate exactly like a budget/turn cap,
-#: so a slow-but-correct trial reds a scenario whose other trial passed). The
-#: wall-clock watchdog is therefore only a GENEROUS hang-backstop: high enough
-#: that a slow-but-correct fan-out/delegation trajectory finishes inside it,
-#: yet FINITE so a true hang (one that burns neither cost nor turns) is still
-#: caught. It is deliberately NOT a latency gate. Provisioning / E2E / workspace
-#: timeouts are unaffected — those legitimately catch I/O waste and live
-#: elsewhere; this constant scopes strictly to the eval lane.
-DEFAULT_WATCHDOG_SECONDS = 900
-
-#: GENEROUS default per-run budget for the metered ``t3 eval run --backend api``
-#: lane — distinct from the cheap-lane :data:`MAX_BUDGET_USD` runner floor (0.10),
-#: which truncated finishing scenarios (a truncated run measures the cap, not
-#: behaviour). ~10x the cheap floor, below the benchmark's 2.0; override via
-#: ``T3_EVAL_MAX_BUDGET_USD``.
-METERED_DEFAULT_BUDGET_USD = 1.0
-
-#: The metered lane's representative reasoning effort. The lane otherwise runs at
-#: the model's DEFAULT effort, while real usage is high effort — so a default-effort
-#: pass-rate is pessimistic. A scenario's own ``@effort`` still wins. Override via
-#: ``T3_EVAL_EFFORT``.
-METERED_DEFAULT_EFFORT: EffortLevel = "high"
-
-
-def env_float(name: str, *, default: float) -> float:
-    """Resolve a positive ``float`` from env *name*, falling back to *default*.
-
-    A missing, empty, unparsable, or non-positive value yields the generous
-    *default* — a fat-fingered override never silently tightens the cap to an
-    accidental 0.
-    """
-    raw = os.environ.get(name, "").strip()
-    if not raw:
-        return default
-    try:
-        value = float(raw)
-    except ValueError:
-        return default
-    return value if value > 0 else default
-
-
-def resolve_watchdog_seconds() -> float:
-    """The generous per-scenario watchdog, ``T3_EVAL_WATCHDOG_SECONDS`` overriding the default."""
-    return env_float(_WATCHDOG_ENV_VAR, default=float(DEFAULT_WATCHDOG_SECONDS))
-
-
-def resolve_max_turns_override(explicit: int | None = None) -> int | None:
-    """An *explicit* override wins; else the ``T3_EVAL_MAX_TURNS`` knob; else ``None`` to defer to spec.
-
-    Defers to each scenario's own ``max_turns`` (the per-scenario turn budget, mirroring
-    per-scenario cost) when neither is set; a missing/empty/unparsable/non-positive env value
-    yields ``None`` — never a silent global turn cap.
-    """
-    if explicit is not None:
-        return explicit
-    raw = os.environ.get(_MAX_TURNS_ENV_VAR, "").strip()
-    if not raw:
-        return None
-    try:
-        value = int(raw)
-    except ValueError:
-        return None
-    return value if value > 0 else None
-
-
-def resolve_metered_budget_usd() -> float:
-    """The generous metered-lane budget, ``T3_EVAL_MAX_BUDGET_USD`` overriding the default."""
-    return env_float(_METERED_BUDGET_ENV_VAR, default=METERED_DEFAULT_BUDGET_USD)
-
-
-def resolve_metered_effort() -> EffortLevel:
-    """The representative metered-lane effort, ``T3_EVAL_EFFORT`` overriding the default.
-
-    An invalid/unknown override falls back to the representative default rather
-    than passing a bad level through to the SDK.
-    """
-    from teatree.eval.model_variant import EFFORT_LEVELS  # noqa: PLC0415 — avoid an import cycle at module load.
-
-    raw = os.environ.get(_METERED_EFFORT_ENV_VAR, "").strip()
-    return raw if raw in EFFORT_LEVELS else METERED_DEFAULT_EFFORT  # type: ignore[return-value]
 
 
 #: The import-time watchdog default (generous). The RUNNER resolves its own
@@ -392,7 +296,7 @@ def build_sdk_options(config: CleanRoomConfig) -> ClaudeAgentOptions:
         allowed_tools=list(config.allowed_tools),
         disallowed_tools=list(config.disallowed_tools),
         agents=config.agents,
-        permission_mode="bypassPermissions",
+        permission_mode=permission_modes.UNATTENDED,
         max_turns=config.max_turns,
         max_budget_usd=config.max_budget_usd,
         model=config.model,
@@ -454,6 +358,12 @@ class ApiRunnerParams:
     #: resolved eval credential's ``spec.conflicting_vars``; the default preserves
     #: the pre-#2707-reversal metered strip for direct callers.
     conflicting_vars: tuple[str, ...] = _DEFAULT_CONFLICTING_VARS
+    #: The SELECTED eval credential's forbidden vars — REFUSED rather than stripped,
+    #: because they name an operator misconfiguration this credential will not run
+    #: under. Empty for the metered key (a base-URL redirect is legal there); the
+    #: subscription credential forbids ``ANTHROPIC_BASE_URL``, whose plan auth is
+    #: valid only against Anthropic's own endpoint.
+    forbidden_vars: tuple[str, ...] = ()
     #: Throttle-retry seams threaded to :class:`~teatree.eval.throttle_retry.ThrottleRetryDriver`.
     #: ``sleep`` / ``rand`` (the jitter RNG returning ``[0, 1)``) are injectable so a
     #: test asserts the backoff schedule without real time or a real RNG; ``None``
@@ -476,6 +386,7 @@ class ApiInProcessRunner:
         self._max_budget_usd = params.max_budget_usd
         self._effort = params.effort
         self._conflicting_vars = params.conflicting_vars
+        self._forbidden_vars = params.forbidden_vars
         # Resolve the env-overridable knobs at CONSTRUCTION, not module import, so a
         # T3_EVAL_* override set after ``import teatree.eval.api_runner`` (a test, a
         # runtime reconfigure) is honored rather than frozen to its import-time value.
@@ -634,7 +545,7 @@ class ApiInProcessRunner:
         matchers still grade the CALL, so negatives keep full teeth.
         """
         with ExitStack() as stack:
-            env, cwd = stack.enter_context(isolated_claude_env(self._conflicting_vars))
+            env, cwd = stack.enter_context(isolated_claude_env(self._conflicting_vars, self._forbidden_vars))
             if spec.production_hooks:
                 # Pin the loop/hook state roots inside the sandbox home BEFORE any
                 # further env overlay, so the #807 Stop gate sees a fresh owner-less

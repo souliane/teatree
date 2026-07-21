@@ -64,7 +64,7 @@ class TestCredentialWiring:
         text = _text()
         assert "secrets.CLAUDE_CODE_OAUTH_TOKEN" in text
         assert "secrets.ANTHROPIC_API_KEY" in text
-        assert "T3_EVAL_CREDENTIAL" in text
+        assert "T3_AGENT_HARNESS_PROVIDER" in text
 
 
 class TestNoSilentGreen:

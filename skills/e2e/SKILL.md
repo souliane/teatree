@@ -24,7 +24,7 @@ Playwright-based end-to-end testing for overlay target applications. Covers writ
 
 **Full worktree per PR (Non-Negotiable):** Each PR under test MUST have its own full worktree setup (backend + frontend via `t3 <overlay> worktree provision` + `t3 <overlay> worktree start`). Never mix backends from one worktree with frontends from another. Never patch an incomplete worktree by hand — if it's missing repos, env files, or DB, delete it and start over with `t3 <overlay> workspace ticket`.
 
-**This full-worktree rule is `--target local` ONLY — a `--target dev` run provisions NOTHING locally.** A remote/DEV run (`t3 <overlay> e2e [run|external] --target dev`) hits the already-deployed stack, so there is nothing to run on your machine: do NOT `t3 <overlay> worktree provision` or start backend+frontend+DB for it. The full local stack exists to test an **unmerged** change on a self-run stack — irrelevant when the change is already deployed where you're pointing. Over-provisioning a full stack for a remote run just burns ~20 min and reads as a stall; a `--target dev` run needs only the specs repo + Playwright + DEV creds. Provision locally only for `--target local` (an unmerged change with no deployed env to hit).
+**This full-worktree rule is `--target local` ONLY — a `--target dev` run provisions NOTHING locally.** A remote/DEV run (`t3 <overlay> e2e run --target dev`, or the `external` runner) hits the already-deployed stack, so there is nothing to run on your machine: do NOT `t3 <overlay> worktree provision` or start backend+frontend+DB for it. The full local stack exists to test an **unmerged** change on a self-run stack — irrelevant when the change is already deployed where you're pointing. Over-provisioning a full stack for a remote run just burns ~20 min and reads as a stall; a `--target dev` run needs only the specs repo + Playwright + DEV creds. Provision locally only for `--target local` (an unmerged change with no deployed env to hit).
 
 Always start dev servers via `t3 <overlay> worktree start` before running tests. Never start services manually. Before running E2E tests, verify that **translations are loaded** — the frontend i18n directory is gitignored and only populated at startup. If the frontend was started manually, translations will be missing. Quick check: open any page and confirm labels show human-readable text, not raw keys like `app.feature.xxx.label`.
 
@@ -70,7 +70,7 @@ The registration is `claude mcp add chrome-devtools -- npx -y chrome-devtools-mc
 
 A single spec should run against either the deployed **dev** environment or the **local** stack, selected by one CLI argument. Determinism comes from code, never from a parsed file.
 
-**Target selection.** `t3 <overlay> e2e [run|external|project] --target dev|local`:
+**Target selection.** `t3 <overlay> e2e run --target dev|local` (and the `external` / `project` runners):
 
 ```bash
 # Run the suite against the deployed dev environment (do NOT export/edit BASE_URL by hand):
@@ -92,7 +92,7 @@ t3 <overlay> e2e run <work-item> --target local
 
 Test a deployed/merged change against `dev`; an unmerged change must still pass on `local` (the DoD gate below requires a green `local` run regardless).
 
-**Specs branch selection (`external` runner).** `t3 <overlay> e2e [run|external] --repo <name> --branch <name>` (alias `--ref`) runs the suite from a working branch of the external specs repo instead of the `[e2e_repos.<name>].branch` default. Use it while a specs-migration MR is still open — point at the MR's source branch so the team runs the new specs before they land. Omitted, the configured default ref is used unchanged. The branch must exist on the remote, or the run aborts with a clear message. (`--branch` applies only to a `--repo` clone; a `T3_PRIVATE_TESTS` directory is one you check out yourself, so the flag is rejected there.)
+**Specs branch selection (`external` runner).** `t3 <overlay> e2e external --repo <name> --branch <name>` (alias `--ref`) runs the suite from a working branch of the external specs repo instead of the `[e2e_repos.<name>].branch` default. Use it while a specs-migration MR is still open — point at the MR's source branch so the team runs the new specs before they land. Omitted, the configured default ref is used unchanged. The branch must exist on the remote, or the run aborts with a clear message. (`--branch` applies only to a `--repo` clone; a `T3_PRIVATE_TESTS` directory is one you check out yourself, so the flag is rejected there.)
 
 **Recording DEV-vs-local discrepancies (typed sidecar, not prose).** When a spec must behave differently per target (different field labels in a regulated vs internal document, a DEV-only cross-check, a feature whose data only exists on one side), encode it in a **typed TypeScript sidecar the spec imports** (e.g. `<spec>.dualenv.ts` exporting a typed `DualEnvSpec`). `tsc` type-checks it; nothing parses Markdown/YAML to drive behavior. The sidecar is the durable, machine-enforced record of every known divergence and of any fixture provenance.
 

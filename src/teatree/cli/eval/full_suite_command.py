@@ -22,8 +22,8 @@ def register_full_suite_callback(eval_app: typer.Typer) -> None:
             help=(
                 "AI-lane backend for the bare-`t3 eval` full suite: 'transcript' (default — REUSE "
                 "already-recorded in-session transcripts, $0 extra), 'api' (RUN the Claude model "
-                "fresh in-process via the Agent SDK, on the credential the eval_credential knob "
-                "selects — default subscription OAuth (#2707 reversal), or the metered API key; the "
+                "fresh in-process via the Agent SDK, on the credential agent_harness_provider "
+                "selects — default subscription OAuth, or the metered API key; the "
                 "explicit opt-in), 'anthropic_api' (RUN the same Claude model fresh through the "
                 "Anthropic Messages API DIRECTLY, no `claude` CLI child — the CLI-free lane, metered "
                 "on ANTHROPIC_API_KEY), or 'pydantic_ai' (RUN a non-Claude model through the "

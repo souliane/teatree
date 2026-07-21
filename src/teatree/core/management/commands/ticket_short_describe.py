@@ -16,11 +16,12 @@ through the shared one-shot seam
 active harness (``claude_sdk`` or ``pydantic_ai``/OrcaRouter), so the
 summary follows a swapped tier-model DB row and works off-Claude — never a
 hardcoded model id, and no ``teatree.eval`` import on the production path.
-When the model is unavailable (missing binary, absent credential, sandboxed
-environment) or the turn fails, the seam returns ``None`` and the command
-degrades to a truncation fallback so the field is still populated (the
-truncation preserves at least the first ~40 chars of the cached title —
-much better than leaving the row blank forever).
+When the model is unavailable (missing binary, sandboxed environment) or the
+turn fails, the seam returns ``None`` and the command degrades to a truncation
+fallback so the field is still populated (the truncation preserves at least the
+first ~40 chars of the cached title — much better than leaving the row blank
+forever). A refused ambient environment raises instead of degrading, so a
+misrouted base URL surfaces rather than silently truncating every row.
 """
 
 from collections.abc import Callable
@@ -79,10 +80,11 @@ def _summarize(title: str) -> str:
     (:func:`teatree.agents.one_shot.run_one_shot`): the ``cheap`` tier resolved
     to a concrete model id and driven through the active harness, so the summary
     follows a swapped tier-model DB row and works off-Claude. The seam returns
-    ``None`` on ANY failure (no binary, absent credential, timeout, backend
-    error), which maps to ``""`` here so the caller degrades to the truncation
-    fallback. The model's reply is one line; take the LAST non-blank line and
-    strip surrounding quotes.
+    ``None`` on a failed turn (no binary, timeout, backend error), which maps to
+    ``""`` here so the caller degrades to the truncation fallback; a refused
+    ambient environment raises :class:`~teatree.llm.credentials.CredentialError`
+    through instead. The model's reply is one line; take the LAST non-blank line
+    and strip surrounding quotes.
     """
     prompt = _PROMPT_TEMPLATE.format(title=title)
     answer = run_one_shot(

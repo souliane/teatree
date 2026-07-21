@@ -1,12 +1,22 @@
 """``t3 eval set-baseline`` — derive the file-backed ``baseline`` preset from a matrix run.
 
-Reads a ``t3 eval run --models ... --format json`` (or ``t3 eval benchmark
---format json``) matrix payload and writes ``evals/presets/baseline.yaml``: for
-each currently-discovered scenario, the CHEAPEST tier (cheap < balanced <
-frontier) whose matrix cell passed. A scenario that failed at every tier gets
-NO entry (a warning, never a guess) and a scenario no longer discovered is
-pruned. The whole file is regenerated from the matrix — never merged with the
-prior contents — so the output is always exactly what the input run proves.
+Reads a matrix payload and writes ``evals/presets/baseline.yaml``: for each
+currently-discovered scenario, the CHEAPEST tier (cheap < balanced < frontier)
+whose matrix cell passed. A scenario that failed at every tier gets NO entry (a
+warning, never a guess) and a scenario no longer discovered is pruned. The whole
+file is regenerated from the matrix — never merged with the prior contents — so
+the output is always exactly what the input run proves.
+
+The input matrix comes from either producer, both emitting the same JSON shape:
+
+*   ``t3 eval ladder --format json`` — the CHEAP producer. Escalates each
+    scenario cheapest-first and measures opus only on the scenarios both haiku
+    and sonnet failed, so the derivation is loss-free while paying a fraction of
+    the full matrix. A never-reached tier is an ABSENT (null) cell, which the
+    cheapest-passing derivation below already treats as "not passing there".
+*   ``t3 eval run --models <tiers> --format json`` / ``t3 eval benchmark
+    --format json`` — the FULL matrix (every model on every scenario), for when
+    every cell should be measured.
 """
 
 from pathlib import Path
@@ -35,8 +45,9 @@ def set_baseline(
         exists=True,
         readable=True,
         help=(
-            "Matrix JSON to derive the baseline from — the output of "
-            "`t3 eval run --models <tier models> --format json` (or `t3 eval benchmark --format json`)."
+            "Matrix JSON to derive the baseline from — the output of `t3 eval ladder --format json` "
+            "(the cheap escalation-ladder producer) or a full matrix from "
+            "`t3 eval run --models <tier models> --format json` / `t3 eval benchmark --format json`."
         ),
     ),
     allow_frontier: bool = typer.Option(  # noqa: FBT001 — typer boolean flag, not a positional bool foot-gun.

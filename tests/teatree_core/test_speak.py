@@ -12,8 +12,13 @@ don't race the daemon thread.
 """
 
 import logging
+import sqlite3
+import threading
 from pathlib import Path
 from unittest.mock import MagicMock, patch
+
+import pytest
+from django.test import TestCase
 
 from teatree.core import presence, speak_cleaning
 from teatree.core import speak as speak_mod
@@ -683,3 +688,48 @@ class TestSurfaceUploadFailure:
     def test_notify_failure_is_swallowed(self) -> None:
         with patch("teatree.core.notify.notify_user", side_effect=RuntimeError("boom")):
             speak_mod._surface_upload_failure("missing_scope")  # must not raise
+
+
+class TestLocalPlaybackThreadConnectionHygiene(TestCase):
+    """The TTS daemon thread must not strand its DB handle.
+
+    ``speak(block=False)`` and ``_maybe_speak_local`` dispatch playback onto a
+    daemon thread, and the away gate resolves the active mode from the
+    ``ConfigSetting`` store — an ORM read on that thread, which therefore gets
+    its OWN Django connection. ``close()`` is a documented no-op on the
+    in-memory test database, so the raw handle is closed directly; a stranded
+    one is finalized at a later GC as a ``ResourceWarning: unclosed database``
+    charged to an unrelated test.
+    """
+
+    def test_playback_thread_closes_its_raw_handle(self) -> None:
+        raws: list[sqlite3.Connection] = []
+
+        def _touch_the_orm(_text: str) -> None:
+            from django.db import connection  # noqa: PLC0415 — the WORKER thread's connection
+
+            connection.ensure_connection()
+            raws.append(connection.connection)
+
+        thread = threading.Thread(target=speak_mod._speak_local_closing_connections, args=("hello",))
+        with patch.object(speak_mod, "_speak_local", _touch_the_orm):
+            thread.start()
+            thread.join()
+
+        assert raws, "the playback thread never opened a connection"
+        with pytest.raises(sqlite3.ProgrammingError):
+            raws[0].execute("SELECT 1")
+
+    def test_speak_dispatches_the_closing_wrapper_not_the_bare_target(self) -> None:
+        """Pins the wiring: the daemon thread's target is the closing wrapper."""
+        with (
+            patch.object(
+                speak_mod,
+                "resolve_speak",
+                return_value=SpeakConfig(local=LocalPlayback.ALL, slack=False),
+            ),
+            patch.object(speak_mod.threading, "Thread") as thread_cls,
+        ):
+            speak_mod.speak("hello")
+
+        assert thread_cls.call_args.kwargs["target"] is speak_mod._speak_local_closing_connections

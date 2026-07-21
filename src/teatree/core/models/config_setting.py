@@ -47,6 +47,7 @@ never live here (#1775).
 from enum import StrEnum
 from typing import ClassVar
 
+from django.core.exceptions import ValidationError
 from django.db import models
 
 # Any TOML/JSON-shaped value a setting may hold. Recursive in principle
@@ -215,7 +216,7 @@ class ConfigSetting(models.Model):
 
     scope = models.CharField(max_length=255, default=GLOBAL_SCOPE, blank=True)
     key = models.CharField(max_length=255)
-    value = models.JSONField()
+    value = models.JSONField(blank=True)
     seeded_by = models.CharField(max_length=255, default="", blank=True)
     seed_value = models.JSONField(null=True, blank=True, default=None)
     created_at = models.DateTimeField(auto_now_add=True)
@@ -233,3 +234,23 @@ class ConfigSetting(models.Model):
     def __str__(self) -> str:
         where = "global" if self.scope == GLOBAL_SCOPE else f"overlay:{self.scope}"
         return f"config-setting<{where} {self.key}={self.value!r}>"
+
+    def clean(self) -> None:
+        """Refuse a JSON ``null`` value, which ``blank=True`` would otherwise wave through.
+
+        ``value`` is ``blank=True`` because ``[]`` / ``{}`` / ``""`` are all
+        legitimate overrides (``statusline_chain = []`` means "override the
+        shipped non-empty default with nothing"), and a generic key/value store
+        cannot know any per-key arity — that belongs in the coercion layer.
+        Django's required check keys on ``Field.empty_values``
+        (``[None, "", [], (), {}]``), so ``blank=False`` is an all-or-nothing
+        switch that rejects those legitimate values along with ``None``.
+
+        ``blank=True`` alone is unsafe: an empty admin textarea cleans to
+        ``None``, ``Model.clean_fields`` skips a blank-allowed empty value, and
+        ``None`` reaches a NOT NULL column as a 500 rather than a form error.
+        ``None`` is also the resolver's "no row, use the default" sentinel, so
+        it is never a storable value — clear the row instead.
+        """
+        if self.value is None:
+            raise ValidationError({"value": "Enter a JSON value — use [] or {} for an empty list or object."})
