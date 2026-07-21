@@ -17,7 +17,7 @@ import yaml
 from teatree.agents.model_tiering import TIER_MODELS
 from teatree.core.cost import tier_rank
 from teatree.eval.discovery import discover_specs
-from teatree.eval.matrix_payload import MatrixPayloadError, load_matrix_payload
+from teatree.eval.matrix_payload import MatrixCell, MatrixPayloadError, load_matrix_payload
 from teatree.eval.presets import BASELINE_PRESET_PATH, PresetError
 from teatree.utils.django_bootstrap import ensure_django
 
@@ -100,12 +100,12 @@ def set_baseline(
     typer.echo(f"wrote {len(scenario_tiers)} scenario tier(s) to {out}")
 
 
-def _cheapest_passing_tier(results: dict[str, dict[str, object] | None]) -> str | None:
+def _cheapest_passing_tier(results: dict[str, MatrixCell | None]) -> str | None:
     """The cheapest tier whose cell PASSED, or ``None`` if nothing passed."""
     passing_models = [
         model
         for model, cell in results.items()
-        if isinstance(cell, dict) and cell.get("passed") is True and not cell.get("skipped") and not cell.get("errored")
+        if cell is not None and cell.passed and not cell.skipped and not cell.errored
     ]
     unknown = [model for model in passing_models if model not in _TIER_BY_MODEL]
     if unknown:

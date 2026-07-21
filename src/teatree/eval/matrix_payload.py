@@ -17,11 +17,22 @@ class MatrixPayloadError(RuntimeError):
 
 
 @dataclasses.dataclass(frozen=True)
+class MatrixCell:
+    """One ``(scenario, model)`` verdict, mirroring the cell ``render_matrix_json`` emits."""
+
+    passed: bool
+    skipped: bool
+    errored: bool
+    score: float = 0.0
+    trials: int = 1
+
+
+@dataclasses.dataclass(frozen=True)
 class MatrixScenarioEntry:
     """One scenario's per-model result cells, keyed by model id (``None`` = no cell)."""
 
     name: str
-    results: dict[str, dict[str, object] | None]
+    results: dict[str, MatrixCell | None]
 
 
 @dataclasses.dataclass(frozen=True)
@@ -65,4 +76,45 @@ def _parse_scenario_entry(path: Path, entry: object) -> MatrixScenarioEntry:
     if not isinstance(results, dict):
         msg = f"{path}: scenario {name!r} is missing a 'results' object"
         raise MatrixPayloadError(msg)
-    return MatrixScenarioEntry(name=name, results=results)
+    return MatrixScenarioEntry(
+        name=name,
+        results={model: _parse_cell(path, name, model, cell) for model, cell in results.items()},
+    )
+
+
+def _parse_cell(path: Path, scenario: str, model: str, cell: object) -> MatrixCell | None:
+    if cell is None:
+        return None
+    where = f"{path}: scenario {scenario!r}, model {model!r}"
+    if not isinstance(cell, dict):
+        msg = f"{where}: each result cell must be an object or null"
+        raise MatrixPayloadError(msg)
+    return MatrixCell(
+        passed=_parse_bool(where, "passed", cell.get("passed")),
+        skipped=_parse_bool(where, "skipped", cell.get("skipped")),
+        errored=_parse_bool(where, "errored", cell.get("errored")),
+        score=_parse_score(where, cell.get("score", 0.0)),
+        trials=_parse_trials(where, cell.get("trials", 1)),
+    )
+
+
+def _parse_bool(where: str, field: str, value: object) -> bool:
+    if not isinstance(value, bool):
+        msg = f"{where}: cell {field!r} must be a boolean"
+        raise MatrixPayloadError(msg)
+    return value
+
+
+def _parse_score(where: str, value: object) -> float:
+    # bool is an int subclass — reject it explicitly so `true` is not read as 1.0.
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        msg = f"{where}: cell 'score' must be a number"
+        raise MatrixPayloadError(msg)
+    return float(value)
+
+
+def _parse_trials(where: str, value: object) -> int:
+    if isinstance(value, bool) or not isinstance(value, int):
+        msg = f"{where}: cell 'trials' must be an integer"
+        raise MatrixPayloadError(msg)
+    return value
