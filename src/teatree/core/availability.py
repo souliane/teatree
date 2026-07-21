@@ -358,6 +358,39 @@ def load_override(path: Path | None = None) -> Override | None:
     return Override(mode=mode, until=until)
 
 
+def write_override_file(mode: str, *, until: datetime | None = None, path: Path | None = None) -> Path:
+    """Write the override file atomically via ``tmp.replace`` — NO drain, NO resolve.
+
+    The pure file writer: validates *mode*, serialises ``{mode, until}`` and
+    replaces the target atomically. It fires no away→present drain, so the #61
+    merged-mode override chokepoint can use it as a fast-hook posture mirror while
+    owning the single DB-authoritative drain itself. :func:`write_override` layers
+    the transition drain on top.
+    """
+    if mode not in VALID_MODES:
+        allowed = ", ".join(repr(valid) for valid in sorted(VALID_MODES))
+        msg = f"mode must be one of {allowed}, got {mode!r}"
+        raise ValueError(msg)
+    target = path or override_path()
+    target.parent.mkdir(parents=True, exist_ok=True)
+    payload: dict[str, str] = {"mode": mode}
+    if until is not None:
+        if until.tzinfo is None:
+            until = until.replace(tzinfo=UTC)
+        payload["until"] = until.isoformat()
+    fd, tmp_str = tempfile.mkstemp(prefix=".override-", suffix=".tmp", dir=str(target.parent))
+    tmp_path = Path(tmp_str)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            json.dump(payload, fh, sort_keys=True)
+            fh.write("\n")
+        tmp_path.replace(target)
+    except BaseException:
+        tmp_path.unlink(missing_ok=True)
+        raise
+    return target
+
+
 def write_override(
     mode: str,
     *,
@@ -366,7 +399,7 @@ def write_override(
     user_id: str = "",
     overlay: str = "",
 ) -> Path:
-    """Write the override atomically via ``tmp.replace``.
+    """Write the override atomically and fire the away→present drain on a transition.
 
     ``mode`` must be one of :data:`VALID_MODES` — ``"present"`` / ``"away"`` /
     ``"autonomous_away"``. ``until`` is an optional aware-datetime; ``None``
@@ -384,11 +417,6 @@ def write_override(
     never blocks the availability flip. ``user_id`` / ``overlay`` are
     forwarded to the drain for DM targeting and per-overlay bot routing.
     """
-    if mode not in VALID_MODES:
-        allowed = ", ".join(repr(valid) for valid in sorted(VALID_MODES))
-        msg = f"mode must be one of {allowed}, got {mode!r}"
-        raise ValueError(msg)
-    target = path or override_path()
     # The away→present drain fires when returning to a REACHABLE mode from a
     # deferring one. Keyed on the ``_DEFERRING_MODES`` set (not a bare
     # ``mode == MODE_PRESENT``) so ``away`` and ``autonomous_away`` are handled
@@ -396,22 +424,7 @@ def write_override(
     # reachable mode ever join ``present`` — target. ``present`` is the only
     # non-deferring mode today, so this is behaviour-preserving.
     prior_mode = resolve_mode().mode if mode not in _DEFERRING_MODES else None
-    target.parent.mkdir(parents=True, exist_ok=True)
-    payload: dict[str, str] = {"mode": mode}
-    if until is not None:
-        if until.tzinfo is None:
-            until = until.replace(tzinfo=UTC)
-        payload["until"] = until.isoformat()
-    fd, tmp_str = tempfile.mkstemp(prefix=".override-", suffix=".tmp", dir=str(target.parent))
-    tmp_path = Path(tmp_str)
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8") as fh:
-            json.dump(payload, fh, sort_keys=True)
-            fh.write("\n")
-        tmp_path.replace(target)
-    except BaseException:
-        tmp_path.unlink(missing_ok=True)
-        raise
+    target = write_override_file(mode, until=until, path=path)
     if prior_mode in _DEFERRING_MODES:
         _drain_on_return(user_id=user_id, overlay=overlay)
     return target
@@ -633,4 +646,5 @@ __all__ = [
     "presence_path",
     "resolve_mode",
     "write_override",
+    "write_override_file",
 ]

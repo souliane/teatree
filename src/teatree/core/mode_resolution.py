@@ -188,6 +188,7 @@ def set_mode_override(
 
     before = resolve_active_mode().defers_questions
     LoopPresetOverride.objects.set_override(name, until=until, reason=reason)
+    _mirror_posture_to_fast_hook_file(until=until)
     _drain_if_returned(before_defers=before, user_id=user_id, overlay=overlay)
 
 
@@ -197,8 +198,49 @@ def clear_mode_override(*, user_id: str = "", overlay: str = "") -> bool:
 
     before = resolve_active_mode().defers_questions
     cleared = LoopPresetOverride.objects.clear()
+    _mirror_posture_to_fast_hook_file(until=None)
     _drain_if_returned(before_defers=before, user_id=user_id, overlay=overlay)
     return cleared
+
+
+def _mirror_posture_to_fast_hook_file(*, until: dt.datetime | None) -> None:
+    """Mirror the newly-resolved availability posture into the fast-hook probe file.
+
+    The stdlib away-probe (``hooks/scripts/availability_away_probe.py``) that gates
+    AskUserQuestion deferral and the self-pump pause reads the legacy
+    ``availability_override.json`` directly (no Django boot). The DB ``ModeOverride``
+    row stays authoritative for every Django consumer; this write-through keeps the
+    bare hooks in parity with the merged mode. ``drain=False`` — this module owns the
+    single DB-authoritative drain. Fail-open: a file-write failure never blocks the
+    override.
+    """
+    from teatree.core import availability  # noqa: PLC0415 — deferred: cycle-safe
+
+    resolved = resolve_active_mode()
+    token = _legacy_token(defers=resolved.defers_questions, pauses=resolved.pauses_self_pump)
+    try:
+        if token == availability.MODE_PRESENT and resolved.source in {"default", "live"}:
+            # No manual/scheduled away posture to mirror — let the probe's own
+            # default/schedule tiers decide, exactly as clearing the file does.
+            availability.clear_override()
+        else:
+            availability.write_override_file(token, until=until)
+    except Exception as exc:  # noqa: BLE001 — fast-hook mirror is best-effort; never block the override
+        logger.warning("fast-hook posture mirror failed: %s", exc)
+
+
+def _legacy_token(*, defers: bool, pauses: bool) -> str:
+    """Map the merged mode's two booleans back to the legacy availability string.
+
+    ``(F,*)`` → ``present`` (reachable), ``(T,F)`` → ``autonomous_away`` (defer but
+    keep pumping), ``(T,T)`` → ``away`` (holiday). The single point the fast-hook
+    file mirror translates the merged posture the stdlib probe understands.
+    """
+    from teatree.core import availability  # noqa: PLC0415 — deferred: cycle-safe
+
+    if not defers:
+        return availability.MODE_PRESENT
+    return availability.MODE_AWAY if pauses else availability.MODE_AUTONOMOUS_AWAY
 
 
 def _drain_if_returned(*, before_defers: bool, user_id: str, overlay: str) -> None:

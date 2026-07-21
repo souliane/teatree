@@ -8,23 +8,47 @@ Integration-first against the real DB.
 """
 
 import datetime as dt
+import tempfile
+from pathlib import Path
 from unittest import mock
 
 import django.test
 from django.utils import timezone
 
 from teatree.core import availability
-from teatree.core.models import ConfigSetting, LoopPreset, LoopPresetOverride
 from teatree.core.mode_resolution import clear_mode_override, resolve_active_mode, set_mode_override
+from teatree.core.models import ConfigSetting, LoopPreset, LoopPresetOverride
 
 _DRAIN = "teatree.core.notify_question_drains.drain_deferred_questions"
 
 
-@django.test.override_settings(USE_TZ=True, TIME_ZONE="UTC")
-class TestResolveActiveMode(django.test.TestCase):
+class _TmpStateMixin(django.test.TestCase):
+    """Repoint the presence heartbeat + availability override file to a per-test tmp dir.
+
+    The resolver reads the live-presence heartbeat and mirrors the resolved posture
+    to the availability override file; both default to the shared ``DATA_DIR``.
+    Redirecting them to a tmp dir keeps a resolver test from polluting the real
+    state files (a fixed-``now`` availability test would otherwise read a stray
+    future-dated keystroke as fresh).
+    """
+
     def setUp(self) -> None:
+        super().setUp()
+        tmp = Path(tempfile.mkdtemp())
+        for patcher in (
+            mock.patch.object(availability, "PRESENCE", availability.PresenceHeartbeat(lambda: tmp / "presence")),
+            mock.patch.object(availability, "override_path", lambda: tmp / "availability_override.json"),
+        ):
+            patcher.start()
+            self.addCleanup(patcher.stop)
         LoopPreset.objects.all().delete()
         LoopPresetOverride.objects.all().delete()
+
+
+@django.test.override_settings(USE_TZ=True, TIME_ZONE="UTC")
+class TestResolveActiveMode(_TmpStateMixin):
+    def setUp(self) -> None:
+        super().setUp()
         self.engaged = LoopPreset.objects.create(
             name="engaged", entries={"review": True}, defers_questions=False, pauses_self_pump=False
         )
@@ -72,10 +96,9 @@ class TestResolveActiveMode(django.test.TestCase):
 
 
 @django.test.override_settings(USE_TZ=True, TIME_ZONE="UTC")
-class TestPresenceUpgrade(django.test.TestCase):
+class TestPresenceUpgrade(_TmpStateMixin):
     def setUp(self) -> None:
-        LoopPreset.objects.all().delete()
-        LoopPresetOverride.objects.all().delete()
+        super().setUp()
         LoopPreset.objects.create(name="engaged", entries={}, defers_questions=False)
         # A default away-class mode that IS presence-sensitive.
         self.away_sensitive = LoopPreset.objects.create(
@@ -116,10 +139,9 @@ class TestPresenceUpgrade(django.test.TestCase):
 
 
 @django.test.override_settings(USE_TZ=True, TIME_ZONE="UTC")
-class TestReturnToReachableDrain(django.test.TestCase):
+class TestReturnToReachableDrain(_TmpStateMixin):
     def setUp(self) -> None:
-        LoopPreset.objects.all().delete()
-        LoopPresetOverride.objects.all().delete()
+        super().setUp()
         LoopPreset.objects.create(name="engaged", entries={}, defers_questions=False)
         LoopPreset.objects.create(name="offline", entries={}, defers_questions=True, pauses_self_pump=True)
 
