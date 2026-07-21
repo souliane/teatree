@@ -12,6 +12,7 @@ from teatree.cli.doctor.checks_bootstrap import (
     _check_claude_settings_drift,
     _check_gh_token_permissions,
     _check_provision_concurrency_from_host,
+    _resolve_projects_config,
     _slug_from_repo_url,
 )
 from teatree.core.gates.gh_token_preflight import GhTokenProbe
@@ -65,6 +66,48 @@ class TestGhTokenPermissionsCheck:
             ),
         ):
             assert _check_gh_token_permissions() is True
+
+    def test_recommended_gap_warns_but_verdict_stays_true(self, capsys) -> None:
+        """A missing RECOMMENDED permission WARNs with remediation but never fails (#3477)."""
+        with (
+            patch("teatree.cli.doctor.checks_bootstrap._resolve_repo_slug", return_value="o/r"),
+            patch("teatree.cli.doctor.checks_bootstrap._resolve_projects_config", return_value=("", 0)),
+            patch(
+                "teatree.core.gates.gh_token_preflight.probe_token_permissions",
+                return_value=GhTokenProbe(
+                    missing=(), missing_recommended=("actions: write",), token_kind="fine_grained"
+                ),
+            ),
+        ):
+            ok = _check_gh_token_permissions()
+        assert ok is True
+        out = capsys.readouterr().out
+        assert "WARN" in out
+        assert "actions: write" in out
+
+    def test_required_fail_and_recommended_warn_both_surface(self, capsys) -> None:
+        with (
+            patch("teatree.cli.doctor.checks_bootstrap._resolve_repo_slug", return_value="o/r"),
+            patch("teatree.cli.doctor.checks_bootstrap._resolve_projects_config", return_value=("", 0)),
+            patch(
+                "teatree.core.gates.gh_token_preflight.probe_token_permissions",
+                return_value=GhTokenProbe(
+                    missing=("issues: write",), missing_recommended=("checks: read",), token_kind="fine_grained"
+                ),
+            ),
+        ):
+            ok = _check_gh_token_permissions()
+        assert ok is False
+        out = capsys.readouterr().out
+        assert "WARN" in out
+        assert "checks: read" in out
+        assert "FAIL" in out
+        assert "issues: write" in out
+
+    def test_projects_config_resolution_is_crash_proof(self) -> None:
+        """An overlay-resolution error degrades to "not configured", never a crash."""
+        with patch("teatree.core.overlay_loader.get_overlay", side_effect=RuntimeError("no overlay")):
+            assert _resolve_projects_config() == ("", 0)
 
 
 class TestProvisionConcurrencyFromHost(TestCase):

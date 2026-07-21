@@ -3,9 +3,9 @@
 Three gates that turn silent late failures on a freshly-provisioned or migrated
 box into loud, up-front ones:
 
-- :func:`_check_gh_token_permissions` (#3405) — the GitHub token authenticates but
-    is missing a write permission the loop needs (``issues``/``pull_requests``/
-    ``contents``). Mirrors ``deploy/entrypoint.sh``'s ``init_preflight`` probe.
+- :func:`_check_gh_token_permissions` (#3405/#3477) — a missing REQUIRED permission
+    is a hard FAIL; a missing RECOMMENDED one is a WARN with remediation, never a fail.
+    Mirrors ``deploy/entrypoint.sh``'s ``init_preflight`` probe.
 - :func:`_check_provision_concurrency_from_host` (#3409/#3434) — a stale small-box
     ``provision_max_concurrency`` pin throttling a more capable host. It only
     auto-clears a pin the ENTRYPOINT seeded (never an operator's deliberate one),
@@ -74,28 +74,40 @@ def _resolve_repo_slug() -> str | None:
     return _slug_from_repo_url(remote.stdout) if remote.returncode == 0 else None
 
 
-def _check_gh_token_permissions() -> bool:
-    """FAIL when the GitHub token authenticates but lacks a write permission the loop needs (#3405).
+def _resolve_projects_config() -> tuple[str, int]:
+    """The active overlay's Projects-v2 board config, or ``("", 0)`` when unset/unresolvable (crash-proof)."""
+    from teatree.core.overlay_loader import get_overlay  # noqa: PLC0415 — deferred: ORM import
 
-    Mirrors ``deploy/entrypoint.sh``'s ``init_preflight`` in Python so the same
-    late-failure — ``Resource not accessible by personal access token`` mid-run —
-    is caught by ``t3 doctor`` too. Skips (passes) when the probe cannot reach a
-    confident verdict: ``gh`` absent, no resolvable repo slug, or the API
-    unreachable — a network fault must never redden the run or page the owner.
-    A genuinely missing write permission is a hard FAIL naming each scope.
-    """
-    from teatree.core.gates.gh_token_preflight import probe_token_permissions  # noqa: PLC0415 — deferred import
+    try:
+        overlay = get_overlay()
+    except Exception:  # noqa: BLE001 — no resolvable overlay: board not configured
+        return "", 0
+    owner = getattr(overlay.config, "github_owner", "") or ""
+    number = getattr(overlay.config, "github_project_number", 0) or 0
+    return owner, number
+
+
+def _check_gh_token_permissions() -> bool:
+    """FAIL when the GitHub token lacks a REQUIRED permission (#3405/#3477); a RECOMMENDED gap only WARNs."""
+    from teatree.core.gates.gh_token_preflight import (  # noqa: PLC0415 — deferred import
+        format_remediation,
+        probe_token_permissions,
+    )
 
     slug = _resolve_repo_slug()
     if slug is None:
         return True
+    owner, project_number = _resolve_projects_config()
     try:
-        probe = probe_token_permissions(slug)
+        probe = probe_token_permissions(slug, github_owner=owner, github_project_number=project_number)
     except Exception as exc:  # noqa: BLE001 — a probe failure warns and passes, never blocks doctor
         typer.echo(f"WARN  Could not probe the GitHub token permissions: {exc}")
         return True
     if probe.indeterminate_reason is not None:
         return True
+    if probe.missing_recommended:
+        for line in format_remediation(probe, slug):
+            typer.echo(f"WARN  {line}")
     if not probe.missing:
         return True
     typer.echo(
