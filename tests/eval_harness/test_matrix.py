@@ -138,6 +138,11 @@ class TestRenderMatrixHtml:
         assert "class='err'>ERR" in html
         assert "class='skip'>skip" in html
 
+    def test_ends_with_newline_so_the_published_artifact_is_lint_clean(self) -> None:
+        specs = [_spec("alpha")]
+        rows = [_row("alpha", "m-one")]
+        assert render_matrix_html(rows, ["m-one"], specs).endswith("</html>\n")
+
     def test_html_escapes_scenario_and_model_names(self) -> None:
         specs = [_spec("a<script>")]
         rows = [_row("a<script>", "m&1")]

@@ -28,9 +28,11 @@
 # Git invokes a pre-push hook as:  hook <remote-name> <remote-url>
 # and feeds ref updates on stdin, one per line:
 #   <local-ref> <local-sha> <remote-ref> <remote-sha>
-# A deleted ref has local-sha all-zeros (skip it). For a new remote ref
-# the remote-sha is all-zeros, so the gate falls back to the merge-base
-# with the remote's default branch as the comparison base.
+# A deleted ref has local-sha all-zeros (skip it). The scanned set is the
+# commits reachable from the pushed sha but from no already-public ref —
+# `<local-sha> --not <origin/default> [<remote-sha>]` — never a single
+# linear `<remote-sha>..<local-sha>` range, which a merge-forward inflates
+# with the whole of `main` (#3523).
 #
 # Visibility is resolved via `gh repo view <owner>/<repo> --json
 # visibility`. The gate SKIPS the scan only when the remote is KNOWN to be
@@ -151,23 +153,41 @@ while read -r local_ref local_sha remote_ref remote_sha; do
   [ -n "${local_sha:-}" ] || continue
   [ "${local_sha}" != "${ZERO}" ] || continue  # branch deletion — skip
 
+  # The push newly exposes the commits reachable from the pushed sha but
+  # from NO already-public ref: `origin/<default>` plus, when it is
+  # confirmed to be the branch's own remote tip, the reported remote_sha.
+  # A single linear `remote_sha..HEAD` range instead spans every commit a
+  # merge-forward brought in from `main` — all of it already public, and
+  # every finding and non-noreply identity in it a false positive (#3523).
+  public_tips=()
+  default_tip=$(git rev-parse --verify --quiet \
+    "refs/remotes/${remote_name}/${default_branch}^{commit}" 2>/dev/null || true)
+  if [ -n "${default_tip}" ]; then
+    public_tips+=("${default_tip}")
+  fi
   if [ "${remote_sha}" != "${ZERO}" ] && [ -n "${remote_sha}" ] \
     && _remote_sha_is_trusted_base "${remote_ref}" "${remote_sha}"; then
-    base="${remote_sha}"
-  else
-    base=$(git merge-base "${local_sha}" \
-      "refs/remotes/${remote_name}/${default_branch}" 2>/dev/null || true)
+    remote_tip=$(git rev-parse --verify --quiet "${remote_sha}^{commit}" 2>/dev/null || true)
+    if [ -n "${remote_tip}" ]; then
+      public_tips+=("${remote_tip}")
+    fi
   fi
 
-  if [ -n "${base}" ]; then
-    diff=$(git diff "${base}" "${local_sha}" 2>/dev/null || true)
-    msgs=$(git log --format='%B' "${base}..${local_sha}" 2>/dev/null || true)
-  else
-    # No comparison point (brand-new repo / unknown base): scan the
-    # whole tree at the pushed sha rather than skipping the gate.
-    diff=$(git show "${local_sha}" 2>/dev/null || true)
-    msgs=$(git log --format='%B' "${local_sha}" 2>/dev/null || true)
+  # No resolvable public tip (brand-new repo, unknown sha, shallow clone):
+  # fail CLOSED by subtracting nothing, so the whole history reachable from
+  # the pushed sha is scanned — wider, never narrower.
+  new_commits=("${local_sha}")
+  if [ ${#public_tips[@]} -gt 0 ]; then
+    new_commits+=("--not" "${public_tips[@]}")
   fi
+
+  # `--patch --cc` under an explicit `--format` emits each newly-public
+  # commit's message body and its patch with no commit header, so the
+  # author/committer emails below are judged only by the noreply guard and
+  # never by the scanner's generic email matcher. `--cc` keeps a merge's
+  # conflict resolutions — content in neither parent — in scope while
+  # leaving the already-public content the merge carried over out of it.
+  content=$(git log --format='%B' --patch --cc "${new_commits[@]}" 2>/dev/null || true)
 
   # Author / committer email is metadata `git diff` and `%B` never show,
   # yet it lands in public history forever. On a PUBLIC remote every
@@ -175,13 +195,8 @@ while read -r local_ref local_sha remote_ref remote_sha; do
   # (`([0-9]+\+)?<login>@users.noreply.github.com`); anything else — a
   # real/deliverable address such as a customer-domain email inherited
   # from local git config — is blocked (#730).
-  if [ -n "${base}" ]; then
-    author_range="${base}..${local_sha}"
-  else
-    author_range="${local_sha}"
-  fi
   noreply_re='^([0-9]+\+)?[A-Za-z0-9-]+@users\.noreply\.github\.com$'
-  bad_idents=$(git log --format='%ae%n%ce' "${author_range}" 2>/dev/null \
+  bad_idents=$(git log --format='%ae%n%ce' "${new_commits[@]}" 2>/dev/null \
     | grep -v -E "${noreply_re}" | sort -u || true)
   if [ -n "${bad_idents}" ]; then
     echo "✗ refuse: push to PUBLIC repo '${slug}' has a non-noreply commit identity on '${local_ref}'."
@@ -190,20 +205,20 @@ while read -r local_ref local_sha remote_ref remote_sha; do
     printf '%s\n' "${bad_idents}" | sed 's/^/    /'
     echo "  Allowed shape: <id>+<login>@users.noreply.github.com (GitHub noreply)."
     echo "  Rewrite the range's author/committer to the repo's GitHub noreply identity, then re-push:"
-    echo "    git filter-branch --env-filter '...' -- ${author_range}"
+    echo "    git filter-branch --env-filter '...' -- ${new_commits[*]}"
     echo "  (public-repo privacy gate #730 — see /t3:rules § public-repo commit author identity)"
     blocked=1
   fi
 
   # Commit messages and trailers reach public history exactly like file
   # content does (a `Co-authored-by:` line carrying an internal/customer
-  # address is the canonical case). `git diff` excludes them, so scan the
-  # range's message bodies alongside the diff (#703).
-  [ -n "${diff}${msgs}" ] || continue
+  # address is the canonical case), so they are scanned alongside the
+  # patches rather than excluded the way `git diff` excludes them (#703).
+  [ -n "${content}" ] || continue
 
   report=$(mktemp "${TMPDIR:-/tmp}/t3-privacy-gate.XXXXXX")
   scan_rc=0
-  { printf '%s\n' "${diff}"; printf '%s\n' "${msgs}"; } | ${scan_cmd} - >"${report}" 2>&1 || scan_rc=$?
+  printf '%s\n' "${content}" | ${scan_cmd} - >"${report}" 2>&1 || scan_rc=$?
   if [ "${scan_rc}" -eq "${findings_code}" ]; then
     echo "✗ refuse: push to PUBLIC repo '${slug}' carries privacy findings on '${local_ref}'."
     echo "  Findings (line / category / redacted match):"

@@ -8,6 +8,7 @@ tools:
   - Read
   - Grep
   - Glob
+  - Skill
 skills:
   - rules
   - workspace

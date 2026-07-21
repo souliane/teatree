@@ -9,6 +9,7 @@ tools:
   - Grep
   - Glob
   - WebFetch
+  - Skill
 skills:
   - rules
   - platforms

@@ -65,6 +65,11 @@ on:
         required: false
         default: ""
         type: string
+      shards:
+        description: "Shard indices to keep, per lane (e.g. '1-6' or '1,3,7'); empty = every shard. Lets a caller dispatch a subset of the full fan-out at a time (e.g. when the whole matrix doesn't fit inside one usage window)."
+        required: false
+        default: ""
+        type: string
       lookback-days:
         description: "No-PR-merged guard lookback window in days."
         required: false
@@ -170,17 +175,21 @@ jobs:
       # across the whole suite; a manual run with an empty `efforts` keeps the
       # single-tier {lane, shard} matrix (lane default). The 3-tier default is keyed
       # on the schedule EVENT (not a blanket `|| 'low,medium,high'`, which would fan
-      # a blank field 3x and triple the metered spend). An unknown lane or effort
-      # fails loud here rather than producing an empty/invalid matrix. Both inputs
-      # are routed through `env:` vars (never inlined into the script).
+      # a blank field 3x and triple the metered spend). `shards` narrows the matrix
+      # to a subset of shard indices (per lane) so a caller can dispatch a few legs
+      # at a time — empty keeps the full fan-out. An unknown lane/effort, or a
+      # `shards` request that matches no leg, fails loud here rather than producing
+      # an empty/invalid matrix. All three inputs are routed through `env:` vars
+      # (never inlined into the script).
       - name: Compute the lane+shard+effort matrix
         id: matrix
         if: steps.gate.outputs.run_eval == 'true'
         env:
           EVAL_LANE: ${{ inputs.lane }}
           EVAL_EFFORTS: ${{ inputs.efforts || (github.event_name == 'schedule' && 'low,medium,high' || '') }}
+          EVAL_SHARDS: ${{ inputs.shards }}
         run: |
-          MATRIX="$(uv run python scripts/eval/lane_matrix.py --lane "$EVAL_LANE" --efforts "$EVAL_EFFORTS")"
+          MATRIX="$(uv run python scripts/eval/lane_matrix.py --lane "$EVAL_LANE" --efforts "$EVAL_EFFORTS" --shards "$EVAL_SHARDS")"
           echo "matrix=$MATRIX" >> "$GITHUB_OUTPUT"
           echo "Lane+shard+effort matrix: $MATRIX"
 
