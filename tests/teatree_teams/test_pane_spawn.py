@@ -13,8 +13,10 @@ the ``live_owner_blocks_pane`` pre-work check, under the ``teams_max_panes`` cap
 using the role's overlay-seam claim filter. Nothing runs when the feature is off.
 """
 
+import os
 import uuid
 from dataclasses import replace
+from typing import TYPE_CHECKING, cast
 from unittest.mock import patch
 
 import pytest
@@ -23,6 +25,7 @@ from django.test import TestCase
 from teatree.config.settings import UserSettings
 from teatree.core.loop_lease_manager import T3_MASTER_SLOT
 from teatree.core.models import Session, Task, Ticket
+from teatree.llm.credentials import CredentialError
 from teatree.teams.guardrails import LoopOwnerCollisionError
 from teatree.teams.pane_spawn import (
     PaneBudgetExceededError,
@@ -32,6 +35,9 @@ from teatree.teams.pane_spawn import (
 )
 from teatree.teams.panes import PaneState, TeammatePane
 from teatree.teams.roles import TeamRole, team_claim_slot
+
+if TYPE_CHECKING:
+    from claude_agent_sdk.types import SystemPromptPreset
 
 _ENABLED = UserSettings(teams_enabled=True, teams_max_panes=1)
 
@@ -244,3 +250,27 @@ class TestClaimedPaneIsActive(TestCase):
         assert pane is not None
         assert isinstance(pane, TeammatePane)
         assert pane.refreshed_state() == PaneState.ACTIVE
+
+
+class TestPaneSpawnRefusesBaseUrlRedirect(TestCase):
+    """A maker pane pins no credential either, and it is long-lived and autonomous."""
+
+    def test_subscription_plus_redirect_refuses_the_spawn(self) -> None:
+        task = _pending_task()
+        env = {"ANTHROPIC_BASE_URL": "https://gateway.example.invalid/v1", "CLAUDE_CODE_OAUTH_TOKEN": "sk-ant-oat01-x"}
+        with patch.dict(os.environ, env, clear=False):
+            os.environ.pop("ANTHROPIC_API_KEY", None)
+            with pytest.raises(CredentialError) as excinfo:
+                build_pane_options(task, role=TeamRole.CORE_MAKER)
+        assert "ANTHROPIC_BASE_URL" in str(excinfo.value)
+
+    def test_a_metered_key_at_a_gateway_still_spawns_with_a_stable_prefix(self) -> None:
+        task = _pending_task()
+        env = {"ANTHROPIC_BASE_URL": "https://gateway.example.invalid/v1", "ANTHROPIC_API_KEY": "sk-ant-key"}
+        with patch.dict(os.environ, env, clear=False):
+            os.environ.pop("CLAUDE_CODE_OAUTH_TOKEN", None)
+            options = build_pane_options(task, role=TeamRole.CORE_MAKER)
+        # ``system_prompt`` unions two TypedDicts that are both dicts at runtime, so
+        # isinstance cannot discriminate them; name the preset variant explicitly.
+        preset = cast("SystemPromptPreset", options.system_prompt)
+        assert preset["exclude_dynamic_sections"] is True

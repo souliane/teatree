@@ -10,7 +10,6 @@ from django.utils import timezone
 from teatree.cli.eval.docker import (
     ARTIFACTS_MOUNT,
     DOCKER_IMAGE,
-    EVAL_CREDENTIAL_ENV_VAR,
     DockerUnavailableError,
     _auth_passthrough_flags,
     _image_present,
@@ -24,7 +23,8 @@ from teatree.llm.credentials import AnthropicApiKeyCredential, AnthropicSubscrip
 _MODULE = "teatree.cli.eval.docker"
 _OAUTH_ENV = AnthropicSubscriptionCredential().spec.env_var
 _API_KEY_ENV = AnthropicApiKeyCredential().spec.env_var
-_METERED = "metered_api_key"
+_PROVIDER_ENV = "T3_AGENT_HARNESS_PROVIDER"
+_METERED = "api_key"
 
 
 def _completed(returncode: int) -> MagicMock:
@@ -218,9 +218,10 @@ class TestAuthPassthroughIntoContainer(TestCase):
 
     The value is forwarded with docker's ``-e VARNAME`` pass-through form (no value
     on the command line) so the credential never lands in argv / the process list /
-    logs. The DEFAULT lane forwards the subscription ``CLAUDE_CODE_OAUTH_TOKEN``
-    (reversing #2707); flipping the ``eval_credential`` knob (``T3_EVAL_CREDENTIAL``)
-    to ``metered_api_key`` forwards ``ANTHROPIC_API_KEY`` instead. Reverting the
+    logs. The DEFAULT lane forwards the subscription ``CLAUDE_CODE_OAUTH_TOKEN``; an
+    ``api_key`` ``agent_harness_provider`` forwards ``ANTHROPIC_API_KEY`` instead.
+    Exactly ONE credential var travels, and nothing else — that single var is what
+    the in-container resolution reads the host's choice back off. Reverting the
     ``*_auth_passthrough_flags()`` splice in ``_run_in_image`` turns these RED.
     """
 
@@ -248,18 +249,16 @@ class TestAuthPassthroughIntoContainer(TestCase):
         assert _API_KEY_ENV not in command
         assert "sk-metered" not in command
 
-    def test_metered_knob_forwards_the_api_key_not_the_oauth_token(self) -> None:
-        command = self._run_command(
-            {EVAL_CREDENTIAL_ENV_VAR: _METERED, _API_KEY_ENV: "sk-metered", _OAUTH_ENV: "oauth-sub"}
-        )
+    def test_metered_provider_forwards_the_api_key_not_the_oauth_token(self) -> None:
+        command = self._run_command({_PROVIDER_ENV: _METERED, _API_KEY_ENV: "sk-metered", _OAUTH_ENV: "oauth-sub"})
         assert self._passthrough_pair(command, _API_KEY_ENV) == ["-e", _API_KEY_ENV]
         assert _OAUTH_ENV not in command
 
-    def test_credential_knob_override_is_forwarded_into_the_container(self) -> None:
-        # The in-container re-invocation must see the same knob so it resolves the
-        # same credential kind, without depending on a ConfigSetting row.
-        command = self._run_command({EVAL_CREDENTIAL_ENV_VAR: _METERED, _API_KEY_ENV: "sk-metered"})
-        assert self._passthrough_pair(command, EVAL_CREDENTIAL_ENV_VAR) == ["-e", EVAL_CREDENTIAL_ENV_VAR]
+    def test_no_credential_knob_travels_into_the_container(self) -> None:
+        # The forwarded credential var alone tells the container which kind the host
+        # picked, so no selection knob is spliced in alongside it.
+        command = self._run_command({_PROVIDER_ENV: _METERED, _API_KEY_ENV: "sk-metered"})
+        assert _PROVIDER_ENV not in command
 
     def test_default_lane_fails_loud_when_no_oauth_token_is_resolvable(self) -> None:
         # A default (OAuth) api --docker run with no token AND an empty pass store
@@ -403,6 +402,6 @@ class TestAuthPassthroughFlags:
         with patch(f"{_MODULE}.os.environ", {_API_KEY_ENV: "x"}):
             assert _auth_passthrough_flags((_OAUTH_ENV,)) == []
 
-    def test_forwards_the_credential_knob_override_when_set(self) -> None:
-        with patch(f"{_MODULE}.os.environ", {_OAUTH_ENV: "x", EVAL_CREDENTIAL_ENV_VAR: _METERED}):
-            assert _auth_passthrough_flags((_OAUTH_ENV,)) == ["-e", _OAUTH_ENV, "-e", EVAL_CREDENTIAL_ENV_VAR]
+    def test_forwards_only_the_credential_var_never_a_selection_knob(self) -> None:
+        with patch(f"{_MODULE}.os.environ", {_OAUTH_ENV: "x", _PROVIDER_ENV: _METERED}):
+            assert _auth_passthrough_flags((_OAUTH_ENV,)) == ["-e", _OAUTH_ENV]

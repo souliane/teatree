@@ -40,7 +40,7 @@ class TestMakeRunner:
     @pytest.fixture(autouse=True)
     def _bypass_credential_routing(self) -> Iterator[None]:
         # ``make_runner`` resolves its credential through ``resolve_eval_credential``,
-        # which reads the ``eval_credential`` setting (DB) and the routing store.
+        # which reads the ``agent_harness_provider`` setting (DB) and the routing store.
         # Bypass it to the DEFAULT (subscription OAuth) credential — pre-routed to a
         # per-account `pass` entry, since the subscription credential has no built-in
         # default — so this lane is exercised DB-free (KIND selection has its own tests).

@@ -11,7 +11,7 @@ import logging
 from teatree.config import AgentHarness, AgentHarnessProvider, get_effective_settings
 from teatree.core.models import Task
 from teatree.credential_config import resolve_api_key_credential, resolve_subscription_credential
-from teatree.llm.credentials import CredentialError
+from teatree.llm.credentials import CredentialError, reject_ambient_base_url_redirect
 from teatree.utils.git_run import git_env_without_overrides
 
 logger = logging.getLogger(__name__)
@@ -33,7 +33,10 @@ def _provider_child_env(provider: AgentHarnessProvider | None, *, scope: str = "
     ``None``: the ambient environment is used UNCHANGED, so an operator who
     never configured ``agent_harness_provider`` is never forced through an
     eager credential lookup — the ``claude`` CLI's own ambient auth state
-    (however it was set up) applies, exactly as before #2887. An explicit
+    (however it was set up) applies, exactly as before #2887. The ONE ambient
+    combination refused is a base-URL redirect that would carry unobservable
+    (and on a plan deployment, subscription) auth to a non-Anthropic endpoint —
+    see :func:`~teatree.llm.credentials.reject_ambient_base_url_redirect`. An explicit
     ``api_key`` forces the metered ``ANTHROPIC_API_KEY`` (stripping the
     subscription token); an explicit ``subscription_oauth`` forces the
     subscription ``CLAUDE_CODE_OAUTH_TOKEN`` (stripping the API key) so the
@@ -52,6 +55,7 @@ def _provider_child_env(provider: AgentHarnessProvider | None, *, scope: str = "
     fails loud.
     """
     if provider is None:
+        reject_ambient_base_url_redirect()
         return None
     valid = AgentHarnessProvider.valid_for(AgentHarness.CLAUDE_SDK)
     if provider not in valid:
@@ -93,6 +97,7 @@ def system_child_env() -> dict[str, str] | None:
     """
     provider = get_effective_settings().agent_harness_provider
     if provider is None:
+        reject_ambient_base_url_redirect()
         return None
     if provider not in AgentHarnessProvider.valid_for(AgentHarness.CLAUDE_SDK):
         logger.warning(
@@ -100,5 +105,6 @@ def system_child_env() -> dict[str, str] | None:
             "subprocess falls back to the ambient environment's auth state",
             provider.value,
         )
+        reject_ambient_base_url_redirect()
         return None
     return _provider_child_env(provider, scope="")

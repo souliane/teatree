@@ -16,9 +16,15 @@ helper that:
 The turn is CLEAN-ROOM: an empty ``setting_sources`` and empty ``settings`` (no
 hooks), no tools, and a single ``max_turns`` so the model answers from the
 supplied prompt alone — the developer's personal context never biases the
-result, and the model cannot run a tool or read code. Any failure (a missing
-``claude`` binary, a credential problem, a timeout, an SDK/provider error)
-degrades to ``None`` so a best-effort aux turn never breaks its caller.
+result, and the model cannot run a tool or read code. Any failure of the turn
+itself (a missing ``claude`` binary, a timeout, an SDK/provider error) degrades
+to ``None`` so a best-effort aux turn never breaks its caller.
+
+A refused ambient environment is the ONE exception and RAISES
+:class:`~teatree.llm.credentials.CredentialError` instead: it is checked while
+building the options, before the turn is attempted, so it never reaches the
+degrade-to-``None`` handler. A base-URL redirect that silently answered ``None``
+would strand every caller on its fallback forever with nothing naming the cause.
 """
 
 import asyncio
@@ -28,6 +34,7 @@ from claude_agent_sdk import AssistantMessage, ClaudeAgentOptions, TextBlock
 
 from teatree.agents.harness import Harness, resolve_harness
 from teatree.agents.model_tiering import resolve_tier
+from teatree.llm.credentials import reject_ambient_base_url_redirect
 
 # The empty-hooks ``settings`` blob that, with ``setting_sources=[]``, keeps the
 # clean-room turn from picking up the developer's hooks/personal context.
@@ -61,7 +68,14 @@ def _clean_room_options(spec: OneShotSpec) -> ClaudeAgentOptions:
     DB row reaches the turn. ``setting_sources=[]`` + ``settings`` (empty hooks) +
     ``strict_mcp_config`` keep the run virgin; an empty ``tools`` allowlist and a
     single ``max_turns`` bound it to one context-free answer.
+
+    This turn pins no credential, so the spawned child inherits the ambient auth
+    state AND an ambient ``ANTHROPIC_BASE_URL``. The redirect guard runs HERE rather
+    than inside :func:`run_one_shot`'s try, which swallows every exception: a
+    misconfiguration that silently routed a plan-authenticated turn to a third-party
+    endpoint is the one failure this helper must NOT degrade quietly into ``None``.
     """
+    reject_ambient_base_url_redirect()
     return ClaudeAgentOptions(
         model=resolve_tier(spec.tier),
         system_prompt=spec.system_prompt,
@@ -94,9 +108,14 @@ def run_one_shot(prompt: str, spec: OneShotSpec, *, harness: Harness | None = No
     Resolves the harness (:func:`~teatree.agents.harness.resolve_harness`, or the
     injected *harness* for tests) and drives a single clean-room turn built from
     *spec*. Returns the stripped assistant text, or ``None`` when the turn
-    produced nothing OR any failure occurred (a missing ``claude`` binary, a
-    credential problem, a timeout, an SDK/provider error) — a best-effort aux
-    turn must degrade quietly, never break its caller.
+    produced nothing OR the turn failed (a missing ``claude`` binary, a timeout,
+    an SDK/provider error) — a best-effort aux turn must degrade quietly, never
+    break its caller.
+
+    RAISES :class:`~teatree.llm.credentials.CredentialError` when the ambient
+    environment is refused. :func:`_clean_room_options` runs that check before the
+    ``try``, deliberately: a misrouted base URL is a configuration fault the
+    operator must see, not a turn that quietly produced no answer.
     """
     options = _clean_room_options(spec)
     resolved = harness if harness is not None else resolve_harness()

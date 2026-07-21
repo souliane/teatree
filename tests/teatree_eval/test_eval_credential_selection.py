@@ -1,33 +1,85 @@
-"""The eval lane rides the credential the ``eval_credential`` knob selects (#2707 reversal).
+"""The eval lane's credential is derived from ``agent_harness_provider``.
 
-``make_runner(API_BACKEND, ...)`` — the single metered-runner chokepoint — resolves
-its credential through ``resolve_eval_credential``, so the default reverses #2707: the
-fresh-run lane authenticates with the subscription OAuth token and the isolated child
-strips the metered API key. Flip the ``eval_credential`` knob to ``metered_api_key``
-and it exports the API key and strips the OAuth token instead. The isolation env
-strips exactly the selected credential's conflicting vars.
+``resolve_eval_credential`` is the single seam every eval chokepoint reads, so the
+provider→credential mapping is the whole selection surface: no provider pinned (and
+an explicit subscription pin) rides the plan's OAuth token; the two
+Anthropic-metered providers ride ``ANTHROPIC_API_KEY``; a BYOK-router pin has no
+eval credential of its own and falls back to OAuth with a warning rather than
+failing a validly-configured deployment. ``make_runner(API_BACKEND, ...)`` — the
+metered-runner chokepoint — inherits that choice, and the isolation env strips
+exactly the selected credential's conflicting vars.
 """
 
+import logging
 import os
 from unittest.mock import patch
 
 import pytest
 from django.test import TestCase
 
+from teatree.config import AgentHarnessProvider
 from teatree.core.models import ConfigSetting
+from teatree.credential_config import resolve_eval_credential
 from teatree.eval.api_runner import ApiInProcessRunner
 from teatree.eval.backends import API_BACKEND, make_runner
 from teatree.eval.isolation import isolated_claude_env
+from teatree.llm.credentials import AnthropicApiKeyCredential, AnthropicSubscriptionCredential
 
 _OAUTH_ENV = "CLAUDE_CODE_OAUTH_TOKEN"
 _API_KEY_ENV = "ANTHROPIC_API_KEY"
+
+_PROVIDER_TO_CREDENTIAL = [
+    (None, AnthropicSubscriptionCredential),
+    (AgentHarnessProvider.SUBSCRIPTION_OAUTH, AnthropicSubscriptionCredential),
+    (AgentHarnessProvider.API_KEY, AnthropicApiKeyCredential),
+    (AgentHarnessProvider.ANTHROPIC_API, AnthropicApiKeyCredential),
+    (AgentHarnessProvider.ORCA_ROUTER_BYOK, AnthropicSubscriptionCredential),
+]
+
+
+class TestProviderToCredentialMapping(TestCase):
+    @pytest.fixture(autouse=True)
+    def _isolate_config(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.delenv("T3_OVERLAY_NAME", raising=False)
+        monkeypatch.delenv("T3_AGENT_HARNESS_PROVIDER", raising=False)
+        monkeypatch.delenv("T3_EVAL_IN_CONTAINER", raising=False)
+
+    def test_explicit_kind_maps_to_its_credential_class(self) -> None:
+        for provider, expected in _PROVIDER_TO_CREDENTIAL:
+            with self.subTest(provider=str(provider)):
+                assert isinstance(resolve_eval_credential(kind=provider), expected)
+
+    def test_configured_provider_maps_to_its_credential_class(self) -> None:
+        for provider, expected in _PROVIDER_TO_CREDENTIAL:
+            if provider is None:
+                continue
+            with self.subTest(provider=str(provider)):
+                ConfigSetting.objects.set_value("agent_harness_provider", provider.value)
+                assert isinstance(resolve_eval_credential(), expected)
+
+    def test_unconfigured_provider_defaults_to_subscription_oauth(self) -> None:
+        assert isinstance(resolve_eval_credential(), AnthropicSubscriptionCredential)
+
+    def test_byok_router_falls_back_to_oauth_with_a_warning(self) -> None:
+        with self.assertLogs("teatree.credential_config", level=logging.WARNING) as logs:
+            credential = resolve_eval_credential(kind=AgentHarnessProvider.ORCA_ROUTER_BYOK)
+        assert isinstance(credential, AnthropicSubscriptionCredential)
+        assert "orca_router_byok" in "\n".join(logs.output)
+
+    def test_only_the_byok_row_warns(self) -> None:
+        for provider, _expected in _PROVIDER_TO_CREDENTIAL:
+            if provider is AgentHarnessProvider.ORCA_ROUTER_BYOK:
+                continue
+            with self.subTest(provider=str(provider)), patch("teatree.credential_config.logger") as spy:
+                resolve_eval_credential(kind=provider)
+                spy.warning.assert_not_called()
 
 
 class TestMakeRunnerSelectsEvalCredential(TestCase):
     @pytest.fixture(autouse=True)
     def _isolate_config(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.delenv("T3_OVERLAY_NAME", raising=False)
-        monkeypatch.delenv("T3_EVAL_CREDENTIAL", raising=False)
+        monkeypatch.delenv("T3_AGENT_HARNESS_PROVIDER", raising=False)
 
     def test_default_lane_exports_the_oauth_token_and_strips_the_api_key(self) -> None:
         with patch.dict(os.environ, {_OAUTH_ENV: "oauth-sub", _API_KEY_ENV: "sk-metered"}, clear=False):
@@ -47,12 +99,11 @@ class TestMakeRunnerSelectsEvalCredential(TestCase):
             with pytest.raises(CredentialError):
                 make_runner(API_BACKEND)
 
-    def test_metered_knob_exports_the_api_key_and_strips_the_oauth_token(self) -> None:
-        ConfigSetting.objects.set_value("eval_credential", "metered_api_key")
+    def test_api_key_provider_exports_the_api_key_and_strips_the_oauth_token(self) -> None:
+        ConfigSetting.objects.set_value("agent_harness_provider", "api_key")
         with patch.dict(os.environ, {_OAUTH_ENV: "oauth-sub", _API_KEY_ENV: "sk-metered"}, clear=False):
             runner = make_runner(API_BACKEND)
         assert isinstance(runner, ApiInProcessRunner)
-        # The metered lane strips the subscription OAuth token (the pre-#2707 shape).
         assert runner._conflicting_vars == (_OAUTH_ENV,)
 
 

@@ -4,7 +4,13 @@ Each helper is narrow (single concern, single ``typer.echo`` path) and returns
 ``bool`` for pass/fail aggregation by :func:`teatree.cli.doctor.app.run_doctor_checks`.
 """
 
+from pathlib import Path
+from typing import TYPE_CHECKING, cast
+
 import typer
+
+if TYPE_CHECKING:
+    from teatree.cli.doctor.checks_resources import JsonObject
 
 
 def _check_account_switch() -> bool:
@@ -114,4 +120,58 @@ def _check_slack_socket_mode() -> bool:
         return True
     for finding in outcome.findings:
         typer.echo(f"{finding.level.value:<5} [{finding.overlay}] {finding.message}")
+    return True
+
+
+#: Claude Code's interactive permission mode, read from ``~/.claude/settings.json``.
+#: ``auto`` routes every tool call past a model classifier — no prompt on each call,
+#: but not blanket approval either. ``bypassPermissions`` allows everything, which is
+#: correct for a HEADLESS dispatch (no human is present to approve a write) and a
+#: needlessly wide posture for an interactive session where the operator IS present.
+_INTERACTIVE_PERMISSION_MODE_KEY = "defaultMode"
+_CLASSIFIER_GATED_MODE = "auto"
+_ALLOW_ALL_MODE = "bypassPermissions"
+
+
+def _check_interactive_permission_mode() -> bool:
+    """Advise when the interactive session runs wider than it needs to (#3497).
+
+    ADVISORY ONLY — always returns ``True``. The mode lives in the operator's own
+    Claude Code settings, not in teatree's dispatch options, so teatree can suggest
+    but never enforce it. Silent when no mode is configured: an absent key means the
+    Claude Code default applies, which is not teatree's business to nag about.
+
+    Changing this reaches ONLY the session the operator drives. Every unattended lane
+    reads the same file but pins its own mode, so none of them inherit this key:
+    headless dispatch pins it in ``ClaudeAgentOptions`` (the SDK emits
+    ``--permission-mode``), ``t3 loop start`` pins the same flag on its argv, and
+    ``t3 agent`` pins it on the ``-p`` argv it execs. Those pins are the ONLY thing
+    keeping the lanes apart — ``tests/teatree_agents/test_headless_least_privilege.py``,
+    ``tests/teatree_cli/test_cli_loop.py``, and ``tests/teatree_cli/test_cli_agent.py``
+    assert each, so dropping one fails loudly rather than silently classifier-gating
+    unattended work.
+    """
+    from teatree.cli.doctor.checks_resources import _read_json_object  # noqa: PLC0415 — lazy CLI import
+
+    permissions = _read_json_object(Path.home() / ".claude" / "settings.json").get("permissions")
+    if not isinstance(permissions, dict):
+        return True
+    # The cast is load-bearing, not decorative: `isinstance(permissions, dict)` narrows
+    # the JSON-value union to `dict[Never, Never]`, so a bare `.get(str)` is a type error.
+    mode = cast("JsonObject", permissions).get(_INTERACTIVE_PERMISSION_MODE_KEY)
+    if mode == _CLASSIFIER_GATED_MODE:
+        typer.echo(
+            f"OK    Interactive permission mode is {_CLASSIFIER_GATED_MODE} — each tool call is classifier-gated."
+        )
+        return True
+    if mode == _ALLOW_ALL_MODE:
+        typer.echo(
+            f"WARN  Interactive permission mode is {_ALLOW_ALL_MODE}, which approves every tool call. "
+            f"For a session where you are present, {_CLASSIFIER_GATED_MODE} is the safer default — a model "
+            f"classifier approves or denies each call, so you still get an unprompted flow without blanket "
+            f"approval. Set permissions.{_INTERACTIVE_PERMISSION_MODE_KEY} in ~/.claude/settings.json. "
+            f"(Every unattended lane reads the same file but pins --permission-mode of its own — headless "
+            f'dispatch, `t3 loop start`, and `t3 agent "<task>"` alike — so they stay on {_ALLOW_ALL_MODE} '
+            f"and are unaffected.)",
+        )
     return True

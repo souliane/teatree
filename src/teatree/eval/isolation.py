@@ -38,20 +38,22 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
 
-from teatree.llm.credentials import AnthropicApiKeyCredential
+from teatree.llm.credentials import AnthropicApiKeyCredential, CredentialError, base_url_refusal
 
 _HOME_ANCHORED_VARS = ("HOME", "XDG_CONFIG_HOME", "CLAUDE_CONFIG_DIR")
 
 #: The strip set a caller gets when it passes no ``conflicting_vars`` — the metered
-#: lane's conflicts (strip the subscription OAuth token). Non-eval callers of
-#: :func:`isolated_claude_env` (e.g. ``ticket_short_describe``) keep this default; the
-#: eval chokepoints pass the SELECTED eval credential's ``spec.conflicting_vars``.
+#: lane's conflicts (strip the subscription OAuth token). Both current callers (the
+#: judge and the API runner) pass the SELECTED eval credential's
+#: ``spec.conflicting_vars`` explicitly, so this default is the safe floor for a
+#: future caller rather than a set anything relies on today.
 _DEFAULT_CONFLICTING_VARS = AnthropicApiKeyCredential().spec.conflicting_vars
 
 
 @contextmanager
 def isolated_claude_env(
     conflicting_vars: tuple[str, ...] = _DEFAULT_CONFLICTING_VARS,
+    forbidden_vars: tuple[str, ...] = (),
 ) -> Iterator[tuple[dict[str, str], str]]:
     """Yield ``(env, cwd)`` that runs ``claude`` free of the developer's context.
 
@@ -61,7 +63,14 @@ def isolated_claude_env(
     SDK / bundled CLI authenticates with exactly the selected eval credential and
     can never fall back to a conflicting one. ``cwd`` is that directory. The
     directory is removed when the context exits.
+
+    *forbidden_vars* (the selected credential's ``spec.forbidden_vars``) are REFUSED
+    rather than stripped: this env is a copy of the parent's, so an ambient
+    ``ANTHROPIC_BASE_URL`` would otherwise redirect a subscription-authenticated eval
+    child at a third-party endpoint. Raising here matches the dispatch lane's
+    behaviour, so both Claude-spawning seams refuse the same combination.
     """
+    _reject_forbidden(forbidden_vars)
     with tempfile.TemporaryDirectory(prefix="t3-eval-virgin-home-") as home:
         env = dict(os.environ)
         env["HOME"] = home
@@ -70,6 +79,25 @@ def isolated_claude_env(
         for conflicting in conflicting_vars:
             env.pop(conflicting, None)
         yield env, home
+
+
+def _reject_forbidden(forbidden_vars: tuple[str, ...]) -> None:
+    """Raise when the ambient env carries a var the selected credential refuses.
+
+    Empty values are treated as absent — an exported-but-blank var expresses no
+    redirect. The message names the variable and the remedy so an operator is never
+    left guessing which of the two eval lanes refused.
+    """
+    present = [var for var in forbidden_vars if os.environ.get(var, "").strip()]
+    if not present:
+        return
+    raise CredentialError(
+        base_url_refusal(
+            present,
+            authenticator="the selected eval credential authenticates against the Anthropic subscription",
+            remedy="select the metered API key for this eval lane to route it through that endpoint",
+        )
+    )
 
 
 __all__ = ["isolated_claude_env"]

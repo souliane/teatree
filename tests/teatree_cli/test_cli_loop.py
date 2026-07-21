@@ -15,6 +15,7 @@ from unittest.mock import patch
 import pytest
 from typer.testing import CliRunner
 
+from teatree.agents import permission_modes
 from teatree.cli.loop import _self_improve_cadence_for_loop_slot, loop_app
 from teatree.cli.loop.drain_queue import _drain_cadence_for_loop_slot
 from teatree.cli.loop.slack_answer import _slack_answer_cadence_for_loop_slot
@@ -267,14 +268,52 @@ class TestStartCommandSessionPins:
         argv = self._spawn_argv(monkeypatch, tmp_path)
         assert "--model" not in argv
         assert "--effort" not in argv
-        # #2650: no pins, no fat `/loop` slot — just the binary.
-        assert argv == ["/usr/bin/claude"]
+        # #2650: no fat `/loop` slot. The permission mode is NOT optional like the
+        # other two — it is pinned whether or not [agent] configures anything.
+        assert argv == ["/usr/bin/claude", "--permission-mode", "bypassPermissions"]
 
     def test_session_model_passes_through_unchanged(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
         # #2237 removal: no kill-switch downgrade step — session_model is emitted
         # exactly as configured, whatever value the operator wrote.
         argv = self._spawn_argv(monkeypatch, tmp_path, session_model="claude-sonnet-5")
         assert argv[argv.index("--model") + 1] == "claude-sonnet-5"
+
+
+class TestStartCommandPinsUnattendedPermissionMode(TestStartCommandSessionPins):
+    """The loop session pins its own permission mode instead of inheriting the operator's.
+
+    `permissions.defaultMode` is a single global key in `~/.claude/settings.json`, and
+    `t3 doctor check` advises setting it to `auto` for the session the operator drives.
+    This session is NOT that session — it runs the autonomous loop, unattended under
+    `autonomous_away`, where a classifier denial has nobody to override it. The pin is
+    what makes the doctor's advice safe to follow, so it must survive every config
+    combination rather than only the configured-`[agent]` path.
+    """
+
+    def test_mode_is_pinned_regardless_of_agent_config(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+        for rows in ({}, {"session_model": "opus"}, {"session_effort": "max"}):
+            argv = self._spawn_argv(monkeypatch, tmp_path, **rows)
+            assert "--permission-mode" in argv, f"unattended session left unpinned for {rows}"
+            assert argv[argv.index("--permission-mode") + 1] == "bypassPermissions"
+
+    def test_mode_matches_the_headless_lane(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+        # The two unattended lanes must not drift: both read the same constant.
+        argv = self._spawn_argv(monkeypatch, tmp_path)
+        assert argv[argv.index("--permission-mode") + 1] == permission_modes.UNATTENDED
+
+    def test_auto_in_user_settings_cannot_reach_this_session(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        # The regression this guards: an operator follows the doctor's advice, sets
+        # defaultMode=auto, and silently classifier-gates the autonomous loop.
+        home = tmp_path / "home"
+        (home / ".claude").mkdir(parents=True)
+        (home / ".claude" / "settings.json").write_text(
+            json.dumps({"permissions": {"defaultMode": "auto"}}), encoding="utf-8"
+        )
+        monkeypatch.setenv("HOME", str(home))
+        argv = self._spawn_argv(monkeypatch, tmp_path)
+        assert argv[argv.index("--permission-mode") + 1] == "bypassPermissions"
 
 
 class TestStopCommand:

@@ -66,11 +66,11 @@ def assert_api_run_was_metered(*, backend: str, executed: int, total_cost_usd: f
     msg = (
         f"api eval run executed {executed} scenario(s) but metered $0.00 (no metered "
         "calls). A metered run that bills nothing never actually executed — the SDK made "
-        "zero billable tool calls. On the DEFAULT subscription-OAuth eval lane "
-        "(T3_EVAL_CREDENTIAL=subscription_oauth, #2707 reversal) the usual cause is the "
-        "OAuth usage window (5h/7d) being drained so every call was throttled — NOT an "
-        "API-key problem. It can also be a credential that never reached the CLI (a "
-        "logged-out / key-absent case, which is the only cause on a metered_api_key run). "
+        "zero billable tool calls. On the DEFAULT subscription-OAuth eval lane the usual "
+        "cause is the OAuth usage window (5h/7d) being drained so every call was "
+        "throttled — NOT an API-key problem. It can also be a credential that never "
+        "reached the CLI (a logged-out / key-absent case, which is the only cause on a "
+        "metered api_key run). "
         "Check the OAuth usage window first, then the credential. This fails loud rather "
         "than reporting a vacuous green."
     )
