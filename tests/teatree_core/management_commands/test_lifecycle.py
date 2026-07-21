@@ -15,6 +15,7 @@ from django.utils.module_loading import import_string
 import teatree.core.gates.local_stack_gate as local_stack_gate_mod
 import teatree.core.management.commands.worktree as worktree_mod
 import teatree.core.overlay_loader as overlay_loader_mod
+import teatree.core.runners.worktree_provision as worktree_provision_mod
 import teatree.utils.db as db_mod
 import teatree.utils.run as utils_run_mod
 from teatree.core.models import Session, Ticket, Worktree
@@ -202,7 +203,7 @@ class TestLifecycleSetup(TestCase):
     @_patch_overlays(FULL_OVERLAY)
     @override_settings(**SETTINGS)
     def test_runs_post_db_steps(self) -> None:
-        """Setup runs post-DB steps from the overlay via the step runner."""
+        """Setup runs post-DB steps then the reset step, in that order."""
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
 
@@ -217,15 +218,29 @@ class TestLifecycleSetup(TestCase):
                 extra={"worktree_path": str(wt_dir)},
             )
 
-            # FullProvisioning.reset_passwords_command returns a step with callable=lambda: None.
-            # The step runner invokes callables directly (no subprocess).
-            # Verify setup completes without error — the step runner handles execution.
-            call_command("worktree", "provision", path=str(wt_dir))
+            ran: list[str] = []
+            overlay = import_string(FULL_OVERLAY)()
+            overlay.provisioning = type(overlay.provisioning)()
+            overlay.provisioning.post_db_steps = lambda wt: [
+                ProvisionStep(name="migrate", callable=lambda: ran.append("migrate")),
+            ]
+            overlay.provisioning.reset_passwords_command = lambda wt: ProvisionStep(
+                name="reset", callable=lambda: ran.append("reset")
+            )
+
+            with (
+                patch.object(overlay_loader_mod, "_discover_overlays", return_value={"test": overlay}),
+                patch.object(utils_run_mod, "subprocess"),
+            ):
+                call_command("worktree", "provision", path=str(wt_dir))
+
+            # The reset step is appended after post-DB steps by the runner.
+            assert ran == ["migrate", "reset"]
 
     @_patch_overlays(POST_DB_OVERLAY)
     @override_settings(**SETTINGS)
     def test_runs_post_db_steps_with_commands(self) -> None:
-        """Setup iterates post-DB steps and runs their callables via the step runner."""
+        """Setup iterates every post-DB step and invokes each callable in order."""
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
 
@@ -240,9 +255,21 @@ class TestLifecycleSetup(TestCase):
                 extra={"worktree_path": str(wt_dir)},
             )
 
-            # PostDbStepsOverlay returns named callable steps.
-            # The step runner invokes each callable and tracks results.
-            call_command("worktree", "provision", path=str(wt_dir))
+            ran: list[str] = []
+            overlay = import_string(POST_DB_OVERLAY)()
+            overlay.provisioning = type(overlay.provisioning)()
+            overlay.provisioning.post_db_steps = lambda wt: [
+                ProvisionStep(name="run-migrations", callable=lambda: ran.append("run-migrations")),
+                ProvisionStep(name="collectstatic", callable=lambda: ran.append("collectstatic")),
+            ]
+
+            with (
+                patch.object(overlay_loader_mod, "_discover_overlays", return_value={"test": overlay}),
+                patch.object(utils_run_mod, "subprocess"),
+            ):
+                call_command("worktree", "provision", path=str(wt_dir))
+
+            assert ran == ["run-migrations", "collectstatic"]
 
     @_patch_overlays(PRE_RUN_OVERLAY)
     @override_settings(**SETTINGS)
@@ -392,8 +419,8 @@ class TestLifecycleSetup(TestCase):
 
     @_patch_overlays(FULL_OVERLAY)
     @override_settings(**SETTINGS)
-    def test_skips_envfile_message_when_no_path(self) -> None:
-        """Setup skips 'Written:' message when write_env_cache returns None."""
+    def test_skips_wrote_cache_log_when_render_returns_none(self) -> None:
+        """The 'Wrote env cache' log is skipped when write_env_cache returns None."""
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
 
@@ -419,10 +446,15 @@ class TestLifecycleSetup(TestCase):
             with (
                 patch.object(worktree_mod, "get_overlay", return_value=mock_overlay),
                 patch.object(utils_run_mod, "subprocess") as mock_sp,
-                patch("teatree.core.runners.worktree_provision.write_env_cache", return_value=None),
+                patch.object(worktree_provision_mod, "write_env_cache", return_value=None) as mock_write,
+                patch.object(worktree_provision_mod, "logger") as mock_logger,
             ):
                 mock_sp.run.return_value = MagicMock(returncode=0)
                 call_command("worktree", "provision", path=str(wt_path))
+
+            mock_write.assert_called_once()
+            wrote_cache_logs = [c for c in mock_logger.info.call_args_list if "Wrote env cache" in str(c.args)]
+            assert wrote_cache_logs == []
 
     # NOTE: the former ``test_prints_diagnostic_summary`` was removed — the
     # ``Command._print_diagnostics`` helper is gone; the structured health
