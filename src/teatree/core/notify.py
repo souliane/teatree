@@ -342,7 +342,6 @@ def _deliver_dm(
             response = backend.post_message(channel=channel, text=text, thread_ts=thread_ts)
         else:
             response = backend.post_message(channel=channel, text=text, thread_ts=thread_ts, blocks=blocks)
-        deliver_user_dm_sidecar(backend, channel=channel, text=text, thread_ts=thread_ts)
     except Exception as exc:  # noqa: BLE001 — notify must never bubble up
         return "", "", str(exc)
 
@@ -352,6 +351,20 @@ def _deliver_dm(
         slack_error = str(response.get("error", "")) if isinstance(response, dict) else ""
         detail = f"Slack post failed: {slack_error}" if slack_error else "Slack post returned no message ts"
         return channel, posted_ts, detail
+
+    # Delivery is CONFIRMED (``ok:true`` + a real ``ts``): only NOW run the
+    # speak side-effects, threading the audio under the just-delivered message
+    # (``thread_ts=posted_ts``) with an EMPTY ``initial_comment`` so the text
+    # lands exactly ONCE (F4.4). Firing the sidecar before this check
+    # double-delivered the text — the ``post_message`` body plus the audio DM's
+    # identical ``initial_comment`` — and, on an ``ok:false`` post, attached
+    # audio to a DM that never landed; the FAILED finalize then drove a retry
+    # that re-attached, tripling the audio. The sidecar is best-effort and must
+    # never undo a DM that has already landed.
+    try:
+        deliver_user_dm_sidecar(backend, channel=channel, text=text, thread_ts=posted_ts, initial_comment="")
+    except Exception as exc:  # noqa: BLE001 — sidecar is best-effort; a delivered DM must never be undone by it
+        logger.debug("notify_user speak sidecar failed for key on channel=%s: %s", channel, exc)
     return channel, posted_ts, ""
 
 

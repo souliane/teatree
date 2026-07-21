@@ -17,7 +17,9 @@ FROM ubuntu:24.04@sha256:4fbb8e6a8395de5a7550b33509421a2bafbc0aab6c06ba2cef9ebff
 # (anthropic_oauth_pass_paths) instead of a single env token. ttyd backs the
 # admin dashboard's loopback "Debug session" terminal (#3263). The Docker CLI
 # + compose plugin (CLI only, NO engine) let the watchdog role drive the host
-# daemon over the mounted socket.
+# daemon over the mounted socket. The npm `pyright` package provides the
+# `pyright-langserver` binary the pyright-lsp Claude plugin execs to give factory
+# agents live Python type diagnostics while coding (`t3 setup` enables the plugin).
 RUN apt-get update -qq && \
     apt-get install -y -qq --no-install-recommends \
         ca-certificates curl direnv git gnupg jq pass sqlite3 ttyd && \
@@ -36,7 +38,7 @@ RUN apt-get update -qq && \
         > /etc/apt/sources.list.d/docker.list && \
     apt-get update -qq && \
     apt-get install -y -qq --no-install-recommends gh docker-ce-cli docker-compose-plugin && \
-    npm install -g @anthropic-ai/claude-code && \
+    npm install -g @anthropic-ai/claude-code pyright && \
     npm cache clean --force && \
     rm -rf /var/lib/apt/lists/*
 

@@ -205,7 +205,11 @@ def _union_prs(
         try:
             fetched = lister(author=author)
         except Exception:
-            logger.debug("forge read-back %s failed for author %s — skipping", kind, author, exc_info=True)
+            # F5.10: a per-author forge fetch failure degrades the read-back NET
+            # (the claim still proceeds), but it is not routine — surface it at
+            # warning so a systematically failing author/token is visible rather
+            # than buried at debug.
+            logger.warning("forge read-back %s failed for author %s — skipping", kind, author, exc_info=True)
             continue
         for raw in fetched:
             url = _pr_url(raw)

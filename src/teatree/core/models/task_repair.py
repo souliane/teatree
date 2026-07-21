@@ -102,6 +102,7 @@ def _escalate_stall(task: Task, *, phase: str, iterations: int) -> None:
         question,
         session_id=str(session_id or ""),
         dedupe_marker=f"repair-stall:{ticket.pk}:{phase}",
+        audience=DeferredQuestion.Audience.INTERNAL,
     )
 
 
@@ -126,4 +127,5 @@ def _escalate_cap(task: Task, *, phase: str, iterations: int) -> None:
         question,
         session_id=str(session_id or ""),
         dedupe_marker=f"repair-cap:{ticket.pk}:{phase}",
+        audience=DeferredQuestion.Audience.INTERNAL,
     )

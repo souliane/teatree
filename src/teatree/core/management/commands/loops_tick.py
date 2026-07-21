@@ -58,8 +58,8 @@ from teatree.core.loop_lease_manager import PER_LOOP_TICK_MUTEX_PREFIX, per_loop
 from teatree.core.models import LoopLease
 from teatree.loop.loop_cadences import loop_owner_ttl_seconds
 from teatree.loop.preset_resolution import active_overlay_scope
-from teatree.loop.statusline import set_overridden_loops_reader, set_preset_segment_reader
-from teatree.loops.preset_status import overridden_loop_names, preset_line_chunk
+from teatree.loop.statusline import set_overridden_loops_reader, set_preset_line_reader
+from teatree.loops.preset_status import overridden_loop_names, preset_line_handles
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -324,14 +324,14 @@ class Command(TyperCommand):
         # installed together with the preset segment that represents the folded
         # loops), then reset after the tick so the process-global seams never leak.
         set_mini_loop_schedules_reader(mini_loop_schedules)
-        set_preset_segment_reader(preset_line_chunk)
+        set_preset_line_reader(preset_line_handles)
         set_overridden_loops_reader(overridden_loop_names)
         try:
             request = self._build_request(overlay)
             report = run_tick(request, statusline_path=statusline_file, jobs_builder=_scoped_jobs_builder(loop))
         finally:
             set_mini_loop_schedules_reader(None)
-            set_preset_segment_reader(None)
+            set_preset_line_reader(None)
             set_overridden_loops_reader(None)
             LoopLease.objects.release(tick_mutex, owner=owner)
 

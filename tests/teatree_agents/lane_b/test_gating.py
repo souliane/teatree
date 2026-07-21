@@ -103,16 +103,24 @@ class TestHardDenyReason:
         assert reason is not None
         assert "privacy/banned-term gate" in reason
 
-    def test_publish_high_finding_to_a_genuinely_unresolvable_target_is_allowed(
+    def test_publish_high_finding_to_a_genuinely_unresolvable_target_is_denied(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        # #3442 scope guard: a GENUINELY unresolvable target -- no ``--repo`` flag
-        # and a cwd with no git remote, so the destination resolves to nothing at
-        # all -- is NOT the probe-error case and stays SKIPPED/ALLOWED (unchanged).
-        # This pins that fail-closed did NOT leak into the truly-unresolvable path.
+        # #F7.2 fail-closed tightening: an UNRESOLVED ``gh``/``glab`` publish -- no
+        # ``--repo`` flag and a cwd with no git remote, so the destination resolves
+        # to nothing -- is NOT provably non-public and now FAILS CLOSED to a scan,
+        # so a HIGH body is DENIED. (#3442 previously ALLOWED this "genuinely
+        # unresolvable" path, but a gate that could not resolve a target does NOT
+        # prove no egress -- a ``cd public && gh ...``, a subshell, or a late
+        # ``GH_REPO`` could still egress -- so F7.2 deliberately scans every
+        # unresolved publish; only a RESOLVED, provably-non-public dest skips.)
+        # Lane B mirrors Lane A: this matches
+        # ``test_public_visibility.TestUnresolvedStructuredWriteDoesNotSkip``.
         self._isolate_visibility(tmp_path, monkeypatch, None)
         args = {"command": 'gh pr comment 5 --body "**User directive (verbatim):** go"'}
-        assert hard_deny_reason("shell", args, cwd=tmp_path) is None
+        reason = hard_deny_reason("shell", args, cwd=tmp_path)
+        assert reason is not None
+        assert "privacy/banned-term gate" in reason
 
     def test_publish_high_finding_to_a_private_target_is_allowed(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch

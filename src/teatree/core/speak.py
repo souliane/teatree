@@ -53,7 +53,6 @@ can't silently masquerade as working audio delivery.
 
 import fcntl
 import logging
-import re
 import shutil
 import tempfile
 import threading
@@ -67,11 +66,21 @@ from teatree.config import get_effective_settings
 from teatree.core import presence
 from teatree.core.backend_protocols import MessagingBackend
 from teatree.core.modelkit.notify_policy import NotifyAudience
+from teatree.core.speak_cleaning import clean_for_speech
 from teatree.paths import get_data_dir
 from teatree.types import RawAPIDict, SpeakConfig
 from teatree.utils.run import CommandFailedError, TimeoutExpired, run_allowed_to_fail, run_checked
 
 logger = logging.getLogger(__name__)
+
+__all__ = [
+    "clean_for_speech",
+    "deliver_user_dm",
+    "deliver_user_dm_sidecar",
+    "resolve_speak",
+    "speak",
+    "synthesise",
+]
 
 SAY_BINARY = "say"
 _AFCONVERT_BINARY = "afconvert"
@@ -96,55 +105,6 @@ _SPEAKER_LOCK_FILENAME = "speaker.lock"
 # speaker is genuinely saturated.
 _SPEAKER_LOCK_WAIT_BUDGET_S = 2.0
 _SPEAKER_LOCK_RETRY_INTERVAL_S = 0.05
-
-# Speech is throwaway and a long read is worse than no read — a capped
-# excerpt keeps ``say`` from droning through a 4 KB status report.
-_MAX_SPEAK_CHARS = 600
-
-_CODE_FENCE_RE = re.compile(r"```.*?```", re.DOTALL)
-_INLINE_CODE_RE = re.compile(r"`[^`]*`")
-_MD_LINK_RE = re.compile(r"\[([^\]]+)\]\((?:[^)]+)\)")
-_URL_RE = re.compile(r"https?://\S+")
-_HEADING_BULLET_RE = re.compile(r"^\s*(?:#{1,6}|[-*+]|\d+\.)\s+", re.MULTILINE)
-_EMPHASIS_RE = re.compile(r"[*_~>|#]")
-_WS_RE = re.compile(r"\s+")
-
-# Slack emoji shortcodes (``:information_source:``, ``:white_check_mark:``) are
-# status decorations, not prose. ``say`` voices them letter-soup
-# (``:information_source:`` reads as "information source"), so they are dropped
-# wholesale so they never reach the speakers as gibberish.
-_EMOJI_SHORTCODE_RE = re.compile(r":[a-z0-9_+-]+:", re.IGNORECASE)
-
-# A leading emoji shortcode is a status decoration — a line that STARTS with one
-# is a status line (the notify ``:information_source: *info*`` prefix, a
-# ``:white_check_mark: test green`` check). Real prose never opens a line with a
-# ``:shortcode:``.
-_LEADING_EMOJI_RE = re.compile(r"^\s*(?::[a-z0-9_+-]+:\s*)+", re.IGNORECASE)
-
-# After markdown stripping, the notify kind marker (``*info*`` -> ``info``) is a
-# bare status word. These three are the only notify kinds (``NotifyKind``), so a
-# line that is ONLY one of them is the marker preamble, never a real message.
-_NOISE_KIND_MARKERS = frozenset({"info", "answer", "question"})
-
-# A log line leads with a level token AND a genuine log discriminator —
-# ``INFO: ...``, ``[DEBUG] ...``, ``WARNING - ...``, ``Notice: ...``. Two shapes:
-# a BRACKETED level (``[DEBUG]`` — the closing bracket is the discriminator), or
-# a bare level immediately followed by a ``:`` or ``-`` separator. The
-# discriminator is REQUIRED: without it the leading word is ordinary prose that
-# merely happens to start with a level token ("Warning users now about the
-# outage", "Critical bug found in prod.") and must stay spoken. Anchored to the
-# line START so the same words mid-sentence ("the info you asked for") stay prose.
-_LOG_LEVEL_LINE_RE = re.compile(
-    # bracketed level (``[DEBUG]`` — closing bracket is the discriminator) ...
-    r"^(?:\[\s*(?:trace|debug|info|notice|warn|warning|error|critical|fatal)\s*\]\s*[:\-]?\s+\S"
-    # ... or a bare level immediately followed by a required ``:`` / ``-`` separator.
-    r"|(?:trace|debug|info|notice|warn|warning|error|critical|fatal)\s*[:\-]\s+\S)",
-    re.IGNORECASE,
-)
-
-# Sentence-ending punctuation. A terse status fragment ("test green") has none;
-# a real emoji-led message ("We shipped the release!") does, so it is kept.
-_SENTENCE_END_RE = re.compile(r"[.!?]")
 
 
 def binary_available() -> bool:
@@ -201,71 +161,6 @@ def _in_meeting() -> bool:
     except Exception as exc:  # noqa: BLE001 — a presence failure must never mute local audio
         logger.debug("presence resolution failed; treating as not-in-meeting: %s", exc)
         return False
-
-
-def clean_for_speech(text: str) -> str:
-    """Strip markdown / code / URLs / status noise and cap length so ``say`` reads prose.
-
-    Code fences and inline code are dropped entirely (reading source aloud
-    is noise); a ``[label](url)`` markdown link collapses to its label; a
-    bare URL is dropped; Slack emoji shortcodes (``:information_source:``) are
-    dropped; heading/bullet/emphasis sigils are removed. Whole LOG/STATUS lines
-    are then filtered out (#277): a line that is only a notify kind marker
-    (``*info*``/``*answer*``/``*question*``) or that leads with a log level
-    (``INFO:``/``[DEBUG]``) is droning preamble — ``say`` reads it as
-    "Info source", "Info test green" before the real message — so it is
-    dropped, while a real message that merely CONTAINS those words inline is
-    kept. Surviving lines are joined, runs of whitespace collapse to a single
-    space, and the result is truncated to :data:`_MAX_SPEAK_CHARS` on a word
-    boundary with a trailing ``…``.
-    """
-    stripped = _CODE_FENCE_RE.sub(" ", text)
-    stripped = _INLINE_CODE_RE.sub(" ", stripped)
-    stripped = _MD_LINK_RE.sub(r"\1", stripped)
-    stripped = _URL_RE.sub(" ", stripped)
-    stripped = _HEADING_BULLET_RE.sub("", stripped)
-    # Filter whole status/log lines BEFORE the emoji strip, so a leading emoji
-    # shortcode is still visible to the line discriminator.
-    kept = [line for line in stripped.splitlines() if not _is_noise_line(line)]
-    stripped = "\n".join(kept)
-    stripped = _EMOJI_SHORTCODE_RE.sub(" ", stripped)
-    stripped = _EMPHASIS_RE.sub("", stripped)
-    stripped = _WS_RE.sub(" ", stripped).strip()
-    if len(stripped) <= _MAX_SPEAK_CHARS:
-        return stripped
-    head = stripped[:_MAX_SPEAK_CHARS].rsplit(" ", 1)[0].rstrip()
-    return f"{head}…"
-
-
-def _is_noise_line(line: str) -> bool:
-    """Whether ``line`` is a log/status marker rather than user-facing prose (#277).
-
-    Run BEFORE the emoji strip (so a leading ``:shortcode:`` is still visible).
-    A line is status/log noise in any of three cases:
-
-    *   **Notify kind marker** — once its emphasis sigils are gone the line is
-        only ``info``/``answer``/``question`` (the three ``NotifyKind`` values),
-        the DM preamble :func:`teatree.core.notify.format_notification` prepends.
-    *   **Log level line** — it leads with a level token (``INFO:``, ``[DEBUG]``,
-        ``WARNING -``) as a distinct leading token. The same words mid-sentence
-        ("the info you asked for") are prose and survive — the level must LEAD.
-    *   **Emoji-led terse status** — it opens with a ``:shortcode:`` AND, with the
-        emoji and sigils removed, carries no sentence-ending punctuation
-        (``:white_check_mark: test green``). A real emoji-led message ends a
-        sentence ("We shipped the release!") and is kept.
-
-    Blank lines are never noise (they collapse away in the whitespace pass).
-    """
-    candidate = line.strip()
-    if not candidate:
-        return False
-    bare = _EMPHASIS_RE.sub("", _EMOJI_SHORTCODE_RE.sub(" ", candidate)).strip()
-    if bare.lower() in _NOISE_KIND_MARKERS:
-        return True
-    if _LOG_LEVEL_LINE_RE.match(bare):
-        return True
-    led_with_emoji = _LEADING_EMOJI_RE.match(candidate) is not None
-    return led_with_emoji and not _SENTENCE_END_RE.search(bare)
 
 
 def speak(text: str, *, block: bool = False) -> None:
@@ -329,7 +224,9 @@ def deliver_user_dm(
     still-open question can never retire it.
     """
     config = _resolve_speak_safe()
-    audio_body = _maybe_post_with_audio(backend, config, channel=channel, text=text, thread_ts=thread_ts)
+    audio_body = (
+        _maybe_post_with_audio(backend, channel=channel, text=text, thread_ts=thread_ts) if config.slack else None
+    )
     if audio_body is not None:
         response = audio_body
     else:
@@ -344,34 +241,44 @@ def deliver_user_dm_sidecar(
     channel: str,
     text: str,
     thread_ts: str = "",
+    initial_comment: str | None = None,
 ) -> None:
-    """Run the speak side-effects for a bot→user DM — never raises (#2054).
+    """Run the speak side-effects for an already-delivered bot→user DM — never raises (#2054).
 
-    Called by :func:`teatree.core.notify._deliver_dm` AFTER the canonical
-    ``post_message`` delivery has already landed and its ``ts`` has been
-    captured. This function owns the two enrichment arms that do NOT
+    Called AFTER the canonical text delivery has already landed and its ``ts``
+    has been captured. This function owns the two enrichment arms that do NOT
     produce the delivery ``ts``:
 
     *   **Slack audio attachment** — when ``slack`` is on, attach a spoken
         audio file to the DM via ``post_audio_dm``. The attachment is a
         pure enhancement; if it fails the text DM already exists. The
         ``post_audio_dm`` response is intentionally ignored here: the caller
-        already has the ``ts`` from ``post_message`` and does not need it.
+        already has the ``ts`` from the text delivery and does not need it.
     *   **Local playback** — play the text through the machine's speakers
         when ``local`` is ``dm`` or ``all``.
 
+    ``initial_comment`` controls the text posted ALONGSIDE the audio (F4.4).
+    ``None`` (the default) reuses ``text`` as the audio DM's ``initial_comment``
+    — the ``t3 speak-dm`` path, whose audio DM stands on its own. The
+    :func:`teatree.core.notify._deliver_dm` caller passes ``""`` together with
+    ``thread_ts`` set to the delivered message's ``ts``, so the audio threads
+    UNDER the text DM that already landed with NO repeated text — the text is
+    delivered exactly once. In every case the audio is still synthesised from
+    the full ``text``.
+
     Both arms are best-effort: any exception is swallowed so a speak failure
     can NEVER retroactively break a text DM that has already landed. The
-    caller (:func:`teatree.core.notify._deliver_dm`) wraps this call inside
-    its own ``except`` block, so a raise here would be caught before the
-    delivery outcome is affected — but returning ``None`` without raising is
-    the cleaner contract.
+    caller also guards this call, so returning ``None`` without raising is the
+    cleaner contract.
     """
     config = _resolve_speak_safe()
-    try:
-        _maybe_post_with_audio(backend, config, channel=channel, text=text, thread_ts=thread_ts)
-    except Exception as exc:  # noqa: BLE001 — sidecar must never break the delivered text DM
-        logger.debug("deliver_user_dm_sidecar audio attach failed: %s", exc)
+    if config.slack:
+        try:
+            _maybe_post_with_audio(
+                backend, channel=channel, text=text, thread_ts=thread_ts, initial_comment=initial_comment
+            )
+        except Exception as exc:  # noqa: BLE001 — sidecar must never break the delivered text DM
+            logger.debug("deliver_user_dm_sidecar audio attach failed: %s", exc)
     _maybe_speak_local(config, text)
 
 
@@ -406,29 +313,36 @@ def _resolve_speak_safe() -> SpeakConfig:
 
 def _maybe_post_with_audio(
     backend: MessagingBackend,
-    config: SpeakConfig,
     *,
     channel: str,
     text: str,
     thread_ts: str,
+    initial_comment: str | None = None,
 ) -> RawAPIDict | None:
-    """Post ``text`` + an inline audio attachment, or ``None`` to degrade to text-only.
+    """Post an inline audio attachment (with ``text``), or ``None`` to degrade to text-only.
 
-    Returns the ``post_audio_dm`` body on a successful attach (the caller
-    uses it as the delivery response), or ``None`` when ``slack`` is off,
-    synthesis fails, or the attach returns a non-ok body — in every ``None``
-    case the caller falls back to a text-only post so the DM is never dropped.
-    A non-ok attach body additionally surfaces the failure once per error
-    class so a missing ``files:write`` scope is visible.
+    Callers gate this on ``config.slack`` — it is only reached when the Slack
+    audio arm is on. Returns the ``post_audio_dm`` body on a successful attach
+    (the caller uses it as the delivery response), or ``None`` when synthesis
+    fails or the attach returns a non-ok body — in every ``None`` case the
+    caller falls back to a text-only post so the DM is never dropped. A non-ok
+    attach body additionally surfaces the failure once per error class so a
+    missing ``files:write`` scope is visible.
+
+    The audio is always synthesised from the full ``text``. ``initial_comment``
+    is the text posted ALONGSIDE the audio: ``None`` (default) reuses ``text``
+    (the single-message :func:`deliver_user_dm` path), while an explicit ``""``
+    posts the audio with no comment — used when the text has already been
+    delivered separately and the audio only threads under it (F4.4), so the
+    body is never sent twice.
     """
-    if not config.slack:
-        return None
+    comment = text if initial_comment is None else initial_comment
     try:
         audio_path = synthesise(clean_for_speech(text))
         if audio_path is None:
             return None
         try:
-            body = backend.post_audio_dm(channel=channel, filepath=str(audio_path), text=text, thread_ts=thread_ts)
+            body = backend.post_audio_dm(channel=channel, filepath=str(audio_path), text=comment, thread_ts=thread_ts)
         finally:
             shutil.rmtree(audio_path.parent, ignore_errors=True)
     except Exception as exc:  # noqa: BLE001 — a failed attach must degrade to a text DM, never drop it
@@ -473,22 +387,26 @@ def _speaker_lock_path() -> Path:
 
 @contextmanager
 def _serial_speaker() -> Iterator[bool]:
-    """Try to hold the cross-process speaker lock for one ``say`` — best-effort (#2152).
+    """Hold the cross-process speaker lock for one ``say`` if it can — best-effort (#2152).
 
-    Yields ``True`` always — either with the lock held (serialized, no
-    overlap), or without it (fail-open: lock unavailable or budget elapsed).
-    Yields ``False`` to signal to the caller that serialization was skipped so
-    it can log accordingly; ``False`` does NOT mean the read is dropped.
+    A context manager whose body ALWAYS plays: the yielded bool never gates the
+    read (the caller plays regardless), it only reports whether serialization
+    was achieved so the caller can log the unserialized case. The value is:
 
-    The lock prevents two ``say`` calls from overlapping when acquired within
-    the budget. If the budget elapses (speaker still busy) the read falls
-    through and plays anyway — a brief overlap is better than a silenced read,
-    and the budget keeps the wait from blocking the daemon thread indefinitely.
+    *   ``True`` — either the exclusive lock is HELD for the ``with`` body
+        (serialized, no overlap), OR the lockfile could not be opened at all
+        (no state dir / permissions) so serialization is impossible. Both are
+        the "nothing more to wait on, just play" case, so they share ``True``;
+        the lockfile-open failure is already noted at debug on its own.
+    *   ``False`` — the lockfile opened but the wait budget
+        (:data:`_SPEAKER_LOCK_WAIT_BUDGET_S`) elapsed before the lock came free
+        (the speaker is genuinely saturated). The read still plays, unserialized;
+        ``False`` lets the caller log that it fell through.
 
-    Best-effort: if the lockfile cannot be opened (no state dir, permissions)
-    the read still plays — a lock error must never mute audio. Runs INSIDE the
-    daemon thread, never on the caller's egress path, so the bounded wait
-    never delays a DM or turn.
+    So a brief overlap is possible whenever the lock is not held — strictly
+    better than a silenced or minutes-late read. The bounded wait keeps the
+    daemon thread from blocking indefinitely, and this runs INSIDE the daemon
+    thread, never on the caller's egress path, so it never delays a DM or turn.
     """
     try:
         lock_path = _speaker_lock_path()

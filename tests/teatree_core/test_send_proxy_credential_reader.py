@@ -4,8 +4,9 @@ Every point-of-use secret-store read for a Slack bot/app/user token or a
 GitHub/GitLab forge token *on the outbound send path* goes through
 :func:`teatree.core.send_proxy.read_posting_credential`. Concretely, the two
 messaging/forge backend CONSTRUCTORS the send chokepoints use —
-``core/backend_factory.py`` and ``backends/loader.py`` — read posting tokens only
-via the proxy, so the send-path credential surface is one auditable function.
+``core/backend_factory.py`` (with its ``core/toml_backends.py`` path-only-TOML
+leaf) and ``backends/loader.py`` — read posting tokens only via the proxy, so the
+send-path credential surface is one auditable function.
 This gate turns red if a posting-credential ``read_pass`` read is (re)introduced
 in any send-path module.
 
@@ -84,7 +85,13 @@ def test_no_posting_credential_read_pass_outside_the_proxy() -> None:
 
 def test_backend_factory_reads_posting_tokens_only_via_the_proxy() -> None:
     # backend_factory was the sole posting-credential reader before #117; it must
-    # now delegate entirely to the proxy and never call read_pass itself.
-    source = (SRC / "core" / "backend_factory.py").read_text()
-    assert "read_pass(" not in source
-    assert "read_posting_credential(" in source
+    # delegate entirely to the proxy and never call read_pass itself. The
+    # path-only-TOML host/messaging construction it drives now lives in the
+    # sibling ``toml_backends`` leaf (PR #3479 module-health split): neither module
+    # may call read_pass, and the proxy delegation lives with the construction code
+    # in ``toml_backends``.
+    factory_source = (SRC / "core" / "backend_factory.py").read_text()
+    toml_source = (SRC / "core" / "toml_backends.py").read_text()
+    assert "read_pass(" not in factory_source
+    assert "read_pass(" not in toml_source
+    assert "read_posting_credential(" in toml_source

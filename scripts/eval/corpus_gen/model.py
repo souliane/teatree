@@ -135,6 +135,8 @@ class Scenario:
     #: stripped. ``False`` (the default) omits the line, so a scenario declaring
     #: none is byte-identical. See :attr:`teatree.eval.models.EvalSpec.production_hooks`.
     production_hooks: bool = False
+    #: Emit ``single_action: true`` — grade as a first-correct-action probe (#2192 carve-out).
+    single_action: bool = False
 
     @property
     def has_negative(self) -> bool:
@@ -241,6 +243,8 @@ def scenario_yaml(scenario: Scenario) -> str:
         lines.append(f"  cli_stubs: [{', '.join(scenario.cli_stubs)}]")
     if scenario.production_hooks:
         lines.append("  production_hooks: true")
+    if scenario.single_action:
+        lines.append("  single_action: true")
     lines += [
         f"  tools: {tools}",
         f"  prompt: {json.dumps(scenario.prompt, ensure_ascii=False)}",

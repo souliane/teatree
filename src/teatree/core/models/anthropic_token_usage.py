@@ -37,6 +37,29 @@ def _is_exhausted(utilization_5h: float, utilization_7d: float, status_7d: str) 
     )
 
 
+def _blocking_resets(
+    *,
+    utilization_5h: float,
+    utilization_7d: float,
+    status_7d: str,
+    reset_5h: dt.datetime | None,
+    reset_7d: dt.datetime | None,
+) -> list[dt.datetime]:
+    """The resets of the windows currently BLOCKING an account.
+
+    A window only blocks when that window is itself spent: an idle 5h window does NOT hold
+    the account back even though its reset is the sooner of the two. Both :meth:`valid_until`
+    (when to re-probe) and :attr:`AnthropicTokenUsage.frees_up_at` (when the account re-arms)
+    read this one rule, so they can never disagree about which window matters.
+    """
+    blocking: list[dt.datetime] = []
+    if utilization_5h >= UTILIZATION_5H_LIMIT and reset_5h is not None:
+        blocking.append(reset_5h)
+    if (utilization_7d >= UTILIZATION_7D_LIMIT or status_7d == REJECTED_STATUS) and reset_7d is not None:
+        blocking.append(reset_7d)
+    return blocking
+
+
 @dataclass(frozen=True)
 class TokenHealthReading:
     """One account's parsed rate-limit fields, handed to the cache at the boundary.
@@ -70,11 +93,13 @@ class TokenHealthReading:
         if not self.is_exhausted:
             resets = [reset for reset in (self.reset_5h, self.reset_7d) if reset is not None]
             return min([ttl_bound, *resets]) if resets else ttl_bound
-        blocking: list[dt.datetime] = []
-        if self.utilization_5h >= UTILIZATION_5H_LIMIT and self.reset_5h is not None:
-            blocking.append(self.reset_5h)
-        if (self.utilization_7d >= UTILIZATION_7D_LIMIT or self.status_7d == REJECTED_STATUS) and self.reset_7d:
-            blocking.append(self.reset_7d)
+        blocking = _blocking_resets(
+            utilization_5h=self.utilization_5h,
+            utilization_7d=self.utilization_7d,
+            status_7d=self.status_7d,
+            reset_5h=self.reset_5h,
+            reset_7d=self.reset_7d,
+        )
         return max(blocking) if blocking else ttl_bound
 
 
@@ -147,6 +172,30 @@ class AnthropicTokenUsage(models.Model):
 
     @property
     def earliest_reset(self) -> dt.datetime | None:
-        """The soonest window reset on record, or ``None`` when neither is known."""
+        """The soonest window reset on record, or ``None`` when neither is known.
+
+        A display read (the dash health band). Callers deciding WHEN AN EXHAUSTED ACCOUNT
+        RE-ARMS must use :attr:`frees_up_at` instead — this one ignores which window is
+        actually blocking and so can point at an idle window's imminent reset.
+        """
         resets = [reset for reset in (self.reset_5h, self.reset_7d) if reset is not None]
         return min(resets) if resets else None
+
+    @property
+    def frees_up_at(self) -> dt.datetime | None:
+        """When this account re-arms — the LATEST reset among the windows blocking it.
+
+        Every blocking window must clear before the account is usable again, so this is a
+        ``max``, not a ``min``: an account rejected on its 7-day window is not freed by its
+        idle 5h window rolling over. ``None`` when the account is not blocked, or when no
+        blocking window reported a reset — there is nothing to re-arm to, so a caller must
+        not park behind it.
+        """
+        blocking = _blocking_resets(
+            utilization_5h=self.utilization_5h,
+            utilization_7d=self.utilization_7d,
+            status_7d=self.status_7d,
+            reset_5h=self.reset_5h,
+            reset_7d=self.reset_7d,
+        )
+        return max(blocking) if blocking else None

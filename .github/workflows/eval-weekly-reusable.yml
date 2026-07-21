@@ -24,10 +24,15 @@
 #   discovery resolves the overlay scenarios; `assert-scenarios` lists the names
 #   `t3 eval list` MUST discover before any API spend (broken wiring fails RED).
 #
-# AUTH (`anthropic-api-key` secret, EXCLUSIVE — never the subscription token)
-#   The metered backend authenticates EXCLUSIVELY from `anthropic-api-key`. A full
-#   run on the subscription OAuth token would throttle on its depleting usage
-#   window and mislabel the throttled cells; the metered API has no such window.
+# AUTH (`credential` input, mirrors `eval.yml`'s `T3_EVAL_CREDENTIAL` knob)
+#   DEFAULT `subscription_oauth` — the plan's `CLAUDE_CODE_OAUTH_TOKEN` secret
+#   (`subscription-oauth-token`). No repo carries a metered `ANTHROPIC_API_KEY`
+#   secret by default, so a caller with only the subscription token still gets a
+#   runnable benchmark; select `metered_api_key` (`anthropic-api-key`) for a
+#   per-token run with no depleting usage window. Both secrets are wired so the
+#   knob is a pure config flip — docker forwards ONLY the selected credential's
+#   var into the container, mirroring `eval.yml`'s `T3_EVAL_CREDENTIAL`
+#   resolution exactly.
 #
 # PUBLISH — the `publish` job collects every shard's SANITIZED benchmark matrix
 #   HTML (per-(scenario, tier) verdicts + per-model tally, NO reasoning/tool
@@ -45,6 +50,11 @@ on:
         required: false
         default: false
         type: boolean
+      credential:
+        description: "Eval credential (subscription_oauth | metered_api_key). Default subscription_oauth — mirrors eval.yml's `credential` input/`T3_EVAL_CREDENTIAL` knob, since no repo here carries a metered ANTHROPIC_API_KEY secret by default. subscription_oauth draws no per-token bill but rides a depleting usage window (keep the fan-out small); metered_api_key is per-token cost, no window."
+        required: false
+        default: "subscription_oauth"
+        type: string
       lane:
         description: "Eval lane subset (clean_room | under_load); empty = every lane."
         required: false
@@ -52,6 +62,11 @@ on:
         type: string
       efforts:
         description: "Comma-separated reasoning-effort tiers to fan the matrix across (e.g. 'low,medium,high'); empty = no effort axis (single tier at the lane default). The scheduled weekly run still fans all three."
+        required: false
+        default: ""
+        type: string
+      shards:
+        description: "Shard indices to keep, per lane (e.g. '1-6' or '1,3,7'); empty = every shard. Lets a caller dispatch a subset of the full fan-out at a time (e.g. when the whole matrix doesn't fit inside one usage window)."
         required: false
         default: ""
         type: string
@@ -86,9 +101,12 @@ on:
         default: "3.13"
         type: string
     secrets:
+      subscription-oauth-token:
+        description: "The plan's CLAUDE_CODE_OAUTH_TOKEN, used when `credential` is subscription_oauth (the default)."
+        required: false
       anthropic-api-key:
-        description: "The metered API key (sk-ant-api03…) the eval authenticates with, EXCLUSIVELY."
-        required: true
+        description: "The metered API key (sk-ant-api03…), used when `credential` is metered_api_key."
+        required: false
 
 jobs:
   # PREPARE: ONE place that (a) decides whether the eval runs at all (the no-PR
@@ -157,17 +175,21 @@ jobs:
       # across the whole suite; a manual run with an empty `efforts` keeps the
       # single-tier {lane, shard} matrix (lane default). The 3-tier default is keyed
       # on the schedule EVENT (not a blanket `|| 'low,medium,high'`, which would fan
-      # a blank field 3x and triple the metered spend). An unknown lane or effort
-      # fails loud here rather than producing an empty/invalid matrix. Both inputs
-      # are routed through `env:` vars (never inlined into the script).
+      # a blank field 3x and triple the metered spend). `shards` narrows the matrix
+      # to a subset of shard indices (per lane) so a caller can dispatch a few legs
+      # at a time — empty keeps the full fan-out. An unknown lane/effort, or a
+      # `shards` request that matches no leg, fails loud here rather than producing
+      # an empty/invalid matrix. All three inputs are routed through `env:` vars
+      # (never inlined into the script).
       - name: Compute the lane+shard+effort matrix
         id: matrix
         if: steps.gate.outputs.run_eval == 'true'
         env:
           EVAL_LANE: ${{ inputs.lane }}
           EVAL_EFFORTS: ${{ inputs.efforts || (github.event_name == 'schedule' && 'low,medium,high' || '') }}
+          EVAL_SHARDS: ${{ inputs.shards }}
         run: |
-          MATRIX="$(uv run python scripts/eval/lane_matrix.py --lane "$EVAL_LANE" --efforts "$EVAL_EFFORTS")"
+          MATRIX="$(uv run python scripts/eval/lane_matrix.py --lane "$EVAL_LANE" --efforts "$EVAL_EFFORTS" --shards "$EVAL_SHARDS")"
           echo "matrix=$MATRIX" >> "$GITHUB_OUTPUT"
           echo "Lane+shard+effort matrix: $MATRIX"
 
@@ -268,8 +290,9 @@ jobs:
           SUFFIX="${EVAL_LANE}-${EVAL_SHARD//\//-}"
           [ -n "$EVAL_EFFORT" ] && SUFFIX="${SUFFIX}-${EVAL_EFFORT}"
           echo "suffix=$SUFFIX" >> "$GITHUB_OUTPUT"
-      # `--docker` routes the metered lane THROUGH the CI container; the host's
-      # ANTHROPIC_API_KEY is forwarded in via docker's `-e`. `--benchmark` runs
+      # `--docker` routes the lane THROUGH the CI container; the SELECTED
+      # credential (below) is forwarded in via docker's `-e` pass-through, mirroring
+      # `eval.yml`'s `T3_EVAL_CREDENTIAL` resolution exactly. `--benchmark` runs
       # every (lane/shard-filtered) scenario against ALL THREE tier models
       # (frontier/balanced/cheap, resolved through the single TIER_MODELS constant)
       # and renders the comparison matrix + a self-contained HTML dashboard — the
@@ -280,7 +303,14 @@ jobs:
       - name: Metered behavioral benchmark suite (in Docker; 3-tier matrix; --require-executed always armed)
         uses: nick-fields/retry@ad984534de44a9489a53aefd81eb77f87c70dc60  # v4
         env:
+          # Both credentials are wired so the `credential` knob is a pure config
+          # flip, exactly like `eval.yml`. `T3_EVAL_CREDENTIAL` selects which one
+          # every eval chokepoint (make_runner, the judge, the docker `-e`
+          # passthrough) resolves; docker forwards only the SELECTED credential's
+          # var into the container.
+          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.subscription-oauth-token }}
           ANTHROPIC_API_KEY: ${{ secrets.anthropic-api-key }}
+          T3_EVAL_CREDENTIAL: ${{ inputs.credential || 'subscription_oauth' }}
           EVAL_LANE: ${{ matrix.lane }}
           EVAL_SHARD: ${{ matrix.shard }}
           EVAL_EFFORT: ${{ matrix.effort }}

@@ -215,6 +215,51 @@ class TestReapIdleStacksHelper(TestCase):
         assert wt.state == Worktree.State.SERVICES_UP
 
 
+class TestReapScopedByTicketOverlay(TestCase):
+    """F2.11: the reap is scoped by the TICKET's overlay, not the (possibly blank) Worktree.overlay.
+
+    A candidate row auto-detected via cwd can carry an empty ``Worktree.overlay``
+    while its ticket carries the real overlay; reaping by ``candidate.overlay``
+    alone would target the wrong (empty) overlay, free nothing, and needlessly
+    re-enqueue. The reap must use ``candidate.ticket.overlay or candidate.overlay``
+    — matching the cap-count scoping in ``check_local_stack_limit``.
+    """
+
+    def test_reap_uses_ticket_overlay_when_worktree_overlay_blank(self) -> None:
+        ticket = Ticket.objects.create(overlay="t3-heavy", issue_url="https://example.com/t3-heavy/issues/700")
+        candidate = Worktree.objects.create(
+            overlay="",  # blank — auto-detected via cwd
+            ticket=ticket,
+            repo_path="backend",
+            branch="700-feat",
+            state=Worktree.State.PROVISIONED,
+        )
+        blocker_ticket = Ticket.objects.create(overlay="t3-heavy", issue_url="https://example.com/t3-heavy/issues/701")
+        Worktree.objects.create(
+            overlay="t3-heavy",
+            ticket=blocker_ticket,
+            repo_path="backend",
+            branch="701-feat",
+            state=Worktree.State.SERVICES_UP,
+        )
+
+        captured: dict[str, object] = {}
+
+        def _reap(*, overlay: str, write_out: object = None) -> int:
+            captured["overlay"] = overlay
+            return 0
+
+        with (
+            patch.object(gate_mod, "resolve_max_concurrent_local_stacks", return_value=1),
+            patch.object(gate_mod, "_running_container_count", return_value=1),
+            patch.object(gate_mod, "reap_idle_stacks", side_effect=_reap),
+        ):
+            acquire_or_enqueue(candidate, write_out=lambda _m: None)
+
+        # Scoped to the ticket's real overlay, NOT the blank Worktree.overlay ("").
+        assert captured["overlay"] == "t3-heavy"
+
+
 class TestCheckLimitUntouched(TestCase):
     """``check_local_stack_limit`` keeps its SystemExit-free refusal contract."""
 

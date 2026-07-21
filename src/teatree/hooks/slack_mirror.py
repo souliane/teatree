@@ -66,10 +66,13 @@ type ThreadResolver = Callable[[str], str]
 type AudioEnricher = Callable[[str, str, str], None]
 
 
-def slack_config_from_toml() -> tuple[str, str] | None:
+def slack_config_from_registry() -> tuple[str, str] | None:
     """Return ``(bot_token_ref, user_id)`` from the first slack-enabled overlay.
 
-    Sources the per-overlay Slack wiring from the DB overlays registry.
+    Sources the per-overlay Slack wiring from the DB overlays registry. Named for
+    the registry it actually reads -- the legacy ``_from_toml`` name predated the
+    move off a TOML file to the DB overlays registry and misdescribed the source
+    (#F7.9).
     """
     from teatree.config import load_config  # noqa: PLC0415 — deferred: call-time import, kept lazy
 

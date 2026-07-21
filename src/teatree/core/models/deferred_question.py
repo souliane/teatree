@@ -51,6 +51,53 @@ def question_fingerprint(text: str) -> str:
     return hashlib.sha256(normalized.encode("utf-8")).hexdigest()[:32]
 
 
+#: Signals that a ``needs_user_input`` reason is a tool-lack / mis-provisioned
+#: DISPATCH fault — a session reporting it lacks the tools / checkout / access to do
+#: its assigned work — not a genuine decision the owner must make. Any one branch is
+#: sufficient. Each keys on a signal owner *decision* questions do not carry, so a
+#: real "how should I proceed on X?" ("cannot decide", "no clean approach") stays
+#: OWNER_QUESTION. Branches (4)-(7) were added after (1)-(3) still leaked review
+#: parks that reported the same fault by its consequence/symptom (#201/#202).
+_TOOL_LACK_SELFREPORT_RE = re.compile(
+    r"(?:"
+    # (1) capability negation adjacent to a tool word
+    r"\b(?:lack|lacks|lacking|no|without|missing|denied|deprived of)\b[^.]{0,40}?"
+    r"\b(?:shell|bash|gh|tool|tools|toolset)\b"
+    r"|\bshell[- ]?denied\b"  # (2) bare "shell-denied"
+    r"|\bneeds?\b[^.]{0,40}?\bsession\b[^.]{0,40}?\btool"  # (3) hand-off phrasings
+    r"|\bsession with (?:the )?(?:standard )?tool"
+    r"|\bpicked up by (?:a )?session\b"
+    # (4) dispatch-provisioning phrase ("tool access") — only in a provisioning report
+    r"|\btool access\b"
+    # (5) no accessible checkout / working tree / working copy / repo access
+    r"|\bno\b[^.]{0,30}?\b(?:accessible )?(?:checkout|working tree|working copy|repo(?:sitory)? access)\b"
+    # (6) internal task-context tools (TaskGet/TaskList/TaskRead) returning nothing
+    r"|\btask(?:get|list|read)\b[^.]{0,60}?\b(?:returned nothing|nothing|empty|unavailable|no rows)\b"
+    # (7) inability to do tool-requiring work (the consequence phrasing of a lack)
+    r"|\b(?:cannot|can't|can not|unable to|couldn't|could not)\b[^.]{0,60}?"
+    r"\b(?:inspect|make code changes|run the required|run [^.]{0,20}?verify-gates|verify-gates"
+    r"|clone|check ?out|apply the patch)\b"
+    r")",
+    re.IGNORECASE,
+)
+
+
+def is_tool_lack_selfreport(text: str) -> bool:
+    """True if *text* is an agent's own "I lack the tools to proceed" dispatch fault.
+
+    An agent that stops with ``needs_user_input`` because its session was
+    dispatched WITHOUT the shell / ``gh`` / toolset / checkout its own work needs is
+    reporting a DISPATCH fault — a phase mis-provisioned for its job — not asking the
+    owner to decide anything. Surfacing that self-report to the owner's DM is the
+    exact leak this classifier defends (it reached the owner as "*Pending question* …
+    This session lacks any shell/write tool …", and later as the review-phase
+    "launched without … tool access, so I cannot inspect the PR diff …" / "no shell,
+    TaskGet/TaskList returned nothing" leaks). Such a reason is recorded ``INTERNAL``
+    — logged / statusline-only, never DM'd. See ``_TOOL_LACK_SELFREPORT_RE``.
+    """
+    return bool(_TOOL_LACK_SELFREPORT_RE.search(_WHITESPACE_RE.sub(" ", text.strip())))
+
+
 class DeferredQuestionError(ValueError):
     """A :class:`DeferredQuestion` was rejected at record time — contract failed."""
 
@@ -78,7 +125,21 @@ class DeferredQuestion(models.Model):
         STALE = "stale", "Stale"
         POLICY = "policy", "Policy auto-answer"  # #119 graduation: the dial answered, not a human
 
+    class Audience(models.TextChoices):
+        OWNER_QUESTION = "owner_question", "Owner question"
+        INTERNAL = "internal", "Internal"
+
     question = models.TextField()
+    # Who the question is for. OWNER_QUESTION rows are DM'd to the owner; INTERNAL
+    # rows (repair-loop stalls, dispatch-health escalations synthesized by the box
+    # about its OWN health) are logged/statusline-only and never reach the owner
+    # feed — mirroring ``NotifyAudience`` so the two queues share one audience model.
+    audience = models.CharField(
+        max_length=16,
+        default=Audience.OWNER_QUESTION,
+        choices=Audience.choices,
+        db_index=True,
+    )
     options_json = models.TextField(blank=True, default="")
     session_id = models.CharField(max_length=255, blank=True, default="")
     tool_use_id = models.CharField(max_length=255, blank=True, default="")
@@ -164,6 +225,7 @@ class DeferredQuestion(models.Model):
         run_id: str = "",
         dedupe_marker: str = "",
         parked_task: "Task | None" = None,
+        audience: str = Audience.OWNER_QUESTION,
     ) -> "DeferredQuestion":
         """The single guarded factory for a queued question.
 
@@ -211,6 +273,7 @@ class DeferredQuestion(models.Model):
                 run_id=run_id or "",
                 dedupe_marker=dedupe_marker or "",
                 parked_task=parked_task,
+                audience=audience or cls.Audience.OWNER_QUESTION,
             )
 
     @classmethod
@@ -226,6 +289,7 @@ class DeferredQuestion(models.Model):
             answered_at__isnull=True,
             dismissed_at__isnull=True,
             slack_ts="",
+            audience=cls.Audience.OWNER_QUESTION,
         ).order_by("created_at")
 
     def mark_mirrored(self, *, channel: str, slack_ts: str) -> bool:

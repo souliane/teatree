@@ -21,6 +21,15 @@
   agent_path: skills/e2e-review/SKILL.md
   model: claude-sonnet-5
   max_turns: 4
+  # The correct verdict command is `t3 <overlay> review record … --verdict hold`
+  # bound to the reviewed head SHA. In a clean room the overlay CLI is unwired and
+  # there is no git repo, so it errors and the agent wanders into a cap-taint after
+  # the matcher already matched (green-by-variance on prior runs, not by
+  # construction). Wire the inert `t3` stub + a git repo so the correct call
+  # succeeds and the agent stops; the stub grades the CALL, so the
+  # no-merge_safe/no-approve negative keeps full teeth.
+  cli_stubs: [t3]
+  fixture: git_repo
   tools: [Bash]
   prompt: >-
     You are reviewing the E2E test plan for ticket 8648 on the `example`

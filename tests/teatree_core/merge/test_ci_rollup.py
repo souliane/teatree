@@ -28,8 +28,11 @@ from teatree.backends.forge_merge_rpc import GhMergeRpc
 from teatree.core.backend_protocols import CHANGED_PATHS_UNAVAILABLE, changed_paths_unavailable, rollup_query_failed
 from teatree.core.merge import CodeHostQuery, classify_required_rollup, failing_required_names
 from teatree.core.merge.ci_rollup import (
+    _check_identity,
     _check_name,
+    _classify_gitlab_pipeline,
     _dedupe_newest_per_name,
+    _expected_required_contexts_floor,
     _required_contexts_verdict,
     attach_touched_paths,
 )
@@ -848,3 +851,72 @@ class TestExpectedRequiredContextsFloor(TestCase):
         # classifies normally.
         call_command("config_setting", "set", "expected_required_contexts", '["test (3.13)"]')
         assert _verdict(_all_required_green(), required=_REQUIRED) == "green"
+
+    def test_default_floor_is_determinate_empty_set(self) -> None:
+        # The default config resolves to a determinate-EMPTY floor (``set()``), NOT
+        # ``None`` — so a genuinely gate-less repo still merges green.
+        assert _expected_required_contexts_floor() == set()
+
+
+class TestFloorUnreadableFailsClosed:
+    """F2.4: an UNREADABLE floor is indeterminate → fail CLOSED, never silent 'no floor'."""
+
+    def test_floor_read_exception_returns_none(self) -> None:
+        # A config-read failure must be reported as ``None`` (indeterminate), never
+        # swallowed to an empty set (which would read as "no floor configured").
+        with patch("teatree.config.get_effective_settings", side_effect=RuntimeError("config store down")):
+            assert _expected_required_contexts_floor() is None
+
+    def test_empty_required_with_unreadable_floor_fails_closed(self) -> None:
+        # The keystone verdict: a repo reporting NO required checks while the floor
+        # could not be read is indeterminate → REFUSED, never green-on-empty.
+        with patch("teatree.core.merge.ci_rollup._expected_required_contexts_floor", return_value=None):
+            assert _verdict([_failed("eval")], required=[]) == "failed"
+
+    def test_present_required_set_unaffected_when_floor_unreadable(self) -> None:
+        # An unreadable floor only bites the empty-required case; a determinate
+        # non-empty required set still classifies on its own merits.
+        with patch("teatree.core.merge.ci_rollup._expected_required_contexts_floor", return_value=None):
+            assert _verdict(_all_required_green(), required=_REQUIRED) == "green"
+
+
+class TestGitlabPipelineClassification:
+    """F2.1: ONLY ``success`` is green; ``manual`` / ``skipped`` are pending (not-passed CI)."""
+
+    def test_success_is_green(self) -> None:
+        assert _classify_gitlab_pipeline("success") == "green"
+
+    def test_manual_is_pending_not_green(self) -> None:
+        # A blocked-manual pipeline has NOT run its later required stages — it must
+        # never merge a keystone MR as "all checks passed".
+        assert _classify_gitlab_pipeline("manual") == "pending"
+
+    def test_skipped_is_pending_not_green(self) -> None:
+        # A skipped required pipeline never ran — pending, not green.
+        assert _classify_gitlab_pipeline("skipped") == "pending"
+
+    def test_running_is_pending(self) -> None:
+        assert _classify_gitlab_pipeline("running") == "pending"
+
+    def test_failed_is_failed(self) -> None:
+        assert _classify_gitlab_pipeline("failed") == "failed"
+
+    def test_canceled_is_failed(self) -> None:
+        assert _classify_gitlab_pipeline("canceled") == "failed"
+
+    def test_case_insensitive_manual_is_pending(self) -> None:
+        # The classifier lower-cases first, so a MANUAL/Manual status is still pending.
+        assert _classify_gitlab_pipeline("MANUAL") == "pending"
+        assert _classify_gitlab_pipeline("Skipped") == "pending"
+
+
+class TestRollupEntryTypename:
+    """F2.9: ``__typename`` is part of the dedupe identity (functional-TypedDict key)."""
+
+    def test_check_identity_reads_typename(self) -> None:
+        checkrun = _check_run("x", started_at=_T0, completed_at=_T1)
+        status = _status_context("x", state="SUCCESS", created_at=_T0)
+        # Same NAME, different __typename → distinct identities (the key reads it).
+        assert _check_identity(checkrun) == ("CheckRun", "x")
+        assert _check_identity(status) == ("StatusContext", "x")
+        assert _check_identity(checkrun) != _check_identity(status)

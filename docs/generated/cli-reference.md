@@ -4660,6 +4660,8 @@ Usage: t3 worker [OPTIONS] COMMAND [ARGS]...
 │         tier, timer counts.                                                  │
 │ ensure  Spawn a detached worker iff ``loop_runner_enabled`` is ON and the    │
 │         flock is free.                                                       │
+│ drain   Quiesce the worker and wait for in-flight tasks to finish            │
+│         (drain-then-deploy).                                                 │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -4706,6 +4708,32 @@ Usage: t3 worker ensure [OPTIONS]
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --json          Emit the outcome as JSON.                                    │
 │ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+#### `t3 worker drain`
+
+```
+Usage: t3 worker drain [OPTIONS]
+
+ Quiesce the worker and wait for in-flight tasks to finish (drain-then-deploy).
+
+ Sets ``worker_quiescing`` ON so the claim/admission path admits ZERO new work,
+ then waits up to ``--timeout`` seconds for every live CLAIMED lease to clear —
+ the supervisor is never stopped and no in-flight sub-agent is killed. Exits 0
+ when the worker is drained; exits ``_GRACE_EXCEEDED_EXIT`` (naming the still-
+ CLAIMED task pks) when the grace lapses, so a deploy can proceed knowing a
+ stuck
+ task re-queues via its lease lapse. The fresh worker's init clears the gate.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --timeout              INTEGER  Grace seconds to wait for in-flight tasks to │
+│                                 finish.                                      │
+│                                 [default: 1800]                              │
+│ --poll-interval        FLOAT    Seconds between in-flight checks.            │
+│                                 [default: 5.0]                               │
+│ --json                          Emit the outcome as JSON.                    │
+│ --help                          Show this message and exit.                  │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -7975,10 +8003,17 @@ Usage: t3 teatree pr post-test-plan [OPTIONS] MR_IID
 
  Post a test plan as a PR comment. Uploads files and updates existing notes.
 
- Files (screenshots, videos) are uploaded and embedded as ``!(url)`` in the
- body.
- If an existing note contains ``## Test Plan``, it is updated instead of
- creating a new one.
+ A thin delegator to the shared gated engine
+ (:func:`teatree.core.management.commands._test_plan.mr_post.post_mr_test_plan_
+ comment`),
+ so the MR path gets the SAME gates as the ticket/issue poster (F3.1) and
+ can no longer drift: files (screenshots, videos) are uploaded and each one
+ passes the #2156 ``verify_upload`` existence check before it is embedded
+ as ``!(url)``; the body is run through the blocked-body config gate
+ and the scanned public-repo leak seam; and the note is matched for an
+ idempotent in-place update by THIS MR's hidden idempotency marker — never
+ a naive ``"## Test Plan" in body`` scan that could clobber a colleague's
+ unrelated comment.
 
  Gated by ``on_behalf_post_mode`` (#960, BLOCK under ``ask`` /
  ``draft_or_ask``): the call is refused with no upload or host side
@@ -7986,8 +8021,9 @@ Usage: t3 teatree pr post-test-plan [OPTIONS] MR_IID
  ``(<repo>!<mr>, "post_evidence")``. The ``"post_evidence"`` action key
  is PERSISTED on existing ``OnBehalfApproval`` rows, so it stays the wire
  value even though the command is now named ``post-test-plan``. The gate
- is inlined here (not at the ``code_host`` layer) so PR creation — which
- is not an on-behalf colleague-facing post — remains ungated.
+ is inlined at the command layer (not at the ``code_host`` layer) so PR
+ creation — which is not an on-behalf colleague-facing post — remains
+ ungated.
 
  The legacy ``post-evidence`` name is kept as a hidden, deprecated alias
  for one release so existing scripts keep working.

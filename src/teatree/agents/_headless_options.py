@@ -20,6 +20,7 @@ from claude_agent_sdk.types import EffortLevel, SystemPromptPreset, ThinkingConf
 from teatree.agents.model_tiering import model_supports_thinking, resolve_spawn_effort, resolve_spawn_model
 from teatree.agents.reader_profile import is_reader_phase
 from teatree.agents.sdk_tool_map import sdk_disallowed_tools_for_phase
+from teatree.core.modelkit.phases import ARCHITECTURAL_REVIEW_PHASE, normalize_phase
 from teatree.core.models import Task
 from teatree.core.models.worktree import Worktree
 from teatree.llm.builtin_tools import KNOWN_BUILTIN_TOOLS
@@ -190,11 +191,55 @@ def _apply_reader_tool_lockdown(options: ClaudeAgentOptions) -> None:
 
 
 def _resolve_task_cwd(task: Task) -> str | None:
-    """Determine the working directory for a task from its ticket's worktrees."""
+    """Determine the working directory for a task from its ticket's worktrees.
+
+    A materialised ticket worktree wins. When there is none, a scanner-dispatched
+    repo-work phase (``architectural_review``) falls back to the overlay's main
+    teatree clone (:func:`_main_clone_cwd`) — its synthetic per-overlay ticket
+    carries no worktree, yet the review must start IN a checkout to Read the tree,
+    do ``git`` archaeology, run ``t3 tool verify-gates``, and cold-worktree off it.
+    Every other phase keeps the historical ``None`` (cwd unset) when no ticket
+    worktree exists.
+    """
     worktree = Worktree.objects.filter(ticket=task.ticket).order_by("pk").first()
     if worktree and Path(worktree.repo_path).is_dir():
         return str(worktree.repo_path)
-    return None
+    return _main_clone_cwd(task)
+
+
+#: Scanner-dispatched repo-work phases whose synthetic ticket carries no
+#: materialised worktree, so ``_resolve_task_cwd`` starts them in the overlay's
+#: main clone instead of an unset cwd. ``architectural_review`` reads the whole
+#: teatree tree and cold-worktrees off it; the main-clone guard keeps its git
+#: read-only + ``worktree add`` while blocking any mutation of the shared clone.
+_MAIN_CLONE_DISPATCH_PHASES: frozenset[str] = frozenset({ARCHITECTURAL_REVIEW_PHASE})
+
+
+def _main_clone_cwd(task: Task) -> str | None:
+    """Overlay main teatree clone as cwd for a scanner-dispatched review, else ``None``.
+
+    Only ``_MAIN_CLONE_DISPATCH_PHASES`` fall back here — every other phase keeps the
+    historical ``None`` (byte-identical). Resolution mirrors the loop's own clone
+    lookup (``teatree.core.fleet.wire._resolve_clone``): the ``T3_REPO`` main clone
+    when it is a git checkout, else a ``teatree`` clone discovered under the clone
+    root. ``None`` when neither resolves on this host, so a dispatch degrades to an
+    unset cwd rather than crashing.
+    """
+    if normalize_phase(task.phase) not in _MAIN_CLONE_DISPATCH_PHASES:
+        return None
+    import os  # noqa: PLC0415 — deferred: keeps the option-build import light
+
+    from teatree.config.loader import clone_root  # noqa: PLC0415 — deferred
+    from teatree.core.worktree.clone_paths import find_clone_path  # noqa: PLC0415 — deferred
+
+    env_repo = os.environ.get("T3_REPO", "").strip()
+    if env_repo and (Path(env_repo) / ".git").is_dir():
+        return env_repo
+    try:
+        found = find_clone_path(clone_root(), "teatree")
+    except Exception:  # noqa: BLE001 — clone-discovery failure degrades to unset cwd, never a dispatch crash
+        return None
+    return str(found) if found is not None else None
 
 
 def _get_resume_session_id(task: Task) -> str:

@@ -65,6 +65,8 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import cast
 
+from teatree.loops.dream._shared import is_binding_text
+
 #: Default retention window — a memory written within this many days is kept
 #: regardless of references (a fresh lesson is never stale). Generous on purpose.
 DEFAULT_RETENTION_DAYS = 30
@@ -393,12 +395,6 @@ def _is_user_memory(memory: _MemoryFile) -> bool:
     return _resolved_type(memory) == "user" or memory.path.name.lower().startswith("user_")
 
 
-def _is_binding_text(text: str) -> bool:
-    """True when the memory carries BINDING / Non-Negotiable doctrine (mirrors the engine weight)."""
-    lowered = text.lower()
-    return "binding" in lowered or "non-negotiable" in lowered
-
-
 def _inbound_link_counts(files: Sequence[_MemoryFile], index_text: str) -> dict[str, int]:
     """Map each memory NAME to the number of distinct documents that ``[[name]]``-link it.
 
@@ -442,7 +438,7 @@ def _signal_score(memory: _MemoryFile, *, inbound_links: int, now: datetime, ret
     budget forces it. DB-free and deterministic — usable under ``SimpleTestCase``.
     """
     score = _SIGNAL_USER if _is_user_memory(memory) else 0
-    if _is_binding_text(memory.text):
+    if is_binding_text(memory.text):
         score += _SIGNAL_BINDING
     score += _SIGNAL_PER_INBOUND_LINK * inbound_links
     score += _recency_score(memory, now, retention)

@@ -48,6 +48,19 @@ class TestSchemaInvariants:
         hints = [e.grep_hint for e in catalog if e.grep_hint is not None]
         assert len(hints) == len(set(hints))
 
+    def test_waivers_only_on_judgement_entries(self, catalog: tuple[AntiPatternEntry, ...]) -> None:
+        for entry in catalog:
+            if entry.waivers:
+                assert entry.detection == "judgement", f"{entry.id}: waivers are only meaningful on a judgement entry"
+
+    def test_float_for_money_carries_the_telemetry_waiver(self, catalog: tuple[AntiPatternEntry, ...]) -> None:
+        by_id = {e.id: e for e in catalog}
+        entry = by_id["float-for-money"]
+        assert entry.waivers, "float-for-money must record its accepted telemetry waiver"
+        joined = " ".join(entry.waivers)
+        assert "provider-cost telemetry" in joined
+        assert "TaskAttempt.cost_usd" in joined
+
     def test_every_grep_hint_compiles(self, catalog: tuple[AntiPatternEntry, ...]) -> None:
         for entry in catalog:
             if entry.grep_hint is not None:
@@ -153,4 +166,39 @@ class TestLoaderValidation:
             "  grep_hint: '('\n  anti_pattern: a\n  preferred_pattern: p\n  consumers: [linter]\n"
         )
         with pytest.raises(CatalogError, match="not a valid regex"):
+            self._load(tmp_path, body)
+
+    def test_waiver_on_judgement_entry_loads(self, tmp_path: Path) -> None:
+        body = (
+            "- id: x\n  name: X\n  severity: low\n  detection: judgement\n"
+            "  anti_pattern: a\n  preferred_pattern: p\n  consumers: [ac-reviewing-codebase]\n"
+            "  waivers:\n    - An accepted, examined exception.\n"
+        )
+        (entry,) = self._load(tmp_path, body)
+        assert entry.waivers == ("An accepted, examined exception.",)
+
+    def test_waiver_defaults_to_empty_when_absent(self, tmp_path: Path) -> None:
+        body = (
+            "- id: x\n  name: X\n  severity: low\n  detection: judgement\n"
+            "  anti_pattern: a\n  preferred_pattern: p\n  consumers: [eval]\n"
+        )
+        (entry,) = self._load(tmp_path, body)
+        assert entry.waivers == ()
+
+    def test_waiver_on_greppable_entry_rejected(self, tmp_path: Path) -> None:
+        body = (
+            "- id: x\n  name: X\n  severity: low\n  detection: greppable\n"
+            "  grep_hint: foo\n  anti_pattern: a\n  preferred_pattern: p\n  consumers: [linter]\n"
+            "  waivers:\n    - An exception that has no place on a mechanized entry.\n"
+        )
+        with pytest.raises(CatalogError, match="waivers are only allowed on a judgement entry"):
+            self._load(tmp_path, body)
+
+    def test_empty_waiver_string_rejected(self, tmp_path: Path) -> None:
+        body = (
+            "- id: x\n  name: X\n  severity: low\n  detection: judgement\n"
+            "  anti_pattern: a\n  preferred_pattern: p\n  consumers: [eval]\n"
+            "  waivers:\n    - '  '\n"
+        )
+        with pytest.raises(CatalogError, match="waivers must be a list of non-empty strings"):
             self._load(tmp_path, body)

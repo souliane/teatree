@@ -14,6 +14,15 @@ resource that never exists — 403 "not accessible" = denied, 404/200 = present
 ``X-OAuth-Scopes`` membership instead (``repo`` required; ``workflow``/
 ``read:project`` recommended — the rest is bundled into ``repo``).
 
+Each write permission is checked with a side-effect-free mutation aimed at a
+resource number that never exists (issue/PR ``0``, a bogus ref): a token that
+*has* the permission gets a harmless ``404``, a token that *lacks* it gets the
+``403`` GitHub returns before it ever loads the resource. Nothing is created,
+edited, or deleted either way. A write probe that reaches NEITHER verdict -- a
+transport/network fault, no ``403`` and no ``404`` -- is *indeterminate*, never
+read as a grant: the deploy skips (a network blip must not falsely certify a
+token) rather than passing preflight then failing mid-run.
+
 ``workflows: write`` is never actively probed on a fine-grained token — the
 #3477 spike could only confirm the permitted (404) path, not whether a denied
 token 403s route-level first, so probing risks a false "missing". Always
@@ -86,6 +95,18 @@ _FORBIDDEN_SIGNAL = "not accessible"
 
 # GraphQL's denial shape (FORBIDDEN error type) — checked for the projects:read probe only.
 _GRAPHQL_FORBIDDEN_SIGNAL = "forbidden"
+
+# Substrings that mean a write probe REACHED the route past the write-authorization
+# gate: a token WITH the permission gets a 404/422 on the deliberately non-existent
+# target (never a 403 ``not accessible``). Their presence -- or a zero exit code --
+# means the permission is PRESENT. Their ABSENCE, with no ``not accessible`` denial,
+# means the probe never reached a verdict (a transport/network fault) -> indeterminate.
+_WRITE_REACHED_SIGNALS: tuple[str, ...] = (
+    "not found",  # 404 on the non-existent issue/PR/ref (JSON body and gh's message)
+    "(http ",  # gh appends the HTTP status on any reached response (e.g. "(HTTP 404)")
+)
+
+type _WriteVerdict = Literal["denied", "present", "indeterminate"]
 
 # The classic-PAT scope granting write to issues/PRs/contents + read to actions/checks/statuses.
 _CLASSIC_WRITE_SCOPE = "repo"
@@ -171,7 +192,16 @@ FINE_GRAINED_TOKENS_URL = "https://github.com/settings/personal-access-tokens"
 
 @dataclass(frozen=True)
 class GhTokenProbe:
-    """Outcome of a token-permission probe. ``missing_recommended`` never affects ``ok`` — WARN only."""
+    """Outcome of a token-permission probe.
+
+    ``missing`` is the denied REQUIRED permission labels (empty == the token has
+    every required permission); ``missing_recommended`` is the WARN-tier gaps and
+    never affects ``ok``. ``indeterminate_reason`` is set only when the probe
+    could not run to a verdict (``gh`` absent, the metadata read unreachable, or a
+    required write probe that reached no 403/404) — the caller then skips rather
+    than failing on a network fault. A genuine denial always takes precedence over
+    an indeterminate write probe, so a real permission gap is never masked.
+    """
 
     missing: tuple[str, ...]
     missing_recommended: tuple[str, ...] = ()
@@ -192,6 +222,24 @@ def _default_run(args: list[str]) -> tuple[int, str]:
 def _has_signal(text: str, signals: tuple[str, ...]) -> bool:
     lowered = text.lower()
     return any(signal in lowered for signal in signals)
+
+
+def _write_probe_verdict(code: int, out: str) -> _WriteVerdict:
+    """Classify one write probe as ``denied`` / ``present`` / ``indeterminate``.
+
+    ``denied`` when GitHub returned the route-level 403 :data:`_FORBIDDEN_SIGNAL`
+    (the token lacks the permission). ``present`` when the probe REACHED a verdict
+    past the write-authorization gate -- a zero exit or a :data:`_WRITE_REACHED_SIGNALS`
+    (404/422) response on the non-existent target. ``indeterminate`` otherwise: a
+    non-zero exit with NEITHER signal is a transport/network fault, NOT a grant --
+    the fail-open the old ``not accessible``-only test collapsed into ``present``.
+    """
+    lowered = out.lower()
+    if _FORBIDDEN_SIGNAL in lowered:
+        return "denied"
+    if code == 0 or _has_signal(lowered, _WRITE_REACHED_SIGNALS):
+        return "present"
+    return "indeterminate"
 
 
 def _oauth_scopes(headers_text: str) -> frozenset[str] | None:
@@ -274,9 +322,30 @@ def probe_token_permissions(
     default_branch = _parse_default_branch(meta_out)
     required_missing: set[str] = set()
     recommended_missing: set[str] = set()
+    indeterminate_writes: list[str] = []
     for probe in _PROBES:
-        if _probe_verdict(run, probe, slug, default_branch):
+        if probe.kind == "mutate":
+            # Write probe: a 3-way verdict so a transient/network fault is INDETERMINATE,
+            # never falsely certified as present (#3477).
+            args = [part.format(slug=slug) for part in probe.argv_template]
+            verdict = _write_probe_verdict(*run(args))
+            if verdict == "denied":
+                (required_missing if probe.tier == "required" else recommended_missing).add(probe.label)
+            elif verdict == "indeterminate" and probe.tier == "required":
+                indeterminate_writes.append(probe.label)
+        elif _probe_verdict(run, probe, slug, default_branch):
+            # Read probe: a route-level 403 is the only denial; a 404/network miss is never "missing".
             (required_missing if probe.tier == "required" else recommended_missing).add(probe.label)
+
+    # A genuine denial is a definite gap (loud FAIL) and wins; only when NO required write was
+    # denied but one could not reach a verdict do we skip preflight rather than false-certify.
+    if not required_missing and indeterminate_writes:
+        reason = f"write probe(s) did not reach a verdict: {', '.join(indeterminate_writes)} (API unreachable?)"
+        return GhTokenProbe(
+            missing=(),
+            indeterminate_reason=reason,
+            token_kind="fine_grained",  # noqa: S106 — a classification label, not a credential
+        )
 
     # Never actively probed (see module docstring) — always surfaced so remediation names it.
     recommended_missing.add("workflows: write")

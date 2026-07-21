@@ -50,8 +50,12 @@ def drop_orphaned_stashes(repo: str) -> list[str]:
         for line in git.run(repo=repo, args=["branch", "--no-color"]).splitlines()
     }
     try:
-        default = git.run(repo=repo, args=["rev-parse", "--abbrev-ref", "origin/HEAD"]).strip().removeprefix("origin/")
+        default = (
+            git.run_strict(repo=repo, args=["rev-parse", "--abbrev-ref", "origin/HEAD"]).strip().removeprefix("origin/")
+        )
     except CommandFailedError:
+        # STRICT so a missing ``origin/HEAD`` actually raises (the lenient runner
+        # made this ``except`` dead). The "main" fallback below stays.
         default = ""
     default = default or "main"
 

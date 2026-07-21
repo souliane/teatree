@@ -1,13 +1,14 @@
 """GitHub backend — code host via the ``gh`` CLI."""
 
-import json
-import re
+import logging
 from typing import cast
 from urllib.parse import quote_plus, urlparse
 
 from teatree.backends import forge_merge_rpc as _forge_merge
 from teatree.backends.errors import IssueNotFoundError
+from teatree.backends.github import pr_reads as _pr_reads
 from teatree.backends.github.api import (
+    _FORGE_READ_TIMEOUT_SECONDS,
     _gh_api_get,
     _gh_api_get_paginated,
     _gh_api_patch,
@@ -17,13 +18,8 @@ from teatree.backends.github.api import (
     _run_gh,
 )
 from teatree.backends.github.claims import record_github_note_claim as _record_github_note_claim
-from teatree.backends.github.payloads import (
-    _GitHubPullRequestSummary,
-    _GitHubUser,
-    latest_review_state_from_reviews,
-    pr_open_state_from_payload,
-    reviewer_is_requested,
-)
+from teatree.backends.github.payloads import _GitHubUser, latest_review_state_from_reviews, reviewer_is_requested
+from teatree.backends.github.pr_reads import PR_URL_RE
 from teatree.core.backend_protocols import (
     ApprovalState,
     ForgeMergeResult,
@@ -36,22 +32,9 @@ from teatree.core.backend_protocols import (
 from teatree.types import RawAPIDict
 from teatree.utils import git
 from teatree.utils.run import CommandFailedError
+from teatree.utils.throttled_log import warn_throttled
 
-_ISSUE_URL_RE = re.compile(r"^/(?P<owner>[^/]+)/(?P<repo>[^/]+)/issues/(?P<number>\d+)/?$")
-_PR_URL_RE = re.compile(r"^/(?P<owner>[^/]+)/(?P<repo>[^/]+)/pulls?/(?P<number>\d+)/?$")
-
-
-def issue_repo_short(url: str) -> str:
-    """The repo short-name from a GitHub issue/PR URL, or ``""`` if unparsable.
-
-    The board item's URL (e.g. ``https://github.com/souliane/teatree/issues/4``)
-    is the authoritative source of the issue's repo. The project *owner* is NOT
-    a reliable repo (a Projects v2 board spans repos), so scoping a ticket by
-    the owner mis-classifies UI-visibility for the DoD gate (#1426).
-    """
-    path = urlparse(url).path
-    match = _ISSUE_URL_RE.match(path) or _PR_URL_RE.match(path)
-    return match.group("repo") if match else ""
+logger = logging.getLogger(__name__)
 
 
 # ast-grep-ignore: ac-django-no-complexity-suppressions
@@ -85,7 +68,7 @@ class GitHubCodeHost:  # noqa: PLR0904 — method count reflects the CodeHostBac
         if spec.draft:
             cmd.append("--draft")
 
-        result = _run_gh(*cmd, token=self._token)
+        result = _run_gh(*cmd, token=self._token, timeout=_FORGE_READ_TIMEOUT_SECONDS)
         # #1222 / #1226: align with the cross-host canonical key (``web_url``)
         # that ``ShipExecutor`` reads — returning ``url`` silently produced
         # empty PR rows because the consumer never looked at that field. The
@@ -122,22 +105,57 @@ class GitHubCodeHost:  # noqa: PLR0904 — method count reflects the CodeHostBac
         if not slug or not login:
             return False
         try:
-            _run_gh("gh", "api", f"repos/{slug}/assignees/{login}", "--silent", token=self._token)
+            _run_gh(
+                "gh",
+                "api",
+                f"repos/{slug}/assignees/{login}",
+                "--silent",
+                token=self._token,
+                timeout=_FORGE_READ_TIMEOUT_SECONDS,
+            )
         except CommandFailedError:
             return False
         return True
 
     def list_my_prs(self, *, author: str, updated_after: str | None = None) -> list[RawAPIDict]:
+        """Open PRs authored by *author*, ENRICHED with head SHA + CI rollup (#7).
+
+        The ``search/issues`` API carries no pipeline fields, so a bare search hit
+        drives ``MyPrsScanner``'s red-pipeline lane with an empty status — the
+        my_pr.failed auto-debug lane was structurally inert on GitHub (this
+        deployment's forge). Each hit is enriched with one bounded
+        ``gh pr view --json headRefOid,statusCheckRollup,mergeable,mergeStateStatus``
+        so ``head_sha`` and the aggregate CI state reach the scanner. An
+        enrichment that fails (auth/network/unknown PR) leaves the hit unenriched
+        — the scanner then warns about the gap rather than silently reading "".
+        """
         terms = [f"is:pr is:open author:{author}"]
         if updated_after:
             terms.append(f"updated:>={updated_after}")
         query = quote_plus(" ".join(terms))
-        return _gh_api_search_paginated(f"search/issues?q={query}&per_page=100", token=self._token)
+        hits = _gh_api_search_paginated(f"search/issues?q={query}&per_page=100", token=self._token)
+        return [_pr_reads.enrich_pr_pipeline(hit, token=self._token) for hit in hits]
 
     def list_my_merged_prs(self, *, author: str, updated_after: str | None = None) -> list[RawAPIDict]:
+        """List merged PRs authored by *author*.
+
+        GitHub's search API caps EVERY query at 1000 results regardless of
+        pagination, so without an *updated_after* cutoff a prolific author's
+        merged-PR history silently truncates at the 1000 most recent. Callers
+        that need completeness must pass a recent *updated_after*; an uncut call
+        warns (throttled) so the truncation is visible rather than silent.
+        """
         terms = [f"is:pr is:merged author:{author}"]
         if updated_after:
             terms.append(f"updated:>={updated_after}")
+        else:
+            warn_throttled(
+                logger,
+                f"github-merged-prs-uncapped:{author}",
+                "list_my_merged_prs(%r) has no updated_after cutoff — GitHub search caps at 1000 results, "
+                "older merged PRs may be silently truncated",
+                author,
+            )
         query = quote_plus(" ".join(terms))
         return _gh_api_search_paginated(f"search/issues?q={query}&per_page=100", token=self._token)
 
@@ -172,20 +190,32 @@ class GitHubCodeHost:  # noqa: PLR0904 — method count reflects the CodeHostBac
     def get_pr_diff(self, *, repo: str, pr_iid: int) -> list[RawAPIDict]:
         """Return the PR's changed files (path + per-file additions/deletions/patch).
 
-        Returns ``[]`` when the PR/repo cannot be read — an unknown PR degrades to
-        a caught empty result rather than crashing the caller.
+        Returns ``[]`` ONLY for a genuine HTTP 404 (unknown PR/repo) — a real
+        "no such PR" degrades to a caught empty result. Every OTHER failure
+        (auth, rate-limit, network, 5xx) RE-RAISES: an empty diff read as data
+        would let a reviewer sign off on a lie ("this PR touches nothing"), so an
+        indeterminate read must surface, not masquerade as an empty PR.
         """
         try:
             return _gh_api_get_paginated(f"repos/{repo}/pulls/{pr_iid}/files?per_page=100", token=self._token)
-        except CommandFailedError:
-            return []
+        except CommandFailedError as exc:
+            if _pr_reads.is_not_found(exc):
+                return []
+            raise
 
     def list_pr_commits(self, *, repo: str, pr_iid: int) -> list[RawAPIDict]:
-        """Return the commits on the PR; ``[]`` when the PR/repo cannot be read."""
+        """Return the commits on the PR; ``[]`` ONLY for a genuine HTTP 404.
+
+        Like :meth:`get_pr_diff`, an unknown PR degrades to ``[]`` but any other
+        failure (auth/rate-limit/network/5xx) re-raises rather than being read as
+        an empty commit list.
+        """
         try:
             return _gh_api_get_paginated(f"repos/{repo}/pulls/{pr_iid}/commits?per_page=100", token=self._token)
-        except CommandFailedError:
-            return []
+        except CommandFailedError as exc:
+            if _pr_reads.is_not_found(exc):
+                return []
+            raise
 
     def get_repo(self, *, repo: str) -> RawAPIDict:
         """Return ``owner/repo`` metadata (default branch, visibility, …).
@@ -233,12 +263,16 @@ class GitHubCodeHost:  # noqa: PLR0904 — method count reflects the CodeHostBac
         return _gh_api_get_paginated(f"repos/{repo}/issues/{pr_iid}/comments?per_page=100", token=self._token)
 
     def list_pr_discussions(self, *, repo: str, pr_iid: int) -> list[RawAPIDict]:  # noqa: PLR6301 — instance method to satisfy the CodeHostBackend Protocol.
-        """No thread-structured resolvable-discussion read on GitHub (#3340).
+        """No STALE-BOT-thread filtering surface on GitHub (#3340).
 
-        GitHub has no resolvable-thread merge block like GitLab's "must resolve"
-        policy (mirrors :meth:`get_mr_approvals`, which reports
-        ``unresolved_resolvable=0`` here), so there is no stale-bot-thread count
-        to filter. Returns ``[]`` — a caller iterating it selects nothing.
+        This method backs GitLab's stale-bot-thread exclusion
+        (:func:`thread_opened_solely_by`), which keys on the per-note authorship
+        the GitLab discussions endpoint exposes. GitHub's aggregate unresolved
+        count is read directly in :meth:`get_mr_approvals` via
+        ``reviewThreads(isResolved:false)`` (GitHub DOES enforce conversation
+        resolution as a merge gate), so no per-note thread list is assembled
+        here. Returns ``[]`` — a caller iterating it for the stale-bot filter
+        selects nothing.
         """
         _ = (repo, pr_iid)
         return []
@@ -441,32 +475,12 @@ class GitHubCodeHost:  # noqa: PLR0904 — method count reflects the CodeHostBac
             "--header",
             "Accept: application/vnd.github+json",
             token=self._token,
+            timeout=_FORGE_READ_TIMEOUT_SECONDS,
         )
         return {}
 
     def get_mr_approvals(self, *, repo: str, pr_iid: int) -> ApprovalState:
-        """Return GitHub's aggregate review decision as an approval snapshot (#8).
-
-        GitHub exposes no numeric "approvals remaining" counter; its aggregate
-        ``reviewDecision`` (``gh pr view --json reviewDecision``) is the
-        merge-authorising signal — ``APPROVED`` means every required review is
-        satisfied. Maps to ``approvals_left=0`` on ``APPROVED`` and ``1``
-        otherwise, so a not-yet-approved (or a payload with no decision) is
-        never mis-read as merge-authorised. ``unresolved_resolvable`` is ``0``:
-        GitHub has no resolvable-thread merge block like GitLab's "must resolve"
-        policy, so nothing there gates the M7 waiting lane.
-        """
-        result = _run_gh("gh", "pr", "view", str(pr_iid), "--repo", repo, "--json", "reviewDecision", token=self._token)
-        try:
-            data = json.loads(result.stdout or "{}")
-        except json.JSONDecodeError:
-            data = {}
-        decision = str(data.get("reviewDecision") or "").upper() if isinstance(data, dict) else ""
-        return ApprovalState(
-            approvals_left=0 if decision == "APPROVED" else 1,
-            approved_by=[],
-            unresolved_resolvable=0,
-        )
+        return _pr_reads.approval_state(repo=repo, pr_iid=pr_iid, token=self._token)
 
     def get_review_state(self, *, pr_url: str, reviewer: str) -> ReviewState:
         """Return *reviewer*'s current review state on the PR at *pr_url*.
@@ -479,7 +493,7 @@ class GitHubCodeHost:  # noqa: PLR0904 — method count reflects the CodeHostBac
         ``PENDING``. Unparsable URLs and unknown reviewers yield ``NONE``.
         """
         path = urlparse(pr_url).path
-        match = _PR_URL_RE.match(path)
+        match = PR_URL_RE.match(path)
         if match is None or not reviewer:
             return ReviewState.NONE
 
@@ -495,55 +509,10 @@ class GitHubCodeHost:  # noqa: PLR0904 — method count reflects the CodeHostBac
         return ReviewState.NONE
 
     def get_pr_open_state(self, *, pr_url: str) -> PrOpenState:
-        """Return whether the PR at *pr_url* is genuinely open/merged/closed (#1074).
-
-        Fetches the PR's real ``state``/``merged`` fields. ``state=="open"``
-        → OPEN, ``merged is True`` → MERGED, ``state=="closed"`` without
-        ``merged`` → CLOSED. Any exception (``gh api`` failure, auth error),
-        unparsable URL, or non-dict / unrecognised payload → ``UNKNOWN`` so
-        the orphan sweep fails open (never reaps on doubt). GitLab's
-        implementation maps the same ambiguity to ``UNKNOWN`` identically.
-        """
-        match = _PR_URL_RE.match(urlparse(pr_url).path)
-        if match is None:
-            return PrOpenState.UNKNOWN
-        try:
-            pr = _gh_api_get(
-                f"repos/{match['owner']}/{match['repo']}/pulls/{match['number']}",
-                token=self._token,
-            )
-        except Exception:  # noqa: BLE001 — fail open: any failure must NOT reap a live review.
-            return PrOpenState.UNKNOWN
-        return pr_open_state_from_payload(pr)
+        return _pr_reads.pr_open_state(pr_url=pr_url, token=self._token)
 
     def get_pr_author(self, *, pr_url: str) -> str:
-        """Return the PR author's GitHub login, or ``""`` when it can't be resolved.
-
-        Fetches the PR payload and reads ``user.login``. Any exception
-        (``gh api`` failure, auth error), unparsable URL, or non-dict /
-        author-less payload returns ``""`` — the reaction scanners treat an
-        unresolved author as "not provably self" and skip the reaction, so a
-        transient lookup failure can never cause a reaction on the user's
-        own MR.
-        """
-        match = _PR_URL_RE.match(urlparse(pr_url).path)
-        if match is None:
-            return ""
-        try:
-            pr = _gh_api_get(
-                f"repos/{match['owner']}/{match['repo']}/pulls/{match['number']}",
-                token=self._token,
-            )
-        except Exception:  # noqa: BLE001 — fail safe: an unresolved author must skip the reaction.
-            return ""
-        if not isinstance(pr, dict):
-            return ""
-        user = cast("_GitHubPullRequestSummary", pr).get("user")
-        if isinstance(user, dict):
-            login = cast("_GitHubUser", user).get("login")
-            if isinstance(login, str):
-                return login
-        return ""
+        return _pr_reads.pr_author(pr_url=pr_url, token=self._token)
 
     def _merge_rpc(self) -> _forge_merge.GhMergeRpc:
         return _forge_merge.GhMergeRpc(_forge_merge.gh_runner(self._token))

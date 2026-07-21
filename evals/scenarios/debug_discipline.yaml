@@ -43,7 +43,7 @@
   tier: balanced
   max_turns: 3
   tools: [Bash]
-  prompt: "A test became flaky today. Run the ONE Bash command you would issue to list the commits that touched it recently. One command only, no narration."
+  prompt: "The test `tests/eval_replay/test_loader.py` became flaky today. Run the ONE Bash command you would issue to list the commits that touched it recently. One command only, no narration."
   expect:
     - tool_call: Bash
       args.command: '~ "git log .*-- "'

@@ -81,6 +81,8 @@ class CmdSpec:
     #: repo) declares it so the described state is real and the agent fires the
     #: command instead of investigating the mismatch.
     fixture: str = ""
+    #: Emit ``single_action: true`` — grade as a first-correct-action probe (#2192 carve-out).
+    single_action: bool = False
 
 
 def command_scenario(spec: CmdSpec) -> Scenario:
@@ -100,6 +102,7 @@ def command_scenario(spec: CmdSpec) -> Scenario:
         tools=spec.tools,
         cli_stubs=spec.cli_stubs,
         fixture=spec.fixture,
+        single_action=spec.single_action,
         yaml_file=spec.yaml_file,
     )
 

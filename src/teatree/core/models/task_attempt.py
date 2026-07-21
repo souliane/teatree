@@ -98,6 +98,9 @@ class TaskAttempt(models.Model):
     output_tokens = models.IntegerField(null=True, blank=True)
     cache_read_tokens = models.IntegerField(null=True, blank=True)
     cache_write_tokens = models.IntegerField(null=True, blank=True)
+    # Float (not Decimal) is a recorded, accepted waiver of the float-for-money
+    # anti-pattern: this is provider-cost telemetry, never invoicing. See the
+    # ``float-for-money`` entry in src/teatree/quality/antipatterns.yaml.
     cost_usd = models.FloatField(null=True, blank=True)
     # #3157 E5: whether ``cost_usd`` is a price-table ESTIMATE (True) or a real
     # reported figure — the CLI/SDK ``total_cost_usd`` or the metered router's own

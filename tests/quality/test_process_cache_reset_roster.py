@@ -130,6 +130,10 @@ def discover_process_caches() -> dict[str, str]:
 RESET_BY_CONFTEST: dict[str, str] = {
     "teatree.core.backend_factory:_code_host_cache": "reset_backend_caches",
     "teatree.core.backend_factory:_messaging_cache": "reset_backend_caches",
+    # Short-TTL negative caches (F4.5): a transient resolve failure caches a None
+    # verdict for a bounded window instead of process-lifetime; reset_backend_caches clears them.
+    "teatree.core.backend_factory:_code_host_none_until": "reset_backend_caches",
+    "teatree.core.backend_factory:_messaging_none_until": "reset_backend_caches",
     "teatree.backends.loader:get_ci_service": "reset_backend_caches",  # cleared transitively by reset_backend_caches
     "teatree.core.overlay_loader:_discover_overlays": "reset_overlay_cache",
     "teatree.core.gates.pr_budget_forge:_forge_cache": "reset_forge_pr_budget_cache",

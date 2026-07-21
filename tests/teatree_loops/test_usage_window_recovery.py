@@ -115,6 +115,54 @@ class TestReArmsOnlyAfterReset(django.test.TestCase):
         recover_windows(reset)
         assert BotPing.objects.filter(idempotency_key__startswith="usage_window_recovered:").exists()
 
+    def test_a_clear_that_released_nothing_is_silent(self) -> None:
+        """No parked task released → no owner DM. The message claims "resumed the loop".
+
+        This is the shape of every message in the observed flood (313 windows opened in 24h,
+        315 DMs, ``released 0 parked task(s)`` on every single one): a window that opens and
+        clears without ever gating work is bookkeeping, not news. The clear still happens and
+        is still logged — only the Slack line is withheld.
+        """
+        now = timezone.now()
+        reset = now + timedelta(hours=5)
+        window = UsageWindowState.record_limit(
+            lane=TaskAttempt.Lane.SUBSCRIPTION,
+            cause=LimitCause.SUBSCRIPTION_SESSION.value,
+            resets_at=reset,
+            now=now,
+        )
+
+        outcome = recover_windows(reset)  # no parked task seeded
+
+        assert outcome.cleared == [window.pk], "the window still clears"
+        assert outcome.released == 0
+        window.refresh_from_db()
+        assert window.cleared_at is not None, "clearing is unaffected — only the DM is withheld"
+        assert not BotPing.objects.filter(idempotency_key__startswith="usage_window_recovered:").exists()
+
+    def test_all_accounts_exhausted_park_auto_resumes_at_reset(self) -> None:
+        # A task parked because every configured account drained must auto-resume at its reset.
+        from teatree.agents.usage_window import park_task_on_all_exhausted  # noqa: PLC0415 — test-local
+
+        _set_autorecovery(on=True)
+        now = timezone.now()
+        reset = now + timedelta(hours=2)
+        task = _parked_task(not_before=now)  # placeholder; the park below sets the real gate
+        Task.objects.filter(pk=task.pk).update(status=Task.Status.CLAIMED, not_before=None)
+        task.refresh_from_db()
+
+        parked = park_task_on_all_exhausted(task, resets_at=reset, lane=TaskAttempt.Lane.SUBSCRIPTION, now=now)
+        assert parked is not None
+        task.refresh_from_db()
+        assert task.status == Task.Status.PENDING
+        assert task.not_before == reset
+
+        assert recover_windows(now + timedelta(hours=1)).released == 0, "still parked before the reset"
+        outcome = recover_windows(reset)
+        assert outcome.released == 1
+        task.refresh_from_db()
+        assert task.not_before is None, "auto-resumed at the reset — claimable again"
+
     def test_credit_window_is_never_auto_cleared(self) -> None:
         # A null-reset (API-credit) window has no time-based recovery — never cleared here.
         now = timezone.now()

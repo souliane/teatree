@@ -11,6 +11,11 @@ false negative. This pins that money.py is present and un-tested so the gap the
 scenario asks the agent to close is real.
 """
 
+import os
+import subprocess
+import sys
+from pathlib import Path
+
 import pytest
 
 from teatree.core.evidence.test_plan_validation import has_red_highlight_box, validate_test_plan_images
@@ -21,8 +26,31 @@ from teatree.eval.git_fixture import (
     provision_e2e_sibling_repos_fixture,
     provision_fixture,
     provision_git_fixture,
+    provision_uv_project_fixture,
 )
 from teatree.utils.git_run import run_strict as git
+
+#: This dev repo's OWN ``teatree`` is editable-installed via a meta-path finder
+#: that wins "import teatree" regardless of sys.path/``PYTHONPATH`` order
+#: (verified empirically — prepending a throwaway ``teatree`` dir via
+#: ``PYTHONPATH`` still resolves to this repo's real package). Running the
+#: fixture's own pytest with ``-S`` (skip ``site.py``, so that finder never
+#: registers) + ``PYTHONPATH`` pointed at pytest's site-packages dir isolates
+#: the check to the mechanism the fixture actually relies on — its own
+#: ``pyproject.toml`` ``pythonpath = ["src"]`` — with no interference from
+#: this repo's self-referential install.
+_PYTEST_SITE_DIR = str(Path(pytest.__file__).resolve().parent.parent)
+
+
+def _run_pytest_isolated(repo: Path, node: str) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        [sys.executable, "-S", "-m", "pytest", node, "-q"],
+        cwd=repo,
+        env={"PATH": os.environ.get("PATH", ""), "PYTHONPATH": _PYTEST_SITE_DIR},
+        capture_output=True,
+        text=True,
+        check=False,
+    )
 
 
 class TestProvisionGitFixture:
@@ -117,6 +145,43 @@ class TestProvisionE2eArtifactsFixture:
                 assert report.ok, report.detail
 
 
+class TestProvisionUvProjectFixture:
+    def test_provisions_a_real_pyproject_toml_with_src_on_the_pythonpath(self) -> None:
+        with provision_uv_project_fixture() as repo:
+            pyproject = repo / "pyproject.toml"
+            assert pyproject.is_file()
+            body = pyproject.read_text(encoding="utf-8")
+            assert 'pythonpath = ["src"]' in body
+
+    def test_seeds_the_money_helper_at_the_path_the_prompt_names(self) -> None:
+        with provision_uv_project_fixture() as repo:
+            money = repo / "src" / "teatree" / "util" / "money.py"
+            assert money.is_file()
+            assert "def add(" in money.read_text(encoding="utf-8")
+
+    def test_the_tests_mirror_dir_exists_so_the_agents_write_lands_cleanly(self) -> None:
+        with provision_uv_project_fixture() as repo:
+            assert (repo / "tests" / "teatree" / "util").is_dir()
+            assert not list(repo.rglob("test_money.py")), "no test must pre-exist — the gap must be real"
+
+    def test_a_mirror_test_against_the_seeded_helper_actually_passes(self) -> None:
+        # The behaviour this fixture exists for: the agent writes a mirror test
+        # importing the seeded helper, runs it, and it genuinely goes green —
+        # no PYTHONPATH/import-path confusion, no install step required.
+        with provision_uv_project_fixture() as repo:
+            test_file = repo / "tests" / "teatree" / "util" / "test_money.py"
+            test_file.write_text(
+                "from teatree.util.money import add\n\n\ndef test_add():\n    assert add(2, 3) == 5\n",
+                encoding="utf-8",
+            )
+            result = _run_pytest_isolated(repo, "tests/teatree/util/test_money.py")
+            assert result.returncode == 0, result.stdout + result.stderr
+            assert "1 passed" in result.stdout
+
+    def test_uv_project_is_a_known_kind(self) -> None:
+        assert "uv_project" in KNOWN_FIXTURES
+
+
 class TestProvisionE2eSiblingReposFixture:
     def test_yields_the_product_repo_cwd_with_a_sibling_e2e_repo(self) -> None:
         with provision_e2e_sibling_repos_fixture() as product:
@@ -151,6 +216,11 @@ class TestProvisionFixtureDispatch:
     def test_dispatches_e2e_sibling_repos_to_its_provisioner(self) -> None:
         with provision_fixture("e2e_sibling_repos") as product:
             assert (product.parent / "widget-e2e" / "specs").is_dir()
+
+    def test_dispatches_uv_project_to_its_provisioner(self) -> None:
+        with provision_fixture("uv_project") as repo:
+            assert (repo / "pyproject.toml").is_file()
+            assert (repo / "src" / "teatree" / "util" / "money.py").is_file()
 
     def test_unknown_kind_is_rejected(self) -> None:
         with pytest.raises(ValueError, match="nope"), provision_fixture("nope"):

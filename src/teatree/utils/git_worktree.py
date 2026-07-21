@@ -81,6 +81,15 @@ def commits_absent_from_all_remotes(repo: str, ref: str) -> list[str]:
     teardown, not allow it. The legitimate empty case (``git log`` exits 0 with
     no output because the ref genuinely has nothing absent from remotes)
     still returns ``[]`` and allows teardown.
+
+    **Only as fresh as local ``refs/remotes/*``.** This is a purely local graph
+    query — it never contacts a remote. A tracking ref goes STALE when its branch
+    is deleted upstream by anything other than this clone (a forge's
+    auto-delete-on-merge, or a sibling clone), and against a stale ref this
+    returns ``[]`` for commits that exist on NO remote — the exact misread that
+    authorises reaping the last copy of unmerged work. A destructive caller MUST
+    therefore pass :func:`teatree.utils.git.fetch_all_prune` first and fail
+    closed when it returns ``False``. Read-only callers may accept the staleness.
     """
     output = run_strict(repo=repo, args=["log", ref, "--not", "--remotes", "--oneline"])
     return [line for line in output.splitlines() if line.strip()]

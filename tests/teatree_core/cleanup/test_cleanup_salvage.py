@@ -129,3 +129,62 @@ def test_refuses_when_banned_terms_present(tmp_path: Path) -> None:
     assert result.deleted is False
     assert rec.calls == [], "banned-terms refusal must happen before any push/PR/delete"
     assert any("banned terms" in e for e in result.errors)
+
+
+def test_refuses_when_source_content_is_unreadable(tmp_path: Path) -> None:
+    # #F4.6 leak: an UNREADABLE source (the ref does not resolve, so the strict
+    # content probe raises) must REFUSE — the old lenient probe degraded to
+    # ``["", ""]`` which the scanner read as "clean" and pushed the branch to a
+    # public PR completely unscanned. No push/PR/delete may happen.
+    work = _repo_with_feature(tmp_path)
+    rec = _Recorder(verified=True)
+
+    result = salvage_item(
+        SalvageRequest(repo=str(work), source_ref="no-such-ref", salvage_branch="salvage/x"),
+        rec.hooks(),
+    )
+
+    assert result.salvaged is False
+    assert result.deleted is False
+    assert rec.calls == [], "an unscannable source must refuse before any push/PR/delete"
+    assert any("could not read the source content" in e for e in result.errors)
+
+
+def test_refuses_when_there_is_no_unique_content_to_scan(tmp_path: Path) -> None:
+    # A source ref with NO unique content vs target yields an empty scan corpus
+    # ("unknown"). Refuse rather than push an unscanned (albeit empty) branch —
+    # the final safety gate fails CLOSED on an inconclusive scan (#F4.6).
+    work = _repo_with_feature(tmp_path)
+    rec = _Recorder(verified=True)
+
+    result = salvage_item(
+        SalvageRequest(repo=str(work), source_ref="main", salvage_branch="salvage/main", target="origin/main"),
+        rec.hooks(),
+    )
+
+    assert result.salvaged is False
+    assert result.deleted is False
+    assert rec.calls == []
+    assert any("could not read the source content" in e for e in result.errors)
+
+
+def test_scan_can_be_bypassed_when_banned_clean_not_required(tmp_path: Path) -> None:
+    # ``require_banned_clean=False`` skips the scan-gate entirely, so an
+    # unreadable/empty content corpus does NOT block the salvage (the caller has
+    # opted out of the final safety gate).
+    work = _repo_with_feature(tmp_path)
+    rec = _Recorder(verified=True)
+
+    result = salvage_item(
+        SalvageRequest(
+            repo=str(work),
+            source_ref="feature",
+            salvage_branch="salvage/feature",
+            require_banned_clean=False,
+        ),
+        rec.hooks(),
+    )
+
+    assert result.salvaged is True
+    assert result.deleted is True
+    assert rec.calls == ["push", "open_pr", "verify", "delete"]

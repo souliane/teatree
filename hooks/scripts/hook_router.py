@@ -142,7 +142,7 @@ from hooks.scripts.question_gates import (
 )
 from hooks.scripts.question_gates import last_assistant_turn as _last_assistant_turn
 from hooks.scripts.question_gates import read_transcript_entries as _read_transcript_entries
-from hooks.scripts.quote_verdict import QuoteVerdict
+from hooks.scripts.quote_scanner_verdict_io import quote_scanner_high_block_message as _quote_scanner_high_block_message
 from hooks.scripts.quote_verdict import resolve_high_verdict as _resolve_quote_verdict
 from hooks.scripts.raw_pid_kill_guard import handle_block_raw_pid_kill
 from hooks.scripts.raw_review_post_guard import (
@@ -2067,29 +2067,24 @@ def handle_quote_scanner_pretool(data: dict) -> bool:
             sys.path.insert(0, str(src_dir))
             added = True
         return _run_quote_scanner_pretool(data)
-    except Exception:  # noqa: BLE001 — crash-proof hook: any failure degrades silently, never breaks the tool call
+    except Exception as exc:  # noqa: BLE001 — crash-proof hook: any failure degrades, never breaks the tool call
+        # Fail OPEN on any internal error (a crashing hook is worse than no
+        # scan), but NOT silently: an unscanned body on the PUBLIC-egress publish
+        # path is exactly the leak this gate exists to catch, so name the failure
+        # loudly on stderr (mirroring the banned-terms gate, #F7.9). A failed
+        # stderr write must itself never break the tool call.
+        with contextlib.suppress(OSError):
+            sys.stderr.write(
+                "[teatree] NOTE: pre-publish quote-scanner gate (#1213) failed open on an internal error "
+                f"({type(exc).__name__}: {exc}); the publish body was NOT scanned for verbatim user quotes. "
+                "This is a fail-open safeguard (a crashing hook is worse than no scan), NOT a clean scan — "
+                "fix the underlying error, or verify the body by hand before it reaches a public surface.\n"
+            )
         return False
     finally:
         if added:
             with contextlib.suppress(ValueError):
                 sys.path.remove(str(src_dir))
-
-
-def _quote_scanner_high_io(quote_scanner: "ModuleType", tool_name: str, result: object, verdict: QuoteVerdict) -> bool:
-    """Apply a resolved quote ``QuoteVerdict``: warn-downgrade or deny.
-
-    The verdict DECISION (#1213/#1415/#126) lives in the ``quote_verdict`` sibling;
-    this owns only the router-side I/O — the stderr warning + ledger write on a
-    downgrade, or the ledger deny + ``emit_pretooluse_deny`` block. Split out of
-    :func:`_run_quote_scanner_pretool` to keep its return count under the PLR0911
-    ceiling, mirroring :func:`_banned_term_marker_blocks`.
-    """
-    if verdict.warning is not None:
-        sys.stderr.write(verdict.warning)
-        quote_scanner.log_decision(tool_name=tool_name, decision=verdict.decision, result=result, override=False)
-        return False
-    quote_scanner.log_decision(tool_name=tool_name, decision="deny", result=result, override=False)
-    return emit_pretooluse_deny(quote_scanner.format_block_message(result))
 
 
 def _run_quote_scanner_pretool(data: dict) -> bool:
@@ -2128,7 +2123,8 @@ def _run_quote_scanner_pretool(data: dict) -> bool:
     if result.has_high:
         command = tool_input.get("command", "")
         verdict = _resolve_quote_verdict(command, _resolve_cwd_repo(data))
-        return _quote_scanner_high_io(quote_scanner, tool_name, result, verdict)
+        block_message = _quote_scanner_high_block_message(quote_scanner, tool_name, result, verdict)
+        return emit_pretooluse_deny(block_message) if block_message is not None else False
 
     if result.has_medium:
         sys.stderr.write(quote_scanner.format_warn_message(result) + "\n")
@@ -5366,9 +5362,9 @@ def _active_dm_thread_for_channel(channel: str) -> str:
 
 
 def _slack_config_from_toml() -> tuple[str, str] | None:
-    from teatree.hooks.slack_mirror import slack_config_from_toml  # noqa: PLC0415 — deferred: cold-hook import
+    from teatree.hooks.slack_mirror import slack_config_from_registry  # noqa: PLC0415 — deferred: cold-hook import
 
-    return slack_config_from_toml()
+    return slack_config_from_registry()
 
 
 def _perform_slack_post(slack_cfg: tuple[str, str], questions: list[dict]) -> str:

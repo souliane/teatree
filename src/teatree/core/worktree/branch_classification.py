@@ -180,6 +180,31 @@ def prefilter_branch_commits_by_subject(repo: str, branch: str, target: str = "o
     return classification
 
 
+_FALLBACK_DEFAULT_TARGET = "origin/main"
+
+
+def effective_default_target(repo: str) -> str:
+    """Resolve ``repo``'s REAL default branch as an ``origin/<default>`` ref.
+
+    The content/redundancy probes must compare against the repo's ACTUAL default
+    branch, not a hardcoded ``origin/main`` — a ``master``/``develop``-default
+    repo measured against a base it does not have makes ``git cherry`` fail (or,
+    worse, silently mis-measure). Shared here (a leaf both :mod:`cleanup` and
+    :mod:`worktree_done` import) so the two teardown paths resolve the base the
+    SAME way without an import cycle.
+
+    Fail-safe to ``origin/main`` on an unresolvable default: the downstream
+    content gate fails CLOSED (an unresolvable target makes ``git cherry``
+    inconclusive → a blocker → refuse), so a wrong/missing base keeps the branch
+    rather than wiping it.
+    """
+    try:
+        default = git.default_branch(repo)
+    except (RuntimeError, CommandFailedError):
+        return _FALLBACK_DEFAULT_TARGET
+    return f"origin/{default}"
+
+
 def content_equivalence_blockers(repo: str, branch: str, target: str = "origin/main") -> list[str]:
     """Return the commit(s) on ``branch`` NOT provably content-equivalent to ``target``.
 
@@ -443,15 +468,28 @@ def _branch_captured_upstream(repo: str, branch: str, default: str) -> bool:
     The forge-CLI-free per-commit cherry-zero signal the orphaned-stash reaper
     uses on a ``stash@{N}`` ref. ``git cherry`` prints ``- <sha>`` for each commit
     whose change is already upstream (a squash captured it) and ``+ <sha>`` for
-    one that is not; the ref is captured when cherry finds no ``+`` line. A probe
-    failure reads as not-captured so the data-loss guards keep the work.
+    one that is not; the ref is captured only when cherry actually RAN, produced
+    at least one comparison line, and every line is a ``-``.
+
+    Two data-loss traps this closes (#F4.1). (1) The probe runs through the STRICT
+    runner, so a real ``git cherry`` failure (unresolvable ``origin/<default>``,
+    the ref gone, a corrupt repo) raises :class:`CommandFailedError` and is caught
+    to ``False`` (not-captured) — the LENIENT runner degraded a failure to ``""``,
+    which the ``all(...)`` below then read as vacuously-captured. (2) EMPTY cherry
+    output is NOT captured: ``all([])`` is ``True``, but a stash ref that is a
+    merge commit (``git cherry`` compares no patch and prints nothing) or any ref
+    that produced no comparison line was never actually content-compared, so
+    treating it as captured would drop the ONLY copy of the work. Both now resolve
+    to ``False`` — a keep — so the orphaned-stash reaper keeps the stash on any
+    inconclusive probe.
 
     The richer current-tip detector is :func:`branch_redundancy` (which also runs
     the synthetic-squash and ``--merged`` layers); this one stays the minimal
     per-commit form the stash path wants.
     """
     try:
-        cherry = git.run(repo=repo, args=["cherry", f"origin/{default}", branch])
+        cherry = git.run_strict(repo=repo, args=["cherry", f"origin/{default}", branch])
     except CommandFailedError:
         return False
-    return all(line.startswith("-") for line in cherry.splitlines() if line.strip())
+    lines = [line for line in cherry.splitlines() if line.strip()]
+    return bool(lines) and all(line.startswith("-") for line in lines)

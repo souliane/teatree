@@ -19,6 +19,7 @@ import yaml
 _WORKFLOWS = Path(__file__).resolve().parents[3] / ".github" / "workflows"
 _PR = _WORKFLOWS / "eval-pr-reusable.yml"
 _WEEKLY = _WORKFLOWS / "eval-weekly-reusable.yml"
+_BENCHMARK = _WORKFLOWS / "eval-benchmark.yml"
 
 
 def _load(path: Path) -> dict[str, Any]:
@@ -31,10 +32,15 @@ def _on(workflow: dict[str, Any]) -> dict[str, Any]:
 
 
 class TestReusableContract:
-    def test_both_are_workflow_call_with_a_required_api_key_secret(self) -> None:
-        for path in (_PR, _WEEKLY):
-            call = _on(_load(path))["workflow_call"]
-            assert call["secrets"]["anthropic-api-key"]["required"] is True, path.name
+    def test_both_are_workflow_call_with_credential_secrets(self) -> None:
+        # eval-pr-reusable requires the metered api-key; eval-weekly-reusable is
+        # dual-credential (subscription_oauth default), so it declares both secrets
+        # and the runner enforces the selected one.
+        pr_secrets = _on(_load(_PR))["workflow_call"]["secrets"]
+        assert pr_secrets["anthropic-api-key"]["required"] is True, _PR.name
+        weekly_secrets = _on(_load(_WEEKLY))["workflow_call"]["secrets"]
+        assert "subscription-oauth-token" in weekly_secrets, _WEEKLY.name
+        assert "anthropic-api-key" in weekly_secrets, _WEEKLY.name
 
     def test_overlay_host_checkout_inputs_are_exposed(self) -> None:
         for path in (_PR, _WEEKLY):
@@ -46,6 +52,16 @@ class TestReusableContract:
         inputs = _on(_load(_WEEKLY))["workflow_call"]["inputs"]
         assert "force" in inputs
         assert "dashboard-path" in inputs
+
+    def test_weekly_exposes_shards_defaulting_to_unfiltered(self) -> None:
+        inputs = _on(_load(_WEEKLY))["workflow_call"]["inputs"]
+        assert inputs["shards"]["default"] == ""
+
+    def test_benchmark_caller_exposes_shards_and_threads_it_to_the_reusable(self) -> None:
+        dispatch_inputs = _on(_load(_BENCHMARK))["workflow_dispatch"]["inputs"]
+        assert dispatch_inputs["shards"]["default"] == ""
+        benchmark_job = _load(_BENCHMARK)["jobs"]["benchmark"]
+        assert benchmark_job["with"]["shards"] == "${{ inputs.shards }}"
 
 
 class TestNoSilentGreen:
@@ -77,8 +93,17 @@ class TestInjectionSafety:
         # The env-var-safe pattern: a caller-supplied value (assert-scenarios,
         # lane) is bound to an env var and referenced as $VAR in the shell, never
         # interpolated as ${{ inputs.* }} directly inside a `run:` body.
-        for path in (_PR, _WEEKLY):
+        for path in (_PR, _WEEKLY, _BENCHMARK):
             for line in path.read_text(encoding="utf-8").splitlines():
                 stripped = line.strip()
                 if stripped.startswith(("uv run", "echo ", "grep ", "git ")):
                     assert "${{ inputs." not in stripped, f"{path.name}: inlined input in a run line — {stripped!r}"
+
+    def test_shards_is_routed_through_env_not_inlined_into_run(self) -> None:
+        text = _WEEKLY.read_text(encoding="utf-8")
+        assert "EVAL_SHARDS: ${{ inputs.shards }}" in text
+        assert '--shards "$EVAL_SHARDS"' in text
+        for line in text.splitlines():
+            stripped = line.strip()
+            if stripped.startswith(("uv run", "echo ", "grep ", "git ")):
+                assert "${{ inputs.shards" not in stripped, f"inlined shards input in a run line — {stripped!r}"

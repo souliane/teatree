@@ -17,6 +17,7 @@ from teatree.core.backend_protocols import PrMergeState, changed_paths_unavailab
 from teatree.core.backend_registry import get_backend_provider
 from teatree.core.models import MergeClear
 from teatree.utils.pr_ref import PrRef
+from teatree.utils.throttled_log import warn_throttled
 
 if TYPE_CHECKING:
     from teatree.core.backend_protocols import CodeHostBackend
@@ -212,17 +213,26 @@ def attach_touched_paths(clear: object, query: CodeHostQuery) -> None:
     clear.substrate_paths_indeterminate = False
 
 
-class _RollupEntry(TypedDict, total=False):
-    """One ``gh ... statusCheckRollup`` entry — CheckRun or StatusContext."""
-
-    conclusion: object
-    status: object
-    state: object
-    name: object
-    context: object
-    startedAt: object
-    completedAt: object
-    createdAt: object
+# One ``gh ... statusCheckRollup`` entry — a CheckRun or a legacy StatusContext.
+# Declared with the FUNCTIONAL ``TypedDict`` syntax because ``__typename`` (the
+# GraphQL discriminator the dedupe key reads via :func:`_check_identity`) is a
+# dunder name that the class-based syntax cannot express — the class body mangles
+# a leading-double-underscore attribute, so the key would silently not type-check.
+_RollupEntry = TypedDict(
+    "_RollupEntry",
+    {
+        "__typename": object,
+        "conclusion": object,
+        "status": object,
+        "state": object,
+        "name": object,
+        "context": object,
+        "startedAt": object,
+        "completedAt": object,
+        "createdAt": object,
+    },
+    total=False,
+)
 
 
 def _check_identity(entry: _RollupEntry) -> tuple[str, str]:
@@ -421,15 +431,28 @@ def _gitlab_pipeline_verdict(
     return _classify_gitlab_pipeline(str(head.get("status") or ""))
 
 
-def _expected_required_contexts_floor() -> set[str]:
-    """The operator-configured required-context floor (empty = no floor). Fail-safe to empty."""
+def _expected_required_contexts_floor() -> set[str] | None:
+    """The operator-configured required-context floor, or ``None`` when it could not be read.
+
+    A DETERMINATE-EMPTY set is "no floor configured"; a non-empty set is the
+    configured floor; ``None`` is the fail-CLOSED signal that the setting could
+    not be read AT ALL (Django not set up, a config-store error). The caller must
+    NOT collapse an unreadable floor to "no floor" — doing so would let a
+    removed-branch-protection repo (empty required set) classify GREEN on a
+    transient config failure. An unresolvable floor is indeterminate → fail closed.
+    """
     try:
         from teatree.config import get_effective_settings  # noqa: PLC0415 — deferred: keep core.merge import-light
 
         return {name.strip() for name in get_effective_settings(None).expected_required_contexts if name.strip()}
-    except Exception:  # noqa: BLE001 — a config-read failure must never wedge the merge gate; treat as no floor.
-        logger.debug("ci_rollup: expected_required_contexts floor unresolved — treating as no floor")
-        return set()
+    except Exception:  # noqa: BLE001 — a config-read failure is INDETERMINATE (None), never silently "no floor".
+        warn_throttled(
+            logger,
+            "ci_rollup:floor-unreadable",
+            "ci_rollup: expected_required_contexts floor could not be read — treating as indeterminate (fail closed)",
+            exc_info=True,
+        )
+        return None
 
 
 def _github_required_checks_verdict(
@@ -442,28 +465,40 @@ def _github_required_checks_verdict(
     """GitHub §17.4.3 verdict: scope the rollup to the branch-protection required contexts.
 
     Fail CLOSED when the required set is indeterminate. When the required set is a
-    DETERMINATE-EMPTY set (branch protection removed/never configured) AND the
-    operator configured an ``expected_required_contexts`` floor, fail CLOSED too — a
-    removed branch-protection gate must not classify as green. Otherwise the shared
-    :func:`classify_required_rollup` verdict over only the required contexts (an
-    empty required set with no floor → ``green``, a non-required check never blocks).
+    DETERMINATE-EMPTY set (branch protection removed/never configured), fail CLOSED
+    too if the operator configured an ``expected_required_contexts`` floor OR if the
+    floor itself could not be read (``None`` — indeterminate) — a removed
+    branch-protection gate, and an unresolvable floor over one, must not classify as
+    green. Only a determinate-EMPTY floor over an empty required set is genuinely
+    "no gate" → the shared :func:`classify_required_rollup` verdict runs (an empty
+    required set → ``green``, a non-required check never blocks).
     """
     required_names = _required_context_names(backend, slug=slug, pr_id=pr_id)
     if required_names is None:
         return "failed"  # fail CLOSED — the branch-protection required set is indeterminate
-    if not required_names and _expected_required_contexts_floor():
-        logger.warning(
-            "ci_rollup: %s#%s reports NO required checks but a floor is configured — failing closed",
-            slug,
-            pr_id,
-        )
-        return "failed"
+    if not required_names:
+        floor = _expected_required_contexts_floor()
+        if floor is None:
+            logger.warning(
+                "ci_rollup: %s#%s reports NO required checks and the expected_required_contexts floor "
+                "could not be read — failing closed (indeterminate)",
+                slug,
+                pr_id,
+            )
+            return "failed"
+        if floor:
+            logger.warning(
+                "ci_rollup: %s#%s reports NO required checks but a floor is configured — failing closed",
+                slug,
+                pr_id,
+            )
+            return "failed"
     return classify_required_rollup(rollup, required_names)
 
 
-_GITLAB_PIPELINE_GREEN_STATUSES = frozenset({"success", "manual", "skipped"})
+_GITLAB_PIPELINE_GREEN_STATUSES = frozenset({"success"})
 _GITLAB_PIPELINE_PENDING_STATUSES = frozenset(
-    {"pending", "running", "preparing", "scheduled", "waiting_for_resource", "created"},
+    {"pending", "running", "preparing", "scheduled", "waiting_for_resource", "created", "manual", "skipped"},
 )
 
 
@@ -473,8 +508,14 @@ def _classify_gitlab_pipeline(status: str) -> str:
     GitLab pipeline statuses (per the REST API documentation): ``created``,
     ``waiting_for_resource``, ``preparing``, ``pending``, ``running``,
     ``success``, ``failed``, ``canceled``, ``skipped``, ``manual``,
-    ``scheduled``. ``success`` / ``manual`` / ``skipped`` are green;
-    ``failed`` / ``canceled`` are failed; everything else is pending.
+    ``scheduled``. ONLY ``success`` is green.
+
+    ``manual`` and ``skipped`` are NOT green — they are pending. A ``manual``
+    pipeline is blocked on a manual gate whose later (required) stages have not
+    run, and a ``skipped`` pipeline never ran its required jobs; classifying
+    either as green merged a keystone MR on not-passed CI (the §17.4.3
+    fail-toward-green hole). ``failed`` / ``canceled`` are failed; everything
+    else is pending.
     """
     s = status.lower()
     if s in _GITLAB_PIPELINE_GREEN_STATUSES:

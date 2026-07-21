@@ -88,6 +88,45 @@ class DetectComplianceFailuresTestCase(TestCase):
         findings = detect_compliance_failures(extract)
         assert findings == []
 
+    def test_single_incidental_shared_token_is_not_a_recurrence(self) -> None:
+        # F6.5: one shared token is noise. Requiring >=2 distinctive shared tokens
+        # stops a correction from being misattributed to an arbitrary memory that
+        # merely happens to share a common word — the correction is still a compliance
+        # failure, just a first-occurrence directive, not a memory recurrence.
+        memory = (
+            "name: feedback_provision_lease\nThe worktree provision lease claims a pid guard before owner liveness.\n"
+        )
+        violation = (
+            '{"type": "user", "content": "stop touching the worktree without asking, you do not follow instructions!!"}'
+        )
+        extract = _extract(
+            _memory_snippet("feedback_provision_lease.md", memory),
+            _transcript_snippet("session-x.jsonl", violation),
+        )
+        findings = detect_compliance_failures(extract)
+        assert findings  # still a compliance failure
+        assert all(not f.is_recurrence for f in findings)
+        assert all(f.rule_source is RuleSource.IN_SESSION for f in findings)
+
+    def test_best_overlap_memory_wins_not_an_arbitrary_first_match(self) -> None:
+        # F6.5: attribution is BEST-match, not first-token-wins. The correction shares
+        # two distinctive tokens with feedback_beta and only one with feedback_alpha,
+        # so the recurrence attributes to feedback_beta.
+        mem_a = "name: feedback_alpha\nThe alphaword lesson about widgets.\n"
+        mem_b = "name: feedback_beta\nThe alphaword and betaword handling.\n"
+        violation = (
+            '{"type": "user", "content": "stop ignoring the alphaword and betaword rule again, '
+            'you do not follow instructions!!"}'
+        )
+        extract = _extract(
+            _memory_snippet("feedback_alpha.md", mem_a),
+            _memory_snippet("feedback_beta.md", mem_b),
+            _transcript_snippet("session-y.jsonl", violation),
+        )
+        recurrences = [f for f in detect_compliance_failures(extract) if f.is_recurrence]
+        assert len(recurrences) == 1
+        assert recurrences[0].rule_identity == "feedback_beta"
+
     def test_violation_without_a_backing_memory_is_not_a_recurrence(self) -> None:
         # A correction whose rule has no durable memory is still a compliance
         # failure, but a FIRST occurrence — not a recurrence (no escalation yet).

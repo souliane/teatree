@@ -20,8 +20,11 @@ import logging
 import re
 from dataclasses import dataclass
 
+from django.core.exceptions import ImproperlyConfigured
+
 from teatree.core.overlay_loader import get_overlay
 from teatree.hooks import term_match
+from teatree.utils.throttled_log import warn_throttled
 
 logger = logging.getLogger(__name__)
 
@@ -164,22 +167,53 @@ def _target_is_public(target_repo: str, forge: str) -> bool:
         return True
 
 
-def _overlay_privacy_rules() -> tuple[list[str], list[str]]:
-    """The active overlay's ``(privacy_redact_terms, privacy_block_patterns)``.
+def _overlay_privacy_rules() -> tuple[list[str], list[str]] | None:
+    """The active overlay's ``(privacy_redact_terms, privacy_block_patterns)``, or ``None``.
 
-    Best-effort overlay-specific ADDITIONS to the always-on built-in quote
-    anchors (:data:`_DEFAULT_QUOTE_PATTERNS`). When no single overlay resolves —
-    none installed, several with no ``T3_OVERLAY_NAME`` to disambiguate, or
-    Django not yet set up — both lists are empty and only the built-in detectors
-    apply; the gate still scans a public target (the built-ins are the floor),
-    so it never goes inert on a rules-resolution failure.
+    Overlay-specific ADDITIONS to the always-on built-in quote anchors
+    (:data:`_DEFAULT_QUOTE_PATTERNS`). Two outcomes are distinguished so a
+    confidentiality boundary never silently loses the overlay's own rules:
+
+    * **No single overlay resolves** — none installed, several with no
+        ``T3_OVERLAY_NAME`` to disambiguate, an unknown name, or Django not yet set
+        up (:class:`ImproperlyConfigured`, exactly what :func:`get_overlay` raises).
+        There ARE no overlay rules to lose, so both lists are empty ``([], [])`` and
+        only the built-in detectors apply — the gate still scans a public target.
+
+    * **A genuine resolution FAILURE** — an overlay IS present but its
+        ``config`` / ``privacy_redact_terms`` / ``privacy_block_patterns`` could not
+        be read (an unexpected error). The overlay's redact list + block patterns
+        would silently vanish from the scan, so this returns ``None``: the caller
+        fails CLOSED and LOUD (refuses a public publish) rather than scanning with
+        only the two generic built-ins.
     """
     try:
         config = get_overlay().config
-        return list(config.privacy_redact_terms), list(config.privacy_block_patterns)
-    except Exception as exc:  # noqa: BLE001 — overlay rules are a best-effort add; the built-in detectors are the floor.
-        logger.debug("publication privacy gate: overlay redact rules unresolved (%s) — built-in detectors only", exc)
+    except ImproperlyConfigured as exc:
+        # No single overlay resolves — there are no overlay rules to drop, so the
+        # built-in detectors are the floor and the gate stays live (not a failure).
+        logger.debug("publication privacy gate: no single overlay resolves (%s) — built-in detectors only", exc)
         return [], []
+    except Exception as exc:  # noqa: BLE001 — a genuine resolution failure must fail CLOSED, never scan-with-builtins-only.
+        warn_throttled(
+            logger,
+            "privacy_gate:overlay-rules-unresolvable",
+            "publication privacy gate: overlay privacy rules could not be resolved (%s) — failing CLOSED",
+            exc,
+            exc_info=True,
+        )
+        return None
+    try:
+        return list(config.privacy_redact_terms), list(config.privacy_block_patterns)
+    except Exception as exc:  # noqa: BLE001 — an overlay present but unreadable is a resolution failure → fail CLOSED.
+        warn_throttled(
+            logger,
+            "privacy_gate:overlay-rules-unreadable",
+            "publication privacy gate: overlay privacy rule fields unreadable (%s) — failing CLOSED",
+            exc,
+            exc_info=True,
+        )
+        return None
 
 
 def scan_outbound_text(*, text: str, target_repo: str, forge: str = "") -> PrivacyGateResult:
@@ -191,10 +225,31 @@ def scan_outbound_text(*, text: str, target_repo: str, forge: str = "") -> Priva
     public repo. A provably-private repo is a clean pass; an unknown repo fails
     CLOSED (scanned). *forge* (``"github"``/``"gitlab"``) routes a bare-slug
     visibility probe to the right tool.
+
+    When the target is public but the overlay's privacy rules cannot be resolved
+    (:func:`_overlay_privacy_rules` returns ``None`` — an overlay is present but
+    its redact/block rules could not be read), the gate REFUSES the publish with a
+    synthetic ``overlay-rules-unresolvable`` match: a confidentiality boundary must
+    fail CLOSED and loud, never scan a public target with only the two generic
+    built-ins while the overlay's own rules silently vanish.
     """
     if not _target_is_public(target_repo, forge):
         return PrivacyGateResult(target_repo=target_repo, is_public=False)
-    redact_terms, block_patterns = _overlay_privacy_rules()
+    rules = _overlay_privacy_rules()
+    if rules is None:
+        warn_throttled(
+            logger,
+            f"privacy_gate:refuse-unresolvable:{target_repo}",
+            "publication privacy gate: REFUSING public publish to %s — overlay privacy rules unresolvable "
+            "(failing CLOSED so the overlay's redact/block rules cannot silently vanish from the scan)",
+            target_repo,
+        )
+        return PrivacyGateResult(
+            target_repo=target_repo,
+            is_public=True,
+            matches=(PrivacyMatch(pattern_name="overlay-rules-unresolvable", matched_text="", position=0),),
+        )
+    redact_terms, block_patterns = rules
     return scan_for_publication(
         text=text,
         target_repo=target_repo,

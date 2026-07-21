@@ -9,6 +9,7 @@ from django.db.models import Q
 from django.db.models.expressions import BaseExpression
 from django.utils import timezone
 
+from teatree.config import worker_is_quiescing
 from teatree.core.loop_lease_manager import (
     PER_LOOP_OWNER_PREFIX,
     T3_MASTER_SLOT,
@@ -18,6 +19,8 @@ from teatree.core.loop_lease_manager import (
     is_per_loop_owner_slot,
     per_loop_owner_slot,
 )
+from teatree.core.managers_overlay import for_overlay as _for_overlay
+from teatree.core.managers_overlay import overlay_scope_q
 from teatree.core.repair_loop import IterationStalled, MaxIterationsExceeded
 from teatree.core.session_handover_manager import SessionHandoverManager, SessionHandoverQuerySet
 
@@ -44,6 +47,7 @@ __all__ = [
     "TicketManager",
     "WorktreeManager",
     "is_per_loop_owner_slot",
+    "overlay_scope_q",
     "per_loop_owner_slot",
 ]
 
@@ -74,19 +78,6 @@ def _claimable_now_q(now: datetime) -> Q:
     drift between "is there work" and the actual claim.
     """
     return Q(not_before__isnull=True) | Q(not_before__lte=now)
-
-
-def _for_overlay(qs: models.QuerySet, overlay: str | None) -> models.QuerySet:
-    """Scope *qs* to *overlay*, including legacy empty-overlay rows.
-
-    A module function rather than a mixin (composition over inheritance): the
-    three overlay-scoped QuerySets call it from their own ``for_overlay`` method,
-    so there is no mixin diamond and no ``# type: ignore[attr-defined]`` on
-    ``self.filter`` / ``self.all``.
-    """
-    if overlay:
-        return qs.filter(Q(overlay=overlay) | Q(overlay=""))
-    return qs.all()
 
 
 class TicketQuerySet(models.QuerySet):
@@ -237,18 +228,12 @@ class TaskQuerySet(models.QuerySet):
         A ``Task`` has no overlay column of its own — its overlay is the
         ticket's or the session's, so the scope clause spans both relations
         and includes legacy empty-overlay rows. An empty ``overlay`` returns
-        every task. This is the single source of truth for the Task overlay
-        clause, shared by ``_claimable_for_target`` (the loop claim) and the
-        MCP ``loop_stats`` read.
+        every task. Delegates to :func:`overlay_scope_q`, the single source of
+        truth for the Task overlay clause, shared with ``_claimable_for_target``
+        (the loop claim), the MCP ``loop_stats`` read, and the dashboard
+        selectors (F1.6).
         """
-        if overlay:
-            return self.filter(
-                Q(ticket__overlay=overlay)
-                | Q(session__overlay=overlay)
-                | Q(ticket__overlay="")
-                | Q(session__overlay="")
-            )
-        return self.all()
+        return self.filter(overlay_scope_q(overlay))
 
     def for_claude_session(self, claude_session_id: str) -> models.QuerySet:
         """Tasks whose session is the given Claude session, newest first.
@@ -346,6 +331,11 @@ class TaskQuerySet(models.QuerySet):
         """
         task_model = cast("type[Task]", apps.get_model("core", "Task"))
 
+        # Drain gate (rolling deploy): while the worker is quiescing, admit NO new
+        # task — the CAS never fires, so claimed ≡ spawned stays true and in-flight
+        # CLAIMED leases (which renew via ``renew_lease``, not this path) are untouched.
+        if worker_is_quiescing():
+            return None
         now = timezone.now()
         candidates = self.filter(status=task_model.Status.PENDING).filter(_claimable_now_q(now))
         if extra_filter is not None:
@@ -550,24 +540,40 @@ class TaskQuerySet(models.QuerySet):
             self.filter(status=task_model.Status.CLAIMED, lease_expires_at__gt=now).filter(dispatchable_filter).count()
         )
 
-    def active_claim_exists(self) -> bool:
-        """True iff some task is CLAIMED with a still-live lease.
+    def active_claims(self) -> models.QuerySet:
+        """Tasks CLAIMED with a still-live lease — the in-flight set (SSOT).
 
-        A live CLAIMED lease means a worker / sub-agent is actively driving
-        a unit of loop work right now — the deferred-reinstall drain reads
-        this to DEFER re-anchoring the running interpreter until no unit is
-        in flight (never mutate the code out from under an active agent).
-        An expired lease is not in-flight (the worker is gone; the reaper /
-        reclaimer will sweep it).
+        A live CLAIMED lease means a worker / sub-agent is actively driving a unit
+        of loop work right now; an expired lease is not in-flight (the worker is
+        gone; the reaper / reclaimer will sweep it). This is the single predicate
+        both ``active_claim_exists`` (the deferred-reinstall + drain readiness check)
+        and ``t3 worker drain``'s still-claimed listing read, so the two can never
+        drift.
         """
         task_model = cast("type[Task]", apps.get_model("core", "Task"))
 
         now = timezone.now()
-        return self.filter(status=task_model.Status.CLAIMED, lease_expires_at__gt=now).exists()
+        return self.filter(status=task_model.Status.CLAIMED, lease_expires_at__gt=now)
+
+    def active_claim_exists(self) -> bool:
+        """True iff some task is CLAIMED with a still-live lease.
+
+        The deferred-reinstall drain and ``t3 worker drain`` read this to DEFER an
+        action (re-anchoring the running interpreter / swapping the deploy image)
+        until no unit is in flight — never mutate the code out from under an active
+        agent.
+        """
+        return self.active_claims().exists()
 
     def _claimable_for_target(self, target: str, overlay: str | None = None) -> models.QuerySet:
         task_model = cast("type[Task]", apps.get_model("core", "Task"))
 
+        # Drain gate (rolling deploy): a quiescing worker sees NO claimable work, so
+        # the interactive/headless claim commands admit zero new tasks during the
+        # deploy window. Orthogonal to the supervisor's stop condition — in-flight
+        # leases keep renewing.
+        if worker_is_quiescing():
+            return self.none()
         now = timezone.now()
         qs = (
             self.filter(

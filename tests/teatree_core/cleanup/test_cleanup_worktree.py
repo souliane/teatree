@@ -44,9 +44,9 @@ def _no_unpushed(mock_git: MagicMock) -> None:
     mock; without this the #706 guard sees a truthy ``MagicMock`` and refuses
     spuriously. The #2609 content gate (``content_equivalence_blockers``) lives in
     ``branch_classification`` and runs real ``git`` — so it is short-circuited here
-    by defaulting ``unsynced_commits`` to empty (a fully-synced branch never reaches
-    the content gate). Tests that target a guard override the relevant value after
-    calling this.
+    by defaulting ``unsynced_commits`` to empty (a fully-synced branch never
+    reaches the content gate). Tests that target a guard override the relevant value
+    after calling this.
     """
     mock_git.commits_absent_from_all_remotes.return_value = []
     mock_git.unsynced_commits.return_value = []

@@ -15,10 +15,11 @@ human-ratified revert bound the risk; a KEPT decision is "correlated better", no
 
 from datetime import datetime, timedelta
 
-from teatree.core.factory.factory_score import FactoryScore, ScoredSignal
+from teatree.core.factory.factory_score import FactoryScore
 from teatree.core.models import FactoryScoreSnapshot, OuterLoopExperiment
 from teatree.loops.outer_loop.decide import Decision, decide_keep
 from teatree.loops.outer_loop.score import read_score
+from teatree.loops.shared.score_snapshot import snapshot_to_score
 from teatree.utils.git_branch import head_sha
 
 
@@ -73,37 +74,16 @@ def measure_and_decide(
 
 
 def _baseline_score(experiment: OuterLoopExperiment) -> FactoryScore | None:
-    """Reconstruct the admission FactoryScore from the experiment's baseline snapshot."""
+    """Reconstruct the admission FactoryScore from the experiment's baseline snapshot.
+
+    Delegates to the shared :func:`~teatree.loops.shared.score_snapshot.snapshot_to_score`
+    (F6.6) — the ONE snapshot→score inverse — rather than a verbatim second copy that
+    could drift from it field by field.
+    """
     snapshot = experiment.baseline_snapshot
     if snapshot is None:
         return None
-    return _snapshot_to_score(snapshot)
-
-
-def _snapshot_to_score(snapshot: FactoryScoreSnapshot) -> FactoryScore:
-    signals = [
-        ScoredSignal(
-            provider_id=raw["provider_id"],
-            status=raw["status"],
-            value=raw.get("value"),
-            normalized=raw.get("normalized"),
-            weight=raw.get("weight", 0.0),
-            covered=raw.get("covered", False),
-            red=raw.get("red", False),
-            verdict=raw.get("verdict", ""),
-        )
-        for raw in snapshot.signals
-    ]
-    return FactoryScore(
-        aggregate=snapshot.aggregate,
-        verdict=snapshot.verdict,
-        coverage=snapshot.coverage,
-        coverage_floor=snapshot.coverage_floor,
-        recipe_sha=snapshot.recipe_sha,
-        recipe_approved=snapshot.recipe_approved,
-        window_days=snapshot.window_days,
-        signals=signals,
-    )
+    return snapshot_to_score(snapshot)
 
 
 def _safe_head_sha() -> str:

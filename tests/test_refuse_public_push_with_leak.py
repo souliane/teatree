@@ -22,6 +22,13 @@ import pytest
 
 HOOK = Path(__file__).resolve().parents[1] / "scripts" / "hooks" / "refuse-public-push-with-leak.sh"
 SCAN = Path(__file__).resolve().parents[1] / "scripts" / "privacy_scan.py"
+ZERO_SHA = "0" * 40
+# Planted fixture values the gate-under-test must flag; annotated so this
+# repo's own pre-push gate does not flag the test source itself.
+_PLANTED_SECRET = "token = glpat-XXXXXXXXXXXXXXXX\n"  # privacy-scan:allow fixture
+_PLANTED_HOME_PATH = "see /Users/someone/secret/path\n"  # privacy-scan:allow fixture
+_SQUASH_COMMITTER = "noreply@github.com"  # privacy-scan:allow fixture
+_REAL_EMAIL = "real.dev@internal.example"  # privacy-scan:allow fixture
 
 
 def _hermetic_env() -> dict[str, str]:
@@ -853,6 +860,137 @@ class TestLeakGateRecomputesBaseFromRemoteTrackingRef:
         result = _run_hook_synth(work, env, to_ref=head, from_ref=tip)
 
         assert result.returncode == 0, result.stdout + result.stderr
+
+
+class TestLeakGateScansOnlyNewlyPublicCommits:
+    """A merge-forward push must not re-judge ``main``'s own history (#3523).
+
+    When a feature branch merges ``origin/main`` into itself, the linear range
+    ``remote_sha..HEAD`` spans every commit the merge brought in — all of it
+    already public. The gate must scan the commits reachable from HEAD but NOT
+    from any already-public ref (``origin/main`` AND the branch's own remote
+    tip), so main's findings and main's committer identities are never
+    re-reported against the branch.
+    """
+
+    _FEATURE_STDIN = "refs/heads/feature {head} refs/heads/feature {tip}\n"
+
+    def _merge_forward(
+        self,
+        tmp_path: Path,
+        *,
+        main_content: str = _PLANTED_HOME_PATH,
+        main_committer: str = _SQUASH_COMMITTER,
+    ) -> tuple[Path, dict[str, str], str, str]:
+        """Feature branch pushed at F1, then merged with an advanced ``main``.
+
+        ``main`` carries both a content finding and a non-noreply (GitHub
+        squash-merge) committer identity — the two false-positive classes the
+        stale linear range produced on PR #3523.
+        """
+        origin = tmp_path / "origin"
+        _make_repo(origin)
+        _git(origin, "checkout", "-b", "feature")
+        feature_tip = _commit_file(origin, "feature.txt", "existing feature line\n", "seed feature branch")
+        _git(origin, "checkout", "main")
+        _commit_file(origin, "prior.txt", main_content, "prior PR merged on main")
+        _commit_file(
+            origin,
+            "squashed.txt",
+            "a line squash-merged via the GitHub web UI\n",
+            "prior PR squash-merged on main",
+            committer_email=main_committer,
+        )
+
+        work, env = _public_work_clone(tmp_path, origin)
+        _git(work, "checkout", "feature")
+        _git(work, "merge", "origin/main", "-m", "merge origin/main into feature")
+        return work, env, _rev(work, "HEAD"), feature_tip
+
+    def test_merge_forward_with_findings_only_on_main_is_allowed(self, tmp_path: Path) -> None:
+        work, env, head, tip = self._merge_forward(tmp_path)
+
+        result = _run_hook(work, env, self._FEATURE_STDIN.format(head=head, tip=tip))
+
+        assert result.returncode == 0, (
+            "already-public main content must not be re-scanned: " + result.stdout + result.stderr
+        )
+
+    def test_merge_forward_does_not_re_judge_main_commit_identities(self, tmp_path: Path) -> None:
+        work, env, head, tip = self._merge_forward(tmp_path, main_content="a clean prior line\n")
+
+        result = _run_hook(work, env, self._FEATURE_STDIN.format(head=head, tip=tip))
+
+        assert result.returncode == 0, (
+            "already-public main identities must not be re-judged: " + result.stdout + result.stderr
+        )
+        assert _SQUASH_COMMITTER not in result.stdout
+
+    def test_branch_finding_on_top_of_merge_forward_still_blocks(self, tmp_path: Path) -> None:
+        work, env, _head, tip = self._merge_forward(tmp_path)
+        head = _commit_file(work, "leak.txt", _PLANTED_SECRET, "add config")
+
+        result = _run_hook(work, env, self._FEATURE_STDIN.format(head=head, tip=tip))
+
+        assert result.returncode == 1, "a genuinely new leak must still block: " + result.stdout + result.stderr
+        assert "privacy" in (result.stdout + result.stderr).lower()
+
+    def test_branch_identity_on_top_of_merge_forward_still_blocks(self, tmp_path: Path) -> None:
+        work, env, _head, tip = self._merge_forward(tmp_path, main_content="a clean prior line\n")
+        head = _commit_file(
+            work,
+            "extra.txt",
+            "another clean feature line\n",
+            "extend feature",
+            committer_email=_REAL_EMAIL,
+        )
+
+        result = _run_hook(work, env, self._FEATURE_STDIN.format(head=head, tip=tip))
+
+        assert result.returncode == 1, "a new non-noreply identity must block: " + result.stdout + result.stderr
+        assert _REAL_EMAIL in result.stdout
+
+    def test_amended_history_is_still_scanned(self, tmp_path: Path) -> None:
+        """A force-push whose ``remote_sha`` is no longer an ancestor of HEAD.
+
+        Excluding the old remote tip must not exclude the rewritten commit —
+        it is unreachable from every public ref, so it is genuinely new.
+        """
+        origin = tmp_path / "origin"
+        _make_repo(origin)
+        _git(origin, "checkout", "-b", "feature")
+        tip = _commit_file(origin, "feature.txt", "existing feature line\n", "seed feature branch")
+        _git(origin, "checkout", "main")
+        work, env = _public_work_clone(tmp_path, origin)
+        _git(work, "checkout", "feature")
+        _git(work, "reset", "--hard", "HEAD~1")
+        head = _commit_file(work, "leak.txt", _PLANTED_SECRET, "rewritten feature")
+
+        result = _run_hook(work, env, self._FEATURE_STDIN.format(head=head, tip=tip))
+
+        assert result.returncode == 1, "amended history must still be scanned: " + result.stdout + result.stderr
+        assert "privacy" in (result.stdout + result.stderr).lower()
+
+    def test_undeterminable_public_set_fails_closed(self, tmp_path: Path) -> None:
+        """No resolvable ``origin/<default>`` → scan wider, never narrower.
+
+        With no public ref to subtract, the whole history reachable from the
+        pushed sha is scanned, so a finding that predates the branch still
+        blocks rather than riding out on an unknown base.
+        """
+        origin = tmp_path / "origin"
+        _make_repo(origin)
+        _commit_file(origin, "prior.txt", _PLANTED_HOME_PATH, "prior PR merged on main")
+        work, env = _public_work_clone(tmp_path, origin)
+        _git(work, "checkout", "-b", "feature")
+        head = _commit_file(work, "feature.txt", "a clean new feature line\n", "add feature")
+        _git(work, "update-ref", "-d", "refs/remotes/origin/HEAD")
+        _git(work, "update-ref", "-d", "refs/remotes/origin/main")
+
+        result = _run_hook(work, env, self._FEATURE_STDIN.format(head=head, tip=ZERO_SHA))
+
+        assert result.returncode == 1, "an undeterminable public set must fail closed: " + result.stdout + result.stderr
+        assert "home_path" in result.stdout, result.stdout
 
 
 def _make_erroring_gh_shim(bin_dir: Path) -> None:

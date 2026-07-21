@@ -210,8 +210,13 @@ class FakePrApiClient:
     fallback_succeeds: bool = True
     merge_pr_calls: list[tuple[str, int, str]] = field(default_factory=list)
     main_check_calls: list[tuple[str, str]] = field(default_factory=list)
+    #: F5.8: slugs whose ``list_open_prs`` raises a recoverable ScannerError
+    #: (auth / rate-limit), used to prove the sweep records-and-continues.
+    scanner_error_slugs: frozenset[str] = frozenset()
 
     def list_open_prs(self, *, slug: str) -> list[PrSummary]:
+        if slug in self.scanner_error_slugs:
+            raise ScannerError(scanner="pr_sweep", error_class=ScannerErrorClass.AUTH, detail=f"401 on {slug}")
         return list(self.prs_by_slug.get(slug, ()))
 
     def main_check_failed(self, *, slug: str, check_name: str) -> bool:
@@ -746,6 +751,34 @@ class TestMultiRepo:
         assert kinds == ["pr_sweep.merged", "pr_sweep.skip"]
         assert signals[1].payload["slug"] == other
         assert signals[1].payload["reason"] == "draft"
+
+    def test_scanner_error_mid_pass_preserves_earlier_merge_signals(self) -> None:
+        # F5.8: repo A merges a PR (producing a signal with a real side effect),
+        # then repo B's list hits an auth failure. The pass must NOT re-raise and
+        # discard repo A's merge signal — the merge already happened.
+        other = "example-org/example-repo"
+        _issue_clear()
+        api = FakePrApiClient(
+            prs_by_slug={SLUG: [_open_pr()]},
+            scanner_error_slugs=frozenset({other}),
+        )
+        keystone = FakeKeystone()
+        scanner, _ = _scanner(api=api, keystone=keystone, repos=(SLUG, other))
+
+        signals = scanner.scan()
+
+        assert [s.kind for s in signals] == ["pr_sweep.merged"]
+        assert keystone.calls  # the merge for repo A actually ran
+
+    def test_scanner_error_with_no_signals_still_raises_for_dispatcher(self) -> None:
+        # F5.8: when the pass produced NO signals, the recoverable error must still
+        # surface to the dispatcher (#1287) so a sustained auth failure is recorded.
+        api = FakePrApiClient(scanner_error_slugs=frozenset({SLUG}))
+        keystone = FakeKeystone()
+        scanner, _ = _scanner(api=api, keystone=keystone, repos=(SLUG,))
+
+        with pytest.raises(ScannerError):
+            scanner.scan()
 
 
 class TestSoloOverlayBypassesClearGate:

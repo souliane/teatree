@@ -1056,13 +1056,14 @@ def test_live_hook_fails_closed_on_probe_error_for_non_denylisted_repo(
     assert json.loads(captured.out)["permissionDecision"] == "deny"
 
 
-def test_live_hook_skips_unresolvable_target(
+def test_live_hook_fails_closed_on_unresolvable_target(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    # MUST-SKIP: a publish whose target cannot be resolved from the command (a
-    # flagless create whose cwd has NO git remote -> destination None) is not
-    # affirmatively public, so the gate SKIPS it. Bias hard toward not firing:
-    # an unresolvable ``gh``/``glab`` publish is never treated as a public leak.
+    # MUST-DENY (#F7.2 fail closed): a ``gh``/``glab`` publish whose target
+    # cannot be resolved from the command (a flagless create whose cwd has NO git
+    # remote -> destination None) is NOT provably non-public, so the gate SCANS
+    # and the banned term BLOCKS. Previously an unresolved gh/glab dest was
+    # treated as skip-eligible and let the leak ride out unscanned.
     home = Path(os.environ["HOME"])
     _write_home_config(home, _DENYLIST_CONFIG, monkeypatch, tmp_path)
     monkeypatch.setattr(_repo_visibility, "_resolve_probe_tool", lambda _tool: None)
@@ -1075,6 +1076,33 @@ def test_live_hook_skips_unresolvable_target(
     data = {
         "tool_name": "Bash",
         "tool_input": {"command": 'gh issue create --body "customercorp leak"'},
+        "cwd": str(no_remote),
+    }
+    blocked = handle_banned_terms_pretool(data)
+    captured = capsys.readouterr()
+
+    assert blocked is True
+    assert json.loads(captured.out)["permissionDecision"] == "deny"
+
+
+def test_live_hook_clean_body_to_unresolvable_target_allows(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # NEVER-LOCKOUT guard for #F7.2: failing closed on an unresolvable target
+    # SCANS the body; a CLEAN body (no banned term) still ALLOWS. The fail-closed
+    # scan blocks a leak, it does not block every unresolvable-target post.
+    home = Path(os.environ["HOME"])
+    _write_home_config(home, _DENYLIST_CONFIG, monkeypatch, tmp_path)
+    monkeypatch.setattr(_repo_visibility, "_resolve_probe_tool", lambda _tool: None)
+    monkeypatch.delenv("GH_REPO", raising=False)
+
+    no_remote = tmp_path / "no-remote"
+    no_remote.mkdir()
+    _git(no_remote, "init", "-b", "main")
+
+    data = {
+        "tool_name": "Bash",
+        "tool_input": {"command": 'gh issue create --body "a clean status update"'},
         "cwd": str(no_remote),
     }
     blocked = handle_banned_terms_pretool(data)

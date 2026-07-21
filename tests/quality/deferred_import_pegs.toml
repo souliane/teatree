@@ -10,7 +10,6 @@
 [intra_core]
 "src/teatree/core/_checking_gather.py" = 5
 "src/teatree/core/apps.py" = 2
-"src/teatree/core/backend_factory.py" = 3
 "src/teatree/core/checking.py" = 2
 "src/teatree/core/cleanup/cleanup.py" = 1
 "src/teatree/core/cost.py" = 1
@@ -127,6 +126,13 @@
 # deferred_question import DeferredQuestion` (ORM/app-registry) to escalate an
 # intake attachment-gate hold instead of silently freezing the ticket.
 "src/teatree/core/tasks.py" = 6
+# PR #3479 module-health split: the path-only-TOML backend construction moved
+# out of backend_factory.py into toml_backends.py, carrying the same three
+# function-scoped intra-core imports verbatim (two `send_proxy.read_posting_credential`
+# host-credential reads + one `messaging_tokens.resolve_messaging_tokens`), all
+# deferred pre-app-registry. backend_factory.py's peg dropped from 3 to 0 in the
+# same change — the edge relocated, it did not grow.
+"src/teatree/core/toml_backends.py" = 3
 "src/teatree/core/views/_rate_limit.py" = 1
 # #8 M7 revival: the waiting-lane covering-CLEAR match reads the shared SIG-1
 # supersede helper (superseding_context / clear_is_superseded) and the promoted

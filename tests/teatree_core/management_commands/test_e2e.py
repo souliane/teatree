@@ -608,11 +608,30 @@ class TestE2eExternal(TestCase):
         assert "-c" not in cmd
         assert spec in cmd
 
+    @_patch_overlays(_PLAYWRIGHT_ARGS_OVERLAY)
+    @override_settings(**SETTINGS)
+    def test_playwright_args_are_shlex_split_keeping_quoted_values_intact(self) -> None:
+        """``--playwright-args`` is shlex-split, so a quoted value stays ONE arg (F3.6).
+
+        ``str.split`` fractured ``--grep "smoke test"`` into ``--grep``, ``"smoke``,
+        ``test"`` — three broken tokens Playwright can't parse. ``shlex.split``
+        keeps the quoted value as a single argument.
+        """
+        spec = "playwright/contrib/acme/loan-request/child-allowance.spec.ts"
+        with self._external_run(spec, playwright_args='--grep "smoke test"') as mock_run:
+            cmd = mock_run.call_args[0][0]
+        assert "--grep" in cmd
+        assert "smoke test" in cmd
+        # The naive split would have produced these fractured tokens.
+        assert '"smoke' not in cmd
+        assert 'test"' not in cmd
+
     @contextmanager
-    def _external_run(self, spec: str) -> Iterator[MagicMock]:
+    def _external_run(self, spec: str, *, playwright_args: str = "") -> Iterator[MagicMock]:
         """Run ``e2e external <spec> --target local`` against a provisioned worktree.
 
         Yields the ``Popen`` mock so the caller can assert the built command.
+        ``playwright_args`` threads the ``--playwright-args`` flag through.
         """
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
@@ -635,7 +654,7 @@ class TestE2eExternal(TestCase):
                 patch.object(e2e_disc_mod, "get_service_port", return_value=5555),
                 patch.object(utils_run_mod, "Popen", _popen_for(mock_result)) as mock_run,
             ):
-                call_command("e2e", "external", test_path=spec, target="local")
+                call_command("e2e", "external", test_path=spec, target="local", playwright_args=playwright_args)
                 yield mock_run
 
     @_patch_overlays(FULL_OVERLAY)

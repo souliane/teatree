@@ -471,6 +471,80 @@ class TestRunHeadlessTypedRateLimitWindow(TestCase):
         assert "seven_day_sonnet" in attempt.error
 
 
+class TestRunHeadlessAllAccountsExhausted(TestCase):
+    """Multi-account #C2: with EVERY subscription account drained, a dispatch QUIESCES.
+
+    Pre-dispatch the credential selector raises ``AllTokensExhaustedError``; the headless
+    runner must PARK the task (auto-resume at the earliest reset) rather than record a
+    terminal FAILED that a human is later pinged about. Flag-off is byte-identical to today
+    (the drained lane still records a loud FAILED).
+    """
+
+    @classmethod
+    def setUpTestData(cls) -> None:
+        cls.ticket = Ticket.objects.create()
+
+    def _seed_exhausted(self, pass_path: str, *, reset: Any) -> None:
+        from teatree.core.models import AnthropicTokenUsage  # noqa: PLC0415 — test-local
+        from teatree.core.models.anthropic_token_usage import REJECTED_STATUS, TokenHealthReading  # noqa: PLC0415
+
+        AnthropicTokenUsage.objects.record(
+            pass_path,
+            TokenHealthReading(
+                organization_id="org-1",
+                utilization_5h=0.1,
+                utilization_7d=1.0,
+                status_5h="allowed",
+                status_7d=REJECTED_STATUS,
+                reset_5h=None,
+                reset_7d=reset,
+            ),
+        )
+
+    def _configure_three_exhausted_accounts(self) -> Any:
+        from datetime import timedelta  # noqa: PLC0415 — test-local
+
+        from django.utils import timezone  # noqa: PLC0415 — test-local
+
+        ConfigSetting.objects.set_value("agent_harness_provider", "subscription_oauth")
+        ConfigSetting.objects.set_value("anthropic_oauth_pass_paths", ["acct/1/oauth", "acct/2/oauth", "acct/3/oauth"])
+        earliest = timezone.now() + timedelta(hours=1)
+        self._seed_exhausted("acct/1/oauth", reset=timezone.now() + timedelta(hours=4))
+        self._seed_exhausted("acct/2/oauth", reset=earliest)  # the soonest to free up
+        self._seed_exhausted("acct/3/oauth", reset=timezone.now() + timedelta(hours=3))
+        return earliest
+
+    def test_all_exhausted_parks_and_auto_resumes_not_failed(self) -> None:
+        from teatree.core.models import UsageWindowState  # noqa: PLC0415 — test-local
+
+        ConfigSetting.objects.set_value("limit_autorecovery_enabled", value=True)
+        earliest = self._configure_three_exhausted_accounts()
+        with _fake_sdk([]):  # the run parks pre-dispatch; the SDK is never opened
+            session = Session.objects.create(ticket=self.ticket)
+            task = Task.objects.create(ticket=self.ticket, session=session)
+            attempt = run_headless(task, phase="coding", overlay_skill_metadata={})
+
+        task.refresh_from_db()
+        assert task.status == Task.Status.PENDING, "PARKED for auto-resume, NOT terminal FAILED"
+        assert task.not_before == earliest, "parked until the earliest account frees up"
+        assert attempt.error.startswith("limit_parked: ")
+        window = UsageWindowState.objects.active_for_lane(TaskAttempt.Lane.SUBSCRIPTION)
+        assert window is not None
+        assert window.resets_at == earliest
+
+    def test_flag_off_records_the_terminal_failed_as_today(self) -> None:
+        ConfigSetting.objects.set_value("limit_autorecovery_enabled", value=False)
+        self._configure_three_exhausted_accounts()
+        with _fake_sdk([]):
+            session = Session.objects.create(ticket=self.ticket)
+            task = Task.objects.create(ticket=self.ticket, session=session)
+            attempt = run_headless(task, phase="coding", overlay_skill_metadata={})
+
+        task.refresh_from_db()
+        assert task.status == Task.Status.FAILED, "flag off → byte-identical to today (loud FAILED)"
+        assert "exhausted" in attempt.error
+
+
 def test_limit_match_prefers_the_typed_window_over_the_result_text() -> None:
     # The result text names no limit phrase; the rejected typed window is the only
     # signal, so _limit_match classifies WEEKLY from it (the fallback would be None).
@@ -694,6 +768,46 @@ class TestResolveTaskCwd(TestCase):
         Worktree.objects.create(ticket=ticket, repo_path="/nonexistent/repo/path")
         assert _resolve_task_cwd(task) is None
 
+    def test_architectural_review_with_no_worktree_falls_back_to_t3_repo_clone(self) -> None:
+        # The architectural-review daemon's synthetic ticket carries no worktree; the
+        # dispatch must start the review IN the teatree main clone so it can Read the
+        # tree and run git / `t3 tool verify-gates`. This closes the leaked "no
+        # accessible checkout of the teatree repo" half of the bug.
+        import tempfile  # noqa: PLC0415
+
+        from teatree.agents._headless_options import _resolve_task_cwd  # noqa: PLC0415
+
+        ticket = Ticket.objects.create()
+        session = Session.objects.create(ticket=ticket)
+        task = Task.objects.create(ticket=ticket, session=session, phase="architectural_review")
+        with tempfile.TemporaryDirectory() as clone_dir:
+            (Path(clone_dir) / ".git").mkdir()
+            with patch.dict(os.environ, {"T3_REPO": clone_dir}):
+                assert _resolve_task_cwd(task) == clone_dir
+
+    def test_architectural_review_falls_back_to_clone_root_scan_without_t3_repo(self) -> None:
+        from teatree.agents._headless_options import _resolve_task_cwd  # noqa: PLC0415
+
+        ticket = Ticket.objects.create()
+        session = Session.objects.create(ticket=ticket)
+        task = Task.objects.create(ticket=ticket, session=session, phase="architectural_review")
+        with (
+            patch.dict(os.environ, {"T3_REPO": ""}),
+            patch("teatree.core.worktree.clone_paths.find_clone_path", return_value=Path("/ws/souliane/teatree")),
+        ):
+            assert _resolve_task_cwd(task) == "/ws/souliane/teatree"
+
+    def test_non_dispatch_phase_with_no_worktree_keeps_unset_cwd(self) -> None:
+        # Only the scanner-dispatched review phase falls back to the main clone; every
+        # other phase keeps the historical ``None`` when it has no ticket worktree.
+        from teatree.agents._headless_options import _resolve_task_cwd  # noqa: PLC0415
+
+        ticket = Ticket.objects.create()
+        session = Session.objects.create(ticket=ticket)
+        task = Task.objects.create(ticket=ticket, session=session, phase="coding")
+        with patch.dict(os.environ, {"T3_REPO": "/does/not/matter"}):
+            assert _resolve_task_cwd(task) is None
+
 
 def test_collect_ignores_messages_that_are_neither_assistant_nor_result() -> None:
     from teatree.agents.headless import _collect  # noqa: PLC0415
@@ -812,6 +926,19 @@ class TestLoopWatchdog(TestCase):
         assert watchdog.max_turns == 0
         assert watchdog.max_cost_usd == pytest.approx(0.0)
 
+    def test_from_settings_reads_the_db_home_config_tier(self) -> None:
+        # F9.5: an explicit ConfigSetting row is the authoritative source (visible to
+        # config_setting get) and wins over the Django-settings fallback for that
+        # dimension; unconfigured dimensions still fall back to the Django-settings value.
+        ConfigSetting.objects.set_value("watchdog_max_turns", 250, scope="")
+        with override_settings(
+            TEATREE_LOOP_WATCHDOG={"max_runtime_seconds": 42, "max_turns": 7, "max_cost_usd": 1.5},
+        ):
+            watchdog = LoopWatchdog.from_settings()
+        assert watchdog.max_turns == 250  # config row wins over the fallback's 7
+        assert watchdog.max_runtime_seconds == 42  # unconfigured -> Django fallback
+        assert watchdog.max_cost_usd == pytest.approx(1.5)  # unconfigured -> Django fallback
+
 
 class TestDriveWithHeartbeat(TestCase):
     """The SDK driver renews the lease and honours the watchdog (#882, #997)."""
@@ -917,6 +1044,52 @@ class TestDriveWithHeartbeat(TestCase):
         assert elapsed < 10
         assert outcome.stuck_reason is not None
         assert "lease lost" in outcome.stuck_reason
+
+
+class TestWatchdogResamplesUsageMidRun(TestCase):
+    """The heartbeat re-samples usage each tick so a mid-run cost spike is caught (F9.3)."""
+
+    def setUp(self) -> None:
+        self.ticket = Ticket.objects.create()
+        self.session = Session.objects.create(ticket=self.ticket)
+        self.task = Task.objects.create(ticket=self.ticket, session=self.session)
+        self.task.renew_lease = lambda **_kw: None
+
+    def _options(self) -> Any:
+        return headless_mod._build_options(self.task, "ctx", phase="coding", skills=[])
+
+    def test_cost_spike_after_the_pre_run_snapshot_interrupts(self) -> None:
+        # The pre-run snapshot is UNDER the ceiling; the spend then spikes over it while
+        # the run is in flight. With the old static-snapshot code the watchdog would never
+        # observe the spike and the never-terminating stream would drain; re-sampling each
+        # heartbeat catches it and interrupts fast.
+        call_count = 0
+
+        def growing(task: Task) -> TaskUsage:
+            nonlocal call_count
+            call_count += 1
+            # Call 1 is the pre-run sample (under 5.0); every heartbeat re-sample after it
+            # observes the spiked spend (over 5.0).
+            return TaskUsage(turns=0, cost_usd=1.0 if call_count == 1 else 6.0)
+
+        watchdog = LoopWatchdog(max_runtime_seconds=0, max_turns=0, max_cost_usd=5.0)
+        messages = [_assistant_text("step") for _ in range(1000)]
+        start = time.monotonic()
+        with (
+            _fake_sdk(messages, delay=0.05),
+            patch.object(headless_mod, "_sample_usage_closing_connection", growing),
+            patch.object(headless_mod, "_HEARTBEAT_INTERVAL", 0.02),
+        ):
+            outcome = asyncio.run(
+                _drive_with_heartbeat(self.task, "p", self._options(), ClaudeSdkHarness(), watchdog=watchdog)
+            )
+        elapsed = time.monotonic() - start
+
+        assert outcome.stuck_reason is not None
+        assert "cost" in outcome.stuck_reason
+        assert "6" in outcome.stuck_reason
+        assert call_count >= 2, "the watchdog never re-sampled usage after the pre-run snapshot"
+        assert elapsed < 10, f"watchdog did not interrupt on the mid-run spike: {elapsed:.1f}s"
 
 
 class TestUsageSampleClosesWorkerConnection(TestCase):

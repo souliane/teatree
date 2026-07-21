@@ -52,6 +52,7 @@ from teatree.config.resolution import (
     _overlay_overrides_by_name,
     cadence_seconds,
     get_effective_settings,
+    worker_is_quiescing,
 )
 from teatree.config.setting_parsers import (
     _default_handover_mirror_path,
@@ -64,6 +65,7 @@ from teatree.config.setting_parsers import (
 from teatree.config.settings import (
     ENV_SETTING_OVERRIDES,
     OVERLAY_OVERRIDABLE_SETTINGS,
+    SAFETY_POSTURE_KEYS,
     TOML_OVERLAY_OVERRIDABLE_SETTINGS,
     OverlayEntry,
     TeaTreeConfig,
@@ -83,6 +85,7 @@ __all__ = [
     "FEATURE_FLAGS",
     "OVERLAY_OVERRIDABLE_SETTINGS",
     "REGISTRY_SETTINGS",
+    "SAFETY_POSTURE_KEYS",
     "SETTING_HOMES",
     "TOML_OVERLAY_OVERRIDABLE_SETTINGS",
     "AgentHarness",
@@ -138,5 +141,6 @@ __all__ = [
     "resolve_mr_reminder",
     "resolve_speak",
     "speak_from_subtable",
+    "worker_is_quiescing",
     "worktree_root",
 ]
