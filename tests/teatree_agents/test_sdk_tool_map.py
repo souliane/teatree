@@ -7,8 +7,10 @@ capability-coverage drift guard, and the parity guard that every mapped SDK name
 is a real CLI built-in (a bogus deny-rule name is rejected by the CLI).
 """
 
+import pytest
+
 from teatree.agents.sdk_tool_map import CAPABILITY_TO_SDK_TOOLS, sdk_disallowed_tools_for_phase
-from teatree.core.modelkit.phase_tools import ALL_TOOLS
+from teatree.core.modelkit.phase_tools import ALL_TOOLS, VERDICT_REVIEW_PHASES
 from teatree.eval.toolset import KNOWN_BUILTIN_TOOLS
 
 
@@ -33,9 +35,18 @@ class TestReviewPhaseKeepsShellDeniesWrite:
         assert "Grep" not in disallowed
         assert "Glob" not in disallowed
 
-    def test_e2e_reviewing_and_requesting_review_deny_git_write(self) -> None:
-        for phase in ("e2e_reviewing", "requesting_review"):
-            assert "Bash" in sdk_disallowed_tools_for_phase(phase), phase
+    @pytest.mark.parametrize("phase", sorted(VERDICT_REVIEW_PHASES))
+    def test_every_verdict_review_phase_keeps_bash_and_denies_write(self, phase: str) -> None:
+        # The Lane-A translation of the SSOT: a phase that must RECORD a verdict
+        # (`t3 review record` / `t3 review post-comment` off a cold checkout) is
+        # dispatched with Bash reachable, and never with Write/Edit.
+        disallowed = set(sdk_disallowed_tools_for_phase(phase))
+        assert "Bash" not in disallowed, phase
+        assert {"Write", "Edit"} <= disallowed, phase
+
+    def test_requesting_review_denies_git_write(self) -> None:
+        # Control: a non-verdict read-only phase still loses the whole shell family.
+        assert "Bash" in sdk_disallowed_tools_for_phase("requesting_review")
 
     def test_short_verb_spelling_resolves_same(self) -> None:
         assert sdk_disallowed_tools_for_phase("review") == sdk_disallowed_tools_for_phase("reviewing")

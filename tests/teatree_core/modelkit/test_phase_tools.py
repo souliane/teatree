@@ -1,4 +1,11 @@
-from teatree.core.modelkit.phase_tools import ALL_TOOLS, disallowed_tools_for_phase, tools_for_phase
+import pytest
+
+from teatree.core.modelkit.phase_tools import (
+    ALL_TOOLS,
+    VERDICT_REVIEW_PHASES,
+    disallowed_tools_for_phase,
+    tools_for_phase,
+)
 
 
 class TestToolsForPhase:
@@ -59,13 +66,32 @@ class TestDispatchablePhaseTotality:
         assert "write_file" not in tools
         assert "edit_file" not in tools
 
-    def test_adversarial_and_e2e_review_stay_read_mostly_no_shell(self) -> None:
-        # The adversarial/e2e review phases are pure diff-read audits — no shell.
-        for phase in ("codex_adversarial_reviewing", "e2e_reviewing"):
-            tools = tools_for_phase(phase)
-            assert "read_file" in tools, phase
-            assert "write_file" not in tools, phase
-            assert "shell" not in tools, phase
+    @pytest.mark.parametrize("phase", sorted(VERDICT_REVIEW_PHASES))
+    def test_every_verdict_review_phase_gets_the_shell_never_write(self, phase: str) -> None:
+        # A review phase's deliverable is a RECORDED verdict, and every recording
+        # path is a shell call (`t3 review record` / `t3 review post-comment`,
+        # bound to a `git rev-parse HEAD` sha) off a `git worktree add --detach`
+        # cold checkout. A shell-less review phase can read a diff but can never
+        # deliver — it stalls and leaks an "I have no Bash/git/gh" question to the
+        # owner instead of a merge_safe/hold. It still never mutates source.
+        tools = tools_for_phase(phase)
+        assert {"read_file", "search_files", "shell"} <= tools, phase
+        assert "write_file" not in tools, phase
+        assert "edit_file" not in tools, phase
+
+    def test_codex_review_variants_share_one_toolset(self) -> None:
+        # Both variants come out of the SAME dispatch handler
+        # (`loop.persistence._handle_codex_review`) for the same review work — the
+        # `codex:adversarial-review` variant differs only in RUBRIC hardness, and
+        # it is selected for the HIGHEST-stakes diffs (auth/, permissions/,
+        # migrations/, secrets). Granting the harder review the weaker toolset is
+        # the inversion this pins shut.
+        assert tools_for_phase("codex_adversarial_reviewing") == tools_for_phase("codex_reviewing")
+
+    def test_requesting_review_stays_read_only(self) -> None:
+        # Anti-over-correction control: `requesting_review` posts no verdict, so it
+        # is NOT in the verdict set and keeps the plain read-only grant.
+        assert "shell" not in tools_for_phase("requesting_review")
 
     def test_architectural_review_gets_shell_but_never_writes(self) -> None:
         # The periodic ac-reviewing-codebase pass is a genuine review-WORK phase:
