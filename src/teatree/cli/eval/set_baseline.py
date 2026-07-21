@@ -64,13 +64,9 @@ def set_baseline(
     the matrix that is no longer discovered (renamed/removed) is pruned. Output
     is deterministic: scenario keys sorted, ``frontier_ok`` sorted.
     """
-    # Resolved at call time (not as the Option default) so the rendered CLI-reference
-    # help stays byte-deterministic — an absolute ``__file__``-derived default differs
-    # per environment and would break the docs-drift gate.
-    out = out if out is not None else BASELINE_PRESET_PATH
     ensure_django()
-    # Resolved here, not as the option default: binding the absolute path would
-    # render this machine's checkout into the generated CLI reference.
+    # Resolved here, not as the Option default: an absolute __file__-derived
+    # default renders per-environment and breaks the docs-drift gate.
     target = out if out is not None else BASELINE_PRESET_PATH
     try:
         payload = load_matrix_payload(from_matrix)
