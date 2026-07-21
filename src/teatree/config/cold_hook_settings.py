@@ -65,4 +65,5 @@ COLD_HOOK_SETTINGS: dict[str, ColdHookSetting] = {
     "deny_circuit_breaker_threshold": ColdHookSetting(_parse_strict_int, default=3),
     "orchestrator_turn_budget": ColdHookSetting(_parse_strict_int, default=25),
     "orchestrator_turn_wall_clock_seconds": ColdHookSetting(_parse_strict_int, default=180),
+    "hook_validator_timeout_seconds": ColdHookSetting(_parse_strict_int, default=60),
 }

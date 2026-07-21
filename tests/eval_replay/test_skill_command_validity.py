@@ -4,8 +4,10 @@ The engine is pure: it takes the live ``(valid_paths, group_paths)`` registry as
 an argument (dependency-inverted — no ``teatree.cli`` import) and reports every
 backticked invocation that does not resolve. A SKILL.md that documents a ``t3``
 command which no longer exists in the registry is drift (the "no stale
-references" rule). Placeholder/flag forms (``t3 <overlay> …``, ``t3 …``) are
-skipped — they are generic mentions, not specific commands.
+references" rule). A leading ``t3 <overlay>`` is resolved to a representative
+overlay so an overlay-scoped ``t3 <overlay> <group> <sub>`` is validated too;
+only a command path that is itself a placeholder (``t3 …``, ``t3 <overlay> …``)
+is skipped as a generic mention.
 """
 
 from pathlib import Path
@@ -56,10 +58,11 @@ class TestResolveCommandPath:
         assert resolve_command_path("t3 loop tick somearg", _VALID, _GROUPS) == "t3 loop tick"
 
     def test_first_token_placeholder_resolves_to_the_bare_root(self) -> None:
-        # `t3 <overlay> …` / `t3 …` — the first token after `t3` is a placeholder,
-        # so the walk halts at the root group `t3`. The resolver returns `"t3"`
-        # (a valid path); the `validate_skill_commands` layer treats these as
-        # generic mentions via `_is_placeholder_only`, never as a concrete command.
+        # Called DIRECTLY, the resolver treats any first-token placeholder as the
+        # halt point, so the walk stops at the root group `t3`. `validate_skill_commands`
+        # substitutes a leading `<overlay>` with a concrete overlay BEFORE calling
+        # the resolver, so the overlay form is validated there — this direct call
+        # exercises only the token-walker's own placeholder-halt contract.
         assert resolve_command_path("t3 <overlay> workspace ticket", _VALID, _GROUPS) == "t3"
         assert resolve_command_path("t3 ...", _VALID, _GROUPS) == "t3"
         assert resolve_command_path("t3 …", _VALID, _GROUPS) == "t3"
@@ -98,6 +101,37 @@ class TestValidateSkillCommands:
         skills = tmp_path / "skills"
         _skill(skills, "doc", "Run `t3 <overlay> workspace ticket <url>` or just `t3 ...`.")
         report = validate_skill_commands(_VALID, _GROUPS, skills_dir=skills)
+        assert report.ok
+
+    def test_overlay_placeholder_command_path_is_validated(self, tmp_path: Path) -> None:
+        # `t3 <overlay> <group> <sub>` resolves the `<overlay>` placeholder to the
+        # representative overlay, then validates the group+sub path against the
+        # registry. A subcommand absent from the registry is drift — the leading
+        # placeholder no longer short-circuits the check.
+        valid = {"t3", "t3 teatree", "t3 teatree lifecycle"}
+        groups = {"t3", "t3 teatree", "t3 teatree lifecycle"}
+        skills = tmp_path / "skills"
+        _skill(skills, "attest", "Attest via `t3 <overlay> lifecycle record-e2e-run <id>`.")
+        report = validate_skill_commands(valid, groups, skills_dir=skills)
+        assert not report.ok
+        assert report.violations[0].command == "t3 <overlay> lifecycle record-e2e-run <id>"
+
+    def test_overlay_placeholder_real_command_validates_ok(self, tmp_path: Path) -> None:
+        valid = {"t3", "t3 teatree", "t3 teatree ticket", "t3 teatree ticket list"}
+        groups = {"t3", "t3 teatree", "t3 teatree ticket"}
+        skills = tmp_path / "skills"
+        _skill(skills, "list", "Enumerate with `t3 <overlay> ticket list`.")
+        report = validate_skill_commands(valid, groups, skills_dir=skills)
+        assert report.ok
+
+    def test_overlay_placeholder_in_arg_position_is_still_skipped(self, tmp_path: Path) -> None:
+        # A placeholder in an ARGUMENT position (after a resolved leaf, or a bare
+        # `t3 <overlay> …` mention) is not drift — only the command PATH is checked.
+        valid = {"t3", "t3 teatree", "t3 teatree ticket", "t3 teatree ticket list"}
+        groups = {"t3", "t3 teatree", "t3 teatree ticket"}
+        skills = tmp_path / "skills"
+        _skill(skills, "generic", "Run `t3 <overlay> ...` or `t3 <overlay> ticket list <id>`.")
+        report = validate_skill_commands(valid, groups, skills_dir=skills)
         assert report.ok
 
     def test_typoed_subcommand_is_a_violation(self, tmp_path: Path) -> None:

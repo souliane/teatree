@@ -300,6 +300,15 @@ jobs:
       # all-skipped run exits non-zero. `--lane`/`--shard` scope the leg to its one
       # shard. `--effort <tier>` is appended only when the matrix carries an effort
       # axis; with no effort axis the run keeps the lane-default effort.
+      # Which subscription account CLAUDE_CODE_OAUTH_TOKEN currently holds. Recorded so a
+      # shard's cost figures stay attributable — they are NOT comparable across accounts on
+      # different plans. The variable is written by `t3 eval ci-account switch` (operator-
+      # invoked); an empty value means the secret predates account tracking.
+      - name: Record the run's cost basis (which account the OAuth secret holds)
+        run: |
+          ACCOUNT="${{ vars.CLAUDE_CODE_OAUTH_ACCOUNT }}"
+          echo "### Cost basis" >> "$GITHUB_STEP_SUMMARY"
+          echo "OAuth account: ${ACCOUNT:-unrecorded}" >> "$GITHUB_STEP_SUMMARY"
       - name: Metered behavioral benchmark suite (in Docker; 3-tier matrix; --require-executed always armed)
         uses: nick-fields/retry@ad984534de44a9489a53aefd81eb77f87c70dc60  # v4
         env:

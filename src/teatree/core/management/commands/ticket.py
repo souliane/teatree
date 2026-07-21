@@ -17,7 +17,7 @@ from teatree.core.management.commands._plan_commands import PlanCommands
 from teatree.core.management.commands._rubric_commands import RubricCommands
 from teatree.core.management.commands._sweep_commands import SweepCommands
 from teatree.core.management.commands._ticket_show import TicketShowCommands
-from teatree.core.management.commands._transition_names import ALLOWED_TRANSITIONS
+from teatree.core.management.commands._transition_names import ALLOWED_TRANSITIONS, TRANSITION_HELP
 from teatree.core.management.commands._transition_refusals import review_context_refusal
 from teatree.core.merge import MergePreconditionError, resolve_pr_repo_slug
 from teatree.core.models import ClearIssuanceError, ClearRequest, MergeClear, ReviewVerdict, Ticket
@@ -84,14 +84,9 @@ class Command(
     SweepCommands,
     TyperCommand,
 ):
-    @command()
+    @command(help=TRANSITION_HELP)
     def transition(self, ticket_id: int, transition_name: str) -> dict[str, object]:
-        """Transition a ticket to a new state.
-
-        Accepts any of the allowed transition names: scope, start, code, test,
-        review, ship, request_review, mark_merged, retrospect, mark_delivered,
-        rework, mark_review_no_action.
-        """
+        """Transition a ticket to a new state; see ``--help`` for the allowed names."""
         if transition_name not in ALLOWED_TRANSITIONS:
             return {"error": f"Unknown transition: {transition_name}"}
 

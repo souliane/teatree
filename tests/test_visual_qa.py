@@ -103,6 +103,26 @@ class TestEvaluate:
         assert not report.has_errors
 
 
+class TestRunCheckLaunchesHeadless:
+    """The pre-push visual-QA gate must never pop a visible window on a headless box."""
+
+    def test_chromium_launched_headless(self, monkeypatch, tmp_path) -> None:
+        launcher = MagicMock()
+        pw = MagicMock()
+        pw.chromium.launch = launcher
+        context_manager = MagicMock()
+        context_manager.__enter__.return_value = pw
+        monkeypatch.setattr(
+            "playwright.sync_api.sync_playwright",
+            lambda: context_manager,
+            raising=True,
+        )
+
+        visual_qa.run_check([], base_url="http://x", screenshot_dir=str(tmp_path))
+
+        assert launcher.call_args.kwargs.get("headless") is True
+
+
 class TestVisualQAReport:
     def test_empty_report_has_no_errors(self) -> None:
         report = visual_qa.VisualQAReport(targets=["/"])

@@ -1566,6 +1566,8 @@ Usage: t3 eval [OPTIONS] COMMAND [ARGS]...
 │                           name is given.                                     │
 │ ci-heal                   Operator control of the CI-eval self-healing loop  │
 │                           (open sessions, list, dry-run advance).            │
+│ ci-account                Inspect / switch the Anthropic account CI's OAuth  │
+│                           secret holds.                                      │
 │ corpus                    Ground-truth corpus curation: list, inspect, and   │
 │                           grade captured sessions.                           │
 │ label                     Corpus-label curation: list nominations, scaffold  │
@@ -1777,9 +1779,11 @@ Usage: t3 eval skill-command-validity [OPTIONS]
 
  Tier-1 (deterministic, free, no ``claude`` run): each ``skills/<name>/`` doc's
  backticked ``t3 …`` commands are token-walked against the live typer command
- tree. A command that no longer resolves (a CLI rename left the doc stale) is a
- violation — the "no stale references" rule — and exits non-zero. Generic
- placeholder mentions (``t3 …`` / ``t3 <overlay> …``) are skipped.
+ tree. A leading ``t3 <overlay>`` is resolved to a representative overlay so an
+ overlay-scoped ``t3 <overlay> <group> <sub>`` is validated too. A command that
+ no longer resolves (a CLI rename left the doc stale) is a violation — the "no
+ stale references" rule — and exits non-zero. A generic mention whose command
+ path is a placeholder (``t3 …``, ``t3 <overlay> …``) is skipped.
 
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --format        TEXT  Report format: text or json. [default: text]           │
@@ -2620,6 +2624,61 @@ Usage: t3 eval ci-heal advance [OPTIONS]
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --json          Emit the advance outcomes as a JSON array.                   │
 │ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+#### `t3 eval ci-account`
+
+```
+Usage: t3 eval ci-account [OPTIONS] COMMAND [ARGS]...
+
+ Inspect / switch the Anthropic account CI's OAuth secret holds.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Commands ───────────────────────────────────────────────────────────────────╮
+│ show    Report which account CI's OAuth secret holds, and every account's    │
+│         headroom.                                                            │
+│ switch  Point CI's OAuth secret at the healthiest account; exit 1 when none  │
+│         can serve a run.                                                     │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 eval ci-account show`
+
+```
+Usage: t3 eval ci-account show [OPTIONS]
+
+ Report which account CI's OAuth secret holds, and every account's headroom.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --repo        TEXT  The repo whose Actions secret to read/write.             │
+│                     [default: souliane/teatree]                              │
+│ --json              Emit the report as JSON.                                 │
+│ --help              Show this message and exit.                              │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 eval ci-account switch`
+
+```
+Usage: t3 eval ci-account switch [OPTIONS]
+
+ Point CI's OAuth secret at the healthiest account; exit 1 when none can serve
+ a run.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --repo               TEXT     The repo whose Actions secret to read/write.   │
+│                               [default: souliane/teatree]                    │
+│ --json                        Emit the report as JSON.                       │
+│ --starting-in        INTEGER  Minutes until the run starts. A 5h window that │
+│                               resets before then counts as fully free, so an │
+│                               account can be scored for a run scheduled      │
+│                               after its reset.                               │
+│                               [default: 0]                                   │
+│ --dry-run                     Report the switch without writing anything.    │
+│ --help                        Show this message and exit.                    │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -7955,6 +8014,8 @@ Usage: t3 teatree pr [OPTIONS] COMMAND [ARGS]...
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ╭─ Commands ───────────────────────────────────────────────────────────────────╮
 │ create          Create a pull request for the ticket's branch.               │
+│ merge           [Removed] Refuses with a redirect to the §17.4 keystone      │
+│                 (`ticket clear` + `ticket merge`).                           │
 │ ensure-pr       Create a PR for an orphan branch (idempotent).               │
 │ check-gates     Check whether session gates allow a phase transition.        │
 │ fetch-issue     Fetch issue details from the configured tracker.             │
@@ -8018,6 +8079,32 @@ Usage: t3 teatree pr create [OPTIONS] TICKET_ID
 │                                                        no-adopt-worktree]    │
 │ --help                                                 Show this message and │
 │                                                        exit.                 │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 teatree pr merge`
+
+```
+Usage: t3 teatree pr merge [OPTIONS] PR SLUG
+
+ REMOVED — FSM-incoherent post-#863; refuses with a redirect to the §17.4
+ keystone.
+
+ The old LOCAL-squash/server-side path bypassed ``MergeClear``
+ validation, the ``expected_head_oid`` SHA-binding, the atomic
+ CLEAR-consume + ``MergeAudit`` + attestation + ``mark_merged()``.
+ It refuses symmetrically with the raw-merge prohibition guard so
+ no out-of-band path survives (BLUEPRINT §17.1 invariant 8 / §17.4).
+ Use ``ticket clear`` then ``ticket merge`` instead.
+
+╭─ Arguments ──────────────────────────────────────────────────────────────────╮
+│ *    pr        INTEGER  [required]                                           │
+│ *    slug      TEXT     [required]                                           │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --repo-path                 TEXT                                             │
+│ --auto         --no-auto          [default: no-auto]                         │
+│ --help                            Show this message and exit.                │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -8837,6 +8924,8 @@ Usage: t3 teatree lifecycle [OPTIONS] COMMAND [ARGS]...
 │                          (reviewing-phase gate).                             │
 │ record-review-context    Record referenced-context retrieval before          │
 │                          reviewing (deep-retrieval gate).                    │
+│ record-e2e-run           Record a green E2E run + posted evidence, clearing  │
+│                          the mandatory-E2E gate (#1967).                     │
 │ record-anti-vacuity      Record the SHA-bound anti-vacuity attestation       │
 │                          before review-request/merge.                        │
 ╰──────────────────────────────────────────────────────────────────────────────╯
@@ -8949,6 +9038,36 @@ Usage: t3 teatree lifecycle record-review-context [OPTIONS] TICKET_ID
 │ --analysis         TEXT  How the implementation was analyzed against the     │
 │                          specified requirements + rules.                     │
 │ --help                   Show this message and exit.                         │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 teatree lifecycle record-e2e-run`
+
+```
+Usage: t3 teatree lifecycle record-e2e-run [OPTIONS] TICKET_ID
+
+ Record SHA-bound, POSTED E2E evidence for the mandatory-E2E gate (#1967).
+
+ Writes an :class:`~teatree.core.models.e2e_mandatory_run.E2eMandatoryRun`
+ for the ticket at ``--head-sha``. A green run satisfies the mandatory-E2E
+ gate at ``pr create`` and the §17.4 CLEAR **only when** ``--posted-url``
+ is given — recorded E2E evidence is not enough, it must be POSTED (the
+ SHA-bound ``e2e post-test-plan`` ticket comment). A green run at any other
+ SHA does not carry. Re-recording the same spec at the same tree updates
+ the row in place (idempotent). A red run, or a green run with no
+ ``--posted-url``, records provenance without satisfying the gate.
+
+╭─ Arguments ──────────────────────────────────────────────────────────────────╮
+│ *    ticket_id      TEXT  [required]                                         │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --spec              TEXT  Path to the E2E spec that ran.                     │
+│ --result            TEXT  Run result: green or red. [default: green]         │
+│ --head-sha          TEXT  Full 40-char hex SHA of the reviewed tree the run  │
+│                           executed against.                                  │
+│ --posted-url        TEXT  URL of the posted `e2e post-test-plan` comment;    │
+│                           required for a green run to satisfy the gate.      │
+│ --help                    Show this message and exit.                        │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -9164,11 +9283,10 @@ Usage: t3 teatree ticket [OPTIONS] COMMAND [ARGS]...
 ```
 Usage: t3 teatree ticket transition [OPTIONS] TICKET_ID TRANSITION_NAME
 
- Transition a ticket to a new state.
-
- Accepts any of the allowed transition names: scope, start, code, test,
- review, ship, request_review, mark_merged, retrospect, mark_delivered,
- rework, mark_review_no_action.
+ Transition a ticket to a new state. Allowed transition names: scope, start,
+ plan, code, test, review, ship, request_review, mark_merged, retrospect,
+ mark_delivered, rework, mark_review_no_action, reconcile_reviewed, ignore,
+ unignore.
 
 ╭─ Arguments ──────────────────────────────────────────────────────────────────╮
 │ *    ticket_id            INTEGER  [required]                                │

@@ -508,6 +508,11 @@ _LEAK_SPELLINGS: list[tuple[str, str]] = [
     # unread (pre-fix, ``gh -F`` reached the api-field walker, the path matched
     # no ``field=value`` assignment, and the post was ALLOWED unscanned).
     ("gh short body-file unreadable", "gh pr create -R souliane/teatree --title x -F /nonexistent/body.md"),
+    # ``glab`` uses ``-d`` for the MR description on ``create`` and ``update``;
+    # pre-fix the parser recognised only the long ``--description``, so a body
+    # passed as ``-d`` extracted empty, scanned clean, and posted UNSCANNED.
+    ("glab short description -d create", 'glab mr create -R souliane/teatree -d "acmecorp"'),
+    ("glab short description -d update", 'glab mr update 7 -R souliane/teatree -d "acmecorp"'),
     ("interpreter sh -c forge", f'{_INTERNAL_LEAD}sh -c "{_PUBLIC_POST}"'),
     ("interpreter bash -c forge", f'{_INTERNAL_LEAD}bash -c "{_PUBLIC_POST}"'),
     ("interpreter eval forge", f'{_INTERNAL_LEAD}eval "{_PUBLIC_POST}"'),
