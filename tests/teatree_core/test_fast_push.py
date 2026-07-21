@@ -6,6 +6,7 @@ runtime so this test file never contains a literal matchable token.
 """
 
 import json
+import sqlite3
 from dataclasses import dataclass, field
 from pathlib import Path
 from subprocess import CompletedProcess
@@ -13,7 +14,15 @@ from unittest.mock import patch
 
 import pytest
 
-from teatree.core.fast_push import LEAK_GATES, FastPusher, FastPushOutcome, GhForge, GlabForge, forge_for_repo
+from teatree.core.fast_push import (
+    LEAK_GATES,
+    FastPusher,
+    FastPushOutcome,
+    GhForge,
+    GlabForge,
+    LeakGateScan,
+    forge_for_repo,
+)
 from teatree.utils.run import run_checked
 
 
@@ -300,3 +309,41 @@ class TestForgeCliCommands:
             assert forge.create_pr(branch="b", title="t", body="d") == "https://gl/mr/8"
             forge.update_pr(url="https://gl/mr/8", body="d2")
         assert run.call_args_list[1].args[0][:4] == ["glab", "mr", "update", "8"]
+
+
+class TestCoreGateClassRouting:
+    """The fast-push gate is a ``core``-scope gate and must request core classes.
+
+    ``GATE_CLASSES["core"]`` deliberately excludes the diff-only ``tone`` class.
+    Routing this gate through the ``diff`` union would silently widen fast-push
+    beyond the registry's own per-gate contract the moment a registry is
+    populated.
+    """
+
+    @staticmethod
+    def _seed_registry(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        db = tmp_path / "registry.sqlite3"
+        conn = sqlite3.connect(str(db))
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS teatree_config_setting ("
+            "id INTEGER PRIMARY KEY, scope TEXT NOT NULL DEFAULT '', key TEXT NOT NULL, value TEXT NOT NULL)"
+        )
+        conn.execute(
+            "INSERT INTO teatree_config_setting (scope, key, value) VALUES ('', 'banned_term_registry', ?)",
+            (json.dumps({"leak": ["acme"], "tone": ["blunder"]}),),
+        )
+        conn.commit()
+        conn.close()
+        monkeypatch.setenv("T3_CONFIG_DB", str(db))
+        monkeypatch.delenv("T3_BANNED_TERMS", raising=False)
+
+    def test_leak_class_term_is_flagged(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        self._seed_registry(tmp_path, monkeypatch)
+        findings = LeakGateScan._banned_terms({"sample.txt": ["acme"]})
+        assert [f.detail for f in findings] == ["banned term 'acme'"]
+
+    def test_tone_class_term_is_not_flagged_by_the_core_gate(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        self._seed_registry(tmp_path, monkeypatch)
+        assert LeakGateScan._banned_terms({"sample.txt": ["blunder"]}) == []

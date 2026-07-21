@@ -5,7 +5,7 @@ hook chain runs is skipped EXCEPT the leak gates, which are re-enforced
 in-process here so bypassing the hooks never bypasses leak protection. The
 four gates mirror the hook chain's four leak checks, consulting the SAME
 canonical matchers and sources — banned terms (``term_match`` /
-``resolve_banned_terms``); the privacy/secret scan (``scripts/privacy_scan.py``);
+``terms_for_gate("core")``); the privacy/secret scan (``scripts/privacy_scan.py``);
 overlay-leak terms + opaque IDs (``overlay_leak_terms`` / ``find_opaque_ids``);
 and the public-repo commit-author identity gate (#730). Author/committer email
 is commit metadata a diff never shows, so that fourth gate refuses a non-noreply
@@ -26,7 +26,8 @@ from pathlib import Path
 from typing import Final, Protocol
 
 from teatree.config import cold_reader
-from teatree.hooks.banned_terms_cli import resolve_banned_terms, staged_added_lines
+from teatree.hooks.banned_term_registry import terms_for_gate
+from teatree.hooks.banned_terms_cli import staged_added_lines
 from teatree.hooks.banned_terms_tree_scan import BannedTermsUnsetError
 from teatree.hooks.opaque_id import find_opaque_ids
 from teatree.hooks.term_match import matched_term
@@ -241,7 +242,7 @@ class LeakGateScan:
     @staticmethod
     def _banned_terms(lines_by_path: dict[str, list[str]]) -> list[LeakFinding]:
         try:
-            terms = resolve_banned_terms()
+            terms = terms_for_gate("core")
         except BannedTermsUnsetError:
             detail = (
                 "the banned_terms list is UNSET — fail closed: set T3_BANNED_TERMS or "
