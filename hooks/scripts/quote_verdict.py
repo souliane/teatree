@@ -84,7 +84,7 @@ def resolve_high_verdict(command: str, cwd: Path | None) -> QuoteVerdict:
     terms; the quote gate may NOT, because ``privacy-scan`` carries no
     verbatim-quote detector (see the module docstring). Config resolution is the
     default env/home one (the live gate passes no explicit config; tests pin it
-    via ``T3_BANNED_TERMS_CONFIG``).
+    via the ``config_path`` argument).
     """
     from teatree.hooks import public_visibility, publish_surface  # noqa: PLC0415 — deferred: cold-hook import
 

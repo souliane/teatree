@@ -18,17 +18,18 @@ Exit codes:
 import json
 import re
 import sys
-from collections.abc import Sequence
 from pathlib import Path
 
 import typer
 from rich.console import Console
 from rich.table import Table
 
+from teatree.config import cold_reader
 from teatree.hooks.banned_terms_cli import resolve_banned_terms
 from teatree.hooks.banned_terms_tree_scan import BannedTermsUnsetError
 from teatree.hooks.opaque_id import find_opaque_ids
 from teatree.hooks.privacy_diff_comments import scan_diff as _scan_diff_comments
+from teatree.hooks.term_match import matched_term
 
 _DIFF_DETECTORS = (_scan_diff_comments,)
 
@@ -81,12 +82,8 @@ def _is_ssh_git_remote(line: str, match: re.Match[str]) -> bool:
 _ALLOW_MARKER = "privacy-scan:allow"
 
 
-def _build_banned_re(terms: Sequence[str]) -> re.Pattern[str] | None:
-    cleaned = [t.strip() for t in terms if t.strip()]
-    if not cleaned:
-        return None
-    escaped = [re.escape(t) for t in cleaned]
-    return re.compile(r"\b(?:" + "|".join(escaped) + r")\b", re.IGNORECASE)
+def _banned_allowlist() -> tuple[str, ...]:
+    return tuple(str(t) for t in cold_reader.list_setting("banned_terms_allowlist", default=[]))
 
 
 def _resolve_scan_terms(env_value: str) -> tuple[str, ...]:
@@ -113,7 +110,7 @@ def _resolve_scan_terms(env_value: str) -> tuple[str, ...]:
         return ()
 
 
-def _scan_line(line: str, banned_re: re.Pattern[str] | None) -> list[tuple[str, str]]:
+def _scan_line(line: str, terms: tuple[str, ...], allowlist: tuple[str, ...] = ()) -> list[tuple[str, str]]:
     findings: list[tuple[str, str]] = []
     if _ALLOW_MARKER in line:
         return findings
@@ -133,8 +130,8 @@ def _scan_line(line: str, banned_re: re.Pattern[str] | None) -> list[tuple[str, 
         for m in _HOSTNAME_RE.finditer(line)
         if not _FALSE_POSITIVE_RE.search(m.group())
     )
-    if banned_re:
-        findings.extend(("banned_term", m.group()) for m in banned_re.finditer(line))
+    if term := matched_term(line, terms, allowlist):
+        findings.append(("banned_term", term))
     return findings
 
 
@@ -192,12 +189,14 @@ def main(
 ) -> None:
     """Scan text for privacy-sensitive patterns."""
     text = sys.stdin.read() if input_file == "-" else Path(input_file).read_text(encoding="utf-8")
-    banned_re = _build_banned_re(_resolve_scan_terms(banned_terms))
+    terms = _resolve_scan_terms(banned_terms)
+    allowlist = _banned_allowlist()
     all_findings: list[dict[str, str | int]] = []
 
     for lineno, line in enumerate(text.splitlines(), 1):
         all_findings.extend(
-            {"line": lineno, "category": category, "match": match} for category, match in _scan_line(line, banned_re)
+            {"line": lineno, "category": category, "match": match}
+            for category, match in _scan_line(line, terms, allowlist)
         )
 
     all_findings.extend(_run_diff_detectors(text))

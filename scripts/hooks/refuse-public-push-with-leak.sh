@@ -5,7 +5,7 @@
 # repository and the branch-vs-base diff OR the commit messages in the
 # push range fail `t3 tool privacy-scan` (a planted secret, an internal
 # `/Users/`-`/home/` path, a private IP, an API token, an internal
-# hostname, or a T3_BANNED_TERM). Commit messages and trailers reach
+# hostname, or a configured banned term). Commit messages and trailers reach
 # public history just like file content, so they are scanned too (#703).
 #
 # It ALSO refuses (#730) when any commit in the push range has an author

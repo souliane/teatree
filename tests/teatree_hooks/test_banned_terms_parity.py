@@ -28,12 +28,33 @@ import os
 import sqlite3
 import subprocess
 import sys
+from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
 
 import pytest
 
+from teatree.core.fast_push import LeakGateScan
 from teatree.hooks import banned_terms_scanner, banned_terms_tree_scan
 from teatree.hooks.term_match import matched_term
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "scripts"))
+from privacy_scan import PRIVACY_FINDINGS_EXIT_CODE
+
+
+@contextmanager
+def _config_db(db: Path) -> Iterator[None]:
+    """Point the cold config reader at *db* for the duration of the block."""
+    previous = os.environ.get("T3_CONFIG_DB")
+    os.environ["T3_CONFIG_DB"] = str(db)
+    try:
+        yield
+    finally:
+        if previous is None:
+            del os.environ["T3_CONFIG_DB"]
+        else:
+            os.environ["T3_CONFIG_DB"] = previous
+
 
 # Anchor the script under test to THIS repo (the one carrying the test), not
 # ``find_project_root`` — that helper resolves a worktree back to its primary
@@ -179,12 +200,49 @@ def _tree_verdict(tmp_path: Path, text: str) -> bool:
     return any(f.path == "sample.txt" for f in findings)
 
 
+def _privacy_scan_verdict(tmp_path: Path, text: str) -> bool:
+    """Whether the pre-push backstop ``scripts/privacy_scan.py`` flags *text*.
+
+    The posting gate downgrades a local commit to a warning on the theory that
+    this scan is the real backstop, so a term this misses is a term that
+    reaches a public remote unblocked.
+    """
+    db = _seed_db(tmp_path)
+    sample = tmp_path / "sample.txt"
+    sample.write_text(text + "\n", encoding="utf-8")
+    script = _REPO_ROOT / "scripts" / "privacy_scan.py"
+    result = subprocess.run(
+        [sys.executable, str(script), str(sample), "--json"],
+        capture_output=True,
+        text=True,
+        check=False,
+        env={**os.environ, "T3_CONFIG_DB": str(db)},
+    )
+    assert result.returncode in {0, PRIVACY_FINDINGS_EXIT_CODE}, (
+        f"privacy scan crashed: {result.returncode}\n{result.stderr}"
+    )
+    return any(f["category"] == "banned_term" for f in json.loads(result.stdout))
+
+
+def _fast_push_verdict(tmp_path: Path, text: str) -> bool:
+    """Whether the fast-push in-process gate flags *text*.
+
+    ``t3 fast-push`` bypasses the whole hook chain, so its own banned-terms
+    pass is the only thing standing between a fast-pushed commit and a leak.
+    """
+    db = _seed_db(tmp_path)
+    with _config_db(db):
+        return bool(LeakGateScan._banned_terms({"sample.txt": [text]}))
+
+
 _ENTRY_POINTS = {
     "shell-hook": _shell_verdict,
     "banned_terms_cli": _cli_verdict,
     "posting-gate": _scanner_verdict,
     "overlay-leak-matcher": _term_match_verdict,
     "tree-scan": _tree_verdict,
+    "privacy-scan": _privacy_scan_verdict,
+    "fast-push": _fast_push_verdict,
 }
 
 
