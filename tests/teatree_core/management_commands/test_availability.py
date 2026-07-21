@@ -10,6 +10,7 @@ from typer.testing import CliRunner
 
 from teatree.core.availability import MODE_AWAY, MODE_PRESENT, load_override
 from teatree.core.management.commands.availability import Command as AvailabilityCommand
+from teatree.core.models import LoopPreset
 from teatree.core.models.deferred_question import DeferredQuestion
 
 # ast-grep-ignore: ac-django-no-pytest-django-db
@@ -20,6 +21,14 @@ pytestmark = pytest.mark.django_db
 def override_file(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     target = tmp_path / "availability_override.json"
     monkeypatch.setattr("teatree.core.availability.override_path", lambda: target)
+    # The availability aliases now set a ModeOverride to a merged mode; seed the
+    # three modes the aliases target (offline is migration-seeded, but keep it
+    # explicit so the test is self-contained).
+    LoopPreset.objects.update_or_create(
+        name="offline", defaults={"entries": {}, "defers_questions": True, "pauses_self_pump": True}
+    )
+    LoopPreset.objects.update_or_create(name="unattended", defaults={"entries": {}, "defers_questions": True})
+    LoopPreset.objects.update_or_create(name="engaged", defaults={"entries": {}, "defers_questions": False})
     return target
 
 
@@ -32,7 +41,7 @@ def _call(*args: str) -> str:
 class TestAvailabilityCommand:
     def test_away_writes_override(self, override_file: Path) -> None:
         out = _call("availability", "away")
-        assert "mode=away" in out
+        assert "mode=offline" in out
         loaded = load_override()
         assert loaded is not None
         assert loaded.mode == MODE_AWAY
@@ -46,7 +55,7 @@ class TestAvailabilityCommand:
 
     def test_present_writes_override(self, override_file: Path) -> None:
         out = _call("availability", "present")
-        assert "mode=present" in out
+        assert "mode=engaged" in out
         loaded = load_override()
         assert loaded is not None
         assert loaded.mode == MODE_PRESENT
