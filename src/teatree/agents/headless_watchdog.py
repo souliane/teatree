@@ -10,11 +10,11 @@ thread sampler the heartbeat loop offloads the aggregate read to.
 from dataclasses import dataclass
 
 from django.conf import settings
-from django.db import connection
 from django.db.models import Sum
 
 from teatree.config import UserSettings, get_effective_settings
 from teatree.core.models import Task
+from teatree.utils.thread_db import close_thread_db_connections
 
 # Conservative documented default (#882): a generous wall-clock ceiling that
 # only trips on a genuinely runaway agent that never returns — the canonical
@@ -133,14 +133,16 @@ def _sample_usage_closing_connection(task: Task) -> TaskUsage:
 
     Run as an :func:`asyncio.to_thread` worker: the aggregate query opens a
     Django connection bound to the worker thread, which never closes itself.
-    ``close_old_connections`` would NOT reap a fresh, healthy connection (it
-    only closes ones past ``CONN_MAX_AGE`` / marked unusable), so close the
-    thread-local connection explicitly — otherwise it outlives the thread and
-    surfaces as a ``ResourceWarning: unclosed database`` when the thread is
-    GC'd (an order-dependent test flake, and a real connection leak in
-    production).
+    Neither ``close_old_connections`` nor ``connection.close()`` reaps it —
+    the former only closes connections past ``CONN_MAX_AGE`` / marked unusable,
+    and the latter is a documented no-op on an in-memory database. The raw
+    DB-API handle has to be closed directly, which is what
+    :func:`~teatree.utils.thread_db.close_thread_db_connections` does;
+    otherwise the handle outlives the thread and surfaces as a
+    ``ResourceWarning: unclosed database`` when the thread is GC'd (an
+    order-dependent test flake, and a real connection leak in production).
     """
     try:
         return TaskUsage.for_task(task)
     finally:
-        connection.close()
+        close_thread_db_connections()

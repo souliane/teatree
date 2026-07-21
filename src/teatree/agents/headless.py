@@ -25,7 +25,6 @@ from typing import TYPE_CHECKING
 
 from claude_agent_sdk import AssistantMessage, ClaudeAgentOptions, RateLimitEvent, ResultMessage, TextBlock
 from claude_agent_sdk.types import RateLimitInfo
-from django.db import close_old_connections
 from django.utils import timezone
 
 from teatree.agents._headless_env import _overlay_scope, _provider_child_env
@@ -52,6 +51,7 @@ from teatree.llm.credentials import CredentialError
 from teatree.skill_support.loading import SkillLoadingPolicy
 from teatree.types import SkillMetadata
 from teatree.utils.git_run import git_env_hermetic
+from teatree.utils.thread_db import close_thread_db_connections
 
 if TYPE_CHECKING:
     from pydantic_ai.messages import ModelMessage
@@ -390,6 +390,20 @@ def _resolve_dispatch_lane(harness: Harness, provider: AgentHarnessProvider | No
     return _LANE_BY_PROVIDER.get(provider, "")
 
 
+def _renew_lease_closing_connection(task: Task) -> None:
+    """Renew *task*'s lease and close THIS thread's DB connection.
+
+    The :func:`asyncio.to_thread` sibling of
+    :func:`~teatree.agents.headless_watchdog._sample_usage_closing_connection`:
+    the lease write opens a Django connection bound to the offload worker
+    thread, which never closes itself — see :mod:`teatree.utils.thread_db`.
+    """
+    try:
+        task.renew_lease()
+    finally:
+        close_thread_db_connections()
+
+
 async def _drive_with_heartbeat(
     task: Task,
     prompt: str,
@@ -430,7 +444,7 @@ async def _drive_with_heartbeat(
                 while True:
                     await asyncio.sleep(_HEARTBEAT_INTERVAL)
                     try:
-                        await asyncio.to_thread(task.renew_lease)
+                        await asyncio.to_thread(_renew_lease_closing_connection, task)
                     except LeaseLostError:
                         # Another worker took over this task's claim (the lease
                         # lapsed and was reclaimed). Abort THIS run — two workers
@@ -460,9 +474,10 @@ async def _drive_with_heartbeat(
                         await session.interrupt()
                         return
             finally:
-                # This coroutine's thread-offloaded DB work owns its own
-                # connection — close it so it is not leaked.
-                await asyncio.to_thread(close_old_connections)
+                # Belt to the per-call suspenders: every offload target above
+                # closes its own thread's handle, so this only reaps a worker
+                # thread the pool happened to reuse without a closing target.
+                await asyncio.to_thread(close_thread_db_connections)
 
         heartbeat_task = asyncio.create_task(_heartbeat())
         try:
