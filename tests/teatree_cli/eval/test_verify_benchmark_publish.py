@@ -6,9 +6,11 @@ the exit code the publish job branches on is exercised end to end.
 
 from pathlib import Path
 
+import pytest
 from typer.testing import CliRunner
 
 from teatree.cli import app
+from teatree.cli.eval.verify_benchmark_publish import verify_benchmark_publish
 from teatree.eval.matrix import MatrixRow, render_matrix_html
 from teatree.eval.models import EvalSpec
 
@@ -59,3 +61,20 @@ class TestVerifyBenchmarkPublish:
         assert result.exit_code == 1
         assert "under_load-3-5" in result.output
         assert "claude-sonnet-5" in result.output
+
+
+class TestVerifyBenchmarkPublishCallable:
+    """The command function itself, called directly — the seam the workflow step runs."""
+
+    def test_returns_on_a_metered_dashboard(self, tmp_path: Path) -> None:
+        _write_shard(tmp_path, "clean_room-1-16", cost_usd=0.31)
+
+        verify_benchmark_publish(tmp_path)
+
+    def test_raises_system_exit_one_on_an_unmetered_shard(self, tmp_path: Path) -> None:
+        _write_shard(tmp_path, "under_load-3-5", cost_usd=0.0)
+
+        with pytest.raises(SystemExit) as excinfo:
+            verify_benchmark_publish(tmp_path)
+
+        assert excinfo.value.code == 1
