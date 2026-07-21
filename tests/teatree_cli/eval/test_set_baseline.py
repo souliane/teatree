@@ -199,3 +199,32 @@ class TestHeaderAndUnknownColumn:
         result = _invoke(["--from", str(matrix), "--out", str(out)], discovered=[_spec("alpha")])
         assert result.exit_code == 2
         assert "some-custom-model" in result.output
+
+
+class TestOutDefaultIsResolvedAtCallTime:
+    """The ``--out`` default must not bind the absolute BASELINE_PRESET_PATH.
+
+    Binding it makes the rendered help — and therefore the committed CLI
+    reference — carry the generating machine's absolute path, so docs-drift can
+    never be green on two different checkouts.
+    """
+
+    def test_help_does_not_leak_an_absolute_path(self) -> None:
+        result = CliRunner().invoke(app, ["eval", "set-baseline", "--help"])
+        assert result.exit_code == 0
+        assert "/" not in _default_marker_text(result.output)
+
+    def test_omitting_out_writes_to_the_module_path(self, tmp_path: Path) -> None:
+        matrix = tmp_path / "matrix.json"
+        _write_matrix(matrix, {"alpha": {_HAIKU: _cell(passed=True)}})
+        target = tmp_path / "baseline.yaml"
+        with patch("teatree.cli.eval.set_baseline.BASELINE_PRESET_PATH", target):
+            result = _invoke(["--from", str(matrix)], discovered=[_spec("alpha")])
+        assert result.exit_code == 0, result.output
+        assert yaml.safe_load(target.read_text(encoding="utf-8"))["scenarios"] == {"alpha": "cheap"}
+
+
+def _default_marker_text(help_output: str) -> str:
+    """The ``[default: ...]`` fragment of a rendered help screen, or ``""``."""
+    _, _, tail = help_output.partition("[default:")
+    return tail.partition("]")[0]

@@ -2037,8 +2037,6 @@ Usage: t3 eval set-baseline [OPTIONS]
 │                                  in the same file.                           │
 │    --out                   PATH  Baseline file to write (default:            │
 │                                  evals/presets/baseline.yaml).               │
-│                                  [default:                                   │
-│                                  ~/.local/share/teatree-worktre… │
 │    --help                        Show this message and exit.                 │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```

@@ -49,8 +49,8 @@ def set_baseline(
             "under frontier_ok in the same file."
         ),
     ),
-    out: Path = typer.Option(
-        BASELINE_PRESET_PATH,
+    out: Path | None = typer.Option(
+        None,
         "--out",
         help="Baseline file to write (default: evals/presets/baseline.yaml).",
     ),
@@ -64,6 +64,9 @@ def set_baseline(
     is deterministic: scenario keys sorted, ``frontier_ok`` sorted.
     """
     ensure_django()
+    # Resolved here, not as the option default: binding the absolute path would
+    # render this machine's checkout into the generated CLI reference.
+    target = out if out is not None else BASELINE_PRESET_PATH
     try:
         payload = load_matrix_payload(from_matrix)
     except MatrixPayloadError as exc:
@@ -96,8 +99,8 @@ def set_baseline(
         scenario_tiers[entry.name] = tier
     for name in sorted(unresolved):
         typer.echo(f"WARNING {name}: failed at every tier in the matrix — no baseline entry written", err=True)
-    _write_baseline(out, scenario_tiers, frontier_ok)
-    typer.echo(f"wrote {len(scenario_tiers)} scenario tier(s) to {out}")
+    _write_baseline(target, scenario_tiers, frontier_ok)
+    typer.echo(f"wrote {len(scenario_tiers)} scenario tier(s) to {target}")
 
 
 def _cheapest_passing_tier(results: dict[str, MatrixCell | None]) -> str | None:
