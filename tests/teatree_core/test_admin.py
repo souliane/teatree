@@ -129,7 +129,7 @@ class TestPresetScheduleAdminChangelistsLoad(django.test.TestCase):
     def test_loop_schedule_change_form_shows_slot_inline(self) -> None:
         schedule = ModeSchedule.objects.create(name="standard", timezone="UTC")
         ModeScheduleSlot.objects.create(schedule=schedule, days=[0], start_time=dt.time(8, 0), preset_name="engaged")
-        url = reverse("admin:core_loopschedule_change", args=[schedule.pk])
+        url = reverse("admin:core_modeschedule_change", args=[schedule.pk])
         response = self.client.get(url)
         assert response.status_code == 200
         # The inline renders the slot's start_time field on the schedule change form.
