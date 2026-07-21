@@ -2,6 +2,7 @@
 
 import http.server
 import socket
+import sqlite3
 import sys
 import threading
 import time
@@ -9,6 +10,8 @@ from collections.abc import Iterator
 from typing import ClassVar
 
 import pytest
+from django.db import connection
+from django.test import TestCase
 
 from teatree.core.worktree.readiness import (
     CommandProbeSpec,
@@ -302,3 +305,27 @@ class TestRunAndReportProbes:
         lines: list[str] = []
         run_and_report_probes(probes, write_line=lines.append)
         assert lines == ["[OK] ok"]
+
+
+class TestRunProbesConnectionHygiene(TestCase):
+    """An overlay probe that touches the ORM must not leak its pool worker's connection.
+
+    ``Probe.check_fn`` is overlay-supplied and may query the ORM, opening a
+    thread-local Django connection on the pool worker. Left open, that handle is
+    finalized at an arbitrary later GC as a ``ResourceWarning`` which — under
+    ``filterwarnings = error`` — fails an unrelated test in the same xdist worker.
+    """
+
+    def test_probe_worker_db_connection_is_closed(self) -> None:
+        raw_connections: list[sqlite3.Connection] = []
+
+        def orm_touching_check() -> ProbeResult:
+            connection.ensure_connection()
+            raw_connections.append(connection.connection)
+            return ProbeResult(name="orm", passed=True)
+
+        run_probes([Probe(name="orm", description="touches the ORM", check_fn=orm_touching_check)])
+
+        assert raw_connections, "the probe never opened a connection"
+        with pytest.raises(sqlite3.ProgrammingError):
+            raw_connections[0].execute("SELECT 1")
