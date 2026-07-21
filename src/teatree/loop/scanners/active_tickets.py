@@ -25,6 +25,7 @@ from typing import TYPE_CHECKING, cast
 
 from django.apps import apps
 
+from teatree.core.modelkit.phases import SHORT_DESCRIBE_PHASE
 from teatree.loop.scanners.base import ScanSignal
 
 logger = logging.getLogger(__name__)
@@ -92,7 +93,7 @@ def _enqueue_short_describe(ticket: "Ticket") -> None:
 
     existing = Task.objects.filter(
         ticket=ticket,
-        phase="short_describe",
+        phase=SHORT_DESCRIBE_PHASE,
         status__in=[Task.Status.PENDING, Task.Status.CLAIMED, Task.Status.COMPLETED],
     )
     if existing.exists():
@@ -101,7 +102,7 @@ def _enqueue_short_describe(ticket: "Ticket") -> None:
     Task.objects.create(
         ticket=ticket,
         session=session,
-        phase="short_describe",
+        phase=SHORT_DESCRIBE_PHASE,
         execution_target=Task.ExecutionTarget.HEADLESS,
         subject=f"Summarize #{ticket.ticket_number}",
         execution_reason="Auto-scheduled short_describe — generate terminal-friendly ticket summary",

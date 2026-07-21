@@ -5,7 +5,7 @@ from unittest.mock import patch
 from django.test import TestCase
 
 from teatree.core.backend_protocols import ReviewState
-from teatree.core.models import ImplementedIssueMarker, Task, Ticket
+from teatree.core.models import BroadcastObservation, ImplementedIssueMarker, ScannedBroadcast, Task, Ticket
 from teatree.loop.dispatch import DispatchAction
 from teatree.loop.persistence import persist_agent_actions
 from tests.factories import ImplementedIssueMarkerFactory
@@ -55,6 +55,46 @@ class TestPersistReviewer(TestCase):
         # Open reviewing task already exists → no new Task created.
         assert second == []
         assert Task.objects.filter(ticket__issue_url=action.payload["url"]).count() == 1
+
+    def test_links_the_reviewer_task_back_to_its_broadcast_row(self) -> None:
+        """The broadcast ledger learns which task covers it, closing its emission gate."""
+        row = ScannedBroadcast.record(
+            BroadcastObservation(
+                channel="C0DEMOCHAN1",
+                slack_ts="1779201478.501469",
+                mr_urls=["https://example.com/owner/repo/pull/42"],
+                classification=ScannedBroadcast.Classification.PENDING,
+            )
+        )
+        assert row is not None
+        action = self._action()
+        action.payload["broadcast_id"] = row.pk
+
+        created = persist_agent_actions([action])
+
+        row.refresh_from_db()
+        assert row.reviewer_task_id == str(created[0].pk)
+        assert row.awaiting_reviewer_dispatch is False
+
+    def test_links_an_already_open_reviewer_task_back_to_its_broadcast_row(self) -> None:
+        """A re-emitted broadcast whose review is already in flight still converges."""
+        action = self._action()
+        first = persist_agent_actions([action])
+        row = ScannedBroadcast.record(
+            BroadcastObservation(
+                channel="C0DEMOCHAN1",
+                slack_ts="1779201499.123456",
+                mr_urls=["https://example.com/owner/repo/pull/42"],
+                classification=ScannedBroadcast.Classification.PENDING,
+            )
+        )
+        assert row is not None
+        action.payload["broadcast_id"] = row.pk
+
+        assert persist_agent_actions([action]) == []
+
+        row.refresh_from_db()
+        assert row.reviewer_task_id == str(first[0].pk)
 
     def test_updates_reviewed_sha_when_author_pushes(self) -> None:
         first = self._action(head_sha="abc123")

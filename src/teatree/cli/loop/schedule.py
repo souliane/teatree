@@ -1,4 +1,4 @@
-"""``t3 loop schedule {list,show,set-active,clear-active}`` — the weekly schedule surface (#3159).
+"""``t3 loop schedule {list,show,set-active,set-timezone,clear-active}`` — the weekly schedule surface (#3159).
 
 Thin typer verbs delegating to the ``loop_schedule`` Django management command
 (the ``cli.loop.state`` pattern). :func:`register` attaches the ``schedule``
@@ -24,7 +24,7 @@ def _delegate(*args: str, json_output: bool = False) -> None:
 
 
 def register(loop_app: typer.Typer) -> None:
-    """Attach the ``schedule`` subgroup (list/show/set-active/clear-active) onto loop_app."""
+    """Attach the ``schedule`` subgroup (list/show/set-active/set-timezone/clear-active) onto loop_app."""
     schedule_app = typer.Typer(
         name="schedule", no_args_is_help=True, help="Weekly preset schedules — the L2 calendar (#3159)."
     )
@@ -52,6 +52,16 @@ def register(loop_app: typer.Typer) -> None:
     ) -> None:
         """Activate a schedule — the single write that switches calendars (normal ↔ holiday)."""
         _delegate("set-active", name, json_output=json_output)
+
+    @schedule_app.command("set-timezone")
+    def set_timezone_command(
+        name: Annotated[str, typer.Argument()],
+        zone: Annotated[str, typer.Argument()],
+        *,
+        json_output: Annotated[bool, typer.Option("--json")] = False,
+    ) -> None:
+        """Set a schedule's timezone so its wall-clock slots fire locally, not in the project zone."""
+        _delegate("set-timezone", name, zone, json_output=json_output)
 
     @schedule_app.command("clear-active")
     def clear_active_command(*, json_output: Annotated[bool, typer.Option("--json")] = False) -> None:

@@ -1,11 +1,49 @@
+import socket
 from unittest.mock import patch
 
-from django.test import TestCase
+from django.test import SimpleTestCase, TestCase
 
-from teatree.core.management.commands._e2e_discovery import resolve_linked_worktree
+from teatree.core.management.commands._e2e_discovery import detect_local_port, resolve_linked_worktree
 from teatree.core.management.commands.e2e import _ticket_frontend_projects
 from teatree.core.models import Ticket, Worktree
 from teatree.core.worktree.worktree_env import compose_project
+
+
+class LocalPortDetectionTests(SimpleTestCase):
+    """The local-port scan must see a listener on either loopback family."""
+
+    @staticmethod
+    def _listener(family: int, address: str) -> socket.socket:
+        """An OS-assigned listening socket bound to *address* only."""
+        server = socket.socket(family, socket.SOCK_STREAM)
+        server.bind((address, 0))
+        server.listen(1)
+        return server
+
+    def test_detects_ipv6_only_listener(self) -> None:
+        # `nx serve` binds ::1 only on an IPv6-preferring host, so an
+        # IPv4-only probe aborts `e2e external` with "Frontend not running"
+        # while the dev server is happily serving on [::1]:4200.
+        if not socket.has_ipv6:
+            self.skipTest("interpreter built without IPv6 support")
+        try:
+            server = self._listener(socket.AF_INET6, "::1")
+        except OSError:
+            self.skipTest("host has no IPv6 loopback")
+        with server:
+            port = server.getsockname()[1]
+            assert detect_local_port(port) == port
+
+    def test_detects_ipv4_only_listener(self) -> None:
+        with self._listener(socket.AF_INET, "127.0.0.1") as server:
+            port = server.getsockname()[1]
+            assert detect_local_port(port) == port
+
+    def test_returns_none_when_nothing_listens(self) -> None:
+        with self._listener(socket.AF_INET, "127.0.0.1") as server:
+            port = server.getsockname()[1]
+        # The listener is closed now, so its port is free again.
+        assert detect_local_port(port) is None
 
 
 class TicketFrontendProjectsTests(TestCase):

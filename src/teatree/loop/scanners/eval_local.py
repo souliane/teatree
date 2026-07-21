@@ -37,6 +37,7 @@ from django.db import transaction
 from django.db.models import Max
 from django.utils import timezone
 
+from teatree.core.modelkit.phases import EVAL_LOCAL_PHASE
 from teatree.loop.scanners.base import ScanSignal, hours_since
 
 if TYPE_CHECKING:
@@ -46,8 +47,9 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-#: Canonical phase token written to ``Task.phase`` for local-eval tasks.
-EVAL_LOCAL_PHASE = "eval_local"
+#: Canonical phase token written to ``Task.phase`` for local-eval tasks. Owned by the
+#: canonical phase vocabulary and re-exported here, so the phase can never exist without
+#: a declared ``SCANNER_DISPATCHED_PHASES`` producer + tool-least-privilege entry.
 
 #: States that mean an eval task is still in-flight (cannot queue a dupe).
 _IN_FLIGHT_TASK_STATES: frozenset[str] = frozenset({"pending", "claimed"})

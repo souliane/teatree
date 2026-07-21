@@ -17,6 +17,7 @@ instead of a baked-in 3-core cap that made host-derived concurrency a no-op.
 
 import os
 import platform
+import re
 import sys
 
 # Reserve for the light sibling containers (admin 512m + slack-listener 512m +
@@ -27,6 +28,29 @@ _SIBLING_RESERVE_MIB = 1280
 _HOST_HEADROOM = 0.8
 # Never cap the worker below 2 GiB even on a tiny host (a single headless run needs it).
 _WORKER_MIN_MIB = 2048
+# ``vm_stat`` states its own page size on the header line; only fall back to the
+# Intel-era 4 KiB when that line cannot be read (see :func:`_macos_page_size`).
+_VM_STAT_PAGE_SIZE_RE = re.compile(r"page size of (\d+) bytes")
+_DEFAULT_PAGE_SIZE = 4096
+
+
+def _macos_page_size(vm_stat_output: str) -> int:
+    """Page size (bytes) declared by ``vm_stat``'s header, or 4096 when unreadable.
+
+    Not a constant: Apple Silicon uses 16384-byte pages where Intel used 4096,
+    and ``vm_stat`` reports page COUNTS. Assuming 4 KiB on an arm64 Mac scales
+    the reclaimable total (free + inactive pages) down 4x, so a 24 GiB host with
+    ~7 GB free reads back as ~93% used instead of ~70%. That phantom pressure
+    made :func:`teatree.core.gates.provision_admission_gate.check_provision_admission`
+    hold every ``worktree start`` against its 85% ceiling. ``vm_stat`` states the
+    real size on its first line, so read it rather than guess.
+
+    The 4096 fallback keeps an unparsable header on the historical arithmetic
+    instead of raising — consistent with this module degrading rather than
+    crashing a caller.
+    """
+    match = _VM_STAT_PAGE_SIZE_RE.search(vm_stat_output)
+    return int(match.group(1)) if match else _DEFAULT_PAGE_SIZE
 
 
 def _macos_ram_used_percent() -> float:
@@ -46,7 +70,7 @@ def _macos_ram_used_percent() -> float:
         stat = run_checked([vm_stat], timeout=2).stdout
     except (CommandFailedError, ValueError, OSError, TimeoutError):
         return 0.0
-    page_size, free_pages, inactive_pages = 4096, 0, 0
+    page_size, free_pages, inactive_pages = _macos_page_size(stat), 0, 0
     for line in stat.splitlines():
         if line.startswith("Pages free:"):
             free_pages = int(line.split(":")[1].strip().rstrip("."))

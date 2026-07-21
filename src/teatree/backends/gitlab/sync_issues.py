@@ -12,6 +12,7 @@ from typing import TYPE_CHECKING
 import httpx
 
 from teatree.backends.gitlab import GitLabCodeHost
+from teatree.core.intake.label_admission import LabelPolicy
 from teatree.core.intake.ticket_kind_classification import classify_ticket_kind
 from teatree.core.models import Ticket
 from teatree.types import SyncResult
@@ -31,12 +32,20 @@ def fetch_assigned_issues(
     result: SyncResult,
     *,
     overlay_name: str = "",
+    label_policy: LabelPolicy | None = None,
 ) -> None:
     """Upsert tickets for issues assigned to *username* that have no PR yet.
 
     Tickets keyed by the same ``issue_url`` are consolidated with PR-based
     tickets so each ticket is represented by a single row.
+
+    This is the second issue intake alongside the ``assigned_issues`` scanner,
+    so it runs the same :func:`intake_admits` label gate: an assignment alone
+    is not a nomination, and a ticket created here is work the operator never
+    picked. The gate covers row *creation* only — an issue already tracked is
+    still reconciled, whatever its labels now say.
     """
+    policy = label_policy or LabelPolicy()
     try:
         issues = host.list_assigned_issues(assignee=username)
     except httpx.HTTPError as exc:
@@ -63,6 +72,8 @@ def fetch_assigned_issues(
 
         raw_labels = issue.get("labels")
         labels = [str(label) for label in raw_labels] if isinstance(raw_labels, list) else []
+        if not policy.admits(labels):
+            continue
         issue_title = str(issue.get("title", ""))
         Ticket.objects.create(
             issue_url=issue_url,

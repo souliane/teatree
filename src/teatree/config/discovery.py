@@ -114,25 +114,29 @@ def discover_active_overlay() -> OverlayEntry | None:
 def _discover_from_manage_py() -> OverlayEntry | None:
     """Walk up from cwd to find a manage.py and extract its settings module.
 
-    The directory basename names the overlay, but a clone dir can differ from
-    the registered entry-point name (``teatree`` on disk vs the registered
-    ``t3-teatree``). ``_canonical_active_overlay_name`` folds the basename onto
-    the registered entry point so every consumer — most importantly the scanners
-    that stamp ``ticket.overlay`` — writes the dispatchable name, never a stale
-    alias that the queue then can't resolve (souliane/teatree#1959).
+    The settings module is the authoritative name source, not the directory
+    basename: a clone dir is named freely and drifts from the registered
+    entry-point name (``acme-factory`` on disk against a registered
+    ``t3-acme``), while the settings module names the Django project that IS
+    the overlay (``acme.settings`` → ``acme`` → ``t3-acme``). The basename
+    remains the fallback. ``_canonical_active_overlay_name`` folds whichever
+    resolves onto the registered entry point so every consumer — most
+    importantly the scanners that stamp ``ticket.overlay`` — writes the
+    dispatchable name, never a stale alias the queue then can't resolve
+    (souliane/teatree#1959).
     """
     for directory in [Path.cwd(), *Path.cwd().parents]:
         manage_py = directory / "manage.py"
         if manage_py.is_file():
             settings_module = _extract_settings_module(manage_py)
             if settings_module:
-                name = _canonical_active_overlay_name(directory.name)
+                name = _canonical_active_overlay_name(directory.name, settings_module=settings_module)
                 return OverlayEntry(name=name, overlay_class="", project_path=directory)
     return None
 
 
-def _canonical_active_overlay_name(directory_name: str) -> str:
-    """Fold a clone-directory basename onto its registered entry-point name, if one exists.
+def _canonical_active_overlay_name(directory_name: str, *, settings_module: str = "") -> str:
+    """Fold a clone dir / settings module onto its registered entry-point name, if one exists.
 
     Stays inside the ``platform`` layer (``config``): reads the entry-point
     names directly and reuses the local ``_match_canonical_ep`` alias rule
@@ -146,9 +150,11 @@ def _canonical_active_overlay_name(directory_name: str) -> str:
         return directory_name
     if directory_name in ep_names:
         return directory_name
-    canonical = _match_canonical_ep(directory_name, ep_names)
-    if canonical is not None:
-        return canonical
+    settings_package = settings_module.split(".", maxsplit=1)[0]
+    for alias in (settings_package, directory_name):
+        canonical = _match_canonical_ep(alias, ep_names) if alias else None
+        if canonical is not None:
+            return canonical
     # A clone/deploy dir whose basename matches NO registered entry point —
     # e.g. a ``teatree-deploy`` deploy dir against the sole ``t3-teatree``
     # entry point — would otherwise leak the raw basename as the overlay

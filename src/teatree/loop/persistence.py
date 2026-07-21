@@ -24,7 +24,7 @@ from teatree.core.models.auto_implement import mark_auto_implement
 from teatree.core.models.ticket_external_review import schedule_external_review
 from teatree.loop.dispatch import DispatchAction
 from teatree.loop.dispatch_gates import claim_red_mr_fix
-from teatree.loop.dispatch_tables import PERSISTED_AT_SOURCE_ZONES
+from teatree.loop.dispatch_tables import PERSISTED_AT_SOURCE_ZONES, ActionPayload
 
 if TYPE_CHECKING:
     from teatree.core.models.types import TicketExtra
@@ -161,7 +161,9 @@ def _handle_reviewer(action: DispatchAction) -> Task | None:
         # review of the genuinely new revision (the recorded APPROVED
         # belonged to the old SHA).
         ticket.merge_extra(set_keys={"reviewed_sha": head_sha}, pop_keys=["last_review_state"])
-    if _has_open_task(ticket, phase="reviewing"):
+    open_task = _open_task_in_phase(ticket, phase="reviewing")
+    if open_task is not None:
+        _link_broadcast_reviewer_task(payload, open_task)
         return None
     if _already_reviewed_at_head(ticket, head_sha):
         # #959 defect 2: the MR was already independently reviewed AND
@@ -174,7 +176,27 @@ def _handle_reviewer(action: DispatchAction) -> Task | None:
         # above, so a genuinely new revision is still reviewed.
         logger.debug("PR %s already approved at head %s — not re-enqueuing review", pr_url, head_sha)
         return None
-    return schedule_external_review(ticket)
+    task = schedule_external_review(ticket)
+    _link_broadcast_reviewer_task(payload, task)
+    return task
+
+
+def _link_broadcast_reviewer_task(payload: ActionPayload, task: Task | None) -> None:
+    """Record the covering reviewer task on the ``ScannedBroadcast`` row that emitted it.
+
+    Closes the broadcast ledger's emission gate: until the row knows which task
+    covers it, ``ScannedBroadcast.awaiting_reviewer_dispatch`` keeps re-emitting
+    the review intent every tick. Best-effort — a broadcast that has since been
+    deleted must never break the dispatch it is auditing.
+    """
+    broadcast_id = payload.get("broadcast_id")
+    if not broadcast_id or task is None:
+        return
+    from teatree.core.models import ScannedBroadcast  # noqa: PLC0415 — lazy: avoids the models import cycle
+
+    row = ScannedBroadcast.objects.filter(pk=broadcast_id).first()
+    if row is not None:
+        row.attach_reviewer_task(str(task.pk))
 
 
 def _already_reviewed_at_head(ticket: Ticket, head_sha: str) -> bool:
@@ -267,12 +289,16 @@ def _link_claimed_marker(ticket: Ticket, issue_url: str) -> None:
     ).update(ticket=ticket, state=ImplementedIssueMarker.State.TICKET_CREATED)
 
 
-def _has_open_task(ticket: Ticket, *, phase: str) -> bool:
+def _open_task_in_phase(ticket: Ticket, *, phase: str) -> Task | None:
     # #769 audit: match any accepted phase spelling (short verb or
     # gerund) via the shared SSOT helper, not a raw ``phase=phase``
     # filter that would miss a short-verb ``code`` task and let the
     # orchestrator create a duplicate.
-    return Task.objects.pending_in_phase(phase).filter(ticket=ticket).exists()
+    return Task.objects.pending_in_phase(phase).filter(ticket=ticket).first()
+
+
+def _has_open_task(ticket: Ticket, *, phase: str) -> bool:
+    return _open_task_in_phase(ticket, phase=phase) is not None
 
 
 def _get_or_create_ticket(

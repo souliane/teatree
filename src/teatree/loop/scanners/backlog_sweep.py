@@ -45,6 +45,7 @@ from django.db import transaction
 from django.db.models import Max
 from django.utils import timezone
 
+from teatree.core.modelkit.phases import BACKLOG_SWEEP_PHASE
 from teatree.loop.scanners.base import ScanSignal, hours_since
 
 if TYPE_CHECKING:
@@ -54,8 +55,9 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-#: Canonical phase token written to ``Task.phase`` for backlog-sweep tasks.
-BACKLOG_SWEEP_PHASE = "backlog_sweep"
+#: Canonical phase token written to ``Task.phase`` for backlog-sweep tasks. Owned by the
+#: canonical phase vocabulary and re-exported here, so the phase can never exist without
+#: a declared ``SCANNER_DISPATCHED_PHASES`` producer + tool-least-privilege entry.
 
 #: States that mean a sweep task is still in-flight (cannot queue a dupe).
 _IN_FLIGHT_TASK_STATES: frozenset[str] = frozenset({"pending", "claimed"})

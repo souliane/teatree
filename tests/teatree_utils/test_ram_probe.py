@@ -4,6 +4,7 @@ import subprocess
 import sys
 import tempfile
 from pathlib import Path
+from subprocess import CompletedProcess
 from unittest.mock import patch
 
 import pytest
@@ -49,6 +50,56 @@ def test_read_ram_used_percent_unknown_platform_returns_zero() -> None:
 def test_macos_probe_no_binaries_returns_zero() -> None:
     with patch("shutil.which", return_value=None):
         assert _macos_ram_used_percent() == pytest.approx(0.0)
+
+
+class TestMacosPageSize:
+    """The mac probe must read the page size off ``vm_stat``, never assume 4 KiB.
+
+    Apple Silicon reports 16384-byte pages. Assuming 4096 shrinks the
+    reclaimable total 4x, which reads back as a near-full host and makes
+    ``check_provision_admission`` hold every provision on a host with GBs free.
+    """
+
+    # A real arm64 capture (24 GiB host): free + inactive = 470274 reclaimable pages.
+    _TOTAL_BYTES = 25769803776
+    _RECLAIMABLE_PAGES = 83371 + 386903
+    _VM_STAT_16K = """Mach Virtual Memory Statistics: (page size of 16384 bytes)
+Pages free:                                    83371.
+Pages active:                                  397317.
+Pages inactive:                               386903.
+Pages speculative:                               9228.
+Pages wired down:                              383587.
+"""
+
+    def _probe(self, vm_stat_output: str) -> float:
+        """Run the mac probe against *vm_stat_output* with a fixed ``hw.memsize``."""
+
+        def fake_run(cmd, **_kwargs):
+            stdout = str(self._TOTAL_BYTES) if "hw.memsize" in cmd else vm_stat_output
+            return CompletedProcess(args=cmd, returncode=0, stdout=stdout, stderr="")
+
+        with (
+            patch("shutil.which", side_effect=lambda name: f"/usr/bin/{name}"),
+            patch("teatree.utils.run.run_checked", side_effect=fake_run),
+        ):
+            return _macos_ram_used_percent()
+
+    def _expected_percent(self, page_size: int) -> float:
+        used = self._TOTAL_BYTES - self._RECLAIMABLE_PAGES * page_size
+        return used * 100.0 / self._TOTAL_BYTES
+
+    def test_uses_the_page_size_from_the_vm_stat_header(self) -> None:
+        assert self._probe(self._VM_STAT_16K) == pytest.approx(self._expected_percent(16384))
+
+    def test_does_not_fall_back_to_a_hardcoded_four_kib_page(self) -> None:
+        # The 4 KiB reading of this same capture is ~92.5% — a phantom that
+        # trips the 85% provision-admission ceiling on a host with ~7 GB free.
+        assert self._probe(self._VM_STAT_16K) != pytest.approx(self._expected_percent(4096))
+
+    def test_unparsable_header_falls_back_to_four_kib(self) -> None:
+        # "Can't tell" keeps the historical 4 KiB arithmetic rather than raising.
+        headerless = self._VM_STAT_16K.replace("(page size of 16384 bytes)", "(page size unknown)")
+        assert self._probe(headerless) == pytest.approx(self._expected_percent(4096))
 
 
 def test_linux_probe_missing_proc_meminfo_returns_zero() -> None:

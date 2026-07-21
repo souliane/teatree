@@ -21,6 +21,7 @@ from teatree.backends.gitlab.sync_issues import fetch_assigned_issues, fetch_iss
 from teatree.backends.gitlab.sync_prs import _PRContext, extract_repo_path, upsert_ticket_from_pr
 from teatree.backends.gitlab.sync_terminal import detect_closed_prs, detect_merged_prs
 from teatree.backends.slack.review_sync import fetch_review_permalinks
+from teatree.core.intake.label_admission import LabelPolicy
 from teatree.core.models import Ticket
 from teatree.core.sync import _overlay_name
 from teatree.types import LAST_SYNC_CACHE_KEY, PENDING_REVIEWS_CACHE_KEY, SyncBackend, SyncResult
@@ -73,7 +74,16 @@ class GitLabSyncBackend(SyncBackend):
             ctx = _PRContext(raw=raw, repo_short=repo_short, client=client, project=project)
             upsert_ticket_from_pr(ctx, result, username=username, overlay_name=overlay_name)
 
-        fetch_assigned_issues(host, username, result, overlay_name=overlay_name)
+        fetch_assigned_issues(
+            host,
+            username,
+            result,
+            overlay_name=overlay_name,
+            label_policy=LabelPolicy(
+                ready_labels=tuple(overlay.config.ready_labels),
+                exclude_labels=tuple(overlay.config.exclude_labels),
+            ),
+        )
 
         if overlay_name:
             Ticket.objects.in_flight().filter(overlay="").update(overlay=overlay_name)

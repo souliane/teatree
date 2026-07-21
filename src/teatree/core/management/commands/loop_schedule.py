@@ -1,4 +1,4 @@
-"""``manage.py loop_schedule`` — list/show/set-active/clear-active loop schedules (#3159).
+"""``manage.py loop_schedule`` — list/show/set-active/set-timezone/clear-active schedules (#3159).
 
 Backs ``t3 loop schedule …``. A schedule is a named weekly calendar of slots; the
 active one is the ``active_loop_schedule`` ``ConfigSetting`` (global scope). Setting
@@ -8,6 +8,7 @@ management command" rule).
 """
 
 import json
+import zoneinfo
 from typing import Annotated, Any, NoReturn
 
 import typer
@@ -57,7 +58,7 @@ class Command(TyperCommand):
         for schedule in schedules:
             marker = " *ACTIVE*" if schedule.name == active else ""
             self.stdout.write(
-                f"  {schedule.name:<20} tz={schedule.timezone or 'local':<18} {schedule.slots.count()} slots{marker}"
+                f"  {schedule.name:<20} tz={schedule.timezone_label:<18} {schedule.slots.count()} slots{marker}"
             )
         if not active:
             self.stdout.write("  (no active schedule — presets apply only via a manual override)")
@@ -96,7 +97,7 @@ class Command(TyperCommand):
                 )
             )
             return
-        self.stdout.write(f"schedule {schedule.name} (tz={schedule.timezone or 'local'}): {schedule.description}")
+        self.stdout.write(f"schedule {schedule.name} (tz={schedule.timezone_label}): {schedule.description}")
         for slot in slots:
             self.stdout.write(f"  {_slot_days(slot):<28} {slot.start_time.strftime('%H:%M')} -> {slot.preset_name}")
 
@@ -112,6 +113,40 @@ class Command(TyperCommand):
             self._refuse(f"no schedule named {name!r} — run `t3 loop schedule list`", json_output=json_output)
         ConfigSetting.objects.set_value(ACTIVE_SCHEDULE_SETTING, name)
         self._emit({"active": name}, f"active schedule is now {name!r}.", json_output=json_output)
+
+    @command(name="set-timezone")
+    def set_timezone(
+        self,
+        name: Annotated[str, typer.Argument(help="Schedule to retime.")],
+        zone: Annotated[str, typer.Argument(help="IANA zone key, e.g. Europe/Vienna.")],
+        *,
+        json_output: Annotated[bool, typer.Option("--json", help="Emit JSON.")] = False,
+    ) -> None:
+        """Set *name*'s slot timezone — the lever that makes its wall-clock slots fire locally.
+
+        A schedule seeded without a timezone resolves to ``settings.TIME_ZONE``,
+        so its 08:00 slot fires at 08:00 UTC rather than 08:00 where the operator
+        is. The per-schedule column is the correct lever; the project zone stays
+        UTC. Validated here at WRITE time so an unknown key is refused once
+        instead of warned about on every tick.
+        """
+        schedule = ModeSchedule.objects.filter(name=name).first()
+        if schedule is None:
+            self._refuse(f"no schedule named {name!r} — run `t3 loop schedule list`", json_output=json_output)
+        try:
+            zoneinfo.ZoneInfo(zone)
+        except (zoneinfo.ZoneInfoNotFoundError, ValueError):
+            self._refuse(
+                f"unknown timezone {zone!r} — expected an IANA key like 'Europe/Vienna'",
+                json_output=json_output,
+            )
+        schedule.timezone = zone
+        schedule.save(update_fields=["timezone", "updated_at"])
+        self._emit(
+            {"name": name, "timezone": zone},
+            f"schedule {name!r} now resolves its slots in {zone}.",
+            json_output=json_output,
+        )
 
     @command(name="clear-active")
     def clear_active(self, *, json_output: Annotated[bool, typer.Option("--json", help="Emit JSON.")] = False) -> None:
