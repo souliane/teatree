@@ -1520,52 +1520,54 @@ Usage: t3 eval [OPTIONS] COMMAND [ARGS]...
 │ --help                           Show this message and exit.                 │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ╭─ Commands ───────────────────────────────────────────────────────────────────╮
-│ negative-control        Self-test the harness: plant a known violation and   │
-│                         assert it is caught (token-free).                    │
-│ benchmark               Benchmark cost AND pass-rate of model@effort         │
-│                         variants against the eval suite.                     │
-│ capture-subagent        Copy the freshest in-session sub-agent JSONL to a    │
-│                         scenario's transcript path.                          │
-│ transcript-replay       Replay a real session transcript against teatree     │
-│                         behavioural invariants.                              │
-│ coverage                Report per-skill behavioral-eval coverage: every     │
-│                         skill is covered or eval_exempt.                     │
-│ pinned-regressions      Run the deterministic regression corpus over the     │
-│                         real gate/checker code paths.                        │
-│ skill-command-validity  Validate every backticked ``t3 …`` in the skill docs │
-│                         against the live CLI registry.                       │
-│ skill-prose-judge       Score each skill's prose for clarity/actionability   │
-│                         via the LLM judge (ADVISORY).                        │
-│ audit                   Audit captured sessions into the durable ledger and  │
-│                         print per-session verdicts.                          │
-│ changed-scenarios       Print the scenario names a PR's STDIN diff touched;  │
-│                         exit --skip-code when none.                          │
-│ ci-trigger              Dispatch ``eval-ci-heal.yml`` for a PR branch and    │
-│                         print the head SHA it keys on.                       │
-│ ci-status               Resolve one eval-ci-heal run's verdict (and, on      │
-│                         failure, its triaged reds).                          │
-│ green-proof             Assert the merged eval-heal JSON proves a full-suite │
-│                         green (executed, 0 reds).                            │
-│ merged-prs-since        Exit 0 if any PR merged in the last --days, else     │
-│                         --skip-code (non-list payload exits 2).              │
-│ merge-summaries         Merge per-shard summary markdown into one dashboard  │
-│                         (to --out or stdout).                                │
-│ merge-summary-json      Merge per-shard eval-heal summary JSONs into one     │
-│                         §2.4 JSON (to --out or stdout).                      │
-│ prepare-transcript      Emit the per-scenario prompts for a LOCAL            │
-│                         transcript-backend eval run.                         │
-│ history                 Show recent eval runs and per-scenario pass-rate     │
-│                         over time.                                           │
-│ list                    List discovered eval scenarios as a table (Name,     │
-│                         Scenario, Agent, File, Asserts).                     │
-│ run                     Run one scenario by name, or all scenarios when no   │
-│                         name is given.                                       │
-│ ci-heal                 Operator control of the CI-eval self-healing loop    │
-│                         (open sessions, list, dry-run advance).              │
-│ corpus                  Ground-truth corpus curation: list, inspect, and     │
-│                         grade captured sessions.                             │
-│ label                   Corpus-label curation: list nominations, scaffold a  │
-│                         label, review the corpus.                            │
+│ negative-control          Self-test the harness: plant a known violation and │
+│                           assert it is caught (token-free).                  │
+│ benchmark                 Benchmark cost AND pass-rate of model@effort       │
+│                           variants against the eval suite.                   │
+│ capture-subagent          Copy the freshest in-session sub-agent JSONL to a  │
+│                           scenario's transcript path.                        │
+│ transcript-replay         Replay a real session transcript against teatree   │
+│                           behavioural invariants.                            │
+│ coverage                  Report per-skill behavioral-eval coverage: every   │
+│                           skill is covered or eval_exempt.                   │
+│ pinned-regressions        Run the deterministic regression corpus over the   │
+│                           real gate/checker code paths.                      │
+│ skill-command-validity    Validate every backticked ``t3 …`` in the skill    │
+│                           docs against the live CLI registry.                │
+│ skill-prose-judge         Score each skill's prose for clarity/actionability │
+│                           via the LLM judge (ADVISORY).                      │
+│ audit                     Audit captured sessions into the durable ledger    │
+│                           and print per-session verdicts.                    │
+│ changed-scenarios         Print the scenario names a PR's STDIN diff         │
+│                           touched; exit --skip-code when none.               │
+│ ci-trigger                Dispatch ``eval-ci-heal.yml`` for a PR branch and  │
+│                           print the head SHA it keys on.                     │
+│ ci-status                 Resolve one eval-ci-heal run's verdict (and, on    │
+│                           failure, its triaged reds).                        │
+│ green-proof               Assert the merged eval-heal JSON proves a          │
+│                           full-suite green (executed, 0 reds).               │
+│ merged-prs-since          Exit 0 if any PR merged in the last --days, else   │
+│                           --skip-code (non-list payload exits 2).            │
+│ verify-benchmark-publish  Exit 1 when any collected benchmark shard is not   │
+│                           backed by real metered spend.                      │
+│ merge-summaries           Merge per-shard summary markdown into one          │
+│                           dashboard (to --out or stdout).                    │
+│ merge-summary-json        Merge per-shard eval-heal summary JSONs into one   │
+│                           §2.4 JSON (to --out or stdout).                    │
+│ prepare-transcript        Emit the per-scenario prompts for a LOCAL          │
+│                           transcript-backend eval run.                       │
+│ history                   Show recent eval runs and per-scenario pass-rate   │
+│                           over time.                                         │
+│ list                      List discovered eval scenarios as a table (Name,   │
+│                           Scenario, Agent, File, Asserts).                   │
+│ run                       Run one scenario by name, or all scenarios when no │
+│                           name is given.                                     │
+│ ci-heal                   Operator control of the CI-eval self-healing loop  │
+│                           (open sessions, list, dry-run advance).            │
+│ corpus                    Ground-truth corpus curation: list, inspect, and   │
+│                           grade captured sessions.                           │
+│ label                     Corpus-label curation: list nominations, scaffold  │
+│                           a label, review the corpus.                        │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -1921,6 +1923,23 @@ Usage: t3 eval merged-prs-since [OPTIONS]
 │                                [default: 1]                                  │
 │    --now              TEXT     Override 'now' (ISO-8601); for testing.       │
 │    --help                      Show this message and exit.                   │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+#### `t3 eval verify-benchmark-publish`
+
+```
+Usage: t3 eval verify-benchmark-publish [OPTIONS] DASHBOARD_DIR
+
+ Exit 1 when any collected benchmark shard is not backed by real metered spend.
+
+╭─ Arguments ──────────────────────────────────────────────────────────────────╮
+│ *    dashboard_dir      PATH  Directory holding the collected                │
+│                               eval-benchmark-*.html shards.                  │
+│                               [required]                                     │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                  │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
