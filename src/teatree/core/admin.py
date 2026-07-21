@@ -3,10 +3,10 @@ from django.contrib import admin
 from teatree.core.models import (
     ConfigSetting,
     Loop,
-    LoopPreset,
-    LoopPresetOverride,
-    LoopSchedule,
-    LoopScheduleSlot,
+    Mode,
+    ModeOverride,
+    ModeSchedule,
+    ModeScheduleSlot,
     Prompt,
     PromptVersion,
     PullRequest,
@@ -111,38 +111,38 @@ class ConfigSettingAdmin(admin.ModelAdmin):
     readonly_fields = ("created_at", "updated_at")
 
 
-@admin.register(LoopPreset)
-class LoopPresetAdmin(admin.ModelAdmin):
+@admin.register(Mode)
+class ModeAdmin(admin.ModelAdmin):
     list_display = ("name", "availability_mode", "entry_count", "description", "updated_at")
     search_fields = ("name",)
     readonly_fields = ("created_at", "updated_at")
 
 
-@admin.register(LoopPresetOverride)
-class LoopPresetOverrideAdmin(admin.ModelAdmin):
+@admin.register(ModeOverride)
+class ModeOverrideAdmin(admin.ModelAdmin):
     list_display = ("preset_name", "until", "reason", "set_at")
     search_fields = ("preset_name",)
     readonly_fields = ("set_at",)
 
 
-class LoopScheduleSlotInline(admin.TabularInline):
+class ModeScheduleSlotInline(admin.TabularInline):
     """Edit a schedule's slots (days / start time / preset) in place under it (#3159, LP-4)."""
 
-    model = LoopScheduleSlot
+    model = ModeScheduleSlot
     extra = 1
     fields = ("days", "start_time", "preset_name")
 
 
-@admin.register(LoopSchedule)
-class LoopScheduleAdmin(admin.ModelAdmin):
+@admin.register(ModeSchedule)
+class ModeScheduleAdmin(admin.ModelAdmin):
     list_display = ("name", "timezone", "description", "updated_at")
     search_fields = ("name",)
     readonly_fields = ("created_at", "updated_at")
-    inlines = (LoopScheduleSlotInline,)
+    inlines = (ModeScheduleSlotInline,)
 
 
-@admin.register(LoopScheduleSlot)
-class LoopScheduleSlotAdmin(admin.ModelAdmin):
+@admin.register(ModeScheduleSlot)
+class ModeScheduleSlotAdmin(admin.ModelAdmin):
     list_display = ("id", "schedule", "days", "start_time", "preset_name")
     list_filter = ("schedule",)
     search_fields = ("preset_name",)

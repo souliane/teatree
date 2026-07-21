@@ -165,12 +165,12 @@ class TestLoopsListPresetEffectiveColumn(django.test.TestCase):
 
     def _activate(self, preset_name: str, entries: dict[str, bool]) -> None:
         from teatree.core.models import (  # noqa: PLC0415 — deferred import (cycle-safe / pre-app-registry)
-            LoopPreset,
-            LoopPresetOverride,
+            Mode,
+            ModeOverride,
         )
 
-        LoopPreset.objects.create(name=preset_name, entries=entries)
-        LoopPresetOverride.objects.set_override(preset_name)
+        Mode.objects.create(name=preset_name, entries=entries)
+        ModeOverride.objects.set_override(preset_name)
 
     def test_masked_off_loop_is_annotated(self) -> None:
         Loop.objects.create(name="demo-mask", delay_seconds=60, prompt=_prompt(), enabled=True)

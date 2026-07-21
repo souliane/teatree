@@ -57,6 +57,7 @@ graph TD
     teatree.core --> teatree.core.loop_lease_manager
     teatree.core --> teatree.core.session_identity
     teatree.core --> teatree.loop.loop_cadences
+    teatree.core --> teatree.loop.preset_resolution
     teatree.core.loop_lease_manager --> teatree.utils
     teatree.core.managers --> teatree.config
     teatree.core.managers --> teatree.utils

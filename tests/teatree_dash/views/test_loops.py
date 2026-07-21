@@ -5,7 +5,7 @@ import re
 from django.test import Client, TestCase
 from django.urls import reverse
 
-from teatree.core.availability import clear_override, resolve_mode
+from teatree.core.mode_resolution import clear_mode_override, resolve_active_mode
 from teatree.core.models.config_setting import ConfigSetting
 from teatree.core.models.loop import Loop
 from teatree.core.models.loop_state import LoopState, LoopStatus
@@ -73,16 +73,21 @@ class LoopActionPostTestCase(TestCase):
 class AvailabilityPostTestCase(TestCase):
     def setUp(self) -> None:
         self.url = reverse("dash:availability")
-        self.addCleanup(clear_override)
+        self.addCleanup(clear_mode_override)
 
-    def test_switch_to_away_writes_override(self) -> None:
+    def test_switch_to_away_sets_the_offline_mode_override(self) -> None:
+        # The standalone availability modes are gone: "away" now sets the merged
+        # holiday 'offline' mode (seeded by migration 0022) as the override.
         self.client.post(self.url, {"mode": "away"})
-        assert resolve_mode().mode == "away"
+        resolved = resolve_active_mode()
+        assert resolved.name == "offline"
+        assert resolved.defers_questions is True
+        assert resolved.pauses_self_pump is True
 
     def test_auto_clears_the_override(self) -> None:
         self.client.post(self.url, {"mode": "away"})
         self.client.post(self.url, {"mode": "auto"})
-        assert resolve_mode().source == "default"
+        assert resolve_active_mode().source == "default"
 
     def test_unknown_mode_rejected(self) -> None:
         resp = self.client.post(self.url, {"mode": "banana"})

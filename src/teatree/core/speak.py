@@ -65,6 +65,7 @@ from typing import IO
 from teatree.config import get_effective_settings
 from teatree.core import presence
 from teatree.core.backend_protocols import MessagingBackend
+from teatree.core.mode_resolution import resolve_active_mode
 from teatree.core.modelkit.notify_policy import NotifyAudience
 from teatree.core.speak_cleaning import clean_for_speech
 from teatree.paths import get_data_dir
@@ -138,12 +139,10 @@ def _is_away() -> bool:
     A resolution failure degrades to NOT away (returns ``False``): the
     away-gate must never suppress local audio on a transient error.
     """
-    from teatree.core import availability  # noqa: PLC0415 — deferred: call-time import, kept lazy
-
     try:
-        return availability.resolve_mode().defers_questions
+        return resolve_active_mode().defers_questions
     except Exception as exc:  # noqa: BLE001 — a resolution failure must never mute local audio
-        logger.debug("availability resolution failed; treating as present: %s", exc)
+        logger.debug("mode resolution failed; treating as present: %s", exc)
         return False
 
 

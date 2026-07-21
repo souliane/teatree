@@ -183,7 +183,7 @@ def _dict_literal_keys(tree: ast.Module) -> set[str]:
 
     A field name that appears only as a dict-literal key (e.g. the schedule
     command's ``{"timezone": schedule.timezone}`` output row, whose value is a
-    ``LoopSchedule`` model attribute — never a settings object) collides with a
+    ``ModeSchedule`` model attribute — never a settings object) collides with a
     UserSettings field name but is NOT a settings-key read. It is the same
     coincidental class as the ``<bare-var>.get("<key>")`` sub-key rule above, in
     dict-literal form, so the resolution-module string rule must not count it.
@@ -225,7 +225,7 @@ def _admin_option_strings(tree: ast.Module) -> set[str]:
     """String elements of Django admin option tuples (``list_display = ("timezone", …)``).
 
     A field name listed in a ``ModelAdmin``'s ``list_display`` / ``fields`` / … is a
-    MODEL column reference (e.g. ``LoopSchedule.timezone``), never a settings-object
+    MODEL column reference (e.g. ``ModeSchedule.timezone``), never a settings-object
     read — the same coincidental class as :func:`_dict_literal_keys`, in admin-option
     form. Excluded so a bare field-name string in an admin option never counts as a
     settings reader.

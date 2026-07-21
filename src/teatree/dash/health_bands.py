@@ -3,7 +3,7 @@
 Nothing here computes health from scratch — the verdict is ``read_health``, the
 loop table is ``loops.live.build_report``, capacity reads the same parked-lane /
 token-usage / cost / queue selectors the statusline uses, and the mode band reads
-``availability.resolve_mode`` plus the ``danger_gate_fail_open`` switch. Sharing
+``mode_resolution.resolve_active_mode`` plus the ``danger_gate_fail_open`` switch. Sharing
 the data layer is what keeps this page from drifting from the statusline (the
 #1172 duplication objection). Every band is fail-open on its own so one broken
 read degrades that band, never the whole page.
@@ -17,9 +17,9 @@ from datetime import datetime
 from django.utils import timezone
 
 from teatree.config import get_effective_settings
-from teatree.core.availability import resolve_mode
 from teatree.core.cost import CostReport, cycle_start, cycle_start_datetime
 from teatree.core.factory.operational_health import read_health
+from teatree.core.mode_resolution import resolve_active_mode
 from teatree.core.models.anthropic_token_usage import AnthropicTokenUsage
 from teatree.core.models.known_issue import KnownIssue
 from teatree.core.models.task_attempt import TaskAttempt
@@ -215,5 +215,5 @@ def _queue_depth() -> QueueDepth:
 
 
 def _mode_band() -> ModeBand:
-    resolution = resolve_mode()
-    return ModeBand(mode=resolution.mode, source=resolution.source, gate_fail_open=dash_gate_fail_open())
+    resolved = resolve_active_mode()
+    return ModeBand(mode=resolved.name, source=resolved.source, gate_fail_open=dash_gate_fail_open())

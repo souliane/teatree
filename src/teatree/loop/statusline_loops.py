@@ -20,29 +20,7 @@ from teatree.loop.statusline_loop_chunks import (
 from teatree.loop.statusline_palette import _ANSI_GREEN, _ANSI_RED, _ANSI_YELLOW
 
 if TYPE_CHECKING:
-    from teatree.core.availability import Resolution
     from teatree.core.managers import OwnershipStatus
-
-
-def availability_segment(resolution: "Resolution") -> str:
-    """Return the loop line's availability segment (#58, #1678, #3494).
-
-    Renders ``availability: <present|away>`` — spelled out, so the user reads the
-    currently-resolved availability at a glance as one ``·``-separated segment of
-    the dedicated loop line. The deciding layer (override / schedule / default) is
-    intentionally NOT shown here: the owner's clarified layout keeps the segment to
-    the bare state, and the ``preset:`` / ``schedule:`` handles already surface the
-    governing layer.
-
-    The ``availability:`` label is deliberately distinct from the config
-    ``Mode`` enum (auto/interactive) and other ``mode=`` usages, which the bare
-    ``mode=away`` form collided with. An unrecognised mode renders nothing.
-    """
-    from teatree.core.availability import VALID_MODES  # noqa: PLC0415 — deferred: loaded at tick time, not import
-
-    if resolution.mode not in VALID_MODES:
-        return ""
-    return f"availability: {resolution.mode}"
 
 
 def _configured_overlay_names() -> list[str]:
@@ -107,8 +85,8 @@ def health_chip(*, colorize: bool = False) -> list[str]:
 def dashboard_head_anchor(*, colorize: bool = False) -> list[str]:
     """Return the single consolidated dashboard head line, or ``[]``.
 
-    Folds the live-loops line (which already carries the availability segment,
-    #1678), the configured-overlays summary, and the global-health chip onto
+    Folds the live-loops line (which already carries the merged ``mode:`` handle,
+    #61), the configured-overlays summary, and the global-health chip onto
     ONE line joined by the loop line's own `` · `` separator — so overlays and
     health stop each wasting a whole row. Every source is individually
     fail-open, so a broken read drops only its own segment; the line is ``[]``
@@ -208,7 +186,7 @@ def _mini_loop_schedules() -> list[MiniLoopSchedule]:
 
 @dataclass(frozen=True, slots=True)
 class PresetLineHandles:
-    """The three ordered handles the loop line renders around the loop chunks (#3494).
+    """The three ordered handles the loop line renders around the loop chunks (#3494, #61).
 
     The summary handles LEAD the line and the per-loop overrides trail the loops,
     so the single up-stack reader resolves the three sub-segments separately
@@ -216,8 +194,9 @@ class PresetLineHandles:
 
     *   ``schedule`` — the active weekly schedule, spelled out:
         ``schedule: standard`` or ``schedule: none active`` (always shown).
-    *   ``preset`` — the governing preset: ``preset: <name>`` (schedule-driven)
-        or ``preset: manual`` (manual override); ``""`` when none governs.
+    *   ``mode`` — the merged operating mode: ``mode: <name>`` (schedule/default)
+        or ``mode: manual`` (manual override). Replaces the old ``preset:`` +
+        ``availability:`` handles — the mode name conveys reachability.
     *   ``override`` — the ``forced ON: <names>`` / ``forced OFF: <names>``
         per-loop manual-override segment; ``""`` when none diverge.
 
@@ -225,7 +204,7 @@ class PresetLineHandles:
     """
 
     schedule: str
-    preset: str
+    mode: str
     override: str
 
 
@@ -238,7 +217,7 @@ type PresetLineReader = Callable[[], PresetLineHandles]
 
 
 def _empty_preset_handles() -> PresetLineHandles:
-    return PresetLineHandles(schedule="", preset="", override="")
+    return PresetLineHandles(schedule="", mode="", override="")
 
 
 _preset_line_reader: PresetLineReader = _empty_preset_handles
@@ -400,33 +379,33 @@ def live_loops_anchor(*, colorize: bool = False) -> list[str]:
 
     Single line, prepended at the top of the statusline so the user's
     "what governs now, what's overdue, and am I blocked?" question is answered
-    with one glance. Spelled-out, labeled order (#3494):
+    with one glance. Spelled-out, labeled order (#3494, #61):
 
-        ``schedule: none active · preset: manual · overdue: snapshot_warmer,
-        triage_assessor · forced ON: triage_assessor · availability: present ·
-        4 waiting``
+        ``schedule: none active · mode: manual · overdue: snapshot_warmer,
+        triage_assessor · forced ON: triage_assessor · 4 waiting``
 
     Shape, in render order:
 
     *   ``schedule: <name>`` / ``schedule: none active`` — the active weekly
         schedule, always spelled out (:func:`teatree.loops.preset_status.schedule_chunk`).
-    *   ``preset: <name>`` (schedule-driven) / ``preset: manual`` (manual
-        override) — the governing preset, or omitted when none governs. An
-        ENGAGED preset is the summary handle the domain loops fold under.
+    *   ``mode: <name>`` (schedule/default) / ``mode: manual`` (manual override) —
+        the merged operating mode (#61), replacing the old ``preset:`` +
+        ``availability:`` handles. The mode name conveys reachability, so an
+        away-class mode (``unattended`` / ``offline``) needs no separate
+        availability segment. A NON-``off`` mode is the summary handle the domain
+        loops fold under.
     *   the loop section:
 
-        -   with a preset engaged, ``overdue: <name>, <name>`` — ONLY the
+        -   with a mode governing, ``overdue: <name>, <name>`` — ONLY the
             genuinely-overdue / never-fired domain crons; the routine due-soon
-            ones fold into the preset handle (:func:`_overdue_mini_loop_names`).
-        -   with no preset, the full due-soon ``due: <name> <next-tick> …``
+            ones fold into the mode handle (:func:`_overdue_mini_loop_names`).
+        -   with no mode handle, the full due-soon ``due: <name> <next-tick> …``
             countdown list (:func:`_mini_loop_chunks`) — every chunk's
             ``<next-tick>`` is the RELATIVE whole-minute countdown to THAT loop's
             own next fire, so a fast 60s cron and a slow 1h cron differ and the
             line counts down across renders.
     *   ``forced ON: <names>`` / ``forced OFF: <names>`` — the per-loop manual
-        overrides that diverge from the preset/base verdict.
-    *   ``availability: <present|away>`` — the currently-resolved availability,
-        read live at render time (:func:`_availability_segment`).
+        overrides that diverge from the mode/base verdict.
     *   ``N waiting`` — appended ONLY when N > 0 things are waiting on the user
         across the durable waiting-on-you lane (unresolved questions, PRs awaiting
         a merge authorization, pending review requests, manual items —
@@ -458,12 +437,12 @@ def live_loops_anchor(*, colorize: bool = False) -> list[str]:
     # to represent it, and the domain crons then show only their genuinely-overdue
     # exceptions. The override segment trails the loops it annotates.
     handles = _preset_line_handles()
-    governing = bool(handles.preset)
+    governing = bool(handles.mode)
     leases = _live_lease_chunks(colorize=colorize, handle_present=governing)
 
-    # Under an engaged preset the domain crons collapse to a single ``overdue:``
+    # Under a governing mode the domain crons collapse to a single ``overdue:``
     # label listing only the genuinely-overdue / never-fired exceptions; with no
-    # preset the full due-soon ``due:`` countdown list renders (today's behavior).
+    # mode handle the full due-soon ``due:`` countdown list renders.
     if governing:
         overdue = _overdue_mini_loop_names()
         loop_section = "overdue: " + ", ".join(overdue) if overdue else ""
@@ -472,49 +451,31 @@ def live_loops_anchor(*, colorize: bool = False) -> list[str]:
         loop_section = "due: " + " ".join(due) if due else ""
 
     # The line is silenced only when nothing substantive is live — no schedule /
-    # preset / override handle, no loop section, and no infra lease. The
-    # availability and waiting segments are trailing decorations that never keep
-    # an otherwise-empty line alive (a quiet machine shows no loop line).
-    substantive = handles.schedule or handles.preset or handles.override or loop_section or leases
+    # mode / override handle, no loop section, and no infra lease. The waiting
+    # segment is a trailing decoration that never keeps an otherwise-empty line
+    # alive (a quiet machine shows no loop line).
+    substantive = handles.schedule or handles.mode or handles.override or loop_section or leases
     if not substantive:
         return []
 
-    # Order (#3494): schedule -> preset -> loops (overdue/due) -> overrides ->
-    # availability -> waiting -> infra leases (kept unobtrusive at the tail, never
-    # between the preset and the loops).
+    # Order (#3494, #61): schedule -> mode -> loops (overdue/due) -> overrides ->
+    # waiting -> infra leases (kept unobtrusive at the tail, never between the mode
+    # and the loops). The separate ``availability:`` segment is gone (folded into
+    # ``mode:``).
     parts: list[str] = []
     if handles.schedule:
         parts.append(handles.schedule)
-    if handles.preset:
-        parts.append(handles.preset)
+    if handles.mode:
+        parts.append(handles.mode)
     if loop_section:
         parts.append(loop_section)
     if handles.override:
         parts.append(handles.override)
-    availability = _availability_segment()
-    if availability:
-        parts.append(availability)
     waiting = _waiting_clause()
     if waiting:
         parts.append(waiting)
     parts.extend(leases)
     return [" · ".join(parts)]
-
-
-def _availability_segment() -> str:
-    """Return the live availability segment for the loop line, or ``""``.
-
-    Reads :func:`teatree.core.availability.resolve_mode` at render time so the
-    segment reflects the currently-resolved availability, never a cached value.
-    Fails open to ``""`` (no segment) on any read error so a broken
-    availability config never blanks the loop line.
-    """
-    try:
-        from teatree.core.availability import resolve_mode  # noqa: PLC0415 — deferred: loaded at tick time, not import
-
-        return availability_segment(resolve_mode())
-    except Exception:  # noqa: BLE001 — rendering is best-effort; a failure degrades to empty
-        return ""
 
 
 def _waiting_clause() -> str:

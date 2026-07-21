@@ -176,6 +176,9 @@ t3 eval run --no-persist                     # run without recording to the ledg
 t3 eval run --backend api --trials 3          # pass@k: 3 trials, pass if any passes
 t3 eval run --backend api --trials 3 --require all  # pass^k: regression gate, all must pass
 t3 eval run --backend api --models opus,sonnet,haiku  # model-regression matrix (per-model columns)
+t3 eval run --preset cheap                    # apply a model-tier PRESET per scenario (cheap/frontier/baseline) instead of each scenario's own tier/phase; mutually exclusive with --model/--models/--benchmark
+t3 eval benchmark --presets cheap,baseline,default  # compare PRESETS (not raw model@effort variants) — 'default' = each scenario's own resolution, no preset
+t3 eval set-baseline --from matrix.json       # regenerate evals/presets/baseline.yaml: each scenario's cheapest PASSING tier from a --models/--benchmark matrix JSON run
 t3 eval run --judge                           # also grade judge-opted scenarios with an LLM judge
 t3 eval run --baseline                        # persist + mark this run as its model's baseline
 t3 eval run --gate-regressions               # persist + fail on a drop vs each model's baseline
@@ -757,6 +760,34 @@ error: the command exits non-zero only when the run itself is broken. The
 summary math/renderers live in `src/teatree/eval/benchmark.py`; the thin
 command in `src/teatree/cli/eval/benchmark.py` reuses the matrix lane's
 row collector.
+
+### Presets (`--preset` / `--presets` / `t3 eval set-baseline`)
+
+A PRESET is a composition layer applied ON TOP of the tier/phase resolution
+above (`teatree.eval.presets`) — it never edits a scenario's own YAML (a
+generated corpus would clobber a hand edit on the next regen). `t3 eval run
+--preset cheap` (or `frontier`) forces every scenario onto that one tier;
+`--preset baseline` applies the per-scenario map in
+`evals/presets/baseline.yaml` — a scenario absent from that map falls through
+to its own `tier`/`phase`/default resolution, never silently cheapened.
+`--preset` is mutually exclusive with `--model`/`--models`/`--benchmark` and
+forces the metered `--backend api` lane (a transcript replay can't reflect a
+model swap).
+
+`t3 eval benchmark --presets cheap,baseline,default` compares PRESETS
+column-for-column instead of raw `model@effort` variants — `default` is the
+no-preset column (each scenario's own resolution, unchanged). Mutually
+exclusive with `--models`.
+
+`t3 eval set-baseline --from matrix.json` regenerates `evals/presets/baseline.yaml`
+from a `t3 eval run --models <tier models> --format json` (or `t3 eval
+benchmark --format json`) matrix: for each currently-discovered scenario it
+picks the CHEAPEST tier whose cell passed (`cheap` < `balanced` < `frontier`).
+A scenario that failed at every tier gets no entry (warned, never guessed); a
+scenario no longer discovered is pruned. Assigning the `frontier` tier is
+refused unless `--allow-frontier` is passed (it is then also recorded under
+`frontier_ok` in the same file) — a scenario can never be silently pinned to
+the most expensive tier.
 
 #### Cost reporting — billed headline + honest cache observability
 

@@ -28,6 +28,7 @@ from teatree.cli.eval.merge_summary_json import merge_summary_json
 from teatree.cli.eval.merged_prs_since import merged_prs_since
 from teatree.cli.eval.negative_control import negative_control
 from teatree.cli.eval.prepare_transcript import prepare_transcript
+from teatree.cli.eval.set_baseline import set_baseline
 from teatree.cli.eval.skill_command_lane import skill_command_validity
 from teatree.cli.eval.skill_prose_lane import skill_prose_judge
 from teatree.cli.eval.transcript_replay import transcript_replay
@@ -55,6 +56,7 @@ def register_imported_commands(eval_app: typer.Typer) -> None:
     eval_app.command("merge-summaries")(merge_summaries)
     eval_app.command("merge-summary-json")(merge_summary_json)
     eval_app.command("prepare-transcript")(prepare_transcript)
+    eval_app.command("set-baseline")(set_baseline)
     eval_app.command("history")(history_command)
     eval_app.add_typer(corpus_app, name="corpus")
     eval_app.add_typer(label_app, name="label")
