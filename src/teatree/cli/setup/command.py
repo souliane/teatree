@@ -19,6 +19,7 @@ from teatree.cli.doctor import agent_skill_dirs
 from teatree.cli.setup.apm import ApmInstaller, strip_apm_hooks
 from teatree.cli.setup.clone import find_main_clone, validate_repo
 from teatree.cli.setup.docker_alias import DockerAliasInstaller
+from teatree.cli.setup.git_hooks_installer import GitHooksInstaller
 from teatree.cli.setup.mcp_registrar import McpServerRegistrar
 from teatree.cli.setup.plugin_registrar import PluginRegistrar, PyrightPluginRegistrar
 from teatree.cli.setup.skill_linker import CORE_EXCLUDED_SKILLS, SkillLinker
@@ -121,6 +122,10 @@ def run(
     ToolInstaller(repo).ensure_installed()
 
     ApmInstaller(repo).install()
+
+    # A checkout whose hooks were never installed pushes with the whole local gate
+    # layer absent (leak gate, banned-terms, dev/push-gate.sh) and nothing errors.
+    GitHooksInstaller(repo).install(echo=typer.echo)
 
     settings_json = Path.home() / ".claude" / "settings.json"
     stripped = strip_apm_hooks(settings_json)
