@@ -74,25 +74,49 @@ cannot run.
 - `dev/ci-parity-fast.sh` initially FAILED on two real architecture ratchets
   (`test_no_flat_core_regrowth`, `test_intra_core_deferred_import_ratchet`). Both were
   fixed properly, not by bumping pegs — see dead ends below. Not re-run since.
-- Full `uv run pytest --no-cov` was still running at handover. An EARLIER full run (on
-  the pre-rework code) reported 6 failures, all re-run in isolation afterwards and all
-  **passed** — they were contention flakes from two heavy suites running concurrently
-  (`test_lifecycle_probe_chaining`, `test_outer`, `test_workflows`,
-  `test_acquire_or_enqueue`, `directive_dogfood`). Treat them as flakes, but confirm.
+- Full `uv run pytest --no-cov`: **29642 passed, 52 skipped, 1 failed**. The failure is
+  `tests/teatree_core/management_commands/test_outer.py::TestOuterTickWhenEnabled::
+  test_tick_ok_line_names_the_experiment` — a `sqlite3` unraisable-exception warning under
+  xdist contention, unrelated to this change and **green when re-run in isolation**.
+
+## PR — OPEN, non-draft, but the BODY IS STALE
+
+PR #3537 <https://github.com/souliane/teatree/pull/3537> is open and non-draft. The branch
+is pushed (the pre-push leak gate passed on the second attempt, after scrubbing absolute
+home paths out of this file — see "Push" below).
+
+**Its body is the auto-generated commit message from BEFORE the rework, so two statements
+in it are now WRONG:** it cites `teatree.core.git_checkouts` (the module now lives at
+`teatree.core.gates.git_checkouts`) and claims discovery reads "each tracked worktree's
+on-disk path" (the ORM source was dropped — see dead ends). It also lacks the
+`## Architecture pre-check`, anti-vacuity and test-evidence sections.
+
+The correct body is committed at `pr-body.txt` in this worktree, already validated
+(`t3 tool validate-mr` exits 0 on it). **Posting it is blocked by a teatree bug, NOT by
+anything wrong with the body:**
+
+- `gh pr edit --body-file pr-body.txt` fails on this box with a gh/GitHub API error
+  (`GraphQL: Projects (classic) is being deprecated … repository.pullRequest.projectCards`)
+  and never applies the change.
+- `gh api -X PATCH repos/souliane/teatree/pulls/3537 -F body=@pr-body.txt` is denied by the
+  MR-metadata gate with "the overlay validator is not resolvable or crashed". Root cause
+  measured: `hook_router._run_mr_validator` gives the validator a **10s timeout**, and
+  `t3 tool validate-mr` takes **13.2s** here (cold `t3` + Django bootstrap). The
+  `TimeoutExpired` becomes `None`, which the gate reads as broken-env and fails closed.
+
+This is a real bug worth its own fix (raise the timeout, or warm the validator). It was NOT
+bypassed — `T3_MR_VALIDATE_ALLOW_BROKEN_ENV=1` is a deliberate safety bypass a sub-agent
+must not self-authorize.
 
 ## What the next person must do
 
-1. Re-run `uv run pytest --no-cov -q` in `/tmp/wt-git-hooks` and confirm green.
-2. Re-run `bash dev/ci-parity-fast.sh` — it must now pass the two ratchets it caught.
-3. Delete this `RESUME.md` and amend/commit.
-4. Push: `git push -u origin fix/setup-installs-git-hooks` from the HOST (token via
-   `pass show github/souliane/pat`, never printed). The container cannot run the push
-   gate — 512MB cgroup cap, SIGKILL 137.
-5. Open a NON-draft PR (a draft blocks the autonomous merge loop on this repo). Body
-   must state the verified evidence in "Root cause" above and that this closes an
-   install-completeness gap of the same class as #3523. Include the
-   `## Architecture pre-check` section.
-6. Nothing else is outstanding — the implementation is complete as far as it was taken.
+1. Post the correct PR body. Either fix the validator timeout first, or have the owner
+   authorize the documented bypass:
+   `cd <this worktree> && gh api -X PATCH repos/souliane/teatree/pulls/3537 -F body=@pr-body.txt`.
+2. Delete `RESUME.md` and `pr-body.txt`, commit, push. Neither belongs in the merge.
+3. Re-run `bash dev/ci-parity-fast.sh` — it must now pass the two ratchets it caught.
+4. Watch CI on #3537.
+5. The implementation itself is complete; nothing else is outstanding.
 
 ## Dead ends / decisions not worth revisiting
 

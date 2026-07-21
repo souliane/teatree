@@ -1,0 +1,97 @@
+fix(setup): install git hooks in every checkout, and check it
+
+## Why
+
+`t3 setup` installed the prek hooks into the clone it was invoked from and nowhere else.
+On a containerized deploy that clone is the container's, while every commit and push comes
+from the host checkout — whose `.git/hooks` held only `*.sample` files and whose
+`core.hooksPath` was unset. Every worktree shares that git dir, so all of them were ungated
+too: the leak gate (`scripts/hooks/refuse-public-push-with-leak.sh`), the banned-terms gate
+and `dev/push-gate.sh` never fired on a host push. Nothing errored and CI's tree-wide
+`banned-terms-tree` / `overlay-leak-tree` jobs still passed, so the gap was invisible.
+Nothing leaked — the missing layer was defence in depth.
+
+This closes an install-completeness gap of the same class as #3523: an install that looks
+working but isn't.
+
+The bug is not "setup forgets to install hooks" but "setup installs into one clone while
+work happens in another", so a check that inspects only the installed clone would report
+healthy while another clone pushes ungated.
+
+## What
+
+- `core/gates/git_checkouts.py` — `discover_checkouts()` enumerates the checkouts nothing
+  else covers: the installed clone, every checkout under the auto-isolated worktrees root
+  (including ad-hoc `git worktree add` ones), and the clone owning each. Django-free, so
+  setup and doctor can call it before `ensure_django`.
+- `core/gates/git_hooks_preflight.py` — `probe_git_hooks` per checkout and
+  `probe_checkouts` returning one verdict per git hooks dir, so a worktree family collapses
+  onto its clone. A `*.sample` file and a non-executable hook both count as missing. An
+  explicitly set `core.hooksPath` is reported and left untouched.
+- `cli/setup/git_hooks_installer.py` — wired into `t3 setup`; installs into every
+  unprotected checkout, delegating to the existing `prek_hook.install` (idempotent by
+  overwrite).
+- `cli/doctor/checks_bootstrap.py` — `_check_git_hooks_installed`, a hard FAIL per
+  unprotected checkout naming the path, the missing hooks, the gates each carries, and the
+  `t3 setup` remediation.
+
+Setup and the doctor check consume the same discovery, so the repair and the verification
+cannot disagree.
+
+Self-evidence: this branch's own push was refused by the newly-installed leak gate on an
+absolute home path, then passed after scrubbing.
+
+## Architecture pre-check
+
+1. **BLUEPRINT alignment** — section 10 Configuration, new "Git-hook install completeness"
+    paragraph beside the token preflight it mirrors.
+2. **FSM phase boundaries** — n/a, no `Ticket.State` / `Worktree.State` transition.
+3. **Extension-point contracts** — n/a, no `OverlayBase` / scanner / Protocol change.
+4. **Component boundaries** — probe and discovery in `core/gates/` beside
+    `gh_token_preflight`, the setup compose unit in `cli/setup/`, the check in
+    `cli/doctor/checks_bootstrap.py`. No straddling.
+5. **Dependency direction** — `core.gates` depends on `teatree.paths` and
+    `teatree.utils.run` only; `cli` depends on `core`. `uv run tach check` passes.
+6. **Test surface** — `tests/teatree_core/gates/test_git_hooks_preflight.py`,
+    `tests/teatree_core/gates/test_git_checkouts.py`,
+    `tests/teatree_cli/setup/test_git_hooks_installer.py`,
+    `tests/teatree_cli/doctor/test_bootstrap_checks.py`. Real `git` under `tmp_path`, no
+    mocked git. The load-bearing assertions are
+    `test_a_protected_clone_does_not_mask_an_unprotected_one` and
+    `test_an_unprotected_second_clone_is_installed_into_as_well`.
+7. **Resilience invariants** — verify-by-re-read (the installer re-probes after
+    `prek install` and WARNs if a hook is still absent); idempotency (probe-then-install,
+    and `prek install -f` overwrites); no external write, so no heartbeat or sub-agent
+    return contract in scope.
+8. **Identity and key normalization** — checkouts canonicalize UP to the resolved git hooks
+    dir; verdicts dedupe on that, never on a stripped path.
+9. **Behavior preservation** — purely additive. No gate weakened, no matcher narrowed, no
+    must-block test inverted. `prek_hook` is reused unchanged.
+10. **Removability / harness-vs-data** — removable: three self-contained modules plus one
+    call site in `setup/command.py` and one in `run_bootstrap_checks`. Harness side is
+    correct — the required hook names are a fixed property of what git runs, not per-repo
+    policy; the per-repo variation is already read from the repo.
+
+## Anti-vacuity
+
+- Replacing `prek_hook.install` with a success stub turns the fresh-checkout tests RED
+  (4 failed, 26 passed), including `test_fresh_checkout_ends_with_both_hooks_installed`.
+- Narrowing the doctor check to `discover_checkouts()[:1]` turns
+  `test_a_protected_clone_does_not_mask_an_unprotected_one` RED.
+
+## Test evidence
+
+- Full suite: 29642 passed, 52 skipped, 1 failed —
+  `test_outer.py::test_tick_ok_line_names_the_experiment`, a sqlite3 unraisable warning
+  under xdist contention, unrelated to this change and green when re-run in isolation.
+- `uv run ruff check`, `ruff format --check`, `uv run tach check` and
+  `uv run prek run ty-check --all-files` all pass.
+
+## Open questions and assumptions
+
+- `RESUME.md` is a handover note committed under a wind-down instruction. Delete it before
+  merge — it is not part of the change.
+- `dev/ci-parity-fast.sh` initially failed two architecture ratchets
+  (`test_no_flat_core_regrowth`, `test_intra_core_deferred_import_ratchet`). Both were
+  fixed structurally (the module moved into `core/gates/`, the ORM source dropped in favour
+  of the worktrees-root scan) rather than by bumping a peg. Not re-run end to end since.
