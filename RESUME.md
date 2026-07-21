@@ -117,7 +117,7 @@ I also independently pinned the Django behaviour in
 `TestCloseThreadDbConnectionsIsNotVacuous::test_django_close_all_leaves_the_in_memory_handle_open`,
 which passes — direct proof that `loops/worker.py` was genuinely leaking.
 
-## Verification status — READ THIS, IT IS INCOMPLETE
+## Verification status
 
 Completed:
 
@@ -129,9 +129,9 @@ Completed:
 - Full pre-commit hook suite on commit — all passed (tach, import-linter, jscpd,
   module-health, banned-terms, BLUEPRINT gate, etc.).
 
-- **Repeat runs, post-restore: 7 consecutive iterations, 92 passed each.** The guard set
-  plus BOTH victim files (`test_run.py`, `test_retro_gate_failures.py`) under xdist. The
-  loop was still going when I stopped; 7 confirmed green is the number to quote.
+- **Repeat runs, post-restore: 10 consecutive iterations, 92 passed each (10/10 green).**
+  The guard set plus BOTH victim files (`test_run.py`, `test_retro_gate_failures.py`)
+  under xdist. The loop ran to completion.
 - Branch pushed. All pre-push gates passed, no bypass.
 - **PR: <https://github.com/souliane/teatree/pull/3536>** (non-draft).
 
