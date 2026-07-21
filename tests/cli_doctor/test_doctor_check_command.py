@@ -38,6 +38,12 @@ def _isolate_environment_dependent_gates(monkeypatch):
     (``test_clone_guard.py`` and ``test_entrypoint_primary_clone.py``); here we
     only assert that ``t3 doctor check`` aggregates results, so pinning each to
     its primary-clone boundary is correct.
+
+    Every gate added to ``t3 doctor check`` that reads the host belongs here.
+    These tests assert the exit code and the "All checks passed" summary, so a
+    new host-reading gate that FAILs off-box silently re-couples them to the box
+    they run on — which is how they turned red on a fresh CI clone before the
+    git-hooks gate was pinned below.
     """
     monkeypatch.setattr(teatree_cli_update, "_collect_repos", list)
     monkeypatch.setattr(teatree_paths, "DATA_DIR_AUTO_ISOLATED", False)
