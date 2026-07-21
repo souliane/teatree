@@ -319,22 +319,35 @@ def probe_token_permissions(
         )
 
     # Fine-grained PAT: per-permission route/read probes.
-    default_branch = _parse_default_branch(meta_out)
+    return _probe_fine_grained(slug, run, _parse_default_branch(meta_out), github_owner, github_project_number)
+
+
+def _probe_fine_grained(
+    slug: str,
+    run: GhRunner,
+    default_branch: str | None,
+    github_owner: str,
+    github_project_number: int,
+) -> GhTokenProbe:
+    """Per-permission route/read probes for a fine-grained PAT, aggregated into a verdict.
+
+    Write probes get the 3-way :func:`_write_probe_verdict` so a transient/network fault
+    is INDETERMINATE, never falsely certified as present (#3477); a genuine required denial
+    wins over an indeterminate one so a real gap is never masked. Read probes count only a
+    route-level 403 as denied (a 404/network miss is never "missing"). ``workflows: write``
+    is always surfaced as an unprobed WARN gap; ``projects: read`` only when a board is set.
+    """
     required_missing: set[str] = set()
     recommended_missing: set[str] = set()
     indeterminate_writes: list[str] = []
     for probe in _PROBES:
         if probe.kind == "mutate":
-            # Write probe: a 3-way verdict so a transient/network fault is INDETERMINATE,
-            # never falsely certified as present (#3477).
-            args = [part.format(slug=slug) for part in probe.argv_template]
-            verdict = _write_probe_verdict(*run(args))
+            verdict = _write_probe_verdict(*run([part.format(slug=slug) for part in probe.argv_template]))
             if verdict == "denied":
                 (required_missing if probe.tier == "required" else recommended_missing).add(probe.label)
             elif verdict == "indeterminate" and probe.tier == "required":
                 indeterminate_writes.append(probe.label)
         elif _probe_verdict(run, probe, slug, default_branch):
-            # Read probe: a route-level 403 is the only denial; a 404/network miss is never "missing".
             (required_missing if probe.tier == "required" else recommended_missing).add(probe.label)
 
     # A genuine denial is a definite gap (loud FAIL) and wins; only when NO required write was
