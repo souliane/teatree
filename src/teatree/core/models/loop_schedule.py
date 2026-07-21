@@ -15,6 +15,7 @@ shape only, referencing presets **by name** so a deleted preset fails open.
 from typing import ClassVar
 
 from django.db import models
+from django.utils import timezone as django_timezone
 
 
 class ModeSchedule(models.Model):
@@ -31,7 +32,17 @@ class ModeSchedule(models.Model):
         ordering: ClassVar = ["name"]
 
     def __str__(self) -> str:
-        return f"loop-schedule<{self.name} tz={self.timezone or 'local'}>"
+        return f"loop-schedule<{self.name} tz={self.timezone_label}>"
+
+    @property
+    def timezone_label(self) -> str:
+        """Display form of ``timezone``.
+
+        An unset value resolves to the *project* zone, not the operator's local
+        one — naming it "local" reads as "your wall clock" and hides that slots
+        seeded without a timezone fire in ``settings.TIME_ZONE``.
+        """
+        return self.timezone or f"{django_timezone.get_current_timezone_name()} (default)"
 
 
 _MAX_WEEKDAY = 6  # Python weekday(): Sunday

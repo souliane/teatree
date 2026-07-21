@@ -99,7 +99,7 @@ def _summarize(title: str) -> str:
     return lines[-1].strip().strip('"').strip("'")
 
 
-def _describe_one(ticket_id: int, *, stdout_write: Callable[[str], object]) -> None:
+def describe_ticket(ticket_id: int, *, stdout_write: Callable[[str], object]) -> None:
     from teatree.core.models import Ticket  # noqa: PLC0415 — deferred: ORM import needs the app registry
 
     ticket = Ticket.objects.filter(pk=ticket_id).first()
@@ -158,7 +158,7 @@ class Command(TyperCommand):
         if all_missing:
             _describe_all_missing(stdout_write=self.stdout.write)
         else:
-            _describe_one(ticket_id, stdout_write=self.stdout.write)
+            describe_ticket(ticket_id, stdout_write=self.stdout.write)
 
 
 __all__ = ["BaseCommand", "Command"]

@@ -8,9 +8,18 @@ on ``(channel, slack_ts)`` deduplicates and the stored classification lets
 follow-up ticks observe what's already been done.
 
 The lifecycle mirrors :class:`ReviewAssignment`: one row per
-``(channel, slack_ts)``, monotonic state transitions, optional reviewer-task
-linkage for audit, no double dispatch when the row already exists with the
-same classification.
+``(channel, slack_ts)``, monotonic state transitions, reviewer-task linkage,
+no double dispatch while a reviewer task covers the row.
+
+Idempotency is not the emission gate
+------------------------------------
+
+The ledger answers "have I seen this broadcast?"; ``reviewer_task_id``
+answers "did a reviewer actually get dispatched for it?". Gating emission on
+the former makes a broadcast reviewable exactly once ever — so a dispatch lost
+to a dead worker, a failed task, or an exhausted budget leaves that review
+permanently unreachable. :attr:`ScannedBroadcast.awaiting_reviewer_dispatch`
+is the emission gate; the unique constraint remains the idempotency key.
 
 State machine
 -------------
@@ -105,11 +114,11 @@ class ScannedBroadcast(models.Model):
     def record(cls, observation: BroadcastObservation) -> "ScannedBroadcast | None":
         """Insert one row idempotently on ``(channel, slack_ts)``.
 
-        Returns the new row on first observation, ``None`` if a row for
-        this broadcast already exists with the same classification. When
-        the classification changes (pending → all_merged once the last
-        open MR closes), the row is updated and returned so the caller
-        can re-react on Slack.
+        Returns the new row on first observation, and again on any later
+        observation the caller still has work for: a changed classification
+        (pending → all_merged once the last open MR closes) or a pending
+        broadcast no reviewer task covers. ``None`` means there is nothing
+        left to do for this broadcast.
         """
         if not observation.channel or not observation.slack_ts:
             return None
@@ -130,7 +139,7 @@ class ScannedBroadcast(models.Model):
             # does not override a row marked manual — only an explicit reset does.
             return None
         if row.classification == observation.classification:
-            return None
+            return row if row.awaiting_reviewer_dispatch else None
         row.classification = observation.classification
         row.mr_urls = list(observation.mr_urls)
         row.reclassified_at = timezone.now()
@@ -164,6 +173,26 @@ class ScannedBroadcast(models.Model):
         if updated:
             self.refresh_from_db(fields=["classification", "manually_classified", "manually_classified_at"])
         return bool(updated)
+
+    @property
+    def awaiting_reviewer_dispatch(self) -> bool:
+        """True when this pending broadcast has no reviewer task covering it.
+
+        Having *seen* a broadcast before is idempotency, not coverage — the
+        review only became reachable if a reviewer task was actually created.
+        A row whose task was never recorded, was deleted, or FAILED lost its
+        emission and must be re-emitted. A COMPLETED task still counts as
+        covered: the review happened, and the broadcast signal carries no head
+        SHA for the downstream at-head dedup to key on, so re-emitting on it
+        would re-review on every tick.
+        """
+        if self.classification != self.Classification.PENDING:
+            return False
+        if not self.reviewer_task_id.isdigit():
+            return True
+        from teatree.core.models.task import Task  # noqa: PLC0415 — lazy: avoids the models import cycle
+
+        return not Task.objects.filter(pk=self.reviewer_task_id).exclude(status=Task.Status.FAILED).exists()
 
     def attach_reviewer_task(self, task_id: str) -> bool:
         """Persist the dispatched reviewer-task id on this broadcast row.

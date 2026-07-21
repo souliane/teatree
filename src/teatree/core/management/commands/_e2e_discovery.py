@@ -14,13 +14,38 @@ from teatree.core.models import Ticket, Worktree
 from teatree.core.worktree.worktree_env import compose_project
 from teatree.utils.ports import get_service_port
 
+# Both loopback literals, IPv4 first (the common case). Literals rather than
+# resolving ``localhost``: a host whose ``/etc/hosts`` maps the name to one
+# family only would hide a listener on the other — the very failure below.
+_LOOPBACK_ADDRESSES: tuple[tuple[int, str], ...] = (
+    (socket.AF_INET, "127.0.0.1"),
+    (socket.AF_INET6, "::1"),
+)
+# Per-address connect timeout. ``discover_frontend_port`` scans 11 ports, so
+# the worst case is 11 x len(_LOOPBACK_ADDRESSES) x this — halving the old
+# single-family 0.3s keeps that ceiling exactly where it was.
+_LOOPBACK_CONNECT_TIMEOUT = 0.15
+
 
 def detect_local_port(port: int) -> int | None:
-    """Return *port* if something is listening on localhost, else None."""
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-        s.settimeout(0.3)
-        if s.connect_ex(("127.0.0.1", port)) == 0:
-            return port
+    """Return *port* if something is listening on localhost, else None.
+
+    Probes both loopback families rather than IPv4 alone. Node dev servers
+    (``nx serve`` and friends) bind ``::1`` only on a host that prefers IPv6,
+    and an ``AF_INET``-only probe cannot see them: ``curl`` against
+    ``[::1]:4200`` answers 200 while ``127.0.0.1:4200`` is refused. That made
+    :func:`discover_frontend_port` report no frontend and aborted
+    ``e2e external --target local`` with "Frontend not running" on a host
+    whose frontend was up and serving.
+    """
+    for family, address in _LOOPBACK_ADDRESSES:
+        try:
+            with socket.socket(family, socket.SOCK_STREAM) as probe:
+                probe.settimeout(_LOOPBACK_CONNECT_TIMEOUT)
+                if probe.connect_ex((address, port)) == 0:
+                    return port
+        except OSError:
+            continue  # family unavailable on this host (e.g. IPv6 disabled)
     return None
 
 

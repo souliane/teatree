@@ -144,6 +144,35 @@ def test_discover_active_overlay_folds_deploy_dirname_to_sole_overlay(
     assert result.project_path == project
 
 
+def test_discover_active_overlay_canonicalizes_via_settings_module(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A clone dir matching no entry point resolves through its settings module.
+
+    ``acme-factory`` matches neither ``t3-acme`` exactly nor the dash-suffix
+    alias rule, and the sole-overlay fallback cannot fire with two installed —
+    so pre-fix the raw basename leaked out as an undispatchable overlay anchor.
+    ``acme.settings`` names the Django project that IS the overlay.
+    """
+    project = tmp_path / "acme-factory"
+    _write_manage_py(project, "acme.settings")
+    monkeypatch.chdir(project)
+
+    ep_acme = MagicMock()
+    ep_acme.name = "t3-acme"
+    ep_acme.value = "acme_overlay.overlay:AcmeOverlay"
+    ep_teatree = MagicMock()
+    ep_teatree.name = "t3-teatree"
+    ep_teatree.value = "t3_teatree.overlay:TeatreeOverlay"
+
+    with patch("importlib.metadata.entry_points", return_value=[ep_acme, ep_teatree]):
+        result = discover_active_overlay()
+
+    assert result is not None
+    assert result.name == "t3-acme"
+    assert result.project_path == project
+
+
 def test_discover_active_overlay_dirname_kept_raw_when_multiple_overlays(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

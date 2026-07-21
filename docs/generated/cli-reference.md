@@ -4737,6 +4737,8 @@ Usage: t3 loop schedule [OPTIONS] COMMAND [ARGS]...
 │ show          Show a schedule's ordered slots, or (no arg) the active one.   │
 │ set-active    Activate a schedule — the single write that switches calendars │
 │               (normal ↔ holiday).                                            │
+│ set-timezone  Set a schedule's timezone so its wall-clock slots fire         │
+│               locally, not in the project zone.                              │
 │ clear-active  Clear the active schedule so no L2 layer applies.              │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
@@ -4780,6 +4782,24 @@ Usage: t3 loop schedule set-active [OPTIONS] NAME
 
 ╭─ Arguments ──────────────────────────────────────────────────────────────────╮
 │ *    name      TEXT  [required]                                              │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --json                                                                       │
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 loop schedule set-timezone`
+
+```
+Usage: t3 loop schedule set-timezone [OPTIONS] NAME ZONE
+
+ Set a schedule's timezone so its wall-clock slots fire locally, not in the
+ project zone.
+
+╭─ Arguments ──────────────────────────────────────────────────────────────────╮
+│ *    name      TEXT  [required]                                              │
+│ *    zone      TEXT  [required]                                              │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --json                                                                       │

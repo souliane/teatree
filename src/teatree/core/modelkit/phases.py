@@ -144,7 +144,18 @@ SUBAGENT_BY_PHASE: dict[tuple[str, str], str] = {
 #: own token from this set.
 ARCHITECTURAL_REVIEW_PHASE: str = "architectural_review"
 DOGFOOD_SMOKE_PHASE: str = "dogfood_smoke"
-SCANNER_DISPATCHED_PHASES: frozenset[str] = frozenset({ARCHITECTURAL_REVIEW_PHASE, DOGFOOD_SMOKE_PHASE})
+EVAL_LOCAL_PHASE: str = "eval_local"
+BACKLOG_SWEEP_PHASE: str = "backlog_sweep"
+SHORT_DESCRIBE_PHASE: str = "short_describe"
+SCANNER_DISPATCHED_PHASES: frozenset[str] = frozenset(
+    {
+        ARCHITECTURAL_REVIEW_PHASE,
+        DOGFOOD_SMOKE_PHASE,
+        EVAL_LOCAL_PHASE,
+        BACKLOG_SWEEP_PHASE,
+        SHORT_DESCRIBE_PHASE,
+    }
+)
 
 #: Every canonical FSM phase plus every reactive/dispatch-only phase registered
 #: in ``SUBAGENT_BY_PHASE`` (``debugging``/``bughunt``/``answering``/…) and every

@@ -12,6 +12,7 @@ from unittest.mock import MagicMock
 from django.test import TestCase
 
 from teatree.backends.gitlab.sync_issues import fetch_assigned_issues
+from teatree.core.intake.label_admission import LabelPolicy
 from teatree.core.models import Ticket
 from teatree.types import SyncResult
 
@@ -55,3 +56,44 @@ class TestGitLabAssignedIssueSyncClassifiesKind(TestCase):
             labels=["debug"],
         )
         assert ticket.kind == Ticket.Kind.FEATURE
+
+
+class TestGitLabAssignedIssueSyncHonoursTheLabelGate(TestCase):
+    """The second intake answers to the same allowlist as the ``assigned_issues`` scanner.
+
+    Assignment alone is not a nomination — an issue the operator never labelled
+    ready must not become a Ticket row here just because it is assigned.
+    """
+
+    URL = "https://gitlab.com/o/r/-/issues/720"
+
+    def _sync(self, *, labels: list[str], ready: tuple[str, ...], exclude: tuple[str, ...] = ()) -> None:
+        host = MagicMock()
+        host.list_assigned_issues.return_value = [{"web_url": self.URL, "title": "Some issue", "labels": labels}]
+        fetch_assigned_issues(
+            host,
+            "me",
+            SyncResult(),
+            overlay_name="acme",
+            label_policy=LabelPolicy(ready_labels=ready, exclude_labels=exclude),
+        )
+
+    def test_issue_without_a_ready_label_creates_no_ticket(self) -> None:
+        self._sync(labels=["backend"], ready=("ready-for-dev",))
+
+        assert not Ticket.objects.filter(issue_url=self.URL).exists()
+
+    def test_issue_with_a_ready_label_creates_a_ticket(self) -> None:
+        self._sync(labels=["ready-for-dev"], ready=("ready-for-dev",))
+
+        assert Ticket.objects.filter(issue_url=self.URL).exists()
+
+    def test_excluded_issue_creates_no_ticket(self) -> None:
+        self._sync(labels=["ready-for-dev", "blocked"], ready=("ready-for-dev",), exclude=("blocked",))
+
+        assert not Ticket.objects.filter(issue_url=self.URL).exists()
+
+    def test_empty_allowlist_still_admits_everything(self) -> None:
+        self._sync(labels=["backend"], ready=())
+
+        assert Ticket.objects.filter(issue_url=self.URL).exists()

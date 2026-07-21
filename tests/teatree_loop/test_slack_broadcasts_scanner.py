@@ -21,7 +21,7 @@ import pytest
 from django.db import OperationalError
 from django.test import TestCase
 
-from teatree.core.models import ScannedBroadcast
+from teatree.core.models import ScannedBroadcast, Session, Task, Ticket
 from teatree.loop.scanners.slack_broadcast_mr_classifier import GlabGhMrStateClassifier
 from teatree.loop.scanners.slack_broadcasts import ConnectChannelBotRestrictedError, MrState, SlackBroadcastsScanner
 from teatree.types import RawAPIDict
@@ -429,26 +429,50 @@ class TestSkipsBroadcastsAlreadyEyesReactedByColleague(TestCase):
 
 
 class TestIdempotency(TestCase):
-    def test_idempotent_rescan_is_a_noop(self) -> None:
-        backend = FakeMessaging()
-        history = {CHANNEL: [_message(f"{MR_OPEN}", TS_A)]}
-        states = {MR_OPEN: MrState(url=MR_OPEN, merged=False, approved=False)}
-        scanner = SlackBroadcastsScanner(
+    def _pending_scanner(self, backend: FakeMessaging) -> SlackBroadcastsScanner:
+        return SlackBroadcastsScanner(
             backend=backend,
             channels=[CHANNEL],
-            fetch_channel_history=_fetcher(history),
-            classify_mrs=_classifier(states),
+            fetch_channel_history=_fetcher({CHANNEL: [_message(f"{MR_OPEN}", TS_A)]}),
+            classify_mrs=_classifier({MR_OPEN: MrState(url=MR_OPEN, merged=False, approved=False)}),
         )
+
+    def test_rescan_reuses_the_single_ledger_row(self) -> None:
+        backend = FakeMessaging()
+        scanner = self._pending_scanner(backend)
+
+        scanner.scan()
+        scanner.scan()
+
+        # No discovery-time claim reaction on either scan (#113/#86).
+        assert backend.react_calls == []
+        assert ScannedBroadcast.objects.filter(channel=CHANNEL, slack_ts=TS_A).count() == 1
+
+    def test_rescan_re_emits_while_no_reviewer_task_covers_the_row(self) -> None:
+        """The ledger is the dedup key, not the emission gate.
+
+        A dispatch lost before a reviewer task existed — dead worker, exhausted
+        budget, a stopped review loop — would otherwise make this review
+        permanently unreachable. Duplicate work is prevented downstream, where
+        ``persist_agent_actions`` reuses the open reviewing Task.
+        """
+        scanner = self._pending_scanner(FakeMessaging())
 
         first = scanner.scan()
         second = scanner.scan()
 
         assert len(first) == 1
-        assert second == []
-        # No discovery-time claim reaction on either scan (#113/#86); the
-        # second scan no-ops on the idempotency row.
-        assert backend.react_calls == []
-        assert ScannedBroadcast.objects.filter(channel=CHANNEL, slack_ts=TS_A).count() == 1
+        assert [signal.payload["mr_url"] for signal in second] == [MR_OPEN]
+
+    def test_rescan_stops_emitting_once_a_reviewer_task_covers_the_row(self) -> None:
+        scanner = self._pending_scanner(FakeMessaging())
+        scanner.scan()
+        row = ScannedBroadcast.objects.get(channel=CHANNEL, slack_ts=TS_A)
+        ticket = Ticket.objects.create(issue_url=MR_OPEN, role=Ticket.Role.REVIEWER)
+        session = Session.objects.create(ticket=ticket, agent_id="t3:reviewer")
+        row.attach_reviewer_task(str(Task.objects.create(ticket=ticket, session=session, phase="reviewing").pk))
+
+        assert scanner.scan() == []
 
     def test_pending_to_all_merged_reclassifies_and_reacts_green(self) -> None:
         backend = FakeMessaging()

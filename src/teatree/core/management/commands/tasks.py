@@ -13,6 +13,7 @@ from teatree.agents.prompt import build_interactive_context
 from teatree.agents.skill_bundle import resolve_skill_bundle
 from teatree.core.intake.ticket_kind_classification import classify_ticket_kind
 from teatree.core.machine_output import emit
+from teatree.core.management.commands._deterministic_phases import run_deterministic_phase
 from teatree.core.management.commands.tasks_session_view import (
     TaskRow,
     render_reconcile_checklist,
@@ -512,6 +513,11 @@ class Command(TyperCommand):
         if refusal is not None:
             task.complete_with_attempt(exit_code=1, error=refusal, result={"routing_error": refusal})
             return {"exit_code": "1", "routing_error": refusal}
+
+        # A non-agentic phase (``short_describe``) runs its own implementation, not a
+        # generic ticket-work brief its least-privilege toolset cannot satisfy.
+        if (deterministic := run_deterministic_phase(task)) is not None:
+            return deterministic
 
         # Durable failure recording, the same semantics ``execute_headless_task``
         # applies (souliane/teatree#2192): ``run_headless`` can RAISE on an SDK

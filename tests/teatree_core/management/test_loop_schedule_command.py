@@ -1,4 +1,4 @@
-"""``manage.py loop_schedule`` — list/show/set-active/clear-active against a real DB."""
+"""``manage.py loop_schedule`` — list/show/set-active/set-timezone/clear-active against a real DB."""
 
 import datetime as dt
 import io
@@ -54,3 +54,58 @@ class TestLoopScheduleCommand(django.test.TestCase):
         payload = json.loads(_run("show", "standard", json_output=True))
         assert payload["slots"][0]["preset"] == "engaged"
         assert payload["slots"][0]["start_time"] == "08:00"
+
+
+@django.test.override_settings(USE_TZ=True, TIME_ZONE="UTC")
+class TestSetTimezone(django.test.TestCase):
+    def _seeded(self) -> ModeSchedule:
+        """A schedule as ``preset_seed`` leaves it: no timezone, so slots resolve in UTC."""
+        return ModeSchedule.objects.create(name="standard", timezone="")
+
+    def test_writes_the_zone(self) -> None:
+        schedule = self._seeded()
+
+        _run("set-timezone", "standard", "Europe/Vienna")
+
+        schedule.refresh_from_db()
+        assert schedule.timezone == "Europe/Vienna"
+
+    def test_refuses_an_unknown_zone_without_writing(self) -> None:
+        schedule = self._seeded()
+
+        with pytest.raises(SystemExit):
+            _run("set-timezone", "standard", "Mars/Olympus_Mons")
+
+        schedule.refresh_from_db()
+        assert schedule.timezone == ""
+
+    def test_refuses_an_unknown_schedule(self) -> None:
+        with pytest.raises(SystemExit):
+            _run("set-timezone", "ghost", "Europe/Vienna")
+
+    def test_json_output_reports_the_written_zone(self) -> None:
+        self._seeded()
+
+        payload = json.loads(_run("set-timezone", "standard", "Europe/Vienna", json_output=True))
+
+        assert payload == {"name": "standard", "timezone": "Europe/Vienna"}
+
+
+@django.test.override_settings(USE_TZ=True, TIME_ZONE="UTC")
+class TestUnsetTimezoneRendersHonestly(django.test.TestCase):
+    """An empty timezone means the project zone, not the operator's local one."""
+
+    def test_list_names_the_project_zone(self) -> None:
+        ModeSchedule.objects.create(name="standard", timezone="")
+
+        assert "tz=UTC (default)" in _run("list")
+
+    def test_show_names_the_project_zone(self) -> None:
+        ModeSchedule.objects.create(name="standard", timezone="")
+
+        assert "tz=UTC (default)" in _run("show", "standard")
+
+    def test_an_explicit_zone_is_rendered_as_is(self) -> None:
+        ModeSchedule.objects.create(name="standard", timezone="Europe/Vienna")
+
+        assert "tz=Europe/Vienna" in _run("list")

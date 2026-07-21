@@ -18,10 +18,10 @@ from django.test import TestCase
 from teatree.core.management.commands.ticket_short_describe import (
     _FALLBACK_LEN,
     _describe_all_missing,
-    _describe_one,
     _generate_short_description,
     _summarize,
     _truncation_fallback,
+    describe_ticket,
 )
 from teatree.core.models import Ticket
 
@@ -126,14 +126,14 @@ class TestDescribeOne(TestCase):
     def test_missing_ticket_emits_noop_and_exits_one(self) -> None:
         captured: list[str] = []
         with pytest.raises(SystemExit) as excinfo:
-            _describe_one(99999, stdout_write=captured.append)
+            describe_ticket(99999, stdout_write=captured.append)
         assert excinfo.value.code == 1
         assert any("no ticket with id=99999" in line for line in captured)
 
     def test_ticket_without_title_is_noop(self) -> None:
         ticket = Ticket.objects.create(overlay="t3-teatree", extra={})
         captured: list[str] = []
-        _describe_one(ticket.pk, stdout_write=captured.append)
+        describe_ticket(ticket.pk, stdout_write=captured.append)
         assert any("has no extra['issue_title']" in line for line in captured)
         ticket.refresh_from_db()
         assert ticket.short_description == ""
@@ -145,7 +145,7 @@ class TestDescribeOne(TestCase):
         )
         captured: list[str] = []
         with patch(_SUMMARIZE, return_value="dogfood smoke scanner"):
-            _describe_one(ticket.pk, stdout_write=captured.append)
+            describe_ticket(ticket.pk, stdout_write=captured.append)
         ticket.refresh_from_db()
         assert ticket.short_description == "dogfood smoke scanner"
 
@@ -201,7 +201,7 @@ class TestCommandDescribeMethod(TestCase):
             cmd.describe(ticket_id=0, all_missing=False)
         assert excinfo.value.code == 2
 
-    def test_describe_with_ticket_id_calls_describe_one(self) -> None:
+    def test_describe_with_ticket_id_calls_describe_ticket(self) -> None:
         cmd = self._command()
         ticket = Ticket.objects.create(
             overlay="t3-teatree",

@@ -541,6 +541,10 @@
           "name": "set-active"
         },
         {
+          "help": "Set *name*'s slot timezone \u2014 the lever that makes its wall-clock slots fire locally",
+          "name": "set-timezone"
+        },
+        {
           "help": "Clear the active schedule so no L2 layer applies (presets only via override)",
           "name": "clear-active"
         }

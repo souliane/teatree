@@ -270,6 +270,7 @@ List/show/set-active/clear-active loop schedules (#3159).
 | `show` | Show a schedule's ordered slots (weekdays at a start time, then the preset) |
 | `list` | List every schedule with its timezone, slot count, and the ACTIVE marker |
 | `set-active` | Activate *name* — the single ``active_loop_schedule`` write that switches calendars |
+| `set-timezone` | Set *name*'s slot timezone — the lever that makes its wall-clock slots fire locally |
 | `clear-active` | Clear the active schedule so no L2 layer applies (presets only via override) |
 
 ## `loop_self_improve`

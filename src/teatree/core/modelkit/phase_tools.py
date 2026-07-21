@@ -153,6 +153,23 @@ _TOOLS_BY_PHASE: Final[dict[str, frozenset[str]]] = {
     # the provision smoke, so it needs the shell (read-only+shell, mirroring
     # ``bughunt``/``shipping``); it never mutates source through the write tools.
     "dogfood_smoke": _READ_ONLY | {"shell"},
+    # ``eval_local`` shells out to run the scoped eval suite (``t3 eval run``), the
+    # same read-only+shell shape as ``dogfood_smoke``: it executes a suite and
+    # reports, it never mutates source.
+    "eval_local": _READ_ONLY | {"shell"},
+    # ``backlog_sweep`` triages the issue tracker — it reads the tracker over the
+    # forge CLI (shell) and the web, and records close/fold PROPOSALS behind the
+    # scanner's ask-gate. NO write/edit: a sweep produces proposals, never commits.
+    "backlog_sweep": _READ_ONLY | _WEB | {"shell"},
+    # ``short_describe`` turns a cached issue title into a <=40 char statusline
+    # summary. It is a pure text transformation over data already on the ``Ticket``
+    # row, so it needs NO tool at all — and MUST NOT get the shell: the scanner
+    # enqueues one per undescribed ticket, so granting it write/shell would turn a
+    # few hundred summarisation dispatches a day into autonomous ticket-implementing
+    # agents. Executed deterministically (``deterministic_phase_runner``) rather than
+    # as a generic agent spawn, so the empty allowance is never contradicted by a
+    # ticket-work brief.
+    "short_describe": _NONE,
 }
 
 

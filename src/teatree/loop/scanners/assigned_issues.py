@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING, cast
 from django.apps import apps
 
 from teatree.core.backend_protocols import CodeHostBackend
+from teatree.core.intake.label_admission import intake_admits
 from teatree.loop.scanners.base import ScanSignal
 from teatree.types import RawAPIDict
 
@@ -108,9 +109,7 @@ class AssignedIssuesScanner:
         signals: list[ScanSignal] = []
         for issue in issues:
             labels = _issue_labels(issue)
-            if self.ready_labels and not any(label in labels for label in self.ready_labels):
-                continue
-            if self.exclude_labels and any(label in labels for label in self.exclude_labels):
+            if not intake_admits(labels, self.ready_labels, self.exclude_labels):
                 continue
             url = _issue_url(issue)
             if url and url in tracked:
