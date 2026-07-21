@@ -35,6 +35,7 @@ from teatree.core.gates.provision_admission_gate import (
 from teatree.core.models import Worktree
 from teatree.core.provision.provision_report import ProvisionReport
 from teatree.utils.run import TimeoutExpired, run_allowed_to_fail
+from teatree.utils.thread_db import close_thread_db_connections
 
 logger = logging.getLogger(__name__)
 
@@ -113,6 +114,22 @@ def provision_worktree_subprocess(
     return WorktreeProvisionResult(worktree_id=worktree.pk, repo_path=worktree.repo_path, ok=ok, detail=detail)
 
 
+def _provision_closing_connections(
+    executor: Callable[[Worktree], WorktreeProvisionResult],
+    worktree: Worktree,
+) -> WorktreeProvisionResult:
+    """Provision one worktree on a pool worker, then close that worker's DB connections.
+
+    *executor* reads and writes ``Worktree`` rows, so it opens a thread-local Django
+    connection on the pool worker that nothing else closes. See
+    :mod:`teatree.utils.thread_db`.
+    """
+    try:
+        return executor(worktree)
+    finally:
+        close_thread_db_connections()
+
+
 # ast-grep-ignore: ac-django-no-complexity-suppressions
 def run_worktree_provisions_in_parallel(  # noqa: PLR0913 — each kwarg is a documented seam / test injection point.
     worktrees: Sequence[Worktree],
@@ -167,7 +184,7 @@ def run_worktree_provisions_in_parallel(  # noqa: PLR0913 — each kwarg is a do
                 held_since = None
                 worktree = pending.pop(0)
                 out(f"  Provisioning {worktree.repo_path}…")
-                futures[pool.submit(executor, worktree)] = worktree
+                futures[pool.submit(_provision_closing_connections, executor, worktree)] = worktree
 
             if not futures:
                 sleep(poll_interval)

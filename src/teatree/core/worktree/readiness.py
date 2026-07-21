@@ -20,6 +20,7 @@ from typing import TYPE_CHECKING
 import httpx
 
 from teatree.utils.run import CommandFailedError, TimeoutExpired, run_allowed_to_fail
+from teatree.utils.thread_db import close_thread_db_connections
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterable, Mapping
@@ -117,6 +118,19 @@ def command_probe(*, name: str, description: str, spec: CommandProbeSpec) -> Pro
     return Probe(name=name, description=description, check_fn=_check)
 
 
+def _check_closing_connections(probe: "Probe") -> ProbeResult:
+    """Run one probe on a pool worker, then close that worker's DB connections.
+
+    An overlay-supplied ``check_fn`` may touch the ORM, which opens a thread-local
+    Django connection on the pool worker that nothing else closes. See
+    :mod:`teatree.utils.thread_db`; a no-op for a probe that never opened one.
+    """
+    try:
+        return probe.check()
+    finally:
+        close_thread_db_connections()
+
+
 def run_probes(probes: "Iterable[Probe]", *, max_workers: int = 8) -> list[ProbeResult]:
     """Run probes concurrently. Result order matches input order."""
     probes_list = list(probes)
@@ -124,7 +138,7 @@ def run_probes(probes: "Iterable[Probe]", *, max_workers: int = 8) -> list[Probe
         return []
     results: dict[int, ProbeResult] = {}
     with ThreadPoolExecutor(max_workers=max_workers) as pool:
-        futures = {pool.submit(p.check): i for i, p in enumerate(probes_list)}
+        futures = {pool.submit(_check_closing_connections, p): i for i, p in enumerate(probes_list)}
         for fut in as_completed(futures):
             results[futures[fut]] = fut.result()
     return [results[i] for i in range(len(probes_list))]
