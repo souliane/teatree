@@ -380,3 +380,30 @@ class TestRunT3CommandRunner:
         assert "partial stderr" in result.stderr
         assert "partial" in result.stdout
         assert result.elapsed_seconds >= 0
+
+    def test_run_t3_command_strips_inherited_django_settings_module(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Regression: a leaked ``DJANGO_SETTINGS_MODULE`` breaks the child (#3516).
+
+        It crashes the child's overlay-entry-point import with
+        ``AppRegistryNotReady`` (a dogfood-smoke run against a process that
+        already bootstrapped Django). Every other subprocess-spawning path in
+        this codebase (``cli/overlay.py:_base_env()``,
+        ``self_update.py:_self_db_migrate_env()``) strips the inherited var
+        before shelling out to a bare ``t3`` command; this runner must too.
+        """
+        from subprocess import CompletedProcess  # noqa: PLC0415 -- test-local, see #3516
+        from unittest.mock import patch  # noqa: PLC0415 -- test-local, see #3516
+
+        from teatree.loop.dogfood_smoke import run_t3_command  # noqa: PLC0415 -- test-local, see #3516
+
+        monkeypatch.setenv("DJANGO_SETTINGS_MODULE", "teatree.settings")
+        monkeypatch.setenv("SOME_OTHER_VAR", "keep-me")
+        step = SmokeStep(name="workspace_ticket", command=("t3", "teatree", "workspace", "ticket"))
+        fake = CompletedProcess(args=step.command, returncode=0, stdout="ok", stderr="")
+        with patch("teatree.loop.dogfood_smoke.run_allowed_to_fail", return_value=fake) as mock_run:
+            run_t3_command(step)
+
+        passed_env = mock_run.call_args.kwargs["env"]
+        assert passed_env is not None
+        assert "DJANGO_SETTINGS_MODULE" not in passed_env
+        assert passed_env["SOME_OTHER_VAR"] == "keep-me"
