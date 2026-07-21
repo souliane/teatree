@@ -35,6 +35,7 @@ from teatree.loop.queue_drain import expire_stale_default_jobs
 from teatree.loops.timer_chains import _loop_runner_enabled, kill_live_tick_process_groups
 from teatree.loops.timer_reconciler import ensure_loop_timers, ensure_maintenance_chains
 from teatree.utils.ram_probe import default_provision_concurrency
+from teatree.utils.thread_db import close_thread_db_connections
 
 if TYPE_CHECKING:
     from django_tasks_db.management.commands.db_worker import Worker
@@ -133,15 +134,18 @@ def _build_executor(queue_name: str, worker_id: str) -> "Worker":
 
 
 def _spawn_executor_thread(executor: _Executor) -> _Handle:
-    """Run *executor* in a daemon thread that closes its DB connection on exit."""
+    """Run *executor* in a daemon thread that closes its DB connection on exit.
+
+    Closes the raw DB-API handle rather than calling ``connections.close_all()``:
+    that is a documented no-op under the in-memory test database, so it left this
+    thread's handle stranded for a later GC. See :mod:`teatree.utils.thread_db`.
+    """
 
     def _run() -> None:
         try:
             executor.run()
         finally:
-            from django.db import connections  # noqa: PLC0415 — deferred: Django import at call time
-
-            connections.close_all()
+            close_thread_db_connections()
 
     thread = threading.Thread(target=_run, daemon=True)
     thread.start()

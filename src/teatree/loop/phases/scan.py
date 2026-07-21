@@ -14,6 +14,7 @@ from dataclasses import dataclass, field
 from teatree.loop.domain_jobs import _run_job
 from teatree.loop.job_identity import _ScannerJob
 from teatree.loop.scanners.base import ScanSignal
+from teatree.utils.thread_db import close_thread_db_connections
 
 _DEFAULT_PER_JOB_TIMEOUT: float = 60.0
 _POOL_WORKERS_PER_CPU: int = 4
@@ -30,31 +31,14 @@ def _run_job_closing_connections(job: _ScannerJob) -> tuple[str, list[ScanSignal
 
     A scanner that touches the ORM opens a thread-local Django connection on its
     pool worker. Nothing else closes it: ``pool.shutdown(wait=False)`` never joins
-    the worker, so the orphaned ``sqlite3`` connection is finalized at GC time and
-    emits a ``ResourceWarning`` — which, under a Django ``TestCase`` (the pool
-    thread is not the test's transaction-owning thread), surfaces as an
-    unraisable-exception error in an unrelated later test. This mirrors the
-    per-thread connection hygiene :func:`teatree.loops.worker._spawn_executor_thread`
-    applies to its own worker thread, and is a no-op for a scanner that never
-    opened a connection.
-
-    The raw DB-API connection is closed directly rather than via
-    ``connection.close()``: Django keeps an in-memory (``:memory:``) SQLite
-    connection open on ``close()`` because closing it would discard the database
-    — so under the in-memory test DB ``close()`` alone leaves the handle open.
-    Closing the underlying connection releases it on both the in-memory test DB
-    and a production file DB. The worker thread is discarded after the job, so
-    the wrapper is never reused.
+    the worker, so the orphaned handle is finalized at an arbitrary later GC — see
+    :mod:`teatree.utils.thread_db` for why that surfaces as a red in an unrelated
+    test. A no-op for a scanner that never opened a connection.
     """
     try:
         return _run_job(job)
     finally:
-        from django.db import connections  # noqa: PLC0415 — deferred Django import at call time
-
-        for conn in connections.all():
-            if conn.connection is not None:
-                conn.connection.close()
-                conn.connection = None
+        close_thread_db_connections()
 
 
 def scan_phase(
