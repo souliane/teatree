@@ -74,7 +74,6 @@ def _noop_reverse(apps, schema_editor):
 
 
 class Migration(migrations.Migration):
-
     dependencies = [
         ("core", "0021_deferredquestion_audience"),
     ]

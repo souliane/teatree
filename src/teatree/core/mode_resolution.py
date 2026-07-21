@@ -30,8 +30,12 @@ the loop fleet or silently mute the user.
 """
 
 import datetime as dt
+import json
 import logging
+import os
+import tempfile
 from dataclasses import dataclass
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 from django.utils import timezone
@@ -224,9 +228,34 @@ def _mirror_posture_to_fast_hook_file(*, until: dt.datetime | None) -> None:
             # default/schedule tiers decide, exactly as clearing the file does.
             availability.clear_override()
         else:
-            availability.write_override_file(token, until=until)
+            _write_override_json(availability.override_path(), mode=token, until=until)
     except Exception as exc:  # noqa: BLE001 — fast-hook mirror is best-effort; never block the override
         logger.warning("fast-hook posture mirror failed: %s", exc)
+
+
+def _write_override_json(target: Path, *, mode: str, until: dt.datetime | None) -> None:
+    """Atomically write the availability override file — NO drain, NO resolve.
+
+    The fast-hook posture mirror's pure writer (kept here, not in
+    ``core.availability``, so that module's grandfathered LOC budget is untouched).
+    The DB ``ModeOverride`` row is authoritative; this file only lets the stdlib
+    away-probe read the resolved posture.
+    """
+    target.parent.mkdir(parents=True, exist_ok=True)
+    payload: dict[str, str] = {"mode": mode}
+    if until is not None:
+        aware = until.replace(tzinfo=dt.UTC) if until.tzinfo is None else until
+        payload["until"] = aware.isoformat()
+    fd, tmp_str = tempfile.mkstemp(prefix=".override-", suffix=".tmp", dir=str(target.parent))
+    tmp_path = Path(tmp_str)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            json.dump(payload, handle, sort_keys=True)
+            handle.write("\n")
+        tmp_path.replace(target)
+    except BaseException:
+        tmp_path.unlink(missing_ok=True)
+        raise
 
 
 def _legacy_token(*, defers: bool, pauses: bool) -> str:
