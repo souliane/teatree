@@ -9,6 +9,7 @@ tools:
   - Bash
   - Grep
   - Glob
+  - Skill
 skills:
   - rules
   - workspace
