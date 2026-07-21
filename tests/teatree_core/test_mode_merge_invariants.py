@@ -2,16 +2,16 @@
 
 Locks the five owner-flagged invariants around the merged :class:`LoopPreset` (Mode):
 
-1. Owner-reply ALWAYS-ON — the reactive owner-DM reply recorder never consults the
-   merged-mode resolver / defer predicate (static guard; the functional proof lives
-   in ``tests/teatree_agents/test_owner_answer_threading.py``).
-2. Auto-merge under away — loop membership, proven in
-   ``tests/teatree_loops/test_loop_table.py::TestAutoMergePathAdmittedUnderAutonomousAway``.
-3. Live-presence #189 escape — ``PresenceHeartbeat.is_live_user_turn`` still gates a
-   per-turn in-client render, independent of the named mode.
-4. autoload gate — untouched by the merge (no mode read added to it).
-5. ``require_human_approval_to_merge`` stays a SEPARATE knob — it is NOT folded into
-   the merged Mode (design decision D).
+1.  Owner-reply ALWAYS-ON — the reactive owner-DM reply recorder never consults the
+    merged-mode resolver / defer predicate (static guard; the functional proof lives
+    in ``tests/teatree_agents/test_owner_answer_threading.py``).
+2.  Auto-merge under away — loop membership, proven in
+    ``tests/teatree_loops/test_loop_table.py::TestAutoMergePathAdmittedUnderAutonomousAway``.
+3.  Live-presence #189 escape — ``PresenceHeartbeat.is_live_user_turn`` still gates a
+    per-turn in-client render, independent of the named mode.
+4.  autoload gate — untouched by the merge (no mode read added to it).
+5.  ``require_human_approval_to_merge`` stays a SEPARATE knob — it is NOT folded into
+    the merged Mode (design decision D).
 """
 
 import datetime as dt

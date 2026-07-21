@@ -33,11 +33,10 @@ def _live_lease() -> list[tuple[str, datetime]]:
 class TestDashboardHeadAnchor:
     """Pure formatter: the four segments fold onto exactly one line."""
 
-    def test_folds_loops_availability_overlays_health_onto_one_line(self) -> None:
+    def test_folds_loops_overlays_health_onto_one_line(self) -> None:
         with (
             patch("teatree.loop.statusline_loops._live_loop_leases", return_value=_live_lease()),
             patch("teatree.loop.statusline_loops._cadence_for_loop", return_value=720),
-            patch("teatree.loop.statusline_loops._availability_segment", return_value="availability: away (override)"),
             patch("teatree.loop.statusline_loops._configured_overlay_names", return_value=["t3-teatree"]),
             patch("teatree.core.factory.operational_health.read_health", return_value=_health(HealthStatus.RED, 3)),
         ):
@@ -45,7 +44,8 @@ class TestDashboardHeadAnchor:
         assert len(lines) == 1, repr(lines)
         line = lines[0]
         assert "tick 11m" in line, line
-        assert "availability: away (override)" in line, line
+        # The separate availability segment is gone (folded into the mode handle).
+        assert "availability:" not in line, line
         assert "overlays: t3-teatree" in line, line
         assert "health: ● 3" in line, line
 
@@ -71,7 +71,6 @@ class TestDashboardHeadAnchor:
         with (
             patch("teatree.loop.statusline_loops._live_loop_leases", return_value=_live_lease()),
             patch("teatree.loop.statusline_loops._cadence_for_loop", return_value=720),
-            patch("teatree.loop.statusline_loops._availability_segment", return_value=""),
             patch(
                 "teatree.loop.statusline_loops._configured_overlay_names",
                 side_effect=RuntimeError("config broken"),

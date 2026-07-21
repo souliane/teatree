@@ -11,13 +11,13 @@ already backs presets — :func:`teatree.loop.preset_resolution.resolve_active_p
 (L3 manual :class:`LoopPresetOverride` row → L2 active-schedule slot) — and adds
 the two pieces availability contributed:
 
-* **L0 default** — the configured ``default_mode`` ``ConfigSetting`` (default
-  ``engaged``) when no override / schedule governs, replacing availability's
-  ``present``-when-no-windows default.
-* **presence-sensitivity upgrade** — a fresh keystroke (within
-  :data:`teatree.core.availability.PRESENCE_FRESHNESS`) upgrades an away-class
-  mode reached *by schedule / default* to the ``presence_upgrade_mode`` (default
-  ``engaged``). Upgrade-only; never downgrades; never overrides a manual override.
+*   **L0 default** — the configured ``default_mode`` ``ConfigSetting`` (default
+    ``engaged``) when no override / schedule governs, replacing availability's
+    ``present``-when-no-windows default.
+*   **presence-sensitivity upgrade** — a fresh keystroke (within
+    :data:`teatree.core.availability.PRESENCE_FRESHNESS`) upgrades an away-class
+    mode reached *by schedule / default* to the ``presence_upgrade_mode`` (default
+    ``engaged``). Upgrade-only; never downgrades; never overrides a manual override.
 
 The returned :class:`ResolvedMode` satisfies every old surface at once: the
 availability ``.defers_questions`` / ``.pauses_self_pump`` predicates AND the

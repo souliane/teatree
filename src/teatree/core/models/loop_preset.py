@@ -61,17 +61,17 @@ class LoopPreset(models.Model):
     fully expressed by them (the merge's key finding: availability adds no state a
     preset can't carry, only two booleans plus a presence rule):
 
-    * ``defers_questions`` — the user is unreachable NOW: ``AskUserQuestion``
-      defers to the durable backlog, local TTS is silenced, colleague-facing
-      loops are gated off, and returning to a non-deferring mode drains the
-      backlog. Maps to the old ``away`` + ``autonomous_away`` modes.
-    * ``pauses_self_pump`` — stop self-driving too (holiday): the loop tick parks.
-      Maps to the old ``away`` mode only. Requires ``defers_questions`` (the
-      nonsensical "pump paused but questions answered" 4th point is unrepresentable).
-    * ``presence_sensitive`` — a fresh keystroke upgrades an away-class mode
-      reached *by schedule/default* to the configured ``presence_upgrade_mode``.
-      Defaults ``True`` so any scheduled away honours a live keystroke, exactly as
-      the old presence rule did.
+    *   ``defers_questions`` — the user is unreachable NOW: ``AskUserQuestion``
+        defers to the durable backlog, local TTS is silenced, colleague-facing
+        loops are gated off, and returning to a non-deferring mode drains the
+        backlog. Maps to the old ``away`` + ``autonomous_away`` modes.
+    *   ``pauses_self_pump`` — stop self-driving too (holiday): the loop tick parks.
+        Maps to the old ``away`` mode only. Requires ``defers_questions`` (the
+        nonsensical "pump paused but questions answered" 4th point is unrepresentable).
+    *   ``presence_sensitive`` — a fresh keystroke upgrades an away-class mode
+        reached *by schedule/default* to the configured ``presence_upgrade_mode``.
+        Defaults ``True`` so any scheduled away honours a live keystroke, exactly as
+        the old presence rule did.
 
     The legacy ``availability_mode`` string is retained during the merge only to
     seed/back-fill the booleans and to keep the deprecation aliases working; it is

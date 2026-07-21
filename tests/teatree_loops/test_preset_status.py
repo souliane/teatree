@@ -76,23 +76,24 @@ class TestEffectiveVerdicts(django.test.TestCase):
 
 @django.test.override_settings(USE_TZ=True, TIME_ZONE="UTC")
 class TestStatuslineChunk(django.test.TestCase):
-    def test_empty_when_no_preset(self) -> None:
-        assert statusline_chunk() == ""
+    def test_default_mode_when_nothing_governs(self) -> None:
+        # Post-merge there is ALWAYS a resolved mode; a quiet machine reads the
+        # configured default (``engaged``) rather than an empty handle.
+        assert statusline_chunk() == "mode: engaged"
 
-    def test_manual_override_reads_preset_manual(self) -> None:
-        # A manually-overridden preset (#3494) reads ``preset: manual`` — the
-        # layer, not the preset name — so the operator sees the schedule is not
-        # the one governing.
+    def test_manual_override_reads_mode_manual(self) -> None:
+        # A manual override (#3494, #61) reads ``mode: manual`` — the layer, not
+        # the mode name — so the operator sees the schedule is not governing.
         LoopPreset.objects.create(name="heads-down", entries={})
         LoopPresetOverride.objects.set_override("heads-down")
-        assert statusline_chunk() == "preset: manual"
+        assert statusline_chunk() == "mode: manual"
 
     def test_manual_override_includes_the_boundary_when_bounded(self) -> None:
         LoopPreset.objects.create(name="heads-down", entries={})
         until = timezone.now() + dt.timedelta(hours=3)
         LoopPresetOverride.objects.create(preset_name="heads-down", until=until)
         chunk = statusline_chunk()
-        assert chunk.startswith("preset: manual →")
+        assert chunk.startswith("mode: manual →")
 
 
 @django.test.override_settings(USE_TZ=True, TIME_ZONE="UTC")
@@ -145,10 +146,10 @@ class TestScheduleAndOverrideChunks(django.test.TestCase):
 
 @django.test.override_settings(USE_TZ=True, TIME_ZONE="UTC")
 class TestPresetLineChunk(django.test.TestCase):
-    def test_shows_schedule_none_active_when_nothing_governs(self) -> None:
-        # The schedule handle is always spelled out, so the bundled view is never
-        # empty — it reads ``schedule: none active`` on a quiet machine.
-        assert preset_line_chunk() == "schedule: none active"
+    def test_shows_schedule_and_default_mode_when_nothing_governs(self) -> None:
+        # The schedule handle is always spelled out and the mode handle is always
+        # present (the configured default), so a quiet machine reads both.
+        assert preset_line_chunk() == "schedule: none active · mode: engaged"
 
     def test_preset_line_handles_resolves_the_three_handles(self) -> None:
         _loop("plh-review", enabled=True)
@@ -158,27 +159,25 @@ class TestPresetLineChunk(django.test.TestCase):
         LoopState.objects.override("plh-review", on=False)
         handles = preset_line_handles()
         assert handles.schedule == "schedule: standard"
-        assert handles.preset == "preset: manual"
+        assert handles.mode == "mode: manual"
         assert handles.override == "forced OFF: plh-review"
 
-    def test_preset_line_handles_quiet_machine_shows_only_schedule(self) -> None:
+    def test_preset_line_handles_quiet_machine_shows_schedule_and_default_mode(self) -> None:
         handles = preset_line_handles()
         assert handles.schedule == "schedule: none active"
-        assert handles.preset == ""
+        assert handles.mode == "mode: engaged"
         assert handles.override == ""
 
-    def test_composes_schedule_preset_and_overrides(self) -> None:
-
+    def test_composes_schedule_mode_and_overrides(self) -> None:
         _loop("pl-review", enabled=True)
         ConfigSetting.objects.set_value(ACTIVE_SCHEDULE_SETTING, "standard")
         LoopPreset.objects.create(name="heads-down", entries={})
         LoopPresetOverride.objects.set_override("heads-down")
         LoopState.objects.override("pl-review", on=False)
         chunk = preset_line_chunk()
-        assert chunk == "schedule: standard · preset: manual · forced OFF: pl-review"
+        assert chunk == "schedule: standard · mode: manual · forced OFF: pl-review"
 
-    def test_schedule_governed_has_no_manual_marker(self) -> None:
-
+    def test_schedule_governed_names_the_mode_not_manual(self) -> None:
         LoopPreset.objects.create(name="engaged", entries={})
         schedule = LoopSchedule.objects.create(name="standard", timezone="UTC")
         LoopScheduleSlot.objects.create(
@@ -186,7 +185,7 @@ class TestPresetLineChunk(django.test.TestCase):
         )
         ConfigSetting.objects.set_value(ACTIVE_SCHEDULE_SETTING, "standard")
         chunk = preset_line_chunk()
-        # Schedule-governed → the preset is named (not "manual"); no ⚠ marker.
-        assert chunk.startswith("schedule: standard · preset: engaged")
+        # Schedule-governed → the mode is named (not "manual"); no ⚠ marker.
+        assert chunk.startswith("schedule: standard · mode: engaged")
         assert "⚠" not in chunk
         assert "manual" not in chunk

@@ -72,7 +72,6 @@ class TestConsolidatedLoopAnchor:
         with (
             patch("teatree.loop.statusline_loops._live_loop_leases", return_value=leases),
             patch("teatree.loop.statusline_loops._cadence_for_loop", return_value=720),
-            patch("teatree.loop.statusline_loops._availability_segment", return_value=""),
         ):
             lines = live_loops_anchor()
         assert len(lines) == 1, repr(lines)
@@ -89,7 +88,6 @@ class TestConsolidatedLoopAnchor:
         with (
             patch("teatree.loop.statusline_loops._live_loop_leases", return_value=leases),
             patch("teatree.loop.statusline_loops._cadence_for_loop", return_value=720),
-            patch("teatree.loop.statusline_loops._availability_segment", return_value=""),
         ):
             lines = live_loops_anchor()
         assert lines == ["tick"], repr(lines)
@@ -101,7 +99,6 @@ class TestConsolidatedLoopAnchor:
         with (
             patch("teatree.loop.statusline_loops._live_loop_leases", return_value=leases),
             patch("teatree.loop.statusline_loops._cadence_for_loop", return_value=720),
-            patch("teatree.loop.statusline_loops._availability_segment", return_value=""),
         ):
             lines = live_loops_anchor()
         assert lines == ["tick due"], repr(lines)
@@ -204,7 +201,6 @@ class TestLoopLineComposesLeasesAndMiniLoops:
                 "teatree.loop.statusline_loops._mini_loop_schedules",
                 return_value=[("dispatch", datetime.now(UTC) + timedelta(seconds=120), 600)],
             ),
-            patch("teatree.loop.statusline_loops._availability_segment", return_value=""),
         ):
             lines = live_loops_anchor(colorize=False)
         # #3248: due-soon mini-loops ride the ``due:`` section; #3494 keeps the
@@ -220,7 +216,6 @@ class TestLoopLineComposesLeasesAndMiniLoops:
                 "teatree.loop.statusline_loops._mini_loop_schedules",
                 return_value=[("resource_pressure", datetime.now(UTC) + timedelta(seconds=60), 600)],
             ),
-            patch("teatree.loop.statusline_loops._availability_segment", return_value=""),
         ):
             lines = live_loops_anchor(colorize=False)
         assert lines == ["due: resource_pressure 1m"], lines
@@ -244,11 +239,10 @@ class TestPerLoopLeaseCollapse:
             patch("teatree.loop.statusline_loops.current_session_owned_per_loop_slots", return_value=None),
             patch("teatree.loop.statusline_loops._cadence_for_loop", return_value=600),
             patch("teatree.loop.statusline_loops._mini_loop_schedules", return_value=[]),
-            patch("teatree.loop.statusline_loops._availability_segment", return_value=""),
             patch("teatree.loop.statusline_loops._waiting_clause", return_value=""),
             patch(
                 "teatree.loop.statusline_loops._preset_line_handles",
-                return_value=PresetLineHandles(schedule="", preset="preset engaged", override="ovr: audit+"),
+                return_value=PresetLineHandles(schedule="", mode="mode: engaged", override="ovr: audit+"),
             ),
         ):
             set_overridden_loops_reader((lambda: overridden) if overridden is not None else None)
@@ -273,7 +267,7 @@ class TestPerLoopLeaseCollapse:
         ]
         line = self._render_with_overridden({"audit"}, leases)
         # The preset handle represents the folded loops:
-        assert "preset engaged" in line, line
+        assert "mode: engaged" in line, line
         # The single manual override surfaces:
         assert "loop:audit" in line, line
         # The routine loop_runner-driven, non-overridden loops are folded away:
@@ -298,7 +292,7 @@ class TestPerLoopLeaseCollapse:
         leases = [("loop:dispatch", now), ("loop:tickets", now), ("loop:ship", now)]
         line = self._render_with_overridden(set(), leases)
         assert "loop:" not in line, line
-        assert "preset engaged" in line, line
+        assert "mode: engaged" in line, line
 
     def test_infra_leases_always_survive_the_collapse(self) -> None:
         # Infra / master leases (``loop-tick`` -> ``tick``, ``reinstall``) are not
@@ -331,15 +325,14 @@ class TestMiniLoopOverdueCollapse:
     """
 
     @staticmethod
-    def _render(preset: str, schedules: list[tuple[str, datetime | None, int]]) -> str:
+    def _render(mode: str, schedules: list[tuple[str, datetime | None, int]]) -> str:
         with (
             patch("teatree.loop.statusline_loops._live_loop_leases", return_value=[]),
             patch("teatree.loop.statusline_loops._mini_loop_schedules", return_value=schedules),
-            patch("teatree.loop.statusline_loops._availability_segment", return_value=""),
             patch("teatree.loop.statusline_loops._waiting_count", return_value=0),
             patch(
                 "teatree.loop.statusline_loops._preset_line_handles",
-                return_value=PresetLineHandles(schedule="schedule: none active", preset=preset, override=""),
+                return_value=PresetLineHandles(schedule="schedule: none active", mode=mode, override=""),
             ),
         ):
             lines = live_loops_anchor(colorize=False)
@@ -355,7 +348,7 @@ class TestMiniLoopOverdueCollapse:
             ("snapshot_warmer", None, 600),  # never-fired -> overdue
             ("triage_assessor", now - timedelta(seconds=5), 600),  # overdue
         ]
-        line = self._render("preset: manual", schedules)
+        line = self._render("mode: manual", schedules)
         # One ``overdue:`` label, comma-separated names, no per-item "due":
         assert "overdue: snapshot_warmer, triage_assessor" in line, line
         assert "snapshot_warmer due" not in line, line
@@ -370,7 +363,7 @@ class TestMiniLoopOverdueCollapse:
             ("dispatch", now + timedelta(seconds=60), 600),
             ("inbox", now + timedelta(seconds=60), 600),
         ]
-        line = self._render("preset: manual", schedules)
+        line = self._render("mode: manual", schedules)
         assert "overdue:" not in line, line
         assert "dispatch" not in line, line
 
@@ -408,11 +401,10 @@ class TestPresetLineReaderInjection:
     """``set_preset_line_reader`` installs the up-stack handles reader (#3494)."""
 
     def test_injected_reader_drives_the_line_handles(self) -> None:
-        handles = PresetLineHandles(schedule="schedule: standard", preset="preset: manual", override="")
+        handles = PresetLineHandles(schedule="schedule: standard", mode="mode: manual", override="")
         with (
             patch("teatree.loop.statusline_loops._live_loop_leases", return_value=[]),
             patch("teatree.loop.statusline_loops._mini_loop_schedules", return_value=[]),
-            patch("teatree.loop.statusline_loops._availability_segment", return_value=""),
             patch("teatree.loop.statusline_loops._waiting_count", return_value=0),
         ):
             set_preset_line_reader(lambda: handles)
@@ -420,7 +412,7 @@ class TestPresetLineReaderInjection:
                 line = live_loops_anchor(colorize=False)[0]
             finally:
                 set_preset_line_reader(None)
-        assert line == "schedule: standard · preset: manual", line
+        assert line == "schedule: standard · mode: manual", line
 
     def test_reset_to_none_silences_the_handles(self) -> None:
         with (
@@ -451,24 +443,24 @@ class TestLoopLineSegmentOrder:
                 "teatree.loop.statusline_loops._mini_loop_schedules",
                 return_value=[("snapshot_warmer", None, 600), ("triage_assessor", now - timedelta(seconds=5), 600)],
             ),
-            patch("teatree.loop.statusline_loops._availability_segment", return_value="availability: present"),
             patch("teatree.loop.statusline_loops._waiting_count", return_value=4),
             patch(
                 "teatree.loop.statusline_loops._preset_line_handles",
                 return_value=PresetLineHandles(
                     schedule="schedule: none active",
-                    preset="preset: manual",
+                    mode="mode: manual",
                     override="forced ON: triage_assessor",
                 ),
             ),
         ):
             line = live_loops_anchor(colorize=False)[0]
+        # The separate availability segment is gone (folded into ``mode:``).
+        assert "availability:" not in line, line
         positions = [
             line.index("schedule: none active"),
-            line.index("preset: manual"),
+            line.index("mode: manual"),
             line.index("overdue: snapshot_warmer, triage_assessor"),
             line.index("forced ON: triage_assessor"),
-            line.index("availability: present"),
             line.index("4 waiting"),
             line.index("reinstall"),  # infra lease kept at the tail
         ]
@@ -567,7 +559,6 @@ class TestZonesForIntegration:
         with (
             patch("teatree.loop.statusline_loops._live_loop_leases", return_value=leases),
             patch("teatree.loop.statusline_loops._cadence_for_loop", return_value=720),
-            patch("teatree.loop.statusline_loops._availability_segment", return_value=""),
         ):
             zones = zones_for([], colorize=False)
         target = tmp_path / "statusline.txt"

@@ -23,7 +23,6 @@ home (``teatree.loop.statusline``); identity is preserved so
 
 from teatree.loop.statusline_loops import (
     PresetLineHandles,
-    availability_segment,
     dashboard_head_anchor,
     health_chip,
     live_loops_anchor,
@@ -50,7 +49,6 @@ __all__ = [
     "StatuslineEntry",
     "StatuslineZones",
     "ZoneItem",
-    "availability_segment",
     "colorize_enabled",
     "dashboard_head_anchor",
     "default_path",
