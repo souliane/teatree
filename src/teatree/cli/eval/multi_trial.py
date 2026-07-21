@@ -279,7 +279,9 @@ def run_model_matrix_lane(  # noqa: PLR0913 — each kwarg threads one `eval run
             effort=effort,
         ),
     )
-    rows = collect_matrix_rows(specs, model_list, runner=runner, trials=trials, require=require, grader=grader)
+    rows = collect_matrix_rows(
+        specs, model_list, runner=runner, policy=TrialPolicy(trials=trials, require=require), grader=grader
+    )
     if output_format == "json":
         typer.echo(render_matrix_json(rows, model_list, specs))
     else:
@@ -389,29 +391,29 @@ def parse_model_tags(models: str) -> list[str]:
     return [variant.tag for variant in variants]
 
 
-# ast-grep-ignore: ac-django-no-complexity-suppressions
+@dataclasses.dataclass(frozen=True)
+class TrialPolicy:
+    """How many times to run each cell and what counts as a pass — the pass@k knobs."""
+
+    trials: int = 1
+    require: str = "any"
+
+
 @dataclasses.dataclass(frozen=True)
 class _MatrixCell:
-    """One matrix cell to execute: *spec* (its column model already applied) + the column's *tag*.
-
-    Bundles what would otherwise be 3 separate keyword args (``tag``/``trials``/
-    ``require``) threaded through :func:`_resilient_matrix_trial` /
-    :func:`_matrix_trial`, keeping both under the project's arg-count lint floor.
-    """
+    """One matrix cell to execute: *spec* (its column model already applied) + the column's *tag*."""
 
     spec: EvalSpec
     tag: str
-    trials: int
-    require: str
+    policy: TrialPolicy
 
 
-def collect_matrix_rows(  # noqa: PLR0913 — each kwarg threads one matrix/benchmark CLI flag through the shared loop.
+def collect_matrix_rows(
     specs: list[EvalSpec],
     columns: "Sequence[str | MatrixColumn]",
     *,
     runner: EvalRunner,
-    trials: int,
-    require: str,
+    policy: TrialPolicy,
     grader=None,  # noqa: ANN001 — JudgeGrader | None, kept local to the CLI.
 ) -> list[MatrixRow]:
     """Run every scenario against every column — the shared matrix/benchmark loop.
@@ -428,7 +430,7 @@ def collect_matrix_rows(  # noqa: PLR0913 — each kwarg threads one matrix/benc
     return [
         _resilient_matrix_trial(
             runner,
-            _MatrixCell(spec=with_model(spec, column.model_for(spec)), tag=column.tag, trials=trials, require=require),
+            _MatrixCell(spec=with_model(spec, column.model_for(spec)), tag=column.tag, policy=policy),
             grader=grader,
         )
         for column in (_as_column(column) for column in columns)
@@ -491,9 +493,9 @@ def _matrix_trial(
     grader=None,  # noqa: ANN001 — JudgeGrader | None, kept local to the CLI.
 ) -> MatrixRow:
     spec = cell.spec
-    if cell.trials > 1:
+    if cell.policy.trials > 1:
         result = run_pass_at_k(
-            spec, lambda s: evaluate(s, runner.run(s), judge=grader), k=cell.trials, require=cell.require
+            spec, lambda s: evaluate(s, runner.run(s), judge=grader), k=cell.policy.trials, require=cell.policy.require
         )
         return MatrixRow(
             scenario=spec.name,

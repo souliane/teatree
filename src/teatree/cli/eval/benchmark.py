@@ -21,7 +21,13 @@ import typer
 from teatree.cli._format_opts import require_valid_format
 from teatree.cli.eval.docker import DockerUnavailableError, run_eval_in_docker
 from teatree.cli.eval.metered_routing import should_route_to_docker, warn_local_metered
-from teatree.cli.eval.multi_trial import MatrixColumn, collect_matrix_rows, parse_model_tags, parse_preset_columns
+from teatree.cli.eval.multi_trial import (
+    MatrixColumn,
+    TrialPolicy,
+    collect_matrix_rows,
+    parse_model_tags,
+    parse_preset_columns,
+)
 from teatree.cli.eval.run_modes import RunGuards, persist_matrix_run
 from teatree.eval.backends import API_BACKEND, ApiRunnerParams, make_runner
 from teatree.eval.benchmark import render_benchmark_json, render_benchmark_text, summarize_benchmark
@@ -133,7 +139,7 @@ def benchmark(  # noqa: PLR0913, PLR0917 — typer command: each param maps 1:1 
         API_BACKEND,
         ApiRunnerParams(max_turns_override=max_turns, require_executed=True, max_budget_usd=max_budget_usd),
     )
-    rows = collect_matrix_rows(specs, columns, runner=runner, trials=trials, require="any")
+    rows = collect_matrix_rows(specs, columns, runner=runner, policy=TrialPolicy(trials=trials))
     RunGuards.executed(executed=sum(1 for row in rows if not row.skipped), collected=len(rows), required=True)
     # The benchmark is always api-metered, yet (unlike the single-run lane and the
     # suite) it lacked the unmetered-$0 guard: an executed-but-$0 run (auth ok but

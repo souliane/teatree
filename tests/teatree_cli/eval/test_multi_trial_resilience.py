@@ -13,7 +13,7 @@ from pathlib import Path
 import pytest
 import typer
 
-from teatree.cli.eval.multi_trial import collect_matrix_rows
+from teatree.cli.eval.multi_trial import TrialPolicy, collect_matrix_rows
 from teatree.eval.models import EvalRun, EvalSpec
 
 
@@ -149,7 +149,7 @@ class TestPerCellErrorIsolation:
     def test_one_failing_cell_does_not_abort_the_others(self) -> None:
         specs = [_spec("alpha"), _spec("beta")]
         runner = _RaiseOnCellRunner(fail_scenario="alpha", fail_model="haiku")
-        rows = collect_matrix_rows(specs, ["opus", "haiku"], runner=runner, trials=1, require="any")
+        rows = collect_matrix_rows(specs, ["opus", "haiku"], runner=runner, policy=TrialPolicy(trials=1))
 
         # All four cells produced a row — nothing was lost.
         assert len(rows) == 4
@@ -167,7 +167,7 @@ class TestPerCellErrorIsolation:
         specs = [_spec("alpha")]
         # Fails twice, succeeds on the third attempt — within the bounded retries.
         runner = _RaiseNTimesRunner(fail_scenario="alpha", fail_model="opus", fails=2)
-        rows = collect_matrix_rows(specs, ["opus"], runner=runner, trials=1, require="any")
+        rows = collect_matrix_rows(specs, ["opus"], runner=runner, policy=TrialPolicy(trials=1))
         (row,) = rows
         assert row.errored is False
         assert row.passed is True
@@ -175,7 +175,7 @@ class TestPerCellErrorIsolation:
     def test_always_raising_cell_errors_after_three_attempts(self) -> None:
         specs = [_spec("alpha")]
         runner = _AlwaysRaisesRunner(fail_scenario="alpha", fail_model="opus")
-        rows = collect_matrix_rows(specs, ["opus"], runner=runner, trials=1, require="any")
+        rows = collect_matrix_rows(specs, ["opus"], runner=runner, policy=TrialPolicy(trials=1))
         (row,) = rows
         assert row.errored is True
         assert row.passed is False
@@ -188,7 +188,7 @@ class TestPerCellErrorIsolation:
         # transient cell failure. It must propagate, not be retried/ERRORED.
         specs = [_spec("alpha")]
         with pytest.raises(typer.Exit):
-            collect_matrix_rows(specs, ["opus"], runner=_RaisesTyperExitRunner(), trials=1, require="any")
+            collect_matrix_rows(specs, ["opus"], runner=_RaisesTyperExitRunner(), policy=TrialPolicy(trials=1))
 
     @pytest.mark.parametrize("exc", [KeyboardInterrupt(), SystemExit(1)])
     def test_base_exception_propagates_through_the_resilient_wrapper(self, exc: BaseException) -> None:
@@ -197,7 +197,7 @@ class TestPerCellErrorIsolation:
         # (a Ctrl-C must abort the whole run, never be retried/ERRORED).
         specs = [_spec("alpha")]
         with pytest.raises(type(exc)):
-            collect_matrix_rows(specs, ["opus"], runner=_RaisesBaseExceptionRunner(exc), trials=1, require="any")
+            collect_matrix_rows(specs, ["opus"], runner=_RaisesBaseExceptionRunner(exc), policy=TrialPolicy(trials=1))
 
 
 class TestMatrixCellCapTaint:
@@ -208,7 +208,7 @@ class TestMatrixCellCapTaint:
         # clean trial cannot prop up a green matrix cell over a capped sibling.
         specs = [_spec("alpha")]
         runner = _CappedTrialRunner(capped_scenario="alpha", capped_model="opus", cap_on_attempt=2)
-        rows = collect_matrix_rows(specs, ["opus"], runner=runner, trials=3, require="any")
+        rows = collect_matrix_rows(specs, ["opus"], runner=runner, policy=TrialPolicy(trials=3))
         (row,) = rows
         assert row.errored is False
         assert row.skipped is False
