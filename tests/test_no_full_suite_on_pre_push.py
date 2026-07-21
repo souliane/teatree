@@ -21,8 +21,8 @@ CI's ``test-shard`` lane runs it whole-tree on every PR, so relocating it off th
 push path loses zero coverage. ``TestPushHeavyRelocatedToCI`` still pins that the
 three heaviest CLASSES -- the ~63s jscpd scan (``TestScanCoverage``), the mutmut
 kill-proof run (``TestMutmutKillsTheMutant``), and the >300s ast-grep whole-tree scan
-(``TestBlockingSetIsGreen``) -- carry the ``push_heavy`` marker (deselected from the
-fast inner-loop lane ``dev/ci-parity-fast.sh``) while the cheap siblings do not, and
+(``TestBlockingSetIsGreen``) -- carry the ``push_heavy`` marker (so a scoped local run
+can deselect them with ``-m "not push_heavy"``) while the cheap siblings do not, and
 that CI's shard lane runs ALL of them with no marker filter.
 
 The "no full suite on push" invariant is STRICTLY MORE satisfied by #122 (the push
@@ -376,13 +376,13 @@ class TestPushHeavyRelocatedToCI:
 
     The invariant is relocation, not deletion: nothing that gated before is ungated
     after -- the jscpd + mutmut + whole-tree ast-grep checks run in CI's ``test-shard``
-    lane on every PR. Since #122 the push gate no longer runs ``tests/quality`` at
-    all; the ``push_heavy`` marker now scopes the fast inner-loop lane
-    (``dev/ci-parity-fast.sh`` runs ``tests/quality -m "not push_heavy"``), CLASS-scoped
-    so the cheap/deterministic siblings still run there. This class pins every half of
-    that contract: the marker is registered (``--strict-markers``), the heavy classes
-    carry it, the cheap classes (and the module) do NOT, and CI's shard lane does NOT
-    filter it.
+    lane on every PR. Since #122 the push gate no longer runs ``tests/quality`` at all,
+    and since #3587 the fast inner loop (``dev/ci-parity-fast.sh``) runs the diff-scoped
+    ``dev/test-affected.sh`` selector; the ``push_heavy`` marker keeps the three heaviest
+    classes deselectable from any scoped local run (``-m "not push_heavy"``), CLASS-scoped
+    so the cheap/deterministic siblings still run. This class pins every half of that
+    contract: the marker is registered (``--strict-markers``), the heavy classes carry
+    it, the cheap classes (and the module) do NOT, and CI's shard lane does NOT filter it.
     """
 
     def test_push_heavy_marker_is_registered(self) -> None:

@@ -29,7 +29,7 @@ Teatree IS the Django project. Overlays are lightweight Python packages:
 ```bash
 uv run pytest                    # full suite, parallel (-n auto), no coverage — fast default
 bash dev/test-cov.sh             # coverage lane: --cov --doctest-modules, 93% floor (CI parity)
-bash dev/ci-parity-fast.sh       # inner-loop: scoped prek + makemigrations + push gate, NO floor
+bash dev/ci-parity-fast.sh       # inner-loop: scoped prek + makemigrations + affected tests + push gate, NO floor
 bash dev/ci-parity.sh            # the EXACT full CI predicate in one command (see below)
 uv run ruff check                # lint
 uv run ruff format               # format
@@ -37,14 +37,19 @@ t3 tool push-gate                # inspect the incremental push-gate plan for th
 t3 --help                        # CLI (installed via `uv tool install --editable .`)
 ```
 
-**Before pushing a src-touching PR, run `bash dev/ci-parity.sh`.** It chains the
-exact blocking CI predicate (prek all-files, `makemigrations --check`,
-`t3 tool test-path-mirror`, `dev/test-cov.sh`, `t3 ci coverage`) so a floor/gate
-failure is caught locally instead of on the first CI cycle. It is opt-in by
-workflow, never a push hook — the 93% whole-tree coverage floor is a whole-tree
-property no diff-scoped push subset can prove, and the full suite must never gate
-a push (`tests/test_no_full_suite_on_pre_push.py`). Use `bash dev/ci-parity-fast.sh`
-for the fast inner loop while iterating. The push-stage `ci-critical-parity` hook
+**Before pushing a src-touching PR, run `bash dev/ci-parity-fast.sh`** — scoped prek,
+`makemigrations --check`, the affected-tests lane, and the incremental push gate. It is
+the necessary-and-sufficient local check: CI's required, sharded `test (3.13)` lane is
+the authority on the whole-tree 93% branch floor, and running its byte-equivalent
+duplicate locally buys nothing but wall-clock.
+
+**`bash dev/ci-parity.sh` is the opt-in deep lane**, not the pre-push mandate: reach for
+it to reproduce a red CI locally, or when a PR is coverage-sensitive (deleting tests,
+adding a low-coverage module). It chains the exact blocking CI predicate (prek all-files,
+`makemigrations --check`, `t3 tool test-path-mirror`, `dev/test-cov.sh`, `t3 ci coverage`).
+Neither script is ever a push hook — the 93% whole-tree coverage floor is a whole-tree
+property no diff-scoped push subset can prove, and the full suite must never gate a push
+(`tests/test_no_full_suite_on_pre_push.py`). The push-stage `ci-critical-parity` hook
 runs `dev/push-gate.sh` — the never-lockout safety contract plus the incremental
 push gate (scoped doctest + ast-grep, FULL on any uncertainty, behind the
 default-TRUE `incremental_push_gate` flag — ON scopes the diff, OFF is the pre-#122

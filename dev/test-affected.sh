@@ -7,7 +7,7 @@
 # migrations/data files/deletions/files outside the modelled roots) degrades to the
 # WHOLE suite. Over-run is free; under-run is a false green.
 #
-# NOT a gate. The 4-shard CI run + 93% combined-coverage floor stays the merge gate,
+# NOT a gate. The 12-shard CI run + 93% combined-coverage floor stays the merge gate,
 # and pre-push is untouched (`tests/test_no_full_suite_on_pre_push.py`). Use this while
 # iterating; run `bash dev/test-fast.sh` (or `bash dev/ci-parity.sh`) before pushing.
 #
