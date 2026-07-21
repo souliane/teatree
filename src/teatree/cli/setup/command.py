@@ -174,6 +174,10 @@ def run(
         # unreachable marketplace WARNs and continues; its `pyright-langserver` runtime
         # dep is baked into the image and advisory-checked by `t3 doctor`.
         PyrightPluginRegistrar().install()
+        # #3568: register+enable is not enough — the plugin execs `pyright-langserver`,
+        # so provision that binary (npm `pyright` into ~/.local) when it is missing.
+        # Idempotent (skips when already on PATH) and offline-safe (WARNs, continues).
+        PyrightPluginRegistrar.ensure_langserver()
         # Confirm the structured-search MCP server (`t3 mcp serve`, #1023) is
         # still wired via the plugin-bundled `.mcp.json` (#2863) — read-only,
         # idempotent, warns loudly rather than silently regressing agents back
