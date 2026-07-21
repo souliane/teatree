@@ -38,6 +38,15 @@ _T3_IN_BACKTICKS = re.compile(r"`(t3 [^`]+)`")
 # is where the concrete command path ends — anything after it is an arg/flag.
 _PLACEHOLDER = re.compile(r"^(\.\.\.|…|<.*>|\$.*|--.*|-[A-Za-z]|\{.*\}|\|.*|>.*|\".*|'.*)$")
 
+# The `<overlay>` slot in a `t3 <overlay> <group> <sub>` doc template is not a
+# free-text argument — it is the command-path segment every overlay-scoped `t3`
+# invocation carries. It resolves to a concrete overlay at runtime, so validating
+# the group+sub path requires substituting it with the representative overlay the
+# #550 registry is assembled from (``teatree.cli._assemble_teatree_app`` builds
+# the registry from the ``teatree`` overlay, so its ``t3 teatree …`` paths are
+# what a ``t3 <overlay> …`` template must resolve against).
+_REPRESENTATIVE_OVERLAY = "teatree"
+
 
 @dataclasses.dataclass(frozen=True)
 class CommandViolation:
@@ -81,9 +90,11 @@ def resolve_command_path(raw: str, valid: set[str], groups: set[str]) -> str | N
     **group** and the next non-placeholder token does NOT extend it to a valid
     child (a typo'd/removed subcommand). A token after a **leaf** (or a
     placeholder/flag anywhere) is a normal argument, not drift. A first token
-    that is itself a placeholder (``t3 <overlay> …`` / ``t3 …``) leaves the
-    matched node at the root group ``t3`` which is not a concrete command — it
-    resolves to ``None`` (skipped, not a violation, by the caller).
+    that is itself a placeholder (``t3 …``) leaves the matched node at the root
+    group ``t3`` which is not a concrete command — it resolves to ``None``
+    (skipped, not a violation, by the caller). The overlay slot of a
+    ``t3 <overlay> …`` template is substituted with a concrete overlay upstream
+    (:func:`_resolve_overlay_placeholder`), so its group+sub path is walked here.
     """
     toks = raw.split()
     if not toks or toks[0] != "t3":
@@ -105,11 +116,32 @@ def resolve_command_path(raw: str, valid: set[str], groups: set[str]) -> str | N
     return matched if matched in valid else None
 
 
-def _is_placeholder_only(raw: str) -> bool:
-    """True for a generic CLI mention (``t3 …`` / ``t3 <overlay> …``).
+def _resolve_overlay_placeholder(raw: str) -> str:
+    """Substitute a leading ``t3 <overlay>`` with the representative overlay.
 
-    The first token after ``t3`` is a placeholder, so the invocation names no
-    concrete command — it is documentation, never drift.
+    ``t3 <overlay> <group> <sub>`` is the shape of nearly every overlay-scoped
+    ``t3`` example in the skill docs; the ``<overlay>`` slot is a command-path
+    segment, not a free-text argument. Resolving it to the concrete overlay the
+    registry is built from lets the group+sub path be validated against the real
+    command tree instead of being short-circuited by the leading placeholder. A
+    non-overlay generic mention (``t3 …``, ``t3 <command> …``) is returned
+    unchanged.
+    """
+    toks = raw.split()
+    if len(toks) > 1 and toks[1] == "<overlay>":
+        toks[1] = _REPRESENTATIVE_OVERLAY
+        return " ".join(toks)
+    return raw
+
+
+def _is_placeholder_only(raw: str) -> bool:
+    """True for a generic CLI mention whose command path is a placeholder.
+
+    The first token after ``t3`` is a placeholder (``t3 …``, ``t3 <command> …``),
+    so the invocation names no concrete command — it is documentation, never
+    drift. The overlay slot is resolved upstream by
+    :func:`_resolve_overlay_placeholder`, so a ``t3 <overlay> <group> <sub>``
+    template reaches here already carrying a concrete command path.
     """
     toks = raw.split()
     first_arg = toks[1] if len(toks) > 1 else None
@@ -133,11 +165,14 @@ def validate_skill_commands(
     """Validate every backticked ``t3 …`` in every skill doc against the registry.
 
     *valid* / *groups* are the live CLI registry sets (``command_paths`` /
-    ``command_groups`` over the typer app). A backticked invocation that names a
-    concrete command which does not resolve is a :class:`CommandViolation`. A
-    generic placeholder mention (``t3 …`` / ``t3 <overlay> …``) is skipped — it
-    names no concrete command. ``checked`` counts the concrete invocations
-    examined (placeholders excluded).
+    ``command_groups`` over the typer app). A leading ``t3 <overlay>`` is
+    resolved to the representative overlay first, so a ``t3 <overlay> <group>
+    <sub>`` template is validated against the real ``t3 teatree …`` command
+    tree. A backticked invocation that names a concrete command which does not
+    resolve is a :class:`CommandViolation`. A generic mention whose command path
+    is a placeholder (``t3 …``, or a ``t3 <overlay> …`` whose group/sub slot is
+    itself a placeholder) is skipped — it names no concrete command. ``checked``
+    counts the concrete invocations examined (placeholders excluded).
     """
     violations: list[CommandViolation] = []
     checked = 0
@@ -147,9 +182,10 @@ def validate_skill_commands(
         except (OSError, UnicodeDecodeError):
             continue
         for raw in iter_backticked_t3_commands(text):
-            if _is_placeholder_only(raw):
+            resolved = _resolve_overlay_placeholder(raw)
+            if _is_placeholder_only(resolved):
                 continue
             checked += 1
-            if resolve_command_path(raw, valid, groups) is None:
+            if resolve_command_path(resolved, valid, groups) is None:
                 violations.append(CommandViolation(skill=skill, doc=md.relative_to(skills_dir).as_posix(), command=raw))
     return CommandValidityReport(violations=tuple(violations), checked=checked)

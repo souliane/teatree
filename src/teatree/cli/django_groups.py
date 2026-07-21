@@ -181,6 +181,7 @@ DJANGO_GROUPS: dict[str, DjangoGroup] = {
         "Pull request helpers.",
         [
             ("create", "Create a pull request for the ticket's branch."),
+            ("merge", "[Removed] Refuses with a redirect to the §17.4 keystone (`ticket clear` + `ticket merge`)."),
             ("ensure-pr", "Create a PR for an orphan branch (idempotent)."),
             ("check-gates", "Check whether session gates allow a phase transition."),
             ("fetch-issue", "Fetch issue details from the configured tracker."),
@@ -290,6 +291,7 @@ DJANGO_GROUPS: dict[str, DjangoGroup] = {
             ("clear-ledger", "Clear a reused ticket's stale phase ledger (sanctioned session-retire)."),
             ("record-review-skill-run", "Record evidence the configured review skill ran (reviewing-phase gate)."),
             ("record-review-context", "Record referenced-context retrieval before reviewing (deep-retrieval gate)."),
+            ("record-e2e-run", "Record a green E2E run + posted evidence, clearing the mandatory-E2E gate (#1967)."),
             ("record-anti-vacuity", "Record the SHA-bound anti-vacuity attestation before review-request/merge."),
         ],
         # Every subcommand records phase attestations against the
