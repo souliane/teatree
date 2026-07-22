@@ -452,7 +452,12 @@ class ReviewerPrsScanner:
         seen_urls: set[str] = set()
         prs: list[RawAPIDict] = []
         for reviewer in reviewers:
-            for pr in self.host.list_review_requested_prs(reviewer=reviewer):
+            try:
+                fetched = self.host.list_review_requested_prs(reviewer=reviewer)
+            except Exception:
+                logger.warning("list_review_requested_prs failed for %s — skipping", reviewer, exc_info=True)
+                continue
+            for pr in fetched:
                 url = _pr_url(pr)
                 if url and url in seen_urls:
                     continue
