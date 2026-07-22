@@ -1,6 +1,6 @@
 """Idempotent seed of the default loop presets + schedules (#3159).
 
-The 6 curated presets and the two shipped schedules (``standard`` /
+The 7 curated presets and the two shipped schedules (``standard`` /
 ``always-unattended``) as owner-editable DB DATA, not code. Named for what the
 mode *does*, grounded in the seed taxonomy (:data:`teatree.loops.seed.DEFAULT_LOOPS`).
 
@@ -9,10 +9,13 @@ re-run creates nothing new and leaves an operator-edited preset/schedule exactly
 as-is. Slots are only materialised for a NEWLY-created schedule, so an operator
 who re-arranged a schedule's slots keeps that arrangement.
 
-**Fully opt-in:** the seed never writes ``active_loop_schedule`` — a fresh install
-has every preset + schedule present but NO active schedule, so loop admission is
-byte-for-byte today's two-plane verdict until the owner runs
-``t3 loop schedule set-active standard``.
+**``standard`` ships active:** the seed pins ``active_loop_schedule`` to
+``standard`` through the provenance-aware :meth:`ConfigSetting.objects.seed`, so a
+fresh install runs the owner's working-hours calendar out of the box — Mon-Fri
+09:00-16:00 ``Europe/Vienna`` → ``engaged`` (attended), every other hour →
+``unattended`` (autonomous-away). The provenance seed CREATES the pin on a fresh
+box and PRESERVES an operator who switched to another calendar (or cleared it),
+so a re-seed never overrides the owner's choice.
 
 Dark/destructive-opt-in loops (``issue_implementer`` / ``issue_disposition`` /
 ``backlog_sweep`` / ``outer_loop`` / ``directive_loop``) stay *inherit* in every
@@ -46,6 +49,8 @@ _ENGAGED = dict.fromkeys(
         "news",
         "arch_review",
         "dream",
+        "eval_local",
+        "dogfood",
         "snapshot_warmer",
         "housekeeping",
         "idle_stack_reaper",
@@ -72,7 +77,7 @@ _HEADS_DOWN = {
         ),
         True,
     ),
-    **dict.fromkeys(("review", "followup", "audit", "news", "arch_review", "eval_local"), False),
+    **dict.fromkeys(("review", "followup", "audit", "news", "arch_review", "eval_local", "dogfood"), False),
 }
 _UNATTENDED = {
     **dict.fromkeys(
@@ -155,6 +160,9 @@ class ScheduleSpec:
     name: str
     description: str
     slots: tuple[SlotSpec, ...]
+    # An IANA zone key resolves each slot's wall-clock start locally with DST
+    # handled (CET/CEST); "" falls back to ``settings.TIME_ZONE`` at read time.
+    timezone: str = ""
 
 
 def default_preset_specs() -> tuple[PresetSpec, ...]:
@@ -204,17 +212,20 @@ def default_preset_specs() -> tuple[PresetSpec, ...]:
 
 def default_schedule_specs() -> tuple[ScheduleSpec, ...]:
     weekdays = [0, 1, 2, 3, 4]
+    weekend = [5, 6]
     all_week = [0, 1, 2, 3, 4, 5, 6]
     return (
         ScheduleSpec(
             "standard",
-            "Weekday days → engaged, evenings → maintenance, weekends → unattended.",
+            "Owner working hours (Europe/Vienna): weekdays 09:00-16:00 → engaged "
+            "(attended); all other times (weekday evenings/nights + weekends) → "
+            "unattended (autonomous-away).",
             (
-                SlotSpec(weekdays, dt.time(8, 0), "engaged"),
-                SlotSpec(weekdays, dt.time(19, 0), "maintenance"),
-                SlotSpec([5], dt.time(9, 0), "unattended"),
-                SlotSpec([6], dt.time(9, 0), "unattended"),
+                SlotSpec(weekdays, dt.time(9, 0), "engaged"),
+                SlotSpec(weekdays, dt.time(16, 0), "unattended"),
+                SlotSpec(weekend, dt.time(0, 0), "unattended"),
             ),
+            timezone="Europe/Vienna",
         ),
         ScheduleSpec(
             "always-unattended",
@@ -222,6 +233,10 @@ def default_schedule_specs() -> tuple[ScheduleSpec, ...]:
             (SlotSpec(all_week, dt.time(0, 0), "unattended"),),
         ),
     )
+
+
+#: The calendar ``active_loop_schedule`` is pinned to on a fresh install.
+DEFAULT_ACTIVE_SCHEDULE = "standard"
 
 
 @dataclass(frozen=True, slots=True)
@@ -235,13 +250,19 @@ def seed_default_presets_and_schedules() -> PresetSeedResult:
 
     ``get_or_create`` by ``name`` never clobbers an operator-edited row. Slots are
     materialised only for a newly-created schedule (a re-run leaves a re-arranged
-    schedule untouched). The active-schedule selector is deliberately NOT written —
-    a fresh install is fully opt-in.
+    schedule untouched). The ``active_loop_schedule`` pin is written through the
+    provenance-aware :meth:`ConfigSetting.objects.seed` so ``standard`` ships active
+    on a fresh box while an operator who switched calendars (or cleared the pin) is
+    never overridden on a re-seed.
     """
     from teatree.core.models import (  # noqa: PLC0415 — deferred import (cycle-safe / pre-app-registry)
+        ConfigSetting,
         Mode,
         ModeSchedule,
         ModeScheduleSlot,
+    )
+    from teatree.loop.preset_resolution import (  # noqa: PLC0415 — deferred import (cycle-safe / pre-app-registry)
+        ACTIVE_SCHEDULE_SETTING,
     )
 
     presets_created = 0
@@ -262,7 +283,7 @@ def seed_default_presets_and_schedules() -> PresetSeedResult:
     schedules_created = 0
     for spec in default_schedule_specs():
         schedule, made = ModeSchedule.objects.get_or_create(
-            name=spec.name, defaults={"description": spec.description, "timezone": ""}
+            name=spec.name, defaults={"description": spec.description, "timezone": spec.timezone}
         )
         schedules_created += int(made)
         if made:
@@ -272,4 +293,8 @@ def seed_default_presets_and_schedules() -> PresetSeedResult:
                 )
                 for slot in spec.slots
             )
+
+    # A fresh sentinel never equals a real schedule name, so the provenance seed
+    # always CREATES the pin when no row exists and PRESERVES an operator's switch.
+    ConfigSetting.objects.seed(ACTIVE_SCHEDULE_SETTING, DEFAULT_ACTIVE_SCHEDULE, code_default=object())
     return PresetSeedResult(presets_created=presets_created, schedules_created=schedules_created)
