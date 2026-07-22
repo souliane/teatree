@@ -18,6 +18,18 @@ from teatree.core.worktree.worktree_done import _DONE_TICKET_STATES
 
 logger = logging.getLogger(__name__)
 
+# The initial claim lease for a headless task must match the heartbeat's renewal
+# window (``agents.headless._LEASE_SECONDS`` = 900s), NOT ``Task.claim``'s 300s
+# default. The heartbeat only renews to 900s from the first tick (~60s); with the
+# 300s default the pre-first-tick window is just ~5 heartbeats, so under CPU
+# starvation (a loaded box running several coders) the first renewal slips past
+# 300s, the lease lapses, ``reclaim_orphaned_claims`` re-queues the still-running
+# task, and it aborts "lease lost: re-claimed by another worker" — a self-inflicted
+# reclaim. Claiming with 900s from the start closes that window. Kept equal to
+# ``_LEASE_SECONDS`` by ``test_headless_claim_lease_matches_heartbeat`` (core cannot
+# import the agents layer, so the value is duplicated and drift-guarded by test).
+_HEADLESS_CLAIM_LEASE_SECONDS = 900
+
 
 def _persist_intake_landscape(ticket: Ticket) -> None:
     """Bake the intake landscape survey into a durable artifact (#2541).
@@ -112,9 +124,11 @@ def execute_headless_task(task_id: int, phase: str) -> dict[str, object]:
         task_obj.complete_with_attempt(exit_code=1, error=routing_refusal, result={"routing_error": routing_refusal})
         return {"exit_code": 1, "routing_error": routing_refusal}
 
-    # Claim here (when the worker actually starts) instead of at enqueue time
+    # Claim here (when the worker actually starts) instead of at enqueue time.
+    # Use the heartbeat-matched lease so a starved first heartbeat cannot let the
+    # initial 300s window lapse and re-queue this live task (_HEADLESS_CLAIM_LEASE_SECONDS).
     if task_obj.status == Task.Status.PENDING:
-        task_obj.claim(claimed_by="headless-worker")
+        task_obj.claim(claimed_by="headless-worker", lease_seconds=_HEADLESS_CLAIM_LEASE_SECONDS)
     try:
         from teatree.core.headless_dispatch import get_headless_runner  # noqa: PLC0415 — deferred: call-time import
 

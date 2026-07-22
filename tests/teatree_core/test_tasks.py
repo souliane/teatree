@@ -1253,3 +1253,48 @@ class TestConsumePendingPhaseTasksNormalizesPhase(TestCase):
 
         zombie.refresh_from_db()
         assert zombie.status == Task.Status.COMPLETED
+
+
+class TestHeadlessClaimLease(TestCase):
+    @override_settings(**IMMEDIATE_BACKEND)
+    def test_headless_worker_claims_with_heartbeat_matched_lease(self) -> None:
+        # The initial claim lease must equal the heartbeat renewal window (900s),
+        # not Task.claim's 300s default: under CPU starvation a delayed first
+        # heartbeat lets the 300s lease lapse and reclaim_orphaned_claims re-queues
+        # the live task, which then aborts "lease lost: re-claimed by another worker".
+        from teatree.agents.headless import _LEASE_SECONDS  # noqa: PLC0415 — deferred: local test import
+        from teatree.core import headless_dispatch as headless_dispatch_mod  # noqa: PLC0415 — deferred: local
+        from teatree.core.tasks import (  # noqa: PLC0415 — deferred: local
+            _HEADLESS_CLAIM_LEASE_SECONDS,
+            execute_headless_task,
+        )
+
+        assert _HEADLESS_CLAIM_LEASE_SECONDS == _LEASE_SECONDS
+
+        ticket = Ticket.objects.create()
+        session = Session.objects.create(ticket=ticket)
+        task = Task.objects.create(
+            ticket=ticket,
+            session=session,
+            execution_target=Task.ExecutionTarget.HEADLESS,
+            status=Task.Status.PENDING,
+            phase="coding",
+        )
+        captured: dict[str, float] = {}
+
+        class _StopAfterClaimError(RuntimeError):
+            """Sentinel raised in the fake runner to stop right after the claim."""
+
+        def _capture_lease(t: Task, **_kwargs: object) -> object:
+            t.refresh_from_db()
+            captured["seconds"] = (t.lease_expires_at - t.claimed_at).total_seconds()
+            raise _StopAfterClaimError
+
+        with (
+            patch.object(headless_dispatch_mod, "loop_dispatch_refusal", return_value=None),
+            patch.object(headless_dispatch_mod, "get_headless_runner", return_value=_capture_lease),
+            pytest.raises(_StopAfterClaimError),
+        ):
+            execute_headless_task.func(task.pk, task.phase)
+
+        assert captured["seconds"] == pytest.approx(_LEASE_SECONDS, abs=1)
