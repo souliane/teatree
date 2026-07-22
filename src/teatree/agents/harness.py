@@ -35,7 +35,7 @@ from typing import TYPE_CHECKING, Protocol, cast
 from claude_agent_sdk import ClaudeAgentOptions, ClaudeSDKClient
 from pydantic_ai import Agent
 from pydantic_ai.models import Model
-from pydantic_ai.models.openai import OpenAIChatModel, OpenAIChatModelSettings, ReasoningEffort
+from pydantic_ai.models.openai import OpenAIChatModel, ReasoningEffort
 
 from teatree.agents.harness_options import HarnessOptions
 from teatree.agents.harness_registry import (
@@ -54,6 +54,7 @@ from teatree.agents.pydantic_ai_config import (
     OrcaLaneConfig,
     PydanticAiBinding,
     PydanticAiModelConfig,
+    build_model_settings,
     build_orca_provider,
     resolve_native_anthropic_model,
 )
@@ -288,8 +289,10 @@ class PydanticAiHarness:
         # the tool config, so the pydantic_ai (and future Vertex) path is vendor-type-free.
         harness_options = HarnessOptions.from_sdk_options(options)
         model = self._resolve_model(harness_options)
-        effort = resolve_effort(harness_options)
-        model_settings = OpenAIChatModelSettings(openai_reasoning_effort=effort) if effort else None
+        # The effort key is BINDING-specific (``openai_reasoning_effort`` vs
+        # ``anthropic_effort``) and a foreign key is dropped silently, so the settings
+        # are built per binding — see :func:`build_model_settings`.
+        model_settings = build_model_settings(model, resolve_effort(harness_options), binding=self._binding)
         # PR-03: a phased dispatch wires the phase-scoped, gated tool/MCP layer
         # onto the Agent (``toolsets=`` + ``tool_timeout=``); an un-phased one
         # keeps a bare text Agent (byte-identical to before the tool port). The
