@@ -7,6 +7,8 @@ refuses (with the reason) otherwise. The DB-touching paths run under a real test
 """
 
 import json
+import threading
+from pathlib import Path
 from unittest import mock
 
 import django.test
@@ -14,9 +16,10 @@ import pytest
 from typer.testing import CliRunner
 
 import teatree.cli.worker as worker_cli
-from teatree.cli.doctor.checks_runtime import _check_worker_running
+from teatree.cli.doctor.checks_runtime import _check_singletons, _check_worker_running
 from teatree.cli.worker import worker_app
 from teatree.loop.drain import DrainOutcome, DrainReport
+from teatree.utils import singleton as singleton_mod
 
 runner = CliRunner()
 
@@ -119,6 +122,93 @@ class TestWorkerEnsure(django.test.TestCase):
             result = runner.invoke(worker_app, ["ensure"])
         assert result.exit_code == 1
         assert "error" in result.stdout
+
+
+def test_ensure_is_a_no_op_for_a_live_flock_holder_with_a_stale_pid_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The end-to-end #3617 bug: a live worker holds the flock, its lock file records
+    # a dead pid, and a prior diagnostic `read_pid` reap (status/doctor) ran. `ensure`
+    # must still detect the live holder via the flock and spawn NOTHING.
+
+    monkeypatch.setattr(singleton_mod, "DATA_DIR", tmp_path)
+    path = singleton_mod.default_pid_path(singleton_mod.WORKER_SINGLETON)
+
+    ready, release = threading.Event(), threading.Event()
+
+    def _hold() -> None:
+        with singleton_mod.singleton(singleton_mod.WORKER_SINGLETON, pid_path=path):
+            ready.set()
+            release.wait(timeout=10)
+
+    holder = threading.Thread(target=_hold)
+    holder.start()
+    try:
+        assert ready.wait(timeout=5), "holder never acquired the flock"
+        path.write_text("999999999\n", encoding="utf-8")  # stale pid clobbers the live holder's file
+        singleton_mod.read_pid(path)  # a prior status/doctor reap — must NOT orphan the flock
+
+        spawns: list[bool] = []
+        with (
+            mock.patch.object(worker_cli, "_resolve_kill_switch", return_value=(True, "default")),
+            mock.patch(
+                "teatree.utils.worker_spawn.spawn_detached_worker",
+                side_effect=lambda: spawns.append(True) or True,
+            ),
+        ):
+            result = runner.invoke(worker_app, ["ensure", "--json"])
+    finally:
+        release.set()
+        holder.join(timeout=5)
+
+    assert result.exit_code == 0
+    assert json.loads(result.stdout)["action"] == "already-running"
+    assert spawns == []
+
+
+def test_check_singletons_reports_a_stale_idle_lock_file_without_unlinking(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+
+    monkeypatch.setattr(singleton_mod, "DATA_DIR", tmp_path)
+    path = singleton_mod.default_pid_path(singleton_mod.WORKER_SINGLETON)
+    path.write_text("999999999\n", encoding="utf-8")  # dead pid, no flock held
+
+    echoed: list[str] = []
+    with mock.patch("teatree.cli.doctor.checks_runtime.typer.echo", side_effect=echoed.append):
+        assert _check_singletons() is True
+    assert path.is_file()  # never unlinked
+    assert any("stale but idle" in line for line in echoed)
+
+
+def test_check_singletons_leaves_a_live_flock_holders_file_untouched(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+
+    monkeypatch.setattr(singleton_mod, "DATA_DIR", tmp_path)
+    path = singleton_mod.default_pid_path(singleton_mod.WORKER_SINGLETON)
+
+    ready, release = threading.Event(), threading.Event()
+
+    def _hold() -> None:
+        with singleton_mod.singleton(singleton_mod.WORKER_SINGLETON, pid_path=path):
+            ready.set()
+            release.wait(timeout=10)
+
+    holder = threading.Thread(target=_hold)
+    holder.start()
+    try:
+        assert ready.wait(timeout=5), "holder never acquired the flock"
+        path.write_text("999999999\n", encoding="utf-8")  # stale pid, but the flock IS held
+        echoed: list[str] = []
+        with mock.patch("teatree.cli.doctor.checks_runtime.typer.echo", side_effect=echoed.append):
+            assert _check_singletons() is True
+    finally:
+        release.set()
+        holder.join(timeout=5)
+
+    assert path.is_file()
+    assert not any("stale but idle" in line for line in echoed)  # a live holder is never flagged
 
 
 class TestWorkerDrain(django.test.TestCase):

@@ -153,16 +153,17 @@ def a_worker_is_running() -> bool:
     completed the #5 deprecation of the pre-#1796 ``teatree-worker`` singleton). The
     probe imports the SAME constant the workers acquire — so the name can never drift
     — and stands the in-process tick drain down while it is alive, so the two never
-    claim the same rows. ``read_pid`` reports the live holder (and reaps a stale pid
-    file) without acquiring the lock, so probing here never disturbs a running worker.
+    claim the same rows. It reads the KERNEL flock, not the recorded pid: a stale/dead
+    pid in the lock file can never blind the stand-down while a worker is live, and a
+    recycled pid can never fake a holder (#3617). The non-blocking probe acquires and
+    releases when free, so it never disturbs a running worker.
     """
     from teatree.utils.singleton import (  # noqa: PLC0415 — deferred: keeps queue_drain cold-import cheap
         WORKER_SINGLETON,
-        default_pid_path,
-        read_pid,
+        flock_is_held,
     )
 
-    return read_pid(default_pid_path(WORKER_SINGLETON)) is not None
+    return flock_is_held(WORKER_SINGLETON)
 
 
 def expire_stale_ready_jobs(*, threshold_hours: int | None = None, queue_name: str | None = None) -> dict[str, int]:
