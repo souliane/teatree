@@ -27,7 +27,7 @@ class FileChange(TypedDict, total=False):
     lines_removed: int
 
 
-class TestResult(TypedDict, total=False):
+class SingleTestResult(TypedDict, total=False):
     name: str
     passed: bool
     duration_seconds: float
@@ -180,7 +180,7 @@ class AgentResult(TypedDict, total=False):
     summary: str
     plan_text: str
     files_modified: list[FileChange]
-    tests_run: list[TestResult]
+    tests_run: list[SingleTestResult]
     tests_passed: int
     tests_failed: int
     decisions: list[str]
@@ -394,8 +394,11 @@ RESULT_JSON_SCHEMA: JSONSchema = {
 #: - ``answering``: an ``answer`` draft returned — same shell-denied hand-back;
 #:   a summary-only run dropped the drafted reply.
 #:
-#: Phases not in this map (``scoping``, ``retro``) carry no evidence
-#: requirement — they are intentionally lightweight.
+#: Phases not in this map carry no evidence requirement. Of those, the
+#: intentionally-lightweight ``scoping`` and ``retro`` phases additionally
+#: accept a prose-only summary when the agent emits no JSON envelope at all —
+#: see :data:`PROSE_SUMMARY_ACCEPTED_PHASES`, the sibling that gates the
+#: no-envelope fallback for every OTHER uncovered phase.
 PHASE_REQUIRED_EVIDENCE: dict[str, tuple[str, ...]] = {
     "planning": ("plan_text",),
     "coding": ("files_modified",),
@@ -414,6 +417,21 @@ PHASE_REQUIRED_EVIDENCE: dict[str, tuple[str, ...]] = {
 def required_evidence_for_phase(phase: str) -> tuple[str, ...]:
     """Return the accepted evidence fields for ``phase`` (empty if none required)."""
     return PHASE_REQUIRED_EVIDENCE.get(normalize_phase(phase), ())
+
+
+#: Phases whose no-envelope run may still record the prose-only ``{"summary":
+#: ...}`` fallback — exactly the intentionally-lightweight phases the sibling
+#: :data:`PHASE_REQUIRED_EVIDENCE` block calls out. Data, not harness logic: a
+#: run on ANY other phase that emits no JSON result envelope is a contract
+#: violation (``prompt.py`` demands a final JSON object from every phase), so
+#: ``_record_success`` refuses it rather than laundering prose into a false
+#: success. Widen this table — never the harness — to exempt a new phase.
+PROSE_SUMMARY_ACCEPTED_PHASES: frozenset[str] = frozenset({"scoping", "retro"})
+
+
+def prose_summary_accepted(phase: str) -> bool:
+    """Whether ``phase`` may record a prose summary when the agent emits no JSON envelope."""
+    return normalize_phase(phase) in PROSE_SUMMARY_ACCEPTED_PHASES
 
 
 type AgentResultBlob = dict[str, object]

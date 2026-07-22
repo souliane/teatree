@@ -142,6 +142,9 @@ class TestRunHeadless(TestCase):
         assert task.status == Task.Status.COMPLETED
 
     def test_no_json_fails_phase_with_evidence_requirement(self) -> None:
+        # A no-JSON run on a non-exempt phase is refused for the root cause (no
+        # result envelope at all) BEFORE the per-field evidence gate — the more
+        # precise diagnostic. The outcome (FAILED) is unchanged.
         with _fake_sdk([_assistant_text("no structured output"), _result_message()]):
             session = Session.objects.create(ticket=self.ticket)
             task = Task.objects.create(ticket=self.ticket, session=session)
@@ -150,7 +153,7 @@ class TestRunHeadless(TestCase):
 
         task.refresh_from_db()
         assert attempt.exit_code == 0
-        assert "files_modified" in attempt.error
+        assert attempt.error.startswith("no_result_envelope:")
         assert task.status == Task.Status.FAILED
 
     def test_fails_when_result_violates_schema(self) -> None:
