@@ -304,6 +304,8 @@ The gate verifies the required phases (`testing`, `reviewing`, `retro`) were rec
 
 If `t3 <overlay> pr create` errors, **fix the error** (create the missing session, run the reviewer, set the missing env var) — do not work around it with raw `gh`/`glab`. Treating the CLI as optional is the same anti-pattern as "Fix the CLI, Never Work Around It" in [`../workspace/SKILL.md`](../workspace/SKILL.md), applied to the shipping flow.
 
+**Never hand-name a `/tmp` PR-body path — the CLI owns the temp file (Non-Negotiable).** The PR/MR body flows through `t3 <overlay> pr create` as *content*; the CLI writes it to a unique per-invocation temp file it owns (`teatree.utils.pr_body.pr_body_tempfile` → `gh pr create --body-file`). Do **not** write a shared, fixed path like `/tmp/pr-body.md` / `/tmp/pr_body.md` — two concurrent shippers race that path, one clobbers the other's body mid-create (re-injecting a default AI-authorship trailer that then trips the banned-terms gate). And never `cp` a body file **into the worktree** (`cp /tmp/pr-body.md pr-body.md`) — a `pr-body.*` / `pr_body.*` file staged in the repo is committable junk, refused by the `check_pr_body_stray` pre-commit gate. When a scratch body file is genuinely needed, mint it with `mktemp` (or the `pr_body_tempfile` helper); never a path you name yourself.
+
 **If the PR/MR needs an issue reference and you have none, do NOT improvise a dummy ref or auto-file on a tracker you do not own** — follow § 0a "Missing Issue Reference Policy": recover the original existing issue first, then ask on a colleague-facing repo (or create on the user's own repo) per the resolved `missing_issue_ref_policy`.
 
 #### Scope-Match Gate Before `Closes/Fixes #N` (Non-Negotiable)

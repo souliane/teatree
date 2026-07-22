@@ -61,3 +61,12 @@
   always_run: true
   pass_filenames: false
   stages: [pre-commit]
+
+- id: pr-body-stray
+  name: Refuse a staged PR/MR body scratch file
+  description: A PR body belongs in a temp file the ship CLI owns, never staged in the repo.
+  entry: t3 hook run check_pr_body_stray
+  language: python
+  always_run: true
+  pass_filenames: false
+  stages: [pre-commit]

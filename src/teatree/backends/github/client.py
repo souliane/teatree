@@ -31,6 +31,7 @@ from teatree.core.backend_protocols import (
 )
 from teatree.types import RawAPIDict
 from teatree.utils import git
+from teatree.utils.pr_body import pr_body_tempfile
 from teatree.utils.run import CommandFailedError
 from teatree.utils.throttled_log import warn_throttled
 
@@ -46,29 +47,32 @@ class GitHubCodeHost:  # noqa: PLR0904 — method count reflects the CodeHostBac
 
     def create_pr(self, spec: PullRequestSpec) -> RawAPIDict:
         repo_slug = git.remote_slug(repo=spec.repo)
-        cmd = [
-            "gh",
-            "pr",
-            "create",
-            "--repo",
-            repo_slug,
-            "--head",
-            spec.branch,
-            "--title",
-            spec.title,
-            "--body",
-            spec.description,
-        ]
-        if spec.target_branch:
-            cmd.extend(["--base", spec.target_branch])
-        if spec.labels:
-            cmd.extend(["--label", ",".join(spec.labels)])
-        if spec.assignee:
-            cmd.extend(["--assignee", spec.assignee])
-        if spec.draft:
-            cmd.append("--draft")
+        # Unique per-invocation body file the CLI owns — never a shared
+        # ``/tmp/pr-body.md`` two concurrent shippers race (#3581).
+        with pr_body_tempfile(spec.description) as body_path:
+            cmd = [
+                "gh",
+                "pr",
+                "create",
+                "--repo",
+                repo_slug,
+                "--head",
+                spec.branch,
+                "--title",
+                spec.title,
+                "--body-file",
+                str(body_path),
+            ]
+            if spec.target_branch:
+                cmd.extend(["--base", spec.target_branch])
+            if spec.labels:
+                cmd.extend(["--label", ",".join(spec.labels)])
+            if spec.assignee:
+                cmd.extend(["--assignee", spec.assignee])
+            if spec.draft:
+                cmd.append("--draft")
 
-        result = _run_gh(*cmd, token=self._token, timeout=_FORGE_READ_TIMEOUT_SECONDS)
+            result = _run_gh(*cmd, token=self._token, timeout=_FORGE_READ_TIMEOUT_SECONDS)
         # #1222 / #1226: align with the cross-host canonical key (``web_url``)
         # that ``ShipExecutor`` reads — returning ``url`` silently produced
         # empty PR rows because the consumer never looked at that field. The

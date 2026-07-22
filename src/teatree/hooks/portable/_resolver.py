@@ -77,6 +77,12 @@ PORTABLE_HOOKS: dict[str, PortableHook] = {
             f"{_PACKAGE}.check_test_path_mirror",
         ),
         PortableHook(
+            "check_pr_body_stray",
+            "Refuse a hand-named PR/MR body scratch file staged inside the worktree.",
+            "python",
+            f"{_PACKAGE}.check_pr_body_stray",
+        ),
+        PortableHook(
             "refuse-main-clone-commit",
             "Worktree-first: refuse commits made in the main clone (#638, #2614).",
             "shell",
