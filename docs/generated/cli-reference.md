@@ -3997,11 +3997,12 @@ Usage: t3 loop [OPTIONS] COMMAND [ARGS]...
 │                  self-improve cycle never blocks a fast per-loop tick        │
 │                  (BLUEPRINT § 5.7).                                          │
 │ slack-answer     Reactive, token-cheap Slack-answer loop — the third `/loop` │
-│                  slot. Runs on a tight cadence (default 20s) in the same     │
-│                  t3-master session as `t3 loop tick`, on a separate          │
-│                  LoopLease so a long answer cycle never blocks a fast        │
-│                  regular tick. Complementary to the inbound prompt-drain,    │
-│                  never a double-answer (#1014).                              │
+│                  slot. The inbound-event wake is the primary drain (~1s);    │
+│                  this timer is the fallback safety net on a 5m default       │
+│                  cadence, in the same t3-master session as `t3 loop tick`,   │
+│                  on a separate LoopLease so a long answer cycle never blocks │
+│                  a fast regular tick. Complementary to the inbound           │
+│                  prompt-drain, never a double-answer (#1014).                │
 │ drain-queue      Reactive DB-queue drain loop — a `/loop` slot that keeps    │
 │                  the django-tasks DB queue advancing without an always-on    │
 │                  `db_worker`. Runs on a tight cadence (default 30s) on the   │
@@ -4453,10 +4454,11 @@ Usage: t3 loop self-improve start [OPTIONS]
 ```
 Usage: t3 loop slack-answer [OPTIONS] COMMAND [ARGS]...
 
- Reactive, token-cheap Slack-answer loop — the third `/loop` slot. Runs on a
- tight cadence (default 20s) in the same t3-master session as `t3 loop tick`,
- on a separate LoopLease so a long answer cycle never blocks a fast regular
- tick. Complementary to the inbound prompt-drain, never a double-answer
+ Reactive, token-cheap Slack-answer loop — the third `/loop` slot. The
+ inbound-event wake is the primary drain (~1s); this timer is the fallback
+ safety net on a 5m default cadence, in the same t3-master session as `t3 loop
+ tick`, on a separate LoopLease so a long answer cycle never blocks a fast
+ regular tick. Complementary to the inbound prompt-drain, never a double-answer
  (#1014).
 
 ╭─ Options ────────────────────────────────────────────────────────────────────╮

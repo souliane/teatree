@@ -15,10 +15,10 @@ daily :func:`prune_task_results` chain caps DBTaskResult table growth, and an ho
 :func:`expire_stale_jobs` chain keeps the ``default``-queue backlog swept for a
 long-lived worker (so it never blind-fires days-old provision/ship jobs even without
 the front-end drain loop). A :func:`drain_headless_queue` chain keeps the headless
-backlog draining and re-enqueues runs a dead worker abandoned. A tight-cadence
-:func:`run_slack_answer` chain drives the reactive Slack-answer cycle headless (the
-👀-receipt + reply/delegate machinery that only ran in an interactive owner
-session's ``/loop`` slot before), guarded by the SAME ``loop-slack-answer``
+backlog draining and re-enqueues runs a dead worker abandoned. A fallback-cadence
+(5m default) :func:`run_slack_answer` chain drives the reactive Slack-answer cycle
+headless (the 👀-receipt + reply/delegate machinery that only ran in an interactive
+owner session's ``/loop`` slot before), guarded by the SAME ``loop-slack-answer``
 :class:`LoopLease` the ``loop_slack_answer`` mgmt command takes so the worker and an
 interactive owner session can never double-post. The same lease-guarded cycle is
 also driven event-first: the Socket Mode receiver enqueues a one-shot

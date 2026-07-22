@@ -10,7 +10,32 @@ never disagree on a reactive slot's cadence or run command.
 
 import pytest
 
-from teatree.loop.loop_cadences import REACTIVE_SLOTS, reactive_slot, reactive_slot_directives
+from teatree.loop.loop_cadences import (
+    REACTIVE_SLOTS,
+    reactive_slot,
+    reactive_slot_directives,
+    slack_answer_cadence_seconds,
+)
+
+
+class TestSlackAnswerFallbackCadence:
+    """The timer is the missed-wake fallback, so its default is 5m, not a tight spin."""
+
+    def test_default_is_five_minutes_when_unset(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.delenv("T3_SLACK_ANSWER_CADENCE", raising=False)
+        assert slack_answer_cadence_seconds() == 300
+
+    def test_invalid_override_falls_back_to_five_minutes(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("T3_SLACK_ANSWER_CADENCE", "garbage")
+        assert slack_answer_cadence_seconds() == 300
+
+    def test_deliberate_low_override_is_still_honoured_above_the_floor(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("T3_SLACK_ANSWER_CADENCE", "20")
+        assert slack_answer_cadence_seconds() == 20
+
+    def test_override_below_floor_is_clamped(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("T3_SLACK_ANSWER_CADENCE", "5")
+        assert slack_answer_cadence_seconds() == 15
 
 
 class TestReactiveSlotCadence:

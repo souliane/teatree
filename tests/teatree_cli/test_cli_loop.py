@@ -403,10 +403,10 @@ class TestSlackAnswerCadenceParser:
     @pytest.mark.parametrize(
         ("env_value", "expected"),
         [
-            ("20", "20s"),
+            ("20", "20s"),  # a deliberate low override is still honoured
             ("60", "1m"),
-            ("", "20s"),
-            ("garbage", "20s"),
+            ("", "5m"),  # unset → 300s fallback default
+            ("garbage", "5m"),  # invalid → 300s fallback default
             ("5", "15s"),  # clamped to 15s floor
             ("15", "15s"),
         ],
@@ -419,7 +419,7 @@ class TestSlackAnswerCadenceParser:
 
     def test_default_when_unset(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.delenv("T3_SLACK_ANSWER_CADENCE", raising=False)
-        assert _slack_answer_cadence_for_loop_slot() == "20s"
+        assert _slack_answer_cadence_for_loop_slot() == "5m"
 
 
 class TestSlackAnswerStartCommand:
