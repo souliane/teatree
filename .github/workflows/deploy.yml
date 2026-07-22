@@ -32,7 +32,15 @@ concurrency:
 jobs:
   deploy:
     runs-on: ubuntu-latest
-    timeout-minutes: 25
+    # Must exceed the worst-case deploy.sh runtime (worker drain up to
+    # TEATREE_DRAIN_TIMEOUT=1800s/30min + image build + up + health wait). If the
+    # job times out while the remote deploy.sh is still draining, GitHub releases
+    # the `deploy` concurrency group and starts the next run WHILE the abandoned
+    # remote deploy keeps running — overlapping drains that strand worker_quiescing
+    # ON. Keep this comfortably above the drain window so the job holds the group
+    # until the convergence truly finishes. deploy.sh's host flock is the hard
+    # backstop if the timeouts ever drift out of order again.
+    timeout-minutes: 50
     steps:
       - name: Validate required secrets
         env:

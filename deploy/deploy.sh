@@ -10,6 +10,41 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 COMPOSE_FILE="$SCRIPT_DIR/docker-compose.yml"
 ENV_FILE="$SCRIPT_DIR/teatree.env"
 
+# Single-convergence invariant (host flock). GitHub's `concurrency: deploy` group
+# serializes the WORKFLOW, but a remote deploy.sh can outlive its GitHub job — an
+# SSH drop does not kill the remote process, and the drain can run longer than the
+# job's timeout — so two runs could otherwise converge on the box at once. Two
+# overlapping worker drains each set `worker_quiescing` ON, and a lingering older
+# drain re-asserts it AFTER a newer run's fresh init cleared it, stranding
+# admission OFF indefinitely (the worker then admits ZERO new coding/planning
+# tasks — they pile up and dead-letter). A host flock guarantees exactly one
+# convergence at a time; a second invocation exits cleanly, since the holder always
+# fast-forwards to the latest main and GitHub re-fires for any later push.
+DEPLOY_LOCK="${TEATREE_DEPLOY_LOCK:-/tmp/teatree-deploy.lock}"
+exec 9>"$DEPLOY_LOCK"
+if ! flock -n 9; then
+    echo "deploy: another convergence already holds $DEPLOY_LOCK — exiting (it converges to latest main)." >&2
+    exit 0
+fi
+
+# Fail-safe against a stranded quiescing gate. If this run drains the worker (which
+# sets `worker_quiescing` ON) but then exits BEFORE the image swap that would
+# recreate the worker and clear the gate via its init (a mid-deploy failure under
+# `set -e`), the still-live OLD worker would stay quiesced forever. The EXIT trap
+# clears the gate so admission resumes. A no-op after a successful swap (the fresh
+# init already cleared it) and when no drain ran; best-effort, never fails the run.
+# Safe under the flock: no other convergence is running to own the gate.
+_DRAINED=false
+_SWAP_DONE=false
+_clear_quiescing_if_stranded() {
+    if [ "$_DRAINED" = true ] && [ "$_SWAP_DONE" = false ]; then
+        echo "deploy: exiting after a drain but before the swap — clearing worker_quiescing so admission resumes." >&2
+        docker compose -f "$COMPOSE_FILE" exec -T teatree-worker \
+            t3 teatree config_setting set worker_quiescing false >/dev/null 2>&1 || true
+    fi
+}
+trap _clear_quiescing_if_stranded EXIT
+
 # The admin can serve while the worker crash-loops, so a converged deploy must
 # confirm the worker process itself is running.
 worker_running() {
@@ -112,6 +147,7 @@ echo "deploy: worker sizing — cpus=${TEATREE_WORKER_CPUS:-<default>} mem_limit
 # admission resumes. Skipped when no worker is running (nothing to drain).
 if worker_running; then
     echo "deploy: draining teatree-worker (up to ${TEATREE_DRAIN_TIMEOUT:-1800}s for in-flight agents to finish) ..."
+    _DRAINED=true
     docker compose -f "$COMPOSE_FILE" exec -T teatree-worker \
         t3 worker drain --timeout "${TEATREE_DRAIN_TIMEOUT:-1800}" \
         || echo "deploy: drain window exceeded — proceeding (a stuck task re-queues via its lease lapse)"
@@ -124,6 +160,9 @@ docker compose -f "$COMPOSE_FILE" up -d --build || {
     docker compose -f "$COMPOSE_FILE" logs --tail 200 teatree-init teatree-worker teatree-admin
     exit 1
 } >&2
+# The swap completed: the fresh worker's init clears worker_quiescing, so the
+# stranded-gate fail-safe above becomes a no-op from here on.
+_SWAP_DONE=true
 
 # Wait for the admin dev server on the box loopback (init clone + install can
 # take a few minutes on first run).
