@@ -18,6 +18,7 @@ from typer.testing import CliRunner
 from teatree.agents import permission_modes
 from teatree.cli.loop import _self_improve_cadence_for_loop_slot, loop_app
 from teatree.cli.loop.drain_queue import _drain_cadence_for_loop_slot
+from teatree.cli.loop.intake_loops import intake_loops_command
 from teatree.cli.loop.slack_answer import _slack_answer_cadence_for_loop_slot
 from teatree.loops.fleet_policy import OWNER_INTAKE_LOOPS
 
@@ -692,3 +693,8 @@ class TestIntakeLoopsCommand:
         assert result.exit_code == 0
         assert result.stdout.split() == sorted(OWNER_INTAKE_LOOPS)
         assert "directive_loop" in result.stdout
+
+    def test_command_callable_prints_each_name(self, capsys: pytest.CaptureFixture[str]) -> None:
+        intake_loops_command()
+
+        assert capsys.readouterr().out.split() == sorted(OWNER_INTAKE_LOOPS)
