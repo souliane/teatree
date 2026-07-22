@@ -3,8 +3,13 @@
 A git worktree's auto-isolated env dir (``~/.local/share/teatree-worktrees/
 <slug>``, holding ``db.sqlite3`` + ``logs/``) lingers after the checkout is
 gone, so clean-all reaps the dirs no live ``Worktree`` row references — but
-never one that still holds a git checkout or any uncommitted/unpushed work
-(#291, mirroring the #706/#835 data-loss discipline).
+never one that still holds a HEALTHY git checkout or any uncommitted/unpushed
+work (#291, mirroring the #706/#835 data-loss discipline).
+
+The same root also accumulates BROKEN checkouts left by ad-hoc ``git worktree
+add`` (a ``.git`` whose linkage is severed, so ``git rev-parse`` fails). A broken
+checkout holds no git-recoverable work, so the reaper drops it (#3583) — the
+distinction from a healthy checkout is the ``git rev-parse`` probe.
 """
 
 import shutil
@@ -19,7 +24,7 @@ from teatree import paths
 from teatree.core.management.commands._workspace import isolated_roots as reaper
 from teatree.core.models import Session, Task, Ticket, Worktree
 from teatree.core.models.external_delivery import mark_external_delivery
-from tests._git_repo import make_git_repo
+from tests._git_repo import make_git_repo, run_git
 
 _REAP = "teatree.core.management.commands._workspace.isolated_roots"
 
@@ -69,7 +74,7 @@ class TestReapOrphanIsolatedWorktreeRoots(TestCase):
         assert referenced.exists()
         assert not any("Removed orphan isolated worktree root" in line for line in result)
 
-    def test_dir_holding_a_git_checkout_is_skipped(self) -> None:
+    def test_dir_holding_a_healthy_git_checkout_is_kept(self) -> None:
         slug = paths.isolated_slug(Path("/gone/with/git"))
         env_dir = make_git_repo(self.root / slug, initial_commit=False)
 
@@ -78,15 +83,61 @@ class TestReapOrphanIsolatedWorktreeRoots(TestCase):
         assert env_dir.exists()
         assert any("SKIPPED" in line and slug in line for line in result)
 
-    def test_dir_with_a_git_file_worktree_pointer_is_skipped(self) -> None:
-        slug = paths.isolated_slug(Path("/gone/linked/wt"))
-        env_dir = _make_env_dir(self.root, slug)
+    def test_healthy_linked_worktree_is_kept(self) -> None:
+        clone = make_git_repo(Path(self.enterContext(tempfile.TemporaryDirectory())) / "clone")
+        wt = self.root / "live-linked"
+        run_git(clone, "worktree", "add", str(wt))
+
+        result = reaper.reap_orphan_isolated_worktree_roots()
+
+        assert wt.exists()
+        assert any("SKIPPED" in line and "live-linked" in line for line in result)
+
+    def test_broken_worktree_checkout_is_reaped(self) -> None:
+        """A ``.git`` whose linkage is severed (``git rev-parse`` fails) is dropped (#3583).
+
+        Documented red-first inversion: the prior test asserted this dir is
+        SKIPPED (kept) — but a broken checkout holds no git-recoverable work and
+        only spams the setup git-hooks preflight, so it must be reaped.
+        """
+        env_dir = self.root / "bench-guard"
+        env_dir.mkdir()
         (env_dir / ".git").write_text("gitdir: /elsewhere/.git/worktrees/x\n")
 
         result = reaper.reap_orphan_isolated_worktree_roots()
 
+        assert not env_dir.exists()
+        assert any("Removed broken worktree checkout" in line and "bench-guard" in line for line in result)
+
+    def test_clean_ignored_broken_checkout_is_kept(self) -> None:
+        """clean_ignore is the operator escape hatch — it protects even a broken checkout."""
+        env_dir = self.root / "keepme"
+        env_dir.mkdir()
+        (env_dir / ".git").write_text("gitdir: /elsewhere/.git/worktrees/x\n")
+        with patch(f"{_REAP}.is_clean_ignored", return_value=True):
+            result = reaper.reap_orphan_isolated_worktree_roots()
+
         assert env_dir.exists()
-        assert any("SKIPPED" in line and slug in line for line in result)
+        assert any("SKIPPED" in line and "keepme" in line for line in result)
+
+    def test_broken_checkout_reaped_despite_unmappable_live_keep(self) -> None:
+        """A broken checkout is reaped even when a pathless live row keeps the env dirs (#3583).
+
+        The global keep-set (a live worktree with no recorded checkout path)
+        protects env dirs that MIGHT be its isolated DB — but a broken checkout's
+        severed ``.git`` is definitive proof it is not one, so it is still dropped.
+        """
+        ticket = Ticket.objects.create(overlay="test", issue_url="https://example.com/issues/3583")
+        Worktree.objects.create(ticket=ticket, overlay="test", repo_path="org/repo", branch="busy-no-path", extra={})
+        Session.objects.create(ticket=ticket, overlay="test")  # live: keep_unmappable_live is set
+        broken = self.root / "broken-sibling"
+        broken.mkdir()
+        (broken / ".git").write_text("gitdir: /elsewhere/.git/worktrees/x\n")
+
+        result = reaper.reap_orphan_isolated_worktree_roots()
+
+        assert not broken.exists()
+        assert any("Removed broken worktree checkout" in line and "broken-sibling" in line for line in result)
 
     def test_clean_ignored_slug_is_skipped(self) -> None:
         slug = paths.isolated_slug(Path("/gone/ignored"))

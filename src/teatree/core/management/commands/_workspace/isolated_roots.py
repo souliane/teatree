@@ -5,8 +5,15 @@ stays under the module-health LOC + function caps (mirrors
 ``_workspace_docker``). A git worktree's auto-isolated env dir
 (``~/.local/share/teatree-worktrees/<slug>`` holding a per-worktree
 ``db.sqlite3`` + ``logs/``) lingers after the checkout is gone; this reaps the
-dirs no live ``Worktree`` row references, never one holding a git checkout
-(#291, mirroring the #706/#835 data-loss discipline).
+dirs no live ``Worktree`` row references, never one holding a HEALTHY git
+checkout (#291, mirroring the #706/#835 data-loss discipline).
+
+The same root accumulates BROKEN checkouts from ad-hoc ``git worktree add`` (a
+``.git`` whose linkage is severed, so ``git rev-parse`` fails). A broken checkout
+holds no git-recoverable work — its branch ref lived in the now-unreachable
+common dir — and only spams the setup git-hooks preflight, so it is dropped
+(#3583). The ``git rev-parse`` probe (:func:`is_broken_checkout`) is the whole
+distinction between a broken checkout (reaped) and a healthy one (kept).
 """
 
 import shutil
@@ -16,6 +23,7 @@ from teatree import paths
 from teatree.core.cleanup.clean_ignore import is_clean_ignored
 from teatree.core.gates.idle_stack import worktree_protects_against_reap
 from teatree.core.models import Worktree
+from teatree.utils.git_worktree_query import is_broken_checkout
 
 
 def _has_unmappable_live_worktree() -> bool:
@@ -61,19 +69,18 @@ def _referenced_isolated_slugs() -> set[str]:
     return referenced
 
 
-def _holds_git_checkout(env_dir: Path) -> bool:
-    """Whether *env_dir* holds a git checkout — never reap one if so (#291).
+def _holds_healthy_git_checkout(env_dir: Path) -> bool:
+    """Whether *env_dir* holds a HEALTHY git checkout — never reap one if so (#291).
 
     A managed auto-isolated env dir holds only a sqlite DB + ``logs/`` and is
-    never a git checkout. A ``.git`` entry — a dir (real repo) or a file (linked
-    worktree) — means an unexpected checkout landed here, where uncommitted or
-    unpushed work could live. Such a dir is kept defensively, mirroring the
-    #706/#835 data-loss discipline: only no-checkout dirs are ever reaped. The
-    ``.git`` presence is the precise signal — working-tree state only exists when
-    a ``.git`` is present, so this one check covers both "real checkout" and "any
-    uncommitted/unpushed work".
+    never a git checkout. A ``.git`` entry that ``git rev-parse`` can resolve — a
+    dir (real repo) or a file (a live linked worktree) — means an unexpected
+    checkout landed here, where uncommitted or unpushed work could live. Such a
+    dir is kept defensively, mirroring the #706/#835 data-loss discipline. A
+    ``.git`` present but with severed linkage is a BROKEN checkout, handled
+    separately (:func:`is_broken_checkout`, #3583) — it holds no recoverable work.
     """
-    return (env_dir / ".git").exists()
+    return (env_dir / ".git").exists() and not is_broken_checkout(env_dir)
 
 
 def reap_orphan_isolated_worktree_roots() -> list[str]:
@@ -84,16 +91,19 @@ def reap_orphan_isolated_worktree_roots() -> list[str]:
     the checkout is gone but its env dir lingers, the dir is an orphan: no live
     ``Worktree`` row's checkout (its DB-backed sqlite path) hashes to its slug.
 
-    Reaps only the unreferenced dirs that hold no git checkout — a dir matching
-    a live row's slug, a ``clean_ignore`` glob, or any git work is skipped with
-    a one-line outcome. Only immediate child *directories* of the root are
-    considered; loose files (seed locks) are ignored.
+    Reaps the unreferenced dirs that hold no HEALTHY git checkout — a dir matching
+    a live row's slug, a ``clean_ignore`` glob, or any live git work is skipped
+    with a one-line outcome. A BROKEN checkout (``.git`` present but ``git
+    rev-parse`` fails) is reaped: it holds no git-recoverable work (#3583). Only
+    immediate child *directories* of the root are considered; loose files (seed
+    locks) are ignored.
 
     Liveness guard (#291/#2243): when a BUSY worktree row has no recorded
     checkout path (:func:`_has_unmappable_live_worktree`), its in-use isolated DB
     cannot be mapped to a slug, so no unreferenced dir can be proven dead. Every
     such dir is then KEPT — fail safe rather than reap a live isolated DB out
-    from under a mid-task agent.
+    from under a mid-task agent. A broken checkout is exempt from this keep — its
+    severed linkage is definitive proof it is not a live isolated DB.
     """
     root = paths.auto_isolated_worktrees_dir()
     if not root.is_dir():
@@ -108,7 +118,11 @@ def reap_orphan_isolated_worktree_roots() -> list[str]:
         if is_clean_ignored(slug):
             outcomes.append(f"SKIPPED '{slug}': matches clean_ignore — keeping")
             continue
-        if _holds_git_checkout(env_dir):
+        if is_broken_checkout(env_dir):
+            shutil.rmtree(env_dir)
+            outcomes.append(f"Removed broken worktree checkout '{slug}': git rev-parse failed — no recoverable work")
+            continue
+        if _holds_healthy_git_checkout(env_dir):
             outcomes.append(f"SKIPPED '{slug}': holds a git checkout (uncommitted/unpushed work) — keeping")
             continue
         if keep_unmappable_live:

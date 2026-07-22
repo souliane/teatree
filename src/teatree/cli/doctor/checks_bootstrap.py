@@ -1,6 +1,6 @@
 """Fresh-box bootstrap-hardening doctor checks (umbrella #3404).
 
-Four gates that turn silent late failures on a freshly-provisioned or migrated
+Five gates that turn silent late failures on a freshly-provisioned or migrated
 box into loud, up-front ones:
 
 - :func:`_check_gh_token_permissions` (#3405/#3477) — a missing REQUIRED permission
@@ -9,6 +9,9 @@ box into loud, up-front ones:
 - :func:`_check_git_hooks_installed` — a checkout whose git hooks were never
     installed pushes with the whole local gate layer absent. A hard FAIL naming the
     missing hooks; a deliberate ``core.hooksPath`` override only WARNs.
+- :func:`_check_registered_worktree_checkouts` (#3583) — a registered ``Worktree``
+    dir that is present on disk but fails ``git rev-parse`` is a broken checkout the
+    reconciler's missing-dir finding never catches. A hard FAIL naming its removal.
 - :func:`_check_provision_concurrency_from_host` (#3409/#3434) — a stale small-box
     ``provision_max_concurrency`` pin throttling a more capable host. It only
     auto-clears a pin the ENTRYPOINT seeded (never an operator's deliberate one),
@@ -159,6 +162,36 @@ def _check_git_hooks_installed() -> bool:
     return ok
 
 
+def _check_registered_worktree_checkouts() -> bool:
+    """FAIL when a registered ``Worktree`` dir exists but is not a git checkout (#3583).
+
+    A row whose ``worktree_path`` is present on disk yet fails ``git rev-parse`` is
+    a broken checkout: the reconciler's missing-dir finding never fires (the dir is
+    there), so it lingers registered and scanned, spamming the setup git-hooks
+    preflight and splitting the reaper's namespace. It holds no git-recoverable
+    work, so each one is a hard FAIL naming its remediation. Reads the ORM
+    (post-``ensure_django``); crash-proof — a probe fault WARNs and passes.
+    """
+    from teatree.core.gates.worktree_checkout_integrity import (  # noqa: PLC0415 — deferred (ORM)
+        find_broken_registered_checkouts,
+    )
+
+    try:
+        broken = find_broken_registered_checkouts()
+    except Exception as exc:  # noqa: BLE001 — a probe failure warns and passes, never blocks doctor
+        typer.echo(f"WARN  Could not probe registered worktree checkouts: {exc.__class__.__name__}: {exc}")
+        return True
+
+    for finding in broken:
+        typer.echo(
+            f"FAIL  Registered worktree wt#{finding.worktree_pk} at {finding.path} exists but is not a git "
+            f"checkout (git rev-parse failed) — a broken checkout holds no live work and splits the reaper's "
+            f"namespace. Remove it with `t3 <overlay> workspace clean-all` or `git worktree remove`, then "
+            f"re-run `t3 doctor check`."
+        )
+    return not broken
+
+
 def _check_provision_concurrency_from_host(*, repair: bool = False) -> bool:
     """Surface — and under ``--repair`` clear — a stale entrypoint-seeded concurrency pin (#3409/#3434).
 
@@ -258,19 +291,21 @@ def _check_claude_settings_drift() -> bool:
 def run_bootstrap_checks(*, repair: bool = False) -> bool:
     """Run every bootstrap-hardening check; return ``False`` iff a hard gate fails.
 
-    Only the token-permission gate (#3405) and the git-hooks gate affect the
-    verdict — the concurrency autofix (#3409/#3434) and the settings-drift check
-    (#3410) are surfacing-only and always pass. Every check runs before the verdict
-    is returned, so one failure never masks another's output. Runs
-    post-``ensure_django`` (the concurrency autofix reads the
-    ORM). ``repair`` gates the concurrency autofix's one mutation: a plain
-    ``t3 doctor`` (``repair=False``) inspects and WARNs but NEVER writes.
+    The token-permission gate (#3405), the git-hooks gate, and the
+    registered-worktree-checkout gate (#3583) affect the verdict — the concurrency
+    autofix (#3409/#3434) and the settings-drift check (#3410) are surfacing-only
+    and always pass. Every check runs before the verdict is returned, so one
+    failure never masks another's output. Runs post-``ensure_django`` (the
+    concurrency autofix and the worktree gate read the ORM). ``repair`` gates the
+    concurrency autofix's one mutation: a plain ``t3 doctor`` (``repair=False``)
+    inspects and WARNs but NEVER writes.
     """
     ok = _check_gh_token_permissions()
     hooks_ok = _check_git_hooks_installed()
+    worktrees_ok = _check_registered_worktree_checkouts()
     _check_provision_concurrency_from_host(repair=repair)
     _check_claude_settings_drift()
-    return ok and hooks_ok
+    return ok and hooks_ok and worktrees_ok
 
 
 __all__ = [
@@ -278,5 +313,6 @@ __all__ = [
     "_check_gh_token_permissions",
     "_check_git_hooks_installed",
     "_check_provision_concurrency_from_host",
+    "_check_registered_worktree_checkouts",
     "run_bootstrap_checks",
 ]

@@ -60,6 +60,21 @@ def is_git_checkout(path: str | Path) -> bool:
     return (Path(path) / ".git").exists()
 
 
+def is_broken_checkout(path: str | Path) -> bool:
+    """*path* LOOKS like a checkout (has ``.git``) but its git linkage is severed.
+
+    ``.git`` is present yet ``git rev-parse`` cannot resolve the repo — the linked
+    worktree's admin entry was pruned, or the clone it pointed at is gone. Such a
+    dir holds no git-recoverable work: its branch ref lived in the now-unreachable
+    common dir. Distinct from a hollow torn-down dir (no ``.git``, so
+    :func:`is_git_checkout` is already ``False``) and from a healthy checkout
+    (``git rev-parse`` resolves the common dir). The single source of truth for
+    "broken checkout" the #3583 reaper and doctor gate share.
+    """
+    p = Path(path)
+    return (p / ".git").exists() and git_common_dir(p) is None
+
+
 @dataclass(frozen=True, slots=True)
 class WorktreeRecord:
     """One record parsed from ``git worktree list --porcelain``."""

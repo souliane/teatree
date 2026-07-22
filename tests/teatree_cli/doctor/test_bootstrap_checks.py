@@ -13,12 +13,16 @@ from teatree.cli.doctor.checks_bootstrap import (
     _check_gh_token_permissions,
     _check_git_hooks_installed,
     _check_provision_concurrency_from_host,
+    _check_registered_worktree_checkouts,
     _resolve_projects_config,
     _slug_from_repo_url,
 )
 from teatree.core.gates.gh_token_preflight import GhTokenProbe
+from teatree.core.gates.worktree_checkout_integrity import BrokenRegisteredCheckout
 from teatree.core.models.config_setting import ConfigSetting
 from tests._git_repo import make_git_repo, run_git
+
+_INTEGRITY = "teatree.core.gates.worktree_checkout_integrity.find_broken_registered_checkouts"
 
 
 class TestSlugFromRepoUrl:
@@ -270,3 +274,27 @@ class TestClaudeSettingsDrift:
         monkeypatch.setattr("pathlib.Path.home", classmethod(lambda cls: tmp_path / "home"))
         with patch("teatree.cli.doctor.checks_bootstrap._teatree_repo_root", return_value=repo):
             assert _check_claude_settings_drift() is True
+
+
+class TestRegisteredWorktreeCheckoutsCheck(TestCase):
+    def test_passes_when_no_broken_checkouts(self) -> None:
+        with patch(_INTEGRITY, return_value=[]):
+            assert _check_registered_worktree_checkouts() is True
+
+    def test_fails_loud_on_a_broken_registered_checkout(self) -> None:
+        finding = BrokenRegisteredCheckout(worktree_pk=7, path=Path("/wt/broken"))
+        out = io.StringIO()
+        with patch(_INTEGRITY, return_value=[finding]), contextlib.redirect_stdout(out):
+            ok = _check_registered_worktree_checkouts()
+        assert ok is False
+        printed = out.getvalue()
+        assert "FAIL" in printed
+        assert "wt#7" in printed
+        assert "/wt/broken" in printed
+
+    def test_crash_proof_probe_warns_and_passes(self) -> None:
+        out = io.StringIO()
+        with patch(_INTEGRITY, side_effect=RuntimeError("boom")), contextlib.redirect_stdout(out):
+            ok = _check_registered_worktree_checkouts()
+        assert ok is True
+        assert "WARN" in out.getvalue()

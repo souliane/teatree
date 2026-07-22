@@ -6,6 +6,7 @@ the checkout / hollow-directory guard. Exercised against real ``git`` under
 details a mock would paper over.
 """
 
+import shutil
 from pathlib import Path
 
 import pytest
@@ -15,6 +16,7 @@ from teatree.utils.git_worktree_query import (
     WorktreeRecord,
     canonical_repo_root,
     git_common_dir,
+    is_broken_checkout,
     is_git_checkout,
     list_worktrees,
     worktree_for_branch,
@@ -78,6 +80,33 @@ class TestIsGitCheckout:
         hollow = tmp_path / "hollow"
         (hollow / "staticfiles").mkdir(parents=True)  # generated artifacts, no .git
         assert is_git_checkout(hollow) is False
+
+
+class TestIsBrokenCheckout:
+    def test_false_for_a_healthy_clone(self, repo: Path) -> None:
+        assert is_broken_checkout(repo) is False
+
+    def test_false_for_a_healthy_linked_worktree(self, repo: Path, tmp_path: Path) -> None:
+        wt = tmp_path / "wt"
+        _git(repo, "worktree", "add", str(wt))
+        assert is_broken_checkout(wt) is False
+
+    def test_false_for_a_hollow_directory(self, tmp_path: Path) -> None:
+        hollow = tmp_path / "hollow"
+        hollow.mkdir()  # no .git at all — a torn-down dir, not a broken checkout
+        assert is_broken_checkout(hollow) is False
+
+    def test_true_for_a_severed_worktree_pointer(self, tmp_path: Path) -> None:
+        severed = tmp_path / "severed"
+        severed.mkdir()
+        (severed / ".git").write_text("gitdir: /gone/.git/worktrees/x\n", encoding="utf-8")
+        assert is_broken_checkout(severed) is True
+
+    def test_true_when_the_owning_clone_is_removed(self, repo: Path, tmp_path: Path) -> None:
+        wt = tmp_path / "orphaned"
+        _git(repo, "worktree", "add", str(wt))
+        shutil.rmtree(repo)  # the clone holding the shared .git is gone
+        assert is_broken_checkout(wt) is True
 
 
 class TestListWorktrees:
