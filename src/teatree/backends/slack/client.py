@@ -4,6 +4,7 @@ from typing import cast
 import httpx
 
 from teatree.backends.slack.http import SlackHttpClient
+from teatree.backends.slack.pagination import next_cursor
 from teatree.identity import agent_signature_suffix
 from teatree.types import RawAPIDict
 from teatree.url_classify import find_pr_urls
@@ -123,15 +124,6 @@ def _history_messages(data: RawAPIDict) -> list[RawAPIDict]:
     return [cast("RawAPIDict", message) for message in messages if isinstance(message, dict)]
 
 
-def _next_cursor(data: RawAPIDict) -> str | None:
-    """The next pagination cursor, or ``None`` when there is no further page."""
-    meta = data.get("response_metadata")
-    if not isinstance(meta, dict):
-        return None
-    cursor = cast("RawAPIDict", meta).get("next_cursor")
-    return cursor if isinstance(cursor, str) and cursor else None
-
-
 def _walk_review_history(request: "SlackReviewSearchRequest") -> tuple[list["SlackReviewMatch"], bool]:
     """Walk a channel's recent history, matching PR URLs — the shared read core.
 
@@ -164,7 +156,7 @@ def _walk_review_history(request: "SlackReviewSearchRequest") -> tuple[list["Sla
             matches.extend(_iter_review_matches(msg, pr_url_set, seen, ctx))
         if seen == pr_url_set or not data.get("has_more"):
             break
-        cursor = _next_cursor(data)
+        cursor = next_cursor(data)
         if cursor is None:
             break
     return matches, True
