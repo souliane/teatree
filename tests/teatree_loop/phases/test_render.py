@@ -7,6 +7,7 @@ from pathlib import Path
 import pytest
 from django.test import TestCase
 
+from teatree.core.models import PullRequest, Ticket
 from teatree.loop.dispatch import dispatch
 from teatree.loop.job_identity import _ScannerJob
 from teatree.loop.phases import render_phase
@@ -95,6 +96,32 @@ class TestRenderPhaseReconcilesManualPrs(TestCase):
         render_phase(report, TickRequest(), jobs=[_job("my_prs")], statusline_path=self.sl, colorize=False)
 
         assert PullRequest.objects.filter(url=url).count() == 1
+
+
+class TestRenderPhaseReconcilesMergedTickets(TestCase):
+    """render_phase drives a stranded pre-merged ticket to MERGED (#3540)."""
+
+    @pytest.fixture(autouse=True)
+    def _tmp(self, tmp_path: Path) -> None:
+        self.sl = tmp_path / "statusline.txt"
+
+    def test_author_not_started_with_merged_pr_reaches_merged(self) -> None:
+        ticket = Ticket.objects.create(overlay="test", role=Ticket.Role.AUTHOR, state=Ticket.State.NOT_STARTED)
+        PullRequest.objects.create(
+            ticket=ticket,
+            url="https://github.com/souliane/teatree/pull/3540",
+            repo="souliane/teatree",
+            iid="3540",
+            overlay="test",
+            state=PullRequest.State.MERGED,
+        )
+        report = TickReport(started_at=_NOW, signals=[])
+        report.actions = dispatch(report.signals, errors=report.errors)
+
+        render_phase(report, TickRequest(), jobs=[], statusline_path=self.sl, colorize=False)
+
+        ticket.refresh_from_db()
+        assert ticket.state == Ticket.State.MERGED
 
 
 def test_render_phase_idle_renders_statusline_without_jobs(tmp_path: Path) -> None:

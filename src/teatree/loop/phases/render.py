@@ -21,6 +21,7 @@ from teatree.config import get_effective_settings
 from teatree.loop.domain_jobs import _identity_groups_for_overlay
 from teatree.loop.job_identity import _ScannerJob
 from teatree.loop.manual_pr_reconcile import reconcile_manual_prs
+from teatree.loop.merged_ticket_reconcile import reconcile_merged_tickets
 from teatree.loop.phases.orchestrate import orchestrate_phase
 from teatree.loop.rendering import _populate_dashboard_head, zones_for
 from teatree.loop.statusline import StatuslineZones, render
@@ -60,6 +61,7 @@ def render_phase(
         _populate_dashboard_head(zones, colorize=colorize)
     _write_open_prs_cache(report.signals, target=statusline_path)
     _reconcile_manual_prs(report.signals)
+    _reconcile_merged_tickets()
     _populate_open_prs_in_anchors(zones, target=statusline_path, colorize=colorize)
     if jobs and report.errors:
         zones.action_needed.append(f"scanner errors: {', '.join(report.errors)}")
@@ -199,6 +201,21 @@ def _reconcile_manual_prs(signals: "list[ScanSignal]") -> None:
     try:
         reconcile_manual_prs(signals)
     except Exception:  # noqa: BLE001 — the manual-PR reconcile is best-effort; a failure degrades to no-op
+        return
+
+
+def _reconcile_merged_tickets() -> None:
+    """Advance any ticket stranded in a pre-merged state whose PR already merged (#3540).
+
+    Runs after :func:`_reconcile_manual_prs` so a row flipped to MERGED this same
+    tick reconciles its ticket immediately. Closes the out-of-keystone-merge wedge
+    where an author ticket entered via a non-ladder phase (``debugging``) has no
+    automatic exit from ``NOT_STARTED``. Fails open: any error degrades to a no-op
+    so a bad row can never abort the tick.
+    """
+    try:
+        reconcile_merged_tickets()
+    except Exception:  # noqa: BLE001 — the merged-ticket reconcile is best-effort; a failure degrades to no-op
         return
 
 
