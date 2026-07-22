@@ -43,6 +43,7 @@ import httpx
 import pytest
 
 from teatree.backends.slack import http as slack_http
+from teatree.config.enums import AdmissionPolicy as _AdmissionPolicy
 from teatree.config.enums import Autonomy as _Autonomy
 from teatree.config.enums import OnBehalfPostMode as _OnBehalfPostMode
 from teatree.types import DEFAULT_MR_TITLE_REGEX as _DEFAULT_MR_TITLE_REGEX
@@ -217,6 +218,7 @@ class _FakeUserSettings:
     backlog_sweep_skill: str = "sweeping-tickets"
     dogfood_smoke_skill: str = "dogfood-smoke"
     mr_title_regex: str = _DEFAULT_MR_TITLE_REGEX
+    admission_policy: _AdmissionPolicy = _AdmissionPolicy.ASSIGNED_AND_LABELED
 
 
 @dataclass

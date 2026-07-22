@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING, cast
 from django.apps import apps
 
 from teatree.core.backend_protocols import CodeHostBackend
+from teatree.core.intake.admission_policy import admit_issue
 from teatree.core.intake.label_admission import intake_admits
 from teatree.loop.scanners.base import ScanSignal
 from teatree.types import RawAPIDict
@@ -113,6 +114,12 @@ class AssignedIssuesScanner:
                 continue
             url = _issue_url(issue)
             if url and url in tracked:
+                continue
+            # The per-overlay admission policy gates AUTONOMOUS work only: a
+            # non-auto-start signal still surfaces for manual triage. Under
+            # auto_start it must run BEFORE a budget slot is spent, so a rejected
+            # issue never blocks an admissible one.
+            if self.auto_start and not admit_issue(issue, overlay=self.overlay_name, owner_handles=assignees):
                 continue
             if self.auto_start and budget == 0:
                 break
