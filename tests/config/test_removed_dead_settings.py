@@ -134,7 +134,10 @@ class TestOnBehalfGatingStillResolves(TestCase):
         for env in ("T3_OVERLAY_NAME", "T3_ON_BEHALF_POST_MODE", "T3_ON_BEHALF_AUTO_ACTIONS"):
             monkeypatch.delenv(env, raising=False)
 
-    def test_default_mode_blocks_visible_posts_and_drafts_auto(self) -> None:
+    def test_draft_or_ask_mode_blocks_visible_posts_and_drafts_auto(self) -> None:
+        # An explicit ``draft_or_ask`` pin survives the ``full``-autonomy collapse
+        # (a pinned gate is never overridden), so the BLOCK/AUTO_DRAFT path resolves.
+        ConfigSetting.objects.set_value("on_behalf_post_mode", "draft_or_ask")
         assert resolve_on_behalf_verdict("post_comment") is OnBehalfVerdict.BLOCK
         assert resolve_on_behalf_verdict("post_draft_note") is OnBehalfVerdict.AUTO_DRAFT
 

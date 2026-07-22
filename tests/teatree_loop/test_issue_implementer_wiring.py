@@ -82,9 +82,14 @@ def _enabled(**overrides: object) -> UserSettings:
     return _settings(issue_implementer_enabled=True, user_identity_aliases=["alice"], **overrides)
 
 
+def _disabled(**overrides: object) -> UserSettings:
+    """The loop explicitly turned OFF (the master gate now ships ON by default)."""
+    return _settings(issue_implementer_enabled=False, **overrides)
+
+
 class IssueImplementerGateTests(TestCase):
-    def test_disabled_by_default_emits_no_scanner(self) -> None:
-        with patch(_PATCH_TARGET, return_value=_settings()):
+    def test_disabled_emits_no_scanner(self) -> None:
+        with patch(_PATCH_TARGET, return_value=_disabled()):
             assert _issue_implementer_scanner_for(_backend()) is None
 
     def test_enabled_with_budget_builds_scanner(self) -> None:
@@ -195,7 +200,7 @@ class IssueImplementerGateTests(TestCase):
             assert _issue_implementer_scanner_for(backend) is None
 
     def test_domain_slice_empty_when_disabled(self) -> None:
-        with patch(_PATCH_TARGET, return_value=_settings()):
+        with patch(_PATCH_TARGET, return_value=_disabled()):
             assert jobs_for_domain(Domain.ISSUE_IMPLEMENTER, _backend()) == []
 
     def test_domain_slice_emits_one_scanner_when_enabled(self) -> None:
@@ -244,7 +249,7 @@ class IssueImplementerRequireLabelWarningTests(TestCase):
 
     def test_disabled_loop_does_not_warn(self) -> None:
         with (
-            patch(_PATCH_TARGET, return_value=_settings(issue_implementer_require_label=True)),
+            patch(_PATCH_TARGET, return_value=_disabled(issue_implementer_require_label=True)),
             self.assertNoLogs("teatree.loop.scanner_factories", level="WARNING"),
         ):
             assert _issue_implementer_scanner_for(_backend()) is None
@@ -267,7 +272,7 @@ class IssueImplementerMiniLoopTests(TestCase):
 
     def test_disabled_loop_is_inert(self) -> None:
         host = _authored_host("https://github.com/souliane/teatree/issues/100")
-        with patch(_PATCH_TARGET, return_value=_settings()):
+        with patch(_PATCH_TARGET, return_value=_disabled()):
             jobs = MINI_LOOP.build_jobs(backends=[_backend_with_host(host)])
         assert jobs == []
 

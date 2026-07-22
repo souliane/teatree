@@ -57,14 +57,14 @@ class TestAutonomyDefault(TestCase):
         for env in ("T3_OVERLAY_NAME", "T3_MODE", "T3_ON_BEHALF_POST_MODE"):
             monkeypatch.delenv(env, raising=False)
 
-    def test_defaults_to_babysit(self) -> None:
-        assert get_effective_settings().autonomy is Autonomy.BABYSIT
+    def test_defaults_to_full(self) -> None:
+        assert get_effective_settings().autonomy is Autonomy.FULL
 
-    def test_babysit_keeps_conservative_gate_values(self) -> None:
+    def test_full_default_collapses_the_gate_values(self) -> None:
         settings = get_effective_settings()
-        assert settings.on_behalf_post_mode is OnBehalfPostMode.DRAFT_OR_ASK
-        assert settings.require_human_approval_to_merge is True
-        assert settings.require_human_approval_to_answer is True
+        assert settings.on_behalf_post_mode is OnBehalfPostMode.IMMEDIATE
+        assert settings.require_human_approval_to_merge is False
+        assert settings.require_human_approval_to_answer is False
 
 
 class _AutonomyDbBase(TestCase):

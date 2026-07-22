@@ -1,7 +1,7 @@
 """``t3 <overlay> autonomy`` — show / set the per-overlay trust switch.
 
 The ``autonomy`` switch (``babysit`` < ``notify`` < ``full``, default
-``babysit``) is the single per-overlay knob that collapses the three
+``full``) is the single per-overlay knob that collapses the three
 user-in-the-loop approval gates — ``on_behalf_post_mode`` (which gates
 colleague auto-approve / on-behalf posts), ``require_human_approval_to_merge``,
 ``require_human_approval_to_answer`` — and pins ``mode = auto`` so the

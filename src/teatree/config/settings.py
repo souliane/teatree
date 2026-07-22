@@ -446,16 +446,15 @@ class _WorkspaceCoreSettings:
 class _ModeHarnessSettings:
     """Mode / autonomy + the two-layer agent-harness (runtime / transport / provider) selectors."""
 
-    mode: Mode = Mode.INTERACTIVE
-    autonomy: Autonomy = Autonomy.BABYSIT
+    mode: Mode = Mode.AUTO
+    autonomy: Autonomy = Autonomy.FULL
     # The single LANE selector for loop-dispatched phase agents (those whose
-    # (role, phase) has a registered phase sub-agent). ``interactive`` (default,
-    # today's behaviour) dispatches them in-session via the ``/loop`` slot's
-    # ``Agent`` tool; ``headless`` runs them via ``agents/headless.py`` behind the
-    # two-layer ``agent_harness`` (transport) / ``agent_harness_provider``
-    # (credential) pair (#2887). Per-overlay overridable; ``T3_AGENT_RUNTIME`` env
-    # wins.
-    agent_runtime: AgentRuntime = AgentRuntime.INTERACTIVE
+    # (role, phase) has a registered phase sub-agent). ``interactive`` dispatches
+    # them in-session via the ``/loop`` slot's ``Agent`` tool; ``headless`` (the
+    # default) runs them via ``agents/headless.py`` behind the two-layer
+    # ``agent_harness`` (transport) / ``agent_harness_provider`` (credential) pair
+    # (#2887). Per-overlay overridable; ``T3_AGENT_RUNTIME`` env wins.
+    agent_runtime: AgentRuntime = AgentRuntime.HEADLESS
     # Layer 1 of the two-layer harness config model (#2887): which in-process
     # TRANSPORT a headless run uses. Orthogonal to ``agent_runtime`` (which LANE —
     # interactive vs headless — a task dispatches into): once a run IS headless,
@@ -577,16 +576,16 @@ class _ModeHarnessSettings:
 class _LoopAndTeamsSettings:
     """WIP dial + loop cadence/runner + the agent-teams pane budget."""
 
-    # How much new work a loop tick admits at once — the bounded-WIP dial. The
-    # conservative ``MEDIUM`` baseline means NO orchestrator fan-out — only
-    # the intrinsic loop + PR sweep + per-overlay ``max_concurrent_auto_starts``
-    # provide throughput. ``slow`` caps to one impl worker; ``full`` arms the
-    # /t3:wip loop; ``boost`` keeps ``boost_concurrency = N`` workers live,
-    # refilling the pool each tick as workers exit. Orthogonal
+    # How much new work a loop tick admits at once — the bounded-WIP dial.
+    # ``slow`` caps to one impl worker; ``medium`` is the conservative baseline
+    # (NO orchestrator fan-out — only the intrinsic loop + PR sweep + per-overlay
+    # ``max_concurrent_auto_starts`` provide throughput); ``full`` (the default)
+    # arms the /t3:wip loop; ``boost`` keeps ``boost_concurrency = N`` workers
+    # live, refilling the pool each tick as workers exit. Orthogonal
     # to ``mode``/``autonomy`` (those gate *whether* a publish proceeds; this
     # governs *how many* threads run) and never relaxes a safety gate.
     # Per-overlay overridable; ``T3_WIP`` env wins over both.
-    wip: Wip = Wip.MEDIUM
+    wip: Wip = Wip.FULL
     # Loop tick interval in seconds (BLUEPRINT § 5.6). Default 12 minutes.
     loop_cadence_seconds: int = 720
     # #1796 / PR-28 — the loop-cadence kill-switch. Default ON: the singleton

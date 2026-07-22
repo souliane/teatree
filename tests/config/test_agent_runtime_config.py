@@ -26,12 +26,12 @@ class TestAgentRuntimeResolution(TestCase):
         monkeypatch.delenv("T3_OVERLAY_NAME", raising=False)
         monkeypatch.delenv("T3_AGENT_RUNTIME", raising=False)
 
-    def test_default_is_interactive_when_no_row(self) -> None:
-        assert get_effective_settings().agent_runtime is AgentRuntime.INTERACTIVE
-
-    def test_stored_headless(self) -> None:
-        ConfigSetting.objects.set_value("agent_runtime", "headless")
+    def test_default_is_headless_when_no_row(self) -> None:
         assert get_effective_settings().agent_runtime is AgentRuntime.HEADLESS
+
+    def test_stored_interactive(self) -> None:
+        ConfigSetting.objects.set_value("agent_runtime", "interactive")
+        assert get_effective_settings().agent_runtime is AgentRuntime.INTERACTIVE
 
     def test_env_wins_over_store(self) -> None:
         ConfigSetting.objects.set_value("agent_runtime", "interactive")

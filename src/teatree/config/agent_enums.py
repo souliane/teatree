@@ -21,13 +21,13 @@ class AgentRuntime(StrEnum):
     member of this enum; the resolver rejects it loudly rather than silently
     misreading it.
 
-    Tiers (default :attr:`INTERACTIVE`, today's behaviour):
+    Tiers (default :attr:`HEADLESS`):
 
-    *   :attr:`INTERACTIVE` (default) — the in-session ``/loop`` slot claims the
+    *   :attr:`INTERACTIVE` — the in-session ``/loop`` slot claims the
         task (``loop_dispatch claim-next``) and spawns the phase sub-agent via the
         ``Agent`` tool, in the live Claude Code session (subscription-covered,
-        visible in the agent view). No behaviour change from before this setting.
-    *   :attr:`HEADLESS` — ``run_headless`` (``agents/headless.py``) drives an
+        visible in the agent view).
+    *   :attr:`HEADLESS` (default) — ``run_headless`` (``agents/headless.py``) drives an
         in-process agent session behind the :class:`AgentHarness` transport seam.
         The transport (``claude_sdk`` default | ``pydantic_ai``) is
         :class:`AgentHarness`'s call; for ``claude_sdk`` the Anthropic credential
@@ -47,9 +47,9 @@ class AgentRuntime(StrEnum):
     def parse(cls, value: str) -> "AgentRuntime":
         """Parse an agent-runtime string; invalid values raise ``ValueError``.
 
-        Mirrors :meth:`Mode.parse`: the conservative default
-        (:attr:`INTERACTIVE`) is applied by the caller when the setting is
-        absent, so a typo never silently switches the runtime.
+        Mirrors :meth:`Mode.parse`: the dataclass default (:attr:`HEADLESS`)
+        is applied by the caller when the setting is absent, so this validates
+        only explicit values and a typo raises rather than switching the runtime.
         """
         normalised = value.strip().lower()
         try:

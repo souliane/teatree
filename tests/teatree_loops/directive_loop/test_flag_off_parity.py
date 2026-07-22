@@ -26,13 +26,14 @@ def _counts() -> tuple[int, int, int, int]:
 
 class TestFlagOffParity(TestCase):
     def test_default_config_tick_is_a_total_no_op(self) -> None:
-        # A CAPTURED directive is present; the default-config tick refuses at G1 and
-        # advances NOTHING. Removing the flag guard would dispatch the interpreter.
+        # A CAPTURED directive is present; the default-config tick refuses at G1b
+        # (``factory_score_enabled`` ships OFF) and advances NOTHING. Removing the
+        # score guard would fall through to the critic probe.
         directive = Directive.objects.capture("do X", source=Directive.Source.CLI)
         before = _counts()
         result = run_tick()
         assert result.action == "refused"
-        assert result.reason == guards.FLAG_OFF
+        assert result.reason == guards.SCORE_OFF
         assert _counts() == before == (0, 0, 0, 0)
         assert Directive.objects.get(pk=directive.pk).state == Directive.State.CAPTURED
 

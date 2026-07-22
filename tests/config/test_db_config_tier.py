@@ -7,7 +7,7 @@ dataclass default. Per DB-home field:
 
     env -> ConfigSetting (overlay then global) -> dataclass default
 
-Pilot setting: ``issue_implementer_enabled`` (a boolean kill-switch, default
+Pilot setting: ``orchestrate_claim_enabled`` (a boolean opt-in gate, default
 ``False``) so an EMPTY table is a provable no-op and the precedence is observable.
 
 Integration-first: real ``ConfigSetting`` rows against the real DB, the active
@@ -25,44 +25,44 @@ class TestDbConfigTier(TestCase):
     @pytest.fixture(autouse=True)
     def _clear_env(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.delenv("T3_OVERLAY_NAME", raising=False)
-        monkeypatch.delenv("T3_ISSUE_IMPLEMENTER_ENABLED", raising=False)
+        monkeypatch.delenv("T3_ORCHESTRATE_CLAIM_ENABLED", raising=False)
         self.monkeypatch = monkeypatch
 
     def test_empty_table_is_a_no_op(self) -> None:
         assert ConfigSetting.objects.count() == 0
-        assert get_effective_settings().issue_implementer_enabled is False
+        assert get_effective_settings().orchestrate_claim_enabled is False
 
     def test_db_is_the_sole_source_for_a_db_home_field(self) -> None:
-        assert get_effective_settings().issue_implementer_enabled is False
-        ConfigSetting.objects.set_value("issue_implementer_enabled", value=True)
-        assert get_effective_settings().issue_implementer_enabled is True
+        assert get_effective_settings().orchestrate_claim_enabled is False
+        ConfigSetting.objects.set_value("orchestrate_claim_enabled", value=True)
+        assert get_effective_settings().orchestrate_claim_enabled is True
 
     def test_overlay_db_row_is_the_sole_overlay_source(self) -> None:
         self.monkeypatch.setenv("T3_OVERLAY_NAME", "my-overlay")
-        assert get_effective_settings().issue_implementer_enabled is False
-        ConfigSetting.objects.set_value("issue_implementer_enabled", value=True, scope="my-overlay")
-        assert get_effective_settings().issue_implementer_enabled is True
+        assert get_effective_settings().orchestrate_claim_enabled is False
+        ConfigSetting.objects.set_value("orchestrate_claim_enabled", value=True, scope="my-overlay")
+        assert get_effective_settings().orchestrate_claim_enabled is True
 
     def test_env_wins_over_db_row(self) -> None:
-        ConfigSetting.objects.set_value("issue_implementer_enabled", value=False)
-        self.monkeypatch.setenv("T3_ISSUE_IMPLEMENTER_ENABLED", "true")
-        assert get_effective_settings().issue_implementer_enabled is True
+        ConfigSetting.objects.set_value("orchestrate_claim_enabled", value=False)
+        self.monkeypatch.setenv("T3_ORCHESTRATE_CLAIM_ENABLED", "true")
+        assert get_effective_settings().orchestrate_claim_enabled is True
 
     def test_db_row_for_non_overridable_key_is_ignored(self) -> None:
         # The pilot is scoped to OVERLAY_OVERRIDABLE_SETTINGS so an unknown /
         # non-overridable key never silently mutates the resolved settings.
         ConfigSetting.objects.set_value("not_a_real_setting", "boom")
-        assert get_effective_settings().issue_implementer_enabled is False
+        assert get_effective_settings().orchestrate_claim_enabled is False
 
     def test_db_row_value_is_coerced_via_registry_parser(self) -> None:
         ConfigSetting.objects.set_value("issue_implementer_max_concurrent", "5")
         assert get_effective_settings().issue_implementer_max_concurrent == 5
 
     def test_clear_restores_dataclass_default(self) -> None:
-        ConfigSetting.objects.set_value("issue_implementer_enabled", value=True)
-        assert get_effective_settings().issue_implementer_enabled is True
-        ConfigSetting.objects.clear("issue_implementer_enabled")
-        assert get_effective_settings().issue_implementer_enabled is False
+        ConfigSetting.objects.set_value("orchestrate_claim_enabled", value=True)
+        assert get_effective_settings().orchestrate_claim_enabled is True
+        ConfigSetting.objects.clear("orchestrate_claim_enabled")
+        assert get_effective_settings().orchestrate_claim_enabled is False
 
     def test_bool_row_false_resolves_false(self) -> None:
         # #258 blocker 2: a stored real-bool ``False`` for an opt-in safety
@@ -107,47 +107,47 @@ class TestPerOverlayDbScope(TestCase):
     @pytest.fixture(autouse=True)
     def _clear_env(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.delenv("T3_OVERLAY_NAME", raising=False)
-        monkeypatch.delenv("T3_ISSUE_IMPLEMENTER_ENABLED", raising=False)
+        monkeypatch.delenv("T3_ORCHESTRATE_CLAIM_ENABLED", raising=False)
         self.monkeypatch = monkeypatch
 
     def test_overlay_scoped_db_row_beats_global_db_row(self) -> None:
-        ConfigSetting.objects.set_value("issue_implementer_enabled", value=False)
-        ConfigSetting.objects.set_value("issue_implementer_enabled", value=True, scope="my-overlay")
+        ConfigSetting.objects.set_value("orchestrate_claim_enabled", value=False)
+        ConfigSetting.objects.set_value("orchestrate_claim_enabled", value=True, scope="my-overlay")
         self.monkeypatch.setenv("T3_OVERLAY_NAME", "my-overlay")
-        assert get_effective_settings().issue_implementer_enabled is True
+        assert get_effective_settings().orchestrate_claim_enabled is True
 
     def test_overlay_scoped_db_row_ignored_for_a_different_overlay(self) -> None:
-        ConfigSetting.objects.set_value("issue_implementer_enabled", value=False)
-        ConfigSetting.objects.set_value("issue_implementer_enabled", value=True, scope="my-overlay")
-        assert get_effective_settings().issue_implementer_enabled is False
-        assert get_effective_settings("another").issue_implementer_enabled is False
+        ConfigSetting.objects.set_value("orchestrate_claim_enabled", value=False)
+        ConfigSetting.objects.set_value("orchestrate_claim_enabled", value=True, scope="my-overlay")
+        assert get_effective_settings().orchestrate_claim_enabled is False
+        assert get_effective_settings("another").orchestrate_claim_enabled is False
 
     def test_global_db_row_applies_when_overlay_has_no_row(self) -> None:
-        ConfigSetting.objects.set_value("issue_implementer_enabled", value=True)
+        ConfigSetting.objects.set_value("orchestrate_claim_enabled", value=True)
         self.monkeypatch.setenv("T3_OVERLAY_NAME", "my-overlay")
-        assert get_effective_settings().issue_implementer_enabled is True
+        assert get_effective_settings().orchestrate_claim_enabled is True
 
     def test_overlay_scoped_row_resolves_through_named_overlay_path(self) -> None:
         # The loop's per-overlay scanners call get_effective_settings(overlay_name);
         # that path must read the overlay's DB scope too (no env applied there).
-        ConfigSetting.objects.set_value("issue_implementer_enabled", value=False)
-        ConfigSetting.objects.set_value("issue_implementer_enabled", value=True, scope="my-overlay")
-        assert get_effective_settings("my-overlay").issue_implementer_enabled is True
+        ConfigSetting.objects.set_value("orchestrate_claim_enabled", value=False)
+        ConfigSetting.objects.set_value("orchestrate_claim_enabled", value=True, scope="my-overlay")
+        assert get_effective_settings("my-overlay").orchestrate_claim_enabled is True
 
     def test_env_still_wins_over_overlay_scoped_db_row(self) -> None:
-        ConfigSetting.objects.set_value("issue_implementer_enabled", value=False, scope="my-overlay")
+        ConfigSetting.objects.set_value("orchestrate_claim_enabled", value=False, scope="my-overlay")
         self.monkeypatch.setenv("T3_OVERLAY_NAME", "my-overlay")
-        self.monkeypatch.setenv("T3_ISSUE_IMPLEMENTER_ENABLED", "true")
-        assert get_effective_settings().issue_implementer_enabled is True
+        self.monkeypatch.setenv("T3_ORCHESTRATE_CLAIM_ENABLED", "true")
+        assert get_effective_settings().orchestrate_claim_enabled is True
 
     def test_overlay_scope_matches_canonical_alias(self) -> None:
         # A row stored under the t3- entry-point spelling resolves for the short
         # alias active overlay (and vice versa).
-        ConfigSetting.objects.set_value("issue_implementer_enabled", value=True, scope="t3-my-overlay")
+        ConfigSetting.objects.set_value("orchestrate_claim_enabled", value=True, scope="t3-my-overlay")
         self.monkeypatch.setenv("T3_OVERLAY_NAME", "my-overlay")
-        assert get_effective_settings().issue_implementer_enabled is True
+        assert get_effective_settings().orchestrate_claim_enabled is True
 
     def test_empty_overlay_scope_is_still_a_no_op(self) -> None:
         self.monkeypatch.setenv("T3_OVERLAY_NAME", "my-overlay")
         assert ConfigSetting.objects.count() == 0
-        assert get_effective_settings().issue_implementer_enabled is False
+        assert get_effective_settings().orchestrate_claim_enabled is False

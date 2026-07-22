@@ -68,8 +68,8 @@ class FeatureFlag:
 
 # ``outer_loop_enabled`` is the canonical DARK flag (the OFF switch the T4
 # autoresearch outer loop ships behind). The live registry is mostly ``DARK`` plus
-# one ``SETTLING`` flag (``incremental_push_gate``, graduated by #122 once its CI
-# selection-audit soak came clean); ``REMOVE`` is not represented live, so the
+# the ``SETTLING`` flags (``incremental_push_gate``, ``directive_loop_enabled``);
+# ``REMOVE`` is not represented live, so the
 # stage-discrimination machinery (:func:`dark_flags`, :func:`render_flags_audit`) is
 # proven non-vacuously over a MIXED FIXTURE in the conformance suite rather than over
 # the live set's accidental composition.
@@ -110,9 +110,12 @@ FEATURE_FLAGS: dict[str, FeatureFlag] = {
     ),
     "directive_loop_enabled": FeatureFlag(
         field="directive_loop_enabled",
-        stage=FlagStage.DARK,
+        stage=FlagStage.SETTLING,
         tracking_issue="souliane/teatree — north-star PR-6 directive intake",
-        summary="The OFF switch the directive self-modification front-end (intake+interpret+ratify) ships behind.",
+        summary=(
+            "Master gate for the directive self-modification front-end (intake+interpret+ratify). Default ON; "
+            "the guard chain still requires factory_score_enabled + a live critic, so it survives as an escape hatch."
+        ),
     ),
     "send_proxy_mode": FeatureFlag(
         field="send_proxy_mode",

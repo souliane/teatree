@@ -32,6 +32,11 @@ def _settings(**overrides: object) -> UserSettings:
     return UserSettings(**overrides)
 
 
+def _disabled(**overrides: object) -> UserSettings:
+    """The assessor explicitly turned OFF (the master gate now ships ON by default)."""
+    return _settings(triage_assessor_enabled=False, **overrides)
+
+
 def _backend(name: str = "acme") -> OverlayBackends:
     return OverlayBackends(
         name=name,
@@ -56,8 +61,8 @@ def _backend_with_host(host: CodeHostBackend, name: str = "acme") -> OverlayBack
 
 
 class TriageAssessorGateTests(TestCase):
-    def test_disabled_by_default_emits_no_scanner(self) -> None:
-        with patch(_PATCH_TARGET, return_value=_settings()):
+    def test_disabled_emits_no_scanner(self) -> None:
+        with patch(_PATCH_TARGET, return_value=_disabled()):
             assert _triage_assessor_scanner_for(_backend()) is None
 
     def test_enabled_builds_scanner(self) -> None:
@@ -89,7 +94,7 @@ class TriageAssessorGateTests(TestCase):
             assert _triage_assessor_scanner_for(backend) is None
 
     def test_domain_slice_empty_when_disabled(self) -> None:
-        with patch(_PATCH_TARGET, return_value=_settings()):
+        with patch(_PATCH_TARGET, return_value=_disabled()):
             assert jobs_for_domain(Domain.TRIAGE_ASSESSOR, _backend()) == []
 
     def test_domain_slice_emits_one_scanner_when_enabled(self) -> None:
@@ -104,7 +109,7 @@ class TriageAssessorGateAntiVacuityTests(TestCase):
 
     def test_flag_off_queues_nothing_for_open_issue(self) -> None:
         host = _issue_host()
-        with patch(_PATCH_TARGET, return_value=_settings()):
+        with patch(_PATCH_TARGET, return_value=_disabled()):
             jobs = jobs_for_domain(Domain.TRIAGE_ASSESSOR, _backend_with_host(host))
         signals = [signal for job in jobs for signal in job.scanner.scan()]
         assert signals == []

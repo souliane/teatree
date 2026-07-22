@@ -17,12 +17,11 @@ from teatree.config.setting_parsers import _default_handover_mirror_path
 class _LoopFlagAndCredentialSettings:
     """Loop feature-flags (issue-implementer, fleet/orchestrate, outer/directive), cost + Anthropic pass routing."""
 
-    # #1548 Opt-in, default-OFF gate for the always-on issue-implementer
-    # loop. The loop is a hard NO-OP unless ``issue_implementer_enabled``
-    # is flipped on, mirroring the ``review_skill = ""`` opt-in (#1541) and
-    # the ``scanning_news_*`` cadence pattern. This PR adds only the config
-    # surface — the scanner and dispatch land in later PRs.
-    issue_implementer_enabled: bool = False
+    # #1548 Master gate for the always-on issue-implementer loop. Default ON:
+    # the factory intakes trusted-author issues autonomously. Flip OFF to make
+    # the loop a hard NO-OP. Governed alongside the per-issue author trust gate
+    # and ``admission_policy``.
+    issue_implementer_enabled: bool = True
     # Label marking an issue as auto-implement. Consulted ONLY when
     # ``issue_implementer_require_label`` is on — since #3235 intake is decided by
     # the issue's trusted AUTHOR, not by a hand-applied label. With the flag on,
@@ -105,16 +104,13 @@ class _LoopFlagAndCredentialSettings:
     # pins stage=DARK => this default == its off_value (False), so the outer loop
     # can never be flipped default-ON without a code-reviewed stage demotion.
     outer_loop_enabled: bool = False
-    # North-star PR-6 — the OFF switch the directive-driven self-modification front-end
-    # (intake + interpret + ratify) ships behind, and a DARK ``FEATURE_FLAGS`` entry.
-    # Ships behaviorally inert: the ``DIRECTIVE``-intent router is parity-off while this
-    # is off (a directive event DROPs exactly as an unrouteable intent), so nothing
-    # writes a ``Directive`` row unless the explicit ``t3 <overlay> directive capture``
-    # CLI is used. DB-home (#1775), per-overlay overridable — an overlay can trial
-    # directive intake on its own budget. The conformance suite pins stage=DARK => this
-    # default == its off_value (False), so it can never ship default-ON without a
-    # code-reviewed stage demotion.
-    directive_loop_enabled: bool = False
+    # North-star PR-6 — the master gate for the directive-driven self-modification
+    # front-end (intake + interpret + ratify), a SETTLING ``FEATURE_FLAGS`` entry.
+    # Default ON, but the loop's guard chain still requires ``factory_score_enabled``
+    # (default OFF) and a live critic before any directive advances, so a directive
+    # event still DROPs at default resolution until those are armed. DB-home (#1775),
+    # per-overlay overridable — flip OFF to disable directive intake entirely.
+    directive_loop_enabled: bool = True
     # North-star PR-7 — the directive-loop VERIFYING horizon in days: after the ratified
     # activation is applied, the five evidence classes (activation live, acceptance green,
     # behavior probe clean, no collateral regression, zero open critic findings) are
@@ -159,12 +155,12 @@ class _LoopFlagAndCredentialSettings:
     # Upper bound on close-candidate signals emitted per tick — keeps an
     # auto-close pass bounded and reviewable.
     auto_disposition_max_closes_per_tick: int = 5
-    # Opt-in, default-OFF gate for the needs-triage assessor loop. When False (the
-    # default) no scanner is built, so the loop emits nothing and never queues an
-    # assessment. When on, the scanner discovers OPEN needs-triage issues and queues
-    # ONE shell-denied assessment task behind an ask-gate — it performs ZERO host
-    # writes and NOTHING acts autonomously (per-item approval via t3:triaging-issues).
-    triage_assessor_enabled: bool = False
+    # Master gate for the needs-triage assessor loop. Default ON: the scanner
+    # discovers OPEN needs-triage issues and queues ONE shell-denied assessment
+    # task behind an ask-gate — it performs ZERO host writes and NOTHING acts
+    # autonomously (per-item approval via t3:triaging-issues). Flip OFF to make the
+    # loop emit nothing.
+    triage_assessor_enabled: bool = True
     # Min interval between assessment passes (the scanner self-gates on this).
     triage_assessor_cadence_hours: int = 24
     # Upper bound on issues serialized into one queued assessment task — keeps the
