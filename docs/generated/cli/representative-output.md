@@ -154,6 +154,8 @@ Usage: t3 loop [OPTIONS] COMMAND [ARGS]...
 │                  emit it.                                                    │
 │ list             Print LIVE loop status: each loop's enabled state, cadence, │
 │                  last fire, and next tick.                                   │
+│ intake-loops     Print each owner-intake loop name (never fleet-masked off), │
+│                  one per line, sorted.                                       │
 │ reclaim-markers  Release orphaned non-terminal markers whose ticket is       │
 │                  terminal/gone, freeing intake budget.                       │
 │ pause            Pause a mini-loop durably (#1913) — EMERGENCY-only; prefer  │

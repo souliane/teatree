@@ -102,12 +102,14 @@ jobs:
           # Repo VARIABLES (not secrets): the box's fleet-scoped loop split,
           # consumed by the entrypoint's apply_fleet_loop_policy. ENABLED loops
           # are force-enabled here (clearing any stale hold — this box HOSTS the
-          # DM-only `inbox` loop); DISABLED loops are forced off (the colleague/
-          # human-facing `review`/`directive_loop` the laptop owns). The fallbacks
-          # are the box's shipped role; the entrypoint validates every name and
-          # fails the deploy loudly on a typo.
+          # DM-only `inbox` loop); DISABLED loops are forced off (the colleague-
+          # facing `review` loop the laptop owns). `directive_loop` is owner-intake
+          # (#3632) — it interprets the owner's captured directives, so it is NOT
+          # masked here (masking it left 20 owner directives uninterpreted for ~8
+          # days). The entrypoint additionally prunes any owner-intake loop from the
+          # DISABLED set, validates every name, and fails the deploy loudly on a typo.
           TEATREE_ENABLED_LOOPS: ${{ vars.TEATREE_ENABLED_LOOPS || 'inbox' }}
-          TEATREE_DISABLED_LOOPS: ${{ vars.TEATREE_DISABLED_LOOPS || 'review,directive_loop' }}
+          TEATREE_DISABLED_LOOPS: ${{ vars.TEATREE_DISABLED_LOOPS || 'review' }}
           # Repo VARIABLE: when 'true' the box's teatree.env gets NO Anthropic
           # env token even though the secret exists (the eval workflows still
           # need the secret) — the env source beats the pass rotation in

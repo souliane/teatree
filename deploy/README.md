@@ -249,10 +249,16 @@ authoritative planes:
 - **ENABLED set** (default `inbox`) → `t3 loop enable <name> --emergency`, the one
   handle that clears a stale hold and sets `Loop.enabled=True`, so a box whose
   `inbox` an older image disabled recovers. Idempotent.
-- **DISABLED set** (default `review,directive_loop`) → `t3 loop override <name> off`,
-  the sanctioned NON-emergency forced-off that replaces the deprecated
+- **DISABLED set** (default `review`) → `t3 loop override <name> off`, the
+  sanctioned NON-emergency forced-off that replaces the deprecated
   `t3 loop disable`. Forced-off beats the preset mask and the base config, so the
-  colleague/human-facing loops stay off here under any mode. Idempotent.
+  colleague-facing `review` loop stays off here under any mode. Idempotent.
+- **OWNER-INTAKE loops are never forced off** (`t3 loop intake-loops` —
+  `directive_loop` / `dispatch` / `inbox`). They interpret the owner's captured
+  directives and deliver deferred owner questions; `autonomous_away` means the
+  human is unreachable *now*, so that intent must QUEUE for later, not be dropped
+  unread. Any intake loop listed in `TEATREE_DISABLED_LOOPS` is pruned (with a
+  warning) before the DISABLED set is applied, so a redeploy can never re-mask it.
 
 `TEATREE_ENABLED_LOOPS` / `TEATREE_DISABLED_LOOPS` (comma-separated) override the
 defaults; an **empty** value acts on nothing. Every name in both lists is

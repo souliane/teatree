@@ -359,8 +359,14 @@ seed_setting() {
 # owner overlay, so `inbox` — the inbound-messaging scanners (Slack DM →
 # PendingChatInjection, review-intent, red-card, mentions) — MUST run here; it
 # feeds the drain → 👀-ack → answer cycle that posts replies. The COLLEAGUE-facing
-# Slack loops the laptop owns stay off here: `review` (colleague PR review → Slack)
-# and `directive_loop` (asks the human via Slack).
+# Slack loop the laptop owns stays off here: `review` (colleague PR review → Slack).
+#
+# OWNER-INTAKE loops are NEVER forced off here (#3632): `directive_loop` interprets
+# the owner's captured directives and `dispatch` posts deferred owner questions.
+# `autonomous_away` means the human is unreachable *now* — captured intent must
+# QUEUE for later, not be dropped unread. A prior default forced `directive_loop`
+# off on every deploy, so captured owner directives sat uninterpreted for days; the
+# owner-intake set (`t3 loop intake-loops`) is pruned from the DISABLED set below.
 #
 # Per-loop enable/disable/pause/resume is now EMERGENCY-only (#3248): the normal
 # handle is presets/schedules and the emergency per-loop handle is `t3 loop
@@ -375,11 +381,12 @@ seed_setting() {
 #   * ENABLED set (default `inbox`) → `t3 loop enable <name> --emergency`, which
 #     clears any stale hold AND sets `Loop.enabled=True`, so a box whose inbox a
 #     prior deploy durably disabled recovers. Idempotent (a no-op when already on).
-#   * DISABLED set (default `review,directive_loop`) → `t3 loop override <name> off`,
-#     the sanctioned, NON-emergency forced-off that supersedes the deprecated
+#   * DISABLED set (default `review`) → `t3 loop override <name> off`, the
+#     sanctioned, NON-emergency forced-off that supersedes the deprecated
 #     `t3 loop disable`. Forced-off beats the preset mask AND the base config, so a
 #     colleague/human-facing loop stays off here regardless of any mode the owner
-#     later selects. Idempotent.
+#     later selects. Idempotent. Owner-intake loops (`t3 loop intake-loops`) are
+#     pruned from this set before it is applied, so they can never be re-masked.
 #
 # TEATREE_ENABLED_LOOPS / TEATREE_DISABLED_LOOPS (comma-separated, from teatree.env)
 # override the defaults; empty values act on nothing. Every name in BOTH lists is
@@ -387,8 +394,8 @@ seed_setting() {
 # loudly before anything is touched (rather than silently mis-configuring the box).
 apply_fleet_loop_policy() {
     local enabled_raw="${TEATREE_ENABLED_LOOPS-inbox}"
-    local disabled_raw="${TEATREE_DISABLED_LOOPS-review,directive_loop}"
-    local field loop registered
+    local disabled_raw="${TEATREE_DISABLED_LOOPS-review}"
+    local field loop registered intake
     local fields=() enable_loops=() disable_loops=()
 
     IFS=',' read -ra fields <<<"$enabled_raw"
@@ -416,6 +423,13 @@ apply_fleet_loop_policy() {
         fi
     done
 
+    # The owner-intake loops (single source of truth in Python) that must never be
+    # forced off, so the owner's captured intent is always at least ingested (#3632).
+    if ! intake="$(t3 loop intake-loops)"; then
+        echo "entrypoint: could not read the owner-intake loop set ('t3 loop intake-loops' failed) - confirm the t3 install is healthy and re-run Deploy" >&2
+        exit 1
+    fi
+
     # A loop in BOTH lists is a contradiction: the ENABLE pass forces it on, then
     # the DISABLE pass would immediately force it off (admission resolves
     # forced > preset > base), leaving a sanctioned-enabled loop silently MASKED
@@ -437,6 +451,8 @@ apply_fleet_loop_policy() {
         done
         if [ -n "$overlaps" ]; then
             echo "entrypoint: loop '${loop}' is in BOTH TEATREE_ENABLED_LOOPS and TEATREE_DISABLED_LOOPS - keeping it ENABLED (would otherwise be re-masked every restart); remove it from TEATREE_DISABLED_LOOPS in teatree.env to silence this warning" >&2
+        elif grep -qxF "$loop" <<<"$intake"; then
+            echo "entrypoint: loop '${loop}' is an OWNER-INTAKE loop (interprets directives / delivers owner questions) - NOT forcing it off; the owner's captured intent must always be ingested, even under autonomous_away. Remove it from TEATREE_DISABLED_LOOPS in teatree.env to silence this warning" >&2
         else
             pruned_disable+=("$loop")
         fi
