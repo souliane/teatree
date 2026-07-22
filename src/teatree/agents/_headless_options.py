@@ -31,14 +31,27 @@ _READER_PERMISSION_MODE = permission_modes.READER_DEFAULT_DENY
 # The SDK spawns no max-turns ceiling of its own; the loop watchdog bounds a
 # runaway. ``0`` leaves the SDK uncapped (the watchdog is the real bound).
 _MAX_TURNS = 0
-# AskUserQuestion only renders to a live human at the harness — there is none
-# in the SDK/headless lane, so leaving it allowed lets the agent silently stall
-# on an unanswerable question. Hard-deny it UNCONDITIONALLY: the agent must
-# instead return the structured ``needs_user_input`` + ``user_input_reason`` and
-# STOP, which the durable DeferredQuestion → Slack → resume loop then routes to
-# the user. The per-phase least-privilege complement (PR-11) is added on top of
-# this floor at build time — see :func:`_disallowed_tools_for_phase`.
-_DISALLOWED_TOOLS = ("AskUserQuestion",)
+# The external-contact / interactive built-ins — every CLI built-in that can reach
+# the user or an external endpoint directly. NO headless phase may call any of them:
+# there is no live human at the SDK/headless harness (AskUserQuestion would silently
+# stall) and a headless agent must never contact the user or an outside service on its
+# own — the ONLY sanctioned user-contact path is the structured ``needs_user_input`` +
+# ``user_input_reason`` return, which the durable DeferredQuestion → Slack → resume
+# loop routes to the user. None of these is a teatree capability (none appears in any
+# phase's allowed complement), so denying them removes nothing a work phase needs. Each
+# is a real member of the ``claude`` CLI's built-in registry (pinned by
+# :func:`test_floor_is_a_valid_subset_of_the_builtin_registry`), so it is a valid deny
+# rule. The reader phase denies the full :data:`KNOWN_BUILTIN_TOOLS` superset on top.
+_EXTERNAL_CONTACT_BUILTINS: tuple[str, ...] = (
+    "AskUserQuestion",
+    "Monitor",
+    "PushNotification",
+    "RemoteTrigger",
+    "SendMessage",
+)
+# The floor denied on EVERY headless spawn; the per-phase least-privilege complement
+# is layered on top at build time — see :func:`_disallowed_tools_for_phase`.
+_DISALLOWED_TOOLS = _EXTERNAL_CONTACT_BUILTINS
 # Adaptive thinking, pinned EXPLICITLY on every reasoning-capable production
 # spawn. Opus 4.8 runs WITHOUT thinking when the ``thinking`` option is omitted,
 # so the Opus-4.8 planning/coding/debugging/reviewing phases would silently lose
@@ -54,19 +67,23 @@ UUID_RE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]
 def _disallowed_tools_for_phase(phase: str) -> list[str]:
     """The full disallow list for a headless dispatch — floor plus per-phase complement.
 
-    :data:`_DISALLOWED_TOOLS` (``AskUserQuestion``) is denied on every headless
-    spawn; the per-phase least-privilege complement (PR-11) is layered on top,
-    mapped from the phase_tools SSOT to SDK tool names by
-    :func:`~teatree.agents.sdk_tool_map.sdk_disallowed_tools_for_phase`. A review
-    phase (``reviewing`` / ``e2e_reviewing`` / ``requesting_review``) therefore
+    The property this enforces: NO headless phase can reach the user or an external
+    endpoint via a built-in — the only sanctioned user-contact path is the
+    ``needs_user_input`` → DeferredQuestion → Slack DM egress. That is the floor
+    :data:`_DISALLOWED_TOOLS` (:data:`_EXTERNAL_CONTACT_BUILTINS` — ``AskUserQuestion`` /
+    ``Monitor`` / ``PushNotification`` / ``RemoteTrigger`` / ``SendMessage``), denied on
+    EVERY headless spawn. The per-phase least-privilege complement is layered on
+    top, mapped from the phase_tools SSOT to SDK tool names by
+    :func:`~teatree.agents.sdk_tool_map.sdk_disallowed_tools_for_phase`. A review phase
+    (``reviewing`` / ``e2e_reviewing`` / ``requesting_review``) therefore additionally
     denies the shell (git-write), ``Write``/``Edit``, and the spawn tools — the
-    cold-review least-privilege that keeps the transcript at its verdict. A write
-    phase's complement is empty, so its list stays exactly ``[AskUserQuestion]``,
-    byte-identical to before the lever. The #116 reader phase denies the EXHAUSTIVE
+    cold-review least-privilege that keeps the transcript at its verdict. A write phase's
+    complement is empty, so its list stays exactly the floor, and the floor never names a
+    capability tool (Read/Write/Edit/Bash), so a work phase keeps every tool it needs. The
+    #116 reader phase denies the EXHAUSTIVE
     :data:`~teatree.llm.builtin_tools.KNOWN_BUILTIN_TOOLS` set (the binary-validated
-    registry — its available set is empty), so every known built-in including the
-    external-effect ones (``PushNotification`` / ``RemoteTrigger``) and ``ToolSearch``
-    is denied — no tool of ANY kind remains. Sorted & deduplicated for determinism.
+    registry — a superset of the floor, so the overlap is harmless), so no tool of ANY
+    kind remains. Sorted & deduplicated for determinism.
     """
     denied = set(_DISALLOWED_TOOLS) | set(sdk_disallowed_tools_for_phase(phase))
     if is_reader_phase(phase):

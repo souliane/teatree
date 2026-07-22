@@ -20,6 +20,25 @@ def speak(
     """Read text aloud through the local speakers per [teatree.speak] (no-op unless local = all)."""
     ensure_django()
 
+    if _runtime_is_headless():
+        typer.echo(
+            "t3 speak is a local-audio-only sink and cannot reach an away user under "
+            "agent_runtime=headless — route user contact through the needs_user_input → "
+            "DeferredQuestion → Slack path instead. Nothing was spoken.",
+            err=True,
+        )
+        return
+
     from django.core.management import call_command  # noqa: PLC0415 — deferred: Django import at call time
 
     call_command("speak", text, overlay=overlay)
+
+
+def _runtime_is_headless() -> bool:
+    from teatree.config import get_effective_settings  # noqa: PLC0415 — deferred: Django-dependent read at call time
+    from teatree.config.agent_enums import AgentRuntime  # noqa: PLC0415 — deferred
+
+    try:
+        return get_effective_settings().agent_runtime is AgentRuntime.HEADLESS
+    except Exception:  # noqa: BLE001 — a settings-read failure must never silence a present user's read
+        return False
