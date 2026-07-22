@@ -183,9 +183,9 @@ DEFAULT_LOOPS: tuple[LoopSeedSpec, ...] = (
     ),
     LoopSeedSpec(
         "issue_implementer",
-        3600,
+        1800,
         "Discovers and claims labelled backlog issues to auto-implement, kicking off the "
-        "maker pipeline; hourly, default-off behind a triple gate.",
+        "maker pipeline; every 30m, default-off behind a triple gate.",
     ),
     LoopSeedSpec(
         "triage_assessor",

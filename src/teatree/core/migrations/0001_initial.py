@@ -155,10 +155,10 @@ _DEFAULT_LOOPS = (
     ),
     (
         "issue_implementer",
-        3600,
+        1800,
         None,
         None,
-        "Discovers and claims labelled backlog issues to auto-implement, kicking off the maker pipeline; hourly, default-off behind a triple gate.",
+        "Discovers and claims labelled backlog issues to auto-implement, kicking off the maker pipeline; every 30m, default-off behind a triple gate.",
         False,
         False,
     ),

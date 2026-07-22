@@ -48,7 +48,7 @@ class TestDbHomeResolution(TestCase):
         ConfigSetting.objects.set_value("issue_implementer_max_concurrent", value=7)
         assert get_effective_settings().issue_implementer_max_concurrent == 7
         ConfigSetting.objects.clear("issue_implementer_max_concurrent")
-        assert get_effective_settings().issue_implementer_max_concurrent == 1
+        assert get_effective_settings().issue_implementer_max_concurrent == 3
 
     def test_newly_db_home_field_resolves_from_db_row(self) -> None:
         ConfigSetting.objects.set_value("repo_mode", "solo")
