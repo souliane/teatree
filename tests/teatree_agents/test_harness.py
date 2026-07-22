@@ -14,17 +14,21 @@ same way :class:`FakeHarnessSession` proves it for the generic seam.
 import asyncio
 import json
 import os
-from collections.abc import AsyncIterator
+from collections.abc import AsyncGenerator, AsyncIterator
+from contextlib import asynccontextmanager
+from typing import Any
 from unittest.mock import patch
 
 import pytest
 from claude_agent_sdk import AssistantMessage, ClaudeAgentOptions, ResultMessage, TextBlock
 from django.test import TestCase
-from pydantic_ai import Agent
+from pydantic_ai import Agent, RunContext
 from pydantic_ai.exceptions import ModelHTTPError, UsageLimitExceeded
 from pydantic_ai.messages import ModelMessage, ModelRequest, ToolReturnPart
+from pydantic_ai.models import ModelRequestParameters, StreamedResponse
 from pydantic_ai.models.function import AgentInfo, DeltaToolCall, FunctionModel
 from pydantic_ai.models.test import TestModel
+from pydantic_ai.settings import ModelSettings
 from pydantic_ai.toolsets import FunctionToolset
 
 import teatree.agents.harness as harness_mod
@@ -438,6 +442,68 @@ def test_pydantic_ai_num_turns_reflects_the_request_count() -> None:
 
     result = next(m for m in asyncio.run(drive()) if isinstance(m, ResultMessage))
     assert result.num_turns == 2
+
+
+def test_hit_max_tokens_reads_the_final_response_finish_reason() -> None:
+    from pydantic_ai.messages import ModelRequest, ModelResponse, TextPart, UserPromptPart  # noqa: PLC0415 — test-local
+
+    from teatree.agents.pydantic_ai_session import _hit_max_tokens  # noqa: PLC0415 — test-local
+
+    truncated = ModelResponse(parts=[TextPart(content="partial")], finish_reason="length")
+    clean = ModelResponse(parts=[TextPart(content="done")], finish_reason="stop")
+    request = ModelRequest(parts=[UserPromptPart(content="hi")])
+    assert _hit_max_tokens([request, truncated]) is True
+    assert _hit_max_tokens([request, clean]) is False
+    # The final ModelResponse wins even when an earlier one was truncated.
+    assert _hit_max_tokens([truncated, request, clean]) is False
+    # No ModelResponse at all → not a truncation.
+    assert _hit_max_tokens([request]) is False
+    assert _hit_max_tokens([]) is False
+
+
+async def _truncated_text_stream(_messages: object, _info: AgentInfo) -> AsyncIterator[str]:
+    """A single text delta standing in for a model cut off mid-envelope."""
+    await asyncio.sleep(0)
+    yield "partial truncated envelope"
+
+
+class _LengthFinishModel(FunctionModel):
+    """A ``FunctionModel`` whose streamed response reports a max-tokens (``'length'``) stop."""
+
+    @asynccontextmanager
+    async def request_stream(
+        self,
+        messages: list[ModelMessage],
+        model_settings: ModelSettings | None,
+        model_request_parameters: ModelRequestParameters,
+        run_context: RunContext[Any] | None = None,
+    ) -> AsyncGenerator[StreamedResponse]:
+        async with super().request_stream(messages, model_settings, model_request_parameters, run_context) as stream:
+            stream.finish_reason = "length"
+            yield stream
+
+
+def test_pydantic_ai_session_maps_a_length_finish_to_error_max_tokens() -> None:
+    # A run that otherwise completes but whose final ModelResponse stopped on the
+    # max_tokens ceiling (finish_reason='length') is surfaced as an is_error
+    # ResultMessage(subtype="error_max_tokens"), never a success carrying the amputated
+    # JSON envelope (RED: before the check the session yielded subtype="success").
+    from teatree.llm.anthropic_limits import classify_limit  # noqa: PLC0415 — test-local
+
+    agent: Agent[None, str] = Agent(_LengthFinishModel(stream_function=_truncated_text_stream))
+    session = PydanticAiHarnessSession(agent, model_name="m")
+
+    async def drive() -> list[object]:
+        await session.query("hi")
+        return [message async for message in session.receive_response()]
+
+    messages = asyncio.run(drive())
+    results = [m for m in messages if isinstance(m, ResultMessage)]
+    assert len(results) == 1
+    assert results[0].is_error is True
+    assert results[0].subtype == "error_max_tokens"
+    # A genuine FAILED, not a park — its text carries no rate/usage-limit phrase.
+    assert classify_limit(str(results[0].result)) is None
 
 
 def test_pydantic_ai_session_maps_the_request_cap_to_error_max_turns() -> None:
@@ -969,6 +1035,32 @@ class TestPydanticAiStepCap(TestCase):
 
     def test_default_setting_is_a_conservative_cap(self) -> None:
         assert get_effective_settings().pydantic_ai_request_limit == 5
+
+
+class TestPydanticAiMaxTokens(TestCase):
+    """The per-request ``max_tokens`` ceiling reaches the model settings (binding-agnostic)."""
+
+    def test_default_setting_is_generous(self) -> None:
+        assert get_effective_settings().pydantic_ai_max_tokens == 16384
+
+    def test_resolve_harness_reads_the_configured_max_tokens_synchronously(self) -> None:
+        # Resolved SYNC in resolve_harness (before asyncio.run) — a read inside the
+        # async open would fail safe to the default.
+        ConfigSetting.objects.set_value("agent_harness", "pydantic_ai")
+        ConfigSetting.objects.set_value("pydantic_ai_max_tokens", value=12000)
+        harness = resolve_harness(phase="coding")
+        assert isinstance(harness, PydanticAiHarness)
+        assert harness._max_tokens == 12000
+
+    def test_open_threads_max_tokens_into_the_agent_model_settings(self) -> None:
+        harness = PydanticAiHarness(model=TestModel(), config=PydanticAiModelConfig(max_tokens=9000))
+
+        async def drive() -> object:
+            async with harness.open(ClaudeAgentOptions()) as session:
+                assert isinstance(session, PydanticAiHarnessSession)
+                return session._agent.model_settings
+
+        assert asyncio.run(drive()) == {"max_tokens": 9000}
 
 
 class TestVerifierPinnedToClaude(TestCase):
