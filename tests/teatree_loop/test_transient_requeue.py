@@ -474,3 +474,72 @@ class TestExhaustionAutoRequeue(TestCase):
         # Byte-identical to before #3407: an exhaustion failure follows the deterministic
         # escalation path while the flag is off.
         assert DeferredQuestion.objects.filter(answered_at__isnull=True).count() == 1
+
+
+class TestDeadReviewTargetRetired(TestCase):
+    """A review/codex-review task whose linked PR is CLOSED/MERGED is retired, not re-dispatched (#3556)."""
+
+    @staticmethod
+    def _reviewer_task(*, phase: str = "codex_reviewing") -> Task:
+        ticket = Ticket.objects.create(
+            role=Ticket.Role.REVIEWER,
+            state=Ticket.State.NOT_STARTED,
+            issue_url="https://github.com/souliane/teatree/pull/3542",
+        )
+        session = Session.objects.create(ticket=ticket, agent_id=phase)
+        return Task.objects.create(ticket=ticket, session=session, phase=phase, status=Task.Status.FAILED)
+
+    def test_closed_pr_review_task_is_retired_not_reopened(self) -> None:
+        task = self._reviewer_task()
+        # A transient-classified error would otherwise reopen the task every tick.
+        _add_failed_attempt(task, error="outage_death: agent stopped after confirming PR closed")
+
+        with mock.patch("teatree.backends.loader.pr_is_merged_or_closed", return_value=True):
+            reopened = requeue_transient_failed()
+
+        task.refresh_from_db()
+        task.ticket.refresh_from_db()
+        assert reopened == 0
+        assert task.status == Task.Status.COMPLETED  # retired, not re-queued
+        assert task.ticket.state == Ticket.State.IGNORED  # terminal — drops from active scans
+        assert DeferredQuestion.objects.filter(answered_at__isnull=True).count() == 0
+
+    def test_adversarial_review_phase_is_also_retired(self) -> None:
+        task = self._reviewer_task(phase="codex_adversarial_reviewing")
+        _add_failed_attempt(task, error="outage_death: agent stopped after confirming PR closed")
+
+        with mock.patch("teatree.backends.loader.pr_is_merged_or_closed", return_value=True):
+            reopened = requeue_transient_failed()
+
+        task.refresh_from_db()
+        assert reopened == 0
+        assert task.status == Task.Status.COMPLETED
+
+    def test_live_pr_review_task_still_reopens(self) -> None:
+        # Control: the retire path is gated on a provably-dead PR. A live/UNKNOWN PR
+        # (fail-open False) must still reopen the transient failure exactly as before.
+        task = self._reviewer_task()
+        _add_failed_attempt(task, error="outage_death: connection refused")
+
+        with mock.patch("teatree.backends.loader.pr_is_merged_or_closed", return_value=False):
+            reopened = requeue_transient_failed()
+
+        task.refresh_from_db()
+        assert reopened == 1
+        assert task.status == Task.Status.PENDING
+
+    def test_non_review_phase_is_not_pr_gated(self) -> None:
+        # Control: a non-review phase never consults PR state — a dead PR must not
+        # short-circuit an ordinary coding retry.
+        ticket = Ticket.objects.create(role=Ticket.Role.AUTHOR, state=Ticket.State.STARTED)
+        session = Session.objects.create(ticket=ticket, agent_id="coding")
+        task = Task.objects.create(ticket=ticket, session=session, phase="coding", status=Task.Status.FAILED)
+        _add_failed_attempt(task, error="outage_death: connection refused")
+
+        with mock.patch("teatree.backends.loader.pr_is_merged_or_closed", return_value=True) as dead:
+            reopened = requeue_transient_failed()
+
+        task.refresh_from_db()
+        assert reopened == 1
+        assert task.status == Task.Status.PENDING
+        dead.assert_not_called()

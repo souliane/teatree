@@ -45,6 +45,13 @@ COMPLETED silently. This is the fix for the redispatch flood on already-done tic
 (3366/3336/3352): the away-mode queue is never asked about a phase the ticket's own
 state already answers.
 
+A DEAD-REVIEW-TARGET FAILED task — a review/codex-review phase (``reviewing`` /
+``codex_reviewing`` / ``codex_adversarial_reviewing`` / ``e2e_reviewing``) whose
+linked PR is provably MERGED/CLOSED — is likewise retired COMPLETED (and its reviewer
+ticket IGNORED), never reopened: a verdict can never land on a dead PR, so
+re-dispatching only burns a session that re-confirms the close (3556). Fail-OPEN on an
+UNKNOWN PR state so a transient forge hiccup never retires a live review.
+
 A once-escalated task is stamped (:data:`_HALT_STAMP` in ``execution_reason``) and
 excluded from every subsequent scan, so the dead-letter set never grows the per-tick
 work unboundedly. The ``DeferredQuestion`` itself is deduped by a STABLE key —
@@ -65,6 +72,7 @@ from django.utils import timezone
 
 from teatree.agents.outage_classifier import is_transient_failure
 from teatree.agents.usage_window import autorecovery_enabled
+from teatree.core.modelkit.phase_tools import VERDICT_REVIEW_PHASES
 from teatree.core.modelkit.phases import normalize_phase
 from teatree.core.models import Task, TaskAttempt, Ticket
 from teatree.core.models.deferred_question import DeferredQuestion
@@ -88,6 +96,13 @@ _HALT_STAMP = "[repair-halt-parked]"
 #: out of the scan — the away-mode queue is never asked about a phase the ticket
 #: already advanced past (the 3366/3336/3352 redispatch-loop root cause).
 _SUPERSEDED_STAMP = "[superseded-retired]"
+
+#: Stamped onto ``execution_reason`` when a review/codex-review task is retired
+#: because its linked PR is provably MERGED/CLOSED. A review verdict can never land
+#: on a dead PR, so re-dispatching only burns a session that re-confirms the close
+#: (#3556). The task is marked COMPLETED and the reviewer ticket is IGNORED so it
+#: drops out of every active scan instead of re-dispatching indefinitely.
+_DEAD_REVIEW_STAMP = "[dead-review-retired]"
 
 #: Phases whose omitted-envelope refusal earns the one-shot corrective retry.
 _CORRECTIVE_PHASES = frozenset({"coding", "debugging"})
@@ -145,11 +160,7 @@ def _route_failed_task(task: Task, *, now: datetime, autorecovery: bool) -> int:
     non-terminal ticket is still never left silent (reopened, retired, retried, or
     escalated), it just can no longer take the whole tick down with it.
     """
-    if task.ticket.has_completed_phase(task.phase):
-        # SUPERSEDED: the ticket's FSM already reached this phase's output, so this
-        # FAILED row is a dead artifact of an earlier interrupted run. Retire it
-        # silently — never escalate a question the ticket's own state answers.
-        _retire_superseded(task)
+    if _retire_if_dead_artifact(task):
         return 0
     error = _latest_error(task)
     if not error:
@@ -324,6 +335,76 @@ def _stamp_halt(task: Task) -> None:
         return
     reason = f"{task.execution_reason}\n{_HALT_STAMP}".strip() if task.execution_reason else _HALT_STAMP
     Task.objects.filter(pk=task.pk).update(execution_reason=reason)
+
+
+def _retire_if_dead_artifact(task: Task) -> bool:
+    """Retire a FAILED task whose phase output is already moot; ``True`` if retired.
+
+    Two ways a FAILED row becomes a dead artifact to retire (COMPLETED) rather than
+    reopen or escalate:
+
+    * SUPERSEDED — the ticket's FSM already reached this phase's output, so the
+        row is a leftover of an earlier interrupted run (the ticket advanced on its own).
+    * DEAD REVIEW TARGET — a review/codex-review phase whose linked PR is
+        merged/closed, so a verdict can never land; re-dispatching only burns a
+        session that re-confirms the close (#3556).
+    """
+    if task.ticket.has_completed_phase(task.phase):
+        _retire_superseded(task)
+        return True
+    if _review_target_dead(task):
+        _retire_dead_review(task)
+        return True
+    return False
+
+
+def _review_target_dead(task: Task) -> bool:
+    """Whether *task* is a review phase whose linked PR is provably MERGED/CLOSED (#3556).
+
+    Only a verdict-review phase consults the forge; every other phase returns
+    ``False`` without a network read. The linked PR is the reviewer ticket's own
+    ``issue_url`` (a codex/review ticket is keyed on the PR url). Fail-OPEN via
+    :func:`~teatree.backends.loader.pr_is_merged_or_closed`: an UNKNOWN/indefinite
+    state returns ``False`` so a transient forge hiccup never retires a live review.
+    """
+    if normalize_phase(task.phase) not in VERDICT_REVIEW_PHASES:
+        return False
+    from teatree.backends.loader import pr_is_merged_or_closed  # noqa: PLC0415 - deferred: backends/core cycle
+
+    return pr_is_merged_or_closed(task.ticket.issue_url)
+
+
+def _retire_dead_review(task: Task) -> None:
+    """Retire a dead-review task COMPLETED and IGNORE its reviewer ticket. Idempotent.
+
+    The review target is merged/closed, so the phase output can never land - mark the
+    task COMPLETED (dropping it out of the FAILED scan) via the same
+    ``UPDATE ... WHERE status=FAILED`` compare-and-swap the retire/reopen paths use,
+    then transition the ticket to IGNORED when the FSM allows it so the reviewer ticket
+    stops surfacing as active. No ``DeferredQuestion``: a closed PR is not a defect a
+    human needs to triage.
+    """
+    reason = f"{task.execution_reason}\n{_DEAD_REVIEW_STAMP}".strip() if task.execution_reason else _DEAD_REVIEW_STAMP
+    Task.objects.filter(pk=task.pk, status=Task.Status.FAILED).update(
+        status=Task.Status.COMPLETED,
+        claimed_at=None,
+        claimed_by="",
+        claimed_by_session="",
+        lease_expires_at=None,
+        heartbeat_at=None,
+        execution_reason=reason,
+    )
+    _ignore_ticket_if_allowed(task.ticket)
+
+
+def _ignore_ticket_if_allowed(ticket: Ticket) -> None:
+    """Transition *ticket* to IGNORED when the FSM permits it; a no-op otherwise."""
+    from django_fsm import can_proceed  # noqa: PLC0415 - deferred: FSM import at call time
+
+    if not can_proceed(ticket.ignore):
+        return
+    ticket.ignore()
+    ticket.save()
 
 
 def _retire_superseded(task: Task) -> None:
