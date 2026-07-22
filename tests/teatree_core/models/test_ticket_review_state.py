@@ -20,6 +20,9 @@ _PRE_REVIEW_OR_ABANDONED = (
     Ticket.State.PLANNED,
     Ticket.State.CODED,
     Ticket.State.TESTED,
+    # REVIEW_POSTED is a reviewer terminal, not the author "passed review"
+    # milestone — a reviewer ticket is never a review-request candidate.
+    Ticket.State.REVIEW_POSTED,
     Ticket.State.IGNORED,
 )
 

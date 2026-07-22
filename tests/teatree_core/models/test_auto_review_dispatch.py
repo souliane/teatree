@@ -121,12 +121,12 @@ class TestDispatchedTaskReachesTerminalState:
     The whole point of arming the dispatch is that the enqueued unit can run
     to completion: the reviewer claims the ``Task(phase=reviewing)``, records
     its verdict (stamping ``reviewed_sha`` on the reviewer-role ticket), and
-    completing the task short-circuits the ticket to ``DELIVERED`` via
+    completing the task short-circuits the ticket to ``REVIEW_POSTED`` via
     ``mark_reviewed_externally``. An armed dispatch that never reached a
     terminal state would re-pump the same review forever.
     """
 
-    def test_reviewer_completing_task_short_circuits_ticket_to_delivered(self) -> None:
+    def test_reviewer_completing_task_short_circuits_ticket_to_review_posted(self) -> None:
         row = AutoReviewDispatch.enqueue(slug=SLUG, pr_id=6230, head_sha=HEAD, pr_url=URL, overlay="teatree")
         assert row is not None
         assert row.task is not None
@@ -144,5 +144,5 @@ class TestDispatchedTaskReachesTerminalState:
 
         ticket.refresh_from_db()
         task.refresh_from_db()
-        assert ticket.state == Ticket.State.DELIVERED
+        assert ticket.state == Ticket.State.REVIEW_POSTED
         assert task.status == Task.Status.COMPLETED

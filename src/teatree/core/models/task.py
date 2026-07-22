@@ -343,7 +343,7 @@ class Task(models.Model):
         # Mirror the FSM source list of mark_reviewed_externally() — guarding
         # only on ``role == REVIEWER`` is not enough (#1000): the #998/#999
         # orphan sweep can complete a second reviewing task on a ticket that
-        # already advanced to DELIVERED (or any other terminal state), and an
+        # already advanced to REVIEW_POSTED (or any other terminal state), and an
         # unconditional FSM call then raises TransitionNotAllowed and crashes
         # the loop tick. Sibling branches below all guard on ``ticket.state``;
         # this branch must too. The source set is DERIVED from the transition

@@ -104,7 +104,12 @@ class TestReconcileMerged(TestCase):
         """
         all_states = set(Ticket.State)
         merge_source = set(Ticket._MERGED_RECONCILE_SOURCE_STATES)
-        refused = {Ticket.State.RETROSPECTED, Ticket.State.DELIVERED, Ticket.State.IGNORED}
+        refused = {
+            Ticket.State.RETROSPECTED,
+            Ticket.State.DELIVERED,
+            Ticket.State.REVIEW_POSTED,
+            Ticket.State.IGNORED,
+        }
         assert merge_source.isdisjoint(refused), "a state is both reconcile-merged and refused"
         assert merge_source | refused == all_states, (
             f"State partition incomplete — unclassified: {all_states - merge_source - refused}"

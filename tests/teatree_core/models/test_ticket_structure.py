@@ -92,12 +92,12 @@ _FSM_GRAPH: dict[str, tuple[tuple[str, ...], tuple[str, ...]]] = {
     "mark_delivered": (("retrospected",), ("delivered",)),
     "mark_merged": (("in_review", "merged"), ("merged",)),
     "mark_review_no_action": (
-        ("coded", "delivered", "not_started", "planned", "reviewed", "scoped", "started", "tested"),
-        ("delivered",),
+        ("coded", "not_started", "planned", "review_posted", "reviewed", "scoped", "started", "tested"),
+        ("review_posted",),
     ),
     "mark_reviewed_externally": (
         ("coded", "not_started", "planned", "reviewed", "scoped", "started", "tested"),
-        ("delivered",),
+        ("review_posted",),
     ),
     "plan": (("started",), ("planned",)),
     "reconcile_merged": (

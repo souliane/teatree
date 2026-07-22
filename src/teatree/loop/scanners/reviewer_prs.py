@@ -159,7 +159,7 @@ def _orphaned_task_signals(
 
     **The local FSM is authoritative for the user's own decision (#1431).**
     A reviewer ticket whose ``state`` is already terminal
-    (DELIVERED/SHIPPED/MERGED/IGNORED) has no legal FSM transition left for
+    (REVIEW_POSTED/DELIVERED/SHIPPED/MERGED/IGNORED) has no legal FSM transition left for
     its reviewing task: a re-dispatched orphan's "nothing to post"
     disposition (``mark_review_no_action``) raises ``TransitionNotAllowed``
     (no terminal state in its ``source=[...]``) and the task re-dispatches
@@ -210,7 +210,7 @@ def _orphaned_task_signals(
     for ticket in candidates:
         # #1431: the LOCAL FSM is authoritative for the user's own
         # decision. A reviewer ticket whose state is already terminal
-        # (DELIVERED/SHIPPED/MERGED/IGNORED) has no legal transition left
+        # (REVIEW_POSTED/DELIVERED/SHIPPED/MERGED/IGNORED) has no legal transition left
         # for its reviewing task — re-dispatch wedges the loop. Reap it
         # regardless of forge state (a self-authored MR with no review owed
         # legitimately stays OPEN). This is terminal-LOCAL-FSM *proof*, not
