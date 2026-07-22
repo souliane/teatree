@@ -265,6 +265,32 @@ class TestBuildSystemContext(TestCase):
         ctx = build_system_context(task, skills=[])
         assert "INTAKE LANDSCAPE SURVEY" not in ctx
 
+    def test_planning_brief_instructs_returning_the_plan_text_envelope(self) -> None:
+        # #3584: PHASE_REQUIRED_EVIDENCE["planning"] refuses a run whose envelope
+        # omits `plan_text`, so the brief MUST tell the planner to carry the full
+        # plan under that key — otherwise the plan is produced but the attempt is
+        # refused for "missing required evidence for phase 'planning'" and re-run.
+        ticket = Ticket.objects.create()
+        session = Session.objects.create(ticket=ticket)
+        task = Task.objects.create(ticket=ticket, session=session, phase="planning")
+
+        ctx = build_system_context(task, skills=[])
+        assert "plan_text" in ctx
+        assert "the phase evidence gate refuses a run with no `plan_text`" in ctx
+
+    def test_scanning_news_brief_instructs_returning_the_article_suggestions_envelope(self) -> None:
+        # #3584: PHASE_REQUIRED_EVIDENCE["scanning_news"] refuses a run whose envelope
+        # omits `article_suggestions`, so the shell-denied scanner's brief MUST tell it
+        # to RETURN the candidates rather than try to enqueue them itself.
+        ticket = Ticket.objects.create()
+        session = Session.objects.create(ticket=ticket)
+        task = Task.objects.create(ticket=ticket, session=session, phase="scanning_news")
+
+        ctx = build_system_context(task, skills=[])
+        assert "PHASE: scanning_news" in ctx
+        assert "article_suggestions" in ctx
+        assert "rationale" in ctx
+
     def test_shipping_phase_embeds_reviewer_dispatch_skill_block(self) -> None:
         ticket = Ticket.objects.create()
         session = Session.objects.create(ticket=ticket)

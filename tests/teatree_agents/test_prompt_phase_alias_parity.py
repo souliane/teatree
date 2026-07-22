@@ -49,7 +49,8 @@ class TestPhaseSpecificLinesAlias(TestCase):
         assert self._lines("ship") == self._lines("shipping")
 
     def test_non_phase_is_empty(self) -> None:
-        assert self._lines("scanning_news") == ()
+        # A phase with no per-phase trailing block (retro carries no dispatch directive).
+        assert self._lines("retro") == ()
 
 
 class TestBuildSystemContextReviewScoping(TestCase):

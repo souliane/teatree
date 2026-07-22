@@ -1,6 +1,7 @@
 """Build agent prompts from ticket and task context."""
 
 import json
+from collections.abc import Callable
 from typing import cast
 
 from teatree.agents.coding_prompt import _VERIFY_GATES_COMMAND, _coding_phase_directive, _stack_overlay_load_names
@@ -95,6 +96,38 @@ _ANSWER_RETURN_LINES: tuple[str, ...] = (
     "The `text` MUST be non-empty — a summary-only result with no `answer` drops the reply and",
     "the phase is refused. If you cannot answer (missing context, a decision only the user can",
     "make), draft a clarifying-question reply as the `answer` text rather than returning nothing.",
+)
+
+# Injected into a headless planning brief (#3584): the phase evidence gate
+# (``PHASE_REQUIRED_EVIDENCE["planning"]``) refuses a run whose result envelope
+# omits ``plan_text``, so the planner MUST place the full plan under that key —
+# not only as prose or a PlanArtifact. Without this reinforcing directive the
+# planner produced a plan but returned a summary-only envelope, and the attempt
+# was refused for "missing required evidence for phase 'planning'" then re-run.
+# Symmetric to ``_REVIEW_VERDICT_RETURN_LINES`` / ``_ANSWER_RETURN_LINES``.
+_PLAN_RETURN_LINES: tuple[str, ...] = (
+    "",
+    "RETURN YOUR PLAN IN THE ENVELOPE (the phase evidence gate refuses a run with no `plan_text`):",
+    "your final JSON result MUST carry the full implementation plan under the `plan_text` key:",
+    '  "plan_text": "<the complete plan — file-level changes, data model, API contracts, test',
+    '                strategy, and the E2E test plan / Acceptance scenarios section when UI-visible>"',
+    "A summary-only result with no `plan_text` drops the plan and the phase is refused, wasting the run.",
+)
+
+# Injected into a headless scanning_news brief (#3584): the shell-denied scanner
+# cannot enqueue candidates itself, so it RETURNS them, and the phase evidence
+# gate (``PHASE_REQUIRED_EVIDENCE["scanning_news"]``) refuses a run whose envelope
+# omits ``article_suggestions``. Symmetric to ``_ANSWER_RETURN_LINES``.
+_ARTICLE_SUGGESTIONS_RETURN_LINES: tuple[str, ...] = (
+    "",
+    "RETURN YOUR CANDIDATES AS SUGGESTIONS (this phase has no shell — do NOT try to file issues",
+    "via `t3 <overlay>` or `gh`; you cannot enqueue, you HAND BACK the candidates):",
+    "add an `article_suggestions` array to your final JSON result. The orchestrator queues each",
+    "behind the per-article ask-gate (a PendingArticleSuggestion) for the user's approval:",
+    '  "article_suggestions": [{"title": "<article title>", "url": "<article url>",',
+    '                           "rationale": "<one-line why-this-matters for teatree>"}]',
+    "Each item's `url` MUST be non-empty. A summary-only result with no `article_suggestions`",
+    "silently drops the scan and the phase is refused, wasting the run.",
 )
 
 
@@ -266,11 +299,17 @@ def _intake_landscape_lines(task: Task) -> tuple[str, ...]:
 
 
 def _planning_phase_lines(task: Task) -> tuple[str, ...]:
-    """The headless ``PHASE: planning`` block — intake survey (#2541) + opted-in fan-out."""
+    """The headless ``PHASE: planning`` block — intake survey (#2541), envelope directive (#3584), opted-in fan-out."""
     lines = list(_intake_landscape_lines(task))
+    lines.extend(_PLAN_RETURN_LINES)
     if fanout := _phase_fanout_directive(task):
         lines.extend(("", "PHASE: planning", fanout))
     return tuple(lines)
+
+
+def _scanning_news_phase_lines() -> tuple[str, ...]:
+    """The headless ``PHASE: scanning_news`` block — RETURN the article_suggestions envelope (#3584)."""
+    return ("", "PHASE: scanning_news", *_ARTICLE_SUGGESTIONS_RETURN_LINES)
 
 
 def _reviewing_phase_lines(task: Task) -> tuple[str, ...]:
@@ -360,15 +399,20 @@ def _phase_specific_lines(
             *head_state_brief_lines(task),
             *_coding_phase_directive(skills, stage_exclude=stage_exclude),
         )
-    if phase == "planning":
-        return _planning_phase_lines(task)
-    if phase == "reviewing":
-        return _reviewing_phase_lines(task)
-    if phase == "answering":
-        return _answering_phase_lines(task)
-    if phase == "shipping":
-        return _shipping_phase_lines()
-    return ()
+    builder = _PHASE_BLOCK_BUILDERS.get(phase)
+    return builder(task) if builder is not None else ()
+
+
+#: Per-phase trailing-block builders (excluding coding, which needs *skills* +
+#: *stage_exclude* and stays a special case in ``_phase_specific_lines``). Keyed
+#: on the canonical phase token; a phase absent here carries no trailing block.
+_PHASE_BLOCK_BUILDERS: dict[str, Callable[[Task], tuple[str, ...]]] = {
+    "planning": _planning_phase_lines,
+    "reviewing": _reviewing_phase_lines,
+    "answering": _answering_phase_lines,
+    "scanning_news": lambda _task: _scanning_news_phase_lines(),
+    "shipping": lambda _task: _shipping_phase_lines(),
+}
 
 
 def build_system_context(
