@@ -147,9 +147,7 @@ def get_overlay_for_repo(repo: str = ".") -> "OverlayBase | None":
                 matches.append(overlay)
                 break
 
-    if len(matches) == 1:
-        return matches[0]
-    return None
+    return matches[0] if len(matches) == 1 else None
 
 
 def get_all_overlays() -> "dict[str, OverlayBase]":
@@ -529,6 +527,12 @@ def _discover_overlays() -> "dict[str, OverlayBase]":
     import importlib.metadata  # noqa: PLC0415 — deferred: loaded only on this code path
 
     from teatree.core.overlay import OverlayBase  # noqa: PLC0415 — deferred: call-time import, kept lazy
+    from teatree.utils.django_bootstrap import ensure_django  # noqa: PLC0415 — deferred: call-time import, kept lazy
+
+    # ``ep.load()`` eagerly imports overlay modules that define Django models at
+    # module scope; a caller with ``DJANGO_SETTINGS_MODULE`` pre-set but ``setup()``
+    # unrun would otherwise hit ``AppRegistryNotReady`` here (#3567). Idempotent.
+    ensure_django()
 
     result: dict[str, OverlayBase] = {}
 
