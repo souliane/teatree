@@ -52,9 +52,15 @@ class TestApplyCredentialOverride:
         apply_credential_override(None)
         assert PROVIDER_ENV_VAR not in os.environ
 
-    def test_each_accepted_value_pins_the_provider(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_each_accepted_value_pins_the_provider(self) -> None:
+        # Reset with a DIRECT pop, not ``monkeypatch.delenv``: ``apply_credential_override``
+        # sets ``PROVIDER_ENV_VAR`` straight on ``os.environ``, so a mid-loop ``delenv``
+        # makes monkeypatch capture that intermediate value and RESTORE it at teardown —
+        # which runs after the autouse ``_restore_provider_pin`` cleanup, leaking the pin
+        # into unrelated tests (a shell-denied ``SimpleTestCase`` reading the provider then
+        # hits the DB and fails). The autouse fixture is the sole restore authority.
         for value in ("subscription_oauth", "api_key"):
-            monkeypatch.delenv(PROVIDER_ENV_VAR, raising=False)
+            os.environ.pop(PROVIDER_ENV_VAR, None)
             apply_credential_override(value)
             assert os.environ[PROVIDER_ENV_VAR] == value
 
