@@ -93,6 +93,16 @@ class TestSeedDefaultLoops(django.test.TestCase):
         seed_default_loops_and_prompts()
         assert Loop.objects.get(name="inbox").enabled is False
 
+    def test_issue_implementer_seeds_a_thirty_minute_cadence(self) -> None:
+        seed_default_loops_and_prompts()
+        assert Loop.objects.get(name="issue_implementer").delay_seconds == 1800
+
+    def test_reseed_preserves_an_operator_tuned_cadence(self) -> None:
+        seed_default_loops_and_prompts()
+        Loop.objects.filter(name="issue_implementer").update(delay_seconds=900)
+        seed_default_loops_and_prompts()
+        assert Loop.objects.get(name="issue_implementer").delay_seconds == 900
+
     def test_default_loops_satisfy_the_prompt_xor_script_constraint(self) -> None:
         # Every seeded row must hold exactly one of prompt-FK / script (the DB
         # CheckConstraint) — a seed that violated it would raise on create.

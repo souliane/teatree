@@ -63,7 +63,7 @@ class _LoopFlagAndCredentialSettings:
     # overlay's ``OverlayConfig`` supplies the value BELOW any DB/env override.
     admission_policy: AdmissionPolicy = AdmissionPolicy.ASSIGNED_AND_LABELED
     # Cap on simultaneously in-flight auto-implement tickets.
-    issue_implementer_max_concurrent: int = 1
+    issue_implementer_max_concurrent: int = 3
     # Internal dispatch-rate floor (hours) between auto-implement pickups.
     issue_implementer_cadence_hours: int = 1
     # Fleet-safety Stage 2 kill-switch (default OFF). When ON, the cross-instance
