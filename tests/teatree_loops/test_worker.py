@@ -80,8 +80,36 @@ def _make_worker(*, enabled, sleep, **seam_overrides):
         spawn=spawn,
         sleep=sleep,
         poll_seconds=0.0,
+        reclaim_leases=seam_overrides.get("reclaim_leases") or (lambda: None),
     )
     return LoopWorker(seams), built, handles
+
+
+def test_supervisor_reclaims_dead_owner_leases_each_poll() -> None:
+    reclaims: list[int] = []
+    states = iter([True, False])  # one supervised poll, then flip off
+    worker, _built, _ = _make_worker(
+        enabled=lambda: next(states, False),
+        sleep=lambda _s: None,
+        reclaim_leases=lambda: reclaims.append(1),
+    )
+    worker.run()
+    assert reclaims, "the supervisor must sweep dead-owner loop leases on its poll cadence (#3571)"
+
+
+def test_supervisor_survives_a_reclaim_error() -> None:
+    def _boom() -> None:
+        msg = "db hiccup"
+        raise RuntimeError(msg)
+
+    states = iter([True, False])
+    worker, _built, handles = _make_worker(
+        enabled=lambda: next(states, False),
+        sleep=lambda _s: None,
+        reclaim_leases=_boom,
+    )
+    worker.run()  # a reclaim error must never crash the supervisor
+    assert all(handle.joined for handle in handles)
 
 
 def test_reconciles_seeds_and_expires_before_starting_executors() -> None:

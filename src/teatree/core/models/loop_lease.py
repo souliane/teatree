@@ -39,18 +39,22 @@ different live pid → KEEP) from a post-compaction same-session restart
 (same pid → safe to evict). A null ``owner_pid`` is treated conservatively
 as "owner process unknown → KEEP" (INV4: bias toward preservation).
 
-t3-master liveness is PID-ANCHORED, not TTL-anchored. An owner that is
-alive but BUSY past the tick TTL fires no Stop self-pump, so no tick
-re-claims and the lease TTL-lapses while the owner process is still alive.
-``claim_ownership`` therefore treats a non-empty owner whose ``owner_pid``
-is alive as a LIVE owner — protected past its TTL against any non-
-``take_over`` claim from a DIFFERENT process — so the loop stays with the
-existing process and transfers ONLY on that process's termination or an
+The GLOBAL ``t3-master`` slot's liveness is PID-ANCHORED, not TTL-anchored.
+An owner that is alive but BUSY past the tick TTL fires no Stop self-pump, so
+no tick re-claims and the lease TTL-lapses while the owner process is still
+alive. ``claim_ownership`` therefore treats a non-empty ``t3-master`` owner
+whose ``owner_pid`` is alive as a LIVE owner — protected past its TTL against
+any non-``take_over`` claim from a DIFFERENT process — so the loop stays with
+the existing process and transfers ONLY on that process's termination or an
 explicit ``t3 loop claim --take-over``. A same-process session-id rotation
 (#2835: context compaction rotates the id but not the process) is NOT a
 transfer: the lease is re-anchored to the new session id and the same
 process keeps the loop. The TTL is the FALLBACK release, used only
-when ``owner_pid`` is null or dead. An anonymous caller (``session_id ==
+when ``owner_pid`` is null or dead. A ``loop:<name>`` PER-LOOP slot does NOT
+trust ``pid_alive`` past its TTL (#3571): a dead session's pid is routinely
+reused / cross-namespace, so once its TTL lapses the lease is reclaimable
+regardless of pid liveness (the per-tick re-claim is that session's
+heartbeat), while a fresh TTL still reads live. An anonymous caller (``session_id ==
 ""``, e.g. a Bash-tool tick that never sees the id, #1107) never persists
 ownership: it runs the tick when unowned but can never write the phantom
 "owned by nobody but not expired" row that previously enabled a fresh

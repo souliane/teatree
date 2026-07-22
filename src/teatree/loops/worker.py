@@ -133,6 +133,19 @@ def _build_executor(queue_name: str, worker_id: str) -> "Worker":
     )
 
 
+def _reclaim_dead_owner_leases() -> None:
+    """Return every ``loop:<name>``/``t3-master`` lease held by a dead session to the pool (#3571).
+
+    The worker supervisor's runtime half of the dead-owner reclaim (``run_boot_sweeps``
+    owns the boot half): a loop whose owning session crashed — or whose pid was reused /
+    lives in another container namespace — is otherwise SKIPped by the live worker
+    forever. Lazy-imported so the module's import graph carries no Django/ORM edge.
+    """
+    from teatree.core.models import LoopLease  # noqa: PLC0415 — deferred: ORM import needs the app registry
+
+    LoopLease.objects.reclaim_dead_owner_leases()
+
+
 def _spawn_executor_thread(executor: _Executor) -> _Handle:
     """Run *executor* in a daemon thread that closes its DB connection on exit.
 
@@ -167,6 +180,7 @@ class WorkerSeams:
     make_executor: Callable[[str, str], _Executor] = _build_executor
     spawn: Callable[[_Executor], _Handle] = _spawn_executor_thread
     kill_ticks: Callable[[], object] = kill_live_tick_process_groups
+    reclaim_leases: Callable[[], object] = _reclaim_dead_owner_leases
     sleep: Callable[[float], None] = time.sleep
     poll_seconds: float = SUPERVISOR_POLL_SECONDS
     max_respawns: int = MAX_EXECUTOR_RESPAWNS
@@ -230,6 +244,13 @@ class LoopWorker:
             self._slots[i] = self._spawn_slot(slot.queue, slot.index, respawns=slot.respawns + 1)
         return False
 
+    def _reclaim_dead_owner_leases(self) -> None:
+        """Sweep dead-owner loop leases; a reclaim error must never crash the supervisor (#3571)."""
+        try:
+            self._seams.reclaim_leases()
+        except Exception:
+            logger.warning("Dead-owner loop-lease reclaim failed this poll; will retry next tick.", exc_info=True)
+
     def run(self) -> None:
         """Reconcile, expire stale jobs, start the executors, supervise (kill-switch + liveness), then join and exit."""
         seams = self._seams
@@ -249,6 +270,7 @@ class LoopWorker:
                 if self._respawn_dead_executors():
                     crashed = True
                     break
+                self._reclaim_dead_owner_leases()
         finally:
             self.request_stop()
             for slot in self._slots:
