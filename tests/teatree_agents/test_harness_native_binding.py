@@ -21,6 +21,7 @@ from teatree.agents.pydantic_ai_config import (
     NativeAnthropicUnavailableError,
     PydanticAiBinding,
     PydanticAiModelConfig,
+    build_model_settings,
     native_anthropic_model_name,
 )
 from teatree.agents.pydantic_ai_session import _router_reported_cost
@@ -107,6 +108,50 @@ class TestNativeModelNameFallback:
 
     def test_explicit_pin_passes_through_unchanged(self) -> None:
         assert native_anthropic_model_name(HarnessOptions(model="claude-opus-4-8")) == "claude-opus-4-8"
+
+
+class TestBindingSpecificEffortSettings:
+    """The reasoning effort must ride the key the SELECTED binding's model actually reads.
+
+    pydantic_ai namespaces model settings per provider and silently ignores a foreign
+    key, so the OpenAI-shaped ``openai_reasoning_effort`` handed to the native Anthropic
+    binding dropped the whole effort axis with no error. The vocabularies differ too:
+    the router scale carries ``minimal``, which the Anthropic Messages API rejects, and
+    an explicitly-set ``anthropic_effort`` is passed straight to the wire unmapped.
+    """
+
+    # ``build_model_settings`` reads only ``model.profile``, so the binding shape is
+    # provable without constructing a real AnthropicModel — keeping this hermetic and
+    # free of the optional ``anthropic`` extra. The real-model construction is covered
+    # by ``TestNativeBindingConstruction``.
+    _XHIGH = SimpleNamespace(profile={"anthropic_supports_xhigh_effort": True})
+    _NO_XHIGH = SimpleNamespace(profile={"anthropic_supports_xhigh_effort": False})
+
+    def test_router_binding_uses_the_openai_effort_key(self) -> None:
+        settings = build_model_settings(TestModel(), "high", binding=PydanticAiBinding.ROUTER)
+        assert settings == {"openai_reasoning_effort": "high"}
+
+    def test_native_binding_uses_the_anthropic_effort_key(self) -> None:
+        settings = build_model_settings(self._XHIGH, "high", binding=PydanticAiBinding.NATIVE_ANTHROPIC)
+        # The regression: NOT ``openai_reasoning_effort``, which AnthropicModel ignores.
+        assert settings == {"anthropic_effort": "high"}
+
+    def test_native_binding_maps_minimal_onto_the_anthropic_vocabulary(self) -> None:
+        # ``minimal`` is router-scale only; sent verbatim the Messages API 400s.
+        settings = build_model_settings(self._XHIGH, "minimal", binding=PydanticAiBinding.NATIVE_ANTHROPIC)
+        assert settings == {"anthropic_effort": "low"}
+
+    def test_native_binding_downgrades_xhigh_when_the_model_lacks_it(self) -> None:
+        assert build_model_settings(self._XHIGH, "xhigh", binding=PydanticAiBinding.NATIVE_ANTHROPIC) == {
+            "anthropic_effort": "xhigh"
+        }
+        assert build_model_settings(self._NO_XHIGH, "xhigh", binding=PydanticAiBinding.NATIVE_ANTHROPIC) == {
+            "anthropic_effort": "max"
+        }
+
+    def test_absent_effort_yields_no_settings_on_either_binding(self) -> None:
+        assert build_model_settings(TestModel(), None, binding=PydanticAiBinding.ROUTER) is None
+        assert build_model_settings(self._XHIGH, None, binding=PydanticAiBinding.NATIVE_ANTHROPIC) is None
 
 
 class TestRouterReportedCost:

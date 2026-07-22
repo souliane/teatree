@@ -9,10 +9,14 @@ module with no import cycle. Re-exported from ``teatree.agents.harness`` for bac
 
 from dataclasses import dataclass, field
 from enum import StrEnum
+from typing import cast
 
 from openai import AsyncOpenAI
 from pydantic_ai.models import Model
+from pydantic_ai.models.openai import OpenAIChatModelSettings, ReasoningEffort
+from pydantic_ai.profiles.anthropic import ANTHROPIC_THINKING_EFFORT_MAP, resolve_anthropic_effort
 from pydantic_ai.providers.openai import OpenAIProvider
+from pydantic_ai.settings import ModelSettings
 
 from teatree.agents.harness_options import HarnessOptions
 from teatree.agents.harness_registry import HarnessCapabilities
@@ -176,6 +180,52 @@ def resolve_native_anthropic_model(options: HarnessOptions) -> Model:
         raise NativeAnthropicUnavailableError(msg) from exc
     api_key = AnthropicApiKeyCredential().resolve()
     return AnthropicModel(model_name, provider=AnthropicProvider(api_key=api_key))
+
+
+def build_model_settings(
+    model: Model, effort: ReasoningEffort | None, *, binding: PydanticAiBinding
+) -> ModelSettings | None:
+    """The reasoning-effort model settings for *binding*, under the key its model READS.
+
+    The settings namespace is per-provider in pydantic_ai, so the effort key is
+    binding-specific and NOT interchangeable: an
+    :class:`~pydantic_ai.models.openai.OpenAIChatModel` reads
+    ``openai_reasoning_effort`` while an
+    :class:`~pydantic_ai.models.anthropic.AnthropicModel` reads ``anthropic_effort``
+    and ignores every foreign key silently. Handing the OpenAI-shaped settings to the
+    native Anthropic binding therefore dropped the resolved effort with no error — the
+    whole effort axis was a no-op on that lane.
+
+    The vocabularies differ too. ``HARNESS_EFFORT_SCALE[pydantic_ai]`` is the
+    OpenAI/router scale (it carries ``minimal``), while the Anthropic Messages API
+    accepts only ``low``/``medium``/``high``/``xhigh``/``max``. An explicitly-set
+    ``anthropic_effort`` is passed STRAIGHT to the wire by pydantic_ai (no profile
+    gate, no mapping), so ``minimal`` would 400. The translation therefore goes
+    through pydantic_ai's own canonical
+    :data:`~pydantic_ai.profiles.anthropic.ANTHROPIC_THINKING_EFFORT_MAP` via
+    :func:`~pydantic_ai.profiles.anthropic.resolve_anthropic_effort`, which also owns
+    the per-model ``xhigh`` passthrough decision — never a vocabulary re-invented here.
+    """
+    if effort is None:
+        return None
+    if binding is PydanticAiBinding.NATIVE_ANTHROPIC:
+        if effort not in ANTHROPIC_THINKING_EFFORT_MAP:
+            return None
+        # Built as a plain mapping rather than the ``AnthropicModelSettings`` TypedDict:
+        # that symbol lives in ``pydantic_ai.models.anthropic``, which imports the
+        # OPTIONAL ``anthropic`` extra. Naming it here — even under a lazy import —
+        # would couple this branch to an extra a router-only install does not carry,
+        # while the runtime shape is identical (a TypedDict IS a dict).
+        return cast(
+            "ModelSettings",
+            {
+                "anthropic_effort": resolve_anthropic_effort(
+                    effort,
+                    supports_xhigh=model.profile.get("anthropic_supports_xhigh_effort", False),
+                )
+            },
+        )
+    return cast("ModelSettings", OpenAIChatModelSettings(openai_reasoning_effort=effort))
 
 
 def build_orca_provider(*, lane: str, pass_path: str | None = None) -> OpenAIProvider:
