@@ -104,8 +104,8 @@ _DEFAULT_LOOPS = (
         300,
         None,
         None,
-        "Reviews colleague-authored open PRs every 5m and posts inline findings (with the codex double-check and Slack-broadcast helpers).",
-        True,
+        "Reviews open PRs every 5m and posts inline findings via t3:reviewer — your OWN PRs always (per-SHA deduped), plus colleague-authored PRs when admit_colleague_prs_to_board is on. Always runs (not colleague-facing); self-review keeps going unattended.",
+        False,
         False,
     ),
     (

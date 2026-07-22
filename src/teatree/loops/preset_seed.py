@@ -81,6 +81,12 @@ _UNATTENDED = {
             "dispatch",
             "tickets",
             "ship",
+            # #3569: ``review`` is UNMASKED when unattended — forced ON so self-review
+            # keeps reviewing the owner's own PRs autonomously (it is no longer
+            # colleague_facing, so the away-gate does not skip it). Colleague
+            # admission is gated upstream by ``admit_colleague_prs_to_board``, not
+            # by the preset.
+            "review",
             "audit",
             "news",
             "arch_review",
@@ -94,7 +100,8 @@ _UNATTENDED = {
         ),
         True,
     ),
-    **dict.fromkeys(("review", "followup"), False),
+    # ``followup`` stays masked (its review-request nag is colleague-facing).
+    **dict.fromkeys(("followup",), False),
 }
 _MAINTENANCE = {
     **dict.fromkeys(

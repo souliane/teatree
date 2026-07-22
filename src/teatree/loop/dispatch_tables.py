@@ -29,6 +29,11 @@ AGENT_BY_KIND: dict[str, str] = {
     "reviewer_pr.new_sha": "t3:reviewer",
     "reviewer_pr.unreviewed": "t3:reviewer",
     "reviewer_pr.approval_dismissed": "t3:reviewer",
+    # #3569: the Claude self-PR review fallback runs as the SAME ``t3:reviewer``
+    # sub-agent a colleague review uses. The ``ClaudeSelfPrReviewScanner`` payload
+    # carries ``self_pr=True``, which routes ``persistence._handle_reviewer`` to its
+    # self-PR branch (per-SHA ``CodexReviewMarker`` dedup + reviewing Task).
+    "self_pr_review.dispatch": "t3:reviewer",
     # #1295 cap D: a failing MR/PR routes to the debug agent. Mirrored
     # into the statusline (via _DUAL_DISPATCH) so the user sees the red
     # MR even when the agent's dispatch is gated by the

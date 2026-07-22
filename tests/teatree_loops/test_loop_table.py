@@ -536,23 +536,26 @@ class TestColleagueFacingAvailabilityGate(django.test.TestCase):
 
 @django.test.override_settings(USE_TZ=True)
 class TestAutoMergePathAdmittedUnderAutonomousAway(django.test.TestCase):
-    """#3274/#61: the seeded merge path (`ship`) is admitted under an away-class mode.
+    """#3274/#61/#3569: `ship` AND `review` are admitted under an away-class mode.
 
     End-to-end over the REAL seed + registry + resolver (no stub): a green own-PR
     still gets its review verdict and auto-merges while the owner is away, because
-    the merge sweep lives on the non-colleague-facing `ship` loop (#3244). Auto-merge
-    is loop-membership, NOT an availability read — the merge must not regress it. The
-    away-class posture comes from a real `unattended` mode override (defers=True).
+    the merge sweep lives on the non-colleague-facing `ship` loop (#3244). #3569
+    unmasked `review` too (it is no longer colleague_facing) so self-review keeps
+    running when away — only `followup` (still colleague_facing) is deferred. Both
+    are loop-membership, NOT an availability read. The away-class posture comes from
+    a real `unattended` mode override (defers=True).
     """
 
-    def test_ship_admitted_review_deferred_under_autonomous_away(self) -> None:
+    def test_ship_and_review_admitted_followup_deferred_under_autonomous_away(self) -> None:
         seed_default_loops_and_prompts()
         # A real away-class mode: defers questions but keeps the factory pumping.
         Mode.objects.update_or_create(
             name="unattended", defaults={"entries": {}, "defers_questions": True, "pauses_self_pump": False}
         )
         ModeOverride.objects.set_override("unattended")
-        Loop.objects.filter(name__in=["ship", "review"]).update(enabled=True, last_run_at=None)
+        Loop.objects.filter(name__in=["ship", "review", "followup"]).update(enabled=True, last_run_at=None)
         admitted = admitted_loop_names(timezone.now())
         assert "ship" in admitted
-        assert "review" not in admitted
+        assert "review" in admitted
+        assert "followup" not in admitted

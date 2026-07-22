@@ -679,7 +679,7 @@ class PullMainCloneScannerWiringTests(TestCase):
             patch("teatree.loop.domain_optional_scanner_jobs._pull_main_clone_scanner_for", return_value=fake_scanner),
             patch("teatree.loop.domain_optional_scanner_jobs._architectural_review_scanner_for", return_value=None),
             patch("teatree.loop.domain_jobs._pr_sweep_scanner_for", return_value=None),
-            patch("teatree.loop.domain_jobs._codex_review_scanner_for", return_value=None),
+            patch("teatree.loop.domain_jobs._self_pr_review_scanner_for", return_value=None),
             patch("teatree.loop.domain_jobs._slack_broadcasts_scanner_for", return_value=None),
             patch("teatree.loop.domain_optional_scanner_jobs._failed_e2e_scanner_for", return_value=None),
         ):

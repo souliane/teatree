@@ -103,6 +103,7 @@ OVERLAY_OVERRIDABLE_SETTINGS: dict[str, Callable[[Any], Any]] = {
     "architectural_review_cadence_hours": _parse_strict_int,
     "architectural_review_after_merge_count": _parse_strict_int,
     "review_skill": _parse_strict_str,
+    "admit_colleague_prs_to_board": _parse_strict_bool,
     "require_review_context": _parse_strict_bool,
     "e2e_mandatory_gate_enabled": _parse_strict_bool,
     "attachment_gate_enabled": _parse_strict_bool,
@@ -851,6 +852,15 @@ class _QualityGateSettings:
     # Distinct from ``architectural_review_skill`` (the periodic cadence
     # scanner) — this one gates a single ticket's reviewing attestation.
     review_skill: str = ""
+    # #3569 The single review-board admission knob. Self-authored open PRs are
+    # ALWAYS admitted to the review board (always cold-reviewed by ``t3:reviewer``,
+    # per-SHA deduped). COLLEAGUE / requested-reviewer PRs are admitted to the same
+    # board ONLY when this is ``true`` (the default): the review intake builds the
+    # ``ReviewerPrsScanner`` only when set, so ``false`` stops colleague PRs reaching
+    # the board (self-review still runs). The author distinction lives HERE, upstream
+    # in the intake — the review execution (the ``reviewing`` → ``t3:reviewer`` task)
+    # is blind to author. Per-overlay overridable (DB-home).
+    admit_colleague_prs_to_board: bool = True
     # Opt-in deep-retrieval gate on ``-> reviewing`` (``review_context_gate``);
     # default false = NO-OP. Per-overlay overridable.
     require_review_context: bool = False

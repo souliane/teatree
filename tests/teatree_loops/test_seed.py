@@ -169,16 +169,20 @@ class TestSeedDefaultLoops(django.test.TestCase):
         assert Loop.objects.get(name="inbox").description == "operator note"
 
     def test_seeded_colleague_facing_matches_the_spec(self) -> None:
-        # #2904: review and followup reach/read a colleague, so they seed
-        # colleague_facing=True; every other default loop stays False.
+        # #2904: followup reaches/reads a colleague, so it seeds
+        # colleague_facing=True; #3569 unmasked the review loop (it always runs,
+        # colleague admission is gated upstream by admit_colleague_prs_to_board),
+        # so review is now colleague_facing=False like every other default loop.
         seed_default_loops_and_prompts()
         by_name = {loop.name: loop for loop in Loop.objects.all()}
         for spec in DEFAULT_LOOPS:
             assert by_name[spec.name].colleague_facing is spec.colleague_facing, spec.name
 
-    def test_review_and_followup_seed_colleague_facing_true(self) -> None:
+    def test_review_is_unmasked_and_followup_stays_colleague_facing(self) -> None:
+        # #3569: review always runs (self-review must not be masked when away);
+        # followup keeps its colleague-facing away-gate.
         seed_default_loops_and_prompts()
-        assert Loop.objects.get(name="review").colleague_facing is True
+        assert Loop.objects.get(name="review").colleague_facing is False
         assert Loop.objects.get(name="followup").colleague_facing is True
 
     def test_ship_merge_loop_is_not_colleague_facing(self) -> None:

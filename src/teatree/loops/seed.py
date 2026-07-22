@@ -147,9 +147,9 @@ DEFAULT_LOOPS: tuple[LoopSeedSpec, ...] = (
     LoopSeedSpec(
         "review",
         300,
-        "Reviews colleague-authored open PRs every 5m and posts inline findings (with the "
-        "codex double-check and Slack-broadcast helpers).",
-        colleague_facing=True,
+        "Reviews open PRs every 5m and posts inline findings via t3:reviewer — your OWN PRs always "
+        "(per-SHA deduped), plus colleague-authored PRs when admit_colleague_prs_to_board is on. "
+        "Always runs (not colleague-facing); self-review keeps going unattended.",
     ),
     LoopSeedSpec(
         "ship",

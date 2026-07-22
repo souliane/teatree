@@ -190,6 +190,56 @@ class PrSweepShipDomainTestCase(TestCase):
 _SETTINGS_PATCH_TARGET = "teatree.loop.scanner_factories._effective_settings_for_overlay"
 
 
+class ReviewDomainUnifiedIntakeTestCase(TestCase):
+    """``Domain.REVIEW`` is the SINGLE review intake — self + colleague (#3569).
+
+    Self-authored PRs are ALWAYS admitted (the ``ClaudeSelfPrReviewScanner``);
+    colleague PRs are admitted only when ``admit_colleague_prs_to_board`` is ON
+    (the ``ReviewerPrsScanner``). Both feed the SAME ``reviewing`` → ``t3:reviewer``
+    gate. There is no separate self_review domain and codex is not wired here.
+    """
+
+    @staticmethod
+    def _backend() -> OverlayBackends:
+        overlay = MagicMock()
+        overlay.config.get_github_token.return_value = ""
+        overlay.config.get_review_broadcast_channels.return_value = []
+        overlay.config.get_review_channel.return_value = ("", "")
+        overlay.metadata.get_followup_repos.return_value = ["souliane/teatree"]
+        overlay.get_workspace_repos.return_value = []
+        return OverlayBackends(
+            name="t3-teatree",
+            hosts=(MagicMock(spec=CodeHostBackend),),
+            messaging=None,
+            ready_labels=("ready",),
+            overlay=overlay,
+        )
+
+    def _review_names(self, backend: OverlayBackends) -> set[str]:
+        return {job.scanner.name for job in jobs_for_domain(Domain.REVIEW, backend, all_backends=(backend,))}
+
+    def test_self_pr_scanner_always_admitted_even_when_colleague_off(self) -> None:
+        backend = self._backend()
+        with patch(_SETTINGS_PATCH_TARGET, return_value=UserSettings(admit_colleague_prs_to_board=False)):
+            names = self._review_names(backend)
+        assert "self_pr_review" in names
+
+    def test_colleague_scanner_admitted_only_when_setting_on(self) -> None:
+        backend = self._backend()
+        with patch(_SETTINGS_PATCH_TARGET, return_value=UserSettings(admit_colleague_prs_to_board=True)):
+            assert "reviewer_prs" in self._review_names(backend)
+        with patch(_SETTINGS_PATCH_TARGET, return_value=UserSettings(admit_colleague_prs_to_board=False)):
+            assert "reviewer_prs" not in self._review_names(backend)
+
+    def test_codex_scanner_never_wired_into_review(self) -> None:
+        backend = self._backend()
+        with patch(_SETTINGS_PATCH_TARGET, return_value=UserSettings(admit_colleague_prs_to_board=True)):
+            assert "codex_review" not in self._review_names(backend)
+
+    def test_no_separate_self_review_domain(self) -> None:
+        assert not hasattr(Domain, "SELF_REVIEW")
+
+
 class IssueImplementerDomainPartitionTestCase(TestCase):
     """``ISSUE_IMPLEMENTER`` joins the partition without breaking it (#1553).
 

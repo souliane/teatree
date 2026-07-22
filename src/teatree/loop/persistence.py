@@ -126,8 +126,21 @@ def _reconcile_existing_overlay(ticket: Ticket, *, created: bool) -> None:
 
 
 def _handle_reviewer(action: DispatchAction) -> Task | None:
-    """Reviewer-requested PR → Ticket(role=reviewer) + Task(phase=reviewing)."""
+    """Reviewer-requested PR → Ticket(role=reviewer) + Task(phase=reviewing).
+
+    The ``self_pr`` payload flag (set by the #3569 Claude self-PR scanner) routes
+    to :func:`_handle_self_pr_review` — the SAME ``t3:reviewer`` agent + reviewing
+    phase, but per-SHA deduped via :class:`CodexReviewMarker` because the self-PR
+    scanner emits unconditionally every tick (the colleague path is deduped by the
+    reviewer cache instead).
+    """
     payload = action.payload
+    if payload.get("self_pr"):
+        # Lazy: the sibling imports this module's shared ticket/task helpers, so it
+        # can only be imported after this module finishes loading (breaks the cycle).
+        from teatree.loop.persistence_self_pr_review import handle_self_pr_review  # noqa: PLC0415 — #3569
+
+        return handle_self_pr_review(action)
     pr_url = str(payload.get("url") or "")
     if not pr_url:
         logger.debug("Skipping t3:reviewer action with no url: %r", action.detail)
