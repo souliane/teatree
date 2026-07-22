@@ -967,6 +967,42 @@ class TestPydanticAiStepCap(TestCase):
 
         assert asyncio.run(drive()) == 4
 
+    def test_positive_max_turns_wins_over_request_limit(self) -> None:
+        harness = PydanticAiHarness(
+            model=TestModel(), config=PydanticAiModelConfig(orca=OrcaLaneConfig(request_limit=4))
+        )
+
+        async def drive() -> int | None:
+            async with harness.open(ClaudeAgentOptions(max_turns=3)) as session:
+                assert isinstance(session, PydanticAiHarnessSession)
+                return session._request_limit
+
+        assert asyncio.run(drive()) == 3
+
+    def test_zero_max_turns_keeps_the_lane_request_limit(self) -> None:
+        # Headless dispatch sends max_turns=0 → the lane's request_limit is untouched, so an
+        # uncapped dispatch stays byte-identical and only a positive caller cap changes behaviour.
+        harness = PydanticAiHarness(
+            model=TestModel(), config=PydanticAiModelConfig(orca=OrcaLaneConfig(request_limit=4))
+        )
+
+        async def drive() -> int | None:
+            async with harness.open(ClaudeAgentOptions(max_turns=0)) as session:
+                assert isinstance(session, PydanticAiHarnessSession)
+                return session._request_limit
+
+        assert asyncio.run(drive()) == 4
+
+    def test_zero_max_turns_and_no_request_limit_stays_uncapped(self) -> None:
+        harness = PydanticAiHarness(model=TestModel())
+
+        async def drive() -> bool:
+            async with harness.open(ClaudeAgentOptions(max_turns=0)) as session:
+                assert isinstance(session, PydanticAiHarnessSession)
+                return session._usage_limits() is None
+
+        assert asyncio.run(drive()) is True
+
     def test_default_setting_is_a_conservative_cap(self) -> None:
         assert get_effective_settings().pydantic_ai_request_limit == 5
 

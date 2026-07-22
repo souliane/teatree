@@ -310,13 +310,17 @@ class PydanticAiHarness:
         # (OrcaRouter's OpenAI-compatible connection pool) closes cleanly on
         # exit — a bare ``Agent(...)`` never closes it, leaking a client per
         # dispatch until GC.
+        # A positive caller ``max_turns`` (an OneShotSpec cap, an eval override) wins over the
+        # lane's own ``request_limit``; ``0`` (a headless dispatch, an SDK-``None`` coercion)
+        # keeps ``request_limit`` — so every uncapped dispatch stays byte-identical.
+        request_limit = harness_options.max_turns if harness_options.max_turns > 0 else self._orca.request_limit
         async with agent:
             yield PydanticAiHarnessSession(
                 agent,
                 model_name=model.model_name,
                 history=self._history,
                 phase=self._phase,
-                request_limit=self._orca.request_limit,
+                request_limit=request_limit,
             )
 
 

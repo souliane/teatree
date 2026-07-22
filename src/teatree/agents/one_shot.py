@@ -20,11 +20,15 @@ result, and the model cannot run a tool or read code. Any failure of the turn
 itself (a missing ``claude`` binary, a timeout, an SDK/provider error) degrades
 to ``None`` so a best-effort aux turn never breaks its caller.
 
-A refused ambient environment is the ONE exception and RAISES
-:class:`~teatree.llm.credentials.CredentialError` instead: it is checked while
-building the options, before the turn is attempted, so it never reaches the
-degrade-to-``None`` handler. A base-URL redirect that silently answered ``None``
-would strand every caller on its fallback forever with nothing naming the cause.
+A refused credential RAISES :class:`~teatree.llm.credentials.CredentialError`
+instead of degrading — a misrouted endpoint or a missing metered key is an
+operator misconfiguration that must surface, not a turn that silently answered
+``None`` and stranded every caller on its fallback forever with nothing naming
+the cause. TWO refusal paths raise: the ambient base-URL guard, checked while
+building the options before the turn is attempted; and a credential the
+``pydantic_ai`` lane resolves LAZILY inside ``harness.open()`` (the OrcaRouter BYOK
+key or the native Anthropic key), which sits INSIDE the degrade-to-``None`` try and
+so is re-raised explicitly ahead of the blanket handler.
 """
 
 import asyncio
@@ -34,7 +38,7 @@ from claude_agent_sdk import AssistantMessage, ClaudeAgentOptions, TextBlock
 
 from teatree.agents.harness import Harness, resolve_harness
 from teatree.agents.model_tiering import resolve_tier
-from teatree.llm.credentials import reject_ambient_base_url_redirect
+from teatree.llm.credentials import CredentialError, reject_ambient_base_url_redirect
 
 # The empty-hooks ``settings`` blob that, with ``setting_sources=[]``, keeps the
 # clean-room turn from picking up the developer's hooks/personal context.
@@ -71,9 +75,9 @@ def _clean_room_options(spec: OneShotSpec) -> ClaudeAgentOptions:
 
     This turn pins no credential, so the spawned child inherits the ambient auth
     state AND an ambient ``ANTHROPIC_BASE_URL``. The redirect guard runs HERE rather
-    than inside :func:`run_one_shot`'s try, which swallows every exception: a
-    misconfiguration that silently routed a plan-authenticated turn to a third-party
-    endpoint is the one failure this helper must NOT degrade quietly into ``None``.
+    than inside :func:`run_one_shot`'s try, which degrades non-credential failures to
+    ``None``: a misconfiguration that silently routed a plan-authenticated turn to a
+    third-party endpoint is the one failure this helper must NOT degrade quietly into ``None``.
     """
     reject_ambient_base_url_redirect()
     return ClaudeAgentOptions(
@@ -112,15 +116,21 @@ def run_one_shot(prompt: str, spec: OneShotSpec, *, harness: Harness | None = No
     an SDK/provider error) — a best-effort aux turn must degrade quietly, never
     break its caller.
 
-    RAISES :class:`~teatree.llm.credentials.CredentialError` when the ambient
-    environment is refused. :func:`_clean_room_options` runs that check before the
-    ``try``, deliberately: a misrouted base URL is a configuration fault the
-    operator must see, not a turn that quietly produced no answer.
+    RAISES :class:`~teatree.llm.credentials.CredentialError` when a credential is
+    refused — the one failure that must NOT degrade to ``None``. Two paths raise:
+    :func:`_clean_room_options`'s ambient base-URL guard runs before the ``try``;
+    and on the ``pydantic_ai`` lane the metered credential resolves LAZILY inside
+    ``harness.open()`` (inside the ``try``), so ``CredentialError`` is re-raised
+    ahead of the blanket handler. A misrouted base URL or a missing metered key is
+    a configuration fault the operator must see, not a turn that quietly produced
+    no answer.
     """
     options = _clean_room_options(spec)
     resolved = harness if harness is not None else resolve_harness()
     try:
         text = asyncio.run(_run_turn(resolved, options, prompt, timeout_seconds=spec.timeout_seconds))
+    except CredentialError:
+        raise
     except Exception:  # noqa: BLE001 — the documented contract is "None on ANY failure"; heterogeneous backend errors
         return None
     return text.strip() or None
