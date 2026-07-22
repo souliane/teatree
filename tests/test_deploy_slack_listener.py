@@ -191,6 +191,26 @@ class TestSlackDrainLoopExecution:
         assert "FAILED" not in stderr
         assert beat.get("consecutive_failures", -1) == 0
 
+    def test_benign_stderr_warning_on_empty_queue_is_not_a_failure(self, tmp_path: Path) -> None:
+        # Every t3 invocation emits a benign WARNING to STDERR (e.g. an overlay's
+        # skills-root notice). On an empty queue (rc=1, empty STDOUT) that warning
+        # must NOT be mistaken for a failure — the emptiness test keys on stdout,
+        # not on stderr folded in via 2>&1.
+        stderr, beat = self._run(
+            tmp_path,
+            'echo "WARNING teatree.cli.overlay skills root declared but no tool-commands.json found" >&2\nexit 1',
+        )
+        assert "FAILED" not in stderr
+        assert beat.get("consecutive_failures", -1) == 0
+
+    def test_rc1_with_stdout_content_is_a_failure(self, tmp_path: Path) -> None:
+        # rc=1 but WITH stdout content is a real failure (a crash that printed to
+        # stdout then exited 1), not an empty-queue poll.
+        stderr, beat = self._run(tmp_path, 'echo "boot error on stdout"\nexit 1')
+        assert "FAILED" in stderr
+        assert "boot error on stdout" in stderr
+        assert beat.get("consecutive_failures", 0) >= 1
+
     def test_drained_messages_reset_the_streak(self, tmp_path: Path) -> None:
         stderr, beat = self._run(tmp_path, 'echo "{\\"overlay\\": \\"acme\\"}"\nexit 0')
         assert "FAILED" not in stderr

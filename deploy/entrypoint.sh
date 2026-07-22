@@ -542,8 +542,11 @@ ensure_clone() {
 # `t3 slack check` exits 0 when it drained messages and 1 with NO output when the
 # queue was empty (the common, healthy case on a quiet box) — so a non-zero exit
 # is NOT itself a failure. A REAL failure is a non-zero exit that ALSO produced
-# output (a Django boot traceback, a DB error). Those increment a consecutive-
-# failure counter and are logged to stderr (visible in `docker compose logs
+# STDOUT (a Django boot traceback, a DB error). STDERR is captured SEPARATELY:
+# every t3 invocation emits a benign WARNING there (an overlay's skills-root
+# notice), so folding it into the emptiness test (2>&1) would misread every
+# empty-queue poll as a failure. Real failures increment a consecutive-failure
+# counter and log BOTH streams to stderr (visible in `docker compose logs
 # teatree-slack-listener`); an empty-queue exit never does.
 #
 # Each pass rewrites a heartbeat file that `t3 doctor` reads from another
@@ -553,11 +556,13 @@ ensure_clone() {
 slack_drain_loop() {
     local interval="${SLACK_CHECK_INTERVAL_SECONDS:-15}"
     local heartbeat="${SLACK_DRAIN_HEARTBEAT:-$HOME/.local/share/teatree/slack-drain-heartbeat.json}"
-    local consecutive=0 last_ok=null now out rc
+    local consecutive=0 last_ok=null now out err rc errfile
+    errfile="$(mktemp)"
+    trap 'rm -f "$errfile"' EXIT
     mkdir -p "$(dirname "$heartbeat")"
     while true; do
         now="$(date +%s)"
-        out="$(t3 slack check 2>&1)" && rc=0 || rc=$?
+        out="$(t3 slack check 2>"$errfile")" && rc=0 || rc=$?
         if [ "$rc" -eq 0 ] || { [ "$rc" -eq 1 ] && [ -z "$out" ]; }; then
             consecutive=0
             last_ok="$now"
@@ -565,6 +570,8 @@ slack_drain_loop() {
             consecutive=$((consecutive + 1))
             echo "entrypoint: slack drain (t3 slack check) FAILED rc=$rc (consecutive=$consecutive):" >&2
             printf '%s\n' "$out" >&2
+            err="$(cat "$errfile")"
+            [ -n "$err" ] && printf '%s\n' "$err" >&2
         fi
         printf '{"updated_at": %s, "interval_seconds": %s, "consecutive_failures": %s, "last_ok_at": %s}\n' \
             "$now" "$interval" "$consecutive" "$last_ok" >"$heartbeat"
