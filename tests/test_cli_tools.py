@@ -14,7 +14,7 @@ import teatree.cli as teatree_cli
 from scripts.privacy_scan import PRIVACY_FINDINGS_EXIT_CODE
 from teatree.cli import app
 from teatree.cli.enforcement_tools import _coverage_is_stale
-from teatree.cli.tools import ToolRunner
+from teatree.cli.tools import ToolRunner, _validation_errors
 from teatree.core.overlay import OverlayBase, OverlayMetadata
 from teatree.repo_mode import RepoMode
 
@@ -536,7 +536,7 @@ class TestValidateMrCommand:
                 app,
                 ["tool", "validate-mr", "--title", "feat: a [f] (p#1)", "--description", "body here"],
             )
-        ov.metadata.validate_pr.assert_called_once_with("feat: a [f] (p#1)", "body here")
+        ov.metadata.validate_pr.assert_called_once_with("feat: a [f] (p#1)", "body here", require_sections=True)
 
     def test_runs_to_completion_in_a_fresh_shell_without_django_preset(self) -> None:
         # Bug 4 (#126): the pre-push hook shells ``t3 tool validate-mr`` from
@@ -991,3 +991,52 @@ class TestToMarkdownCommand:
         result = runner.invoke(app, ["tool", "to-markdown", str(tmp_path / "absent.pdf")])
         assert result.exit_code == 1
         assert "File not found" in result.output
+
+
+class _RecordingMeta(OverlayMetadata):
+    """Records the exact keyword arguments each ``validate_pr`` call receives.
+
+    ``**kwargs`` capture (not a bound default) is what keeps the guard test
+    anti-vacuous: the old conditional forward passed NO keyword on the default
+    path, so a bound ``require_sections=True`` default would falsely look
+    forwarded. Capturing the raw kwargs distinguishes "forwarded" from "defaulted".
+    """
+
+    def __init__(self) -> None:
+        self.kwargs: list[dict[str, object]] = []
+
+    def validate_pr(self, title: str, description: str, **kwargs: object):
+        del title, description
+        self.kwargs.append(dict(kwargs))
+        return {"errors": [], "warnings": []}
+
+
+class _RecordingOverlay(OverlayBase):
+    def __init__(self) -> None:
+        self.metadata = _RecordingMeta()
+
+    def get_repos(self) -> list[str]:
+        return []
+
+    def get_provision_steps(self, worktree):
+        return []
+
+
+class TestValidationErrorsAlwaysForwardsKeyword:
+    """`_validation_errors` forwards ``require_sections`` on every path (#3526).
+
+    The old ``kwargs = {} if require_sections else {...}`` guard forwarded the
+    keyword ONLY on the non-default path, so a non-conforming overlay worked on
+    the common path and crashed on the rare one. Forwarding unconditionally makes
+    the call site honour the documented signature on both paths.
+    """
+
+    def test_default_path_forwards_require_sections(self) -> None:
+        overlay = _RecordingOverlay()
+        _validation_errors(overlay, "fix: x", "body", require_sections=True)
+        assert overlay.metadata.kwargs == [{"require_sections": True}]
+
+    def test_non_default_path_forwards_false(self) -> None:
+        overlay = _RecordingOverlay()
+        _validation_errors(overlay, "fix: x", "body", require_sections=False)
+        assert overlay.metadata.kwargs == [{"require_sections": False}]

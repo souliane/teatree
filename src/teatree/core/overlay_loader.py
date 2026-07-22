@@ -5,7 +5,7 @@ of whether the overlay was registered via ``pip install`` (entry point) or the
 DB-home ``overlays`` registry (injected into ``load_config().raw``).
 """
 
-import importlib
+import importlib.metadata
 import logging
 import os
 from collections.abc import Callable
@@ -15,6 +15,7 @@ from urllib.parse import urlparse
 
 from django.core.exceptions import ImproperlyConfigured
 
+from teatree.core.overlay_conformance import conforming_or_none, conforming_or_raise
 from teatree.core.overlay_url import get_overlay_for_url
 from teatree.core.overlays.overlay_code_defaults_provider import build_and_register as _register_overlay_code_defaults
 from teatree.utils.url_slug import slug_from_issue_or_pr_url
@@ -524,8 +525,6 @@ def _overlay_repo_slugs_for_inference() -> "list[tuple[str, list[str]]]":
 
 @lru_cache(maxsize=1)
 def _discover_overlays() -> "dict[str, OverlayBase]":
-    import importlib.metadata  # noqa: PLC0415 — deferred: loaded only on this code path
-
     from teatree.core.overlay import OverlayBase  # noqa: PLC0415 — deferred: call-time import, kept lazy
     from teatree.utils.django_bootstrap import ensure_django  # noqa: PLC0415 — deferred: call-time import, kept lazy
 
@@ -549,7 +548,7 @@ def _discover_overlays() -> "dict[str, OverlayBase]":
         # registry-only overlays. Without this, OverlayConfig subclasses
         # would have to opt in by passing overlay_name to super().__init__.
         overlay.config.apply_toml_overrides(ep.name)
-        result[ep.name] = overlay
+        result[ep.name] = conforming_or_raise(overlay, ep.name)
 
     # 2. Registry-configured overlays (not already found via entry points)
     result.update(_discover_toml_overlays(OverlayBase, set(result)))
@@ -581,12 +580,12 @@ def _discover_toml_overlays(
 
         try:
             module_path, class_name = class_path.rsplit(":", 1)
-            mod = importlib.import_module(module_path)
-            cls = getattr(mod, class_name)
+            cls = getattr(importlib.import_module(module_path), class_name)
             if not issubclass(cls, base_class):
                 logger.warning("TOML overlay %r class %s does not subclass OverlayBase", name, class_path)
                 continue
-            result[name] = cls()
+            if instance := conforming_or_none(cls(), name):
+                result[name] = instance
         except (ImportError, AttributeError) as exc:
             logger.warning("TOML overlay %r failed to load class %s: %s", name, class_path, exc)
 
