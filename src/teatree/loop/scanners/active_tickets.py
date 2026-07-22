@@ -84,9 +84,14 @@ class ActiveTicketsScanner:
 def _enqueue_short_describe(ticket: "Ticket") -> None:
     """Idempotently enqueue a headless ``short_describe`` task for *ticket*.
 
-    Skips when a non-terminal task with the same phase already exists for
-    the ticket — at-least-once delivery from django-tasks means the loop
-    may scan again before the previous task lands.
+    Skips only when an *in-flight* (PENDING/CLAIMED) task of the same phase already
+    exists — at-least-once delivery from django-tasks means the loop may scan again
+    before the previous task lands. A COMPLETED task is deliberately NOT a suppressor:
+    the caller reaches here only when ``short_description`` is still blank, so a prior
+    COMPLETED-but-blank task (the pre-#3570 agentic-dispatch failure mode) must
+    re-enqueue and self-heal. This is churn-safe because the deterministic runner writes
+    a non-blank value for any titled ticket, after which the caller's blank-field gate
+    stops firing (#3570).
     """
     from teatree.core.models import Task  # noqa: PLC0415 — deferred: ORM import needs the app registry
     from teatree.core.models.session import Session  # noqa: PLC0415 — deferred: ORM import needs the app registry
@@ -94,7 +99,7 @@ def _enqueue_short_describe(ticket: "Ticket") -> None:
     existing = Task.objects.filter(
         ticket=ticket,
         phase=SHORT_DESCRIBE_PHASE,
-        status__in=[Task.Status.PENDING, Task.Status.CLAIMED, Task.Status.COMPLETED],
+        status__in=[Task.Status.PENDING, Task.Status.CLAIMED],
     )
     if existing.exists():
         return
