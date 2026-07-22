@@ -30,3 +30,13 @@ def test_board_columns_are_grouped_in_lifecycle_order() -> None:
     grouped = [state for _name, states in COLUMN_GROUPS for state in states]
     assert grouped == list(BOARD_COLUMNS)
     assert BOARD_COLUMNS[0] == Ticket.State.NOT_STARTED
+
+
+def test_review_posted_is_under_reviewing_not_landed() -> None:
+    """The reviewer terminal must not read as author-merged "Landed" work."""
+    groups = dict(COLUMN_GROUPS)
+    assert Ticket.State.REVIEW_POSTED in groups["Reviewing"]
+    assert Ticket.State.REVIEW_POSTED not in groups["Landed"]
+    # DELIVERED stays the author-merged terminal — Landed only.
+    assert Ticket.State.DELIVERED in groups["Landed"]
+    assert Ticket.State.DELIVERED not in groups["Reviewing"]
