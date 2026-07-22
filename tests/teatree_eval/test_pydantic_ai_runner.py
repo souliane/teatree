@@ -15,6 +15,7 @@ from unittest.mock import patch
 
 import pytest
 from django.test import TestCase
+from pydantic_ai.exceptions import ModelHTTPError
 from pydantic_ai.models.function import AgentInfo, DeltaToolCall, FunctionModel
 from pydantic_ai.models.openai import OpenAIChatModel
 from pydantic_ai.models.test import TestModel
@@ -102,6 +103,22 @@ class TestNonClaudeScenarioRunsGreen:
         runner = PydanticAiRunner(model=FunctionModel(stream_function=stream_fn))
         result = evaluate(spec, runner.run(spec))
         assert not result.passed
+
+    def test_a_provider_error_folds_into_the_run_not_a_scenario_crash(self) -> None:
+        # A provider error (a 429) now surfaces as an is_error EvalRun — the seam
+        # maps it to an is_error ResultMessage the runner collects — rather than
+        # propagating out of ``runner.run`` and crashing the whole scenario
+        # (RED: ``runner.run`` raised ModelHTTPError).
+        exc = ModelHTTPError(status_code=429, model_name="m", body={"error": {"type": "rate_limit_error"}})
+
+        async def stream_fn(_messages: object, _info: AgentInfo) -> AsyncIterator[object]:
+            await asyncio.sleep(0)
+            raise exc
+            yield ""  # unreachable; marks stream_fn as an async generator
+
+        spec = _spec(Matcher(kind="positive", tool="Bash", arg_path="command", operator="contains", value="x"))
+        run = PydanticAiRunner(model=FunctionModel(stream_function=stream_fn)).run(spec)
+        assert run.is_error is True
 
     def test_a_text_only_model_produces_graded_text(self) -> None:
         spec = _spec(Matcher(kind="positive", tool="Bash", arg_path="command", operator="contains", value="x"))

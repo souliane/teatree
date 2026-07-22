@@ -83,6 +83,15 @@ def maybe_persist_on_park(task: Task, result: AgentResultBlob, thread: "list[Mod
 
     An ordinary completed run (or one with no ``thread`` — claude_sdk, or a
     watchdog-interrupted run) has nothing to resume.
+
+    Known limitation (souliane/teatree#3605): this persists ONLY on a
+    ``needs_user_input`` park, keyed under *task*'s pk, and
+    :func:`rehydrate_thread_for_resume` walks ``parent_task`` only. A
+    usage-LIMIT-parked run (``usage_window.park_or_rotate_on_limit``) re-queues as
+    ITSELF, so it neither persists here nor rehydrates on resume — it resumes with
+    a fresh conversation. The fix (persist under the task's own pk on a limit-park +
+    rehydrate from ``task`` itself) is tracked separately; a cache miss is a cost,
+    never an error.
     """
     if result.get("needs_user_input") and thread:
         persist_parked_thread(task, thread)

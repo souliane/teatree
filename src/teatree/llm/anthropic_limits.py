@@ -38,8 +38,12 @@ credits``, ``seven-day limit``, ``5-hour limit``, ``five-hour limit``. One entry
 is mapped on API semantics rather than a literal match: ``quota exceeded`` — in
 the binary the literal string is only the libc "Disk quota exceeded" error, so it
 is mapped to the transient :data:`LimitCause.RATE_LIMIT` (the API's rate-quota
-wording, keeping pre-PR parity), never to a subscription or credit cause. A
-credit-empty condition is never laundered into a subscription-quota report.
+wording, keeping pre-PR parity), never to a subscription or credit cause. Two
+entries — ``rate_limit_error`` and ``overloaded_error`` — are Anthropic API
+error-body ``type`` literals (the ``{"error": {"type": ...}}`` code an HTTP 429
+resp. 529 carries), NOT CLI-grepped strings; both map to the transient
+:data:`LimitCause.RATE_LIMIT`. A credit-empty condition is never laundered into a
+subscription-quota report.
 """
 
 import dataclasses
@@ -88,7 +92,13 @@ _SIGNATURES: tuple[tuple[str, LimitCause], ...] = (
     ("five-hour limit", LimitCause.SUBSCRIPTION_SESSION),  # human-readable rendering
     ("session limit", LimitCause.SUBSCRIPTION_SESSION),  # CLI x12
     ("usage limit", LimitCause.SUBSCRIPTION_SESSION),  # CLI x31
-    # Transient API rate / quota limit (HTTP 429).
+    # Transient API rate / quota limit (HTTP 429 / 529). The two ``*_error`` codes
+    # are Anthropic API error-body ``type`` literals, not CLI-grepped prose (a 429
+    # body carries ``rate_limit_error``, a 529 carries ``overloaded_error``); both
+    # precede the space-separated ``rate limit`` prose so an error body classifies
+    # on its structured code first.
+    ("rate_limit_error", LimitCause.RATE_LIMIT),  # API 429 error-code literal
+    ("overloaded_error", LimitCause.RATE_LIMIT),  # API 529 error-code literal
     ("rate limit", LimitCause.RATE_LIMIT),  # CLI x81
     ("quota exceeded", LimitCause.RATE_LIMIT),  # API rate-quota wording (see docstring)
 )

@@ -38,6 +38,10 @@ class TestClassifyLimit:
             # Transient API rate / quota limit.
             ("HTTP 429: rate limit exceeded, retry later", LimitCause.RATE_LIMIT),
             ("Anthropic API quota exceeded; please back off and retry.", LimitCause.RATE_LIMIT),
+            # Anthropic API error-body ``type`` codes: a 429 carries rate_limit_error,
+            # a 529 carries overloaded_error — both transient (retry shortly).
+            ('status_code: 429, body: {"error": {"type": "rate_limit_error"}}', LimitCause.RATE_LIMIT),
+            ('status_code: 529, body: {"error": {"type": "overloaded_error"}}', LimitCause.RATE_LIMIT),
         ],
     )
     def test_classifies_each_real_signal_distinctly(self, text: str, cause: LimitCause) -> None:
