@@ -531,6 +531,10 @@ async def _collect(session: HarnessSession, prompt: str) -> HarnessOutcome:
     )
 
 
+#: Head of the agent's prose folded into a no-envelope refusal for diagnosis.
+_NO_ENVELOPE_TEXT_HEAD_CHARS = 500
+
+
 def _record_success(task: Task, outcome: HarnessOutcome, *, phase: str = "", lane: str = "") -> TaskAttempt:
     """Record a successful SDK run via the shared recorder.
 
@@ -539,12 +543,29 @@ def _record_success(task: Task, outcome: HarnessOutcome, *, phase: str = "", lan
     SDK path and the in-session ``record-attempt`` path can never drift on the
     result-envelope contract. *lane* is the resolved Layer-2 lane
     (souliane/teatree#657) this dispatch authenticated through.
+
+    When the agent emits NO parseable JSON result envelope, the phase decides
+    the outcome. ``prompt.py`` demands a final JSON object from every phase, so
+    prose-only output is a contract violation: for a phase NOT in
+    :data:`~teatree.agents.result_schema.PROSE_SUMMARY_ACCEPTED_PHASES` this
+    records a FAILED attempt with a ``no_result_envelope:`` diagnostic rather
+    than laundering the prose into a false success. The exempt phases
+    (``scoping``, ``retro``) keep the ``{"summary": ...}`` fallback unchanged.
+    This is lane-agnostic — both harness backends funnel through here.
     """
     from teatree.agents.attempt_recorder import record_result_envelope  # noqa: PLC0415 — deferred: call-time import
     from teatree.agents.headless_result import parse_result  # noqa: PLC0415 — deferred: call-time import
+    from teatree.agents.result_schema import prose_summary_accepted  # noqa: PLC0415 — deferred: call-time import
 
     result = parse_result(outcome.agent_text)
     if not result:
+        if not prose_summary_accepted(phase or task.phase):
+            head = outcome.agent_text.strip()[:_NO_ENVELOPE_TEXT_HEAD_CHARS]
+            error = (
+                "no_result_envelope: agent produced no JSON result envelope; "
+                f"refusing to record success (agent text head: {head!r})"
+            )
+            return _record_failure(task, exit_code=0, error=error)
         result = {"summary": outcome.agent_text[:1000]}
 
     maybe_persist_on_park(task, result, outcome.thread)  # (#2886)
