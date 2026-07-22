@@ -15,6 +15,7 @@ from teatree.core.tasks import (
     drain_headless_queue,
     drain_headless_queue_body,
     enqueue_teardown_for_terminal_tickets,
+    execute_headless_task,
     execute_provision,
     execute_retrospect,
     execute_ship,
@@ -1253,3 +1254,43 @@ class TestConsumePendingPhaseTasksNormalizesPhase(TestCase):
 
         zombie.refresh_from_db()
         assert zombie.status == Task.Status.COMPLETED
+
+
+_SHORT_DESCRIBE_SUMMARIZE = "teatree.agents.short_describe._summarize"
+
+
+class TestExecuteHeadlessTaskDeterministicPhase(TestCase):
+    """The ``@task`` auto-enqueue lane routes ``short_describe`` to its deterministic runner (#3570).
+
+    ``execute_headless_task`` is the lane the scanner's post_save auto-enqueue and the drain
+    safety-net both use. Before #3570 it went straight to the agentic headless runner, so
+    ``short_describe`` never wrote ``Ticket.short_description`` — the field stayed blank forever
+    while the recorded attempt read like a plausible success.
+    """
+
+    def _short_describe_task(self, title: str = "add dark mode toggle") -> Task:
+        ticket = Ticket.objects.create(extra={"issue_title": title})
+        session = Session.objects.create(ticket=ticket, agent_id="short-describe")
+        return Task.objects.create(
+            ticket=ticket,
+            session=session,
+            phase="short_describe",
+            execution_target=Task.ExecutionTarget.HEADLESS,
+        )
+
+    def test_writes_short_description_without_agentic_dispatch(self) -> None:
+        task = self._short_describe_task()
+        with (
+            patch(_SHORT_DESCRIBE_SUMMARIZE, return_value="dark mode toggle"),
+            patch("teatree.core.overlay_loader.get_overlay") as overlay,
+            patch("teatree.core.headless_dispatch.get_headless_runner") as get_runner,
+        ):
+            overlay.return_value.metadata.get_skill_metadata.return_value = {}
+            result = execute_headless_task.call(task.pk, "short_describe")
+
+        get_runner.assert_not_called()
+        task.ticket.refresh_from_db()
+        assert task.ticket.short_description == "dark mode toggle"
+        assert result["exit_code"] == "0"
+        task.refresh_from_db()
+        assert task.status == Task.Status.COMPLETED

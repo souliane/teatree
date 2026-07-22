@@ -6,6 +6,7 @@ from django.tasks import task
 
 from teatree.config import get_effective_settings, worktree_root
 from teatree.core.backend_factory import code_host_from_overlay
+from teatree.core.deterministic_dispatch import run_deterministic_phase
 from teatree.core.gates.critic_gate import record_critic_findings
 from teatree.core.intake.attachment_manifest import attachment_gate_refusal, attachments_dir_for, ticket_text_sources
 from teatree.core.intake.landscape_gather import run_landscape
@@ -115,6 +116,13 @@ def execute_headless_task(task_id: int, phase: str) -> dict[str, object]:
     # Claim here (when the worker actually starts) instead of at enqueue time
     if task_obj.status == Task.Status.PENDING:
         task_obj.claim(claimed_by="headless-worker")
+
+    # A non-agentic phase (``short_describe``) runs its own implementation, not a generic
+    # ticket-work brief its least-privilege toolset cannot satisfy — the same seam the
+    # ``work-next-headless`` CLI consults, so the two headless lanes never drift (#3570).
+    if (deterministic := run_deterministic_phase(task_obj)) is not None:
+        return {**deterministic}
+
     try:
         from teatree.core.headless_dispatch import get_headless_runner  # noqa: PLC0415 — deferred: call-time import
 

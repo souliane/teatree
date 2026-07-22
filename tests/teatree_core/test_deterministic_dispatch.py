@@ -1,19 +1,23 @@
 """The headless worker runs non-agentic phases deterministically, not as an agent spawn.
 
 ``short_describe`` is a fixed text transformation over the ``Ticket`` row, so it is
-routed to its own runner rather than handed a ticket-work brief its empty toolset
-cannot satisfy. Every other phase resolves to ``None`` (dispatches agentically).
+routed to its own registered runner rather than handed a ticket-work brief its empty
+toolset cannot satisfy. Every other phase resolves to ``None`` (dispatches agentically).
 """
 
 from unittest.mock import patch
 
 from django.test import TestCase
 
-from teatree.core.management.commands._deterministic_phases import deterministic_phase_runner, run_deterministic_phase
+from teatree.core.deterministic_dispatch import (
+    deterministic_phase_runner,
+    register_deterministic_phase,
+    run_deterministic_phase,
+)
 from teatree.core.models import Session, Task, Ticket
 
-_SUMMARIZE = "teatree.core.management.commands.ticket_short_describe._summarize"
-_RUNNERS = "teatree.core.management.commands._deterministic_phases._RUNNERS"
+_SUMMARIZE = "teatree.agents.short_describe._summarize"
+_RUNNERS = "teatree.core.deterministic_dispatch._runners"
 
 
 def _short_describe_task(title: str = "add dark mode toggle") -> Task:
@@ -28,6 +32,15 @@ class TestDeterministicPhaseRunner(TestCase):
 
     def test_an_agentic_phase_resolves_to_none(self) -> None:
         assert deterministic_phase_runner("coding") is None
+
+    def test_registration_makes_a_phase_resolvable(self) -> None:
+        def _runner(_task: Task) -> str:
+            return "ok"
+
+        with patch(_RUNNERS, {}):
+            assert deterministic_phase_runner("custom_phase") is None
+            register_deterministic_phase("custom_phase", _runner)
+            assert deterministic_phase_runner("custom_phase") is _runner
 
     def test_short_describe_runner_writes_the_summary(self) -> None:
         task = _short_describe_task()
