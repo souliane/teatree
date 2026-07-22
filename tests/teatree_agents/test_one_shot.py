@@ -134,3 +134,34 @@ class TestOneShotRefusesBaseUrlRedirect:
         monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-key")
         monkeypatch.delenv("CLAUDE_CODE_OAUTH_TOKEN", raising=False)
         _clean_room_options(OneShotSpec(system_prompt="s"))
+
+
+class TestOneShotPydanticLaneCredentialRefusalRaises:
+    """A credential the ``pydantic_ai`` lane resolves LAZILY inside ``open`` RAISES, never None.
+
+    Unlike the ambient base-URL guard (checked before ``run_one_shot``'s try), this refusal
+    surfaces from INSIDE the degrade-to-None try, so it must be re-raised past the blanket
+    handler — a missing metered key is an operator misconfiguration to surface, not a silent
+    None that strands every caller on its fallback with nothing naming the cause.
+    """
+
+    def test_refused_lazy_credential_raises_credential_error(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("T3_CONFIG_DB", str(tmp_path / "absent.sqlite3"))
+        monkeypatch.delenv("ANTHROPIC_BASE_URL", raising=False)
+        monkeypatch.setenv("ORCA_ROUTER_BASE_URL", "https://router.example.invalid/v1")
+        monkeypatch.delenv("ORCA_ROUTER_API_KEY", raising=False)
+        # model=None forces the REAL lazy OrcaRouter credential resolution inside open() — no
+        # network is reached, the credential refusal fires before the client is built.
+        harness = PydanticAiHarness(model=None)
+        with pytest.raises(CredentialError):
+            run_one_shot("q", OneShotSpec(system_prompt="p"), harness=harness)
+
+    def test_a_non_credential_backend_error_still_degrades_to_none(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # The re-raise is narrow: every OTHER backend failure still collapses to None (the claude
+        # lane never raises CredentialError from open()), so a best-effort aux turn never breaks.
+        monkeypatch.setenv("T3_CONFIG_DB", str(tmp_path / "absent.sqlite3"))
+        assert run_one_shot("q", OneShotSpec(system_prompt="p"), harness=_RaisingHarness()) is None
