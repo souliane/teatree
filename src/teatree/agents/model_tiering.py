@@ -45,9 +45,9 @@ the ``claude-agent-sdk`` CLI's scale tops out at ``max``
 / :func:`resolve_spawn_effort` validate their resolved value against the ACTIVE
 harness's :data:`HARNESS_EFFORT_SCALE` entry and drop an out-of-range value (falling
 back to the shipped default) rather than ever handing a harness an effort string it
-does not understand. The shipped :data:`TIER_EFFORT` values (``xhigh`` / ``high``)
-are valid on both scales today, so this is a no-op for the shipped defaults; it only
-narrows an operator's ``agent_tier_effort`` override.
+does not understand. The shipped :data:`TIER_EFFORT` value (``xhigh`` for both
+reasoning tiers) is valid on both scales today, so this is a no-op for the shipped
+defaults; it only narrows an operator's ``agent_tier_effort`` override.
 
 The mapping is config-driven from the DB ``ConfigSetting`` store, read via
 :mod:`teatree.config.cold_reader`. Set the per-phase → tier map and the tier
@@ -102,13 +102,14 @@ PYDANTIC_AI_TIER_MODELS: dict[str, str] = {
 # THE SINGLE SOURCE OF TRUTH for per-tier reasoning EFFORT — the parallel of
 # :data:`TIER_MODELS` for the effort axis. Abstract tier name -> CLI effort level
 # (a member of :data:`teatree.config.agent_spawn.EFFORT_SCALE`). Overridable per tier
-# via ``agent_tier_effort`` (merged OVER this default). Only the reasoning tiers
-# carry an effort: ``cheap`` (Haiku, which rejects the effort/thinking levers) is
-# deliberately ABSENT, so :func:`resolve_tier_effort` returns ``None`` for it and
-# its spawns inherit the SDK default effort (emit no ``--effort``).
+# via ``agent_tier_effort`` (merged OVER this default). The headless default effort
+# is ``xhigh`` for both reasoning tiers (``frontier``/``balanced``); ``cheap``
+# (Haiku, the dummy/mechanical-task tier, which rejects the effort/thinking levers)
+# is deliberately ABSENT, so :func:`resolve_tier_effort` returns ``None`` for it and
+# its spawns run effortless (inherit the SDK default, emit no ``--effort``).
 TIER_EFFORT: dict[str, str] = {
     "frontier": "xhigh",
-    "balanced": "high",
+    "balanced": "xhigh",
 }
 
 # HARNESS-SCOPED effort vocabularies ([#2885](https://github.com/souliane/teatree/issues/2885)):

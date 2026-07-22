@@ -535,7 +535,7 @@ the default (no flag).
 **`[agent.tier_effort]` (per-abstract-tier spawn effort).** The effort parallel
 of `[agent.tier_models]`: overrides the reasoning effort an abstract tier spawns
 with, merged OVER the shipped `model_tiering.TIER_EFFORT`
-(`{"frontier": "xhigh", "balanced": "high"}`; `cheap`/Haiku is absent → no
+(`{"frontier": "xhigh", "balanced": "xhigh"}`; `cheap`/Haiku is absent → no
 effort). `resolve_spawn_effort(phase)` resolves phase → tier → effort through the
 same `[agent.phase_models]` override mechanism as the model, so a phase
 downgraded to a cheaper tier drops model and effort together. Each value must be
