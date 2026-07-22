@@ -106,6 +106,24 @@ class TestDiscoverTomlOverlaysImportError:
         assert "failed to load class" in caplog.text
 
 
+class TestDiscoverTomlOverlaysConformance:
+    """A registry overlay whose hook signature is non-conforming is warned + skipped (#3526).
+
+    Mirrors the non-subclass handling above: a registry-configured overlay is
+    lenient — a signature mismatch is logged and the overlay dropped, not fatal
+    (the fatal path is reserved for entry-point overlays).
+    """
+
+    def test_skips_non_conforming_overlay(self, caplog):
+        config = _make_config(
+            {"nonconforming": {"class": "tests.test_overlay_loader:_NonConformingOverlay"}},
+        )
+        with patch.object(config_mod, "load_config", return_value=config), caplog.at_level("WARNING"):
+            result = _discover_toml_overlays(OverlayBase, set())
+        assert result == {}
+        assert "require_sections" in caplog.text
+
+
 class TestInferOverlayForUrl:
     """``infer_overlay_for_url`` maps a URL to the owning overlay (#743)."""
 
@@ -756,3 +774,28 @@ class _StubOverlay(OverlayBase):
 
 class _NotAnOverlay:
     """A class that does not subclass OverlayBase."""
+
+
+class _NarrowValidatePr:
+    """metadata.validate_pr predating the require_sections keyword (#3526 non-conforming).
+
+    Deliberately not an ``OverlayMetadata`` subclass — the narrow signature would
+    be a lexical override the type checker rejects; the conformance scan reads the
+    runtime signature, which is the surface under test.
+    """
+
+    def validate_pr(self, title: str, description: str):
+        del title, description
+        return {"errors": [], "warnings": []}
+
+
+class _NonConformingOverlay(OverlayBase):
+    """Registry overlay whose validate_pr cannot accept the documented keyword."""
+
+    metadata = _NarrowValidatePr()
+
+    def get_repos(self) -> list[str]:
+        return []
+
+    def get_provision_steps(self, worktree):
+        return []
