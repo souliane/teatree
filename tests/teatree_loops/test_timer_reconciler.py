@@ -193,6 +193,52 @@ class TestMaintenanceChains(django.test.TestCase):
         )
         assert pending.count() == 1
 
+    def test_wake_slack_answer_enqueues_immediate_not_cadence_delayed(self) -> None:
+        # The per-event drain trigger the receiver fires: an unscheduled enqueue
+        # stores the run-now sentinel, so the worker's ~1s poll picks it up right
+        # away — unlike run_slack_answer, which delays the next run by the cadence.
+        timer_reconciler.wake_slack_answer.enqueue()
+        ready = DBTaskResult.objects.filter(
+            task_path=timer_reconciler.wake_slack_answer.module_path, status=TaskResultStatus.READY
+        )
+        assert ready.count() == 1
+        assert ready.get().run_after == get_date_max()
+
+    def test_wake_slack_answer_runs_cycle_and_does_not_reschedule(self) -> None:
+        result = timer_reconciler.wake_slack_answer.func()
+        assert "deduped" not in result
+        # Empty queue → the cycle runs and reports zero processed.
+        assert result["processed"] == 0
+        # One-shot: unlike the cadence chain, a wake never re-arms itself.
+        assert (
+            DBTaskResult.objects.filter(
+                task_path=timer_reconciler.wake_slack_answer.module_path, status=TaskResultStatus.READY
+            ).count()
+            == 0
+        )
+
+    def test_wake_slack_answer_self_dedups(self) -> None:
+        timer_reconciler.wake_slack_answer.using(run_after=timezone.now()).enqueue()
+        result = timer_reconciler.wake_slack_answer.func()
+        assert result == {"deduped": 1}
+
+    def test_wake_slack_answer_skips_when_lease_held(self) -> None:
+        from teatree.core.models import LoopLease  # noqa: PLC0415 — deferred: ORM import needs the app registry
+
+        # An interactive owner session (or the cadence chain) already holds the slot.
+        assert LoopLease.objects.acquire(timer_reconciler.SLACK_ANSWER_LEASE, owner="owner-session")
+        result = timer_reconciler.wake_slack_answer.func()
+        assert result == {"skipped_lease_held": 1}
+        # Skipping must NOT release the holder's lease.
+        assert not LoopLease.objects.acquire(timer_reconciler.SLACK_ANSWER_LEASE, owner="worker-other")
+
+    def test_wake_slack_answer_releases_its_lease(self) -> None:
+        from teatree.core.models import LoopLease  # noqa: PLC0415 — deferred: ORM import needs the app registry
+
+        timer_reconciler.wake_slack_answer.func()
+        # The wake took-and-released the shared slot, so an owner session can claim it.
+        assert LoopLease.objects.acquire(timer_reconciler.SLACK_ANSWER_LEASE, owner="owner-session")
+
     def test_prune_removes_only_old_finished_results(self) -> None:
         old = DBTaskResult.objects.create(
             task_path="x.old",

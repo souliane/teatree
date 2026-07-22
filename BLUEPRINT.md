@@ -323,6 +323,8 @@ The monitor never auto-merges substrate, never auto-edits memory / skills / `BLU
 
 A tight-cadence (default 20s), token-cheap reactive `/loop` slot that answers user DMs out-of-band so a quick ack / status question gets a reply in seconds, not at the next slower per-loop tick. Coalesces consecutive same-user messages into one logical turn, classifies (pure Python) into `ACK_ONLY` / `SIMPLE` / `NEEDS_WORK`, and either reacts, posts a threaded reply, or delegates to the `t3:answerer` sub-agent.
 
+**Event-driven wake.** The cadence chain is the fallback, not the primary trigger: the Socket Mode receiver (`t3 slack listen`) enqueues a one-shot `wake_slack_answer` task the moment it appends an inbound event to the durable JSONL queue, so the answer cycle runs on the worker's next ~1s loops-queue poll instead of lagging up to a full cadence behind the arrival. The wake shares the cadence chain's lease-guarded body (`_run_slack_answer_cycle_under_lease` under the `loop-slack-answer` `LoopLease`) so it can never double-post with the chain or an owner session, self-dedups so an event burst collapses to one cycle, and does not re-arm — `run_slack_answer` remains the safety net that drains anything a missed wake left behind. The receiver's `backends` layer cannot reach the orchestration layer, so the enqueue is injected as an `on_event` callback wired at the CLI composition root (best-effort — a failed signal only costs latency; the JSONL write is already durable).
+
 ---
 
 ## 6. Overlay System

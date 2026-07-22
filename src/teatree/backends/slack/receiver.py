@@ -20,6 +20,7 @@ import os
 import signal
 import threading
 import time
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -139,12 +140,12 @@ def commit_reactions_drain(path: Path | None = None) -> None:
 
 def _run_single_overlay(
     *,
-    overlay_name: str,
-    app_token: str,
-    bot_token: str,
+    overlay: tuple[str, str, str],
     queues: QueuePaths,
     stop_event: threading.Event,
+    on_event: Callable[[], None] | None = None,
 ) -> None:
+    overlay_name, app_token, bot_token = overlay
     try:
         from slack_sdk.socket_mode import SocketModeClient  # noqa: PLC0415 — deferred: heavy/optional dep at call site
         from slack_sdk.socket_mode.client import BaseSocketModeClient  # noqa: PLC0415 — deferred: heavy/optional dep
@@ -172,6 +173,14 @@ def _run_single_overlay(
         target = queues.for_event_type(event_type)
         _enqueue(target, overlay_name, event)
         logger.info("[%s] Queued %s event (ts=%s)", overlay_name, event_type, event.get("ts", "?"))
+        if on_event is not None:
+            # Best-effort event-driven wake so the answer cycle runs now instead of
+            # at the next cadence tick. The JSONL write above is the durable buffer,
+            # so a failed signal only costs latency — never an event.
+            try:
+                on_event()
+            except Exception:
+                logger.warning("[%s] slack-answer wake signal failed", overlay_name, exc_info=True)
 
     client.socket_mode_request_listeners.append(_handle)
     client.connect()
@@ -189,6 +198,7 @@ def run_listener(
     *,
     queue_path: Path | None = None,
     reactions_queue_path: Path | None = None,
+    on_event: Callable[[], None] | None = None,
 ) -> None:
     queues = QueuePaths(
         events=queue_path or default_queue_path(),
@@ -205,22 +215,21 @@ def run_listener(
     signal.signal(signal.SIGINT, _signal_handler)
 
     threads: list[threading.Thread] = []
-    for overlay_name, app_token, bot_token in overlays:
+    for overlay in overlays:
         t = threading.Thread(
             target=_run_single_overlay,
             kwargs={
-                "overlay_name": overlay_name,
-                "app_token": app_token,
-                "bot_token": bot_token,
+                "overlay": overlay,
                 "queues": queues,
                 "stop_event": stop,
+                "on_event": on_event,
             },
             daemon=True,
-            name=f"slack-{overlay_name}",
+            name=f"slack-{overlay[0]}",
         )
         t.start()
         threads.append(t)
-        logger.info("Started listener thread for %s", overlay_name)
+        logger.info("Started listener thread for %s", overlay[0])
 
     if not threads:
         logger.warning("No slack-enabled overlays found")
