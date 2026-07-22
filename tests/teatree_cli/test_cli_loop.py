@@ -258,19 +258,24 @@ class TestStartCommandSessionPins:
         assert argv[argv.index("--effort") + 1] == "max"
         assert "--model" not in argv
 
-    def test_only_model_injected_when_only_model_set(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    def test_model_and_default_effort_injected_when_only_model_set(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        # session_effort ships as xhigh, so a model-only config still injects the
+        # default effort alongside the pinned model.
         argv = self._spawn_argv(monkeypatch, tmp_path, session_model="opus")
         assert "--model" in argv
         assert argv[argv.index("--model") + 1] == "opus"
-        assert "--effort" not in argv
+        assert argv[argv.index("--effort") + 1] == "xhigh"
 
-    def test_no_pins_when_unconfigured(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    def test_default_effort_injected_when_unconfigured(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+        # No [agent] config → no model pin, but the shipped xhigh effort default
+        # is always injected. The permission mode is pinned regardless.
         argv = self._spawn_argv(monkeypatch, tmp_path)
         assert "--model" not in argv
-        assert "--effort" not in argv
-        # #2650: no fat `/loop` slot. The permission mode is NOT optional like the
-        # other two — it is pinned whether or not [agent] configures anything.
-        assert argv == ["/usr/bin/claude", "--permission-mode", "bypassPermissions"]
+        assert argv[argv.index("--effort") + 1] == "xhigh"
+        # #2650: no fat `/loop` slot — just the binary + pins.
+        assert argv == ["/usr/bin/claude", "--permission-mode", "bypassPermissions", "--effort", "xhigh"]
 
     def test_session_model_passes_through_unchanged(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
         # #2237 removal: no kill-switch downgrade step — session_model is emitted

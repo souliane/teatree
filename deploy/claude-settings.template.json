@@ -1,5 +1,5 @@
 {
-  "model": "claude-opus-4-8",
+  "model": "opusplan",
   "autoCompactEnabled": true,
   "enabledPlugins": {
     "t3@souliane": true,

@@ -85,13 +85,13 @@ class TestSeedClaudeSettings:
         target, proc = _run_seed(tmp_path, existing="{invalid json, not parseable")
         assert proc.returncode == 0, proc.stderr
         parsed = json.loads(target.read_text(encoding="utf-8"))  # must be valid JSON now
-        assert parsed["model"] == "claude-opus-4-8"
+        assert parsed["model"] == "opusplan"
 
     def test_no_existing_file_writes_managed_config(self, tmp_path: Path) -> None:
         target, proc = _run_seed(tmp_path, existing=None)
         assert proc.returncode == 0, proc.stderr
         parsed = json.loads(target.read_text(encoding="utf-8"))
-        assert parsed["model"] == "claude-opus-4-8"
+        assert parsed["model"] == "opusplan"
 
     def test_valid_existing_file_merge_preserves_unmanaged_keys(self, tmp_path: Path) -> None:
         # Anti-regression: a VALID existing file still deep-merges so an unmanaged
@@ -101,5 +101,5 @@ class TestSeedClaudeSettings:
         target, proc = _run_seed(tmp_path, existing=existing)
         assert proc.returncode == 0, proc.stderr
         parsed = json.loads(target.read_text(encoding="utf-8"))
-        assert parsed["model"] == "claude-opus-4-8"  # managed key wins
+        assert parsed["model"] == "opusplan"  # managed key wins
         assert parsed["statusLine"] == {"type": "command", "command": "mine"}  # unmanaged survives

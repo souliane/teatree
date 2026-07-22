@@ -53,6 +53,11 @@ _INHERIT_SENTINELS = frozenset({"", "default", "inherit"})
 # (above ``xhigh``); there is no ``off`` — effort is always one of these five.
 EFFORT_SCALE = frozenset({"low", "medium", "high", "xhigh", "max"})
 
+# The shipped default for the interactive main-agent effort pin when
+# ``agent_session_effort`` is unset — the interactive session runs at ``xhigh``
+# unless the operator pins a different scale value.
+DEFAULT_SESSION_EFFORT = "xhigh"
+
 
 def parse_effort(value: object) -> str | None:
     """Validate a ``session_effort`` value against :data:`EFFORT_SCALE`.
@@ -111,7 +116,8 @@ class AgentConfig:
     *   ``session_model`` — the interactive main-agent ``--model`` pin, or
         ``None`` to inherit the user's default.
     *   ``session_effort`` — the interactive main-agent ``--effort`` pin (a
-        member of :data:`EFFORT_SCALE`), or ``None`` to inherit.
+        member of :data:`EFFORT_SCALE`). Defaults to
+        :data:`DEFAULT_SESSION_EFFORT` (``xhigh``) when unset.
     *   ``honesty_model`` — the most-honest model a situational honesty-critical
         escalation routes verification spawns to (teatree#2263). Default
         ``"opus"`` — the frontier-tier baseline, requiring no operator opt-in.
@@ -144,7 +150,7 @@ class AgentConfig:
 
     skill_models: dict[str, str | None] = field(default_factory=dict)
     session_model: str | None = None
-    session_effort: str | None = None
+    session_effort: str | None = DEFAULT_SESSION_EFFORT
     phase_fanout: dict[str, bool | int] = field(default_factory=dict)
     honesty_model: str = "opus"
     tier_models: dict[str, str] = field(default_factory=dict)
@@ -286,22 +292,35 @@ def _session_model_from(raw: object) -> str | None:
     return _normalize_model(raw)
 
 
+def _session_effort_from(raw: object) -> str | None:
+    """The interactive effort pin, defaulting to :data:`DEFAULT_SESSION_EFFORT`.
+
+    Absent (``None``) → the shipped ``xhigh`` default. A present value is
+    validated against :data:`EFFORT_SCALE` by :func:`parse_effort`, which raises
+    fail-loud on an off-scale value (a misconfiguration the operator must see).
+    """
+    if raw is None:
+        return DEFAULT_SESSION_EFFORT
+    return parse_effort(raw)
+
+
 def resolve_agent_config() -> AgentConfig:
     """Resolve the effective :class:`AgentConfig` from the DB ``ConfigSetting`` store.
 
     Each ``[agent]`` value is read as its own DB key via
     :mod:`teatree.config.cold_reader` (``agent_session_model``,
-    ``agent_skill_models``, …). A missing key yields the field's default (empty
-    map / no pin) — the same fail-to-defaults posture as the ``phase_models``
-    loader — so installing this consumer changes no behaviour until the user
-    sets a value. An explicitly-stored *invalid* ``agent_session_effort`` still
-    raises (fail loud), since that is a misconfiguration the user must see, not
-    an absence to tolerate.
+    ``agent_skill_models``, …). A missing key yields the field's default — the
+    same fail-to-defaults posture as the ``phase_models`` loader. Most default to
+    empty / no pin; ``session_effort`` is the exception, defaulting to
+    :data:`DEFAULT_SESSION_EFFORT` (``xhigh``) so the interactive main-agent
+    session runs at high effort out of the box. An explicitly-stored *invalid*
+    ``agent_session_effort`` still raises (fail loud), since that is a
+    misconfiguration the user must see, not an absence to tolerate.
     """
     return AgentConfig(
         skill_models=_skill_models_from(cold_reader.read_setting("agent_skill_models")),
         session_model=_session_model_from(cold_reader.read_setting("agent_session_model")),
-        session_effort=parse_effort(cold_reader.read_setting("agent_session_effort")),
+        session_effort=_session_effort_from(cold_reader.read_setting("agent_session_effort")),
         phase_fanout=_phase_fanout_from(cold_reader.read_setting("agent_phase_fanout")),
         honesty_model=_honesty_model_from(cold_reader.read_setting("agent_honesty_model")),
         tier_models=_tier_models_from(cold_reader.read_setting("agent_tier_models")),

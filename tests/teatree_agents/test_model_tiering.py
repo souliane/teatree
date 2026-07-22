@@ -339,7 +339,7 @@ class TestTierEffortConstantIsSingleSource:
     def test_only_reasoning_tiers_carry_effort(self) -> None:
         # frontier + balanced carry an effort; cheap (Haiku) is deliberately absent
         # so it inherits the SDK default (Haiku rejects the effort lever).
-        assert TIER_EFFORT == {"frontier": "xhigh", "balanced": "high"}
+        assert TIER_EFFORT == {"frontier": "xhigh", "balanced": "xhigh"}
 
     def test_resolve_tier_effort_reads_the_constant(self) -> None:
         for tier, effort in TIER_EFFORT.items():

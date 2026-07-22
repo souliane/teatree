@@ -1300,9 +1300,9 @@ class TestBuildOptions(TestCase):
         assert options.thinking == {"type": "adaptive"}
         assert options.effort == TIER_EFFORT["frontier"]
 
-    def test_balanced_phase_pins_adaptive_thinking_and_high_effort(self) -> None:
+    def test_balanced_phase_pins_adaptive_thinking_and_xhigh_effort(self) -> None:
         # A balanced (Sonnet) phase supports thinking and carries the balanced-tier
-        # effort (high).
+        # effort (xhigh).
         options = self._options_for_phase("testing")
         assert options.thinking == {"type": "adaptive"}
         assert options.effort == TIER_EFFORT["balanced"]
