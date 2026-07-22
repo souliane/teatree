@@ -3,6 +3,7 @@
 import os
 import shutil
 import subprocess
+import sys
 from pathlib import Path
 from typing import ClassVar
 from unittest.mock import patch
@@ -698,6 +699,46 @@ class TestPathOnlyOwnedScopes:
         overlays = {"t3-stub": {"class": "tests.test_overlay_loader:_StubOverlay"}}
         with self._patch_landscape(overlays, discovered={"t3-stub": overlay}):
             assert path_only_owned_scopes() == []
+
+
+class TestDiscoverOverlaysBootstrapsDjango:
+    """``_discover_overlays`` boots Django before eagerly importing overlay modules (#3567).
+
+    An entry-point overlay module (``teatree/contrib/t3_teatree/overlay.py``) does a
+    module-level ``from teatree.core.models import Worktree`` — a Django model class,
+    which needs the app registry populated. When the calling process's env already
+    carries ``DJANGO_SETTINGS_MODULE=teatree.settings`` but ``django.setup()`` has not
+    run, settings resolve fine (so the ``ImproperlyConfigured`` guard in
+    ``overlay_skill_metadata`` never fires) yet the model import raises
+    ``AppRegistryNotReady`` — crashing the very first bare ``t3`` command of a session.
+
+    Driven in a child interpreter with the env var pre-set and ``django.setup()``
+    unrun, mirroring an agent-session host that inherits the var from upstream of the
+    shell. Pre-fix the child exits non-zero with ``AppRegistryNotReady``; post-fix
+    ``_discover_overlays`` calls ``ensure_django`` first and resolves cleanly.
+    """
+
+    def _env_with_settings_preset(self) -> dict[str, str]:
+        env = os.environ.copy()
+        env["DJANGO_SETTINGS_MODULE"] = "teatree.settings"
+        return env
+
+    def test_discover_overlays_with_preset_settings_module_does_not_crash(self) -> None:
+        probe = (
+            "from teatree.core.overlay_loader import _discover_overlays\n"
+            "overlays = _discover_overlays()\n"
+            "print('discover-ok', sorted(overlays))\n"
+        )
+        result = subprocess.run(
+            [sys.executable, "-c", probe],
+            check=False,
+            capture_output=True,
+            text=True,
+            env=self._env_with_settings_preset(),
+        )
+        assert result.returncode == 0, f"stdout={result.stdout!r}\nstderr={result.stderr!r}"
+        assert "AppRegistryNotReady" not in result.stderr
+        assert "discover-ok" in result.stdout
 
 
 # ── Test helpers ─────────────────────────────────────────────────────
