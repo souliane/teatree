@@ -11,7 +11,12 @@ and passes it in, keeping these functions free of the Connect-membership concern
 from typing import Protocol, cast
 
 from teatree.backends.slack.bot_errors import GLOBAL_TOKEN_FAILURES
+from teatree.backends.slack.pagination import next_cursor
 from teatree.types import RawAPIDict, ScannerError
+
+# Bounds the members walk at ~10k users so a lookup of a genuinely-absent handle
+# terminates rather than paging an entire enterprise workspace.
+_MAX_USER_PAGES = 50
 
 
 class Getter(Protocol):
@@ -84,6 +89,21 @@ def read_reactions(*, get: Getter, channel: str, ts: str, token: str) -> list[st
     return names
 
 
+def _match_member_id(members: object, name: str) -> str:
+    """The id of the first member whose ``name``/``real_name`` equals *name*, else ``""``."""
+    if not isinstance(members, list):
+        return ""
+    for raw_member in members:
+        if not isinstance(raw_member, dict):
+            continue
+        member = cast("RawAPIDict", raw_member)
+        if member.get("name") == name or member.get("real_name") == name:
+            user_id = member.get("id")
+            if isinstance(user_id, str):
+                return user_id
+    return ""
+
+
 def resolve_user_id(*, get: Getter, handle: str) -> str:
     """Look up a Slack user id from a handle (``@alice`` or ``alice``)."""
     clean = handle.lstrip("@")
@@ -95,18 +115,19 @@ def resolve_user_id(*, get: Getter, handle: str) -> str:
         user_id = user.get("id")
         if isinstance(user_id, str):
             return user_id
-    # Fallback: list users and match by name. Cheap for personal workspaces;
-    # the loop scanners cache the result via ``functools.lru_cache`` upstream.
-    listing = get("users.list", {"limit": 200})
-    members = listing.get("members")
-    if not isinstance(members, list):
-        return ""
-    for raw_member in members:
-        if not isinstance(raw_member, dict):
-            continue
-        member = cast("RawAPIDict", raw_member)
-        if member.get("name") == clean or member.get("real_name") == clean:
-            user_id = member.get("id")
-            if isinstance(user_id, str):
-                return user_id
+    # Fallback: list users and match by name, cursor-following every page so a
+    # handle past the first page is not reported "not found". The loop scanners
+    # cache the result via ``functools.lru_cache`` upstream.
+    cursor: str | None = None
+    for _ in range(_MAX_USER_PAGES):
+        params: dict[str, str | int] = {"limit": 200}
+        if cursor:
+            params["cursor"] = cursor
+        listing = get("users.list", params)
+        matched = _match_member_id(listing.get("members"), clean)
+        if matched:
+            return matched
+        cursor = next_cursor(listing)
+        if cursor is None:
+            return ""
     return ""
