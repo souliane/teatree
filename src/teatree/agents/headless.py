@@ -65,6 +65,19 @@ __all__ = ["HarnessOutcome", "LoopWatchdog", "TaskUsage", "run_headless"]
 
 _HEARTBEAT_INTERVAL = 60  # seconds
 
+# Lease duration the heartbeat renews to. The renewal runs as an asyncio task on
+# the SAME event loop the headless agent drives, so under CPU/event-loop
+# starvation (a loaded box running several coders at once) the ``sleep`` between
+# renewals stretches far past its nominal 60s. With the DB default 300s lease that
+# is only ~5 heartbeats of slack: a starved worker misses a few renewals, its OWN
+# ``reclaim_orphaned_claims`` scanner sees the lease expired and re-queues the task,
+# and the still-running coder then aborts with "lease lost: re-claimed by another
+# worker" — a self-inflicted reclaim, NOT a second executor. Renewing to 15x the
+# heartbeat interval widens the slack to ~15 min of continuous starvation before a
+# false lapse, which absorbs realistic load spikes. A genuinely dead session's task
+# still reclaims — just after the wider window.
+_LEASE_SECONDS = 15 * _HEARTBEAT_INTERVAL  # 900s
+
 _STUCK_LOOP_PREFIX = "stuck_loop: "
 _RESULT_ERROR_PREFIX = "result_error: "
 
@@ -399,7 +412,7 @@ def _renew_lease_closing_connection(task: Task) -> None:
     thread, which never closes itself — see :mod:`teatree.utils.thread_db`.
     """
     try:
-        task.renew_lease()
+        task.renew_lease(lease_seconds=_LEASE_SECONDS)
     finally:
         close_thread_db_connections()
 

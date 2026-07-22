@@ -989,6 +989,31 @@ class TestDriveWithHeartbeat(TestCase):
         assert outcome.stuck_reason is None
         assert renew_count >= 1
 
+    def test_heartbeat_renews_with_a_starvation_resilient_lease(self) -> None:
+        # The heartbeat runs on the SAME starvable event loop, so it must renew to a
+        # lease well wider than the heartbeat interval — otherwise a loaded box's
+        # missed renewals let the worker's OWN reclaim scanner yank the live task's
+        # lease ("re-claimed by another worker"). Pin the renewed lease at >= 15x the
+        # heartbeat interval so realistic starvation cannot cause a false lapse.
+        seen_lease: list[int] = []
+
+        def capturing_renew(*, lease_seconds: int = 300, **_kwargs: object) -> None:
+            seen_lease.append(lease_seconds)
+
+        self.task.renew_lease = capturing_renew
+        messages = [_assistant_text("hello"), _result_message()]
+        watchdog = LoopWatchdog(max_runtime_seconds=0, max_turns=0, max_cost_usd=0.0)
+        with _fake_sdk(messages, delay=0.05), patch.object(headless_mod, "_HEARTBEAT_INTERVAL", 0.02):
+            asyncio.run(_drive_with_heartbeat(self.task, "p", self._options(), ClaudeSdkHarness(), watchdog=watchdog))
+
+        assert seen_lease, "the heartbeat must renew the lease at least once during the run"
+        assert min(seen_lease) == headless_mod._LEASE_SECONDS, (
+            "the heartbeat must renew with the starvation-resilient lease constant"
+        )
+        assert headless_mod._LEASE_SECONDS >= 900, (
+            "the renewed lease must be >= ~15 min so realistic event-loop starvation cannot cause a false lapse"
+        )
+
     def test_runtime_ceiling_interrupts_and_reports_stuck(self) -> None:
         # A stream that never terminates within the runtime ceiling is
         # interrupted and reported as a runtime breach.
