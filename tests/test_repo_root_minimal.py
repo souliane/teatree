@@ -67,6 +67,7 @@ _ALLOWED_ROOT_ENTRIES = frozenset(
         ".codespell-dictionary.txt",
         ".dockerignore",  # headless-deploy build-context ignore (deploy/README.md is the SOT)
         ".editorconfig",
+        ".gitattributes",  # `generated` merge driver for generated docs (souliane/teatree#3582)
         ".gitignore",
         ".gitlab-ci.yml",
         ".jscpd.json",
