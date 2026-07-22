@@ -69,7 +69,8 @@ class TestAllowBannedTermEnvReachesWrapper:
     ) -> None:
         # An inherited-env override silently disables every publish scan — the
         # NOTE makes that standing disable visible (finding 7).
-        monkeypatch.delenv("CLAUDE_SESSION_ID", raising=False)
+        for key in ("CLAUDE_SESSION_ID", "CLAUDE_CODE_SESSION_ID", "T3_LOOP_SESSION_ID"):
+            monkeypatch.delenv(key, raising=False)
         monkeypatch.setenv("ALLOW_BANNED_TERM", "1")
         assert has_override("Bash", {"command": "gh issue create --body x"}) is True
         assert "ALLOW_BANNED_TERM=1 is set in the process environment" in capsys.readouterr().err

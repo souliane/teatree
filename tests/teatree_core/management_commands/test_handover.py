@@ -30,6 +30,8 @@ def _session(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
     the test process never fast-pushes the real repo's worktrees; the coupling
     itself is asserted by ``TestHandoverDrivesSubagents`` with its own spy.
     """
+    for key in ("CLAUDE_SESSION_ID", "CLAUDE_CODE_SESSION_ID"):
+        monkeypatch.delenv(key, raising=False)
     monkeypatch.setenv("T3_LOOP_SESSION_ID", "this-session")
     monkeypatch.setenv("TEATREE_CLAUDE_STATUSLINE_STATE_DIR", str(tmp_path / "state"))
     monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "xdg"))
@@ -68,11 +70,21 @@ class TestHandoverCreate:
         assert pathlib.Path(mirror).is_file()
 
     def test_no_session_id_errors(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.delenv("CLAUDE_SESSION_ID", raising=False)
-        monkeypatch.delenv("T3_LOOP_SESSION_ID", raising=False)
+        for key in ("CLAUDE_SESSION_ID", "CLAUDE_CODE_SESSION_ID", "T3_LOOP_SESSION_ID"):
+            monkeypatch.delenv(key, raising=False)
         monkeypatch.setenv("T3_LOOP_REGISTRY_DIR", "/nonexistent-registry-dir")
         with pytest.raises(SystemExit):
             _call("handover", "create", json_output=True)
+
+    def test_claude_code_session_id_is_accepted(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """The #3554 bug: a live Claude Code session exports only ``CLAUDE_CODE_SESSION_ID``."""
+        for key in ("CLAUDE_SESSION_ID", "T3_LOOP_SESSION_ID"):
+            monkeypatch.delenv(key, raising=False)
+        monkeypatch.setenv("T3_LOOP_REGISTRY_DIR", "/nonexistent-registry-dir")
+        monkeypatch.setenv("CLAUDE_CODE_SESSION_ID", "cc-session")
+        data = json.loads(_call("handover", "create", json_output=True))
+        assert data["ok"] is True
+        assert SessionHandover.objects.get().from_session == "cc-session"
 
 
 class TestHandoverDrivesSubagents:

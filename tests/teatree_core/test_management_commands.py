@@ -65,6 +65,8 @@ _MOCK_OVERLAY = {"test": CommandOverlay()}
 
 COMMAND_SETTINGS: dict[str, object] = {}
 
+_NO_SESSION_ENV = {"CLAUDE_SESSION_ID": "", "CLAUDE_CODE_SESSION_ID": "", "T3_LOOP_SESSION_ID": ""}
+
 
 class TestLifecycleCommands(TestCase):
     @override_settings(**COMMAND_SETTINGS)
@@ -396,7 +398,8 @@ class TestTasksListSession(TestCase):
 
     @override_settings(**COMMAND_SETTINGS)
     def test_anonymous_session_lists_nothing(self) -> None:
-        with patch.dict("os.environ", {"CLAUDE_SESSION_ID": "", "T3_LOOP_SESSION_ID": "", "XDG_DATA_HOME": ""}):
+        anon_env = {**_NO_SESSION_ENV, "XDG_DATA_HOME": ""}
+        with patch.dict("os.environ", anon_env):
             ticket = Ticket.objects.create(overlay="test")
             session = Session.objects.create(ticket=ticket, overlay="test", agent_id="claude-abc")
             Task.objects.create(ticket=ticket, session=session, phase="coding")
@@ -659,7 +662,7 @@ class TestReconcileChecklist(TestCase):
     @override_settings(**COMMAND_SETTINGS)
     def test_no_session_still_emits_the_discipline(self) -> None:
         out = io.StringIO()
-        with patch.dict("os.environ", {"CLAUDE_SESSION_ID": "", "T3_LOOP_SESSION_ID": ""}):
+        with patch.dict("os.environ", _NO_SESSION_ENV):
             call_command("tasks", "reconcile-checklist", stdout=out)
         printed = _strip_ansi(out.getvalue())
         # An anonymous caller has no session-scoped teatree tasks, but the

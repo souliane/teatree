@@ -18,13 +18,23 @@ re-exporters are allowed to reach.
 
 #1107 — the headline incident root cause: Claude Code delivers the
 session id ONLY in the hook JSON payload, never as an env var inside a
-Bash-tool subprocess, so in agent-driven mode both env vars are empty and
-``current_session_id()`` returned ``""`` → ``t3 loop claim`` hard-refused
-→ t3-master could never be claimed → every owner-gated slot (#1075
-reactive answer, self-improve, the claim-next spawn pump) was permanently
-dead (131 user DMs reacted/answered never). The precedence is now:
+Bash-tool subprocess, so in agent-driven mode the session-id env vars are
+empty and ``current_session_id()`` returned ``""`` → ``t3 loop claim``
+hard-refused → t3-master could never be claimed → every owner-gated slot
+(#1075 reactive answer, self-improve, the claim-next spawn pump) was
+permanently dead (131 user DMs reacted/answered never). The precedence is
+now:
 
-    ``CLAUDE_SESSION_ID`` → ``T3_LOOP_SESSION_ID`` → loop-registry → ``""``
+    ``CLAUDE_SESSION_ID`` → ``CLAUDE_CODE_SESSION_ID`` → ``T3_LOOP_SESSION_ID`` → loop-registry → ``""``
+
+#3554 — Claude Code exports the live session id as ``CLAUDE_CODE_SESSION_ID``,
+not ``CLAUDE_SESSION_ID``, so a resolver reading only the old name fell
+through to ``""`` in every interactive session (``handover create``
+refused, ``loop whoami`` reported no session). ``CLAUDE_SESSION_ID`` is
+kept ahead of it for backward compatibility. The accepted names live in
+one place — :data:`SESSION_ID_ENV_VARS` — so a future upstream rename is a
+one-line change caught by a single pinning test rather than silent
+degradation at every call site.
 
 The durable session *pid* (the t3-master lease anchor) resolves with a
 parallel precedence so an env-restricted subprocess that cannot read the
@@ -50,6 +60,19 @@ and fails open (any OSError/JSON error → ``""``).
 import json
 import os
 from pathlib import Path
+
+# The session id lands under whichever name the harness exports it, most-
+# to least-preferred. ``CLAUDE_CODE_SESSION_ID`` is what a live Claude Code
+# session exports (#3554); ``CLAUDE_SESSION_ID`` is the legacy name kept for
+# backward compatibility; ``T3_LOOP_SESSION_ID`` is the test/manual override.
+# Single source of truth: ``teatree.hooks._hook_state`` redeclares the same
+# list (it cannot import across the module-boundary graph) and a test pins
+# the two in sync.
+SESSION_ID_ENV_VARS: tuple[str, ...] = (
+    "CLAUDE_SESSION_ID",
+    "CLAUDE_CODE_SESSION_ID",
+    "T3_LOOP_SESSION_ID",
+)
 
 # Deliberately redeclared (not imported) — ``teatree.core`` must not
 # depend on ``teatree.loop``/hooks. Mirrors ``hook_router._OWNER_LOOP``
@@ -164,23 +187,40 @@ def current_session_pid() -> int | None:
     return _coerce_pid(os.environ.get("T3_LOOP_SESSION_PID")) or _pid_from_loop_registry()
 
 
+def session_id_from_env() -> str | None:
+    """The active session id from :data:`SESSION_ID_ENV_VARS`, ``None`` when none is set.
+
+    The env-only slice of the resolver, shared with the loop-slot commands
+    (``loop_slack_answer`` / ``loop_self_improve``) whose t3-master gate
+    consults the registry separately and only needs the env value.
+    """
+    for name in SESSION_ID_ENV_VARS:
+        value = os.environ.get(name)
+        if value:
+            return value
+    return None
+
+
 def current_session_id() -> str:
     """The active Claude session id, or ``""`` when not resolvable.
 
-    ``CLAUDE_SESSION_ID`` is set by Claude Code; ``T3_LOOP_SESSION_ID`` is
-    the test/manual override. When both are absent (#1107: agent-driven
-    Bash-tool subprocesses never see the id as an env var) the loop
-    registry's ``t3-loop-tick-owner`` record is the lowest-precedence
+    Claude Code exports the id as ``CLAUDE_CODE_SESSION_ID`` (#3554);
+    ``CLAUDE_SESSION_ID`` is the legacy name kept ahead of it for backward
+    compatibility, and ``T3_LOOP_SESSION_ID`` is the test/manual override
+    (all three in :data:`SESSION_ID_ENV_VARS`). When none is set (#1107:
+    agent-driven Bash-tool subprocesses never see the id as an env var) the
+    loop registry's ``t3-loop-tick-owner`` record is the lowest-precedence
     fallback. Empty string means anonymous (no session) — the t3-master
     gate treats an anonymous caller as a non-owner whenever a live owner
     exists.
     """
-    return (
-        os.environ.get("CLAUDE_SESSION_ID")
-        or os.environ.get("T3_LOOP_SESSION_ID")
-        or _session_id_from_loop_registry()
-        or ""
-    )
+    return session_id_from_env() or _session_id_from_loop_registry() or ""
 
 
-__all__ = ["current_session_id", "current_session_pid", "owner_record"]
+__all__ = [
+    "SESSION_ID_ENV_VARS",
+    "current_session_id",
+    "current_session_pid",
+    "owner_record",
+    "session_id_from_env",
+]
