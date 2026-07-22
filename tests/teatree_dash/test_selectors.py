@@ -15,8 +15,8 @@ def _cards_by_state(board: KanbanBoard) -> dict[str, list[KanbanCard]]:
     for group in board.groups:
         for column in group.columns:
             cards[column.state] = list(column.cards)
-    if board.ignored is not None:
-        cards[board.ignored.state] = list(board.ignored.cards)
+    for column in board.hidden:
+        cards[column.state] = list(column.cards)
     return cards
 
 
@@ -55,6 +55,12 @@ class BuildKanbanColumnsTestCase(TestCase):
         assert _find_card(build_kanban_columns(), ignored.pk) is None
         shown = build_kanban_columns(BoardFilters(include_ignored=True))
         assert _find_card(shown, ignored.pk) is not None
+
+    def test_review_posted_hidden_by_default_and_shown_on_toggle(self) -> None:
+        posted = TicketFactory(state=State.REVIEW_POSTED)
+        assert _find_card(build_kanban_columns(), posted.pk) is None
+        shown = build_kanban_columns(BoardFilters(include_ignored=True))
+        assert _find_card(shown, posted.pk) is not None
 
     def test_active_dot_from_pending_task(self) -> None:
         ticket = TicketFactory(state=State.CODED)
