@@ -68,6 +68,7 @@ OVERLAY_OVERRIDABLE_SETTINGS: dict[str, Callable[[Any], Any]] = {
     "enforce_regulated_path": _parse_strict_bool,
     "regulated_path_model_allowlist": _parse_str_list,
     "pydantic_ai_request_limit": _parse_strict_int,
+    "pydantic_ai_max_tokens": _parse_strict_int,
     # #882 / #885 (F9.5): the headless watchdog + per-ticket budget ceilings, folded
     # off the former Django-settings ``TEATREE_LOOP_WATCHDOG`` / ``TEATREE_TICKET_BUDGET``
     # dicts into the DB-home config tier so ``config_setting get`` reads them.
@@ -515,6 +516,16 @@ class _ModeHarnessSettings:
     # into ``agent_harness=pydantic_ai``. ``0`` disables the cap (the escape
     # hatch). Per-overlay overridable.
     pydantic_ai_request_limit: int = 5
+    # Per-request output-token ceiling for the ``pydantic_ai`` harness, passed as the base
+    # ``max_tokens`` ``ModelSettings`` key on every run (both the OrcaRouter and native Anthropic
+    # bindings honour it). pydantic_ai's Anthropic binding otherwise defaults to 4096, which
+    # truncates a long result envelope mid-JSON and destroys it; the default is deliberately
+    # GENEROUS (16384) because a generous ceiling only bills for tokens actually generated — the
+    # real spend guards on this lane are the watchdog cost ceiling and ``pydantic_ai_request_limit``,
+    # not this cap. Keep it ≤ the model's own output limit. Applies ONLY to the ``pydantic_ai``
+    # harness, so it is inert until an overlay opts into ``agent_harness=pydantic_ai``. ``0``
+    # leaves the binding's own default. Per-overlay overridable.
+    pydantic_ai_max_tokens: int = 16384
     # The ``pass`` store path the OrcaRouter BYOK key is read from. The
     # ``OrcaRouterCredential`` has NO built-in default, so this is the ONLY ``pass``
     # source: an operator points teatree at an existing per-account ``pass`` entry

@@ -9,11 +9,11 @@ module with no import cycle. Re-exported from ``teatree.agents.harness`` for bac
 
 from dataclasses import dataclass, field
 from enum import StrEnum
-from typing import cast
+from typing import Any, cast
 
 from openai import AsyncOpenAI
 from pydantic_ai.models import Model
-from pydantic_ai.models.openai import OpenAIChatModelSettings, ReasoningEffort
+from pydantic_ai.models.openai import ReasoningEffort
 from pydantic_ai.profiles.anthropic import ANTHROPIC_THINKING_EFFORT_MAP, resolve_anthropic_effort
 from pydantic_ai.providers.openai import OpenAIProvider
 from pydantic_ai.settings import ModelSettings
@@ -53,27 +53,29 @@ class PydanticAiBinding(StrEnum):
     NATIVE_ANTHROPIC = "native_anthropic"
 
 
-#: The OpenAI-compatible OrcaRouter binding's capabilities: MCP toolsets + schema-enforced
-#: structured output; no hooks port yet, no server-side resume (client-side thread reseed),
-#: no reachable cache-control (opaque router surface). Dispatch-lane hints (#3157 AH-5): the
+#: The OpenAI-compatible OrcaRouter binding's capabilities: MCP toolsets; no hooks port yet,
+#: no server-side resume (client-side thread reseed), no reachable cache-control (opaque router
+#: surface), and no schema-enforced structured output (the lane scrapes the last JSON line of
+#: agent text, it does not enforce a result schema). Dispatch-lane hints (#3157 AH-5): the
 #: metered lane, no bundled CLI child (the credential resolves in-process).
 PYDANTIC_AI_ROUTER_CAPABILITIES = HarnessCapabilities(
     hooks=False,
     mcp=True,
     cache_control=False,
     server_resume=False,
-    structured_output=True,
+    structured_output=False,
     spawns_cli_child=False,
     metered_lane=True,
 )
 #: The native Anthropic Messages-API binding's capabilities (#3157 E1b): the router set
-#: PLUS reachable ``cache_control`` breakpoints. Same dispatch-lane hints (metered, no child).
+#: PLUS reachable ``cache_control`` breakpoints (still no schema-enforced structured output).
+#: Same dispatch-lane hints (metered, no child).
 PYDANTIC_AI_NATIVE_CAPABILITIES = HarnessCapabilities(
     hooks=False,
     mcp=True,
     cache_control=True,
     server_resume=False,
-    structured_output=True,
+    structured_output=False,
     spawns_cli_child=False,
     metered_lane=True,
 )
@@ -124,6 +126,10 @@ class PydanticAiModelConfig:
     *   ``binding`` — router (OrcaRouter OpenAI-compatible) vs native Anthropic Messages
         API (#3157 E1b, ``agent_harness_provider=anthropic_api``), selected by
         :func:`resolve_harness` from the provider.
+    *   ``max_tokens`` — the per-request output-token ceiling. Binding-AGNOSTIC (``max_tokens``
+        is a base ``ModelSettings`` key both bindings honour), so it lives here rather than on
+        the router-only :class:`OrcaLaneConfig`. Resolved SYNCHRONOUSLY by :func:`resolve_harness`
+        from the ``pydantic_ai_max_tokens`` setting; ``None`` leaves the binding's own default.
 
     Prompt-cache breakpoints (the :class:`~teatree.agents.context_plan.ContextPlan`
     → ``cache_control`` path, #3157 E2) are NOT wired into the harness here: nothing
@@ -138,6 +144,7 @@ class PydanticAiModelConfig:
 
     orca: OrcaLaneConfig = field(default_factory=OrcaLaneConfig)
     binding: PydanticAiBinding = PydanticAiBinding.ROUTER
+    max_tokens: int | None = None
 
 
 def native_anthropic_model_name(options: HarnessOptions) -> str:
@@ -183,9 +190,13 @@ def resolve_native_anthropic_model(options: HarnessOptions) -> Model:
 
 
 def build_model_settings(
-    model: Model, effort: ReasoningEffort | None, *, binding: PydanticAiBinding
+    model: Model, effort: ReasoningEffort | None, *, binding: PydanticAiBinding, max_tokens: int | None
 ) -> ModelSettings | None:
-    """The reasoning-effort model settings for *binding*, under the key its model READS.
+    """The model settings for *binding*: the base ``max_tokens`` ceiling plus the reasoning effort.
+
+    ``max_tokens`` is a base :class:`~pydantic_ai.settings.ModelSettings` key both bindings
+    honour on the wire (a 4096 default truncates a long result envelope mid-JSON), so it is
+    merged in unconditionally when set. The reasoning effort is the binding-specific part.
 
     The settings namespace is per-provider in pydantic_ai, so the effort key is
     binding-specific and NOT interchangeable: an
@@ -206,26 +217,24 @@ def build_model_settings(
     :func:`~pydantic_ai.profiles.anthropic.resolve_anthropic_effort`, which also owns
     the per-model ``xhigh`` passthrough decision — never a vocabulary re-invented here.
     """
-    if effort is None:
-        return None
-    if binding is PydanticAiBinding.NATIVE_ANTHROPIC:
-        if effort not in ANTHROPIC_THINKING_EFFORT_MAP:
-            return None
-        # Built as a plain mapping rather than the ``AnthropicModelSettings`` TypedDict:
-        # that symbol lives in ``pydantic_ai.models.anthropic``, which imports the
-        # OPTIONAL ``anthropic`` extra. Naming it here — even under a lazy import —
-        # would couple this branch to an extra a router-only install does not carry,
-        # while the runtime shape is identical (a TypedDict IS a dict).
-        return cast(
-            "ModelSettings",
-            {
-                "anthropic_effort": resolve_anthropic_effort(
+    # Built as a plain mapping rather than the per-binding ``…ModelSettings`` TypedDicts: the
+    # ``AnthropicModelSettings`` symbol lives in ``pydantic_ai.models.anthropic``, which imports
+    # the OPTIONAL ``anthropic`` extra — naming it here (even lazily) would couple this branch to
+    # an extra a router-only install does not carry, while the runtime shape is identical (a
+    # TypedDict IS a dict).
+    settings: dict[str, Any] = {}
+    if max_tokens is not None and max_tokens > 0:
+        settings["max_tokens"] = max_tokens
+    if effort is not None:
+        if binding is PydanticAiBinding.NATIVE_ANTHROPIC:
+            if effort in ANTHROPIC_THINKING_EFFORT_MAP:
+                settings["anthropic_effort"] = resolve_anthropic_effort(
                     effort,
                     supports_xhigh=model.profile.get("anthropic_supports_xhigh_effort", False),
                 )
-            },
-        )
-    return cast("ModelSettings", OpenAIChatModelSettings(openai_reasoning_effort=effort))
+        else:
+            settings["openai_reasoning_effort"] = effort
+    return cast("ModelSettings", settings) if settings else None
 
 
 def build_orca_provider(*, lane: str, pass_path: str | None = None) -> OpenAIProvider:

@@ -65,6 +65,22 @@ def _error_turns(stream: "StreamedRunResult[None, str] | None") -> int:
     return requests if requests > 0 else 1
 
 
+class _MaxTokensTruncationError(RuntimeError):
+    """The model response was cut off at the ``max_tokens`` ceiling (``finish_reason='length'``).
+
+    A max-tokens stop amputates the JSON result envelope, so the run is surfaced as an ERROR
+    (``error_max_tokens``) rather than a success carrying a silently-truncated result.
+    """
+
+
+def _hit_max_tokens(messages: "list[ModelMessage]") -> bool:
+    """Whether the final ``ModelResponse`` stopped on a max-tokens (``'length'``) finish reason."""
+    for message in reversed(messages):
+        if isinstance(message, ModelResponse):
+            return message.finish_reason == "length"
+    return False
+
+
 def _tool_blocks_since(messages: "list[ModelMessage]", start: int) -> "Iterator[AssistantMessage]":
     """Yield the tool call/result blocks a turn produced, in the seam's vocabulary.
 
@@ -147,7 +163,10 @@ class PydanticAiHarnessSession:
     :class:`~pydantic_ai.exceptions.UnexpectedModelBehavior` /
     :class:`~pydantic_ai.exceptions.ContentFilterError` → the same status-less
     shape, and a :class:`~pydantic_ai.exceptions.UsageLimitExceeded` (the run hit
-    its own step cap) → ``subtype="error_max_turns"``. The driver's failure
+    its own step cap) → ``subtype="error_max_turns"``. A run that OTHERWISE succeeds
+    but whose final ``ModelResponse`` stopped on a max-tokens (``'length'``) finish is
+    also mapped to an error → ``subtype="error_max_tokens"``, rather than a success
+    carrying the amputated JSON envelope. The driver's failure
     taxonomy keys on ``is_error``, so the park/rotate path becomes reachable and a
     programming error still propagates to a durable ``sdk_error`` FAILED.
     ``num_turns`` is the run's real ``RunUsage.requests`` count (not a hardcoded
@@ -276,6 +295,16 @@ class PydanticAiHarnessSession:
             # A provider/run error with no HTTP status (``ContentFilterError`` is a
             # ``UnexpectedModelBehavior``, ``ModelHTTPError`` is caught above).
             yield self._error_result(exc, subtype="error_during_execution", num_turns=_error_turns(stream_for_usage))
+            return
+        if _hit_max_tokens(all_messages):
+            yield self._error_result(
+                _MaxTokensTruncationError(
+                    "the pydantic_ai response was truncated at the max_tokens ceiling "
+                    "(finish_reason='length'); the result envelope is incomplete"
+                ),
+                subtype="error_max_tokens",
+                num_turns=run_usage.requests,
+            )
             return
         # Surface this turn's tool calls/results in the seam's tool-block
         # vocabulary BEFORE the final text, so a tool-emitting Lane-B session
