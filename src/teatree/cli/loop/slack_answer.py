@@ -17,7 +17,8 @@ slack_answer_app = typer.Typer(
     name="slack-answer",
     help=(
         "Reactive, token-cheap Slack-answer loop — the third `/loop` slot. "
-        "Runs on a tight cadence (default 20s) in the same t3-master "
+        "The inbound-event wake is the primary drain (~1s); this timer is the "
+        "fallback safety net on a 5m default cadence, in the same t3-master "
         "session as `t3 loop tick`, on a separate LoopLease so a long "
         "answer cycle never blocks a fast regular tick. Complementary to "
         "the inbound prompt-drain, never a double-answer (#1014)."
@@ -75,8 +76,8 @@ def slack_answer_start_command() -> None:
     typer.echo(f"    {register_command}")
     typer.echo("")
     typer.echo(
-        "Override the cadence with `T3_SLACK_ANSWER_CADENCE=<seconds> t3 loop slack-answer start` "
-        "(default 20s, floor 15s)."
+        "Override the fallback cadence with `T3_SLACK_ANSWER_CADENCE=<seconds> t3 loop slack-answer start` "
+        "(default 300s/5m, floor 15s). The inbound-event wake is the primary drain; this is the safety net."
     )
     typer.echo("")
     typer.echo(

@@ -19,12 +19,18 @@ _SECONDS_PER_MINUTE = 60
 
 
 def slack_answer_cadence_seconds() -> int:
-    """The ``loop-slack-answer`` throttle window (``T3_SLACK_ANSWER_CADENCE``, default 20s, floor 15)."""
-    raw = os.environ.get("T3_SLACK_ANSWER_CADENCE", "20").strip() or "20"
+    """The ``loop-slack-answer`` FALLBACK throttle window (``T3_SLACK_ANSWER_CADENCE``, default 300s, floor 15).
+
+    The inbound-event wake (``wake_slack_answer``) is the primary drain path
+    (~1s latency), so this timer is only a missed-wake / retry / startup
+    catch-up safety net — hence a 5-minute default, not a tight spin. A
+    deliberate low override is still honoured down to the 15s floor.
+    """
+    raw = os.environ.get("T3_SLACK_ANSWER_CADENCE", "300").strip() or "300"
     try:
         return max(15, int(raw))
     except ValueError:
-        return 20
+        return 300
 
 
 def self_improve_cadence_seconds() -> int:

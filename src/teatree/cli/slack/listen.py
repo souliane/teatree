@@ -41,6 +41,19 @@ def _resolve_overlays(restrict: str) -> list[tuple[str, str, str]]:
     return result
 
 
+def _signal_slack_answer_wake() -> None:
+    """Enqueue an immediate Slack-answer wake — the per-event drain trigger.
+
+    Wired into the Socket Mode receiver as its ``on_event`` callback so an
+    inbound event runs the answer cycle right away instead of at the next
+    cadence tick. Deferred import: the receiver's ``backends`` layer cannot
+    reach the orchestration layer, so the CLI composition root injects it.
+    """
+    from teatree.loops.timer_reconciler import wake_slack_answer  # noqa: PLC0415 — deferred import
+
+    wake_slack_answer.enqueue()
+
+
 @slack_app.command("listen")
 def listen_command(
     *,
@@ -60,6 +73,8 @@ def listen_command(
         level=logging.INFO,
         format="%(asctime)s %(levelname)-5s %(name)s %(message)s",
     )
+    # Bootstrap Django so the per-event wake callback can enqueue onto the task DB.
+    ensure_django()
     pid_path = default_queue_path().with_name("slack-listener.pid")
     try:
         with singleton("slack-listener", pid_path=pid_path):
@@ -69,7 +84,7 @@ def listen_command(
                 raise typer.Exit(code=1)
             for name, _app, _bot in overlays:
                 typer.echo(f"OK    Listening on {name}")
-            run_listener(overlays, queue_path=queue_file)
+            run_listener(overlays, queue_path=queue_file, on_event=_signal_slack_answer_wake)
     except AlreadyRunningError as exc:
         typer.echo(f"WARN  {exc}. Stop it before starting another.")
         raise typer.Exit(code=1) from None

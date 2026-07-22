@@ -6,9 +6,10 @@ a fast regular tick or a self-improve cycle, refuses to run when this
 session is not the loop owner, runs :func:`run_slack_answer_cycle`, and
 prints a one-line summary (or the JSON report when ``--json`` is passed).
 
-This is a reactive ``/loop`` slot: a tight-cadence complement to the slower
-per-loop ticks — a quick ack / status question gets a reply in seconds at
-near-zero token cost, instead of waiting a full loop cadence.
+This is a reactive ``/loop`` slot complementing the slower per-loop ticks —
+a quick ack / status question gets a reply in seconds at near-zero token cost.
+The inbound-event wake is the primary drain (~1s); this timer slot is the
+fallback safety net on a 5m default cadence.
 """
 
 import datetime as dt

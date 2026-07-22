@@ -2,9 +2,10 @@
 
 The reactive, token-cheap complement to the inbound drain: where
 ``slack_dm_inbound`` only records user DMs and the prompt-drain surfaces
-them in-band, this cycle *answers* them out-of-band on a tight cadence so
-a quick ack / status question gets a reply in seconds, not at the next
-slower per-loop tick — and at near-zero token cost.
+them in-band, this cycle *answers* them out-of-band — event-driven off the
+inbound-event wake (~1s), with a 5m fallback timer — so a quick ack / status
+question gets a reply in seconds, not at the next slower per-loop tick, and at
+near-zero token cost.
 
 It is **complementary to the drain, not a double-answer**: ``consume()``
 stamps ``consumed_at`` (prompt-drain), this cycle stamps

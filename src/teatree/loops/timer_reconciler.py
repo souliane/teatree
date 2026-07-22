@@ -15,12 +15,17 @@ daily :func:`prune_task_results` chain caps DBTaskResult table growth, and an ho
 :func:`expire_stale_jobs` chain keeps the ``default``-queue backlog swept for a
 long-lived worker (so it never blind-fires days-old provision/ship jobs even without
 the front-end drain loop). A :func:`drain_headless_queue` chain keeps the headless
-backlog draining and re-enqueues runs a dead worker abandoned. A tight-cadence
-:func:`run_slack_answer` chain drives the reactive Slack-answer cycle headless (the
-👀-receipt + reply/delegate machinery that only ran in an interactive owner
-session's ``/loop`` slot before), guarded by the SAME ``loop-slack-answer``
+backlog draining and re-enqueues runs a dead worker abandoned. A fallback-cadence
+(5m default) :func:`run_slack_answer` chain drives the reactive Slack-answer cycle
+headless (the 👀-receipt + reply/delegate machinery that only ran in an interactive
+owner session's ``/loop`` slot before), guarded by the SAME ``loop-slack-answer``
 :class:`LoopLease` the ``loop_slack_answer`` mgmt command takes so the worker and an
-interactive owner session can never double-post. A :func:`render_statusline` chain
+interactive owner session can never double-post. The same lease-guarded cycle is
+also driven event-first: the Socket Mode receiver enqueues a one-shot
+:func:`wake_slack_answer` the moment it appends an inbound event, so a reply
+lands in ~one worker poll instead of waiting out the cadence, while
+:func:`run_slack_answer` stays as the fallback that drains anything a missed
+wake left behind. A :func:`render_statusline` chain
 (:mod:`teatree.loops.statusline_refresh`) keeps ``statusline.txt`` fresh on a short
 cadence even when no domain loop is admitted-and-ticking, so the pre-rendered loop line
 never freezes headless. The maintenance chains are seeded by
@@ -334,49 +339,79 @@ def drain_headless_chain() -> dict[str, int]:
     }
 
 
+def _run_slack_answer_cycle_under_lease() -> dict[str, int]:
+    """Run one Slack-answer cycle under the shared ``loop-slack-answer`` lease.
+
+    The single body both the cadence chain (:func:`run_slack_answer`) and the
+    event-driven wake (:func:`wake_slack_answer`) share: each serialises on the
+    SAME lease the mgmt command / interactive ``/loop`` slot takes, so the
+    reactive worker, an owner session, and an inbound-event wake can never
+    double-post. A held lease means a holder is already running the cycle, so
+    this returns ``{"skipped_lease_held": 1}`` without running it; the caller
+    decides whether to re-arm.
+    """
+    from teatree.core.models import LoopLease  # noqa: PLC0415 — deferred: ORM import needs the app registry
+    from teatree.loop.slack_answer.cycle import run_slack_answer_cycle  # noqa: PLC0415 — deferred: task-body import
+
+    owner = f"worker-{os.getpid()}"
+    if not LoopLease.objects.acquire(SLACK_ANSWER_LEASE, owner=owner):
+        return {"skipped_lease_held": 1}
+    try:
+        report = run_slack_answer_cycle()
+        return {
+            "processed": report.processed,
+            "eyes_reacted": report.eyes_reacted,
+            "acked": report.acked,
+            "answered_simple": report.answered_simple,
+            "delegated": report.delegated,
+            "errors": report.errors,
+        }
+    finally:
+        LoopLease.objects.release(SLACK_ANSWER_LEASE, owner=owner)
+
+
 @task(queue_name=LOOPS_QUEUE)
 def run_slack_answer() -> dict[str, int]:
     """Run one reactive Slack-answer cycle headless, then re-schedule at its cadence.
 
     Self-dedups first (another pending run carries the chain), mirroring the
     reconcile/prune/expire contract, so an at-least-once redelivery collapses to
-    one. Acquires the SAME ``loop-slack-answer`` :class:`LoopLease` the mgmt
-    command / interactive ``/loop`` slot takes: if the lease is held (an owner
-    session is already running the cycle) this tick SKIPS the cycle rather than
-    double-post, but still re-arms the chain. On a win it runs
-    :func:`run_slack_answer_cycle`, releases the lease in a ``finally``, and
-    re-schedules itself at :func:`slack_answer_cadence_seconds`.
+    one. Runs :func:`_run_slack_answer_cycle_under_lease` — which SKIPS the cycle
+    when an owner session already holds the ``loop-slack-answer`` lease rather
+    than double-post — then always re-schedules itself at
+    :func:`slack_answer_cadence_seconds`. This cadence chain is the fallback
+    safety net behind the event-driven :func:`wake_slack_answer`: it drains
+    anything a missed wake left behind even when no inbound event arrives.
     """
-    from teatree.core.models import LoopLease  # noqa: PLC0415 — deferred: ORM import needs the app registry
     from teatree.loop.loop_cadences import slack_answer_cadence_seconds  # noqa: PLC0415 — deferred: tick-time import
-    from teatree.loop.slack_answer.cycle import run_slack_answer_cycle  # noqa: PLC0415 — deferred: task-body import
 
     if _pending_for_path(run_slack_answer.module_path):
         return {"deduped": 1}
 
-    owner = f"worker-{os.getpid()}"
-    if not LoopLease.objects.acquire(SLACK_ANSWER_LEASE, owner=owner):
-        # An interactive owner session holds the slot — skip this tick's cycle so
-        # the two can never double-post, but still re-arm the chain below.
-        result: dict[str, int] = {"skipped_lease_held": 1}
-    else:
-        try:
-            report = run_slack_answer_cycle()
-            result = {
-                "processed": report.processed,
-                "eyes_reacted": report.eyes_reacted,
-                "acked": report.acked,
-                "answered_simple": report.answered_simple,
-                "delegated": report.delegated,
-                "errors": report.errors,
-            }
-        finally:
-            LoopLease.objects.release(SLACK_ANSWER_LEASE, owner=owner)
-
+    result = _run_slack_answer_cycle_under_lease()
     run_slack_answer.using(
         run_after=timezone.now() + dt.timedelta(seconds=slack_answer_cadence_seconds()),
     ).enqueue()
     return result
+
+
+@task(queue_name=LOOPS_QUEUE)
+def wake_slack_answer() -> dict[str, int]:
+    """Run ONE Slack-answer cycle immediately, triggered by an inbound Slack event.
+
+    Enqueued (best-effort) by the Socket Mode receiver — via a callback wired at
+    the CLI composition root, since the receiver's ``backends`` layer cannot
+    reach this orchestration layer — the moment it appends an inbound event to
+    the durable JSONL queue, so a reply lands in ~one worker poll interval
+    instead of waiting out the :func:`run_slack_answer` cadence. Runs the same
+    lease-guarded cycle as the cadence chain (so it can never double-post), then
+    STOPS — it does not re-arm. The cadence chain remains the fallback that
+    drains anything a missed wake left behind. Self-dedups against a pending
+    wake so an event burst collapses to a single immediate cycle.
+    """
+    if _pending_for_path(wake_slack_answer.module_path):
+        return {"deduped": 1}
+    return _run_slack_answer_cycle_under_lease()
 
 
 def ensure_maintenance_chains() -> None:
