@@ -35,6 +35,7 @@ _PORTABLE_NAMES = {
     "check_broad_except",
     "check_test_shape",
     "check_test_path_mirror",
+    "check_pr_body_stray",
     "refuse-main-clone-commit",
 }
 
