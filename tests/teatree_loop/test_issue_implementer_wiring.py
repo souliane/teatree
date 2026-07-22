@@ -25,6 +25,7 @@ from teatree.config import UserSettings
 from teatree.core.backend_factory import OverlayBackends
 from teatree.core.backend_protocols import CodeHostBackend
 from teatree.core.models import Task, Ticket
+from teatree.core.models.config_setting import ConfigSetting
 from teatree.loop.dispatch import dispatch
 from teatree.loop.domain_jobs import jobs_for_domain
 from teatree.loop.job_identity import Domain
@@ -256,6 +257,9 @@ class IssueImplementerMiniLoopTests(TestCase):
         patcher = patch("teatree.core.review.author_trust.repo_is_internal", return_value=False)
         patcher.start()
         self.addCleanup(patcher.stop)
+        # The mini-loop wiring is orthogonal to the admission policy; pin ``all``
+        # so a trusted author's unassigned/unlabeled issue is admitted.
+        ConfigSetting.objects.set_value("admission_policy", "all")
 
     def test_mini_loop_identity(self) -> None:
         assert MINI_LOOP.name == "issue_implementer"

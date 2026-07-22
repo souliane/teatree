@@ -14,6 +14,7 @@ from typing import Any, Final
 
 from teatree.config.agent_enums import AgentHarness, AgentHarnessProvider, AgentRuntime, parse_harness_name
 from teatree.config.enums import (
+    AdmissionPolicy,
     Autonomy,
     CriticGateMode,
     MissingIssuePolicy,
@@ -187,6 +188,7 @@ OVERLAY_OVERRIDABLE_SETTINGS: dict[str, Callable[[Any], Any]] = {
     "issue_implementer_max_concurrent": _parse_strict_int,
     "issue_implementer_cadence_hours": _parse_strict_int,
     "trusted_issue_authors": _parse_str_list,
+    "admission_policy": AdmissionPolicy.parse,
     "fleet_claim_enabled": _parse_strict_bool,
     "auto_disposition_enabled": _parse_strict_bool,
     "limit_autorecovery_enabled": _parse_strict_bool,

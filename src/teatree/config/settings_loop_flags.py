@@ -9,6 +9,7 @@ rather than composed attributes.
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from teatree.config.enums import AdmissionPolicy
 from teatree.config.setting_parsers import _default_handover_mirror_path
 
 
@@ -50,6 +51,17 @@ class _LoopFlagAndCredentialSettings:
     # governs INTAKE only; merge authority is untouched (a substrate PR still
     # needs a recorded human approver).
     trusted_issue_authors: list[str] = field(default_factory=list)
+    # The per-overlay AUTONOMOUS-admission verdict both issue-intake scanners
+    # (``assigned_issues``, ``issue_implementer``) run before creating
+    # ``Ticket(role=author)`` + ``Task(phase=coding)``. Default
+    # ``ASSIGNED_AND_LABELED`` (the strictest) is SAFE for a colleague repo: a
+    # freshly-configured overlay never auto-works a colleague's ticket by accident.
+    # ``t3-teatree`` (the owner's dogfood overlay) promotes this to ``ALL`` as an
+    # overlay code default. Resolved by
+    # ``teatree.core.intake.admission_policy.admit_issue``; DB-home (#1775),
+    # per-overlay overridable, promoted to an overlay code default (#36) so the
+    # overlay's ``OverlayConfig`` supplies the value BELOW any DB/env override.
+    admission_policy: AdmissionPolicy = AdmissionPolicy.ASSIGNED_AND_LABELED
     # Cap on simultaneously in-flight auto-implement tickets.
     issue_implementer_max_concurrent: int = 1
     # Internal dispatch-rate floor (hours) between auto-implement pickups.
