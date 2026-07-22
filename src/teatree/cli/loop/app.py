@@ -32,6 +32,7 @@ import typer
 from teatree.agents import permission_modes
 from teatree.cli.loop.claim_next import claim_next_command
 from teatree.cli.loop.drain_queue import drain_queue_app
+from teatree.cli.loop.intake_loops import intake_loops_command
 from teatree.cli.loop.listing import list_command
 from teatree.cli.loop.owner import register as register_loop_owner
 from teatree.cli.loop.preset import register as register_loop_preset
@@ -392,6 +393,10 @@ loop_app.command("claim-next")(claim_next_command)
 # #1744 — the read-only live loop-status view. Split off (same module-health
 # reason) and registered as a flat ``t3 loop list``.
 loop_app.command("list")(list_command)
+
+# #3632 — the DB-free owner-intake loop names the deploy fleet policy must never
+# force off; a flat ``t3 loop intake-loops`` the entrypoint reseed reads.
+loop_app.command("intake-loops")(intake_loops_command)
 
 # #3275 — the on-demand issue-marker reconciler: flat ``t3 loop reclaim-markers``.
 # The sanctioned way to unjam stranded intake budget (raw SQL is classifier-blocked).

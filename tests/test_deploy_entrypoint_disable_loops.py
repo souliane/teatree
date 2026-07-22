@@ -1,3 +1,4 @@
+# test-path: cross-cutting — exercises the deploy/entrypoint.sh shell script, not a single src package.
 """Integration tests for the deploy entrypoint's fleet-loop policy step.
 
 `deploy/entrypoint.sh` (init role) declares this box's per-loop role through
@@ -10,9 +11,11 @@ or ``t3 loop override`` can revive a loop a prior deploy left in a durable
 It force-enables the ENABLED set (default ``inbox``) with
 ``t3 loop enable <name> --emergency`` — the ONE handle that clears a stale hold, so
 the DM-only box's inbox recovers even from a prior durable disable. It forces the
-DISABLED set (default ``review,directive_loop``) off with
-``t3 loop override <name> off`` — the sanctioned NON-emergency successor to the
-now-refused ``t3 loop disable``.
+DISABLED set (default ``review``) off with ``t3 loop override <name> off`` — the
+sanctioned NON-emergency successor to the now-refused ``t3 loop disable``. The
+OWNER-INTAKE loops (``t3 loop intake-loops`` — ``directive_loop`` / ``dispatch`` /
+``inbox``) are pruned from the DISABLED set before it is applied, so the owner's
+captured intent is always ingested even under ``autonomous_away`` (#3632).
 
 It never calls the deprecated ``t3 loop disable``. Because a typo in either list
 would silently mis-configure the box, the step validates the whole requested set
@@ -39,6 +42,8 @@ from pathlib import Path
 
 import pytest
 
+from teatree.loops.fleet_policy import OWNER_INTAKE_LOOPS
+
 pytestmark = pytest.mark.skipif(
     shutil.which("jq") is None or shutil.which("bash") is None,
     reason="needs bash + jq (both present in the deploy image and CI)",
@@ -55,6 +60,7 @@ _STUB_LOOP_STATUS = {
         {"name": "inbox"},
         {"name": "review"},
         {"name": "directive_loop"},
+        {"name": "dispatch"},
         {"name": "tickets"},
         {"name": "ship"},
     ],
@@ -94,12 +100,20 @@ def _write_t3_stub(bin_dir: Path) -> None:
     missing ``--emergency``, trips the function's loud-failure path.
     """
     bin_dir.mkdir(parents=True, exist_ok=True)
+    # The owner-intake names come from the single Python source, injected so the
+    # stub can never drift from the real `t3 loop intake-loops` contract.
+    intake_echo = "".join(f"  echo {name}\n" for name in sorted(OWNER_INTAKE_LOOPS))
     shim = bin_dir / "t3"
     shim.write_text(
         "#!/usr/bin/env bash\n"
         'if [ "${1:-}" = "loop" ] && [ "${2:-}" = "list" ]; then\n'
         '  [ -n "${T3_LIST_FAIL:-}" ] && exit 3\n'
         '  cat "$T3_LIST_JSON"\n'
+        "  exit 0\n"
+        "fi\n"
+        'if [ "${1:-}" = "loop" ] && [ "${2:-}" = "intake-loops" ]; then\n'
+        '  [ -n "${T3_INTAKE_FAIL:-}" ] && exit 4\n'
+        f"{intake_echo}"
         "  exit 0\n"
         "fi\n"
         'if [ "${1:-}" = "loop" ] && [ "${2:-}" = "enable" ]; then\n'
@@ -196,17 +210,18 @@ def _run(
 
 
 class TestApplyFleetLoopPolicy:
-    def test_defaults_enable_inbox_and_force_colleague_loops_off(self, tmp_path: Path) -> None:
+    def test_defaults_enable_inbox_and_force_colleague_loop_off(self, tmp_path: Path) -> None:
         # The DM-only box: `inbox` is force-enabled (recovering any stale hold),
-        # and the colleague-facing `review` / `directive_loop` are forced off — via
-        # the override plane, never the deprecated `t3 loop disable`.
+        # and the colleague-facing `review` loop is forced off — via the override
+        # plane, never the deprecated `t3 loop disable`. `directive_loop` is
+        # owner-intake and is NOT in the default disabled set (#3632).
         out = _run(tmp_path)
         assert out.result.returncode == 0, out.result.stderr
         assert out.enabled == ["inbox"]
         # `inbox clear` drops any stale forced-off override left by a prior deploy
-        # so the sanctioned-enabled inbox can never stay masked; then the
-        # colleague loops are forced off.
-        assert out.overridden == ["inbox clear", "review off", "directive_loop off"]
+        # so the sanctioned-enabled inbox can never stay masked; then only the
+        # colleague `review` loop is forced off — never `directive_loop`.
+        assert out.overridden == ["inbox clear", "review off"]
         assert out.disabled == [], "the deprecated `t3 loop disable` must never be called"
 
     def test_enable_passes_emergency(self, tmp_path: Path) -> None:
@@ -225,10 +240,34 @@ class TestApplyFleetLoopPolicy:
         assert out.disabled == []
 
     def test_whitespace_and_trailing_comma_tolerated(self, tmp_path: Path) -> None:
+        # `directive_loop` is owner-intake → pruned; only `review` is forced off.
         out = _run(tmp_path, enabled="inbox, ,", disabled="review, directive_loop ,")
         assert out.result.returncode == 0, out.result.stderr
         assert out.enabled == ["inbox"]
-        assert out.overridden == ["inbox clear", "review off", "directive_loop off"]
+        assert out.overridden == ["inbox clear", "review off"]
+        assert "OWNER-INTAKE loop" in out.result.stderr
+
+    def test_owner_intake_loop_is_never_forced_off(self, tmp_path: Path) -> None:
+        """An explicit owner-intake loop in the DISABLED set is pruned, never masked (#3632).
+
+        This is the redeploy re-mask the fix removes: `directive_loop` (interprets
+        the owner's captured directives) forced off on every deploy left owner
+        intent uninterpreted. It stays runnable; the colleague `review` loop still
+        gets forced off, so the exemption is scoped to owner-intake loops only.
+        """
+        out = _run(tmp_path, enabled="inbox", disabled="review,directive_loop,dispatch")
+        assert out.result.returncode == 0, out.result.stderr
+        assert out.enabled == ["inbox"]
+        assert out.overridden == ["inbox clear", "review off"]
+        assert "directive_loop" not in [entry.split()[0] for entry in out.overridden if entry.endswith(" off")]
+        assert "OWNER-INTAKE loop" in out.result.stderr
+
+    def test_intake_read_failure_is_loud(self, tmp_path: Path) -> None:
+        out = _run(tmp_path, enabled="inbox", disabled="review", T3_INTAKE_FAIL="1")
+        assert out.result.returncode != 0
+        assert out.enabled == [], "the intake read precedes every action"
+        assert out.overridden == []
+        assert "could not read the owner-intake loop set" in out.result.stderr
 
     def test_both_empty_is_a_noop_and_succeeds(self, tmp_path: Path) -> None:
         out = _run(tmp_path, enabled="", disabled="")
