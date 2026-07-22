@@ -45,6 +45,14 @@ COMPLETED silently. This is the fix for the redispatch flood on already-done tic
 (3366/3336/3352): the away-mode queue is never asked about a phase the ticket's own
 state already answers.
 
+A FAILED task WITH A LIVE SUCCESSOR — a newer, still-active (PENDING/CLAIMED) sibling
+Task on the same ``(ticket, phase)`` — is likewise retired COMPLETED, never escalated
+(3534). A stuck-phase redispatch mints a fresh Task and can re-claim the predecessor's
+lease out from under it; the predecessor lands FAILED carrying a ``stuck_loop: lease
+lost … re-claimed`` breach even though the phase is recovering fine under the successor.
+Escalating it files a ``DeferredQuestion`` already stale at write time — the successor
+has the work, so the only correct answer is "ignore".
+
 A DEAD-REVIEW-TARGET FAILED task — a review/codex-review phase (``reviewing`` /
 ``codex_reviewing`` / ``codex_adversarial_reviewing`` / ``e2e_reviewing``) whose
 linked PR is provably MERGED/CLOSED — is likewise retired COMPLETED (and its reviewer
@@ -73,7 +81,7 @@ from django.utils import timezone
 from teatree.agents.outage_classifier import is_transient_failure
 from teatree.agents.usage_window import autorecovery_enabled
 from teatree.core.modelkit.phase_tools import VERDICT_REVIEW_PHASES
-from teatree.core.modelkit.phases import normalize_phase
+from teatree.core.modelkit.phases import normalize_phase, phase_spellings
 from teatree.core.models import Task, TaskAttempt, Ticket
 from teatree.core.models.deferred_question import DeferredQuestion
 from teatree.core.models.task_repair import phase_attempts
@@ -340,11 +348,14 @@ def _stamp_halt(task: Task) -> None:
 def _retire_if_dead_artifact(task: Task) -> bool:
     """Retire a FAILED task whose phase output is already moot; ``True`` if retired.
 
-    Two ways a FAILED row becomes a dead artifact to retire (COMPLETED) rather than
+    Three ways a FAILED row becomes a dead artifact to retire (COMPLETED) rather than
     reopen or escalate:
 
-    * SUPERSEDED — the ticket's FSM already reached this phase's output, so the
+    * SUPERSEDED BY FSM — the ticket's FSM already reached this phase's output, so the
         row is a leftover of an earlier interrupted run (the ticket advanced on its own).
+    * SUPERSEDED BY A LIVE SUCCESSOR — a newer, still-active sibling Task holds this
+        ``(ticket, phase)`` (a redispatch that re-claimed the lease out from under this
+        row), so escalating it asks about a failure the system already recovered (#3534).
     * DEAD REVIEW TARGET — a review/codex-review phase whose linked PR is
         merged/closed, so a verdict can never land; re-dispatching only burns a
         session that re-confirms the close (#3556).
@@ -352,10 +363,34 @@ def _retire_if_dead_artifact(task: Task) -> bool:
     if task.ticket.has_completed_phase(task.phase):
         _retire_superseded(task)
         return True
+    if _has_live_successor(task):
+        _retire_superseded(task)
+        return True
     if _review_target_dead(task):
         _retire_dead_review(task)
         return True
     return False
+
+
+def _has_live_successor(task: Task) -> bool:
+    """Whether a newer, still-active sibling Task is handling *task*'s ``(ticket, phase)`` (#3534).
+
+    A stuck-phase redispatch mints a FRESH Task for the same ``(ticket, phase)`` and can
+    re-claim the predecessor's lease out from under it. The predecessor then lands FAILED
+    carrying a ``stuck_loop: lease lost … re-claimed`` breach even though the phase is
+    recovering fine under the successor — so escalating it files a ``DeferredQuestion``
+    that was already stale at write time (the only correct answer was "ignore"). A
+    later-pk sibling in an ACTIVE state (PENDING/CLAIMED) is that live successor; retire
+    the predecessor as superseded. Only a strictly LATER row (``pk__gt``) counts, so the
+    newest FAILED row is never retired on the strength of an older sibling — a genuinely
+    blocked phase whose last row has no successor still escalates.
+    """
+    return Task.objects.filter(
+        ticket_id=task.ticket_id,  # ty: ignore[unresolved-attribute]
+        phase__in=phase_spellings(normalize_phase(task.phase)),
+        status__in=Task.Status.active(),
+        pk__gt=task.pk,
+    ).exists()
 
 
 def _review_target_dead(task: Task) -> bool:

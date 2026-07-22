@@ -288,6 +288,73 @@ class TestTransientRequeue(TestCase):
         assert task.status == Task.Status.FAILED
         assert DeferredQuestion.objects.filter(answered_at__isnull=True).count() == 1
 
+    def test_lease_loss_with_live_successor_is_retired_not_escalated(self) -> None:
+        # 3534: worker A loses its lease because a redispatch minted a fresh task B
+        # for the same (ticket, phase) and B re-claimed the lease. A lands FAILED
+        # carrying the `stuck_loop: lease lost … re-claimed` breach even though the
+        # phase is recovering fine under B. The predecessor must retire silently —
+        # escalating it asks the human about a failure the system already superseded.
+        predecessor = _failed_task(phase="coding")
+        _add_failed_attempt(
+            predecessor,
+            error="stuck_loop: lease lost for task 1: re-claimed by another worker",
+        )
+        Task.objects.create(
+            ticket=predecessor.ticket,
+            session=predecessor.session,
+            phase="coding",
+            status=Task.Status.CLAIMED,
+        )
+
+        reopened = requeue_transient_failed()
+
+        predecessor.refresh_from_db()
+        assert reopened == 0
+        assert predecessor.status == Task.Status.COMPLETED
+        assert "[superseded-retired]" in predecessor.execution_reason
+        assert DeferredQuestion.objects.filter(answered_at__isnull=True).count() == 0
+
+    def test_failed_task_with_only_an_older_sibling_still_escalates(self) -> None:
+        # Directionality guard: the newest FAILED row must NOT be retired on the
+        # strength of an OLDER live sibling — only a LATER successor (higher pk)
+        # supersedes it. A genuinely blocked phase whose live sibling predates it
+        # is still a real halt that must escalate.
+        older = _failed_task(phase="coding")
+        newest = Task.objects.create(
+            ticket=older.ticket,
+            session=older.session,
+            phase="coding",
+            status=Task.Status.FAILED,
+        )
+        Task.objects.filter(pk=older.pk).update(status=Task.Status.CLAIMED)
+        _add_failed_attempt(newest, error="deterministic failure in phase 'coding'")
+
+        reopened = requeue_transient_failed()
+
+        newest.refresh_from_db()
+        assert reopened == 0
+        assert newest.status == Task.Status.FAILED
+        assert DeferredQuestion.objects.filter(answered_at__isnull=True).count() == 1
+
+    def test_failed_task_with_terminal_sibling_still_escalates(self) -> None:
+        # A COMPLETED/FAILED sibling is not a live successor — the phase is not being
+        # worked by anyone else, so a genuine deterministic failure must still escalate.
+        task = _failed_task(phase="coding")
+        _add_failed_attempt(task, error="deterministic failure in phase 'coding'")
+        Task.objects.create(
+            ticket=task.ticket,
+            session=task.session,
+            phase="coding",
+            status=Task.Status.COMPLETED,
+        )
+
+        reopened = requeue_transient_failed()
+
+        task.refresh_from_db()
+        assert reopened == 0
+        assert task.status == Task.Status.FAILED
+        assert DeferredQuestion.objects.filter(answered_at__isnull=True).count() == 1
+
     def test_churned_tasks_same_condition_collapse_to_one_question(self) -> None:
         # THE FLOOD FIX: a stuck phase mints a FRESH Task row every redispatch cycle.
         # Two FAILED tasks on the same (ticket, phase) failing IDENTICALLY are ONE
