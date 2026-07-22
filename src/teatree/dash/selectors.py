@@ -30,11 +30,13 @@ State = Ticket.State
 # The four visual groupings (lifecycle order). The union of every grouped state
 # plus the toggle-hidden IGNORED equals ``Ticket.State`` exactly — pinned by
 # ``test_kanban_conformance``. A card keeps its own state sub-column within a
-# group; the grouping is purely visual.
+# group; the grouping is purely visual. REVIEW_POSTED (reviewer terminal) sits
+# under "Reviewing", NOT "Landed": "Landed" is author work merged to main, so a
+# reviewer ghost must never read as merged-and-shipped there.
 COLUMN_GROUPS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("Backlog", (State.NOT_STARTED, State.SCOPED)),
     ("Building", (State.STARTED, State.PLANNED, State.CODED, State.TESTED)),
-    ("Reviewing", (State.REVIEWED, State.SHIPPED, State.IN_REVIEW)),
+    ("Reviewing", (State.REVIEWED, State.SHIPPED, State.IN_REVIEW, State.REVIEW_POSTED)),
     ("Landed", (State.MERGED, State.RETROSPECTED, State.DELIVERED)),
 )
 # Hidden by default behind the board's ``ignored`` toggle (abandoned tickets).

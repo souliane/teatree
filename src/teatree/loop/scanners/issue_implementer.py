@@ -40,6 +40,7 @@ from urllib.parse import urlparse
 
 from teatree.core.backend_protocols import CodeHostBackend
 from teatree.core.fleet import wire
+from teatree.core.intake.admission_policy import admit_issue
 from teatree.core.models import NEEDS_TRIAGE_LABEL, ImplementedIssueMarker
 from teatree.core.review.author_trust import classify_author, is_trusted_author, trusted_handles
 from teatree.loop.scanners.base import ScanSignal
@@ -226,10 +227,10 @@ class IssueImplementerScanner:
                 self.overlay_name,
             )
             return []
-        candidates = self._candidate_issues(trusted)
+        operators = self._resolve_identities()
+        candidates = self._candidate_issues(trusted, operators)
         if not candidates:
             return []
-        operators = self._resolve_identities()
         open_prs = fetch_open_prs(self.host, authors=operators) if self.readback_enabled else []
         merged_prs = fetch_merged_prs(self.host, authors=operators) if self.readback_enabled else []
         signals: list[ScanSignal] = []
@@ -324,13 +325,16 @@ class IssueImplementerScanner:
         config_tier = frozenset(handle.strip().lower() for handle in self.trusted_authors if handle.strip())
         return config_tier | trusted_handles()
 
-    def _candidate_issues(self, trusted: frozenset[str]) -> list[RawAPIDict]:
-        """Open, URL-bearing, TRUSTED-AUTHOR issues not held by :data:`NEEDS_TRIAGE_LABEL`.
+    def _candidate_issues(self, trusted: frozenset[str], operators: tuple[str, ...]) -> list[RawAPIDict]:
+        """Open, URL-bearing, TRUSTED-AUTHOR, ADMITTED issues not held by :data:`NEEDS_TRIAGE_LABEL`.
 
         The claimable set, resolved before the per-issue read-back + claim loop so the
         forge open-PR fetch only fires when there is real work to guard. The label
         filter applies ONLY under ``require_label`` — by default an unlabelled issue
-        from a trusted author is exactly what this loop exists to pick up.
+        from a trusted author is exactly what this loop exists to pick up. The
+        per-overlay admission policy (:func:`admit_issue`, keyed on the operator's own
+        *operators* handles) runs LAST, so a rejected issue is dropped before it can
+        be claimed — the marker/budget is never spent on work the overlay will not do.
         """
         candidates: list[RawAPIDict] = []
         for issue in self._collect_unique_issues(trusted):
@@ -348,6 +352,13 @@ class IssueImplementerScanner:
                     "IssueImplementerScanner REFUSED %s: author %r is not a trusted issue author",
                     _issue_url(issue),
                     _issue_author(issue),
+                )
+                continue
+            if not admit_issue(issue, overlay=self.overlay_name, owner_handles=operators):
+                logger.info(
+                    "IssueImplementerScanner REFUSED %s: overlay %r admission_policy rejects it for autonomous work",
+                    _issue_url(issue),
+                    self.overlay_name,
                 )
                 continue
             candidates.append(issue)

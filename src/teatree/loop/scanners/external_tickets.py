@@ -14,7 +14,7 @@ from teatree.loop.scanners.base import ScanSignal
 
 logger = logging.getLogger(__name__)
 
-_TERMINAL_STATES = ("delivered", "ignored")
+_TERMINAL_STATES = ("delivered", "review_posted", "ignored")
 _PLACEHOLDERS = ", ".join("?" for _ in _TERMINAL_STATES)
 _QUERY = f"SELECT id, state, issue_url, overlay FROM teatree_ticket WHERE state NOT IN ({_PLACEHOLDERS}) ORDER BY id"  # noqa: S608 — literal placeholder count, no user input
 

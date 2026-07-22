@@ -27,6 +27,7 @@ from django.test import TestCase
 
 from teatree.core.backend_protocols import PrOpenState, ReviewState
 from teatree.core.models import ImplementedIssueMarker
+from teatree.core.models.config_setting import ConfigSetting
 from teatree.core.models.session import Session
 from teatree.core.models.task import Task
 from teatree.core.models.ticket import Ticket
@@ -695,6 +696,9 @@ class TestIssueImplementerIsolation(TestCase):
         patcher = patch("teatree.core.review.author_trust.repo_is_internal", return_value=False)
         patcher.start()
         self.addCleanup(patcher.stop)
+        # Isolation is orthogonal to the admission policy; pin ``all`` so the
+        # unassigned/unlabeled trusted-author issues are admitted.
+        ConfigSetting.objects.set_value("admission_policy", "all")
 
     def _issue(self, url: str) -> RawAPIDict:
         return {

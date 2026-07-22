@@ -32,7 +32,9 @@ from teatree.loop.statusline_render import default_path
 # plain form between the escape sequences).
 _URL_RE = re.compile(r"https?://[^\s\x1b\\]+")
 
-_TERMINAL_TICKET_STATES = frozenset({Ticket.State.MERGED, Ticket.State.DELIVERED, Ticket.State.IGNORED})
+_TERMINAL_TICKET_STATES = frozenset(
+    {Ticket.State.MERGED, Ticket.State.DELIVERED, Ticket.State.REVIEW_POSTED, Ticket.State.IGNORED},
+)
 
 
 def _default_statusline_reader() -> str:

@@ -15,7 +15,10 @@ from pydantic_ai import Agent
 from pydantic_ai.agent import AgentRunResult
 from pydantic_ai.messages import ModelMessage, ModelResponse, TextPart, ToolCallPart
 from pydantic_ai.models.function import AgentInfo, FunctionModel
+from pydantic_ai.toolsets.abstract import AbstractToolset
+from pydantic_ai.toolsets.combined import CombinedToolset
 
+from teatree.agents.lane_b import toolsets as toolsets_module
 from teatree.agents.lane_b.config import LaneBToolConfig
 from teatree.agents.lane_b.toolsets import build_lane_b_toolsets
 from tests.teatree_agents.lane_b._managed_clone import linked_worktree, managed_main_clone
@@ -111,6 +114,25 @@ class TestHardDenyWithinAssembledToolsets:
             p for m in result.all_messages() for p in getattr(m, "parts", []) if type(p).__name__ == "ToolReturnPart"
         ]
         assert any("marker" in str(p.content) for p in returns)
+
+
+class TestMcpHonoursEmptyPhaseAllowance:
+    def _pin_sentinel_mcp(self, monkeypatch: pytest.MonkeyPatch) -> AbstractToolset[None]:
+        sentinel: AbstractToolset[None] = CombinedToolset([])
+        monkeypatch.setattr(toolsets_module, "build_mcp_toolsets", lambda: [sentinel])
+        return sentinel
+
+    def test_none_phase_gets_no_mcp(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        # short_describe maps to the empty (NON-None) allowance — it may call NOTHING,
+        # so no MCP toolset may attach past the phase filter.
+        sentinel = self._pin_sentinel_mcp(monkeypatch)
+        config = LaneBToolConfig(fs_root=tmp_path, phase="short_describe")
+        assert sentinel not in build_lane_b_toolsets(config).toolsets
+
+    def test_work_phase_still_gets_mcp(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        sentinel = self._pin_sentinel_mcp(monkeypatch)
+        config = LaneBToolConfig(fs_root=tmp_path, phase="coding")
+        assert sentinel in build_lane_b_toolsets(config).toolsets
 
 
 def test_no_model_requests_are_allowed() -> None:

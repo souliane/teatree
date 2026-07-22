@@ -65,6 +65,19 @@ __all__ = ["HarnessOutcome", "LoopWatchdog", "TaskUsage", "run_headless"]
 
 _HEARTBEAT_INTERVAL = 60  # seconds
 
+# Lease duration the heartbeat renews to. The renewal runs as an asyncio task on
+# the SAME event loop the headless agent drives, so under CPU/event-loop
+# starvation (a loaded box running several coders at once) the ``sleep`` between
+# renewals stretches far past its nominal 60s. With the DB default 300s lease that
+# is only ~5 heartbeats of slack: a starved worker misses a few renewals, its OWN
+# ``reclaim_orphaned_claims`` scanner sees the lease expired and re-queues the task,
+# and the still-running coder then aborts with "lease lost: re-claimed by another
+# worker" — a self-inflicted reclaim, NOT a second executor. Renewing to 15x the
+# heartbeat interval widens the slack to ~15 min of continuous starvation before a
+# false lapse, which absorbs realistic load spikes. A genuinely dead session's task
+# still reclaims — just after the wider window.
+_LEASE_SECONDS = 15 * _HEARTBEAT_INTERVAL  # 900s
+
 _STUCK_LOOP_PREFIX = "stuck_loop: "
 _RESULT_ERROR_PREFIX = "result_error: "
 
@@ -399,7 +412,7 @@ def _renew_lease_closing_connection(task: Task) -> None:
     thread, which never closes itself — see :mod:`teatree.utils.thread_db`.
     """
     try:
-        task.renew_lease()
+        task.renew_lease(lease_seconds=_LEASE_SECONDS)
     finally:
         close_thread_db_connections()
 
@@ -531,6 +544,10 @@ async def _collect(session: HarnessSession, prompt: str) -> HarnessOutcome:
     )
 
 
+#: Head of the agent's prose folded into a no-envelope refusal for diagnosis.
+_NO_ENVELOPE_TEXT_HEAD_CHARS = 500
+
+
 def _record_success(task: Task, outcome: HarnessOutcome, *, phase: str = "", lane: str = "") -> TaskAttempt:
     """Record a successful SDK run via the shared recorder.
 
@@ -539,12 +556,29 @@ def _record_success(task: Task, outcome: HarnessOutcome, *, phase: str = "", lan
     SDK path and the in-session ``record-attempt`` path can never drift on the
     result-envelope contract. *lane* is the resolved Layer-2 lane
     (souliane/teatree#657) this dispatch authenticated through.
+
+    When the agent emits NO parseable JSON result envelope, the phase decides
+    the outcome. ``prompt.py`` demands a final JSON object from every phase, so
+    prose-only output is a contract violation: for a phase NOT in
+    :data:`~teatree.agents.result_schema.PROSE_SUMMARY_ACCEPTED_PHASES` this
+    records a FAILED attempt with a ``no_result_envelope:`` diagnostic rather
+    than laundering the prose into a false success. The exempt phases
+    (``scoping``, ``retro``) keep the ``{"summary": ...}`` fallback unchanged.
+    This is lane-agnostic — both harness backends funnel through here.
     """
     from teatree.agents.attempt_recorder import record_result_envelope  # noqa: PLC0415 — deferred: call-time import
     from teatree.agents.headless_result import parse_result  # noqa: PLC0415 — deferred: call-time import
+    from teatree.agents.result_schema import prose_summary_accepted  # noqa: PLC0415 — deferred: call-time import
 
     result = parse_result(outcome.agent_text)
     if not result:
+        if not prose_summary_accepted(phase or task.phase):
+            head = outcome.agent_text.strip()[:_NO_ENVELOPE_TEXT_HEAD_CHARS]
+            error = (
+                "no_result_envelope: agent produced no JSON result envelope; "
+                f"refusing to record success (agent text head: {head!r})"
+            )
+            return _record_failure(task, exit_code=0, error=error)
         result = {"summary": outcome.agent_text[:1000]}
 
     maybe_persist_on_park(task, result, outcome.thread)  # (#2886)

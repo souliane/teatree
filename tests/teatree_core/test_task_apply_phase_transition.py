@@ -16,16 +16,16 @@ from teatree.core.models import Session, Task, Ticket
 
 
 class TestApplyPhaseTransitionGuardsTerminalReviewer(TestCase):
-    """#1000: reviewer-ticket already in DELIVERED must not re-fire the FSM."""
+    """#1000: reviewer-ticket already in REVIEW_POSTED must not re-fire the FSM."""
 
-    def test_completed_reviewing_task_on_delivered_ticket_no_ops(self) -> None:
+    def test_completed_reviewing_task_on_terminal_ticket_no_ops(self) -> None:
         # Reviewer-role ticket already advanced through review and is now
-        # DELIVERED (terminal). The #999 orphan sweep then completes a
+        # REVIEW_POSTED (terminal). The #999 orphan sweep then completes a
         # second reviewing task on the same ticket.
         ticket = Ticket.objects.create(
             overlay="test",
             role=Ticket.Role.REVIEWER,
-            state=Ticket.State.DELIVERED,
+            state=Ticket.State.REVIEW_POSTED,
         )
         session = Session.objects.create(ticket=ticket, agent_id="t")
         task = Task.objects.create(
@@ -40,13 +40,13 @@ class TestApplyPhaseTransitionGuardsTerminalReviewer(TestCase):
 
         ticket.refresh_from_db()
         assert fired is False, "no transition should fire on a terminal-state reviewer ticket"
-        assert ticket.state == Ticket.State.DELIVERED, f"ticket state must remain DELIVERED, got {ticket.state}"
+        assert ticket.state == Ticket.State.REVIEW_POSTED, f"ticket state must remain REVIEW_POSTED, got {ticket.state}"
 
     def test_reviewer_ticket_in_source_state_still_advances(self) -> None:
         # Guard must not regress the happy path: a reviewer-role ticket
         # still in a source state of mark_reviewed_externally() (here
         # NOT_STARTED, the lowest state on the source list) must advance
-        # to DELIVERED when its reviewing task completes.
+        # to REVIEW_POSTED when its reviewing task completes.
         ticket = Ticket.objects.create(
             overlay="test",
             role=Ticket.Role.REVIEWER,
@@ -64,16 +64,16 @@ class TestApplyPhaseTransitionGuardsTerminalReviewer(TestCase):
 
         ticket.refresh_from_db()
         assert fired is True, "reviewer ticket in a source state must advance"
-        assert ticket.state == Ticket.State.DELIVERED
+        assert ticket.state == Ticket.State.REVIEW_POSTED
 
-    def test_mark_reviewed_externally_still_raises_when_called_directly_on_delivered(self) -> None:
+    def test_mark_reviewed_externally_still_raises_when_called_directly_on_terminal(self) -> None:
         # Sanity: the guard lives in _apply_phase_transition, not in the
-        # FSM. Calling the transition directly on a DELIVERED ticket
+        # FSM. Calling the transition directly on a REVIEW_POSTED ticket
         # still raises — proving the guard is what protects the loop.
         ticket = Ticket.objects.create(
             overlay="test",
             role=Ticket.Role.REVIEWER,
-            state=Ticket.State.DELIVERED,
+            state=Ticket.State.REVIEW_POSTED,
         )
         session = Session.objects.create(ticket=ticket, agent_id="t")
         Task.objects.create(

@@ -553,7 +553,7 @@ class TestTerminalTransitionsEnqueueTeardown(TestCase):
     The target-state enqueue (#808 derive-don't-enumerate) fires
     ``execute_teardown`` for EVERY transition landing in a terminal state:
     ``ignore``→IGNORED, ``mark_delivered``→DELIVERED,
-    ``mark_review_no_action``→DELIVERED, and the
+    ``mark_review_no_action``→REVIEW_POSTED, and the
     ``mark_merged``/``reconcile_merged``→MERGED merge paths (regression). A frozen
     or abandoned ticket's worktrees are reaped the instant it is done, not only on
     merge, so worktrees stop piling up on closed tickets.

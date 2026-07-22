@@ -127,7 +127,13 @@ class TicketQuerySet(models.QuerySet):
 
         return (
             self.for_overlay(overlay)
-            .exclude(state__in=[ticket_model.State.DELIVERED, ticket_model.State.IGNORED])
+            .exclude(
+                state__in=[
+                    ticket_model.State.DELIVERED,
+                    ticket_model.State.REVIEW_POSTED,
+                    ticket_model.State.IGNORED,
+                ],
+            )
             .filter(Q(extra__tracker_status__isnull=True) | ~Q(extra__tracker_status="Done"))
             .order_by("pk")
         )
@@ -138,7 +144,7 @@ class WorktreeQuerySet(models.QuerySet):
         return _for_overlay(self, overlay)
 
     def active(self, overlay: str | None = None) -> models.QuerySet:
-        """Worktrees whose ticket is still in flight (not delivered or ignored).
+        """Worktrees whose ticket is still in flight (not delivered, review-posted, or ignored).
 
         Matches the worktrees panel one-to-one so the KPI count and table size agree.
         """
@@ -146,7 +152,13 @@ class WorktreeQuerySet(models.QuerySet):
 
         return (
             self.for_overlay(overlay)
-            .exclude(ticket__state__in=[ticket_model.State.DELIVERED, ticket_model.State.IGNORED])
+            .exclude(
+                ticket__state__in=[
+                    ticket_model.State.DELIVERED,
+                    ticket_model.State.REVIEW_POSTED,
+                    ticket_model.State.IGNORED,
+                ],
+            )
             .order_by("pk")
         )
 

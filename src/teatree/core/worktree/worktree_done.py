@@ -60,8 +60,9 @@ logger = logging.getLogger(__name__)
 
 # Terminal ticket states that authorise teardown. SHIPPED is excluded on purpose
 # — a shipped ticket still has an OPEN PR, so the work is not finished.
+# REVIEW_POSTED (reviewer terminal) is included so a reviewer worktree is reaped.
 _DONE_TICKET_STATES = frozenset(
-    {Ticket.State.MERGED, Ticket.State.DELIVERED, Ticket.State.IGNORED},
+    {Ticket.State.MERGED, Ticket.State.DELIVERED, Ticket.State.REVIEW_POSTED, Ticket.State.IGNORED},
 )
 
 _PREVIEW_LIMIT = 3

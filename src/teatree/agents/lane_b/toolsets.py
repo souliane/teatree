@@ -4,7 +4,9 @@ The one place the capability toolsets, the phase-scoping filter, the hard-deny
 wrapper, the soft-gate approval, and the MCP toolsets are composed into the list
 ``PydanticAiHarness`` passes as ``Agent(toolsets=...)``. Composition order (inner
 to outer): capabilities → phase filter → hard-deny wrapper → soft-gate approval;
-MCP toolsets ride alongside (read-only, never phase-filtered).
+the read-only MCP toolsets ride alongside, EXCEPT for an empty (non-``None``)
+phase allowance — a ``_NONE`` phase (``short_describe``, ``directive_reading``)
+may call nothing, so no MCP attaches past the phase filter.
 """
 
 from dataclasses import dataclass
@@ -42,8 +44,10 @@ def build_lane_b_toolsets(config: LaneBToolConfig, *, soft_gated: frozenset[str]
     ``write_file`` is allowed, so a read-only phase's toolset carries no mutation
     surface even before the runtime filter. The composed capabilities are wrapped
     in :class:`HardDenyToolset` (the shared-registry hard-deny) and, when a soft
-    gate is configured, in the native ``approval_required`` deferral. MCP toolsets
-    (read-only) are appended un-filtered.
+    gate is configured, in the native ``approval_required`` deferral. The read-only
+    MCP toolsets are appended un-filtered — UNLESS the phase allowance is a
+    non-``None`` empty set (a ``_NONE`` phase), which exposes nothing and so gets
+    no MCP either.
     """
     allowed = tools_for_phase(config.phase) if config.phase else None
     capability_toolsets: list[AbstractToolset[None]] = []
@@ -64,5 +68,8 @@ def build_lane_b_toolsets(config: LaneBToolConfig, *, soft_gated: frozenset[str]
     if soft_gated:
         gated = gated.approval_required(make_soft_gate_predicate(soft_gated))
 
-    toolsets: list[AbstractToolset[None]] = [gated, *build_mcp_toolsets()]
+    # A _NONE-phase allowance (empty, but NOT None) means the phase may call
+    # nothing — so no MCP toolset may attach past the phase filter either.
+    mcp_toolsets: list[AbstractToolset[None]] = [] if allowed is not None and not allowed else build_mcp_toolsets()
+    toolsets: list[AbstractToolset[None]] = [gated, *mcp_toolsets]
     return LaneBToolsets(toolsets=toolsets, needs_deferred_output=bool(soft_gated))

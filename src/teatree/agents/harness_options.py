@@ -50,6 +50,10 @@ class HarnessOptions:
         already stripped in the adapter, so a backend uses this string as-is).
     *   ``cwd`` — the resolved task worktree (the Lane-B File System jail root).
     *   ``env`` — the pinned child-env overrides (merged over the ambient env by the tool layer).
+    *   ``max_turns`` — the caller's hard turn cap; a POSITIVE value wins over the lane's own
+        ``request_limit`` in :meth:`~teatree.agents.harness.PydanticAiHarness.open`. ``0``
+        (headless dispatch's value, and the SDK-``None`` coercion) leaves the run uncapped, so
+        every uncapped dispatch stays byte-identical.
     """
 
     model: str | None = None
@@ -57,6 +61,7 @@ class HarnessOptions:
     system_prompt: str = ""
     cwd: str | None = None
     env: dict[str, str] = field(default_factory=dict)
+    max_turns: int = 0
 
     @classmethod
     def from_sdk_options(cls, options: ClaudeAgentOptions) -> "HarnessOptions":
@@ -69,4 +74,7 @@ class HarnessOptions:
             # plain path string (a Path is more vendor/OS-coupled than its string form).
             cwd=str(options.cwd) if options.cwd else None,
             env=dict(options.env or {}),
+            # ``ClaudeAgentOptions.max_turns`` is ``int | None``; coerce SDK-``None`` (and 0) to
+            # 0 so only a genuinely positive cap wins over the lane's ``request_limit``.
+            max_turns=options.max_turns or 0,
         )

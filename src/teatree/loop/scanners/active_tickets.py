@@ -33,7 +33,7 @@ logger = logging.getLogger(__name__)
 if TYPE_CHECKING:
     from teatree.core.models import Ticket
 
-_TERMINAL_STATES: frozenset[str] = frozenset({"delivered", "ignored"})
+_TERMINAL_STATES: frozenset[str] = frozenset({"delivered", "review_posted", "ignored"})
 
 
 @dataclass(slots=True)

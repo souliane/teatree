@@ -984,7 +984,7 @@ class TestTicketCommand(TestCase):
         assert ticket.state == Ticket.State.STARTED
         assert "ignored_from" not in (ticket.extra or {})
 
-    def test_transition_mark_review_no_action_delivers_reviewer_ticket(self) -> None:
+    def test_transition_mark_review_no_action_closes_reviewer_ticket(self) -> None:
         """#1077: the no-action disposition is reachable via the CLI transition."""
         ticket = Ticket.objects.create(
             overlay="test",
@@ -997,7 +997,7 @@ class TestTicketCommand(TestCase):
             "dict[str, object]",
             call_command("ticket", "transition", ticket.pk, "mark_review_no_action"),
         )
-        assert result["state"] == Ticket.State.DELIVERED
+        assert result["state"] == Ticket.State.REVIEW_POSTED
         ticket.refresh_from_db()
         assert ticket.extra["last_review_state"] == "reviewed_no_action"
 

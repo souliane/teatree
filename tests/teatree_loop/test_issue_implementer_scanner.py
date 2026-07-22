@@ -18,6 +18,7 @@ from unittest.mock import patch
 from django.test import TestCase
 
 from teatree.core.models import ImplementedIssueMarker, TrustedIdentity
+from teatree.core.models.config_setting import ConfigSetting
 from teatree.loop.scanners.issue_implementer import IssueImplementerScanner
 from teatree.types import RawAPIDict
 
@@ -94,6 +95,10 @@ class _PublicRepoTestCase(TestCase):
         patcher = patch("teatree.core.review.author_trust.repo_is_internal", return_value=False)
         patcher.start()
         self.addCleanup(patcher.stop)
+        # These suites exercise the author-trust gate, orthogonal to the admission
+        # policy; pin ``all`` so a trusted author's unassigned/unlabeled issue is
+        # admitted. The admission policy has its own suite below.
+        ConfigSetting.objects.set_value("admission_policy", "all")
 
     def _scanner(self, host: _Host, **overrides: object) -> IssueImplementerScanner:
         kwargs: dict[str, object] = {
@@ -532,3 +537,45 @@ class IssueImplementerRepoScopeTests(_PublicRepoTestCase):
 
         assert [s.payload["url"] for s in signals] == [self.URL_A]
         assert ImplementedIssueMarker.objects.filter(issue_url=self.URL_A, overlay=self.OVERLAY).exists()
+
+
+def _assigned(issue: RawAPIDict, assignee: str) -> RawAPIDict:
+    return {**issue, "assignees": [{"login": assignee}]}
+
+
+class IssueImplementerAdmissionPolicyTests(_PublicRepoTestCase):
+    """The per-overlay admission policy gates the trusted-author scanner (#3573).
+
+    Layered ABOVE the author-trust gate: a TRUSTED author's issue is still refused
+    unless the overlay's ``admission_policy`` admits it. The base ``setUp`` pins
+    ``all``; each test below overrides it to the policy under test.
+    """
+
+    def test_default_rejects_colleague_unassigned_unlabeled(self) -> None:
+        ConfigSetting.objects.set_value("admission_policy", "assigned_and_labeled")
+        host = _Host(authored={COLLEAGUE: [_issue(self.URL_A, author=COLLEAGUE)]})
+
+        assert self._scanner(host).scan() == []
+        # The floor runs BEFORE the claim — no marker/budget is ever spent on it.
+        assert not ImplementedIssueMarker.objects.exists()
+
+    def test_assigned_and_labeled_admits_when_assigned_and_labeled(self) -> None:
+        ConfigSetting.objects.set_value("admission_policy", "assigned_and_labeled")
+        issue = _assigned(_issue(self.URL_A, author=COLLEAGUE, labels=["t3-auto"]), OWNER)
+        host = _Host(authored={COLLEAGUE: [issue]})
+
+        assert [s.payload["url"] for s in self._scanner(host).scan()] == [self.URL_A]
+
+    def test_assigned_policy_admits_owner_assigned_without_label(self) -> None:
+        ConfigSetting.objects.set_value("admission_policy", "assigned")
+        issue = _assigned(_issue(self.URL_A, author=COLLEAGUE), OWNER)
+        host = _Host(authored={COLLEAGUE: [issue]})
+
+        assert len(self._scanner(host).scan()) == 1
+
+    def test_assigned_policy_rejects_unassigned(self) -> None:
+        ConfigSetting.objects.set_value("admission_policy", "assigned")
+        host = _Host(authored={COLLEAGUE: [_issue(self.URL_A, author=COLLEAGUE)]})
+
+        assert self._scanner(host).scan() == []
+        assert not ImplementedIssueMarker.objects.exists()

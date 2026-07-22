@@ -9,10 +9,13 @@ channels let it hand the work back through the result envelope, and
 from typing import Any, cast
 
 from teatree.agents.result_schema import (
+    PROSE_SUMMARY_ACCEPTED_PHASES,
     RESULT_JSON_SCHEMA,
     DirectiveCandidateEnvelope,
+    SingleTestResult,
     candidate_carries_payload,
     check_evidence,
+    prose_summary_accepted,
     required_evidence_for_phase,
 )
 
@@ -189,3 +192,31 @@ class TestDirectiveCandidateEvidenceGate:
     def test_a_real_candidate_satisfies_the_gate(self) -> None:
         result = {"directive_candidate": {"is_directive": True, "normalized_constraint": "at most 1 open PR"}}
         assert check_evidence(result, "directive_reading") == ""
+
+
+class TestProseSummaryAcceptedPhases:
+    """The no-envelope fallback is accepted only for the intentionally-light phases."""
+
+    def test_the_exempt_table_is_exactly_scoping_and_retro(self) -> None:
+        assert frozenset({"scoping", "retro"}) == PROSE_SUMMARY_ACCEPTED_PHASES
+
+    def test_exempt_phases_accept_the_prose_fallback(self) -> None:
+        assert prose_summary_accepted("scoping")
+        assert prose_summary_accepted("retro")
+
+    def test_aliases_normalize_before_the_lookup(self) -> None:
+        # ``scope``/``retrospect`` normalize UP to the canonical exempt tokens.
+        assert prose_summary_accepted("scope")
+        assert prose_summary_accepted("RETROSPECT")
+
+    def test_non_exempt_phases_refuse_the_prose_fallback(self) -> None:
+        assert not prose_summary_accepted("debugging")
+        assert not prose_summary_accepted("coding")
+        assert not prose_summary_accepted("reviewing")
+
+
+class TestSingleTestResultShape:
+    def test_carries_the_per_test_result_fields(self) -> None:
+        entry: SingleTestResult = {"name": "test_x", "passed": True, "duration_seconds": 0.1}
+        assert entry["name"] == "test_x"
+        assert entry["passed"] is True

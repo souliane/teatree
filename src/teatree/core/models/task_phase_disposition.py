@@ -30,7 +30,8 @@ _PHASE_TARGET_STATE: dict[str, str] = {
     "shipping": Ticket.State.SHIPPED,
 }
 #: Lifecycle order used to compare a ticket's position to a phase's target.
-#: Terminal/abandoned IGNORED is intentionally absent — it is never a wedge.
+#: The off-ladder terminals IGNORED and REVIEW_POSTED are intentionally absent —
+#: a terminal ticket is never a wedge (guarded via ``is_terminal`` before the lookup).
 _STATE_ORDER: list[str] = [
     Ticket.State.NOT_STARTED,
     Ticket.State.SCOPED,
@@ -102,10 +103,11 @@ def escalate_unmatched_phase_transition(task: "Task", *, phase: str, ticket: Tic
     is expected to no-op. A terminal/abandoned ticket is never a wedge.
     """
     target = _PHASE_TARGET_STATE.get(phase)
-    # IGNORED is the one state absent from _STATE_ORDER (terminal/abandoned,
-    # never a wedge); excluding it here means ticket.state is always in the
-    # order below, so the index lookups cannot raise.
-    if target is None or ticket.state == Ticket.State.IGNORED:
+    # A terminal ticket is never a wedge. REVIEW_POSTED/IGNORED are off the
+    # author ladder (absent from _STATE_ORDER); the other terminals sit past
+    # every phase target. Short-circuiting on is_terminal keeps the index
+    # lookups below to live author-ladder states, so they cannot raise.
+    if target is None or ticket.is_terminal:
         return
     if _STATE_ORDER.index(ticket.state) >= _STATE_ORDER.index(target):
         return  # idempotent replay — the ticket already advanced past this phase's target

@@ -285,7 +285,8 @@ def _enqueue_ticket_transition_task(
     ``retrospect``→retrospect). Teardown is keyed on the TARGET STATE instead
     (#808 derive-don't-enumerate): every transition landing in a terminal state
     purges the ticket's worktrees the instant it is done — ``ignore``→IGNORED,
-    ``mark_delivered``/``mark_review_no_action``/``mark_reviewed_externally``→DELIVERED,
+    ``mark_delivered``→DELIVERED,
+    ``mark_review_no_action``/``mark_reviewed_externally``→REVIEW_POSTED,
     and the ``mark_merged``/``reconcile_merged``→MERGED merge paths — so a
     frozen/closed ticket's worktrees are reaped rather than piling up. The reaper's
     own analyze-before-wipe (#706) keeps any unsynced work regardless.
@@ -338,8 +339,8 @@ def _release_issue_markers_on_completion(
 ) -> None:
     """Free the issue-implementer marker(s) when the ticket completes.
 
-    Keyed on the ticket reaching a terminal state (MERGED / DELIVERED /
-    IGNORED): a DISPATCHED/TICKET_CREATED marker held its budget slot for its
+    Keyed on the ticket reaching a terminal-done state (MERGED / DELIVERED /
+    REVIEW_POSTED / IGNORED): a DISPATCHED/TICKET_CREATED marker held its budget slot for its
     whole life, so without this the first claim locked the single-ticket budget
     permanently. ABANDONED (give-up / fleet-claim-steal) is left untouched — it
     is already terminal and carries distinct semantics. Best-effort: the FSM

@@ -128,30 +128,69 @@ class TestBindingSpecificEffortSettings:
     _NO_XHIGH = SimpleNamespace(profile={"anthropic_supports_xhigh_effort": False})
 
     def test_router_binding_uses_the_openai_effort_key(self) -> None:
-        settings = build_model_settings(TestModel(), "high", binding=PydanticAiBinding.ROUTER)
+        settings = build_model_settings(TestModel(), "high", binding=PydanticAiBinding.ROUTER, max_tokens=None)
         assert settings == {"openai_reasoning_effort": "high"}
 
     def test_native_binding_uses_the_anthropic_effort_key(self) -> None:
-        settings = build_model_settings(self._XHIGH, "high", binding=PydanticAiBinding.NATIVE_ANTHROPIC)
+        settings = build_model_settings(
+            self._XHIGH, "high", binding=PydanticAiBinding.NATIVE_ANTHROPIC, max_tokens=None
+        )
         # The regression: NOT ``openai_reasoning_effort``, which AnthropicModel ignores.
         assert settings == {"anthropic_effort": "high"}
 
     def test_native_binding_maps_minimal_onto_the_anthropic_vocabulary(self) -> None:
         # ``minimal`` is router-scale only; sent verbatim the Messages API 400s.
-        settings = build_model_settings(self._XHIGH, "minimal", binding=PydanticAiBinding.NATIVE_ANTHROPIC)
+        settings = build_model_settings(
+            self._XHIGH, "minimal", binding=PydanticAiBinding.NATIVE_ANTHROPIC, max_tokens=None
+        )
         assert settings == {"anthropic_effort": "low"}
 
     def test_native_binding_downgrades_xhigh_when_the_model_lacks_it(self) -> None:
-        assert build_model_settings(self._XHIGH, "xhigh", binding=PydanticAiBinding.NATIVE_ANTHROPIC) == {
-            "anthropic_effort": "xhigh"
-        }
-        assert build_model_settings(self._NO_XHIGH, "xhigh", binding=PydanticAiBinding.NATIVE_ANTHROPIC) == {
-            "anthropic_effort": "max"
-        }
+        assert build_model_settings(
+            self._XHIGH, "xhigh", binding=PydanticAiBinding.NATIVE_ANTHROPIC, max_tokens=None
+        ) == {"anthropic_effort": "xhigh"}
+        assert build_model_settings(
+            self._NO_XHIGH, "xhigh", binding=PydanticAiBinding.NATIVE_ANTHROPIC, max_tokens=None
+        ) == {"anthropic_effort": "max"}
 
     def test_absent_effort_yields_no_settings_on_either_binding(self) -> None:
-        assert build_model_settings(TestModel(), None, binding=PydanticAiBinding.ROUTER) is None
-        assert build_model_settings(self._XHIGH, None, binding=PydanticAiBinding.NATIVE_ANTHROPIC) is None
+        assert build_model_settings(TestModel(), None, binding=PydanticAiBinding.ROUTER, max_tokens=None) is None
+        assert (
+            build_model_settings(self._XHIGH, None, binding=PydanticAiBinding.NATIVE_ANTHROPIC, max_tokens=None) is None
+        )
+
+
+class TestMaxTokensSetting:
+    """``max_tokens`` is a base ``ModelSettings`` key that must reach BOTH bindings.
+
+    pydantic_ai's Anthropic binding defaults to 4096, which truncates a long result
+    envelope mid-JSON; the configured ceiling must ride every request on both the router
+    and the native binding, and merge cleanly with the binding-specific reasoning effort.
+    """
+
+    _XHIGH = SimpleNamespace(profile={"anthropic_supports_xhigh_effort": True})
+
+    def test_router_binding_carries_max_tokens_without_effort(self) -> None:
+        settings = build_model_settings(TestModel(), None, binding=PydanticAiBinding.ROUTER, max_tokens=16384)
+        assert settings == {"max_tokens": 16384}
+
+    def test_native_binding_carries_max_tokens_without_effort(self) -> None:
+        settings = build_model_settings(self._XHIGH, None, binding=PydanticAiBinding.NATIVE_ANTHROPIC, max_tokens=16384)
+        assert settings == {"max_tokens": 16384}
+
+    def test_router_binding_merges_max_tokens_with_the_effort_key(self) -> None:
+        settings = build_model_settings(TestModel(), "high", binding=PydanticAiBinding.ROUTER, max_tokens=8192)
+        assert settings == {"max_tokens": 8192, "openai_reasoning_effort": "high"}
+
+    def test_native_binding_merges_max_tokens_with_the_effort_key(self) -> None:
+        settings = build_model_settings(
+            self._XHIGH, "high", binding=PydanticAiBinding.NATIVE_ANTHROPIC, max_tokens=8192
+        )
+        assert settings == {"max_tokens": 8192, "anthropic_effort": "high"}
+
+    def test_zero_or_none_max_tokens_adds_no_ceiling(self) -> None:
+        assert build_model_settings(TestModel(), None, binding=PydanticAiBinding.ROUTER, max_tokens=0) is None
+        assert build_model_settings(TestModel(), None, binding=PydanticAiBinding.ROUTER, max_tokens=None) is None
 
 
 class TestRouterReportedCost:

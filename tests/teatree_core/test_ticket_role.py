@@ -55,7 +55,7 @@ class TestScheduleCodingRefusesReviewer(TestCase):
 
 
 class TestMarkReviewedExternally(TestCase):
-    def test_transitions_to_delivered_on_review_complete(self) -> None:
+    def test_transitions_to_review_posted_on_review_complete(self) -> None:
         ticket = Ticket.objects.create(
             overlay="acme",
             issue_url="https://example.com/pr/5",
@@ -67,7 +67,8 @@ class TestMarkReviewedExternally(TestCase):
         task.complete()
 
         ticket.refresh_from_db()
-        assert ticket.state == Ticket.State.DELIVERED
+        assert ticket.state == Ticket.State.REVIEW_POSTED
+        assert ticket.state != Ticket.State.DELIVERED
         # ``mark_reviewed`` upserts the same reviewer ticket via the DB —
         # head sha + last review state should be persisted on ``extra``.
         assert ticket.extra["reviewed_sha"] == "deadbeef"
@@ -81,6 +82,7 @@ class TestMarkReviewedExternally(TestCase):
         task.complete()
         ticket.refresh_from_db()
         # Author flow: state stays NOT_STARTED until ticket.start() is called by the orchestrator.
+        assert ticket.state != Ticket.State.REVIEW_POSTED
         assert ticket.state != Ticket.State.DELIVERED
 
 
@@ -92,7 +94,7 @@ class TestMarkReviewNoAction(TestCase):
 
         Anti-vacuity anchor: pre-#1077 there is no ``mark_review_no_action``
         transition, so this test cannot even resolve the attribute — RED by
-        ``AttributeError``. With the fix: ticket → DELIVERED, the reviewing
+        ``AttributeError``. With the fix: ticket → REVIEW_POSTED, the reviewing
         Task is COMPLETED (no longer PENDING — the infinite re-queue stops),
         and ``last_review_state`` is ``reviewed_no_action`` (NEVER
         ``approved``, so a later genuine review is not suppressed).
@@ -111,7 +113,7 @@ class TestMarkReviewNoAction(TestCase):
 
         ticket.refresh_from_db()
         task.refresh_from_db()
-        assert ticket.state == Ticket.State.DELIVERED
+        assert ticket.state == Ticket.State.REVIEW_POSTED
         assert task.status == Task.Status.COMPLETED
         assert ticket.extra["last_review_state"] == "reviewed_no_action"
         assert ticket.extra["last_review_state"] != "approved"
@@ -142,6 +144,6 @@ class TestMarkReviewNoAction(TestCase):
 
         ticket.refresh_from_db()
         task.refresh_from_db()
-        assert ticket.state == Ticket.State.DELIVERED
+        assert ticket.state == Ticket.State.REVIEW_POSTED
         assert task.status == Task.Status.COMPLETED
         assert "last_review_state" not in (ticket.extra or {})

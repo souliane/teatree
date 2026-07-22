@@ -1009,7 +1009,7 @@ class TestReplayOrphanedTransitions(TestCase):
     def test_replays_reviewer_role_external_review(self) -> None:
         # The reviewing+REVIEWER branch (mark_reviewed_externally): a
         # reviewer-role ticket whose completed reviewing task's external
-        # review transition was lost is recovered to DELIVERED.
+        # review transition was lost is recovered to REVIEW_POSTED.
         ticket = Ticket.objects.create(state=Ticket.State.STARTED, role=Ticket.Role.REVIEWER)
         session = Session.objects.create(ticket=ticket, agent_id="a")
         Task.objects.create(ticket=ticket, session=session, phase="reviewing", status=Task.Status.COMPLETED)
@@ -1018,7 +1018,7 @@ class TestReplayOrphanedTransitions(TestCase):
 
         ticket.refresh_from_db()
         assert replayed == 1
-        assert ticket.state == Ticket.State.DELIVERED
+        assert ticket.state == Ticket.State.REVIEW_POSTED
 
     def test_only_latest_completed_task_per_ticket_is_replayed(self) -> None:
         # A ticket accrues one COMPLETED task per phase. The sweep must

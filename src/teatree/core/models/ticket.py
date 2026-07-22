@@ -58,6 +58,9 @@ class Ticket(
         MERGED = "merged", "Merged"
         RETROSPECTED = "retrospected", "Retrospected"
         DELIVERED = "delivered", "Delivered"
+        # Reviewer terminal — a posted external review is done, NOT author-merged
+        # (DELIVERED); keeps a reviewer ticket off the board's "Landed" group.
+        REVIEW_POSTED = "review_posted", "Review posted"
         IGNORED = "ignored", "Ignored"
 
     class Role(models.TextChoices):
@@ -79,7 +82,7 @@ class Ticket(
     # state is a legal reconcile source, derived (not enumerated) so a
     # future added state cannot silently re-introduce the bug.
     _TERMINAL_STATES: ClassVar[frozenset[str]] = frozenset(
-        {State.SHIPPED, State.MERGED, State.DELIVERED, State.IGNORED},
+        {State.SHIPPED, State.MERGED, State.DELIVERED, State.REVIEW_POSTED, State.IGNORED},
     )
     # The linear author work-state progression (excludes the terminal set and the
     # off-ladder IN_REVIEW/RETROSPECTED branch states). A ticket at index i has
@@ -191,15 +194,13 @@ class Ticket(
 
     @classmethod
     def marker_release_states(cls) -> frozenset[str]:
-        """Terminal states that free an issue-implementer marker's in-flight budget.
+        """Terminal-done states that free markers and trigger worktree teardown.
 
-        The single source of truth shared by the on-transition release signal
-        (``_release_issue_markers_on_completion``) and the retroactive
-        reconciler (``ImplementedIssueMarker.objects.reconcile_stale``, #3275).
-        SHIPPED is excluded on purpose — its PR is open but unmerged, so the
-        marker still legitimately holds its slot.
+        ``_TERMINAL_STATES`` minus SHIPPED (its PR is still open). Shared by the
+        teardown/marker signal and the #3275 reconciler; REVIEW_POSTED is the
+        reviewer terminal (marker release is a no-op for reviewer tickets).
         """
-        return frozenset({cls.State.MERGED, cls.State.DELIVERED, cls.State.IGNORED})
+        return frozenset({cls.State.MERGED, cls.State.DELIVERED, cls.State.REVIEW_POSTED, cls.State.IGNORED})
 
     def __str__(self) -> str:
         return str(self.issue_url or f"ticket-{self.pk}")
@@ -398,21 +399,21 @@ class Ticket(
             State.TESTED,
             State.REVIEWED,
         ],
-        target=State.DELIVERED,
+        target=State.REVIEW_POSTED,
         conditions=[
             lambda t: t.role == Ticket.Role.REVIEWER and t.tasks.completed_in_phase("reviewing").exists(),
             lambda t: t.review_context_satisfied(),
         ],
     )
     def mark_reviewed_externally(self) -> None:
-        """Reviewer-role short-circuit: any pre-shipped state → DELIVERED.
+        """Reviewer-role short-circuit: any pre-shipped state → REVIEW_POSTED.
 
-        External review tickets bypass the implementation lifecycle. Once
-        the reviewing task completes, the ticket is done — the reviewer has
-        posted their review on someone else's PR. We also stamp the head
-        SHA + ``last_review_state`` on ``extra`` so ``ReviewerPrsScanner``
-        won't re-spawn the reviewer agent for the same PR until either the
-        SHA moves or the forge dismisses the approval.
+        External review tickets bypass the implementation lifecycle. Once the
+        reviewing task completes the ticket is done. Lands ``REVIEW_POSTED``,
+        NOT ``DELIVERED`` (author work merged to main), so the board never shows
+        a reviewer ghost as "Landed". Also stamps the head SHA +
+        ``last_review_state`` on ``extra`` so ``ReviewerPrsScanner`` won't
+        re-spawn the reviewer agent until the SHA moves or the approval drops.
         """
         sha = str(self._extra().get("reviewed_sha", ""))
         if self.issue_url and sha:
@@ -431,13 +432,13 @@ class Ticket(
             State.CODED,
             State.TESTED,
             State.REVIEWED,
-            # #1431: DELIVERED self-transition (this transition's own target)
+            # #1431: REVIEW_POSTED self-transition (this transition's own target)
             # makes a re-dispatched orphan's no-action path a no-op instead of
             # a TransitionNotAllowed crash. SHIPPED/MERGED/IGNORED stay out —
-            # an IGNORED→DELIVERED move would resurrect; Gap B reaps those.
-            State.DELIVERED,
+            # an IGNORED→REVIEW_POSTED move would resurrect; Gap B reaps those.
+            State.REVIEW_POSTED,
         ],
-        target=State.DELIVERED,
+        target=State.REVIEW_POSTED,
         conditions=[lambda t: t.role == Ticket.Role.REVIEWER],
     )
     def mark_review_no_action(self) -> None:

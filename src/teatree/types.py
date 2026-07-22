@@ -313,6 +313,19 @@ DEFAULT_MR_TITLE_REGEX = (
     r"^(feat|fix|improvement|config|techdebt|chore|docs|refactor|test|perf|build|ci)(\(.+\))?!?: .+"
 )
 
+# The default ticket-transition → Slack-reaction emoji map. An overlay's
+# ``OverlayConfig.get_transition_emojis`` merges its own overrides onto this base.
+DEFAULT_TRANSITION_EMOJIS: dict[str, str] = {
+    "test": "white_check_mark",
+    "request_review": "eyes",
+    "approve": "white_check_mark",
+    "mark_merged": "tada",
+    "retrospect": "memo",
+    "mark_delivered": "white_check_mark",
+    "rework": "arrows_counterclockwise",
+    "ignore": "wastebasket",
+}
+
 
 @dataclass(frozen=True, slots=True)
 class ProvisionStep:

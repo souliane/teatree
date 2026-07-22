@@ -5,6 +5,7 @@ from typing import Any
 
 from django.test import TestCase
 
+from teatree.core.models.config_setting import ConfigSetting
 from teatree.core.models.ticket import Ticket
 from teatree.loop.scanners.assigned_issues import AssignedIssuesScanner
 from teatree.types import RawAPIDict
@@ -65,6 +66,12 @@ class AssignedIssuesAutoStartTests(TestCase):
     READY_URL_A = "https://example.com/issues/100"
     READY_URL_B = "https://example.com/issues/101"
     READY_URL_C = "https://example.com/issues/102"
+
+    def setUp(self) -> None:
+        # This suite exercises auto-start dedup + budget, orthogonal to the
+        # admission policy; pin ``all`` so an unassigned/unlabeled ready issue is
+        # admitted and the budget assertions stay about the budget.
+        ConfigSetting.objects.set_value("admission_policy", "all")
 
     def _scanner(self, host: _Host, *, max_concurrent: int = 1) -> AssignedIssuesScanner:
         return AssignedIssuesScanner(
@@ -146,3 +153,52 @@ class AssignedIssuesAutoStartTests(TestCase):
         host = _Host(issues=[self._ready_issue(self.READY_URL_A)])
         signals = self._scanner(host, max_concurrent=1).scan()
         assert signals[0].payload["auto_start"] is True
+
+
+class AssignedIssuesAdmissionPolicyTests(TestCase):
+    """The per-overlay admission policy gates AUTONOMOUS auto-start (#3573).
+
+    A non-auto-start (manual triage) signal is NOT gated — the policy governs
+    only autonomous work.
+    """
+
+    OVERLAY = "acme"
+    URL = "https://example.com/issues/200"
+
+    def _auto_scanner(self, host: _Host) -> AssignedIssuesScanner:
+        return AssignedIssuesScanner(
+            host=host,
+            ready_labels=("ready",),
+            auto_start=True,
+            max_concurrent=5,
+            overlay_name=self.OVERLAY,
+            identities=("alice",),
+        )
+
+    def _issue(self, *, assignee: str = "", extra_label: str = "") -> RawAPIDict:
+        labels = ["ready", *([extra_label] if extra_label else [])]
+        issue: RawAPIDict = {"web_url": self.URL, "title": "ready", "labels": labels}
+        if assignee:
+            issue["assignees"] = [{"login": assignee}]
+        return issue
+
+    def test_default_rejects_unassigned_unlabeled_auto_start(self) -> None:
+        # No config row → the strict default; a ready-but-unassigned/unlabeled
+        # issue is never auto-started.
+        assert self._auto_scanner(_Host(issues=[self._issue()])).scan() == []
+
+    def test_assigned_and_labeled_admits_assigned_and_labeled(self) -> None:
+        ConfigSetting.objects.set_value("admission_policy", "assigned_and_labeled")
+        host = _Host(issues=[self._issue(assignee="alice", extra_label="t3-auto")])
+        assert [s.payload["url"] for s in self._auto_scanner(host).scan()] == [self.URL]
+
+    def test_assigned_policy_admits_owner_assigned(self) -> None:
+        ConfigSetting.objects.set_value("admission_policy", "assigned")
+        host = _Host(issues=[self._issue(assignee="alice")])
+        assert len(self._auto_scanner(host).scan()) == 1
+
+    def test_manual_triage_signal_is_not_gated_by_policy(self) -> None:
+        # No config row → strict default, but auto_start=False surfaces for triage.
+        host = _Host(issues=[self._issue()])
+        scanner = AssignedIssuesScanner(host=host, ready_labels=("ready",), auto_start=False, overlay_name=self.OVERLAY)
+        assert [s.payload["url"] for s in scanner.scan()] == [self.URL]

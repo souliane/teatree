@@ -23,6 +23,7 @@ from teatree.config import UserSettings
 GOLDEN_USER_SETTINGS_FIELDS: frozenset[str] = frozenset(
     {
         "admin_autologin_enabled",
+        "admission_policy",
         "admit_colleague_prs_to_board",
         "agent_harness",
         "agent_harness_provider",
@@ -134,6 +135,7 @@ GOLDEN_USER_SETTINGS_FIELDS: frozenset[str] = frozenset(
         "provision_step_timeout_seconds",
         "pull_main_clone_cadence_hours",
         "pull_main_clone_disabled",
+        "pydantic_ai_max_tokens",
         "pydantic_ai_request_limit",
         "ram_crit_avail_gb",
         "ram_kill_allowlist",

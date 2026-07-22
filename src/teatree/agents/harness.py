@@ -229,6 +229,7 @@ class PydanticAiHarness:
         cfg = config or PydanticAiModelConfig()
         self._orca = cfg.orca
         self._binding = cfg.binding
+        self._max_tokens = cfg.max_tokens
 
     @property
     def history(self) -> "list[ModelMessage] | None":
@@ -292,7 +293,9 @@ class PydanticAiHarness:
         # The effort key is BINDING-specific (``openai_reasoning_effort`` vs
         # ``anthropic_effort``) and a foreign key is dropped silently, so the settings
         # are built per binding — see :func:`build_model_settings`.
-        model_settings = build_model_settings(model, resolve_effort(harness_options), binding=self._binding)
+        model_settings = build_model_settings(
+            model, resolve_effort(harness_options), binding=self._binding, max_tokens=self._max_tokens
+        )
         # PR-03: a phased dispatch wires the phase-scoped, gated tool/MCP layer
         # onto the Agent (``toolsets=`` + ``tool_timeout=``); an un-phased one
         # keeps a bare text Agent (byte-identical to before the tool port). The
@@ -310,13 +313,17 @@ class PydanticAiHarness:
         # (OrcaRouter's OpenAI-compatible connection pool) closes cleanly on
         # exit — a bare ``Agent(...)`` never closes it, leaking a client per
         # dispatch until GC.
+        # A positive caller ``max_turns`` (an OneShotSpec cap, an eval override) wins over the
+        # lane's own ``request_limit``; ``0`` (a headless dispatch, an SDK-``None`` coercion)
+        # keeps ``request_limit`` — so every uncapped dispatch stays byte-identical.
+        request_limit = harness_options.max_turns if harness_options.max_turns > 0 else self._orca.request_limit
         async with agent:
             yield PydanticAiHarnessSession(
                 agent,
                 model_name=model.model_name,
                 history=self._history,
                 phase=self._phase,
-                request_limit=self._orca.request_limit,
+                request_limit=request_limit,
             )
 
 
@@ -354,6 +361,7 @@ def _build_pydantic_ai_harness(context: HarnessBuildContext) -> Harness:
         phase=context.phase,
         config=PydanticAiModelConfig(
             binding=binding,
+            max_tokens=settings.pydantic_ai_max_tokens,
             orca=OrcaLaneConfig(
                 lane=settings.orca_router_lane,
                 request_limit=settings.pydantic_ai_request_limit,
