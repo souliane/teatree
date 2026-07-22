@@ -48,6 +48,7 @@ from teatree.loop.scanners.review_nag import ReviewNagScanner
 from teatree.loop.scanners.review_request_merge_react import ReviewRequestMergeReactScanner
 from teatree.loop.scanners.reviewer_prs import ReviewerPrsScanner
 from teatree.loop.scanners.scanning_news import ScanningNewsScanner
+from teatree.loop.scanners.self_pr_review import ClaudeSelfPrReviewScanner
 from teatree.loop.scanners.self_update import SelfUpdateScanner
 from teatree.loop.scanners.slack_broadcast_mr_classifier import GlabGhMrStateClassifier
 from teatree.loop.scanners.slack_broadcasts import BackendChannelHistoryFetcher, SlackBroadcastsScanner
@@ -74,6 +75,7 @@ __all__ = [
     "BacklogSweepScanner",
     "CallCommandMergeKeystone",
     "CiEvalHealScanner",
+    "ClaudeSelfPrReviewScanner",
     "CodexReviewScanner",
     "DbBackupScanner",
     "DeferredQuestionPosterScanner",

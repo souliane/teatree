@@ -194,23 +194,26 @@ class CodexReviewScanner:
         )
 
 
-def _classify_variant(changed_files: tuple[str, ...], *, slug: str = "", author: str = "") -> str:
-    """Choose the codex review variant based on author trust and diff footprint.
+def is_adversarial_review(changed_files: tuple[str, ...], *, slug: str = "", author: str = "") -> bool:
+    """Whether a self-PR warrants the harder ADVERSARIAL review pass.
 
-    Routes to ``codex:adversarial-review`` when EITHER the PR is on a PUBLIC
-    repo authored by an untrusted identity (#1773 — the untrusted public author
-    never gets the lenient self-PR path) OR the diff touches a high-stakes path
-    (auth, permissions, migrations, secrets/tokens/credentials). Defaults to
-    ``codex:review``. The classifier is intentionally conservative — false
-    positives are fine (adversarial review is strictly more thorough), false
-    negatives are the actual failure mode.
+    True when EITHER the PR is on a PUBLIC repo authored by an untrusted identity
+    (#1773 — the untrusted public author never gets the lenient self-PR path) OR
+    the diff touches a high-stakes path (auth, permissions, migrations,
+    secrets/tokens/credentials). Backend-agnostic (#3569): both the codex and the
+    Claude self-PR scanners route to their harder variant on a True. Intentionally
+    conservative — a false positive (an unnecessary adversarial pass) is strictly
+    more thorough; a false negative is the real failure mode.
     """
     if slug and classify_author(slug, author).untrusted:
+        return True
+    return any(marker in path.lower() for path in changed_files for marker in ADVERSARIAL_PATH_MARKERS)
+
+
+def _classify_variant(changed_files: tuple[str, ...], *, slug: str = "", author: str = "") -> str:
+    """Choose the codex review variant (standard vs adversarial) for a PR."""
+    if is_adversarial_review(changed_files, slug=slug, author=author):
         return ADVERSARIAL_REVIEW_VARIANT
-    for path in changed_files:
-        lowered = path.lower()
-        if any(marker in lowered for marker in ADVERSARIAL_PATH_MARKERS):
-            return ADVERSARIAL_REVIEW_VARIANT
     return STANDARD_REVIEW_VARIANT
 
 
@@ -330,4 +333,5 @@ __all__ = [
     "CodexReviewScanner",
     "GhCodexPrApi",
     "PrSummary",
+    "is_adversarial_review",
 ]

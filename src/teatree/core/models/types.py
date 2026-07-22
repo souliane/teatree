@@ -205,6 +205,9 @@ class TicketExtra(TypedDict, total=False):
     # persistence handlers stamp so the dispatched agent has its context.
     # Codex auto-review: the resolved ``/codex:*`` variant on a reviewer ticket.
     codex_variant: str
+    # #3569 Claude self-PR review: the resolved ``claude:*`` variant on a reviewer
+    # ticket (the codex fallback path — same shape as ``codex_variant``).
+    self_pr_review_variant: str
     # RED CARD corrective action: the ``RedCardSignal`` row + surfaces so the
     # agent can file the enforcement issue and record it via ``link_issue``.
     red_card_signal_id: int

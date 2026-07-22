@@ -35,7 +35,11 @@ def _backdate_override(hours: int) -> None:
 
 class AvailabilityOverrideDoctorCheckTestCase(TestCase):
     def _seed_review_loop(self) -> None:
-        Loop.objects.get_or_create(
+        # A colleague-facing fixture loop for the doctor-naming check. Forced True via
+        # update_or_create because #3569 made the seeded `review` row colleague_facing
+        # =False (it always runs now) — this test exercises the doctor mechanism, not
+        # the production seed value (which test_seed pins).
+        Loop.objects.update_or_create(
             name="review",
             defaults={"delay_seconds": 60, "colleague_facing": True, "script": "src/teatree/loops/review/loop.py"},
         )

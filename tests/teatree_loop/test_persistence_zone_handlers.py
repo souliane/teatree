@@ -163,6 +163,102 @@ class TestCodexReviewZoneRevived(TestCase):
         assert "persist:codex:review" in errors
 
 
+class TestSelfPrReviewZoneRevived(TestCase):
+    """``self_pr_review.dispatch`` → reviewer ``reviewing`` task + persist-time marker (#3569).
+
+    The Claude self-review fallback routes through the SAME ``t3:reviewer`` zone as
+    a colleague review, but the ``self_pr`` payload flag sends it to the self-PR
+    branch, which claims a per-SHA :class:`CodexReviewMarker`. Anti-vacuity: on the
+    pre-#3569 code ``_handle_reviewer`` had no self-PR branch, so the unconditional
+    scanner emit would create a fresh reviewing task every tick (the flood) instead
+    of the single, per-SHA-deduped task these assertions pin.
+    """
+
+    def _signal(
+        self,
+        *,
+        pr_url: str = "https://github.com/o/r/pull/70",
+        pr_id: int = 70,
+        head_sha: str = "selfsha1",
+        variant: str = "claude:review",
+    ) -> ScanSignal:
+        return ScanSignal(
+            kind="self_pr_review.dispatch",
+            summary=f"self-PR review {pr_url}",
+            payload={
+                "slug": "o/r",
+                "pr_id": pr_id,
+                "head_sha": head_sha,
+                "pr_url": pr_url,
+                "url": pr_url,
+                "variant": variant,
+                "overlay": "acme",
+                "title": "PR 70",
+                "self_pr": True,
+            },
+        )
+
+    def test_creates_reviewer_reviewing_task_routed_to_claude(self) -> None:
+        created = persist_agent_actions(_agent_actions(self._signal()))
+        assert len(created) == 1
+        task = created[0]
+        assert task.phase == "reviewing"
+        assert task.ticket.role == Ticket.Role.REVIEWER
+        assert task.ticket.extra["self_pr_review_variant"] == "claude:review"
+
+    def test_dispatch_routes_self_pr_to_reviewer_zone(self) -> None:
+        actions = _agent_actions(self._signal())
+        assert [a.zone for a in actions] == ["t3:reviewer"]
+
+    def test_claims_marker_at_persist_time(self) -> None:
+        persist_agent_actions(_agent_actions(self._signal(pr_id=200, head_sha="selfsha-200")))
+        assert CodexReviewMarker.objects.filter(slug="o/r", pr_id=200, head_sha="selfsha-200").count() == 1
+
+    def test_idempotent_per_sha_after_task_completes(self) -> None:
+        # The persist-time marker (not just the open-task check) dedups per SHA:
+        # even after the first review task completes, the same SHA does NOT re-fire.
+        first = persist_agent_actions(_agent_actions(self._signal(pr_id=201, head_sha="selfsha-201")))
+        assert len(first) == 1
+        first[0].complete()
+        second = persist_agent_actions(_agent_actions(self._signal(pr_id=201, head_sha="selfsha-201")))
+        assert second == []
+        assert Task.objects.filter(ticket__issue_url="https://github.com/o/r/pull/70", phase="reviewing").count() == 1
+
+    def test_force_push_new_sha_re_reviews(self) -> None:
+        first = persist_agent_actions(_agent_actions(self._signal(pr_id=202, head_sha="selfsha-202a")))
+        assert len(first) == 1
+        first[0].complete()
+        second = persist_agent_actions(_agent_actions(self._signal(pr_id=202, head_sha="selfsha-202b")))
+        assert len(second) == 1
+
+    def test_incomplete_payload_creates_nothing(self) -> None:
+        created = persist_agent_actions(_agent_actions(self._signal(head_sha="")))
+        assert created == []
+        assert not CodexReviewMarker.objects.filter(slug="o/r", pr_id=70).exists()
+
+    def test_role_conflict_does_not_burn_marker(self) -> None:
+        Ticket.objects.create(issue_url="https://github.com/o/r/pull/73", overlay="acme", role=Ticket.Role.AUTHOR)
+        created = persist_agent_actions(
+            _agent_actions(self._signal(pr_url="https://github.com/o/r/pull/73", pr_id=73, head_sha="selfsha-73")),
+        )
+        assert created == []
+        assert not CodexReviewMarker.objects.filter(slug="o/r", pr_id=73).exists()
+
+    def test_task_creation_failure_rolls_back_marker(self) -> None:
+        with patch(
+            "teatree.loop.persistence_self_pr_review._create_phase_task",
+            side_effect=RuntimeError("boom"),
+        ):
+            errors: dict[str, str] = {}
+            created = persist_agent_actions(
+                _agent_actions(self._signal(pr_url="https://github.com/o/r/pull/71", pr_id=71, head_sha="selfsha-71")),
+                errors=errors,
+            )
+        assert created == []
+        assert not CodexReviewMarker.objects.filter(slug="o/r", pr_id=71).exists()
+        assert "persist:t3:reviewer" in errors
+
+
 class TestRedCardZoneRevived(TestCase):
     """``red_card.signal`` → author corrective ``coding`` task, row_id stamped."""
 

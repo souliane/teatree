@@ -9,14 +9,7 @@ the per-overlay domain slices (``domain_jobs``) consume. Depends DOWN on
 import logging
 from typing import TYPE_CHECKING
 
-from teatree.config import (
-    Autonomy,
-    Mode,
-    UserSettings,
-    clone_root,
-    effective_trusted_issue_authors,
-    get_effective_settings,
-)
+from teatree.config import Autonomy, UserSettings, clone_root, effective_trusted_issue_authors, get_effective_settings
 from teatree.core.backend_factory import OverlayBackends
 from teatree.core.merge import normalize_repo_slug
 from teatree.core.models import ImplementedIssueMarker
@@ -28,7 +21,7 @@ from teatree.loop.scanners import (
     AutoReviewTaskDispatcher,
     BackendChannelHistoryFetcher,
     CallCommandMergeKeystone,
-    CodexReviewScanner,
+    ClaudeSelfPrReviewScanner,
     GhCodexPrApi,
     GhPrApiClient,
     GlabGhMrStateClassifier,
@@ -224,20 +217,28 @@ def _pull_main_clone_scanner_for(backend: OverlayBackends) -> PullMainCloneScann
     )
 
 
-def _codex_review_scanner_for(backend: OverlayBackends) -> CodexReviewScanner | None:
-    """Build a per-overlay codex-review scanner from the overlay's followup repos (#1254).
+def _admit_colleague_prs_to_board(overlay_name: str) -> bool:
+    """#3569: whether COLLEAGUE / requested-reviewer PRs are admitted to the review board.
 
-    The fleet-of-agents doctrine ("auto-codex-on-every-push") only
-    applies when the user has opted the overlay into end-to-end
-    autonomy: ``mode = "auto"`` AND ``require_human_approval_to_merge =
-    false``. On every other overlay the scanner is silent — the user is
-    keeping a human-in-the-loop training wheel and explicit codex
-    invocation stays manual.
+    Self-authored PRs are always admitted; colleague PRs only when this is ON (the
+    default). The review intake builds :class:`ReviewerPrsScanner` only when true.
+    """
+    settings = _effective_settings_for_overlay(overlay_name)
+    return settings.admit_colleague_prs_to_board
 
-    Repo list comes from ``overlay.metadata.get_followup_repos()``
-    (same source as :class:`PrSweepScanner`). Returns ``None`` when the
-    overlay has no Python class, no repos, or has not opted into the
-    fleet doctrine.
+
+def _self_pr_review_scanner_for(backend: OverlayBackends) -> ClaudeSelfPrReviewScanner | None:
+    """Build the per-overlay SELF-authored-PR review scanner (#1254, #3569).
+
+    Self-authored open PRs are ALWAYS admitted to the review board: this sweeps
+    the owner's own open PRs and enqueues one Claude ``reviewing`` → ``t3:reviewer``
+    task per un-reviewed head SHA (per-SHA dedup = "since last review"). It is the
+    SAME quality gate colleague PRs get — the review execution is blind to author.
+    Codex is no longer the self-review mechanism (retired #3569); the ``t3:reviewer``
+    Claude reviewer is the sole gate. Repo list comes from
+    ``overlay.metadata.get_followup_repos()`` (same source as
+    :class:`PrSweepScanner`). Returns ``None`` when the overlay has no Python class
+    or no followup repos.
     """
     overlay = backend.overlay
     if overlay is None:
@@ -245,13 +246,9 @@ def _codex_review_scanner_for(backend: OverlayBackends) -> CodexReviewScanner | 
     repos = tuple(overlay.metadata.get_followup_repos())
     if not repos:
         return None
-    settings = _effective_settings_for_overlay(backend.name)
-    if settings.mode != Mode.AUTO or settings.require_human_approval_to_merge:
-        return None
-    github_token = overlay.config.get_github_token()
-    return CodexReviewScanner(
+    return ClaudeSelfPrReviewScanner(
         repos=repos,
-        api=GhCodexPrApi(token=github_token),
+        api=GhCodexPrApi(token=overlay.config.get_github_token()),
         overlay=backend.name,
     )
 

@@ -155,6 +155,12 @@
 "src/teatree/loop/domain_optional_scanner_jobs.py" = 1
 "src/teatree/loop/global_scanner_factories.py" = 1
 "src/teatree/loop/loop_scoping.py" = 1
+# #3569: `_handle_reviewer` defers `from teatree.loop.persistence_self_pr_review
+# import handle_self_pr_review`. The sibling module (split out to keep persistence
+# under the module-health LOC cap) imports persistence's shared ticket/task helpers
+# at top level, so persistence can only import it lazily — the load-bearing edge
+# that breaks the persistence<->sibling import cycle.
+"src/teatree/loop/persistence.py" = 1
 "src/teatree/loop/phases/render.py" = 8
 "src/teatree/loop/scanners/failed_e2e_posts.py" = 1
 "src/teatree/loop/scanners/outbound_audit_overlay_verifiers.py" = 5

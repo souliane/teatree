@@ -24,9 +24,10 @@ from teatree.loop.domain_optional_scanner_jobs import (
 )
 from teatree.loop.job_identity import PER_OVERLAY_DOMAINS, Domain, _ScannerJob
 from teatree.loop.scanner_factories import (
-    _codex_review_scanner_for,
+    _admit_colleague_prs_to_board,
     _competing_url_prefixes,
     _pr_sweep_scanner_for,
+    _self_pr_review_scanner_for,
     _slack_broadcasts_scanner_for,
     _task_sweep_scanner_for,
 )
@@ -228,36 +229,46 @@ def _review_jobs_for_overlay(
     *,
     all_backends: tuple[OverlayBackends, ...],
 ) -> list[_ScannerJob]:
-    """Reviewer-PR (per host) + broadcast / codex helpers.
+    """The single review intake (#3569): self-authored + colleague PRs → one board.
 
-    #3244: the ``pr_sweep`` auto-merge engine moved OUT of here into the ship
-    domain (:func:`_ship_jobs_for_overlay`) so it keeps ticking under
-    ``autonomous_away`` — this ``colleague_facing`` review loop is skipped then.
+    Both feed the SAME ``reviewing`` → ``t3:reviewer`` (Claude) queue; the review
+    execution is blind to author. The author distinction lives HERE, upstream.
+
+    Self-authored open PRs are ALWAYS admitted — the ``ClaudeSelfPrReviewScanner``
+    sweeps the owner's own open PRs and enqueues one Claude ``reviewing`` task per
+    un-reviewed head SHA (per-SHA dedup = "since last review"); codex is no longer
+    the self-review mechanism. COLLEAGUE / requested-reviewer PRs are admitted only
+    when ``admit_colleague_prs_to_board`` is ON (the sole config knob) — the
+    ``ReviewerPrsScanner`` is built only then, so ``false`` keeps colleague PRs off
+    the board while self-review still runs.
+
+    #3244: the ``pr_sweep`` auto-merge engine lives in the ship domain, not here.
     """
     tag = backend.name
     jobs: list[_ScannerJob] = []
-    for code_host in backend.hosts:
-        url_prefixes = _allowed_url_prefixes_for_host(backend, code_host)
-        competing_prefixes = _competing_url_prefixes(
-            this_backend=backend,
-            code_host=code_host,
-            all_backends=all_backends,
-        )
-        jobs.append(
-            _ScannerJob(
-                scanner=ReviewerPrsScanner(
-                    host=code_host,
-                    identities=backend.identities,
-                    overlay_name=tag,
-                    allowed_url_prefixes=url_prefixes,
-                    competing_url_prefixes=competing_prefixes,
+    self_pr_scanner = _self_pr_review_scanner_for(backend)
+    if self_pr_scanner is not None:
+        jobs.append(_ScannerJob(scanner=self_pr_scanner, overlay=tag))
+    if _admit_colleague_prs_to_board(tag):
+        for code_host in backend.hosts:
+            url_prefixes = _allowed_url_prefixes_for_host(backend, code_host)
+            competing_prefixes = _competing_url_prefixes(
+                this_backend=backend,
+                code_host=code_host,
+                all_backends=all_backends,
+            )
+            jobs.append(
+                _ScannerJob(
+                    scanner=ReviewerPrsScanner(
+                        host=code_host,
+                        identities=backend.identities,
+                        overlay_name=tag,
+                        allowed_url_prefixes=url_prefixes,
+                        competing_url_prefixes=competing_prefixes,
+                    ),
+                    overlay=tag,
                 ),
-                overlay=tag,
-            ),
-        )
-    codex_scanner = _codex_review_scanner_for(backend)
-    if codex_scanner is not None:
-        jobs.append(_ScannerJob(scanner=codex_scanner, overlay=tag))
+            )
     broadcasts_scanner = _slack_broadcasts_scanner_for(backend)
     if broadcasts_scanner is not None:
         jobs.append(_ScannerJob(scanner=broadcasts_scanner, overlay=tag))

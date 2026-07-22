@@ -23,6 +23,7 @@ from teatree.config import UserSettings
 GOLDEN_USER_SETTINGS_FIELDS: frozenset[str] = frozenset(
     {
         "admin_autologin_enabled",
+        "admit_colleague_prs_to_board",
         "agent_harness",
         "agent_harness_provider",
         "agent_runtime",

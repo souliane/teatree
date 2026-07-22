@@ -1,8 +1,10 @@
-"""Review mini-loop — reviewer-PR / Slack-review-intent / broadcast / codex / sweep wiring.
+"""Review mini-loop — the single review intake (self + colleague PRs) + broadcasts.
 
-Five-minute default cadence. Reviewer-PR work is event-bursty (a
-colleague pushes a new SHA, the loop fires once, the work is done) so
-sub-minute polling buys nothing.
+Five-minute default cadence. Both the owner's OWN open PRs (always) and colleague
+requested-reviewer PRs (when ``admit_colleague_prs_to_board`` is on) feed the same
+``reviewing`` → ``t3:reviewer`` gate; the author distinction lives upstream in the
+intake (#3569). Review work is event-bursty (a new SHA, the loop fires once, the
+work is done) so sub-minute polling buys nothing.
 """
 
 from typing import TYPE_CHECKING

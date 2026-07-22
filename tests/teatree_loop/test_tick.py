@@ -1291,69 +1291,48 @@ def test_build_default_jobs_skips_slack_broadcasts_without_messaging() -> None:
     assert not [j for j in jobs if j.scanner.name == "slack_broadcasts"]
 
 
-def test_build_default_jobs_wires_codex_review_when_fleet_doctrine_applies() -> None:
-    """#1254: an auto-mode overlay gets a ``codex_review`` scanner."""
-    from unittest.mock import patch  # noqa: PLC0415
+def test_build_default_jobs_wires_self_pr_review_and_never_codex() -> None:
+    """#3569: the review intake wires the Claude ``self_pr_review`` scanner, never codex."""
+    from unittest.mock import patch  # noqa: PLC0415 — deferred: test-local import (#3569)
 
-    from teatree.config import Mode, UserSettings  # noqa: PLC0415
-    from teatree.loop.tick import build_default_jobs  # noqa: PLC0415
-
-    backend = _backend_with_overlay(name="teatree", repos=["souliane/teatree"])
-    auto_settings = UserSettings(mode=Mode.AUTO, require_human_approval_to_merge=False)
-    with patch("teatree.loop.scanner_factories._effective_settings_for_overlay", return_value=auto_settings):
-        jobs = build_default_jobs(backends=[backend])
-    codex_jobs = [j for j in jobs if j.scanner.name == "codex_review"]
-    assert len(codex_jobs) == 1
-    assert codex_jobs[0].overlay == "teatree"
-    assert codex_jobs[0].scanner.repos == ("souliane/teatree",)
-
-
-def test_build_default_jobs_skips_codex_review_when_interactive_mode() -> None:
-    """#1254: an interactive-mode overlay is opted out of auto-dispatch."""
-    from unittest.mock import patch  # noqa: PLC0415
-
-    from teatree.config import Mode, UserSettings  # noqa: PLC0415
-    from teatree.loop.tick import build_default_jobs  # noqa: PLC0415
+    from teatree.config import UserSettings  # noqa: PLC0415 — deferred: test-local import (#3569)
+    from teatree.loop.tick import build_default_jobs  # noqa: PLC0415 — deferred: test-local import (#3569)
 
     backend = _backend_with_overlay(name="teatree", repos=["souliane/teatree"])
-    interactive_settings = UserSettings(mode=Mode.INTERACTIVE)
-    with patch("teatree.loop.scanner_factories._effective_settings_for_overlay", return_value=interactive_settings):
+    with patch("teatree.loop.scanner_factories._effective_settings_for_overlay", return_value=UserSettings()):
         jobs = build_default_jobs(backends=[backend])
+    self_jobs = [j for j in jobs if j.scanner.name == "self_pr_review"]
+    assert len(self_jobs) == 1
+    assert self_jobs[0].overlay == "teatree"
+    assert self_jobs[0].scanner.repos == ("souliane/teatree",)
     assert not [j for j in jobs if j.scanner.name == "codex_review"]
 
 
-def test_build_default_jobs_skips_codex_review_when_human_approval_required() -> None:
-    """#1254: auto-mode with ``require_human_approval_to_merge`` keeps codex auto-dispatch off.
+def test_build_default_jobs_self_pr_review_is_not_fleet_gated() -> None:
+    """#3569: self-PR review runs regardless of mode — it is not fleet-gated like the old codex sweep."""
+    from unittest.mock import patch  # noqa: PLC0415 — deferred: test-local import (#3569)
 
-    The fleet doctrine — auto-codex-on-every-push — applies only when the
-    user has opted into end-to-end autonomy. ``require_human_approval_to_merge``
-    being on is the user keeping a human-in-the-loop training wheel; the
-    scanner respects that and stays silent.
-    """
-    from unittest.mock import patch  # noqa: PLC0415
-
-    from teatree.config import Mode, UserSettings  # noqa: PLC0415
-    from teatree.loop.tick import build_default_jobs  # noqa: PLC0415
+    from teatree.config import Mode, UserSettings  # noqa: PLC0415 — deferred: test-local import (#3569)
+    from teatree.loop.tick import build_default_jobs  # noqa: PLC0415 — deferred: test-local import (#3569)
 
     backend = _backend_with_overlay(name="teatree", repos=["souliane/teatree"])
-    half_auto = UserSettings(mode=Mode.AUTO, require_human_approval_to_merge=True)
-    with patch("teatree.loop.scanner_factories._effective_settings_for_overlay", return_value=half_auto):
+    interactive = UserSettings(mode=Mode.INTERACTIVE)
+    with patch("teatree.loop.scanner_factories._effective_settings_for_overlay", return_value=interactive):
         jobs = build_default_jobs(backends=[backend])
-    assert not [j for j in jobs if j.scanner.name == "codex_review"]
+    assert [j for j in jobs if j.scanner.name == "self_pr_review"]
 
 
-def test_build_default_jobs_skips_codex_review_when_overlay_has_no_repos() -> None:
-    """#1254: an overlay whose ``get_followup_repos`` is empty gets no codex job."""
-    from unittest.mock import patch  # noqa: PLC0415
+def test_build_default_jobs_skips_self_pr_review_when_overlay_has_no_repos() -> None:
+    """#3569: an overlay whose ``get_followup_repos`` is empty gets no self-PR review job."""
+    from unittest.mock import patch  # noqa: PLC0415 — deferred: test-local import (#3569)
 
-    from teatree.config import Mode, UserSettings  # noqa: PLC0415
-    from teatree.loop.tick import build_default_jobs  # noqa: PLC0415
+    from teatree.config import UserSettings  # noqa: PLC0415 — deferred: test-local import (#3569)
+    from teatree.loop.tick import build_default_jobs  # noqa: PLC0415 — deferred: test-local import (#3569)
 
     backend = _backend_with_overlay(name="empty", repos=[])
-    auto_settings = UserSettings(mode=Mode.AUTO, require_human_approval_to_merge=False)
-    with patch("teatree.loop.scanner_factories._effective_settings_for_overlay", return_value=auto_settings):
+    with patch("teatree.loop.scanner_factories._effective_settings_for_overlay", return_value=UserSettings()):
         jobs = build_default_jobs(backends=[backend])
-    assert not [j for j in jobs if j.scanner.name == "codex_review"]
+    assert not [j for j in jobs if j.scanner.name == "self_pr_review"]
 
 
 @dataclass(slots=True)

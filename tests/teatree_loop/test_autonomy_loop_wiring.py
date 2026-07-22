@@ -4,7 +4,7 @@ The as-built #1668 PR collapsed the three approval gates in
 ``get_effective_settings()`` but ``_effective_settings_for_overlay`` — the
 resolver the loop's scanner-builders use — did ``replace(base, **overrides)``
 and never routed through ``_apply_autonomy``. So the auto-merge / codex
-consumers (``pr_sweep`` ``solo_overlay`` gate, ``_codex_review_scanner_for``)
+consumers (``pr_sweep`` ``solo_overlay`` gate, ``_self_pr_review_scanner_for``)
 were BLIND to the collapse: a ``full``/``notify`` overlay's merge autonomy was
 a silent no-op in the loop. These tests pin the collapse through the loop
 resolver AND the resulting ``solo_overlay`` decision.
