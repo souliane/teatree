@@ -532,9 +532,10 @@ class TestLoopOwnerCli:
         assert "claimed loop slot" in result.stdout
         assert LoopLease.objects.get(name="t3-master").session_id == "cli-session"
 
-    def test_claim_without_session_id_exits_2(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.delenv("CLAUDE_SESSION_ID", raising=False)
-        monkeypatch.delenv("T3_LOOP_SESSION_ID", raising=False)
+    def test_claim_without_session_id_exits_2(self, monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
+        for key in ("CLAUDE_SESSION_ID", "CLAUDE_CODE_SESSION_ID", "T3_LOOP_SESSION_ID"):
+            monkeypatch.delenv(key, raising=False)
+        monkeypatch.setenv("T3_LOOP_REGISTRY_DIR", str(tmp_path / "no-registry"))
         result = runner.invoke(loop_app, ["claim"])
 
         assert result.exit_code == 2
@@ -655,11 +656,12 @@ class TestLoopOwnerCli:
             "driverless": True,
         }
 
-    def test_claim_json_no_session_id_error_shape(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_claim_json_no_session_id_error_shape(self, monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
         import json  # noqa: PLC0415
 
-        monkeypatch.delenv("CLAUDE_SESSION_ID", raising=False)
-        monkeypatch.delenv("T3_LOOP_SESSION_ID", raising=False)
+        for key in ("CLAUDE_SESSION_ID", "CLAUDE_CODE_SESSION_ID", "T3_LOOP_SESSION_ID"):
+            monkeypatch.delenv(key, raising=False)
+        monkeypatch.setenv("T3_LOOP_REGISTRY_DIR", str(tmp_path / "no-registry"))
         result = runner.invoke(loop_app, ["claim", "--json"])
 
         assert result.exit_code == 2

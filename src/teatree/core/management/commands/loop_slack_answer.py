@@ -21,10 +21,12 @@ from typing import Annotated
 import typer
 from django_typer.management import TyperCommand
 
+from teatree.core.session_identity import session_id_from_env
+
 
 def _non_owner_session_id() -> str | None:
     """Read the current Claude session id from the env, ``None`` when absent."""
-    return os.environ.get("CLAUDE_SESSION_ID") or os.environ.get("T3_LOOP_SESSION_ID")
+    return session_id_from_env()
 
 
 def _session_owns_loop(session_id: str | None) -> bool:

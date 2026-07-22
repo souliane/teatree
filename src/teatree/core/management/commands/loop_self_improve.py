@@ -16,6 +16,8 @@ from typing import TYPE_CHECKING, Annotated, Any
 import typer
 from django_typer.management import TyperCommand
 
+from teatree.core.session_identity import session_id_from_env
+
 if TYPE_CHECKING:
     from teatree.loop.self_improve.schedule import TierResult
 
@@ -53,7 +55,7 @@ def _non_owner_session_id() -> str | None:
     env var is missing and the t3-master gate skips its check rather
     than refusing every CLI call.
     """
-    return os.environ.get("CLAUDE_SESSION_ID") or os.environ.get("T3_LOOP_SESSION_ID")
+    return session_id_from_env()
 
 
 def _session_owns_loop(session_id: str | None) -> bool:
