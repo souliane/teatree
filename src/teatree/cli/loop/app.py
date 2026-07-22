@@ -257,9 +257,11 @@ def _session_pin_flags() -> list[str]:
     Model and effort are session-level pins so the user never runs ``/model`` (or
     sets the effort) by hand. They are injected ONLY into the interactive
     ``claude`` spawn argv here — never into ``claude -p`` headless (effort is
-    session-wide, not per-sub-agent). Absent settings inject neither. Effort is
-    validated at parse time (``config.agent_spawn.resolve_agent_config``), so an
-    off-scale value fails loudly rather than reaching the CLI.
+    session-wide, not per-sub-agent). An absent ``agent_session_model`` injects no
+    ``--model``; effort ships a default (``xhigh``), so ``--effort`` is always
+    injected unless the operator pins a different scale value. Effort is validated
+    at parse time (``config.agent_spawn.resolve_agent_config``), so an off-scale
+    value fails loudly rather than reaching the CLI.
     """
     from teatree.config.agent_spawn import resolve_agent_config  # noqa: PLC0415 — deferred: interactive-spawn path only
 

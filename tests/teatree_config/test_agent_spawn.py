@@ -59,11 +59,11 @@ class TestEffortScale:
 
 
 class TestAgentConfigDefaults:
-    def test_default_is_empty_skill_models_and_no_pins(self) -> None:
+    def test_default_is_empty_skill_models_no_model_pin_xhigh_effort(self) -> None:
         cfg = AgentConfig()
         assert cfg.skill_models == {}
         assert cfg.session_model is None
-        assert cfg.session_effort is None
+        assert cfg.session_effort == "xhigh"
 
     def test_default_honesty_model_is_opus(self) -> None:
         # The most-honest model an honesty-critical escalation routes to defaults
@@ -177,11 +177,11 @@ class TestSessionEffortParse:
         _point_at(monkeypatch, db)
         assert resolve_agent_config().session_effort == "max"
 
-    def test_absent_session_effort_is_none(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_absent_session_effort_defaults_to_xhigh(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         db = tmp_path / "db.sqlite3"
         _seed(db, "agent_session_model", "haiku")
         _point_at(monkeypatch, db)
-        assert resolve_agent_config().session_effort is None
+        assert resolve_agent_config().session_effort == "xhigh"
 
     def test_invalid_session_effort_raises_clean_valueerror(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
