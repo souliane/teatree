@@ -1,15 +1,20 @@
 """Per-phase tool least-privilege at the headless harness (PR-11).
 
 ``_build_options`` injects the per-phase disallow list on the ``ClaudeAgentOptions``
-it hands the SDK. A verdict-producing review-phase dispatch must come up WITH the
-shell it needs to cold-check-out the head and record its verdict, and UNABLE to
-mutate source (``Write``/``Edit``) — the lockout that keeps the transcript at that
-verdict. A write phase's options are byte-identical to before the lever.
+it hands the SDK. Two guarantees are pinned here. First, the external-contact floor:
+the interactive/external-effect built-ins (``AskUserQuestion``/``PushNotification``/
+``RemoteTrigger``/``SendMessage``/``Monitor``) are denied on EVERY headless phase, so
+no headless agent can reach the user or an external endpoint via a built-in — the only
+sanctioned user-contact path is ``needs_user_input`` → DeferredQuestion → Slack.
+Second, the per-phase complement: a verdict-producing review-phase dispatch keeps the
+shell it needs to cold-check-out the head and record its verdict, and is UNABLE to
+mutate source (``Write``/``Edit``), while a work phase's capability tools
+(Read/Write/Edit/Bash) are untouched by the floor.
 """
 
 from django.test import TestCase
 
-from teatree.agents._headless_options import _build_options, _disallowed_tools_for_phase
+from teatree.agents._headless_options import _EXTERNAL_CONTACT_BUILTINS, _build_options, _disallowed_tools_for_phase
 from teatree.core.modelkit.phase_tools import VERDICT_REVIEW_PHASES
 from teatree.core.models import Session, Task, Ticket
 from teatree.llm.builtin_tools import KNOWN_BUILTIN_TOOLS
@@ -20,6 +25,22 @@ class TestDisallowedToolsForPhase(TestCase):
         for phase in ("coding", "reviewing", "planning", "shipping"):
             assert "AskUserQuestion" in _disallowed_tools_for_phase(phase), phase
 
+    def test_external_contact_builtins_denied_on_every_headless_phase(self) -> None:
+        # No headless phase — work, planning, review, shipping, debugging — can reach
+        # the user or an external endpoint via a built-in.
+        for phase in ("coding", "testing", "planning", "shipping", "reviewing", "debugging", "e2e"):
+            disallowed = set(_disallowed_tools_for_phase(phase))
+            missing = set(_EXTERNAL_CONTACT_BUILTINS) - disallowed
+            assert not missing, (phase, missing)
+
+    def test_floor_is_a_valid_subset_of_the_builtin_registry(self) -> None:
+        # Every floor name must be a real CLI built-in or the CLI rejects it as a
+        # deny rule ("matches no known tool").
+        assert set(_EXTERNAL_CONTACT_BUILTINS) <= set(KNOWN_BUILTIN_TOOLS)
+        assert {"AskUserQuestion", "PushNotification", "RemoteTrigger", "SendMessage", "Monitor"} == set(
+            _EXTERNAL_CONTACT_BUILTINS
+        )
+
     def test_review_phase_keeps_shell_but_denies_file_mutation(self) -> None:
         disallowed = set(_disallowed_tools_for_phase("reviewing"))
         # F4: the reviewer keeps the shell (Bash) to run the cold-review checkout,
@@ -27,10 +48,13 @@ class TestDisallowedToolsForPhase(TestCase):
         assert {"Write", "Edit"} <= disallowed
         assert "Bash" not in disallowed
 
-    def test_write_phase_denies_only_the_askuserquestion_floor(self) -> None:
-        # A full-access phase adds nothing — byte-identical to before the lever.
-        assert _disallowed_tools_for_phase("coding") == ["AskUserQuestion"]
-        assert _disallowed_tools_for_phase("testing") == ["AskUserQuestion"]
+    def test_write_phase_denies_exactly_the_external_contact_floor(self) -> None:
+        # A full-access phase adds nothing beyond the floor, and the floor never
+        # touches its capability tools (Read/Write/Edit/Bash stay granted).
+        for phase in ("coding", "testing"):
+            disallowed = _disallowed_tools_for_phase(phase)
+            assert disallowed == sorted(_EXTERNAL_CONTACT_BUILTINS), phase
+            assert {"Read", "Write", "Edit", "Bash"}.isdisjoint(disallowed), phase
 
     def test_sorted_and_deduplicated(self) -> None:
         result = _disallowed_tools_for_phase("reviewing")
@@ -101,7 +125,15 @@ class TestBuildOptionsHarnessPin(TestCase):
         options = self._options_for("coding")
         assert "Bash" not in options.disallowed_tools
         assert "Write" not in options.disallowed_tools
-        assert options.disallowed_tools == ["AskUserQuestion"]
+        assert "Read" not in options.disallowed_tools
+        assert options.disallowed_tools == sorted(_EXTERNAL_CONTACT_BUILTINS)
+
+    def test_work_dispatch_denies_the_external_contact_builtins(self) -> None:
+        # The live gap this closes: a work-phase dispatch used to carry only the
+        # AskUserQuestion floor, leaving PushNotification/RemoteTrigger/SendMessage/
+        # Monitor reachable so a headless agent could contact the user directly.
+        disallowed = set(self._options_for("coding").disallowed_tools)
+        assert {"AskUserQuestion", "PushNotification", "RemoteTrigger", "SendMessage", "Monitor"} <= disallowed
 
     def test_reader_dispatch_suppresses_all_tool_sources(self) -> None:
         # #116 (C1): an empty allowed_tools is a no-op in the SDK transport, so the reader
