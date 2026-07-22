@@ -251,10 +251,18 @@ def default_projects_dir() -> Path:
     return Path.home() / ".claude" / "projects"
 
 
+#: Both roots task-output transcripts land under; the split is temporal residue (#3585).
+_TASK_OUTPUT_TMP_BASES: tuple[str, ...] = ("/tmp", "/var/tmp")  # noqa: S108 — fixed agent-controlled paths
+
+
 def _task_output_roots() -> list[Path]:
     uid = os.geteuid()
-    candidate = Path(f"/tmp/claude-{uid}")  # noqa: S108 — fixed agent-controlled path, not user input
-    return [candidate] if candidate.is_dir() else []
+    roots: dict[Path, Path] = {}
+    for base in _TASK_OUTPUT_TMP_BASES:
+        candidate = Path(base) / f"claude-{uid}"
+        if candidate.is_dir():
+            roots.setdefault(candidate.resolve(), candidate)
+    return list(roots.values())
 
 
 def _regular_file_mtime(path: Path) -> float | None:

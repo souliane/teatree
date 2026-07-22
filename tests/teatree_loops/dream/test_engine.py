@@ -941,6 +941,48 @@ class TestEnumerateMembersTaskOutput:
         assert kinds == {"memory", "main", "subagent", "task_output"}
 
 
+class TestTaskOutputRoots:
+    def test_both_tmp_and_var_tmp_roots_globbed_when_both_exist(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        uid = os.geteuid()
+        base_tmp = tmp_path / "tmp"
+        base_var_tmp = tmp_path / "var_tmp"
+        (base_tmp / f"claude-{uid}").mkdir(parents=True)
+        (base_var_tmp / f"claude-{uid}").mkdir(parents=True)
+        monkeypatch.setattr(engine, "_TASK_OUTPUT_TMP_BASES", (str(base_tmp), str(base_var_tmp)))
+
+        roots = engine._task_output_roots()
+
+        assert roots == [base_tmp / f"claude-{uid}", base_var_tmp / f"claude-{uid}"]
+
+    def test_only_existing_roots_are_returned(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        uid = os.geteuid()
+        base_tmp = tmp_path / "tmp"
+        base_var_tmp = tmp_path / "var_tmp"
+        base_tmp.mkdir()  # base present but no claude-{uid} subdir under it
+        (base_var_tmp / f"claude-{uid}").mkdir(parents=True)
+        monkeypatch.setattr(engine, "_TASK_OUTPUT_TMP_BASES", (str(base_tmp), str(base_var_tmp)))
+
+        roots = engine._task_output_roots()
+
+        assert roots == [base_var_tmp / f"claude-{uid}"]
+
+    def test_roots_deduplicated_when_bases_resolve_to_the_same_dir(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        uid = os.geteuid()
+        real_base = tmp_path / "real"
+        (real_base / f"claude-{uid}").mkdir(parents=True)
+        link_base = tmp_path / "link"
+        link_base.symlink_to(real_base)
+        monkeypatch.setattr(engine, "_TASK_OUTPUT_TMP_BASES", (str(real_base), str(link_base)))
+
+        roots = engine._task_output_roots()
+
+        assert roots == [real_base / f"claude-{uid}"]
+
+
 class TestEnumerateMembersMemoryFiles:
     def test_memory_md_picked_up_as_memory_kind(self, tmp_path: Path) -> None:
         memory_dir = tmp_path / "slug" / "memory"
