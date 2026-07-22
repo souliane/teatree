@@ -23,7 +23,10 @@ runner = CliRunner()
 
 class TestWorkerStatus(django.test.TestCase):
     def test_status_reports_not_running_and_enabled_by_default(self) -> None:
-        with mock.patch.object(worker_cli, "_flock_holder_pid", return_value=None):
+        with (
+            mock.patch.object(worker_cli, "_flock_holder_pid", return_value=None),
+            mock.patch("teatree.utils.singleton.flock_is_held", return_value=False),
+        ):
             result = runner.invoke(worker_app, ["status"])
         assert result.exit_code == 0
         assert "NOT running" in result.stdout
@@ -41,6 +44,40 @@ class TestWorkerStatus(django.test.TestCase):
         assert payload["loop_runner_enabled"] is True
         assert payload["source"] == "default"
         assert isinstance(payload["timers"], dict)
+
+    def test_status_reports_running_via_flock_when_pid_file_absent(self) -> None:
+        # The flock is HELD by a live worker but the pid file is missing/stale, so
+        # `read_pid` returns None — status must not print a false "NOT running" (#3571).
+        with (
+            mock.patch.object(worker_cli, "_flock_holder_pid", return_value=None),
+            mock.patch("teatree.utils.singleton.flock_is_held", return_value=True),
+        ):
+            result = runner.invoke(worker_app, ["status"])
+        assert result.exit_code == 0
+        assert "NOT running" not in result.stdout
+        assert "RUNNING" in result.stdout
+        assert "t3 worker ensure" not in result.stdout
+
+    def test_status_json_flock_fallback_marks_running(self) -> None:
+        with (
+            mock.patch.object(worker_cli, "_flock_holder_pid", return_value=None),
+            mock.patch("teatree.utils.singleton.flock_is_held", return_value=True),
+        ):
+            result = runner.invoke(worker_app, ["status", "--json"])
+        assert result.exit_code == 0
+        payload = json.loads(result.stdout)
+        assert payload["running"] is True
+        assert payload["holder_pid"] is None
+        assert payload["flock_held"] is True
+
+    def test_status_not_running_when_flock_free(self) -> None:
+        with (
+            mock.patch.object(worker_cli, "_flock_holder_pid", return_value=None),
+            mock.patch("teatree.utils.singleton.flock_is_held", return_value=False),
+        ):
+            result = runner.invoke(worker_app, ["status"])
+        assert result.exit_code == 0
+        assert "NOT running" in result.stdout
 
 
 class TestWorkerEnsure(django.test.TestCase):

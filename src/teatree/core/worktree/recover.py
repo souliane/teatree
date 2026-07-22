@@ -31,6 +31,7 @@ class BootSweepsDict(TypedDict):
     replayed_transitions: int
     reclaimed_claims: int
     reaped_claims: int
+    reclaimed_leases: int
 
 
 class OrphanDict(TypedDict):
@@ -109,6 +110,7 @@ class RecoverReport:
                 replayed_transitions=self.boot_sweeps.replayed_transitions,
                 reclaimed_claims=self.boot_sweeps.reclaimed_claims,
                 reaped_claims=self.boot_sweeps.reaped_claims,
+                reclaimed_leases=self.boot_sweeps.reclaimed_leases,
             ),
             data_loss_risk=[self._orphan_dict(o) for o in self.data_loss_risk],
             committed_unpushed=[self._orphan_dict(o) for o in self.committed_unpushed],
@@ -141,7 +143,8 @@ class RecoverReport:
         sweeps = self.boot_sweeps
         sweep_line = (
             f"boot sweeps: replayed={sweeps.replayed_transitions} "
-            f"reclaimed={sweeps.reclaimed_claims} reaped={sweeps.reaped_claims}"
+            f"reclaimed={sweeps.reclaimed_claims} reaped={sweeps.reaped_claims} "
+            f"leases={sweeps.reclaimed_leases}"
         )
         lines = [header, sweep_line]
         lines += self._render_orphans("Data-loss risk (unpushed)", self.data_loss_risk)

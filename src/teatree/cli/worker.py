@@ -98,10 +98,20 @@ def status_command(*, json_output: bool = typer.Option(False, "--json", help="Em
 
     ensure_django()
 
+    from teatree.utils.singleton import (  # noqa: PLC0415 (deferred: no Django/DB at CLI import)
+        WORKER_SINGLETON,
+        default_pid_path,
+        flock_is_held,
+    )
+
     holder = _flock_holder_pid()
+    # The pid file can be missing/stale while a worker actually holds the kernel flock
+    # (the pid file is diagnostic; the flock is the lock). Fall back to the flock probe
+    # so status never prints a false "NOT running" while loops are advancing (#3571).
+    flock_held = flock_is_held(WORKER_SINGLETON, pid_path=default_pid_path(WORKER_SINGLETON))
     enabled, source = _resolve_kill_switch()
     timers = _timer_counts()
-    running = holder is not None
+    running = holder is not None or flock_held
 
     if json_output:
         typer.echo(
@@ -109,6 +119,7 @@ def status_command(*, json_output: bool = typer.Option(False, "--json", help="Em
                 {
                     "running": running,
                     "holder_pid": holder,
+                    "flock_held": flock_held,
                     "loop_runner_enabled": enabled,
                     "source": source,
                     "timers": timers,
@@ -117,7 +128,12 @@ def status_command(*, json_output: bool = typer.Option(False, "--json", help="Em
         )
         return
 
-    state = f"RUNNING (pid {holder})" if running else "NOT running"
+    if holder is not None:
+        state = f"RUNNING (pid {holder})"
+    elif flock_held:
+        state = "RUNNING (flock held; pid file missing/stale)"
+    else:
+        state = "NOT running"
     typer.echo(f"worker: {state}")
     typer.echo(f"loop_runner_enabled: {enabled} (from {source})")
     if enabled and not running:

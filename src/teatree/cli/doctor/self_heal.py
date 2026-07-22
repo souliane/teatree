@@ -1,12 +1,10 @@
 """Self-heal doctor checks — the H24 factory-outage detectors (owner directive #10).
 
-The recorded 2026 seven-hour silent freeze: the worker WAS the monitor, so when
-the worker/init container died the thing that would alert died with it, and
-NOBODY noticed. These crash-proof ``_check_*`` detectors surface the
-silent-failure classes that froze the factory as loud red findings so the
-in-daemon watchdog (the ``deploy/watchdog.sh`` sidecar container, kept alive by
-the Docker daemon independently of the stack it watches) can restart the stack
-and DM the owner:
+The worker WAS the monitor, so when it died the alerting died with it (the
+recorded seven-hour silent freeze). These crash-proof ``_check_*`` detectors
+surface the silent-failure classes as loud findings so the in-daemon watchdog
+(the ``deploy/watchdog.sh`` sidecar, kept alive by the Docker daemon independently
+of the stack it watches) can restart the stack and DM the owner:
 
 - a compose init container that exited non-zero / a worker stuck ``Created``,
 - a free worker flock while the loop machinery has queued, overdue work,
@@ -15,13 +13,13 @@ and DM the owner:
 - a PENDING ``interactive`` task under ``agent_runtime=headless`` (unrunnable),
 - a FAILED task on a still-live ticket (the silent-freeze signature),
 - a runtime clone that has drifted off its default branch,
-- a slack-drain sidecar failing every pass or gone silent, so inbound Slack stops being answered.
+- a slack-drain sidecar failing every pass or gone silent, so inbound Slack stops being answered,
+- a ``loop:<name>``/``t3-master`` lease held by a dead session past TTL (this one AUTO-REPAIRS).
 
-Each returns ``bool`` — ``False`` is a hard FAIL that reddens ``t3 doctor`` (and
-so the watchdog's ``t3 doctor --json``). Every check is crash-proof: any
-unexpected error degrades to a pass, because a self-heal detector that itself
-aborts the doctor run would recreate the very "monitor dies, alerting dies"
-failure this module exists to end.
+Each returns ``bool`` — ``False`` is a hard FAIL that reddens ``t3 doctor`` (and so
+the watchdog's ``t3 doctor --json``). Every check is crash-proof: any error degrades
+to a pass, since a detector that aborted the run would recreate the very "monitor
+dies, alerting dies" failure this module ends.
 """
 
 import base64
@@ -107,17 +105,12 @@ def _parse_compose_state_rows(text: str) -> list[tuple[str, str, str]]:
 def _compose_states_from_handoff() -> list[tuple[str, str, str]] | None:
     """Compose states handed off by the socket-holding watchdog, or ``None`` when absent.
 
-    ``t3 doctor`` runs inside ``teatree-admin``, which has the ``docker`` CLI but
-    NOT ``/var/run/docker.sock`` (only the watchdog mounts the socket), so a local
-    ``docker ps`` there cannot reach the daemon and the compose-stack detector would
-    silently pass every real outage. The watchdog — the ONE container with the
-    socket — gathers the states and passes them in via :data:`_COMPOSE_STATES_ENV`
-    (base64 of the same tab-separated ``docker ps`` output), so the detector runs in
-    the container that also has the DB-backed ``loop_runner_on`` gate.
-
-    ``None`` when the env var is unset / empty (a dev box, or a direct ``t3 doctor``
-    run) so the caller falls back to a LOCAL ``docker ps``. A malformed / non-base64
-    handoff also yields ``None`` (degrade to a pass) rather than a garbage verdict.
+    ``t3 doctor`` runs inside ``teatree-admin`` (docker CLI but no
+    ``/var/run/docker.sock``), so only the socket-holding watchdog can gather the
+    states; it passes them in via :data:`_COMPOSE_STATES_ENV` (base64 of the
+    tab-separated ``docker ps`` output). ``None`` when the env var is unset/empty
+    (caller falls back to a LOCAL ``docker ps``) or the handoff is malformed
+    (degrade to a pass, never a garbage verdict).
     """
     raw = os.environ.get(_COMPOSE_STATES_ENV, "").strip()
     if not raw:
@@ -153,18 +146,11 @@ class _Probe:
     def compose_container_states(project: str) -> list[tuple[str, str, str]] | None:
         """``(service, state, status)`` per container of *project*, or ``None`` when unreadable.
 
-        Prefers the watchdog handoff (:func:`_compose_states_from_handoff`): the
-        doctor runs inside a socket-LESS app container (``teatree-admin`` has the
-        ``docker`` CLI but not ``/var/run/docker.sock``), so a local ``docker ps``
-        cannot reach the daemon there and the detector would silently pass every
-        real outage. The socket-holding watchdog gathers the states and hands them
-        in, so the check runs where the DB-backed ``loop_runner_on`` gate lives.
-
-        Falls back to a LOCAL ``docker ps`` when no handoff is present (a dev box,
-        or a direct ``t3 doctor`` run on a machine WITH docker access). ``None``
-        means "cannot tell" (no handoff, and no ``docker`` on PATH / daemon down /
-        timeout) — the caller degrades to a pass, exactly as the MCP / Slack doctor
-        probes degrade when their tool is absent.
+        Prefers the watchdog handoff (:func:`_compose_states_from_handoff`), since the
+        doctor's socket-less app container cannot reach the daemon; falls back to a
+        LOCAL ``docker ps`` when no handoff is present (a dev box). ``None`` means
+        "cannot tell" (no handoff, no ``docker`` on PATH / daemon down / timeout) — the
+        caller degrades to a pass, as the MCP / Slack probes do when their tool is absent.
         """
         from teatree.utils.run import run_allowed_to_fail  # noqa: PLC0415 — deferred: keeps CLI startup light
 
@@ -552,6 +538,28 @@ def _check_slack_drain_alive() -> bool:
     return True
 
 
+def _check_dead_owner_lease() -> bool:
+    """AUTO-REPAIR (not just FAIL) a loop lease held by a dead session past TTL (#3571).
+
+    Reclaims every ``loop:<name>``/``t3-master`` lease whose owning session is provably
+    dead (crashed, or a reused / cross-namespace pid) and reports the heal. Conservative,
+    idempotent, best-effort — any error degrades to a pass rather than aborting the run.
+    """
+    try:
+        from teatree.core.models import LoopLease  # noqa: PLC0415 — deferred: ORM import needs the app registry
+
+        reclaimed = LoopLease.objects.reclaim_dead_owner_leases()
+    except Exception as exc:  # noqa: BLE001 — a self-heal probe must never crash the doctor run
+        typer.echo(f"WARN  Dead-owner-lease check crashed: {exc.__class__.__name__}: {exc}")
+        return True
+    if reclaimed:
+        typer.echo(
+            f"WARN  Auto-reclaimed {len(reclaimed)} loop lease(s) held by a dead session past TTL "
+            f"({', '.join(sorted(reclaimed))}) — returned to the pool for a live worker to drive."
+        )
+    return True
+
+
 def _now() -> dt.datetime:
     from django.utils import timezone  # noqa: PLC0415 — deferred: Django import at call time
 
@@ -573,6 +581,7 @@ def run_self_heal_checks() -> bool:
         _check_failed_tasks_on_live_tickets,
         _check_runtime_clone_on_default_branch,
         _check_slack_drain_alive,
+        _check_dead_owner_lease,
     )
     ok = True
     for check in checks:

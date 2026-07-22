@@ -584,14 +584,30 @@ class TestPerLoopOwnershipReusesGlobalMachinery(TestCase):
         assert won is True
         assert owner == "successor"
 
-    def test_per_loop_alive_pid_blocks_reclaim_past_ttl(self) -> None:
-        """pid-liveness guard fires per-loop too (busy owner past TTL is protected)."""
+    def test_per_loop_alive_pid_past_ttl_is_reclaimable(self) -> None:
+        """A per-loop lease past its TTL is reclaimed even with an alive pid (#3571).
+
+        The per-tick re-claim IS the owning session's heartbeat, so a lapsed TTL means
+        the session stopped driving this loop; the pid can be reused / cross-namespace,
+        so it is not trusted past the TTL for a ``loop:<name>`` slot. A FRESH-TTL live
+        owner is still protected — see ``test_per_loop_foreign_live_session_is_blocked``.
+        """
         slot = per_loop_owner_slot("dispatch")
         LoopLease.objects.claim_ownership(slot, session_id="busy", ttl_seconds=1, owner_pid=os.getpid())
         row = LoopLease.objects.get(name=slot)
         row.lease_expires_at = timezone.now() - timedelta(seconds=5)
         row.save(update_fields=["lease_expires_at"])
         won, owner = LoopLease.objects.claim_ownership(slot, session_id="newcomer")
+        assert won is True
+        assert owner == "newcomer"
+
+    def test_master_alive_pid_blocks_reclaim_past_ttl(self) -> None:
+        """The global ``t3-master`` slot keeps its #1604 busy-owner-past-TTL protection."""
+        LoopLease.objects.claim_ownership(T3_MASTER_SLOT, session_id="busy", ttl_seconds=1, owner_pid=os.getpid())
+        row = LoopLease.objects.get(name=T3_MASTER_SLOT)
+        row.lease_expires_at = timezone.now() - timedelta(seconds=5)
+        row.save(update_fields=["lease_expires_at"])
+        won, owner = LoopLease.objects.claim_ownership(T3_MASTER_SLOT, session_id="newcomer")
         assert won is False
         assert owner == "busy"
 
