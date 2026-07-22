@@ -84,7 +84,11 @@ _CORE_DIR = Path(__file__).resolve().parents[2] / "src" / "teatree" / "core"
 # stop_snapshot.py cannot import the orchestration layer, so the resolver cannot live in
 # teatree.loop; and it composes teatree.core.models + teatree.core.availability (the
 # presence heartbeat) + teatree.loop.preset_resolution, fitting no existing subpackage.
-PINNED_FLAT_CORE_MODULES = 79
+# 80: +git_merge_driver.py (#3582) — the per-clone `merge.generated.driver` registration
+# seam, the exact sibling of the flat git-hooks install helper prek_hook.py (both are
+# per-checkout .git/config installers consumed by `t3 setup` + worktree provisioning).
+# Django-free and owned by no subpackage — gates/ is gate/deny logic, not an installer.
+PINNED_FLAT_CORE_MODULES = 80
 
 
 def _flat_core_modules() -> list[str]:

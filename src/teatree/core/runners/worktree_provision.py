@@ -5,6 +5,7 @@ from pathlib import Path
 from teatree.config import get_effective_settings
 from teatree.core import prek_hook
 from teatree.core.gates.schema_guard import SelfDbMigrationError, require_current_schema
+from teatree.core.git_merge_driver import install_merge_driver
 from teatree.core.models import Worktree
 from teatree.core.overlay import OverlayBase
 from teatree.core.overlay_loader import get_overlay_for_worktree
@@ -98,6 +99,11 @@ def _setup_worktree_dir(wt_path: str, worktree: Worktree, overlay: OverlayBase) 
     """
     if not wt_path or not Path(wt_path).is_dir():
         return None
+    # #3582: register the `generated` merge driver so this worktree resolves a
+    # generated-doc conflict by regeneration. Worktrees share the main clone's
+    # `.git/config`, so this is a no-op repeat once the clone is registered, but
+    # it also covers a worktree whose clone `t3 setup` never touched.
+    logger.debug("%s", install_merge_driver(Path(wt_path)))
     repo_name = Path(wt_path).name
     core_lines = [f"dotenv ../{CACHE_DIRNAME}/{repo_name}/{CACHE_FILENAME}"]
     _append_envrc_lines(wt_path, core_lines + overlay.provisioning.envrc_lines(worktree))

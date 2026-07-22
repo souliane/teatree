@@ -43,6 +43,7 @@ ALLOWED_ROOT = frozenset(
         ".pre-commit-config.yaml",
         ".pre-commit-hooks.yaml",  # pre-commit hook-provider manifest (#3312)
         ".gitignore",
+        ".gitattributes",  # `generated` merge driver for generated docs (souliane/teatree#3582)
         ".dockerignore",  # headless-deploy build-context ignore (deploy/README.md is the SOT)
         ".gitlab-ci.yml",
         "requirements.audit.ignore",  # per-CVE pip-audit allowlist (CI security gate)

@@ -21,6 +21,7 @@ from teatree.cli.setup.clone import find_main_clone, validate_repo
 from teatree.cli.setup.docker_alias import DockerAliasInstaller
 from teatree.cli.setup.git_hooks_installer import GitHooksInstaller
 from teatree.cli.setup.mcp_registrar import McpServerRegistrar
+from teatree.cli.setup.merge_driver_installer import GitMergeDriverInstaller
 from teatree.cli.setup.plugin_registrar import PluginRegistrar, PyrightPluginRegistrar
 from teatree.cli.setup.skill_linker import CORE_EXCLUDED_SKILLS, SkillLinker
 from teatree.cli.setup.statusline_installer import StatuslineInstall, install_statusline
@@ -90,6 +91,25 @@ def _report_statusline_install(settings_json: Path, repo: Path) -> None:
         typer.echo("WARN  settings.json unparsable — skipped statusLine install.")
 
 
+def _install_checkout_git_config(repo: Path) -> None:
+    """Install the per-checkout git config every checkout teatree commits from needs.
+
+    A checkout whose hooks were never installed pushes with the whole local gate
+    layer absent (leak gate, banned-terms, dev/push-gate.sh) and nothing errors;
+    a checkout without the ``generated`` merge driver leaves textual conflict
+    markers on generated docs (the CLI reference, antipattern catalog) on every
+    CLI-touching PR (souliane/teatree#3582). Both are per-``.git/config``
+    properties, so both walk the same checkout set.
+
+    Ordering: ``prek_hook.install`` routes through ``run_step``'s optional
+    time-box, which imports ``provision_timebox`` -> ``notify`` ->
+    ``teatree.core.models`` at call time — Django must already be configured
+    (the caller runs ``ensure_django()`` first).
+    """
+    GitHooksInstaller(repo).install(echo=typer.echo)
+    GitMergeDriverInstaller(repo).install(echo=typer.echo)
+
+
 @setup_app.callback()
 def run(
     ctx: typer.Context,
@@ -123,15 +143,10 @@ def run(
 
     ApmInstaller(repo).install()
 
-    # A checkout whose hooks were never installed pushes with the whole local gate
-    # layer absent (leak gate, banned-terms, dev/push-gate.sh) and nothing errors.
-    # `prek_hook.install` routes through `run_step`'s optional time-box, which
-    # imports `provision_timebox` -> `notify` -> `teatree.core.models` at call
-    # time — Django must be configured before this runs, or that import raises
-    # `ImproperlyConfigured` (`ensure_django()` is idempotent, so the later call
-    # before DM provisioning is a no-op repeat).
+    # ensure_django() is idempotent; the later call before DM provisioning is a
+    # no-op repeat. It must precede _install_checkout_git_config — see that helper.
     ensure_django()
-    GitHooksInstaller(repo).install(echo=typer.echo)
+    _install_checkout_git_config(repo)
 
     settings_json = Path.home() / ".claude" / "settings.json"
     stripped = strip_apm_hooks(settings_json)
