@@ -11,12 +11,14 @@ back-compat (``from teatree.agents.harness import PydanticAiHarnessSession``).
 
 import asyncio
 import json
+import uuid
 from collections.abc import AsyncIterator, Iterator
 from contextlib import suppress
 from typing import TYPE_CHECKING, Any
 
 from claude_agent_sdk import AssistantMessage, ResultMessage, TextBlock, ToolResultBlock, ToolUseBlock
 from pydantic_ai import Agent
+from pydantic_ai.exceptions import ModelAPIError, ModelHTTPError, UnexpectedModelBehavior, UsageLimitExceeded
 from pydantic_ai.messages import ModelRequest, ModelResponse, RetryPromptPart, ToolCallPart, ToolReturnPart
 from pydantic_ai.usage import UsageLimits
 
@@ -48,6 +50,19 @@ def _router_reported_cost(run_usage: object) -> float | None:
         if isinstance(value, int | float) and not isinstance(value, bool) and value >= 0:
             return float(value)
     return None
+
+
+def _error_turns(stream: "StreamedRunResult[None, str] | None") -> int:
+    """Turns actually made when a run ERRORED, from the stream's usage — else ``1``.
+
+    ``None`` when the error hit ``run_stream`` entry before the first request (no
+    stream bound); a ``0`` request count degrades to ``1`` so a failed attempt
+    always records at least the one turn it attempted.
+    """
+    if stream is None:
+        return 1
+    requests = stream.usage.requests
+    return requests if requests > 0 else 1
 
 
 def _tool_blocks_since(messages: "list[ModelMessage]", start: int) -> "Iterator[AssistantMessage]":
@@ -124,6 +139,21 @@ class PydanticAiHarnessSession:
     keeps ``message_history`` across calls, matching ``ClaudeSDKClient``'s
     contract — proved by :mod:`tests.teatree_agents.test_harness`.
 
+    A provider/run error is mapped into the same TRUTHFUL terminal
+    ``ResultMessage`` the claude_sdk lane yields rather than propagated raw: a
+    :class:`~pydantic_ai.exceptions.ModelHTTPError` (an Anthropic 429/529 body) →
+    ``is_error=True`` carrying its ``api_error_status``, a
+    :class:`~pydantic_ai.exceptions.ModelAPIError` /
+    :class:`~pydantic_ai.exceptions.UnexpectedModelBehavior` /
+    :class:`~pydantic_ai.exceptions.ContentFilterError` → the same status-less
+    shape, and a :class:`~pydantic_ai.exceptions.UsageLimitExceeded` (the run hit
+    its own step cap) → ``subtype="error_max_turns"``. The driver's failure
+    taxonomy keys on ``is_error``, so the park/rotate path becomes reachable and a
+    programming error still propagates to a durable ``sdk_error`` FAILED.
+    ``num_turns`` is the run's real ``RunUsage.requests`` count (not a hardcoded
+    ``1``), and every terminal message carries the stable per-session
+    :attr:`session_id`.
+
     ``interrupt`` cancels the pydantic_ai ``StreamedRunResult`` (stops token
     generation, closes the underlying connection, records the interrupted state
     in message history) AND the local drain task, and sets ``_interrupted`` so
@@ -166,6 +196,11 @@ class PydanticAiHarnessSession:
         # ``run_stream`` so a cheap-model maker can't drift on a long tool loop;
         # ``None``/``<= 0`` leaves the run uncapped (the ``claude_sdk`` behaviour).
         self._request_limit = request_limit
+        # A stable per-session id stamped onto EVERY terminal ``ResultMessage``
+        # (success and error), so the attempt recorder (:func:`headless._attempt_usage`)
+        # persists a non-empty ``agent_session_id`` — the claude_sdk lane always
+        # carries one; pydantic_ai has no server-side session, so teatree mints it.
+        self._session_id = uuid.uuid4().hex
         self._pending_prompt: str | None = None
         self._active_task: asyncio.Task[str] | None = None
         self._active_stream: StreamedRunResult[None, str] | None = None
@@ -175,6 +210,11 @@ class PydanticAiHarnessSession:
     def history(self) -> "list[ModelMessage]":
         """The accumulated conversation so far (seed + every completed turn)."""
         return self._history
+
+    @property
+    def session_id(self) -> str:
+        """The stable per-session id stamped onto every terminal ``ResultMessage``."""
+        return self._session_id
 
     async def query(self, prompt: str) -> None:
         self._pending_prompt = prompt
@@ -194,27 +234,49 @@ class PydanticAiHarnessSession:
             if self._phase
             else self._history
         )
-        async with self._agent.run_stream(
-            prompt, message_history=sent_history, usage_limits=self._usage_limits()
-        ) as stream:
-            self._active_stream = stream
-            task = asyncio.ensure_future(self._drain(stream))
-            self._active_task = task
-            try:
-                text = await task
-            except asyncio.CancelledError:
-                if self._interrupted:
-                    return
-                task.cancel()
-                with suppress(asyncio.CancelledError):
-                    await task
-                raise
-            finally:
-                self._active_task = None
-                self._active_stream = None
-            all_messages = stream.all_messages()
-            self._history = all_messages
-            run_usage = stream.usage
+        stream_for_usage: StreamedRunResult[None, str] | None = None
+        try:
+            async with self._agent.run_stream(
+                prompt, message_history=sent_history, usage_limits=self._usage_limits()
+            ) as stream:
+                stream_for_usage = stream
+                self._active_stream = stream
+                task = asyncio.ensure_future(self._drain(stream))
+                self._active_task = task
+                try:
+                    text = await task
+                except asyncio.CancelledError:
+                    if self._interrupted:
+                        return
+                    task.cancel()
+                    with suppress(asyncio.CancelledError):
+                        await task
+                    raise
+                finally:
+                    self._active_task = None
+                    self._active_stream = None
+                all_messages = stream.all_messages()
+                self._history = all_messages
+                run_usage = stream.usage
+        except UsageLimitExceeded as exc:
+            # The run hit its OWN per-run request cap (``_request_limit``) — a genuine
+            # FAILED, NOT a park: its message names no rate/usage-limit phrase, so
+            # ``classify_limit`` never mistakes it for a recoverable window.
+            yield self._error_result(exc, subtype="error_max_turns", num_turns=_error_turns(stream_for_usage))
+            return
+        except ModelHTTPError as exc:
+            yield self._error_result(
+                exc,
+                subtype="error_during_execution",
+                num_turns=_error_turns(stream_for_usage),
+                api_error_status=exc.status_code,
+            )
+            return
+        except (ModelAPIError, UnexpectedModelBehavior) as exc:
+            # A provider/run error with no HTTP status (``ContentFilterError`` is a
+            # ``UnexpectedModelBehavior``, ``ModelHTTPError`` is caught above).
+            yield self._error_result(exc, subtype="error_during_execution", num_turns=_error_turns(stream_for_usage))
+            return
         # Surface this turn's tool calls/results in the seam's tool-block
         # vocabulary BEFORE the final text, so a tool-emitting Lane-B session
         # looks to the driver exactly like the claude_sdk lane's.
@@ -226,8 +288,8 @@ class PydanticAiHarnessSession:
             duration_ms=0,
             duration_api_ms=0,
             is_error=False,
-            num_turns=1,
-            session_id="",
+            num_turns=run_usage.requests,
+            session_id=self._session_id,
             # #3157 E5: pass the metered router's OWN reported cost through when it surfaces
             # one, so the attempt records the real figure (flagged not-estimated) instead of
             # the price-table guess; ``None`` (the common case) falls back to the estimate.
@@ -239,6 +301,30 @@ class PydanticAiHarnessSession:
                 "cache_creation_input_tokens": run_usage.cache_write_tokens,
             },
             result=text,
+            model_usage={self._model_name: {}},
+        )
+
+    def _error_result(
+        self, exc: Exception, *, subtype: str, num_turns: int, api_error_status: int | None = None
+    ) -> ResultMessage:
+        """A truthful terminal ``ResultMessage`` for a provider/run error (``is_error=True``).
+
+        The SAME error-shaped envelope the claude_sdk lane yields, so the driver's
+        failure taxonomy (:func:`headless._limit_match` / ``_error_result_reason``)
+        keys on ``is_error`` and classifies (or fails) it without special-casing the
+        transport. ``api_error_status`` carries the HTTP status for a
+        :class:`~pydantic_ai.exceptions.ModelHTTPError` (rendered by
+        ``_error_result_reason``), ``None`` otherwise.
+        """
+        return ResultMessage(
+            subtype=subtype,
+            duration_ms=0,
+            duration_api_ms=0,
+            is_error=True,
+            num_turns=num_turns,
+            session_id=self._session_id,
+            result=str(exc),
+            api_error_status=api_error_status,
             model_usage={self._model_name: {}},
         )
 

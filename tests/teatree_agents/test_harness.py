@@ -21,9 +21,11 @@ import pytest
 from claude_agent_sdk import AssistantMessage, ClaudeAgentOptions, ResultMessage, TextBlock
 from django.test import TestCase
 from pydantic_ai import Agent
-from pydantic_ai.messages import ModelMessage
-from pydantic_ai.models.function import AgentInfo, FunctionModel
+from pydantic_ai.exceptions import ModelHTTPError, UsageLimitExceeded
+from pydantic_ai.messages import ModelMessage, ModelRequest, ToolReturnPart
+from pydantic_ai.models.function import AgentInfo, DeltaToolCall, FunctionModel
 from pydantic_ai.models.test import TestModel
+from pydantic_ai.toolsets import FunctionToolset
 
 import teatree.agents.harness as harness_mod
 import teatree.agents.headless as headless_mod
@@ -50,7 +52,7 @@ from teatree.agents.pydantic_ai_config import (
 )
 from teatree.agents.pydantic_ai_resume import persist_parked_thread
 from teatree.config import get_effective_settings
-from teatree.core.models import ConfigSetting, Session, Task, TaskAttempt, Ticket
+from teatree.core.models import ConfigSetting, Session, Task, TaskAttempt, Ticket, UsageWindowState
 from teatree.llm.credentials import CredentialError, OrcaRouterProviderConfig
 from tests.teatree_agents._sdk_fake import FakeHarness, FakeHarnessSession, assistant_text, result_message
 
@@ -356,6 +358,195 @@ class TestRunHeadlessDrivesPydanticAiHarness(TestCase):
         # the parked ancestor thread was restored, so the resume is recoverable.
         self.ticket.refresh_from_db()
         assert str(parked.pk) in self.ticket.extra.get("pydantic_ai_threads", {})
+
+
+def _raising_stream(exc: Exception) -> object:
+    """A ``FunctionModel`` stream function that raises *exc* on the model request.
+
+    The trailing ``yield`` is unreachable but required so pydantic_ai treats the
+    coroutine as an async generator (a streamed FunctionModel).
+    """
+
+    async def stream_fn(_messages: object, _info: AgentInfo) -> AsyncIterator[str]:
+        await asyncio.sleep(0)
+        raise exc
+        yield ""
+
+    return stream_fn
+
+
+async def _tool_then_text_stream(messages: object, _info: AgentInfo) -> AsyncIterator[object]:
+    """Request 1 issues a ``ping`` tool call; request 2 (after the return) yields text.
+
+    Two model requests, so ``RunUsage.requests == 2`` — the fixture the num_turns
+    and request-cap tests drive against.
+    """
+    await asyncio.sleep(0)
+    returned = any(
+        isinstance(part, ToolReturnPart)
+        for message in (messages if isinstance(messages, list) else [])
+        if isinstance(message, ModelRequest)
+        for part in message.parts
+    )
+    if returned:
+        yield "final answer"
+    else:
+        yield {0: DeltaToolCall(name="ping", json_args="{}", tool_call_id="c1")}
+
+
+def _ping_toolset() -> FunctionToolset[None]:
+    toolset: FunctionToolset[None] = FunctionToolset()
+    toolset.add_function(lambda: "pong", name="ping")
+    return toolset
+
+
+def test_pydantic_ai_session_stamps_a_stable_nonempty_session_id() -> None:
+    # A minted session_id is stamped on EVERY terminal ResultMessage and is stable
+    # across turns (RED: the hardcoded "" gave the attempt no agent_session_id).
+    session = PydanticAiHarnessSession(Agent(TestModel(custom_output_text="hi")), model_name="m")
+
+    async def drive() -> list[ResultMessage]:
+        results: list[ResultMessage] = []
+        for _ in range(2):
+            await session.query("go")
+            results.extend([m async for m in session.receive_response() if isinstance(m, ResultMessage)])
+        return results
+
+    results = asyncio.run(drive())
+    assert len(results) == 2
+    assert results[0].session_id
+    assert results[0].session_id == results[1].session_id == session.session_id
+
+
+def test_pydantic_ai_sessions_mint_distinct_session_ids() -> None:
+    first = PydanticAiHarnessSession(Agent(TestModel()), model_name="m")
+    second = PydanticAiHarnessSession(Agent(TestModel()), model_name="m")
+    assert first.session_id
+    assert second.session_id
+    assert first.session_id != second.session_id
+
+
+def test_pydantic_ai_num_turns_reflects_the_request_count() -> None:
+    # A tool-call turn followed by a text turn is TWO model requests, so the
+    # terminal ResultMessage reports num_turns == 2 (RED: the hardcoded 1).
+    agent: Agent[None, str] = Agent(FunctionModel(stream_function=_tool_then_text_stream), toolsets=[_ping_toolset()])
+    session = PydanticAiHarnessSession(agent, model_name="m")
+
+    async def drive() -> list[object]:
+        await session.query("hi")
+        return [message async for message in session.receive_response()]
+
+    result = next(m for m in asyncio.run(drive()) if isinstance(m, ResultMessage))
+    assert result.num_turns == 2
+
+
+def test_pydantic_ai_session_maps_the_request_cap_to_error_max_turns() -> None:
+    # A real per-run request cap (request_limit=1) against a model that wants a
+    # 2nd request raises UsageLimitExceeded, which the session reports as an
+    # is_error ResultMessage(subtype="error_max_turns") — a genuine FAILED whose
+    # text does NOT phrase-match the limit classifier (so it never parks).
+    from teatree.llm.anthropic_limits import classify_limit  # noqa: PLC0415 — test-local
+
+    agent: Agent[None, str] = Agent(FunctionModel(stream_function=_tool_then_text_stream), toolsets=[_ping_toolset()])
+    session = PydanticAiHarnessSession(agent, model_name="m", request_limit=1)
+
+    async def drive() -> list[object]:
+        await session.query("hi")
+        return [message async for message in session.receive_response()]
+
+    result = next(m for m in asyncio.run(drive()) if isinstance(m, ResultMessage))
+    assert result.is_error is True
+    assert result.subtype == "error_max_turns"
+    assert classify_limit(str(result.result)) is None
+
+
+class TestRunHeadlessPydanticAiFailureReporting(TestCase):
+    """A pydantic_ai provider/run error is REPORTED through the driver, never a raw crash.
+
+    The seam maps the error into the same ``is_error`` ``ResultMessage`` the
+    claude_sdk lane yields, so the driver's failure taxonomy (park/rotate or a
+    recorded FAILED) fires without any transport special-casing. Before the fix a
+    429 propagated raw out of ``asyncio.run`` and ``run_headless`` re-raised it (a
+    ``sdk_error`` FAILED-with-traceback), leaving the park path unreachable.
+    """
+
+    def setUp(self) -> None:
+        self.ticket = Ticket.objects.create()
+        self.session = Session.objects.create(ticket=self.ticket, agent_id="agent-1")
+        self.task = Task.objects.create(ticket=self.ticket, session=self.session, phase="coding")
+        ConfigSetting.objects.set_value("agent_harness", "pydantic_ai")
+
+    def _run_raising(self, exc: Exception) -> TaskAttempt:
+        harness = PydanticAiHarness(model=FunctionModel(stream_function=_raising_stream(exc)))
+        with (
+            patch.object(headless_mod, "resolve_harness", return_value=harness),
+            patch.object(headless_mod.TaskUsage, "for_task", classmethod(lambda cls, task: TaskUsage(0, 0.0))),
+        ):
+            attempt = run_headless(self.task, phase="coding", overlay_skill_metadata={})
+        self.task.refresh_from_db()
+        return attempt
+
+    def test_rate_limit_error_parks_when_autorecovery_on(self) -> None:
+        ConfigSetting.objects.set_value("limit_autorecovery_enabled", value=True)
+        exc = ModelHTTPError(status_code=429, model_name="m", body={"error": {"type": "rate_limit_error"}})
+        attempt = self._run_raising(exc)
+
+        assert self.task.status == Task.Status.PENDING, "PARKED for auto-resume, not a raw crash"
+        assert "limit_parked: " in attempt.error
+        assert "rate_limit" in attempt.error
+        assert "Traceback" not in attempt.error
+        window = UsageWindowState.objects.active_for_lane(TaskAttempt.Lane.METERED)
+        assert window is not None
+        assert window.cause == "rate_limit"
+
+    def test_rate_limit_error_fails_cleanly_when_autorecovery_off(self) -> None:
+        ConfigSetting.objects.set_value("limit_autorecovery_enabled", value=False)
+        exc = ModelHTTPError(status_code=429, model_name="m", body={"error": {"type": "rate_limit_error"}})
+        attempt = self._run_raising(exc)
+
+        assert self.task.status == Task.Status.FAILED
+        assert attempt.error.startswith("rate_limit: ")
+        assert "Traceback" not in attempt.error, "a classified limit failure, never a raw traceback"
+
+    def test_overloaded_error_529_is_a_rate_limit(self) -> None:
+        ConfigSetting.objects.set_value("limit_autorecovery_enabled", value=True)
+        exc = ModelHTTPError(status_code=529, model_name="m", body={"error": {"type": "overloaded_error"}})
+        attempt = self._run_raising(exc)
+
+        assert self.task.status == Task.Status.PENDING
+        assert "rate_limit" in attempt.error
+        window = UsageWindowState.objects.active_for_lane(TaskAttempt.Lane.METERED)
+        assert window is not None
+        assert window.cause == "rate_limit"
+
+    def test_credit_body_400_is_api_credit_and_never_parks(self) -> None:
+        # API-credit exhaustion has no timed window, so even with auto-recovery ON
+        # it FAILS loud (add credits) and never parks.
+        ConfigSetting.objects.set_value("limit_autorecovery_enabled", value=True)
+        exc = ModelHTTPError(
+            status_code=400,
+            model_name="m",
+            body={"error": {"type": "invalid_request_error", "message": "credit balance is too low"}},
+        )
+        attempt = self._run_raising(exc)
+
+        assert self.task.status == Task.Status.FAILED
+        assert attempt.error.startswith("api_credit: ")
+        assert "console.anthropic.com" in attempt.error
+        assert "subscription" not in attempt.error.casefold()
+        assert UsageWindowState.objects.active_for_lane(TaskAttempt.Lane.METERED) is None
+
+    def test_usage_limit_exceeded_fails_error_max_turns_and_never_parks(self) -> None:
+        # The run hit its own per-run request cap — a genuine FAILED (error_max_turns),
+        # never a park, never a raw traceback.
+        ConfigSetting.objects.set_value("limit_autorecovery_enabled", value=True)
+        exc = UsageLimitExceeded("The next request would exceed the request_limit of 1")
+        attempt = self._run_raising(exc)
+
+        assert self.task.status == Task.Status.FAILED
+        assert "error_max_turns" in attempt.error
+        assert "Traceback" not in attempt.error
+        assert UsageWindowState.objects.active_for_lane(TaskAttempt.Lane.METERED) is None
 
 
 class TestRunHeadlessCachedResumeParity(TestCase):
