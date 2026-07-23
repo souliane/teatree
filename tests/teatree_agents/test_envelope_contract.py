@@ -11,7 +11,13 @@ import json
 
 from django.test import SimpleTestCase, TestCase
 
-from teatree.agents.envelope_contract import CONTRACT_HEADING, allowed_keys, envelope_contract_lines, envelope_example
+from teatree.agents.envelope_contract import (
+    CONTRACT_HEADING,
+    allowed_keys,
+    envelope_contract_lines,
+    envelope_example,
+    final_output_reminder_line,
+)
 from teatree.agents.prompt import build_system_context
 from teatree.agents.result_schema import RESULT_JSON_SCHEMA, check_evidence, required_evidence_for_phase
 from teatree.core.models import Session, Task, Ticket
@@ -42,6 +48,14 @@ class TestEnvelopeContractText(SimpleTestCase):
             assert "no_result_envelope" in text, phase
             for field in required_evidence_for_phase(phase):
                 assert f"`{field}`" in text, (phase, field)
+
+    def test_final_output_reminder_names_the_phase_evidence_key(self) -> None:
+        line = final_output_reminder_line(_WORK_PHASE)
+        assert "`files_modified`" in line
+        assert "refused" in line
+
+    def test_final_output_reminder_on_a_phase_with_no_evidence_key(self) -> None:
+        assert "`summary`" in final_output_reminder_line("scoping")
 
     def test_example_satisfies_the_phase_evidence_gate(self) -> None:
         # A brief whose example would itself be refused teaches the wrong shape.
