@@ -22,9 +22,11 @@ from unittest.mock import patch
 import pytest
 
 from teatree.core.merge import MergePreconditionError, assert_merge_preconditions
+from teatree.core.merge.substrate_standing import resolve_overlay_by_repo_identity, substrate_standing_authorization
 from teatree.core.models import ConfigSetting, MergeClear, ReviewVerdict, Ticket
 from teatree.loop.scanners.pr_sweep import PrSummary, PrSweepScanner
 from teatree.loop.scanners.pr_sweep_adapters import NullMergeNotifier
+from teatree.loop.scanners.pr_sweep_substrate import solo_overlay_substrate_authorized
 from teatree.utils.pr_ref import PrRef
 
 # ast-grep-ignore: ac-django-no-pytest-django-db
@@ -324,3 +326,45 @@ class TestBothMergePathsAgree:
             sweep = _sweep_merges()
             keystone = _keystone_authorizes()
         assert (sweep, keystone) == (False, False)
+
+
+class TestSharedPolicyFunction:
+    """The two paths reuse ONE predicate — pinned directly on the extracted symbols."""
+
+    def test_resolve_overlay_by_repo_identity_prefers_the_owning_overlay(self) -> None:
+        with _teatree_owns_slug():
+            assert resolve_overlay_by_repo_identity(SLUG, fallback="ignored") == OVERLAY
+
+    def test_resolve_overlay_by_repo_identity_falls_back_to_the_stored_token(self) -> None:
+        with _teatree_owns_slug():
+            assert resolve_overlay_by_repo_identity("nobody/unclaimed", fallback=OVERLAY) == OVERLAY
+
+    def test_substrate_standing_authorization_reports_the_self_signoff_grant(self) -> None:
+        with _teatree_owns_slug(), _self_signoff_config():
+            authorization = substrate_standing_authorization(overlay_name=OVERLAY)
+        assert (authorization.self_signoff, authorization.delegated_by) == (True, "")
+        assert bool(authorization) is True
+
+    def test_substrate_standing_authorization_reports_the_matching_delegation(self) -> None:
+        with _teatree_owns_slug(), _delegation_config():
+            authorization = substrate_standing_authorization(overlay_name=OVERLAY, presented_authorizer=OWNER)
+        assert authorization.delegated_by == OWNER
+        assert bool(authorization) is True
+
+    def test_substrate_standing_authorization_is_empty_without_an_optin(self) -> None:
+        with _teatree_owns_slug(), _no_optin_config():
+            authorization = substrate_standing_authorization(overlay_name=OVERLAY, presented_authorizer=OWNER)
+        assert bool(authorization) is False
+
+    def test_substrate_standing_authorization_on_an_unresolved_overlay_is_empty(self) -> None:
+        assert bool(substrate_standing_authorization(overlay_name="  ", presented_authorizer=OWNER)) is False
+
+    def test_solo_overlay_substrate_authorized_reads_the_shared_policy(self) -> None:
+        with _teatree_owns_slug(), _self_signoff_config():
+            authorized = solo_overlay_substrate_authorized(pr=_open_pr(), overlay=OVERLAY, presented_authorizer="")
+        assert authorized is True
+
+    def test_solo_overlay_substrate_authorized_is_false_without_an_optin(self) -> None:
+        with _teatree_owns_slug(), _no_optin_config():
+            authorized = solo_overlay_substrate_authorized(pr=_open_pr(), overlay=OVERLAY, presented_authorizer="")
+        assert authorized is False
