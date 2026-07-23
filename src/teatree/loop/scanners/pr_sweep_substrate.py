@@ -12,6 +12,7 @@ from typing import TYPE_CHECKING, Protocol, runtime_checkable
 
 from teatree.core.backend_protocols import changed_paths_unavailable
 from teatree.core.merge.ci_rollup import CodeHostQuery
+from teatree.core.merge.substrate_standing import resolve_overlay_by_repo_identity, substrate_standing_authorization
 from teatree.core.models.merge_clear import diff_paths_are_substrate
 from teatree.loop.scanners.pr_sweep_types import MergeAttempt, PrSummary
 from teatree.utils.pr_ref import PrRef
@@ -42,6 +43,27 @@ def pr_diff_is_substrate(pr: PrSummary) -> bool:
         logger.warning("pr_sweep empty/truncated changed-paths for %s#%d — holding conservatively", pr.slug, pr.number)
         return True
     return diff_paths_are_substrate(paths)
+
+
+def solo_overlay_substrate_authorized(*, pr: PrSummary, overlay: str, presented_authorizer: str) -> bool:
+    """Whether a standing opt-in lifts the solo-path substrate hold for *pr* (#3648).
+
+    Delegates to :func:`~teatree.core.merge.authorization.substrate_standing_authorization` —
+    the SAME policy function the keystone/CLEAR path reads — so the sweep and the
+    keystone can never disagree about the same PR under the same config. The
+    overlay is resolved by repo identity from the PR's slug (the CLEAR path's
+    rule), falling back to the scanner's own overlay token.
+
+    Substrate is a blast-radius sign-off, not a quality gate: the caller has
+    already required an independent cold-review verdict bound to the live head,
+    and that floor is untouched here.
+    """
+    return bool(
+        substrate_standing_authorization(
+            overlay_name=resolve_overlay_by_repo_identity(pr.slug, fallback=overlay),
+            presented_authorizer=presented_authorizer,
+        )
+    )
 
 
 @runtime_checkable

@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING
 
 from teatree.core.merge.ci_rollup import CodeHostQuery
 from teatree.core.merge.errors import MergePreconditionError
+from teatree.core.merge.substrate_standing import resolve_overlay_by_repo_identity, substrate_standing_authorization
 from teatree.core.models.mr_review_lock import MRReviewLock
 from teatree.core.models.review_verdict import HeadVerdictState, ReviewVerdict
 from teatree.core.review.author_trust import classify_pr_provenance
@@ -272,15 +273,11 @@ def _resolve_clear_overlay_name(clear: "MergeClear", *, resolved_slug: str = "")
 
     Returns ``""`` when no source resolves an overlay (the fail-closed default).
     """
-    from teatree.core.overlay_loader import infer_overlay_for_url  # noqa: PLC0415 — deferred: call-time import
-
-    from_stored = infer_overlay_for_url(str(getattr(clear, "slug", "") or "")).strip()
-    if from_stored:
-        return from_stored
-    from_recovered = infer_overlay_for_url(resolved_slug.strip()).strip()
-    if from_recovered:
-        return from_recovered
-    return str(getattr(getattr(clear, "ticket", None), "overlay", "") or "").strip()
+    return resolve_overlay_by_repo_identity(
+        str(getattr(clear, "slug", "") or ""),
+        resolved_slug,
+        fallback=str(getattr(getattr(clear, "ticket", None), "overlay", "") or ""),
+    )
 
 
 def _overlay_grants_standing_substrate_signoff(clear: "MergeClear", *, resolved_slug: str = "") -> bool:
@@ -314,11 +311,12 @@ def _overlay_grants_standing_substrate_signoff(clear: "MergeClear", *, resolved_
     overlay_name = _resolve_clear_overlay_name(clear, resolved_slug=resolved_slug)
     if not overlay_name:
         return False
-    settings = get_effective_settings(overlay_name=overlay_name)
     # Substrate holds for the owner by default (#2727); the config seam is the
-    # only opt-in that lifts it, and only on a solo-owned (``full``) overlay.
+    # only opt-in that lifts it, and only on a solo-owned (``full``) overlay. The
+    # shared policy function is what the solo-overlay sweep reads too (#3648).
     if clear.is_substrate():
-        return settings.substrate_self_signoff and settings.autonomy is Autonomy.FULL
+        return substrate_standing_authorization(overlay_name=overlay_name).self_signoff
+    settings = get_effective_settings(overlay_name=overlay_name)
     if settings.autonomy is Autonomy.FULL:
         return True
     # The collaborative ``notify`` tier collapses the merge-approval gate to
@@ -348,18 +346,12 @@ def _config_standing_substrate_delegation(clear: "MergeClear", presented: str, *
     An empty setting (the default) returns ``""``, so the held-for-owner posture is
     preserved verbatim.
     """
-    presented_id = presented.strip()
-    if not presented_id or not clear.is_substrate():
+    if not presented.strip() or not clear.is_substrate():
         return ""
-    from teatree.config import get_effective_settings  # noqa: PLC0415 — deferred: call-time import, kept lazy
-
     overlay_name = _resolve_clear_overlay_name(clear, resolved_slug=resolved_slug)
     if not overlay_name:
         return ""
-    configured = get_effective_settings(overlay_name=overlay_name).substrate_auto_merge_authorized_by.strip()
-    if configured and presented_id == configured:
-        return configured
-    return ""
+    return substrate_standing_authorization(overlay_name=overlay_name, presented_authorizer=presented).delegated_by
 
 
 def _assert_anti_vacuity(clear: "MergeClear", head_sha: str) -> None:
