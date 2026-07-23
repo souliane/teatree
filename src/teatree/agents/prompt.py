@@ -70,8 +70,13 @@ _REVIEW_VERDICT_RETURN_LINES: tuple[str, ...] = (
     '  "review_verdict": {"verdict": "merge_safe"|"hold", "reviewed_sha": "<full 40-char HEAD SHA>",',
     '                     "reviewer_identity": "<your reviewer id, NOT a maker/loop role>",',
     '                     "gh_verify_result": "green"|"pending"|"failed",',
+    '                     "blast_class": "substrate"|"logic"|"docs",',
     '                     "findings": [{"severity": "...", "summary": "...", "file": "...", "line": 0}]}',
     "Use verdict=hold with the blocking findings when the change must not merge yet.",
+    "`verdict` accepts ONLY merge_safe or hold — PASS/LGTM/approve are refused and record nothing.",
+    "`reviewed_sha` MUST be the full 40-char SHA of the head you reviewed (`git rev-parse HEAD`):",
+    "the merge gate compares it against the forge's live head, so a short or stale SHA vouches for nothing.",
+    "A result with no `review_verdict` FAILS the phase — a review that records no verdict never happened.",
 )
 
 # Injected into a headless answering brief: the answering phase is denied the

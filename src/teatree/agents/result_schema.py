@@ -383,10 +383,14 @@ RESULT_JSON_SCHEMA: JSONSchema = {
 #:
 #: - ``coding``: at least one file change recorded.
 #: - ``testing``: at least one test result OR a positive ``tests_passed``.
-#: - ``reviewing``: at least one design decision recorded, OR a typed
-#:   ``review_verdict`` returned for server-side recording (corr-11) — a
-#:   headless reviewer denied the shell proves the review happened by the
-#:   verdict it hands back, not only by a decision list.
+#: - ``reviewing``: a typed ``review_verdict`` returned for server-side
+#:   recording (corr-11), carrying a verdict the recorder can persist.
+#:   ``decisions`` used to satisfy this too, and that alternative is what let
+#:   138 reviewing tasks complete having recorded no verdict at all while every
+#:   open PR logged ``solo_overlay_no_review`` (#3654): a summary-plus-decisions
+#:   result is indistinguishable from a healthy review, so the absence was
+#:   invisible. The verdict is the only artifact the merge gate consumes, so it
+#:   is the only accepted evidence.
 #: - ``shipping``: at least one command executed (``git push``, ``gh pr``...).
 #: - ``scanning_news``: at least one ``article_suggestion`` returned — the
 #:   shell-denied scanner hands its candidates back through the envelope, so a
@@ -403,7 +407,7 @@ PHASE_REQUIRED_EVIDENCE: dict[str, tuple[str, ...]] = {
     "planning": ("plan_text",),
     "coding": ("files_modified",),
     "testing": ("tests_run", "tests_passed"),
-    "reviewing": ("decisions", "review_verdict"),
+    "reviewing": ("review_verdict",),
     "critic_reviewing": ("critic_verdict",),
     "directive_interpreting": ("directive_interpretation",),
     "directive_reading": ("directive_candidate",),
@@ -519,6 +523,22 @@ def interpretation_carries_payload(envelope: object) -> bool:
     return isinstance(questions, list) and any(str(q).strip() for q in questions)
 
 
+def verdict_carries_payload(envelope: object) -> bool:
+    """Whether a review-verdict envelope names a verdict the recorder can persist (#3654).
+
+    ``ReviewVerdict.record`` only knows ``merge_safe`` / ``hold``; a reviewer that
+    hands back ``PASS`` / ``LGTM`` — or an envelope carrying only findings — writes
+    no row, so the merge gate stays unfed. Matching the recorder's vocabulary here
+    keeps a reviewing task from completing over a verdict that never lands.
+    """
+    from teatree.core.models.review_verdict import ReviewVerdict  # noqa: PLC0415 — deferred: ORM/app-registry
+
+    if not isinstance(envelope, dict):
+        return False
+    verdict = str(cast("ReviewVerdictEnvelope", envelope).get("verdict") or "").strip().lower()
+    return verdict in {choice.value for choice in ReviewVerdict.Verdict}
+
+
 #: Channels whose "evidence present" test is stricter than coarse truthiness:
 #: the field must carry what the recorder actually PERSISTS (a url-bearing
 #: suggestion, a text-bearing answer). Without this a schema-violating-but-
@@ -531,6 +551,7 @@ _FIELD_PERSISTS: dict[str, Callable[[object], bool]] = {
     "answer": lambda v: bool(answer_text(v)),
     "directive_interpretation": interpretation_carries_payload,
     "directive_candidate": candidate_carries_payload,
+    "review_verdict": verdict_carries_payload,
 }
 
 
