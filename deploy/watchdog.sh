@@ -38,10 +38,11 @@ PASS_TIMEOUT="${TEATREE_WATCHDOG_PASS_TIMEOUT:-300}"
 INIT_SERVICE="${TEATREE_WATCHDOG_INIT_SERVICE:-teatree-init}"
 # Services to `exec` the read commands in (first reachable one wins). The WORKER
 # leads (#3651): `t3 doctor check --json` boots Django, scans the DB and makes live
-# third-party HTTP round-trips — measured at 380 MiB peak, which inside the admin's
-# lean 512m cap (257 MiB idle just serving the dashboard) left ~130 MiB of headroom
-# and restarted the admin on every pass. The worker is the container sized for heavy
-# work; the admin stays the fallback so a down worker never blinds the watchdog.
+# third-party HTTP round-trips — measured at 380 MiB peak, which under the admin's
+# then-512m cap (257 MiB idle just serving the dashboard) left ~130 MiB of headroom
+# and restarted the admin on every pass. The admin cap is now 2g, but the worker is
+# still the container sized for heavy work, so nothing recurring competes with
+# gunicorn; the admin stays the fallback so a down worker never blinds the watchdog.
 EXEC_SERVICES="${TEATREE_WATCHDOG_EXEC_SERVICES:-teatree-worker teatree-admin}"
 # Bounded retry for a probe that could not RUN because its target was mid-restart or
 # not yet up — a transient, distinct from a completed run that returned no verdict.
