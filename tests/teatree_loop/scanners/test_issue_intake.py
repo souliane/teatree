@@ -13,7 +13,7 @@ from unittest.mock import patch
 from django.test import TestCase
 
 from teatree.core.models import ImplementedIssueMarker, Ticket, TrustedIdentity
-from teatree.loop.scanners.issue_intake import IssueIntakeScanner
+from teatree.loop.scanners.issue_intake import IssueIntakeScanner, author_is_trusted, issue_author, issue_url
 from teatree.types import RawAPIDict
 
 OWNER = "souliane"
@@ -547,3 +547,24 @@ class IssueIntakeExistingWorkTests(_PublicRepoTestCase):
         host = _Host(authored={OWNER: [_issue(self.URL_A, author=OWNER)]})
 
         assert len(self._scanner(host).scan()) == 1
+
+
+class IssueIntakePayloadReadersTests(_PublicRepoTestCase):
+    """The three payload readers the fail-closed gate leans on."""
+
+    def test_issue_url_reads_both_forge_url_fields(self) -> None:
+        assert issue_url({"web_url": self.URL_A}) == self.URL_A
+        assert issue_url({"html_url": self.URL_A}) == self.URL_A
+        assert issue_url({}) == ""
+
+    def test_issue_author_reads_both_forge_shapes_and_strips(self) -> None:
+        assert issue_author({"user": {"login": " souliane "}}) == OWNER
+        assert issue_author({"author": {"username": OWNER}}) == OWNER
+        assert issue_author({"user": "not-a-dict"}) == ""
+
+    def test_author_is_trusted_refuses_an_unresolvable_author(self) -> None:
+        trusted = frozenset({OWNER})
+
+        assert author_is_trusted(_issue(self.URL_A, author=OWNER), trusted)
+        assert not author_is_trusted(_issue(self.URL_A, author=STRANGER), trusted)
+        assert not author_is_trusted({"web_url": self.URL_A}, trusted)
