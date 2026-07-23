@@ -19,6 +19,7 @@ from teatree.cli.doctor.checks_bootstrap import (
     _check_provision_concurrency_from_host,
     run_bootstrap_checks,
 )
+from teatree.cli.doctor.checks_cold_hooks import _check_cold_hook_settings_readable
 from teatree.cli.doctor.checks_docker import _check_docker_workflow_wired
 from teatree.cli.doctor.checks_environment import (
     _check_configured_review_skills,
@@ -101,6 +102,7 @@ __all__ = (
     "_check_availability_override_staleness",
     "_check_chrome_devtools_mcp_suggestion",
     "_check_claude_settings_drift",
+    "_check_cold_hook_settings_readable",
     "_check_configured_review_skills",
     "_check_connector_manifest",
     "_check_dangling_editable_pth",
@@ -329,6 +331,10 @@ def run_doctor_checks(*, repair: bool = False, slack_roundtrip: bool = False) ->
     ok = _check_stale_uv_venv() and ok
     ok = _check_stale_path_t3() and ok
     ok = _check_agent_session_pins() and ok
+    # #3499: the hooks read settings through a DIFFERENT interpreter than the CLI, so a
+    # store the CLI reads fine can be unreadable to every cold-hook gate. Runs after
+    # ensure_django() above: it compares the hook's answer against the Django-side one.
+    ok = _check_cold_hook_settings_readable() and ok
     # Verify the Claude Code statusLine block (PR-17: present, absolute path, executable
     # target — a missing block WARNs, a relative/non-executable one hard-FAILs) AND its
     # freshness. The freshness backstop hard-FAILs a pre-rendered statusline gone stale past

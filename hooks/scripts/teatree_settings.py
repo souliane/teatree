@@ -31,9 +31,25 @@ sys.modules.setdefault("hooks.scripts.teatree_settings", sys.modules[__name__])
 
 _GLOBAL_SCOPE = ""
 
+# ``read_cold_setting_status`` second-element vocabulary.
+COLD_READ_OK = "ok"
+COLD_READ_UNREADABLE = "unreadable"
 
-def _read_cold_setting(name: str) -> object | None:
-    """The stored GLOBAL-scope DB value for ``[teatree] <name>``, un-coerced; ``None`` on absence/failure.
+
+def read_cold_setting_status(name: str) -> tuple[object | None, str]:
+    """The stored GLOBAL-scope value for ``[teatree] <name>``, un-coerced, plus HOW it resolved.
+
+    Returns ``(value, status)``. ``status`` is :data:`COLD_READ_UNREADABLE` when the
+    read MACHINERY itself failed — ``teatree`` not importable, or ``read_setting``
+    raising — and :data:`COLD_READ_OK` otherwise, INCLUDING when the row is simply
+    absent (``value`` is then ``None``).
+
+    The status exists because the value alone cannot express the difference between
+    "the operator never opted in" and "this install cannot read its own settings"
+    (#3499) — the two resolve identically to the caller's default, which is why a
+    total DB-read outage stayed invisible for months. Readers that only need the
+    value ignore the status; the engagement advisory and the ``t3 doctor``
+    cold-hook probe branch on it.
 
     THE single seam through which every reader below reaches the canonical
     ``ConfigSetting`` store, so the ``sys.path`` bootstrap can never be applied to
@@ -68,9 +84,9 @@ def _read_cold_setting(name: str) -> object | None:
     try:
         from teatree.config.cold_reader import read_setting  # noqa: PLC0415 — deferred: cold-hook import
 
-        return read_setting(name, scope=_GLOBAL_SCOPE)
+        return read_setting(name, scope=_GLOBAL_SCOPE), COLD_READ_OK
     except Exception:  # noqa: BLE001 — crash-proof hook: any failure degrades silently, never breaks the tool call
-        return None
+        return None, COLD_READ_UNREADABLE
     finally:
         if added:
             with contextlib.suppress(ValueError):
@@ -81,12 +97,12 @@ def _cold_db_bool(name: str) -> bool | None:
     """The stored GLOBAL-scope DB bool for ``[teatree] <name>``; ``None`` on absence/failure.
 
     Delegates to the Django-free ``teatree.config.cold_reader`` via
-    :func:`_read_cold_setting`, lazily imported so this leaf stays import-light at
+    :func:`read_cold_setting_status`, lazily imported so this leaf stays import-light at
     load. Fails open to ``None`` on ANY error — ``teatree`` not importable, an
     unreadable/locked DB, a missing row, a non-bool value — so the caller's
     per-setting default still stands (never-lockout).
     """
-    value = _read_cold_setting(name)
+    value, _ = read_cold_setting_status(name)
     return value if isinstance(value, bool) else None
 
 
@@ -121,7 +137,7 @@ def _cold_db_raw(name: str) -> object | None:
     ABSENT setting apart from one whose stored value is not a clean boolean. Fails
     open to ``None`` on any error.
     """
-    return _read_cold_setting(name)
+    return read_cold_setting_status(name)[0]
 
 
 def teatree_bool_setting_loud(name: str, *, default: bool) -> bool:
@@ -160,7 +176,7 @@ def _cold_db_int(name: str) -> int | None:
     as a budget, so it returns ``None`` and the caller's default fires instead
     (never-lockout).
     """
-    value = _read_cold_setting(name)
+    value, _ = read_cold_setting_status(name)
     if isinstance(value, bool) or not isinstance(value, int):
         return None
     return value

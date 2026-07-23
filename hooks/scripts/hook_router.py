@@ -90,6 +90,7 @@ from hooks.scripts.direct_command_guard import deny_match as _deny_match  # noqa
 from hooks.scripts.direct_command_guard import handle_block_direct_commands
 from hooks.scripts.django_bootstrap import bootstrap_teatree_django
 from hooks.scripts.engagement import engage
+from hooks.scripts.engagement_advisory import session_start_advisory as _session_start_advisory
 from hooks.scripts.forge_api_detect import (
     _API_CREATE_ENDPOINT_RE,  # noqa: F401 re-export for test access
     _GLAB_GH_API_RE,
@@ -4436,14 +4437,6 @@ def _merge_session_start_context(context: str, session_id: str, source: str) -> 
     return context
 
 
-# #256 one-line how-to-start advisory for a default-off, not-yet-engaged session.
-# autoload is DB-home: the auto-start opt-in is set via the ConfigSetting store.
-_TEATREE_NOT_ACTIVE_ADVISORY = (
-    "teatree is installed but not active in this session — run /teatree to start it "
-    "(or run `t3 <overlay> config_setting set autoload true` to start it automatically)."
-)
-
-
 def _emit_session_start_context(context: str) -> None:
     # #1452: the harness silently drops the legacy flat top-level
     # ``{"additionalContext": ...}`` form for SessionStart; the documented schema
@@ -4500,7 +4493,7 @@ def handle_session_start_bootstrap(data: dict) -> None:
     if _autoload_enabled():
         engage(session_id, seed_skills=True)
     elif not _teatree_active(session_id):
-        advisory = "" if source in {"compact", "resume"} else _TEATREE_NOT_ACTIVE_ADVISORY
+        advisory = "" if source in {"compact", "resume"} else _session_start_advisory()
         _emit_session_start_context(_merge_session_start_context(advisory, session_id, source))
         return
     if not _loop_auto_load_active(session_id):
