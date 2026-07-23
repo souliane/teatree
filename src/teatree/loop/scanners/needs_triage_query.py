@@ -15,6 +15,7 @@ behaviour), so ``issue_disposition`` re-imports these names rather than keeping
 its own copies.
 """
 
+import logging
 from typing import TYPE_CHECKING, cast
 
 from teatree.core.models import NEEDS_TRIAGE_LABEL
@@ -22,6 +23,8 @@ from teatree.types import RawAPIDict
 
 if TYPE_CHECKING:
     from teatree.core.backend_protocols import CodeHostBackend
+
+logger = logging.getLogger(__name__)
 
 
 def _issue_url(issue: RawAPIDict) -> str:
@@ -76,7 +79,12 @@ def needs_triage_issues(host: "CodeHostBackend", assignees: tuple[str, ...]) -> 
     seen_urls: set[str] = set()
     issues: list[RawAPIDict] = []
     for assignee in assignees:
-        for issue in host.list_assigned_issues(assignee=assignee):
+        try:
+            fetched = host.list_assigned_issues(assignee=assignee)
+        except Exception:
+            logger.warning("list_assigned_issues failed for %s — skipping", assignee, exc_info=True)
+            continue
+        for issue in fetched:
             if not _issue_is_open(issue):
                 continue
             if NEEDS_TRIAGE_LABEL not in _issue_labels(issue):

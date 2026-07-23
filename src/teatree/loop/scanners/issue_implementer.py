@@ -390,7 +390,12 @@ class IssueImplementerScanner:
             # its ``author:`` query is pure waste (and, unscoped, a firehose). Skip it.
             if "/" in author:
                 continue
-            for issue in self.host.list_authored_issues(author=author, repo_slugs=self.repo_slugs):
+            try:
+                fetched = self.host.list_authored_issues(author=author, repo_slugs=self.repo_slugs)
+            except Exception:
+                logger.warning("list_authored_issues failed for %s — skipping", author, exc_info=True)
+                continue
+            for issue in fetched:
                 url = _issue_url(issue)
                 if url and url in seen_urls:
                     continue

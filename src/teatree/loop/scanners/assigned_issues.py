@@ -5,6 +5,7 @@ user, the dispatcher creates the corresponding :class:`Ticket` and lets
 the FSM ``start()`` transition take over (BLUEPRINT § 5.6).
 """
 
+import logging
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, cast
 
@@ -18,6 +19,8 @@ from teatree.types import RawAPIDict
 
 if TYPE_CHECKING:
     from teatree.core.models.ticket import Ticket
+
+logger = logging.getLogger(__name__)
 
 # A ticket no longer occupies the auto-start budget once it reaches IN_REVIEW
 # (PR is open, awaiting review/CLEAR before the keystone merge). Earlier states
@@ -173,7 +176,12 @@ class AssignedIssuesScanner:
         seen_urls: set[str] = set()
         issues: list[RawAPIDict] = []
         for assignee in assignees:
-            for issue in self.host.list_assigned_issues(assignee=assignee):
+            try:
+                fetched = self.host.list_assigned_issues(assignee=assignee)
+            except Exception:
+                logger.warning("list_assigned_issues failed for %s — skipping", assignee, exc_info=True)
+                continue
+            for issue in fetched:
                 url = _issue_url(issue)
                 if url and url in seen_urls:
                     continue
