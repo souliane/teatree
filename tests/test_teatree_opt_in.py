@@ -328,10 +328,10 @@ _CROSS_CUTTING_SKILLS = [
     "handover",
     "next",
     "review-request",
-    "loops",
+    "wip",
 ]
 # Genuinely teatree-specific skills keep the transitive opt-in.
-_TEATREE_SPECIFIC_SKILLS = ["dogfooding-teatree", "wip"]
+_TEATREE_SPECIFIC_SKILLS = ["dogfooding-teatree"]
 
 
 class TestRealClosureMarkerActivation:

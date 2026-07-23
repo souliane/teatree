@@ -55,7 +55,7 @@ def _my_pr(iid: int, *, overlay: str = "teatree") -> DispatchAction:
 
 
 def _ready(num: str, *, title: str = "", overlay: str = "teatree") -> DispatchAction:
-    # ``assigned_issue.ready`` produces a payload WITHOUT ``reason`` so the
+    # ``issue_intake.admitted`` produces a payload WITHOUT ``reason`` so the
     # renderer takes the dedicated ``ready_refs`` branch (which is what
     # ``_render_action_line`` consumes for the canonical-shape ``ready:``
     # row). A payload with ``reason`` would be routed as a disposition.

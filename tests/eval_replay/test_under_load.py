@@ -84,7 +84,7 @@ class TestLoadBudgetedSkillBundle:
         bodies = {
             "rules": "# Rules\n\n" + ("rule " * 200),
             "wip": "# Wip\n\n" + ("wip " * 50),
-            "loops": "# Loops\n\nthe role split source",  # tiny canonical-source skill
+            "health": "# Health\n\nthe role split source",  # tiny canonical-source skill
             "ship": "# Ship\n\n" + ("ship " * 4000),
             "review": "# Review\n\n" + ("review " * 4000),
             "e2e": "# E2E\n\n" + ("e2e " * 4000),
@@ -99,12 +99,12 @@ class TestLoadBudgetedSkillBundle:
         budgeted = load_budgeted_skill_bundle(char_budget=1_000_000, skills_dir=skills)
         assert budgeted == load_skill_bundle(skills_dir=skills)
 
-    def test_over_budget_keeps_agent_path_skill_rules_and_loops(self, tmp_path: Path) -> None:
+    def test_over_budget_keeps_agent_path_skill_rules_and_health(self, tmp_path: Path) -> None:
         skills = self._big_skill_dir(tmp_path)
         budgeted = load_budgeted_skill_bundle(keep_skill="wip", char_budget=15_000, skills_dir=skills)
         assert "## skill: wip" in budgeted, "the agent_path skill (keep_skill) must never be dropped"
         assert "## skill: rules" in budgeted, "the always-keep cross-cutting rules skill must survive"
-        assert "## skill: loops" in budgeted, "a small canonical-source skill must survive smallest-first"
+        assert "## skill: health" in budgeted, "a small canonical-source skill must survive smallest-first"
 
     def test_over_budget_sheds_the_largest_tail(self, tmp_path: Path) -> None:
         skills = self._big_skill_dir(tmp_path)
@@ -116,7 +116,7 @@ class TestLoadBudgetedSkillBundle:
     def test_budgeted_bundle_never_exceeds_the_char_budget(self, tmp_path: Path) -> None:
         skills = self._big_skill_dir(tmp_path)
         budgeted = load_budgeted_skill_bundle(keep_skill="wip", char_budget=15_000, skills_dir=skills)
-        # The pinned set (wip+rules+loops) is small here; the cap holds for the fill.
+        # The pinned set (wip+rules+health) is small here; the cap holds for the fill.
         assert len(budgeted) <= 15_000
 
     def test_real_catalog_under_load_prompt_fits_the_input_window(self) -> None:
@@ -129,7 +129,7 @@ class TestLoadBudgetedSkillBundle:
             f"budgeted under_load system prompt is {len(framed):,} chars (~{len(framed) // 4:,} tok) — "
             "too large to leave room for the preamble + tool schemas + response"
         )
-        assert "## skill: loops" in bundle, "the role-split canonical source must stay in the real bundle"
+        assert "## skill: health" in bundle, "the role-split canonical source must stay in the real bundle"
         assert "## skill: rules" in bundle, "the cross-cutting rules skill must stay in the real bundle"
 
 
