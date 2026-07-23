@@ -488,6 +488,17 @@ a.chip:hover {
   font-size: var(--text-sm);
 }
 
+/* The softer sibling of banner-red: a gap worth seeing, not a failure. */
+.banner-amber {
+  background: color-mix(in srgb, var(--warn) 12%, transparent);
+  border: 1px solid var(--warn);
+  color: var(--warn);
+  padding: var(--sp-2) var(--sp-3);
+  border-radius: var(--r-md);
+  margin-bottom: var(--sp-3);
+  font-size: var(--text-sm);
+}
+
 /* --- Tables --- */
 table.dash {
   width: 100%;
@@ -530,6 +541,27 @@ table.dash th.num {
 }
 .eff-no {
   color: var(--danger);
+}
+/* "No opinion" must read as its own third state, never as a quieter "off". */
+.eff-inherit {
+  color: var(--brand);
+}
+
+/* Preset tab strip on the schedule editor. */
+.tabs {
+  display: flex;
+  gap: var(--sp-1);
+  flex-wrap: wrap;
+  margin-bottom: var(--sp-3);
+}
+.daybox {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-1);
+  font-size: var(--text-sm);
+}
+.dash-btn.seg-inherit {
+  border-style: dashed;
 }
 
 /* Effective-state dot + word in the loops table. */

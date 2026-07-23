@@ -131,7 +131,7 @@
 # availability presence heartbeat + fast-hook mirror, and the deferred-question drain
 # — cycle-safe and app-registry-safe (mode_resolution is imported by early hooks via
 # speak.py before Django apps are ready).
-"src/teatree/core/mode_resolution.py" = 9
+"src/teatree/core/mode_resolution.py" = 8
 # #61: stop_snapshot's resume-plan defers `resolve_active_mode` + `ConfigSetting`
 # (ORM/app-registry) to render the mode/schedule lines.
 "src/teatree/core/stop_snapshot.py" = 2

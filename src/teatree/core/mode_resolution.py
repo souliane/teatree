@@ -51,12 +51,24 @@ logger = logging.getLogger(__name__)
 # availability's "present when no windows" default — a fresh box with no schedule
 # resolves ``engaged`` (present-class), so it is never silently muted.
 DEFAULT_MODE_SETTING = "default_mode"
-_FALLBACK_DEFAULT_MODE = "engaged"
+#: Used only when the setting is unset AND no row of that name exists — the
+#: synthesized present-class fallback. Every other consumer resolves by row.
+FALLBACK_DEFAULT_MODE = "engaged"
 
 # The present-class mode a live keystroke upgrades a schedule/default away-class
 # mode to (design §3.3 / owner decision B). Re-pointable; defaults ``engaged``.
 PRESENCE_UPGRADE_SETTING = "presence_upgrade_mode"
-_FALLBACK_UPGRADE_MODE = "engaged"
+FALLBACK_UPGRADE_MODE = "engaged"
+
+#: The legacy availability tokens as the intrinsic posture ``(defers_questions,
+#: pauses_self_pump)`` they mean. The mode carrying that posture is looked up BY ROW
+#: (:func:`mode_name_for_availability`), never by a hard-coded mode name — so an
+#: operator renaming ``offline`` to ``holiday`` cannot break the away switch.
+AVAILABILITY_POSTURES: dict[str, tuple[bool, bool]] = {
+    "present": (False, False),
+    "autonomous_away": (True, False),
+    "away": (True, True),
+}
 
 
 @dataclass(frozen=True, slots=True)
@@ -150,11 +162,11 @@ def _default_mode() -> "Mode":
 
 
 def _default_mode_name() -> str:
-    return _setting_name(DEFAULT_MODE_SETTING, _FALLBACK_DEFAULT_MODE)
+    return _setting_name(DEFAULT_MODE_SETTING, FALLBACK_DEFAULT_MODE)
 
 
 def _presence_upgrade_mode_name() -> str:
-    return _setting_name(PRESENCE_UPGRADE_SETTING, _FALLBACK_UPGRADE_MODE)
+    return _setting_name(PRESENCE_UPGRADE_SETTING, FALLBACK_UPGRADE_MODE)
 
 
 def _setting_name(key: str, fallback: str) -> str:
@@ -164,10 +176,34 @@ def _setting_name(key: str, fallback: str) -> str:
     return raw.strip() if isinstance(raw, str) and raw.strip() else fallback
 
 
-def _mode_by_name(name: str) -> "Mode | None":
+def _mode_model() -> "type[Mode]":
+    """The ``Mode`` model class — the ONE deferred ORM import every mode lookup here shares."""
     from teatree.core.models import Mode  # noqa: PLC0415 — deferred: ORM needs the app registry
 
-    return Mode.objects.by_name(name)
+    return Mode
+
+
+def _mode_by_name(name: str) -> "Mode | None":
+    return _mode_model().objects.by_name(name)
+
+
+def mode_name_for_availability(token: str) -> str:
+    """The name of the mode row carrying *token*'s posture, resolved by row not by literal.
+
+    Raises :class:`LookupError` for an unknown token or when no seeded mode carries
+    that posture — refusing to write an override naming a mode that does not exist,
+    rather than leaving a dangling name that silently falls open to base config.
+    """
+    posture = AVAILABILITY_POSTURES.get(token)
+    if posture is None:
+        msg = f"unknown availability token {token!r}; use {'/'.join(AVAILABILITY_POSTURES)}"
+        raise LookupError(msg)
+    defers, pauses = posture
+    mode = _mode_model().objects.by_posture(defers_questions=defers, pauses_self_pump=pauses)
+    if mode is None:
+        msg = f"no mode carries the {token!r} posture — run `t3 setup` to seed the defaults"
+        raise LookupError(msg)
+    return mode.name
 
 
 def set_mode_override(
@@ -292,10 +328,8 @@ def _synthetic_default_mode() -> "Mode":
     ``state_for == None`` → inherit ``Loop.enabled``, i.e. byte-for-byte today's
     no-preset verdict; the booleans are present-class so nothing is muted.
     """
-    from teatree.core.models import Mode  # noqa: PLC0415 — deferred: ORM needs the app registry
-
-    return Mode(
-        name=_FALLBACK_DEFAULT_MODE,
+    return _mode_model()(
+        name=FALLBACK_DEFAULT_MODE,
         entries={},
         defers_questions=False,
         pauses_self_pump=False,
@@ -304,10 +338,14 @@ def _synthetic_default_mode() -> "Mode":
 
 
 __all__ = [
+    "AVAILABILITY_POSTURES",
     "DEFAULT_MODE_SETTING",
+    "FALLBACK_DEFAULT_MODE",
+    "FALLBACK_UPGRADE_MODE",
     "PRESENCE_UPGRADE_SETTING",
     "ResolvedMode",
     "clear_mode_override",
+    "mode_name_for_availability",
     "resolve_active_mode",
     "set_mode_override",
 ]

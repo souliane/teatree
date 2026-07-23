@@ -10,14 +10,17 @@ mask (#3159), and the base ``Loop.enabled`` flag (L1). The write side
 ``LoopManager`` verbs, so this module only reads.
 """
 
+import datetime as dt
 import logging
 from dataclasses import dataclass
 
 from teatree.config import get_effective_settings
-from teatree.core.mode_resolution import resolve_active_mode
+from teatree.core.mode_resolution import AVAILABILITY_POSTURES, resolve_active_mode
 from teatree.core.models.loop import Loop
 from teatree.core.models.loop_state import LoopState, LoopStatus
 from teatree.dash.gate_state import dash_gate_fail_open
+from teatree.loops.live import LoopStatusEntry, build_report
+from teatree.loops.loop_cadence_editing import CadenceBounds, cadence_bounds_for
 from teatree.loops.preset_status import LoopVerdict, effective_verdicts
 
 logger = logging.getLogger(__name__)
@@ -29,17 +32,11 @@ logger = logging.getLogger(__name__)
 LOOP_ACTIONS: frozenset[str] = frozenset({"pause", "resume", "disable", "enable"})
 
 
-# Availability modes the header switch offers, mapped to the merged Mode they now
-# set as an override (#61): the standalone availability string modes are gone —
-# ``present`` is the ``engaged`` present-class mode, ``away`` the holiday ``offline``
-# mode (defers + pauses), ``autonomous_away`` the ``unattended`` mode. ``auto``
-# clears the override so the schedule / default decides again.
-AVAILABILITY_MODE_MAP: dict[str, str] = {
-    "present": "engaged",
-    "away": "offline",
-    "autonomous_away": "unattended",
-}
-AVAILABILITY_ACTIONS: frozenset[str] = frozenset({*AVAILABILITY_MODE_MAP, "auto"})
+# Availability modes the header switch offers. Each is resolved to the merged Mode
+# carrying that intrinsic posture BY ROW (#3559) — never by a hard-coded mode name,
+# so an operator renaming a seeded mode cannot break the switch. ``auto`` clears the
+# override so the schedule / default decides again.
+AVAILABILITY_ACTIONS: frozenset[str] = frozenset({*AVAILABILITY_POSTURES, "auto"})
 
 # The exact phrase the operator must type to flip the master fail-open switch —
 # the one switch that relaxes every over-deny gate must never be a one-click toggle.
@@ -48,6 +45,8 @@ GATE_CONFIRM_PHRASE = "fail-open"
 
 @dataclass(frozen=True, slots=True)
 class LoopRow:
+    """One loop in the unified table: what decides it, how often it fires, and when."""
+
     name: str
     description: str
     enabled: bool
@@ -55,11 +54,21 @@ class LoopRow:
     effective: bool
     deciding_layer: str
     cadence_label: str
+    delay_seconds: int | None
+    daily_at: str
+    bounds: CadenceBounds
+    last_run_at: dt.datetime | None
+    next_run_at: dt.datetime | None
+
+    @property
+    def is_daily(self) -> bool:
+        return bool(self.daily_at)
 
 
 @dataclass(frozen=True, slots=True)
 class LoopControlView:
     loops: tuple["LoopRow", ...]
+    infra_slots: tuple[LoopStatusEntry, ...]
     availability_mode: str
     availability_source: str
     gate_fail_open: bool
@@ -67,15 +76,25 @@ class LoopControlView:
 
 
 def build_loop_control() -> LoopControlView:
-    """The whole loop-control page read model: loop rows + header control state."""
+    """The whole loop-control page read model: loop rows + infra slots + header state."""
     resolved = resolve_active_mode()
     return LoopControlView(
         loops=build_loop_rows(),
+        infra_slots=_infra_slots(),
         availability_mode=resolved.name,
         availability_source=resolved.source,
         gate_fail_open=dash_gate_fail_open(),
         runner_enabled=_runner_enabled(),
     )
+
+
+def _infra_slots() -> tuple[LoopStatusEntry, ...]:
+    """The worker's infra lease slots — a small distinct section beside the loop table."""
+    try:
+        return build_report().infra_slots
+    except Exception:
+        logger.warning("infra-slot read failed — rendering the loop table without it", exc_info=True)
+        return ()
 
 
 def _runner_enabled() -> bool:
@@ -111,6 +130,11 @@ def _loop_row(loop: Loop, status: str, verdict: LoopVerdict) -> LoopRow:
         effective=verdict.admitted,
         deciding_layer=_deciding_layer(verdict, enabled=loop.enabled, status=status),
         cadence_label=loop.cadence_label,
+        delay_seconds=loop.delay_seconds,
+        daily_at=loop.daily_at.strftime("%H:%M") if loop.daily_at is not None else "",
+        bounds=cadence_bounds_for(loop.name),
+        last_run_at=loop.last_run_at,
+        next_run_at=loop.next_run_at(),
     )
 
 

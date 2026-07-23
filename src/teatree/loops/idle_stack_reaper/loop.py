@@ -30,5 +30,6 @@ def _build_jobs(**_: object) -> "list[_ScannerJob]":
 MINI_LOOP = MiniLoop(
     name="idle_stack_reaper",
     default_cadence_seconds=_REGISTRY_CADENCE_FLOOR,
+    cadence_is_floor=True,
     build_jobs=_build_jobs,
 )
