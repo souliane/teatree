@@ -79,8 +79,12 @@
 # so the single-credential-reader routes through the proxy without dragging the ORM
 # model registry in pre-app-registry (#3334).
 "src/teatree/core/messaging_tokens.py" = 1
-"src/teatree/core/merge/authorization.py" = 5
+"src/teatree/core/merge/authorization.py" = 4
 "src/teatree/core/merge/execution.py" = 4
+# substrate_standing defers `from teatree.core.overlay_loader import infer_overlay_for_url`
+# so resolving a repo's owning overlay stays a call-time read of the live overlay
+# registry — the edge moved here verbatim from merge/authorization.py (#3648).
+"src/teatree/core/merge/substrate_standing.py" = 1
 "src/teatree/core/model_registries.py" = 5
 "src/teatree/core/models/auto_review_dispatch.py" = 3
 "src/teatree/core/models/implemented_issue_marker.py" = 1
