@@ -106,9 +106,11 @@ def _live_critic() -> CriticLiveness:
     return CriticLiveness(live=True, verdict_count=MIN_CRITIC_SAMPLE)
 
 
-def _open_directive_consumer() -> tuple[DirectiveLoopSettings, GuardSeams]:
+def _open_directive_consumer(*, factory_score_enabled: bool = True) -> tuple[DirectiveLoopSettings, GuardSeams]:
     """Settings + seams that make the directive guard chain allow, as its tick would."""
-    settings = SimpleNamespace(directive_loop_enabled=True, factory_score_enabled=True, directive_verify_days=7)
+    settings = SimpleNamespace(
+        directive_loop_enabled=True, factory_score_enabled=factory_score_enabled, directive_verify_days=7
+    )
     report = FactorySignalsReport(
         window_days=28, generated_at=datetime(2026, 1, 1, tzinfo=UTC), signals=[], verdict=SignalVerdict.OK
     )
@@ -116,8 +118,12 @@ def _open_directive_consumer() -> tuple[DirectiveLoopSettings, GuardSeams]:
     return settings, seams
 
 
-def _run(*, open_directive_consumer: bool = False) -> tuple[bool, str]:
-    settings, seams = _open_directive_consumer() if open_directive_consumer else (None, None)
+def _run(*, open_directive_consumer: bool = False, factory_score_enabled: bool = True) -> tuple[bool, str]:
+    settings, seams = (
+        _open_directive_consumer(factory_score_enabled=factory_score_enabled)
+        if open_directive_consumer
+        else (None, None)
+    )
     buf = io.StringIO()
     with redirect_stdout(buf):
         ok = _check_intent_freshness(settings=settings, seams=seams)
@@ -168,6 +174,19 @@ class TestCheckIntentFreshness(TestCase):
         assert ok is True
         assert "WARN" in out
         assert f"directive #{directive.pk}" in out
+
+    def test_dark_factory_score_does_not_mark_the_intake_consumer_dead(self) -> None:
+        # The queue holds the PRE-admission arc, whose chain is `evaluate_intake_guards`
+        # — it drops the `factory_score_enabled` gate that only the post-admission
+        # `evaluate_execution_guards` chain applies. Probing the execution chain here
+        # would report a draining consumer as dead the moment scoring ships dark.
+        Loop.objects.filter(name="directive_loop").update(enabled=True)
+        directive = Directive.objects.capture("cap 1 PR per repo", source=Directive.Source.CLI)
+        _backdate_directive(directive, hours=30)
+        ok, out = _run(open_directive_consumer=True, factory_score_enabled=False)
+        assert ok is True
+        assert "FAIL" not in out
+        assert "WARN" in out
 
     def test_fresh_directive_with_live_consumer_is_silent(self) -> None:
         Loop.objects.filter(name="directive_loop").update(enabled=True)

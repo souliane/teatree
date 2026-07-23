@@ -145,29 +145,35 @@ def _directive_consumer_liveness(
     """Whether the directive queue has a live consumer, and what must change if not.
 
     An unmasked loop row is only half the gate: every directive tick first runs the
-    fail-closed guard chain (the DARK ``directive_loop_enabled`` flag, ``factory_score_enabled``,
-    the critic-live probe, signal trust, the self-improve budget), and all of them ship
-    off — so a queue whose loop row is enabled can still have no consumer at all. The
-    remediation names both blockers, so following it cannot silence the finding while
-    directives still never advance.
+    fail-closed guard chain (the DARK ``directive_loop_enabled`` flag, the critic-live
+    probe, signal trust, the self-improve budget), and all of them ship off — so a queue
+    whose loop row is enabled can still have no consumer at all. The remediation names
+    both blockers, so following it cannot silence the finding while directives still
+    never advance.
+
+    The chain probed is the INTAKE one: this queue holds the pre-admission arc — the rows
+    the tick interprets before stopping at the structural human ratify gate. The
+    post-admission ``evaluate_execution_guards`` additionally gates on
+    ``factory_score_enabled``, which never blocks intake, so probing that chain would
+    report a consumer as dead while it is in fact draining this queue.
     """
     from teatree.config import get_effective_settings  # noqa: PLC0415 — deferred: DB read at call time
     from teatree.loops.directive_loop.guards import (  # noqa: PLC0415 — deferred: ORM-backed probes
         CRITIC_NOT_LIVE,
         FLAG_OFF,
-        SCORE_OFF,
         SIGNAL_UNTRUSTED,
-        evaluate_guards,
+        evaluate_intake_guards,
     )
 
     blockers: list[str] = []
     if not loop_admits:
         blockers.append("unmask the loop row: t3 loop enable directive_loop --emergency")
-    verdict = evaluate_guards(settings=settings if settings is not None else get_effective_settings(None), seams=seams)
+    verdict = evaluate_intake_guards(
+        settings=settings if settings is not None else get_effective_settings(None), seams=seams
+    )
     if not verdict.ok:
         remedies = {
             FLAG_OFF: "turn on the DARK `directive_loop_enabled` setting",
-            SCORE_OFF: "turn on the `factory_score_enabled` setting",
             CRITIC_NOT_LIVE: "make the critic gate a proven live merge supervisor",
             SIGNAL_UNTRUSTED: "close the factory-signal instrumentation gap",
         }
