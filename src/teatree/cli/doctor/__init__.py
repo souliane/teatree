@@ -11,7 +11,6 @@ services live in :mod:`teatree.cli.doctor.service`; the ``_check_*`` probes live
 
 from teatree.cli.doctor.app import (
     _CLAUDE_PLUGIN_ID,
-    _REQUIRED_TOOLS,
     AGENT_SKILL_RUNTIMES,
     DoctorService,
     IntrospectionHelpers,
@@ -22,6 +21,7 @@ from teatree.cli.doctor.app import (
     _check_configured_review_skills,
     _check_connector_manifest,
     _check_dangling_editable_pth,
+    _check_declared_dependencies_provisioned,
     _check_dream_staleness,
     _check_editable_sanity,
     _check_entrypoint_is_primary_clone,
@@ -59,7 +59,6 @@ from teatree.cli.doctor.app import (
 __all__ = [
     "AGENT_SKILL_RUNTIMES",
     "_CLAUDE_PLUGIN_ID",
-    "_REQUIRED_TOOLS",
     "DoctorService",
     "IntrospectionHelpers",
     "PackageNotFoundError",
@@ -69,6 +68,7 @@ __all__ = [
     "_check_configured_review_skills",
     "_check_connector_manifest",
     "_check_dangling_editable_pth",
+    "_check_declared_dependencies_provisioned",
     "_check_dream_staleness",
     "_check_editable_sanity",
     "_check_entrypoint_is_primary_clone",

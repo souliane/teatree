@@ -152,6 +152,11 @@ layer = "platform"
 depends_on = ["teatree.types", "teatree.utils", "teatree.project"]
 
 [[modules]]
+path = "teatree.provisioning"
+layer = "platform"
+depends_on = ["teatree.utils"]
+
+[[modules]]
 path = "teatree.core"
 layer = "domain"
 depends_on = [

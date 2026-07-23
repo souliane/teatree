@@ -20,6 +20,7 @@ from teatree.cli.setup.apm import ApmInstaller, strip_apm_hooks
 from teatree.cli.setup.clone import find_main_clone, validate_repo
 from teatree.cli.setup.docker_alias import DockerAliasInstaller
 from teatree.cli.setup.git_hooks_installer import GitHooksInstaller
+from teatree.cli.setup.mandated_skills import MandatedSkillProvisioner
 from teatree.cli.setup.mcp_registrar import McpServerRegistrar
 from teatree.cli.setup.merge_driver_installer import GitMergeDriverInstaller
 from teatree.cli.setup.plugin_registrar import PluginRegistrar, PyrightPluginRegistrar
@@ -30,6 +31,7 @@ from teatree.cli.slack.dm_provisioning import provision_all_overlay_dm_channels
 from teatree.cli.slack.provision import slack_provision
 from teatree.cli.slack.setup import slack_bot_setup
 from teatree.cli.slack.user_token_setup import slack_user_token_setup
+from teatree.paths import get_data_dir
 from teatree.self_update import ensure_self_db_migrated, seed_default_loops
 from teatree.utils.django_bootstrap import ensure_django
 
@@ -89,6 +91,26 @@ def _report_statusline_install(settings_json: Path, repo: Path) -> None:
         typer.echo("WARN  Could not write the statusline to settings.json (not writable) — skipping; setup continues.")
     else:
         typer.echo("WARN  settings.json unparsable — skipped statusLine install.")
+
+
+def _sync_runtime_skill_links(workspace_dir: Path, excluded: list[str]) -> None:
+    """Sync core + overlay skill symlinks into every agent runtime's skills dir."""
+    for label, skills_dir in agent_skill_dirs():
+        if not skills_dir.is_dir():
+            continue
+        linker = SkillLinker(skills_dir, workspace_dir)
+        removed = linker.remove_excluded(excluded)
+        if removed:
+            typer.echo(f"OK    {label}: removed {removed} excluded skill(s).")
+
+        sync_core = label != "claude"
+        created, fixed = linker.sync(sync_core=sync_core)
+        suffix = "" if sync_core else " (core skills via plugin)"
+        typer.echo(f"OK    {label}: {created} created, {fixed} fixed{suffix}.")
+
+        broken = linker.clean_broken()
+        if broken:
+            typer.echo(f"OK    {label}: removed {broken} broken symlink(s).")
 
 
 def _install_checkout_git_config(repo: Path) -> None:
@@ -175,22 +197,17 @@ def run(
     claude_skills = Path.home() / ".claude" / "skills"
     claude_skills.mkdir(parents=True, exist_ok=True)
 
-    for label, skills_dir in agent_skill_dirs():
-        if not skills_dir.is_dir():
-            continue
-        linker = SkillLinker(skills_dir, workspace_dir)
-        removed = linker.remove_excluded(all_excluded)
-        if removed:
-            typer.echo(f"OK    {label}: removed {removed} excluded skill(s).")
+    _sync_runtime_skill_links(workspace_dir, all_excluded)
 
-        sync_core = label != "claude"
-        created, fixed = linker.sync(sync_core=sync_core)
-        suffix = "" if sync_core else " (core skills via plugin)"
-        typer.echo(f"OK    {label}: {created} created, {fixed} fixed{suffix}.")
-
-        broken = linker.clean_broken()
-        if broken:
-            typer.echo(f"OK    {label}: removed {broken} broken symlink(s).")
+    # #3652: install the skills teatree's own configuration MANDATES but ships in
+    # no plugin — the companion bibles the operator config declares non-negotiable
+    # for Python/Django work. `apm` is the declared installer and is absent from
+    # the deployed image, so a fresh box ran agents that could not load a skill
+    # their config requires. Runs AFTER the linker (whose stale-link prune only
+    # touches teatree-owned source roots, never these) and is idempotent — an
+    # already-loadable skill is skipped, so the entrypoint's every-start `t3 setup`
+    # converges without re-fetching.
+    MandatedSkillProvisioner(repo, claude_skills, get_data_dir("skill-sources")).provision(typer.echo)
 
     if not skip_plugin:
         PluginRegistrar(repo).install()
