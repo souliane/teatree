@@ -19,7 +19,6 @@ never degrade to "any label admits"), and an author the caller could not resolve
 arrives as ``author_trusted=False``.
 """
 
-from collections.abc import Iterable
 from dataclasses import dataclass
 from enum import StrEnum
 from typing import cast
@@ -109,8 +108,3 @@ def resolve_admit_label(overlay: str) -> str:
     from teatree.config import get_effective_settings  # noqa: PLC0415 — deferred: keeps this leaf import-light
 
     return get_effective_settings(overlay or None).issue_implementer_label or DEFAULT_ADMIT_LABEL
-
-
-def admits_untrusted_author(labels: Iterable[str], *, admit_label: str) -> bool:
-    """Whether *labels* carry the owner's admission for an untrusted author (rule 4)."""
-    return bool(admit_label) and admit_label in set(labels)

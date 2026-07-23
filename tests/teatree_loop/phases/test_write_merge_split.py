@@ -9,11 +9,11 @@ from operator import itemgetter
 import pytest
 from django.test import TestCase
 
-from teatree.config import Wip
+from teatree.config import UserSettings, Wip
 from teatree.core.backend_factory import OverlayBackends
 from teatree.core.models import ConfigSetting, Session, Task, Ticket
 from teatree.loop.phases.conflict_area import area_key, spread_by_area
-from teatree.loop.phases.orchestrate import orchestrate_phase
+from teatree.loop.phases.orchestrate import merge_lane_target, orchestrate_phase, write_lane_target
 
 
 def _backends() -> list[OverlayBackends]:
@@ -66,6 +66,25 @@ class TestPhaseSplitTargets(TestCase):
         phases = [e.phase for e in manifest.entries]
         assert phases.count("shipping") == 1
         assert phases.count("coding") == 3
+
+
+class TestLaneTargets:
+    """The two lane ceilings, resolved without touching the DB."""
+
+    def test_merge_lane_is_clamped_to_single_flight(self) -> None:
+        assert merge_lane_target(UserSettings(merge_wip=5)) == 1
+
+    def test_merge_lane_can_be_closed_entirely(self) -> None:
+        assert merge_lane_target(UserSettings(merge_wip=0)) == 0
+
+    def test_write_lane_is_bounded_by_the_summed_overlay_cap(self) -> None:
+        settings = UserSettings(wip=Wip.FULL, write_wip=5)
+        backends = [OverlayBackends(name="a", max_concurrent_auto_starts=2)]
+
+        assert write_lane_target(settings, Wip.FULL, backends) == 2
+
+    def test_slow_pins_the_write_lane_to_one(self) -> None:
+        assert write_lane_target(UserSettings(wip=Wip.SLOW, write_wip=9), Wip.SLOW, _backends()) == 1
 
 
 class TestConflictAreaHeuristic:

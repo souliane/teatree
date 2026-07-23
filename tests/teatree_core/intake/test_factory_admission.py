@@ -7,6 +7,7 @@ from teatree.core.intake.factory_admission import (
     IntakeVerdict,
     decide_intake,
     decide_issue_intake,
+    payload_labels,
     resolve_admit_label,
 )
 from teatree.core.models import ConfigSetting
@@ -66,6 +67,17 @@ class TestDecisionTableOrder:
         """An unset admit label must not degrade into "every label admits"."""
         verdict = decide_intake(_facts(labels=frozenset({"", "bug"})), admit_label="")
         assert verdict is IntakeVerdict.IGNORE_NOT_ADMITTED
+
+
+class TestPayloadLabels:
+    def test_reads_both_forge_label_shapes(self) -> None:
+        assert payload_labels({"labels": ["a", {"name": "b"}]}) == frozenset({"a", "b"})
+
+    def test_a_non_list_labels_field_is_empty(self) -> None:
+        assert payload_labels({"labels": "t3-auto"}) == frozenset()
+
+    def test_a_missing_labels_field_is_empty(self) -> None:
+        assert payload_labels({}) == frozenset()
 
 
 class TestPayloadFacade:
