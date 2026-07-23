@@ -4,7 +4,7 @@ Folds the two former intake scanners (``assigned_issues`` and
 ``issue_implementer``) into a single loop job so the factory can never hold two
 divergent opinions about which issue becomes work. Discovery is a union of two
 author-/label-scoped forge queries; the verdict is
-:func:`~teatree.core.intake.factory_admission.decide_intake`, evaluated top-down.
+:func:`~teatree.core.intake.factory_admission.decide_issue_intake`, evaluated top-down.
 
 Discovery is scoped so the factory never even fetches work it may not do:
 
