@@ -275,6 +275,10 @@ OVERLAY_OVERRIDABLE_SETTINGS: dict[str, Callable[[Any], Any]] = {
     # ``sqlite3`` CLI (bash ``statusline.sh._autoload_db_value``); a ``[teatree]
     # autoload`` TOML value is ignored on read. Strict bool, default OFF.
     "autoload": _parse_strict_bool,
+    # #3502 opt-in: render the loop statusline in an EXPLICITLY engaged session
+    # even with ``autoload`` off. Consumed only by the bash ``statusline.sh`` gate
+    # (cold sqlite3 read); strict bool, default OFF (preserves the #256 guarantee).
+    "statusline_in_engaged_session": _parse_strict_bool,
     # Parallel ticket-workspace provisioning speed + resource-aware admission.
     # Fast steps (symlinks, settings, a compose override) default to this short
     # ceiling instead of the uniform 1800s one; a step opts into the long
@@ -437,6 +441,15 @@ class _WorkspaceCoreSettings:
     # ``/teatree`` — or loading any ``t3:`` skill — engages teatree for the
     # session regardless of this default.
     autoload: bool = False
+    # #3502 Default-OFF opt-in to render the loop statusline in a session the
+    # owner EXPLICITLY engaged (`/teatree` -> the `.teatree-active` / `.t3-engaged`
+    # marker) even with `autoload` off — the per-session counterpart of the global
+    # `autoload` visibility flag, for an owner who wants the statusline only in the
+    # sessions they engaged rather than in every session. Consumed ONLY by the bash
+    # `statusline.sh` render gate, which cold-reads it DB-ONLY via the sqlite3 CLI
+    # (`_statusline_in_engaged_session_db_value`). Default OFF preserves the #256
+    # colleague guarantee unchanged (marker present + autoload off -> still blank).
+    statusline_in_engaged_session: bool = False
     timezone: str = ""
     contribute: bool = False
     excluded_skills: list[str] = field(default_factory=list)

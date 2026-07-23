@@ -565,6 +565,29 @@ def _seed_autoload_db(path: Path, *, autoload: object) -> None:
         conn.close()
 
 
+def _seed_setting_db(path: Path, key: str, *, value: object) -> None:
+    """Build a ``teatree_config_setting`` sqlite carrying one GLOBAL row.
+
+    The migration-shaped shim ``_seed_autoload_db`` uses, generalised to any key
+    so the cold ``sqlite3`` statusline readers (``_autoload_db_value`` /
+    ``_statusline_in_engaged_session_db_value``) resolve it.
+    """
+    conn = sqlite3.connect(path)
+    try:
+        conn.execute(
+            "CREATE TABLE teatree_config_setting ("
+            "id INTEGER PRIMARY KEY, scope TEXT NOT NULL DEFAULT '', "
+            "key TEXT NOT NULL, value TEXT NOT NULL)"
+        )
+        conn.execute(
+            "INSERT INTO teatree_config_setting (scope, key, value) VALUES ('', ?, ?)",
+            (key, json.dumps(value)),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
 class TestStatuslineGating:
     def _run_statusline(
         self,
@@ -635,6 +658,76 @@ class TestStatuslineGating:
         _seed_autoload_db(db, autoload=True)
         out = self._run_statusline("teatree-sess", state_dir, extra_env={"T3_CONFIG_DB": str(db)})
         assert out != ""
+
+    # ── #3502: opt-in to render in an explicitly engaged session (autoload off) ──
+
+    def test_engaged_optin_with_marker_renders_without_autoload(self, tmp_path: Path) -> None:
+        # #3502: the owner opts in (``statusline_in_engaged_session`` true) and this
+        # session was explicitly engaged by hand (the ``.teatree-active`` marker), so
+        # the loop statusline renders even with ``autoload`` off — the per-session
+        # counterpart of the global ``autoload`` visibility flag.
+        state_dir = tmp_path / "state"
+        state_dir.mkdir(parents=True, exist_ok=True)
+        (state_dir / "eng-sess.teatree-active").touch()
+        db = tmp_path / "db.sqlite3"
+        _seed_setting_db(db, "statusline_in_engaged_session", value=True)
+        out = self._run_statusline(
+            "eng-sess", state_dir, home=tmp_path / "fresh-home", extra_env={"T3_CONFIG_DB": str(db)}
+        )
+        assert "statusline off" not in out
+        assert out != ""
+
+    def test_engaged_optin_via_t3_engaged_marker_renders(self, tmp_path: Path) -> None:
+        # The opt-in honours EITHER engagement marker: a session engaged by loading
+        # any ``t3:`` skill (``.t3-engaged``) renders the same as ``.teatree-active``.
+        state_dir = tmp_path / "state"
+        state_dir.mkdir(parents=True, exist_ok=True)
+        (state_dir / "eng-sess.t3-engaged").touch()
+        db = tmp_path / "db.sqlite3"
+        _seed_setting_db(db, "statusline_in_engaged_session", value=True)
+        out = self._run_statusline(
+            "eng-sess", state_dir, home=tmp_path / "fresh-home", extra_env={"T3_CONFIG_DB": str(db)}
+        )
+        assert "statusline off" not in out
+        assert out != ""
+
+    def test_engaged_optin_without_marker_shows_hint(self, tmp_path: Path) -> None:
+        # The opt-in renders ONLY in an EXPLICITLY engaged session: with no marker
+        # (a non-engaged session) the #256 suppression stands — the neutral hint.
+        state_dir = tmp_path / "state"
+        state_dir.mkdir(parents=True, exist_ok=True)
+        db = tmp_path / "db.sqlite3"
+        _seed_setting_db(db, "statusline_in_engaged_session", value=True)
+        out = self._run_statusline(
+            "bare-sess", state_dir, home=tmp_path / "fresh-home", extra_env={"T3_CONFIG_DB": str(db)}
+        )
+        assert "statusline off" in out
+
+    def test_no_optin_with_marker_shows_hint(self, tmp_path: Path) -> None:
+        # #256 colleague guarantee, UNCHANGED: with the opt-in absent, a marked
+        # session under ``autoload`` off still gets no statusline — only the hint.
+        state_dir = tmp_path / "state"
+        state_dir.mkdir(parents=True, exist_ok=True)
+        (state_dir / "eng-sess.teatree-active").touch()
+        db = tmp_path / "db.sqlite3"
+        _seed_setting_db(db, "autoload", value=False)
+        out = self._run_statusline(
+            "eng-sess", state_dir, home=tmp_path / "fresh-home", extra_env={"T3_CONFIG_DB": str(db)}
+        )
+        assert "statusline off" in out
+
+    def test_optin_false_row_with_marker_shows_hint(self, tmp_path: Path) -> None:
+        # A stored ``statusline_in_engaged_session`` false is an explicit no: a
+        # marked session under ``autoload`` off still renders only the hint.
+        state_dir = tmp_path / "state"
+        state_dir.mkdir(parents=True, exist_ok=True)
+        (state_dir / "eng-sess.teatree-active").touch()
+        db = tmp_path / "db.sqlite3"
+        _seed_setting_db(db, "statusline_in_engaged_session", value=False)
+        out = self._run_statusline(
+            "eng-sess", state_dir, home=tmp_path / "fresh-home", extra_env={"T3_CONFIG_DB": str(db)}
+        )
+        assert "statusline off" in out
 
 
 # ── #256: default-off teatree autoload + engagement seam ──────────────────

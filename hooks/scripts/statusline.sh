@@ -70,8 +70,15 @@ fi
 # `autoload` is the ONE owner flag that "engages the session", so it alone gates
 # whether the statusline is shown here. Loop *arming* keeps its stricter
 # `marker AND autoload` gate (hook_router._loop_auto_load_active); this is display
-# *visibility*, which the owner wants in every one of their sessions. The #256
-# colleague guarantee still holds: `autoload` off is blank regardless of the marker.
+# *visibility*, which the owner wants in every one of their sessions.
+#
+# The one widening is the DEFAULT-OFF `statusline_in_engaged_session` opt-in
+# (#3502, `statusline_engaged_render` below): an owner who does NOT want the
+# broad `autoload`-on visibility but DOES want the statusline in a session they
+# engaged by hand sets it, and only THEN does an explicitly-engaged (marker-
+# carrying) session render with `autoload` off. The #256 colleague guarantee is
+# unchanged because it defaults OFF: `autoload` off with the opt-in unset is
+# blank regardless of the marker.
 
 # The canonical ConfigSetting store's GLOBAL `autoload` value, JSON-decoded:
 # `true` / `false` / empty. Read-only via the sqlite3 CLI (so the statusline needs
@@ -104,6 +111,20 @@ _statusline_chain_db() {
         || return 0
 }
 
+# The canonical ConfigSetting store's GLOBAL `statusline_in_engaged_session`
+# opt-in (#3502), JSON-decoded: `true` / `false` / empty. Same cold sqlite3 read
+# + WAL fallback as `_autoload_db_value`. Fails silent (empty) on no sqlite3, a
+# missing DB, or any read error.
+_statusline_in_engaged_session_db_value() {
+    command -v sqlite3 >/dev/null 2>&1 || return 0
+    local db="${T3_CONFIG_DB:-${XDG_DATA_HOME:-$HOME/.local/share}/teatree/db.sqlite3}"
+    [ -f "$db" ] || return 0
+    local q="SELECT value FROM teatree_config_setting WHERE scope='' AND key='statusline_in_engaged_session' LIMIT 1;"
+    sqlite3 "file:${db}?mode=ro" "$q" 2>/dev/null \
+        || sqlite3 "file:${db}?immutable=1" "$q" 2>/dev/null \
+        || return 0
+}
+
 # Session-start loop/statusline auto-load is OPT-IN (#256): default OFF so a
 # colleague who merely clones the repo never sees the loop statusline. ``autoload``
 # is the ONE owner flag (it engages the session AND arms its loops). Mirrors
@@ -124,7 +145,24 @@ autoload_enabled() {
     return 1
 }
 
-if [ -n "$session_id" ] && ! autoload_enabled; then
+# The per-session statusline opt-in (#3502): render in a session the owner
+# explicitly engaged by hand (`/teatree` -> the `.teatree-active` / `.t3-engaged`
+# marker) even with `autoload` off — the per-session counterpart of the global
+# `autoload` visibility flag. Default OFF (the setting absent), so the #256
+# colleague guarantee is unchanged: a fresh clone that merely loads a teatree
+# skill (marker present, this opt-in unset) still renders no statusline. Unlike
+# `autoload`, this DOES require the engagement marker — it is scoped to the one
+# session the owner engaged, not every session.
+statusline_engaged_render() {
+    [ -n "$session_id" ] || return 1
+    case "$(_statusline_in_engaged_session_db_value)" in
+        true) ;;
+        *) return 1 ;;
+    esac
+    [ -f "$state_dir/${session_id}.teatree-active" ] || [ -f "$state_dir/${session_id}.t3-engaged" ]
+}
+
+if [ -n "$session_id" ] && ! autoload_enabled && ! statusline_engaged_render; then
     # #3233: CC discards zero-byte statusline output, so a silent ``exit 0``
     # here renders a mysteriously BLANK bar under the non-TTY CC invocation
     # (session_id set) — invisible to every run-the-script-by-hand debug pass.
