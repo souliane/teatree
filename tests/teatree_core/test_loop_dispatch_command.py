@@ -410,7 +410,7 @@ class TestClaimNextAdmitBudgetGate(_LoopDispatchTest):
         assert len(payload) == 1  # claimed despite no budget key
 
     def test_full_with_budget_admits_exactly_budget_then_refuses(self) -> None:
-        from teatree.loop.admit_budget import write_admit_budget  # noqa: PLC0415
+        from teatree.loop.admit_budget import write_admit_budget  # noqa: PLC0415 - deferred: local import
 
         with tempfile.TemporaryDirectory() as d:
             sl = Path(d) / "statusline.txt"
@@ -430,7 +430,7 @@ class TestClaimNextAdmitBudgetGate(_LoopDispatchTest):
     def test_in_flight_at_budget_refuses_the_next_claim(self) -> None:
         # THE anti-vacuous core: B already in flight + budget B → claim ZERO.
         # RED on the pre-fix code (no clamp → it would claim the pending row).
-        from teatree.loop.admit_budget import write_admit_budget  # noqa: PLC0415
+        from teatree.loop.admit_budget import write_admit_budget  # noqa: PLC0415 - deferred: local import
 
         with tempfile.TemporaryDirectory() as d:
             sl = Path(d) / "statusline.txt"
@@ -444,7 +444,7 @@ class TestClaimNextAdmitBudgetGate(_LoopDispatchTest):
     def test_freeing_one_lease_lets_exactly_one_more_claim(self) -> None:
         # Prove the gate is the ONLY thing holding the row: clear one in-flight
         # lease (reclaim it to PENDING) and the next claim takes exactly one.
-        from teatree.loop.admit_budget import write_admit_budget  # noqa: PLC0415
+        from teatree.loop.admit_budget import write_admit_budget  # noqa: PLC0415 - deferred: local import
 
         with tempfile.TemporaryDirectory() as d:
             sl = Path(d) / "statusline.txt"
@@ -467,10 +467,10 @@ class TestClaimNextAdmitBudgetGate(_LoopDispatchTest):
 
     def test_stale_budget_past_ttl_is_ignored_unclamped(self) -> None:
         # A budget written long ago (dead loop) is ignored → unclamped drain.
-        import json as _json  # noqa: PLC0415
-        import time as _time  # noqa: PLC0415
+        import json as _json  # noqa: PLC0415 - deferred: local import
+        import time as _time  # noqa: PLC0415 - deferred: local import
 
-        from teatree.loop.admit_budget import BUDGET_KEY, WRITTEN_AT_KEY  # noqa: PLC0415
+        from teatree.loop.admit_budget import BUDGET_KEY, WRITTEN_AT_KEY  # noqa: PLC0415 - deferred: local import
 
         with tempfile.TemporaryDirectory() as d:
             sl = Path(d) / "statusline.txt"
@@ -507,7 +507,7 @@ class TestClaimNextAdmitBudgetGate(_LoopDispatchTest):
         # Reconciliation invariant: with the gate armed, every CLAIMED row is one
         # the caller will spawn — there is no claimed-but-orphaned surplus. We
         # claim a full budgeted wave and assert claimed == budget exactly.
-        from teatree.loop.admit_budget import write_admit_budget  # noqa: PLC0415
+        from teatree.loop.admit_budget import write_admit_budget  # noqa: PLC0415 - deferred: local import
 
         with tempfile.TemporaryDirectory() as d:
             sl = Path(d) / "statusline.txt"
@@ -570,7 +570,7 @@ class TestPendingSpawnClaimableOnly(_LoopDispatchTest):
         # in flight, one more PENDING → claim-next would refuse → the
         # claimable-only probe must report ZERO so the self-pump stops
         # re-offering the un-advanceable unit.
-        from teatree.loop.admit_budget import write_admit_budget  # noqa: PLC0415
+        from teatree.loop.admit_budget import write_admit_budget  # noqa: PLC0415 - deferred: local import
 
         with tempfile.TemporaryDirectory() as d:
             sl = Path(d) / "statusline.txt"
@@ -588,7 +588,7 @@ class TestPendingSpawnClaimableOnly(_LoopDispatchTest):
     def test_under_budget_reports_the_claimable_unit(self) -> None:
         # Control: in-flight 1 < budget 2 → a claim could land → the probe
         # reports the PENDING unit (it did not just blanket-suppress).
-        from teatree.loop.admit_budget import write_admit_budget  # noqa: PLC0415
+        from teatree.loop.admit_budget import write_admit_budget  # noqa: PLC0415 - deferred: local import
 
         with tempfile.TemporaryDirectory() as d:
             sl = Path(d) / "statusline.txt"
@@ -629,7 +629,7 @@ class TestPendingSpawnClaimableOnly(_LoopDispatchTest):
         # Without --claimable-only the legacy probe is byte-identical: it
         # reports the un-advanceable unit even at a full budget (the legacy
         # callers must not change behaviour).
-        from teatree.loop.admit_budget import write_admit_budget  # noqa: PLC0415
+        from teatree.loop.admit_budget import write_admit_budget  # noqa: PLC0415 - deferred: local import
 
         with tempfile.TemporaryDirectory() as d:
             sl = Path(d) / "statusline.txt"
@@ -775,7 +775,7 @@ class TestAdmissionGovernorKillSwitchIsATrueRevert(_LoopDispatchTest):
     """#3644: `admission_governor_enabled = false` restores the pre-governor behaviour.
 
     The kill-switch is the rollback lever for the riskiest behavioural change in the
-    consolidation, so "a true revert" has to be a pinned property rather than a claim:
+    change, so "a true revert" has to be a pinned property rather than a claim:
     with the flag off, the static-budget contract at this chokepoint must hold exactly
     as it did before the governor existed.
     """

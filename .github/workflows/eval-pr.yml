@@ -30,7 +30,18 @@
 # NO-SILENT-GREEN
 #   `--require-executed` is passed unconditionally and `claude --version` is
 #   asserted before the eval, so a missing binary / all-skipped run fails RED
-#   rather than passing green with zero coverage (mirrors eval.yml).
+#   rather than passing green with zero coverage (mirrors eval.yml). ZERO-IS-RED
+#   closes the last vacuous gap: when `detect` promised scenarios (`run=true`)
+#   the eval job asserts it executed >=1 — a run that was SUPPOSED to execute
+#   scenarios but executed ZERO fails, never passes green.
+#
+# SCENARIO-REACHABILITY (advisory, F12 / #3566)
+#   The `detect` job runs `t3 eval reachability` on every PR: it walks every
+#   `t3 …` invocation the shipped scenarios + fixtures cite against the LIVE CLI
+#   registry, so a scenario grading a path the product cannot take surfaces at
+#   authoring time. It is ADVISORY (report + exit 0) — the shipped corpus still
+#   carries known false positives (overlay-slot fixture names, prose fragments) —
+#   so it gives the check a live production caller without reddening a PR.
 #
 # TRIALS — single trial + adaptive escalate-on-fail
 #   This PR lane runs `--trials 1` (a single trial) for fast/cheap feedback, not the
@@ -120,6 +131,16 @@ jobs:
             echo "run=false" >> "$GITHUB_OUTPUT"
             echo "No scenario file changed → skipping the metered PR eval."
           fi
+      # ADVISORY reachability report (F12 / #3566): give the reachability check a
+      # live production caller. It walks every `t3 …` the shipped scenarios +
+      # fixtures cite against the LIVE CLI registry and reports unreachable ones.
+      # ADVISORY by default (`t3 eval reachability` exits 0 even with unreachable
+      # references) so it never reds a PR — the shipped corpus still carries known
+      # false positives (overlay-slot fixture names, prose fragments). A crash
+      # (broken wiring) still fails loud. Runs on every PR, not only when a
+      # scenario changed, so a fixture citing a removed command surfaces regardless.
+      - name: Report scenario-reachability (advisory)
+        run: uv run t3 eval reachability
 
   # EVAL: run ONLY the changed scenarios (single trial), in the CI container.
   # Mirrors eval.yml's setup. Skipped entirely when no scenario changed.
@@ -184,10 +205,12 @@ jobs:
             set -euo pipefail
             : > "$RUNNER_TEMP/eval-summary.md"
             rc=0
+            ran=0
             IFS=',' read -ra NAMES <<< "$EVAL_NAMES"
             for name in "${NAMES[@]}"; do
               name="$(echo "$name" | xargs)"  # trim whitespace
               [ -z "$name" ] && continue
+              ran=$((ran + 1))
               uv run t3 eval run "$name" --backend api \
                 --escalate-on-fail --escalate-trials 3 \
                 --require-executed --docker \
@@ -195,6 +218,16 @@ jobs:
                 --summary-md "$RUNNER_TEMP/eval-summary-$name.md" || rc=$?
               [ -f "$RUNNER_TEMP/eval-summary-$name.md" ] && cat "$RUNNER_TEMP/eval-summary-$name.md" >> "$RUNNER_TEMP/eval-summary.md"
             done
+            # ZERO-IS-RED: detect reached this job only with run=true (>=1 changed
+            # scenario), so executing ZERO here is a vacuous green, never a pass —
+            # the case where every selected name trims to empty. Each real
+            # invocation is already zero-is-RED (require_spec exits 2 on an unknown
+            # name; --require-executed reds an all-skipped run); this closes the
+            # loop-ran-nothing gap the per-invocation guards cannot see.
+            if [ "$ran" -eq 0 ]; then
+              echo "::error::detect selected scenarios (run=true) but the eval executed ZERO — vacuous green, failing." >&2
+              exit 1
+            fi
             exit "$rc"
       # Append the sanitized summary to the PR's step summary (the in-container run
       # could not write $GITHUB_STEP_SUMMARY directly — see the header comment). The

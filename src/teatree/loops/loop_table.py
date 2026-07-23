@@ -29,7 +29,7 @@ registered loop module raises and is logged + skipped (never a silent no-op); a
 prompt-instructed work). So which behaviour fans out is decided by the row's
 column, not by its name.
 
-An ``off_live_tick`` loop (the heavy ``dream`` consolidation pass, #1933 § 3) is
+An ``off_live_tick`` loop (the heavy ``dream`` distiller pass, #1933 § 3) is
 NEVER picked up here — the live tick must not invoke its ``build_jobs`` or bump
 its ``last_run_at``; it is driven by its own low-frequency cron. The combined
 enable verdict (the ``LoopState`` hold check) runs BEFORE the cadence claim so a
@@ -131,7 +131,7 @@ def _loop_admitted(row: "Loop | None", loop: MiniLoop, ctx: _TickAdmission) -> b
     preset mask (L3/L2, resolved ONCE per tick as *ctx.active_preset*, #3159) over
     ``Loop.enabled``. The single verdict both :func:`build_loop_table_jobs` and the
     loop-timer chains (:func:`admitted_loop_names`, via
-    :func:`teatree.loops.timer_chains.loop_admitted`) gate on, so it can never drift.
+    :func:`teatree.loops.timer_chains._loop_admitted`) gate on, so it can never drift.
     """
     if loop.off_live_tick:
         return False

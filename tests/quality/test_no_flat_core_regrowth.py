@@ -93,7 +93,9 @@ _CORE_DIR = Path(__file__).resolve().parents[2] / "src" / "teatree" / "core"
 # flat loop_lease_manager.py queryset hub to hold it under the 500-LOC module-health cap.
 # A pure-predicate leaf helper of that flat root hub, owned by no existing subpackage,
 # mirroring managers_overlay.py beside managers.py.
-PINNED_FLAT_CORE_MODULES = 92
+# 93: +headless_admission.py — the F9 headless-lane admission chokepoint (governor consult)
+# 94: +managers_task_claim.py — the claim-admission/ordering concern carved from managers.py (module health)
+PINNED_FLAT_CORE_MODULES = 94
 
 
 def _flat_core_modules() -> list[str]:

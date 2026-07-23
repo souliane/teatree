@@ -18,6 +18,7 @@ Exit codes:
 import json
 import re
 import sys
+from collections.abc import Iterator
 from pathlib import Path
 
 import typer
@@ -157,21 +158,92 @@ def _run_diff_detectors(text: str) -> list[dict[str, str | int]]:
     return findings
 
 
+def _scan_text(text: str, terms: tuple[str, ...], allowlist: tuple[str, ...]) -> list[dict[str, str | int]]:
+    """Per-line + whole-text findings for one text blob (no file attribution)."""
+    findings: list[dict[str, str | int]] = []
+    for lineno, line in enumerate(text.splitlines(), 1):
+        findings.extend(
+            {"line": lineno, "category": category, "match": match}
+            for category, match in _scan_line(line, terms, allowlist)
+        )
+    findings.extend(_run_diff_detectors(text))
+    return findings
+
+
+#: Directories a directory-argument walk never descends into: version-control
+#: internals, vendored dependencies, and tool caches — none of which is source
+#: the operator is about to push, and all of which would add noise or churn.
+_SKIP_DIR_NAMES = frozenset(
+    {
+        ".git",
+        ".hg",
+        ".svn",
+        "node_modules",
+        "__pycache__",
+        ".venv",
+        "venv",
+        ".mypy_cache",
+        ".ruff_cache",
+        ".pytest_cache",
+        ".tox",
+    }
+)
+
+
+def _iter_directory_files(root: Path) -> Iterator[Path]:
+    """Yield the regular files under *root*, skipping VCS / vendored / cache dirs and symlinks."""
+    for path in sorted(root.rglob("*")):
+        if path.is_symlink() or not path.is_file():
+            continue
+        if _SKIP_DIR_NAMES & set(path.relative_to(root).parts):
+            continue
+        yield path
+
+
+def _scan_directory(
+    root: Path,
+    terms: tuple[str, ...],
+    allowlist: tuple[str, ...],
+) -> list[dict[str, str | int]]:
+    """Walk *root* and scan each text file, tagging every finding with its file path.
+
+    A directory is the scanner's most obvious invocation (``privacy-scan .``); it must
+    not traceback on it. A binary / undecodable file is skipped, so the scan degrades to
+    fewer files, never a crash — and each finding names the file it is in so it is locatable.
+    """
+    findings: list[dict[str, str | int]] = []
+    for path in _iter_directory_files(root):
+        try:
+            text = path.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError):
+            continue
+        rel = path.relative_to(root).as_posix()
+        for finding in _scan_text(text, terms, allowlist):
+            finding["file"] = rel
+            findings.append(finding)
+    return findings
+
+
+def _location(finding: dict[str, str | int]) -> str:
+    """Locatable position of a finding: ``<file> line N`` in a directory scan, else ``line N``."""
+    file = finding.get("file")
+    return f"{file} line {finding['line']}" if file else f"line {finding['line']}"
+
+
 def _plain_summary(findings: list[dict[str, str | int]]) -> str:
     """Deterministic plain-text findings summary for non-TTY callers.
 
-    Stable, greppable, line-oriented (one finding per line: line number,
-    category, redacted match). Consumed verbatim by the pre-push gate's
-    refusal message and by any scripted caller of ``t3 tool
-    privacy-scan``. The redaction of the match itself is already applied
-    upstream in ``_scan_line`` (api keys are truncated to a 20-char
-    prefix); other categories carry the raw match by design so the user
+    Stable, greppable, line-oriented (one finding per line: location, category,
+    redacted match). Consumed verbatim by the pre-push gate's refusal message and
+    by any scripted caller of ``t3 tool privacy-scan``. The redaction of the match
+    itself is already applied upstream in ``_scan_line`` (api keys are truncated to
+    a 20-char prefix); other categories carry the raw match by design so the user
     can locate the offending text.
     """
     if not findings:
         return "Privacy scan: clean (0 findings)"
     header = f"Privacy scan: {len(findings)} finding(s)"
-    rows = [f"  line {f['line']}: {f['category']}: {f['match']}" for f in findings]
+    rows = [f"  {_location(f)}: {f['category']}: {f['match']}" for f in findings]
     return "\n".join([header, *rows])
 
 
@@ -188,19 +260,16 @@ def main(
     json_output: bool = typer.Option(False, "--json", help="Output as JSON"),
 ) -> None:
     """Scan text for privacy-sensitive patterns."""
-    text = sys.stdin.read() if input_file == "-" else Path(input_file).read_text(encoding="utf-8")
     terms = _resolve_scan_terms(banned_terms)
     allowlist = _banned_allowlist()
-    all_findings: list[dict[str, str | int]] = []
+    target = None if input_file == "-" else Path(input_file)
+    if target is not None and target.is_dir():
+        all_findings = _scan_directory(target, terms, allowlist)
+    else:
+        text = sys.stdin.read() if target is None else target.read_text(encoding="utf-8")
+        all_findings = _scan_text(text, terms, allowlist)
 
-    for lineno, line in enumerate(text.splitlines(), 1):
-        all_findings.extend(
-            {"line": lineno, "category": category, "match": match}
-            for category, match in _scan_line(line, terms, allowlist)
-        )
-
-    all_findings.extend(_run_diff_detectors(text))
-    all_findings.sort(key=lambda f: int(f["line"]))
+    all_findings.sort(key=lambda f: (str(f.get("file", "")), int(f["line"])))
 
     if json_output:
         print(json.dumps(all_findings, indent=2))
@@ -214,11 +283,11 @@ def main(
         print(_plain_summary(all_findings))
         if all_findings:
             table = Table(title="Privacy Scan Findings")
-            table.add_column("Line", style="dim", justify="right")
+            table.add_column("Location", style="dim")
             table.add_column("Category", style="bold")
             table.add_column("Match")
             for f in all_findings:
-                table.add_row(str(f["line"]), str(f["category"]), str(f["match"]))
+                table.add_row(_location(f), str(f["category"]), str(f["match"]))
             console.print(table)
         else:
             console.print("[green]Privacy scan: clean[/]")

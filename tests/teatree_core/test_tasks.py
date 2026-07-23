@@ -77,9 +77,9 @@ def _stub_headless_runner(testcase: TestCase) -> None:
     "don't run a real threaded DB read under TestCase" isolation
     ``tests/teatree_agents/_sdk_fake.py`` documents.
     """
-    from unittest.mock import patch  # noqa: PLC0415
+    from unittest.mock import patch  # noqa: PLC0415 - deferred: local import
 
-    from teatree.core import headless_dispatch  # noqa: PLC0415
+    from teatree.core import headless_dispatch  # noqa: PLC0415 - deferred: local import
 
     def _runner(task: Task, *, phase: str = "", overlay_skill_metadata: object = None) -> TaskAttempt:
         return task.complete_with_attempt(exit_code=0, result={"summary": "stubbed"})
@@ -93,9 +93,9 @@ class TestDrainHeadlessQueue(TestCase):
     """Drain is a safety net for tasks that missed the post_save auto-enqueue."""
 
     def setUp(self) -> None:
-        from django.db.models.signals import post_save  # noqa: PLC0415
+        from django.db.models.signals import post_save  # noqa: PLC0415 - deferred: local import
 
-        from teatree.core.signals import _auto_enqueue_headless_task  # noqa: PLC0415
+        from teatree.core.signals import _auto_enqueue_headless_task  # noqa: PLC0415 - deferred: local import
 
         post_save.disconnect(_auto_enqueue_headless_task, sender=Task, dispatch_uid="auto_enqueue_headless")
         self.addCleanup(
@@ -182,7 +182,7 @@ class TestDrainHeadlessQueue(TestCase):
         # (author, coding) pair routed INTERACTIVE, orphaned once the box moved
         # to the headless lane with no interactive session to dispatch it. Under
         # agent_runtime=headless the drain adopts it: route_to_headless + dispatch.
-        from teatree.config import AgentRuntime  # noqa: PLC0415
+        from teatree.config import AgentRuntime  # noqa: PLC0415 - deferred: local import
 
         ticket = Ticket.objects.create(overlay="test", role=Ticket.Role.AUTHOR)
         session = Session.objects.create(ticket=ticket, overlay="test")
@@ -231,9 +231,9 @@ class TestExecuteHeadlessUnknownOverlay(TestCase):
     """A task on an unknown overlay fails permanently — never an eternal re-crash (#1959)."""
 
     def setUp(self) -> None:
-        from django.db.models.signals import post_save  # noqa: PLC0415
+        from django.db.models.signals import post_save  # noqa: PLC0415 - deferred: local import
 
-        from teatree.core.signals import _auto_enqueue_headless_task  # noqa: PLC0415
+        from teatree.core.signals import _auto_enqueue_headless_task  # noqa: PLC0415 - deferred: local import
 
         post_save.disconnect(_auto_enqueue_headless_task, sender=Task, dispatch_uid="auto_enqueue_headless")
         self.addCleanup(
@@ -245,7 +245,7 @@ class TestExecuteHeadlessUnknownOverlay(TestCase):
 
     @override_settings(**IMMEDIATE_BACKEND)
     def test_unknown_overlay_marks_task_failed_with_attempt(self) -> None:
-        from teatree.core.tasks import execute_headless_task  # noqa: PLC0415
+        from teatree.core.tasks import execute_headless_task  # noqa: PLC0415 - deferred: local import
 
         ticket = Ticket.objects.create(overlay="ghost-overlay")
         session = Session.objects.create(ticket=ticket, overlay="ghost-overlay")
@@ -272,8 +272,8 @@ class TestExecuteHeadlessUnknownOverlay(TestCase):
         # A claude-agent-sdk ``ProcessError`` stringifies to "Check stderr output
         # for details" and hides the real cause on ``.stderr``. The recorded
         # attempt must carry that stderr so a headless failure is diagnosable.
-        from teatree.core import headless_dispatch as headless_dispatch_mod  # noqa: PLC0415
-        from teatree.core.tasks import execute_headless_task  # noqa: PLC0415
+        from teatree.core import headless_dispatch as headless_dispatch_mod  # noqa: PLC0415 - deferred: local import
+        from teatree.core.tasks import execute_headless_task  # noqa: PLC0415 - deferred: local import
 
         ticket = Ticket.objects.create()
         session = Session.objects.create(ticket=ticket)
@@ -308,7 +308,7 @@ class TestExecuteHeadlessUnknownOverlay(TestCase):
 
     @override_settings(**IMMEDIATE_BACKEND)
     def test_failed_unknown_overlay_task_is_not_re_enqueued_next_drain(self) -> None:
-        from teatree.core.tasks import execute_headless_task  # noqa: PLC0415
+        from teatree.core.tasks import execute_headless_task  # noqa: PLC0415 - deferred: local import
 
         ticket = Ticket.objects.create(overlay="ghost-overlay")
         session = Session.objects.create(ticket=ticket, overlay="ghost-overlay")
@@ -325,6 +325,75 @@ class TestExecuteHeadlessUnknownOverlay(TestCase):
             result = drain_headless_queue.enqueue()
 
         assert task.pk not in result.return_value["enqueued"]
+
+
+class TestClaimIsTheSoleAdmissionDecision(TestCase):
+    """The atomic claim is the ONLY admission predicate (F4).
+
+    A re-delivered terminal task or one a live rival already holds is a no-op,
+    never a second billed execution on the same row (the 74%-duplicate mechanism).
+    """
+
+    def setUp(self) -> None:
+        from django.db.models.signals import post_save  # noqa: PLC0415 - deferred: local import
+
+        from teatree.core.signals import _auto_enqueue_headless_task  # noqa: PLC0415 - deferred: local import
+
+        post_save.disconnect(_auto_enqueue_headless_task, sender=Task, dispatch_uid="auto_enqueue_headless")
+        self.addCleanup(
+            post_save.connect,
+            _auto_enqueue_headless_task,
+            sender=Task,
+            dispatch_uid="auto_enqueue_headless",
+        )
+
+    def _make_task(self, *, status: str) -> Task:
+        ticket = Ticket.objects.create()
+        session = Session.objects.create(ticket=ticket)
+        return Task.objects.create(
+            ticket=ticket,
+            session=session,
+            execution_target=Task.ExecutionTarget.HEADLESS,
+            status=status,
+            phase="architectural_review",
+        )
+
+    @override_settings(**IMMEDIATE_BACKEND)
+    def test_terminal_task_redelivery_does_not_re_execute(self) -> None:
+        from teatree.core import headless_dispatch as headless_dispatch_mod  # noqa: PLC0415 - deferred: local import
+        from teatree.core.tasks import execute_headless_task  # noqa: PLC0415 - deferred: local import
+
+        task = self._make_task(status=Task.Status.COMPLETED)
+        runner = MagicMock()
+
+        with (
+            patch.object(headless_dispatch_mod, "loop_dispatch_refusal", return_value=None),
+            patch.object(headless_dispatch_mod, "get_headless_runner", return_value=runner),
+        ):
+            result = execute_headless_task.func(task.pk, task.phase)
+
+        runner.assert_not_called()
+        assert result == {"skipped": "not claimable (claimed elsewhere or terminal)"}
+
+    @override_settings(**IMMEDIATE_BACKEND)
+    def test_task_claimed_by_live_rival_does_not_re_execute(self) -> None:
+        from teatree.core import headless_dispatch as headless_dispatch_mod  # noqa: PLC0415 - deferred: local import
+        from teatree.core.tasks import execute_headless_task  # noqa: PLC0415 - deferred: local import
+
+        task = self._make_task(status=Task.Status.PENDING)
+        task.claim(claimed_by="rival-worker", lease_seconds=900)
+        runner = MagicMock()
+
+        with (
+            patch.object(headless_dispatch_mod, "loop_dispatch_refusal", return_value=None),
+            patch.object(headless_dispatch_mod, "get_headless_runner", return_value=runner),
+        ):
+            result = execute_headless_task.func(task.pk, task.phase)
+
+        runner.assert_not_called()
+        assert result == {"skipped": "not claimable (claimed elsewhere or terminal)"}
+        task.refresh_from_db()
+        assert task.claimed_by == "rival-worker"
 
 
 class TestExecuteRetrospect(TestCase):
@@ -373,7 +442,7 @@ class TestExecuteTeardown(TestCase):
 
     @override_settings(**IMMEDIATE_BACKEND)
     def test_advances_runner_when_state_matches(self) -> None:
-        from teatree.core.runners.base import RunnerResult  # noqa: PLC0415
+        from teatree.core.runners.base import RunnerResult  # noqa: PLC0415 - deferred: local import
 
         ticket = self._ticket_in_merged()
 
@@ -410,7 +479,7 @@ class TestExecuteTeardown(TestCase):
     def test_does_not_skip_delivered_or_ignored(self) -> None:
         # The guard relax (#): DELIVERED and IGNORED are terminal, so teardown
         # runs (does not skip) — previously only MERGED passed the guard.
-        from teatree.core.runners.base import RunnerResult  # noqa: PLC0415
+        from teatree.core.runners.base import RunnerResult  # noqa: PLC0415 - deferred: local import
 
         for state in (Ticket.State.DELIVERED, Ticket.State.IGNORED):
             ticket = Ticket.objects.create(overlay="test")
@@ -429,7 +498,7 @@ class TestExecuteTeardown(TestCase):
 
     @override_settings(**IMMEDIATE_BACKEND)
     def test_reports_failure_without_advancing(self) -> None:
-        from teatree.core.runners.base import RunnerResult  # noqa: PLC0415
+        from teatree.core.runners.base import RunnerResult  # noqa: PLC0415 - deferred: local import
 
         ticket = self._ticket_in_merged()
 
@@ -450,7 +519,7 @@ class TestEnqueueTeardownBacklogDrain(TestCase):
     """The one-shot operational drain enqueues teardown for terminal tickets holding worktrees."""
 
     def _terminal_ticket_with_worktree(self, state: Ticket.State) -> Ticket:
-        from teatree.core.models import Worktree  # noqa: PLC0415
+        from teatree.core.models import Worktree  # noqa: PLC0415 - deferred: local import
 
         ticket = Ticket.objects.create(overlay="test")
         ticket.state = state
@@ -478,8 +547,8 @@ class TestEnqueueTeardownBacklogDrain(TestCase):
 
 
 def _run_git(*args: str, cwd: Path) -> None:
-    import shutil  # noqa: PLC0415
-    import subprocess  # noqa: PLC0415
+    import shutil  # noqa: PLC0415 - deferred: local import
+    import subprocess  # noqa: PLC0415 - deferred: local import
 
     git = shutil.which("git") or "git"
     subprocess.run([git, "-C", str(cwd), *args], check=True, capture_output=True)
@@ -525,7 +594,7 @@ class TestExecuteTeardownTerminalPurge(TestCase):
         _run_git("commit", "-q", "-m", message, cwd=self.wt_path)
 
     def _ignored_ticket_with_worktree(self) -> Ticket:
-        from teatree.core.models import Worktree  # noqa: PLC0415
+        from teatree.core.models import Worktree  # noqa: PLC0415 - deferred: local import
 
         ticket = Ticket.objects.create(
             overlay="test",
@@ -557,7 +626,7 @@ class TestExecuteTeardownTerminalPurge(TestCase):
 
     @override_settings(**IMMEDIATE_BACKEND)
     def test_purges_clean_worktree_of_ignored_ticket(self) -> None:
-        from teatree.core.models import Worktree  # noqa: PLC0415
+        from teatree.core.models import Worktree  # noqa: PLC0415 - deferred: local import
 
         ticket = self._ignored_ticket_with_worktree()
         # Fully push the branch so nothing is at risk.
@@ -576,7 +645,7 @@ class TestExecuteTeardownTerminalPurge(TestCase):
 
     @override_settings(**IMMEDIATE_BACKEND)
     def test_keeps_unpushed_unique_commits_on_terminal_purge(self) -> None:
-        from teatree.core.models import Worktree  # noqa: PLC0415
+        from teatree.core.models import Worktree  # noqa: PLC0415 - deferred: local import
 
         ticket = self._ignored_ticket_with_worktree()
         # A commit on NO remote, not patch-id-equivalent to origin/main.
@@ -593,7 +662,7 @@ class TestExecuteTeardownTerminalPurge(TestCase):
 
     @override_settings(**IMMEDIATE_BACKEND)
     def test_keeps_uncommitted_changes_on_terminal_purge(self) -> None:
-        from teatree.core.models import Worktree  # noqa: PLC0415
+        from teatree.core.models import Worktree  # noqa: PLC0415 - deferred: local import
 
         ticket = self._ignored_ticket_with_worktree()
         # Every commit is pushed, so the unpushed-commit branch of the guard is
@@ -623,7 +692,7 @@ class TestExecuteProvision(TestCase):
 
     @override_settings(**IMMEDIATE_BACKEND)
     def test_provisions_then_schedules_planning(self) -> None:
-        from teatree.core.runners.base import RunnerResult  # noqa: PLC0415
+        from teatree.core.runners.base import RunnerResult  # noqa: PLC0415 - deferred: local import
 
         ticket = self._ticket_in_started()
 
@@ -647,8 +716,8 @@ class TestExecuteProvision(TestCase):
         # artifact the planner consumes — the survey is PRODUCED by intake, not
         # re-derived by the planner. Revert the persistence and this drops to 0
         # artifacts (the anti-vacuity proof).
-        from teatree.core.models import LandscapeArtifact  # noqa: PLC0415
-        from teatree.core.runners.base import RunnerResult  # noqa: PLC0415
+        from teatree.core.models import LandscapeArtifact  # noqa: PLC0415 - deferred: local import
+        from teatree.core.runners.base import RunnerResult  # noqa: PLC0415 - deferred: local import
 
         ticket = self._ticket_in_started()
         survey = {"worktrees": [], "open_prs": [{"url": "https://forge/pr/9"}], "recommendations": [], "warnings": []}
@@ -672,8 +741,8 @@ class TestExecuteProvision(TestCase):
         # The survey is best-effort context, not a gate: a gather that raises
         # (a forge outage, a corrupt clone) must not abort provisioning or
         # planning — fail-open, mirroring the landscape module's own doctrine.
-        from teatree.core.models import LandscapeArtifact  # noqa: PLC0415
-        from teatree.core.runners.base import RunnerResult  # noqa: PLC0415
+        from teatree.core.models import LandscapeArtifact  # noqa: PLC0415 - deferred: local import
+        from teatree.core.runners.base import RunnerResult  # noqa: PLC0415 - deferred: local import
 
         ticket = self._ticket_in_started()
 
@@ -700,8 +769,10 @@ class TestExecuteProvision(TestCase):
         # ``workspace ticket``). The provision worker must NOT auto-schedule the
         # planner the external owner will never claim — but provisioning itself
         # still succeeds.
-        from teatree.core.models.external_delivery import mark_external_delivery  # noqa: PLC0415
-        from teatree.core.runners.base import RunnerResult  # noqa: PLC0415
+        from teatree.core.models.external_delivery import (  # noqa: PLC0415 - deferred: local import
+            mark_external_delivery,
+        )
+        from teatree.core.runners.base import RunnerResult  # noqa: PLC0415 - deferred: local import
 
         ticket = self._ticket_in_started()
         mark_external_delivery(ticket)
@@ -723,8 +794,10 @@ class TestExecuteProvision(TestCase):
     def test_skips_planning_for_trivial_marked_ticket(self) -> None:
         # Batch C: a trivial-marked AUTHOR ticket skips the auto-planner exactly
         # as an externally-delivered one does — but provisioning still succeeds.
-        from teatree.core.models.trivial_plan_skip import mark_trivial_plan_skip  # noqa: PLC0415
-        from teatree.core.runners.base import RunnerResult  # noqa: PLC0415
+        from teatree.core.models.trivial_plan_skip import (  # noqa: PLC0415 - deferred: local import
+            mark_trivial_plan_skip,
+        )
+        from teatree.core.runners.base import RunnerResult  # noqa: PLC0415 - deferred: local import
 
         ticket = self._ticket_in_started()
         mark_trivial_plan_skip(ticket, reason="one-line constant bump", by="operator")
@@ -827,7 +900,7 @@ class TestExecuteProvision(TestCase):
 
     @override_settings(**IMMEDIATE_BACKEND)
     def test_keeps_state_when_runner_fails(self) -> None:
-        from teatree.core.runners.base import RunnerResult  # noqa: PLC0415
+        from teatree.core.runners.base import RunnerResult  # noqa: PLC0415 - deferred: local import
 
         ticket = self._ticket_in_started()
 
@@ -850,7 +923,7 @@ class TestExecuteShip(TestCase):
 
     @override_settings(**IMMEDIATE_BACKEND)
     def test_advances_shipped_ticket_to_in_review(self) -> None:
-        from teatree.core.runners.base import RunnerResult  # noqa: PLC0415
+        from teatree.core.runners.base import RunnerResult  # noqa: PLC0415 - deferred: local import
 
         ticket = self._ticket_in_shipped()
 
@@ -882,7 +955,7 @@ class TestExecuteShip(TestCase):
 
     @override_settings(**IMMEDIATE_BACKEND)
     def test_keeps_state_when_runner_fails(self) -> None:
-        from teatree.core.runners.base import RunnerResult  # noqa: PLC0415
+        from teatree.core.runners.base import RunnerResult  # noqa: PLC0415 - deferred: local import
 
         ticket = self._ticket_in_shipped()
 
@@ -907,7 +980,7 @@ class TestExecuteShipOrphanPrWindow(TestCase):
     """
 
     def _shipped_ticket_with_worktree(self) -> Ticket:
-        from teatree.core.models import Worktree  # noqa: PLC0415
+        from teatree.core.models import Worktree  # noqa: PLC0415 - deferred: local import
 
         ticket = Ticket.objects.create(overlay="test", issue_url="https://example.com/issues/77")
         Worktree.objects.create(

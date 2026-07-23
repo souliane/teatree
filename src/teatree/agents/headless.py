@@ -345,8 +345,15 @@ def _resolve_child_env_or_failure(
 
 
 def _active_agent_count() -> int:
-    """In-flight claimed dispatchable tasks — the divisor for the test-worker budget (#3644)."""
-    return max(1, Task.objects.in_flight_claimed_count(Task.dispatchable_q()))
+    """Live headless agents in flight — the divisor for the test-worker budget (#3644/F9).
+
+    ``live_headless_agent_count`` counts EVERY claimed live-lease headless agent,
+    including the free-form phases (``architectural_review`` …) that go through
+    this very cap. The prior ``in_flight_claimed_count(dispatchable_q())`` counted
+    only registered-phase tasks, so it undercounted this set and handed each agent
+    too many pytest workers — the melt direction.
+    """
+    return max(1, Task.objects.live_headless_agent_count())
 
 
 def _outcome_failure(task: Task, outcome: HarnessOutcome, *, lane: str = "") -> TaskAttempt | None:

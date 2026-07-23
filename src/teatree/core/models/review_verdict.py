@@ -37,6 +37,22 @@ from teatree.core.models.mr_review_lock import MRReviewLock
 from teatree.core.models.ticket import Ticket
 
 
+def normalize_reviewer_identity(identity: str) -> str:
+    """The canonical, idempotency-keyed form of a free-text reviewer identity (F8).
+
+    The recorded ``reviewer_identity`` is free text — 187 distinct values on the
+    live box, with the SAME logical reviewer spelled many ways ("Codex", "codex ",
+    "codex"). That made "has this sha been reviewed by this identity?" unanswerable
+    by query and let the dispatcher re-review one sha 17 times. The normalized form
+    collapses the case-and-whitespace noise only — ``strip`` + internal-whitespace
+    runs to one space + ``casefold`` — so equivalent spellings key to ONE row while
+    genuinely distinct identities stay distinct (no role-prefix stripping, which
+    would over-merge two real reviewers). It is the canonical key at every boundary:
+    the record write, the uniqueness constraint, and the has-been-reviewed query.
+    """
+    return " ".join(identity.split()).casefold()
+
+
 class ReviewVerdictError(ValueError):
     """A ``ReviewVerdict`` was rejected at record time — the contract failed."""
 
@@ -121,6 +137,21 @@ class ReviewVerdictManager(models.Manager["ReviewVerdict"]):
     def for_pr(self, slug: str, pr_id: int) -> "models.QuerySet[ReviewVerdict]":
         return self.filter(slug=slug.strip(), pr_id=pr_id)
 
+    def has_verdict_for_identity(self, *, slug: str, pr_id: int, reviewed_sha: str, reviewer_identity: str) -> bool:
+        """True iff *reviewer_identity* already recorded a verdict for this exact sha (F8).
+
+        The query the free-text identity made impossible: it keys on the
+        NORMALIZED identity, so a dispatcher / reviewer can ask "has this head
+        already been cold-reviewed by me?" before arming (or recording) a
+        duplicate. ``reviewed_sha`` is normalised the way :meth:`record` stores it.
+        """
+        return self.filter(
+            slug=slug.strip(),
+            pr_id=pr_id,
+            reviewed_sha=reviewed_sha.strip().lower(),
+            reviewer_identity_normalized=normalize_reviewer_identity(reviewer_identity),
+        ).exists()
+
     def latest_for_pr(self, slug: str, pr_id: int) -> "ReviewVerdict | None":
         """The most recently recorded verdict for a PR, regardless of SHA.
 
@@ -200,6 +231,11 @@ class ReviewVerdict(models.Model):
     reviewed_sha = models.CharField(max_length=64)
     verdict = models.CharField(max_length=16, choices=Verdict.choices)
     reviewer_identity = models.CharField(max_length=255)
+    #: The idempotency key for "who reviewed this sha" (F8). The free-text
+    #: ``reviewer_identity`` normalised via :func:`normalize_reviewer_identity`;
+    #: a UniqueConstraint on ``(slug, pr_id, reviewed_sha, this)`` makes a
+    #: same-identity re-review of one head a single row, not the 66%-duplicate pile.
+    reviewer_identity_normalized = models.CharField(max_length=255, blank=True, default="", db_index=True)
     blast_class = models.CharField(max_length=16, choices=MergeClear.BlastClass.choices)
     gh_verify_result = models.CharField(max_length=32, choices=MergeClear.VerifyResult.choices)
     findings = models.JSONField(default=list, blank=True)
@@ -211,6 +247,12 @@ class ReviewVerdict(models.Model):
         db_table = "teatree_review_verdict"
         ordering: ClassVar = ["-recorded_at"]
         indexes: ClassVar = [models.Index(fields=["slug", "pr_id", "reviewed_sha"])]
+        constraints: ClassVar = [
+            models.UniqueConstraint(
+                fields=["slug", "pr_id", "reviewed_sha", "reviewer_identity_normalized"],
+                name="uniq_review_verdict_slug_pr_sha_reviewer",
+            ),
+        ]
 
     def __str__(self) -> str:
         return f"review-verdict<{self.slug}#{self.pr_id}@{self.reviewed_sha[:8]} {self.verdict}>"
@@ -304,16 +346,26 @@ class ReviewVerdict(models.Model):
             raise ReviewVerdictError(msg)
 
         with transaction.atomic():
-            recorded = cls.objects.create(
-                ticket=ticket,
-                pr_id=pr_id,
+            # Idempotent on the normalized-identity key (F8): a re-review of the
+            # SAME head by the SAME identity UPDATES its one row (newest verdict
+            # wins) instead of stacking a duplicate — the 66%-duplicate-verdict
+            # pile the free-text identity produced. A different identity, or a
+            # moved head, is a distinct key and records a fresh row, so the
+            # cross-reviewer / cross-head newest-wins aggregation is preserved.
+            recorded, _ = cls.objects.update_or_create(
                 slug=slug.strip(),
+                pr_id=pr_id,
                 reviewed_sha=reviewed_sha.strip().lower(),
-                verdict=normalized_verdict,
-                reviewer_identity=reviewer,
-                blast_class=normalized_blast,
-                gh_verify_result=normalized_verify,
-                findings=[finding.as_dict() for finding in (findings or [])],
+                reviewer_identity_normalized=normalize_reviewer_identity(reviewer),
+                defaults={
+                    "ticket": ticket,
+                    "verdict": normalized_verdict,
+                    "reviewer_identity": reviewer,
+                    "blast_class": normalized_blast,
+                    "gh_verify_result": normalized_verify,
+                    "findings": [finding.as_dict() for finding in (findings or [])],
+                    "recorded_at": timezone.now(),
+                },
             )
             MRReviewLock.resolve(slug=recorded.slug, pr_id=recorded.pr_id)
             return recorded

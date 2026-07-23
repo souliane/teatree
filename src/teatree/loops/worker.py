@@ -32,7 +32,7 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Protocol
 
 from teatree.loop.queue_drain import expire_stale_default_jobs
-from teatree.loops.timer_chains import _loop_runner_enabled, kill_live_tick_process_groups
+from teatree.loops.timer_chains import LoopRunnerState, kill_live_tick_process_groups, read_loop_runner_state
 from teatree.loops.timer_reconciler import ensure_loop_timers, ensure_maintenance_chains
 from teatree.utils.ram_probe import default_provision_concurrency
 from teatree.utils.thread_db import close_thread_db_connections
@@ -91,6 +91,11 @@ EXECUTOR_INTERVAL_SECONDS = 1.0
 #: is a real fault the OS/container should restart the whole worker for, not one the
 #: supervisor should mask by respawning forever).
 MAX_EXECUTOR_RESPAWNS = 5
+#: How many consecutive supervisor polls the kill-switch may read UNREADABLE before the
+#: worker exits NON-ZERO so ``restart: on-failure`` restarts it (F7). A transient blip
+#: recovers within a poll or two; a persistent read failure is a real fault, never a
+#: clean stop that leaves the factory silently dead.
+MAX_UNREADABLE_POLLS = 3
 
 
 class _Executor(Protocol):
@@ -114,7 +119,18 @@ class LoopWorkerExecutorCrashError(RuntimeError):
     """
 
 
+class KillSwitchUnreadableError(RuntimeError):
+    """The kill-switch read UNREADABLE for too many consecutive polls (F7).
+
+    Raised out of :meth:`LoopWorker.run` so the worker exits NON-ZERO: a persistent
+    kill-switch read failure is a real fault the supervisor must restart the worker
+    for, never a clean exit-0 that ``restart: on-failure`` ignores while the factory
+    sits silently dead. A legitimate OFF is a clean stop; only "cannot confirm" crashes.
+    """
+
+
 _CRASH_MESSAGE = "A loops/default executor thread died and exhausted its respawn budget; exiting non-zero."
+_UNREADABLE_MESSAGE = "The loop_runner_enabled kill-switch was unreadable for too many polls; exiting non-zero."
 
 
 def _build_executor(queue_name: str, worker_id: str) -> "Worker":
@@ -173,7 +189,7 @@ class WorkerSeams:
     real DB, or a real clock, while keeping :class:`LoopWorker`'s constructor thin.
     """
 
-    enabled: Callable[[], bool] = _loop_runner_enabled
+    read_state: Callable[[], LoopRunnerState] = read_loop_runner_state
     reconcile: Callable[[], object] = ensure_loop_timers
     seed_chains: Callable[[], object] = ensure_maintenance_chains
     expire: Callable[[], object] = expire_stale_default_jobs
@@ -184,6 +200,7 @@ class WorkerSeams:
     sleep: Callable[[float], None] = time.sleep
     poll_seconds: float = SUPERVISOR_POLL_SECONDS
     max_respawns: int = MAX_EXECUTOR_RESPAWNS
+    max_unreadable_polls: int = MAX_UNREADABLE_POLLS
     executor_queues: tuple[str, ...] = field(default_factory=build_executor_queues)
 
 
@@ -264,8 +281,27 @@ class LoopWorker:
         self._slots = [self._spawn_slot(queue, index) for index, queue in enumerate(seams.executor_queues)]
 
         crashed = False
+        unreadable = False
+        unreadable_polls = 0
         try:
-            while not self._stop.is_set() and seams.enabled():
+            while not self._stop.is_set():
+                state = seams.read_state()
+                if state is LoopRunnerState.OFF:
+                    break  # a legitimate kill-switch OFF is a clean stop (exit 0).
+                if state is LoopRunnerState.UNREADABLE:
+                    # F7: a read FAILURE is not an OFF — never a clean exit. Retry a few
+                    # polls (a blip recovers), then crash so restart:on-failure restarts us.
+                    unreadable_polls += 1
+                    logger.warning(
+                        "kill-switch unreadable (%d/%d consecutive polls) — will crash-restart if it persists",
+                        unreadable_polls,
+                        seams.max_unreadable_polls,
+                    )
+                    if unreadable_polls >= seams.max_unreadable_polls:
+                        unreadable = True
+                        break
+                else:
+                    unreadable_polls = 0  # ON — a recovered read resets the streak.
                 seams.sleep(seams.poll_seconds)
                 if self._respawn_dead_executors():
                     crashed = True
@@ -283,3 +319,5 @@ class LoopWorker:
             seams.kill_ticks()
         if crashed:
             raise LoopWorkerExecutorCrashError(_CRASH_MESSAGE)
+        if unreadable:
+            raise KillSwitchUnreadableError(_UNREADABLE_MESSAGE)

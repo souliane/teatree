@@ -262,6 +262,15 @@ def _auto_enqueue_headless_task(
     if not instance.ticket.has_dispatchable_overlay():
         logger.warning("Skipping auto-enqueue of task %s: unknown overlay %r", instance.pk, instance.ticket.overlay)
         return
+    from teatree.core.headless_admission import headless_admission_denied_reason  # noqa: PLC0415 — deferred: call-time
+
+    denied = headless_admission_denied_reason()
+    if denied is not None:
+        # The governor brakes the headless lane at its admission chokepoint (F9).
+        # The task stays PENDING; the (also-gated) drain re-admits it once the
+        # governor clears. Never silent — a refusal is always logged.
+        logger.warning("Governor DENIED auto-enqueue of headless task %s: %s (staying PENDING)", instance.pk, denied)
+        return
     from teatree.core.tasks import execute_headless_task  # noqa: PLC0415 — deferred: call-time import, kept lazy
 
     try:

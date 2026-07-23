@@ -16,7 +16,7 @@ import tomlkit
 from tomlkit import items as tomlkit_items
 
 from teatree.config.registries import REGISTRY_KEYS
-from teatree.config.secret_settings import SECRET_SETTINGS
+from teatree.config.secret_settings import PERSONAL_IDENTIFIERS, SECRET_SETTINGS, is_credential_reference
 from teatree.core.models import ConfigSetting
 from teatree.core.models.config_setting import ConfigValue
 from teatree.hooks.term_match import matched_term
@@ -35,7 +35,7 @@ class RedactedRow:
 
     scope: str
     key: str
-    reason: str  # "private-key" or "banned-term:<term>"
+    reason: str  # "private-key" / "credential-coordinate" / "personal-identifier" / "banned-term:<term>"
 
 
 @dataclass(frozen=True)
@@ -80,9 +80,22 @@ def _resolve_export_scan_terms() -> tuple[str, ...]:
 
 
 def _redaction_reason(key: str, value: ConfigValue, terms: tuple[str, ...]) -> str | None:
-    """Why this row must not be shared (private key, or a value carrying a banned term), else None."""
+    """Why this row must not be shared, else None.
+
+    Four withhold classes, first match wins: an explicit private key
+    (``SECRET_SETTINGS``); a credential coordinate (the SAME suffix rule the dashboard
+    credential band uses — ``anthropic_oauth_pass_paths`` / ``*_credential_entry`` /
+    ``*_token_ref`` etc.); a personal identifier (``slack_user_id`` /
+    ``slack_user_channel`` / ``availability_schedule``); or a value carrying a banned
+    customer/brand term. The credential + personal classes close the F2 leak where
+    pass-store coordinates and personal handles shipped by default on export.
+    """
     if key in SECRET_SETTINGS:
         return "private-key"
+    if is_credential_reference(key):
+        return "credential-coordinate"
+    if key in PERSONAL_IDENTIFIERS:
+        return "personal-identifier"
     hit = matched_term(f"{key} {json.dumps(value, default=str)}", terms)
     return f"banned-term:{hit}" if hit else None
 

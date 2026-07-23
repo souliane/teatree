@@ -144,13 +144,17 @@ class _ModeHarnessSettings:
     # (the metered-lane guardrail). Passed as pydantic_ai
     # ``UsageLimits(request_limit=...)`` on every ``PydanticAiHarnessSession`` run
     # so a cheap-model maker cannot drift on a long tool loop — the FSM already
-    # chunks work into phases and the orchestrator re-dispatches, so a tight
-    # per-run cap composes with orchestration rather than killing tasks. Applies
-    # ONLY to the ``pydantic_ai`` harness (the default ``claude_sdk`` harness is
-    # bounded by the loop watchdog instead), so it is inert until an overlay opts
-    # into ``agent_harness=pydantic_ai``. ``0`` disables the cap (the escape
-    # hatch). Per-overlay overridable.
-    pydantic_ai_request_limit: int = 5
+    # chunks work into phases and the orchestrator re-dispatches, so a per-run cap
+    # composes with orchestration rather than killing tasks. The default is a REAL
+    # turn budget: a live Lane-B task runs ~16 model requests, so the earlier cap of
+    # 5 refused mid-task before the run ever reached ``open()``. 40 clears that
+    # measured reality with generous headroom; a positive caller ``max_turns`` (an
+    # ``OneShotSpec`` cap, an eval override) still wins over it (``harness.py`` /
+    # ``eval/pydantic_ai_runner.py``). Applies ONLY to the ``pydantic_ai`` harness
+    # (the default ``claude_sdk`` harness is bounded by the loop watchdog instead),
+    # so it is inert until an overlay opts into ``agent_harness=pydantic_ai``. ``0``
+    # disables the cap (the escape hatch). Per-overlay overridable.
+    pydantic_ai_request_limit: int = 40
     # Per-request output-token ceiling for the ``pydantic_ai`` harness, passed as the base
     # ``max_tokens`` ``ModelSettings`` key on every run (both the OpenAI-compatible and native Anthropic
     # bindings honour it). pydantic_ai's Anthropic binding otherwise defaults to 4096, which
@@ -713,8 +717,8 @@ class _ScannerSettings:
     # #2419 Periodic backlog-sweep scanner — DEFAULT-OFF (kill switch ships
     # ON) with a weekly cadence (168h). Companion to the `sweeping-tickets`
     # skill: once the sweep's verdicts prove trustworthy the loop fires a
-    # low-frequency `backlog_sweep` task that consolidates the issue tracker
-    # (shipped / consolidate-into-epic / regressive / still-standalone
+    # low-frequency `backlog_sweep` task that groups the issue tracker
+    # (shipped / group-into-epic / regressive / still-standalone
     # against current `main`). The sweep is destructive-capable — it can
     # propose closing issues — so unlike the always-on news/eval scanners
     # the kill switch defaults ON: the scanner stays inert until the user

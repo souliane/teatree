@@ -416,6 +416,36 @@ class IssueIntakeBudgetCapTests(_PublicRepoTestCase):
         assert len(signals) == 4
 
 
+class IssueIntakeGovernorTests(_PublicRepoTestCase):
+    """New intake also brakes when the headless-admission governor denies (F9)."""
+
+    def test_governor_deny_brakes_new_intake(self) -> None:
+        # A DENY reason from the admission governor stops the candidate loop even
+        # when the static budget has room (the log names the reason).
+        host = _Host(
+            authored={OWNER: [_issue("https://github.com/souliane/teatree/issues/900", author=OWNER)]},
+        )
+        with patch(
+            "teatree.core.headless_admission.headless_admission_denied_reason",
+            return_value="congestion: headless pool saturated",
+        ):
+            signals = self._scanner(host, max_concurrent=0).scan()
+        assert signals == []
+        assert ImplementedIssueMarker.objects.in_flight_count(self.OVERLAY) == 0
+
+    def test_governor_fail_open_leaves_intake_unchanged(self) -> None:
+        # A None reason (fail-open) does not brake intake — the issue is claimed.
+        host = _Host(
+            authored={OWNER: [_issue("https://github.com/souliane/teatree/issues/901", author=OWNER)]},
+        )
+        with patch(
+            "teatree.core.headless_admission.headless_admission_denied_reason",
+            return_value=None,
+        ):
+            signals = self._scanner(host, max_concurrent=0).scan()
+        assert len(signals) == 1
+
+
 class IssueIntakeReadbackTests(_PublicRepoTestCase):
     """Pre-dispatch forge read-back: an already-PR'd trusted-author issue is NOT re-claimed.
 

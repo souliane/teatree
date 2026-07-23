@@ -55,8 +55,11 @@ from pydantic_ai.tools import ToolDefinition
 from pydantic_ai.toolsets.abstract import ToolsetTool
 from pydantic_ai.toolsets.wrapper import WrapperToolset
 
-#: Tools whose primary argument is a shell command (the Bash-parity surface).
-_COMMAND_TOOLS = frozenset({"shell"})
+from teatree.agents.lane_b.tool_names import TOOL_BASH
+
+#: Tools whose primary argument is a shell command — keyed on the MODEL-VISIBLE tool
+#: name (``Bash``), since pydantic_ai passes that name to :meth:`HardDenyToolset.call_tool`.
+_COMMAND_TOOLS = frozenset({TOOL_BASH})
 
 #: Soft-gated tool names: a call to one needs human approval before it runs. The
 #: shell tool is the ask-gate surface — a command that clears hard-deny may still
@@ -76,11 +79,11 @@ def _publish_payload(command: str, cwd: Path | None) -> str | None:
     """The publish-egress text to scan, or ``None`` when the call is not a publish.
 
     Lane A's ``extract_publish_payload`` scoping, ported.
-    Lane B's only egress surface is the ``shell`` command (its MCP toolsets are
+    Lane B's only egress surface is the ``Bash`` command (its MCP toolsets are
     read-only and it dispatches no ``Agent``/``Task``), so a shell call is scoped
     exactly as Lane A scopes a ``Bash`` call: the body payload of a publish command
     (``gh``/``glab`` post, commit, …), ``None`` for a non-publish command. Every
-    other tool — ``read_file``/``write_file``/``edit_file``/``search_files``, jailed
+    other tool — ``Read``/``Write``/``Edit``/``Grep``, jailed
     to the worktree — has an empty *command* and is not scanned, matching Lane A,
     whose publish gate never scans a local file write.
     """

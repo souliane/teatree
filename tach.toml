@@ -233,6 +233,11 @@ layer = "domain"
 depends_on = []
 
 [[modules]]
+path = "teatree.core.managers_task_claim"
+layer = "domain"
+depends_on = []
+
+[[modules]]
 path = "teatree.core.managers"
 layer = "domain"
 depends_on = [
@@ -242,6 +247,7 @@ depends_on = [
   "teatree.core.models.errors",
   "teatree.core.loop_lease_manager",
   "teatree.core.managers_overlay",
+  "teatree.core.managers_task_claim",
   "teatree.core.repair_loop",
   "teatree.core.session_handover_manager"
 ]

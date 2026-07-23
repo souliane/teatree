@@ -18,7 +18,12 @@ from claude_agent_sdk import ClaudeAgentOptions
 from claude_agent_sdk.types import EffortLevel, SystemPromptPreset, ThinkingConfig
 
 from teatree.agents import permission_modes
-from teatree.agents.model_tiering import model_supports_thinking, resolve_spawn_effort, resolve_spawn_model
+from teatree.agents.model_tiering import (
+    model_supports_thinking,
+    resolve_fallback_model,
+    resolve_spawn_effort,
+    resolve_spawn_model,
+)
 from teatree.agents.reader_profile import is_reader_phase
 from teatree.agents.sdk_tool_map import sdk_disallowed_tools_for_phase
 from teatree.core.modelkit.phases import ARCHITECTURAL_REVIEW_PHASE, normalize_phase
@@ -148,6 +153,12 @@ def _build_options(
             exclude_dynamic_sections=True,
         ),
         model=spawn_model or None,
+        # Capacity-exhaustion degrade: when the spawn model's pool is exhausted the
+        # SDK continues for a turn on the next-cheaper catalog rung rather than
+        # parking the task (claude-agent-sdk ``fallback_model``). ``None`` when the
+        # spawn model is at the cheapest rung / a pin teatree does not recognise / an
+        # inherited default — byte-identical to before the field existed.
+        fallback_model=resolve_fallback_model(spawn_model),
         cwd=cwd,
         add_dirs=add_dirs,
         permission_mode=_PERMISSION_MODE,

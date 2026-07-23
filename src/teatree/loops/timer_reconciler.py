@@ -173,41 +173,54 @@ def _pending_for_path(path: str) -> bool:
 
 @task(queue_name=LOOPS_QUEUE)
 def reconcile_timers() -> dict[str, int]:
-    """Reconcile the chains, then re-schedule this reconciler ~5 minutes out.
+    """Re-schedule this reconciler ~5 minutes out, THEN reconcile the chains.
 
     Self-dedups first (another pending reconciler carries the chain) so an
     at-least-once redelivery collapses to one, mirroring the loop-timer contract.
+    Successor-FIRST (F6): the next fire is queued BEFORE the body runs, so a body
+    exception cannot orphan the chain. This is the repair chain for every OTHER
+    chain, so orphaning it would strand the whole maintenance mesh until a worker
+    restart — the body therefore runs in a try that records-but-never-propagates.
     """
     if _pending_for_path(reconcile_timers.module_path):
         return {"deduped": 1}
-    counts = ensure_loop_timers()
     reconcile_timers.using(run_after=timezone.now() + dt.timedelta(seconds=RECONCILE_INTERVAL_SECONDS)).enqueue()
-    return counts
+    try:
+        return ensure_loop_timers()
+    except Exception:
+        logger.exception("reconcile_timers body failed; successor already queued, the chain survives")
+        return {"error": 1}
 
 
 @task(queue_name=LOOPS_QUEUE)
 def prune_task_results() -> dict[str, int]:
-    """Delete finished DBTaskResults older than the retention window, then re-schedule daily.
+    """Re-schedule daily, THEN delete finished DBTaskResults older than the retention window.
 
     Caps unbounded growth of the results table the timer chains churn. Only FINISHED
     (successful/failed) rows past the retention window are removed — a READY or
-    RUNNING row is never touched.
+    RUNNING row is never touched. Successor-FIRST (F6): the next fire is queued before
+    the delete runs, in a try that records-but-never-propagates, so a body fault cannot
+    orphan the chain.
     """
     from django_tasks.base import TaskResultStatus  # noqa: PLC0415 — deferred: heavy/optional dep at call site
     from django_tasks_db.models import DBTaskResult  # noqa: PLC0415 — deferred: heavy/optional dep at call site
 
     if _pending_for_path(prune_task_results.module_path):
         return {"deduped": 1}
-    cutoff = timezone.now() - dt.timedelta(seconds=PRUNE_RETENTION_SECONDS)
-    deleted, _ = (
-        DBTaskResult.objects.filter(
-            status__in=[TaskResultStatus.SUCCESSFUL, TaskResultStatus.FAILED],
-            finished_at__lt=cutoff,
-        )
-        .exclude(finished_at=None)
-        .delete()
-    )
     prune_task_results.using(run_after=timezone.now() + dt.timedelta(seconds=PRUNE_INTERVAL_SECONDS)).enqueue()
+    try:
+        cutoff = timezone.now() - dt.timedelta(seconds=PRUNE_RETENTION_SECONDS)
+        deleted, _ = (
+            DBTaskResult.objects.filter(
+                status__in=[TaskResultStatus.SUCCESSFUL, TaskResultStatus.FAILED],
+                finished_at__lt=cutoff,
+            )
+            .exclude(finished_at=None)
+            .delete()
+        )
+    except Exception:
+        logger.exception("prune_task_results body failed; successor already queued, the chain survives")
+        return {"error": 1}
     return {"pruned": deleted}
 
 
@@ -224,8 +237,12 @@ def expire_stale_jobs() -> dict[str, int]:
 
     if _pending_for_path(expire_stale_jobs.module_path):
         return {"deduped": 1}
-    retired = expire_stale_default_jobs()
     expire_stale_jobs.using(run_after=timezone.now() + dt.timedelta(seconds=EXPIRE_INTERVAL_SECONDS)).enqueue()
+    try:
+        retired = expire_stale_default_jobs()
+    except Exception:
+        logger.exception("expire_stale_jobs body failed; successor already queued, the chain survives")
+        return {"error": 1}
     return {"retired": sum(retired.values())}
 
 
@@ -313,7 +330,7 @@ def reap_stuck_headless_runs() -> dict[str, int]:
 
 @task(queue_name=LOOPS_QUEUE)
 def drain_headless_chain() -> dict[str, int]:
-    """Reap dead headless runs, drain the pending headless backlog, re-schedule ~5min out.
+    """Re-schedule ~5min out, THEN reap dead headless runs and drain the pending backlog.
 
     The scheduled home of ``drain_headless_queue`` — it was defined but NEVER
     scheduled from anywhere, so the pending headless backlog only drained on the
@@ -322,15 +339,21 @@ def drain_headless_chain() -> dict[str, int]:
     self-perpetuating, like its sibling reconcile/prune/expire chains. Runs on
     the ``loops`` queue and enqueues onto ``default`` (it never runs the heavy
     headless work itself). Self-dedups first so an at-least-once redelivery
-    collapses to one.
+    collapses to one. Successor-FIRST (F6): the next fire is queued before the
+    reap/drain body, in a try that records-but-never-propagates, so a body fault
+    cannot orphan the chain.
     """
     from teatree.core.tasks import drain_headless_queue_body  # noqa: PLC0415 — deferred: task-body import
 
     if _pending_for_path(drain_headless_chain.module_path):
         return {"deduped": 1}
-    reaped = reap_stuck_headless_runs()
-    drained = drain_headless_queue_body()
     drain_headless_chain.using(run_after=timezone.now() + dt.timedelta(seconds=DRAIN_INTERVAL_SECONDS)).enqueue()
+    try:
+        reaped = reap_stuck_headless_runs()
+        drained = drain_headless_queue_body()
+    except Exception:
+        logger.exception("drain_headless_chain body failed; successor already queued, the chain survives")
+        return {"error": 1}
     return {
         "reaped_failed": reaped["failed"],
         "reaped_reenqueued": reaped["reenqueued"],
@@ -372,27 +395,31 @@ def _run_slack_answer_cycle_under_lease() -> dict[str, int]:
 
 @task(queue_name=LOOPS_QUEUE)
 def run_slack_answer() -> dict[str, int]:
-    """Run one reactive Slack-answer cycle headless, then re-schedule at its cadence.
+    """Re-schedule at its cadence, THEN run one reactive Slack-answer cycle headless.
 
     Self-dedups first (another pending run carries the chain), mirroring the
     reconcile/prune/expire contract, so an at-least-once redelivery collapses to
-    one. Runs :func:`_run_slack_answer_cycle_under_lease` — which SKIPS the cycle
-    when an owner session already holds the ``loop-slack-answer`` lease rather
-    than double-post — then always re-schedules itself at
-    :func:`slack_answer_cadence_seconds`. This cadence chain is the fallback
-    safety net behind the event-driven :func:`wake_slack_answer`: it drains
-    anything a missed wake left behind even when no inbound event arrives.
+    one. Successor-FIRST (F6): the next fire is queued before the cycle body, in a
+    try that records-but-never-propagates, so a body fault cannot orphan the chain.
+    The body runs :func:`_run_slack_answer_cycle_under_lease` — which SKIPS the
+    cycle when an owner session already holds the ``loop-slack-answer`` lease rather
+    than double-post. This cadence chain is the fallback safety net behind the
+    event-driven :func:`wake_slack_answer`: it drains anything a missed wake left
+    behind even when no inbound event arrives.
     """
     from teatree.loop.loop_cadences import slack_answer_cadence_seconds  # noqa: PLC0415 — deferred: tick-time import
 
     if _pending_for_path(run_slack_answer.module_path):
         return {"deduped": 1}
 
-    result = _run_slack_answer_cycle_under_lease()
     run_slack_answer.using(
         run_after=timezone.now() + dt.timedelta(seconds=slack_answer_cadence_seconds()),
     ).enqueue()
-    return result
+    try:
+        return _run_slack_answer_cycle_under_lease()
+    except Exception:
+        logger.exception("run_slack_answer body failed; successor already queued, the chain survives")
+        return {"error": 1}
 
 
 @task(queue_name=LOOPS_QUEUE)

@@ -21,7 +21,14 @@ import re
 from collections.abc import Iterable
 from pathlib import Path
 
+from teatree.eval.discovery import SCENARIOS_DIR
 from teatree.eval.skill_command_validity import resolve_command_path
+
+#: The shipped catalogs the reachability lane walks by default. ``SCENARIOS_DIR``
+#: is discovery's own resolver; the ``_pass``/``_fail`` transcript fixtures live
+#: beside it under ``evals/fixtures`` (the same ``parents[3] / "evals"`` root).
+DEFAULT_SCENARIOS_DIR = SCENARIOS_DIR
+DEFAULT_FIXTURES_DIR = SCENARIOS_DIR.parent / "fixtures"
 
 #: A ``t3 …`` invocation anywhere in a YAML expectation or a fixture command
 #: string — scenario/fixture text is not markdown, so backticks are not the

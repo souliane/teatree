@@ -22,7 +22,7 @@ from dataclasses import dataclass, field
 
 from teatree.config import get_effective_settings
 from teatree.config.agent_spawn import resolve_agent_config
-from teatree.config.secret_settings import SECRET_SETTINGS
+from teatree.config.secret_settings import SECRET_SETTINGS, is_credential_reference
 from teatree.core.config_self_repair import SELF_REPAIR_STAMP
 from teatree.core.models import Task
 from teatree.utils.secrets import read_pass
@@ -36,9 +36,6 @@ MASKED = "<private>"
 _SELF_REPAIR_LIMIT = 20
 
 _AGENT_SETTINGS = frozenset({"agent_runtime", "agent_harness", "agent_harness_provider", "mode", "wip", "autonomy"})
-#: A credential-reference setting: it names WHERE a secret lives (a ``pass`` entry),
-#: never the secret. Matched by suffix so a renamed reference keeps its band.
-_CREDENTIAL_RE = re.compile(r"(pass_path|pass_paths|pass_key|token_ref|credential_entry)$")
 _KILL_SWITCH_RE = re.compile(r"(_enabled|_disabled)$")
 _EXTRA_KILL_SWITCHES = frozenset({"danger_gate_fail_open", "worker_quiescing"})
 _CONCURRENCY_RE = re.compile(r"(concurrency|max_concurrent|_workers)")
@@ -55,7 +52,7 @@ def classify_setting_band(name: str) -> str:
     """
     if name in _AGENT_SETTINGS:
         return "agent"
-    if _CREDENTIAL_RE.search(name):
+    if is_credential_reference(name):
         return "credentials"
     if _KILL_SWITCH_RE.search(name) or name in _EXTRA_KILL_SWITCHES:
         return "kill_switches"

@@ -99,7 +99,7 @@ def _lane_a_pid_kill_denies(command: str) -> bool:
 
 
 def _streaming_model(*, tool_command: str) -> FunctionModel:
-    """A streaming FunctionModel: call ``shell`` with *tool_command*, then text."""
+    """A streaming FunctionModel: call ``Bash`` with *tool_command*, then text."""
     state = {"n": 0}
 
     def stream_fn(messages: object, info: object) -> object:
@@ -109,7 +109,7 @@ def _streaming_model(*, tool_command: str) -> FunctionModel:
         async def gen():  # noqa: RUF029 — an async generator (the stream contract) that only yields.
             if turn == 1:
                 args = json.dumps({"command": tool_command})
-                yield {0: DeltaToolCall(name="shell", json_args=args, tool_call_id="c1")}
+                yield {0: DeltaToolCall(name="Bash", json_args=args, tool_call_id="c1")}
             else:
                 yield "done"
 
@@ -147,7 +147,7 @@ class TestVocabularyParity:
         assert all(isinstance(m, (AssistantMessage, ResultMessage)) for m in messages)
         # The tool call + its result surfaced in the seam's tool-block vocabulary.
         tool_uses = _blocks(messages, ToolUseBlock)
-        assert [t.name for t in tool_uses] == ["shell"]
+        assert [t.name for t in tool_uses] == ["Bash"]
         tool_results = _blocks(messages, ToolResultBlock)
         assert tool_results
         assert any("marker" in str(r.content) for r in tool_results)
@@ -161,7 +161,7 @@ class TestHardDenyParity:
         command = "git reset --hard HEAD~1"
         clone = managed_main_clone(tmp_path / "teatree")
         # The shared evaluator the claude_sdk lane's PreToolUse hook also consults.
-        assert hard_deny_reason("shell", {"command": command}, cwd=clone) is not None
+        assert hard_deny_reason("Bash", {"command": command}, cwd=clone) is not None
 
         harness = PydanticAiHarness(model=_streaming_model(tool_command=command), phase="coding")
         messages = _collect(harness, ClaudeAgentOptions(cwd=str(clone)), "reset hard")
@@ -176,7 +176,7 @@ class TestHardDenyParity:
         command = "git reset --hard HEAD"
         clone = managed_main_clone(tmp_path / "teatree")
         wt = linked_worktree(clone, tmp_path / "wt")
-        assert hard_deny_reason("shell", {"command": command}, cwd=wt) is None
+        assert hard_deny_reason("Bash", {"command": command}, cwd=wt) is None
 
         harness = PydanticAiHarness(model=_streaming_model(tool_command=command), phase="coding")
         messages = _collect(harness, ClaudeAgentOptions(cwd=str(wt)), "reset soft")
@@ -224,8 +224,8 @@ def _history_straddling_a_tool_pair() -> list[ModelMessage]:
         ModelRequest(parts=[UserPromptPart(content="task")]),  # 0: framing
         ModelResponse(parts=[TextPart(content="a1")]),  # 1: dropped middle
         ModelRequest(parts=[UserPromptPart(content="u2")]),  # 2: dropped middle
-        ModelResponse(parts=[ToolCallPart(tool_name="shell", args={"command": "ls"}, tool_call_id="c1")]),  # 3: CALL
-        ModelRequest(parts=[ToolReturnPart(tool_name="shell", content="out", tool_call_id="c1")]),  # 4: RETURN
+        ModelResponse(parts=[ToolCallPart(tool_name="Bash", args={"command": "ls"}, tool_call_id="c1")]),  # 3: CALL
+        ModelRequest(parts=[ToolReturnPart(tool_name="Bash", content="out", tool_call_id="c1")]),  # 4: RETURN
     ]
     for i in range(5, 44):
         if i % 2 == 1:
@@ -284,7 +284,7 @@ class TestPrivacyGateParity:
         # then Lane A's OWN destination verdict — the exact ``resolve_high_verdict``
         # function its PreToolUse hook consults, NOT a strawman that omits the
         # destination gate and so would call every HIGH finding a deny.
-        command = tool_args.get("command", "") if tool_name == "shell" else ""
+        command = tool_args.get("command", "") if tool_name == "Bash" else ""
         payload = extract_publish_payload("Bash", {"command": command}, cwd) if command else None
         if payload is None or not scan_text(payload).has_high:
             return False
@@ -299,23 +299,23 @@ class TestPrivacyGateParity:
         # write_file's content tripped HIGH and was denied while Lane A never scans
         # a local write.
         args = {"path": "note.md", "content": self._HIGH_BODY}
-        assert hard_deny_reason("write_file", args, cwd=tmp_path) is None
-        assert self._lane_a_denies("write_file", args, tmp_path) is False
+        assert hard_deny_reason("Write", args, cwd=tmp_path) is None
+        assert self._lane_a_denies("Write", args, tmp_path) is False
 
     def test_non_publish_shell_command_with_a_high_finding_is_refused_on_neither_lane(self, tmp_path: Path) -> None:
         # A local `echo ... > file` is not a publish — Lane A passes it through, and
         # Lane B must too (RED without the fix: the whole command string was scanned).
         args = {"command": f'echo "{self._HIGH_BODY}" > note.md'}
-        assert hard_deny_reason("shell", args, cwd=tmp_path) is None
-        assert self._lane_a_denies("shell", args, tmp_path) is False
+        assert hard_deny_reason("Bash", args, cwd=tmp_path) is None
+        assert self._lane_a_denies("Bash", args, tmp_path) is False
 
     def test_clean_publish_command_is_refused_on_neither_lane(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         monkeypatch.setattr(_repo_visibility, "probe_visibility", lambda _slug: "PUBLIC")
         args = self._post("souliane/teatree", "shipped the compaction fix")
-        assert hard_deny_reason("shell", args, cwd=tmp_path) is None
-        assert self._lane_a_denies("shell", args, tmp_path) is False
+        assert hard_deny_reason("Bash", args, cwd=tmp_path) is None
+        assert self._lane_a_denies("Bash", args, tmp_path) is False
 
     def test_public_target_high_finding_is_denied_on_both_lanes(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -325,10 +325,10 @@ class TestPrivacyGateParity:
         # This is the anti-vacuity guard for the two allow rows below.
         monkeypatch.setattr(_repo_visibility, "probe_visibility", lambda _slug: "PUBLIC")
         args = self._post("souliane/teatree", self._HIGH_BODY)
-        reason = hard_deny_reason("shell", args, cwd=tmp_path)
+        reason = hard_deny_reason("Bash", args, cwd=tmp_path)
         assert reason is not None
         assert "privacy/banned-term gate" in reason
-        assert self._lane_a_denies("shell", args, tmp_path) is True
+        assert self._lane_a_denies("Bash", args, tmp_path) is True
 
     def test_private_target_high_finding_is_allowed_on_both_lanes(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -337,8 +337,8 @@ class TestPrivacyGateParity:
         # Lane A downgrades it, and Lane B now allows it too (no over-deny).
         monkeypatch.setattr(_repo_visibility, "probe_visibility", lambda _slug: "PRIVATE")
         args = self._post("someowner/private-svc", self._HIGH_BODY)
-        assert hard_deny_reason("shell", args, cwd=tmp_path) is None
-        assert self._lane_a_denies("shell", args, tmp_path) is False
+        assert hard_deny_reason("Bash", args, cwd=tmp_path) is None
+        assert self._lane_a_denies("Bash", args, tmp_path) is False
 
     def test_probe_error_target_high_finding_is_denied_on_both_lanes(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -350,10 +350,10 @@ class TestPrivacyGateParity:
         # above stays the anti-over-block allow proof.
         monkeypatch.setattr(_repo_visibility, "probe_visibility", lambda _slug: None)
         args = self._post("someowner/mystery", self._HIGH_BODY)
-        reason = hard_deny_reason("shell", args, cwd=tmp_path)
+        reason = hard_deny_reason("Bash", args, cwd=tmp_path)
         assert reason is not None
         assert "privacy/banned-term gate" in reason
-        assert self._lane_a_denies("shell", args, tmp_path) is True
+        assert self._lane_a_denies("Bash", args, tmp_path) is True
 
 
 class TestBashHardDenyCorpusParity:
@@ -398,14 +398,14 @@ class TestBashHardDenyCorpusParity:
         # Anti-vacuity: the fixture is a genuine Lane-A refusal.
         assert lane_a_denies(command), f"{label}: fixture is not a Lane-A deny — the parity claim is vacuous"
         # RED before the registry wiring: Lane B returned None (the command was reachable).
-        reason = hard_deny_reason("shell", {"command": command}, cwd=tmp_path)
+        reason = hard_deny_reason("Bash", {"command": command}, cwd=tmp_path)
         assert reason is not None, f"{label}: Lane B must refuse a command Lane A refuses (the bypass class)"
         assert "BLOCKED" in reason
 
     def test_benign_commands_are_allowed_on_lane_b(self, tmp_path: Path) -> None:
         # The anti-over-block twin: a benign shell command Lane A allows is allowed.
         for command in ("ls -la", "gh pr view 5", "git commit -m 'normal'", "gh api repos/o/x/pulls/7/comments"):
-            assert hard_deny_reason("shell", {"command": command}, cwd=tmp_path) is None, command
+            assert hard_deny_reason("Bash", {"command": command}, cwd=tmp_path) is None, command
 
     # (leaf-predicate, INDEPENDENT lane-a-matcher, commands) — the divergence guard:
     # for each command (deny AND allow shapes), the Lane-B leaf and the Lane-A guard
@@ -463,7 +463,7 @@ class TestBashHardDenyWireParity:
         result = run_hook_router("PreToolUse", {"tool_name": "Bash", "tool_input": {"command": command}}, home=home)
         assert result.returncode == 2, f"Lane A's PreToolUse subprocess must deny --no-verify; got {result.returncode}"
         # The SAME command is refused on Lane B through the shared registry.
-        assert hard_deny_reason("shell", {"command": command}, cwd=tmp_path) is not None
+        assert hard_deny_reason("Bash", {"command": command}, cwd=tmp_path) is not None
 
 
 def test_zero_tokens_enforced() -> None:

@@ -10,10 +10,14 @@ recorded ``TicketTransition`` rows and ``build_ticket_lifecycle_mermaid``.
 from dataclasses import dataclass
 from datetime import datetime
 
+from django.db.models import Prefetch
+
 from teatree.core.models.pull_request import PullRequest
+from teatree.core.models.task_attempt import TaskAttempt
 from teatree.core.models.ticket import Ticket
 from teatree.core.models.transition import TicketTransition
 from teatree.core.selectors import build_ticket_lifecycle_mermaid
+from teatree.core.selectors._helpers import _humanize_duration
 from teatree.dash.issue_link import issue_link
 from teatree.dash.selectors import PrChip, group_slug
 
@@ -30,12 +34,43 @@ class TransitionRow:
 
 
 @dataclass(frozen=True, slots=True)
+class AttemptRow:
+    """One :class:`TaskAttempt`'s already-recorded provenance (#3673 Tier 1).
+
+    Display-only over columns the model already carries — no migration. ``cost_usd``
+    is paired with ``cost_is_estimated`` so the drawer can mark a price-table guess
+    distinctly from a reported figure (never a bare number, per the ask).
+    """
+
+    attempt_id: int
+    model: str
+    duration: str
+    cost_usd: float | None
+    cost_is_estimated: bool
+    input_tokens: int | None
+    output_tokens: int | None
+    cache_read_tokens: int | None
+    cache_write_tokens: int | None
+    num_turns: int | None
+    lane: str
+    execution_target: str
+    outcome: str
+    exit_code: int | None
+    error: str
+    error_fingerprint: str
+    artifact_path: str
+    launch_url: str
+    agent_session_id: str
+
+
+@dataclass(frozen=True, slots=True)
 class TaskRow:
     task_id: int
     phase: str
     status: str
     claimed_by: str
     execution_target: str
+    attempts: tuple[AttemptRow, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -138,6 +173,11 @@ def _transitions(ticket_id: int) -> tuple[TransitionRow, ...]:
 
 
 def _tasks(ticket: Ticket) -> tuple[TaskRow, ...]:
+    # Prefetch every task's attempts in one extra query so the provenance panel
+    # (#3673) stays a fixed two-query plan regardless of task/attempt count (#3674).
+    tasks = ticket.tasks.order_by("-pk").prefetch_related(  # ty: ignore[unresolved-attribute]  # Django reverse FK
+        Prefetch("attempts", queryset=TaskAttempt.objects.order_by("-pk")),
+    )
     return tuple(
         TaskRow(
             task_id=task.pk,
@@ -145,9 +185,40 @@ def _tasks(ticket: Ticket) -> tuple[TaskRow, ...]:
             status=task.get_status_display(),
             claimed_by=task.claimed_by,
             execution_target=task.execution_target,
+            attempts=tuple(_attempt_row(attempt) for attempt in task.attempts.all()),
         )
-        for task in ticket.tasks.order_by("-pk")  # ty: ignore[unresolved-attribute]  # Django reverse FK
+        for task in tasks
     )
+
+
+def _attempt_row(attempt: TaskAttempt) -> AttemptRow:
+    return AttemptRow(
+        attempt_id=attempt.pk,
+        model=attempt.model,
+        duration=_attempt_duration(attempt),
+        cost_usd=attempt.cost_usd,
+        cost_is_estimated=attempt.cost_is_estimated,
+        input_tokens=attempt.input_tokens,
+        output_tokens=attempt.output_tokens,
+        cache_read_tokens=attempt.cache_read_tokens,
+        cache_write_tokens=attempt.cache_write_tokens,
+        num_turns=attempt.num_turns,
+        lane=attempt.lane,
+        execution_target=attempt.execution_target,
+        outcome=attempt.get_outcome_display() if attempt.outcome else "",  # ty: ignore[unresolved-attribute]
+        exit_code=attempt.exit_code,
+        error=attempt.error,
+        error_fingerprint=attempt.error_fingerprint,
+        artifact_path=attempt.artifact_path,
+        launch_url=attempt.launch_url,
+        agent_session_id=attempt.agent_session_id,
+    )
+
+
+def _attempt_duration(attempt: TaskAttempt) -> str:
+    if attempt.ended_at is None:
+        return ""
+    return _humanize_duration((attempt.ended_at - attempt.started_at).total_seconds())
 
 
 def _sessions(ticket: Ticket) -> tuple[SessionRow, ...]:

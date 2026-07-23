@@ -102,3 +102,5 @@ MEGA_NOTES.md
 # one-shot analyses / plans - never committed (owner decision 2026-07-23)
 docs/audits/
 docs/research/
+
+.coverage*

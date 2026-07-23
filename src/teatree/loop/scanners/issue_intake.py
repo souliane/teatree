@@ -207,7 +207,7 @@ class IssueIntakeScanner:
         )
         signals: list[ScanSignal] = []
         for issue in candidates:
-            if self._budget_exhausted():
+            if self._budget_exhausted() or self._governor_denied():
                 break
             url = issue_url(issue)
             try:
@@ -282,6 +282,22 @@ class IssueIntakeScanner:
         if self.max_concurrent <= 0:
             return False
         return ImplementedIssueMarker.objects.in_flight_count(self.overlay_name) >= self.max_concurrent
+
+    @staticmethod
+    def _governor_denied() -> bool:
+        """True when the admission governor brakes new intake this tick (F9).
+
+        Issue intake gated only on its static ``max_concurrent`` and never asked
+        the governor, yet the measured congestion collapse was on the headless
+        lane the admitted issue then runs on. A DENY defers new intake with a
+        visible log; fail-open (``None``) leaves intake unchanged.
+        """
+        from teatree.core.headless_admission import headless_admission_denied_reason  # noqa: PLC0415 — deferred
+
+        reason = headless_admission_denied_reason()
+        if reason is not None:
+            logger.info("IssueIntakeScanner deferring new intake: governor DENIED admission: %s", reason)
+        return reason is not None
 
     def _claim(self, url: str) -> ImplementedIssueMarker | None:
         """Claim *url*, cross-instance mutex first when the fleet kill-switch is on.
