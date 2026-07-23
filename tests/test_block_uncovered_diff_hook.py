@@ -1,3 +1,5 @@
+# test-path: cross-cutting — drives the hooks/scripts/coverage_gate.py PreToolUse gate; the
+# teatree.utils.diff_coverage import is only the byte-identity drift guard (#3521), no src/teatree/ mirror.
 """Tests for the per-diff-coverage PreToolUse hook (#937, §17.6 gate 12).
 
 Gate 12's detection (``teatree.utils.diff_coverage`` / ``t3 tool
