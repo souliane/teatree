@@ -313,3 +313,58 @@ def scan_outbound_text(*, text: str, target_repo: str, forge: str = "") -> Priva
         redact_terms=list(dict.fromkeys([*redact_terms, *banned])),
         block_patterns=block_patterns,
     )
+
+
+#: Mask token substituted for a leak-gate match when redacting text for LOCAL display.
+LEAK_MASK = "[redacted]"
+
+#: Synthetic public target that forces :func:`scan_for_publication` to scan (it only
+#: matches when the target is in ``public_repos``). Never a real repo — a local-display
+#: redaction has no publish destination.
+_LOCAL_REDACT_TARGET = "__local_redact__"
+
+
+def redact_for_local_display(text: str) -> str:
+    """Mask every leak-gate match in *text* for LOCAL display — never a publish.
+
+    The one redactor a local viewer (the dashboard transcript panel) routes
+    through: it reuses the publication scan's exact vocabulary and matcher — the
+    overlay's redact terms, the DB-home banned terms, and the built-in
+    quote/block patterns — then blanks each matched span with :data:`LEAK_MASK`.
+    No second redactor is invented. Fails SAFE: an unresolvable overlay/banned
+    source drops that source's terms rather than raising, and the built-in
+    detectors always apply, so a display path degrades to fewer masks, never a
+    crash and never a bypass of the built-ins.
+    """
+    overlay_rules = _overlay_privacy_rules()
+    redact_terms = list(overlay_rules[0]) if overlay_rules else []
+    block_patterns = list(overlay_rules[1]) if overlay_rules else []
+    banned = _db_banned_terms()
+    if banned:
+        redact_terms = list(dict.fromkeys([*redact_terms, *banned]))
+    result = scan_for_publication(
+        text=text,
+        target_repo=_LOCAL_REDACT_TARGET,
+        public_repos=[_LOCAL_REDACT_TARGET],
+        redact_terms=redact_terms,
+        block_patterns=block_patterns,
+    )
+    return _mask_spans(text, result.matches)
+
+
+def _mask_spans(text: str, matches: tuple[PrivacyMatch, ...]) -> str:
+    """Replace each matched span with :data:`LEAK_MASK`, merging overlaps.
+
+    Spans are merged then applied right-to-left so an earlier replacement never
+    shifts a later span's indices.
+    """
+    spans = sorted((m.position, m.position + len(m.matched_text)) for m in matches if m.matched_text)
+    merged: list[tuple[int, int]] = []
+    for start, end in spans:
+        if merged and start <= merged[-1][1]:
+            merged[-1] = (merged[-1][0], max(merged[-1][1], end))
+        else:
+            merged.append((start, end))
+    for start, end in reversed(merged):
+        text = text[:start] + LEAK_MASK + text[end:]
+    return text

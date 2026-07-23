@@ -385,6 +385,17 @@ register_harness(
 )
 
 
+def _task_overlay(task: "Task | None") -> str | None:
+    """The overlay name a dispatch's config resolves under — the task's ticket overlay.
+
+    ``None`` (no task, or a task whose ticket carries no overlay) keeps the
+    active-overlay resolution so the interactive/default path is unchanged.
+    """
+    if task is None:
+        return None
+    return task.ticket.overlay or None
+
+
 def resolve_harness(task: "Task | None" = None, *, phase: str | None = None) -> Harness:
     """Return the headless transport backend selected by the OPEN ``agent_harness`` setting.
 
@@ -406,6 +417,13 @@ def resolve_harness(task: "Task | None" = None, *, phase: str | None = None) -> 
     the trusted Claude lane. A verification phase therefore never rehydrates a pydantic_ai
     resume thread (its factory is the claude_sdk one).
 
+    Settings are resolved at the TASK's OVERLAY scope (``task.ticket.overlay``), not
+    global/active-only: whether an overlay runs Lane B (``agent_harness=pydantic_ai``)
+    and its endpoint / credential / request cap are all per-overlay overridable, and a
+    headless dispatch runs per-task, so a per-overlay override for a NON-active overlay
+    must apply. A task-less ``resolve_harness()`` (the interactive/default path) keeps
+    the active-overlay resolution (env layer included).
+
     Before building, the CONFIGURED ``(agent_harness, agent_harness_provider)`` pair is
     validated against the resolved backend's registry-declared ``valid_providers`` (#3157
     AH-6) — a live consumer that also enforces an overlay-registered backend's own provider
@@ -414,7 +432,7 @@ def resolve_harness(task: "Task | None" = None, *, phase: str | None = None) -> 
     provider valid for the configured harness into a spurious failure; an unpinned provider
     always passes.
     """
-    settings = get_effective_settings()
+    settings = get_effective_settings(_task_overlay(task))
     provider = settings.agent_harness_provider
     assert_provider_valid_for_harness(settings.agent_harness, provider.value if provider is not None else None)
     harness_name = resolve_phase_harness(settings.agent_harness, phase)

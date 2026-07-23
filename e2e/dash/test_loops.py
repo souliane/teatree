@@ -49,7 +49,9 @@ def test_gate_toggle_refuses_without_the_confirm_phrase(live_server: LiveServer,
 @pytest.mark.usefixtures("seeded_board")
 def test_gate_toggle_enables_with_the_confirm_phrase(live_server: LiveServer, page: Page) -> None:
     page.goto(f"{live_server.url}/dash/loops/")
-    page.locator('input[name="confirm"]').fill("fail-open")
+    # The loop kill-switch (#3623) adds a second `input[name="confirm"]` on this page,
+    # so scope the fill to the fail-open gate form to keep the locator unambiguous.
+    page.locator('form[action*="/loops/gate/"] input[name="confirm"]').fill("fail-open")
     page.get_by_role("button", name="turn ON").click()
     # Now on — the loops page offers the restore button and the fail-open state.
     expect(page.get_by_role("button", name="turn OFF")).to_be_visible()

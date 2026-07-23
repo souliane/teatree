@@ -49,6 +49,7 @@ from teatree.cli.doctor.checks_mcp import (
     _check_teatree_mcp_registration,
 )
 from teatree.cli.doctor.checks_provisioning import _check_declared_dependencies_provisioned
+from teatree.cli.doctor.checks_reconciliation import _check_reconciliation_ledger
 from teatree.cli.doctor.checks_resources import (
     _check_pyright_lsp_plugin,
     _check_tmp_tmpfs_headroom,
@@ -126,6 +127,7 @@ __all__ = (
     "_check_mcp_connectivity",
     "_check_provision_concurrency_from_host",
     "_check_pyright_lsp_plugin",
+    "_check_reconciliation_ledger",
     "_check_single_db",
     "_check_singletons",
     "_check_skills",
@@ -281,6 +283,25 @@ def _check_enabled_but_unprovisioned() -> bool:
     return declared and review_skills and pyright_lsp
 
 
+def _run_daily_advisories() -> None:
+    """Post-ensure_django surfacing-only daily advisories — never gate the exit code.
+
+    The idle-time dream-distiller staleness alarm (#1933) + its transcript-
+    visibility companion, the compose output-root pin check (#3641), and the Plan-2
+    Wave B reconciliation ledger — a daily set of end-to-end outcome assertions (park
+    spin, cost-per-delivery, dead-ticket spend, loop freeze, vacuous eval gates, halt
+    count, open-question age, duplicate execution) checked against production telemetry
+    and DM'd loud to the owner via the notify seam under a per-day idempotency key (so
+    the watchdog's frequent doctor runs fire at most one DM per finding per day). All
+    read the ORM, so this runs after ``ensure_django``; every one is surfacing-only, so
+    its return value is deliberately discarded and none can redden the exit code.
+    """
+    _check_dream_staleness()
+    _check_dream_transcript_visibility()
+    _check_compose_output_root_pinned()
+    _check_reconciliation_ledger()
+
+
 def run_doctor_checks(*, repair: bool = False, slack_roundtrip: bool = False) -> bool:
     """Run every doctor check; return ``False`` if any hard-FAILs.
 
@@ -404,13 +425,11 @@ def run_doctor_checks(*, repair: bool = False, slack_roundtrip: bool = False) ->
 
     ok = doctor_check_clone_currency(_collect_repos()) and ok
 
-    # Idle-time dream consolidation staleness alarm (#1933). Runs after
-    # ``ensure_django`` because it reads the ``DreamRunMarker`` row. A WARN
-    # (not a hard FAIL): a stale dream cron means memories pile up unpromoted,
-    # which the operator should fix, but it must not red the whole doctor run.
-    _check_dream_staleness()
-    _check_dream_transcript_visibility()
-    _check_compose_output_root_pinned()
+    # Post-ensure_django, surfacing-only daily advisories, grouped to keep
+    # run_doctor_checks lean: the dream-distiller staleness/transcript alarms
+    # (#1933), the compose output-root pin check (#3641), and the Plan-2 Wave B
+    # reconciliation ledger. None gate the exit code.
+    _run_daily_advisories()
 
     # #3274: WARN on a no-expiry away / autonomous_away availability override that
     # has sat past the staleness threshold — it silently suppresses the

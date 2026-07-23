@@ -10,7 +10,7 @@ from teatree.agents.lane_b.shell import ShellDeniedError, _resolve_shell, build_
 
 
 def _shell(config):
-    return build_shell_toolset(config).tools["shell"].function
+    return build_shell_toolset(config).tools["Bash"].function
 
 
 class TestShellTool:

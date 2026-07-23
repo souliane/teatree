@@ -1,12 +1,10 @@
 import logging
-from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import TYPE_CHECKING, cast
 
 from django.apps import apps
 from django.db import models, transaction
 from django.db.models import Q
-from django.db.models.expressions import BaseExpression
 from django.utils import timezone
 
 from teatree.config import worker_is_quiescing
@@ -21,6 +19,7 @@ from teatree.core.loop_lease_manager import (
 )
 from teatree.core.managers_overlay import for_overlay as _for_overlay
 from teatree.core.managers_overlay import overlay_scope_q
+from teatree.core.managers_task_claim import ClaimOrder, _claimable_now_q
 from teatree.core.repair_loop import IterationStalled, MaxIterationsExceeded
 from teatree.core.session_handover_manager import SessionHandoverManager, SessionHandoverQuerySet
 
@@ -52,32 +51,7 @@ __all__ = [
 ]
 
 
-@dataclass(frozen=True)
-class ClaimOrder:
-    """Optional ordering for :meth:`TaskManager.claim_next_pending` (PR-13).
-
-    Bundles the ``.annotate()`` kwargs and the resulting ``order_by`` fields so a
-    caller can pick the claim order (admission priority: a queued TODO/followup
-    before a new-ticket auto-start) through one parameter. The default claim path
-    passes no ``ClaimOrder`` and stays plain oldest-``pk``.
-    """
-
-    annotations: dict[str, BaseExpression]
-    order_by: tuple[str, ...]
-
-
 logger = logging.getLogger(__name__)
-
-
-def _claimable_now_q(now: datetime) -> Q:
-    """The ``not_before`` admission predicate — a task is claimable now iff not window-parked.
-
-    A null ``not_before`` (every task never limit-parked) or an elapsed one is claimable; a
-    future ``not_before`` (a task parked behind an exhausted usage window, Directive #3)
-    is skipped until the window re-arms. Shared by both claim paths so the gate can never
-    drift between "is there work" and the actual claim.
-    """
-    return Q(not_before__isnull=True) | Q(not_before__lte=now)
 
 
 class TicketQuerySet(models.QuerySet):
@@ -551,6 +525,27 @@ class TaskQuerySet(models.QuerySet):
         return (
             self.filter(status=task_model.Status.CLAIMED, lease_expires_at__gt=now).filter(dispatchable_filter).count()
         )
+
+    def live_headless_agent_count(self) -> int:
+        """Live HEADLESS agents in flight — CLAIMED, unexpired-lease, HEADLESS target.
+
+        The single divisor for the per-agent test-worker budget AND the
+        governor's ceiling comparison (#3644/F9). Counts EVERY live headless
+        agent — a registered-phase task AND a free-form one (``architectural_review``
+        etc.). ``dispatchable_q()`` selects only ``(role, phase)`` pairs with a
+        registered sub-agent, so counting through it UNDERcounted the free-form
+        headless agents that go through the very ``with_test_worker_cap`` this
+        number divides — a smaller divisor gave each agent MORE pytest workers,
+        the melt direction. Counting the true live-agent set fixes it.
+        """
+        task_model = cast("type[Task]", apps.get_model("core", "Task"))
+
+        now = timezone.now()
+        return self.filter(
+            status=task_model.Status.CLAIMED,
+            lease_expires_at__gt=now,
+            execution_target=task_model.ExecutionTarget.HEADLESS,
+        ).count()
 
     def active_claims(self) -> models.QuerySet:
         """Tasks CLAIMED with a still-live lease — the in-flight set (SSOT).

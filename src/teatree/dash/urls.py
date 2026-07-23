@@ -36,6 +36,7 @@ from teatree.dash.views import (
     schedule_slot_delete,
     ticket_drawer,
     ticket_transition,
+    transcript,
 )
 
 app_name = "dash"
@@ -67,6 +68,7 @@ urlpatterns = [
     path("presets/schedule/slot/delete/", schedule_slot_delete, name="schedule_slot_delete"),
     path("tickets/<int:ticket_id>/", ticket_drawer, name="ticket_drawer"),
     path("tickets/<int:ticket_id>/transition/", ticket_transition, name="ticket_transition"),
+    path("transcript/<str:session_id>/", transcript, name="transcript"),
     path("debug/session/", debug_session, name="debug_session"),
     path("debug/command/", command_run, name="command_run"),
 ]

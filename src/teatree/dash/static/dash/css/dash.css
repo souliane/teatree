@@ -699,3 +699,84 @@ pre.output {
     transition: none;
   }
 }
+
+/* --- Per-task provenance panel (#3673) --- */
+.task-block {
+  margin: var(--sp-3) 0;
+  padding: var(--sp-2);
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm);
+}
+table.dash.provenance {
+  margin-top: var(--sp-2);
+  font-size: var(--text-xs);
+}
+.provenance .small,
+.mono.small {
+  font-size: var(--text-xs);
+}
+.provenance-extra td {
+  padding-top: 0;
+}
+.attempt-error {
+  color: var(--danger);
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.attempt-refs {
+  margin-top: var(--sp-1);
+}
+/* Estimated vs reported cost must read differently at a glance (#3673). */
+.cost .cost-tag {
+  font-size: var(--text-xs);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  padding: 0 var(--sp-1);
+  border-radius: var(--r-sm);
+}
+.cost.est {
+  color: var(--warn);
+}
+.cost.est .cost-tag {
+  background: var(--warn);
+  color: var(--surface);
+}
+.cost.reported {
+  color: var(--ok);
+}
+.cost.reported .cost-tag {
+  background: var(--ok);
+  color: var(--surface);
+}
+
+/* --- Opt-in redacted transcript viewer (#3673 Tier 2) --- */
+.transcript {
+  margin-top: var(--sp-3);
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm);
+  background: var(--surface-2);
+}
+.transcript-head {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  padding: var(--sp-2) var(--sp-3);
+  border-bottom: 1px solid var(--line);
+}
+.transcript-lines {
+  margin: 0;
+  padding: var(--sp-2) var(--sp-4);
+  max-height: 40vh;
+  overflow-y: auto;
+  font-size: var(--text-xs);
+}
+.transcript-line {
+  margin: var(--sp-1) 0;
+}
+.transcript-text {
+  font-family: var(--font-mono);
+  white-space: pre-wrap;
+  word-break: break-word;
+}

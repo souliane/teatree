@@ -92,7 +92,7 @@ SIGNAL_LEDGER_PRODUCERS: tuple[SignalLedgerProducer, ...] = (
     SignalLedgerProducer(
         ledger="ReviewVerdict",
         write_entry_point="teatree.core.models.review_verdict.ReviewVerdict.record",
-        write_call="cls.objects.create",
+        write_call="cls.objects.update_or_create",
         integration_test="tests/teatree_core/test_review_verdict_model.py",
     ),
     SignalLedgerProducer(

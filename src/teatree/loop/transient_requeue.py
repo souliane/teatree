@@ -561,19 +561,25 @@ def _retire_superseded(task: Task) -> None:
 
 
 def _escalation_marker(task: Task) -> str:
-    """Stable dedupe key for a halted task's escalation — ``(ticket, phase, failure)``.
+    """Stable dedupe key for a halted task's escalation — ``(phase, failure)``, ticket-agnostic.
 
-    Keyed on the ticket + canonical phase + the NORMALIZED failure fingerprint, NOT
-    the task pk: a stuck phase mints a FRESH ``Task`` row every redispatch cycle, so a
-    per-task key filed one identical question per cycle (the observed 10-15x flood).
-    Keying on the underlying standing condition instead collapses every churned row
-    that fails the same way to ONE open ``DeferredQuestion``. A genuinely different
-    failure (different fingerprint) keeps its own key, so a real new problem still
+    Keyed on the canonical phase + the NORMALIZED failure fingerprint — NOT the task pk
+    and NOT the ticket id. This collapses two levels of flood to ONE open
+    ``DeferredQuestion`` (⇒ one owner DM). First, a stuck phase mints a FRESH ``Task`` row
+    every redispatch cycle, so a per-task key filed one identical question per cycle (the
+    observed 10-15x flood). Second, several DISTINCT tickets stalling on the SAME root
+    cause — the harness/provider mismatch that paged once per ticket (#3671) — filed one
+    question per ticket under a per-ticket key even though a single systemic condition
+    underlies all of them.
+
+    Dropping the ticket id collapses both onto the underlying standing condition, so one
+    halt condition pages the owner once. A genuinely different failure (different
+    fingerprint) or a different phase keeps its own key, so a real new problem still
     surfaces. Truncated to fit the indexed ``dedupe_marker`` column (max 64).
     """
     fingerprint = terminal_reason_fingerprint(_latest_error(task))
     phase = normalize_phase(task.phase)
-    return f"repair-halt:{task.ticket_id}:{phase}:{fingerprint}"[:64]  # ty: ignore[unresolved-attribute]
+    return f"repair-halt:{phase}:{fingerprint}"[:64]
 
 
 def _escalate_once(task: Task, *, reason: str) -> None:

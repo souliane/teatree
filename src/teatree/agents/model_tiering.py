@@ -235,6 +235,48 @@ def resolve_tier(tier: str) -> str:
     return merged.get(tier, tier)
 
 
+# Capacity-exhaustion fallback ladder: a spawn's model degrades ONE rung down this
+# order (frontier -> balanced -> cheap) when its primary capacity pool is exhausted,
+# so the run continues for a turn on a less-loaded pool instead of parking. The
+# cheapest rung has no fallback.
+_FALLBACK_LADDER: tuple[str, ...] = ("frontier", "balanced", "cheap")
+
+
+def _recognized_tier_of(model: str | None) -> str | None:
+    """The abstract tier of *model* when its family is KNOWN, else ``None``.
+
+    Unlike :func:`_abstract_tier_of` (which defaults an unrecognised id to
+    :data:`DEFAULT_TIER`), this returns ``None`` for a pinned id whose family
+    teatree does not carry — the fallback resolver must not guess a cross-family
+    degrade for an unknown pin.
+    """
+    lowered = (model or "").lower()
+    for family, tier in FAMILY_TO_TIER.items():
+        if family in lowered:
+            return tier
+    return None
+
+
+def resolve_fallback_model(model: str | None) -> str | None:
+    """The next-cheaper catalog model the ``claude_sdk`` spawn degrades to on exhaustion.
+
+    ``fallback_model`` (claude-agent-sdk ``types.py``) lets a spawn continue on a
+    model in a LESS-exhausted capacity pool for a turn instead of parking when the
+    primary 429s / overloads. The ladder is the tier catalog (:data:`TIER_MODELS`,
+    :func:`resolve_tier` honouring any ``agent_tier_models`` override) walked down
+    one rung along :data:`_FALLBACK_LADDER`. A model already at the cheapest rung —
+    or a pinned id whose family teatree does not recognise — has NO defined fallback
+    (``None``): teatree never guesses a cross-family degrade.
+    """
+    tier = _recognized_tier_of(model)
+    if tier is None:
+        return None
+    index = _FALLBACK_LADDER.index(tier)
+    if index + 1 >= len(_FALLBACK_LADDER):
+        return None
+    return resolve_tier(_FALLBACK_LADDER[index + 1])
+
+
 class UnconfiguredOpenAICompatibleModelError(RuntimeError):
     """The ``pydantic_ai`` lane resolved no model id from any configured source."""
 

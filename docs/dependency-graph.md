@@ -70,6 +70,7 @@ graph TD
     teatree.core.managers --> teatree.core.models.errors
     teatree.core.managers --> teatree.core.loop_lease_manager
     teatree.core.managers --> teatree.core.managers_overlay
+    teatree.core.managers --> teatree.core.managers_task_claim
     teatree.core.managers --> teatree.core.repair_loop
     teatree.core.managers --> teatree.core.session_handover_manager
     teatree.core.models --> teatree.core.modelkit
@@ -370,6 +371,7 @@ graph TD
     teatree.core.session_handover_manager
     teatree.core.repair_loop
     teatree.core.managers_overlay
+    teatree.core.managers_task_claim
     teatree.backends.errors
     teatree.backends.types
     teatree.cli._format_opts

@@ -1,0 +1,193 @@
+# ============================================================
+# NIGHTLY SMOKE BEHAVIORAL-EVAL WORKFLOW — conditional, cheap, off the PR path
+# ============================================================
+#
+# The three-tier eval cadence (owner-refined 2026-07-23):
+#   * PER-PR   (eval-pr.yml)  — the scenarios a PR's diff changed, upfront-catch.
+#   * NIGHTLY  (THIS file)    — a small SMOKE slice, run ONLY on a day something
+#                               merged to main, so an idle repo spends zero budget.
+#   * WEEKLY   (eval.yml)     — the full 233-scenario catalog, sharded, unchanged.
+#
+# WHY A CONDITIONAL NIGHTLY (not an unconditional one)
+#   The per-PR lane only runs the scenarios a PR TOUCHED — a regression in an
+#   UNCHANGED scenario (a CLI/skill/gate change that shifts behavior corpus-wide)
+#   would not surface until the weekly run, up to a week later. The nightly smoke
+#   closes that gap with a small representative slice — but ONLY when there is new
+#   work to test. The `prepare` job gates on "did >=1 PR merge to main in the last
+#   day": no merge that day → SKIP CLEANLY (exit 0, clear log line), zero token
+#   spend. This is a PRE-CHECK deciding whether to invoke the eval at all — it is
+#   NOT a skip-as-pass inside the eval (once invoked, `--require-executed` still
+#   fails loud on zero coverage). It mirrors eval.yml's weekly no-PR guard, at a
+#   1-day window instead of 7.
+#
+# THE SMOKE SLICE
+#   `--lane clean_room --shard 1/16` runs the FIRST deterministic name-sorted
+#   shard of the cheap clean_room lane (~14 scenarios — the weekly per-shard
+#   ceiling, teatree.eval.lane_shard.MAX_SCENARIOS_PER_SHARD), at a SINGLE trial.
+#   clean_room scenarios are seconds-to-a-minute each (one skill into an empty
+#   context), so the slice finishes fast and cheap. The expensive under_load lane
+#   (10-45 min/scenario) is deliberately NOT in the smoke set — that is the
+#   weekly's job. The slice grows slowly with the catalog; it is a smoke test
+#   (catch a gross regression / a broken harness end-to-end), not full coverage.
+#
+# AUTH — DEFAULT subscription OAuth (no per-token bill)
+#   Like eval-pr.yml, the nightly rides the subscription `CLAUDE_CODE_OAUTH_TOKEN`
+#   by default (`T3_AGENT_HARNESS_PROVIDER=subscription_oauth`) — a small nightly
+#   slice barely touches the usage window. The metered `api_key` stays selectable
+#   via the `credential` input. Until the selected credential's secret is set the
+#   eval job correctly fails RED.
+#
+# NO-SILENT-GREEN
+#   `--require-executed` is passed unconditionally and `claude --version` is
+#   asserted before the eval, so a missing binary / all-skipped run fails RED
+#   rather than passing green with zero coverage (mirrors eval.yml / eval-pr.yml).
+# ============================================================
+
+name: Nightly smoke eval
+
+on:
+  schedule:
+    # Daily nightly smoke, 05:00 UTC — offset below the weekly Monday 06:00 run.
+    - cron: "0 5 * * *"
+  workflow_dispatch:
+    inputs:
+      credential:
+        description: "Eval credential (subscription_oauth | api_key). Default subscription_oauth (no per-token bill; small nightly slice barely touches the usage window)."
+        required: false
+        default: "subscription_oauth"
+        type: string
+
+concurrency:
+  group: eval-nightly-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # PREPARE: decide whether the nightly runs at all. A manual workflow_dispatch
+  # run ALWAYS runs (force). A scheduled run is guarded: it SKIPS CLEANLY (exit 0,
+  # clear log line) when NO PR merged to main in the last day — nothing new to
+  # smoke-test, no API spend. This mirrors eval.yml's weekly no-PR guard at a
+  # 1-day window (`merged_prs_since.py --days 1`).
+  prepare:
+    runs-on: ubuntu-latest
+    outputs:
+      run_eval: ${{ steps.gate.outputs.run_eval }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+      - uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78  # v7
+        with:
+          enable-cache: true
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v6
+        with:
+          python-version: "3.13"
+      - name: Sync dependencies (retry on transient network failure)
+        uses: nick-fields/retry@ad984534de44a9489a53aefd81eb77f87c70dc60  # v4
+        with:
+          timeout_minutes: 10
+          max_attempts: 3
+          retry_wait_seconds: 30
+          command: uv sync
+      # Decide whether to invoke the smoke eval. A manual run ALWAYS runs (force).
+      # A scheduled run runs ONLY if >=1 PR merged to main in the last day. The
+      # `gh api` query stays in the YAML; the pure decision lives in
+      # `scripts/eval/merged_prs_since.py` (`t3 eval merged-prs-since`). A bad API
+      # read degrades to `[]` → no-merge → skip (never a false run on a read error).
+      - name: Decide whether the nightly smoke runs (manual always runs)
+        id: gate
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EVENT_NAME: ${{ github.event_name }}
+        run: |
+          if [ "$EVENT_NAME" = "workflow_dispatch" ]; then
+            echo "run_eval=true" >> "$GITHUB_OUTPUT"
+            echo "Manual workflow_dispatch run → running the nightly smoke (force, no-merge guard bypassed)."
+          else
+            gh api "repos/${{ github.repository }}/pulls?state=closed&sort=updated&direction=desc&per_page=100" \
+              --jq '[.[] | {number: .number, merged_at: .merged_at}]' > prs.json || echo "[]" > prs.json
+            if uv run python scripts/eval/merged_prs_since.py --prs-file prs.json --days 1 --skip-code 1; then
+              echo "run_eval=true" >> "$GITHUB_OUTPUT"
+            else
+              echo "run_eval=false" >> "$GITHUB_OUTPUT"
+            fi
+          fi
+
+  # EVAL: the smoke slice (clean_room shard 1/16, single trial), in the CI
+  # container. Skipped entirely when prepare gated it out (no merge that day).
+  eval:
+    needs: prepare
+    if: needs.prepare.outputs.run_eval == 'true'
+    runs-on: ubuntu-latest
+    # A ~14-scenario single-trial clean_room slice finishes well inside this cap;
+    # the cap exists so a hang (a wedged scenario, a stuck docker daemon) fails
+    # loud as a red, diagnosable run instead of stalling to the 6h default.
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+      - uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78  # v7
+        with:
+          enable-cache: true
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v6
+        with:
+          python-version: "3.13"
+      - name: Sync dependencies (retry on transient network failure)
+        uses: nick-fields/retry@ad984534de44a9489a53aefd81eb77f87c70dc60  # v4
+        with:
+          timeout_minutes: 10
+          max_attempts: 3
+          retry_wait_seconds: 30
+          command: uv sync
+      # Install the Claude CLI the api backend shells out to, then ASSERT it — a
+      # missing binary must FAIL the job, not skip every scenario green.
+      - name: Install and assert the Claude CLI
+        run: |
+          npm install -g @anthropic-ai/claude-code
+          claude --version
+      - name: Migrate the self-DB (the eval run-history ledger persists into it)
+        run: uv run python -m teatree migrate --no-input
+      # Run the smoke slice at the DEFAULT per-tier lane, single trial, with
+      # `--escalate-on-fail --escalate-trials 3` so a one-off flake re-runs before
+      # reddening (only the failed scenario re-runs; a recovered trial is
+      # flaky-but-passing, not red). `--require-executed` + the asserted CLI keep a
+      # no-coverage run from passing green; `--docker` routes through the CI image
+      # (auth forwarded via docker `-e`). The private transcript is uploaded; the
+      # sanitized summary goes to the run's step summary.
+      - name: Nightly smoke behavioral eval (in Docker)
+        uses: nick-fields/retry@ad984534de44a9489a53aefd81eb77f87c70dc60  # v4
+        env:
+          # Both credentials wired so the provider is a pure config flip; the
+          # DEFAULT rides CLAUDE_CODE_OAUTH_TOKEN (subscription).
+          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          T3_AGENT_HARNESS_PROVIDER: ${{ inputs.credential || 'subscription_oauth' }}
+        with:
+          timeout_minutes: 80
+          max_attempts: 2
+          retry_wait_seconds: 60
+          command: |
+            set -euo pipefail
+            uv run t3 eval run --backend api \
+              --lane clean_room --shard 1/16 \
+              --escalate-on-fail --escalate-trials 3 \
+              --require-executed --docker \
+              --transcript-html "$RUNNER_TEMP/eval-transcripts.html" \
+              --summary-md "$RUNNER_TEMP/eval-summary.md"
+      # Append the sanitized summary to the run's step summary (the in-container
+      # run could not write $GITHUB_STEP_SUMMARY directly — the container's
+      # writable mount is $RUNNER_TEMP). The summary is publish-safe; the
+      # transcript stays private.
+      - name: Publish the sanitized summary to the step summary
+        if: always()
+        run: |
+          if [ -f "$RUNNER_TEMP/eval-summary.md" ]; then
+            cat "$RUNNER_TEMP/eval-summary.md" >> "$GITHUB_STEP_SUMMARY"
+          fi
+      # Upload the PRIVATE per-trial transcript as an artifact a maintainer reads
+      # to diagnose a red nightly smoke. `if: always()` so a red run still
+      # publishes it. A red nightly is surfaced by GitHub's native failed-run
+      # email to the maintainer (no extra secret, no bot).
+      - name: Upload the per-trial transcript report (private)
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7
+        with:
+          name: eval-nightly-transcripts
+          path: ${{ runner.temp }}/eval-transcripts.html
+          if-no-files-found: warn

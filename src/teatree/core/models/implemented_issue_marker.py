@@ -2,8 +2,10 @@
 
 When the issue-implementer loop dispatches an issue it records an
 :class:`ImplementedIssueMarker` keyed on ``(issue_url, overlay)``. A
-re-tick on the same issue finds the existing row and skips re-dispatch,
-and the non-terminal row count (``in_flight_count``) is the max-concurrent
+re-tick on a live or COMPLETED issue finds the existing row and skips
+re-dispatch, while an ABANDONED row (a given-up attempt) is RE-CLAIMED so
+an abandoned issue becomes claimable again rather than permanently skipped
+(F10). The non-terminal row count (``in_flight_count``) is the max-concurrent
 budget the loop checks before dispatching the next issue.
 
 Mirrors :class:`teatree.core.models.red_mr_fix_attempt.RedMrFixAttempt`
@@ -11,8 +13,8 @@ Mirrors :class:`teatree.core.models.red_mr_fix_attempt.RedMrFixAttempt`
 """
 
 from dataclasses import dataclass
-from datetime import timedelta
-from typing import ClassVar
+from datetime import datetime, timedelta
+from typing import ClassVar, TypedDict, Unpack
 
 from django.db import models
 from django.utils import timezone
@@ -44,15 +46,60 @@ class MarkerReconcileResult:
         return len(self.completed) + len(self.abandoned)
 
 
+class MarkerClaimFields(TypedDict, total=False):
+    """The per-claim field overrides :meth:`ImplementedIssueMarkerManager.claim` writes (F10).
+
+    Every key is a concrete ``ImplementedIssueMarker`` column. ``claim`` forwards
+    these as ``get_or_create`` defaults on a first observation and, on an ABANDONED
+    re-claim, merges them over the reset payload; ``total=False`` because a caller
+    supplies only the subset it wants to set.
+    """
+
+    state: "ImplementedIssueMarker.State"
+    dispatched_at: datetime
+    ticket: None
+    head_sha: str
+    claim_ref_sha: str
+    claimed_by_instance: str
+
+
 class ImplementedIssueMarkerManager(models.Manager["ImplementedIssueMarker"]):
-    def claim(self, issue_url: str, overlay: str = "", **kw: object) -> "ImplementedIssueMarker | None":
+    def claim(
+        self, issue_url: str, overlay: str = "", **kw: Unpack[MarkerClaimFields]
+    ) -> "ImplementedIssueMarker | None":
+        """Claim *issue_url* for dispatch, returning the marker or ``None`` if unavailable.
+
+        A first observation inserts a DISPATCHED row. A live (non-terminal) or COMPLETED
+        row returns ``None`` — the issue is in flight or already implemented, never
+        re-dispatched. An ABANDONED row (a given-up consideration record) is RE-CLAIMED
+        (F10): before the fix ``get_or_create`` returned ``None`` for ANY existing row, so
+        an abandoned issue could never be re-claimed — permanently skipped by intake. The
+        re-claim is a backend-agnostic conditional UPDATE (the affected-row count is the
+        CAS token, correct on the production SQLite backend where ``select_for_update`` is
+        a no-op), so exactly one concurrent re-claimer wins and resets the row to a fresh
+        DISPATCHED claim; the loser gets ``None``.
+        """
         if not issue_url:
             return None
         from teatree.instance_id import instance_id  # noqa: PLC0415 — leaf import kept out of module load
 
         kw.setdefault("claimed_by_instance", instance_id())
-        row, created = self.get_or_create(issue_url=issue_url, overlay=overlay, defaults=kw)
-        return row if created else None
+        row, created = self.get_or_create(issue_url=issue_url, overlay=overlay, defaults=dict(kw))
+        if created:
+            return row
+        reclaim_fields: MarkerClaimFields = {
+            "state": ImplementedIssueMarker.State.DISPATCHED,
+            "dispatched_at": timezone.now(),
+            "ticket": None,
+            "head_sha": "",
+            "claim_ref_sha": "",
+            **kw,
+        }
+        reclaimed = self.filter(pk=row.pk, state=ImplementedIssueMarker.State.ABANDONED).update(**reclaim_fields)
+        if reclaimed != 1:
+            return None
+        row.refresh_from_db()
+        return row
 
     def cache_from_fleet_claim(
         self, issue_url: str, overlay: str, *, claim_ref_sha: str, claimed_by_instance: str

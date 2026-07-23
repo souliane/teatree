@@ -1534,6 +1534,8 @@ Usage: t3 eval [OPTIONS] COMMAND [ARGS]...
 │                           real gate/checker code paths.                      │
 │ skill-command-validity    Validate every backticked ``t3 …`` in the skill    │
 │                           docs against the live CLI registry.                │
+│ reachability              Report scenario/fixture ``t3 …`` invocations that  │
+│                           name no live CLI command.                          │
 │ skill-prose-judge         Score each skill's prose for clarity/actionability │
 │                           via the LLM judge (ADVISORY).                      │
 │ audit                     Audit captured sessions into the durable ledger    │
@@ -1790,6 +1792,32 @@ Usage: t3 eval skill-command-validity [OPTIONS]
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --format        TEXT  Report format: text or json. [default: text]           │
 │ --help                Show this message and exit.                            │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+#### `t3 eval reachability`
+
+```
+Usage: t3 eval reachability [OPTIONS]
+
+ Report scenario/fixture ``t3 …`` invocations that name no live CLI command.
+
+ Tier-1 (deterministic, free, no ``claude`` run): each scenario YAML and each
+ ``_pass``/``_fail`` transcript fixture is scanned for ``t3 …`` runs, which are
+ token-walked against the live typer command tree. A reference that resolves to
+ nothing grades a path the product cannot take. ADVISORY by default (the
+ shipped
+ corpus carries known false positives from two precision gaps — overlay-slot
+ fixture names and prose fragments); ``--fail-on-unreachable`` flips it to a
+ gate.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --format                     TEXT  Report format: text or json.              │
+│                                    [default: text]                           │
+│ --fail-on-unreachable              Exit non-zero on any unreachable          │
+│                                    reference; default is advisory (report +  │
+│                                    exit 0).                                  │
+│ --help                             Show this message and exit.               │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 

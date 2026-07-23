@@ -1,0 +1,19 @@
+<div class="transcript">
+  <div class="transcript-head">
+    <span class="chip mono">{{ session_id }}</span>
+    <span class="muted small">redacted tail · most recent lines only</span>
+    <button type="button" class="drawer-close" onclick="document.getElementById('transcript-viewer').innerHTML=''" aria-label="Close transcript">×</button>
+  </div>
+  {% if entries %}
+    <ol class="transcript-lines">
+      {% for e in entries %}
+        <li class="transcript-line" data-role="{{ e.role }}">
+          <span class="chip small role">{{ e.role|default:"·" }}</span>
+          <span class="transcript-text">{{ e.text }}</span>
+        </li>
+      {% endfor %}
+    </ol>
+  {% else %}
+    <p class="muted">No transcript found for this session.</p>
+  {% endif %}
+</div>

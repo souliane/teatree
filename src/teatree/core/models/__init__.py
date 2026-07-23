@@ -102,7 +102,13 @@ from teatree.core.models.review_assignment import ReviewAssignment, ReviewIntent
 from teatree.core.models.review_evidence import ReviewEvidence, ReviewEvidenceError
 from teatree.core.models.review_loop import ReviewLoop, ReviewLoopRound
 from teatree.core.models.review_request_post import ReviewRequestPost
-from teatree.core.models.review_verdict import Finding, ReviewVerdict, ReviewVerdictError, Severity
+from teatree.core.models.review_verdict import (
+    Finding,
+    ReviewVerdict,
+    ReviewVerdictError,
+    Severity,
+    normalize_reviewer_identity,
+)
 from teatree.core.models.rubric import Rubric, RubricCriterion, RubricError
 from teatree.core.models.scanned_broadcast import BroadcastObservation, ScannedBroadcast
 from teatree.core.models.scanned_failed_e2e import ScannedFailedE2E
@@ -319,5 +325,6 @@ __all__ = [
     "WorktreeExtra",
     "build_review_contract",
     "canonical_mr_scope",
+    "normalize_reviewer_identity",
     "validated_ticket_extra",
 ]

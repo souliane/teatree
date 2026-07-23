@@ -24,6 +24,7 @@ from teatree.dash.views.presets import (
     schedule_slot_delete,
 )
 from teatree.dash.views.tickets import ticket_drawer, ticket_transition
+from teatree.dash.views.transcript import transcript
 
 __all__ = [
     "availability",
@@ -53,4 +54,5 @@ __all__ = [
     "schedule_slot_delete",
     "ticket_drawer",
     "ticket_transition",
+    "transcript",
 ]

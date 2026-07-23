@@ -61,7 +61,7 @@ gate exempts them.
 
 This file is the architecture SOT: where the parts live, the tech stack, how
 runs are triggered (local default, CI manual + weekly), and the per-skill
-coverage gate (`t3 eval coverage`).
+coverage gate (`t3 eval coverage`). A companion advisory check, `t3 eval reachability`, walks every `t3 …` command a scenario or fixture cites against the live command tree and reports references to commands that no longer exist (advisory — `--fail-on-unreachable` opts into gating).
 
 ## Architecture
 

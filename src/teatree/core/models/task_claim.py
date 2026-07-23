@@ -53,12 +53,23 @@ def claim(task: "Task", *, claimed_by: str, claimed_by_session: str = "", lease_
     ``renew_lease``'s claim-generation CAS truthful: a re-claim of an
     expired-lease orphan overwrites the dead owner's stale session instead
     of leaving it to falsely satisfy the heartbeat predicate.
+
+    A window-parked task (PENDING with ``not_before`` in the future,
+    Directive #3) is NOT claimable until its window re-arms — the same
+    ``_claimable_now_q`` predicate ``claim_next_pending`` honours, ANDed into
+    the CAS here so the two claim paths can never disagree on "is there work".
+    Without it a parked task claimed at entry would be pre-flight re-parked
+    every drain, churning junk park attempts (F5); with it the claim itself
+    refuses a parked row and the drain never re-surfaces one.
     """
+    from teatree.core.managers import _claimable_now_q  # noqa: PLC0415 — deferred: single-source park predicate
+
     status = task.Status
     now = timezone.now()
-    claimable = Q(status=status.PENDING) | (
-        Q(status=status.CLAIMED) & (Q(lease_expires_at__isnull=True) | Q(lease_expires_at__lte=now))
-    )
+    claimable = (
+        Q(status=status.PENDING)
+        | (Q(status=status.CLAIMED) & (Q(lease_expires_at__isnull=True) | Q(lease_expires_at__lte=now)))
+    ) & _claimable_now_q(now)
     won = (
         type(task)
         .objects.filter(pk=task.pk)
@@ -76,6 +87,9 @@ def claim(task: "Task", *, claimed_by: str, claimed_by_session: str = "", lease_
         task.refresh_from_db()
         if task.status in status.terminal():
             msg = "Task already finished"
+            raise InvalidTransitionError(msg)
+        if task.status == status.PENDING and task.not_before is not None and task.not_before > now:
+            msg = f"Task parked until {task.not_before.isoformat()}"
             raise InvalidTransitionError(msg)
         msg = "Task already claimed"
         raise InvalidTransitionError(msg)

@@ -140,7 +140,7 @@
 "src/teatree/core/safe_kill.py" = 1
 "src/teatree/core/intake/scope_cache.py" = 1
 "src/teatree/core/send_proxy.py" = 3
-"src/teatree/core/signals.py" = 5
+"src/teatree/core/signals.py" = 6 # +1: F9 headless-admission consult (lazy, avoids app-registry-at-load)
 "src/teatree/core/speak.py" = 1
 "src/teatree/core/provision/step_runner.py" = 1
 # #61 availability+preset merge: the unified operating-mode resolver defers its
@@ -155,7 +155,9 @@
 # _record_attachment_hold_question defers `from teatree.core.models.
 # deferred_question import DeferredQuestion` (ORM/app-registry) to escalate an
 # intake attachment-gate hold instead of silently freezing the ticket.
-"src/teatree/core/tasks.py" = 6
+"src/teatree/core/tasks.py" = 8 # +2: F4 claim-CAS + F9 headless_admission lazy imports
+"src/teatree/core/headless_admission.py" = 1 # F9: lazy governor import, avoids app-registry-at-load
+"src/teatree/core/models/task_claim.py" = 1 # F5: lazy _claimable_now_q park predicate import
 # PR #3479 module-health split: the path-only-TOML backend construction moved
 # out of backend_factory.py into toml_backends.py, carrying the same three
 # function-scoped intra-core imports verbatim (two `send_proxy.read_posting_credential`
