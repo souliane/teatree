@@ -500,8 +500,9 @@ class Command(TyperCommand):
         *,
         dry_run: bool = typer.Option(
             default=False,
-            help="Preview only: list each worktree that WOULD WIPE (with its done-signal source) "
-            "or be KEPT, removing nothing.",
+            help="Preview only: every pass reports what it WOULD do — each worktree that "
+            "would WIPE (with its done-signal source) or be KEPT, plus the branch, stash, "
+            "orphan DB/docker/env-root, raw-worktree and DSLR candidates — removing nothing.",
         ),
     ) -> list[str]:
         """Reap every done+redundant worktree, then prune branches/stashes, orphan DBs/docker/env-roots, DSLR.

@@ -1462,14 +1462,14 @@ class TestProviderChildEnv(TestCase):
         assert env["ANTHROPIC_API_KEY"] == "key-y"
         assert "CLAUDE_CODE_OAUTH_TOKEN" not in env
 
-    def test_orca_router_byok_is_invalid_under_claude_sdk_and_raises(self) -> None:
+    def test_openai_compatible_is_invalid_under_claude_sdk_and_raises(self) -> None:
         # #2887: the sole caller of this helper is already scoped to the
         # ClaudeSdkHarness dispatch, so a Layer-2 provider only valid under
         # agent_harness=pydantic_ai reaching here is a cross-layer
         # misconfiguration — it must fail loud, never silently fall through to
         # the ambient env.
         with pytest.raises(CredentialError, match="not valid under agent_harness=claude_sdk"):
-            _provider_child_env(AgentHarnessProvider.ORCA_ROUTER_BYOK)
+            _provider_child_env(AgentHarnessProvider.OPENAI_COMPATIBLE)
 
     def test_no_explicit_pin_uses_ambient_env(self) -> None:
         # #2887: the default (no ConfigSetting row, no env var) resolves to
@@ -1515,7 +1515,7 @@ class TestSystemChildEnv(TestCase):
         # pass spawns ``claude`` on ANY harness, so a valid pydantic_ai deployment keeps
         # its working ambient auth — warned, never broken.
         ConfigSetting.objects.set_value("agent_harness", "pydantic_ai")
-        ConfigSetting.objects.set_value("agent_harness_provider", "orca_router_byok")
+        ConfigSetting.objects.set_value("agent_harness_provider", "openai_compatible")
         with self.assertLogs("teatree.agents._headless_env", level="WARNING") as logs:
             env = system_child_env()
 
@@ -1540,10 +1540,10 @@ class TestResolveDispatchLane:
         assert _resolve_dispatch_lane(ClaudeSdkHarness(), None) == ""
 
     def test_pydantic_ai_is_always_metered(self) -> None:
-        # OrcaRouter BYOK is the only Layer-2 provider valid under
+        # the OpenAI-compatible backend BYOK is the only Layer-2 provider valid under
         # agent_harness=pydantic_ai — always metered, no pin needed.
         assert _resolve_dispatch_lane(PydanticAiHarness(), None) == TaskAttempt.Lane.METERED
-        assert _resolve_dispatch_lane(PydanticAiHarness(), AgentHarnessProvider.ORCA_ROUTER_BYOK) == (
+        assert _resolve_dispatch_lane(PydanticAiHarness(), AgentHarnessProvider.OPENAI_COMPATIBLE) == (
             TaskAttempt.Lane.METERED
         )
 

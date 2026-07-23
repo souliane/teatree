@@ -200,7 +200,7 @@ def run(  # noqa: PLR0913, PLR0917 — typer command: each param maps 1:1 to a p
             "same Claude model fresh through the Anthropic Messages API DIRECTLY, no `claude` "
             "CLI child — the CLI-free lane for a harness that forbids the Claude Code CLI, "
             "metered on ANTHROPIC_API_KEY) or 'pydantic_ai' (RUN a non-Claude model through "
-            "the provider-agnostic harness seam, OrcaRouter BYOK — the model-evolution lane). "
+            "the provider-agnostic harness seam, the OpenAI-compatible backend — the model-evolution lane). "
             "--trials and --models require --backend api."
         ),
     ),

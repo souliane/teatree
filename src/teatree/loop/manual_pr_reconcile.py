@@ -30,18 +30,25 @@ from typing import TYPE_CHECKING, Any
 
 from django.utils import timezone
 
+from teatree.core.work_lease import WorkIdentity, register_work_claim, release_work_claim
 from teatree.loop.pr_ticket_index import _description_from_payload, resolve_author_ticket
 from teatree.utils.close_keywords import parse_closes_ticket
 from teatree.utils.url_slug import pr_ref_from_url
 
 if TYPE_CHECKING:
-    from teatree.core.models import Ticket
+    from teatree.core.models import PullRequest, Ticket
     from teatree.loop.scanners.base import ScanSignal
 
 logger = logging.getLogger(__name__)
 
 # The open-PR signal kinds MyPrsScanner emits (mirrors open_prs._OPEN_PR_SIGNAL_KINDS).
 _MY_PR_SIGNAL_KINDS = frozenset({"my_pr.open", "my_pr.draft_notes", "my_pr.failed"})
+
+#: Work-lease owner for a PR opened outside the lifecycle (#3561). One identity
+#: for the whole class: the lease answers "is someone already on this branch/PR?",
+#: and the raw actor — a hand-run ``gh pr create``, an ad-hoc sub-agent worktree —
+#: leaves no session id the loop could key on.
+_MANUAL_PR_OWNER = "raw-pr-work"
 
 
 @dataclass(frozen=True, slots=True)
@@ -107,6 +114,10 @@ def _resolve_ticket(pr: _ScannedPr) -> "Ticket | None":
     return resolve_author_ticket(slug=pr.slug, pr_id=pr.iid, pr_url=pr.url)
 
 
+def _work_identity(row: "PullRequest") -> WorkIdentity:
+    return WorkIdentity(repo=row.repo, pr_url=row.url, issue_url=row.ticket.issue_url)
+
+
 def _reconcile_one(pr: _ScannedPr) -> bool:
     """Upsert one row; return True when a row was created or transitioned to merged."""
     from teatree.core.models import PullRequest  # noqa: PLC0415 — deferred: ORM import needs the app registry
@@ -137,6 +148,12 @@ def _reconcile_one(pr: _ScannedPr) -> bool:
         row.mark_merged()
         row.save()
         changed = True
+        release_work_claim(_work_identity(row), owner=_MANUAL_PR_OWNER)
+    elif not pr.merged:
+        # A PR opened outside the lifecycle IS active branch/PR work (#3561):
+        # registering it here is what makes the interactive session and the loop
+        # mutually visible, so the loop defers instead of racing the branch.
+        register_work_claim(_work_identity(row), owner=_MANUAL_PR_OWNER)
     return changed
 
 

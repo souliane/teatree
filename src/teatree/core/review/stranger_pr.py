@@ -8,17 +8,18 @@ never auto-merged, whatever the label says.
 
 Admission runs through the SAME decision function as issue intake
 (:func:`~teatree.core.intake.factory_admission.decide_intake`), so "who may the
-factory work for" has exactly one answer. Author trust uses the same strict
-conjunction intake uses — the shared classifier AND explicit trusted-set
-membership — so the classifier's private-repo bypass cannot hand an unlisted
-collaborator the reviewer.
+factory work for" has exactly one answer. Author trust runs through the SAME
+autonomy decision at the same ``INTAKE`` gate
+(:func:`~teatree.core.review.author_trust.decide_author_trust`), so the
+classifier's private-repo bypass cannot hand an unlisted collaborator the
+reviewer.
 """
 
 from typing import cast
 from urllib.parse import urlparse
 
 from teatree.core.intake.factory_admission import IntakeFacts, decide_intake, payload_labels
-from teatree.core.review.author_trust import classify_author, is_trusted_author
+from teatree.core.review.author_trust import AuthorSubject, AutonomyGate, TrustVerdict, decide_author_trust
 from teatree.types import RawAPIDict
 from teatree.utils.url_slug import slug_from_issue_or_pr_url
 
@@ -49,8 +50,9 @@ def pr_is_admitted(pr: RawAPIDict, *, pr_url: str, trusted: frozenset[str], admi
     if not author or not slug:
         return False
     host_kind = "gitlab" if "/-/" in parsed.path or "gitlab" in (parsed.hostname or "").lower() else "github"
-    classification = classify_author(slug, author, host_kind=host_kind, extra_trusted=trusted)
-    author_trusted = classification.trusted and is_trusted_author(author, extra_trusted=trusted)
+    subject = AuthorSubject(slug=slug, author=author, host_kind=host_kind)
+    trust = decide_author_trust(subject, gate=AutonomyGate.INTAKE, extra_trusted=trusted)
+    author_trusted = trust is TrustVerdict.AUTONOMOUS
     verdict = decide_intake(
         IntakeFacts(labels=payload_labels(pr), work_exists=False, author_trusted=author_trusted),
         admit_label=admit_label,

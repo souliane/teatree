@@ -38,9 +38,9 @@ class TestBindingSelection(TestCase):
         monkeypatch.delenv("T3_AGENT_HARNESS_PROVIDER", raising=False)
         monkeypatch.delenv("T3_OVERLAY_NAME", raising=False)
 
-    def test_orca_router_provider_selects_the_router_binding(self) -> None:
+    def test_backend_router_provider_selects_the_router_binding(self) -> None:
         ConfigSetting.objects.set_value("agent_harness", "pydantic_ai")
-        ConfigSetting.objects.set_value("agent_harness_provider", "orca_router_byok")
+        ConfigSetting.objects.set_value("agent_harness_provider", "openai_compatible")
         harness = resolve_harness()
         assert isinstance(harness, PydanticAiHarness)
         assert harness.binding is PydanticAiBinding.ROUTER
@@ -101,9 +101,9 @@ class TestNativeModelNameFallback:
 
     def test_unpinned_fallback_is_a_concrete_anthropic_id_not_a_router_handle(self) -> None:
         # The bug: an unpinned dispatch resolved through resolve_pydantic_ai_model, which
-        # returns an ``orcarouter/…`` router handle — invalid on the direct Anthropic API.
+        # returns an ``vendor/…`` router handle — invalid on the direct Anthropic API.
         name = native_anthropic_model_name(HarnessOptions())
-        assert "/" not in name  # NOT a provider-prefixed router handle (orcarouter/teatree-factory)
+        assert "/" not in name  # NOT a provider-prefixed router handle (vendor/some-model)
         assert name.startswith("claude-")  # a concrete Claude dash-form id, valid on the Messages API
 
     def test_explicit_pin_passes_through_unchanged(self) -> None:

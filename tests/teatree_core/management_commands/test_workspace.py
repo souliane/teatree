@@ -1193,22 +1193,22 @@ class TestWorkspaceTicket(TestCase):
             assert ticket.repos == ["backend", "frontend"]
 
 
-_no_prune = patch.object(ws_clean_all_mod, "prune_branches", new=lambda _repo: [])
+_no_prune = patch.object(ws_clean_all_mod, "prune_branches", new=lambda _repo, **_kw: [])
 
 
-_no_stash = patch.object(ws_clean_all_mod, "drop_orphaned_stashes", new=lambda _repo: [])
+_no_stash = patch.object(ws_clean_all_mod, "drop_orphaned_stashes", new=lambda _repo, **_kw: [])
 
 
-_no_orphan_dbs = patch.object(ws_clean_all_mod, "drop_orphan_databases", new=list)
+_no_orphan_dbs = patch.object(ws_clean_all_mod, "drop_orphan_databases", new=lambda **_kw: [])
 
 
-_no_orphan_docker = patch.object(ws_clean_all_mod, "reap_orphan_worktree_docker", new=list)
+_no_orphan_docker = patch.object(ws_clean_all_mod, "reap_orphan_worktree_docker", new=lambda **_kw: [])
 
 
-_no_orphan_isolated_roots = patch.object(ws_clean_all_mod, "reap_orphan_isolated_worktree_roots", new=list)
+_no_orphan_isolated_roots = patch.object(ws_clean_all_mod, "reap_orphan_isolated_worktree_roots", new=lambda **_kw: [])
 
 
-_no_orphan_raw = patch.object(ws_clean_all_mod, "reap_orphan_raw_worktrees", new=lambda _ws: [])
+_no_orphan_raw = patch.object(ws_clean_all_mod, "reap_orphan_raw_worktrees", new=lambda _ws, **_kw: [])
 
 
 _no_dslr_prune = patch("teatree.utils.django_db.prune_dslr_snapshots", new=lambda **kw: [])
@@ -1688,7 +1688,10 @@ class TestCleanAllDryRun(TestCase):
     @_no_orphan_raw
     @_patch_overlays(FULL_OVERLAY)
     @override_settings(**SETTINGS)
-    def test_dry_run_skips_the_destructive_passes(self) -> None:
+    def test_dry_run_previews_every_pass_and_mutates_nothing(self) -> None:
+        # souliane/teatree#3489: a dry run that previews pass 1 of 9 under-reports
+        # what a destructive command will do. Every pass now runs in preview mode —
+        # same selection, mutation skipped — so the preview cannot understate scope.
         reaper_calls: dict[str, bool] = {}
 
         def _spy(_ws: Path, *, dry_run: bool) -> list[str]:
@@ -1699,13 +1702,17 @@ class TestCleanAllDryRun(TestCase):
             tempfile.TemporaryDirectory() as tmp,
             patch.object(workspace_mod, "_worktree_root", return_value=Path(tmp)),
             patch.object(ws_clean_all_mod, "reap_done_worktrees", side_effect=_spy),
-            patch.object(ws_clean_all_mod, "drop_orphan_databases") as mock_drop,
+            patch.object(ws_clean_all_mod, "drop_orphan_databases", return_value=[]) as mock_drop,
+            patch.object(ws_clean_all_mod, "reap_broken_worktree_dirs") as mock_broken,
         ):
             cleaned = cast("list[str]", call_command("workspace", "clean-all", "--dry-run"))
 
         assert reaper_calls["dry_run"] is True
         assert any("WOULD WIPE" in line for line in cleaned)
-        mock_drop.assert_not_called()  # dry-run touches nothing beyond the preview
+        assert mock_drop.call_args.kwargs["dry_run"] is True
+        # The one pass with no dry-run mode is named, never silently omitted.
+        mock_broken.assert_not_called()
+        assert any("NOT PREVIEWED" in line for line in cleaned)
 
 
 @_no_orphan_raw
@@ -1921,7 +1928,7 @@ class TestWorkspaceCleanAll(TestCase):
             mock_reap.return_value = ["Reaped docker project teatree-wt99: 1 container(s), 1 image(s)"]
             cleaned = cast("list[str]", call_command("workspace", "clean-all"))
 
-        mock_reap.assert_called_once_with()
+        mock_reap.assert_called_once_with(dry_run=False)
         assert any("Reaped docker project teatree-wt99" in c for c in cleaned)
 
 

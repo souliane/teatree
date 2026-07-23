@@ -235,6 +235,9 @@ _HEREDOC_BODY_RE = re.compile(
 # Command separators that end one command and begin the next.
 _CMD_SEP_SPLIT_RE = re.compile(r"\|\||&&|[;|&\n]")
 
+# A command substitution runs its inner command whatever leads the segment.
+_SUBSTITUTION_RE = re.compile(r"\$\(|`")
+
 
 def _heredoc_owner_leader(prefix: str) -> str:
     """Return the executable leading the command that introduces a heredoc.
@@ -276,6 +279,32 @@ def _strip_forge_heredoc_bodies(command: str) -> str:
     return _HEREDOC_BODY_RE.sub(blank, command)
 
 
+def _executing_segments(quote_stripped: str) -> str:
+    """*quote_stripped* minus the segments a ``t3``/read-only leader owns (#3562).
+
+    A segment led by ``grep``/``cat``/``t3`` READS a blocked tool's name as an
+    argument; it cannot invoke it. Scanning it produced the Class-W false positive
+    (``rg manage.py runserver src && t3 loop status`` denied for grepping the
+    phrase), because F6 disables the leader allowlist for the WHOLE command as soon
+    as a chain operator appears. Dropping only the read-only segments keeps every
+    other segment scanned, so ``grep x; pip install y`` still denies on segment two.
+
+    A segment carrying a command substitution keeps its scan: ``echo $(pip install
+    x)`` runs the inner command despite the read-only leader.
+    """
+    kept = [
+        segment
+        for segment in _CMD_SEP_SPLIT_RE.split(quote_stripped)
+        if _SUBSTITUTION_RE.search(segment) or not _leader_is_allowlisted(segment)
+    ]
+    return "\n".join(kept)
+
+
+def _leader_is_allowlisted(segment: str) -> bool:
+    leader = segment.lstrip()
+    return bool(_T3_CMD_PREFIX_RE.match(leader) or _READONLY_CMD_PREFIX_RE.match(leader))
+
+
 def deny_match(command: str) -> str | None:
     """Return a deny reason for *command*, or None if it should pass through."""
     # Checked FIRST — even before t3/read-only bypass — because agents must
@@ -307,7 +336,7 @@ def deny_match(command: str) -> str | None:
     # still match the stripped target.
     quote_stripped = _QUOTED_LITERAL_RE.sub(" ", scan_command)
     for pattern, reason in _QUOTE_STRIPPED_BLOCKED:
-        if pattern.search(quote_stripped):
+        if pattern.search(_executing_segments(quote_stripped)):
             return reason + " If `t3` fails, fix the CLI — do not work around it."
     return None
 

@@ -14,6 +14,7 @@ tools:
 skills:
   - rules
   - workspace
+  - architecture-design
 maxTurns: 50
 ---
 

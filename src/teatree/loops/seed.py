@@ -194,6 +194,14 @@ DEFAULT_LOOPS: tuple[LoopSeedSpec, ...] = (
         "behind an ask-gate; default-off behind triage_assessor_enabled, never acts without per-item approval.",
     ),
     LoopSeedSpec(
+        "dm_sweep",
+        3600,
+        "Sweeps the owner's DM threads hourly and resolves the ones that no longer need "
+        "them (owner already replied, subject merged/closed, duplicate of an open thread); "
+        "leaves anything older than a day for the resurfacing side, and says nothing when "
+        "it resolved nothing.",
+    ),
+    LoopSeedSpec(
         "housekeeping",
         3600,
         "Fast-forwards the editable teatree and overlay installs (self-update) and pulls "
@@ -252,10 +260,12 @@ DEFAULT_LOOPS: tuple[LoopSeedSpec, ...] = (
     ),
     LoopSeedSpec(
         "directive_loop",
-        86400,
-        "Advances one ratified directive one step per day (implement, configure, verify, "
-        "keep-only-if-verified, else human-asked revert), off the live tick; ships disabled "
-        "behind the directive_loop_enabled flag and the critic-live guard.",
+        3600,
+        "Hourly, off the live tick: interprets captured owner directives up to "
+        "directive_intake_per_tick per pass and stops at the human ratify gate, then advances "
+        "one ratified directive one step (implement, configure, verify, keep-only-if-verified, "
+        "else human-asked revert); ships disabled behind the directive_loop_enabled flag, and "
+        "the execution arc additionally needs the critic-live guard.",
     ),
     LoopSeedSpec(
         "ci_eval_heal",

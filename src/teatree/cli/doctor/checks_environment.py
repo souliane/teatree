@@ -21,6 +21,26 @@ def _check_single_db() -> bool:
     return False
 
 
+def _check_control_db_agreement() -> bool:
+    """WARN when this entry point's control DB is not the one the installed ``t3`` uses (#3514).
+
+    The single seam (:meth:`teatree.paths.ControlDb.divergence_message`) answers for
+    the running process, so the divergence that used to strand a ticket between two
+    databases is stated rather than discovered later. A WARN, not a FAIL: an isolated
+    worktree DB is the intended, protective outcome — the bug was only ever the
+    silence around it. The harder anchoring case is a FAIL below.
+    """
+    import os  # noqa: PLC0415 — deferred: keeps CLI startup light
+
+    from teatree import paths  # noqa: PLC0415 — deferred: keeps CLI startup light
+
+    message = paths.ControlDb(os.environ, Path.home()).divergence_message(Path.cwd())
+    if message is None:
+        return True
+    typer.echo(f"WARN  {message}")
+    return False
+
+
 def _check_entrypoint_is_primary_clone() -> bool:
     """FAIL when the running ``t3`` entrypoint is anchored to a worktree (#1507).
 

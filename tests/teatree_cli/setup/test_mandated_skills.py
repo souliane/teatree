@@ -39,13 +39,20 @@ def repo(tmp_path: Path) -> Path:
 def provisioner(tmp_path: Path, repo: Path, monkeypatch: pytest.MonkeyPatch) -> MandatedSkillProvisioner:
     monkeypatch.setattr(
         "teatree.cli.setup.mandated_skills.MandatedSkillInstaller",
-        lambda cache_root: _local_installer(cache_root, tmp_path),
+        lambda cache_root, **kwargs: _local_installer(cache_root, tmp_path, **kwargs),
     )
     return MandatedSkillProvisioner(repo, tmp_path / "home" / ".claude" / "skills", tmp_path / "cache")
 
 
-def _local_installer(cache_root: Path, tmp_path: Path) -> MandatedSkillInstaller:
-    return MandatedSkillInstaller(cache_root, remote_base=f"{tmp_path / 'remotes'}/")
+def _local_installer(cache_root: Path, tmp_path: Path, **kwargs: Path | None) -> MandatedSkillInstaller:
+    """The real installer with only its remote redirected at a local bare repo.
+
+    Every keyword the production call site passes is FORWARDED, never dropped, so the
+    double keeps exercising the real two-source contract — the plugin's own tree first,
+    the declared remote as the fallback — rather than a version of it that ignores
+    whichever parameter the double was written before.
+    """
+    return MandatedSkillInstaller(cache_root, remote_base=f"{tmp_path / 'remotes'}/", **kwargs)
 
 
 class TestMandatedSkillProvisioner:
@@ -71,7 +78,7 @@ class TestMandatedSkillProvisioner:
     ) -> None:
         monkeypatch.setattr(
             "teatree.cli.setup.mandated_skills.MandatedSkillInstaller",
-            lambda cache_root: _local_installer(cache_root, tmp_path / "nowhere"),
+            lambda cache_root, **kwargs: _local_installer(cache_root, tmp_path / "nowhere", **kwargs),
         )
         lines: list[str] = []
 

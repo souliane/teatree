@@ -333,13 +333,9 @@ select:hover {
 .card-num {
   font-weight: 500;
   color: var(--ink);
-}
-.card-issue {
-  color: var(--ink-muted);
   text-decoration: none;
-  font-size: var(--text-sm);
 }
-.card-issue:hover {
+a.card-num:hover {
   color: var(--brand);
   text-decoration: underline;
 }

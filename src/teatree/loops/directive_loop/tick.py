@@ -1,11 +1,11 @@
-"""One directive-loop tick — guard chain, then advance one directive one step (north-star PR-7).
+"""One directive-loop tick — guard chain, drain intake, then one execution step (north-star PR-7).
 
 :func:`run_tick` is the whole behaviour and structurally mirrors
 :func:`teatree.loops.outer_loop.tick.run_tick`. It ALWAYS runs an unconditional
 guard chain first; a refusal returns a typed no-op result with zero mutation (the
 QUADRUPLE-OFF flag-off parity property) and is LOGGED at warning level, so a refused
-tick is never indistinguishable from an idle one (#3643). When the chain allows, it
-advances the OLDEST active directive exactly one FSM step:
+tick is never indistinguishable from an idle one (#3643). When the chain allows, each
+advanced directive takes exactly one FSM step:
 
     CAPTURED       → arm the headless interpreter (idempotent dispatch)
     CLARIFYING     → re-interpret once every clarify question is answered, else wait
@@ -21,8 +21,10 @@ advances the OLDEST active directive exactly one FSM step:
 The guard chain is arc-scoped: the pre-admission INTAKE arc runs
 :func:`~teatree.loops.directive_loop.guards.evaluate_intake_guards`, and the
 post-admission EXECUTION arc — consulted only once a directive is past the human ratify
-gate — runs the score-requiring
-:func:`~teatree.loops.directive_loop.guards.evaluate_execution_guards`.
+gate — runs the score- and critic-requiring
+:func:`~teatree.loops.directive_loop.guards.evaluate_execution_guards`. The two arcs
+also have different throughput (#3649): intake drains up to
+``directive_intake_per_tick`` directives per pass, execution advances exactly one.
 
 Every dependency the tick reads is injectable (:class:`TickSeams`) so the whole
 pipeline is exercisable without a live critic, a real merge, a real pytest run, or a
@@ -31,7 +33,7 @@ real clock; the production cron passes none and the real probes apply.
 
 import logging
 from collections.abc import Callable
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime
 
 from django.utils import timezone
@@ -61,6 +63,19 @@ logger = logging.getLogger(__name__)
 
 _ACTIVATION_ONLY = "activation_only"
 
+#: The pre-admission arc — inert steps that terminate at the human ratify gate.
+_INTAKE_STATES = frozenset(
+    {
+        Directive.State.CAPTURED,
+        Directive.State.CLARIFYING,
+        Directive.State.INTERPRETED,
+        Directive.State.RATIFY_PENDING,
+    }
+)
+
+#: Tick actions that report a wait on someone else rather than a step taken.
+_NO_PROGRESS_ACTIONS = frozenset({"waiting", "pending", "refused", "idle"})
+
 
 @dataclass(frozen=True, slots=True)
 class TickSeams:
@@ -82,6 +97,7 @@ class DirectiveTickResult:
     action: str
     reason: str = ""
     directive_id: int | None = None
+    advanced: int = 0
 
 
 def _ticket_merged(directive: Directive) -> bool:
@@ -103,7 +119,16 @@ def run_tick(
     settings: DirectiveLoopSettings | None = None,
     seams: TickSeams | None = None,
 ) -> DirectiveTickResult:
-    """Run one tick: arc-scoped guard chain, then advance the oldest active directive one step."""
+    """Run one tick: arc-scoped guards, drain the intake arc, then one execution step.
+
+    Intake advances up to ``directive_intake_per_tick`` directives per pass and
+    execution exactly one, because the two arcs carry opposite risk (#3649). Advancing
+    one directive per tick on a daily cadence could not drain a backlog that grew
+    faster than it emptied, and starved every younger directive behind whichever one
+    happened to be in the execution arc. Interpretation is inert, cheap, and terminates
+    at the human ratify gate, so it is bounded by a budget rather than a queue position;
+    changing configuration stays deliberately one-at-a-time.
+    """
     resolved_seams = seams or TickSeams()
     resolved_settings = settings if settings is not None else get_effective_settings(overlay or None)
     intake_verdict = evaluate_intake_guards(
@@ -112,20 +137,72 @@ def run_tick(
     if not intake_verdict.ok:
         return _refused(intake_verdict.reason)
 
-    directive = Directive.objects.active().order_by("created_at", "pk").first()
-    if directive is None:
+    actives = list(Directive.objects.active().order_by("created_at", "pk"))
+    if not actives:
         return DirectiveTickResult(action="idle", reason="no_active_directive")
 
-    intake = _advance_intake(directive)
-    if intake is not None:
-        return intake
+    stepped: set[int] = set()
+    results = _drain_intake(actives, budget=max(1, int(resolved_settings.directive_intake_per_tick)), stepped=stepped)
+    candidate = _execution_candidate(actives, stepped=stepped)
+    if candidate is not None:
+        results.append(
+            _run_execution_step(candidate, resolved_settings, overlay=overlay, now=now, seams=resolved_seams)
+        )
+    return _summarise(results)
 
-    execution_verdict = evaluate_execution_guards(
-        settings=resolved_settings, seams=resolved_seams.guards, overlay=overlay, now=now
+
+def _drain_intake(actives: list[Directive], *, budget: int, stepped: set[int]) -> list[DirectiveTickResult]:
+    """Advance each pre-admission directive one step, up to *budget* directives."""
+    results: list[DirectiveTickResult] = []
+    for directive in actives:
+        if len(results) >= budget:
+            break
+        if directive.state not in _INTAKE_STATES:
+            continue
+        result = _advance_intake(directive)
+        if result is not None:
+            stepped.add(directive.pk)
+            results.append(result)
+    return results
+
+
+def _execution_candidate(actives: list[Directive], *, stepped: set[int]) -> Directive | None:
+    """The oldest post-admission directive this tick has not already moved.
+
+    *stepped* excludes a directive the intake drain just advanced: admission flips a row
+    into the execution arc mid-tick, and taking its next step immediately would run two
+    FSM steps on one directive in one tick.
+    """
+    return next((row for row in actives if row.pk not in stepped and row.state not in _INTAKE_STATES), None)
+
+
+def _run_execution_step(
+    directive: Directive,
+    settings: DirectiveLoopSettings,
+    *,
+    overlay: str,
+    now: datetime | None,
+    seams: TickSeams,
+) -> DirectiveTickResult:
+    """Advance *directive* one post-admission step, or refuse on the execution chain.
+
+    The execution guard chain is consulted only once a directive is actually in that
+    arc, so a tick that merely interprets never logs a spurious execution refusal.
+    """
+    verdict = evaluate_execution_guards(settings=settings, seams=seams.guards, overlay=overlay, now=now)
+    if not verdict.ok:
+        return _refused(verdict.reason, directive_id=directive.pk)
+    return _advance_execution(directive, settings, now=now, seams=seams)
+
+
+def _summarise(results: list[DirectiveTickResult]) -> DirectiveTickResult:
+    """Report the first result that made progress, tagged with how many directives moved."""
+    advanced = sum(1 for result in results if result.action not in _NO_PROGRESS_ACTIONS)
+    headline = next(
+        (result for result in results if result.action not in _NO_PROGRESS_ACTIONS),
+        results[0] if results else DirectiveTickResult(action="idle", reason="no_active_directive"),
     )
-    if not execution_verdict.ok:
-        return _refused(execution_verdict.reason, directive_id=directive.pk)
-    return _advance_execution(directive, resolved_settings, now=now, seams=resolved_seams)
+    return replace(headline, advanced=advanced)
 
 
 def _refused(reason: str, *, directive_id: int | None = None) -> DirectiveTickResult:

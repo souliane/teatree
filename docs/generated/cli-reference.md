@@ -1496,8 +1496,8 @@ Usage: t3 eval [OPTIONS] COMMAND [ARGS]...
 │                                  CLI-free lane, metered on                   │
 │                                  ANTHROPIC_API_KEY), or 'pydantic_ai' (RUN a │
 │                                  non-Claude model through the                │
-│                                  provider-agnostic harness seam, OrcaRouter  │
-│                                  BYOK).                                      │
+│                                  provider-agnostic harness seam, the         │
+│                                  OpenAI-compatible backend).                 │
 │                                  [default: transcript]                       │
 │ --transcript-dir        PATH     Directory of <scenario>.jsonl transcripts   │
 │                                  for the AI lane (default: cwd).             │
@@ -2416,8 +2416,9 @@ Usage: t3 eval run [OPTIONS] [NAME]
 │                                                     'pydantic_ai' (RUN a     │
 │                                                     non-Claude model through │
 │                                                     the provider-agnostic    │
-│                                                     harness seam, OrcaRouter │
-│                                                     BYOK — the               │
+│                                                     harness seam, the        │
+│                                                     OpenAI-compatible        │
+│                                                     backend — the            │
 │                                                     model-evolution lane).   │
 │                                                     --trials and --models    │
 │                                                     require --backend api.   │
@@ -7276,10 +7277,13 @@ Usage: t3 teatree workspace clean-all [OPTIONS]
 │ --keep-dslr                    INTEGER  Number of DSLR snapshots to keep per │
 │                                         tenant.                              │
 │                                         [default: 1]                         │
-│ --dry-run      --no-dry-run             Preview only: list each worktree     │
-│                                         that WOULD WIPE (with its            │
-│                                         done-signal source) or be KEPT,      │
-│                                         removing nothing.                    │
+│ --dry-run      --no-dry-run             Preview only: every pass reports     │
+│                                         what it WOULD do — each worktree     │
+│                                         that would WIPE (with its            │
+│                                         done-signal source) or be KEPT, plus │
+│                                         the branch, stash, orphan            │
+│                                         DB/docker/env-root, raw-worktree and │
+│                                         DSLR candidates — removing nothing.  │
 │                                         [default: no-dry-run]                │
 │ --help                                  Show this message and exit.          │
 ╰──────────────────────────────────────────────────────────────────────────────╯

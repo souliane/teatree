@@ -566,7 +566,7 @@ ensure_clone() {
 # teatree-slack-listener`); an empty-queue exit never does.
 #
 # Each pass rewrites a heartbeat file that `t3 doctor` reads from another
-# container to surface a stuck/failed drain (self_heal `_check_slack_drain_alive`).
+# container to surface a stuck/failed drain (`self_heal_slack_drain.check_slack_drain_alive`).
 # The heartbeat path mirrors teatree.paths.DATA_DIR ($HOME/.local/share/teatree) —
 # the filename is pinned to the doctor side by tests/test_deploy_slack_listener.py.
 slack_drain_loop() {

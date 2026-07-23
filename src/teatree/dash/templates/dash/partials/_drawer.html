@@ -1,6 +1,15 @@
+{% load dash_format %}
 <div class="drawer">
   <div class="drawer-head">
-    <h2><span class="mono">#{{ detail.number }}</span> {{ detail.short_description|default:"(no description)" }}</h2>
+    <h2>
+      {% if detail.issue_href %}
+        <a class="mono" href="{{ detail.issue_href }}" target="_blank" rel="noopener"
+          title="Open {{ detail.issue_ref }} on the forge">{{ detail.issue_ref }}</a>
+      {% else %}
+        <span class="mono">#{{ detail.number }}</span>
+      {% endif %}
+      {% if detail.short_description %}{{ detail.short_description|code_spans }}{% else %}(no description){% endif %}
+    </h2>
     <button type="button" class="drawer-close" data-drawer-close aria-label="Close ticket detail">×</button>
   </div>
   <div class="card-meta">
@@ -9,7 +18,7 @@
     <span class="chip role">{{ detail.role }}</span>
     <span class="chip">{{ detail.kind }}</span>
     {% if detail.expedited %}<span class="chip expedited">expedited</span>{% endif %}
-    {% if detail.issue_url %}<a class="chip" href="{{ detail.issue_url }}" target="_blank" rel="noopener">issue</a>{% endif %}
+    {% if detail.issue_href %}<a class="chip" href="{{ detail.issue_href }}" target="_blank" rel="noopener">{{ detail.issue_ref }}</a>{% endif %}
   </div>
 
   <h3>Actions</h3>

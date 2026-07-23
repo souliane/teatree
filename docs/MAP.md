@@ -64,7 +64,6 @@ lightweight entry-point packages. The Python source lives under
 | `docs/` | User-facing documentation (mkdocs site) plus `generated/` auto-generated reference |
 | `scripts/` | Standalone build, install, lint, and hook helper scripts (`privacy_scan.py`, `ai_signature_scan.py`, `hooks/`, `lib/`) |
 | `dev/` | Local dev/test infrastructure — docker compose, test/e2e Dockerfiles, the test matrix script |
-| `docs/audits/` | Periodic codebase audit notes |
 
 ## Related navigation
 

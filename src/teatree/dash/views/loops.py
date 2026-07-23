@@ -17,6 +17,7 @@ from teatree.dash import audit
 from teatree.dash.loop_control import (
     AVAILABILITY_ACTIONS,
     GATE_CONFIRM_PHRASE,
+    RUNNER_CONFIRM_PHRASE,
     LoopActionError,
     LoopControlView,
     apply_loop_action,
@@ -30,15 +31,21 @@ if TYPE_CHECKING:
     from django.http import HttpRequest, HttpResponse
 
 _GATE_KEY = "danger_gate_fail_open"
+_RUNNER_KEY = "loop_runner_enabled"
 
 
 class LoopsContext(TypedDict):
     control: LoopControlView
     gate_confirm_phrase: str
+    runner_confirm_phrase: str
 
 
 def _loops_context() -> LoopsContext:
-    return {"control": build_loop_control(), "gate_confirm_phrase": GATE_CONFIRM_PHRASE}
+    return {
+        "control": build_loop_control(),
+        "gate_confirm_phrase": GATE_CONFIRM_PHRASE,
+        "runner_confirm_phrase": RUNNER_CONFIRM_PHRASE,
+    }
 
 
 @require_loopback_or_staff
@@ -110,6 +117,26 @@ def gate_toggle(request: "HttpRequest") -> "HttpResponse":
     before = str(ConfigSetting.objects.get_effective(_GATE_KEY))
     ConfigSetting.objects.set_value(_GATE_KEY, value=enable)
     audit.record(actor=actor(request), action="gate:danger_gate_fail_open", before=before, after=str(enable))
+    return redirect("dash:loops")
+
+
+@require_loopback_or_staff
+@require_POST
+def runner_toggle(request: "HttpRequest") -> "HttpResponse":
+    """POST the global ``loop_runner_enabled`` kill-switch, gated behind a typed confirm.
+
+    Turning it OFF stops the whole loop fleet, and an accidental stop is the
+    hardest flip on this page to notice — nothing errors, work simply stops
+    arriving. So the OFF direction requires typing the exact confirm phrase, ON
+    does not (restarting the fleet is recoverable), and BOTH are audited.
+    """
+    enable = request.POST.get("enable") in {"1", "true", "on"}
+    confirm = request.POST.get("confirm", "").strip()
+    if not enable and confirm != RUNNER_CONFIRM_PHRASE:
+        return HttpResponseBadRequest(f"type {RUNNER_CONFIRM_PHRASE!r} to stop the loop fleet")
+    before = str(ConfigSetting.objects.get_effective(_RUNNER_KEY))
+    ConfigSetting.objects.set_value(_RUNNER_KEY, value=enable)
+    audit.record(actor=actor(request), action=f"kill-switch:{_RUNNER_KEY}", before=before, after=str(enable))
     return redirect("dash:loops")
 
 

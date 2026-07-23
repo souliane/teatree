@@ -1,7 +1,6 @@
 """Conformance test § 5.2: every ``ProvisionStep`` carries a post-condition or idempotent marker.
 
-The forensic provisioning root-cause analysis
-(``docs/provisioning-rootcause-2026-05-27.md``) identifies Pattern B: a
+Pattern B of the provisioning failure taxonomy: a
 step's ``callable`` returns without raising, but the real artifact is
 broken (symlink dangling, env file unreadable, DB dropped, node_modules
 empty). The FSM reports green because the runner only checks "did the
@@ -72,8 +71,8 @@ def test_provision_step_dataclass_declares_post_condition_and_idempotent_fields(
     """Require typed ``post_condition`` and ``idempotent`` fields on ``ProvisionStep``.
 
     Today the dataclass has ``name`` / ``callable`` / ``required`` /
-    ``description`` only. This assertion goes RED on ``main`` — see
-    ``docs/provisioning-rootcause-2026-05-27.md`` § 3.2.
+    ``description`` only. This assertion goes RED on ``main``: the dataclass carries no
+    post-condition field, so no step can declare one.
 
     Marked ``xfail(strict=True)``: it WILL fail until paradigm issue
     [#1386](https://github.com/souliane/teatree/issues/1386) lands the
@@ -85,7 +84,7 @@ def test_provision_step_dataclass_declares_post_condition_and_idempotent_fields(
         "ProvisionStep is missing typed contract fields: "
         + ", ".join(sorted(missing))
         + f". Current fields: {sorted(field_names)}. "
-        "See docs/provisioning-rootcause-2026-05-27.md § 3.2."
+        "A step must be verified by a declared post-condition, not by whether its callable raised."
     )
 
 
@@ -117,7 +116,7 @@ def test_every_provision_step_carries_post_condition_or_idempotent_marker(
         pytest.fail(
             "ProvisionStep lacks post_condition / idempotent fields entirely — "
             "every step is implicitly Pattern B. "
-            "See docs/provisioning-rootcause-2026-05-27.md § 3.2."
+            "A step must be verified by a declared post-condition, not by whether its callable raised."
         )
 
     violations = [

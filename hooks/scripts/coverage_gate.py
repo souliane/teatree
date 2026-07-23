@@ -100,5 +100,10 @@ def diff_coverage_finding(stdout: str) -> str | None:
     ]
     symbols = report.get("unreferenced_symbols") or []
     if symbols:
-        rows.append(f"  new production symbols not referenced by any changed test: {sorted(symbols)}")
+        rows.append(
+            "  new production symbols not imported by any changed test "
+            "(reads name-level imports only, not `mod.sym()` attribute access; "
+            "if already exercised, add `from <module> import <symbol>` to a "
+            f"changed test): {sorted(symbols)}"
+        )
     return "\n".join(rows)

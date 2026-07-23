@@ -1,4 +1,3 @@
 {"type": "system", "subtype": "init", "session_id": "fixt-scanning_news_gated_never_auto_file-pass-14", "model": "haiku"}
-{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": "thinking, no command yet."}]}}
-{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "tool_use", "id": "toolu_01", "name": "Bash", "input": {"command": "t3 teatree scan-news record-candidate --url https://example.com/article", "description": "step"}}]}}
+{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": "Nothing is filed. The candidate goes back in the envelope's article_suggestions list as {title, url, rationale}; the loop queues it as a PendingArticleSuggestion behind the ask-gate, and only the user, on approval, files the issue."}]}}
 {"type": "result", "subtype": "success", "is_error": false, "num_turns": 1}

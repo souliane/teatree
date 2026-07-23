@@ -1,6 +1,7 @@
 """``review_request_dedup_window_days`` — config-driven live-Slack dedup window (#1084 follow-up)."""
 
-from teatree.config.settings import OVERLAY_OVERRIDABLE_SETTINGS, UserSettings
+from teatree.config.setting_registries import OVERLAY_OVERRIDABLE_SETTINGS
+from teatree.config.settings import UserSettings
 
 
 class TestDedupWindowDefault:

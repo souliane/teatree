@@ -140,9 +140,17 @@ DB-home field resolves from `ConfigSetting` (global + overlay rows) + env only.
 per-overlay-TOML-overridable fields `orchestrator_bash_gate_enabled` / `privacy` —
 per-overlay override now lives in a `ConfigSetting` overlay-scope row — `handover_mirror_path`
 — its pre-Django SessionStart reader reads the DB via `cold_reader`, which fails open to
-the same default bootstrap path `write_mirror` uses when unset — `statusline_chain` —
+the same default bootstrap path `write_mirror` uses when unset; that default is the SHARED
+data dir (`$T3_DATA_DIR` when set, else `${XDG_DATA_HOME:-~/.local/share}/teatree`) plus
+`handover/latest.md` (#3563) — the state dir is runtime-local, so a hand-off created inside
+the worker container wrote its mirror to a filesystem the host could not read and the host's
+`latest.md` stayed pinned to an ancient session, while the data dir is the one directory
+every runtime shares (the deploy already bind-mounts it) — `statusline_chain` —
 the bash statusline hook reads it from the canonical sqlite via the `sqlite3` CLI +
-`json_each` — and `autoload` — the #256 engagement flag; its cold SessionStart /
+`json_each` — `statusline_engaged_render` — the #3502 opt-in (strict bool, default OFF)
+that renders the statusline in a hand-engaged session (an engage marker present) even
+with autoload off, read DB-only by the bash statusline
+(`statusline.sh._statusline_engaged_render_db_value`) — and `autoload` — the #256 engagement flag; its cold SessionStart /
 UserPromptSubmit readers (`teatree_settings.autoload_enabled` via `_cold_db_bool`,
 `statusline.sh` via the `sqlite3` CLI) read the DB ONLY, so a `[teatree] autoload`
 value is ignored on read and the how-to advisory points at

@@ -19,8 +19,9 @@ import os
 import re
 import sqlite3
 import tempfile
-from collections.abc import Iterator
+from collections.abc import Iterator, Mapping
 from contextlib import contextmanager
+from dataclasses import dataclass
 from pathlib import Path
 from typing import NamedTuple
 
@@ -31,6 +32,30 @@ _TRUE_CANONICAL_DATA_DIR = Path.home() / ".local" / "share" / "teatree"
 #: isolated sibling DB instead — the #779 cross-DB mismatch. Public so the
 #: lifecycle/ship guard can name it in the refusal message.
 TRUE_CANONICAL_DB = _TRUE_CANONICAL_DATA_DIR / "db.sqlite3"
+
+# A repo root that is definitionally NOT a worktree (no ``.git`` file), so
+# ``ControlDb.for_repo`` takes its primary branch. Lets ``ControlDb.primary``
+# reuse the one seam instead of re-deriving the env precedence.
+_PRIMARY_CLONE_SENTINEL = Path("/nonexistent-primary-clone")
+
+
+class ControlDbResolution(NamedTuple):
+    """Which control DB this entry point talks to, and whether it was isolated.
+
+    THE single resolution seam (#3514). Subcommands used to disagree about the
+    answer — the Django/ORM path auto-isolates a worktree onto a per-worktree DB
+    while the pre-Django cold path always resolves the PRIMARY one — with no shared
+    implementation of the env precedence and no signal when the two diverged, so a
+    ticket written by one subcommand was invisible to the next. Every path derives
+    from here now, and :meth:`ControlDb.divergence_message` turns the remaining,
+    deliberate divergence into a stated fact.
+
+    *reason* names why this answer was reached, so a diagnostic can quote it.
+    """
+
+    path: Path
+    isolated: bool
+    reason: str
 
 
 class ResolvedDataDir(NamedTuple):
@@ -147,6 +172,82 @@ def resolve_data_dir(*, env: dict[str, str], home: Path, repo_root: Path) -> Res
             raise CanonicalDBFromWorktreeError(repo_root)
         return ResolvedDataDir(data_dir, auto_isolated=False)
     return ResolvedDataDir(_worktree_isolation_root(home) / isolated_slug(repo_root), auto_isolated=True)
+
+
+@dataclass(frozen=True, slots=True)
+class ControlDb:
+    """Which control DB an entry point talks to, under one ``env`` + ``home`` (#3514).
+
+    Composes the three answers that were separate module functions each repeating the
+    same ``(env, home)`` pair: :meth:`for_repo` (this entry point's DB), :meth:`primary`
+    (the DB the installed ``t3`` and the live loop use), and :meth:`divergence_message`
+    (what to say when the two differ).
+
+    ``home=None`` defers to the running process's ``Path.home()``, and does so LAZILY —
+    only on the branch that actually needs it. An explicit ``T3_CONFIG_DB`` already
+    fixes the answer, so resolving it must not touch the home tree at all: eagerly
+    computing the default made every cold read a home-tree read, which is exactly the
+    coupling ``tests/test_no_agent_memory_dependency.py`` forbids.
+    """
+
+    env: Mapping[str, str]
+    home: Path | None = None
+
+    def for_repo(self, repo_root: Path) -> ControlDbResolution:
+        """THE control-DB answer for code resident in *repo_root*.
+
+        First match wins: an explicit ``T3_CONFIG_DB`` (which collapses every path onto
+        one DB, the escape hatch for a subcommand that must join the primary), then
+        :func:`resolve_data_dir`'s own precedence (``XDG_DATA_HOME``, else the
+        auto-isolated per-worktree dir for worktree code, else the canonical dir). Pure
+        for an explicit ``home``: it then reads only its own state, so a caller can
+        resolve any entry point's answer — including one it is not itself running as —
+        which is what makes the divergence describable.
+        """
+        override = self.env.get("T3_CONFIG_DB")
+        if override:
+            return ControlDbResolution(Path(override), isolated=False, reason="T3_CONFIG_DB is set explicitly")
+        resolved = resolve_data_dir(
+            env=dict(self.env),
+            home=self.home if self.home is not None else Path.home(),
+            repo_root=repo_root,
+        )
+        reason = (
+            "worktree code with no explicit XDG_DATA_HOME is auto-isolated onto its own DB"
+            if resolved.auto_isolated
+            else "the primary data dir"
+        )
+        return ControlDbResolution(resolved.path / "db.sqlite3", isolated=resolved.auto_isolated, reason=reason)
+
+    def primary(self) -> Path:
+        """The PRIMARY control DB — the same answer a main clone resolves to.
+
+        The worktree-isolation branch is deliberately not taken: the pre-Django cold
+        readers must reach the DB the installed ``t3`` and the live loop operate on,
+        even when the code they are embedded in lives in a worktree. Derived from
+        :meth:`for_repo` against a synthetic primary-clone root so the env precedence
+        has ONE implementation, never a second copy that can drift.
+        """
+        return self.for_repo(_PRIMARY_CLONE_SENTINEL).path
+
+    def divergence_message(self, repo_root: Path) -> str | None:
+        """The message naming both DBs when *repo_root*'s answer is not the primary.
+
+        ``None`` when they agree — the ordinary case, and nothing to say. Otherwise the
+        isolation is real and intended (worktree code must never migrate the canonical
+        DB), so the message states both paths and the remedy rather than pretending it
+        away: a stranded ticket is what happens when this stays unsaid.
+        """
+        mine = self.for_repo(repo_root)
+        primary = self.primary()
+        if mine.path == primary:
+            return None
+        return (
+            f"This entry point resolves the control DB at {mine.path} ({mine.reason}), while the "
+            f"installed `t3` and the live loop use {primary}. A ticket written here is NOT visible "
+            f"there. Run `t3 <overlay> worktree provision` to provision this worktree, or set "
+            f"T3_CONFIG_DB to join a specific DB deliberately."
+        )
 
 
 @contextmanager

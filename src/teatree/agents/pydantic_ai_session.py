@@ -28,7 +28,7 @@ if TYPE_CHECKING:
     from pydantic_ai.messages import ModelMessage
     from pydantic_ai.result import StreamedRunResult
 
-#: The response-usage keys OrcaRouter (or another metered OpenAI-compatible router) may
+#: The response-usage keys A metered OpenAI-compatible endpoint may
 #: carry its own per-request cost under, when pydantic_ai threads it through ``RunUsage.details``.
 _ROUTER_COST_KEYS = ("cost", "cost_usd", "total_cost", "total_cost_usd")
 
@@ -36,7 +36,7 @@ _ROUTER_COST_KEYS = ("cost", "cost_usd", "total_cost", "total_cost_usd")
 def _router_reported_cost(run_usage: object) -> float | None:
     """The metered router's OWN reported cost from a pydantic_ai run usage, or ``None`` (#3157 E5).
 
-    A metered OpenAI-compatible router (OrcaRouter) knows the real per-request cost; core only
+    A metered OpenAI-compatible endpoint knows the real per-request cost; core only
     estimates it. When pydantic_ai surfaces that figure in ``RunUsage.details``, record THAT
     number (flagged not-estimated) instead of the price-table estimate. Absent (the common case
     today) → ``None``, so the estimate is used and flagged as such. Best-effort: any cost-like
@@ -210,8 +210,8 @@ class PydanticAiHarnessSession:
         # un-phased run stays history-identical to #2885 — a resumed thread is
         # sent verbatim, never trimmed.
         self._phase = phase
-        # The per-run sequential-request cap (OrcaRouter setup plan §4 guardrail
-        # #1). A positive value becomes ``UsageLimits(request_limit=...)`` on each
+        # The per-run sequential-request cap (the metered-lane guardrail). A positive
+        # value becomes ``UsageLimits(request_limit=...)`` on each
         # ``run_stream`` so a cheap-model maker can't drift on a long tool loop;
         # ``None``/``<= 0`` leaves the run uncapped (the ``claude_sdk`` behaviour).
         self._request_limit = request_limit
@@ -361,7 +361,7 @@ class PydanticAiHarnessSession:
         """The per-run step cap as pydantic_ai ``UsageLimits``, or ``None`` when uncapped.
 
         A positive :attr:`_request_limit` caps the model-request count per run
-        (OrcaRouter setup plan §4 guardrail #1); ``None``/``<= 0`` returns ``None``
+        (the metered-lane guardrail); ``None``/``<= 0`` returns ``None``
         so the run is uncapped — the shipped behaviour for a resumed #2885 thread
         opened with no cap.
         """

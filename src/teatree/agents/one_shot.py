@@ -11,7 +11,7 @@ helper that:
     DB row reaches the call; and
 *   routes the turn through the provider-agnostic harness seam
     (:func:`~teatree.agents.harness.resolve_harness`), so the SAME clean-room
-    turn runs on ``claude_sdk`` or ``pydantic_ai``/OrcaRouter with no code edit.
+    turn runs on ``claude_sdk`` or ``pydantic_ai`` with no code edit.
 
 The turn is CLEAN-ROOM: an empty ``setting_sources`` and empty ``settings`` (no
 hooks), no tools, and a single ``max_turns`` so the model answers from the
@@ -26,7 +26,7 @@ operator misconfiguration that must surface, not a turn that silently answered
 ``None`` and stranded every caller on its fallback forever with nothing naming
 the cause. TWO refusal paths raise: the ambient base-URL guard, checked while
 building the options before the turn is attempted; and a credential the
-``pydantic_ai`` lane resolves LAZILY inside ``harness.open()`` (the OrcaRouter BYOK
+``pydantic_ai`` lane resolves LAZILY inside ``harness.open()`` (the the OpenAI-compatible backend
 key or the native Anthropic key), which sits INSIDE the degrade-to-``None`` try and
 so is re-raised explicitly ahead of the blanket handler.
 """

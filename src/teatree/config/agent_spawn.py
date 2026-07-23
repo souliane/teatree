@@ -9,7 +9,7 @@ one DB key per setting. Set a value with
     t3 <overlay> config_setting set agent_session_effort xhigh
     t3 <overlay> config_setting set agent_skill_models '{"code-review": "opus"}'
     t3 <overlay> config_setting set agent_tier_models '{"frontier": "claude-opus-4-9"}'
-    t3 <overlay> config_setting set agent_pydantic_ai_tier_models '{"frontier": "orcarouter/teatree-factory"}'
+    t3 <overlay> config_setting set agent_pydantic_ai_tier_models '{"frontier": "vendor/some-model"}'
     t3 <overlay> config_setting set agent_tier_effort '{"balanced": "xhigh"}'
 
 The per-skill floor (``agent_skill_models``) is MODEL only — there is
@@ -39,6 +39,7 @@ to ``None`` at this boundary without ``config.agent_spawn`` importing UP into
 definition of "this value means inherit the default".
 """
 
+import os
 from dataclasses import dataclass, field
 
 from teatree.config import cold_reader
@@ -99,12 +100,12 @@ class AgentConfig:
         Mirrors ``skill_models`` (a typed ``agent_tier_models`` dict); a
         non-dict value or a non-string entry value yields no override.
     *   ``pydantic_ai_tier_models`` — the ``tier_models`` sibling for the
-        ``pydantic_ai`` (OrcaRouter) harness: abstract-tier-name → OrcaRouter
+        ``pydantic_ai`` (OpenAI-compatible) harness: abstract-tier-name → provider-native
         model/router-handle id, merged OVER
         :data:`teatree.agents.model_tiering.PYDANTIC_AI_TIER_MODELS`. Distinct from
         ``tier_models`` because the two harnesses target different catalogs — the
         ``claude_sdk`` harness serves Claude dash-form ids, the ``pydantic_ai``
-        harness serves OrcaRouter's provider-prefixed ids. Empty by default → the
+        harness serves the provider's own prefixed ids. Empty by default → the
         shipped router-handle default stands. Same mechanics/tolerance as
         ``tier_models``.
     *   ``tier_effort`` — abstract-tier-name → reasoning effort, merged OVER
@@ -118,6 +119,14 @@ class AgentConfig:
     *   ``session_effort`` — the interactive main-agent ``--effort`` pin (a
         member of :data:`EFFORT_SCALE`). Defaults to
         :data:`DEFAULT_SESSION_EFFORT` (``xhigh``) when unset.
+    *   ``session_permission_mode`` — the ``t3 loop start`` ``--permission-mode``
+        override (#3528). Empty (the default) means NO opinion, and the CLI keeps
+        its shipped ``permission_modes.UNATTENDED`` pin — which is what makes
+        ``t3 doctor check``'s ``auto`` advice safe to follow. The setting exists so
+        an operator can narrow it without editing teatree. The default lives at the
+        CLI rather than here because this platform layer may not import
+        ``teatree.agents``. ``T3_AGENT_SESSION_PERMISSION_MODE`` wins over the
+        stored value.
     *   ``honesty_model`` — the most-honest model a situational honesty-critical
         escalation routes verification spawns to (teatree#2263). Default
         ``"opus"`` — the frontier-tier baseline, requiring no operator opt-in.
@@ -151,6 +160,7 @@ class AgentConfig:
     skill_models: dict[str, str | None] = field(default_factory=dict)
     session_model: str | None = None
     session_effort: str | None = DEFAULT_SESSION_EFFORT
+    session_permission_mode: str = ""
     phase_fanout: dict[str, bool | int] = field(default_factory=dict)
     honesty_model: str = "opus"
     tier_models: dict[str, str] = field(default_factory=dict)
@@ -245,7 +255,7 @@ def _tier_models_from(raw: object) -> dict[str, str]:
 def _pydantic_ai_tier_models_from(raw: object) -> dict[str, str]:
     """Normalise the ``agent_pydantic_ai_tier_models`` value into a tier → id override map.
 
-    The ``pydantic_ai``/OrcaRouter sibling of :func:`_tier_models_from` — identical
+    The ``pydantic_ai`` sibling of :func:`_tier_models_from` — identical
     tolerance (non-dict → empty, a non-string-or-blank entry skipped) so a
     malformed override never poisons the shipped
     :data:`teatree.agents.model_tiering.PYDANTIC_AI_TIER_MODELS` default.
@@ -304,6 +314,19 @@ def _session_effort_from(raw: object) -> str | None:
     return parse_effort(raw)
 
 
+def _session_permission_mode_from(raw: object) -> str:
+    """The loop session's permission-mode override — env, then the stored value, else empty.
+
+    Empty means no opinion: the CLI keeps its shipped pin. A non-string or blank
+    stored value is likewise no opinion, so it can never pin an empty flag onto the
+    ``claude`` argv.
+    """
+    env = os.environ.get("T3_AGENT_SESSION_PERMISSION_MODE", "").strip()
+    if env:
+        return env
+    return raw.strip() if isinstance(raw, str) else ""
+
+
 def resolve_agent_config() -> AgentConfig:
     """Resolve the effective :class:`AgentConfig` from the DB ``ConfigSetting`` store.
 
@@ -321,6 +344,9 @@ def resolve_agent_config() -> AgentConfig:
         skill_models=_skill_models_from(cold_reader.read_setting("agent_skill_models")),
         session_model=_session_model_from(cold_reader.read_setting("agent_session_model")),
         session_effort=_session_effort_from(cold_reader.read_setting("agent_session_effort")),
+        session_permission_mode=_session_permission_mode_from(
+            cold_reader.read_setting("agent_session_permission_mode")
+        ),
         phase_fanout=_phase_fanout_from(cold_reader.read_setting("agent_phase_fanout")),
         honesty_model=_honesty_model_from(cold_reader.read_setting("agent_honesty_model")),
         tier_models=_tier_models_from(cold_reader.read_setting("agent_tier_models")),

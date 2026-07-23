@@ -101,6 +101,12 @@ class _LoopFlagAndCredentialSettings:
     # judged once this many days elapse. DB-home, per-overlay overridable. Inert while
     # ``directive_loop_enabled`` is off (nothing reaches VERIFYING).
     directive_verify_days: int = 7
+    # #3649 — how many directives one tick may advance through the INERT pre-admission
+    # arc (interpret → clarify → ratify-ask → admit). Execution stays one directive per
+    # tick regardless: this bounds only the arc that writes nothing and terminates at the
+    # human ratify gate, so a backlog reaches the owner in a bounded number of ticks
+    # instead of one directive per tick. DB-home, per-overlay overridable.
+    directive_intake_per_tick: int = 25
     # T4-PR-3 — the autoresearch outer-loop runtime bounds (guard chain G4). Inert
     # while the flag is off: the measurement horizon after an experiment merges,
     # the max experiments admitted per rolling 7-day window, and the convergence

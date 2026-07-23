@@ -13,7 +13,7 @@ ever intaken on author trust until the operator names a trusted author.
 """
 
 from teatree.config import OVERLAY_OVERRIDABLE_SETTINGS, UserSettings, effective_trusted_issue_authors
-from teatree.config.settings import ENV_SETTING_OVERRIDES
+from teatree.config.setting_registries import ENV_SETTING_OVERRIDES
 
 
 class TestEffectiveTrustedIssueAuthors:

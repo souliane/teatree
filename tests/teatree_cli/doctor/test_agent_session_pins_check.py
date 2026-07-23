@@ -156,7 +156,7 @@ class TestAgentSessionPinsCheck:
         db = tmp_path / "config.sqlite3"
         _seed(
             db,
-            agent_session_model="orcarouter/teatree-factory",
+            agent_session_model="vendor/some-model",
             agent_skill_models={"c": "deepseek/deepseek-v4-pro"},
         )
         _point_at(monkeypatch, db)

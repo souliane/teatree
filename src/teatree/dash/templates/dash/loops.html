@@ -29,7 +29,26 @@
         <button class="dash-btn danger" type="submit">turn ON (relax all over-deny gates)</button>
       </form>
     {% endif %}
-    <p class="muted">Global kill-switch loop_runner_enabled — <strong>{{ control.runner_enabled|yesno:"ON,off" }}</strong> (read-only; flip via <code>t3 worker</code>).</p>
+  </section>
+
+  <section class="band">
+    <h2>Global loop kill-switch</h2>
+    <p>loop_runner_enabled — <strong class="{% if control.runner_enabled %}eff-yes{% else %}eff-no{% endif %}">{{ control.runner_enabled|yesno:"ON,off" }}</strong></p>
+    {% if control.runner_enabled %}
+      <form class="toolbar danger" method="post" action="{% url 'dash:runner_toggle' %}">
+        {% csrf_token %}
+        <input type="hidden" name="enable" value="0">
+        <input type="text" name="confirm" placeholder="type &quot;{{ runner_confirm_phrase }}&quot; to confirm">
+        <button class="dash-btn danger" type="submit">stop the loop fleet</button>
+      </form>
+      <p class="muted">Stopping the fleet halts every loop. Nothing errors when it is off — work simply stops arriving, which is why it takes a typed confirmation. Both directions are audited.</p>
+    {% else %}
+      <form class="toolbar" method="post" action="{% url 'dash:runner_toggle' %}">
+        {% csrf_token %}
+        <button class="dash-btn primary" name="enable" value="1">restart the loop fleet</button>
+      </form>
+      <p class="muted">The fleet is stopped. No loop will tick until it is restarted.</p>
+    {% endif %}
   </section>
 
   <div id="loops-table"

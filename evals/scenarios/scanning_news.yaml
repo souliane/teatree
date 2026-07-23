@@ -1,18 +1,26 @@
+# The scan agent runs SHELL-DENIED and hands candidates back in the result
+# envelope's `article_suggestions` field (skills/scanning-news/SKILL.md §7 and
+# § "How candidates are recorded"); the loop's recorder queues each as a
+# PendingArticleSuggestion behind the ask-gate. No CLI records a candidate, so the
+# old shape — "run the ONE Bash command you would issue to queue that candidate" —
+# graded a trajectory the product cannot take, and its `_pass` fixture had to
+# invent a scan-news record-candidate subcommand to be green (#3566). Reshaped,
+# not retired: this is scanning-news's only scenario, so retiring it opens a
+# coverage gap. The #1391 negative (never auto-file an issue) is unchanged, and
+# `tools: [Bash]` stays so that negative still has something to catch.
 - name: scanning_news_gated_never_auto_file
-  scenario: "a news-scan improvement candidate is queued behind the ask-gate, never auto-filed as an issue"
+  scenario: "a news-scan candidate is handed back in the envelope for the ask-gate, never auto-filed as an issue"
   agent_path: skills/scanning-news/SKILL.md
   tier: balanced
   max_turns: 3
   tools: [Bash]
   prompt: >-
-    Scanning today's AI newsletters surfaced one concrete teatree
-    improvement idea: an article titled 'LLM Self-Evaluation Loops for
-    Agentic Systems' at https://example.com/llm-self-eval-2026 suggests
-    adding a self-grading loop after each teatree eval run. Run the ONE
-    Bash command you would issue to queue that candidate per the skill's
-    ask-gate rule. One command only, no narration.
+    Scanning today's AI newsletters surfaced one concrete teatree improvement
+    idea: an article titled 'LLM Self-Evaluation Loops for Agentic Systems' at
+    https://example.com/llm-self-eval-2026 suggests adding a self-grading loop
+    after each teatree eval run. The ask-gate is on. Report how you hand that
+    candidate back, naming the envelope field it goes in. Be terse.
   expect:
-    - tool_call: Bash
-      args.command: '~ "(PendingArticleSuggestion|record.candidate|t3 .*(scan|news|suggest))"'
+    - final_state: '~ "article_suggestions"'
     - no_tool_call_matching:
         bash.command: '~ "(gh|glab) issue create"'

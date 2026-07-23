@@ -7,9 +7,9 @@ forge URLs and must never render as a link — they resolve to ``("", "")`` so
 the template renders plain text instead of a dead anchor.
 """
 
+from teatree.core.forge_url import is_forge_url
 from teatree.core.models.ticket_number import derive_issue_number
 
-_HTTP_SCHEMES = ("http://", "https://")
 _REQUEST_MARKERS = ("/pull/", "/merge_requests/")
 
 
@@ -20,7 +20,7 @@ def issue_link(issue_url: str) -> tuple[str, str]:
     a short human handle: ``!N`` for a pull/merge request, ``#N`` for an issue,
     or the trailing path segment when no numeric id is present.
     """
-    if not issue_url.startswith(_HTTP_SCHEMES):
+    if not is_forge_url(issue_url):
         return "", ""
     number = derive_issue_number(issue_url)
     if any(marker in issue_url for marker in _REQUEST_MARKERS):

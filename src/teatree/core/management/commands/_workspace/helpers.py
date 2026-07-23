@@ -13,6 +13,7 @@ from collections.abc import Callable
 from typing import TYPE_CHECKING, TypedDict
 
 from teatree.core.gates.orphan_guard import find_orphans_in_workspace
+from teatree.core.management.commands._workspace.preview import preview_line
 from teatree.core.models import Ticket, Worktree
 from teatree.core.overlay_loader import get_overlay, infer_overlay_for_url
 from teatree.core.runners import heal_missing_provisioned_db
@@ -110,10 +111,18 @@ def dslr_tenants_in_use() -> set[str]:
     return {overlay.provisioning.resolve_variant(v).canonical_tenant for v in variants if v}
 
 
-def prune_dslr_snapshots_skipping(*, keep: int, in_use_tenants: set[str]) -> list[str]:
+def prune_dslr_snapshots_skipping(*, keep: int, in_use_tenants: set[str], dry_run: bool = False) -> list[str]:
     """Prune DSLR snapshots (skipping in-use tenants) and return cleanup labels."""
-    from teatree.utils.django_db import prune_dslr_snapshots  # noqa: PLC0415 — deferred: keeps command import light
+    from teatree.utils.django_db import (  # noqa: PLC0415 — deferred: keeps command import light
+        prune_dslr_snapshots,
+        stale_dslr_snapshots,
+    )
 
+    if dry_run:
+        return [
+            preview_line(f"Prune DSLR snapshot: {name}", dry_run=True)
+            for name in stale_dslr_snapshots(keep=keep, in_use_tenants=in_use_tenants)
+        ]
     pruned = prune_dslr_snapshots(keep=keep, in_use_tenants=in_use_tenants)
     return [f"Pruned DSLR snapshot: {name}" for name in pruned]
 

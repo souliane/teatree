@@ -430,6 +430,18 @@ class TestSummaryRendering:
         assert "src/x.py" in text
         assert "widget" in text
 
+    def test_failed_summary_names_the_from_import_workaround(self) -> None:
+        # souliane/teatree#3521: the symbol check reads name-level imports
+        # only, so a symbol reached via `import mod` + `mod.sym()`
+        # false-flags as unreferenced. The failure text must name the
+        # workaround (`from <module> import <symbol>`) and that it does not
+        # see attribute access, so an already-covered symbol is cheap to
+        # unblock instead of misread as "cover it".
+        text = DiffCoverageReport(unreferenced_symbols=["widget"]).summary()
+        assert "from <module> import <symbol>" in text
+        assert "imports" in text
+        assert "attribute access" in text
+
 
 class TestFreshAnalysisAndEdgeCases:
     def test_file_never_imported_under_coverage_all_new_lines_uncovered(self, git_repo: Path) -> None:

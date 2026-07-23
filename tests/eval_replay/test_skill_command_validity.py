@@ -124,6 +124,19 @@ class TestValidateSkillCommands:
         report = validate_skill_commands(valid, groups, skills_dir=skills)
         assert report.ok
 
+    def test_a_placeholder_group_slot_names_no_concrete_command(self, tmp_path: Path) -> None:
+        # `t3 <overlay> <group> <sub>` is a doc TEMPLATE: substituting the overlay
+        # leaves a group placeholder, so there is no concrete command path to check.
+        # The registry lists `t3 teatree` as a group only, so treating it as a
+        # command path reported the template as drift.
+        valid = {"t3", "t3 teatree ticket list"}
+        groups = {"t3", "t3 teatree", "t3 teatree ticket"}
+        skills = tmp_path / "skills"
+        _skill(skills, "shape", "Every overlay command is `t3 <overlay> <group> <sub>`.")
+        report = validate_skill_commands(valid, groups, skills_dir=skills)
+        assert report.ok
+        assert report.checked == 0
+
     def test_overlay_placeholder_in_arg_position_is_still_skipped(self, tmp_path: Path) -> None:
         # A placeholder in an ARGUMENT position (after a resolved leaf, or a bare
         # `t3 <overlay> …` mention) is not drift — only the command PATH is checked.

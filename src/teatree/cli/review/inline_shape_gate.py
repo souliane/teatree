@@ -23,6 +23,8 @@ Fail-open on a read failure: a network/auth error fetching the drafts returns
 from collections.abc import Mapping
 from typing import TYPE_CHECKING, cast
 
+from teatree.cli.review.guarded_read import guarded_read
+
 if TYPE_CHECKING:
     from teatree.backends.gitlab.api import GitLabHTTPClient
 
@@ -43,13 +45,17 @@ def _is_inline_draft(note: object) -> bool:
 def count_inline_drafts(api: "GitLabHTTPClient", encoded_repo: str, mr: int) -> int:
     """Return the number of existing inline draft notes on the MR.
 
-    Best-effort: any exception fetching the drafts (missing token, network,
-    a test stub without the endpoint) returns 0, so the gate fails open.
+    Best-effort: a failed fetch (missing token, network, a test stub without the
+    endpoint) returns 0, so the gate fails open rather than refusing every draft
+    note whenever the forge is unreachable. The read goes through
+    :func:`~teatree.cli.review.guarded_read.guarded_read`, so that failure is
+    logged instead of being indistinguishable from "no drafts pending" (#3509).
     """
-    try:
-        notes = api.get_json(f"projects/{encoded_repo}/merge_requests/{mr}/draft_notes")
-    except Exception:  # noqa: BLE001 — network/auth failure → fail-open
+    endpoint = f"projects/{encoded_repo}/merge_requests/{mr}/draft_notes"
+    outcome = guarded_read(f"the inline draft notes on MR !{mr}", lambda: api.get_json(endpoint), neutral=None)
+    if outcome.failed:
         return 0
+    notes = outcome.value
     if not isinstance(notes, list):
         return 0
     return sum(1 for note in notes if _is_inline_draft(note))

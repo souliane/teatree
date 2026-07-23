@@ -943,6 +943,18 @@
         {
           "help": "Refresh the durable recovery artifacts (idempotent, safe to re-run)",
           "name": "prepare-stop"
+        },
+        {
+          "help": "Append an item to this session's durable working list",
+          "name": "todo-add"
+        },
+        {
+          "help": "List this session's working items, in working order",
+          "name": "todo-list"
+        },
+        {
+          "help": "Move one working item to *status*",
+          "name": "todo-set"
         }
       ]
     },

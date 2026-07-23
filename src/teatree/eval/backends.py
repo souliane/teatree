@@ -23,7 +23,7 @@ the *execution* is swappable behind one ``EvalRunner`` protocol. Three backends:
     capture-subagent`` copies its JSONL to the path this backend reads.
 *   ``pydantic_ai`` (:class:`~teatree.eval.pydantic_ai_runner.PydanticAiRunner`)
     RUNS a **non-Claude** model through the provider-agnostic harness seam
-    (OrcaRouter BYOK) — the model-evolution unblock, so a swapped GPT/open-source
+    (the OpenAI-compatible backend) — the model-evolution unblock, so a swapped GPT/open-source
     model is verifiable by the same scenarios.
 
 Credential: the fresh-run ``api`` backend authenticates with the credential the
@@ -31,7 +31,7 @@ Credential: the fresh-run ``api`` backend authenticates with the credential the
 reversing [#2707](https://github.com/souliane/teatree/issues/2707); metered
 ``ANTHROPIC_API_KEY`` under an ``api_key`` provider), resolved through the
 single ``teatree.credential_config.resolve_eval_credential`` seam. ``transcript``
-runs no model and authenticates nothing; ``pydantic_ai`` carries its own OrcaRouter
+runs no model and authenticates nothing; ``pydantic_ai`` carries its own OpenAI-compatible
 BYOK credential, resolved lazily inside the harness.
 
 SDK coupling: the ``api`` lane is genuinely coupled to ``claude-agent-sdk`` (it
@@ -64,7 +64,7 @@ KNOWN_BACKENDS = (API_BACKEND, ANTHROPIC_API_BACKEND, TRANSCRIPT_BACKEND, PYDANT
 #: the require-executed / all-skipped enforcement, both accept the fresh-run-only
 #: ``--trials`` / ``--models`` shapes, and both forward the metered credential into
 #: the ``--docker`` container. The ``transcript`` ($0 replay) and ``pydantic_ai``
-#: (non-Claude, OrcaRouter BYOK) lanes are neither.
+#: (non-Claude, the OpenAI-compatible backend) lanes are neither.
 FRESH_CLAUDE_BACKENDS = (API_BACKEND, ANTHROPIC_API_BACKEND)
 
 
@@ -110,7 +110,7 @@ def make_runner(
     ``"transcript"`` → the transcript-ingest runner that REUSES an
     already-recorded run; it runs no model, so it resolves no credential.
     ``"pydantic_ai"`` → the non-Claude runner that RUNS a model through the
-    provider-agnostic harness seam (OrcaRouter BYOK, credential resolved lazily);
+    provider-agnostic harness seam (the OpenAI-compatible backend, credential resolved lazily);
     ``max_turns_override`` and ``effort`` thread through, the Claude-only
     ``require_executed`` / ``max_budget_usd`` knobs do not apply.
 
@@ -174,7 +174,7 @@ def make_runner(
         # The non-Claude lane. Imported at call time (not module top) to keep the
         # eval CLI import chain Django-free — the pydantic_ai runner pulls in the
         # harness + settings, which cannot be read before ``django.setup()`` (the
-        # plain ``import teatree.cli`` path). The OrcaRouter/eval-lane knobs resolve
+        # plain ``import teatree.cli`` path). The backend/eval-lane knobs resolve
         # SYNCHRONOUSLY inside the factory, before the async run.
         from teatree.eval.pydantic_ai_runner import (  # noqa: PLC0415 — lazy: keeps the eval CLI import chain Django-free until a pydantic_ai run is requested (see the branch comment).
             build_pydantic_ai_eval_runner,

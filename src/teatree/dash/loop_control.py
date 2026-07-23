@@ -42,6 +42,13 @@ AVAILABILITY_ACTIONS: frozenset[str] = frozenset({*AVAILABILITY_POSTURES, "auto"
 # the one switch that relaxes every over-deny gate must never be a one-click toggle.
 GATE_CONFIRM_PHRASE = "fail-open"
 
+# The exact phrase the operator must type to STOP the whole loop fleet
+# (``loop_runner_enabled`` OFF). Same doctrine as the fail-open switch, mirrored on
+# the axis that matters here: the dangerous direction is OFF, and an accidental
+# stop is the hardest flip on this page to notice — nothing errors, work simply
+# stops arriving. Re-enabling needs no phrase; restarting the fleet is recoverable.
+RUNNER_CONFIRM_PHRASE = "stop-the-fleet"
+
 
 @dataclass(frozen=True, slots=True)
 class LoopRow:

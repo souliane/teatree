@@ -14,6 +14,7 @@ from teatree.core.models.pull_request import PullRequest
 from teatree.core.models.ticket import Ticket
 from teatree.core.models.transition import TicketTransition
 from teatree.core.selectors import build_ticket_lifecycle_mermaid
+from teatree.dash.issue_link import issue_link
 from teatree.dash.selectors import PrChip, group_slug
 
 
@@ -56,6 +57,8 @@ class TicketDetail:
     role: str
     kind: str
     issue_url: str
+    issue_href: str
+    issue_ref: str
     short_description: str
     expedited: bool
     remote_missing: bool
@@ -93,6 +96,7 @@ def legal_transition_names(ticket: Ticket) -> tuple[str, ...]:
 
 def build_ticket_detail(ticket_id: int) -> TicketDetail:
     ticket = Ticket.objects.get(pk=ticket_id)
+    issue_href, issue_ref = issue_link(ticket.issue_url)
     return TicketDetail(
         ticket_id=ticket.pk,
         number=ticket.ticket_number,
@@ -103,6 +107,8 @@ def build_ticket_detail(ticket_id: int) -> TicketDetail:
         role=ticket.role,
         kind=ticket.kind,
         issue_url=ticket.issue_url,
+        issue_href=issue_href,
+        issue_ref=issue_ref,
         short_description=ticket.short_description,
         expedited=ticket.expedited,
         remote_missing=ticket.remote_missing,

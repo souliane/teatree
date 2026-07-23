@@ -23,6 +23,7 @@ from teatree.cli.doctor.checks_cold_hooks import _check_cold_hook_settings_reada
 from teatree.cli.doctor.checks_docker import _check_docker_workflow_wired
 from teatree.cli.doctor.checks_environment import (
     _check_configured_review_skills,
+    _check_control_db_agreement,
     _check_dangling_editable_pth,
     _check_editable_sanity,
     _check_entrypoint_is_primary_clone,
@@ -35,6 +36,7 @@ from teatree.cli.doctor.checks_environment import (
 )
 from teatree.cli.doctor.checks_intent import _check_intent_freshness
 from teatree.cli.doctor.checks_loop import (
+    _check_compose_output_root_pinned,
     _check_dream_staleness,
     _check_dream_transcript_visibility,
     _check_loop_presets,
@@ -61,6 +63,7 @@ from teatree.cli.doctor.checks_session import (
     _check_slack_socket_mode,
 )
 from teatree.cli.doctor.checks_slack_roundtrip import check_slack_roundtrip
+from teatree.cli.doctor.checks_worktree_health import check_worktree_health
 from teatree.cli.doctor.dev_sources import (
     _find_host_project_root,
     _find_teatree_pyproject_from_cwd,
@@ -103,8 +106,10 @@ __all__ = (
     "_check_chrome_devtools_mcp_suggestion",
     "_check_claude_settings_drift",
     "_check_cold_hook_settings_readable",
+    "_check_compose_output_root_pinned",
     "_check_configured_review_skills",
     "_check_connector_manifest",
+    "_check_control_db_agreement",
     "_check_dangling_editable_pth",
     "_check_declared_dependencies_provisioned",
     "_check_docker_workflow_wired",
@@ -327,7 +332,9 @@ def run_doctor_checks(*, repair: bool = False, slack_roundtrip: bool = False) ->
     # its `pyright-langserver` binary (the LSP then silently never starts). Runs after
     # ensure_django() above: the review-skill check reads the ConfigSetting store.
     ok = _check_enabled_but_unprovisioned() and ok
+    ok = check_worktree_health() and ok
     ok = _check_single_db() and ok
+    ok = _check_control_db_agreement() and ok
     ok = _check_stale_uv_venv() and ok
     ok = _check_stale_path_t3() and ok
     ok = _check_agent_session_pins() and ok
@@ -403,6 +410,7 @@ def run_doctor_checks(*, repair: bool = False, slack_roundtrip: bool = False) ->
     # which the operator should fix, but it must not red the whole doctor run.
     _check_dream_staleness()
     _check_dream_transcript_visibility()
+    _check_compose_output_root_pinned()
 
     # #3274: WARN on a no-expiry away / autonomous_away availability override that
     # has sat past the staleness threshold — it silently suppresses the

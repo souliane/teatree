@@ -20,6 +20,7 @@ from pydantic_ai.models.test import TestModel
 
 from teatree.agents.harness import PydanticAiHarness
 from teatree.agents.one_shot import OneShotSpec, _clean_room_options, run_one_shot
+from teatree.agents.pydantic_ai_config import OpenAICompatibleLaneConfig, PydanticAiModelConfig
 from teatree.llm.credentials import CredentialError
 from tests.teatree_agents._sdk_fake import FakeHarness, assistant_text, result_message
 
@@ -150,11 +151,19 @@ class TestOneShotPydanticLaneCredentialRefusalRaises:
     ) -> None:
         monkeypatch.setenv("T3_CONFIG_DB", str(tmp_path / "absent.sqlite3"))
         monkeypatch.delenv("ANTHROPIC_BASE_URL", raising=False)
-        monkeypatch.setenv("ORCA_ROUTER_BASE_URL", "https://router.example.invalid/v1")
-        monkeypatch.delenv("ORCA_ROUTER_API_KEY", raising=False)
-        # model=None forces the REAL lazy OrcaRouter credential resolution inside open() — no
-        # network is reached, the credential refusal fires before the client is built.
-        harness = PydanticAiHarness(model=None)
+        monkeypatch.setenv("OPENAI_COMPATIBLE_BASE_URL", "https://router.example.invalid/v1")
+        monkeypatch.delenv("OPENAI_COMPATIBLE_API_KEY", raising=False)
+        # model=None forces the REAL lazy credential resolution inside open() — no network
+        # is reached, the credential refusal fires before the client is built. The lane's
+        # model is configured so resolution reaches that credential step.
+        harness = PydanticAiHarness(
+            model=None,
+            config=PydanticAiModelConfig(
+                backend=OpenAICompatibleLaneConfig(
+                    base_url="https://router.example.invalid/v1", model="vendor/some-model"
+                )
+            ),
+        )
         with pytest.raises(CredentialError):
             run_one_shot("q", OneShotSpec(system_prompt="p"), harness=harness)
 

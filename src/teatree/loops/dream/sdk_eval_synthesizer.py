@@ -25,6 +25,8 @@ from teatree.loops.dream.llm_eval_proposer import SynthesizedSpec
 if TYPE_CHECKING:
     from claude_agent_sdk import ClaudeAgentOptions
 
+    from teatree.agents._headless_env import ChildEnvResolver
+
 _SYNTH_SYSTEM_PROMPT = (
     "You design ONE under_load behavioural eval that pins a drift rule. From the "
     "drift rule, the cited real mistake, and a session slice, emit discriminating "
@@ -92,7 +94,12 @@ _SYNTH_WATCHDOG_SECONDS = 5 * 60
 _REQUIRED_SYNTH_KEYS = ("scenario_name", "context_preamble", "prompt", "expect", "fail_tool_call", "pass_tool_call")
 
 
-def sdk_spec_synthesizer(candidate: Mapping[str, object], transcript_slice: str) -> SynthesizedSpec:
+def sdk_spec_synthesizer(
+    candidate: Mapping[str, object],
+    transcript_slice: str,
+    *,
+    child_env: "ChildEnvResolver | None" = None,
+) -> SynthesizedSpec:
     """The real synthesizer: one bounded headless SDK turn → a scenario, parsed defensively.
 
     Mirrors :func:`teatree.loops.dream.sdk_distiller.sdk_distiller`'s invocation shape (a
@@ -101,6 +108,9 @@ def sdk_spec_synthesizer(candidate: Mapping[str, object], transcript_slice: str)
     scenario JSON object. Raises on an unavailable ``claude`` or a malformed reply, so the
     caller DROPS the candidate (never a staged unproven spec) rather than reporting a fake
     success.
+
+    *child_env* injects the credential resolver (#3512); ``None`` uses the production
+    :func:`~teatree.agents._headless_env.system_child_env`.
     """
     import asyncio  # noqa: PLC0415 — deferred: loaded only on this code path
     import shutil  # noqa: PLC0415 — deferred: loaded only on this code path
@@ -116,7 +126,7 @@ def sdk_spec_synthesizer(candidate: Mapping[str, object], transcript_slice: str)
     # inside the async turn) so the spawned ``claude`` authenticates on the configured
     # plan/meter rather than an ambient env; a CredentialError propagates and DROPS the
     # candidate loud instead of the auth gap masquerading as a malformed reply.
-    env = system_child_env()
+    env = (child_env or system_child_env)()
     prompt = _SYNTH_PROMPT_TEMPLATE.format(
         scenario_name=str(candidate.get("scenario_name") or ""),
         drift_rule=str(candidate.get("drift_rule") or ""),

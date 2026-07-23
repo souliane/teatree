@@ -47,8 +47,13 @@ def _healthy_report() -> FactorySignalsReport:
     )
 
 
-def _open_settings(*, score: bool = True) -> SimpleNamespace:
-    return SimpleNamespace(directive_loop_enabled=True, factory_score_enabled=score, directive_verify_days=7)
+def _open_settings(*, score: bool = True, intake_per_tick: int = 25) -> SimpleNamespace:
+    return SimpleNamespace(
+        directive_loop_enabled=True,
+        factory_score_enabled=score,
+        directive_verify_days=7,
+        directive_intake_per_tick=intake_per_tick,
+    )
 
 
 def _all_green_verify() -> VerifySeams:
@@ -275,6 +280,42 @@ class TestDirectiveSpawnedTicketsDoNotCollide(TestCase):
         assert interpret_ticket.repo_namespaced_key
         assert impl_ticket.repo_namespaced_key
         assert interpret_ticket.repo_namespaced_key != impl_ticket.repo_namespaced_key
+
+
+class TestIntakeDrain(TestCase):
+    """#3649 blocker 2 — one directive per tick cannot drain a 35-deep backlog.
+
+    Intake is inert and human-gated at the end, so the tick advances up to
+    ``directive_intake_per_tick`` of them per pass; execution stays one per tick.
+    """
+
+    def test_every_captured_directive_advances_in_one_tick(self) -> None:
+        directives = [Directive.objects.capture(f"do {n}", source=Directive.Source.CLI) for n in range(5)]
+        result = run_tick(settings=_open_settings(), seams=_seams())
+        assert result.action == "interpret_dispatched"
+        assert result.advanced == 5
+        for directive in directives:
+            assert DirectiveDispatch.objects.filter(directive=directive).exists()
+
+    def test_the_per_tick_budget_bounds_the_drain(self) -> None:
+        for n in range(5):
+            Directive.objects.capture(f"do {n}", source=Directive.Source.CLI)
+        result = run_tick(settings=_open_settings(intake_per_tick=2), seams=_seams())
+        assert result.advanced == 2
+        assert DirectiveDispatch.objects.count() == 2
+
+    def test_a_directive_in_the_execution_arc_never_starves_intake(self) -> None:
+        _admitted(kind="activation_only", acceptance_tests=[])
+        captured = Directive.objects.capture("do X", source=Directive.Source.CLI)
+        run_tick(settings=_open_settings(), seams=_seams())
+        assert DirectiveDispatch.objects.filter(directive=captured).exists()
+
+    def test_execution_stays_one_directive_per_tick(self) -> None:
+        first = _admitted(kind="activation_only", acceptance_tests=[])
+        second = _admitted(kind="activation_only", acceptance_tests=[])
+        run_tick(settings=_open_settings(), seams=_seams())
+        assert Directive.objects.get(pk=first.pk).state != Directive.State.ADMITTED
+        assert Directive.objects.get(pk=second.pk).state == Directive.State.ADMITTED
 
 
 class TestIdle(TestCase):

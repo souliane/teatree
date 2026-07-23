@@ -81,7 +81,7 @@ def assert_pydantic_ai_run_produced_output(*, backend: str, executed: int, produ
     """Fail when the ``pydantic_ai`` backend executed scenarios but every run was empty.
 
     The ``$0``-metered guard (:func:`assert_api_run_was_metered`) is Claude-specific:
-    it keys on ``cost_usd``, which the OrcaRouter BYOK ``pydantic_ai`` lane does not
+    it keys on ``cost_usd``, which the the OpenAI-compatible backend ``pydantic_ai`` lane does not
     meter, so it can never guard a ``pydantic_ai`` fresh run. The backend-appropriate
     vacuous-green signal there is an EMPTY trajectory — a run that captured no tool
     calls AND no text never actually drove the model (the model-evolution lane could
@@ -94,8 +94,8 @@ def assert_pydantic_ai_run_produced_output(*, backend: str, executed: int, produ
     msg = (
         f"pydantic_ai eval run executed {executed} scenario(s) but every run captured an EMPTY "
         "trajectory (no tool calls, no text). A fresh run that produces nothing never actually "
-        "drove the model — the OrcaRouter credential/model likely never authenticated. This fails "
-        "loud rather than reporting a vacuous green; check the OrcaRouter BYOK credential and model."
+        "drove the model — the backend credential/model likely never authenticated. This fails "
+        "loud rather than reporting a vacuous green; check the the OpenAI-compatible backend credential and model."
     )
     raise EmptyFreshRunError(msg)
 

@@ -10,18 +10,23 @@ brief demands the shell the phase is (correctly) denied, so the agent follows it
 stop-rule, records ``needs_user_input`` and parks. The scanner's dedup filter ignores
 FAILED, so the next tick re-enqueues it — a retry storm of unanswerable questions.
 
-Registering a phase here routes it to its own implementation instead, so its empty tool
-allowance is never contradicted by a brief written for a different kind of work. It lives
-beside the headless task command (``tasks.py``) that consults it — a ``_``-prefixed module
-so Django never mistakes it for a management command.
+Both headless entry points consult this registry — the ``tasks work-next-headless``
+command AND the django-tasks worker ``core.tasks.execute_headless_task`` (#3570: that
+second lane went straight to the agentic runner, so every ``short_describe`` task
+completed exit-0 with the agent NARRATING a summary it had no path to persist, and the
+scanner's COMPLETED dedup then suppressed the ticket forever).
+
+It lives in the domain layer because both callers must reach it, and registration is
+INVERTED (mirroring :mod:`teatree.core.headless_dispatch`): a runner that needs the
+model seam lives in ``teatree.agents`` and registers itself at app-ready, so ``core``
+never imports the higher layer.
 """
 
 import logging
 import traceback
 from collections.abc import Callable
 
-from teatree.core.management.commands.ticket_short_describe import describe_ticket
-from teatree.core.modelkit.phases import SHORT_DESCRIBE_PHASE, normalize_phase
+from teatree.core.modelkit.phases import normalize_phase
 from teatree.core.models import Task
 
 logger = logging.getLogger(__name__)
@@ -31,14 +36,12 @@ logger = logging.getLogger(__name__)
 #: traceback as a failed attempt, the same contract the agentic path has.
 PhaseRunner = Callable[[Task], str]
 
-
-def _run_short_describe(task: Task) -> str:
-    lines: list[str] = []
-    describe_ticket(int(task.ticket_id), stdout_write=lines.append)  # ty: ignore[unresolved-attribute]
-    return "\n".join(lines)
+_RUNNERS: dict[str, PhaseRunner] = {}
 
 
-_RUNNERS: dict[str, PhaseRunner] = {SHORT_DESCRIBE_PHASE: _run_short_describe}
+def register_phase_runner(phase: str, runner: PhaseRunner) -> None:
+    """Register *runner* as the deterministic implementation of *phase*."""
+    _RUNNERS[normalize_phase(phase)] = runner
 
 
 def deterministic_phase_runner(phase: str) -> PhaseRunner | None:
@@ -49,10 +52,8 @@ def deterministic_phase_runner(phase: str) -> PhaseRunner | None:
 def run_deterministic_phase(task: Task) -> dict[str, str] | None:
     """Execute *task* deterministically when its phase is non-agentic, else ``None``.
 
-    A non-agentic phase (``short_describe``) runs its own implementation rather than a
-    generic ticket-work brief its least-privilege toolset cannot satisfy. Failures are
-    recorded through the same durable recorder as the agentic path, so a raise never
-    leaves the task stuck CLAIMED. ``None`` means the phase dispatches agentically.
+    Failures are recorded through the same durable recorder as the agentic path, so a
+    raise never leaves the task stuck CLAIMED. ``None`` means dispatch agentically.
     """
     runner = deterministic_phase_runner(task.phase)
     if runner is None:
@@ -66,3 +67,11 @@ def run_deterministic_phase(task: Task) -> dict[str, str] | None:
         return {"exit_code": "1", "phase_error": error}
     attempt = task.complete_with_attempt(exit_code=0, result={"summary": outcome})
     return {"exit_code": "0", "attempt_id": str(attempt.pk)}
+
+
+__all__ = [
+    "PhaseRunner",
+    "deterministic_phase_runner",
+    "register_phase_runner",
+    "run_deterministic_phase",
+]

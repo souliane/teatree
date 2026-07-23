@@ -50,6 +50,11 @@ def _extract_with_one_snippet() -> ConsolidationExtract:
     )
 
 
+def _no_credentials() -> dict[str, str] | None:
+    """#3512: the SimpleTestCase turns inject the credential resolver, never read the DB."""
+    return None
+
+
 class SdkDistillerParseTestCase(SimpleTestCase):
     def test_parses_clusters_from_json(self) -> None:
         payload = (
@@ -241,7 +246,7 @@ class SdkDistillerParseTestCase(SimpleTestCase):
             patch("shutil.which", return_value=None),
             pytest.raises(RuntimeError, match="claude is not installed"),
         ):
-            sdk_distiller._run_distiller_turn(_extract_with_one_snippet())
+            sdk_distiller._run_distiller_turn(_extract_with_one_snippet(), child_env=_no_credentials)
 
     def test_live_turn_renders_snippets_and_parses_the_sdk_reply(self) -> None:
         # The real _run_distiller_turn -> _collect_turn path with the SDK client faked:
@@ -267,7 +272,7 @@ class SdkDistillerParseTestCase(SimpleTestCase):
             patch("shutil.which", return_value="/usr/bin/claude"),
             patch.object(claude_agent_sdk, "ClaudeSDKClient", _make_client),
         ):
-            clusters = sdk_distiller.sdk_distiller(_extract_with_one_snippet())
+            clusters = sdk_distiller.sdk_distiller(_extract_with_one_snippet(), child_env=_no_credentials)
         assert len(clusters) == 1
         assert clusters[0].cluster_key == deterministic_cluster_key(["/feedback_x.md"])
         assert "BINDING: x" in FakeHarnessSession.last_prompt
@@ -299,10 +304,10 @@ class DistillOptionsTierResolutionTestCase(SimpleTestCase):
         # ``agent_tier_models`` DB override for the cheap tier was silently ignored and
         # the aux distiller call could never follow an off-Claude tier.
         db = Path(self.enterContext(tempfile.TemporaryDirectory())) / "config.sqlite3"
-        _seed_config_setting(db, "agent_tier_models", json.dumps({"cheap": "orcarouter/custom-cheap"}))
+        _seed_config_setting(db, "agent_tier_models", json.dumps({"cheap": "vendor/custom-cheap"}))
         with patch.dict("os.environ", {"T3_CONFIG_DB": str(db)}):
             options = sdk_distiller._distill_options()
-        assert options.model == "orcarouter/custom-cheap"
+        assert options.model == "vendor/custom-cheap"
 
     def test_system_prompt_is_a_plain_string(self) -> None:
         # A plain-string system prompt (not the ``claude_code`` preset) keeps the turn
@@ -377,7 +382,7 @@ class SdkDistillerCredentialEnvTestCase(TestCase):
         # A pydantic_ai-only provider warns and uses ambient auth rather than breaking a
         # valid deployment: the turn still runs and options.env stays the SDK default.
         ConfigSetting.objects.set_value("agent_harness", "pydantic_ai")
-        ConfigSetting.objects.set_value("agent_harness_provider", "orca_router_byok")
+        ConfigSetting.objects.set_value("agent_harness_provider", "openai_compatible")
         with (
             patch("shutil.which", return_value="/usr/bin/claude"),
             patch.object(claude_agent_sdk, "ClaudeSDKClient", _recording_client("[]")),
@@ -473,7 +478,7 @@ class SdkDistillerWatchdogTestCase(SimpleTestCase):
 
         def _run() -> None:
             try:
-                sdk_distiller._run_distiller_turn(_extract_with_one_snippet())
+                sdk_distiller._run_distiller_turn(_extract_with_one_snippet(), child_env=_no_credentials)
                 captured["exc"] = None
             except BaseException as exc:  # noqa: BLE001 - record whatever the turn raised
                 captured["exc"] = exc

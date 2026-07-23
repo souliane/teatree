@@ -88,7 +88,12 @@ _CORE_DIR = Path(__file__).resolve().parents[2] / "src" / "teatree" / "core"
 # seam, the exact sibling of the flat git-hooks install helper prek_hook.py (both are
 # per-checkout .git/config installers consumed by `t3 setup` + worktree provisioning).
 # Django-free and owned by no subpackage — gates/ is gate/deny logic, not an installer.
-PINNED_FLAT_CORE_MODULES = 80
+# 92: +loop_lease_liveness.py — the ORM-free lease-liveness predicates (lease_is_live +
+# live_foreign_owner_session + pid_is_foreign + anchorable_owner_pid) carved out of the
+# flat loop_lease_manager.py queryset hub to hold it under the 500-LOC module-health cap.
+# A pure-predicate leaf helper of that flat root hub, owned by no existing subpackage,
+# mirroring managers_overlay.py beside managers.py.
+PINNED_FLAT_CORE_MODULES = 92
 
 
 def _flat_core_modules() -> list[str]:

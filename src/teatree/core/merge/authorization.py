@@ -14,7 +14,7 @@ from teatree.core.merge.errors import MergePreconditionError
 from teatree.core.merge.substrate_standing import resolve_overlay_by_repo_identity, substrate_standing_authorization
 from teatree.core.models.mr_review_lock import MRReviewLock
 from teatree.core.models.review_verdict import HeadVerdictState, ReviewVerdict
-from teatree.core.review.author_trust import classify_pr_provenance
+from teatree.core.review.author_trust import AuthorSubject, AutonomyGate, TrustVerdict, decide_author_trust
 from teatree.utils.pr_ref import PrRef
 
 if TYPE_CHECKING:
@@ -512,13 +512,13 @@ def assert_merge_provenance_trusted(*, slug: str, pr_id: int, host_kind: str = "
     overlay MRs cross this gate identically.
     """
     query = CodeHostQuery.for_ref(PrRef(slug=slug, pr_id=pr_id, host_kind=host_kind))
-    classification = classify_pr_provenance(
-        slug,
-        query.pr_author(),
-        same_repo=query.pr_same_repo(),
+    subject = AuthorSubject(
+        slug=slug,
+        author=query.pr_author(),
         host_kind=host_kind,
+        same_repo=query.pr_same_repo(),
     )
-    if classification.internal_repo or classification.trusted:
+    if decide_author_trust(subject, gate=AutonomyGate.MERGE) is TrustVerdict.AUTONOMOUS:
         return
     msg = (
         f"{slug}#{pr_id} is not trusted to auto-merge — a fork / cross-repo PR always requires a human, "

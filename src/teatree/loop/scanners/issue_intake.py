@@ -34,7 +34,15 @@ from teatree.core.backend_protocols import CodeHostBackend
 from teatree.core.fleet import wire
 from teatree.core.intake.factory_admission import decide_issue_intake
 from teatree.core.models import ImplementedIssueMarker
-from teatree.core.review.author_trust import classify_author, is_trusted_author, trusted_handles
+from teatree.core.review.author_trust import (
+    AuthorSubject,
+    AutonomyGate,
+    TrustVerdict,
+    decide_author_trust,
+    trusted_handles,
+)
+from teatree.core.work_lease import WorkIdentity, foreign_work_holder
+from teatree.instance_id import instance_id
 from teatree.loop.scanners.base import ScanSignal
 from teatree.loop.scanners.forge_readback import existing_work_for_issue, fetch_merged_prs, fetch_open_prs, issue_number
 from teatree.types import RawAPIDict
@@ -128,21 +136,19 @@ def _issue_slug_and_host_kind(url: str) -> tuple[str, str]:
 def author_is_trusted(issue: RawAPIDict, trusted: frozenset[str]) -> bool:
     """The fail-closed per-issue author gate — REFUSE unless the filer is a named trusted human.
 
-    Two conjuncts, both from the shared :mod:`~teatree.core.review.author_trust` seam,
-    because intake is strictly stricter than merge:
-
-    * :func:`classify_author` is the seam the merge keystone and the reviewing scanners
-        share, so the factory holds ONE opinion of who is trusted.
-    * :func:`is_trusted_author` additionally requires EXPLICIT membership of the trusted
-        set, closing the private-repo bypass (``classify_author`` calls every author on a
-        private repo trusted — right for judging a merge, far too loose for INTAKE).
+    Delegates to :func:`decide_author_trust` at the ``INTAKE`` gate — the ONE autonomy
+    decision the PR-merge gate also applies (#3577) — so the factory cannot hold two
+    opinions of who is trusted. The intake gate's extra strictness (EXPLICIT trusted-set
+    membership on top of the repo-scoped classification, closing the private-repo bypass)
+    lives in that decision, not here. An unresolvable author or repo slug refuses before
+    the decision is reached.
     """
     author = issue_author(issue)
     slug, host_kind = _issue_slug_and_host_kind(issue_url(issue))
     if not author or not slug:
         return False
-    classification = classify_author(slug, author, host_kind=host_kind, extra_trusted=trusted)
-    return classification.trusted and is_trusted_author(author, extra_trusted=trusted)
+    subject = AuthorSubject(slug=slug, author=author, host_kind=host_kind)
+    return decide_author_trust(subject, gate=AutonomyGate.INTAKE, extra_trusted=trusted) is TrustVerdict.AUTONOMOUS
 
 
 @dataclass(slots=True)
@@ -282,7 +288,17 @@ class IssueIntakeScanner:
 
         ``None`` from the fleet acquire — a live rival holds it, or the ref infra is
         unreachable and the acquire failed safe — skips this issue.
+
+        A live BRANCH/PR work lease on this issue also yields ``None`` (#3561):
+        an interactive session that opened the PR by hand outside the lifecycle
+        holds a lease the loop can now see, so the loop DEFERS instead of pushing
+        divergent commits to the same branch. The deferral lapses with the lease's
+        TTL, so a session that walked away never wedges the loop.
         """
+        holder = foreign_work_holder(WorkIdentity(issue_url=url), owner=instance_id())
+        if holder:
+            logger.info("Deferring the claim of %s: %r holds its branch/PR work lease (#3561).", url, holder)
+            return None
         if not wire.fleet_claim_enabled(self.overlay_name):
             return ImplementedIssueMarker.objects.claim(url, overlay=self.overlay_name)
         claim = wire.acquire_issue_claim(url)

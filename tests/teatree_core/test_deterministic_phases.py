@@ -9,11 +9,11 @@ from unittest.mock import patch
 
 from django.test import TestCase
 
-from teatree.core.management.commands._deterministic_phases import deterministic_phase_runner, run_deterministic_phase
+from teatree.core.deterministic_phases import deterministic_phase_runner, run_deterministic_phase
 from teatree.core.models import Session, Task, Ticket
 
-_SUMMARIZE = "teatree.core.management.commands.ticket_short_describe._summarize"
-_RUNNERS = "teatree.core.management.commands._deterministic_phases._RUNNERS"
+_SUMMARIZE = "teatree.agents.ticket_short_description._summarize"
+_RUNNERS = "teatree.core.deterministic_phases._RUNNERS"
 
 
 def _short_describe_task(title: str = "add dark mode toggle") -> Task:

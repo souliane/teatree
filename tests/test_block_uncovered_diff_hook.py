@@ -21,6 +21,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 import hooks.scripts.hook_router as router
+from hooks.scripts.coverage_gate import diff_coverage_finding
 from hooks.scripts.hook_router import _is_merge_class_mutation, handle_block_uncovered_diff
 
 
@@ -67,6 +68,18 @@ def _finding_json(*, uncovered: list[dict] | None = None, symbols: list[str] | N
     )
 
 
+def test_finding_row_names_the_from_import_workaround():
+    # souliane/teatree#3521: the rendered symbol-finding row (consumed by
+    # the deny reason) names the imports-only reading + the `from <module>
+    # import <symbol>` workaround, so a false-positive on an already-covered
+    # symbol is discoverable.
+    finding = diff_coverage_finding(_finding_json(uncovered=[], symbols=["widget"]))
+    assert finding is not None
+    assert "widget" in finding
+    assert "from <module> import <symbol>" in finding
+    assert "imports only" in finding
+
+
 class TestBlocksUncoveredDiff:
     def test_blocks_gh_pr_ready_when_diff_coverage_fails(self, monkeypatch, capsys):
         monkeypatch.setattr(router.shutil, "which", lambda _: "/usr/local/bin/t3")
@@ -94,6 +107,22 @@ class TestBlocksUncoveredDiff:
         data = {"tool_name": "Bash", "tool_input": {"command": "gh pr create --title t --body b"}}
         with patch.object(router.subprocess, "run", return_value=rejected):
             assert handle_block_uncovered_diff(data) is True
+
+    def test_deny_preamble_names_the_from_import_workaround(self, monkeypatch, capsys):
+        # souliane/teatree#3521: the deny preamble (shown even for a
+        # line-only finding, symbols=[]) must not say a bare "cover it" —
+        # it names the imports-only reading and the `from <module> import
+        # <symbol>` workaround, since a flagged symbol may already be
+        # covered via `import mod` + `mod.sym()`.
+        monkeypatch.setattr(router.shutil, "which", lambda _: "/usr/local/bin/t3")
+        rejected = subprocess.CompletedProcess(args=[], returncode=1, stdout=_finding_json(), stderr="")
+        data = {"tool_name": "Bash", "tool_input": {"command": "gh pr ready 42"}}
+        with patch.object(router.subprocess, "run", return_value=rejected):
+            assert handle_block_uncovered_diff(data) is True
+        reason = json.loads(capsys.readouterr().out)["permissionDecisionReason"]
+        assert "from <module> import <symbol>" in reason
+        assert "imports only" in reason
+        assert "attribute access" in reason
 
 
 class TestFailsOpenOnBrokenSubprocess:

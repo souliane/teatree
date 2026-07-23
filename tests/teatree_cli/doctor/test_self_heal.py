@@ -311,6 +311,24 @@ class FailedTaskOnLiveTicketCheckTest(TestCase):
         ok, _out = _echoes(self_heal._check_failed_tasks_on_live_tickets)
         assert ok is True
 
+    def test_failed_task_on_cadence_anchor_is_ok(self) -> None:
+        # souliane/teatree#3492: a `<scheme>://<overlay>` loop-cadence anchor is a
+        # recurring schedule, not deliverable work — it can never reach a terminal
+        # state, so any cadence tick that ever failed pins the FAIL forever.
+        ticket = TicketFactory(state=Ticket.State.NOT_STARTED, issue_url="scanning-news://t3-teatree")
+        TaskFactory(ticket=ticket, status="failed", execution_target="interactive")
+        ok, _out = _echoes(self_heal._check_failed_tasks_on_live_tickets)
+        assert ok is True
+
+    def test_failed_task_on_bare_number_row_is_ok(self) -> None:
+        # souliane/teatree#3492: a bare-number `issue_url` is malformed debris from
+        # a write path closed by #3289. `derive_issue_number` still renders it as a
+        # forge-looking `#3274`, which is what made it read as frozen issue work.
+        ticket = TicketFactory(state=Ticket.State.STARTED, issue_url="3274", overlay="")
+        TaskFactory(ticket=ticket, status="failed", execution_target="interactive")
+        ok, _out = _echoes(self_heal._check_failed_tasks_on_live_tickets)
+        assert ok is True
+
 
 class RuntimeCloneBranchCheckTest(TestCase):
     def test_drifted_branch_fails(self) -> None:
@@ -465,69 +483,3 @@ class ParseFindingsTest(TestCase):
 
     def test_blank_lines_skipped(self) -> None:
         assert self_heal._Probe.parse_findings("\n\n  \n") == []
-
-
-class SlackDrainCheckTest(TestCase):
-    """`_check_slack_drain_alive` reads the sidecar heartbeat another container writes.
-
-    Functional: writes a real heartbeat JSON to a tmp DATA_DIR and runs the check,
-    so the probe's parse and the FAIL/degrade logic are exercised together.
-    """
-
-    def setUp(self) -> None:
-        import tempfile  # noqa: PLC0415 — test-local
-
-        self._dir = tempfile.mkdtemp()
-        self._patch = mock.patch(f"{_MOD}.DATA_DIR", Path(self._dir))
-        self._patch.start()
-        self.addCleanup(self._patch.stop)
-
-    def _write_beat(self, *, age_seconds: int, consecutive: int, interval: int = 15) -> None:
-        import time  # noqa: PLC0415 — test-local
-
-        beat = {
-            "updated_at": int(time.time()) - age_seconds,
-            "interval_seconds": interval,
-            "consecutive_failures": consecutive,
-            "last_ok_at": int(time.time()) - age_seconds,
-        }
-        (Path(self._dir) / "slack-drain-heartbeat.json").write_text(_json.dumps(beat), encoding="utf-8")
-
-    def test_absent_heartbeat_degrades_to_pass(self) -> None:
-        ok, out = _echoes(self_heal._check_slack_drain_alive)
-        assert ok is True
-        assert out == ""
-
-    def test_fresh_healthy_heartbeat_is_ok(self) -> None:
-        self._write_beat(age_seconds=5, consecutive=0)
-        ok, out = _echoes(self_heal._check_slack_drain_alive)
-        assert ok is True
-        assert out == ""
-
-    def test_stale_heartbeat_fails(self) -> None:
-        # No refresh for well past max(4x interval, 120s) — the drain loop died/hung.
-        self._write_beat(age_seconds=600, consecutive=0)
-        ok, out = _echoes(self_heal._check_slack_drain_alive)
-        assert ok is False
-        assert "FAIL" in out
-        assert "stale" in out
-
-    def test_consecutive_failures_fail(self) -> None:
-        self._write_beat(age_seconds=5, consecutive=self_heal._MAX_DRAIN_CONSECUTIVE_FAILURES)
-        ok, out = _echoes(self_heal._check_slack_drain_alive)
-        assert ok is False
-        assert "FAIL" in out
-        assert "failed" in out
-
-    def test_a_few_failures_but_fresh_is_ok(self) -> None:
-        # Below the threshold and freshly beating — a transient blip, not a break.
-        self._write_beat(age_seconds=5, consecutive=self_heal._MAX_DRAIN_CONSECUTIVE_FAILURES - 1)
-        ok, out = _echoes(self_heal._check_slack_drain_alive)
-        assert ok is True
-        assert out == ""
-
-    def test_unparsable_heartbeat_degrades_to_pass(self) -> None:
-        (Path(self._dir) / "slack-drain-heartbeat.json").write_text("{not json", encoding="utf-8")
-        ok, out = _echoes(self_heal._check_slack_drain_alive)
-        assert ok is True
-        assert out == ""

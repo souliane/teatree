@@ -62,15 +62,13 @@ from teatree.config.setting_parsers import (
     _parse_str_list,
     _parse_user_identity_aliases,
 )
-from teatree.config.settings import (
+from teatree.config.setting_registries import (
     ENV_SETTING_OVERRIDES,
     OVERLAY_OVERRIDABLE_SETTINGS,
     SAFETY_POSTURE_KEYS,
     TOML_OVERLAY_OVERRIDABLE_SETTINGS,
-    OverlayEntry,
-    TeaTreeConfig,
-    UserSettings,
 )
+from teatree.config.settings import OverlayEntry, TeaTreeConfig, UserSettings
 from teatree.config.speak import resolve_speak, speak_from_subtable
 from teatree.config.trusted_authors import effective_trusted_issue_authors
 from teatree.paths import DATA_DIR, get_data_dir

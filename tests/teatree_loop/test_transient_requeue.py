@@ -665,3 +665,61 @@ class TestDeadReviewTargetRetired(TestCase):
         assert reopened == 1
         assert task.status == Task.Status.PENDING
         dead.assert_not_called()
+
+
+class TestSelfRepairInsteadOfPaging(TestCase):
+    """A config breach with exactly one valid resolution corrects itself and never DMs (#3665)."""
+
+    invalid_pair = (
+        "agent_harness_provider='openai_compatible' is not valid under agent_harness='claude_sdk'; "
+        "valid: api_key, subscription_oauth"
+    )
+
+    def test_invalid_harness_provider_pair_is_corrected_and_the_task_reopened(self) -> None:
+        task = _failed_task()
+        _add_failed_attempt(task, error=self.invalid_pair)
+
+        reopened = requeue_transient_failed()
+
+        task.refresh_from_db()
+        assert reopened == 1
+        assert task.status == Task.Status.PENDING
+        assert ConfigSetting.objects.get_effective("agent_harness") == "pydantic_ai"
+
+    def test_self_repair_never_raises_a_question_to_a_human(self) -> None:
+        task = _failed_task()
+        _add_failed_attempt(task, error=self.invalid_pair)
+
+        requeue_transient_failed()
+
+        assert DeferredQuestion.objects.count() == 0
+
+    def test_self_repair_is_visible_on_the_task_it_unblocked(self) -> None:
+        task = _failed_task()
+        _add_failed_attempt(task, error=self.invalid_pair)
+
+        requeue_transient_failed()
+
+        task.refresh_from_db()
+        assert "[self-repaired] agent_harness=pydantic_ai" in task.execution_reason
+
+    def test_a_recurrence_after_the_one_repair_escalates_normally(self) -> None:
+        task = _failed_task()
+        _add_failed_attempt(task, error=self.invalid_pair)
+        requeue_transient_failed()
+
+        Task.objects.filter(pk=task.pk).update(status=Task.Status.FAILED)
+        _add_failed_attempt(task, error=self.invalid_pair)
+        requeue_transient_failed()
+
+        task.refresh_from_db()
+        assert task.status == Task.Status.FAILED
+        assert DeferredQuestion.objects.count() == 1
+
+    def test_a_genuine_decision_still_pages(self) -> None:
+        task = _failed_task()
+        _add_failed_attempt(task, error="AssertionError: expected 3 got 4")
+
+        requeue_transient_failed()
+
+        assert DeferredQuestion.objects.count() == 1
