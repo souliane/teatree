@@ -125,7 +125,7 @@ Do X — never Y: DO compose the message with a bare `git commit -m`. NEVER pass
 
 - Start servers and verify functionality.
 - **E2E gate:** If the project requires E2E tests for the type of changes made (UI, forms, user flows), those tests must be written and passing BEFORE proceeding. E2E is part of implementation, not a post-push activity.
-- **Src-touching PR → run `bash dev/ci-parity.sh` before push (teatree).** It chains the exact blocking CI predicate (prek all-files, `makemigrations --check`, `t3 tool test-path-mirror`, `dev/test-cov.sh`, `t3 ci coverage`) in one command, so a coverage-floor or ratchet failure is caught locally instead of on the first CI cycle. It is opt-in by workflow, never a push hook — the 93% whole-tree coverage floor is a whole-tree property no diff-scoped push subset can prove. The push-stage `ci-critical-parity` hook only covers the fast scoped doctest/never-lockout classes.
+- **Src-touching PR → run `bash dev/ci-parity.sh` before push (teatree).** It chains the exact blocking CI predicate (prek all-files, `makemigrations --check`, `t3 tool test-path-mirror`, `check_module_health.py --from-ref`, `dev/test-cov.sh`, `t3 ci coverage`) in one command, so a coverage-floor or ratchet failure is caught locally instead of on the first CI cycle. It is opt-in by workflow, never a push hook — the 93% whole-tree coverage floor is a whole-tree property no diff-scoped push subset can prove. The push-stage `ci-critical-parity` hook only covers the fast scoped doctest/never-lockout classes.
 - **Wait for user feedback.** Do NOT proceed to push without user approval.
 
 ### 3a. BLUEPRINT.md Sync

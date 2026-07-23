@@ -46,7 +46,7 @@ duplicate locally buys nothing but wall-clock.
 **`bash dev/ci-parity.sh` is the opt-in deep lane**, not the pre-push mandate: reach for
 it to reproduce a red CI locally, or when a PR is coverage-sensitive (deleting tests,
 adding a low-coverage module). It chains the exact blocking CI predicate (prek all-files,
-`makemigrations --check`, `t3 tool test-path-mirror`, `dev/test-cov.sh`, `t3 ci coverage`).
+`makemigrations --check`, `t3 tool test-path-mirror`, `check_module_health.py --from-ref`, `dev/test-cov.sh`, `t3 ci coverage`).
 Neither script is ever a push hook — the 93% whole-tree coverage floor is a whole-tree
 property no diff-scoped push subset can prove, and the full suite must never gate a push
 (`tests/test_no_full_suite_on_pre_push.py`). The push-stage `ci-critical-parity` hook
