@@ -34,10 +34,10 @@ class TestStalenessBannerWording:
         banner = staleness_banner(6 * 3600, colorize=False)
         assert "STALE" in banner
         assert "6h ago" in banner
-        # #2650 remedy: re-register the per-loop `/loop` via `/t3:loops`, or force a
+        # #2650 remedy: re-register the per-loop `/loop` via `/t3:health`, or force a
         # render with the PLURAL `t3 loops tick` — never the retired singular
         # `t3 loop tick` fat-loop shim.
-        assert "/t3:loops" in banner
+        assert "/t3:health" in banner
         assert "t3 loops tick" in banner
         assert "t3 loop tick" not in banner
 

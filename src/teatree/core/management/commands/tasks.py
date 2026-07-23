@@ -378,7 +378,7 @@ class Command(TyperCommand):
         render the harness TODO list: that list is the agent's live in-memory
         ``TaskCreate`` / ``TaskUpdate`` state, which a CLI subprocess cannot read
         (it can only see a stale on-disk snapshot that lags the live session).
-        ``/t3:todos`` builds the harness half from the live ``TaskList`` harness
+        ``/t3:checking`` builds the harness half from the live ``TaskList`` harness
         tool instead, so this view never masquerades as the live session list.
         """
         session_id = current_session_id()

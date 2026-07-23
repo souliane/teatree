@@ -27,7 +27,6 @@ class _Cfg:
     gitlab_url: str = "https://gitlab.com"
     ready_labels: tuple[str, ...] = ()
     exclude_labels: tuple[str, ...] = ()
-    auto_start_assigned_issues: bool = False
     max_concurrent_auto_starts: int = 1
     stale_threshold_days: int = 3
 

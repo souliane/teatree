@@ -17,6 +17,7 @@ from typing import TYPE_CHECKING, cast
 
 from teatree.core.backend_protocols import CodeHostBackend, PrOpenState, ReviewState
 from teatree.core.review.review_candidate import should_review_candidate_reasons
+from teatree.core.review.stranger_pr import pr_is_admitted
 from teatree.loop.scanners.base import ScanSignal
 from teatree.loop.scanners.pr_payload import head_sha
 from teatree.loop.url_specificity import best_url_match_specificity
@@ -282,6 +283,12 @@ class ReviewerPrsScanner:
     overlay and another, the most-specific claim wins so a dogfooding
     overlay that lists a sibling's repo path does not steal the sibling's
     reviewer-role PRs from its own zone.
+
+    ``trusted_authors`` + ``admit_label`` arm the #3634 stranger-PR gate: an
+    untrusted author's PR is IGNORED until the owner applies the admit label. An
+    empty ``trusted_authors`` leaves the gate disarmed (no admission context — this
+    scanner is not being driven as the factory's autonomous sweep), which preserves
+    the pre-#3634 behaviour for an ad-hoc caller.
     """
 
     host: CodeHostBackend
@@ -289,6 +296,8 @@ class ReviewerPrsScanner:
     overlay_name: str = ""
     allowed_url_prefixes: tuple[str, ...] = field(default_factory=tuple)
     competing_url_prefixes: tuple[str, ...] = field(default_factory=tuple)
+    trusted_authors: tuple[str, ...] = field(default_factory=tuple)
+    admit_label: str = ""
     name: str = "reviewer_prs"
     _migrated: bool = field(default=False, init=False)
 
@@ -321,6 +330,9 @@ class ReviewerPrsScanner:
                 # (not just the primary alias) is matched so an MR authored under
                 # any of the user's github/gitlab aliases is recognised as own
                 # work (#1321 multi-identity).
+                if not self._admitted(pr, url):
+                    logger.info("ReviewerPrsScanner IGNORED %s: untrusted author, no %r label", url, self.admit_label)
+                    continue
                 reasons = should_review_candidate_reasons(pr, current_user=primary_reviewer, self_identities=reviewers)
                 if reasons:
                     # #1321: a reviewing task already created for a self-authored
@@ -341,6 +353,13 @@ class ReviewerPrsScanner:
                 continue
         signals.extend(_orphaned_task_signals(ticket_model, scanned_urls, self.host, self.overlay_name))
         return signals
+
+    def _admitted(self, pr: RawAPIDict, url: str) -> bool:
+        """The #3634 stranger-PR gate — disarmed when no trusted set is configured."""
+        if not self.trusted_authors:
+            return True
+        trusted = frozenset(handle.strip().lower() for handle in self.trusted_authors if handle.strip())
+        return pr_is_admitted(pr, pr_url=url, trusted=trusted, admit_label=self.admit_label)
 
     def _self_authored_reconcile_signals(
         self,

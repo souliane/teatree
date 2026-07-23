@@ -18,11 +18,7 @@
     },
     {
       "name": "checking",
-      "summary": "A SHORT \"what did I miss\" report when the user checks in mid-loop \u2014 terse, grouped, clickable; then answer the pending deferred questions in-band"
-    },
-    {
-      "name": "cleanup-sweep",
-      "summary": "Use when sweeping stale, lost, or abandoned worktrees, branches, or stashes that are NOT actively being worked \u2014 deciding per item whether to salvage unmerged work to a fresh PR, delete a shipped/superseded/redundant item, push post-merge commits to a new PR, or keep an uncertain one. The judgment layer over `t3 <overlay> workspace emit` / `salvage` / `clean-all` (the mechanical reaper is `/t3:workspace`)"
+      "summary": "The check-in surface \u2014 a SHORT \"what did I miss\" report, the session task/TODO lists, the pending deferred questions, and the daily follow-up routine (new tickets, ticket statuses, PR reminders)"
     },
     {
       "name": "code",
@@ -57,20 +53,12 @@
       "summary": "Reviewer-side quality gate for Playwright end-to-end specs. Load when reviewing a new or changed E2E test, deciding whether a spec is ready to land, or adopting an outside Playwright suite. Judges specs against Playwright's published best practices \u2014 user-visible behaviour over implementation, resilient role/label/test-id locators, web-first auto-retrying assertions instead of hard waits, per-test isolation, page-object structure, and runnable evidence \u2014 and tells the implementer what to fix before approval"
     },
     {
-      "name": "followup",
-      "summary": "Daily follow-up \u2014 batch process new tickets, check/advance ticket statuses, remind about PRs waiting for review"
-    },
-    {
       "name": "handover",
       "summary": "Use when the user wants to hand all current work from one Claude session to another (or to a not-yet-existing session) with a single command, or to transfer an in-flight TeaTree task from Claude to another runtime, or asks whether it is time to switch because Claude usage is getting high"
     },
     {
       "name": "health",
       "summary": "Read and act on the global operational-health chip \u2014 the green/yellow/red factory-health verdict and its known-issues registry"
-    },
-    {
-      "name": "loops",
-      "summary": "Show t3 loop status and trigger DB-configured loops \u2014 which loops are running vs stalled, the cadence/next-tick of each, loop ownership, and how to trigger a per-loop tick"
     },
     {
       "name": "next",
@@ -129,12 +117,12 @@
       "summary": "Evidence-gated ticket/issue consolidation and triage \u2014 classify every open issue against current `main`, then consolidate by merging related tickets into a small set of tracking epics (never by discarding ideas) and close only what is demonstrably shipped or now folded into an epic. Always asks the operator for the maximum number of tickets/epics to keep before triaging \u2014 never assumes a number. Dry-run first; close only on user approval (or auto-close ONLY the high-confidence \"shipped by merged PR #X\" class), posting a one-line reason on every close"
     },
     {
-      "name": "teatree",
-      "summary": "TeaTree agent lifecycle platform \u2014 core architecture, lifecycle phases, CLI reference, overlay API, skill loading, and plugin hooks"
+      "name": "sweeping-worktrees",
+      "summary": "Use when sweeping stale, lost, or abandoned worktrees, branches, or stashes that are NOT actively being worked \u2014 deciding per item whether to salvage unmerged work to a fresh PR, delete a shipped/superseded/redundant item, push post-merge commits to a new PR, or keep an uncertain one. The judgment layer over `t3 <overlay> workspace emit` / `salvage` / `clean-all` (the mechanical reaper is `/t3:workspace`)"
     },
     {
-      "name": "teatree-batch",
-      "summary": "Unattended batch ticket processing \u2014 work through a prioritized backlog one ticket at a time, sequentially. Create worktree, implement with TDD, self-review, push, merge, clean up. Skip tickets that need design decisions"
+      "name": "teatree",
+      "summary": "TeaTree agent lifecycle platform \u2014 core architecture, lifecycle phases, CLI reference, overlay API, skill loading, and plugin hooks"
     },
     {
       "name": "test",
@@ -143,10 +131,6 @@
     {
       "name": "ticket",
       "summary": "Ticket intake and kickoff \u2014 from zero to ready-to-code"
-    },
-    {
-      "name": "todos",
-      "summary": "List the current session's tasks/todos \u2014 terse, grouped pending / in_progress / completed, with clickable refs"
     },
     {
       "name": "triaging-issues",
@@ -158,7 +142,7 @@
     },
     {
       "name": "wip",
-      "summary": "The bounded-WIP throughput dial \u2014 slow / medium / full / boost. `boost` keeps `boost_concurrency = N` workers live, refilling the pool each tick; `full` arms a self-sustaining boost loop; `medium` (baseline) and `slow` cap concurrency"
+      "summary": "The bounded-WIP throughput dial \u2014 slow / medium / full / boost \u2014 plus the WRITE-parallel / MERGE-serial phase split and the per-ticket unattended delivery cycle. `boost` keeps `boost_concurrency = N` workers live; `full` arms a self-sustaining boost loop; `medium` (baseline) and `slow` cap concurrency"
     },
     {
       "name": "workspace",

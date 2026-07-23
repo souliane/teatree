@@ -122,7 +122,6 @@ class OverlayConfig(BaseModel):
     require_ticket: bool = False
     ready_labels: list[str] = Field(default_factory=list)
     exclude_labels: list[str] = Field(default_factory=list)
-    auto_start_assigned_issues: bool = False
     max_concurrent_auto_starts: int = 1
     stale_threshold_days: int = 3
     notion_database_id: str = ""

@@ -13,7 +13,11 @@ import logging
 from teatree.core.backend_factory import OverlayBackends
 from teatree.core.backend_protocols import CodeHostBackend
 from teatree.loop.job_identity import _ScannerJob
-from teatree.loop.scanner_factory_config import _gitlab_approvals_enabled, _user_identity_aliases_for_overlay
+from teatree.loop.scanner_factory_config import (
+    _gitlab_approvals_enabled,
+    _user_identity_aliases_for_overlay,
+    stranger_pr_admission,
+)
 from teatree.loop.scanners import (
     GitLabApprovalsScanner,
     MyPrsScanner,
@@ -60,6 +64,7 @@ def _jobs_for_backend_hosts(
     # render as ``reassigned`` churn. Explicit groups still take precedence.
     if not identity_groups and len(backend.identities) > 1:
         identity_groups = (tuple(backend.identities),)
+    reviewer_trusted, reviewer_admit_label = stranger_pr_admission(tag)
     for code_host in backend.hosts:
         url_prefixes = _allowed_url_prefixes_for_host(backend, code_host)
         competing_prefixes = _competing_url_prefixes(
@@ -85,6 +90,8 @@ def _jobs_for_backend_hosts(
                         overlay_name=tag,
                         allowed_url_prefixes=url_prefixes,
                         competing_url_prefixes=competing_prefixes,
+                        trusted_authors=reviewer_trusted,
+                        admit_label=reviewer_admit_label,
                     ),
                     overlay=tag,
                 ),

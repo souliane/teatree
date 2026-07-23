@@ -36,7 +36,6 @@ def stub_backend() -> Any:
     backend.identities = ("alice",)
     backend.ready_labels = ()
     backend.exclude_labels = ()
-    backend.auto_start_assigned_issues = False
     backend.max_concurrent_auto_starts = 1
     backend.stale_threshold_days = 3
     backend.external_db = None

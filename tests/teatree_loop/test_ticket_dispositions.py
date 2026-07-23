@@ -309,7 +309,6 @@ class _FakeBackend:
         self.ready_labels: tuple[str, ...] = ("ready",)
         self.exclude_labels: tuple[str, ...] = ()
         self.overlay = None
-        self.auto_start_assigned_issues = False
         self.max_concurrent_auto_starts = 1
         self.stale_threshold_days = 3
         self.external_db = None

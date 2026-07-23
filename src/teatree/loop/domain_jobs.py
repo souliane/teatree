@@ -35,6 +35,7 @@ from teatree.loop.scanner_factory_config import (
     _gitlab_approvals_enabled,
     _user_identity_aliases_for_overlay,
     _user_slack_id_for_overlay,
+    stranger_pr_admission,
 )
 from teatree.loop.scanners import (
     ActiveTicketsScanner,
@@ -249,6 +250,7 @@ def _review_jobs_for_overlay(
     if self_pr_scanner is not None:
         jobs.append(_ScannerJob(scanner=self_pr_scanner, overlay=tag))
     if _admit_colleague_prs_to_board(tag):
+        reviewer_trusted, reviewer_admit_label = stranger_pr_admission(tag)
         for code_host in backend.hosts:
             url_prefixes = _allowed_url_prefixes_for_host(backend, code_host)
             competing_prefixes = _competing_url_prefixes(
@@ -264,6 +266,8 @@ def _review_jobs_for_overlay(
                         overlay_name=tag,
                         allowed_url_prefixes=url_prefixes,
                         competing_url_prefixes=competing_prefixes,
+                        trusted_authors=reviewer_trusted,
+                        admit_label=reviewer_admit_label,
                     ),
                     overlay=tag,
                 ),

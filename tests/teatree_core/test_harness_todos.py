@@ -1,7 +1,7 @@
 """``teatree.core.harness_todos`` — best-effort read of the harness TODO store.
 
 Backs the recovery snapshots (PreCompact + the continuous stop-snapshotter),
-which cannot call the live ``TaskList`` tool; NOT the interactive ``/t3:todos``
+which cannot call the live ``TaskList`` tool; NOT the interactive ``/t3:checking``
 view, which would lag the live session. There is no teatree-written
 ``<session>.todos`` mirror to fall back to — that materialiser was removed.
 """

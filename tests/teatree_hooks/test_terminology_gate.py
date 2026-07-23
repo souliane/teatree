@@ -83,7 +83,7 @@ class TestPathExemption:
         assert terminology_gate.path_is_exempt("tests/teatree_hooks/test_terminology_gate.py")
 
     def test_other_path_is_not_exempt(self) -> None:
-        assert not terminology_gate.path_is_exempt("skills/todos/SKILL.md")
+        assert not terminology_gate.path_is_exempt("skills/checking/SKILL.md")
 
 
 def _git(cwd: Path, *args: str) -> None:

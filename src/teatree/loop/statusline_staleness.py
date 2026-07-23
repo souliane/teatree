@@ -70,7 +70,7 @@ def staleness_banner(age_seconds: int, *, colorize: bool = True) -> str:
     age = _format_age(int(age_seconds))
     text = (
         f"⚠ statusline STALE — last rendered {age} ago; loop may be stopped "
-        "(re-register its /loop via /t3:loops, or run `t3 loops tick`)"
+        "(re-register its /loop via /t3:health, or run `t3 loops tick`)"
     )
     if colorize:
         return f"{_RED}{text}{_RST}"

@@ -319,7 +319,7 @@ def build_ticket(
             )
 
         # #2104: this CLI IS the hand-dispatched external-delivery entry — a
-        # directly-implementing delivery agent (per /teatree-batch) runs it, the
+        # directly-implementing delivery agent (per /t3:wip) runs it, the
         # loop's own FSM never does. Claim delivery ownership so the loop's
         # scheduling chokepoints (execute_provision before schedule_planning; the
         # pr_sweep review-arm) skip the auto-planner / duplicate review-arm the
