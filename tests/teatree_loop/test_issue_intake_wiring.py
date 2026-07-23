@@ -1,20 +1,11 @@
-"""The issue-implementer tick-job builder is gated by the default-OFF triple gate (#1553, #3235).
+"""The unified intake tick-job builder is gated by the default-OFF triple gate (#3634).
 
-``_issue_implementer_scanner_for`` returns a scanner ONLY when the loop is
-opted in for the overlay AND the in-flight concurrency budget has room;
-otherwise ``None`` (no job emitted). With the default-OFF config it always
-returns ``None``, so the per-overlay ``ISSUE_IMPLEMENTER`` domain slice is
-empty and the registry/legacy fan-out stays byte-for-byte unchanged.
+``_issue_intake_scanner_for`` returns a scanner ONLY when the loop is opted in for
+the overlay AND the in-flight concurrency budget has room; otherwise ``None`` (no
+job emitted), so with the default-OFF config the domain slice is empty.
 
-C4 (#1554) wires the mini-loop into the live tick and routes the emitted
-``issue_implementer.claimed`` signal to ``t3:orchestrator`` (maker-side
-kickoff). #3235 moves INTAKE from a hand-applied label to the trusted AUTHOR of
-the issue: the builder resolves the effective trusted-author set from config and
-hands it to the scanner, and the label filter only applies when the operator
-opts back into it with ``issue_implementer_require_label``.
-
-These tests pin the default-OFF inertness end-to-end, the enabled→dispatch path
-(unlabelled, trusted-author issues), and the require-label operator warning.
+The mini-loop wires it into the live tick and routes the emitted
+``issue_intake.admitted`` signal to ``t3:orchestrator`` (maker-side kickoff).
 """
 
 from unittest.mock import MagicMock, patch
@@ -25,13 +16,12 @@ from teatree.config import UserSettings
 from teatree.core.backend_factory import OverlayBackends
 from teatree.core.backend_protocols import CodeHostBackend
 from teatree.core.models import Task, Ticket
-from teatree.core.models.config_setting import ConfigSetting
 from teatree.loop.dispatch import dispatch
 from teatree.loop.domain_jobs import jobs_for_domain
 from teatree.loop.job_identity import Domain
 from teatree.loop.persistence import persist_agent_actions
-from teatree.loop.scanner_factories import _issue_implementer_scanner_for
-from teatree.loop.scanners.issue_implementer import IssueImplementerScanner
+from teatree.loop.scanner_factories import _issue_intake_scanner_for
+from teatree.loop.scanners.issue_intake import IssueIntakeScanner
 from teatree.loops.issue_implementer.loop import MINI_LOOP
 from tests.factories import ImplementedIssueMarkerFactory, TicketFactory
 
@@ -64,6 +54,7 @@ def _authored_host(*urls: str, author: str = "alice") -> CodeHostBackend:
     host.list_authored_issues.return_value = [
         {"web_url": url, "title": f"do {url}", "labels": [], "state": "open", "user": {"login": author}} for url in urls
     ]
+    host.list_labeled_issues.return_value = []
     host.list_my_prs.return_value = []
     host.list_my_merged_prs.return_value = []
     return host
@@ -82,25 +73,25 @@ def _enabled(**overrides: object) -> UserSettings:
     return _settings(issue_implementer_enabled=True, user_identity_aliases=["alice"], **overrides)
 
 
-class IssueImplementerGateTests(TestCase):
+class IssueIntakeGateTests(TestCase):
     def test_disabled_by_default_emits_no_scanner(self) -> None:
         with patch(_PATCH_TARGET, return_value=_settings()):
-            assert _issue_implementer_scanner_for(_backend()) is None
+            assert _issue_intake_scanner_for(_backend()) is None
 
     def test_enabled_with_budget_builds_scanner(self) -> None:
         with patch(_PATCH_TARGET, return_value=_enabled(issue_implementer_label="auto-implement")):
-            scanner = _issue_implementer_scanner_for(_backend())
-        assert isinstance(scanner, IssueImplementerScanner)
-        assert scanner.label == "auto-implement"
+            scanner = _issue_intake_scanner_for(_backend())
+        assert isinstance(scanner, IssueIntakeScanner)
+        assert scanner.admit_label == "auto-implement"
         assert scanner.overlay_name == "acme"
         assert scanner.identities == ("alice",)
 
-    def test_enabled_without_a_label_still_builds_a_scanner(self) -> None:
-        """#3235: an unset label is no longer a kill-switch — intake is by trusted author."""
+    def test_unset_label_falls_back_to_the_shipped_admit_label(self) -> None:
+        """An unset ``issue_implementer_label`` still recognises the shipped ``t3-auto`` convention."""
         with patch(_PATCH_TARGET, return_value=_enabled()):
-            scanner = _issue_implementer_scanner_for(_backend())
-        assert isinstance(scanner, IssueImplementerScanner)
-        assert scanner.require_label is False
+            scanner = _issue_intake_scanner_for(_backend())
+        assert isinstance(scanner, IssueIntakeScanner)
+        assert scanner.admit_label == "t3-auto"
         assert scanner.can_claim is True
 
     def test_trusted_authors_are_resolved_from_the_config_union(self) -> None:
@@ -111,38 +102,29 @@ class IssueImplementerGateTests(TestCase):
             trusted_issue_authors=["trusted-colleague"],
         )
         with patch(_PATCH_TARGET, return_value=settings):
-            scanner = _issue_implementer_scanner_for(_backend())
-        assert isinstance(scanner, IssueImplementerScanner)
+            scanner = _issue_intake_scanner_for(_backend())
+        assert isinstance(scanner, IssueIntakeScanner)
         assert set(scanner.trusted_authors) == {"souliane", "trusted-colleague"}
 
     def test_owned_repo_slugs_are_resolved_from_the_overlay(self) -> None:
         """The builder scopes intake to the overlay's own repos — the cross-repo firehose fix."""
         overlay = _overlay_with_repos(followup=["souliane/teatree"], merge_candidates=["souliane/teatree-e2e"])
         with patch(_PATCH_TARGET, return_value=_enabled()):
-            scanner = _issue_implementer_scanner_for(_backend(overlay=overlay))
-        assert isinstance(scanner, IssueImplementerScanner)
+            scanner = _issue_intake_scanner_for(_backend(overlay=overlay))
+        assert isinstance(scanner, IssueIntakeScanner)
         assert set(scanner.repo_slugs) == {"souliane/teatree", "souliane/teatree-e2e"}
 
     def test_no_overlay_leaves_repo_slugs_empty(self) -> None:
         """A backend with no overlay keeps intake unscoped (back-compat, no crash)."""
         with patch(_PATCH_TARGET, return_value=_enabled()):
-            scanner = _issue_implementer_scanner_for(_backend())
-        assert isinstance(scanner, IssueImplementerScanner)
+            scanner = _issue_intake_scanner_for(_backend())
+        assert isinstance(scanner, IssueIntakeScanner)
         assert scanner.repo_slugs == ()
-
-    def test_require_label_flag_is_plumbed_to_the_scanner(self) -> None:
-        with patch(
-            _PATCH_TARGET,
-            return_value=_enabled(issue_implementer_label="auto-implement", issue_implementer_require_label=True),
-        ):
-            scanner = _issue_implementer_scanner_for(_backend())
-        assert isinstance(scanner, IssueImplementerScanner)
-        assert scanner.require_label is True
 
     def test_concurrency_at_max_emits_no_scanner(self) -> None:
         ImplementedIssueMarkerFactory(overlay="acme")
         with patch(_PATCH_TARGET, return_value=_enabled(issue_implementer_max_concurrent=1)):
-            assert _issue_implementer_scanner_for(_backend()) is None
+            assert _issue_intake_scanner_for(_backend()) is None
 
     def test_fleet_on_at_full_budget_builds_a_heartbeat_only_scanner(self) -> None:
         # Fleet-safety Stage 2: at full budget the scanner is STILL emitted when the
@@ -152,8 +134,8 @@ class IssueImplementerGateTests(TestCase):
             patch(_PATCH_TARGET, return_value=_enabled(issue_implementer_max_concurrent=1)),
             patch("teatree.core.fleet.wire.fleet_claim_enabled", return_value=True),
         ):
-            scanner = _issue_implementer_scanner_for(_backend())
-        assert isinstance(scanner, IssueImplementerScanner)
+            scanner = _issue_intake_scanner_for(_backend())
+        assert isinstance(scanner, IssueIntakeScanner)
         assert scanner.can_claim is False
 
     def test_fleet_on_with_budget_can_claim(self) -> None:
@@ -161,8 +143,8 @@ class IssueImplementerGateTests(TestCase):
             patch(_PATCH_TARGET, return_value=_enabled()),
             patch("teatree.core.fleet.wire.fleet_claim_enabled", return_value=True),
         ):
-            scanner = _issue_implementer_scanner_for(_backend())
-        assert isinstance(scanner, IssueImplementerScanner)
+            scanner = _issue_intake_scanner_for(_backend())
+        assert isinstance(scanner, IssueIntakeScanner)
         assert scanner.can_claim is True
 
     def test_orphaned_terminal_ticket_marker_is_reconciled_and_budget_frees(self) -> None:
@@ -176,23 +158,23 @@ class IssueImplementerGateTests(TestCase):
         TicketFactory(overlay="acme", issue_url=url, state=Ticket.State.MERGED)
         ImplementedIssueMarkerFactory(overlay="acme", issue_url=url)  # DISPATCHED, jams budget=1
         with patch(_PATCH_TARGET, return_value=_enabled(issue_implementer_max_concurrent=1)):
-            scanner = _issue_implementer_scanner_for(_backend())
+            scanner = _issue_intake_scanner_for(_backend())
         assert scanner is not None
 
     def test_abandoned_marker_does_not_consume_budget(self) -> None:
         ImplementedIssueMarkerFactory(overlay="acme", abandoned=True)
         with patch(_PATCH_TARGET, return_value=_enabled(issue_implementer_max_concurrent=1)):
-            assert _issue_implementer_scanner_for(_backend()) is not None
+            assert _issue_intake_scanner_for(_backend()) is not None
 
     def test_budget_is_overlay_scoped(self) -> None:
         ImplementedIssueMarkerFactory(overlay="other")
         with patch(_PATCH_TARGET, return_value=_enabled(issue_implementer_max_concurrent=1)):
-            assert _issue_implementer_scanner_for(_backend("acme")) is not None
+            assert _issue_intake_scanner_for(_backend("acme")) is not None
 
     def test_hostless_backend_emits_no_scanner(self) -> None:
         backend = OverlayBackends(name="acme", hosts=(), messaging=None, ready_labels=())
         with patch(_PATCH_TARGET, return_value=_enabled()):
-            assert _issue_implementer_scanner_for(backend) is None
+            assert _issue_intake_scanner_for(backend) is None
 
     def test_domain_slice_empty_when_disabled(self) -> None:
         with patch(_PATCH_TARGET, return_value=_settings()):
@@ -201,65 +183,17 @@ class IssueImplementerGateTests(TestCase):
     def test_domain_slice_emits_one_scanner_when_enabled(self) -> None:
         with patch(_PATCH_TARGET, return_value=_enabled()):
             jobs = jobs_for_domain(Domain.ISSUE_IMPLEMENTER, _backend())
-        assert [job.scanner.name for job in jobs] == ["issue_implementer"]
+        assert [job.scanner.name for job in jobs] == ["issue_intake"]
         assert jobs[0].overlay == "acme"
 
 
-class IssueImplementerRequireLabelWarningTests(TestCase):
-    """``require_label`` + an EMPTY label is a safe but silent no-op — warn the operator.
-
-    Pre-#3235 an empty label silently disabled the whole loop; that warning now
-    belongs only to the operator who has explicitly opted the label filter back ON
-    and then left the label unset. Without the flag the empty label is expected and
-    must NOT warn — intake is by trusted author.
-    """
-
-    def test_require_label_with_empty_label_emits_no_scanner_and_warns(self) -> None:
-        with (
-            patch(_PATCH_TARGET, return_value=_enabled(issue_implementer_require_label=True)),
-            self.assertLogs("teatree.loop.scanner_factories", level="WARNING") as captured,
-        ):
-            scanner = _issue_implementer_scanner_for(_backend("acme"))
-        assert scanner is None
-        joined = "\n".join(captured.output)
-        assert "issue_implementer_label is empty" in joined
-        assert "acme" in joined
-
-    def test_require_label_with_a_label_does_not_warn(self) -> None:
-        with (
-            patch(
-                _PATCH_TARGET,
-                return_value=_enabled(issue_implementer_label="auto-implement", issue_implementer_require_label=True),
-            ),
-            self.assertNoLogs("teatree.loop.scanner_factories", level="WARNING"),
-        ):
-            assert _issue_implementer_scanner_for(_backend()) is not None
-
-    def test_empty_label_without_the_flag_does_not_warn(self) -> None:
-        with (
-            patch(_PATCH_TARGET, return_value=_enabled()),
-            self.assertNoLogs("teatree.loop.scanner_factories", level="WARNING"),
-        ):
-            assert _issue_implementer_scanner_for(_backend()) is not None
-
-    def test_disabled_loop_does_not_warn(self) -> None:
-        with (
-            patch(_PATCH_TARGET, return_value=_settings(issue_implementer_require_label=True)),
-            self.assertNoLogs("teatree.loop.scanner_factories", level="WARNING"),
-        ):
-            assert _issue_implementer_scanner_for(_backend()) is None
-
-
-class IssueImplementerMiniLoopTests(TestCase):
+class IssueIntakeMiniLoopTests(TestCase):
     """The mini-loop is the live-tick entry point — enabled→dispatch, disabled→inert (#1554)."""
 
     def setUp(self) -> None:
         patcher = patch("teatree.core.review.author_trust.repo_is_internal", return_value=False)
         patcher.start()
         self.addCleanup(patcher.stop)
-        # The mini-loop wiring is orthogonal to the admission policy; pin ``all``
-        # so a trusted author's unassigned/unlabeled issue is admitted.
-        ConfigSetting.objects.set_value("admission_policy", "all")
 
     def test_mini_loop_identity(self) -> None:
         assert MINI_LOOP.name == "issue_implementer"
@@ -280,10 +214,10 @@ class IssueImplementerMiniLoopTests(TestCase):
         host = _authored_host(url)
         with patch(_PATCH_TARGET, return_value=_enabled()):
             jobs = MINI_LOOP.build_jobs(backends=[_backend_with_host(host)])
-        assert [job.scanner.name for job in jobs] == ["issue_implementer"]
+        assert [job.scanner.name for job in jobs] == ["issue_intake"]
 
         signals = [signal for job in jobs for signal in job.scanner.scan()]
-        claimed = [s for s in signals if s.kind == "issue_implementer.claimed"]
+        claimed = [s for s in signals if s.kind == "issue_intake.admitted"]
         assert [s.payload["url"] for s in claimed] == [url]
 
         actions = dispatch(claimed)
@@ -320,7 +254,7 @@ class IssueImplementerMiniLoopTests(TestCase):
         with patch(_PATCH_TARGET, return_value=_enabled()):
             jobs = MINI_LOOP.build_jobs(backends=[_backend_with_host(host)])
         signals = [signal for job in jobs for signal in job.scanner.scan()]
-        claimed = [s for s in signals if s.kind == "issue_implementer.claimed"]
+        claimed = [s for s in signals if s.kind == "issue_intake.admitted"]
 
         created = persist_agent_actions(dispatch(claimed))
 
@@ -336,7 +270,7 @@ class IssueImplementerMiniLoopTests(TestCase):
         host = _authored_host(url)
         with patch(_PATCH_TARGET, return_value=_enabled()):
             jobs = MINI_LOOP.build_jobs(backends=[_backend_with_host(host)])
-        claimed = [s for job in jobs for s in job.scanner.scan() if s.kind == "issue_implementer.claimed"]
+        claimed = [s for job in jobs for s in job.scanner.scan() if s.kind == "issue_intake.admitted"]
         actions = dispatch(claimed)
 
         first = persist_agent_actions(actions)

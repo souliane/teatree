@@ -12,7 +12,7 @@ from teatree.loop.job_identity import _ScannerJob
 from teatree.loop.scanner_factories import (
     _architectural_review_scanner_for,
     _issue_disposition_scanner_for,
-    _issue_implementer_scanner_for,
+    _issue_intake_scanner_for,
     _pull_main_clone_scanner_for,
     _triage_assessor_scanner_for,
 )
@@ -53,12 +53,12 @@ def _housekeeping_jobs_for_overlay(backend: OverlayBackends) -> list[_ScannerJob
 def _issue_implementer_jobs_for_overlay(backend: OverlayBackends) -> list[_ScannerJob]:
     """Per-overlay issue-implementer scanner behind the default-OFF triple gate (#1553).
 
-    Empty by default — :func:`_issue_implementer_scanner_for` returns
+    Empty by default — :func:`_issue_intake_scanner_for` returns
     ``None`` unless the overlay opts in and has in-flight budget — so this
     domain slice contributes nothing to either fan-out path until an overlay
     enables the loop, keeping the registry/legacy parity green.
     """
-    scanner = _issue_implementer_scanner_for(backend)
+    scanner = _issue_intake_scanner_for(backend)
     if scanner is None:
         return []
     return [_ScannerJob(scanner=scanner, overlay=backend.name)]

@@ -193,7 +193,7 @@ class TestFollowupLoopBuildJobs:
         assert jobs[0].scanner.name == "assigned_issues"
 
     def test_backends_path(self, stub_backend: Any) -> None:
-        # No hosts on the stub → no AssignedIssuesScanner jobs.
+        # No hosts on the stub → no per-host scanner jobs.
         # messaging None → no ReviewNagScanner / ReviewRequestMergeReactScanner job.
         jobs = FOLLOWUP_LOOP.build_jobs(backends=[stub_backend])
         assert jobs == []

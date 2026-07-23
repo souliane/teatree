@@ -39,7 +39,6 @@ from teatree.loop.scanner_factory_config import (
 from teatree.loop.scanners import (
     ActiveTicketsScanner,
     AskUserQuestionReplyScanner,
-    AssignedIssuesScanner,
     DeferredQuestionPosterScanner,
     GitLabApprovalsScanner,
     IncomingEventsScanner,
@@ -276,23 +275,9 @@ def _review_jobs_for_overlay(
 
 
 def _followup_jobs_for_overlay(backend: OverlayBackends) -> list[_ScannerJob]:
-    """Assigned-issue intake (per host) + the single review-nag (overlay-scoped)."""
+    """The single review-nag (overlay-scoped). Intake is the unified ``issue_intake`` job."""
     tag = backend.name
-    jobs: list[_ScannerJob] = [
-        _ScannerJob(
-            scanner=AssignedIssuesScanner(
-                host=code_host,
-                ready_labels=backend.ready_labels,
-                exclude_labels=backend.exclude_labels,
-                auto_start=backend.auto_start_assigned_issues,
-                max_concurrent=backend.max_concurrent_auto_starts,
-                overlay_name=tag,
-                identities=backend.identities,
-            ),
-            overlay=tag,
-        )
-        for code_host in backend.hosts
-    ]
+    jobs: list[_ScannerJob] = []
     if backend.messaging is not None:
         jobs.extend(
             (

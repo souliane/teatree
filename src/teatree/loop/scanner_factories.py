@@ -26,7 +26,7 @@ from teatree.loop.scanners import (
     GhPrApiClient,
     GlabGhMrStateClassifier,
     IssueDispositionScanner,
-    IssueImplementerScanner,
+    IssueIntakeScanner,
     NullMergeNotifier,
     PrSweepScanner,
     PullMainCloneScanner,
@@ -325,46 +325,31 @@ def _owned_repo_slugs(overlay: "OverlayBase | None") -> tuple[str, ...]:
     return tuple(slugs)
 
 
-def _issue_implementer_scanner_for(backend: OverlayBackends) -> IssueImplementerScanner | None:
-    """Build a per-overlay issue-implementer scanner behind the triple gate (#1553, #3235).
+def _issue_intake_scanner_for(backend: OverlayBackends) -> IssueIntakeScanner | None:
+    """Build the per-overlay unified intake scanner behind the triple gate (#3634).
 
-    Returns a scanner ONLY when the always-on issue-implementer loop is
-    opted in for this overlay AND the in-flight budget has room. Two of the
-    triple gate's three checks live here; the third lives in the scanner.
+    Returns a scanner ONLY when the intake loop is opted in for this overlay AND
+    the in-flight budget has room. Two of the triple gate's three checks live
+    here; the third — per-issue claim idempotency — lives in the scanner
+    (:meth:`ImplementedIssueMarker.claim` returns ``None`` for an already-claimed
+    issue).
 
-    The master gate is ``issue_implementer_enabled`` (default False) — the
-    loop is a hard no-op until an overlay flips it on. The concurrency gate
-    is ``ImplementedIssueMarker.in_flight_count(overlay) <
-    issue_implementer_max_concurrent`` — a full budget emits no scanner, so
-    no further issue is picked up this tick.
+    The master gate is ``issue_implementer_enabled`` (default False), so with the
+    default config no job is emitted for this domain at all.
 
-    The third gate — per-issue claim idempotency — lives inside the scanner
-    itself (:meth:`ImplementedIssueMarker.claim` returns ``None`` for an
-    already-claimed issue, which the scanner skips).
+    The builder resolves the CONFIG tier of the trusted-author set
+    (:func:`~teatree.config.effective_trusted_issue_authors`) and the admit label
+    (``issue_implementer_label``, falling back to the shipped
+    :data:`~teatree.core.intake.factory_admission.DEFAULT_ADMIT_LABEL`); the scanner
+    unions in the DB ``TrustedIdentity`` rows and applies the top-down decision table.
 
-    Returns ``None`` (no job emitted) whenever either gate is shut, so with
-    the default-OFF config neither ``build_loop_table_jobs`` nor
-    ``build_default_jobs`` emits anything for this domain — the live
-    fan-out stays byte-for-byte unchanged until an overlay opts in.
-
-    #3235 — INTAKE BY TRUSTED AUTHOR. The builder resolves the CONFIG tier of the
-    trusted-author set (:func:`~teatree.config.effective_trusted_issue_authors`: the
-    owner's ``user_identity_aliases`` unioned with the ``trusted_issue_authors`` allowlist) and
-    hands it to the scanner, which unions in the DB ``TrustedIdentity`` rows and
-    enforces the fail-closed per-issue gate. An EMPTY label is therefore no longer a
-    kill-switch: intake is by author, and the label only applies when the operator
-    explicitly opts back into it with ``issue_implementer_require_label``. That flag
-    WITH an empty label is a safe but silent no-op (nothing can ever match), so the
-    operator who set up that contradiction gets one WARNING naming the missing label.
-
-    Fleet-safety Stage 2: when ``fleet_claim_enabled`` is on the scanner is
-    emitted even at a full budget (or a require-label contradiction) — with
-    ``can_claim=False`` it claims nothing new but STILL runs the per-tick heartbeat
-    sweep, so an in-flight claim can never expire and be stolen mid-dispatch. With the
-    kill-switch OFF the emission stays byte-for-byte the pre-Stage-2 behaviour
-    (no scanner unless we can actually claim).
+    Fleet-safety Stage 2: when ``fleet_claim_enabled`` is on the scanner is emitted
+    even at a full budget — with ``can_claim=False`` it claims nothing new but STILL
+    runs the per-tick heartbeat sweep, so an in-flight claim can never expire and be
+    stolen mid-dispatch.
     """
     from teatree.core.fleet import wire  # noqa: PLC0415 — leaf import kept out of module load
+    from teatree.core.intake.factory_admission import DEFAULT_ADMIT_LABEL  # noqa: PLC0415 — leaf import
 
     settings = _effective_settings_for_overlay(backend.name)
     if not settings.issue_implementer_enabled:
@@ -373,32 +358,17 @@ def _issue_implementer_scanner_for(backend: OverlayBackends) -> IssueImplementer
     if code_host is None:
         return None
     # #3275: self-heal the in-flight budget BEFORE reading it. A marker orphaned
-    # while the pipeline was down never leaves ``dispatched``/``ticket_created``
-    # (release-on-completion only fires on the live transition event), so it
-    # strands its slot and ``has_budget`` reads false forever. Reconciling each
-    # tick releases terminal-ticket / gone-ticket markers so the gate below sees
-    # a current count and intake never permanently jams.
+    # while the pipeline was down never leaves ``dispatched``/``ticket_created``,
+    # so it strands its slot and the budget gate reads false forever.
     ImplementedIssueMarker.objects.reconcile_stale(backend.name)
-    label_satisfiable = bool(settings.issue_implementer_label) or not settings.issue_implementer_require_label
-    if not label_satisfiable:
-        logger.warning(
-            "issue-implementer loop enabled for overlay %r with issue_implementer_require_label=true but "
-            "issue_implementer_label is empty — nothing will be dispatched until a label is set "
-            "(or the require-label flag is turned off, which intakes by trusted author alone)",
-            backend.name,
-        )
-    has_budget = (
-        ImplementedIssueMarker.objects.in_flight_count(backend.name) < settings.issue_implementer_max_concurrent
-    )
-    can_claim = label_satisfiable and has_budget
+    can_claim = ImplementedIssueMarker.objects.in_flight_count(backend.name) < settings.issue_implementer_max_concurrent
     if not can_claim and not wire.fleet_claim_enabled(backend.name):
         return None
-    return IssueImplementerScanner(
+    return IssueIntakeScanner(
         host=code_host,
-        label=settings.issue_implementer_label,
+        admit_label=settings.issue_implementer_label or DEFAULT_ADMIT_LABEL,
         overlay_name=backend.name,
         trusted_authors=tuple(sorted(effective_trusted_issue_authors(settings))),
-        require_label=settings.issue_implementer_require_label,
         identities=backend.identities,
         repo_slugs=_owned_repo_slugs(backend.overlay),
         can_claim=can_claim,

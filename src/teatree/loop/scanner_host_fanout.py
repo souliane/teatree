@@ -15,7 +15,6 @@ from teatree.core.backend_protocols import CodeHostBackend
 from teatree.loop.job_identity import _ScannerJob
 from teatree.loop.scanner_factory_config import _gitlab_approvals_enabled, _user_identity_aliases_for_overlay
 from teatree.loop.scanners import (
-    AssignedIssuesScanner,
     GitLabApprovalsScanner,
     MyPrsScanner,
     ReviewerPrsScanner,
@@ -86,18 +85,6 @@ def _jobs_for_backend_hosts(
                         overlay_name=tag,
                         allowed_url_prefixes=url_prefixes,
                         competing_url_prefixes=competing_prefixes,
-                    ),
-                    overlay=tag,
-                ),
-                _ScannerJob(
-                    scanner=AssignedIssuesScanner(
-                        host=code_host,
-                        ready_labels=backend.ready_labels,
-                        exclude_labels=backend.exclude_labels,
-                        auto_start=backend.auto_start_assigned_issues,
-                        max_concurrent=backend.max_concurrent_auto_starts,
-                        overlay_name=tag,
-                        identities=backend.identities,
                     ),
                     overlay=tag,
                 ),

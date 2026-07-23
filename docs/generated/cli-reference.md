@@ -6676,6 +6676,8 @@ Usage: t3 teatree wip [OPTIONS] COMMAND [ARGS]...
 │ set    Persist the global `` wip`` dial. A typo is rejected.                 │
 │ boost  Arm boost mode with a live-worker target: sets ``wip = boost`` and    │
 │        ``boost_concurrency = N``.                                            │
+│ split  Set the WRITE/MERGE phase split: ``write_wip = N``, merge stays       │
+│        single-flight.                                                        │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -6724,6 +6726,26 @@ Usage: t3 teatree wip boost [OPTIONS] CONCURRENCY
 │ *    concurrency      INTEGER  Target live worker count N the boost pool     │
 │                                refills to.                                   │
 │                                [required]                                    │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 teatree wip split`
+
+```
+Usage: t3 teatree wip split [OPTIONS] WRITE
+
+ Set the WRITE/MERGE phase split: ``write_wip = N``, merge stays single-flight.
+
+ The merge lane is deliberately not settable above 1 — serializing merges is
+ what guarantees the next PR rebases against what just landed.
+
+╭─ Arguments ──────────────────────────────────────────────────────────────────╮
+│ *    write      INTEGER  WRITE-lane width N — how many implementation        │
+│                          workers run in parallel.                            │
+│                          [required]                                          │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --help          Show this message and exit.                                  │

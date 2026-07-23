@@ -23,7 +23,6 @@ from teatree.config import UserSettings
 GOLDEN_USER_SETTINGS_FIELDS: frozenset[str] = frozenset(
     {
         "admin_autologin_enabled",
-        "admission_policy",
         "admit_colleague_prs_to_board",
         "agent_harness",
         "agent_harness_provider",
@@ -99,7 +98,6 @@ GOLDEN_USER_SETTINGS_FIELDS: frozenset[str] = frozenset(
         "issue_implementer_label",
         "ci_eval_heal_autofix_enabled",
         "issue_implementer_max_concurrent",
-        "issue_implementer_require_label",
         "limit_autorecovery_enabled",
         "local_stack_queue_disabled",
         "local_stack_queue_max_attempts",
@@ -198,7 +196,9 @@ GOLDEN_USER_SETTINGS_FIELDS: frozenset[str] = frozenset(
         "watchdog_max_cost_usd",
         "watchdog_max_runtime_seconds",
         "watchdog_max_turns",
+        "merge_wip",
         "wip",
+        "write_wip",
         "workspace_dir",
         "worktree_stale_days",
     }

@@ -348,54 +348,6 @@ class SendProxyMode(StrEnum):
             raise ValueError(msg) from exc
 
 
-class AdmissionPolicy(StrEnum):
-    """Which issues an overlay's factory may AUTONOMOUSLY pick up for auto-implementation.
-
-    The single per-overlay verdict both issue-intake scanners (``assigned_issues``,
-    ``issue_implementer``) run before creating ``Ticket(role=author)`` +
-    ``Task(phase=coding)``. Resolved by
-    :func:`teatree.core.intake.admission_policy.admit_issue`.
-
-    Tiers (default :attr:`ASSIGNED_AND_LABELED`, the strictest — SAFE for a
-    colleague repo so a freshly-configured overlay never auto-works a colleague's
-    ticket by accident):
-
-    *   :attr:`ALL` — auto-work EVERY issue. The owner's own dogfood overlay
-        (``t3-teatree``), promoted to this value as an overlay code default.
-    *   :attr:`ASSIGNED` — auto-work only issues ASSIGNED to the owner.
-    *   :attr:`ASSIGNED_AND_LABELED` (default) — auto-work only issues assigned to
-        the owner AND carrying the ``t3-auto`` label.
-
-    HARD INVARIANT (floor, every non-:attr:`ALL` policy): an issue BOTH unassigned
-    to the owner AND lacking the ``t3-auto`` label is NEVER auto-worked, regardless
-    of policy. Enforced explicitly in ``admit_issue`` before the policy branch.
-
-    DB-home, per-overlay overridable: ``t3 <overlay> config_setting set
-    admission_policy <value>`` (``--overlay <name>`` for the per-overlay scope).
-    """
-
-    ALL = "all"
-    ASSIGNED = "assigned"
-    ASSIGNED_AND_LABELED = "assigned_and_labeled"
-
-    @classmethod
-    def parse(cls, value: str) -> "AdmissionPolicy":
-        """Parse an admission-policy string; invalid values raise ``ValueError``.
-
-        Mirrors :meth:`Mode.parse`: the conservative default
-        (:attr:`ASSIGNED_AND_LABELED`) is applied by the caller when the setting
-        is absent, so a typo never silently widens which issues the factory
-        auto-works.
-        """
-        normalised = value.strip().lower()
-        try:
-            return cls(normalised)
-        except ValueError as exc:
-            valid = ", ".join(m.value for m in cls)
-            msg = f"Invalid admission_policy {value!r}; valid values: {valid}"
-            raise ValueError(msg) from exc
-
-
 class MissingIssuePolicy(StrEnum):
     """What to do when a commit/MR needs an issue reference and none is in hand.
 

@@ -10,7 +10,6 @@ from django.test import TestCase
 
 from teatree.core.backend_protocols import PrOpenState, ReviewState
 from teatree.core.models import Ticket
-from teatree.loop.scanners.assigned_issues import AssignedIssuesScanner
 from teatree.loop.scanners.my_prs import MyPrsScanner
 from teatree.loop.scanners.notion_view import NotionViewScanner
 from teatree.loop.scanners.pr_payload import head_sha
@@ -797,104 +796,6 @@ class TestNotionViewScanner:
         client.list_unrouted.return_value = [{"title": "Spec for API"}]
         signals = NotionViewScanner(client=client).scan()
         assert [s.kind for s in signals] == ["notion.unrouted"]
-
-
-class TestAssignedIssuesScanner:
-    def test_filters_by_ready_label(self) -> None:
-        host = FakeCodeHost(
-            user="alice",
-            assigned_issues=[
-                {"web_url": "x", "title": "ready", "labels": ["ready"]},
-                {"web_url": "y", "title": "draft", "labels": ["draft"]},
-            ],
-        )
-        scanner = AssignedIssuesScanner(host=host, ready_labels=("ready",))
-        signals = scanner.scan()
-        assert [s.payload["url"] for s in signals] == ["x"]
-        assert host.list_assigned_issues_calls == ["alice"]
-
-    def test_no_user_no_signals(self) -> None:
-        host = FakeCodeHost(user="")
-        scanner = AssignedIssuesScanner(host=host, ready_labels=("ready",))
-        assert scanner.scan() == []
-        assert host.list_assigned_issues_calls == []
-
-    def test_no_ready_labels_emits_signal_for_every_issue(self) -> None:
-        host = FakeCodeHost(
-            user="alice",
-            assigned_issues=[
-                {"web_url": "x", "title": "first", "labels": ["draft"]},
-                {"web_url": "y", "title": "second", "labels": []},
-            ],
-        )
-        scanner = AssignedIssuesScanner(host=host, ready_labels=())
-        signals = scanner.scan()
-        assert [s.payload["url"] for s in signals] == ["x", "y"]
-
-    def test_issue_without_url_emits_signal_with_empty_url(self) -> None:
-        host = FakeCodeHost(
-            user="alice",
-            assigned_issues=[{"title": "no-url", "labels": []}],
-        )
-        scanner = AssignedIssuesScanner(host=host, ready_labels=())
-        signals = scanner.scan()
-        assert signals[0].payload["url"] == ""
-
-    def test_dict_label_objects_resolved_by_name(self) -> None:
-        host = FakeCodeHost(
-            user="alice",
-            assigned_issues=[
-                {"html_url": "z", "title": "third", "labels": [{"name": "ready"}, {"name": "P1"}]},
-            ],
-        )
-        scanner = AssignedIssuesScanner(host=host, ready_labels=("ready",))
-        signals = scanner.scan()
-        assert [s.payload["url"] for s in signals] == ["z"]
-        assert "ready" in signals[0].payload["labels"]
-
-    def test_non_list_labels_treated_as_empty(self) -> None:
-        host = FakeCodeHost(
-            user="alice",
-            assigned_issues=[{"web_url": "w", "title": "weird", "labels": "ready"}],
-        )
-        scanner = AssignedIssuesScanner(host=host, ready_labels=("ready",))
-        assert scanner.scan() == []
-
-    def test_payload_carries_auto_start_flag(self) -> None:
-        host = FakeCodeHost(
-            user="alice",
-            assigned_issues=[{"web_url": "x", "title": "ready", "labels": ["ready"]}],
-        )
-        notify = AssignedIssuesScanner(host=host, ready_labels=("ready",), auto_start=False).scan()
-        assert notify[0].payload["auto_start"] is False
-
-    def test_exclude_labels_filters_out_matching_issues(self) -> None:
-        host = FakeCodeHost(
-            user="alice",
-            assigned_issues=[
-                {"web_url": "x", "title": "actionable", "labels": ["ready"]},
-                {"web_url": "y", "title": "in review", "labels": ["ready", "DEV review"]},
-                {"web_url": "z", "title": "also done", "labels": ["ready", "Process::Technical review"]},
-            ],
-        )
-        scanner = AssignedIssuesScanner(
-            host=host,
-            ready_labels=("ready",),
-            exclude_labels=("DEV review", "Process::Technical review"),
-        )
-        signals = scanner.scan()
-        assert [s.payload["url"] for s in signals] == ["x"]
-
-    def test_exclude_labels_empty_means_no_exclusion(self) -> None:
-        host = FakeCodeHost(
-            user="alice",
-            assigned_issues=[
-                {"web_url": "x", "title": "first", "labels": ["DEV review"]},
-            ],
-        )
-        scanner = AssignedIssuesScanner(host=host, ready_labels=(), exclude_labels=())
-        signals = scanner.scan()
-        assert [s.payload["url"] for s in signals] == ["x"]
 
 
 class TestPersistEntryLockedMergeExtra(TestCase):

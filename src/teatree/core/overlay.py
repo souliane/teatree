@@ -11,7 +11,6 @@ import httpx
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from teatree.backends.types import Service
-from teatree.config.enums import AdmissionPolicy
 from teatree.core.e2e_scenario import Capture, E2eExtrasContext, Scenario
 from teatree.core.failed_e2e_watcher import FailedE2EWatcher
 from teatree.core.gates.merge_guard import MergeGuard
@@ -200,12 +199,6 @@ class OverlayConfig(BaseModel):
     backlog_sweep_skill: str = "sweeping-tickets"
     dogfood_smoke_skill: str = "dogfood-smoke"
     mr_title_regex: str = DEFAULT_MR_TITLE_REGEX
-    # The per-overlay autonomous-admission verdict for issue intake (#3573). The
-    # default MIRRORS the ``UserSettings`` dataclass default (the strictest,
-    # colleague-safe ``ASSIGNED_AND_LABELED``) so a bare overlay is a no-op; the
-    # dogfood overlay promotes it to ``ALL`` via its ``overlay_settings.py``
-    # (``ADMISSION_POLICY``).
-    admission_policy: AdmissionPolicy = AdmissionPolicy.ASSIGNED_AND_LABELED
 
     def __init__(self, settings_module: str = "", overlay_name: str = "", **data: object) -> None:
         super().__init__(**data)

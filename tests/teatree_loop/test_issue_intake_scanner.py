@@ -1,15 +1,10 @@
-"""Behaviour tests for ``IssueImplementerScanner`` — author-trust intake + claim idempotency (#3235).
+"""Behaviour tests for the ONE unified issue-intake scanner (#3634).
 
-The scanner is the discovery + claim half of the always-on issue-implementer loop.
-Intake is decided by the trusted AUTHOR of the issue (#3235), not by a
-hand-applied label: the scanner lists each trusted author's open issues via the
-code-host backend's author-scoped query, REFUSES any issue whose author is not in
-the trusted set (fail-closed), and claims the rest through the TOCTOU-safe
-:meth:`ImplementedIssueMarker.claim` so a re-tick (or a concurrent overlay) never
-double-dispatches the same issue.
-
-The legacy label filter survives as an OPT-IN (``require_label=True``) — see
-:class:`IssueImplementerRequireLabelTests`.
+The scanner is the discovery + claim half of the factory's intake. Two scoped
+discovery queries (per trusted author, and per admit label) feed one top-down
+decision function; claims go through the TOCTOU-safe
+:meth:`ImplementedIssueMarker.claim` so a re-tick — or a concurrent overlay —
+never double-dispatches the same issue.
 """
 
 from dataclasses import dataclass, field
@@ -17,9 +12,8 @@ from unittest.mock import patch
 
 from django.test import TestCase
 
-from teatree.core.models import ImplementedIssueMarker, TrustedIdentity
-from teatree.core.models.config_setting import ConfigSetting
-from teatree.loop.scanners.issue_implementer import IssueImplementerScanner
+from teatree.core.models import ImplementedIssueMarker, Ticket, TrustedIdentity
+from teatree.loop.scanners.issue_intake import IssueIntakeScanner
 from teatree.types import RawAPIDict
 
 OWNER = "souliane"
@@ -38,10 +32,14 @@ class _Host:
 
     user: str = OWNER
     authored: dict[str, list[RawAPIDict]] = field(default_factory=dict)
+    #: Keyed by admit label — the owner-admission discovery query.
+    labeled: dict[str, list[RawAPIDict]] = field(default_factory=dict)
     open_prs: list[RawAPIDict] = field(default_factory=list)
     merged_prs: list[RawAPIDict] = field(default_factory=list)
     #: Every author handle the scanner asked the forge about — the intake surface.
     queried_authors: list[str] = field(default_factory=list)
+    #: Every admit label the scanner asked the forge about.
+    queried_labels: list[str] = field(default_factory=list)
     #: The ``repo_slugs`` passed with each query — the repo-scope surface.
     queried_repo_slugs: list[tuple[str, ...]] = field(default_factory=list)
 
@@ -54,6 +52,14 @@ class _Host:
         issues = list(self.authored.get(author, []))
         # Model the forge's ``repo:`` qualifier: a scoped query returns only issues
         # whose repo slug is in the requested set (an unscoped query returns all).
+        if repo_slugs:
+            issues = [issue for issue in issues if _issue_repo_slug(issue) in repo_slugs]
+        return issues
+
+    def list_labeled_issues(self, *, label: str, repo_slugs: tuple[str, ...] = ()) -> list[RawAPIDict]:
+        self.queried_labels.append(label)
+        self.queried_repo_slugs.append(repo_slugs)
+        issues = list(self.labeled.get(label, []))
         if repo_slugs:
             issues = [issue for issue in issues if _issue_repo_slug(issue) in repo_slugs]
         return issues
@@ -95,24 +101,20 @@ class _PublicRepoTestCase(TestCase):
         patcher = patch("teatree.core.review.author_trust.repo_is_internal", return_value=False)
         patcher.start()
         self.addCleanup(patcher.stop)
-        # These suites exercise the author-trust gate, orthogonal to the admission
-        # policy; pin ``all`` so a trusted author's unassigned/unlabeled issue is
-        # admitted. The admission policy has its own suite below.
-        ConfigSetting.objects.set_value("admission_policy", "all")
 
-    def _scanner(self, host: _Host, **overrides: object) -> IssueImplementerScanner:
+    def _scanner(self, host: _Host, **overrides: object) -> IssueIntakeScanner:
         kwargs: dict[str, object] = {
             "host": host,
-            "label": self.LABEL,
+            "admit_label": self.LABEL,
             "overlay_name": self.OVERLAY,
             "trusted_authors": TRUSTED,
             "identities": (OWNER,),
         }
         kwargs.update(overrides)
-        return IssueImplementerScanner(**kwargs)
+        return IssueIntakeScanner(**kwargs)
 
 
-class IssueImplementerAuthorTrustIntakeTests(_PublicRepoTestCase):
+class IssueIntakeAuthorTrustIntakeTests(_PublicRepoTestCase):
     """Intake is by TRUSTED AUTHOR — no label required (#3235)."""
 
     def test_owner_authored_unlabelled_issue_is_claimed_and_emitted(self) -> None:
@@ -121,7 +123,7 @@ class IssueImplementerAuthorTrustIntakeTests(_PublicRepoTestCase):
 
         signals = self._scanner(host).scan()
 
-        assert [s.kind for s in signals] == ["issue_implementer.claimed"]
+        assert [s.kind for s in signals] == ["issue_intake.admitted"]
         assert signals[0].payload["url"] == self.URL_A
         assert signals[0].payload["auto_start"] is True
         marker = ImplementedIssueMarker.objects.get(issue_url=self.URL_A, overlay=self.OVERLAY)
@@ -184,7 +186,7 @@ class IssueImplementerAuthorTrustIntakeTests(_PublicRepoTestCase):
         assert not ImplementedIssueMarker.objects.exists()
 
 
-class IssueImplementerUntrustedAuthorRefusalTests(_PublicRepoTestCase):
+class IssueIntakeUntrustedAuthorRefusalTests(_PublicRepoTestCase):
     """FAIL-CLOSED. An issue authored outside the trusted set is NEVER auto-implemented.
 
     This is the safety keystone of #3235: intake without a human label means the
@@ -205,13 +207,6 @@ class IssueImplementerUntrustedAuthorRefusalTests(_PublicRepoTestCase):
 
         assert signals == []
         assert not ImplementedIssueMarker.objects.filter(issue_url=self.URL_A).exists()
-        assert not ImplementedIssueMarker.objects.exists()
-
-    def test_stranger_authored_issue_is_refused_even_when_labelled(self) -> None:
-        """A label can never launder an untrusted author — the label is not an authority."""
-        host = _Host(authored={OWNER: [_issue(self.URL_A, author=STRANGER, labels=[self.LABEL])]})
-
-        assert self._scanner(host).scan() == []
         assert not ImplementedIssueMarker.objects.exists()
 
     def test_stranger_authored_issue_is_refused_on_a_private_repo(self) -> None:
@@ -261,7 +256,7 @@ class IssueImplementerUntrustedAuthorRefusalTests(_PublicRepoTestCase):
         assert not ImplementedIssueMarker.objects.filter(issue_url=self.URL_A).exists()
 
 
-class IssueImplementerNeedsTriageGateTests(_PublicRepoTestCase):
+class IssueIntakeNeedsTriageGateTests(_PublicRepoTestCase):
     """``needs-triage`` HOLDS a trusted-author issue — the maintainer override survives #3235.
 
     The maintainer applies ``needs-triage`` to withhold an issue from the autonomous
@@ -300,55 +295,47 @@ class IssueImplementerNeedsTriageGateTests(_PublicRepoTestCase):
         assert not ImplementedIssueMarker.objects.exists()
 
 
-class IssueImplementerRequireLabelTests(_PublicRepoTestCase):
-    """Back-compat: ``require_label=True`` restores the label as a MANDATORY second gate.
+class IssueIntakeAdmitLabelTests(_PublicRepoTestCase):
+    """Rule 4: the owner-applied admit label is the ONLY route in for an untrusted author."""
 
-    An operator who wants the pre-#3235 hand-tagged workflow flips
-    ``issue_implementer_require_label`` on; the label filter then applies ON TOP of
-    author trust (never instead of it — trust is not optional).
-    """
+    def test_labeled_stranger_issue_is_admitted(self) -> None:
+        host = _Host(labeled={self.LABEL: [_issue(self.URL_A, author=STRANGER, labels=[self.LABEL])]})
 
-    def test_label_is_required_when_the_flag_is_on(self) -> None:
-        host = _Host(authored={OWNER: [_issue(self.URL_A, author=OWNER)]})
-
-        assert self._scanner(host, require_label=True).scan() == []
-        assert not ImplementedIssueMarker.objects.exists()
-
-    def test_labelled_trusted_issue_is_claimed_when_the_flag_is_on(self) -> None:
-        host = _Host(authored={OWNER: [_issue(self.URL_A, author=OWNER, labels=[self.LABEL])]})
-
-        signals = self._scanner(host, require_label=True).scan()
+        signals = self._scanner(host).scan()
 
         assert [s.payload["url"] for s in signals] == [self.URL_A]
+        assert signals[0].payload["verdict"] == "act_admitted"
 
-    def test_dict_shaped_label_is_matched_when_the_flag_is_on(self) -> None:
-        issue = _issue(self.URL_A, author=OWNER)
-        issue["labels"] = [{"name": self.LABEL}]
-        host = _Host(authored={OWNER: [issue]})
+    def test_label_scoped_query_fires_once_for_the_configured_label(self) -> None:
+        host = _Host()
 
-        assert len(self._scanner(host, require_label=True).scan()) == 1
+        self._scanner(host).scan()
 
-    def test_label_still_cannot_launder_an_untrusted_author(self) -> None:
-        host = _Host(authored={OWNER: [_issue(self.URL_A, author=STRANGER, labels=[self.LABEL])]})
+        assert host.queried_labels == [self.LABEL]
 
-        assert self._scanner(host, require_label=True).scan() == []
+    def test_no_label_query_when_no_admit_label_is_configured(self) -> None:
+        host = _Host()
+
+        self._scanner(host, admit_label="").scan()
+
+        assert host.queried_labels == []
+
+    def test_needs_triage_outranks_the_admit_label(self) -> None:
+        issue = _issue(self.URL_A, author=STRANGER, labels=[self.LABEL, "needs-triage"])
+        host = _Host(labeled={self.LABEL: [issue]})
+
+        assert self._scanner(host).scan() == []
         assert not ImplementedIssueMarker.objects.exists()
 
-    def test_empty_label_with_the_flag_on_claims_nothing(self) -> None:
-        """Defence-in-depth: require_label + no label configured = nothing is claimable."""
-        host = _Host(authored={OWNER: [_issue(self.URL_A, author=OWNER, labels=[self.LABEL])]})
-
-        assert self._scanner(host, require_label=True, label="").scan() == []
-        assert not ImplementedIssueMarker.objects.exists()
-
-    def test_empty_label_with_the_flag_off_still_claims_by_author(self) -> None:
-        """The label is NOT required by default — an unset label is no longer a kill-switch."""
+    def test_trusted_author_is_admitted_with_no_label_at_all(self) -> None:
         host = _Host(authored={OWNER: [_issue(self.URL_A, author=OWNER)]})
 
-        assert len(self._scanner(host, label="").scan()) == 1
+        signals = self._scanner(host, admit_label="").scan()
+
+        assert [s.payload["verdict"] for s in signals] == ["act_trusted_author"]
 
 
-class IssueImplementerClaimLifecycleTests(_PublicRepoTestCase):
+class IssueIntakeClaimLifecycleTests(_PublicRepoTestCase):
     """Selection hygiene + claim idempotency, on the author-trust intake path."""
 
     def test_closed_issue_is_skipped(self) -> None:
@@ -390,7 +377,7 @@ class IssueImplementerClaimLifecycleTests(_PublicRepoTestCase):
         assert ImplementedIssueMarker.objects.filter(issue_url=self.URL_A).count() == 1
 
 
-class IssueImplementerBudgetCapTests(_PublicRepoTestCase):
+class IssueIntakeBudgetCapTests(_PublicRepoTestCase):
     """A single ``scan()`` claims at most ``max_concurrent - in_flight`` NEW issues.
 
     The factory only gates whether the scanner runs; without an in-loop cap the
@@ -429,7 +416,7 @@ class IssueImplementerBudgetCapTests(_PublicRepoTestCase):
         assert len(signals) == 4
 
 
-class IssueImplementerReadbackTests(_PublicRepoTestCase):
+class IssueIntakeReadbackTests(_PublicRepoTestCase):
     """Pre-dispatch forge read-back: an already-PR'd trusted-author issue is NOT re-claimed.
 
     The local claim ledger cannot see another instance's work, so before claiming
@@ -489,7 +476,7 @@ class IssueImplementerReadbackTests(_PublicRepoTestCase):
         assert [s.payload["url"] for s in signals] == [self.URL_A]
 
 
-class IssueImplementerRepoScopeTests(_PublicRepoTestCase):
+class IssueIntakeRepoScopeTests(_PublicRepoTestCase):
     """Repo-scoped intake — app handles skipped, cross-repo issues refused (the firehose fix).
 
     Two failures the pre-fix scanner had: (1) it queried EVERY trusted handle,
@@ -543,39 +530,20 @@ def _assigned(issue: RawAPIDict, assignee: str) -> RawAPIDict:
     return {**issue, "assignees": [{"login": assignee}]}
 
 
-class IssueImplementerAdmissionPolicyTests(_PublicRepoTestCase):
-    """The per-overlay admission policy gates the trusted-author scanner (#3573).
+class IssueIntakeExistingWorkTests(_PublicRepoTestCase):
+    """Rule 2: an active ticket already owning the URL blocks a second intake."""
 
-    Layered ABOVE the author-trust gate: a TRUSTED author's issue is still refused
-    unless the overlay's ``admission_policy`` admits it. The base ``setUp`` pins
-    ``all``; each test below overrides it to the policy under test.
-    """
-
-    def test_default_rejects_colleague_unassigned_unlabeled(self) -> None:
-        ConfigSetting.objects.set_value("admission_policy", "assigned_and_labeled")
-        host = _Host(authored={COLLEAGUE: [_issue(self.URL_A, author=COLLEAGUE)]})
+    def test_active_ticket_for_the_url_is_ignored(self) -> None:
+        Ticket.objects.create(issue_url=self.URL_A, overlay=self.OVERLAY, role=Ticket.Role.AUTHOR)
+        host = _Host(authored={OWNER: [_issue(self.URL_A, author=OWNER)]})
 
         assert self._scanner(host).scan() == []
-        # The floor runs BEFORE the claim — no marker/budget is ever spent on it.
         assert not ImplementedIssueMarker.objects.exists()
 
-    def test_assigned_and_labeled_admits_when_assigned_and_labeled(self) -> None:
-        ConfigSetting.objects.set_value("admission_policy", "assigned_and_labeled")
-        issue = _assigned(_issue(self.URL_A, author=COLLEAGUE, labels=["t3-auto"]), OWNER)
-        host = _Host(authored={COLLEAGUE: [issue]})
-
-        assert [s.payload["url"] for s in self._scanner(host).scan()] == [self.URL_A]
-
-    def test_assigned_policy_admits_owner_assigned_without_label(self) -> None:
-        ConfigSetting.objects.set_value("admission_policy", "assigned")
-        issue = _assigned(_issue(self.URL_A, author=COLLEAGUE), OWNER)
-        host = _Host(authored={COLLEAGUE: [issue]})
+    def test_a_terminal_ticket_does_not_block_intake(self) -> None:
+        Ticket.objects.create(
+            issue_url=self.URL_A, overlay=self.OVERLAY, role=Ticket.Role.AUTHOR, state=Ticket.State.DELIVERED
+        )
+        host = _Host(authored={OWNER: [_issue(self.URL_A, author=OWNER)]})
 
         assert len(self._scanner(host).scan()) == 1
-
-    def test_assigned_policy_rejects_unassigned(self) -> None:
-        ConfigSetting.objects.set_value("admission_policy", "assigned")
-        host = _Host(authored={COLLEAGUE: [_issue(self.URL_A, author=COLLEAGUE)]})
-
-        assert self._scanner(host).scan() == []
-        assert not ImplementedIssueMarker.objects.exists()
