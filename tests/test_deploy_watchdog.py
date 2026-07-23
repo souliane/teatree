@@ -37,9 +37,16 @@ def _write_docker_stub(bin_dir: Path) -> None:
     """A `docker` shim modelling the `docker compose` calls run_pass makes.
 
     ``STUB_INIT_PS`` is the init service's `ps --format json` row; ``STUB_TRUE_RC``
-    is the reachability probe's exit code (non-zero → unreachable); a doctor `exec`
-    prints ``STUB_DOCTOR_JSON`` and exits ``STUB_DOCTOR_RC``; a `notify send` exec
-    captures the piped DM body to ``STUB_NOTIFY_FILE``.
+    is the reachability probe's exit code (non-zero → unreachable, with
+    ``STUB_TRUE_STDERR`` on stderr); a doctor `exec` prints ``STUB_DOCTOR_JSON`` and
+    exits ``STUB_DOCTOR_RC``; a `notify send` exec captures the piped DM body to
+    ``STUB_NOTIFY_FILE``.
+
+    ``STUB_UNREACHABLE_SVC`` makes the reachability probe fail for exactly that one
+    service, so the fallback ordering can be driven. ``STUB_DOCTOR_TRANSIENT_UNTIL``
+    makes the first N doctor attempts fail the way a restarting target does — nothing
+    on stdout, ``STUB_DOCTOR_STDERR`` on stderr — so a bounded retry can be driven;
+    attempts are counted into ``STUB_DOCTOR_ATTEMPTS``.
     """
     bin_dir.mkdir(parents=True, exist_ok=True)
     shim = bin_dir / "docker"
@@ -60,11 +67,28 @@ def _write_docker_stub(bin_dir: Path) -> None:
         "  exec)\n"
         '    printf "%s\\n" "$*" >>"${STUB_EXEC_LOG:-/dev/null}"\n'
         '    [ "${1:-}" = -T ] && shift\n'
+        '    while [ "${1:-}" = -e ]; do shift 2; done\n'
+        '    svc="${1:-}"\n'
         "    shift || true\n"
         '    rest="$*"\n'
         '    case "$rest" in\n'
-        '      true) exit "${STUB_TRUE_RC:-0}" ;;\n'
-        '      *"doctor check --json"*) printf "%s\\n" "$STUB_DOCTOR_JSON"; exit "${STUB_DOCTOR_RC:-1}" ;;\n'
+        "      true)\n"
+        '        rc="${STUB_TRUE_RC:-0}"\n'
+        '        [ -z "${STUB_UNREACHABLE_SVC:-}" ] || { rc=0; [ "$svc" != "$STUB_UNREACHABLE_SVC" ] || rc=1; }\n'
+        '        [ "$rc" = 0 ] || printf "%s\\n" "${STUB_TRUE_STDERR:-}" >&2\n'
+        '        exit "$rc" ;;\n'
+        '      *"doctor check --json"*)\n'
+        "        n=0\n"
+        '        if [ -n "${STUB_DOCTOR_ATTEMPTS:-}" ]; then\n'
+        '          n=$(cat "$STUB_DOCTOR_ATTEMPTS" 2>/dev/null || printf 0)\n'
+        "          n=$((n + 1))\n"
+        '          printf "%s" "$n" >"$STUB_DOCTOR_ATTEMPTS"\n'
+        "        fi\n"
+        '        if [ "$n" -le "${STUB_DOCTOR_TRANSIENT_UNTIL:-0}" ]; then\n'
+        '          printf "%s\\n" "${STUB_DOCTOR_STDERR:-}" >&2\n'
+        "          exit 1\n"
+        "        fi\n"
+        '        printf "%s\\n" "$STUB_DOCTOR_JSON"; exit "${STUB_DOCTOR_RC:-1}" ;;\n'
         '      *"notify send"*) cat >"$STUB_NOTIFY_FILE"; exit 0 ;;\n'
         "      *) exit 0 ;;\n"
         "    esac\n"
@@ -88,6 +112,8 @@ def _run_pass(tmp_path: Path, **stub_env: str) -> str:
     env["PATH"] = f"{bin_dir}{os.pathsep}{env['PATH']}"
     env["STUB_NOTIFY_FILE"] = str(notify_file)
     env["STUB_EXEC_LOG"] = str(tmp_path / "exec.log")
+    env["STUB_DOCTOR_ATTEMPTS"] = str(tmp_path / "attempts.txt")
+    env["TEATREE_WATCHDOG_DOCTOR_RETRY_DELAY"] = "0"
     env.setdefault("STUB_INIT_PS", '{"State":"exited","ExitCode":0}')
     env.setdefault("STUB_DOCTOR_JSON", _GREEN_VERDICT)
     env.update(stub_env)
@@ -98,6 +124,18 @@ def _run_pass(tmp_path: Path, **stub_env: str) -> str:
 def _exec_log(tmp_path: Path) -> str:
     log = tmp_path / "exec.log"
     return log.read_text(encoding="utf-8") if log.exists() else ""
+
+
+def _doctor_exec_lines(tmp_path: Path) -> list[str]:
+    return [line for line in _exec_log(tmp_path).splitlines() if "doctor check --json" in line]
+
+
+def _doctor_attempts(tmp_path: Path) -> int:
+    counter = tmp_path / "attempts.txt"
+    return int(counter.read_text(encoding="utf-8")) if counter.exists() else 0
+
+
+_RESTARTING_ERR = "Error response from daemon: Container 9f2c is restarting, wait until the container is running"
 
 
 class TestWatchdogRunPass:
@@ -147,6 +185,80 @@ class TestWatchdogComposeStateHandoff:
         # flag — so the exec shape is stable and the doctor falls back cleanly.
         _run_pass(tmp_path, STUB_DOCKER_PS="", STUB_DOCTOR_JSON=_GREEN_VERDICT, STUB_DOCTOR_RC="0")
         assert "TEATREE_DOCTOR_COMPOSE_PS=" in _exec_log(tmp_path)
+
+
+class TestWatchdogTargetsTheWorker:
+    """The health probe runs where heavy work belongs, not in the lean web container.
+
+    `t3 doctor check --json` boots Django, scans the DB and makes live third-party
+    HTTP calls. Running it inside the 512m admin — which is simultaneously serving
+    the dashboard — left ~130 MiB of headroom and restarted the container every
+    watchdog pass (#3651). The worker is sized for heavy work, so it is probed first.
+    """
+
+    def test_doctor_probe_targets_the_worker_first(self, tmp_path: Path) -> None:
+        _run_pass(tmp_path, STUB_DOCTOR_JSON=_GREEN_VERDICT, STUB_DOCTOR_RC="0")
+        assert "teatree-worker" in _doctor_exec_lines(tmp_path)[0]
+
+    def test_admin_is_the_fallback_when_the_worker_is_unreachable(self, tmp_path: Path) -> None:
+        # A down worker must not blind the watchdog — the admin stays in the list.
+        dm = _run_pass(
+            tmp_path,
+            STUB_UNREACHABLE_SVC="teatree-worker",
+            STUB_DOCTOR_JSON=_GREEN_VERDICT,
+            STUB_DOCTOR_RC="0",
+        )
+        assert dm == ""
+        assert "teatree-admin" in _doctor_exec_lines(tmp_path)[0]
+
+
+class TestWatchdogTransientTargetUnavailability:
+    """A target that was restarting is a transient to retry, not a red to page on.
+
+    A completed doctor run that emits nothing is still RED (a half-crashed doctor).
+    A probe that could not run at all — the daemon refusing the exec because the
+    container is restarting/not running — is a transient: retried, never paged.
+    """
+
+    def test_restarting_target_is_retried_and_does_not_page(self, tmp_path: Path) -> None:
+        dm = _run_pass(
+            tmp_path,
+            STUB_DOCTOR_TRANSIENT_UNTIL="99",
+            STUB_DOCTOR_STDERR=_RESTARTING_ERR,
+            TEATREE_WATCHDOG_DOCTOR_RETRIES="3",
+        )
+        assert dm == ""
+        assert _doctor_attempts(tmp_path) == 3
+
+    def test_transient_that_clears_on_retry_reads_the_recovered_verdict(self, tmp_path: Path) -> None:
+        dm = _run_pass(
+            tmp_path,
+            STUB_DOCTOR_TRANSIENT_UNTIL="1",
+            STUB_DOCTOR_STDERR=_RESTARTING_ERR,
+            STUB_DOCTOR_JSON=_RED_VERDICT,
+            STUB_DOCTOR_RC="1",
+            TEATREE_WATCHDOG_DOCTOR_RETRIES="3",
+        )
+        assert "red findings" in dm
+        assert _doctor_attempts(tmp_path) == 2
+
+    def test_unreachable_service_with_a_restarting_error_does_not_page(self, tmp_path: Path) -> None:
+        # The exec never lands because every target is mid-restart — transient, not
+        # the genuine "stack unreachable" outage.
+        dm = _run_pass(
+            tmp_path,
+            STUB_TRUE_RC="1",
+            STUB_TRUE_STDERR=_RESTARTING_ERR,
+            TEATREE_WATCHDOG_DOCTOR_RETRIES="2",
+        )
+        assert dm == ""
+
+    def test_completed_run_with_no_verdict_still_pages_as_red(self, tmp_path: Path) -> None:
+        # The deliberate #3440 behaviour must survive the transient carve-out: doctor
+        # RAN (no daemon error) and produced nothing → still RED.
+        dm = _run_pass(tmp_path, STUB_DOCTOR_JSON="garbage with no verdict line", STUB_DOCTOR_RC="1")
+        assert "no parseable verdict" in dm.lower()
+        assert _doctor_attempts(tmp_path) == 1, "a completed run must not be retried"
 
 
 if __name__ == "__main__":

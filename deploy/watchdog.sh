@@ -15,7 +15,8 @@
 #      EXCLUDED (an empirical fact — `up -d --no-recreate` re-runs a completed
 #      init every pass, which would replay the heavy ~minute init on every tick),
 #      while a missing/failed init IS included so the init-failure outage recovers.
-#   2. `t3 doctor check --json` inside a live container — read the factory health,
+#   2. `t3 doctor check --json` inside the WORKER (the container sized for heavy
+#      work; see EXEC_SERVICES) — read the factory health,
 #      including the H24 self-heal detectors (dead containers, a free worker flock
 #      over overdue loop work, stranded headless tasks, stale timers, unrunnable
 #      interactive tasks, failed tasks on live tickets, a drifted runtime clone).
@@ -35,8 +36,17 @@ OVERLAY="${TEATREE_WATCHDOG_OVERLAY:-teatree}"
 INTERVAL="${TEATREE_WATCHDOG_INTERVAL:-300}"
 PASS_TIMEOUT="${TEATREE_WATCHDOG_PASS_TIMEOUT:-300}"
 INIT_SERVICE="${TEATREE_WATCHDOG_INIT_SERVICE:-teatree-init}"
-# Services to `exec` the read commands in (first reachable one wins).
-EXEC_SERVICES="${TEATREE_WATCHDOG_EXEC_SERVICES:-teatree-admin teatree-worker}"
+# Services to `exec` the read commands in (first reachable one wins). The WORKER
+# leads (#3651): `t3 doctor check --json` boots Django, scans the DB and makes live
+# third-party HTTP round-trips — measured at 380 MiB peak, which inside the admin's
+# lean 512m cap (257 MiB idle just serving the dashboard) left ~130 MiB of headroom
+# and restarted the admin on every pass. The worker is the container sized for heavy
+# work; the admin stays the fallback so a down worker never blinds the watchdog.
+EXEC_SERVICES="${TEATREE_WATCHDOG_EXEC_SERVICES:-teatree-worker teatree-admin}"
+# Bounded retry for a probe that could not RUN because its target was mid-restart or
+# not yet up — a transient, distinct from a completed run that returned no verdict.
+DOCTOR_RETRIES="${TEATREE_WATCHDOG_DOCTOR_RETRIES:-3}"
+DOCTOR_RETRY_DELAY="${TEATREE_WATCHDOG_DOCTOR_RETRY_DELAY:-15}"
 # Services restarted when init has already completed (init excluded — see header).
 read -ra APP_SERVICES <<<"${TEATREE_WATCHDOG_APP_SERVICES:-teatree-worker teatree-admin teatree-slack-listener teatree-watchdog}"
 
@@ -45,7 +55,7 @@ read -ra APP_SERVICES <<<"${TEATREE_WATCHDOG_APP_SERVICES:-teatree-worker teatre
 # temp is routed to disk (/var/tmp) by the entrypoint + settings template, but a
 # crashed/abandoned run can still leave pytest/uv/claude scratch behind that grows
 # unbounded over weeks — the periodic half of the tmpfs-fill guard.
-TEMP_TRIM_SERVICES="${TEATREE_WATCHDOG_TEMP_TRIM_SERVICES:-teatree-worker teatree-admin}"
+TEMP_TRIM_SERVICES="${TEATREE_WATCHDOG_TEMP_TRIM_SERVICES:-teatree-admin teatree-worker}"
 TEMP_TRIM_ROOTS="${TEATREE_WATCHDOG_TEMP_TRIM_ROOTS:-/var/tmp /tmp}"
 TEMP_TRIM_MIN_AGE_MIN="${TEATREE_WATCHDOG_TEMP_TRIM_MIN_AGE_MIN:-720}"
 
@@ -122,22 +132,62 @@ compose_states_b64() {
 # made the red-findings DM path below dead code). Reachability is probed
 # separately (a trivial `exec ... true`); only a genuinely unreachable service
 # falls through to the next one. Returns 0 when a service was reached (DOCTOR_RAW
-# set, possibly empty), 125 when NO exec service could be reached at all.
-run_doctor() {
-  local svc states_b64
+# set, possibly empty), 125 when NO exec service could be reached at all. Either
+# way DOCTOR_ERR carries the daemon's stderr, which run_doctor classifies.
+_doctor_attempt() {
+  local svc states_b64 err_file probe_err
   DOCTOR_RAW=""
+  DOCTOR_ERR=""
   states_b64="$(compose_states_b64)"
+  err_file="$(mktemp)"
   for svc in $EXEC_SERVICES; do
-    if compose exec -T "$svc" true >/dev/null 2>&1; then
+    probe_err="$(compose exec -T "$svc" true 2>&1 >/dev/null)" && {
       # `|| true`: doctor exits non-zero on red findings; keep its stdout, drop
       # the exit code (set -e must not abort, and the code is NOT the signal).
       # `-e TEATREE_DOCTOR_COMPOSE_PS`: hand the socket-only container states to the
       # doctor's compose-stack detector, which cannot reach the daemon itself.
-      DOCTOR_RAW="$(compose exec -T -e "TEATREE_DOCTOR_COMPOSE_PS=$states_b64" "$svc" t3 doctor check --json 2>/dev/null || true)"
+      DOCTOR_RAW="$(compose exec -T -e "TEATREE_DOCTOR_COMPOSE_PS=$states_b64" "$svc" t3 doctor check --json 2>"$err_file" || true)"
+      DOCTOR_ERR="$(cat "$err_file")"
+      rm -f "$err_file"
+      return 0
+    }
+    DOCTOR_ERR="$DOCTOR_ERR$probe_err"$'\n'
+  done
+  rm -f "$err_file"
+  return 125
+}
+
+# A daemon refusal to exec into a container that is restarting / not (yet) running.
+# This is the target being momentarily UNAVAILABLE, never a statement about doctor.
+_is_transient_exec_error() {
+  case "$1" in
+    *"is restarting"* | *"is not running"* | *"is paused"* | *"No such container"* | *"not running"*) return 0 ;;
+  esac
+  return 1
+}
+
+# Run the doctor probe, retrying a bounded number of times while the only failure is
+# a transient target unavailability. Returns 0 when a run COMPLETED (DOCTOR_RAW set,
+# possibly empty — an empty completed run is RED), 125 when no exec service could be
+# reached for a non-transient reason, and 126 when the target stayed unavailable for
+# every attempt (a transient the caller must NOT page on).
+run_doctor() {
+  local attempt=1 rc
+  while :; do
+    _doctor_attempt && rc=0 || rc=$?
+    if [ "$rc" -eq 0 ] && { [ -n "$DOCTOR_RAW" ] || ! _is_transient_exec_error "$DOCTOR_ERR"; }; then
       return 0
     fi
+    if [ "$rc" -ne 0 ] && ! _is_transient_exec_error "$DOCTOR_ERR"; then
+      return "$rc"
+    fi
+    if [ "$attempt" -ge "$DOCTOR_RETRIES" ]; then
+      return 126
+    fi
+    log "doctor probe target unavailable (attempt $attempt/$DOCTOR_RETRIES) — retrying in ${DOCTOR_RETRY_DELAY}s"
+    attempt=$((attempt + 1))
+    sleep "$DOCTOR_RETRY_DELAY"
   done
-  return 125
 }
 
 # Trim ONLY well-known stale scratch (pytest / uv / claude) older than the age
@@ -176,7 +226,16 @@ run_pass() {
   # Guard against a temp-scratch leak filling the disk (never fatal — see fn).
   trim_stale_temp
 
-  if ! run_doctor; then
+  local doctor_rc
+  run_doctor && doctor_rc=0 || doctor_rc=$?
+  if [ "$doctor_rc" -eq 126 ]; then
+    # The probe could not RUN: its target was restarting / not running for every
+    # attempt. That is a transient (#3651) — a retry is the whole remedy, and it
+    # must never page the owner the way a completed-but-silent doctor does.
+    log "doctor probe target unavailable after $DOCTOR_RETRIES attempts — transient, not paging"
+    return 0
+  fi
+  if [ "$doctor_rc" -ne 0 ]; then
     # No exec service could be reached at all — a genuine transport failure, the
     # ONLY case that is truly "unreachable" (distinct from doctor running and
     # returning a red verdict, which is handled below).
@@ -196,7 +255,7 @@ run_pass() {
     # is itself a RED condition, not a healthy pass (the old code treated it as
     # healthy and stayed silent). DM at most once per day so a persistent breakage is seen.
     log "doctor reachable but produced no JSON verdict — treating as RED"
-    printf 'teatree watchdog: `t3 doctor check --json` ran but produced NO parseable verdict — doctor may be crashing on the box. SSH in and run `t3 doctor check` in `docker compose -p %s exec teatree-admin`.' "$PROJECT" \
+    printf 'teatree watchdog: `t3 doctor check --json` ran but produced NO parseable verdict — doctor may be crashing on the box. SSH in and run `t3 doctor check` in `docker compose -p %s exec teatree-worker`.' "$PROJECT" \
       | notify_owner "watchdog:doctor-no-verdict:$(date -u +%Y%m%d)"
     return 0
   fi
