@@ -22,7 +22,9 @@ binding discipline:
 3. **Dedup against existing reactors.** A reaction already present from a
     colleague or the bot is never re-added — :func:`reaction_already_present`
     consults the live message reactions and the :class:`OutboundClaim`
-    ledger before any ``reactions.add``.
+    ledger before any ``reactions.add``. The outcome path fetches that live
+    message itself (#3564); passing ``message=None`` there silently reduced the
+    predicate to a ledger-only read, so a colleague's reaction was never seen.
 4. **Idempotent — no per-tick re-fire.** Every reaction the loop does post
     is recorded in the :class:`OutboundClaim` ``SLACK_REACTION`` ledger,
     keyed on ``(channel, ts, emoji)``, so a second tick finds the claim
@@ -51,6 +53,7 @@ from teatree.loop.review_claim_signals import (
 
 if TYPE_CHECKING:
     from teatree.core.backend_protocols import MessagingBackend
+    from teatree.types import RawAPIDict
 
 logger = logging.getLogger(__name__)
 
@@ -72,9 +75,11 @@ def emit_review_done_reactions(
 
     Resolves the message coordinates from the :class:`ReviewRequestPost`
     ledger by matching ``(slug, pr_id)`` against each tracked MR URL. Each
-    emoji is posted at most once: skipped when already present (a colleague
-    or the bot) and recorded in the :class:`OutboundClaim` ledger so a later
-    tick does not re-fire it. Reacting routes through
+    emoji is posted at most once: skipped when already present and recorded in
+    the :class:`OutboundClaim` ledger so a later tick does not re-fire it.
+    "Already present" spans BOTH dedup sources — the live message is fetched once
+    per emission (:func:`_live_message`) so a COLLEAGUE's reaction is seen, not only
+    teatree's own ledger (#3564). Reacting routes through
     :meth:`MessagingBackend.react_routed` so a colleague/channel message
     goes out under the personal ``xoxp`` token (#1750). Returns the emojis
     actually posted; ``[]`` when the PR has no tracked Slack message or no
@@ -87,9 +92,10 @@ def emit_review_done_reactions(
         return []
     channel, ts, target_url = resolved
     egress = OnBehalfSlackEgress(messaging)
+    live = _live_message(messaging, channel=channel, ts=ts)
     posted: list[str] = []
     for emoji in emojis:
-        if reaction_already_present(message=None, channel=channel, ts=ts, emoji=emoji):
+        if reaction_already_present(message=live, channel=channel, ts=ts, emoji=emoji):
             continue
         try:
             reacted = _egress_react(egress, channel=channel, ts=ts, emoji=emoji, target_url=target_url)
@@ -100,6 +106,21 @@ def emit_review_done_reactions(
             record_reaction_claim(channel=channel, ts=ts, emoji=emoji, target_url=target_url)
             posted.append(emoji)
     return posted
+
+
+def _live_message(messaging: "MessagingBackend", *, channel: str, ts: str) -> "RawAPIDict | None":
+    """The tracked message with its live ``reactions``, or ``None`` when unreadable.
+
+    Read once per emission rather than per emoji, so the colleague-dedup costs one
+    Slack call. ``None`` degrades the dedup to the :class:`OutboundClaim` ledger alone:
+    an unreadable message must not stop a review verdict from being signalled, and the
+    worst case is the double-react the ledger already prevents across ticks.
+    """
+    try:
+        return messaging.fetch_message(channel=channel, ts=ts)
+    except Exception:  # noqa: BLE001 — an unreadable message degrades dedup, never blocks the signal
+        logger.info("emit_review_done_reactions: live reactions unreadable for %s/%s", channel, ts)
+        return None
 
 
 def _egress_react(

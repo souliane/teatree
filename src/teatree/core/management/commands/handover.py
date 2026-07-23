@@ -18,7 +18,7 @@ from typing import Annotated
 import typer
 from django_typer.management import TyperCommand, command, initialize
 
-from teatree.core.handover import create_handover
+from teatree.core.handover import claim_handovers, create_handover
 from teatree.core.handover_orchestration import SubagentPush, drive_subagents_to_fast_push
 from teatree.loop.session_identity import current_session_id
 
@@ -68,11 +68,16 @@ class Command(TyperCommand):
         handover, mirror = create_handover(from_session=from_session, explicit_to=to)
         recipient = handover.to_session or "next-session"
         pushes = self._drive_subagents() if drive_subagents else []
+        # A hand-off that reports OK while transferring nothing is worse than one
+        # that fails: the operator moves on believing state was carried over, and
+        # the receiving session claims a row with nothing in it (#3551).
+        empty = not handover.payload.strip()
         if json_output:
             self.stdout.write(
                 json.dumps(
                     {
-                        "ok": True,
+                        "ok": not empty,
+                        "empty_payload": empty,
                         "from_session": handover.from_session,
                         "to_session": handover.to_session,
                         "parked_for_next": handover.is_for_next_session,
@@ -83,9 +88,16 @@ class Command(TyperCommand):
                 )
             )
         else:
-            self.stdout.write(f"OK    handed off to {recipient}; mirror written to {mirror}.")
+            status = "WARN " if empty else "OK   "
+            self.stdout.write(f"{status} handed off to {recipient}; mirror written to {mirror}.")
             for push in pushes:
                 self.stdout.write(f"      sub-agent {push.branch}: {self._push_summary(push)}")
+        if empty:
+            self.stderr.write(
+                f"ERROR hand-off {handover.pk} carries NO durable state — no PreCompact snapshot for session "
+                f"{from_session}, and no in-flight worktrees, tickets or PRs to derive one from."
+            )
+            raise SystemExit(1)
 
     def _drive_subagents(self) -> list[SubagentPush]:
         """Fast-push in-flight sub-agent worktrees; a failure here never fails the hand-off.
@@ -154,21 +166,10 @@ class Command(TyperCommand):
         "next session", marks it claimed so it injects exactly once, and
         prints the payload. Empty payload when nothing is claimable.
         """
-        from teatree.core.models import SessionHandover  # noqa: PLC0415 — deferred: ORM import needs the app registry
-
-        session_id = session or current_session_id()
-        claimed = SessionHandover.objects.claim_next(session_id) if session_id else None
-        payload = claimed.payload if claimed else ""
+        payload, origin = claim_handovers(session or current_session_id())
         if json_output:
             self.stdout.write(
-                json.dumps(
-                    {
-                        "claimed": claimed is not None,
-                        "from_session": claimed.from_session if claimed else "",
-                        "payload": payload,
-                    },
-                    indent=2,
-                )
+                json.dumps({"claimed": bool(payload), "from_session": origin, "payload": payload}, indent=2)
             )
         elif payload:
             self.stdout.write(payload)

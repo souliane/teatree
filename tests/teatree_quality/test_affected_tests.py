@@ -8,6 +8,7 @@ change the classifier cannot prove local degrades to a whole-tree FULL run.
 """
 
 from pathlib import Path
+from typing import ClassVar
 
 import pytest
 
@@ -15,6 +16,7 @@ from teatree.quality import affected_tests as mod
 from teatree.quality.affected_tests import (
     FLOOR_DIRS,
     Selection,
+    SelectionSources,
     TachUnavailableError,
     build_selection,
     classify_selection,
@@ -38,12 +40,21 @@ def _select(
     dependents: dict[str, list[str]] | None = None,
     test_imports: dict[str, tuple[str, ...]] | None = None,
     mirror: dict[str, str] | None = None,
+    doc_readers: dict[str, tuple[str, ...]] | None = None,
 ) -> Selection:
+    readers = doc_readers or {}
+
+    def doc_reader_lookup(tokens: frozenset[str]) -> tuple[str, ...]:
+        return tuple(sorted({test for token in tokens for test in readers.get(token, ())}))
+
     return select(
         changed=changed,
-        dependents_map=dependents or {},
-        test_imports=test_imports or {},
-        mirror_lookup=(mirror or {}).get,
+        sources=SelectionSources(
+            dependents_map=dependents or {},
+            test_imports=test_imports or {},
+            mirror_lookup=(mirror or {}).get,
+            doc_reader_lookup=doc_reader_lookup,
+        ),
         floor_dirs=FLOOR_DIRS,
     )
 
@@ -130,8 +141,7 @@ class TestUnclassifiableForcesFull:
             ("M", "scripts/ci/thing.py"),  # python outside the modelled roots
             ("M", "hooks/scripts/gate.py"),  # hook python outside the graph
             ("M", "e2e/spec/flow.py"),  # e2e python outside the modelled roots
-            ("M", "BLUEPRINT.md"),  # doc file a doc-parsing test may read
-            ("M", "skills/test/SKILL.md"),  # skill markdown outside the roots
+            ("M", "src/teatree/foo/notes.md"),  # markdown under a code root is fixture data
         ],
     )
     def test_unclassifiable_change_forces_full(self, entry: tuple[str, str]) -> None:
@@ -200,6 +210,68 @@ class TestExplainChain:
         assert sel.explain("tests/teatree_other/test_nope.py") == [
             "tests/teatree_other/test_nope.py: not selected by this diff"
         ]
+
+
+class TestDocsOnlyChangeIsScopedNotFull:
+    """#3645: a docs-only path no longer escalates to the whole tree.
+
+    Replaces the old blanket ``BLUEPRINT.md``/``SKILL.md`` FULL cases. Coverage is
+    preserved, not dropped: the doc's own readers are selected instead, which is a
+    STRICTLY better guard than a whole-tree run nobody could afford to wait for.
+    """
+
+    _BLUEPRINT_READERS: ClassVar[dict[str, tuple[str, ...]]] = {"BLUEPRINT.md": ("tests/test_blueprint_sync.py",)}
+
+    def test_blueprint_edit_alone_does_not_force_full(self) -> None:
+        sel = _select(_changed(("M", "BLUEPRINT.md")), doc_readers=self._BLUEPRINT_READERS)
+        assert not sel.full
+
+    def test_blueprint_edit_selects_the_tests_that_read_it(self) -> None:
+        sel = _select(_changed(("M", "BLUEPRINT.md")), doc_readers=self._BLUEPRINT_READERS)
+        assert "tests/test_blueprint_sync.py" in sel.test_files
+
+    def test_doc_reader_selection_records_its_reason(self) -> None:
+        sel = _select(_changed(("M", "BLUEPRINT.md")), doc_readers=self._BLUEPRINT_READERS)
+        assert [r.kind for r in sel.reasons] == ["doc-read"]
+
+    def test_a_doc_with_no_reader_selects_only_the_floor(self) -> None:
+        sel = _select(_changed(("M", "docs/blueprint/appendix.md")))
+        assert not sel.full
+        assert sel.test_files == ()
+        assert sel.pytest_args() == list(FLOOR_DIRS)
+
+    def test_docs_tree_and_mkdocs_config_are_scoped_too(self) -> None:
+        assert not _select(_changed(("M", "docs/dashboard.md"), ("M", "mkdocs.yml"))).full
+
+    def test_skill_markdown_is_scoped(self) -> None:
+        assert not _select(_changed(("M", "skills/rules/SKILL.md"))).full
+
+    def test_changed_docs_are_reported_on_the_selection(self) -> None:
+        sel = _select(_changed(("M", "BLUEPRINT.md")), doc_readers=self._BLUEPRINT_READERS)
+        assert sel.changed_docs == ("BLUEPRINT.md",)
+
+    def test_src_change_plus_required_blueprint_edit_stays_scoped(self) -> None:
+        # The vicious interaction the ticket names: the blueprint-sync gate COMPELS
+        # the doc edit, and that edit used to compel the whole suite.
+        sel = _select(
+            _changed(("M", "src/teatree/foo/bar.py"), ("M", "BLUEPRINT.md")),
+            test_imports={"tests/teatree_foo/test_bar.py": ("teatree.foo.bar",)},
+            doc_readers=self._BLUEPRINT_READERS,
+        )
+        assert not sel.full
+        assert {"tests/teatree_foo/test_bar.py", "tests/test_blueprint_sync.py"} <= set(sel.test_files)
+        assert sel.doctest_targets == ("src/teatree/foo/bar.py",)
+
+    def test_a_real_full_trigger_beside_a_doc_still_forces_full(self) -> None:
+        assert _select(_changed(("M", "BLUEPRINT.md"), ("M", "tests/conftest.py"))).full
+
+    def test_a_deleted_doc_is_still_scoped_and_selects_its_readers(self) -> None:
+        sel = _select(_changed(("D", "BLUEPRINT.md")), doc_readers=self._BLUEPRINT_READERS)
+        assert not sel.full
+        assert "tests/test_blueprint_sync.py" in sel.test_files
+
+    def test_a_deleted_source_file_beside_a_doc_still_forces_full(self) -> None:
+        assert _select(_changed(("D", "src/teatree/foo/bar.py"), ("M", "BLUEPRINT.md"))).full
 
 
 class TestClassifySelection:

@@ -4,7 +4,8 @@
 its absence was only a WARN — so the mandated companion skills never landed on a
 fresh box and nothing reported it. This step re-reads the same declaration the
 doctor gate enumerates and installs every mandated skill that is not already
-loadable, straight from the source repo the declaration names.
+loadable — from the plugin's own ``skills/`` tree when it carries one (#3668), else
+from the source repo the declaration names.
 
 Idempotent by construction: a skill already resolvable on the runtime skills dir
 is skipped, so re-running ``t3 setup`` (which the container entrypoint does on
@@ -48,7 +49,7 @@ class MandatedSkillProvisioner:
             return True
 
         self.skills_dir.mkdir(parents=True, exist_ok=True)
-        installer = MandatedSkillInstaller(self.cache_root)
+        installer = MandatedSkillInstaller(self.cache_root, plugin_skills_dir=self.repo / "skills")
         return self._install_each(pending, installer, echo)
 
     def _install_each(

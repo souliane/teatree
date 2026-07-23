@@ -109,7 +109,10 @@ def _live_critic() -> CriticLiveness:
 def _open_directive_consumer(*, factory_score_enabled: bool = True) -> tuple[DirectiveLoopSettings, GuardSeams]:
     """Settings + seams that make the directive guard chain allow, as its tick would."""
     settings = SimpleNamespace(
-        directive_loop_enabled=True, factory_score_enabled=factory_score_enabled, directive_verify_days=7
+        directive_loop_enabled=True,
+        factory_score_enabled=factory_score_enabled,
+        directive_verify_days=7,
+        directive_intake_per_tick=25,
     )
     report = FactorySignalsReport(
         window_days=28, generated_at=datetime(2026, 1, 1, tzinfo=UTC), signals=[], verdict=SignalVerdict.OK

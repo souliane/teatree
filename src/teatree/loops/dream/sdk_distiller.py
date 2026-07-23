@@ -43,6 +43,8 @@ from teatree.loops.dream.json_scan import first_object_bearing_array
 if TYPE_CHECKING:
     from claude_agent_sdk import ClaudeAgentOptions
 
+    from teatree.agents._headless_env import ChildEnvResolver
+
 _DISTILL_SYSTEM_PROMPT = (
     "You consolidate an agent's recent feedback and lessons into durable rules. "
     "Group the snippets by ROOT CAUSE. Emit ONE imperative rule per group, and a "
@@ -91,7 +93,7 @@ def deterministic_cluster_key(source_files: Sequence[str]) -> str:
     return hashlib.sha256("\n".join(members).encode("utf-8")).hexdigest()
 
 
-def sdk_distill(extract: ConsolidationExtract) -> DistillResult:
+def sdk_distill(extract: ConsolidationExtract, *, child_env: "ChildEnvResolver | None" = None) -> DistillResult:
     """The real distiller: one bounded headless SDK call, parsed defensively (#2847).
 
     An empty extract short-circuits without an LLM call. Otherwise one bounded
@@ -102,16 +104,21 @@ def sdk_distill(extract: ConsolidationExtract) -> DistillResult:
     array) so the operator can tell a healthy no-consolidation from a broken parse.
     An SDK failure propagates so the command marks the pass attempted-not-
     succeeded (staleness keeps firing) — never laundered into a fake success.
+
+    *child_env* injects the credential resolver (#3512); ``None`` uses the production
+    :func:`~teatree.agents._headless_env.system_child_env`.
     """
     if not extract.snippets:
         return DistillResult(clusters=[], empty_reason=DistillEmptyReason.NOTHING_TO_CONSOLIDATE)
-    raw = _run_distiller_turn(extract)
+    raw = _run_distiller_turn(extract, child_env=child_env)
     return _parse_distill_result(raw)
 
 
-def sdk_distiller(extract: ConsolidationExtract) -> list[DistilledCluster]:
+def sdk_distiller(
+    extract: ConsolidationExtract, *, child_env: "ChildEnvResolver | None" = None
+) -> list[DistilledCluster]:
     """Clusters-only distiller for callers that do not need the empty-reason diagnostic."""
-    return sdk_distill(extract).clusters
+    return sdk_distill(extract, child_env=child_env).clusters
 
 
 def _render_snippets(extract: ConsolidationExtract) -> str:
@@ -120,7 +127,7 @@ def _render_snippets(extract: ConsolidationExtract) -> str:
     )
 
 
-def _run_distiller_turn(extract: ConsolidationExtract) -> str:
+def _run_distiller_turn(extract: ConsolidationExtract, *, child_env: "ChildEnvResolver | None" = None) -> str:
     """Run one bounded headless ``claude-agent-sdk`` turn, returning its text.
 
     Reuses the headless-runner invocation shape (the ``claude_code`` preset,
@@ -145,7 +152,7 @@ def _run_distiller_turn(extract: ConsolidationExtract) -> str:
     # configured plan/meter instead of an unauthenticated ambient env — an auth gap
     # would otherwise surface only as an UNPARSABLE reply, never as a real failure. A
     # CredentialError propagates and fails the pass loud.
-    env = system_child_env()
+    env = (child_env or system_child_env)()
     prompt = _DISTILL_PROMPT_TEMPLATE.format(snippets=_render_snippets(extract))
     return asyncio.run(_collect_turn(prompt, env=env))
 

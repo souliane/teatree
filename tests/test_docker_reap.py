@@ -18,6 +18,7 @@ from teatree.docker.reap import (
     _parse_docker_timestamp,
     is_worktree_compose_project,
     list_compose_projects,
+    orphan_compose_projects,
     project_last_activity,
     reap_compose_project,
     reap_orphan_compose_projects,
@@ -320,6 +321,19 @@ class TestReapOrphanComposeProjects:
         assert results == []
         assert fake.removed_containers == []
         assert fake.removed_images == []
+
+    def test_orphan_compose_projects_selects_owned_non_live_only(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        # Selection-only preview seam (#3489): everything teatree owns minus the
+        # live set, and never a foreign stack. The deploy stack and a user project
+        # carry no worktree label, so they are excluded even though they are unowned.
+        monkeypatch.setattr(
+            "teatree.docker.reap.list_compose_projects",
+            lambda: {"live-wt1", "orphan-wt9", "teatree", "someuser-project"},
+        )
+
+        selected = orphan_compose_projects({"live-wt1"})
+
+        assert selected == ["orphan-wt9"]
 
 
 # ── Stale-stack reaping (#2207) ──────────────────────────────────────────────

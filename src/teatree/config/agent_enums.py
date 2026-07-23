@@ -52,6 +52,7 @@ class AgentRuntime(StrEnum):
         absent, so a typo never silently switches the runtime.
         """
         normalised = value.strip().lower()
+        normalised = _PROVIDER_VALUE_ALIASES.get(normalised, normalised)
         try:
             return cls(normalised)
         except ValueError as exc:
@@ -83,8 +84,8 @@ class AgentHarness(StrEnum):
     *   :attr:`PYDANTIC_AI` — the provider-agnostic transport
         (:class:`~teatree.agents.harness.PydanticAiHarness`,
         [#2885](https://github.com/souliane/teatree/issues/2885)): a
-        ``pydantic_ai.Agent`` targeting OrcaRouter's BYOK, OpenAI-compatible,
-        metered endpoint. Its OrcaRouter credential resolves lazily inside
+        ``pydantic_ai.Agent`` targeting the configured OpenAI-compatible,
+        metered endpoint. Its credential resolves lazily inside
         ``open``, so selecting this value never itself requires a live
         credential.
 
@@ -109,6 +110,7 @@ class AgentHarness(StrEnum):
         also admits an overlay-registered harness name.
         """
         normalised = value.strip().lower()
+        normalised = _PROVIDER_VALUE_ALIASES.get(normalised, normalised)
         try:
             return cls(normalised)
         except ValueError as exc:
@@ -148,19 +150,18 @@ class AgentHarnessProvider(StrEnum):
     [#2887](https://github.com/souliane/teatree/issues/2887): the "single home"
     for the provider/credential a headless run authenticates with, CONSTRAINED by
     Layer 1 (:class:`AgentHarness`) via :meth:`valid_for`. Mirrors the resolution
-    table :class:`~teatree.llm.credentials.OrcaRouterCredential` already
-    documents in prose:
+    table the credential modules document in prose:
 
     | Layer 1 (``agent_harness``) | Layer 2 (this enum)     | Credential                            |
     |------------------------------|---------------------------|-----------------------------------------|
     | ``claude_sdk``                | ``subscription_oauth``    | ``AnthropicSubscriptionCredential``     |
     | ``claude_sdk``                | ``api_key``               | ``AnthropicApiKeyCredential``           |
-    | ``pydantic_ai``               | ``orca_router_byok``      | ``OrcaRouterCredential``                |
+    | ``pydantic_ai``               | ``openai_compatible``     | ``OpenAICompatibleCredential``          |
     | ``pydantic_ai``               | ``anthropic_api``         | ``AnthropicApiKeyCredential``           |
 
     A Vertex AI Layer-2 provider under ``pydantic_ai`` is reserved but not yet
-    implemented (see ``OrcaRouterCredential``'s docstring), so it carries no enum
-    member yet — :meth:`valid_for` names only what is actually selectable today.
+    implemented, so it carries no enum member yet — :meth:`valid_for` names only
+    what is actually selectable today.
 
     Tiers (default :attr:`SUBSCRIPTION_OAUTH`, today's ``claude_sdk`` behaviour):
 
@@ -170,10 +171,11 @@ class AgentHarnessProvider(StrEnum):
     *   :attr:`API_KEY` — the metered Anthropic API key
         (:class:`~teatree.llm.credentials.AnthropicApiKeyCredential`).
         Valid only under ``agent_harness=claude_sdk``.
-    *   :attr:`ORCA_ROUTER_BYOK` — OrcaRouter's BYOK metered key
-        (:class:`~teatree.llm.credentials.OrcaRouterCredential`).
+    *   :attr:`OPENAI_COMPATIBLE` — the key for whichever OpenAI-compatible API
+        the generic backend settings name
+        (:class:`~teatree.llm.openai_compatible.OpenAICompatibleCredential`).
         Valid only under ``agent_harness=pydantic_ai`` — the OpenAI-compatible
-        router binding, where prompt-cache semantics are opaque.
+        binding, where prompt-cache semantics are opaque.
     *   :attr:`ANTHROPIC_API` — the metered Anthropic API key
         (:class:`~teatree.llm.credentials.AnthropicApiKeyCredential`), driving the
         NATIVE Anthropic Messages-API binding on the ``pydantic_ai`` lane
@@ -191,7 +193,7 @@ class AgentHarnessProvider(StrEnum):
 
     SUBSCRIPTION_OAUTH = "subscription_oauth"
     API_KEY = "api_key"
-    ORCA_ROUTER_BYOK = "orca_router_byok"
+    OPENAI_COMPATIBLE = "openai_compatible"
     ANTHROPIC_API = "anthropic_api"
 
     @classmethod
@@ -200,9 +202,13 @@ class AgentHarnessProvider(StrEnum):
 
         Mirrors :meth:`Mode.parse`: the conservative default
         (:attr:`SUBSCRIPTION_OAUTH`) is applied by the caller when the setting is
-        absent, so a typo never silently switches the credential.
+        absent, so a typo never silently switches the credential. A retired VALUE
+        is aliased forward (:data:`_PROVIDER_VALUE_ALIASES`) so a stored row written
+        before the generic-backend collapse (#3666) keeps resolving — the value half
+        of the same migrate-or-fail-loud contract the key half carries.
         """
         normalised = value.strip().lower()
+        normalised = _PROVIDER_VALUE_ALIASES.get(normalised, normalised)
         try:
             return cls(normalised)
         except ValueError as exc:
@@ -216,7 +222,12 @@ class AgentHarnessProvider(StrEnum):
         return _VALID_PROVIDERS_BY_HARNESS[harness]
 
 
+#: Retired ``agent_harness_provider`` VALUES mapped forward. The data migration
+#: rewrites stored rows; this keeps an env var or an un-migrated row resolving.
+_PROVIDER_VALUE_ALIASES: dict[str, str] = {"orca_router_byok": AgentHarnessProvider.OPENAI_COMPATIBLE.value}
+
+
 _VALID_PROVIDERS_BY_HARNESS: dict[AgentHarness, frozenset[AgentHarnessProvider]] = {
     AgentHarness.CLAUDE_SDK: frozenset({AgentHarnessProvider.SUBSCRIPTION_OAUTH, AgentHarnessProvider.API_KEY}),
-    AgentHarness.PYDANTIC_AI: frozenset({AgentHarnessProvider.ORCA_ROUTER_BYOK, AgentHarnessProvider.ANTHROPIC_API}),
+    AgentHarness.PYDANTIC_AI: frozenset({AgentHarnessProvider.OPENAI_COMPATIBLE, AgentHarnessProvider.ANTHROPIC_API}),
 }

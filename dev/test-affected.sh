@@ -3,9 +3,22 @@
 #
 # Safety-biased selection (`t3 tool affected-tests`): a changed src module expands to
 # its transitive reverse-import dependents + the tests importing any of them + the
-# mirror path + an always-run floor. ANY unclassifiable change (conftest/settings/
-# migrations/data files/deletions/files outside the modelled roots) degrades to the
-# WHOLE suite. Over-run is free; under-run is a false green.
+# mirror path + an always-run floor. ANY unclassifiable EXECUTABLE change (conftest/
+# settings/migrations/data files/deletions/files outside the modelled roots) degrades
+# to the WHOLE suite.
+#
+# Under-run is a false green, so the escalation stays. Over-run is not free either
+# (#3645): a measured escalation ran 30182 tests in 59m32s for a one-module fix and
+# manufactured 30 shared-box artifact failures that then had to be disproved. Docs
+# (markdown / the docs tree / mkdocs config) are therefore classified as having no
+# executable semantics and select only the tests that READ them, rather than the tree.
+#
+# The report step also prints the #3672 ADVISORY `selector-comparison` line: the tach
+# pytest plugin's impact verdict, computed report-only and NEVER applied, diffed against
+# our selection. `theirs_only` (tests the plugin keeps and we drop) is the only direction
+# that could ever produce a false green, so it is counted separately. Collect that
+# divergence over real diffs — it is the gate for a later cutover, and changes nothing
+# today. The `--pytest-args` path does not compute it, so the hot path is unaffected.
 #
 # NOT a gate. The 12-shard CI run + 93% combined-coverage floor stays the merge gate,
 # and pre-push is untouched (`tests/test_no_full_suite_on_pre_push.py`). Use this while

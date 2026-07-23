@@ -9,6 +9,16 @@
 
 [intra_core]
 "src/teatree/core/_checking_gather.py" = 5
+# souliane/teatree#3526: the load-time conformance checker resolves `OverlayBase` at
+# call time because `teatree.core.overlay` reaches back into the loader that imports
+# this module — a genuine cycle, not a lazy-import convenience.
+"src/teatree/core/overlay_conformance.py" = 1
+# 1: #3658 resolves a thread's subject against teatree's own `Ticket` rows — an ORM
+# import that must resolve after the app registry is ready, so it stays call-time.
+"src/teatree/core/owner_dm_sweep.py" = 1
+# 1: the token-budget read (`AnthropicTokenUsage`) is an ORM import that must resolve
+# after the app registry is ready, so it stays call-time.
+"src/teatree/core/admission_governor.py" = 1
 "src/teatree/core/apps.py" = 2
 "src/teatree/core/checking.py" = 2
 "src/teatree/core/cleanup/cleanup.py" = 1
@@ -32,7 +42,10 @@
 "src/teatree/core/gates/review_request_draft_gate.py" = 1
 "src/teatree/core/gates/review_request_guard.py" = 6
 "src/teatree/core/gates/rubric_gate.py" = 2
-"src/teatree/core/handover.py" = 2
+# 6: #3551/#3555 made the hand-off derive live state when the snapshot payload is
+# empty — Worktree / Ticket / PullRequest / LoopLease / SessionHandover are all ORM
+# reads that must resolve after the app registry is ready, so each stays call-time.
+"src/teatree/core/handover.py" = 6
 "src/teatree/core/headless_dispatch.py" = 1
 # _reenqueue_provision defers `from teatree.core.tasks import execute_provision`
 # (call-time, kept lazy) — tasks.py pulls the whole task-execution graph
@@ -52,7 +65,9 @@
 "src/teatree/core/management/commands/dream.py" = 2
 "src/teatree/core/management/commands/e2e.py" = 1
 "src/teatree/core/management/commands/followup.py" = 2
-"src/teatree/core/management/commands/handover.py" = 1
+# 0: #3555 moved the claim/drain logic onto the shared `handover.claim_handovers`
+# seam, so the command no longer defers an intra-core import of its own.
+"src/teatree/core/management/commands/handover.py" = 0
 "src/teatree/core/management/commands/lifecycle.py" = 3
 "src/teatree/core/management/commands/loop_dispatch.py" = 3
 "src/teatree/core/management/commands/loop_drain_queue.py" = 1
@@ -71,7 +86,9 @@
 # god-module split, taking one deferred teatree.core import with them; the four
 # left here (DodE2EOverride, E2EBypassApproval, two get_all_overlays) are real.
 "src/teatree/core/management/commands/ticket.py" = 4
-"src/teatree/core/management/commands/ticket_short_describe.py" = 2
+# 1: #3570 moved the runner to `agents/ticket_short_description.py` (registered at
+# app-ready), so the command defers one intra-core import instead of two.
+"src/teatree/core/management/commands/ticket_short_describe.py" = 1
 "src/teatree/core/management/commands/worktree.py" = 1
 "src/teatree/core/managers.py" = 2
 "src/teatree/core/mcp_connectivity.py" = 1

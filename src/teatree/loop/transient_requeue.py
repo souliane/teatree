@@ -26,6 +26,15 @@ freeze silently; it is routed straight to the escalation path. The invariant: a
 terminal FAILED task on a non-terminal ticket ALWAYS escalates or retries-once,
 never freezes silently.
 
+A SELF-CORRECTABLE FAILED task — one whose deterministic failure is a config breach
+with exactly ONE valid resolution (an invalid ``agent_harness``/``agent_harness_provider``
+pair) — is CORRECTED and reopened rather than escalated (#3665). The message was
+excellent; the paging was the defect. Self-repair stays loud (a WARNING log and the
+durable :data:`~teatree.core.config_self_repair.SELF_REPAIR_STAMP` the dashboard renders)
+and fires at most once per task, so it cannot become the silent-failure bug class it
+replaces. The criterion — exactly one valid resolution, never a guess between two —
+lives in :mod:`teatree.core.config_self_repair`.
+
 An EXHAUSTION-killed FAILED task — one that died on a Claude usage-window limit (a
 subscription 5h/weekly window or a transient rate limit, recorded ``<cause>: …`` by
 ``LimitMatch.as_reason``) — is NOT a defect and must not be escalated to a human as one.
@@ -84,6 +93,7 @@ from django.utils import timezone
 
 from teatree.agents.outage_classifier import is_transient_failure
 from teatree.agents.usage_window import autorecovery_enabled
+from teatree.core.config_self_repair import SELF_REPAIR_STAMP
 from teatree.core.modelkit.phase_tools import VERDICT_REVIEW_PHASES
 from teatree.core.modelkit.phases import normalize_phase, phase_spellings
 from teatree.core.models import Task, TaskAttempt, Ticket
@@ -96,6 +106,7 @@ from teatree.core.repair_loop import (
     terminal_reason_fingerprint,
 )
 from teatree.llm.anthropic_limits import LimitCause, recoverable_exhaustion_cause, window_horizon
+from teatree.loop.config_self_repair import repair_for_error
 
 logger = logging.getLogger(__name__)
 
@@ -228,7 +239,9 @@ def _requeue_on_window_reset(task: Task, cause: LimitCause, *, now: datetime) ->
 
 
 def _handle_deterministic(task: Task) -> int:
-    """Corrective-retry a spent-envelope coding failure once, else escalate. Returns the reopen count."""
+    """Self-repair, corrective-retry, or escalate a deterministic failure. Returns the reopen count."""
+    if (repaired := _self_repair_reopen(task)) is not None:
+        return repaired
     halt = _budget_halt_reason(task)
     if halt is not None:
         _escalate_once(task, reason=halt)
@@ -237,6 +250,34 @@ def _handle_deterministic(task: Task) -> int:
         return _corrective_reopen(task)
     _escalate_once(task, reason=_latest_error(task) or "deterministic failure")
     return 0
+
+
+def _self_repair_reopen(task: Task) -> int | None:
+    """Correct a single-valid-resolution config breach and reopen *task*; ``None`` if it must page.
+
+    The #3665 ruling: a repair-halt condition with exactly one valid resolution
+    carries no decision, so it is corrected and logged rather than DM'd to the
+    owner. Over-suppression is foreclosed on both sides — the correction is loud
+    (WARNING log + the durable :data:`~teatree.loop.config_self_repair.SELF_REPAIR_STAMP`
+    the dashboard's configuration band renders), and it fires at most ONCE per
+    task, so a breach that survives its own repair escalates normally.
+    """
+    if SELF_REPAIR_STAMP in task.execution_reason:
+        return None
+    repair = repair_for_error(_latest_error(task))
+    if repair is None:
+        return None
+    repair.apply()
+    new_reason = f"{task.execution_reason}\n{repair.stamp()}".strip() if task.execution_reason else repair.stamp()
+    return Task.objects.filter(pk=task.pk, status=Task.Status.FAILED).update(
+        status=Task.Status.PENDING,
+        claimed_at=None,
+        claimed_by="",
+        claimed_by_session="",
+        lease_expires_at=None,
+        heartbeat_at=None,
+        execution_reason=new_reason,
+    )
 
 
 def _is_corrective_candidate(task: Task) -> bool:

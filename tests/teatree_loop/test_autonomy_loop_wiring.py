@@ -85,7 +85,8 @@ class TestEffectiveSettingsForOverlaySeesCollapse(TestCase):
         settings = _effective_settings_for_overlay("t3-teatree")
         assert settings.autonomy is Autonomy.FULL
         assert settings.mode is Mode.AUTO
-        assert settings.require_human_approval_to_merge is False
+        # #3630: the tier never removes the merge review gate — that is its own opt-in.
+        assert settings.require_human_approval_to_merge is True
 
     def test_notify_overlay_resolver_sees_collapsed_values(self) -> None:
         _stage_config(self.monkeypatch)
@@ -93,7 +94,7 @@ class TestEffectiveSettingsForOverlaySeesCollapse(TestCase):
         settings = _effective_settings_for_overlay("t3-client")
         assert settings.autonomy is Autonomy.NOTIFY
         assert settings.mode is Mode.AUTO
-        assert settings.require_human_approval_to_merge is False
+        assert settings.require_human_approval_to_merge is True
         assert settings.notify_on_behalf is True
 
     def test_global_interactive_mode_does_not_defeat_collapse_in_loop(self) -> None:
@@ -156,31 +157,27 @@ class TestPrSweepSoloOverlayGate(TestCase):
         assert scanner.solo_overlay is False
 
     def test_full_overlay_arms_auto_review_dispatch(self) -> None:
-        """``full`` autonomy collapses ``require_human_approval_to_merge`` → arms #68."""
+        """``full`` autonomy plus the explicit merge opt-in (#3630) → arms #68."""
         _stage_config(self.monkeypatch)
         _stage_autonomy("t3-teatree", Autonomy.FULL)
+        ConfigSetting.objects.set_value("require_human_approval_to_merge", value=False, scope="t3-teatree")
         scanner = _pr_sweep_scanner_for(_backend(name="t3-teatree"), slack_user_id="")
         assert scanner is not None
         assert scanner.solo_overlay is True
         assert scanner.auto_review_dispatch is True
         assert scanner.review_dispatcher is not None
 
-    def test_full_overlay_with_pinned_human_approval_disarms_auto_review_dispatch(self) -> None:
-        """An explicit ``require_human_approval_to_merge = true`` survives the collapse.
+    def test_full_overlay_with_human_approval_disarms_auto_review_dispatch(self) -> None:
+        """``full`` autonomy alone keeps the human in the merge loop (#3630).
 
-        ``full`` autonomy would collapse the merge gate to ``false``, but a
-        hard-pinned per-overlay value wins (``_apply_autonomy``'s
-        ``hard_pinned`` set). The single-author bypass still arms
-        (``solo_overlay``) yet the cold-review auto-dispatch must NOT — the
-        human stays in the merge loop, so the agent must not auto-dispatch its
-        own review. This is the case that catches a future collapse-precedence
-        regression silently arming a human-approval overlay.
+        The merge gate is no longer tier-governed, so ``full`` resolves it to its
+        default ``true``. The single-author bypass still arms (``solo_overlay``) yet
+        the cold-review auto-dispatch must NOT — the human stays in the merge loop, so
+        the agent must not auto-dispatch its own review. This is the case that catches
+        a regression silently arming a human-approval overlay.
         """
         _stage_config(self.monkeypatch)
         _stage_autonomy("t3-teatree", Autonomy.FULL)
-        # A per-overlay (overlay-scoped) gate row is a HARD pin — it survives the
-        # ``full`` collapse, keeping the human in the merge loop.
-        ConfigSetting.objects.set_value("require_human_approval_to_merge", value=True, scope="t3-teatree")
         scanner = _pr_sweep_scanner_for(_backend(name="t3-teatree"), slack_user_id="")
         assert scanner is not None
         assert scanner.solo_overlay is True

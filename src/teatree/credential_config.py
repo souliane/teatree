@@ -489,7 +489,7 @@ def resolve_eval_credential(*, kind: "AgentHarnessProvider | None" = None, scope
     *   :attr:`AgentHarnessProvider.SUBSCRIPTION_OAUTH` → subscription OAuth.
     *   :attr:`AgentHarnessProvider.API_KEY` / :attr:`AgentHarnessProvider.ANTHROPIC_API`
         → the metered ``ANTHROPIC_API_KEY`` (per-token cost, no usage window).
-    *   :attr:`AgentHarnessProvider.ORCA_ROUTER_BYOK` → subscription OAuth with a
+    *   :attr:`AgentHarnessProvider.OPENAI_COMPATIBLE` → subscription OAuth with a
         WARNING: the eval lane authenticates against Anthropic, so a BYOK router pin
         has no eval credential of its own; falling back keeps the lane runnable rather
         than failing a validly-configured ``pydantic_ai`` deployment.
@@ -524,7 +524,7 @@ def resolve_eval_credential(*, kind: "AgentHarnessProvider | None" = None, scope
         kind = get_effective_settings().agent_harness_provider
     if kind in {AgentHarnessProvider.API_KEY, AgentHarnessProvider.ANTHROPIC_API}:
         return resolve_api_key_credential(scope=scope)
-    if kind is AgentHarnessProvider.ORCA_ROUTER_BYOK:
+    if kind is AgentHarnessProvider.OPENAI_COMPATIBLE:
         logger.warning(
             "agent_harness_provider=%s pins a non-Anthropic router; the eval lane "
             "falls back to the subscription OAuth credential",

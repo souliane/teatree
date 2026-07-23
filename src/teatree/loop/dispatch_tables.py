@@ -125,6 +125,13 @@ STATUSLINE_ZONE_BY_KIND: dict[str, str] = {
     # action_needed so orphaned work is never silently green.
     "workstate.drift": "action_needed",
     "workstate.probe_error": "action_needed",
+    # #3658 owner-DM hygiene sweep. Emitted ONLY when the pass actually resolved
+    # something (a pass with nothing to do is silent), so it is the record of
+    # threads teatree closed on the owner's behalf — they must see that it
+    # happened rather than find questions silently gone. It reports a COMPLETED
+    # action, never a request, so it renders in ``in_flight`` rather than
+    # crowding ``action_needed``.
+    "dm_sweep.resolved": "in_flight",
 }
 
 # Diagnostic signal kinds that intentionally do NOT render to the statusline.

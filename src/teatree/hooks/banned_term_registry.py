@@ -51,20 +51,32 @@ from typing import Final
 
 from teatree.config import cold_reader
 from teatree.hooks.banned_terms_tree_scan import BannedTermsUnsetError
+from teatree.hooks.leak_policy import ALLOW, LEAK, PROSE_COLLIDER, TERM_CLASSES, TONE, Surface, classes_for_surface
 
-LEAK: Final = "leak"
-PROSE_COLLIDER: Final = "prose_collider"
-TONE: Final = "tone"
-ALLOW: Final = "allow"
+__all__ = [
+    "ALLOW",
+    "GATE_CLASSES",
+    "LEAK",
+    "PROSE_COLLIDER",
+    "TERM_CLASSES",
+    "TONE",
+    "MigrationVerification",
+    "allowlist_terms",
+    "build_registry_from_legacy",
+    "class_of_term",
+    "load_registry",
+    "registry_terms_for_gate",
+    "terms_for_gate",
+    "verify_migration",
+]
 
-TERM_CLASSES: Final[tuple[str, ...]] = (LEAK, PROSE_COLLIDER, TONE, ALLOW)
-
-# Which term CLASSES each scanning gate consumes. ``leak`` is the widest
-# (scanned everywhere); ``tone`` is diff-only; the allowlist is its own class.
+# Which term CLASSES each scanning gate consumes, DERIVED from the one policy
+# (:func:`teatree.hooks.leak_policy.classes_for_surface`) rather than restated —
+# the gate names are the legacy keys the dual-read callers already pass.
 GATE_CLASSES: Final[dict[str, tuple[str, ...]]] = {
-    "diff": (LEAK, PROSE_COLLIDER, TONE),
-    "core": (LEAK, PROSE_COLLIDER),
-    "tree": (LEAK,),
+    "diff": classes_for_surface(Surface.DIFF),
+    "core": classes_for_surface(Surface.CORE),
+    "tree": classes_for_surface(Surface.TREE),
 }
 
 _REGISTRY_KEY: Final = "banned_term_registry"
@@ -187,6 +199,25 @@ def _legacy_allowlist(db_path: Path | None = None) -> tuple[str, ...]:
     if not isinstance(raw, list):
         return ()
     return tuple(str(entry).strip() for entry in raw if str(entry).strip())
+
+
+def class_of_term(term: str, *, db_path: Path | None = None) -> str:
+    """The registry class *term* belongs to, for :func:`teatree.hooks.leak_policy.decide`.
+
+    Falls back to :data:`PROSE_COLLIDER` when the registry is unset or does not carry
+    *term*: pre-cutover every legacy ``banned_terms`` entry IS a prose-collider, and a
+    term the registry cannot classify must land in a BLOCKING class, never in
+    :data:`ALLOW`. Class membership is checked in :data:`TERM_CLASSES` order, so the
+    widest-scanned class wins a term listed twice.
+    """
+    registry = load_registry(db_path=db_path)
+    if registry is None:
+        return PROSE_COLLIDER
+    cleaned = term.strip().lower()
+    for term_class in TERM_CLASSES:
+        if any(entry.strip().lower() == cleaned for entry in registry[term_class]):
+            return term_class
+    return PROSE_COLLIDER
 
 
 def allowlist_terms(db_path: Path | None = None) -> tuple[str, ...]:

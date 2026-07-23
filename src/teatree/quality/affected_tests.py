@@ -9,9 +9,16 @@ module expands to its transitive dependents — the reverse-import closure from
 any module in that closure is selected, unioned with the mirror-convention test path
 and an always-run floor. ANY change the classifier cannot prove local (conftest,
 settings, migrations, non-``.py`` data files, deletions/renames, files outside the
-modelled roots) degrades to a whole-tree FULL run. Over-run is free; under-run is a
-false green — the same doctrine as :mod:`teatree.quality.changed_set`, the shared
-changed-set + FULL-trigger normalizer this builds on.
+modelled roots) degrades to a whole-tree FULL run. Under-run is a false green — the
+same doctrine as :mod:`teatree.quality.changed_set`, the shared changed-set +
+FULL-trigger normalizer this builds on.
+
+Over-run is NOT free, though (#3645). One implementer's one-module fix escalated to
+30182 tests over 59m32s because the diff carried the ``BLUEPRINT.md`` edit the
+blueprint-sync gate compels — the doc edit was out-of-root, so it forced FULL. Docs
+are therefore classified rather than blanket-escalated: :mod:`teatree.quality.doc_impact`
+proves a path carries no executable semantics and maps it to the tests that READ it.
+The escalation stays exactly as conservative for everything executable.
 """
 
 import ast
@@ -24,6 +31,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from teatree.quality.changed_set import ChangedSet, ChangedSetError, FullTrigger, changed_paths, classify, is_migration
+from teatree.quality.doc_impact import disk_doc_reader_lookup, is_doc_path, reference_tokens
 from teatree.quality.test_path_mirror import collect_test_files, expected_test_dir
 from teatree.utils.run import run_allowed_to_fail
 
@@ -49,6 +57,7 @@ class SelectionVerdict:
     create_db: bool
     scoped_src: tuple[Path, ...] = ()
     scoped_tests: tuple[Path, ...] = ()
+    scoped_docs: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -69,6 +78,7 @@ class Selection:
     reasons: tuple[SelectionReason, ...] = ()
     changed_src: tuple[str, ...] = ()
     changed_tests: tuple[str, ...] = ()
+    changed_docs: tuple[str, ...] = ()
     warnings: tuple[str, ...] = ()
 
     def pytest_args(self, *, test_db_cloned: bool = False) -> list[str]:
@@ -93,8 +103,8 @@ class Selection:
             return f"affected-tests: FULL — {self.reason}"
         return (
             f"affected-tests: SCOPED — {len(self.test_files)} test file(s) + "
-            f"{len(self.floor_dirs)} floor dir(s), {len(self.doctest_targets)} changed src module(s); "
-            "full-run triggers: none"
+            f"{len(self.floor_dirs)} floor dir(s), {len(self.doctest_targets)} changed src module(s), "
+            f"{len(self.changed_docs)} changed doc(s); full-run triggers: none"
         )
 
     def explain(self, test: str | None = None) -> list[str]:
@@ -130,26 +140,32 @@ def _extra_full_trigger(path: str) -> str | None:
 
 
 def classify_selection(changed: ChangedSet) -> SelectionVerdict:
-    """Route a diff to FULL or the scoped src+test lists, reusing the shared classifier.
+    """Route a diff to FULL or the scoped src+test+doc lists, reusing the shared classifier.
 
-    Adds the #113-only escalations on top of :func:`teatree.quality.changed_set.classify`:
-    factories/settings force FULL, a migration additionally requires ``--create-db``,
-    and a file the shared classifier merely IGNORED (doc/markdown outside the code
-    roots) becomes FULL — a doc/skill-parsing test may read it, so scoping it away
-    would risk an under-select.
+    Docs are partitioned out FIRST (#3645) so a markdown/docs-tree/mkdocs path never
+    reaches the shared classifier's out-of-root escalation — its impact is mapped to
+    the tests that read it instead. Everything else keeps the #113 escalations on top
+    of :func:`teatree.quality.changed_set.classify`: factories/settings force FULL, a
+    migration additionally requires ``--create-db``, and any remaining path the shared
+    classifier merely IGNORED still becomes FULL.
     """
-    base: FullTrigger = classify(changed)
-    create_db = any(is_migration(path) for path in changed.paths)
+    docs = tuple(sorted({entry.path for entry in changed.entries if is_doc_path(entry.path)}))
+    executable = ChangedSet(
+        entries=tuple(entry for entry in changed.entries if not is_doc_path(entry.path)),
+        base_ref=changed.base_ref,
+    )
+    base: FullTrigger = classify(executable)
+    create_db = any(is_migration(path) for path in executable.paths)
     if base.full:
         return SelectionVerdict(full=True, reason=base.reason, create_db=create_db)
 
-    for entry in changed.entries:
+    for entry in executable.entries:
         extra = _extra_full_trigger(entry.path)
         if extra:
             return SelectionVerdict(full=True, reason=f"{extra} ({entry.path})", create_db=create_db)
 
     scoped = {str(p) for p in base.scoped_src} | {str(p) for p in base.scoped_tests}
-    ignored = [path for path in changed.paths if path not in scoped]
+    ignored = [path for path in executable.paths if path not in scoped]
     if ignored:
         return SelectionVerdict(
             full=True,
@@ -162,6 +178,7 @@ def classify_selection(changed: ChangedSet) -> SelectionVerdict:
         create_db=create_db,
         scoped_src=base.scoped_src,
         scoped_tests=base.scoped_tests,
+        scoped_docs=docs,
     )
 
 
@@ -193,8 +210,15 @@ def _prefixes(module: str) -> list[str]:
     return [".".join(parts[: index + 1]) for index in range(len(parts))]
 
 
-def _closure_index(parent: Mapping[str, str | None]) -> tuple[dict[str, str], dict[str, str]]:
-    """Index the closure files by exact module and by every ancestor prefix."""
+@dataclass(frozen=True)
+class _ClosureIndex:
+    """The closure files indexed by exact module and by every ancestor prefix."""
+
+    module_to_file: dict[str, str]
+    prefix_to_file: dict[str, str]
+
+
+def _closure_index(parent: Mapping[str, str | None]) -> _ClosureIndex:
     module_to_file: dict[str, str] = {}
     prefix_to_file: dict[str, str] = {}
     for file in sorted(parent):
@@ -204,7 +228,7 @@ def _closure_index(parent: Mapping[str, str | None]) -> tuple[dict[str, str], di
         module_to_file.setdefault(module, file)
         for prefix in _prefixes(module):
             prefix_to_file.setdefault(prefix, file)
-    return module_to_file, prefix_to_file
+    return _ClosureIndex(module_to_file=module_to_file, prefix_to_file=prefix_to_file)
 
 
 def _match_closure_file(
@@ -246,18 +270,59 @@ def _under_floor(path: str, floor_dirs: Iterable[str]) -> bool:
     return any(path == floor or path.startswith(f"{floor}/") for floor in floor_dirs)
 
 
+@dataclass(frozen=True)
+class SelectionSources:
+    """The injected resolvers the pure core selects from — no tach, no disk, no git."""
+
+    dependents_map: Mapping[str, list[str]]
+    test_imports: Mapping[str, tuple[str, ...]]
+    mirror_lookup: Callable[[str], str | None]
+    doc_reader_lookup: Callable[[frozenset[str]], tuple[str, ...]]
+
+
+class _Selected:
+    """Accumulates test → reason, first pass wins, never selecting a floor-dir test."""
+
+    def __init__(self, floor_dirs: Iterable[str]) -> None:
+        self._floor_dirs = tuple(floor_dirs)
+        self.reasons: dict[str, SelectionReason] = {}
+
+    def add(self, test: str, kind: str, chain: tuple[str, ...]) -> bool:
+        if test in self.reasons or _under_floor(test, self._floor_dirs):
+            return False
+        self.reasons[test] = SelectionReason(test=test, kind=kind, chain=chain)
+        return True
+
+
+def _add_import_matches(
+    selected: _Selected, sources: SelectionSources, index: _ClosureIndex, parent: Mapping[str, str | None]
+) -> None:
+    for test in sorted(sources.test_imports):
+        for imported in sources.test_imports[test]:
+            closure_file = _match_closure_file(imported, index.module_to_file, index.prefix_to_file)
+            if closure_file is not None:
+                selected.add(test, "import-match", _import_chain(test, imported, closure_file, parent))
+                break
+
+
+def _add_mirrors(selected: _Selected, sources: SelectionSources, index: _ClosureIndex) -> list[str]:
+    warnings: list[str] = []
+    for module in sorted(index.module_to_file):
+        mirror = sources.mirror_lookup(module)
+        if mirror and selected.add(mirror, "mirror", (f"mirror path of {module}",)):
+            warnings.append(f"mirror {mirror} for {module} not caught by the import scan — included belt-and-braces")
+    return warnings
+
+
 def select(
     *,
     changed: ChangedSet,
-    dependents_map: Mapping[str, list[str]],
-    test_imports: Mapping[str, tuple[str, ...]],
-    mirror_lookup: Callable[[str], str | None],
+    sources: SelectionSources,
     floor_dirs: tuple[str, ...] = FLOOR_DIRS,
 ) -> Selection:
     """The pure selection core: classify, expand the reverse-import closure, match tests.
 
-    Every input is injected (the changed set, the dependents adjacency, the
-    test→imports map, the mirror resolver) so the selection is deterministic and needs
+    Every input is injected via *sources* so the selection is deterministic and needs
     no tach/disk — the impure edges live in :func:`build_selection`.
     """
     verdict = classify_selection(changed)
@@ -267,34 +332,18 @@ def select(
     changed_src = tuple(str(p) for p in verdict.scoped_src)
     changed_tests = tuple(str(p) for p in verdict.scoped_tests)
 
-    parent = dependents_closure(changed_src, dependents_map)
-    module_to_file, prefix_to_file = _closure_index(parent)
+    parent = dependents_closure(changed_src, sources.dependents_map)
+    index = _closure_index(parent)
 
-    selected: dict[str, SelectionReason] = {}
-
+    selected = _Selected(floor_dirs)
     for test in changed_tests:
-        if not _under_floor(test, floor_dirs):
-            selected[test] = SelectionReason(test=test, kind="self-changed", chain=(f"{test} (changed test)",))
+        selected.add(test, "self-changed", (f"{test} (changed test)",))
+    _add_import_matches(selected, sources, index, parent)
+    for reader in sources.doc_reader_lookup(reference_tokens(verdict.scoped_docs)):
+        selected.add(reader, "doc-read", (f"{reader} reads a changed doc",))
+    warnings = _add_mirrors(selected, sources, index)
 
-    for test in sorted(test_imports):
-        if test in selected or _under_floor(test, floor_dirs):
-            continue
-        for imported in test_imports[test]:
-            closure_file = _match_closure_file(imported, module_to_file, prefix_to_file)
-            if closure_file is not None:
-                selected[test] = SelectionReason(
-                    test=test, kind="import-match", chain=_import_chain(test, imported, closure_file, parent)
-                )
-                break
-
-    warnings: list[str] = []
-    for module in sorted(module_to_file):
-        mirror = mirror_lookup(module)
-        if mirror and mirror not in selected and not _under_floor(mirror, floor_dirs):
-            selected[mirror] = SelectionReason(test=mirror, kind="mirror", chain=(f"mirror path of {module}",))
-            warnings.append(f"mirror {mirror} for {module} not caught by the import scan — included belt-and-braces")
-
-    ordered = sorted(selected)
+    ordered = sorted(selected.reasons)
     return Selection(
         full=False,
         reason=verdict.reason or "scoped to the diff — no FULL trigger",
@@ -302,9 +351,10 @@ def select(
         test_files=tuple(ordered),
         floor_dirs=floor_dirs,
         doctest_targets=changed_src,
-        reasons=tuple(selected[test] for test in ordered),
+        reasons=tuple(selected.reasons[test] for test in ordered),
         changed_src=changed_src,
         changed_tests=changed_tests,
+        changed_docs=verdict.scoped_docs,
         warnings=tuple(warnings),
     )
 
@@ -403,7 +453,8 @@ def build_selection(root: Path, base_ref: str = "origin/main") -> Selection:
     Fail-safe throughout: a dirty/shallow merge-base or an unavailable tach map both
     degrade to a whole-tree FULL run — a selector that cannot prove its selection must
     run everything, never skip-as-pass. tach is skipped entirely when the diff already
-    classifies FULL.
+    classifies FULL, and when no src module changed at all (a docs-only diff has an
+    empty reverse-import closure, so the map would cost seconds to answer nothing).
     """
     try:
         changed = changed_paths(base_ref=base_ref, cwd=root)
@@ -414,19 +465,24 @@ def build_selection(root: Path, base_ref: str = "origin/main") -> Selection:
     if verdict.full:
         return Selection(full=True, reason=verdict.reason, create_db=verdict.create_db)
 
-    try:
-        dependents_map = run_tach_dependents_map(root)
-    except TachUnavailableError as exc:
-        return Selection(
-            full=True,
-            reason=f"tach dependency map unavailable ({exc}) — FULL (fail-safe)",
-            create_db=verdict.create_db,
-        )
+    dependents_map: Mapping[str, list[str]] = {}
+    if verdict.scoped_src:
+        try:
+            dependents_map = run_tach_dependents_map(root)
+        except TachUnavailableError as exc:
+            return Selection(
+                full=True,
+                reason=f"tach dependency map unavailable ({exc}) — FULL (fail-safe)",
+                create_db=verdict.create_db,
+            )
 
     return select(
         changed=changed,
-        dependents_map=dependents_map,
-        test_imports=scan_test_imports(root),
-        mirror_lookup=disk_mirror_lookup(root),
+        sources=SelectionSources(
+            dependents_map=dependents_map,
+            test_imports=scan_test_imports(root),
+            mirror_lookup=disk_mirror_lookup(root),
+            doc_reader_lookup=disk_doc_reader_lookup(root),
+        ),
         floor_dirs=FLOOR_DIRS,
     )

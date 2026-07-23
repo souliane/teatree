@@ -3,8 +3,14 @@
 ``apm`` is the primary installer, but it is absent from the deployed image, and
 its absence was a WARN — so the mandated companion skills never landed and
 nothing said so. This is the fallback that makes ``t3 setup`` provision them
-anyway: clone the declared source repo into a cache and symlink the declared
-subpath into the runtime skills directory, idempotently.
+anyway, idempotently, from two sources in order:
+
+1.  the PLUGIN's own ``skills/`` tree, when it already carries a skill by that
+    name (#3668) — no network, no cache, deterministic. This is how the
+    recommended set (the software-architecture skill above all) installs on a box
+    with no reachable source repo.
+2.  the declared source repo — cloned into a cache and symlinked from its declared
+    subpath, for a skill the plugin does not carry.
 """
 
 import logging
@@ -61,17 +67,35 @@ def parse_skill_source(spec: str) -> SkillSource | None:
     )
 
 
+def _link(link: Path, target: Path) -> None:
+    """Point *link* at *target*, replacing whatever was there."""
+    if link.is_symlink() or link.exists():
+        link.unlink()
+    link.symlink_to(target)
+
+
 class MandatedSkillInstaller:
     """Provision declared skills from their source repos into a runtime skills dir."""
 
-    def __init__(self, cache_root: Path, *, remote_base: str = "https://github.com/") -> None:
+    def __init__(
+        self,
+        cache_root: Path,
+        *,
+        remote_base: str = "https://github.com/",
+        plugin_skills_dir: Path | None = None,
+    ) -> None:
         self.cache_root = cache_root
         self.remote_base = remote_base
+        self.plugin_skills_dir = plugin_skills_dir
 
     def ensure(self, dependency: DeclaredDependency, *, link_dir: Path) -> InstallOutcome:
         """Make *dependency* loadable from *link_dir*, doing nothing when it already is."""
         if (link_dir / dependency.name / "SKILL.md").is_file():
             return InstallOutcome.ALREADY_PRESENT
+        carried = self._plugin_copy(dependency.name)
+        if carried is not None:
+            _link(link_dir / dependency.name, carried)
+            return InstallOutcome.INSTALLED
         source = parse_skill_source(dependency.source)
         if source is None:
             return InstallOutcome.UNAVAILABLE
@@ -81,11 +105,15 @@ class MandatedSkillInstaller:
         target = checkout / source.subpath
         if not (target / "SKILL.md").is_file():
             return InstallOutcome.UNAVAILABLE
-        link = link_dir / dependency.name
-        if link.is_symlink() or link.exists():
-            link.unlink()
-        link.symlink_to(target)
+        _link(link_dir / dependency.name, target)
         return InstallOutcome.INSTALLED
+
+    def _plugin_copy(self, name: str) -> Path | None:
+        """The plugin's own copy of *name*, when it ships one."""
+        if self.plugin_skills_dir is None:
+            return None
+        candidate = self.plugin_skills_dir / name
+        return candidate if (candidate / "SKILL.md").is_file() else None
 
     def _checkout(self, source: SkillSource) -> Path | None:
         """Return the source repo's local checkout, cloning it once when absent."""

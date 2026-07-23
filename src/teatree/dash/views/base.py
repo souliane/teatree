@@ -11,6 +11,7 @@ NAV_ITEMS: tuple[tuple[str, str], ...] = (
     ("dash:health", "Health"),
     ("dash:loops", "Loops"),
     ("dash:presets", "Schedule"),
+    ("dash:config", "Config"),
 )
 
 

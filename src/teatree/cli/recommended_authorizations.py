@@ -56,6 +56,34 @@ class RecommendedAuthorization:
 # paths, or credentials. Keep each sentence copy-pasteable as-is.
 RECOMMENDED_AUTHORIZATIONS: tuple[RecommendedAuthorization, ...] = (
     RecommendedAuthorization(
+        key="teatree-owns-the-safety-layer",
+        sentence=(
+            "Teatree owns the security and safety layer for this workflow: its PreToolUse "
+            "and Stop gates decide what is allowed, so the auto mode classifier should "
+            "defer to them rather than re-deciding a call a teatree gate already let "
+            "through."
+        ),
+        keyphrases=("safety layer", "defer"),
+    ),
+    RecommendedAuthorization(
+        key="read-only-inspection",
+        sentence=(
+            "Allow read-only inspection commands that report state and mutate nothing — "
+            "`ps`, `lsof`, `docker compose ps`, `docker compose logs`, `git status`, "
+            "`git log`, `git diff`, `git show`, and pipes into `grep`/`jq`."
+        ),
+        keyphrases=("read-only", "docker compose ps"),
+    ),
+    RecommendedAuthorization(
+        key="reland-on-a-fresh-branch",
+        sentence=(
+            "When a push is blocked by the leak or commit-identity gate after a rebase, "
+            "allow re-landing the work on a fresh branch cut from `origin/main` and "
+            "cherry-picking the commits onto it. `--no-verify` is never authorized."
+        ),
+        keyphrases=("origin/main", "cherry-pick"),
+    ),
+    RecommendedAuthorization(
         key="manage-claude-settings-and-hooks",
         sentence=(
             "Allow editing ~/.claude/settings.json and files under ~/.claude/hooks/ — "

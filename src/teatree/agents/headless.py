@@ -27,14 +27,14 @@ from claude_agent_sdk import AssistantMessage, ClaudeAgentOptions, RateLimitEven
 from claude_agent_sdk.types import RateLimitInfo
 from django.utils import timezone
 
-from teatree.agents._headless_env import _overlay_scope, _provider_child_env
+from teatree.agents._headless_env import _overlay_scope, _provider_child_env, with_test_worker_cap
 from teatree.agents._headless_options import _build_options
 from teatree.agents.harness import Harness, HarnessSession, pydantic_ai_thread, resolve_harness
 from teatree.agents.harness_registry import InvalidHarnessProviderError, UnknownHarnessError
 from teatree.agents.headless_budget import TicketBudget
 from teatree.agents.headless_usage import _attempt_usage
 from teatree.agents.headless_watchdog import LoopWatchdog, TaskUsage, _sample_usage_closing_connection
-from teatree.agents.pydantic_ai_resume import maybe_persist_on_park
+from teatree.agents.pydantic_ai_resume import maybe_persist_on_limit_park, maybe_persist_on_park
 from teatree.agents.reader_profile import is_reader_phase, reader_child_env, reader_env_hermetic
 from teatree.agents.skill_bundle import active_overlay_stage_skills, resolve_skill_bundle
 from teatree.agents.usage_window import (
@@ -341,7 +341,12 @@ def _resolve_child_env_or_failure(
         # reader instead pins exactly the allowlist (inference credential survives if
         # ambiently present, everything else dropped).
         return reader_child_env(base_env if base_env is not None else dict(os.environ))
-    return base_env
+    return with_test_worker_cap(base_env, active_agents=_active_agent_count())
+
+
+def _active_agent_count() -> int:
+    """In-flight claimed dispatchable tasks — the divisor for the test-worker budget (#3644)."""
+    return max(1, Task.objects.in_flight_claimed_count(Task.dispatchable_q()))
 
 
 def _outcome_failure(task: Task, outcome: HarnessOutcome, *, lane: str = "") -> TaskAttempt | None:
@@ -350,7 +355,8 @@ def _outcome_failure(task: Task, outcome: HarnessOutcome, *, lane: str = "") -> 
     Collapses the stuck-loop / usage-limit / error-result terminal cases into a
     single return so ``run_headless`` stays within its early-return budget. A usage-limit
     hit is PARKED not FAILED when Directive #3 auto-recovery is enabled (the flag-off
-    default records the terminal FAILED exactly as before).
+    default records the terminal FAILED exactly as before). A park keeps the run's
+    conversation so the resume continues it rather than restarting (#3605).
     """
     if outcome.stuck_reason is not None:
         return _record_failure(task, error=f"{_STUCK_LOOP_PREFIX}{outcome.stuck_reason}")
@@ -359,6 +365,7 @@ def _outcome_failure(task: Task, outcome: HarnessOutcome, *, lane: str = "") -> 
         sdk_resets_at = outcome.rate_limit_info.resets_at if outcome.rate_limit_info is not None else None
         parked = park_or_rotate_on_limit(task, limit, sdk_resets_at=sdk_resets_at, lane=lane)
         if parked is not None:
+            maybe_persist_on_limit_park(task, outcome.thread)
             return parked
         reason = limit.as_reason()
         logger.warning("Task %s hit a model-access limit (%s): %s", task.pk, limit.cause.value, reason)
@@ -371,12 +378,12 @@ def _outcome_failure(task: Task, outcome: HarnessOutcome, *, lane: str = "") -> 
 
 
 # souliane/teatree#657: the Layer-2 lane (subscription vs metered) each
-# ``AgentHarnessProvider`` authenticates through — ORCA_ROUTER_BYOK is a
+# ``AgentHarnessProvider`` authenticates through — OPENAI_COMPATIBLE is a
 # metered BYOK key, same lane as API_KEY.
 _LANE_BY_PROVIDER: dict[AgentHarnessProvider, str] = {
     AgentHarnessProvider.SUBSCRIPTION_OAUTH: TaskAttempt.Lane.SUBSCRIPTION,
     AgentHarnessProvider.API_KEY: TaskAttempt.Lane.METERED,
-    AgentHarnessProvider.ORCA_ROUTER_BYOK: TaskAttempt.Lane.METERED,
+    AgentHarnessProvider.OPENAI_COMPATIBLE: TaskAttempt.Lane.METERED,
 }
 
 
@@ -384,7 +391,7 @@ def _resolve_dispatch_lane(harness: Harness, provider: AgentHarnessProvider | No
     """The Layer-2 lane (souliane/teatree#657/#2887) this dispatch authenticated through.
 
     A :class:`~teatree.agents.harness.PydanticAiHarness` run always rides
-    OrcaRouter's BYOK metered credential — the only Layer-2 provider valid
+    the configured OpenAI-compatible credential — the only Layer-2 provider valid
     under ``agent_harness=pydantic_ai`` — so it is unconditionally METERED. A
     :class:`ClaudeSdkHarness` run is attributable only when an explicit
     Layer-2 pin (*provider*) was configured: the ambient-credential default

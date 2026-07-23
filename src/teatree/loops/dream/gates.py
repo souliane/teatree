@@ -317,6 +317,7 @@ class Gate:
         homed_index_lines: set[str],
         clusters_recorded: int = 0,
         maintenance_performed: bool = False,
+        archived_names: Container[str] = (),
     ) -> GateResult:
         """(c) Consolidation actually happened, AND every pruned index line is homed.
 
@@ -339,6 +340,13 @@ class Gate:
         the line text changes but the pointer is not lost, so it must not count as
         a prune. Without it every summary clip looked like a lost prune and the
         pass never stamped success (#2545 staleness defect).
+
+        A line targeting a memory the decay phase ARCHIVED (*archived_names*) is
+        likewise homed: the archive IS its durable destination, and gate (f)
+        independently fails any archived entry that is not restorable. Without
+        this, phase 6 doing its job — archive a decayed memory, re-index drops its
+        line — made a healthy pass fail gate (c), so the success marker was never
+        stamped (souliane/teatree#3467).
         """
         size_reduced = snapshot_after.byte_size < snapshot_before.byte_size
         schema_grew = schema_after > schema_before
@@ -347,7 +355,9 @@ class Gate:
         unhomed = sorted(
             line
             for line in pruned_lines
-            if line not in homed_index_lines and not _line_targets(line, snapshot_after.memories)
+            if line not in homed_index_lines
+            and not _line_targets(line, snapshot_after.memories)
+            and not _line_targets(line, archived_names)
         )
         consolidated = size_reduced or schema_grew or distilled or maintenance_performed
         passed = consolidated and not unhomed
@@ -450,6 +460,7 @@ def evaluate_gates(  # noqa: PLR0913 — each kwarg is one documented §4 gate i
                 homed_index_lines=homed_index_lines,
                 clusters_recorded=clusters_recorded,
                 maintenance_performed=maintenance_performed,
+                archived_names={a.name for a in archived},
             ),
             Gate.index_budget(snapshot_after),
             Gate.monotonicity(pass_rate_first=pass_rate_first, pass_rate_second=pass_rate_second),

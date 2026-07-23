@@ -144,6 +144,7 @@ from hooks.scripts.plan_edit_gate import skip_plan_gate_token
 from hooks.scripts.question_gates import (
     FENCED_CODE_RE,
     STRUCTURED_QUESTION_BLOCK,
+    handle_resolve_answered_question,
     handle_warn_batched_questions,
     is_user_directed_question,
     preceding_user_rejected_question_and_asked_clarify,
@@ -178,6 +179,8 @@ from hooks.scripts.teatree_settings import autoload_enabled as _autoload_enabled
 from hooks.scripts.teatree_settings import teatree_bool_setting as _teatree_bool_setting
 from hooks.scripts.teatree_settings import teatree_bool_setting_loud as _teatree_bool_setting_loud
 from hooks.scripts.teatree_settings import teatree_int_setting as _teatree_int_setting
+from hooks.scripts.turn_inspect import current_turn_assistant_text as _current_turn_assistant_text
+from hooks.scripts.turn_inspect import current_turn_edits as _current_turn_edits
 from hooks.scripts.turn_inspect import current_turn_tool_commands
 from hooks.scripts.unknown_repo_push_gate import handle_block_unknown_repo_push
 from hooks.scripts.ups_fastpath import has_pending_chat_work, has_pending_question_work, record_presence
@@ -2567,10 +2570,10 @@ def handle_block_uncovered_diff(data: dict) -> bool:
 
     return _fail_open_or_deny(
         data,
-        "BLOCKED: per-diff coverage gate 12 failed (BLUEPRINT §17.6.3). "
-        "An added production line is uncovered or a changed symbol is not "
-        "referenced by a changed test. Cover/reference it, then re-mark the "
-        "PR ready (resolve the finding before re-requesting review).\n" + finding,
+        "BLOCKED: per-diff coverage gate 12 failed (BLUEPRINT §17.6.3). An added production line is uncovered, or a "
+        "changed symbol is not imported by a changed test — it reads name-level imports only, not `mod.sym()` "
+        "attribute access. If the symbol is already exercised, add `from <module> import <symbol>` to a changed "
+        "test to make the reference visible, then re-mark the PR ready (resolve the finding first).\n" + finding,
     )
 
 
@@ -3359,6 +3362,11 @@ def handle_read_dedup(data: dict) -> None:
         "\n".join(f"{mtime}\t{path}" for path, mtime in reads.items()) + "\n",
         encoding="utf-8",
     )
+
+
+# ``handle_resolve_answered_question`` (+ its ``_answer_text_from_tool_response``
+# helper) lives in the ``question_gates`` sibling — the AskUserQuestion
+# decision-policy home — and is imported into the PostToolUse chain above.
 
 
 # ── PostToolUse: capture Agent-tool sub-agent dispatches ───────────
@@ -4257,12 +4265,9 @@ def _claim_session_handover(session_id: str) -> str | None:
     from_session = ""
     if bootstrap_teatree_django():
         try:
-            from teatree.core.models import SessionHandover  # noqa: PLC0415 — deferred: ORM/app-registry
+            from teatree.core.handover import claim_handovers  # noqa: PLC0415 — deferred: ORM/app-registry
 
-            claimed = SessionHandover.objects.claim_next(session_id)
-            if claimed is not None:
-                payload = claimed.payload
-                from_session = claimed.from_session
+            payload, from_session = claim_handovers(session_id)
         except Exception:  # noqa: BLE001 — never block SessionStart on a DB hiccup
             payload = ""
 
@@ -5373,22 +5378,32 @@ def handle_mirror_question_to_slack(data: dict) -> bool:
     already short-circuited an away turn). Three present-mode arms:
 
     - live user turn (the user typed a prompt seconds ago, in this
-    session) — mirror to Slack and return ``False`` so the question
+    session) — capture and mirror, then return ``False`` so the question
     renders in-client. Preserves ``TestPresentModeMirrorsButDoesNotDeny``
     and the #189 live-turn escape.
     - attended non-owner turn (a different live session owns the loop; a
-    human is reading the prose) — mirror and return ``False``.
+    human is reading the prose) — same: capture, mirror, return ``False``.
     - loop-driven / autonomous turn (this session drives the loop, or
     there is no live owner) — the broken path: rendering in-client
     suspends the session with no way for a Slack reply to reach it.
     Instead capture a generation-stamped mirror-linked
     ``DeferredQuestion``, then deny so the agent narrates the deferral and
     proceeds; the answer arrives later via ``additionalContext``.
+
+    All three arms now record the question (#3642). The interactive arms used to
+    post the DM WITHOUT a row, which made the mirror unanswerable — a Slack reply had
+    no live generation to bind, and an owner who walked away from the terminal lost the
+    question entirely. Recording puts it in the same owner-thread queue the headless
+    lane feeds (:mod:`teatree.core.owner_threads`); the fast path is unchanged because
+    the arm still returns ``False`` and the modal renders. An in-client answer resolves
+    the row via :func:`handle_resolve_answered_question`, so neither surface can apply
+    an answer the other already took.
     """
     if data.get("tool_name") != "AskUserQuestion":
         return False
     if _is_live_user_turn(data) or not _session_drives_loop(str(data.get("session_id", ""))):
-        _post_question_to_slack(data)
+        if _capture_and_defer_question(data, mode="present") is None:
+            _post_question_to_slack(data)
         return False
     if not str(_first_question(data).get("question", "")).strip():
         _post_question_to_slack(data)
@@ -5911,79 +5926,6 @@ def classify_session_edit(file_path: str) -> str | None:
     return None
 
 
-_EDIT_TOOL_NAMES = frozenset({"Edit", "Write", "NotebookEdit"})
-
-
-def _edit_block_path(block: dict) -> str | None:
-    """File path for an ``Edit``/``Write``/``NotebookEdit`` tool_use block.
-
-    Caller pre-filters with ``isinstance(block, dict)`` (mirrors the
-    ``_block_is_settings_write`` contract).
-    """
-    if block.get("type") != "tool_use":
-        return None
-    name = block.get("name")
-    if name not in _EDIT_TOOL_NAMES:
-        return None
-    tool_input = block.get("input")
-    if not isinstance(tool_input, dict):
-        return None
-    raw = tool_input.get("file_path") or tool_input.get("notebook_path")
-    if isinstance(raw, str) and raw:
-        return raw
-    return None
-
-
-def _current_turn_edits(transcript_path: str) -> list[str]:
-    """File paths edited by the assistant in the most recent turn.
-
-    Walks the transcript newest→oldest; the most recent ``user`` entry
-    is the boundary. Returns the file paths from every ``Edit`` /
-    ``Write`` / ``NotebookEdit`` ``tool_use`` block after that
-    boundary, in transcript order. Duplicates kept — the caller
-    classifies + dedupes.
-    """
-    entries = _read_transcript_entries(transcript_path)
-    if not entries:
-        return []
-    edits: list[str] = []
-    for entry in reversed(entries):
-        role = _entry_role(entry)
-        if role == "user":
-            break
-        if role != "assistant":
-            continue
-        for block in _entry_content(entry):
-            if not isinstance(block, dict):
-                continue
-            path = _edit_block_path(block)
-            if path is not None:
-                edits.append(path)
-    edits.reverse()
-    return edits
-
-
-def _current_turn_assistant_text(transcript_path: str) -> str:
-    """Concatenated assistant text blocks in the most recent turn.
-
-    Used to detect a teatree-issue reference that clears the gate.
-    """
-    chunks: list[str] = []
-    entries = _read_transcript_entries(transcript_path)
-    for entry in reversed(entries):
-        role = _entry_role(entry)
-        if role == "user":
-            break
-        if role != "assistant":
-            continue
-        for block in _entry_content(entry):
-            if isinstance(block, dict) and block.get("type") == "text":
-                text = block.get("text")
-                if isinstance(text, str):
-                    chunks.append(text)
-    return "\n".join(chunks)
-
-
 # ── Stop: speak-on-stop arm (local == all, #2060) ───────────────────────────
 
 
@@ -6238,6 +6180,7 @@ _HANDLERS: dict[str, list] = {
         handle_track_cron_jobs,
         handle_read_dedup,
         handle_track_agents,
+        handle_resolve_answered_question,
     ],
     "TaskCreated": [
         handle_enforce_skill_loading_on_task_create,

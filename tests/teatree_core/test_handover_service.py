@@ -39,12 +39,16 @@ class TestSnapshotPayloadReuse(TestCase):
 
     def test_reads_precompact_snapshot_file_as_payload(self) -> None:
         (self.state_dir / "t3-snapshot-sess-A-precompact.md").write_text("SNAPSHOT BODY", encoding="utf-8")
-        assert handover.snapshot_payload("sess-A") == "SNAPSHOT BODY"
+        assert handover.HandoverPayload("sess-A").snapshot() == "SNAPSHOT BODY"
 
-    def test_falls_back_to_stub_when_no_snapshot(self) -> None:
-        payload = handover.snapshot_payload("sess-never-compacted")
-        assert "sess-never-compacted" in payload
-        assert "No PreCompact" in payload
+    def test_no_snapshot_reads_empty_so_the_caller_derives_live_state(self) -> None:
+        # #3551: the stub that told the receiver to re-derive everything is gone.
+        # An absent snapshot yields "", and ``resolve()`` falls through to ``live_state()``.
+        assert handover.HandoverPayload("sess-never-compacted").snapshot() == ""
+
+    def test_handover_payload_prefers_the_snapshot(self) -> None:
+        (self.state_dir / "t3-snapshot-sess-B-precompact.md").write_text("SNAPSHOT BODY", encoding="utf-8")
+        assert handover.HandoverPayload("sess-B").resolve() == "SNAPSHOT BODY"
 
 
 class TestResolveTargetSession(TestCase):

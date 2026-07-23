@@ -1,9 +1,9 @@
 """The directive-loop guard chains — the code half of QUADRUPLE-OFF (north-star PR-7).
 
 Fail-closed and ordered: the first (most fundamental) refusal wins. Two chains split
-by arc (#3643): the pre-admission INTAKE chain runs G1 flag, G2 critic-live, G3
-signal-trust, G4 budget; the post-admission EXECUTION chain inserts G1b score at its
-historical position. Both reuse the outer loop's probes.
+by arc (#3643, #3649): the pre-admission INTAKE chain runs G1 flag, G3 signal-trust, G4
+budget; the post-admission EXECUTION chain adds G1b score and G2 critic-live at their
+historical positions. Both reuse the outer loop's probes.
 """
 
 import datetime as dt
@@ -40,7 +40,9 @@ def _healthy_report() -> FactorySignalsReport:
 
 
 def _settings(*, flag: bool = True, score: bool = True) -> SimpleNamespace:
-    return SimpleNamespace(directive_loop_enabled=flag, factory_score_enabled=score, directive_verify_days=7)
+    return SimpleNamespace(
+        directive_loop_enabled=flag, factory_score_enabled=score, directive_verify_days=7, directive_intake_per_tick=25
+    )
 
 
 def _open_seams() -> GuardSeams:
@@ -99,10 +101,11 @@ class TestExecutionGuards(TestCase):
 
 
 class TestIntakeGuards(TestCase):
-    """The pre-admission arc interprets and stops at the human ratify gate (#3643).
+    """The pre-admission arc interprets and stops at the human ratify gate (#3643/#3649).
 
-    It changes no config, so the score is not its admission baseline — every OTHER
-    guard still applies unchanged.
+    It changes no config and merges nothing, so neither the score (its admission
+    baseline) nor the critic (its merge supervisor) is that arc's safety property —
+    the structural human ratify gate is. Every OTHER guard still applies unchanged.
     """
 
     def test_score_off_still_allows(self) -> None:
@@ -114,14 +117,20 @@ class TestIntakeGuards(TestCase):
         verdict = guards.evaluate_intake_guards(settings=_settings(flag=False), seams=_open_seams())
         assert verdict.reason == guards.FLAG_OFF
 
-    def test_critic_not_live_still_refuses(self) -> None:
+    def test_absent_critic_still_allows(self) -> None:
         seams = GuardSeams(
             critic_probe=lambda: CriticLiveness(live=False, verdict_count=0),
             signal_report=_healthy_report(),
             budget=BudgetVerdict.allow(),
         )
         verdict = guards.evaluate_intake_guards(settings=_settings(score=False), seams=seams)
-        assert verdict.reason == guards.CRITIC_NOT_LIVE
+        assert verdict.ok
+        assert verdict.reason == ""
+
+    def test_real_probe_absent_critic_still_allows(self) -> None:
+        seams = GuardSeams(signal_report=_healthy_report(), budget=BudgetVerdict.allow())
+        assert not probe_critic_liveness().live
+        assert guards.evaluate_intake_guards(settings=_settings(score=False), seams=seams).ok
 
     def test_untrusted_signal_still_refuses(self) -> None:
         gap = SignalRow(

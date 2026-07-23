@@ -207,6 +207,45 @@ class TestGateC(SimpleTestCase):
         )
         assert not result.passed  # consolidation happened but a pruned line is orphaned
 
+    def test_homes_a_pruned_line_whose_memory_the_decay_phase_archived(self) -> None:
+        # souliane/teatree#3467: phase 6 deliberately archives a decayed memory, and
+        # the re-index correctly drops its index line. Gate (c) counted that as an
+        # unhomed prune because the file is gone from the AFTER snapshot — so a
+        # healthy pass (6 clusters recorded) failed the acceptance gate and never
+        # stamped the marker. The archive IS the durable home, and gate (f)
+        # independently proves it is restorable, so this must not fail (c).
+        archive = self.enterContext(tempfile.TemporaryDirectory())
+        destination = Path(archive) / "stale.md"
+        destination.write_text("archived body", encoding="utf-8")
+        before = _snapshot({"a.md": "x" * 100, "stale.md": "y" * 100}, index="- a\n- [stale.md](stale.md)\n")
+        after = _snapshot({"a.md": "x" * 100}, index="- a\n")
+        result = Gate.consolidation_happened(
+            before,
+            after,
+            schema_before=0,
+            schema_after=0,
+            homed_index_lines=set(),
+            clusters_recorded=6,
+            archived_names={"stale.md"},
+        )
+        assert result.passed, result.detail
+
+    def test_an_unarchived_pruned_line_still_fails(self) -> None:
+        # The narrowing must not leak: a line pruned with no home AND no archive
+        # entry is still the lost-lesson case gate (c) exists to catch.
+        before = _snapshot({"a.md": "x" * 100}, index="- a\n- [lost.md](lost.md)\n")
+        after = _snapshot({"a.md": "x" * 100}, index="- a\n")
+        result = Gate.consolidation_happened(
+            before,
+            after,
+            schema_before=0,
+            schema_after=0,
+            homed_index_lines=set(),
+            clusters_recorded=6,
+            archived_names={"other.md"},
+        )
+        assert not result.passed
+
     def test_homes_a_reworded_pointer_to_a_surviving_memory(self) -> None:
         # Re-index (phase 5) clips a long curated summary to <=200 chars: the index
         # LINE text changes, but feedback_x.md still exists and is still pointed at —

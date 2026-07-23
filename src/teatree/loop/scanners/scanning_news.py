@@ -35,6 +35,7 @@ from django.db import transaction
 from django.db.models import Max
 from django.utils import timezone
 
+from teatree.core.news_sources import NEWS_SOURCES, render_source_directive
 from teatree.loop.scanners.base import ScanSignal, hours_since
 
 if TYPE_CHECKING:
@@ -200,14 +201,20 @@ class ScanningNewsScanner:
         for user approval — it must NOT auto-create issues. The marker
         substring is load-bearing: it is the channel the dispatched skill
         reads to know the gate is active.
+
+        The MERGED source table (#3669) is appended to every directive, gate or
+        not: the agent runs shell-denied and fetches by URL, so the breadth the
+        press-review aggregator contributed has to reach it as text. The
+        teatree-relevance triage the loop exists for is unchanged — the directive
+        names the sources, the skill still decides what survives.
         """
         base = f"Periodic scanning-news scan ({trigger}) via skill: {self.skill}"
         if self.require_approval:
-            return (
+            base = (
                 f"{base} | ASK-GATE: do NOT auto-create issues — record each candidate as a "
                 f"PendingArticleSuggestion and surface the batch for explicit user approval (#1391)"
             )
-        return base
+        return f"{base}\n{render_source_directive(NEWS_SOURCES)}"
 
     def _placeholder_issue_url(self) -> str:
         """Stable synthetic URL for the overlay-anchored placeholder ticket."""

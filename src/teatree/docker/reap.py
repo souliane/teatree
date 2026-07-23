@@ -186,6 +186,15 @@ def _reapable_candidates(live_projects: set[str]) -> list[str]:
     return sorted(p for p in list_compose_projects() - live_projects if is_worktree_compose_project(p))
 
 
+def orphan_compose_projects(live_projects: set[str]) -> list[str]:
+    """The projects :func:`reap_orphan_compose_projects` would tear down — selection only.
+
+    Public so ``clean-all --dry-run`` previews this pass through the same ownership
+    seam a live run uses, rather than describing it from the outside (#3489).
+    """
+    return _reapable_candidates(live_projects)
+
+
 def reap_orphan_compose_projects(live_projects: set[str]) -> list[ReapResult]:
     results: list[ReapResult] = []
     for project in _reapable_candidates(live_projects):

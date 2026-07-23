@@ -13,7 +13,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 
-from teatree.config.settings import _parse_strict_bool, _parse_strict_int
+from teatree.config.setting_parsers import _parse_strict_bool, _parse_strict_int
 
 
 @dataclass(frozen=True)

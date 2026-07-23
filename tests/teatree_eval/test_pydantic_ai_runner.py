@@ -3,7 +3,7 @@
 The behavioral eval lane must be able to grade a non-Claude model so a GPT/OSS swap
 is verifiable. These tests drive the runner with pydantic_ai's own model doubles
 (`FunctionModel` / `TestModel`) under `ALLOW_MODEL_REQUESTS=False`, so they run with
-no network, no OrcaRouter credential, and zero tokens.
+no network, no the OpenAI-compatible backend credential, and zero tokens.
 """
 
 import asyncio
@@ -20,7 +20,7 @@ from pydantic_ai.models.function import AgentInfo, DeltaToolCall, FunctionModel
 from pydantic_ai.models.openai import OpenAIChatModel
 from pydantic_ai.models.test import TestModel
 
-from teatree.agents.pydantic_ai_config import LANE_EVAL
+from teatree.agents.pydantic_ai_config import LANE_EVAL, OpenAICompatibleLaneConfig
 from teatree.eval.backends import KNOWN_BACKENDS, PYDANTIC_AI_BACKEND, UnknownBackendError, make_runner
 from teatree.eval.models import EvalSpec, Matcher
 from teatree.eval.pydantic_ai_runner import PydanticAiRunner
@@ -150,23 +150,28 @@ class TestRunnerWithSettings(TestCase):
     def test_make_runner_builds_the_pydantic_ai_runner_on_the_eval_lane(self) -> None:
         runner = make_runner(PYDANTIC_AI_BACKEND)
         assert isinstance(runner, PydanticAiRunner)
-        # The eval runner tags its OrcaRouter dispatch with the `eval` x-lane header.
-        assert runner._orca.lane == LANE_EVAL
+        # The eval runner tags its the OpenAI-compatible backend dispatch with the `eval` x-lane header.
+        assert runner._backend.lane == LANE_EVAL
 
-    def test_resolve_model_builds_the_orca_router_model_on_the_eval_lane(self) -> None:
-        # With no injected model, `_resolve_model` builds a real OrcaRouter
-        # OpenAI-compatible model — mocked at the credential boundary so the test
-        # needs no live BYOK key or network.
+    def test_resolve_model_builds_the_configured_model_on_the_eval_lane(self) -> None:
+        # With no injected model, `_resolve_model` builds a real OpenAI-compatible
+        # model — mocked at the credential boundary so the test needs no live key
+        # or network.
         spec = _spec(Matcher(kind="positive", tool="Bash", arg_path="command", operator="~", value="."))
         spec = dataclasses.replace(spec, model="claude-opus-4-8")
+        runner = PydanticAiRunner(
+            backend=OpenAICompatibleLaneConfig(
+                lane=LANE_EVAL, base_url="https://backend.example/v1", model="vendor/some-model"
+            )
+        )
         with patch(
-            "teatree.eval.pydantic_ai_runner.resolve_orca_router_provider_config",
-            lambda **_: SimpleNamespace(base_url="https://orca.example/v1", api_key="k"),
+            "teatree.eval.pydantic_ai_runner.resolve_openai_compatible_backend",
+            lambda **_: SimpleNamespace(base_url="https://backend.example/v1", api_key="k"),
         ):
-            model = PydanticAiRunner()._resolve_model(spec)
+            model = runner._resolve_model(spec)
         assert isinstance(model, OpenAIChatModel)
-        # The abstract Claude id normalises UP to the OrcaRouter router handle.
-        assert model.model_name == "orcarouter/teatree-factory"
+        # The abstract Claude id normalises UP to the CONFIGURED model id.
+        assert model.model_name == "vendor/some-model"
 
 
 class TestEvalToolset:

@@ -94,7 +94,7 @@ class AnthropicApiRunner:
         if model is None:
             return _skip_run(spec, "ANTHROPIC_API_KEY not resolvable")
         # Delegate the request loop + vocabulary mapping + watchdog to the pydantic_ai
-        # lane, injecting the Anthropic model so its own OrcaRouter model-resolution is
+        # lane, injecting the Anthropic model so its own model-resolution is
         # never reached; the turn cap bounds that loop.
         delegate = PydanticAiRunner(model=model, max_turns_override=self._turn_cap, effort=self._effort)
         return delegate.run(spec)

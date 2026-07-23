@@ -11,9 +11,9 @@ from django_typer.management import TyperCommand, command
 from teatree.agents._headless_options import UUID_RE
 from teatree.agents.prompt import build_interactive_context
 from teatree.agents.skill_bundle import resolve_skill_bundle
+from teatree.core.deterministic_phases import run_deterministic_phase
 from teatree.core.intake.ticket_kind_classification import classify_ticket_kind
 from teatree.core.machine_output import emit
-from teatree.core.management.commands._deterministic_phases import run_deterministic_phase
 from teatree.core.management.commands.tasks_session_view import (
     TaskRow,
     render_reconcile_checklist,

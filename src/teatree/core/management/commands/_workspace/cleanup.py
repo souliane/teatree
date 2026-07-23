@@ -15,6 +15,7 @@ from teatree.core.cleanup.clean_ignore import is_clean_ignored
 from teatree.core.cleanup.cleanup import _ref_captured_by_merge, _remote_tracking_ref_exists
 from teatree.core.cleanup.cleanup_busy_guards import WorktreeBusyError, guard_live_worktree
 from teatree.core.intake.resolve import match_worktree_by_path
+from teatree.core.management.commands._workspace.preview import preview_line
 from teatree.core.models import Worktree
 from teatree.core.worktree.branch_classification import _branch_tree_matches_squash, is_squash_merged
 from teatree.core.worktree.worktree_env import CACHE_DIRNAME, CACHE_FILENAME, write_env_cache
@@ -105,7 +106,9 @@ def _refuse_if_unpushed(repo: str, name: str, *, remote_ref_was_present: bool) -
     )
 
 
-def _prune_squash_merged(repo: str, name: str, wt_map: dict[str, str], *, remote_ref_was_present: bool) -> str:
+def _prune_squash_merged(
+    repo: str, name: str, wt_map: dict[str, str], *, remote_ref_was_present: bool, dry_run: bool = False
+) -> str:
     """Remove a confirmed squash-merged branch (and its worktree if linked).
 
     A branch whose tip tree matches the PR's merge commit is cleaned despite
@@ -128,6 +131,8 @@ def _prune_squash_merged(repo: str, name: str, wt_map: dict[str, str], *, remote
     if refusal:
         return refusal
     wt_path = wt_map.get(name, "")
+    if dry_run:
+        return preview_line(f"Prune squash-merged branch: {name}", dry_run=True)
     if wt_path:
         git.worktree_remove(repo, wt_path)
         git.run(repo=repo, args=["worktree", "prune"])
@@ -146,7 +151,7 @@ class WorktreeReaper:
     def __init__(self, workspace: Path) -> None:
         self.workspace = workspace
 
-    def remove_empty_ticket_dirs(self) -> list[str]:
+    def remove_empty_ticket_dirs(self, *, dry_run: bool = False) -> list[str]:
         """Remove ticket dirs that are empty or hold only empty repo subdirs.
 
         A multi-repo ticket dir (``ac/1234/`` with empty ``backend/`` +
@@ -166,10 +171,14 @@ class WorktreeReaper:
         for entry in self.workspace.iterdir():
             if not entry.is_dir():
                 continue
-            for child in list(entry.iterdir()):
-                if child.is_dir() and not any(child.iterdir()):
-                    with suppress(OSError):
-                        child.rmdir()
+            empty_children = [c for c in entry.iterdir() if c.is_dir() and not any(c.iterdir())]
+            if dry_run:
+                if set(entry.iterdir()) == set(empty_children):
+                    removed.append(preview_line(f"Remove empty dir: {entry.name}", dry_run=True))
+                continue
+            for child in empty_children:
+                with suppress(OSError):
+                    child.rmdir()
             if not any(entry.iterdir()):
                 with suppress(OSError):
                     entry.rmdir()
@@ -193,7 +202,7 @@ def _worktree_clean(wt_path: str) -> bool:
     return True
 
 
-def _prune_gone_worktree(repo: str, name: str, wt_path: str) -> str:
+def _prune_gone_worktree(repo: str, name: str, wt_path: str, *, dry_run: bool = False) -> str:
     """Remove the working tree of a gone-remote branch, keeping the branch ref.
 
     A branch whose ``origin/<branch>`` ref was pruned (squash-merged + deleted on
@@ -241,13 +250,17 @@ def _prune_gone_worktree(repo: str, name: str, wt_path: str) -> str:
     unsynced = git.unsynced_commits(repo, name)
     if unsynced and not _branch_tree_matches_squash(repo, name):
         return f"SKIPPED '{name}': {len(unsynced)} commit(s) ahead of origin/main — keeping {wt_path}"
+    if dry_run:
+        return preview_line(f"Remove gone-remote worktree (branch kept): {name}", dry_run=True)
     if git.worktree_remove(repo, wt_path):
         git.run(repo=repo, args=["worktree", "prune"])
         return f"Removed gone-remote worktree (branch kept): {name}"
     return f"SKIPPED '{name}': git worktree remove failed for {wt_path}"
 
 
-def _prune_gone_remote_worktrees(repo: str, wt_map: dict[str, str], protected: set[str]) -> list[str]:
+def _prune_gone_remote_worktrees(
+    repo: str, wt_map: dict[str, str], protected: set[str], *, dry_run: bool = False
+) -> list[str]:
     """Reap worktrees of gone-remote branches; mark their refs protected.
 
     Worktree-linked branches whose ``origin/<branch>`` ref is gone (squash-merged
@@ -263,12 +276,26 @@ def _prune_gone_remote_worktrees(repo: str, wt_map: dict[str, str], protected: s
     for name, wt_path in sorted(wt_map.items()):
         if name in protected or _remote_tracking_ref_exists(repo, name):
             continue
-        cleaned.append(_prune_gone_worktree(repo, name, wt_path))
+        cleaned.append(_prune_gone_worktree(repo, name, wt_path, dry_run=dry_run))
         protected.add(name)
     return cleaned
 
 
-def prune_branches(repo: str) -> list[str]:
+def _delete_branches(repo: str, names: list[str], skip: set[str], *, kind: str, dry_run: bool) -> list[str]:
+    """Delete each branch in *names* not in *skip*, returning one outcome line apiece."""
+    outcomes: list[str] = []
+    for name in names:
+        if name in skip:
+            continue
+        if dry_run:
+            outcomes.append(preview_line(f"Prune {kind} branch: {name}", dry_run=True))
+            continue
+        git.branch_delete(repo, name)
+        outcomes.append(f"Pruned {kind} branch: {name}")
+    return outcomes
+
+
+def prune_branches(repo: str, *, dry_run: bool = False) -> list[str]:
     """Delete local branches that are gone or merged, including squash-merged.
 
     ``clean_ignore``-matching branches (never-merge dev overrides, long-lived
@@ -308,23 +335,20 @@ def prune_branches(repo: str) -> list[str]:
     }
     protected |= {name for name in all_local if is_clean_ignored(name)}
 
-    for line in git.run(repo=repo, args=["branch", "-v", "--no-color"]).splitlines():
-        if "[gone]" not in line:
-            continue
-        name = line.strip().removeprefix("* ").removeprefix("+ ").split()[0]
-        if name in protected or name in wt_branches:
-            continue
-        git.branch_delete(repo, name)
-        cleaned.append(f"Pruned gone branch: {name}")
+    gone = [
+        line.strip().removeprefix("* ").removeprefix("+ ").split()[0]
+        for line in git.run(repo=repo, args=["branch", "-v", "--no-color"]).splitlines()
+        if "[gone]" in line
+    ]
+    cleaned.extend(_delete_branches(repo, gone, protected | wt_branches, kind="gone", dry_run=dry_run))
 
-    cleaned.extend(_prune_gone_remote_worktrees(repo, wt_map, protected))
+    cleaned.extend(_prune_gone_remote_worktrees(repo, wt_map, protected, dry_run=dry_run))
 
-    for line in git.run(repo=repo, args=["branch", "--merged", f"origin/{default}", "--no-color"]).splitlines():
-        name = line.strip().removeprefix("* ").removeprefix("+ ")
-        if name in protected or name in wt_branches:
-            continue
-        git.branch_delete(repo, name)
-        cleaned.append(f"Pruned merged branch: {name}")
+    merged = [
+        line.strip().removeprefix("* ").removeprefix("+ ")
+        for line in git.run(repo=repo, args=["branch", "--merged", f"origin/{default}", "--no-color"]).splitlines()
+    ]
+    cleaned.extend(_delete_branches(repo, merged, protected | wt_branches, kind="merged", dry_run=dry_run))
 
     all_branches = {
         line.strip().removeprefix("* ").removeprefix("+ ")
@@ -334,7 +358,13 @@ def prune_branches(repo: str) -> list[str]:
         if not is_squash_merged(repo, name, default):
             continue
         cleaned.append(
-            _prune_squash_merged(repo, name, wt_map, remote_ref_was_present=name in pre_prune_remote_branches)
+            _prune_squash_merged(
+                repo,
+                name,
+                wt_map,
+                remote_ref_was_present=name in pre_prune_remote_branches,
+                dry_run=dry_run,
+            )
         )
 
     remaining = {
@@ -379,7 +409,7 @@ def _postgres_client_installed() -> bool:
     return False
 
 
-def drop_orphan_databases() -> list[str]:
+def drop_orphan_databases(*, dry_run: bool = False) -> list[str]:
     """Drop Postgres databases matching wt_* that don't belong to any worktree.
 
     A no-op — never a crash — on a deployment with no Postgres client
@@ -413,6 +443,9 @@ def drop_orphan_databases() -> list[str]:
     orphans = wt_dbs - known_db_names
     cleaned: list[str] = []
     for db_name in sorted(orphans):
+        if dry_run:
+            cleaned.append(preview_line(f"Drop orphan database: {db_name}", dry_run=True))
+            continue
         run_allowed_to_fail(
             ["dropdb", "-h", pg_host(), "-U", pg_user(), "--if-exists", db_name],
             env=pg_env(),

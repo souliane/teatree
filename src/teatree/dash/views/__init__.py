@@ -1,7 +1,16 @@
 from teatree.dash.views.board import board, board_columns_partial
+from teatree.dash.views.config import config, config_bands_partial
 from teatree.dash.views.debug import command_run, debug_session
 from teatree.dash.views.health import health, health_bands_partial
-from teatree.dash.views.loops import availability, gate_toggle, loop_action, loop_cadence, loops, loops_table_partial
+from teatree.dash.views.loops import (
+    availability,
+    gate_toggle,
+    loop_action,
+    loop_cadence,
+    loops,
+    loops_table_partial,
+    runner_toggle,
+)
 from teatree.dash.views.presets import (
     preset_create,
     preset_delete,
@@ -21,6 +30,8 @@ __all__ = [
     "board",
     "board_columns_partial",
     "command_run",
+    "config",
+    "config_bands_partial",
     "debug_session",
     "gate_toggle",
     "health",
@@ -36,6 +47,7 @@ __all__ = [
     "preset_rename",
     "preset_use",
     "presets",
+    "runner_toggle",
     "schedule_activate",
     "schedule_slot",
     "schedule_slot_delete",

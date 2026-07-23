@@ -1,0 +1,10 @@
+{% extends "dash/base.html" %}
+{% block title %}Config{% endblock %}
+{% block content %}
+  <div id="config-bands"
+    hx-get="{% url 'dash:config_bands' %}"
+    hx-trigger="every 15s"
+    hx-swap="morph:innerHTML">
+    {% include "dash/partials/_config_bands.html" %}
+  </div>
+{% endblock %}

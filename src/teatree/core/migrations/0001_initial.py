@@ -175,6 +175,20 @@ _DEFAULT_LOOPS = (
         False,
     ),
     (
+        "dm_sweep",
+        3600,
+        None,
+        None,
+        (
+            "Sweeps the owner's DM threads hourly and resolves the ones that no longer need "
+            "them (owner already replied, subject merged/closed, duplicate of an open thread); "
+            "leaves anything older than a day for the resurfacing side, and says nothing when "
+            "it resolved nothing."
+        ),
+        False,
+        False,
+    ),
+    (
         "housekeeping",
         3600,
         None,
@@ -257,10 +271,16 @@ _DEFAULT_LOOPS = (
     ),
     (
         "directive_loop",
-        86400,
+        3600,
         None,
         None,
-        "Advances one ratified directive one step per day (implement, configure, verify, keep-only-if-verified, else human-asked revert), off the live tick; ships disabled behind the directive_loop_enabled flag and the critic-live guard.",
+        (
+            "Hourly, off the live tick: interprets captured owner directives up to "
+            "directive_intake_per_tick per pass and stops at the human ratify gate, then advances "
+            "one ratified directive one step (implement, configure, verify, keep-only-if-verified, "
+            "else human-asked revert); ships disabled behind the directive_loop_enabled flag, and "
+            "the execution arc additionally needs the critic-live guard."
+        ),
         False,
         False,
     ),

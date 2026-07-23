@@ -213,6 +213,11 @@ layer = "domain"
 depends_on = []
 
 [[modules]]
+path = "teatree.core.loop_lease_liveness"
+layer = "platform"
+depends_on = ["teatree.utils"]
+
+[[modules]]
 path = "teatree.core.loop_lease_manager"
 layer = "domain"
 depends_on = ["teatree.utils"]

@@ -217,19 +217,19 @@ class TestAutonomyKnobCollapsesGatesNotFloor(TestCase):
     def _fixtures(self, isolated_resolution: None, monkeypatch: pytest.MonkeyPatch) -> None:
         self.monkeypatch = monkeypatch
 
-    def test_full_must_allow_colleague_autoapprove_and_automerge(self) -> None:
-        """``autonomy set full`` collapses on-behalf-post (colleague approve) + merge gates."""
+    def test_full_must_allow_colleague_autoapprove_but_keeps_merge_review(self) -> None:
+        """``autonomy set full`` collapses on-behalf-post; the merge gate is separate (#3630)."""
         result = runner.invoke(_app(), ["autonomy", "set", "full", "--overlay", "trusted"])
         assert result.exit_code == 0
 
         self.monkeypatch.setenv("T3_OVERLAY_NAME", "trusted")
         settings = get_effective_settings()
-        # must-ALLOW: colleague auto-approve (on-behalf posts publish immediately)
-        # and the loop's auto-merge are both unblocked.
+        # must-ALLOW: colleague auto-approve (on-behalf posts publish immediately).
         assert settings.on_behalf_post_mode is OnBehalfPostMode.IMMEDIATE
-        assert settings.require_human_approval_to_merge is False
         assert settings.require_human_approval_to_answer is False
-        # And the merge-autonomy path is actually reachable (gated on mode == AUTO).
+        # must-KEEP: review before merge is never a side effect of the tier.
+        assert settings.require_human_approval_to_merge is True
+        # And the merge-autonomy path is otherwise reachable (gated on mode == AUTO).
         assert settings.mode is Mode.AUTO
 
     def test_full_must_deny_relaxing_the_safety_floor(self) -> None:

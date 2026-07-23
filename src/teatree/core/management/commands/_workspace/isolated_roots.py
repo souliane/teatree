@@ -15,6 +15,7 @@ from pathlib import Path
 from teatree import paths
 from teatree.core.cleanup.clean_ignore import is_clean_ignored
 from teatree.core.gates.idle_stack import worktree_protects_against_reap
+from teatree.core.management.commands._workspace.preview import preview_line
 from teatree.core.models import Worktree
 
 
@@ -76,7 +77,7 @@ def _holds_git_checkout(env_dir: Path) -> bool:
     return (env_dir / ".git").exists()
 
 
-def reap_orphan_isolated_worktree_roots() -> list[str]:
+def reap_orphan_isolated_worktree_roots(*, dry_run: bool = False) -> list[str]:
     """Remove DB-unreferenced auto-isolated worktree env dirs left on disk (#291).
 
     Each git worktree gets an auto-isolated env dir under
@@ -116,6 +117,9 @@ def reap_orphan_isolated_worktree_roots() -> list[str]:
                 f"SKIPPED '{slug}': a live worktree has no recorded checkout path "
                 "— cannot prove this env dir is orphan, keeping (live work)"
             )
+            continue
+        if dry_run:
+            outcomes.append(preview_line(f"Remove orphan isolated env dir: {slug}", dry_run=True))
             continue
         shutil.rmtree(env_dir)
         outcomes.append(f"Removed orphan isolated worktree root: {slug}")

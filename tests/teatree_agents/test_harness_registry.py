@@ -112,7 +112,7 @@ class TestBuiltinRegistrations:
     def test_pydantic_ai_capabilities_and_providers_declared(self) -> None:
         spec = resolve_harness_spec("pydantic_ai")
         assert spec.capabilities == PYDANTIC_AI_ROUTER_CAPABILITIES
-        assert spec.valid_providers == frozenset({"orca_router_byok", "anthropic_api"})
+        assert spec.valid_providers == frozenset({"openai_compatible", "anthropic_api"})
 
     def test_registry_valid_providers_agree_with_config_valid_for(self) -> None:
         # The registry's per-backend valid_providers must not drift from the config-layer
@@ -126,7 +126,7 @@ class TestProviderConstraintConsumesValidProviders:
     """AH-6: valid_providers is CONSULTED for the harness<->provider constraint, not dead."""
 
     def test_valid_providers_for_reads_the_registered_set(self) -> None:
-        assert valid_providers_for("pydantic_ai") == frozenset({"orca_router_byok", "anthropic_api"})
+        assert valid_providers_for("pydantic_ai") == frozenset({"openai_compatible", "anthropic_api"})
 
     def test_valid_providers_for_unregistered_name_is_unconstrained(self) -> None:
         assert valid_providers_for("no_such_harness") == frozenset()
@@ -135,17 +135,17 @@ class TestProviderConstraintConsumesValidProviders:
         assert_provider_valid_for_harness("pydantic_ai", None)  # no pin → no constraint
 
     def test_valid_pin_passes(self) -> None:
-        assert_provider_valid_for_harness("pydantic_ai", "orca_router_byok")
+        assert_provider_valid_for_harness("pydantic_ai", "openai_compatible")
 
     def test_invalid_pin_raises_naming_the_valid_set(self) -> None:
         with pytest.raises(InvalidHarnessProviderError, match="valid: api_key, subscription_oauth"):
-            assert_provider_valid_for_harness("claude_sdk", "orca_router_byok")
+            assert_provider_valid_for_harness("claude_sdk", "openai_compatible")
 
     def test_under_declared_backend_is_unconstrained(self) -> None:
         # An overlay backend that declared no valid_providers is opt-out (never blocked).
         register_harness("no_providers_declared", lambda ctx: FakeThirdHarness([]))
         try:
-            assert_provider_valid_for_harness("no_providers_declared", "orca_router_byok")
+            assert_provider_valid_for_harness("no_providers_declared", "openai_compatible")
         finally:
             harness_registry._REGISTRY.pop("no_providers_declared", None)
 
@@ -194,7 +194,7 @@ class TestThirdHarnessViaEntryPoint(TestCase):
         # valid_for cannot know about.
         with _register_third_harness_via_entry_point(self._monkeypatch):
             ConfigSetting.objects.set_value("agent_harness", "fake_third")
-            ConfigSetting.objects.set_value("agent_harness_provider", "orca_router_byok")
+            ConfigSetting.objects.set_value("agent_harness_provider", "openai_compatible")
             with pytest.raises(InvalidHarnessProviderError, match="fake_third"):
                 resolve_harness()
             # The declared-valid provider resolves cleanly.

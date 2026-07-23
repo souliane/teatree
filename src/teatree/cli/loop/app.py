@@ -244,7 +244,10 @@ def start_command(
 def _session_pin_flags() -> list[str]:
     """The loop session's ``--permission-mode`` / ``--model`` / ``--effort`` pins.
 
-    The mode is pinned UNCONDITIONALLY. This session is attended at LAUNCH —
+    The mode defaults to the unattended pin, overridable by the operator through
+    ``agent_session_permission_mode`` / ``T3_AGENT_SESSION_PERMISSION_MODE``
+    (#3528) — the default is unchanged, the escape hatch is new. This session is
+    attended at LAUNCH —
     ``start_command`` refuses a non-terminal stdin, and the operator is there to
     see the child's own auth behaviour, which is why the base-URL guard
     deliberately skips this exec. But it long outlives that moment: it drives the
@@ -253,7 +256,8 @@ def _session_pin_flags() -> list[str]:
     operator's ``permissions.defaultMode`` — ``t3 doctor check`` advises ``auto``
     there, and pinning here is what makes that advice safe to follow. It is the
     same :data:`~teatree.agents.permission_modes.UNATTENDED` the headless dispatch
-    options pin, so the unattended lanes cannot drift apart.
+    options pin, so the unattended lanes cannot drift apart unless the operator
+    deliberately narrows this one.
 
     Model and effort are session-level pins so the user never runs ``/model`` (or
     sets the effort) by hand. They are injected ONLY into the interactive
@@ -268,7 +272,7 @@ def _session_pin_flags() -> list[str]:
 
     cfg = resolve_agent_config()
     session_model = cfg.session_model
-    flags: list[str] = ["--permission-mode", permission_modes.UNATTENDED]
+    flags: list[str] = ["--permission-mode", cfg.session_permission_mode or permission_modes.UNATTENDED]
     if session_model:
         flags.extend(["--model", session_model])
     if cfg.session_effort:
