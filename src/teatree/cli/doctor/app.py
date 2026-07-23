@@ -8,7 +8,6 @@ The :class:`DoctorService` / :class:`IntrospectionHelpers` services live in
 stay intact.
 """
 
-import shutil
 from importlib.metadata import PackageNotFoundError
 
 import typer
@@ -45,6 +44,7 @@ from teatree.cli.doctor.checks_mcp import (
     _check_mcp_connectivity,
     _check_teatree_mcp_registration,
 )
+from teatree.cli.doctor.checks_provisioning import _check_declared_dependencies_provisioned
 from teatree.cli.doctor.checks_resources import (
     _check_pyright_lsp_plugin,
     _check_tmp_tmpfs_headroom,
@@ -88,12 +88,10 @@ from teatree.utils.django_bootstrap import ensure_django
 
 doctor_app = typer.Typer(no_args_is_help=False, help="Smoke-test hooks, imports, services.")
 doctor_app.command()(authorizations)
-_REQUIRED_TOOLS = ("direnv", "git", "jq")
 
 __all__ = (
     "AGENT_SKILL_RUNTIMES",
     "_CLAUDE_PLUGIN_ID",
-    "_REQUIRED_TOOLS",
     "DoctorService",
     "IntrospectionHelpers",
     "PackageNotFoundError",
@@ -105,6 +103,7 @@ __all__ = (
     "_check_configured_review_skills",
     "_check_connector_manifest",
     "_check_dangling_editable_pth",
+    "_check_declared_dependencies_provisioned",
     "_check_docker_workflow_wired",
     "_check_dream_staleness",
     "_check_dream_transcript_visibility",
@@ -242,13 +241,17 @@ def _check_enabled_but_unprovisioned() -> bool:
     A dependency the operator ENABLED but nothing installed reads as configured while
     silently doing nothing: a ``review_skill`` naming an absent SKILL.md (#3352), or the
     ``pyright-lsp`` plugin enabled without its ``pyright-langserver`` binary (#3568, the
-    LSP never starts). Both HARD-FAIL. Each runs independently (no short-circuit) so
-    every finding is emitted; returns their AND. The review-skill check reads the
-    ConfigSetting store, so the caller runs this after :func:`ensure_django`.
+    LSP never starts). ``_check_declared_dependencies_provisioned`` is the GENERAL gate
+    over the same class (#3652) — it enumerates every mandate from the declaration
+    surfaces, so a newly mandated skill / binary / integration is covered with no change
+    here. All HARD-FAIL, and each runs independently (no short-circuit) so every finding
+    is emitted; returns their AND. The review-skill check reads the ConfigSetting store,
+    so the caller runs this after :func:`ensure_django`.
     """
+    declared = _check_declared_dependencies_provisioned()
     review_skills = _check_configured_review_skills()
     pyright_lsp = _check_pyright_lsp_plugin()
-    return review_skills and pyright_lsp
+    return declared and review_skills and pyright_lsp
 
 
 def run_doctor_checks(*, repair: bool = False, slack_roundtrip: bool = False) -> bool:
@@ -267,12 +270,10 @@ def run_doctor_checks(*, repair: bool = False, slack_roundtrip: bool = False) ->
         typer.echo(f"FAIL  Import check: {exc}")
         return False
 
+    # Required tools are no longer a list here: they are declared in pyproject's
+    # [tool.teatree.provisioning] required_binaries and gated by the general
+    # provisioning check inside _check_enabled_but_unprovisioned below (#3652).
     ok = True
-    for tool in _REQUIRED_TOOLS:
-        if not shutil.which(tool):
-            typer.echo(f"FAIL  Required tool not found: {tool}")
-            ok = False
-
     # Must precede _check_editable_sanity: under contribute=true that check can
     # auto-make-editable against the cwd worktree, creating the exact stale
     # worktree-anchored install this guard exists to catch (#1507).

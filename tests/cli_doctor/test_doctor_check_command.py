@@ -7,6 +7,7 @@ only relocated under a focused package by concern. The module-level
 this is now its only consumer.
 """
 
+from pathlib import Path
 from unittest.mock import patch
 
 import pytest
@@ -18,6 +19,7 @@ import teatree.core.overlay_loader as teatree_overlay_loader
 import teatree.paths as teatree_paths
 from teatree.cli import app
 from teatree.cli.doctor import IntrospectionHelpers
+from teatree.provisioning.declared import project_root_for_running_code, skills_declared_in_apm_manifest
 
 from ._shared import _stage_home
 
@@ -25,7 +27,7 @@ runner = CliRunner()
 
 
 @pytest.fixture(autouse=True)
-def _isolate_environment_dependent_gates(monkeypatch):
+def _isolate_environment_dependent_gates(monkeypatch, tmp_path_factory):
     """Pin the doctor gates that depend on the runner's real on-disk location.
 
     Two gates read the environment the test runner happens to live in and would
@@ -68,6 +70,24 @@ def _isolate_environment_dependent_gates(monkeypatch):
         "teatree.cli.doctor.checks_bootstrap._check_git_hooks_installed",
         lambda: True,
     )
+    # The general provisioning gate (#3652) resolves the manifest-declared skills
+    # against the runner's real skill-install state, where the external apm skills
+    # are absent — the very gap it exists to catch, and a deterministic off-box FAIL
+    # here. Point its skill search at a staged dir carrying them so the BINARY and
+    # INTEGRATION surfaces of the same gate stay live in this aggregation test; the
+    # skill surface is exercised in tests/teatree_cli/doctor/test_provisioning_gate_check.py.
+    monkeypatch.setenv("T3_SKILL_SEARCH_DIRS", str(_stage_declared_skills(tmp_path_factory)))
+
+
+def _stage_declared_skills(tmp_path_factory) -> Path:
+    """A skills dir carrying every manifest-declared skill, so they resolve as installed."""
+    staged = tmp_path_factory.mktemp("declared-skills")
+    root = project_root_for_running_code()
+    for dependency in skills_declared_in_apm_manifest(root / "apm.yml") if root else []:
+        skill = staged / dependency.name
+        skill.mkdir()
+        (skill / "SKILL.md").write_text(f"---\nname: {dependency.name}\n---\n", encoding="utf-8")
+    return staged
 
 
 class TestDoctorCheckCommand:
@@ -98,7 +118,7 @@ class TestDoctorCheckCommand:
             return True
 
         with (
-            patch.object(teatree_cli_doctor.shutil, "which", side_effect=lambda t: f"/usr/bin/{t}"),
+            patch("shutil.which", side_effect=lambda t: f"/usr/bin/{t}"),
             patch.object(teatree_cli_doctor, "_check_entrypoint_is_primary_clone", side_effect=_entry),
             patch.object(teatree_cli_doctor, "_check_editable_sanity", side_effect=_editable),
             patch.object(teatree_overlay_loader, "get_all_overlays", return_value={}),
@@ -111,7 +131,7 @@ class TestDoctorCheckCommand:
         _stage_home(tmp_path, monkeypatch)
 
         with (
-            patch.object(teatree_cli_doctor.shutil, "which", side_effect=lambda t: f"/usr/bin/{t}"),
+            patch("shutil.which", side_effect=lambda t: f"/usr/bin/{t}"),
             patch.object(IntrospectionHelpers, "editable_info", return_value=(False, "")),
             patch.object(teatree_overlay_loader, "get_all_overlays", return_value={}),
             patch("teatree.core.gates.schema_guard.pending_migrations", return_value=[]),
@@ -126,7 +146,7 @@ class TestDoctorCheckCommand:
         # contribute=false but teatree is editable → WARN
 
         with (
-            patch.object(teatree_cli_doctor.shutil, "which", side_effect=lambda t: f"/usr/bin/{t}"),
+            patch("shutil.which", side_effect=lambda t: f"/usr/bin/{t}"),
             patch.object(IntrospectionHelpers, "editable_info", return_value=(True, "file:///src")),
             patch.object(teatree_overlay_loader, "get_all_overlays", return_value={}),
             patch("teatree.core.gates.schema_guard.pending_migrations", return_value=[]),
@@ -142,11 +162,7 @@ class TestDoctorCheckCommand:
         _stage_home(tmp_path, monkeypatch)
 
         with (
-            patch.object(
-                teatree_cli_doctor.shutil,
-                "which",
-                side_effect=lambda t: None if t == "direnv" else f"/usr/bin/{t}",
-            ),
+            patch("shutil.which", side_effect=lambda t: None if t == "direnv" else f"/usr/bin/{t}"),
             patch.object(IntrospectionHelpers, "editable_info", return_value=(False, "")),
             patch.object(teatree_overlay_loader, "get_all_overlays", return_value={}),
         ):
@@ -154,8 +170,11 @@ class TestDoctorCheckCommand:
 
         # The Critical exit-code contract (#3313): a hard FAIL must exit non-zero
         # so `t3 doctor check && …` in CI/hooks does not get silent success.
+        # #3652: required tools are declared in pyproject's [tool.teatree.provisioning]
+        # table, so the general declared-dependency check is what names the gap.
         assert result.exit_code == 1
-        assert "FAIL  Required tool not found: direnv" in result.output
+        assert "FAIL  Declared dependency not provisioned: binary 'direnv'" in result.output
+        assert "pyproject.toml" in result.output
 
     def test_validates_skills_in_claude_dir(self, tmp_path, monkeypatch):
         _stage_home(tmp_path, monkeypatch)
@@ -164,7 +183,7 @@ class TestDoctorCheckCommand:
         (claude_skills / "ok-skill" / "SKILL.md").write_text("---\nname: ok-skill\ndescription: d\n---\n")
 
         with (
-            patch.object(teatree_cli_doctor.shutil, "which", side_effect=lambda t: f"/usr/bin/{t}"),
+            patch("shutil.which", side_effect=lambda t: f"/usr/bin/{t}"),
             patch.object(IntrospectionHelpers, "editable_info", return_value=(False, "")),
             patch.object(teatree_overlay_loader, "get_all_overlays", return_value={}),
             patch("teatree.core.gates.schema_guard.pending_migrations", return_value=[]),
@@ -181,7 +200,7 @@ class TestDoctorCheckCommand:
         (bad / "SKILL.md").write_text("no frontmatter here")
 
         with (
-            patch.object(teatree_cli_doctor.shutil, "which", side_effect=lambda t: f"/usr/bin/{t}"),
+            patch("shutil.which", side_effect=lambda t: f"/usr/bin/{t}"),
             patch.object(IntrospectionHelpers, "editable_info", return_value=(False, "")),
             patch.object(teatree_overlay_loader, "get_all_overlays", return_value={}),
         ):
@@ -196,7 +215,7 @@ class TestDoctorCheckCommand:
         (skill / "SKILL.md").write_text("---\nname: warn-skill\ndescription: d\nunknown-field: x\n---\n")
 
         with (
-            patch.object(teatree_cli_doctor.shutil, "which", side_effect=lambda t: f"/usr/bin/{t}"),
+            patch("shutil.which", side_effect=lambda t: f"/usr/bin/{t}"),
             patch.object(IntrospectionHelpers, "editable_info", return_value=(False, "")),
             patch.object(teatree_overlay_loader, "get_all_overlays", return_value={}),
         ):
@@ -228,7 +247,7 @@ class TestDoctorCheckCommand:
             return True
 
         with (
-            patch.object(teatree_cli_doctor.shutil, "which", side_effect=lambda t: f"/usr/bin/{t}"),
+            patch("shutil.which", side_effect=lambda t: f"/usr/bin/{t}"),
             patch.object(IntrospectionHelpers, "editable_info", return_value=(False, "")),
             patch.object(teatree_overlay_loader, "get_all_overlays", return_value={}),
             patch.object(teatree_cli_doctor, "ensure_django", side_effect=_record_setup),
@@ -269,7 +288,7 @@ class TestDoctorCheckCommand:
             return True
 
         with (
-            patch.object(teatree_cli_doctor.shutil, "which", side_effect=lambda t: f"/usr/bin/{t}"),
+            patch("shutil.which", side_effect=lambda t: f"/usr/bin/{t}"),
             patch.object(IntrospectionHelpers, "editable_info", return_value=(False, "")),
             patch.object(teatree_overlay_loader, "get_all_overlays", return_value={}),
             patch.object(teatree_cli_doctor, "ensure_django", side_effect=_record_setup),
@@ -311,7 +330,7 @@ class TestBareDoctorRunsChecks:
         _stage_home(tmp_path, monkeypatch)
 
         with (
-            patch.object(teatree_cli_doctor.shutil, "which", side_effect=lambda t: f"/usr/bin/{t}"),
+            patch("shutil.which", side_effect=lambda t: f"/usr/bin/{t}"),
             patch.object(IntrospectionHelpers, "editable_info", return_value=(False, "")),
             patch.object(teatree_overlay_loader, "get_all_overlays", return_value={}),
             patch("teatree.core.gates.schema_guard.pending_migrations", return_value=[]),
@@ -326,24 +345,20 @@ class TestBareDoctorRunsChecks:
         _stage_home(tmp_path, monkeypatch)
 
         with (
-            patch.object(
-                teatree_cli_doctor.shutil,
-                "which",
-                side_effect=lambda t: None if t == "direnv" else f"/usr/bin/{t}",
-            ),
+            patch("shutil.which", side_effect=lambda t: None if t == "direnv" else f"/usr/bin/{t}"),
             patch.object(IntrospectionHelpers, "editable_info", return_value=(False, "")),
             patch.object(teatree_overlay_loader, "get_all_overlays", return_value={}),
         ):
             result = runner.invoke(app, ["doctor"])
 
         assert result.exit_code == 1
-        assert "FAIL  Required tool not found: direnv" in result.output
+        assert "FAIL  Declared dependency not provisioned: binary 'direnv'" in result.output
 
     def test_check_subcommand_still_dispatches(self, tmp_path, monkeypatch):
         _stage_home(tmp_path, monkeypatch)
 
         with (
-            patch.object(teatree_cli_doctor.shutil, "which", side_effect=lambda t: f"/usr/bin/{t}"),
+            patch("shutil.which", side_effect=lambda t: f"/usr/bin/{t}"),
             patch.object(IntrospectionHelpers, "editable_info", return_value=(False, "")),
             patch.object(teatree_overlay_loader, "get_all_overlays", return_value={}),
             patch("teatree.core.gates.schema_guard.pending_migrations", return_value=[]),

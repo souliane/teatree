@@ -39,6 +39,7 @@ graph TD
     teatree.skill_support --> teatree.types
     teatree.skill_support --> teatree.utils
     teatree.skill_support --> teatree.project
+    teatree.provisioning --> teatree.utils
     teatree.core --> teatree.types
     teatree.core --> teatree.paths
     teatree.core --> teatree.pricing
