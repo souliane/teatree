@@ -20,15 +20,14 @@ from django.test import TestCase
 
 from teatree.core.backend_protocols import ReviewState
 from teatree.core.models import NEEDS_TRIAGE_LABEL, ImplementedIssueMarker
-from teatree.core.models.config_setting import ConfigSetting
-from teatree.loop.scanners.assigned_issues import AssignedIssuesScanner
-from teatree.loop.scanners.issue_implementer import IssueImplementerScanner
+from teatree.loop.scanners.issue_intake import IssueIntakeScanner
 from teatree.loop.scanners.my_prs import MyPrsScanner
 from teatree.loop.scanners.needs_triage_query import needs_triage_issues
 from teatree.loop.scanners.reviewer_prs import ReviewerPrsScanner
 from teatree.types import RawAPIDict
 
 _BAD = "bad-identity"
+_BAD_LABEL = "bad-identity"
 _GOOD = "good-identity"
 
 
@@ -46,6 +45,7 @@ class _RaisingIdentityHost:
     review_requested_by_reviewer: dict[str, list[RawAPIDict]] = field(default_factory=dict)
     issues_by_assignee: dict[str, list[RawAPIDict]] = field(default_factory=dict)
     authored_issues_by_author: dict[str, list[RawAPIDict]] = field(default_factory=dict)
+    issues_by_label: dict[str, list[RawAPIDict]] = field(default_factory=dict)
     raise_for_identity: str = _BAD
 
     def current_user(self) -> str:
@@ -74,6 +74,11 @@ class _RaisingIdentityHost:
         _ = repo_slugs
         self._guard(author)
         return list(self.authored_issues_by_author.get(author, ()))
+
+    def list_labeled_issues(self, *, label: str, repo_slugs: tuple[str, ...] = ()) -> list[RawAPIDict]:
+        _ = repo_slugs
+        self._guard(label)
+        return list(self.issues_by_label.get(label, ()))
 
     def list_my_merged_prs(self, *, author: str, updated_after: str | None = None) -> list[RawAPIDict]:
         _ = (author, updated_after)
@@ -109,16 +114,6 @@ class TestReviewerPrsPerIdentityIsolation(TestCase):
         assert "https://gl/r/2" in urls
 
 
-class TestAssignedIssuesPerIdentityIsolation(TestCase):
-    def test_failing_identity_does_not_suppress_sibling_issues(self) -> None:
-        host = _RaisingIdentityHost(
-            issues_by_assignee={_GOOD: [{"web_url": "https://gl/i/1", "title": "A", "labels": ["ready"]}]},
-        )
-        scanner = AssignedIssuesScanner(host=host, ready_labels=("ready",), identities=(_BAD, _GOOD))
-        signals = scanner.scan()
-        assert [s.payload["url"] for s in signals] == ["https://gl/i/1"]
-
-
 class TestNeedsTriageQueryPerIdentityIsolation(TestCase):
     def test_failing_assignee_does_not_suppress_sibling_issues(self) -> None:
         good_issue: RawAPIDict = {
@@ -131,12 +126,11 @@ class TestNeedsTriageQueryPerIdentityIsolation(TestCase):
         assert [i["web_url"] for i in issues] == ["https://gl/i/9"]
 
 
-class TestIssueImplementerPerIdentityIsolation(TestCase):
+class TestIssueIntakePerIdentityIsolation(TestCase):
     def setUp(self) -> None:
         patcher = patch("teatree.core.review.author_trust.repo_is_internal", return_value=False)
         patcher.start()
         self.addCleanup(patcher.stop)
-        ConfigSetting.objects.set_value("admission_policy", "all")
 
     def _issue(self, url: str, author: str) -> RawAPIDict:
         return {
@@ -152,12 +146,47 @@ class TestIssueImplementerPerIdentityIsolation(TestCase):
         host = _RaisingIdentityHost(
             authored_issues_by_author={_GOOD: [self._issue(good_url, _GOOD)]},
         )
-        scanner = IssueImplementerScanner(
+        scanner = IssueIntakeScanner(
             host=host,
-            label="auto-implement",
+            admit_label="auto-implement",
             overlay_name="acme",
             trusted_authors=(_BAD, _GOOD),
         )
         signals = scanner.scan()
         assert [s.payload["url"] for s in signals] == [good_url]
         assert ImplementedIssueMarker.objects.filter(issue_url=good_url).exists()
+
+    def test_failing_admit_label_query_does_not_suppress_authored_issues(self) -> None:
+        """The #3634 label query is the surface #3508 never saw — it needs the same guard."""
+        good_url = "https://github.com/acme/repo/issues/3"
+        host = _RaisingIdentityHost(
+            authored_issues_by_author={_GOOD: [self._issue(good_url, _GOOD)]},
+            raise_for_identity=_BAD_LABEL,
+        )
+        scanner = IssueIntakeScanner(
+            host=host,
+            admit_label=_BAD_LABEL,
+            overlay_name="acme",
+            trusted_authors=(_GOOD,),
+        )
+
+        signals = scanner.scan()
+
+        assert [s.payload["url"] for s in signals] == [good_url]
+
+    def test_failing_author_query_does_not_suppress_the_label_admitted_issue(self) -> None:
+        """The reverse direction: a stranger's admitted issue survives a bad author fan-out."""
+        admitted_url = "https://github.com/acme/repo/issues/4"
+        host = _RaisingIdentityHost(
+            issues_by_label={"auto-implement": [self._issue(admitted_url, "random-stranger")]},
+        )
+        scanner = IssueIntakeScanner(
+            host=host,
+            admit_label="auto-implement",
+            overlay_name="acme",
+            trusted_authors=(_BAD, _GOOD),
+        )
+
+        signals = scanner.scan()
+
+        assert [s.payload["url"] for s in signals] == [admitted_url]

@@ -414,7 +414,7 @@ class TestTasksListSession(TestCase):
         # list and a CLI subprocess can only read a stale on-disk snapshot
         # (`~/.claude/tasks/<session>/*.json`) that lags the live session. The
         # CLI must NOT pretend to show the harness TODO list — it scopes the
-        # teatree DB Task rows only, so `/t3:todos` builds the harness half from
+        # teatree DB Task rows only, so `/t3:checking` builds the harness half from
         # the live TaskList tool instead. The session view must therefore never
         # feed harness-store rows into the renderer (no `harness_todos`), which
         # goes RED on the old view that read the stale store and rendered it.
@@ -449,7 +449,7 @@ class TestSessionTodoRendering(TestCase):
     """The session-scoped renderer prints the teatree tasks only, grouped by status.
 
     The harness TODO list is NOT rendered here — it is the agent's live
-    in-memory ``TaskList`` state, which a CLI subprocess cannot read. ``/t3:todos``
+    in-memory ``TaskList`` state, which a CLI subprocess cannot read. ``/t3:checking``
     builds that half from the live ``TaskList`` harness tool.
     """
 

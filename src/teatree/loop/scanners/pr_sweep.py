@@ -170,6 +170,9 @@ class PrSweepScanner:
     #: the keystone refuses and the sweep pings-and-holds. When set, the sweep
     #: presents it and (only if EVERY gate passes and the keystone confirms the id
     #: still equals the configured value) the substrate PR auto-merges + notifies.
+    #: #3648: the solo-overlay bypass reads the same id through
+    #: ``solo_overlay_substrate_authorized``, so both merge paths honour the
+    #: delegation identically.
     substrate_standing_authorizer: str = ""
     name: str = "pr_sweep"
 
@@ -342,13 +345,24 @@ class PrSweepScanner:
         bypass (the keystone CLEAR path can't be used here because it needs a
         CLEAR row, but the SHA-bind + re-check floor applies without one —
         #1985, #18).
+
+        A substrate diff HOLDS unless a standing owner opt-in authorizes it
+        (#3648) — read through the keystone's own
+        :func:`~teatree.core.merge.authorization.substrate_standing_authorization`,
+        so this path and the CLEAR path reach one policy decision for the same
+        PR. The cold-review gate above is unaffected: substrate is a
+        blast-radius sign-off, never a quality gate.
         """
         ci_skip, fallback, failing = self._ci_gate(pr)
         if ci_skip is not None:
             return self._ci_block(pr, reason=ci_skip, failing=failing)
         if not has_independent_cold_review(slug=pr.slug, pr_id=pr.number, head_sha=pr.head_sha):
             return self._flag_no_review(pr)
-        if substrate.pr_diff_is_substrate(pr):
+        if substrate.pr_diff_is_substrate(pr) and not substrate.solo_overlay_substrate_authorized(
+            pr=pr,
+            overlay=self.overlay,
+            presented_authorizer=self.substrate_standing_authorizer,
+        ):
             return substrate.hold_solo_overlay_substrate(self.substrate_pinger, pr=pr)
         ok, merged_sha = self.api.merge_pr_squash_bound(
             slug=pr.slug,

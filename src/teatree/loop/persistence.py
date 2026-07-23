@@ -246,7 +246,7 @@ def _already_reviewed_at_head(ticket: Ticket, head_sha: str) -> bool:
 def _handle_orchestrator(action: DispatchAction) -> Task | None:
     """Auto-start assigned issue → Ticket(role=author) + Task(phase=coding).
 
-    Only fires for ``assigned_issue.ready`` / ``issue_implementer.claimed``
+    Only fires for ``issue_intake.admitted``
     signals that carry ``auto_start=True`` (the dispatcher already filtered).
     The scheduled coding task is then dispatched per-phase by the loop —
     ``pending_task`` signals route directly to the phase's own agent, not
@@ -363,7 +363,7 @@ def _handle_orchestrator_zone(action: DispatchAction) -> Task | None:
     """Route the shared ``t3:orchestrator`` zone by payload shape.
 
     Two distinct signals dispatch to this one zone: the auto-start kickoff
-    (``assigned_issue.ready`` / ``issue_implementer.claimed``, carrying
+    (``issue_intake.admitted``, carrying
     ``auto_start``) and the RED CARD corrective signal (carrying ``row_id`` with
     NO ``auto_start``). The RED CARD path was silently dropped inside
     ``_handle_orchestrator`` (its ``auto_start is not True`` guard, #1 blocker),

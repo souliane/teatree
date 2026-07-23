@@ -16,7 +16,6 @@ from teatree.core.backend_protocols import CodeHostBackend, MessagingBackend
 from teatree.loop.domain_jobs import _jobs_for_overlay_backend, jobs_for_domain, single_overlay_messaging_jobs
 from teatree.loop.job_identity import _CANONICAL_CORE_OVERLAY, Domain, _ScannerJob
 from teatree.loop.scanners import (
-    AssignedIssuesScanner,
     BacklogSweepScanner,
     CiEvalHealScanner,
     DbBackupScanner,
@@ -412,7 +411,6 @@ def build_default_jobs(
     host: CodeHostBackend | None = None,
     messaging: MessagingBackend | None = None,
     notion_client: NotionLike | None = None,
-    ready_labels: tuple[str, ...] = (),
 ) -> list[_ScannerJob]:
     """Build the default scanner jobs from one or more overlays.
 
@@ -466,7 +464,6 @@ def build_default_jobs(
                 [
                     _ScannerJob(scanner=MyPrsScanner(host=host), overlay=""),
                     _ScannerJob(scanner=ReviewerPrsScanner(host=host), overlay=""),
-                    _ScannerJob(scanner=AssignedIssuesScanner(host=host, ready_labels=ready_labels), overlay=""),
                 ],
             )
         if messaging is not None:
@@ -485,7 +482,6 @@ def build_default_scanners(
     host: CodeHostBackend | None,
     messaging: MessagingBackend | None,
     notion_client: NotionLike | None = None,
-    ready_labels: tuple[str, ...] = (),
 ) -> list[Scanner]:
     """Single-overlay scanner builder kept for tests and ad-hoc CLI use."""
     return [
@@ -494,6 +490,5 @@ def build_default_scanners(
             host=host,
             messaging=messaging,
             notion_client=notion_client,
-            ready_labels=ready_labels,
         )
     ]

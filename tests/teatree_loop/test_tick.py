@@ -1475,8 +1475,9 @@ class TestRunTickOrchestrateClaimToggle(django.test.TestCase):
             task.refresh_from_db()
             # The tick PLANS, it does not claim — claiming is the live claimer's job.
             assert task.status == Task.Status.PENDING
-            # The admit budget is persisted for the live claimer to read.
-            assert self._read_budget(sl) == 2
+            # The admit budget is persisted for the live claimer to read: the
+            # WRITE lane's ceiling plus the single-flight MERGE lane (#3634).
+            assert self._read_budget(sl) == 3
 
     def test_toggle_on_medium_writes_no_budget(self) -> None:
         import tempfile  # noqa: PLC0415
@@ -1496,7 +1497,7 @@ class TestRunTickOrchestrateClaimToggle(django.test.TestCase):
             sl = Path(d) / "sl.txt"
             self._full_wip_dispatchable_task()
             self._run(toggle=True, sl=sl)
-            assert self._read_budget(sl) == 2
+            assert self._read_budget(sl) == 3
             # Operator disarms the toggle — the next tick must clear the budget
             # so a stale ceiling never throttles dispatch after disarm.
             self._run(toggle=False, sl=sl)
@@ -1572,6 +1573,7 @@ class TestBoostPoolRefillBudget(django.test.TestCase):
             self._claimed_dispatchable_task()
             self._pending_dispatchable_task()
             self._run_boost(sl=sl, n=3)
-            # The sidecar carries the TARGET (3), not the marginal (3 - 2 = 1) —
-            # so the claimer's ``in_flight(2) >= budget`` is False and it refills.
-            assert read_admit_budget(statusline_path=sl, cadence_seconds=720) == 3
+            # The sidecar carries the TARGET (3 WRITE + 1 MERGE), not the
+            # marginal — so the claimer's ``in_flight(2) >= budget`` is False and
+            # it refills.
+            assert read_admit_budget(statusline_path=sl, cadence_seconds=720) == 4

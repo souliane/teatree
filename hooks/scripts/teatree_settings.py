@@ -18,8 +18,10 @@ resolves to the per-setting default, so a gate never silently flips its verdict
 (never-lockout).
 """
 
+import contextlib
 import os
 import sys
+from pathlib import Path
 
 # Alias both identities so a bare ``from teatree_settings import ...`` (the live
 # hook, whose dir is on sys.path) and ``hooks.scripts.teatree_settings`` (a
@@ -29,21 +31,78 @@ sys.modules.setdefault("hooks.scripts.teatree_settings", sys.modules[__name__])
 
 _GLOBAL_SCOPE = ""
 
+# ``read_cold_setting_status`` second-element vocabulary.
+COLD_READ_OK = "ok"
+COLD_READ_UNREADABLE = "unreadable"
+
+
+def read_cold_setting_status(name: str) -> tuple[object | None, str]:
+    """The stored GLOBAL-scope value for ``[teatree] <name>``, un-coerced, plus HOW it resolved.
+
+    Returns ``(value, status)``. ``status`` is :data:`COLD_READ_UNREADABLE` when the
+    read MACHINERY itself failed — ``teatree`` not importable, or ``read_setting``
+    raising — and :data:`COLD_READ_OK` otherwise, INCLUDING when the row is simply
+    absent (``value`` is then ``None``).
+
+    The status exists because the value alone cannot express the difference between
+    "the operator never opted in" and "this install cannot read its own settings"
+    (#3499) — the two resolve identically to the caller's default, which is why a
+    total DB-read outage stayed invisible for months. Readers that only need the
+    value ignore the status; the engagement advisory and the ``t3 doctor``
+    cold-hook probe branch on it.
+
+    THE single seam through which every reader below reaches the canonical
+    ``ConfigSetting`` store, so the ``sys.path`` bootstrap can never be applied to
+    one reader and forgotten on its siblings.
+
+    It puts the sibling ``src/`` on ``sys.path`` for the duration of the import
+    (#3499). ``run-hook.sh`` execs the first ``python3.13|3.12|3.11|python3`` on
+    PATH — on a host where that is a bare system interpreter, ``teatree`` is not
+    installed in it, so an unbootstrapped ``from teatree.config.cold_reader import
+    read_setting`` raises ``ModuleNotFoundError``. The blanket ``except`` below then
+    swallows it and EVERY DB-home flag in this module silently resolves to its
+    compiled-in default — a total DB-read outage indistinguishable from "the
+    operator never opted in". ``hook_router`` puts only the PLUGIN ROOT on
+    ``sys.path``; ``src/`` is a separate entry every other leaf that imports
+    ``teatree`` bootstraps for itself.
+
+    The bootstrap is inlined rather than reusing ``managed_repo.teatree_src_on_path``
+    on purpose: this module is reachable with only the *scripts* dir on ``sys.path``
+    (``memory_recall`` inserts exactly that before importing us), where the
+    ``hooks.scripts.managed_repo`` import would not resolve — and the module contract
+    is to import nothing first-party at load.
+
+    Fails open to ``None`` on ANY error — ``teatree`` still not importable, an
+    unreadable/locked DB, a missing row — so each caller's per-setting default still
+    stands (never-lockout). The path entry is always removed again, so a hook process
+    that imports us never leaks a mutated ``sys.path`` into later handlers.
+    """
+    src_dir = str(Path(__file__).resolve().parents[2] / "src")
+    added = src_dir not in sys.path
+    if added:
+        sys.path.insert(0, src_dir)
+    try:
+        from teatree.config.cold_reader import read_setting  # noqa: PLC0415 — deferred: cold-hook import
+
+        return read_setting(name, scope=_GLOBAL_SCOPE), COLD_READ_OK
+    except Exception:  # noqa: BLE001 — crash-proof hook: any failure degrades silently, never breaks the tool call
+        return None, COLD_READ_UNREADABLE
+    finally:
+        if added:
+            with contextlib.suppress(ValueError):
+                sys.path.remove(src_dir)
+
 
 def _cold_db_bool(name: str) -> bool | None:
     """The stored GLOBAL-scope DB bool for ``[teatree] <name>``; ``None`` on absence/failure.
 
-    Delegates to the Django-free ``teatree.config.cold_reader``, lazily imported so
-    this leaf stays import-light at load. Fails open to ``None`` on ANY error —
-    ``teatree`` not importable, an unreadable/locked DB, a missing row, a non-bool
-    value — so the caller's per-setting default still stands (never-lockout).
+    Delegates to the Django-free ``teatree.config.cold_reader`` via
+    :func:`read_cold_setting_status`, lazily imported so this leaf stays import-light at
+    load. Fails open to ``None`` on ANY error — ``teatree`` not importable, an
+    unreadable/locked DB, a missing row, a non-bool value — so the caller's
+    per-setting default still stands (never-lockout).
     """
-    try:
-        from teatree.config.cold_reader import read_setting  # noqa: PLC0415 — deferred: cold-hook import
-
-        value = read_setting(name, scope=_GLOBAL_SCOPE)
-    except Exception:  # noqa: BLE001 — crash-proof hook: any failure degrades silently, never breaks the tool call
-        return None
+    value, _ = read_cold_setting_status(name)
     return value if isinstance(value, bool) else None
 
 
@@ -78,12 +137,7 @@ def _cold_db_raw(name: str) -> object | None:
     ABSENT setting apart from one whose stored value is not a clean boolean. Fails
     open to ``None`` on any error.
     """
-    try:
-        from teatree.config.cold_reader import read_setting  # noqa: PLC0415 — deferred: cold-hook import
-
-        return read_setting(name, scope=_GLOBAL_SCOPE)
-    except Exception:  # noqa: BLE001 — crash-proof hook: any failure degrades silently, never breaks the tool call
-        return None
+    return read_cold_setting_status(name)[0]
 
 
 def teatree_bool_setting_loud(name: str, *, default: bool) -> bool:
@@ -122,12 +176,7 @@ def _cold_db_int(name: str) -> int | None:
     as a budget, so it returns ``None`` and the caller's default fires instead
     (never-lockout).
     """
-    try:
-        from teatree.config.cold_reader import read_setting  # noqa: PLC0415 — deferred: cold-hook import
-
-        value = read_setting(name, scope=_GLOBAL_SCOPE)
-    except Exception:  # noqa: BLE001 — crash-proof hook: any failure degrades silently, never breaks the tool call
-        return None
+    value, _ = read_cold_setting_status(name)
     if isinstance(value, bool) or not isinstance(value, int):
         return None
     return value

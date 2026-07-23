@@ -12,7 +12,6 @@ invoke Claude — that is the dispatcher's job.
 from teatree.loop.scanners.active_tickets import ActiveTicketsScanner
 from teatree.loop.scanners.architectural_review import ArchitecturalReviewScanner
 from teatree.loop.scanners.askuserquestion_reply import AskUserQuestionReplyScanner
-from teatree.loop.scanners.assigned_issues import AssignedIssuesScanner
 from teatree.loop.scanners.backlog_sweep import BacklogSweepScanner
 from teatree.loop.scanners.base import Scanner, ScanSignal
 from teatree.loop.scanners.ci_eval_heal import CiEvalHealScanner
@@ -24,7 +23,7 @@ from teatree.loop.scanners.gitlab_approvals import GitLabApprovalsScanner
 from teatree.loop.scanners.idle_stack_reaper import IdleStackReaperScanner
 from teatree.loop.scanners.incoming_events import IncomingEventsScanner
 from teatree.loop.scanners.issue_disposition import IssueDispositionScanner
-from teatree.loop.scanners.issue_implementer import IssueImplementerScanner
+from teatree.loop.scanners.issue_intake import IssueIntakeScanner
 from teatree.loop.scanners.local_stack_queue_drainer import LocalStackQueueDrainerScanner
 from teatree.loop.scanners.my_prs import MyPrsScanner
 from teatree.loop.scanners.notion_view import NotionViewScanner
@@ -69,7 +68,6 @@ __all__ = [
     "ActiveTicketsScanner",
     "ArchitecturalReviewScanner",
     "AskUserQuestionReplyScanner",
-    "AssignedIssuesScanner",
     "AutoReviewTaskDispatcher",
     "BackendChannelHistoryFetcher",
     "BacklogSweepScanner",
@@ -87,7 +85,7 @@ __all__ = [
     "IdleStackReaperScanner",
     "IncomingEventsScanner",
     "IssueDispositionScanner",
-    "IssueImplementerScanner",
+    "IssueIntakeScanner",
     "LocalStackQueueDrainerScanner",
     "MyPrsScanner",
     "NotionViewScanner",

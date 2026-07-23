@@ -45,6 +45,18 @@ COMPLETED silently. This is the fix for the redispatch flood on already-done tic
 (3366/3336/3352): the away-mode queue is never asked about a phase the ticket's own
 state already answers.
 
+A FAILED task WITH A LIVE SUCCESSOR — a newer, still-active (PENDING/CLAIMED) sibling
+Task on the same ``(ticket, phase)`` — is PARKED (left FAILED, stamped out of every
+future scan), never escalated (3534). A stuck-phase redispatch mints a fresh Task and
+can re-claim the predecessor's lease out from under it; the predecessor lands FAILED
+carrying a ``stuck_loop: lease lost … re-claimed`` breach even though the phase is
+recovering fine under the successor. Escalating it files a ``DeferredQuestion`` already
+stale at write time — the successor has the work, so the only correct answer is
+"ignore". The park deliberately does NOT mark the row COMPLETED: the phase has not
+finished (the successor is still mid-flight), and a COMPLETED row would become the
+ticket's newest completed task, so ``replay_orphaned_transitions`` would fire its phase
+transition on the next tick and silently advance the ticket past a phase nobody landed.
+
 A DEAD-REVIEW-TARGET FAILED task — a review/codex-review phase (``reviewing`` /
 ``codex_reviewing`` / ``codex_adversarial_reviewing`` / ``e2e_reviewing``) whose
 linked PR is provably MERGED/CLOSED — is likewise retired COMPLETED (and its reviewer
@@ -73,7 +85,7 @@ from django.utils import timezone
 from teatree.agents.outage_classifier import is_transient_failure
 from teatree.agents.usage_window import autorecovery_enabled
 from teatree.core.modelkit.phase_tools import VERDICT_REVIEW_PHASES
-from teatree.core.modelkit.phases import normalize_phase
+from teatree.core.modelkit.phases import normalize_phase, phase_spellings
 from teatree.core.models import Task, TaskAttempt, Ticket
 from teatree.core.models.deferred_question import DeferredQuestion
 from teatree.core.models.task_repair import phase_attempts
@@ -96,6 +108,11 @@ _HALT_STAMP = "[repair-halt-parked]"
 #: out of the scan — the away-mode queue is never asked about a phase the ticket
 #: already advanced past (the 3366/3336/3352 redispatch-loop root cause).
 _SUPERSEDED_STAMP = "[superseded-retired]"
+#: Stamped onto ``execution_reason`` when a FAILED task is parked because a newer,
+#: still-active sibling Task holds its ``(ticket, phase)`` (#3534). The row stays
+#: FAILED — the phase has not completed — and drops out of the scan, so the stale
+#: predecessor neither escalates nor advances the ticket's FSM.
+_LIVE_SUCCESSOR_STAMP = "[superseded-parked]"
 
 #: Stamped onto ``execution_reason`` when a review/codex-review task is retired
 #: because its linked PR is provably MERGED/CLOSED. A review verdict can never land
@@ -153,14 +170,14 @@ def requeue_transient_failed() -> int:
 
 
 def _route_failed_task(task: Task, *, now: datetime, autorecovery: bool) -> int:
-    """Route ONE FAILED task to reopen / retire / corrective-retry / escalate. Returns the reopen count.
+    """Route ONE FAILED task to reopen / dispose / corrective-retry / escalate. Returns the reopen count.
 
     Isolated per task so :func:`requeue_transient_failed` can wrap it in a single
     ``try`` and keep sweeping when one row raises — a terminal FAILED task on a
-    non-terminal ticket is still never left silent (reopened, retired, retried, or
+    non-terminal ticket is still never left silent (reopened, disposed, retried, or
     escalated), it just can no longer take the whole tick down with it.
     """
-    if _retire_if_dead_artifact(task):
+    if _dispose_without_reopen(task):
         return 0
     error = _latest_error(task)
     if not error:
@@ -267,15 +284,17 @@ def _latest_error(task: Task) -> str:
 def _non_terminal_failed_tasks() -> list[Task]:
     """FAILED tasks on a non-terminal ticket, minus already-parked rows, attempts prefetched.
 
-    Excluding :data:`_HALT_STAMP`-stamped rows keeps the per-tick scan bounded as
-    dead letters pile up (a monotonically growing FAILED set would otherwise degrade
-    tick latency linearly); prefetching ``attempts`` removes the per-task N+1 that
-    :func:`_latest_error` would otherwise issue for every FAILED row.
+    Excluding the parked rows — :data:`_HALT_STAMP` (escalated) and
+    :data:`_LIVE_SUCCESSOR_STAMP` (a live successor holds the phase) — keeps the
+    per-tick scan bounded as dead letters pile up (a monotonically growing FAILED set
+    would otherwise degrade tick latency linearly); prefetching ``attempts`` removes the
+    per-task N+1 that :func:`_latest_error` would otherwise issue for every FAILED row.
     """
     return list(
         Task.objects.filter(status=Task.Status.FAILED)
         .exclude(ticket__state__in=Ticket._TERMINAL_STATES)  # noqa: SLF001 — the model's SSOT terminal set
         .exclude(execution_reason__contains=_HALT_STAMP)
+        .exclude(execution_reason__contains=_LIVE_SUCCESSOR_STAMP)
         .select_related("ticket")
         .prefetch_related("attempts"),
     )
@@ -337,6 +356,22 @@ def _stamp_halt(task: Task) -> None:
     Task.objects.filter(pk=task.pk).update(execution_reason=reason)
 
 
+def _dispose_without_reopen(task: Task) -> bool:
+    """Dispose of a FAILED row the sweep must neither reopen nor escalate; ``True`` if handled.
+
+    Two dispositions, differing in whether the phase's work is over. A DEAD ARTIFACT is
+    retired COMPLETED — nothing can still land, so the row's transition is inert. A row
+    with a LIVE SUCCESSOR is parked FAILED — its phase is unfinished and someone else is
+    finishing it, so marking it COMPLETED would advance the ticket over the successor.
+    """
+    if _retire_if_dead_artifact(task):
+        return True
+    if _has_live_successor(task):
+        _park_live_successor(task)
+        return True
+    return False
+
+
 def _retire_if_dead_artifact(task: Task) -> bool:
     """Retire a FAILED task whose phase output is already moot; ``True`` if retired.
 
@@ -348,6 +383,11 @@ def _retire_if_dead_artifact(task: Task) -> bool:
     * DEAD REVIEW TARGET — a review/codex-review phase whose linked PR is
         merged/closed, so a verdict can never land; re-dispatching only burns a
         session that re-confirms the close (#3556).
+
+    Both triggers are FSM-inert by construction — the ticket has already reached (or is
+    being moved to) its terminal answer, so the COMPLETED row's replayed transition
+    finds no matching guard. A live-successor row is NOT one of them: its phase is
+    unfinished, so it is parked FAILED by :func:`_park_live_successor` instead.
     """
     if task.ticket.has_completed_phase(task.phase):
         _retire_superseded(task)
@@ -356,6 +396,57 @@ def _retire_if_dead_artifact(task: Task) -> bool:
         _retire_dead_review(task)
         return True
     return False
+
+
+def _has_live_successor(task: Task) -> bool:
+    """Whether a newer, still-active sibling Task is handling *task*'s ``(ticket, phase)`` (#3534).
+
+    A stuck-phase redispatch mints a FRESH Task for the same ``(ticket, phase)`` and can
+    re-claim the predecessor's lease out from under it. The predecessor then lands FAILED
+    carrying a ``stuck_loop: lease lost … re-claimed`` breach even though the phase is
+    recovering fine under the successor — so escalating it files a ``DeferredQuestion``
+    that was already stale at write time (the only correct answer was "ignore"). A
+    later-pk sibling in an ACTIVE state (PENDING/CLAIMED) is that live successor. Only a
+    strictly LATER row (``pk__gt``) counts, so the newest FAILED row is never parked on
+    the strength of an older sibling — a genuinely blocked phase whose last row has no
+    successor still escalates.
+
+    Checked on ANY failure class, not just the lease loss that motivated it: the breach
+    string is an unreliable discriminator (the same handoff surfaces under several
+    wordings), and a live successor makes the predecessor's error moot whatever it was.
+    The cost is that a parked row skips the :func:`_budget_halt_reason` check, which the
+    escalation path would otherwise run. That is bounded: the park grants no retry (the
+    row is never reopened), its ``TaskAttempt`` rows survive so ``phase_attempts`` still
+    counts them against the phase budget, and the successor carries the redispatcher's
+    own cap — so a doomed phase still hits its budget through the successor's own row.
+    """
+    return Task.objects.filter(
+        ticket_id=task.ticket_id,  # ty: ignore[unresolved-attribute]
+        phase__in=phase_spellings(normalize_phase(task.phase)),
+        status__in=Task.Status.active(),
+        pk__gt=task.pk,
+    ).exists()
+
+
+def _park_live_successor(task: Task) -> None:
+    """Park a FAILED task whose ``(ticket, phase)`` a live successor now holds. Idempotent.
+
+    Stamps :data:`_LIVE_SUCCESSOR_STAMP` so the row drops out of
+    :func:`_non_terminal_failed_tasks` and is never escalated again, via the same
+    ``UPDATE ... WHERE status=FAILED`` compare-and-swap the reopen/retire paths use.
+
+    The row stays FAILED on purpose. Its phase did not finish — the successor is still
+    mid-flight — so marking it COMPLETED (the ``_retire_superseded`` shape) would make it
+    the ticket's newest completed task and ``Task.objects.replay_orphaned_transitions``
+    would fire its phase transition on the next tick, advancing the ticket past work
+    nobody landed (a PLANNED ticket to CODED, a TESTED one through ``review()``).
+    """
+    if _LIVE_SUCCESSOR_STAMP in task.execution_reason:
+        return
+    reason = (
+        f"{task.execution_reason}\n{_LIVE_SUCCESSOR_STAMP}".strip() if task.execution_reason else _LIVE_SUCCESSOR_STAMP
+    )
+    Task.objects.filter(pk=task.pk, status=Task.Status.FAILED).update(execution_reason=reason)
 
 
 def _review_target_dead(task: Task) -> bool:

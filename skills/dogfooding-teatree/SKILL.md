@@ -172,7 +172,7 @@ dispatch logic, or statusline rendering — before declaring the change done.
 A Quick Wins variant where, instead of picking tickets off the tracker, the
 agent dogfoods the loop and the rendered statusline, finds bugs, files them,
 and fixes them in the same session. The user no longer has to play QA.
-Shares the Quick Wins family with `/teatree-batch`.
+Shares the Quick Wins family with `/t3:wip`.
 
 ### Step 1 — Ask the scope
 
@@ -246,7 +246,7 @@ listed.
 For each confirmed bug, in severity order:
 
 1. `gh issue create` with label `bug`, clear reproduction (paste the relevant `tick.json` excerpt and the rendered statusline line), severity, and the scanner / module to look at.
-2. Implement per `/teatree-batch` rules (worktree via `t3 teatree workspace ticket`, TDD against the existing scanner/dispatch tests in `tests/teatree_loop/`, `t3:reviewer` sub-agent, sequential merge).
+2. Implement per `/t3:wip` rules (worktree via `t3 teatree workspace ticket`, TDD against the existing scanner/dispatch tests in `tests/teatree_loop/`, `t3:reviewer` sub-agent, sequential merge).
 3. Close the issue via the PR.
 
 ### Step 6 — Tear down

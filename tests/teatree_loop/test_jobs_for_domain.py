@@ -243,7 +243,7 @@ class ReviewDomainUnifiedIntakeTestCase(TestCase):
 class IssueImplementerDomainPartitionTestCase(TestCase):
     """``ISSUE_IMPLEMENTER`` joins the partition without breaking it (#1553).
 
-    The domain is default-OFF: :func:`_issue_implementer_scanner_for`
+    The domain is default-OFF: :func:`_issue_intake_scanner_for`
     returns ``None`` unless an overlay opts in, so the per-overlay sum stays
     byte-for-byte equal to the legacy builder by default (the parity
     invariant). When enabled it owns exactly the one scanner the partition
@@ -274,7 +274,7 @@ class IssueImplementerDomainPartitionTestCase(TestCase):
             legacy = _jobs_for_overlay_backend(backend, all_backends=(backend,))
         assert sorted(map(_signature, partitioned), key=repr) == sorted(map(_signature, legacy), key=repr)
 
-    def test_enabled_slice_owns_exactly_the_issue_implementer_scanner(self) -> None:
+    def test_enabled_slice_owns_exactly_the_issue_intake_scanner(self) -> None:
         backend = self._backend()
         with patch(
             _SETTINGS_PATCH_TARGET,
@@ -282,10 +282,10 @@ class IssueImplementerDomainPartitionTestCase(TestCase):
         ):
             slice_jobs = jobs_for_domain(Domain.ISSUE_IMPLEMENTER, backend)
             legacy = _jobs_for_overlay_backend(backend, all_backends=(backend,))
-        assert [job.scanner.name for job in slice_jobs] == ["issue_implementer"]
+        assert [job.scanner.name for job in slice_jobs] == ["issue_intake"]
         # Enabled, the legacy aggregator carries exactly the one slice scanner —
         # both fan-out paths derive from this same partition slice (no divergence).
-        legacy_ii = [j for j in legacy if j.scanner.name == "issue_implementer"]
+        legacy_ii = [j for j in legacy if j.scanner.name == "issue_intake"]
         assert len(legacy_ii) == 1
         assert _signature(legacy_ii[0]) == _signature(slice_jobs[0])
 

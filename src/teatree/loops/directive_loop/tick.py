@@ -1,10 +1,11 @@
 """One directive-loop tick — guard chain, then advance one directive one step (north-star PR-7).
 
 :func:`run_tick` is the whole behaviour and structurally mirrors
-:func:`teatree.loops.outer_loop.tick.run_tick`. It ALWAYS runs the unconditional
+:func:`teatree.loops.outer_loop.tick.run_tick`. It ALWAYS runs an unconditional
 guard chain first; a refusal returns a typed no-op result with zero mutation (the
-QUADRUPLE-OFF flag-off parity property). When the chain allows, it advances the
-OLDEST active directive exactly one FSM step:
+QUADRUPLE-OFF flag-off parity property) and is LOGGED at warning level, so a refused
+tick is never indistinguishable from an idle one (#3643). When the chain allows, it
+advances the OLDEST active directive exactly one FSM step:
 
     CAPTURED       → arm the headless interpreter (idempotent dispatch)
     CLARIFYING     → re-interpret once every clarify question is answered, else wait
@@ -17,11 +18,18 @@ OLDEST active directive exactly one FSM step:
     VERIFYING      → decide keep/revert once the horizon elapses, else wait
     REVERT_PENDING → ask the human to revert (once), then wait for resolve-revert
 
+The guard chain is arc-scoped: the pre-admission INTAKE arc runs
+:func:`~teatree.loops.directive_loop.guards.evaluate_intake_guards`, and the
+post-admission EXECUTION arc — consulted only once a directive is past the human ratify
+gate — runs the score-requiring
+:func:`~teatree.loops.directive_loop.guards.evaluate_execution_guards`.
+
 Every dependency the tick reads is injectable (:class:`TickSeams`) so the whole
 pipeline is exercisable without a live critic, a real merge, a real pytest run, or a
 real clock; the production cron passes none and the real probes apply.
 """
 
+import logging
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -32,7 +40,7 @@ from teatree.config import get_effective_settings
 from teatree.core.models import Directive
 from teatree.core.models.ticket import Ticket
 from teatree.loops.directive_loop.configure import apply_activation
-from teatree.loops.directive_loop.guards import DirectiveLoopSettings, evaluate_guards
+from teatree.loops.directive_loop.guards import DirectiveLoopSettings, evaluate_execution_guards, evaluate_intake_guards
 from teatree.loops.directive_loop.implement import schedule_directive_implementation, skip_directive_implementation
 from teatree.loops.directive_loop.interpret import (
     clarifications_answered,
@@ -48,6 +56,8 @@ from teatree.loops.directive_loop.verify import (
     verify_and_decide,
 )
 from teatree.loops.outer_loop.guards import GuardSeams
+
+logger = logging.getLogger(__name__)
 
 _ACTIVATION_ONLY = "activation_only"
 
@@ -93,31 +103,35 @@ def run_tick(
     settings: DirectiveLoopSettings | None = None,
     seams: TickSeams | None = None,
 ) -> DirectiveTickResult:
-    """Run one tick: guard chain, then advance the oldest active directive one step."""
+    """Run one tick: arc-scoped guard chain, then advance the oldest active directive one step."""
     resolved_seams = seams or TickSeams()
     resolved_settings = settings if settings is not None else get_effective_settings(overlay or None)
-    verdict = evaluate_guards(settings=resolved_settings, seams=resolved_seams.guards, overlay=overlay, now=now)
-    if not verdict.ok:
-        return DirectiveTickResult(action="refused", reason=verdict.reason)
+    intake_verdict = evaluate_intake_guards(
+        settings=resolved_settings, seams=resolved_seams.guards, overlay=overlay, now=now
+    )
+    if not intake_verdict.ok:
+        return _refused(intake_verdict.reason)
 
     directive = Directive.objects.active().order_by("created_at", "pk").first()
     if directive is None:
         return DirectiveTickResult(action="idle", reason="no_active_directive")
-    return _advance(directive, resolved_settings, now=now, seams=resolved_seams)
 
-
-def _advance(
-    directive: Directive,
-    settings: DirectiveLoopSettings,
-    *,
-    now: datetime | None,
-    seams: TickSeams,
-) -> DirectiveTickResult:
-    """Advance one directive one FSM step — split intake (pre-admit) from execution (post-admit)."""
     intake = _advance_intake(directive)
     if intake is not None:
         return intake
-    return _advance_execution(directive, settings, now=now, seams=seams)
+
+    execution_verdict = evaluate_execution_guards(
+        settings=resolved_settings, seams=resolved_seams.guards, overlay=overlay, now=now
+    )
+    if not execution_verdict.ok:
+        return _refused(execution_verdict.reason, directive_id=directive.pk)
+    return _advance_execution(directive, resolved_settings, now=now, seams=resolved_seams)
+
+
+def _refused(reason: str, *, directive_id: int | None = None) -> DirectiveTickResult:
+    """Refuse the tick and LOG it — a silent refusal reads exactly like an idle tick."""
+    logger.warning("directive_loop tick refused: %s (directive=%s)", reason, directive_id)
+    return DirectiveTickResult(action="refused", reason=reason, directive_id=directive_id)
 
 
 def _advance_intake(directive: Directive) -> DirectiveTickResult | None:

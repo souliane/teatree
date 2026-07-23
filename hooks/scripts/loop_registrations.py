@@ -20,7 +20,7 @@ STAY — ``hook_router`` and ``cron_tracking`` still classify a per-loop tick pr
 deleted) without importing teatree.
 
 The directive source of truth is the seam the ``t3 loop <slot> start`` CLI reads
-too, so the hook, the ``/t3:loops`` skill, and the CLI can never disagree: reactive
+too, so the hook, the ``/t3:health`` skill, and the CLI can never disagree: reactive
 slots come from ``teatree.loop.loop_cadences.reactive_slot_directives`` (the
 ``/loop`` directive).
 

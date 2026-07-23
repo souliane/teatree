@@ -1,0 +1,171 @@
+{% extends "dash/base.html" %}
+{% block title %}Schedule{% endblock %}
+{% block content %}
+  <section class="band">
+    <h2>What is deciding right now</h2>
+    {% if editor.active_preset %}
+      <p>Preset <strong>{{ editor.active_preset.name }}</strong> via <strong>{{ editor.active_preset.layer }}</strong> — {{ editor.active_preset.reason }}{% if editor.active_preset.until %}, until {{ editor.active_preset.until }}{% endif %}</p>
+    {% else %}
+      <p>No preset governs — every loop resolves from its own base setting.</p>
+    {% endif %}
+    <p>Active schedule — <strong>{{ editor.active_schedule|default:"none" }}</strong></p>
+
+    <h3>Switch the active preset</h3>
+    <form class="toolbar" method="post" action="{% url 'dash:preset_use' %}">
+      {% csrf_token %}
+      {% for preset in editor.presets %}
+        <button class="dash-btn {% if preset.active %}primary{% endif %}" name="preset" value="{{ preset.name }}">{{ preset.name }}</button>
+      {% endfor %}
+      <button class="dash-btn" name="preset" value="auto">auto (let the schedule decide)</button>
+    </form>
+
+    <h3>Switch the active schedule</h3>
+    <form class="toolbar" method="post" action="{% url 'dash:schedule_activate' %}">
+      {% csrf_token %}
+      {% for schedule in editor.schedules %}
+        <button class="dash-btn {% if schedule.active %}primary{% endif %}" name="schedule" value="{{ schedule.name }}">{{ schedule.name }}</button>
+      {% endfor %}
+      <button class="dash-btn" name="schedule" value="none">none</button>
+    </form>
+  </section>
+
+  <section class="band">
+    <h2>Preset entries</h2>
+    <p class="muted">A preset holds one of three opinions per loop. <strong class="eff-yes">on</strong> forces the loop to run,
+      <strong class="eff-no">off</strong> masks it, and <strong class="eff-inherit">no opinion</strong> hands the decision to the loop's
+      own base setting — now <em>and</em> in future, so flipping that base later silently changes what this preset does.
+      Presets do not inherit from one another; resolution is hold → forced override → preset → base.</p>
+
+    <div class="tabs">
+      {% for preset in editor.presets %}
+        <a class="dash-btn {% if preset.name == editor.selected_preset %}primary{% endif %}"
+          href="{% url 'dash:presets' %}?preset={{ preset.name }}">{{ preset.name }}</a>
+      {% endfor %}
+    </div>
+
+    {% for preset in editor.presets %}
+      {% if preset.name == editor.selected_preset %}
+        <h3>{{ preset.name }}{% if preset.active %} — active{% endif %}</h3>
+        <p class="muted">{{ preset.description }}</p>
+        <p class="muted">on {{ preset.on_count }} · off {{ preset.off_count }} · no opinion {{ preset.inherit_count }}{% if preset.availability_pin %} · pins availability {{ preset.availability_pin }}{% endif %}</p>
+        {% if preset.inherit_loops %}
+          <p class="banner-amber">No opinion on {{ preset.inherit_count }} loop{{ preset.inherit_count|pluralize }} —
+            <span class="mono">{{ preset.inherit_loops|join:", " }}</span>. Their base setting decides, so this preset's
+            behaviour changes silently if a base is flipped later.</p>
+        {% endif %}
+
+        <form class="toolbar" method="post" action="{% url 'dash:preset_meta' %}">
+          {% csrf_token %}
+          <input type="hidden" name="preset" value="{{ preset.name }}">
+          <input type="text" name="description" value="{{ preset.description }}" size="60" aria-label="preset description">
+          <select name="availability_pin" aria-label="availability pin">
+            <option value="" {% if not preset.availability_pin %}selected{% endif %}>no availability pin</option>
+            {% for pin in editor.pin_choices %}
+              <option value="{{ pin }}" {% if preset.availability_pin == pin %}selected{% endif %}>{{ pin }}</option>
+            {% endfor %}
+          </select>
+          <button class="dash-btn primary" type="submit">save description &amp; pin</button>
+        </form>
+
+        <form class="toolbar" method="post" action="{% url 'dash:preset_rename' %}">
+          {% csrf_token %}
+          <input type="hidden" name="preset" value="{{ preset.name }}">
+          <input type="text" name="new_name" value="{{ preset.name }}" aria-label="new preset name">
+          <button class="dash-btn" type="submit">rename</button>
+          <span class="muted">Every reference to this preset moves with the rename.</span>
+        </form>
+
+        <form class="toolbar danger" method="post" action="{% url 'dash:preset_delete' %}">
+          {% csrf_token %}
+          <input type="hidden" name="preset" value="{{ preset.name }}">
+          {% if preset.referrers.blocks_delete %}
+            <span class="muted">Cannot delete — {{ preset.referrers.summary }}.</span>
+          {% else %}
+            <button class="dash-btn danger" type="submit">delete preset</button>
+          {% endif %}
+        </form>
+
+        <table class="dash">
+          <thead><tr><th>loop</th><th>base</th><th>this preset says</th></tr></thead>
+          <tbody>
+            {% for entry in preset.entries %}
+              <tr>
+                <td>
+                  <div class="mono">{{ entry.loop_name }}</div>
+                  <div class="muted">{{ entry.description }}</div>
+                </td>
+                <td class="{% if entry.base_enabled %}eff-yes{% else %}eff-no{% endif %}">{{ entry.base_enabled|yesno:"enabled,disabled" }}</td>
+                <td>
+                  <form class="row-actions" method="post" action="{% url 'dash:preset_entry' %}">
+                    {% csrf_token %}
+                    <input type="hidden" name="preset" value="{{ preset.name }}">
+                    <input type="hidden" name="loop" value="{{ entry.loop_name }}">
+                    {% for state in editor.entry_states %}
+                      <button class="dash-btn seg-{{ state }} {% if entry.state == state %}primary{% endif %}"
+                              name="state" value="{{ state }}">{% if state == "inherit" %}no opinion{% else %}{{ state }}{% endif %}</button>
+                    {% endfor %}
+                  </form>
+                </td>
+              </tr>
+            {% empty %}
+              <tr class="empty-row"><td colspan="3">No loops configured.</td></tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      {% endif %}
+    {% empty %}
+      <p class="muted">No presets defined. Run <code>t3 setup</code> to seed the defaults.</p>
+    {% endfor %}
+
+    <h3>New preset</h3>
+    <form class="toolbar" method="post" action="{% url 'dash:preset_create' %}">
+      {% csrf_token %}
+      <input type="text" name="name" placeholder="name" required aria-label="new preset name">
+      <input type="text" name="description" placeholder="what it is for" size="50" aria-label="new preset description">
+      <button class="dash-btn primary" type="submit">create</button>
+    </form>
+  </section>
+
+  <section class="band">
+    <h2>Schedules</h2>
+    {% for schedule in editor.schedules %}
+      <h3>{{ schedule.name }}{% if schedule.active %} — active{% endif %} <span class="muted">tz {{ schedule.timezone_label }}</span></h3>
+      <table class="dash">
+        <thead><tr><th>days</th><th>from</th><th>preset</th><th>actions</th></tr></thead>
+        <tbody>
+          {% for slot in schedule.slots %}
+            <tr>
+              <td>{{ slot.days_label }}</td>
+              <td class="mono">{{ slot.start_time }}</td>
+              <td class="mono">{{ slot.preset_name }}</td>
+              <td>
+                <form class="row-actions" method="post" action="{% url 'dash:schedule_slot_delete' %}">
+                  {% csrf_token %}
+                  <input type="hidden" name="schedule" value="{{ schedule.name }}">
+                  <input type="hidden" name="slot_id" value="{{ slot.slot_id }}">
+                  <button class="dash-btn danger" type="submit">remove</button>
+                </form>
+              </td>
+            </tr>
+          {% empty %}
+            <tr class="empty-row"><td colspan="4">No slots — this schedule selects nothing.</td></tr>
+          {% endfor %}
+        </tbody>
+      </table>
+      <form class="toolbar" method="post" action="{% url 'dash:schedule_slot' %}">
+        {% csrf_token %}
+        <input type="hidden" name="schedule" value="{{ schedule.name }}">
+        {% for day, label in editor.weekdays %}
+          <label class="daybox"><input type="checkbox" name="days" value="{{ day }}"> {{ label }}</label>
+        {% endfor %}
+        <input type="time" name="start_time" required aria-label="slot start time">
+        <select name="preset" aria-label="slot preset">
+          {% for preset in editor.presets %}<option value="{{ preset.name }}">{{ preset.name }}</option>{% endfor %}
+        </select>
+        <button class="dash-btn primary" type="submit">add slot</button>
+      </form>
+    {% empty %}
+      <p class="muted">No schedules defined. Run <code>t3 setup</code> to seed the defaults.</p>
+    {% endfor %}
+  </section>
+{% endblock %}

@@ -575,6 +575,7 @@ same-daemon supervisor can cover, and is honest about the two it cannot:
 | `teatree-init` crash-loop (the recorded 7h freeze) | ✅ | next pass's gated `up -d --no-recreate` re-runs the failed init; while the root cause persists the doctor step reddens and DMs the owner |
 | an app service crashed / exited | ✅ | `up -d --no-recreate` restarts it |
 | the **watchdog itself** crashed | ✅ | `restart: always` — the daemon relaunches it in seconds |
+| the probe's target is mid-restart when the pass runs | ✅ | the daemon's "container is restarting" refusal is classified as transient and retried (`TEATREE_WATCHDOG_DOCTOR_RETRIES`); it never pages the owner. A run that COMPLETED but emitted no verdict is still RED and still DMs |
 | the daemon restarted (e.g. host reboot with Docker enabled on boot) | ✅ | `restart: always` brings it back with the stack |
 | `docker compose down` (deliberate teardown) | ❌ (intentional) | the operator took the stack down on purpose; nothing should fight that |
 | the Docker **daemon** is dead | ❌ | its supervisor is gone; an external uptime check is the backstop |
@@ -596,7 +597,9 @@ docker compose -p teatree logs -f teatree-watchdog
 | `TEATREE_WATCHDOG_PASS_TIMEOUT` | `300` | hard cap on a single pass; a wedged pass is killed and the loop continues |
 | `TEATREE_WATCHDOG_PROJECT` | `teatree` | the compose project the watchdog drives |
 | `TEATREE_WATCHDOG_OVERLAY` | `teatree` | the overlay used for the owner DM |
-| `TEATREE_WATCHDOG_EXEC_SERVICES` | `teatree-admin teatree-worker` | services (first reachable wins) to run the doctor/DM commands in |
+| `TEATREE_WATCHDOG_EXEC_SERVICES` | `teatree-worker teatree-admin` | services (first reachable wins) to run the doctor/DM commands in — the worker leads because the health probe is heavy (#3651) |
+| `TEATREE_WATCHDOG_DOCTOR_RETRIES` | `3` | attempts when the probe cannot run because its target is restarting / not running |
+| `TEATREE_WATCHDOG_DOCTOR_RETRY_DELAY` | `15` | seconds between those retries |
 | `TEATREE_WATCHDOG_APP_SERVICES` | `teatree-worker teatree-admin teatree-slack-listener teatree-watchdog` | services restarted when init has already completed (init excluded) |
 | `TEATREE_WATCHDOG_INIT_SERVICE` | `teatree-init` | the one-shot init service the pass gates on |
 

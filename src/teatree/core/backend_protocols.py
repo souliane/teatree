@@ -308,6 +308,13 @@ class CodeHostBackend(Protocol):
         repo_slugs: tuple[str, ...] = (),
     ) -> list[RawAPIDict]: ...  # pragma: no branch
 
+    def list_labeled_issues(
+        self,
+        *,
+        label: str,
+        repo_slugs: tuple[str, ...] = (),
+    ) -> list[RawAPIDict]: ...  # pragma: no branch
+
     def create_issue(
         self,
         *,

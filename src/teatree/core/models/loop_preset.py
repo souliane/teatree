@@ -36,7 +36,7 @@ PIN_MODES = frozenset({"present", "away", "autonomous_away"})
 # Low-power auto-engage (#3159 build item 6): default-OFF flag + re-pointable target.
 LOW_POWER_AUTO_ENGAGE_SETTING = "low_power_auto_engage"
 LOW_POWER_PRESET_SETTING = "low_power_preset_name"
-_DEFAULT_LOW_POWER_PRESET = "low-power"
+DEFAULT_LOW_POWER_PRESET = "low-power"
 # Marks an override this system engaged automatically (vs. one the user set), so
 # the re-arm path clears only its OWN override and never a user's.
 _AUTO_LOW_POWER_REASON = "auto:low-power (usage window parked)"
@@ -45,6 +45,14 @@ _AUTO_LOW_POWER_REASON = "auto:low-power (usage window parked)"
 class ModeManager(models.Manager["Mode"]):
     def by_name(self, name: str) -> "Mode | None":
         return self.filter(name=name).first()
+
+    def by_posture(self, *, defers_questions: bool, pauses_self_pump: bool) -> "Mode | None":
+        """The mode carrying an intrinsic availability posture — the by-ROW lookup.
+
+        Lets every availability consumer select a mode by what it MEANS rather than
+        by a hard-coded name, so renaming a seeded mode cannot change behaviour.
+        """
+        return self.filter(defers_questions=defers_questions, pauses_self_pump=pauses_self_pump).first()
 
 
 class Mode(models.Model):
@@ -221,4 +229,4 @@ def _low_power_auto_engage_enabled() -> bool:
 
 def _low_power_preset_name() -> str:
     value = ConfigSetting.objects.get_effective(LOW_POWER_PRESET_SETTING)
-    return value.strip() if isinstance(value, str) and value.strip() else _DEFAULT_LOW_POWER_PRESET
+    return value.strip() if isinstance(value, str) and value.strip() else DEFAULT_LOW_POWER_PRESET
