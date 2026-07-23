@@ -191,9 +191,10 @@ class TestWatchdogTargetsTheWorker:
     """The health probe runs where heavy work belongs, not in the lean web container.
 
     `t3 doctor check --json` boots Django, scans the DB and makes live third-party
-    HTTP calls. Running it inside the 512m admin — which is simultaneously serving
-    the dashboard — left ~130 MiB of headroom and restarted the container every
-    watchdog pass (#3651). The worker is sized for heavy work, so it is probed first.
+    HTTP calls. Running it inside the then-512m admin — which is simultaneously
+    serving the dashboard — left ~130 MiB of headroom and restarted the container
+    every watchdog pass (#3651). The worker is sized for heavy work, so it is probed
+    first even now that the admin cap is 2g.
     """
 
     def test_doctor_probe_targets_the_worker_first(self, tmp_path: Path) -> None:

@@ -84,6 +84,16 @@ x-teatree-common: &teatree-common
     - teatree_uv:/opt/teatree/uv
   init: true
 
+# Memory sizing (#3651). Every `mem_limit` below is a ceiling, not a reservation:
+# the kernel enforces it only against what the container actually allocates, so
+# an unused cap costs nothing and raising one consumes no RAM at all. What
+# a cap must cover is that container's realistic CONCURRENT peak plus headroom —
+# NOT its share of a budget. It follows that the SUM of these ceilings may exceed
+# physical RAM and that is expected, not a misconfiguration: do not "fix" the sum
+# down by shrinking a cap. Each cap below is set from measured usage on the live
+# box and states that measurement, so the next reader re-sizes from evidence.
+# Under-sizing is the failure that actually bites: a 512m admin OOM-killed a
+# routine `config_setting set` and ran at 74% of cap during a health probe.
 services:
   # One-shot prep. worker/admin wait for this to exit 0, so the editable install
   # on the shared clone never races.
@@ -122,6 +132,12 @@ services:
     # in-file defaults below apply only when deploy.sh did not export a value
     # (python3 absent / RAM unreadable, or a bare `docker compose up`): ~18g and
     # 3 cores, the pre-#3432 hard-coded caps sized for a ~30GB host.
+    #
+    # 18g stays deliberately generous, and it is a CEILING for burst work, not a
+    # reservation — the worker idles at ~0.5 GiB. It is the one container that
+    # genuinely spikes: it hosts the headless agents and their test suites, and
+    # the box has been observed at 27/30 GiB under that load. Sizing this from
+    # idle usage would OOM-kill agent runs mid-flight.
     mem_limit: "${TEATREE_WORKER_MEM_LIMIT:-18g}"
     cpus: "${TEATREE_WORKER_CPUS:-3.0}"
 
@@ -143,16 +159,20 @@ services:
         condition: service_completed_successfully
     restart: unless-stopped
     network_mode: host
-    # 512m covers SERVING only, and the measured numbers are the reason it holds:
-    # idle-and-serving is 257 MiB (50% of the cap). It does NOT cover a health
-    # probe — `t3 doctor check --json` peaked at 380 MiB (74%), leaving ~130 MiB
-    # for concurrent dashboard traffic, which restarted this container on every
-    # watchdog pass (#3651). A child dying under the cgroup limit is not reported
-    # as a container-level OOM, so `OOMKilled` stayed false the whole time. The
-    # probe now runs in the WORKER (18g) — deploy/watchdog.sh's EXEC_SERVICES —
-    # so nothing heavy competes with gunicorn here. The `_check_worker_memory_cap`
-    # doctor gate warns only when the WORKER's cap is under-sized, not this one.
-    mem_limit: 512m
+    # 2g, because the admin is NOT gunicorn-only: it is the default `docker exec`
+    # target for CLI work, so it routinely runs Django-booting CLI commands while
+    # it serves the dashboard. Measured on the live box: ~257 MiB idle gunicorn,
+    # and ~380 MiB for `t3 doctor check --json` alone — 74% of the old 512m cap
+    # for one probe while the dashboard was still being served, and a routine
+    # `config_setting set` was OOM-killed outright under it (#3651). A child dying
+    # under the cgroup limit is not reported as a container-level OOM, so
+    # `OOMKilled` stayed false the whole time. The watchdog's health probe now
+    # runs in the WORKER (deploy/watchdog.sh's EXEC_SERVICES), which removes the
+    # heaviest recurring competitor for gunicorn but not the ad-hoc CLI exec that
+    # OOM-killed. 2g holds that concurrency (~640 MiB) with room for a second
+    # simultaneous CLI. The `_check_worker_memory_cap` doctor gate is role-aware
+    # and never inspects this cap, so nothing else catches an under-sized admin.
+    mem_limit: 2g
     cpus: "0.5"
 
   # The Slack Socket-Mode receiver. Runs `t3 slack listen` for every
@@ -170,7 +190,11 @@ services:
       teatree-init:
         condition: service_completed_successfully
     restart: unless-stopped
-    mem_limit: 512m
+    # 1g: measured at 172-264 MiB, i.e. up to ~52% of the old 512m cap while
+    # merely idling on a WebSocket. That left almost no room for a reconnect
+    # storm or a burst of queued inbound events, so the cap is tripled to ~4x
+    # observed peak.
+    mem_limit: 1g
     cpus: "0.5"
 
   # In-daemon self-heal watchdog — the cross-platform (Linux + macOS) replacement
@@ -216,7 +240,11 @@ services:
     # `compose exec` inside an app container, not from this container's network.
     network_mode: "none"
     init: true
-    mem_limit: 128m
+    # 256m: measured at 61 MiB, ~48% of the old 128m cap. It is the supervisor
+    # that resurrects everything else, so it is the last container that should
+    # ever OOM; 256m buys ~4x observed peak for 128 MiB of ceiling that stays
+    # unallocated in the normal case.
+    mem_limit: 256m
     cpus: "0.25"
 
 volumes:
