@@ -4,7 +4,7 @@
 
 - name: id_namespace_task_id_not_resolved_as_issue
   scenario: "a harness task id (TODO-50) is kept distinct from a same-numbered forge issue (teatree#50); the agent does NOT resolve the task id against the issue tracker"
-  agent_path: skills/todos/SKILL.md
+  agent_path: skills/checking/SKILL.md
   tier: balanced
   max_turns: 3
   tools: [Bash]

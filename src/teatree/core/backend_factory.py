@@ -60,7 +60,6 @@ class OverlayBackends:
     ready_labels: tuple[str, ...] = field(default_factory=tuple)
     exclude_labels: tuple[str, ...] = ()
     overlay: OverlayBase | None = None
-    auto_start_assigned_issues: bool = False
     max_concurrent_auto_starts: int = 1
     stale_threshold_days: int = 3
     external_db: Path | None = None
@@ -361,7 +360,6 @@ def iter_overlay_backends() -> list[OverlayBackends]:
                 ready_labels=tuple(overlay.config.ready_labels),
                 exclude_labels=tuple(overlay.config.exclude_labels),
                 overlay=overlay,
-                auto_start_assigned_issues=bool(overlay.config.auto_start_assigned_issues),
                 max_concurrent_auto_starts=int(overlay.config.max_concurrent_auto_starts),
                 stale_threshold_days=int(overlay.config.stale_threshold_days),
                 identities=identities,

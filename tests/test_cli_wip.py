@@ -114,7 +114,9 @@ class TestWipShow(TestCase):
         ConfigSetting.objects.set_value("wip", Wip.FULL.value)
         result = runner.invoke(_app(), ["wip", "show"])
         assert result.exit_code == 0
-        assert result.stdout.strip() == Wip.FULL.value
+        assert result.stdout.splitlines()[0] == Wip.FULL.value
+        assert "write_wip = 3 (parallel)" in result.stdout
+        assert "merge_wip = 1 (serial)" in result.stdout
 
     def test_show_boost_reports_concurrency_target(self) -> None:
         ConfigSetting.objects.set_value("wip", Wip.BOOST.value)
@@ -127,7 +129,7 @@ class TestWipShow(TestCase):
     def test_show_defaults_to_medium_when_unset(self) -> None:
         result = runner.invoke(_app(), ["wip", "show"])
         assert result.exit_code == 0
-        assert result.stdout.strip() == Wip.MEDIUM.value
+        assert result.stdout.splitlines()[0] == Wip.MEDIUM.value
 
     def test_show_is_read_only(self) -> None:
         ConfigSetting.objects.set_value("wip", Wip.SLOW.value)
@@ -255,4 +257,4 @@ class TestWipSetBootstrapsDjangoInRealProcess:
         assert shared_env_after_set.set_result.returncode == 0
         # ``show`` must read the persisted dial, not silently fall back to the default.
         shown = self._wip(shared_env_after_set.env, "show")
-        assert shown.stdout.strip() == Wip.BOOST.value, shown.stdout + shown.stderr
+        assert shown.stdout.splitlines()[0] == Wip.BOOST.value, shown.stdout + shown.stderr

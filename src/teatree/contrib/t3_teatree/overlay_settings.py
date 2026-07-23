@@ -82,16 +82,6 @@ REQUIRED_THIRD_PARTY_SERVICES: list[str] = ["github", "slack"]
 # for any per-machine change.
 REVIEW_SKILL: str = "ac-reviewing-codebase"
 
-# ── Issue intake ────────────────────────────────────────────────────
-
-# #3573: this is the owner's own dogfood repo, so the factory auto-works EVERY
-# issue. Promoted from a DB row to this public overlay code default (the value is
-# public and constant); a colleague overlay keeps the strict ``ASSIGNED_AND_LABELED``
-# dataclass default. ``admit_issue`` resolves ``admission_policy`` through
-# env -> DB(overlay) -> DB(global) -> THIS code default -> the dataclass default,
-# so a ``ConfigSetting`` row still overrides it.
-ADMISSION_POLICY: str = "all"
-
 # ── Companion skills ────────────────────────────────────────────────
 
 # Skills loaded alongside the active lifecycle skill for every task in this

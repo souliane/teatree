@@ -15,7 +15,6 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from teatree.core.backend_protocols import ReviewState
-from teatree.loop.scanners.assigned_issues import AssignedIssuesScanner
 from teatree.loop.scanners.my_prs import MyPrsScanner
 from teatree.loop.scanners.reviewer_prs import ReviewerPrsScanner
 from teatree.types import RawAPIDict
@@ -153,28 +152,3 @@ class TestReviewerPrsScannerMultiIdentity:
         urls = sorted(s.payload["url"] for s in signals)
         assert urls == ["https://gl/r/1", "https://gl/r/2"]
         assert sorted(host.queried_reviewers) == ["user-alt", "user-main"]
-
-
-class TestAssignedIssuesScannerMultiIdentity:
-    def test_queries_every_identity_when_aliases_configured(self, db: None) -> None:
-        _ = db
-        host = _IdentityAwareFakeHost(
-            user="user-alt",
-            issues_by_assignee={
-                "user-alt": [
-                    {"web_url": "https://gl/i/1", "title": "A", "labels": ["ready"]},
-                ],
-                "user-main": [
-                    {"html_url": "https://github.com/o/r/issues/9", "title": "B", "labels": ["ready"]},
-                ],
-            },
-        )
-        scanner = AssignedIssuesScanner(
-            host=host,
-            ready_labels=("ready",),
-            identities=("user-alt", "user-main"),
-        )
-        signals = scanner.scan()
-        urls = sorted(s.payload["url"] for s in signals)
-        assert urls == ["https://github.com/o/r/issues/9", "https://gl/i/1"]
-        assert sorted(host.queried_assignees) == ["user-alt", "user-main"]

@@ -14,7 +14,6 @@ from typing import Any, Final
 
 from teatree.config.agent_enums import AgentHarness, AgentHarnessProvider, AgentRuntime, parse_harness_name
 from teatree.config.enums import (
-    AdmissionPolicy,
     Autonomy,
     CriticGateMode,
     MissingIssuePolicy,
@@ -62,6 +61,8 @@ OVERLAY_OVERRIDABLE_SETTINGS: dict[str, Callable[[Any], Any]] = {
     "mode": Mode.parse,
     "autonomy": Autonomy.parse,
     "wip": Wip.parse,
+    "write_wip": _parse_strict_int,
+    "merge_wip": _parse_strict_int,
     "agent_runtime": AgentRuntime.parse,
     "agent_harness": parse_harness_name,
     "agent_harness_provider": AgentHarnessProvider.parse,
@@ -185,11 +186,9 @@ OVERLAY_OVERRIDABLE_SETTINGS: dict[str, Callable[[Any], Any]] = {
     "mr_title_regex": _parse_strict_str,
     "issue_implementer_enabled": _parse_strict_bool,
     "issue_implementer_label": _parse_strict_str,
-    "issue_implementer_require_label": _parse_strict_bool,
     "issue_implementer_max_concurrent": _parse_strict_int,
     "issue_implementer_cadence_hours": _parse_strict_int,
     "trusted_issue_authors": _parse_str_list,
-    "admission_policy": AdmissionPolicy.parse,
     "fleet_claim_enabled": _parse_strict_bool,
     "auto_disposition_enabled": _parse_strict_bool,
     "limit_autorecovery_enabled": _parse_strict_bool,
@@ -325,6 +324,8 @@ TOML_OVERLAY_OVERRIDABLE_SETTINGS: dict[str, Callable[[Any], Any]] = {}
 ENV_SETTING_OVERRIDES: dict[str, tuple[str, Callable[[str], Any]]] = {
     "T3_MODE": ("mode", Mode.parse),
     "T3_WIP": ("wip", Wip.parse),
+    "T3_WRITE_WIP": ("write_wip", int),
+    "T3_MERGE_WIP": ("merge_wip", int),
     "T3_AGENT_RUNTIME": ("agent_runtime", AgentRuntime.parse),
     "T3_AGENT_HARNESS": ("agent_harness", parse_harness_name),
     "T3_AGENT_HARNESS_PROVIDER": ("agent_harness_provider", AgentHarnessProvider.parse),
@@ -336,7 +337,6 @@ ENV_SETTING_OVERRIDES: dict[str, tuple[str, Callable[[str], Any]]] = {
     "T3_ON_BEHALF_AUTO_ACTIONS": ("on_behalf_auto_actions", _parse_env_str_list),
     "T3_REVIEW_SKILL": ("review_skill", str),
     "T3_ISSUE_IMPLEMENTER_ENABLED": ("issue_implementer_enabled", _parse_env_bool),
-    "T3_ISSUE_IMPLEMENTER_REQUIRE_LABEL": ("issue_implementer_require_label", _parse_env_bool),
     "T3_TRUSTED_ISSUE_AUTHORS": ("trusted_issue_authors", _parse_env_str_list),
     "T3_FLEET_CLAIM_ENABLED": ("fleet_claim_enabled", _parse_env_bool),
     "T3_LOOP_AUTO_UPDATE": ("auto_update_reinstall", _parse_env_bool),
@@ -587,6 +587,14 @@ class _LoopAndTeamsSettings:
     # governs *how many* threads run) and never relaxes a safety gate.
     # Per-overlay overridable; ``T3_WIP`` env wins over both.
     wip: Wip = Wip.MEDIUM
+    # #3634 The wip dial's PHASE SPLIT, replacing the single blunt concurrency knob.
+    # ``write_wip`` is how many implementation workers (coding / testing / reviewing)
+    # run concurrently; ``merge_wip`` is the merge lane, single-flight by design so
+    # the next PR always rebases against what just landed. A ``merge_wip`` above 1
+    # forfeits that conflict-safety guarantee, so the resolver clamps it back to 1.
+    # DB-home, per-overlay overridable; ``T3_WRITE_WIP`` / ``T3_MERGE_WIP`` env win.
+    write_wip: int = 3
+    merge_wip: int = 1
     # Loop tick interval in seconds (BLUEPRINT § 5.6). Default 12 minutes.
     loop_cadence_seconds: int = 720
     # #1796 / PR-28 — the loop-cadence kill-switch. Default ON: the singleton

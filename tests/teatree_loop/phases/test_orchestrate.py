@@ -94,18 +94,20 @@ class TestOrchestratePhaseManifestGolden(django.test.TestCase):
     A golden-ish table so a regression in the wip dial -> cap -> admitted-count
     contract turns red. Each row claims a fresh set of dispatchable tasks, runs
     ``orchestrate_phase`` at the named wip/budget, and asserts ``(cap, admitted)``.
+    Since #3634 ``cap`` is the count this pass actually admitted across both lanes;
+    the standing per-lane ceilings are ``write_target`` / ``merge_target``.
     """
 
     def test_wip_backlog_budget_table(self) -> None:
         # Each row is wip, backlog size, summed budget, expected cap, expected admitted.
         table = [
             (Wip.MEDIUM, 3, 5, 0, 0),  # medium is always a no-op
-            (Wip.SLOW, 3, 5, 1, 1),  # slow clamps to one
-            (Wip.SLOW, 0, 5, 1, 0),  # slow cap is 1 but empty backlog admits 0
-            (Wip.FULL, 5, 3, 3, 3),  # full clamps to summed budget
-            (Wip.FULL, 2, 5, 5, 2),  # full budget exceeds backlog -> admit backlog
-            (Wip.FULL, 4, 0, 0, 0),  # zero budget -> empty manifest
-            (Wip.BOOST, 4, 2, 2, 2),  # boost uses the same budget as full
+            (Wip.SLOW, 3, 5, 1, 1),  # slow clamps the WRITE lane to one
+            (Wip.SLOW, 0, 5, 0, 0),  # empty backlog admits nothing
+            (Wip.FULL, 5, 3, 3, 3),  # full clamps to the summed overlay budget
+            (Wip.FULL, 2, 5, 2, 2),  # budget exceeds backlog -> admit backlog
+            (Wip.FULL, 4, 0, 0, 0),  # zero overlay budget -> empty manifest
+            (Wip.BOOST, 4, 2, 2, 2),  # boost with no N keeps full's budget
         ]
         for wip, backlog, budget, expected_cap, expected_admitted in table:
             # ``wip.value`` (the plain ``str``) is the subTest label, not the raw
@@ -287,7 +289,7 @@ class TestBoostPoolRefill(django.test.TestCase):
         backends = [OverlayBackends(name="a", max_concurrent_auto_starts=3)]
         with _with_wip(Wip.FULL):
             manifest = orchestrate_phase(backends=backends)
-        assert manifest.target == 3
+        assert manifest.write_target == 3
 
     def test_boost_concurrency_zero_keeps_summed_overlay_target(self) -> None:
         # Backward-compat: unset boost_concurrency → boost = today's overlay-cap target.
@@ -295,7 +297,7 @@ class TestBoostPoolRefill(django.test.TestCase):
         backends = [OverlayBackends(name="a", max_concurrent_auto_starts=2)]
         with _with_settings(UserSettings(wip=Wip.BOOST, boost_concurrency=0)):
             manifest = orchestrate_phase(backends=backends)
-        assert manifest.target == 2
+        assert manifest.write_target == 2
 
     def test_boost_target_uses_boost_concurrency_over_overlay_cap(self) -> None:
         # A configured N overrides the (smaller) summed overlay auto-start cap.
@@ -305,7 +307,7 @@ class TestBoostPoolRefill(django.test.TestCase):
         settings = UserSettings(wip=Wip.BOOST, boost_concurrency=4, provision_max_concurrency=8)
         with _with_settings(settings):
             manifest = orchestrate_phase(backends=backends, claim=True)
-        assert manifest.target == 4
+        assert manifest.write_target == 4
         assert manifest.cap == 4
         assert len(manifest.entries) == 4
 
@@ -317,7 +319,7 @@ class TestBoostPoolRefill(django.test.TestCase):
         settings = UserSettings(wip=Wip.BOOST, boost_concurrency=10, provision_max_concurrency=3)
         with _with_settings(settings):
             manifest = orchestrate_phase(backends=backends)
-        assert manifest.target == 3
+        assert manifest.write_target == 3
 
     def test_boost_refills_to_target_after_a_worker_exits(self) -> None:
         # The acceptance: N=3 workers, one exits (2 in flight) → this tick admits
@@ -331,7 +333,7 @@ class TestBoostPoolRefill(django.test.TestCase):
         settings = UserSettings(wip=Wip.BOOST, boost_concurrency=3, provision_max_concurrency=8)
         with _with_settings(settings):
             manifest = orchestrate_phase(backends=backends, claim=False)
-        assert manifest.target == 3
+        assert manifest.write_target == 3
         assert manifest.cap == 1
         assert len(manifest.entries) == 1
 

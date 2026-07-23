@@ -1,4 +1,4 @@
-"""The ``/t3:todos`` behavioral scenario: build the live session list dynamically.
+"""The ``/t3:checking`` behavioral scenario: build the live session list dynamically.
 
 Extracted to its own module so the over-cap ``catalog.py`` / ``per_skill.py``
 god-files (ratcheted shrink-only by ``check_module_health.py``) stay untouched.

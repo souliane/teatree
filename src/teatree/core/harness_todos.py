@@ -9,7 +9,7 @@ continuous stop-snapshotter (``teatree.core.stop_snapshot``). A lagging disk
 read is the only option there and an acceptable one (a snapshot is a moment in
 time anyway).
 
-It is deliberately NOT used by the interactive ``/t3:todos`` path — that list
+It is deliberately NOT used by the interactive ``/t3:checking`` path — that list
 lives in the harness's live in-memory session state and is built dynamically
 from the live ``TaskList`` tool (see ``tasks_session_view`` for why). This is a
 stdlib-only DOMAIN module (no Django), so both the interface-layer CLI and the
@@ -69,7 +69,7 @@ def read_harness_todos(session_id: str) -> list[tuple[str, str]]:
     (``~/.claude/tasks/<session>/*.json``). Empty session id (no resolvable
     harness session) yields an empty list.
 
-    Do NOT use this for the interactive ``/t3:todos`` list — it lags the live
+    Do NOT use this for the interactive ``/t3:checking`` list — it lags the live
     session. The agent builds that list from the live ``TaskList`` harness tool.
     """
     if not session_id:

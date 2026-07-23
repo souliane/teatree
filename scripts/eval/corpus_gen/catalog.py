@@ -23,7 +23,7 @@ WORKSPACE = "skills/workspace/SKILL.md"
 DEBUG = "skills/debug/SKILL.md"
 TICKET = "skills/ticket/SKILL.md"
 SWEEP = "skills/sweeping-prs/SKILL.md"
-TODOS = "skills/todos/SKILL.md"
+TODOS = "skills/checking/SKILL.md"
 ANSWERER = "skills/answerer/SKILL.md"
 
 

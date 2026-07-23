@@ -295,6 +295,15 @@ class GitHubCodeHost:  # noqa: PLR0904 — method count reflects the CodeHostBac
         query = quote_plus(f"is:issue is:open author:{author}" + "".join(f" repo:{s}" for s in repo_slugs))
         return _gh_api_search_paginated(f"search/issues?q={query}&per_page=100", token=self._token)
 
+    def list_labeled_issues(self, *, label: str, repo_slugs: tuple[str, ...] = ()) -> list[RawAPIDict]:
+        """Open issues carrying *label* — the owner-admission intake query (#3634).
+
+        The ONLY route by which an untrusted author's issue reaches the factory, so it
+        is repo-scoped exactly like the author query.
+        """
+        query = quote_plus(f'is:issue is:open label:"{label}"' + "".join(f" repo:{s}" for s in repo_slugs))
+        return _gh_api_search_paginated(f"search/issues?q={query}&per_page=100", token=self._token)
+
     def create_issue(
         self,
         *,

@@ -1,5 +1,5 @@
 ---
-name: cleanup-sweep
+name: sweeping-worktrees
 description: Use when sweeping stale, lost, or abandoned worktrees, branches, or stashes that are NOT actively being worked — deciding per item whether to salvage unmerged work to a fresh PR, delete a shipped/superseded/redundant item, push post-merge commits to a new PR, or keep an uncertain one. The judgment layer over `t3 <overlay> workspace emit` / `salvage` / `clean-all` (the mechanical reaper is `/t3:workspace`). Use when the user says "sweep the stale worktrees", "clean up lost/abandoned worktrees", "salvage or delete these branches", "what should I do with these stale worktrees/stashes", or triages the JSON from `workspace emit`.
 compatibility: macOS/Linux, git, gh CLI, `t3` installed (teatree).
 requires:
