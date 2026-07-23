@@ -1,9 +1,9 @@
-"""The unconditional guard chain — the code half of the QUADRUPLE-OFF (north-star PR-7).
+"""The unconditional guard chains — the code half of the QUADRUPLE-OFF (north-star PR-7).
 
-Every directive-loop tick runs :func:`evaluate_guards` before it touches a directive.
-The chain is fail-closed and ordered so the first (most fundamental) refusal wins,
-mirroring :mod:`teatree.loops.outer_loop.guards` and REUSING its probes verbatim
-(self-modification must never run under an unproven merge supervisor):
+Every directive-loop tick runs a guard chain before it touches a directive. Both chains
+are fail-closed and ordered so the first (most fundamental) refusal wins, mirroring
+:mod:`teatree.loops.outer_loop.guards` and REUSING its probes verbatim (self-modification
+must never run under an unproven merge supervisor):
 
 G1 flag: ``directive_loop_enabled`` off ⇒ ``directive_loop_disabled``. G1b score:
 ``factory_score_enabled`` off ⇒ ``factory_score_disabled`` (the admission baseline +
@@ -13,6 +13,14 @@ supervisor (< ``MIN_CRITIC_SAMPLE`` verdicts) ⇒ ``critic_not_live`` — never 
 merge under a supervisor that cannot block. G3 signal-trust: any factory signal reports
 ``instrumentation_gap`` ⇒ ``signal_untrusted`` (never verify against an untrustworthy
 score). G4 budget: the shared self-improve budget precheck refuses ⇒ ``budget:<reason>``.
+
+G1b is scoped to the arc that needs a metric (#3643).
+:func:`evaluate_execution_guards` runs the full G1→G1b→G2→G3→G4 chain for the
+post-admission arc, where the loop actually changes config and measures against the
+score. :func:`evaluate_intake_guards` drops G1b for the pre-admission arc, which only
+interprets owner intent and then STOPS at the structural human ratify gate
+(:meth:`~teatree.core.models.directive.Directive.admit` raises without a consumed,
+answered ratify question) — a dark scoring subsystem is not that arc's safety baseline.
 
 Nothing here mutates state, so every guard is table-tested; a refusal returns a typed
 :class:`~teatree.loops.outer_loop.guards.GuardVerdict` and the tick is a total no-op.
@@ -48,18 +56,40 @@ class DirectiveLoopSettings(Protocol):
     directive_verify_days: int
 
 
-def evaluate_guards(
+def evaluate_intake_guards(
     *,
     settings: DirectiveLoopSettings,
     seams: GuardSeams | None = None,
     overlay: str = "",
     now: datetime | None = None,
 ) -> GuardVerdict:
-    """Run G1→G1b→G2→G3→G4; return the first refusal, else allow."""
+    """Run G1→G2→G3→G4 for the pre-admission arc; return the first refusal, else allow."""
+    return _evaluate(settings=settings, seams=seams, overlay=overlay, now=now, require_score=False)
+
+
+def evaluate_execution_guards(
+    *,
+    settings: DirectiveLoopSettings,
+    seams: GuardSeams | None = None,
+    overlay: str = "",
+    now: datetime | None = None,
+) -> GuardVerdict:
+    """Run G1→G1b→G2→G3→G4 for the post-admission arc; first refusal wins, else allow."""
+    return _evaluate(settings=settings, seams=seams, overlay=overlay, now=now, require_score=True)
+
+
+def _evaluate(
+    *,
+    settings: DirectiveLoopSettings,
+    seams: GuardSeams | None,
+    overlay: str,
+    now: datetime | None,
+    require_score: bool,
+) -> GuardVerdict:
     resolved = seams or GuardSeams()
     if not settings.directive_loop_enabled:
         return GuardVerdict.refuse(FLAG_OFF)
-    if not settings.factory_score_enabled:
+    if require_score and not settings.factory_score_enabled:
         return GuardVerdict.refuse(SCORE_OFF)
     critic = (resolved.critic_probe or probe_critic_liveness)()
     if not critic.live:
