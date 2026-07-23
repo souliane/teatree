@@ -18,11 +18,11 @@ from django_typer.management import TyperCommand, command
 
 from teatree.core.models import PIN_MODES, Loop, Mode, ModeOverride
 from teatree.loop.preset_resolution import next_boundary
+from teatree.loops.preset_editing import apply_entry_edits
 from teatree.loops.preset_status import active_summary, effective_verdicts
 
 _DURATION_RE = re.compile(r"^(\d+)([smhd])$")
 _DURATION_UNIT_SECONDS = {"s": 1, "m": 60, "h": 3600, "d": 86400}
-_ENTRY_VALUES = {"on": True, "off": False}
 
 
 def _parse_duration(raw: str) -> dt.timedelta:
@@ -43,32 +43,6 @@ def _parse_expiry(raw: str) -> dt.datetime | None:
         return timezone.now() + _parse_duration(raw)
     except ValueError:
         return _parse_iso(raw)
-
-
-def _apply_entry_edits(entries: object, edits: list[str]) -> dict[str, bool]:
-    """Fold ``inbox=on`` / ``review=off`` / ``dream=inherit`` edits into *entries* (a copy).
-
-    *entries* is the raw stored map (a JSONField value, so ``object``); non-bool
-    existing values (a corrupt / legacy row) are dropped, so an edit always produces
-    a clean tri-state map.
-    """
-    updated: dict[str, bool] = (
-        {str(key): value for key, value in entries.items() if isinstance(value, bool)}
-        if isinstance(entries, dict)
-        else {}
-    )
-    for edit in edits:
-        loop_name, _, value = edit.partition("=")
-        loop_name = loop_name.strip()
-        value = value.strip().lower()
-        if not loop_name or (value not in _ENTRY_VALUES and value != "inherit"):
-            msg = f"invalid --set {edit!r}; use <loop>=on|off|inherit"
-            raise ValueError(msg)
-        if value == "inherit":
-            updated.pop(loop_name, None)
-        else:
-            updated[loop_name] = _ENTRY_VALUES[value]
-    return updated
 
 
 def _unknown_entry_loops(entries: dict[str, bool]) -> list[str]:
@@ -261,7 +235,7 @@ class Command(TyperCommand):
 
     def _entries_from_edits(self, entries: object, edits: list[str], *, json_output: bool) -> dict[str, bool]:
         try:
-            return _apply_entry_edits(entries, edits)
+            return apply_entry_edits(entries, edits)
         except ValueError as exc:
             self._refuse(str(exc), json_output=json_output)
 

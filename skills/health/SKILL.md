@@ -104,7 +104,7 @@ t3 loop pause <name>      # reversible hold (LoopState only) — does NOT flip t
 t3 loop loop-state <name> # read the durable LoopState status (ENABLED when never touched)
 ```
 
-`enable`/`disable`/`resume` move the TWO planes the #2584 unified verdict reads in lock-step inside one transaction: the durable `LoopState` control tier (#1913) AND the row-level `Loop.enabled` column that the loop tick gates on (`not row.enabled` skips a loop). They are the agent-facing way to toggle `enabled`; the Django admin (`Loop` rows) remains the place to edit a loop's cadence and prompt-vs-script. `pause` is the reversible control-plane hold only — it leaves `Loop.enabled` untouched so a paused loop returns to running with `resume` without re-enabling a row that was deliberately `disable`d.
+`enable`/`disable`/`resume` move the TWO planes the #2584 unified verdict reads in lock-step inside one transaction: the durable `LoopState` control tier (#1913) AND the row-level `Loop.enabled` column that the loop tick gates on (`not row.enabled` skips a loop). They are the agent-facing way to toggle `enabled`; a loop's **cadence** is edited from the dashboard's unified loop table (`/dash/loops/`, validated by `teatree.loops.loop_cadence_editing`), and the Django admin (`Loop` rows) remains the place to edit prompt-vs-script. `pause` is the reversible control-plane hold only — it leaves `Loop.enabled` untouched so a paused loop returns to running with `resume` without re-enabling a row that was deliberately `disable`d.
 
 #### The toggle IS the whole job (#2650 / PR-28)
 
@@ -134,6 +134,8 @@ t3 loop schedule clear-active            # no L2 layer — presets apply only vi
 ```
 
 Seeded defaults (owner-editable DB data, never clobbered by re-seeding): presets `engaged` / `heads-down` / `unattended` (pins `autonomous_away`) / `maintenance` / `low-power` / `off`, and schedules `standard` / `always-unattended`. A fresh install seeds everything but leaves `active_loop_schedule` **unset** — fully opt-in, so with no active schedule and no override every loop admits exactly as its two-plane verdict does today. Everything fails OPEN: a deleted preset/loop/schedule resolves to base config with a WARNING + a `t3 doctor` finding — a broken schedule can never brick the fleet. A preset may pin an availability mode (written through the same `t3 teatree availability` override chokepoint) and a `focus:<overlay>` preset's `overlay_scope` restricts the tick to one backend. `low-power` auto-engages while a usage window is parked, behind the default-off `low_power_auto_engage` flag.
+
+The dashboard's **`/dash/presets/`** page is the same control surface with a UI: switch the active schedule and the active preset, edit a preset's per-loop tri-state entries, create / rename / delete a preset, edit its description and availability pin, and add or remove schedule slots. Every write goes through the `teatree.loops.preset_editing` / `preset_admin` / `schedule_editing` seams — the same ones the CLI verbs above call — so the two surfaces cannot diverge. A rename re-points every by-name referrer (the override row, schedule slots, and the settings that select a preset) in one transaction, and a delete is refused while any of them still names the preset. A preset row is never selected by a hard-coded name: the availability switch resolves the mode carrying the requested posture via `Mode.objects.by_posture`, so renaming a seeded preset cannot change behaviour.
 
 ### Reactive infra loops (not DB `Loop` rows)
 

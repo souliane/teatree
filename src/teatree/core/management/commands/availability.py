@@ -25,12 +25,12 @@ from typing import Annotated
 import typer
 from django_typer.management import TyperCommand, command, initialize
 
-from teatree.core.mode_resolution import clear_mode_override, resolve_active_mode, set_mode_override
-
-# The standalone availability modes map onto the merged modes (design §4.2).
-_AWAY_MODE = "offline"
-_AUTONOMOUS_AWAY_MODE = "unattended"
-_PRESENT_MODE = "engaged"
+from teatree.core.mode_resolution import (
+    clear_mode_override,
+    mode_name_for_availability,
+    resolve_active_mode,
+    set_mode_override,
+)
 
 
 def _parse_until(raw: str) -> datetime | None:
@@ -66,7 +66,7 @@ class Command(TyperCommand):
         ] = "",
     ) -> str:
         """Alias: set the holiday ``offline`` mode (defer + pause) until *until* — or forever."""
-        set_mode_override(_AWAY_MODE, until=_parse_until(until))
+        set_mode_override(mode_name_for_availability("away"), until=_parse_until(until))
         return _render(prefix="set away. ")
 
     @command(name="autonomous-away")
@@ -84,7 +84,7 @@ class Command(TyperCommand):
         backlog while the Stop self-pump keeps driving the loop. Alias for the
         ``unattended`` merged mode.
         """
-        set_mode_override(_AUTONOMOUS_AWAY_MODE, until=_parse_until(until))
+        set_mode_override(mode_name_for_availability("autonomous_away"), until=_parse_until(until))
         return _render(prefix="set autonomous-away. ")
 
     @command()
@@ -109,7 +109,9 @@ class Command(TyperCommand):
         backlog to the user's Slack DM (handled in the mode-override chokepoint),
         so the user is re-asked everything they missed without any manual step.
         """
-        set_mode_override(_PRESENT_MODE, until=_parse_until(until), user_id=user_id, overlay=overlay)
+        set_mode_override(
+            mode_name_for_availability("present"), until=_parse_until(until), user_id=user_id, overlay=overlay
+        )
         return _render(prefix="set present. ")
 
     @command()
