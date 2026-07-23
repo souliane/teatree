@@ -1,4 +1,4 @@
-# Cleanup-sweep judgment: the agent routes each `workspace emit` record to the
+# Worktree-sweep judgment: the agent routes each `workspace emit` record to the
 # right guarded CLI verb and never hand-rolls a destructive git op. Three
 # deterministic matchers prove the load-bearing decisions: a worktree-kind
 # merged+post-merge item goes to a NEW PR via salvage AND its worktree dir is
