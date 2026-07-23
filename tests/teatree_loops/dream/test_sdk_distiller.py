@@ -19,7 +19,7 @@ from teatree.core.models import ConfigSetting
 from teatree.llm.credentials import CredentialError
 from teatree.loops.dream import sdk_distiller
 from teatree.loops.dream.engine import ConsolidationExtract, DistillEmptyReason, WeightedSnippet
-from teatree.loops.dream.sdk_distiller import deterministic_cluster_key
+from teatree.loops.dream.sdk_distiller import deterministic_cluster_key, sdk_distill
 from tests.teatree_agents._sdk_fake import FakeHarnessSession, assistant_text
 
 
@@ -428,6 +428,19 @@ class SdkDistillReasonTestCase(SimpleTestCase):
             result = sdk_distiller.sdk_distill(_extract_with_one_snippet())
         assert len(result.clusters) == 1
         assert result.empty_reason is None
+
+    def test_sdk_distill_derives_the_deterministic_cluster_key(self) -> None:
+        # The public seam anchors idempotency: the returned cluster keys off the member
+        # set (sha256), never the LLM-supplied slug.
+        payload = (
+            '[{"cluster_key":"llm-slug","rule":"do x","source_files":["/feedback_x.md"],'
+            '"is_binding":true,"verified_citation":"x","durable_destination":"d.md"}]'
+        )
+        with patch.object(sdk_distiller, "_run_distiller_turn", return_value=payload):
+            result = sdk_distill(_extract_with_one_snippet())
+        assert result.empty_reason is None
+        assert result.clusters[0].cluster_key == deterministic_cluster_key(["/feedback_x.md"])
+        assert result.clusters[0].cluster_key != "llm-slug"
 
     def test_empty_extract_is_nothing_to_consolidate_without_sdk_call(self) -> None:
         empty = ConsolidationExtract(snippets=(), truncated=False)

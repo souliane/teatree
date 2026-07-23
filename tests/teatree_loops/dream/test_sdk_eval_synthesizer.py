@@ -87,6 +87,20 @@ class SdkSynthesizerGuardTestCase(SimpleTestCase):
         ):
             sdk_eval_synthesizer.sdk_spec_synthesizer(_CANDIDATE, _SLICE, child_env=_no_credentials)
 
+    def test_a_malformed_reply_raises_so_the_candidate_is_dropped(self) -> None:
+        # A reply carrying no JSON object must RAISE, so the caller drops the candidate
+        # rather than staging an unproven spec from a fake success.
+        async def _reply(_prompt: str, *, env: dict[str, str] | None = None) -> str:
+            await asyncio.sleep(0)
+            return "not a JSON object at all"
+
+        with (
+            patch("shutil.which", return_value="/usr/bin/claude"),
+            patch.object(sdk_eval_synthesizer, "_collect_synth_turn", _reply),
+            pytest.raises(ValueError, match="no JSON object"),
+        ):
+            sdk_eval_synthesizer.sdk_spec_synthesizer(_CANDIDATE, _SLICE, child_env=_no_credentials)
+
 
 class _HangOnConnectClient:
     """A ``ClaudeSDKClient`` stand-in whose connect (``__aenter__``) never returns.

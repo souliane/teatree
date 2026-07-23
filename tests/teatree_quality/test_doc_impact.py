@@ -83,6 +83,14 @@ class TestDiskDocReaderLookup:
         self._tree(tmp_path)
         assert disk_doc_reader_lookup(tmp_path)(frozenset()) == ()
 
+    def test_an_unreadable_candidate_is_skipped_not_crashed(self, tmp_path: Path) -> None:
+        # A path whose name matches the *.py glob but cannot be read (here: it is a
+        # directory) must be swallowed so the scan still selects the genuine reader.
+        self._tree(tmp_path)
+        (tmp_path / "tests" / "teatree_quality" / "bogus.py").mkdir()
+        lookup = disk_doc_reader_lookup(tmp_path)
+        assert lookup(reference_tokens(["BLUEPRINT.md"])) == ("tests/teatree_quality/test_blueprint_sync.py",)
+
 
 class TestRealRepoDocConsistencyTestsAreMapped:
     """The mapping is not vacuous.

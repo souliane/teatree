@@ -18,7 +18,7 @@ from unittest import mock
 from django.test import TestCase
 
 from teatree.cli.doctor import self_heal_slack_drain
-from teatree.cli.doctor.self_heal_slack_drain import check_slack_drain_alive
+from teatree.cli.doctor.self_heal_slack_drain import DrainBeat, check_slack_drain_alive, read_heartbeat
 
 _MOD = "teatree.cli.doctor.self_heal_slack_drain"
 
@@ -84,3 +84,23 @@ class SlackDrainCheckTest(TestCase):
         ok, out = _echoes(check_slack_drain_alive)
         assert ok is True
         assert out == ""
+
+    def test_a_crash_reading_the_clock_degrades_to_pass(self) -> None:
+        # A self-heal probe must never itself abort the doctor run: an unexpected
+        # error inside the check's try-block WARNs and passes rather than crashing.
+        self._write_beat(age_seconds=5, consecutive=0)
+        with mock.patch("django.utils.timezone.now", side_effect=RuntimeError("clock gone")):
+            ok, out = _echoes(check_slack_drain_alive)
+        assert ok is True
+        assert "WARN" in out
+        assert "crashed" in out
+
+    def test_read_heartbeat_parses_a_real_beat(self) -> None:
+        self._write_beat(age_seconds=5, consecutive=2, interval=30)
+        beat = read_heartbeat()
+        assert isinstance(beat, DrainBeat)
+        assert beat.consecutive_failures == 2
+        assert beat.interval_seconds == 30
+
+    def test_read_heartbeat_returns_none_when_absent(self) -> None:
+        assert read_heartbeat() is None

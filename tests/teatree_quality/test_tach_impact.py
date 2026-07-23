@@ -24,6 +24,12 @@ class TestUnavailableProbeIsNoneNotEmpty:
         monkeypatch.setattr(tach_impact, "_load_project_config", _boom)
         assert would_skip_tests(tmp_path, candidates=("tests/a/test_a.py",)) is None
 
+    def test_a_none_project_config_yields_none(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        # An unparsable/absent project config resolves to None, so the handler is never
+        # built — the verdict is UNKNOWN (None), never the empty "would skip nothing" set.
+        monkeypatch.setattr(tach_impact, "_load_project_config", lambda _root: None)
+        assert would_skip_tests(tmp_path, candidates=("tests/a/test_a.py",)) is None
+
 
 def _boom(_root: Path) -> object:
     message = "tach config exploded"

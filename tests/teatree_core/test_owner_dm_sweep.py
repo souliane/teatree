@@ -6,8 +6,9 @@ from django.test import TestCase
 from django.utils import timezone
 
 from teatree.core.models import DeferredQuestion, PullRequest, Ticket
-from teatree.core.owner_dm_sweep import SweepSeams, run_sweep
+from teatree.core.owner_dm_sweep import SweepSeams, run_sweep, subject_closed_locally
 from teatree.core.owner_threads import AUTO_RESOLVE_MAX_AGE, open_owner_threads
+from teatree.url_classify import find_forge_urls
 
 _PR_URL = "https://github.com/souliane/teatree/pull/1234"
 
@@ -71,6 +72,30 @@ class TestSubjectClosed(TestCase):
         _thread(f"Should I rebase {_PR_URL}?")
 
         assert run_sweep().resolved == 0
+
+
+class TestSubjectClosedLocally(TestCase):
+    """The model-free "is every referenced subject landed?" predicate, tested directly."""
+
+    def test_a_text_with_no_forge_reference_is_not_subject_closed(self) -> None:
+        assert find_forge_urls("What should I do next?") == []
+        assert subject_closed_locally("What should I do next?") is False
+
+    def test_all_references_landed_is_subject_closed(self) -> None:
+        ticket = Ticket.objects.create(state=Ticket.State.MERGED)
+        PullRequest.objects.create(ticket=ticket, url=_PR_URL, repo="souliane/teatree", iid="1234")
+        text = f"Should I rebase {_PR_URL}?"
+        assert find_forge_urls(text) == [_PR_URL]
+        assert subject_closed_locally(text) is True
+
+    def test_an_untracked_reference_is_not_assumed_closed(self) -> None:
+        assert find_forge_urls(f"rebase {_PR_URL}") == [_PR_URL]
+        assert subject_closed_locally(f"rebase {_PR_URL}") is False
+
+    def test_a_still_open_reference_keeps_the_thread_live(self) -> None:
+        ticket = Ticket.objects.create(state=Ticket.State.IN_REVIEW)
+        PullRequest.objects.create(ticket=ticket, url=_PR_URL, repo="souliane/teatree", iid="1234")
+        assert subject_closed_locally(f"Should I rebase {_PR_URL}?") is False
 
 
 class TestDuplicateThreads(TestCase):

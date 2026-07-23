@@ -2,12 +2,15 @@
 
 from dataclasses import dataclass, field
 from datetime import timedelta
+from unittest import mock
 
+from django.db import OperationalError
 from django.test import TestCase
 from django.utils import timezone
 
 from teatree.core.models import DeferredQuestion, Loop
-from teatree.loop.scanners.dm_sweep import DmSweepScanner
+from teatree.core.owner_threads import OwnerThread
+from teatree.loop.scanners.dm_sweep import DmSweepScanner, SlackThreadReply, _is_owner_reply
 from teatree.types import RawAPIDict
 
 CHANNEL = "D0OWNER"
@@ -70,6 +73,42 @@ class TestOwnerReplyProbe(TestCase):
         assert DmSweepScanner(backend=backend).scan() == []
         row.refresh_from_db()
         assert row.status == DeferredQuestion.STATUS_PENDING
+
+
+class TestScanIsResilient(TestCase):
+    def test_unmigrated_tables_are_skipped_not_crashed(self) -> None:
+        with mock.patch("teatree.core.owner_dm_sweep.run_sweep", side_effect=OperationalError("no such table")):
+            assert DmSweepScanner().scan() == []
+
+    def test_an_unexpected_sweep_failure_is_swallowed(self) -> None:
+        with mock.patch("teatree.core.owner_dm_sweep.run_sweep", side_effect=RuntimeError("boom")):
+            assert DmSweepScanner().scan() == []
+
+
+class TestOwnerReplyProbeSkipsUnaddressableThreads(TestCase):
+    def test_a_thread_with_no_slack_coordinates_is_never_probed(self) -> None:
+        backend = _FakeMessaging()
+        probe = DmSweepScanner(backend=backend)._owner_replied_probe()
+        assert probe is not None
+
+        row = DeferredQuestion.record("Ship it?", slack_channel="", slack_ts="")
+        assert probe(OwnerThread(question=row)) is False
+        assert backend.calls == []
+
+
+class TestIsOwnerReply:
+    def test_a_non_dict_reply_is_never_an_owner_reply(self) -> None:
+        assert _is_owner_reply("not a dict", thread_ts="root") is False
+
+    def test_a_typed_human_reply_in_the_thread_counts(self) -> None:
+        reply: SlackThreadReply = {"ts": "1779990002.000001", "text": "yes, ship"}
+        assert _is_owner_reply(reply, thread_ts="1779990001.000001") is True
+
+    def test_a_bot_post_and_the_root_message_do_not_count(self) -> None:
+        bot: SlackThreadReply = {"ts": "1779990002.000001", "text": "Pending question", "bot_id": "B1"}
+        assert _is_owner_reply(bot, thread_ts="1779990001.000001") is False
+        root: SlackThreadReply = {"ts": "root", "text": "the question"}
+        assert _is_owner_reply(root, thread_ts="root") is False
 
 
 class TestWatermark(TestCase):

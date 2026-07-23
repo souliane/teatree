@@ -80,3 +80,17 @@ class TestScanningNewsDigestDelivery(TestCase):
             record_reactive_envelopes(task, {"article_suggestions": []}, phase="scanning_news")
 
         notify.assert_not_called()
+
+    def test_an_empty_rendered_digest_posts_nothing_but_keeps_the_candidates(self) -> None:
+        # If the digest renders to empty text there is nothing to DM, so the post is
+        # skipped — yet the candidates the ask-gate needs are already persisted.
+        task = _news_task()
+
+        with (
+            mock.patch("teatree.agents.reactive_envelope_recorders.render_digest", return_value=""),
+            mock.patch("teatree.agents.reactive_envelope_recorders.notify_user") as notify,
+        ):
+            record_reactive_envelopes(task, {"article_suggestions": _SUGGESTIONS}, phase="scanning_news")
+
+        notify.assert_not_called()
+        assert PendingArticleSuggestion.objects.count() == 2

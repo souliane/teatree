@@ -28,6 +28,11 @@ class TestNormalizeSourceUrl:
     def test_a_non_url_passes_through_untouched(self) -> None:
         assert normalize_source_url("not a url") == "not a url"
 
+    def test_a_value_that_fails_to_parse_passes_through_rather_than_mangling(self) -> None:
+        # An unmatched IPv6 bracket makes urlparse raise ValueError; the value is
+        # returned untouched instead of being coerced into a false dedupe match.
+        assert normalize_source_url("https://[") == "https://["
+
     def test_two_spellings_of_one_feed_normalize_alike(self) -> None:
         left = normalize_source_url("https://tldr.tech/api/rss/ai/?utm_campaign=daily")
         right = normalize_source_url("https://TLDR.tech/api/rss/ai")

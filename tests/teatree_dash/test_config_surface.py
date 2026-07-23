@@ -8,7 +8,13 @@ from django.test import TestCase
 from teatree.config.agent_spawn import AgentConfig
 from teatree.core.config_self_repair import ConfigRepair
 from teatree.core.models import ConfigSetting, Session, Task, Ticket
-from teatree.dash.config_surface import CredentialEntry, build_config_view, classify_setting_band
+from teatree.dash.config_surface import (
+    CredentialEntry,
+    _pass_entry_resolves,
+    _self_repair_rows,
+    build_config_view,
+    classify_setting_band,
+)
 
 
 class TestSettingBands:
@@ -132,3 +138,29 @@ class TestBuildConfigView(TestCase):
         view = build_config_view()
 
         assert view.error
+
+
+class TestSelfRepairRowsAreResilient(TestCase):
+    def test_a_failed_self_repair_read_omits_the_band(self) -> None:
+        # The band is advisory — a DB read failure drops it rather than 500-ing.
+        patched = mock.patch(
+            "teatree.dash.config_surface.Task.objects.filter",
+            side_effect=RuntimeError("db down"),
+        )
+        patched.start()
+        self.addCleanup(patched.stop)
+
+        assert _self_repair_rows() == ()
+
+
+class TestPassEntryResolves:
+    def test_an_empty_entry_name_never_resolves(self) -> None:
+        assert _pass_entry_resolves("") is False
+
+    def test_a_pass_probe_failure_degrades_to_unresolved(self) -> None:
+        with mock.patch("teatree.dash.config_surface.read_pass", side_effect=RuntimeError("no pass")):
+            assert _pass_entry_resolves("team/token") is False
+
+    def test_a_resolving_entry_reports_true(self) -> None:
+        with mock.patch("teatree.dash.config_surface.read_pass", return_value="secret"):
+            assert _pass_entry_resolves("team/token") is True

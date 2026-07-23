@@ -1976,6 +1976,17 @@ class TestReapOrphanWorktreeDocker(TestCase):
         assert lines == [str(result)]
         assert "backend-wt9" in lines[0]
 
+    def test_dry_run_previews_orphans_through_the_selection_seam(self) -> None:
+        # #3489: the preview routes through the same ``orphan_compose_projects``
+        # ownership seam a live run uses, removing nothing.
+        with patch("teatree.docker.reap.orphan_compose_projects", return_value=["backend-wt9"]) as mock_select:
+            lines = ws_docker_mod.reap_orphan_worktree_docker(dry_run=True)
+
+        assert mock_select.called
+        assert len(lines) == 1
+        assert "backend-wt9" in lines[0]
+        assert "Reap orphan compose project" in lines[0]
+
     def test_foreign_stacks_survive_end_to_end(self) -> None:
         """The whole path -- keep set, ownership gate, engine -- against a faked daemon.
 
@@ -2302,6 +2313,62 @@ class TestPruneBranchesPassOneAndTwo(TestCase):
 
         mock_del.assert_not_called()
 
+    def test_dry_run_previews_gone_branch_deletion_without_deleting(self) -> None:
+        # #3489: the gone-branch pass reports the SAME deletion a live run would
+        # perform, prefixed WOULD, and never calls branch_delete.
+        def fake_run(*, repo: str = ".", args: list[str]) -> str:
+            if args == ["branch", "-v", "--no-color"]:
+                return "  main abc123\n  stale-feature def456 [gone]"
+            if args == ["branch", "--merged", "origin/main", "--no-color"]:
+                return ""
+            if args == ["branch", "--no-color"]:
+                return "* main"
+            return ""
+
+        with (
+            patch.object(git_mod, "run", side_effect=fake_run),
+            patch.object(git_mod, "fetch_all_prune", return_value=True),
+            patch.object(git_mod, "current_branch", return_value="main"),
+            patch.object(git_mod, "default_branch", return_value="main"),
+            patch.object(git_mod, "branch_delete") as mock_del,
+            patch.object(ws_cleanup_mod, "worktree_branches", return_value=set()),
+            patch.object(ws_cleanup_mod, "worktree_map", return_value={}),
+        ):
+            cleaned = ws_cleanup_mod.prune_branches("/repo", dry_run=True)
+
+        mock_del.assert_not_called()
+        assert any(c.startswith("WOULD Prune gone branch") and "stale-feature" in c for c in cleaned), cleaned
+
+
+class TestCleanupDryRunHelperPreviews(TestCase):
+    """The squash-merge and gone-remote helpers preview under ``dry_run`` (#3489)."""
+
+    def test_prune_squash_merged_dry_run_previews_without_deleting(self) -> None:
+        with (
+            patch.object(git_mod, "unsynced_commits", return_value=[]),
+            patch.object(git_mod, "commits_absent_from_all_remotes", return_value=[]),
+            patch.object(git_mod, "branch_delete") as mock_del,
+        ):
+            line = ws_cleanup_mod._prune_squash_merged("/repo", "feat-x", {}, remote_ref_was_present=True, dry_run=True)
+
+        mock_del.assert_not_called()
+        assert line == "WOULD Prune squash-merged branch: feat-x"
+
+    def test_prune_gone_worktree_dry_run_previews_without_removing(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            wt_path = str(Path(tmp) / "wt")
+            Path(wt_path).mkdir()
+            with (
+                patch.object(ws_cleanup_mod, "match_worktree_by_path", return_value=None),
+                patch.object(git_mod, "status_porcelain", return_value=""),
+                patch.object(git_mod, "unsynced_commits", return_value=[]),
+                patch.object(git_mod, "worktree_remove") as mock_remove,
+            ):
+                line = ws_cleanup_mod._prune_gone_worktree("/repo", "feat-y", wt_path, dry_run=True)
+
+        mock_remove.assert_not_called()
+        assert line == "WOULD Remove gone-remote worktree (branch kept): feat-y"
+
     def test_pass1_strips_current_branch_marker_on_gone_branch(self) -> None:
         # `git branch -v` prefixes the checked-out branch with "* ". A gone
         # current branch reads "* feature abc123 [gone] ...". Parsing must
@@ -2604,6 +2671,34 @@ class TestDropOrphanedStashes(TestCase):
         assert "already merged" in result[0]
         assert ["stash", "drop", "stash@{0}"] in calls
 
+    def test_dry_run_previews_a_merged_orphan_without_dropping(self) -> None:
+        # #3489: the preview reports the SAME drop a live run would perform, but
+        # never issues `stash drop`.
+        stash_output = "stash@{0}: WIP on deleted-branch: abc123 merged work"
+        calls: list[list[str]] = []
+
+        def fake_run(*, repo: str = ".", args: list[str]) -> str:
+            calls.append(args)
+            if args == ["stash", "list"]:
+                return stash_output
+            if args == ["branch", "--no-color"]:
+                return "* main"
+            if args == ["rev-parse", "--abbrev-ref", "origin/HEAD"]:
+                return "origin/main"
+            if args[:1] == ["cherry"]:
+                return "- abc123def merged work"
+            return ""
+
+        with (
+            patch.object(git_mod, "run", side_effect=fake_run),
+            patch.object(git_mod, "run_strict", side_effect=fake_run),
+        ):
+            result = ws_stash_mod.drop_orphaned_stashes("/repo", dry_run=True)
+
+        assert len(result) == 1
+        assert result[0].startswith("WOULD Drop orphaned stash")
+        assert not any(a[:2] == ["stash", "drop"] for a in calls), "dry-run must NOT drop"
+
     def test_keeps_orphaned_stash_when_cherry_output_is_empty(self) -> None:
         # #F4.1 data-loss: an EMPTY `git cherry` output (the stash ref is a merge
         # commit, or nothing was content-compared) is NOT proof of capture —
@@ -2905,6 +3000,37 @@ class TestDropOrphanDatabases(TestCase):
         assert not any("wt_known" in c for c in dropdb_cmds)
         # other_db should NOT be dropped (no wt_ prefix)
         assert not any("other_db" in " ".join(c) for c in commands_run if "dropdb" in c)
+
+    @override_settings(**SETTINGS)
+    def test_dry_run_previews_the_orphan_drop_without_dropping(self) -> None:
+        # #3489: the preview names the SAME orphan a live run would drop, but issues
+        # no `dropdb`.
+        ticket = Ticket.objects.create(overlay="test", issue_url="https://example.com/issues/65")
+        Worktree.objects.create(
+            overlay="test", ticket=ticket, repo_path="/tmp/repo", branch="feature", db_name="wt_known"
+        )
+        psql_output = "wt_known|postgres|UTF8\nwt_orphan|postgres|UTF8\n"
+        commands_run: list[list[str]] = []
+
+        def _capture(*args: object, **kwargs: object) -> MagicMock:
+            cmd = list(args[0]) if args else []
+            commands_run.append(cmd)
+            if "psql" in cmd:
+                return MagicMock(returncode=0, stdout=psql_output)
+            return MagicMock(returncode=0)
+
+        with (
+            _pg_client_present(),
+            patch.object(utils_run_mod, "subprocess") as mock_sp,
+            patch.object(db_mod, "pg_env", return_value={}),
+            patch.object(db_mod, "pg_host", return_value="localhost"),
+            patch.object(db_mod, "pg_user", return_value="postgres"),
+        ):
+            mock_sp.run.side_effect = _capture
+            result = ws_cleanup_mod.drop_orphan_databases(dry_run=True)
+
+        assert result == ["WOULD Drop orphan database: wt_orphan"]
+        assert not any("dropdb" in c for c in commands_run), "dry-run must NOT drop"
 
 
 # A deterministic git identity for tests. The CI image (dev/Dockerfile.test,
@@ -3636,6 +3762,29 @@ def _make_squash_merged_worktree(tmp: Path, *, overlay: str = "test", ticket_num
         state=Worktree.State.PROVISIONED,
         extra={"clone_path": str(work), "worktree_path": str(wt_path)},
     )
+
+
+class TestCleanAllFromNonGitCwd(TestCase):
+    """From a non-repo cwd the branch + stash prune is a NAMED no-op, not a silent one."""
+
+    def test_a_non_git_cwd_reports_the_branch_and_stash_prune_skipped(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_s:
+            tmp = Path(tmp_s)
+            workspace = tmp / "workspace"
+            workspace.mkdir()
+            not_a_repo = tmp / "elsewhere"
+            not_a_repo.mkdir()  # no .git — the cwd the passes are gated on
+            io = ws_clean_all_mod.CleanAllIO(write_out=lambda _line: None, write_err=lambda _line: None)
+            self.addCleanup(os.chdir, Path.cwd())
+            os.chdir(not_a_repo)
+
+            with (
+                patch.object(ws_clean_all_mod, "drop_orphan_databases", new=lambda **_kw: []),
+                patch.object(ws_clean_all_mod, "reap_orphan_worktree_docker", new=lambda **_kw: []),
+            ):
+                cleaned = ws_clean_all_mod.run_clean_all(workspace, io, keep_dslr=3, dry_run=True)
+
+            assert any("is not a git repo" in line for line in cleaned), cleaned
 
 
 @_no_prune

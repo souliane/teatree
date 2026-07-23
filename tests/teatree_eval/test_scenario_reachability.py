@@ -8,7 +8,7 @@ can never take.
 import json
 from pathlib import Path
 
-from teatree.eval.scenario_reachability import iter_t3_invocations, validate_scenario_reachability
+from teatree.eval.scenario_reachability import _fixture_commands, iter_t3_invocations, validate_scenario_reachability
 
 _VALID = {"t3", "t3 teatree", "t3 teatree ticket", "t3 teatree ticket list"}
 _GROUPS = {"t3", "t3 teatree", "t3 teatree ticket"}
@@ -71,3 +71,21 @@ class TestScenarioReachability:
         ).render_text()
         assert "s.yaml" in text
         assert "frobnicate" in text
+
+    def test_the_report_text_confirms_a_clean_pass(self, tmp_path: Path) -> None:
+        # The all-resolved render branch: one real invocation, nothing unreachable.
+        scenarios, fixtures = _dirs(tmp_path)
+        (scenarios / "s.yaml").write_text("prompt: run t3 teatree ticket list\n", encoding="utf-8")
+        report = validate_scenario_reachability(_VALID, _GROUPS, scenarios_dir=scenarios, fixtures_dir=fixtures)
+        assert report.ok
+        text = report.render_text()
+        assert "all resolve" in text
+        assert str(report.checked) in text
+
+    def test_fixture_commands_skips_blank_and_malformed_lines(self, tmp_path: Path) -> None:
+        # A blank line and a malformed JSON line are both skipped, while the well-formed
+        # line's Bash command is still extracted.
+        path = tmp_path / "f.stream.jsonl"
+        good = {"message": {"content": [{"name": "Bash", "input": {"command": "t3 teatree ticket list"}}]}}
+        path.write_text("\n   \n{not valid json\n" + json.dumps(good) + "\n", encoding="utf-8")
+        assert _fixture_commands(path) == ["t3 teatree ticket list"]

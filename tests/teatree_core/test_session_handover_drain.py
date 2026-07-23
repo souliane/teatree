@@ -19,7 +19,7 @@ from pathlib import Path
 from django.test import TestCase
 from django.utils import timezone
 
-from teatree.core.handover import HandoverPayload, claim_handovers, write_mirror
+from teatree.core.handover import HandoverPayload, claim_handovers, render_claimed_payload, write_mirror
 from teatree.core.models import SessionHandover, Ticket, Worktree
 
 _PARKED_COUNT = 8
@@ -77,6 +77,29 @@ class TestParkedHandoversAreDrained(TestCase):
 
         assert payload == "ONLY"
         assert origin == "author"
+
+
+class TestRenderClaimedPayload(TestCase):
+    """Concatenating a drained batch fences each author's state (#3555)."""
+
+    def test_a_lone_handover_renders_as_its_bare_payload(self) -> None:
+        row = _park("solo", minutes_ago=5, payload="JUST ME")
+        assert render_claimed_payload([row]) == "JUST ME"
+
+    def test_multiple_handovers_are_fenced_by_authored_headers(self) -> None:
+        first = _park("author-a", minutes_ago=30, payload="STATE A")
+        second = _park("author-b", minutes_ago=5, payload="STATE B")
+
+        rendered = render_claimed_payload([first, second])
+
+        assert "STATE A" in rendered
+        assert "STATE B" in rendered
+        # Each is fenced with a header naming its author so two authors' state is
+        # never read as one narrative.
+        assert "from `author-a`" in rendered
+        assert "from `author-b`" in rendered
+        assert "Hand-off 1 of 2" in rendered
+        assert "Hand-off 2 of 2" in rendered
 
 
 class TestLiveStatePayloadFallback(TestCase):

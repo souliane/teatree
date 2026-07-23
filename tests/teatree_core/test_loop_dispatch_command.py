@@ -520,6 +520,23 @@ class TestClaimNextAdmitBudgetGate(_LoopDispatchTest):
         assert Task.objects.filter(status=Task.Status.PENDING).count() == 2
 
 
+class TestGovernorGate(_LoopDispatchTest):
+    """The adaptive governor is asked at the admission chokepoint (#3644)."""
+
+    def test_a_governor_denial_refuses_the_marginal_claim(self) -> None:
+        # A DENY verdict (token quota / machine load) short-circuits the admit
+        # gate to "exhausted" regardless of the sidecar budget.
+        from teatree.core.admission_governor import AdmissionDecision  # noqa: PLC0415 - deferred: local import
+        from teatree.core.management.commands import loop_dispatch  # noqa: PLC0415 - deferred: local import
+
+        deny = AdmissionDecision(admit=False, reason="token quota hit", ceiling=None, braked=True)
+        with (
+            patch.object(loop_dispatch, "read_admit_budget", return_value=None),
+            patch.object(loop_dispatch, "governor_verdict", return_value=deny),
+        ):
+            assert loop_dispatch._admit_budget_exhausted() is True
+
+
 class TestPendingSpawnClaimableOnly(_LoopDispatchTest):
     """``pending-spawn --claimable-only`` mirrors what ``claim-next`` would take.
 

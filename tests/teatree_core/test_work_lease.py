@@ -17,8 +17,10 @@ from django.utils import timezone
 from teatree.core.models import ImplementedIssueMarker, LoopLease
 from teatree.core.work_lease import (
     WorkIdentity,
+    branch_slot,
     foreign_work_holder,
     issue_slot,
+    pr_slot,
     register_work_claim,
     release_work_claim,
 )
@@ -75,6 +77,24 @@ class TestBranchClaimedPrRefusesASecondLifecycleClaim(TestCase):
         )
 
         assert self._lifecycle_claim(as_instance=_LOOP) is not None
+
+
+class TestWorkSlots:
+    """The branch/PR slot builders are the readable, collision-free lease keys."""
+
+    def test_branch_slot_is_stable_and_repo_branch_specific(self) -> None:
+        assert branch_slot("org/repo", "42-fix") == branch_slot("org/repo", "42-fix")
+        assert branch_slot("org/repo", "42-fix") != branch_slot("org/repo", "43-fix")
+        assert branch_slot("org/repo", "42-fix") != branch_slot("other/repo", "42-fix")
+
+    def test_pr_slot_is_stable_and_url_specific(self) -> None:
+        assert pr_slot(_PR) == pr_slot(_PR)
+        assert pr_slot(_PR) != pr_slot(_PR + "0")
+
+    def test_branch_and_pr_slots_are_distinct_namespaces(self) -> None:
+        assert branch_slot("org/repo", "b").startswith("work:branch:")
+        assert pr_slot(_PR).startswith("work:pr:")
+        assert branch_slot("org/repo", "b") != pr_slot(_PR)
 
 
 class TestWorkClaimIdentities(TestCase):

@@ -19,6 +19,7 @@ from teatree.llm.openai_compatible import (
     OpenAICompatibleBackend,
     OpenAICompatibleCredential,
     resolve_openai_compatible_backend,
+    warn_retired_env_vars,
 )
 
 
@@ -102,3 +103,35 @@ class TestNoProviderSpecificBackendRemains:
     def test_llm_credentials_exposes_no_provider_specific_class(self) -> None:
         provider_named = [name for name in dir(credentials) if "orca" in name.lower()]
         assert provider_named == []
+
+
+class TestWarnRetiredEnvVars:
+    """A retired provider-specific env var, still exported, must not read as in-effect (#3666)."""
+
+    def test_a_set_retired_var_without_its_successor_warns(
+        self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        monkeypatch.setenv("ORCA_ROUTER_BASE_URL", "https://legacy.example")
+        monkeypatch.delenv(OPENAI_COMPATIBLE_BASE_URL_ENV, raising=False)
+        warn_retired_env_vars()
+        stderr = capsys.readouterr().err
+        assert "ORCA_ROUTER_BASE_URL" in stderr
+        assert OPENAI_COMPATIBLE_BASE_URL_ENV in stderr
+        assert "NO effect" in stderr
+
+    def test_no_warning_when_the_successor_is_also_set(
+        self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        # The operator has migrated: retired var present but so is its successor.
+        monkeypatch.setenv("ORCA_ROUTER_BASE_URL", "https://legacy.example")
+        monkeypatch.setenv(OPENAI_COMPATIBLE_BASE_URL_ENV, "https://new.example")
+        warn_retired_env_vars()
+        assert capsys.readouterr().err == ""
+
+    def test_no_warning_when_no_retired_var_is_set(
+        self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        monkeypatch.delenv("ORCA_ROUTER_BASE_URL", raising=False)
+        monkeypatch.delenv("ORCA_ROUTER_API_KEY", raising=False)
+        warn_retired_env_vars()
+        assert capsys.readouterr().err == ""

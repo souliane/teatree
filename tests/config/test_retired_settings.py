@@ -29,6 +29,7 @@ from teatree.config.retired_settings import (
     RETIRED_SETTINGS,
     RetiredSetting,
     removed_setting,
+    warn_removed_setting,
 )
 from teatree.core.models import ConfigSetting
 
@@ -110,3 +111,15 @@ class TestRemovedKeyFailsLoud(TestCase):
         ConfigSetting.objects.set_value("wip", "full")
         get_effective_settings()
         assert "config_setting clear" not in self._captured.readouterr().err
+
+    def test_warn_removed_setting_names_key_reason_and_remedy(self) -> None:
+        # The anti-silent-revert line, called directly: it must be named, reasoned,
+        # and actionable in one message.
+        entry = removed_setting(next(iter(sorted(REMOVED_SETTING_KEYS))))
+        assert entry is not None
+        warn_removed_setting(entry)
+        stderr = self._captured.readouterr().err
+        assert entry.key in stderr
+        assert entry.reason in stderr
+        assert "config_setting clear" in stderr
+        assert "reverted to its default" in stderr

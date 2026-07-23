@@ -41,6 +41,25 @@ class TestBrakeStatePersistence:
         admission.write_braked(braked=True, statusline_path=tmp_path / "statusline.txt")
         assert json.loads(meta.read_text(encoding="utf-8"))["orchestrate_admit_budget"] == 4
 
+    def test_a_non_dict_sidecar_is_replaced_not_merged(self, tmp_path: Path) -> None:
+        # A JSON array (or any non-object) at the sidecar path parses fine but is not a
+        # merge target; it is discarded so the brake key still lands on a clean dict.
+        meta = tmp_path / "tick-meta.json"
+        meta.write_text(json.dumps([1, 2, 3]), encoding="utf-8")
+        admission.write_braked(braked=True, statusline_path=tmp_path / "statusline.txt")
+        assert json.loads(meta.read_text(encoding="utf-8")) == {admission.BRAKED_KEY: True}
+
+    def test_an_unwritable_sidecar_is_logged_never_raised(
+        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        # A sidecar path that cannot be written as a file (here: it is a directory) must
+        # never propagate — persisting the brake state is best-effort, and losing it costs
+        # only one extra evaluation at the high watermark.
+        (tmp_path / "tick-meta.json").mkdir()
+        with caplog.at_level(logging.ERROR):
+            admission.write_braked(braked=True, statusline_path=tmp_path / "statusline.txt")
+        assert "brake state" in caplog.text
+
 
 class TestGovernorVerdictDegradesToNoOpinion:
     def test_kill_switch_off_yields_no_opinion(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

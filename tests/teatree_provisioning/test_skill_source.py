@@ -94,6 +94,23 @@ class TestMandatedSkillInstaller:
 
         assert outcome is InstallOutcome.UNAVAILABLE
 
+    def test_a_stale_symlink_without_the_skill_is_replaced(self, tmp_path: Path, remote: Path) -> None:
+        # A pre-existing link that does NOT resolve to a SKILL.md is re-pointed at
+        # the real source, not left dangling.
+        link_dir = tmp_path / "skills"
+        link_dir.mkdir()
+        empty_target = tmp_path / "empty"
+        empty_target.mkdir()
+        stale = link_dir / "ac-python"
+        stale.symlink_to(empty_target)
+        installer = MandatedSkillInstaller(tmp_path / "cache", remote_base=f"{remote.parent.parent}/")
+
+        outcome = installer.ensure(_dep(), link_dir=link_dir)
+
+        assert outcome is InstallOutcome.INSTALLED
+        assert (link_dir / "ac-python" / "SKILL.md").is_file()
+        assert (link_dir / "ac-python").resolve() != empty_target.resolve()
+
     def test_two_refs_of_one_repo_get_separate_checkouts(self, tmp_path: Path, remote: Path) -> None:
         head = _git(remote, "rev-parse", "HEAD")
         installer = MandatedSkillInstaller(tmp_path / "cache", remote_base=f"{remote.parent.parent}/")

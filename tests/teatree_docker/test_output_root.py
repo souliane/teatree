@@ -49,3 +49,13 @@ def test_unreadable_compose_reports_nothing(tmp_path: Path) -> None:
 def test_malformed_compose_reports_nothing(tmp_path: Path) -> None:
     # A parse failure is not evidence of a missing pin; the caller is advisory.
     assert services_missing_output_root(_compose(tmp_path, "services: [oops\n")) == []
+
+
+def test_a_non_mapping_document_reports_nothing(tmp_path: Path) -> None:
+    # Valid YAML that parses to a list (not a compose mapping) — nothing to report.
+    assert services_missing_output_root(_compose(tmp_path, "- a\n- b\n")) == []
+
+
+def test_a_non_mapping_services_key_reports_nothing(tmp_path: Path) -> None:
+    # `services` present but not a mapping (a list) — no service names to inspect.
+    assert services_missing_output_root(_compose(tmp_path, "services:\n  - worker\n")) == []

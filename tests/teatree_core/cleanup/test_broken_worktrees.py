@@ -8,14 +8,16 @@ the guards keep it from touching anything that could hold work.
 
 import tempfile
 from pathlib import Path
+from unittest import mock
 
 from django.test import TestCase
 
+import teatree.core.management.commands._workspace.broken_worktrees as broken_mod
 from teatree.core.management.commands._workspace.broken_worktrees import (
     reap_broken_worktree_dirs,
     resolves_as_git_checkout,
 )
-from teatree.core.models import Ticket, Worktree
+from teatree.core.models import ConfigSetting, Ticket, Worktree
 from teatree.utils import git
 
 
@@ -93,6 +95,36 @@ class TestBrokenWorktreeReaper(_TmpPathTestCase):
 
         assert not canonical.exists()
         assert not alternate.exists()
+
+    def test_the_same_candidate_is_visited_once_across_repeated_roots(self) -> None:
+        # A KEPT candidate (clean_ignore) survives the first root pass, so the same
+        # root passed twice exercises the seen-set de-dup rather than re-deciding it.
+        ConfigSetting.objects.set_value("clean_ignore", ["spike-*"])
+        broken = _broken_checkout(self.tmp_path / "roots" / "spike-dupe")
+
+        outcomes = reap_broken_worktree_dirs(self.tmp_path / "roots", self.tmp_path / "roots")
+
+        assert broken.is_dir()
+        # Decided exactly once despite appearing under two (identical) roots.
+        assert len([line for line in outcomes if "spike-dupe" in line]) == 1
+
+    def test_a_clean_ignore_match_is_kept(self) -> None:
+        ConfigSetting.objects.set_value("clean_ignore", ["spike-*"])
+        broken = _broken_checkout(self.tmp_path / "roots" / "spike-keepme")
+
+        outcomes = reap_broken_worktree_dirs(self.tmp_path / "roots")
+
+        assert broken.is_dir()
+        assert any("matches clean_ignore" in line for line in outcomes)
+
+    def test_a_removal_failure_is_reported_and_the_dir_is_kept(self) -> None:
+        broken = _broken_checkout(self.tmp_path / "roots" / "wontgo")
+
+        with mock.patch.object(broken_mod.shutil, "rmtree", side_effect=OSError("permission denied")):
+            outcomes = reap_broken_worktree_dirs(self.tmp_path / "roots")
+
+        assert broken.is_dir()
+        assert any("removal failed" in line for line in outcomes)
 
 
 class TestCheckoutProbe(_TmpPathTestCase):

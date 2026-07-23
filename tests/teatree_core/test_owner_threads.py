@@ -45,6 +45,13 @@ class TestOpenOwnerThreads(TestCase):
         assert open_owner_threads(since=since) == ()
 
 
+class TestOwnerThreadCoordinates(TestCase):
+    def test_created_at_reads_the_underlying_question_timestamp(self) -> None:
+        row = _question()
+        thread = open_owner_threads()[0]
+        assert thread.created_at == row.created_at
+
+
 class TestAutoResolvable(TestCase):
     def test_a_thread_younger_than_the_floor_is_auto_resolvable(self) -> None:
         _question(age=AUTO_RESOLVE_MAX_AGE - timedelta(minutes=1))

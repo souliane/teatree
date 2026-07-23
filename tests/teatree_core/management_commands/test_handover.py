@@ -90,6 +90,13 @@ class TestHandoverCreate(_PinnedSessionTestCase):
         out = _call("handover", "create", to="target-Z", json_output=True)
         assert json.loads(out)["to_session"] == "target-Z"
 
+    def test_human_output_reports_ok_and_the_mirror(self) -> None:
+        # The non-JSON path: durable state present → "OK" status and the mirror path.
+        out = _call("handover", "create", to="target-Z")
+        assert "OK" in out
+        assert "handed off to target-Z" in out
+        assert "mirror written to" in out
+
     def test_create_writes_xdg_mirror(self) -> None:
         data = json.loads(_call("handover", "create", json_output=True))
         mirror = data["mirror_path"]

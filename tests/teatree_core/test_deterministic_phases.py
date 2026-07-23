@@ -9,7 +9,7 @@ from unittest.mock import patch
 
 from django.test import TestCase
 
-from teatree.core.deterministic_phases import deterministic_phase_runner, run_deterministic_phase
+from teatree.core.deterministic_phases import deterministic_phase_runner, register_phase_runner, run_deterministic_phase
 from teatree.core.models import Session, Task, Ticket
 
 _SUMMARIZE = "teatree.agents.ticket_short_description._summarize"
@@ -20,6 +20,18 @@ def _short_describe_task(title: str = "add dark mode toggle") -> Task:
     ticket = Ticket.objects.create(overlay="t3-teatree", extra={"issue_title": title})
     session = Session.objects.create(ticket=ticket, agent_id="short-describe")
     return Task.objects.create(ticket=ticket, session=session, phase="short_describe")
+
+
+class TestRegisterPhaseRunner(TestCase):
+    def test_registering_a_runner_makes_it_resolvable_by_phase(self) -> None:
+        def _runner(_task: Task) -> str:
+            return "ran"
+
+        # Isolate the registry so the test never leaks a phase into the real dispatch table.
+        with patch(_RUNNERS, {}):
+            assert deterministic_phase_runner("my_phase") is None
+            register_phase_runner("my_phase", _runner)
+            assert deterministic_phase_runner("my_phase") is _runner
 
 
 class TestDeterministicPhaseRunner(TestCase):

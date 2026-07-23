@@ -14,7 +14,9 @@ import json
 import pytest
 
 from teatree.hooks import banned_term_registry, leak_policy
-from teatree.hooks.leak_policy import Surface, Verdict, Visibility
+from teatree.hooks.leak_policy import Surface, Verdict, Visibility, scans_on_visibility
+from teatree.hooks.public_visibility import destination_visibility
+from teatree.hooks.publish_destination import Destination
 
 _BLOCKING_CLASSES = (banned_term_registry.LEAK, banned_term_registry.PROSE_COLLIDER)
 
@@ -67,6 +69,26 @@ class TestSurfaceScope:
         assert leak_policy.classes_for_surface(Surface.DIFF) == banned_term_registry.GATE_CLASSES["diff"]
         assert leak_policy.classes_for_surface(Surface.CORE) == banned_term_registry.GATE_CLASSES["core"]
         assert leak_policy.classes_for_surface(Surface.TREE) == banned_term_registry.GATE_CLASSES["tree"]
+
+
+class TestScansOnVisibility:
+    """Everything the gate cannot PROVE non-public is scanned — only NON_PUBLIC skips."""
+
+    def test_public_and_unknown_scan_and_non_public_skips(self) -> None:
+        assert scans_on_visibility(Visibility.PUBLIC) is True
+        assert scans_on_visibility(Visibility.UNKNOWN) is True
+        assert scans_on_visibility(Visibility.NON_PUBLIC) is False
+
+
+class TestDestinationVisibilityFailsClosed:
+    """An unresolvable destination is UNKNOWN (fail-closed → scan), never NON_PUBLIC."""
+
+    def test_an_empty_slug_is_unknown(self) -> None:
+        assert destination_visibility(Destination(slug="", via="flag")) is Visibility.UNKNOWN
+
+    def test_an_unexpanded_var_slug_is_unknown(self) -> None:
+        # ``$OWNER`` could expand at run time to a PUBLIC repo, so it is scanned.
+        assert destination_visibility(Destination(slug="$OWNER/repo", via="flag")) is Visibility.UNKNOWN
 
 
 class TestLocalCommitWarns:

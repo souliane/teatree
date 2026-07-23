@@ -18,6 +18,8 @@ from teatree.core.admission_governor import (
     YieldSignal,
     decide_admission,
     per_agent_test_workers,
+    read_machine_signal,
+    weekly_pace,
 )
 
 _WEEK = 7 * 24 * 3600
@@ -200,3 +202,37 @@ class TestUnreadableProbeNeverManufacturesAClamp:
         # the load brake, which reads its own signal successfully.
         denied = _decide(quota=_quota(fresh=False), machine=_machine(load1=8 * 5.0 + 1))
         assert not denied.admit
+
+
+class TestWeeklyPace:
+    def test_on_pace_is_one(self) -> None:
+        # Half the weekly window spent with half the runway left is exactly on pace.
+        assert weekly_pace(_quota(weekly_utilization=0.5, seconds_to_weekly_reset=_WEEK * 0.5)) == pytest.approx(1.0)
+
+    def test_underspent_window_paces_above_one(self) -> None:
+        assert weekly_pace(_quota(weekly_utilization=0.1, seconds_to_weekly_reset=_WEEK * 0.5)) > 1.0
+
+    def test_a_nonpositive_runway_reads_as_fully_on_pace(self) -> None:
+        # A reset that is due now (or already past) makes the runway zero; dividing by it
+        # would blow up, so the guard returns 1.0 — no pacing pressure from a spent clock.
+        assert weekly_pace(_quota(weekly_utilization=0.4, seconds_to_weekly_reset=0.0)) == pytest.approx(1.0)
+        assert weekly_pace(_quota(weekly_utilization=0.4, seconds_to_weekly_reset=-500.0)) == pytest.approx(1.0)
+
+
+class TestReadMachineSignal:
+    def test_reads_the_live_load_and_cores(self) -> None:
+        signal = read_machine_signal()
+        assert signal.cores >= 1
+        assert signal.load1 >= 0.0
+
+    def test_an_unreadable_loadavg_degrades_to_zero(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        # A platform without getloadavg (or a probe error) must not crash the governor:
+        # the load reads 0.0, so the machine brake simply never fires on this box.
+        def _boom() -> tuple[float, float, float]:
+            msg = "no loadavg on this platform"
+            raise OSError(msg)
+
+        monkeypatch.setattr(admission_governor.os, "getloadavg", _boom)
+        signal = read_machine_signal()
+        assert signal.load1 == pytest.approx(0.0)
+        assert signal.cores >= 1
