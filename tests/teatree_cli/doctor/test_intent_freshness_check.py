@@ -197,6 +197,32 @@ class TestCheckIntentFreshness(TestCase):
         assert ok is True
         assert out == ""
 
+    def test_clarifying_directive_awaiting_the_human_does_not_gate(self) -> None:
+        # A CLARIFYING directive whose clarify questions are UNANSWERED is the OWNER's
+        # work, not the directive loop's — `_advance_clarifying` returns `waiting`
+        # (`awaiting_clarification`). Structurally identical to a DELIVERED-but-unanswered
+        # question, so a masked directive_loop must not red the box on it.
+        directive = Directive.objects.capture("ambiguous", source=Directive.Source.CLI)
+        directive.mark_clarifying()
+        clarify = DeferredQuestion.record("which?", options_hash=f"directive_clarify:{directive.pk}:0:0")
+        clarify.mark_mirrored(channel="C1", slack_ts="1700000000.1")
+        _backdate_directive(directive, hours=200)
+        ok, out = _run()
+        assert ok is True
+        assert out == ""
+
+    def test_answered_clarifying_directive_is_still_consumer_work(self) -> None:
+        # Every clarify question answered but not yet re-interpreted IS the directive
+        # loop's work (`_advance_clarifying` re-dispatches), so a masked loop gates.
+        directive = Directive.objects.capture("ambiguous", source=Directive.Source.CLI)
+        directive.mark_clarifying()
+        clarify = DeferredQuestion.record("which?", options_hash=f"directive_clarify:{directive.pk}:0:0")
+        DeferredQuestion.consume(clarify.pk, answer="this one")
+        ok, out = _run()
+        assert ok is False
+        assert "FAIL" in out
+        assert f"directive #{directive.pk}" in out
+
     def test_a_crashing_read_degrades_to_ok_without_reddening_the_run(self) -> None:
         with mock.patch("teatree.loops.preset_status.effective_verdicts", side_effect=RuntimeError("no such table")):
             ok, out = _run()

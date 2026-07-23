@@ -17,13 +17,15 @@ WARN (surfacing-only) — an item has sat in the queue past the freshness thresh
 with a live consumer: owner intent is aging (the consumer runs but is not draining,
 or the owner never came back to answer). Mirrors the dream / marker-jam advisories.
 
-Each queue is defined as exactly the rows its named consumer still has to drain, and
-"live" means every gate that consumer actually passes — an unmasked loop row whose
-guard chain refuses is NOT a live consumer. The pure :func:`intent_freshness_findings`
-takes injected state (a mockable clock, pre-gathered queues) so the red→green contract
-is exercisable without a live loop table; :func:`_check_intent_freshness` is the thin
-ORM-reading wrapper doctor runs. :func:`_gather_intent_queues` is the extension seam
-for further consumable queues.
+Each queue is defined as exactly the rows its named consumer still has to drain — a row
+parked on an unanswered human gate (a delivered question, a directive awaiting its clarify
+answers) is the owner's work, not the consumer's — and "live" means every gate that consumer
+actually passes: an unmasked loop row whose guard chain refuses is NOT a live consumer.
+
+The pure :func:`intent_freshness_findings` takes injected state (a mockable clock,
+pre-gathered queues) so the red→green contract is exercisable without a live loop
+table; :func:`_check_intent_freshness` is the thin ORM-reading wrapper doctor runs.
+:func:`_gather_intent_queues` is the extension seam for further consumable queues.
 """
 
 from collections.abc import Iterable, Sequence
@@ -174,6 +176,35 @@ def _directive_consumer_liveness(
     return not blockers, "To restore the consumer: " + "; ".join(blockers) + "."
 
 
+def _drainable_directives() -> tuple[IntentItem, ...]:
+    """The directive rows the ``directive_loop`` tick still has to advance itself.
+
+    ``CLARIFYING`` is the human-gated exception: ``_advance_clarifying`` re-interprets
+    only once EVERY clarify question of the current generation is answered, and otherwise
+    waits on the owner — so an unanswered row is the owner's work, exactly like a
+    DELIVERED-but-unanswered question. ``RATIFY_PENDING`` is excluded for the same reason
+    by never entering the stuck set at all.
+    """
+    from teatree.core.models import Directive  # noqa: PLC0415 — ORM import needs the app registry
+    from teatree.loops.directive_loop.interpret import (  # noqa: PLC0415 — deferred: ORM-backed probe
+        clarifications_answered,
+    )
+
+    stuck_directive_states = frozenset(
+        {Directive.State.CAPTURED, Directive.State.CLARIFYING, Directive.State.INTERPRETED}
+    )
+    rows = (
+        Directive.objects.filter(state__in=stuck_directive_states)
+        .order_by("created_at")
+        .only("pk", "created_at", "state", "generation")
+    )
+    return tuple(
+        IntentItem(ref=f"directive #{row.pk}", created_at=row.created_at)
+        for row in rows
+        if row.state != Directive.State.CLARIFYING or clarifications_answered(row)
+    )
+
+
 def _gather_intent_queues(
     loop_admits: dict[str, bool],
     *,
@@ -182,25 +213,17 @@ def _gather_intent_queues(
 ) -> list[IntentQueue]:
     """The concrete consumable intent queues, read from the ORM (#no-owner-intent-rots).
 
-    The directive intake arc (drained by the ``directive_loop`` tick) and the owner
-    deferred-question DELIVERY arc (mirrored to the owner by the ``dispatch`` loop's
-    poster scanner, which drains exactly the un-mirrored rows — a delivered question
-    stays pending until the HUMAN answers, so it is no longer this consumer's work).
-    A loop absent from *loop_admits* is treated as not admitting, which only ever
-    matters when its queue is non-empty — an unseeded loop table leaves both queues
-    empty, so this never false-alarms.
+    The directive intake arc (the rows the ``directive_loop`` tick still advances itself
+    — see :func:`_drainable_directives`) and the owner deferred-question DELIVERY arc
+    (mirrored to the owner by the ``dispatch`` loop's poster scanner, which drains exactly
+    the un-mirrored rows — a delivered question stays pending until the HUMAN answers, so
+    it is no longer this consumer's work). A loop absent from *loop_admits* is treated as
+    not admitting, which only ever matters when its queue is non-empty — an unseeded loop
+    table leaves both queues empty, so this never false-alarms.
     """
-    from teatree.core.models import DeferredQuestion, Directive  # noqa: PLC0415 — ORM import needs the app registry
+    from teatree.core.models import DeferredQuestion  # noqa: PLC0415 — ORM import needs the app registry
 
-    stuck_directive_states = frozenset(
-        {Directive.State.CAPTURED, Directive.State.CLARIFYING, Directive.State.INTERPRETED}
-    )
-    directives = tuple(
-        IntentItem(ref=f"directive #{pk}", created_at=created_at)
-        for pk, created_at in Directive.objects.filter(state__in=stuck_directive_states)
-        .order_by("created_at")
-        .values_list("pk", "created_at")
-    )
+    directives = _drainable_directives()
     questions = tuple(
         IntentItem(ref=f"question #{pk}", created_at=created_at)
         for pk, created_at in DeferredQuestion.unmirrored_pending().values_list("pk", "created_at")
