@@ -20,6 +20,7 @@ from teatree.core.models import Session, Task, TaskAttempt, Ticket
 from teatree.core.models.config_setting import ConfigSetting
 from teatree.core.models.deferred_question import DeferredQuestion
 from teatree.core.repair_loop import max_phase_iterations
+from teatree.core.worktree.recovery_sweeps import run_boot_sweeps
 from teatree.llm.anthropic_limits import LimitCause, LimitMatch
 from teatree.loop.tick_recovery import _reap_stale_task_claims
 from teatree.loop.transient_requeue import requeue_transient_failed
@@ -288,12 +289,13 @@ class TestTransientRequeue(TestCase):
         assert task.status == Task.Status.FAILED
         assert DeferredQuestion.objects.filter(answered_at__isnull=True).count() == 1
 
-    def test_lease_loss_with_live_successor_is_retired_not_escalated(self) -> None:
+    def test_lease_loss_with_live_successor_is_parked_not_escalated(self) -> None:
         # 3534: worker A loses its lease because a redispatch minted a fresh task B
         # for the same (ticket, phase) and B re-claimed the lease. A lands FAILED
         # carrying the `stuck_loop: lease lost … re-claimed` breach even though the
-        # phase is recovering fine under B. The predecessor must retire silently —
+        # phase is recovering fine under B. The predecessor must park silently —
         # escalating it asks the human about a failure the system already superseded.
+        # It stays FAILED (the phase never finished) and drops out of every later scan.
         predecessor = _failed_task(phase="coding")
         _add_failed_attempt(
             predecessor,
@@ -310,8 +312,11 @@ class TestTransientRequeue(TestCase):
 
         predecessor.refresh_from_db()
         assert reopened == 0
-        assert predecessor.status == Task.Status.COMPLETED
-        assert "[superseded-retired]" in predecessor.execution_reason
+        assert predecessor.status == Task.Status.FAILED
+        assert "[superseded-parked]" in predecessor.execution_reason
+        assert DeferredQuestion.objects.filter(answered_at__isnull=True).count() == 0
+        # The park is durable: a later sweep never resurrects it into an escalation.
+        assert requeue_transient_failed() == 0
         assert DeferredQuestion.objects.filter(answered_at__isnull=True).count() == 0
 
     def test_failed_task_with_only_an_older_sibling_still_escalates(self) -> None:
@@ -354,6 +359,56 @@ class TestTransientRequeue(TestCase):
         assert reopened == 0
         assert task.status == Task.Status.FAILED
         assert DeferredQuestion.objects.filter(answered_at__isnull=True).count() == 1
+
+    def test_live_successor_park_leaves_the_ticket_fsm_untouched(self) -> None:
+        # The park must not advance the ticket past a phase that never completed. A row
+        # marked COMPLETED becomes the newest completed task for its ticket, so the
+        # boot-sweep replay fires its phase transition and a PLANNED ticket silently
+        # reaches CODED while the successor is still mid-flight.
+        predecessor = _failed_task(phase="coding", state=Ticket.State.PLANNED)
+        _add_failed_attempt(
+            predecessor,
+            error="stuck_loop: lease lost for task 1: re-claimed by another worker",
+        )
+        Task.objects.create(
+            ticket=predecessor.ticket,
+            session=predecessor.session,
+            phase="coding",
+            status=Task.Status.CLAIMED,
+        )
+
+        assert requeue_transient_failed() == 0
+        counts = run_boot_sweeps()
+
+        predecessor.ticket.refresh_from_db()
+        assert counts.replayed_transitions == 0
+        assert predecessor.ticket.state == Ticket.State.PLANNED
+        assert not predecessor.ticket.tasks.completed_in_phase("coding").exists()
+
+    def test_live_successor_park_does_not_satisfy_the_review_completion_guard(self) -> None:
+        # Same skip on the review seam: a COMPLETED park row satisfies
+        # ``completed_in_phase("reviewing")`` — the guard on Ticket.review() /
+        # mark_reviewed_externally() — so the replay disposes a TESTED ticket as if a
+        # verdict had landed.
+        predecessor = _failed_task(phase="reviewing", state=Ticket.State.TESTED)
+        _add_failed_attempt(
+            predecessor,
+            error="stuck_loop: lease lost for task 1: re-claimed by another worker",
+        )
+        Task.objects.create(
+            ticket=predecessor.ticket,
+            session=predecessor.session,
+            phase="reviewing",
+            status=Task.Status.CLAIMED,
+        )
+
+        assert requeue_transient_failed() == 0
+        counts = run_boot_sweeps()
+
+        predecessor.ticket.refresh_from_db()
+        assert counts.replayed_transitions == 0
+        assert predecessor.ticket.state == Ticket.State.TESTED
+        assert not predecessor.ticket.tasks.completed_in_phase("reviewing").exists()
 
     def test_churned_tasks_same_condition_collapse_to_one_question(self) -> None:
         # THE FLOOD FIX: a stuck phase mints a FRESH Task row every redispatch cycle.
