@@ -231,9 +231,10 @@ def _run_loop_intent_gates() -> bool:
     are surfacing-only WARNs — their return values are deliberately discarded so
     neither can become a gate by accident. ``_check_intent_freshness`` is the "no
     owner-intent silently rots" gate: it HARD-FAILs when a consumable intent queue is
-    non-empty while its consuming loop is masked/disabled/held (the directive-loop
-    silent-freeze incident — directives stuck at CAPTURED behind an idle loop, zero
-    signal), so its verdict IS returned for the caller's ``ok`` aggregation.
+    non-empty while its consumer is not live — masked/disabled/held, or refused by the
+    consumer's own guard chain (the directive-loop silent-freeze incident — directives
+    stuck at CAPTURED behind an idle loop, zero signal), so its verdict IS returned for
+    the caller's ``ok`` aggregation.
     """
     _check_loop_presets()
     _check_marker_jam()
