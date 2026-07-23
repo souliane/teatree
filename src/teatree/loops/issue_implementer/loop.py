@@ -8,7 +8,7 @@ for whether any scanner is emitted — with the default-OFF config this
 mini-loop contributes nothing and the registry/legacy parity stays
 byte-for-byte unchanged.
 
-The emitted ``issue_implementer.claimed`` signals route to
+The emitted ``issue_intake.admitted`` signals route to
 ``t3:orchestrator`` (maker-side kickoff) via the dispatch
 ``AGENT_BY_KIND`` table — starting the normal maker pipeline for the
 claimed issue, issuing no ``MergeClear`` and gaining no merge authority.

@@ -48,9 +48,13 @@ class TestFlagOffParity(TestCase):
         assert _counts() == (0, 0, 0, 0)
         assert Directive.objects.get(pk=directive.pk).state == Directive.State.CAPTURED
 
-    def test_score_off_is_a_no_op_and_writes_no_snapshot(self) -> None:
+    def test_score_off_is_still_a_no_op_at_the_shipped_critic_state(self) -> None:
+        # #3643 scoped the score guard to the post-admission arc, so score-off alone no
+        # longer refuses intake — but the shipped state has no live critic, so the tick
+        # is still a total no-op and writes no snapshot.
+        Directive.objects.capture("do X", source=Directive.Source.CLI)
         settings = SimpleNamespace(directive_loop_enabled=True, factory_score_enabled=False, directive_verify_days=7)
         result = run_tick(settings=settings)
         assert result.action == "refused"
-        assert result.reason == guards.SCORE_OFF
+        assert result.reason == guards.CRITIC_NOT_LIVE
         assert _counts() == (0, 0, 0, 0)

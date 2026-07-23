@@ -41,6 +41,8 @@ from teatree.types import RawAPIDict
 from teatree.utils.url_slug import slug_from_issue_or_pr_url
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
+
     from teatree.core.models.ticket import Ticket
 
 logger = logging.getLogger(__name__)
@@ -326,21 +328,43 @@ class IssueIntakeScanner:
         author a real intake, so its query is pure waste. Authors are sorted so the
         query fan-out — and hence the claim order under a tight budget — is
         deterministic across ticks.
+
+        Each query is fault-isolated (#3508): one identity's rate limit, deleted
+        account, or transient forge error is logged and skipped, so a sibling
+        identity's issues still surface this tick.
         """
         seen_urls: set[str] = set()
         issues: list[RawAPIDict] = []
         for author in sorted(trusted):
             if "/" in author:
                 continue
-            self._collect(self.host.list_authored_issues(author=author, repo_slugs=self.repo_slugs), seen_urls, issues)
+            self._collect(
+                lambda a=author: self.host.list_authored_issues(author=a, repo_slugs=self.repo_slugs),
+                f"list_authored_issues({author})",
+                seen_urls,
+                issues,
+            )
         if self.admit_label:
             self._collect(
-                self.host.list_labeled_issues(label=self.admit_label, repo_slugs=self.repo_slugs), seen_urls, issues
+                lambda: self.host.list_labeled_issues(label=self.admit_label, repo_slugs=self.repo_slugs),
+                f"list_labeled_issues({self.admit_label})",
+                seen_urls,
+                issues,
             )
         return issues
 
     @staticmethod
-    def _collect(found: list[RawAPIDict], seen_urls: set[str], issues: list[RawAPIDict]) -> None:
+    def _collect(
+        fetch: "Callable[[], list[RawAPIDict]]",
+        label: str,
+        seen_urls: set[str],
+        issues: list[RawAPIDict],
+    ) -> None:
+        try:
+            found = fetch()
+        except Exception:
+            logger.warning("%s failed — skipping", label, exc_info=True)
+            return
         for issue in found:
             url = issue_url(issue)
             if not url or url in seen_urls or not _issue_is_open(issue):
