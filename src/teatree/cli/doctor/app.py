@@ -33,6 +33,7 @@ from teatree.cli.doctor.checks_environment import (
     _check_stale_uv_venv,
     _check_t3_shim_receipt,
 )
+from teatree.cli.doctor.checks_intent import _check_intent_freshness
 from teatree.cli.doctor.checks_loop import (
     _check_dream_staleness,
     _check_dream_transcript_visibility,
@@ -111,6 +112,7 @@ __all__ = (
     "_check_editable_sanity",
     "_check_entrypoint_is_primary_clone",
     "_check_gh_token_permissions",
+    "_check_intent_freshness",
     "_check_interactive_permission_mode",
     "_check_legacy_overlay_alias",
     "_check_loop_presets",
@@ -219,6 +221,24 @@ def _run_worker_gates() -> bool:
     skills = _check_worker_skills_present()
     memory = _check_worker_memory_cap()
     return running and skills and memory
+
+
+def _run_loop_intent_gates() -> bool:
+    """The ORM-reading loop/intent checks, grouped to keep ``run_doctor_checks`` lean.
+
+    ``_check_loop_presets`` (#3159, dangling preset/loop/schedule refs) and
+    ``_check_marker_jam`` (#3275, orphaned issue-markers stranding the intake budget)
+    are surfacing-only WARNs — their return values are deliberately discarded so
+    neither can become a gate by accident. ``_check_intent_freshness`` is the "no
+    owner-intent silently rots" gate: it HARD-FAILs when a consumable intent queue is
+    non-empty while its consumer is not live — masked/disabled/held, or refused by the
+    consumer's own guard chain (the directive-loop silent-freeze incident — directives
+    stuck at CAPTURED behind an idle loop, zero signal), so its verdict IS returned for
+    the caller's ``ok`` aggregation.
+    """
+    _check_loop_presets()
+    _check_marker_jam()
+    return _check_intent_freshness()
 
 
 def _check_claude_session_posture() -> bool:
@@ -344,20 +364,10 @@ def run_doctor_checks(*, repair: bool = False, slack_roundtrip: bool = False) ->
 
     ok = run_self_heal_checks() and ok
 
-    # #3159: warn on a dangling loop-preset reference (deleted preset / loop /
-    # schedule). Surfacing-only (never gates the exit code), like the sibling
-    # ORM-reading advisories below: the by-name references fail OPEN at read time
-    # (resolve to base config), so a dangling target is a WARN to fix, not a hard
-    # doctor failure. Reads the ORM, so it runs post-ensure_django.
-    _check_loop_presets()
-
-    # #3275: warn when orphaned issue-markers strand the issue_implementer intake
-    # budget (their tickets are terminal/gone but the markers never left
-    # `dispatched`). Surfacing-only (never gates the exit code), like the sibling
-    # ORM-reading advisories: the loop self-heals each tick and the operator can
-    # force it with `t3 loop reclaim-markers`. Reads the ORM, so it runs
-    # post-ensure_django.
-    _check_marker_jam()
+    # The ORM-reading loop/intent advisories, grouped so run_doctor_checks stays lean.
+    # Runs post-ensure_django (all read the ORM); returns the intent-freshness gating
+    # verdict for the caller's `ok` aggregation.
+    ok = _run_loop_intent_gates() and ok
 
     # Fresh-box bootstrap-hardening gates (umbrella #3404): the GitHub token lacks a
     # write permission the loop needs (#3405, hard FAIL); a stale small-box
