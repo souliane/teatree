@@ -10,6 +10,7 @@ from teatree.agents.dispatch_preflight import (
     head_state_brief_lines,
     review_diff_brief_lines,
 )
+from teatree.agents.envelope_contract import envelope_contract_lines, final_output_reminder_line
 from teatree.agents.skill_injection import _explicit_load_name, _read_skill_contents, _read_skill_contents_scoped
 from teatree.agents.stage_skill_prompt import stage_precedence_line, stage_skills_present
 from teatree.config.agent_spawn import resolve_agent_config
@@ -181,6 +182,7 @@ def build_task_prompt(task: Task, *, skills: list[str] | None = None, stage_skil
             f"5. Before declaring done, run the FULL CI-equivalent local gate set: `{_VERIFY_GATES_COMMAND}`.",
             "   It runs BOTH commit-stage and push-stage hooks; a bare `prek run --all-files` SKIPS the",
             "   push-stage gates CI re-runs. Report its exit code as the green-proof.",
+            final_output_reminder_line(task.phase),
         ),
     )
 
@@ -496,16 +498,13 @@ def build_system_context(
             "- Comment only the non-obvious *why*; never narrate the *what* the code already shows.",
             "- Be RIGHT but concise: trim words, never a load-bearing fact, decision, or caveat.",
             "",
-            "When done, run /t3:next to wrap up. It will:",
-            "- Run /t3:retro (captures lessons while context is fresh)",
-            "- Emit the structured JSON result the pipeline needs",
-            "- Display a summary of what happened",
-            "",
-            "If /t3:next is not available, output a JSON object on the last line:",
-            '  {"summary": "...", "needs_user_input": false, "files_modified": [...], "next_steps": [...]}',
+            "When done, run /t3:next to wrap up (retro + the result envelope + a summary).",
+            "/t3:next is a convenience, not the contract: the envelope below is required either way,",
+            "so emit it yourself whenever /t3:next is unavailable or does not run.",
+            *envelope_contract_lines(task.phase),
             "",
             "IMPORTANT: If you cannot proceed without human input (design decision, access, clarification),",
-            "STOP immediately. Do not guess or work around it. Output:",
+            "STOP immediately. Do not guess or work around it. Emit the envelope with:",
             '  {"summary": "...", "needs_user_input": true, "user_input_reason": "Why you need input"}',
             "The pipeline will automatically create an interactive session for a human to continue your work.",
         ),
