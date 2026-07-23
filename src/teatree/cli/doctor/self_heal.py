@@ -105,7 +105,7 @@ def _parse_compose_state_rows(text: str) -> list[tuple[str, str, str]]:
 def _compose_states_from_handoff() -> list[tuple[str, str, str]] | None:
     """Compose states handed off by the socket-holding watchdog, or ``None`` when absent.
 
-    ``t3 doctor`` runs inside ``teatree-admin`` (docker CLI but no
+    ``t3 doctor`` runs inside an app container (docker CLI but no
     ``/var/run/docker.sock``), so only the socket-holding watchdog can gather the
     states; it passes them in via :data:`_COMPOSE_STATES_ENV` (base64 of the
     tab-separated ``docker ps`` output). ``None`` when the env var is unset/empty

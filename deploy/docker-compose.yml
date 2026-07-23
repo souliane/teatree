@@ -143,9 +143,14 @@ services:
         condition: service_completed_successfully
     restart: unless-stopped
     network_mode: host
-    # 512m is correct: the admin is a lean Django web-UI server (gunicorn) — the
-    # heavy CLI/commit/agent work (headless agents + their ty-check/lint hooks)
-    # belongs in the WORKER (18g), never here. The `_check_worker_memory_cap`
+    # 512m covers SERVING only, and the measured numbers are the reason it holds:
+    # idle-and-serving is 257 MiB (50% of the cap). It does NOT cover a health
+    # probe — `t3 doctor check --json` peaked at 380 MiB (74%), leaving ~130 MiB
+    # for concurrent dashboard traffic, which restarted this container on every
+    # watchdog pass (#3651). A child dying under the cgroup limit is not reported
+    # as a container-level OOM, so `OOMKilled` stayed false the whole time. The
+    # probe now runs in the WORKER (18g) — deploy/watchdog.sh's EXEC_SERVICES —
+    # so nothing heavy competes with gunicorn here. The `_check_worker_memory_cap`
     # doctor gate warns only when the WORKER's cap is under-sized, not this one.
     mem_limit: 512m
     cpus: "0.5"
