@@ -124,13 +124,10 @@ class UncoveredFile:
     lines: list[int]
 
 
-UNREFERENCED_SYMBOLS_HINT = (
-    "the check reads name-level imports in changed tests only — not "
-    "`module.symbol(...)` attribute access or call sites, so a symbol reached "
-    "only via `import module` then `module.symbol(...)` reads as unreferenced "
-    "even when fully exercised. Add `from <module> import <symbol>` to a changed "
-    "test to make an existing reference visible; a same-named `def`/`class` in "
-    "any changed test shadows that import."
+UNREFERENCED_SYMBOL_IMPORT_HINT = (
+    "    workaround: this check reads a changed test's import statements only — a "
+    "`module.symbol(...)` call does not count as a reference; when the symbol is already "
+    "exercised, add `from module import symbol` to a changed test to make the reference visible"
 )
 
 
@@ -152,7 +149,7 @@ class DiffCoverageReport:
                 "  new production symbols not referenced by any changed test "
                 f"(test-a-local-copy vacuity risk): {sorted(self.unreferenced_symbols)}"
             )
-            rows.extend((symbol_row, f"  hint: {UNREFERENCED_SYMBOLS_HINT}"))
+            rows.extend((symbol_row, UNREFERENCED_SYMBOL_IMPORT_HINT))
         return "\n".join(rows)
 
 
@@ -323,14 +320,6 @@ def unreferenced_changed_symbols(diff: str, repo_root: Path, scope: CoverageScop
     line-coverage check defeats the import-without-exercise vacuity.
     Neither half alone is sufficient, which is why
     :func:`measure_diff_coverage` always runs both.
-
-    Crediting ``module.symbol(...)`` attribute access is deliberately NOT
-    done (souliane/teatree#3521): any structural rule permissive enough to
-    credit an attribute call equally credits a stubbed (``patch.object``),
-    ``skip``-marked, or stdlib-collision call, so widening it leaks the very
-    vacuity this guards. The workaround for a genuine false positive is to
-    add ``from <module> import <symbol>`` to a changed test — see
-    :data:`UNREFERENCED_SYMBOLS_HINT`.
     """
     if scope is None:
         scope = load_coverage_scope(repo_root / "pyproject.toml")

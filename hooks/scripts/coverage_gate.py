@@ -23,6 +23,15 @@ from pathlib import Path
 
 from hooks.scripts.managed_repo import teatree_src_on_path
 
+# Byte-identical to ``teatree.utils.diff_coverage.UNREFERENCED_SYMBOL_IMPORT_HINT``; this
+# cold-import-safe sibling cannot import ``teatree`` at module top, so the string is
+# duplicated and pinned equal by a drift-guard test (test_block_uncovered_diff_hook.py).
+_UNREFERENCED_SYMBOL_IMPORT_HINT = (
+    "    workaround: this check reads a changed test's import statements only — a "
+    "`module.symbol(...)` call does not count as a reference; when the symbol is already "
+    "exercised, add `from module import symbol` to a changed test to make the reference visible"
+)
+
 
 def coverage_gate_repo_dir(command: str, cwd: str | None) -> Path | None:
     """Return the repo root whose diff the gated forge command should be measured against.
@@ -100,10 +109,10 @@ def diff_coverage_finding(stdout: str) -> str | None:
     ]
     symbols = report.get("unreferenced_symbols") or []
     if symbols:
-        rows.append(
-            "  new production symbols not imported by any changed test "
-            "(reads name-level imports only, not `mod.sym()` attribute access; "
-            "if already exercised, add `from <module> import <symbol>` to a "
-            f"changed test): {sorted(symbols)}"
+        rows.extend(
+            (
+                f"  new production symbols not referenced by any changed test: {sorted(symbols)}",
+                _UNREFERENCED_SYMBOL_IMPORT_HINT,
+            )
         )
     return "\n".join(rows)

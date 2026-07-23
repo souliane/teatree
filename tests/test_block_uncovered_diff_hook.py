@@ -1,3 +1,5 @@
+# test-path: cross-cutting — drives the hooks/scripts/coverage_gate.py PreToolUse gate; the
+# teatree.utils.diff_coverage import is only the byte-identity drift guard (#3521), no src/teatree/ mirror.
 """Tests for the per-diff-coverage PreToolUse hook (#937, §17.6 gate 12).
 
 Gate 12's detection (``teatree.utils.diff_coverage`` / ``t3 tool
@@ -23,6 +25,7 @@ from unittest.mock import patch
 import hooks.scripts.hook_router as router
 from hooks.scripts.coverage_gate import diff_coverage_finding
 from hooks.scripts.hook_router import _is_merge_class_mutation, handle_block_uncovered_diff
+from teatree.utils.diff_coverage import UNREFERENCED_SYMBOL_IMPORT_HINT
 
 
 class TestMergeClassMutationDetection:
@@ -76,8 +79,8 @@ def test_finding_row_names_the_from_import_workaround():
     finding = diff_coverage_finding(_finding_json(uncovered=[], symbols=["widget"]))
     assert finding is not None
     assert "widget" in finding
-    assert "from <module> import <symbol>" in finding
-    assert "imports only" in finding
+    assert "from module import symbol" in finding
+    assert "import statements only" in finding
 
 
 class TestBlocksUncoveredDiff:
@@ -123,6 +126,27 @@ class TestBlocksUncoveredDiff:
         assert "from <module> import <symbol>" in reason
         assert "imports only" in reason
         assert "attribute access" in reason
+
+
+class TestFindingNamesImportWorkaround:
+    """The deny reason names the import-only workaround, not a misleading "reference it" (#3521)."""
+
+    def test_unreferenced_symbol_finding_names_the_import_only_workaround(self) -> None:
+        finding = diff_coverage_finding(_finding_json(uncovered=[], symbols=["build_widget"]))
+        assert finding is not None
+        assert "import statements only" in finding
+        assert "does not count as a reference" in finding
+        assert "from module import symbol" in finding
+
+    def test_import_workaround_absent_from_pure_uncovered_line_finding(self) -> None:
+        finding = diff_coverage_finding(_finding_json(uncovered=[{"path": "src/x.py", "lines": [3]}], symbols=[]))
+        assert finding is not None
+        assert "import statements only" not in finding
+
+    def test_hook_finding_hint_is_byte_identical_to_the_canonical_source(self) -> None:
+        finding = diff_coverage_finding(_finding_json(uncovered=[], symbols=["build_widget"]))
+        assert finding is not None
+        assert UNREFERENCED_SYMBOL_IMPORT_HINT in finding
 
 
 class TestFailsOpenOnBrokenSubprocess:
