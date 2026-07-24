@@ -53,16 +53,24 @@ REGISTRY_KEYS: tuple[str, ...] = tuple(REGISTRY_SETTINGS)
 COLD_SETTINGS: dict[str, Callable[[Any], Any]] = {
     # Customer / brand / partner codename lists (stored as JSON arrays). The DB is
     # personal, so these are safe here; ``SECRET_SETTINGS`` keeps them out of a
-    # shared ``config_setting export``.
+    # shared ``config_setting export``. These four are now LEGACY sources folded into
+    # ``banned_term_registry`` (``banned_brands`` → leak, ``banned_terms`` →
+    # prose_collider, ``overlay_leak_terms`` → overlay, ``banned_terms_allowlist`` →
+    # allow); every gate resolves through the registry via
+    # ``banned_term_registry.terms_for_gate`` and only FALLS BACK to these rows when
+    # the registry is unset. They stay registered as that fallback tier — do not
+    # delete them.
     "banned_terms": _parse_str_list,
     "banned_terms_allowlist": _parse_str_list,
     "banned_brands": _parse_str_list,
-    # The consolidated class-tagged registry (`leak`/`prose_collider`/`tone`/`allow`
-    # → term lists) the three lists above collapse into. A JSON table, so it is
-    # validated by the registry-dict parser, not the str-list one.
+    # The class-tagged registry (`leak`/`prose_collider`/`tone`/`overlay`/`allow` →
+    # term lists) the four legacy lists fold into — the single source every
+    # term-scanning gate resolves through. A JSON table, so it is validated by the
+    # registry-dict parser, not the str-list one.
     "banned_term_registry": _parse_registry_dict,
     "internal_publish_namespaces": _parse_str_list,
     "private_repos": _parse_str_list,
+    # Legacy overlay-leak fallback (folded into the registry's ``overlay`` class).
     "overlay_leak_terms": _parse_str_list,
     # ``[agent]`` spawn tables (str->str/bool/int maps) + scalars, read by the
     # dispatch paths (``config.agent_spawn`` / ``model_tiering``) via ``cold_reader``.

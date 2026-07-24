@@ -235,7 +235,7 @@ class TestEnvMigrateSecrets(TestCase):
             cache_dir = ticket_dir / CACHE_DIRNAME / wt_path.name
             cache_dir.mkdir(parents=True)
             cache_file = cache_dir / CACHE_FILENAME
-            cache_file.write_text("FOO=bar\nPOSTGRES_PASSWORD=top-secret\n", encoding="utf-8")
+            cache_file.write_text("FOO=bar\nPOSTGRES_PASSWORD=swordfish\n", encoding="utf-8")
 
             ticket = Ticket.objects.create(overlay="teatree", issue_url="https://example.com/issues/42")
             wt = Worktree.objects.create(
@@ -260,9 +260,9 @@ class TestEnvMigrateSecrets(TestCase):
                 call_command("env", "migrate-secrets", "--path", str(wt_path))
 
             # Pass key is ticket-pk-scoped (canonical, unique), not ticket_number.
-            assert stored == {f"teatree/wt/{wt.ticket_id}/postgres": "top-secret"}
+            assert stored == {f"teatree/wt/{wt.ticket_id}/postgres": "swordfish"}
             new_body = cache_file.read_text(encoding="utf-8")
-            assert "POSTGRES_PASSWORD=top-secret" not in new_body
+            assert "POSTGRES_PASSWORD=swordfish" not in new_body
             assert f"POSTGRES_PASSWORD_PASS_KEY=teatree/wt/{wt.ticket_id}/postgres" in new_body
 
     def test_reports_already_migrated_when_no_literal_present(self) -> None:

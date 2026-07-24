@@ -629,6 +629,31 @@ Overlay-specific configuration lives on `overlay.config` (an `OverlayConfig` dat
 
 `default_logging(namespace)` in `config/loader.py` returns a Django `LOGGING` dict writing to `~/.local/share/teatree/<namespace>/logs/teatree.log` with rotation (5MB, 3 backups).
 
+### 10.6 Term-scanning taxonomy
+
+Every term-scanning gate resolves through one class-tagged source: the DB-home `banned_term_registry` row (or the `$TEATREE_TERM_REGISTRY` CI secret), read by `teatree.hooks.banned_term_registry.terms_for_gate`. Each class is scanned by a specific gate; the registry is registry-first, falling back to a legacy per-source row when it is unset.
+
+| class | scanned by gate | legacy fallback source | unset behaviour |
+|---|---|---|---|
+| `leak` | diff + core + tree | `banned_brands` | fail-loud |
+| `prose_collider` | diff + core | `banned_terms` | fail-loud |
+| `tone` | diff | (none) | inert |
+| `overlay` | overlay core-generic gate | `overlay_leak_terms` | inert |
+| `allow` | the carve-out (never scanned *for*) | `banned_terms_allowlist` | inert |
+
+* **Gates.** `diff` — the commit/posting body gate (`banned_terms_scanner`); `core` — the in-process `fast_push` leak gate; `tree` — the whole-tree backstop (`banned_terms_tree_scan`); `overlay` — the BLUEPRINT §1 "core stays generic" gate (`check_no_overlay_leak` / `fast_push`); `allow` — the company-identifier carve-out blanked before matching. The class→gate routing derives from `teatree.hooks.leak_policy.classes_for_surface` (the `overlay` class is registry-only — it is not a publish surface).
+* **Unset behaviour.** `leak`/`prose_collider` REFUSE (`BannedTermsUnsetError`) when both the registry and their legacy source are unset — a leak gate never scans as empty. `tone`/`overlay`/`allow` are optional and default to an inert empty set (the overlay gate is inert-when-empty by design). A malformed registry fails loud everywhere.
+* **Single resolver.** The four legacy keys are read from the store only by the registry module and the legacy resolvers it delegates to; every other gate routes through `terms_for_gate` / `allowlist_terms` / `export_scan_terms`. `t3 banned-terms migrate-registry` builds the class-tagged value from the current legacy rows and self-verifies it drops no term (`teatree.hooks.banned_term_registry.verify_migration`).
+
+**Code-resident public tier.** A second tier of term data is generic, DB-free, and ships in the repo — it carries no operator-private value, so it stays committed and is NOT part of the registry:
+
+* `teatree.hooks.terminology_gate` — the conflated-terminology vocabulary (generic wording checks).
+* `teatree.hooks.opaque_id` — the real-shaped Slack/forge ID detector and its synthetic-placeholder allowlist.
+* `scripts/privacy_scan.py` — the credential/email/host regexes (`glpat-`, `sk-`, home-directory paths, …).
+* the eval-fixture personal-marker / profanity guard — a generic fixture-hygiene check.
+
+**Secret / defaults boundary.** Every registry class carries operator-private codenames, so the five term keys (`banned_terms`, `banned_terms_allowlist`, `banned_brands`, `overlay_leak_terms`, `banned_term_registry`) are all in `SECRET_SETTINGS`: DB-only, empty in code, and withheld from a shared `config_setting export`. They must never appear in a committed defaults file — a forward guard asserts `SECRET_SETTINGS` is disjoint from any `config/defaults.toml` that ever ships.
+
 ### 10.4 Data Storage
 
 `~/.local/share/teatree/<namespace>/` — namespaced data directories created by `get_data_dir()`.

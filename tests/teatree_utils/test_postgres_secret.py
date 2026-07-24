@@ -143,10 +143,10 @@ class TestExtractLiteralFromCache:
 
     def test_does_not_leak_password_to_logger(self, tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
         cache = tmp_path / ".t3-env.cache"
-        cache.write_text("POSTGRES_PASSWORD=top-secret-literal\n", encoding="utf-8")
+        cache.write_text("POSTGRES_PASSWORD=swordfish-literal\n", encoding="utf-8")
         caplog.set_level("DEBUG", logger="teatree.utils.postgres_secret")
         extract_literal_from_cache(cache)
-        assert "top-secret-literal" not in caplog.text
+        assert "swordfish-literal" not in caplog.text
 
 
 class TestResolverCommandInvocation:

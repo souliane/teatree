@@ -251,14 +251,14 @@ class TestMultiDeliverableFalseDoneWithoutDeliveryVocabStillFires:
 _MERGE_SHA_EVIDENCE_MAP = (
     "I read the authoritative spec and its comments and enumerated every deliverable.\n"
     "Both deliverables are merged and live on main — done.\n"
-    "- US-03 EURIBOR endpoint: MR !41 MERGED, merge commit "
+    "- REQ-03 line-items endpoint: MR !41 MERGED, merge commit "
     "a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0, origin/main HEAD = "
     "a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0, fast-forwarded.\n"
-    "- US-05 product-items endpoint: MR !42 MERGED, merge commit "
+    "- REQ-05 product-items endpoint: MR !42 MERGED, merge commit "
     "0f1e2d3c4b5a69788796a5b4c3d2e1f0a9b8c7d6, origin/main HEAD = "
     "0f1e2d3c4b5a69788796a5b4c3d2e1f0a9b8c7d6, fast-forwarded.\n"
-    "The crucial deliverable (US-03) is verified on its correct surface.\n"
-    "Both US-03 and US-05 are fixed and live on main.\n"
+    "The crucial deliverable (REQ-03) is verified on its correct surface.\n"
+    "Both REQ-03 and REQ-05 are fixed and live on main.\n"
 )
 
 # The sibling over-exemption guard (#2842 must not re-open): a multi-deliverable
@@ -269,9 +269,9 @@ _MERGE_SHA_EVIDENCE_MAP = (
 _MR_EXISTS_ONLY_FALSE_DONE = (
     "I read the authoritative spec and its comments.\n"
     "Both deliverables are done and ready to merge.\n"
-    "- US-03 EURIBOR endpoint: MR !41 opened, ready for review.\n"
-    "- US-05 product-items endpoint: PR #42 created, branch pushed.\n"
-    "The crucial deliverable (US-03) is verified on its correct surface.\n"
+    "- REQ-03 line-items endpoint: MR !41 opened, ready for review.\n"
+    "- REQ-05 product-items endpoint: PR #42 created, branch pushed.\n"
+    "The crucial deliverable (REQ-03) is verified on its correct surface.\n"
 )
 
 
@@ -305,9 +305,9 @@ class TestMergeShaEvidenceClears:
 _FORWARD_LOOKING_SLIP_THROUGH = (
     "I read the authoritative spec and enumerated every deliverable.\n"
     "Everything is done and ready to merge.\n"
-    "- US-03: PR #41 will be merged once CI passes.\n"
-    "- US-05: PR #42 will be merged once CI passes.\n"
-    "The crucial deliverable US-03 is verified on its correct surface.\n"
+    "- REQ-03: PR #41 will be merged once CI passes.\n"
+    "- REQ-05: PR #42 will be merged once CI passes.\n"
+    "The crucial deliverable REQ-03 is verified on its correct surface.\n"
 )
 
 # A genuine MERGED-state map whose ONLY on-target evidence is the bare MERGED token
@@ -316,9 +316,9 @@ _FORWARD_LOOKING_SLIP_THROUGH = (
 _BARE_MERGED_STATE_MAP = (
     "I read the authoritative spec and its comments and enumerated every deliverable.\n"
     "Both deliverables are merged and live — done.\n"
-    "- US-03 EURIBOR endpoint: PR #42 merged.\n"
-    "- US-05 product-items endpoint: MR !41 is merged.\n"
-    "The crucial deliverable (US-03) is verified on its correct surface.\n"
+    "- REQ-03 line-items endpoint: PR #42 merged.\n"
+    "- REQ-05 product-items endpoint: MR !41 is merged.\n"
+    "The crucial deliverable (REQ-03) is verified on its correct surface.\n"
 )
 
 
@@ -328,9 +328,9 @@ def _two_row_claim(row_a: str, row_b: str) -> str:
     return (
         "I read the authoritative spec and enumerated every deliverable.\n"
         "Everything is done and ready to merge.\n"
-        f"- US-03: {row_a}\n"
-        f"- US-05: {row_b}\n"
-        "The crucial deliverable US-03 is verified on its correct surface.\n"
+        f"- REQ-03: {row_a}\n"
+        f"- REQ-05: {row_b}\n"
+        "The crucial deliverable REQ-03 is verified on its correct surface.\n"
     )
 
 
@@ -383,9 +383,9 @@ _TRAILING_CONDITIONAL_CLAIM = _two_row_claim("PR #41 merged once CI passes.", "P
 _BARE_AND_MERGED_TO_MAIN_MAP = (
     "I read the authoritative spec and its comments and enumerated every deliverable.\n"
     "Both deliverables are merged and live — done.\n"
-    "- US-03 EURIBOR endpoint: PR #42 merged.\n"
-    "- US-05 product-items endpoint: merged to main.\n"
-    "The crucial deliverable (US-03) is verified on its correct surface.\n"
+    "- REQ-03 line-items endpoint: PR #42 merged.\n"
+    "- REQ-05 product-items endpoint: merged to main.\n"
+    "The crucial deliverable (REQ-03) is verified on its correct surface.\n"
 )
 
 
@@ -456,9 +456,9 @@ _MERGED_QUALIFIER_LEAK_PHRASES = [
 _MERGED_QUALIFIER_PRESERVATION_MAP = (
     "I read the authoritative spec and its comments and enumerated every deliverable.\n"
     "Both deliverables are merged and live — done.\n"
-    "- US-03 EURIBOR endpoint: PR #42 merged after the refactor landed.\n"
-    "- US-05 product-items endpoint: merged to main.\n"
-    "The crucial deliverable (US-03) is verified on its correct surface.\n"
+    "- REQ-03 line-items endpoint: PR #42 merged after the refactor landed.\n"
+    "- REQ-05 product-items endpoint: merged to main.\n"
+    "The crucial deliverable (REQ-03) is verified on its correct surface.\n"
 )
 
 
