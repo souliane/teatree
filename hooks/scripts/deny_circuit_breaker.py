@@ -77,6 +77,8 @@ _FP_CONFIRMED_RE = re.compile(r"\[fp-confirmed:\s*\S[^\]]*?\s*\]")
 # The confirm-once-then-reuse contract (#3252) needs the tokened confirming call
 # and the later tokenless call to share a fingerprint; the other tokens are
 # folded in so an escape marker never splits a genuine retry loop into two.
+# Canonical catalog of every escape marker + kill-switch: hooks/CLAUDE.md
+# § "Escape markers & kill-switches".
 _SIGNATURE_STRIP_RE = re.compile(
     r"\[(?:fp-confirmed|fg-ok|skip-skill-gate|skill-load-ok|skip-plan-gate|quote-ok|reviewer-ok|config-overwrite-ok):[^\]]*\]"
     r"|\b(?:ALLOW_BANNED_TERM|QUOTE_OK|T3_MR_VALIDATE_ALLOW_BROKEN_ENV)=\S+"
