@@ -82,11 +82,12 @@ class _SweepHarness(TestCase):
         url: str | None = None,
         status: str = Task.Status.PENDING,
         overlay: str | None = None,
+        phase: str = "coding",
     ) -> Task:
         issue_url = self.URL if url is None else url
         ticket = Ticket.objects.create(overlay=overlay or self.OVERLAY, issue_url=issue_url)
         session = Session.objects.create(overlay=overlay or self.OVERLAY, ticket=ticket, agent_id="a")
-        task = Task.objects.create(ticket=ticket, session=session, phase="coding")
+        task = Task.objects.create(ticket=ticket, session=session, phase=phase)
         if status != Task.Status.PENDING:
             Task.objects.filter(pk=task.pk).update(status=status)
             task.refresh_from_db()
@@ -161,6 +162,36 @@ class CompletionDetectionTests(_SweepHarness):
         assert payload["task_id"] == task.pk
         assert payload["ticket_id"] == task.ticket.pk
         assert payload["issue_url"] == self.URL
+
+
+class FsmOwnedPhaseTests(_SweepHarness):
+    """A directive-loop-internal phase's completion is FSM-owned, not artifact-owned.
+
+    The ``directive_interpreting`` interpret task anchors on a SYNTHETIC ticket whose
+    ``issue_url`` is the shared north-star umbrella (a routing device, not a trackable
+    artifact). When that umbrella issue is closed upstream the artifact sweep must NOT
+    complete the still-PENDING interpret task — doing so silently strands the directive
+    in ``CAPTURED``. The directive FSM (the interpret gate recording an envelope) owns
+    that task's terminal outcome.
+    """
+
+    UMBRELLA = "https://github.com/souliane/teatree/issues/3009#directive=7"
+
+    def test_directive_interpreting_task_is_not_swept_on_closed_umbrella(self) -> None:
+        self._task(url=self.UMBRELLA, phase="directive_interpreting")
+        host = _Host(issues_by_url={self.UMBRELLA: {"state": "closed"}})
+        with self._patch_host(host):
+            assert self._scanner().scan() == []
+        assert host.get_issue_calls == []  # never even fetched — excluded up front
+
+    def test_ordinary_phase_on_the_same_ticket_shape_is_still_swept(self) -> None:
+        # The exclusion is phase-scoped, not a blanket umbrella-URL skip.
+        task = self._task(url=self.UMBRELLA, phase="coding")
+        host = _Host(issues_by_url={self.UMBRELLA: {"state": "closed"}})
+        with self._patch_host(host):
+            signals = self._scanner().scan()
+        assert len(signals) == 1
+        assert signals[0].payload["task_id"] == task.pk
 
 
 class FailOpenTests(_SweepHarness):

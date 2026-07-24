@@ -3,7 +3,11 @@
 This scanner reconciles teatree **Task** rows (the DB-backed lifecycle work
 units), never the agent harness's working list of session items. The candidate
 set is the open :class:`Task` rows (status ``PENDING`` or ``CLAIMED``) whose
-``Ticket`` carries an ``issue_url``. Each tick the scanner walks those tasks
+``Ticket`` carries an ``issue_url``, EXCLUDING the directive-loop-internal phases
+(:data:`_FSM_OWNED_PHASES`) whose completion the directive FSM owns rather than an
+upstream artifact — their synthetic umbrella ``issue_url`` is a routing device, not
+a trackable issue, so sweeping them on the umbrella's closed state would strand the
+directive. Each tick the scanner walks those tasks
 and, for each, verifies the underlying artifact's *terminal* state — is the
 upstream issue closed / the PR merged? — via the overlay's ``is_issue_done()``
 hook (the same independent-evidence check ``TicketCompletionScanner`` uses for
@@ -45,6 +49,15 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 _OPEN_STATUSES = ("pending", "claimed")
+
+#: Directive-loop-internal phases whose completion the DIRECTIVE FSM owns, not an
+#: upstream artifact. Their task anchors on a SYNTHETIC ticket whose ``issue_url`` is
+#: the shared north-star umbrella (a routing device so the overlay resolves, not a
+#: trackable issue), so an artifact-terminal sweep on the umbrella's closed state would
+#: wrongly complete a still-PENDING interpret task and silently strand the directive in
+#: ``CAPTURED``. The interpret gate recording an envelope is the only thing that
+#: terminates these; the sweep leaves them alone.
+_FSM_OWNED_PHASES = ("directive_interpreting",)
 
 
 @dataclass(slots=True)
@@ -88,6 +101,7 @@ class TaskSweepScanner:
         qs = (
             task_model.objects.filter(status__in=_OPEN_STATUSES)
             .exclude(ticket__issue_url="")
+            .exclude(phase__in=_FSM_OWNED_PHASES)
             .filter(Q(last_sweep_check_ts__isnull=True) | Q(last_sweep_check_ts__lt=cutoff))
             .select_related("ticket")
         )

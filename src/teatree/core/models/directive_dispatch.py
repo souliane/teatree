@@ -9,11 +9,16 @@ the codebase and RETURNS a ``directive_interpretation`` envelope;
 ``attempt_recorder`` records the typed :class:`MechanismSketch` server-side
 (maker≠checker — a different actor writes it than the one that captured the text).
 
-Dedup is per ``(directive, purpose, generation)``: a re-fire at the same
-generation returns the existing row and enqueues no second interpreter; a
-clarification bumps ``generation`` and arms exactly one fresh interpreter. The row
-insert and the ``Task`` creation share one transaction so a row never exists
-without its task.
+Dedup is per ``(directive, purpose, generation)`` but keyed on the LIVE task, not
+the row: a re-fire while the generation's interpret task is still in flight
+(PENDING/CLAIMED) returns the existing row and enqueues no second interpreter. Once
+that task reaches a terminal status WITHOUT an interpretation being recorded — the
+governor refused it and the artifact sweep completed the still-PENDING task, or the
+run failed the evidence gate — the directive is still awaiting interpretation, so a
+re-tick RE-ARMS a fresh interpreter on the same row rather than dedup-stranding the
+directive in ``CAPTURED`` forever. A clarification bumps ``generation`` and arms its
+own fresh row. The row insert and the ``Task`` creation share one transaction so a
+row never exists without its task.
 """
 
 from typing import TYPE_CHECKING, ClassVar
@@ -87,14 +92,27 @@ class DirectiveDispatch(models.Model):
     def __str__(self) -> str:
         return f"directive-dispatch<{self.pk}:directive:{self.directive_id} {self.purpose}@gen{self.generation}>"  # type: ignore[attr-defined]  # Django FK accessor
 
+    def has_live_interpreter(self) -> bool:
+        """Whether this dispatch's interpret task is still in flight (PENDING/CLAIMED).
+
+        A live task means an interpreter is already armed for this generation — a
+        re-tick waits on it (the dedup). A terminal or absent task means the prior
+        interpreter finished without an interpretation being recorded, so the
+        directive is still awaiting one and a re-tick may RE-ARM a fresh interpreter.
+        """
+        return self.task is not None and self.task.status in Task.Status.active()
+
     @classmethod
     def enqueue(cls, *, directive: "Directive", contract: str) -> "DirectiveDispatch | None":
         """Record the dispatch + create one claimable headless interpret task — idempotently.
 
-        Returns the new row on the first dispatch for ``(directive, interpret,
-        generation)``; ``None`` when a row for that generation already exists (a
-        prior tick already armed the interpreter). The row insert and the ``Task``
-        creation share one transaction so a row never exists without its task.
+        Returns the row (a fresh interpret task attached) on the first dispatch for
+        ``(directive, interpret, generation)`` AND on a re-arm — when a row for that
+        generation already exists but its interpreter is terminal without having
+        recorded an interpretation. Returns ``None`` only while the generation's
+        interpreter is still in flight (a live PENDING/CLAIMED task). The row insert
+        and the ``Task`` creation share one transaction so a row never exists without
+        its task.
         """
         with transaction.atomic():
             row, created = cls.objects.get_or_create(
@@ -102,7 +120,7 @@ class DirectiveDispatch(models.Model):
                 purpose=cls.Purpose.INTERPRET,
                 generation=directive.generation,
             )
-            if not created:
+            if not created and row.has_live_interpreter():
                 return None
             row.task = cls._create_interpret_task(directive=directive, contract=contract)
             row.save(update_fields=["task"])

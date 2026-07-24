@@ -8,7 +8,7 @@ one. The interpret task needs a ``Ticket``, so the dispatch anchors a synthetic 
 
 from django.test import TestCase
 
-from teatree.core.models import Directive, DirectiveDispatch
+from teatree.core.models import Directive, DirectiveDispatch, Task
 
 
 def _directive() -> Directive:
@@ -58,3 +58,66 @@ class TestDirectiveDispatchEnqueue(TestCase):
         assert row is not None
         assert row.task is not None
         assert row.task.directive_dispatches.first().directive_id == directive.pk
+
+
+class TestDirectiveDispatchReArm(TestCase):
+    """A prior interpreter that recorded no interpretation must not strand the directive.
+
+    The dedup that keeps a re-tick from spawning a second interpreter must hold ONLY
+    while an interpreter is in flight. Once the prior interpret task reaches a terminal
+    status without an interpretation being recorded — the governor refused it and the
+    artifact sweep completed the PENDING task, or the run itself failed the evidence
+    gate — the directive is still awaiting interpretation, so a re-tick RE-ARMS a fresh
+    interpreter rather than dedup-returning ``None`` forever.
+    """
+
+    def test_a_live_pending_interpreter_is_not_rearmed(self) -> None:
+        directive = _directive()
+        first = DirectiveDispatch.enqueue(directive=directive, contract="c")
+        assert first is not None
+        assert first.task is not None
+        assert first.task.status == Task.Status.PENDING  # in flight
+        assert DirectiveDispatch.enqueue(directive=directive, contract="c") is None  # dedup holds
+
+    def test_a_completed_interpreter_that_recorded_nothing_is_rearmed(self) -> None:
+        directive = _directive()
+        first = DirectiveDispatch.enqueue(directive=directive, contract="c")
+        assert first is not None
+        assert first.task is not None
+        old_task = first.task
+        old_task.complete()  # the observed defect: swept-complete with no envelope
+        assert directive.state == Directive.State.CAPTURED  # never advanced past intake
+
+        rearmed = DirectiveDispatch.enqueue(directive=directive, contract="c")
+        assert rearmed is not None  # NOT dedup-suppressed
+        assert rearmed.task is not None
+        assert rearmed.task.pk != old_task.pk  # a fresh interpreter task
+        assert rearmed.task.status == Task.Status.PENDING
+        # Same generation → one dispatch row, its task re-pointed (no unique-constraint churn).
+        assert DirectiveDispatch.objects.filter(directive=directive).count() == 1
+        first.refresh_from_db()
+        assert first.task_id == rearmed.task.pk
+
+    def test_a_failed_interpreter_that_recorded_nothing_is_rearmed(self) -> None:
+        directive = _directive()
+        first = DirectiveDispatch.enqueue(directive=directive, contract="c")
+        assert first is not None
+        assert first.task is not None
+        first.task.fail()  # run-then-fail: bad envelope, evidence gate refused it
+        rearmed = DirectiveDispatch.enqueue(directive=directive, contract="c")
+        assert rearmed is not None
+        assert rearmed.task is not None
+        assert rearmed.task.status == Task.Status.PENDING
+
+    def test_rearm_leaves_a_bumped_generation_as_its_own_fresh_row(self) -> None:
+        # A clarification bump is orthogonal to re-arm: it still arms its own row.
+        directive = _directive()
+        first = DirectiveDispatch.enqueue(directive=directive, contract="c")
+        assert first is not None
+        assert first.task is not None
+        first.task.complete()
+        directive.bump_generation()
+        second = DirectiveDispatch.enqueue(directive=directive, contract="c")
+        assert second is not None
+        assert second.generation == 1
+        assert DirectiveDispatch.objects.filter(directive=directive).count() == 2
