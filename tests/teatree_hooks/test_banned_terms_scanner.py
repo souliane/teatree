@@ -3023,3 +3023,49 @@ class TestSentinelRecognition:
     def test_clean_text_is_neither_sentinel(self) -> None:
         assert not _command_parser.is_fail_closed_sentinel("a normal clean body")
         assert not is_unavailable_body_source_sentinel("a normal clean body")
+
+
+class TestConfiguredCheckHonoursTheRegistry:
+    """The consolidated registry alone counts as configured — the gate must not no-op.
+
+    Once the operator sets ``banned_term_registry`` and drops the legacy
+    ``banned_terms`` row (the intended end state), ``_banned_terms_configured``
+    must still report configured. The old check consulted only the legacy row +
+    env, so a registry-only store silently degraded the whole posting gate to a
+    no-op that scans nothing — RED before the fix.
+    """
+
+    def _seed_registry_only(self, tmp_path: Path, registry: dict[str, list[str]]) -> Path:
+        db = tmp_path / "registry_only.sqlite3"
+        conn = sqlite3.connect(str(db))
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS teatree_config_setting ("
+            "id INTEGER PRIMARY KEY, scope TEXT NOT NULL DEFAULT '', key TEXT NOT NULL, value TEXT NOT NULL)"
+        )
+        conn.execute(
+            "INSERT INTO teatree_config_setting (scope, key, value) VALUES ('', 'banned_term_registry', ?)",
+            (json.dumps(registry),),
+        )
+        conn.commit()
+        conn.close()
+        return db
+
+    def test_registry_only_store_counts_as_configured(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.delenv("T3_BANNED_TERMS", raising=False)
+        monkeypatch.delenv("TEATREE_TERM_REGISTRY", raising=False)
+        db = self._seed_registry_only(tmp_path, {"leak": ["democorp"], "prose_collider": ["widget-margin"]})
+        assert banned_terms_scanner._banned_terms_configured(db) is True
+
+    def test_neither_registry_nor_legacy_row_is_not_configured(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.delenv("T3_BANNED_TERMS", raising=False)
+        monkeypatch.delenv("TEATREE_TERM_REGISTRY", raising=False)
+        db = _seed_config_db(tmp_path, filename="empty_store.sqlite3")
+        assert banned_terms_scanner._banned_terms_configured(db) is False
+
+    def test_env_registry_counts_as_configured(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.delenv("T3_BANNED_TERMS", raising=False)
+        monkeypatch.setenv("TEATREE_TERM_REGISTRY", json.dumps({"leak": ["democorp"]}))
+        db = _seed_config_db(tmp_path, filename="empty_for_env.sqlite3")
+        assert banned_terms_scanner._banned_terms_configured(db) is True

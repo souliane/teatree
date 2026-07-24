@@ -61,22 +61,22 @@ class _ExportGuard:
 
 
 def _resolve_export_scan_terms() -> tuple[str, ...]:
-    """Banned terms + brands for the export content scan; fails safe to empty.
+    """Every ban-class term for the export content scan; fails safe to empty when unset.
 
-    Read straight from the DB store (the codename lists' home) via the Django-free
-    ``cold_reader``, so a shared export scans the operator's configured customer/
-    brand terms without any file. An unconfigured store yields no terms (empty).
+    Delegates to :func:`banned_term_registry.export_scan_terms` — the single home that
+    resolves the ban classes registry-first (``leak`` + ``prose_collider`` + ``tone`` +
+    ``overlay``; the ``allow`` carve-out is excluded) and falls back to the legacy
+    ``banned_terms`` + ``banned_brands`` rows when the registry is unset. Keeping the
+    resolution there (rather than reading the legacy rows here) leaves the registry the
+    single term-source: a shared export scans the operator's configured customer/brand
+    terms without any file, an unconfigured store yields no terms, and a malformed
+    registry fails loud exactly like the gates.
     """
-    # Deferred (PLC0415): importing `teatree.config` at module scope eagerly
-    # loads its heavy package __init__; keep this module's import light.
-    from teatree.config import cold_reader  # noqa: PLC0415 — deferred: call-time import, kept lazy
+    # Deferred (PLC0415): importing `teatree.hooks` at module scope eagerly loads its
+    # heavy package __init__; keep this module's import light.
+    from teatree.hooks.banned_term_registry import export_scan_terms  # noqa: PLC0415 — deferred: kept lazy
 
-    terms: list[str] = []
-    for key in ("banned_terms", "banned_brands"):
-        value = cold_reader.read_setting(key)
-        if isinstance(value, list):
-            terms.extend(str(t) for t in value if str(t).strip())
-    return tuple(terms)
+    return export_scan_terms()
 
 
 def _redaction_reason(key: str, value: ConfigValue, terms: tuple[str, ...]) -> str | None:

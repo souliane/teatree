@@ -427,10 +427,10 @@ class TestUnansweredQuestionsSince:
 
         rows = PendingChatInjection.unanswered_questions_since(timedelta(hours=1))
 
-        slack_tss = [r.slack_ts for r in rows]
-        assert "1" in slack_tss
-        assert "2" in slack_tss
-        assert "3" not in slack_tss
+        slack_ts_list = [r.slack_ts for r in rows]
+        assert "1" in slack_ts_list
+        assert "2" in slack_ts_list
+        assert "3" not in slack_ts_list
         assert q1 is not None
         assert q2 is not None
 

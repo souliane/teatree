@@ -15,7 +15,7 @@ _REPO_ROOT = Path(__file__).resolve().parents[1]
 _PYPROJECT = _REPO_ROOT / "pyproject.toml"
 _LOCK = _REPO_ROOT / "uv.lock"
 
-_PINNED_VERSION = "0.2.94"
+_PINNED_VERSION = "0.2.125"
 _PACKAGE = "claude-agent-sdk"
 
 

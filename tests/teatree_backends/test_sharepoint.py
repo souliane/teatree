@@ -148,12 +148,12 @@ class TestVerifyReadOnly:
 class TestEnvAndConfig:
     def test_password_command_rides_env_not_argv(self) -> None:
         with patch("teatree.backends.sharepoint.run_checked", return_value=_ok("[]")) as run:
-            _client(password_command="pass topsecret-entry").list_files()
+            _client(password_command="pass swordfish-entry").list_files()
 
         env = run.call_args.kwargs["env"]
-        assert env["RCLONE_PASSWORD_COMMAND"] == "pass topsecret-entry"
+        assert env["RCLONE_PASSWORD_COMMAND"] == "pass swordfish-entry"
         assert env["PATH"]  # merged with the ambient environment, not a bare dict
-        assert all("topsecret-entry" not in arg for arg in run.call_args.args[0])
+        assert all("swordfish-entry" not in arg for arg in run.call_args.args[0])
 
     def test_no_password_command_passes_no_env(self) -> None:
         with patch("teatree.backends.sharepoint.run_checked", return_value=_ok("[]")) as run:

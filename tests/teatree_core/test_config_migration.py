@@ -7,14 +7,18 @@ DB: global rows render under ``[teatree]``, each overlay scope under
 shared export never leaks a codename.
 """
 
+import json
 import os
+import sqlite3
 import tomllib
+from pathlib import Path
 from unittest import mock
 
+import pytest
 from django.test import TestCase
 
 from teatree.config import COLD_HOOK_SETTINGS, OVERLAY_OVERRIDABLE_SETTINGS
-from teatree.core.config_migration import export_db_to_toml
+from teatree.core.config_migration import _resolve_export_scan_terms, export_db_to_toml
 from teatree.core.models import ConfigSetting
 
 
@@ -162,3 +166,37 @@ class TestExportScanTermsResolveFailsSafe(TestCase):
         assert doc["teatree"]["mode"] == "auto"
         # No terms resolved => nothing to redact; the export is valid and complete.
         assert export.redacted == ()
+
+
+class TestExportScanTermsRoutesThroughRegistry:
+    """``_resolve_export_scan_terms`` resolves through the consolidated registry.
+
+    Seeds the canonical config DB directly (via ``T3_CONFIG_DB``) so ``cold_reader``
+    reads it, then asserts the export scan set is the union of every ban class,
+    ``overlay`` included, and excludes the ``allow`` carve-out.
+    """
+
+    def _seed_registry(self, tmp_path: Path, registry: dict[str, list[str]]) -> Path:
+        db = tmp_path / "registry.sqlite3"
+        conn = sqlite3.connect(str(db))
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS teatree_config_setting ("
+            "id INTEGER PRIMARY KEY, scope TEXT NOT NULL DEFAULT '', key TEXT NOT NULL, value TEXT NOT NULL)"
+        )
+        conn.execute(
+            "INSERT INTO teatree_config_setting (scope, key, value) VALUES ('', 'banned_term_registry', ?)",
+            (json.dumps(registry),),
+        )
+        conn.commit()
+        conn.close()
+        return db
+
+    def test_union_includes_overlay_and_excludes_allow(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        db = self._seed_registry(
+            tmp_path,
+            {"leak": ["democorp"], "prose_collider": ["widget-margin"], "overlay": ["acme-internal"], "allow": ["ok"]},
+        )
+        monkeypatch.setenv("T3_CONFIG_DB", str(db))
+        monkeypatch.delenv("T3_BANNED_TERMS", raising=False)
+        monkeypatch.delenv("TEATREE_TERM_REGISTRY", raising=False)
+        assert set(_resolve_export_scan_terms()) == {"democorp", "widget-margin", "acme-internal"}

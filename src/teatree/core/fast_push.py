@@ -25,8 +25,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Final, Protocol
 
-from teatree.config import cold_reader
-from teatree.hooks.banned_term_registry import terms_for_gate
+from teatree.hooks.banned_term_registry import allowlist_terms, terms_for_gate
 from teatree.hooks.banned_terms_cli import staged_added_lines
 from teatree.hooks.banned_terms_tree_scan import BannedTermsUnsetError
 from teatree.hooks.opaque_id import find_opaque_ids
@@ -249,7 +248,7 @@ class LeakGateScan:
                 "`t3 <overlay> config_setting set banned_terms '[...]'` (explicit [] opts out)"
             )
             return [LeakFinding(gate="banned-terms", path="", detail=detail)]
-        allowlist = tuple(str(t) for t in cold_reader.list_setting("banned_terms_allowlist", default=[]))
+        allowlist = allowlist_terms()
         return [
             LeakFinding(gate="banned-terms", path=path, detail=f"banned term '{term}'")
             for path, lines in lines_by_path.items()
@@ -292,11 +291,9 @@ class LeakGateScan:
     @staticmethod
     def _overlay_leak(lines_by_path: dict[str, list[str]]) -> list[LeakFinding]:
         env = os.environ.get(_OVERLAY_TERMS_ENV, "")
-        terms = (
-            tuple(t.strip() for t in env.split(",") if t.strip())
-            if env
-            else tuple(str(t) for t in cold_reader.list_setting("overlay_leak_terms", default=[]))
-        )
+        # Registry-first dual-read via terms_for_gate("overlay"); the overlay env
+        # override still WINS, matching check_no_overlay_leak.
+        terms = tuple(t.strip() for t in env.split(",") if t.strip()) if env else terms_for_gate("overlay")
         findings = [
             LeakFinding(gate="overlay-leak", path=path, detail=f"overlay-scoped term '{term}'")
             for path, lines in lines_by_path.items()

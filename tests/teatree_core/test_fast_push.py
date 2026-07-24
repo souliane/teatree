@@ -347,3 +347,46 @@ class TestCoreGateClassRouting:
     ) -> None:
         self._seed_registry(tmp_path, monkeypatch)
         assert LeakGateScan._banned_terms({"sample.txt": ["blunder"]}) == []
+
+    @staticmethod
+    def _seed(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, registry: dict[str, list[str]]) -> None:
+        db = tmp_path / "registry.sqlite3"
+        conn = sqlite3.connect(str(db))
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS teatree_config_setting ("
+            "id INTEGER PRIMARY KEY, scope TEXT NOT NULL DEFAULT '', key TEXT NOT NULL, value TEXT NOT NULL)"
+        )
+        conn.execute("DELETE FROM teatree_config_setting WHERE key = 'banned_term_registry'")
+        conn.execute(
+            "INSERT INTO teatree_config_setting (scope, key, value) VALUES ('', 'banned_term_registry', ?)",
+            (json.dumps(registry),),
+        )
+        conn.commit()
+        conn.close()
+        monkeypatch.setenv("T3_CONFIG_DB", str(db))
+        monkeypatch.delenv("T3_BANNED_TERMS", raising=False)
+        monkeypatch.delenv("TEATREE_OVERLAY_LEAK_TERMS", raising=False)
+
+    def test_overlay_gate_reads_the_registry_overlay_class(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # With no overlay env override, the overlay gate must resolve through the
+        # registry's ``overlay`` class (not the excluded ``leak``/``prose_collider``).
+        self._seed(tmp_path, monkeypatch, {"leak": ["democorp"], "overlay": ["acme-internal"]})
+        findings = LeakGateScan._overlay_leak({"sample.txt": ["uses acme-internal here"]})
+        assert [f.detail for f in findings] == ["overlay-scoped term 'acme-internal'"]
+        assert LeakGateScan._overlay_leak({"sample.txt": ["mentions democorp"]}) == []
+
+    def test_banned_terms_carve_out_reads_the_registry_allow_class(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # The company-identifier carve-out must come from the registry's ``allow``
+        # class: an allow-listed identifier is blanked before matching, so the
+        # ``prose_collider`` slug inside it is NOT flagged.
+        self._seed(tmp_path, monkeypatch, {"prose_collider": ["acme"], "allow": ["acme-product"]})
+        assert LeakGateScan._banned_terms({"sample.txt": ["the acme-product repo"]}) == []
+        # Remove the carve-out and the bare slug flags again — anti-vacuous control.
+        self._seed(tmp_path, monkeypatch, {"prose_collider": ["acme"]})
+        assert [f.detail for f in LeakGateScan._banned_terms({"sample.txt": ["the acme-product repo"]})] == [
+            "banned term 'acme'"
+        ]

@@ -384,3 +384,35 @@ class TestPrivacyScanBannedTermsSource:
         result = _run_env("a perfectly ordinary line of prose\n", {"T3_CONFIG_DB": str(db)})
         assert result.returncode == 0, result.stdout + result.stderr
         assert "inert" not in result.stderr.lower()
+
+
+class TestPrivacyScanAllowlistFromRegistry:
+    """The company-identifier carve-out resolves through the registry ``allow`` class."""
+
+    def _seed_registry(self, tmp_path: Path, registry: dict[str, list[str]]) -> Path:
+        db = tmp_path / "registry.sqlite3"
+        conn = sqlite3.connect(str(db))
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS teatree_config_setting ("
+            "id INTEGER PRIMARY KEY, scope TEXT NOT NULL DEFAULT '', key TEXT NOT NULL, value TEXT NOT NULL)"
+        )
+        conn.execute(
+            "INSERT INTO teatree_config_setting (scope, key, value) VALUES ('', 'banned_term_registry', ?)",
+            (json.dumps(registry),),
+        )
+        conn.commit()
+        conn.close()
+        return db
+
+    def test_registry_allow_class_carves_out_the_identifier(self, tmp_path: Path) -> None:
+        db = self._seed_registry(tmp_path, {"prose_collider": ["acme"], "allow": ["acme-product"]})
+        result = _run_env("the acme-product repo\n", {"T3_CONFIG_DB": str(db)})
+        assert result.returncode == 0, result.stdout + result.stderr
+        assert "banned_term" not in result.stdout
+
+    def test_without_allow_class_the_bare_slug_is_flagged(self, tmp_path: Path) -> None:
+        # Anti-vacuous control: drop the allow class and the same line flags the slug.
+        db = self._seed_registry(tmp_path, {"prose_collider": ["acme"]})
+        result = _run_env("the acme-product repo\n", {"T3_CONFIG_DB": str(db)})
+        assert result.returncode == PRIVACY_FINDINGS_EXIT_CODE, result.stdout + result.stderr
+        assert "banned_term" in result.stdout

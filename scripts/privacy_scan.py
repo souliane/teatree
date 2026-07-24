@@ -25,7 +25,7 @@ import typer
 from rich.console import Console
 from rich.table import Table
 
-from teatree.config import cold_reader
+from teatree.hooks.banned_term_registry import allowlist_terms
 from teatree.hooks.banned_terms_cli import resolve_banned_terms
 from teatree.hooks.banned_terms_tree_scan import BannedTermsUnsetError
 from teatree.hooks.opaque_id import find_opaque_ids
@@ -84,7 +84,7 @@ _ALLOW_MARKER = "privacy-scan:allow"
 
 
 def _banned_allowlist() -> tuple[str, ...]:
-    return tuple(str(t) for t in cold_reader.list_setting("banned_terms_allowlist", default=[]))
+    return allowlist_terms()
 
 
 def _resolve_scan_terms(env_value: str) -> tuple[str, ...]:

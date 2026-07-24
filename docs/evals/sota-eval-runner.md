@@ -100,7 +100,7 @@ Each item below names the integration point, the exact API param/field, a doc ci
 ### 4.4 Capture `session_id` / `stop_reason` / `api_error_status` (impact: High — enabler)
 
 - **Integration point:** `_message_to_event` (`message_mapping.py:90-99`) currently emits `{type,subtype,is_error,total_cost_usd,usage,model_usage}` for `ResultMessage` and `{type,message,parent_tool_use_id}` for `AssistantMessage` — dropping `session_id`, `stop_reason`, `api_error_status`, per-step `usage`, `message_id`, `num_turns`.
-- **API fields:** verified present on SDK v0.2.94 — `ResultMessage.{session_id, stop_reason, api_error_status, num_turns}`, `AssistantMessage.{session_id, message_id, stop_reason, usage}`.
+- **API fields:** verified present on SDK v0.2.125 — `ResultMessage.{session_id, stop_reason, api_error_status, num_turns}`, `AssistantMessage.{session_id, message_id, stop_reason, usage}`.
 - **Doc:** request-id / traceability rationale — <https://platform.claude.com/docs/en/cli-sdks-libraries/sdks/python>; cumulative per-query usage — <https://code.claude.com/docs/en/agent-sdk/cost-tracking>.
 - **Action:** add these to the synthesized events; add `EvalRun.sdk_session_id` (label it clearly — it is the Agent-SDK session id, **not** the Anthropic HTTP request-id) and surface it on RED trials. The consumer side already exists: `transcript_resolver.find_session_file(session_id)` resolves straight to the on-disk transcript.
 - **Win:** every flaky/RED trial becomes replayable and locatable; unblocks refusal (#4.5) and context-window (#4.6) detection.
