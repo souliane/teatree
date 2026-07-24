@@ -1,3 +1,4 @@
+# test-path: cross-cutting
 """The stdlib cold reader for ``defaults.toml`` — behavior, mtime cache, and coherence.
 
 ``cold_defaults`` is the cold-path twin of ``schema.shipped_defaults``: it reads the same

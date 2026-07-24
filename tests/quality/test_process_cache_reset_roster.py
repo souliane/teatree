@@ -162,6 +162,19 @@ EXEMPT: dict[str, str] = {
     "teatree.config.setting_registries:TOML_OVERLAY_OVERRIDABLE_SETTINGS": (
         "import-populated constant; not mutated at runtime"
     ),
+    "teatree.config.cold_defaults:_cache": (
+        "single-entry mtime-keyed memo of the packaged defaults.toml, self-evicting (clears itself on "
+        "each parse so it holds at most the current mtime); keyed by an immutable-in-production file, "
+        "so resetting it would only force a re-parse of the identical file — it isolates no test state"
+    ),
+    "teatree.config.schema:_NO_INIT_OVERRIDES": (
+        "empty-overrides constant spread into the shipped_defaults() constructor; never mutated at runtime"
+    ),
+    "teatree.config.schema:shipped_defaults": (
+        "@lru_cache singleton of the pydantic model built from the packaged defaults.toml; process-stable "
+        "(the file is immutable in production and no test rebinds _DEFAULTS_TOML), so resetting it would "
+        "only rebuild the identical model"
+    ),
     "teatree.loops.timer_chains:_LIVE_TICK_PGIDS": "live tick subprocess PGIDs; process-lifecycle, not a per-test memo",
 }
 

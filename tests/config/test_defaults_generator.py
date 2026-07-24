@@ -1,3 +1,4 @@
+# test-path: cross-cutting
 """``generate_defaults`` — the per-key adopt-live vs keep-conservative decision + serialisation.
 
 Pure over injected dicts (no DB), so the O2 policy is pinned directly: safety /
