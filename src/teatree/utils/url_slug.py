@@ -13,6 +13,21 @@ from urllib.parse import urlparse
 
 from teatree.utils.pr_ref import PrRef
 
+#: The one north-star self-modification umbrella every SYNTHETIC loop ticket anchors
+#: on — the directive interpret (``#directive=``) + implement (``#directive-impl=``)
+#: tickets and the outer-loop experiment (``#outer-loop-experiment=``) tickets, each
+#: disambiguated solely by a URL fragment. These tickets are routing devices whose
+#: task lifecycle the loop FSM owns; the umbrella issue's own upstream open/closed
+#: state says nothing about whether the loop work is done, so the artifact-terminal
+#: task sweep must never complete a task anchored here (souliane/teatree#3706).
+SYNTHETIC_LOOP_UMBRELLA_URL = "https://github.com/souliane/teatree/issues/3009"
+
+
+def is_synthetic_loop_umbrella_url(issue_url: str) -> bool:
+    """Whether *issue_url* anchors on the synthetic-loop umbrella, with or without a fragment."""
+    return issue_url.partition("#")[0] == SYNTHETIC_LOOP_UMBRELLA_URL
+
+
 _GITHUB_RE = re.compile(r"^/(?P<slug>[^/]+/[^/]+)/(?:issues|pull|pulls)/\d+/?$")
 _GITLAB_RE = re.compile(r"^/(?P<slug>.+?)/-/(?:issues|work_items|merge_requests)/\d+/?$")
 

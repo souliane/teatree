@@ -129,6 +129,26 @@ class RecheckBeforeCompleteTests(_TaskCompletionHarness):
         assert task.status == Task.Status.PENDING
 
 
+class SyntheticUmbrellaGuardTests(_TaskCompletionHarness):
+    """Defence in depth (#3706): the handler never artifact-completes a synthetic loop task.
+
+    Even if a stale ``task.completion_detected`` signal carried an umbrella-anchored task,
+    the handler must not complete it on the umbrella issue's closed state — the loop FSM
+    owns that task, not the umbrella artifact.
+    """
+
+    UMBRELLA = "https://github.com/souliane/teatree/issues/3009#directive-impl=7"
+
+    def test_umbrella_anchored_task_is_not_completed(self) -> None:
+        task = self._task(url=self.UMBRELLA)
+        host = _Host(issues_by_url={self.UMBRELLA: {"state": "closed"}})
+        overlay_patch, host_patch = self._patch(host)
+        with overlay_patch, host_patch:
+            task_completion({"task_id": task.pk, "issue_url": self.UMBRELLA})
+        task.refresh_from_db()
+        assert task.status == Task.Status.PENDING
+
+
 class MultiOverlayResolutionTests(TestCase):
     """Real ``get_overlay()`` ambiguity path — two overlays registered (#1605).
 

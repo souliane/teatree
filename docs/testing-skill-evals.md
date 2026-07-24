@@ -106,9 +106,13 @@ The fresh-run `api` lane authenticates with the credential `agent_harness_provid
 selects, resolved through `resolve_eval_credential` — **defaulting to the
 subscription `CLAUDE_CODE_OAUTH_TOKEN`** (it draws no per-token bill). TRADEOFF: the
 subscription's depleting 5h/7d window is shared with the main loop, so the CI lane is
-RIGHT-SIZED — a single effort tier (not `low,medium,high`), a smaller trial count (2),
-and per-account OAuth routing (`anthropic_oauth_pass_paths`) — so a full fan-out cannot
-throttle the window or starve the loop. The metered `ANTHROPIC_API_KEY` is selectable
+RIGHT-SIZED. The **weekly cron** (`eval.yml`) runs the BASELINE: each scenario ONCE at
+its baseline-pinned cheapest-passing tier (`--preset baseline`,
+`evals/presets/baseline.yaml`), single trial, with NO effort fan — the 3-tier
+`low,medium,high` benchmark fan lives ONLY in the MANUAL `eval-benchmark.yml`. A manual
+`eval.yml` dispatch stays a single effort tier (`high`, not `low,medium,high`) at a
+smaller trial count (2), and per-account OAuth routing (`anthropic_oauth_pass_paths`)
+spreads load — so a full fan-out cannot throttle the window or starve the loop. The metered `ANTHROPIC_API_KEY` is selectable
 per run with `t3 eval run --credential api_key` (or durably via
 `config_setting set agent_harness_provider api_key`).
 With no credential available the lane fails loud (`CredentialError`) rather than

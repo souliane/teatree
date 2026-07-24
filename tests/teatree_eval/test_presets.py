@@ -73,8 +73,26 @@ class TestResolvePresetModel:
     def test_frontier_preset_forces_the_frontier_tier(self) -> None:
         assert resolve_preset_model(_spec(), FRONTIER_PRESET) == TIER_MODELS["frontier"]
 
-    def test_per_scenario_entry_wins_over_the_scenarios_own_tier(self) -> None:
-        spec = _spec(name="alpha", tier="frontier")
+    def test_per_scenario_entry_below_the_declared_tier_is_floored_up(self) -> None:
+        # A scenario declaring `tier: balanced` but pinned `cheap` in baseline.yaml
+        # resolves to BALANCED under the preset — the author's asserted minimum is a
+        # floor a stale/wrong cheap pin can never drop below.
+        spec = _spec(name="alpha", tier="balanced")
+        preset = Preset(name="p", scenario_tiers={"alpha": "cheap"})
+        assert resolve_preset_model(spec, preset) == TIER_MODELS["balanced"]
+
+    def test_per_scenario_entry_at_or_above_the_declared_tier_is_used_as_pinned(self) -> None:
+        spec = _spec(name="alpha", tier="balanced")
+        below_none = Preset(name="p", scenario_tiers={"alpha": "balanced"})
+        above = Preset(name="p", scenario_tiers={"alpha": "frontier"})
+        assert resolve_preset_model(spec, below_none) == TIER_MODELS["balanced"]
+        assert resolve_preset_model(spec, above) == TIER_MODELS["frontier"]
+
+    def test_a_scenario_with_no_declared_tier_asserts_no_floor(self) -> None:
+        # No explicit `tier:` is no assertion — the baseline pin cheapens freely,
+        # so the whole point of the cheapest-green baseline survives for the
+        # scenarios that never declared a minimum.
+        spec = _spec(name="alpha")
         preset = Preset(name="p", scenario_tiers={"alpha": "cheap"})
         assert resolve_preset_model(spec, preset) == TIER_MODELS["cheap"]
 
