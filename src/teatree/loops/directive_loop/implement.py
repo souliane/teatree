@@ -17,12 +17,14 @@ from teatree.core.models import Directive, FactoryScoreSnapshot
 from teatree.core.models.task import Task
 from teatree.core.models.ticket import Ticket
 from teatree.loops.outer_loop.score import read_score
+from teatree.utils.url_slug import SYNTHETIC_LOOP_UMBRELLA_URL
 
 #: The standing north-star self-modification umbrella every directive's synthetic
 #: mechanism ticket anchors under; the ``#directive-impl=<pk>`` fragment makes each
 #: unique while still resolving the ``souliane/teatree`` overlay via
-#: ``infer_overlay_for_url`` (the outer-loop synthetic-ticket idiom).
-DIRECTIVE_IMPL_UMBRELLA_URL = "https://github.com/souliane/teatree/issues/3009"
+#: ``infer_overlay_for_url``. Single-sourced from the ONE umbrella anchor the task
+#: sweep recognises (#3706).
+DIRECTIVE_IMPL_UMBRELLA_URL = SYNTHETIC_LOOP_UMBRELLA_URL
 
 _DIRECTIVE_KEY = "directive_id"
 

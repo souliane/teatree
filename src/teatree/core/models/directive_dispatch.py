@@ -29,19 +29,20 @@ from django.utils import timezone
 from teatree.core.models.session import Session
 from teatree.core.models.task import Task
 from teatree.core.models.ticket import Ticket
+from teatree.utils.url_slug import SYNTHETIC_LOOP_UMBRELLA_URL
 
 if TYPE_CHECKING:
     from teatree.core.models.directive import Directive
 
 INTERPRET_PHASE = "directive_interpreting"
 
-#: The standing north-star self-modification umbrella every directive's synthetic
-#: interpret ticket anchors under; the ``#directive=<pk>`` fragment makes each unique
-#: while still resolving the ``souliane/teatree`` overlay via ``infer_overlay_for_url``
-#: (the outer-loop synthetic-ticket idiom — the interpret phase needs a ``Task``, and a
-#: ``Task`` needs a ``Ticket``). Shares the north-star umbrella with the outer loop and
-#: the directive-implementation ticket; the ``#directive=`` fragment disambiguates.
-DIRECTIVE_UMBRELLA_URL = "https://github.com/souliane/teatree/issues/3009"
+#: The standing north-star self-modification umbrella the directive's synthetic interpret
+#: ticket anchors under; the ``#directive=<pk>`` fragment makes each unique while still
+#: resolving the ``souliane/teatree`` overlay via ``infer_overlay_for_url`` (the interpret
+#: phase needs a ``Task``, and a ``Task`` needs a ``Ticket``). Single-sourced from
+#: :data:`~teatree.utils.url_slug.SYNTHETIC_LOOP_UMBRELLA_URL` — the ONE anchor the task
+#: sweep recognises so it never artifact-completes a synthetic loop ticket (#3706).
+DIRECTIVE_UMBRELLA_URL = SYNTHETIC_LOOP_UMBRELLA_URL
 
 
 def synthetic_interpret_ticket(directive: "Directive") -> Ticket:
@@ -120,8 +121,14 @@ class DirectiveDispatch(models.Model):
                 purpose=cls.Purpose.INTERPRET,
                 generation=directive.generation,
             )
-            if not created and row.has_live_interpreter():
-                return None
+            if not created:
+                # Lock the existing row so two concurrent ticks cannot both pass the
+                # terminal-task check and double-arm two live interpreters. On the
+                # file-backed prod SQLite backend the atomic already serializes writers;
+                # the row lock makes it correct on any backend if the loop ever fans out.
+                row = cls.objects.select_for_update().get(pk=row.pk)
+                if row.has_live_interpreter():
+                    return None
             row.task = cls._create_interpret_task(directive=directive, contract=contract)
             row.save(update_fields=["task"])
         return row

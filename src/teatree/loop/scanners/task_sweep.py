@@ -3,11 +3,13 @@
 This scanner reconciles teatree **Task** rows (the DB-backed lifecycle work
 units), never the agent harness's working list of session items. The candidate
 set is the open :class:`Task` rows (status ``PENDING`` or ``CLAIMED``) whose
-``Ticket`` carries an ``issue_url``, EXCLUDING the directive-loop-internal phases
-(:data:`_FSM_OWNED_PHASES`) whose completion the directive FSM owns rather than an
-upstream artifact — their synthetic umbrella ``issue_url`` is a routing device, not
-a trackable issue, so sweeping them on the umbrella's closed state would strand the
-directive. Each tick the scanner walks those tasks
+``Ticket`` carries an ``issue_url``, EXCLUDING every task anchored on the synthetic
+loop umbrella (:func:`~teatree.utils.url_slug.is_synthetic_loop_umbrella_url`) —
+the directive interpret/implement and outer-loop experiment tickets whose completion
+the loop FSM owns rather than an upstream artifact. Their umbrella ``issue_url`` is a
+routing device, not a trackable issue, so sweeping them on the umbrella's closed state
+would complete a live task and strand the loop work regardless of phase (#3706). Each
+tick the scanner walks those tasks
 and, for each, verifies the underlying artifact's *terminal* state — is the
 upstream issue closed / the PR merged? — via the overlay's ``is_issue_done()``
 hook (the same independent-evidence check ``TicketCompletionScanner`` uses for
@@ -42,6 +44,7 @@ from django.utils import timezone
 from teatree.backends.loader import get_code_host_for_url
 from teatree.core.overlay import OverlayBase
 from teatree.loop.scanners.base import ScanSignal
+from teatree.utils.url_slug import is_synthetic_loop_umbrella_url
 
 if TYPE_CHECKING:
     from teatree.core.models import Task
@@ -49,15 +52,6 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 _OPEN_STATUSES = ("pending", "claimed")
-
-#: Directive-loop-internal phases whose completion the DIRECTIVE FSM owns, not an
-#: upstream artifact. Their task anchors on a SYNTHETIC ticket whose ``issue_url`` is
-#: the shared north-star umbrella (a routing device so the overlay resolves, not a
-#: trackable issue), so an artifact-terminal sweep on the umbrella's closed state would
-#: wrongly complete a still-PENDING interpret task and silently strand the directive in
-#: ``CAPTURED``. The interpret gate recording an envelope is the only thing that
-#: terminates these; the sweep leaves them alone.
-_FSM_OWNED_PHASES = ("directive_interpreting",)
 
 
 @dataclass(slots=True)
@@ -101,18 +95,23 @@ class TaskSweepScanner:
         qs = (
             task_model.objects.filter(status__in=_OPEN_STATUSES)
             .exclude(ticket__issue_url="")
-            .exclude(phase__in=_FSM_OWNED_PHASES)
             .filter(Q(last_sweep_check_ts__isnull=True) | Q(last_sweep_check_ts__lt=cutoff))
             .select_related("ticket")
         )
         if self.overlay_name:
             qs = qs.filter(ticket__overlay=self.overlay_name)
         try:
-            return list(qs.only("id", "status", "ticket__id", "ticket__issue_url", "last_sweep_check_ts"))
+            rows = list(qs.only("id", "status", "ticket__id", "ticket__issue_url", "last_sweep_check_ts"))
         except (OperationalError, ProgrammingError):
             # Pre-migration install: the table or the new column does not exist
             # yet. The next tick after ``migrate`` picks the tasks up.
             return []
+        # A synthetic loop ticket (directive interpret/implement, outer-loop experiment)
+        # anchors on the shared north-star umbrella issue via a URL fragment. Its task
+        # lifecycle is owned by the loop FSM, not by the umbrella issue's upstream state,
+        # so a sweep on the umbrella's closed state would wrongly complete a live task and
+        # silently strand the loop work — regardless of phase (#3706).
+        return [row for row in rows if not is_synthetic_loop_umbrella_url(row.ticket.issue_url)]
 
     def _claim_for_sweep(self, *, task_id: int, now: datetime) -> bool:
         """Atomically stamp ``last_sweep_check_ts``; True iff this tick won the race."""

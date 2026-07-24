@@ -215,6 +215,7 @@ def task_completion(payload: ActionPayload) -> None:
     done all no-op silently rather than crash the tick.
     """
     from teatree.core.models.task import Task  # noqa: PLC0415 — deferred: ORM import needs the app registry
+    from teatree.utils.url_slug import is_synthetic_loop_umbrella_url  # noqa: PLC0415 — deferred: tick-time import
 
     task_id = payload.get("task_id")
     if task_id is None:
@@ -224,6 +225,12 @@ def task_completion(payload: ActionPayload) -> None:
     except Task.DoesNotExist:
         return
     if task.status in Task.Status.terminal():
+        return
+    # Defence in depth (#3706): a synthetic loop ticket anchors on the shared umbrella
+    # issue, whose upstream closed state says nothing about whether the loop work is done.
+    # The sweep already excludes these, so this signal should never carry one — never
+    # artifact-complete it if one slips through.
+    if is_synthetic_loop_umbrella_url(task.ticket.issue_url):
         return
     if not _artifact_still_terminal(task):
         logger.info("task_completion: task %s artifact no longer terminal — skipping completion", task_id)
