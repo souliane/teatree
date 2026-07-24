@@ -1,7 +1,6 @@
-r"""Consolidated, class-tagged banned-term registry (banned-terms-registry PR 1).
+r"""Consolidated, class-tagged banned-term registry — the single term-source home.
 
-Teatree carries three separate DB-home term sources today, each read by a
-different gate:
+Teatree carries four separate DB-home term sources, each read by a different gate:
 
 * ``banned_terms`` — the flat leak list the commit/posting DIFF gate
     (``banned_terms_cli`` / ``banned_terms_scanner``) and the in-process CORE
@@ -9,20 +8,31 @@ different gate:
 * ``banned_brands`` — the high-confidence list the full-TREE backstop
     (``banned_terms_tree_scan``) scans.
 * ``banned_terms_allowlist`` — the company-identifier carve-out.
+* ``overlay_leak_terms`` — the BLUEPRINT § 1 "core stays generic" gate
+    (``check_no_overlay_leak`` / ``fast_push``) that keeps overlay-specific names
+    out of the scanned core roots.
 
-This module is the single consolidated home the three collapse into: ONE
+This module is the single consolidated home the four collapse into: ONE
 ``banned_term_registry`` row (or the ``$TEATREE_TERM_REGISTRY`` secret) mapping
 each term to a CLASS, plus :func:`terms_for_gate` — the one router that returns
-the terms a given gate should scan, by class:
+the terms a given gate should scan, by class. The class taxonomy (the canonical
+reference table is ``docs/blueprint/configuration.md`` § 10.6):
 
-===============  ================================  =========================
-class            scanned by gates                  legacy source it migrates
-===============  ================================  =========================
-``leak``         diff + tree + core                ``banned_brands``
-``prose_collider``  diff + core                    ``banned_terms``
-``tone``         diff                              (none today)
-``allow``        the allowlist carve-out           ``banned_terms_allowlist``
-===============  ================================  =========================
+================  ===============================  =========================  ===============
+class             scanned by gate                  legacy source it migrates  unset behaviour
+================  ===============================  =========================  ===============
+``leak``          diff + tree + core               ``banned_brands``          fail-loud
+``prose_collider``  diff + core                    ``banned_terms``           fail-loud
+``tone``          diff                             (none today)               inert
+``overlay``       overlay (core-generic gate)      ``overlay_leak_terms``     inert
+``allow``         the allowlist carve-out          ``banned_terms_allowlist``  inert
+================  ===============================  =========================  ===============
+
+The ``leak`` and ``prose_collider`` classes fail LOUD when both the registry and
+their legacy source are unset (:class:`BannedTermsUnsetError`); ``tone``,
+``overlay`` and ``allow`` are optional and default to an empty, inert set (the
+overlay pass is inert-when-empty by design — an operator with no overlay-scoped
+names is a legitimate no-op, never a refusal).
 
 **Dual-read, registry-first.** :func:`terms_for_gate` (and the legacy
 :func:`banned_terms_cli.resolve_banned_terms` / :func:`banned_terms_tree_scan.load_brand_terms`)
@@ -57,26 +67,43 @@ __all__ = [
     "ALLOW",
     "GATE_CLASSES",
     "LEAK",
+    "OVERLAY",
     "PROSE_COLLIDER",
+    "REGISTRY_TERM_CLASSES",
     "TERM_CLASSES",
     "TONE",
     "MigrationVerification",
     "allowlist_terms",
     "build_registry_from_legacy",
     "class_of_term",
+    "export_scan_terms",
     "load_registry",
     "registry_terms_for_gate",
     "terms_for_gate",
     "verify_migration",
 ]
 
+#: The overlay-leak class. It is registry-only (no :mod:`leak_policy` surface routes
+#: to it) because the BLUEPRINT § 1 "core stays generic" gate is a distinct concern
+#: from the publish-surface leak gates :func:`leak_policy.decide` governs. Its legacy
+#: source is the ``overlay_leak_terms`` row.
+OVERLAY: Final = "overlay"
+
+#: The registry's recognised class set: the :mod:`leak_policy` publish-surface taxonomy
+#: PLUS :data:`OVERLAY`. ``_normalise_registry`` keeps exactly these top-level keys; any
+#: other key is ignored (not a leak source).
+REGISTRY_TERM_CLASSES: Final[tuple[str, ...]] = (*TERM_CLASSES, OVERLAY)
+
 # Which term CLASSES each scanning gate consumes, DERIVED from the one policy
 # (:func:`teatree.hooks.leak_policy.classes_for_surface`) rather than restated —
-# the gate names are the legacy keys the dual-read callers already pass.
+# the gate names are the legacy keys the dual-read callers already pass. The
+# ``overlay`` gate is registry-only (its class is not a publish surface), so it is
+# added explicitly rather than derived from a surface.
 GATE_CLASSES: Final[dict[str, tuple[str, ...]]] = {
     "diff": classes_for_surface(Surface.DIFF),
     "core": classes_for_surface(Surface.CORE),
     "tree": classes_for_surface(Surface.TREE),
+    "overlay": (OVERLAY,),
 }
 
 _REGISTRY_KEY: Final = "banned_term_registry"
@@ -95,10 +122,10 @@ def _normalise_registry(raw: object) -> dict[str, tuple[str, ...]]:
     if not isinstance(raw, dict):
         msg = f"the {_REGISTRY_KEY} registry is set but not a table ({type(raw).__name__}) — refusing to scan as empty"
         raise BannedTermsUnsetError(msg)
-    normalised: dict[str, tuple[str, ...]] = dict.fromkeys(TERM_CLASSES, ())
+    normalised: dict[str, tuple[str, ...]] = dict.fromkeys(REGISTRY_TERM_CLASSES, ())
     for key, value in raw.items():
         term_class = str(key)
-        if term_class not in TERM_CLASSES:
+        if term_class not in REGISTRY_TERM_CLASSES:
             continue  # unknown top-level key: ignored, not a leak source
         if not isinstance(value, list):
             msg = f"the {_REGISTRY_KEY} registry class {term_class!r} is not a list — refusing to scan as empty"
@@ -168,9 +195,11 @@ def terms_for_gate(gate: str, *, db_path: Path | None = None) -> tuple[str, ...]
     the classes *gate* consumes (``GATE_CLASSES``, or the ``allow`` carve-out).
     When the registry is unset, fall back to the OLD per-gate source
     (``resolve_banned_terms`` for ``diff``/``core``, ``load_brand_terms`` for
-    ``tree``, the allowlist for ``allow``). When BOTH the registry and the legacy
-    source are unset, the legacy resolver RAISES :class:`BannedTermsUnsetError` —
-    the gate REFUSES (fail-closed), never scans as empty.
+    ``tree``, ``overlay_leak_terms`` for ``overlay``, the allowlist for ``allow``).
+    When BOTH the registry and a fail-loud gate's legacy source (``diff``/``core``/
+    ``tree``) are unset, the legacy resolver RAISES :class:`BannedTermsUnsetError` —
+    the gate REFUSES (fail-closed), never scans as empty. The optional gates
+    (``overlay``/``allow``) instead yield an empty, inert set.
     """
     registry = load_registry(db_path=db_path)
     if registry is not None:
@@ -187,6 +216,8 @@ def _legacy_terms_for_gate(gate: str, *, db_path: Path | None = None) -> tuple[s
         return resolve_banned_terms(db_path=db_path)
     if gate == "tree":
         return load_brand_terms(db_path=db_path)
+    if gate == "overlay":
+        return _legacy_overlay_terms(db_path=db_path)
     if gate == ALLOW:
         return _legacy_allowlist(db_path=db_path)
     msg = f"unknown banned-terms gate {gate!r}"
@@ -199,6 +230,64 @@ def _legacy_allowlist(db_path: Path | None = None) -> tuple[str, ...]:
     if not isinstance(raw, list):
         return ()
     return tuple(str(entry).strip() for entry in raw if str(entry).strip())
+
+
+def _legacy_overlay_terms(db_path: Path | None = None) -> tuple[str, ...]:
+    """The DB-home ``overlay_leak_terms`` row — empty when unset (inert, NEVER raises).
+
+    The overlay pass is inert-when-empty by design (an operator with no overlay-scoped
+    names is a legitimate no-op), so an unset row yields an empty tuple exactly like the
+    allowlist — never a :class:`BannedTermsUnsetError`.
+    """
+    raw = cold_reader.read_setting("overlay_leak_terms", db_path=db_path)
+    if not isinstance(raw, list):
+        return ()
+    return tuple(str(entry).strip() for entry in raw if str(entry).strip())
+
+
+def export_scan_terms(*, db_path: Path | None = None) -> tuple[str, ...]:
+    """Every ban-class term for the config-export content scan; fail-safe to empty.
+
+    Registry-first: the order-stable union of the four ban classes (``leak`` +
+    ``prose_collider`` + ``tone`` + ``overlay``; the ``allow`` carve-out is not a ban
+    source, so it is excluded). When the registry is unset, the legacy ``banned_terms``
+    + ``banned_brands`` rows — the two the export scanned before the registry existed.
+    Unlike the gates this NEVER raises on a genuinely-unset source: the export is a
+    backup command, so a store with no terms configured yields an empty scan set. A
+    MALFORMED registry still fails loud (propagates :class:`BannedTermsUnsetError`).
+    """
+    registry = load_registry(db_path=db_path)
+    if registry is not None:
+        seen: dict[str, None] = {}
+        for term_class in (LEAK, PROSE_COLLIDER, TONE, OVERLAY):
+            for term in registry[term_class]:
+                if term.strip():
+                    seen.setdefault(term, None)
+        return tuple(seen)
+    return _legacy_export_scan_terms(db_path=db_path)
+
+
+def _legacy_export_scan_terms(db_path: Path | None = None) -> tuple[str, ...]:
+    """The pre-registry export scan set: ``banned_terms`` + ``banned_brands``, fail-safe.
+
+    Routes through the two legacy resolvers rather than reading their rows directly, so
+    the registry module stays the single home for legacy-key resolution. A genuinely-
+    unset source is caught and skipped (an empty scan set) — the export must not crash
+    on a store with no terms.
+    """
+    from teatree.hooks.banned_terms_cli import resolve_banned_terms  # noqa: PLC0415  dual-read cycle
+    from teatree.hooks.banned_terms_tree_scan import load_brand_terms  # noqa: PLC0415  dual-read cycle
+
+    seen: dict[str, None] = {}
+    for resolver in (resolve_banned_terms, load_brand_terms):
+        try:
+            resolved = resolver(db_path=db_path)
+        except BannedTermsUnsetError:
+            continue
+        for term in resolved:
+            if term.strip():
+                seen.setdefault(term, None)
+    return tuple(seen)
 
 
 def class_of_term(term: str, *, db_path: Path | None = None) -> str:
@@ -243,15 +332,17 @@ def _dedup(terms: tuple[str, ...]) -> list[str]:
 
 
 def build_registry_from_legacy(db_path: Path | None = None) -> dict[str, list[str]]:
-    """Build the class-tagged registry from the current three legacy sources.
+    """Build the class-tagged registry from the current four legacy sources.
 
     ``banned_brands`` → ``leak`` (the high-confidence list, scanned everywhere);
     ``banned_terms`` → ``prose_collider`` (its current diff+core routing, never
-    the full tree); ``banned_terms_allowlist`` → ``allow``. ``tone`` starts empty
-    (no current source maps to it). ``banned_terms`` is REQUIRED — an unset list
-    propagates :class:`BannedTermsUnsetError` so a migration can never
-    silently produce an empty registry; ``banned_brands`` is optional (an unset
-    brand list is a legitimate no-brands operator and yields an empty ``leak``).
+    the full tree); ``overlay_leak_terms`` → ``overlay``;
+    ``banned_terms_allowlist`` → ``allow``. ``tone`` starts empty (no current source
+    maps to it). ``banned_terms`` is REQUIRED — an unset list propagates
+    :class:`BannedTermsUnsetError` so a migration can never silently produce an empty
+    registry; ``banned_brands`` is optional (an unset brand list is a legitimate
+    no-brands operator and yields an empty ``leak``), as are ``overlay_leak_terms``
+    and the allowlist (both inert-when-empty).
     """
     from teatree.hooks.banned_terms_cli import resolve_banned_terms  # noqa: PLC0415  dual-read cycle
     from teatree.hooks.banned_terms_tree_scan import load_brand_terms  # noqa: PLC0415  dual-read cycle
@@ -261,11 +352,13 @@ def build_registry_from_legacy(db_path: Path | None = None) -> dict[str, list[st
         brands = load_brand_terms(db_path=db_path)
     except BannedTermsUnsetError:
         brands = ()
+    overlay = _legacy_overlay_terms(db_path=db_path)
     allow = allowlist_terms(db_path=db_path)
     return {
         LEAK: _dedup(brands),
         PROSE_COLLIDER: _dedup(terms),
         TONE: [],
+        OVERLAY: _dedup(overlay),
         ALLOW: _dedup(allow),
     }
 
@@ -277,15 +370,18 @@ class MigrationVerification:
     ``dropped`` — a term the old config scanned that the registry's effective set
     no longer carries (a lossy migration). ``added`` — a term the registry carries
     that no old source had (a fabricated term). ``allow_mismatch`` — the ``allow``
-    class does not equal the old allowlist. ``per_gate_drops`` — per gate, the
-    terms that gate scanned before but the new class routing would stop scanning.
-    ``ok`` is True only when all four are empty: the migration is provably lossless.
+    class does not equal the old allowlist. ``overlay_mismatch`` — the ``overlay``
+    class does not equal the old ``overlay_leak_terms``. ``per_gate_drops`` — per
+    gate, the terms that gate scanned before but the new class routing would stop
+    scanning. ``ok`` is True only when all five are empty: the migration is provably
+    lossless.
     """
 
     ok: bool
     dropped: tuple[str, ...]
     added: tuple[str, ...]
     allow_mismatch: bool
+    overlay_mismatch: bool
     per_gate_drops: dict[str, tuple[str, ...]]
 
     def failure_reason(self) -> str:
@@ -299,6 +395,8 @@ class MigrationVerification:
             lines.append(f"unexpected terms (in the registry, absent from old config): {', '.join(self.added)}")
         if self.allow_mismatch:
             lines.append("the registry allow class does not match the old banned_terms_allowlist")
+        if self.overlay_mismatch:
+            lines.append("the registry overlay class does not match the old overlay_leak_terms")
         for gate, missing in self.per_gate_drops.items():
             lines.append(f"gate {gate!r} would stop scanning: {', '.join(missing)}")
         return "\n".join(lines)
@@ -308,10 +406,11 @@ def verify_migration(registry: dict[str, list[str]], *, db_path: Path | None = N
     """Verify *registry* reproduces every effective term the old three sources yield.
 
     Recomputes the old effective sets (``banned_terms`` for the diff/core gates,
-    ``banned_brands`` for the tree gate, the allowlist for ``allow``) and checks the
-    registry against them: no term dropped from the union, no term fabricated, the
-    allowlist round-trips exactly, and no per-gate term the routing would stop
-    scanning. The migration is lossless iff :attr:`MigrationVerification.ok`.
+    ``banned_brands`` for the tree gate, ``overlay_leak_terms`` for the overlay gate,
+    the allowlist for ``allow``) and checks the registry against them: no term dropped
+    from the union, no term fabricated, the allowlist and the overlay class round-trip
+    exactly, and no per-gate term the routing would stop scanning. The migration is
+    lossless iff :attr:`MigrationVerification.ok`.
     """
     from teatree.hooks.banned_terms_cli import resolve_banned_terms  # noqa: PLC0415  dual-read cycle
     from teatree.hooks.banned_terms_tree_scan import load_brand_terms  # noqa: PLC0415  dual-read cycle
@@ -321,6 +420,7 @@ def verify_migration(registry: dict[str, list[str]], *, db_path: Path | None = N
         old_brands = set(load_brand_terms(db_path=db_path))
     except BannedTermsUnsetError:
         old_brands = set()
+    old_overlay = set(_legacy_overlay_terms(db_path=db_path))
     old_allow = set(allowlist_terms(db_path=db_path))
 
     normalised = _normalise_registry(registry)
@@ -330,18 +430,20 @@ def verify_migration(registry: dict[str, list[str]], *, db_path: Path | None = N
     dropped = old_all - new_ban
     added = new_ban - old_all
     allow_mismatch = set(normalised[ALLOW]) != old_allow
+    overlay_mismatch = set(normalised[OVERLAY]) != old_overlay
 
     per_gate_drops: dict[str, tuple[str, ...]] = {}
-    for gate, old_set in (("diff", old_ban), ("core", old_ban), ("tree", old_brands)):
+    for gate, old_set in (("diff", old_ban), ("core", old_ban), ("tree", old_brands), ("overlay", old_overlay)):
         missing = old_set - set(_classes_union(normalised, gate))
         if missing:
             per_gate_drops[gate] = tuple(sorted(missing))
 
-    ok = not dropped and not added and not allow_mismatch and not per_gate_drops
+    ok = not dropped and not added and not allow_mismatch and not overlay_mismatch and not per_gate_drops
     return MigrationVerification(
         ok=ok,
         dropped=tuple(sorted(dropped)),
         added=tuple(sorted(added)),
         allow_mismatch=allow_mismatch,
+        overlay_mismatch=overlay_mismatch,
         per_gate_drops=per_gate_drops,
     )

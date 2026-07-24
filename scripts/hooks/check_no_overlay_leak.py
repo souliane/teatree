@@ -36,7 +36,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-from teatree.config import cold_reader
+from teatree.hooks.banned_term_registry import terms_for_gate
 from teatree.hooks.opaque_id import find_opaque_ids
 from teatree.hooks.term_match import matched_term
 
@@ -45,18 +45,19 @@ _MISCONFIGURED_EXIT_CODE = 2
 
 
 def _load_terms() -> tuple[str, ...]:
-    """Load forbidden tokens from the env override or the DB-home overlay_leak_terms list.
+    """Load forbidden tokens for the overlay gate — env override, else the registry.
 
-    ``TEATREE_OVERLAY_LEAK_TERMS`` (comma-separated) wins; otherwise the
-    canonical ``overlay_leak_terms`` ``ConfigSetting`` row (read Django-free via
-    :mod:`teatree.config.cold_reader`). Empty (default) leaves the term-list pass
-    inert — the always-on opaque-ID pass still runs.
+    ``TEATREE_OVERLAY_LEAK_TERMS`` (comma-separated) wins; otherwise the consolidated
+    ``banned_term_registry`` via :func:`terms_for_gate` — its ``overlay`` class when the
+    registry is present, else the legacy ``overlay_leak_terms`` row (resolved inside the
+    registry module, never a raw read here). Empty (default) leaves the term-list pass
+    inert — the always-on opaque-ID pass still runs; the overlay gate never raises on an
+    unset source (inert-when-empty).
     """
     env = os.environ.get("TEATREE_OVERLAY_LEAK_TERMS", "")
     if env:
         return tuple(t.strip() for t in env.split(",") if t.strip())
-    terms = cold_reader.list_setting("overlay_leak_terms", default=[])
-    return tuple(str(t) for t in terms if isinstance(t, str) and t.strip())
+    return terms_for_gate("overlay")
 
 
 OVERLAY_LEAK_TERMS: tuple[str, ...] = _load_terms()

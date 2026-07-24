@@ -432,6 +432,60 @@ class TestDbSourcedTerms:
         assert result.returncode == 0, result.stdout  # env list has no match; the DB list is ignored
 
 
+def _seed_registry_db(tmp_path: Path, *, overlay: list[str], legacy: list[str] | None = None) -> Path:
+    """Build a DB carrying the consolidated ``banned_term_registry`` (overlay class)."""
+    db = tmp_path / "registry.sqlite3"
+    conn = sqlite3.connect(str(db))
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS teatree_config_setting ("
+        "id INTEGER PRIMARY KEY, scope TEXT NOT NULL DEFAULT '', key TEXT NOT NULL, value TEXT NOT NULL)"
+    )
+    conn.execute(
+        "INSERT INTO teatree_config_setting (scope, key, value) VALUES ('', 'banned_term_registry', ?)",
+        (json.dumps({"leak": ["democorp"], "overlay": overlay}),),
+    )
+    if legacy is not None:
+        conn.execute(
+            "INSERT INTO teatree_config_setting (scope, key, value) VALUES ('', 'overlay_leak_terms', ?)",
+            (json.dumps(legacy),),
+        )
+    conn.commit()
+    conn.close()
+    return db
+
+
+class TestRegistrySourcedTerms:
+    """The consolidated registry's ``overlay`` class drives the gate, registry-first."""
+
+    def _run_with_db(self, cwd: Path, db: Path, *args: str) -> subprocess.CompletedProcess[str]:
+        env = {k: v for k, v in os.environ.items() if k != "TEATREE_OVERLAY_LEAK_TERMS"}
+        env["HOME"] = str(cwd)
+        env["T3_CONFIG_DB"] = str(db)
+        return subprocess.run(
+            [sys.executable, str(HOOK), *args],
+            cwd=cwd,
+            capture_output=True,
+            text=True,
+            check=False,
+            env=env,
+        )
+
+    def test_registry_overlay_term_is_caught(self, tmp_path: Path) -> None:
+        db = _seed_registry_db(tmp_path, overlay=["alpha-tenant"])
+        _seed(tmp_path, "src/teatree/foo.py", "# Reference to alpha-tenant\n")
+        result = self._run_with_db(tmp_path, db, "--require-terms")
+        assert result.returncode == 1, result.stdout + result.stderr
+        assert "alpha-tenant" in result.stdout.lower()
+
+    def test_registry_wins_over_legacy_overlay_row(self, tmp_path: Path) -> None:
+        # A present registry is authoritative: a file naming only the LEGACY-row term
+        # (absent from the registry's overlay class) is not flagged.
+        db = _seed_registry_db(tmp_path, overlay=["alpha-tenant"], legacy=["legacy-only"])
+        _seed(tmp_path, "src/teatree/foo.py", "# only names legacy-only here\n")
+        result = self._run_with_db(tmp_path, db)
+        assert result.returncode == 0, result.stdout + result.stderr
+
+
 class TestOverlayLeakCiPassesRequireTerms:
     """Fix #2 (CI side): the overlay-leak full-tree CI job passes ``--require-terms``."""
 

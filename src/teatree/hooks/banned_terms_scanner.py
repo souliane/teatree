@@ -97,15 +97,24 @@ class ToolInput(TypedDict, total=False):
 
 
 def _banned_terms_configured(config_path: Path | None) -> bool:
-    """Return True iff the DB-home ``banned_terms`` list (or the env override) is set.
+    """Return True iff a banned-terms source (registry, env, or legacy row) is set.
 
     The gate is a clean NO-OP when nothing is configured — matching the shell
     hook's own "no terms ⇒ no-op" contract — so this decides whether to shell
-    out at all. A set ``T3_BANNED_TERMS`` env or a present ``banned_terms`` DB
-    row (even an explicit empty list) counts as configured; *config_path*
-    overrides the DB path (else the canonical DB / ``T3_CONFIG_DB``).
+    out at all. Configured means ANY of: a set ``T3_BANNED_TERMS`` env; the
+    consolidated ``banned_term_registry`` present (DB row or
+    ``$TEATREE_TERM_REGISTRY`` secret); or a present legacy ``banned_terms`` row
+    (even an explicit empty list). Consulting the registry closes the post-cutover
+    fail-open: once the operator sets the registry and drops the legacy row, the
+    gate must still scan rather than silently no-op. *config_path* overrides the
+    DB path (else the canonical DB / ``T3_CONFIG_DB``). A malformed registry
+    propagates :class:`BannedTermsUnsetError` (fail-loud), never a silent no-op.
     """
+    from teatree.hooks.banned_term_registry import load_registry  # noqa: PLC0415  dual-read cycle
+
     if os.environ.get(_TERMS_ENV, "").strip():
+        return True
+    if load_registry(db_path=config_path) is not None:
         return True
     return isinstance(cold_reader.read_setting(_TERMS_KEY, db_path=config_path), list)
 
