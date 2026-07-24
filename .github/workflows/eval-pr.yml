@@ -210,17 +210,28 @@ jobs:
             : > "$RUNNER_TEMP/eval-summary.md"
             rc=0
             ran=0
+            # Names of the CONFIRMED-red scenarios (every escalation trial also
+            # failed). Collected so the aggregate red-list below NAMES the failures
+            # explicitly — the per-scenario loop only accumulated a single `rc`, so a
+            # red scenario was invisible under a passing tail and had to be hunted
+            # for in the raw log. This prints the culprits directly.
+            failed=()
             IFS=',' read -ra NAMES <<< "$EVAL_NAMES"
             for name in "${NAMES[@]}"; do
               name="$(echo "$name" | xargs)"  # trim whitespace
               [ -z "$name" ] && continue
               ran=$((ran + 1))
+              scenario_rc=0
               uv run t3 eval run "$name" --backend api --preset baseline \
                 --escalate-on-fail --escalate-trials 3 \
                 --require-executed --docker \
                 --transcript-html "$RUNNER_TEMP/eval-transcripts-$name.html" \
-                --summary-md "$RUNNER_TEMP/eval-summary-$name.md" || rc=$?
+                --summary-md "$RUNNER_TEMP/eval-summary-$name.md" || scenario_rc=$?
               [ -f "$RUNNER_TEMP/eval-summary-$name.md" ] && cat "$RUNNER_TEMP/eval-summary-$name.md" >> "$RUNNER_TEMP/eval-summary.md"
+              if [ "$scenario_rc" -ne 0 ]; then
+                rc="$scenario_rc"
+                failed+=("$name")
+              fi
             done
             # ZERO-IS-RED: detect reached this job only with run=true (>=1 changed
             # scenario), so executing ZERO here is a vacuous green, never a pass —
@@ -231,6 +242,16 @@ jobs:
             if [ "$ran" -eq 0 ]; then
               echo "::error::detect selected scenarios (run=true) but the eval executed ZERO — vacuous green, failing." >&2
               exit 1
+            fi
+            # AGGREGATE RED-LIST: name every confirmed-red scenario before exiting so
+            # the next red is announced, not hidden under a passing tail.
+            if [ "${#failed[@]}" -gt 0 ]; then
+              echo "::error::CONFIRMED-red scenarios (${#failed[@]}/${ran}): ${failed[*]}" >&2
+              {
+                echo ""
+                echo "### CONFIRMED-red scenarios (${#failed[@]}/${ran})"
+                printf -- '- %s\n' "${failed[@]}"
+              } >> "$RUNNER_TEMP/eval-summary.md"
             fi
             exit "$rc"
       # Append the sanitized summary to the PR's step summary (the in-container run
