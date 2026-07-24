@@ -373,6 +373,56 @@ class TestConfigSettingExport(TestCase):
         assert "teatree" not in doc
 
 
+class TestConfigSettingImport(TestCase):
+    """``config_setting import`` — the inverse of ``export`` over the CLI (TOML round-trip)."""
+
+    @pytest.fixture(autouse=True)
+    def _isolate(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        self.tmp_path = tmp_path
+        monkeypatch.delenv("T3_OVERLAY_NAME", raising=False)
+
+    def _write_toml(self, text: str) -> Path:
+        path = self.tmp_path / "dump.toml"
+        path.write_text(text, encoding="utf-8")
+        return path
+
+    def test_import_from_file_writes_rows(self) -> None:
+        path = self._write_toml('[teatree]\nmode = "auto"\nissue_implementer_max_concurrent = 9\n')
+        call_command("config_setting", "import", "--input", str(path), stdout=StringIO())
+        assert ConfigSetting.objects.get_effective("mode") == "auto"
+        assert ConfigSetting.objects.get_effective("issue_implementer_max_concurrent") == 9
+
+    def test_import_dry_run_writes_nothing(self) -> None:
+        path = self._write_toml('[teatree]\nmode = "auto"\n')
+        out = StringIO()
+        call_command("config_setting", "import", "--input", str(path), "--dry-run", stdout=out)
+        assert ConfigSetting.objects.count() == 0
+        assert "would import" in out.getvalue()
+
+    def test_import_rejects_unknown_key_and_writes_nothing(self) -> None:
+        path = self._write_toml('[teatree]\nnot_a_setting = 1\nmode = "auto"\n')
+        err = StringIO()
+        with pytest.raises(SystemExit):
+            call_command("config_setting", "import", "--input", str(path), stdout=StringIO(), stderr=err)
+        assert "rejected not_a_setting" in err.getvalue()
+        assert ConfigSetting.objects.count() == 0
+
+    def test_import_reports_a_folded_alias(self) -> None:
+        path = self._write_toml('[teatree]\nspeed = "full"\n')
+        out = StringIO()
+        call_command("config_setting", "import", "--input", str(path), stdout=out)
+        assert "folded retired alias speed -> wip" in out.getvalue()
+        assert ConfigSetting.objects.get_effective("wip") == "full"
+
+    def test_import_rejects_invalid_toml_and_writes_nothing(self) -> None:
+        path = self._write_toml("[teatree\nmode = broken")  # malformed TOML
+        err = StringIO()
+        with pytest.raises(SystemExit):
+            call_command("config_setting", "import", "--input", str(path), stdout=StringIO(), stderr=err)
+        assert "invalid TOML" in err.getvalue()
+        assert ConfigSetting.objects.count() == 0
+
+
 class TestConfigSettingSeed(TestCase):
     """`config_setting seed` — the provenance-aware DEPLOY seed (#3435).
 

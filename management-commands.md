@@ -42,7 +42,6 @@ Edit the source command, not this file.
 | `get` | Print the resolved value for *key* and name its source (DB vs env/default) |
 | `export` | Dump the ``ConfigSetting`` store to TOML — the inverse of ``import`` |
 | `list` | List every DB config override row, naming each row's scope (read-only) |
-| `import` | Load a ``config_setting export`` TOML dump into the store — the inverse of ``export`` |
 
 ## `cost`
 
@@ -144,10 +143,6 @@ Generate the management-commands reference doc from the live command tree.
 ## `generate_overlay_docs`
 
 Generate deterministic overlay extension-point documentation.
-
-## `generate_settings_defaults`
-
-Regenerate config/defaults.toml from in-code defaults + safe live-adopted tunables.
 
 ## `generate_skill_catalogue`
 
