@@ -176,11 +176,33 @@ jobs:
           claude --version
       - name: Migrate the self-DB (the eval run-history ledger persists into it)
         run: uv run python -m teatree migrate --no-input
-      # Run the changed scenarios at the DEFAULT per-tier lane. `--only` is gone;
-      # the positional NAME filter runs one scenario, so the comma-joined detect
-      # list is looped one scenario per `t3 eval run <name>`. Each run is the
-      # DEFAULT single trial at the scenario's OWN resolved tier/phase model (no
-      # forced model), with `--escalate-on-fail --escalate-trials 3` re-running a
+      # Point CLAUDE_CODE_OAUTH_TOKEN at the FRESHEST subscription account before the
+      # eval runs. `EVAL_OAUTH_TOKENS` (a newline-separated repo secret) is probed per
+      # token for remaining usage-window headroom (scripts/eval/select_oauth.py) and the
+      # freshest is exported — masked — into $GITHUB_ENV, which the eval step below
+      # reads. BACKWARD-SAFE: with EVAL_OAUTH_TOKENS unset/empty it passes the existing
+      # single CLAUDE_CODE_OAUTH_TOKEN secret through unchanged. This step OWNS the
+      # credential decision (it also exports T3_AGENT_HARNESS_PROVIDER — an all-exhausted
+      # set flips to api_key ONLY when the opt-in EVAL_API_KEY_FALLBACK repo variable is
+      # set, else it fails loud). This PR lane is tiny (only changed scenarios, single
+      # trial), so it barely touches a window — but a freshest pick still avoids a
+      # depleted account.
+      - name: Select the freshest eval OAuth account
+        env:
+          EVAL_CREDENTIAL: subscription_oauth
+          EVAL_OAUTH_TOKENS: ${{ secrets.EVAL_OAUTH_TOKENS }}
+          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          EVAL_API_KEY_FALLBACK: ${{ vars.EVAL_API_KEY_FALLBACK }}
+        run: uv run python scripts/eval/select_oauth.py
+      # Run the changed scenarios AGAINST BASELINE (`--preset baseline`) — the
+      # same cheapest-passing per-scenario tier the weekly run pins
+      # (evals/presets/baseline.yaml), so a PR's eval verdict matches the weekly's.
+      # A scenario absent from the baseline map (a brand-new scenario the PR adds)
+      # falls through to its own YAML tier — never silently cheapened. `--only` is
+      # gone; the positional NAME filter runs one scenario, so the comma-joined
+      # detect list is looped one scenario per `t3 eval run <name>`. Each run is a
+      # single trial at the baseline-pinned tier, with
+      # `--escalate-on-fail --escalate-trials 3` re-running a
       # failed scenario 3 more times and reading only on a CONFIRMED failure (a
       # recovered trial is flaky-but-passing, not red). `--require-executed` and
       # the asserted CLI keep a no-coverage run from passing green; `--docker`
@@ -190,12 +212,13 @@ jobs:
       - name: Metered behavioral eval — the changed scenarios (in Docker)
         uses: nick-fields/retry@ad984534de44a9489a53aefd81eb77f87c70dc60  # v4
         env:
-          # Both credentials wired so the provider is a pure config flip; the
-          # DEFAULT rides CLAUDE_CODE_OAUTH_TOKEN (subscription), docker forwards
-          # only the selected one and the isolation env strips the other.
-          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          # `CLAUDE_CODE_OAUTH_TOKEN` and `T3_AGENT_HARNESS_PROVIDER` come from the
+          # "Select the freshest eval OAuth account" step above via `$GITHUB_ENV` (that
+          # step owns the credential decision) — NOT pinned here, since a step-level
+          # `env:` would override the dynamic `$GITHUB_ENV` value. `ANTHROPIC_API_KEY`
+          # stays wired for an exhausted-OAuth api_key fallback; docker forwards only the
+          # selected credential's var into the container.
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
-          T3_AGENT_HARNESS_PROVIDER: subscription_oauth
           EVAL_NAMES: ${{ needs.detect.outputs.names }}
         with:
           timeout_minutes: 80
@@ -206,17 +229,28 @@ jobs:
             : > "$RUNNER_TEMP/eval-summary.md"
             rc=0
             ran=0
+            # Names of the CONFIRMED-red scenarios (every escalation trial also
+            # failed). Collected so the aggregate red-list below NAMES the failures
+            # explicitly — the per-scenario loop only accumulated a single `rc`, so a
+            # red scenario was invisible under a passing tail and had to be hunted
+            # for in the raw log. This prints the culprits directly.
+            failed=()
             IFS=',' read -ra NAMES <<< "$EVAL_NAMES"
             for name in "${NAMES[@]}"; do
               name="$(echo "$name" | xargs)"  # trim whitespace
               [ -z "$name" ] && continue
               ran=$((ran + 1))
-              uv run t3 eval run "$name" --backend api \
+              scenario_rc=0
+              uv run t3 eval run "$name" --backend api --preset baseline \
                 --escalate-on-fail --escalate-trials 3 \
                 --require-executed --docker \
                 --transcript-html "$RUNNER_TEMP/eval-transcripts-$name.html" \
-                --summary-md "$RUNNER_TEMP/eval-summary-$name.md" || rc=$?
+                --summary-md "$RUNNER_TEMP/eval-summary-$name.md" || scenario_rc=$?
               [ -f "$RUNNER_TEMP/eval-summary-$name.md" ] && cat "$RUNNER_TEMP/eval-summary-$name.md" >> "$RUNNER_TEMP/eval-summary.md"
+              if [ "$scenario_rc" -ne 0 ]; then
+                rc="$scenario_rc"
+                failed+=("$name")
+              fi
             done
             # ZERO-IS-RED: detect reached this job only with run=true (>=1 changed
             # scenario), so executing ZERO here is a vacuous green, never a pass —
@@ -227,6 +261,16 @@ jobs:
             if [ "$ran" -eq 0 ]; then
               echo "::error::detect selected scenarios (run=true) but the eval executed ZERO — vacuous green, failing." >&2
               exit 1
+            fi
+            # AGGREGATE RED-LIST: name every confirmed-red scenario before exiting so
+            # the next red is announced, not hidden under a passing tail.
+            if [ "${#failed[@]}" -gt 0 ]; then
+              echo "::error::CONFIRMED-red scenarios (${#failed[@]}/${ran}): ${failed[*]}" >&2
+              {
+                echo ""
+                echo "### CONFIRMED-red scenarios (${#failed[@]}/${ran})"
+                printf -- '- %s\n' "${failed[@]}"
+              } >> "$RUNNER_TEMP/eval-summary.md"
             fi
             exit "$rc"
       # Append the sanitized summary to the PR's step summary (the in-container run

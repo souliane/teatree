@@ -82,11 +82,12 @@ class _SweepHarness(TestCase):
         url: str | None = None,
         status: str = Task.Status.PENDING,
         overlay: str | None = None,
+        phase: str = "coding",
     ) -> Task:
         issue_url = self.URL if url is None else url
         ticket = Ticket.objects.create(overlay=overlay or self.OVERLAY, issue_url=issue_url)
         session = Session.objects.create(overlay=overlay or self.OVERLAY, ticket=ticket, agent_id="a")
-        task = Task.objects.create(ticket=ticket, session=session, phase="coding")
+        task = Task.objects.create(ticket=ticket, session=session, phase=phase)
         if status != Task.Status.PENDING:
             Task.objects.filter(pk=task.pk).update(status=status)
             task.refresh_from_db()
@@ -161,6 +162,52 @@ class CompletionDetectionTests(_SweepHarness):
         assert payload["task_id"] == task.pk
         assert payload["ticket_id"] == task.ticket.pk
         assert payload["issue_url"] == self.URL
+
+
+class SyntheticUmbrellaTests(_SweepHarness):
+    """A synthetic loop ticket's completion is FSM-owned, not artifact-owned.
+
+    Directive interpret (``#directive=``), directive implement (``#directive-impl=``),
+    and outer-loop experiment tickets all anchor on the shared north-star umbrella issue
+    (a routing device, not a trackable artifact). When that umbrella is closed upstream
+    the artifact sweep must NOT complete their live tasks — regardless of phase — because
+    doing so silently strands the loop work. The exclusion keys on the umbrella ANCHOR,
+    not the phase, so the real-work phases (coding/testing/...) the impl tickets share
+    with ordinary tickets are still covered.
+    """
+
+    UMBRELLA = "https://github.com/souliane/teatree/issues/3009"
+
+    def test_directive_interpret_task_is_not_swept_on_closed_umbrella(self) -> None:
+        self._task(url=f"{self.UMBRELLA}#directive=7", phase="directive_interpreting")
+        host = _Host(issues_by_url={f"{self.UMBRELLA}#directive=7": {"state": "closed"}})
+        with self._patch_host(host):
+            assert self._scanner().scan() == []
+        assert host.get_issue_calls == []  # never even fetched — excluded up front
+
+    def test_directive_impl_coding_task_is_not_swept_on_closed_umbrella(self) -> None:
+        # The class-level fix: an impl task rides a REAL-work phase (coding) yet still
+        # anchors on the umbrella, so it must be excluded by anchor, not phase.
+        self._task(url=f"{self.UMBRELLA}#directive-impl=7", phase="coding")
+        host = _Host(issues_by_url={f"{self.UMBRELLA}#directive-impl=7": {"state": "closed"}})
+        with self._patch_host(host):
+            assert self._scanner().scan() == []
+        assert host.get_issue_calls == []
+
+    def test_outer_loop_experiment_task_is_not_swept_on_closed_umbrella(self) -> None:
+        self._task(url=f"{self.UMBRELLA}#outer-loop-experiment=3", phase="coding")
+        host = _Host(issues_by_url={f"{self.UMBRELLA}#outer-loop-experiment=3": {"state": "closed"}})
+        with self._patch_host(host):
+            assert self._scanner().scan() == []
+
+    def test_an_ordinary_ticket_coding_task_is_still_swept(self) -> None:
+        # The sweep MUST keep working for real, artifact-backed tickets.
+        task = self._task(url=self.URL, phase="coding")
+        host = _Host(issues_by_url={self.URL: {"state": "closed"}})
+        with self._patch_host(host):
+            signals = self._scanner().scan()
+        assert len(signals) == 1
+        assert signals[0].payload["task_id"] == task.pk
 
 
 class FailOpenTests(_SweepHarness):

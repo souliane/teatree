@@ -10,11 +10,17 @@
 # never runs the rest of the pipeline, and a PR run never triggers this workflow.
 #
 # Cadence:
-#   * schedule  — once a week (Monday 06:00 UTC). Guarded: the scheduled run
-#     SKIPS CLEANLY (exit 0, with a clear log line) when NO PR merged in the
-#     lookback window since the last run — nothing new to test, no spend.
+#   * schedule  — once a week (Monday 06:00 UTC), run as the BASELINE: each
+#     scenario ONCE at its baseline-pinned cheapest-passing tier
+#     (`--preset baseline`, evals/presets/baseline.yaml), single trial, NO
+#     effort fan. This is the cheap, window-safe weekly — the 3-tier
+#     effort/model benchmark fan is the MANUAL eval-benchmark.yml, never the
+#     cron. Guarded: the scheduled run SKIPS CLEANLY (exit 0, with a clear log
+#     line) when NO PR merged in the lookback window since the last run —
+#     nothing new to test, no spend.
 #   * workflow_dispatch — manual, on-demand, always on the api backend
-#     with optional `lane` / `credential` / `efforts` / `trials` inputs. ALWAYS
+#     with optional `lane` / `credential` / `efforts` / `trials` / `model`
+#     inputs (no baseline preset — a manual run keeps per-scenario tiers). ALWAYS
 #     runs (force) — the no-PR guard is bypassed for a manual run.
 #
 # LANE+SHARD FAN-OUT (souliane/teatree#2492, #2683):
@@ -203,35 +209,37 @@ jobs:
       # Empty `lane` input (scheduled runs and the default manual run) = every
       # permitted lane, sharded into budget-safe legs on the lane-aware ceiling
       # (clean_room ~182 → ~13 shards of ≤14, under_load 14 → 4 shards of ≤4 —
-      # #2683). The `efforts` axis defaults to a SINGLE tier ('high') — right-
-      # sizing the subscription lane (#2707 reversal) so a full 3-tier fan-out
-      # cannot throttle the plan's usage window / starve the loop. The SCHEDULED
-      # cron run is the exception: it still fans all three (low,medium,high), so
-      # the weekly run measures pass-rate vs effort across the whole suite. The
-      # 3-tier default is keyed on the schedule EVENT (not a blanket
-      # `|| 'low,medium,high'`, which would fan a blank manual field 3x and
-      # triple the spend) — a manual workflow_dispatch run with an empty
-      # `efforts` field falls back to the single 'high' tier. Pass a comma-
-      # separated list (e.g. 'low,medium,high') to fan each {lane, shard} leg
-      # across multiple reasoning-effort tiers instead (an `api_key` run has no
-      # window to throttle). An unknown lane or effort fails loud here
-      # rather than producing an empty/invalid matrix. Both inputs are routed
-      # through `env:` vars (never inlined) and validated by lane_matrix.py.
+      # #2683).
+      #
+      # WEEKLY (schedule) = the BASELINE: one leg per scenario at its baseline-
+      # pinned tier (evals/presets/baseline.yaml, applied by `--preset baseline`
+      # in the eval step), single trial, NO effort fan. So the scheduled matrix
+      # carries an EMPTY effort axis — one {lane, shard} leg per scenario, never
+      # multiplied across low/medium/high. The 3-tier effort/model fan is the
+      # MANUAL benchmark's job (eval-benchmark.yml → eval-weekly-reusable.yml,
+      # `--benchmark`), never the weekly cron — a 3x fan drains the shared OAuth
+      # usage window mid-run and starves the loop (run 28515055436: every leg's
+      # remaining scenarios force-fail $0.00 once the window is gone).
+      #
+      # A manual workflow_dispatch run keeps a SINGLE effort tier ('high') by
+      # default, or the explicit `efforts` input. The schedule-vs-manual decision
+      # is computed in SHELL, not a GitHub-Actions `x && '' || y` ternary: `||`
+      # treats '' as falsy, so that idiom can never yield the empty string the
+      # scheduled leg needs. An unknown lane or effort fails loud in lane_matrix.py
+      # rather than producing an empty/invalid matrix. Inputs are routed through
+      # `env:` vars (never inlined).
       - name: Compute the lane+shard+effort matrix
         id: matrix
         env:
           EVAL_LANE: ${{ inputs.lane || '' }}
-          # Default a SINGLE effort tier ('high') for a manual/blank run — the
-          # subscription lane (#2707 reversal) rides a depleting usage window, so
-          # 3x the effort axis would throttle it mid-run and starve the loop. The
-          # SCHEDULED cron is the exception: it keeps fanning all three
-          # (low,medium,high) to measure pass-rate vs effort across the whole
-          # suite. The 3-tier default is keyed on the schedule EVENT (not a
-          # blanket `|| 'low,medium,high'`, which would fan a blank manual field
-          # 3x and triple the spend). Override the `efforts` input explicitly
-          # for an `api_key` run, which has no window to throttle.
-          EVAL_EFFORTS: ${{ inputs.efforts || (github.event_name == 'schedule' && 'low,medium,high' || 'high') }}
+          INPUT_EFFORTS: ${{ inputs.efforts }}
+          EVENT_NAME: ${{ github.event_name }}
         run: |
+          if [ "$EVENT_NAME" = "schedule" ]; then
+            EVAL_EFFORTS=""
+          else
+            EVAL_EFFORTS="${INPUT_EFFORTS:-high}"
+          fi
           MATRIX="$(uv run python scripts/eval/lane_matrix.py --lane "$EVAL_LANE" --efforts "$EVAL_EFFORTS")"
           echo "matrix=$MATRIX" >> "$GITHUB_OUTPUT"
           echo "Lane+shard+effort matrix: $MATRIX"
@@ -354,21 +362,49 @@ jobs:
           SUFFIX="${EVAL_LANE}-${EVAL_SHARD//\//-}"
           [ -n "$EVAL_EFFORT" ] && SUFFIX="${SUFFIX}-${EVAL_EFFORT}"
           echo "suffix=$SUFFIX" >> "$GITHUB_OUTPUT"
+      # Point CLAUDE_CODE_OAUTH_TOKEN at the FRESHEST subscription account before the
+      # eval runs, so a full fan-out never lands every leg on one throttled/exhausted
+      # window. `EVAL_OAUTH_TOKENS` (a newline-separated repo secret) is probed per token
+      # for remaining usage-window headroom (scripts/eval/select_oauth.py) and the
+      # freshest is exported — masked — into $GITHUB_ENV, which the eval step below reads.
+      # BACKWARD-SAFE: with EVAL_OAUTH_TOKENS unset/empty it passes the existing single
+      # CLAUDE_CODE_OAUTH_TOKEN secret through unchanged. This step OWNS the credential
+      # decision, so it also exports T3_AGENT_HARNESS_PROVIDER — an all-exhausted set
+      # flips it to api_key ONLY when the opt-in EVAL_API_KEY_FALLBACK repo variable is
+      # set (default off), otherwise the step fails loud rather than spend a throttled
+      # account. Skipped implicitly for an api_key run (it just re-exports the provider).
+      - name: Select the freshest eval OAuth account
+        env:
+          EVAL_CREDENTIAL: ${{ inputs.credential || 'subscription_oauth' }}
+          EVAL_OAUTH_TOKENS: ${{ secrets.EVAL_OAUTH_TOKENS }}
+          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          EVAL_API_KEY_FALLBACK: ${{ vars.EVAL_API_KEY_FALLBACK }}
+        run: uv run python scripts/eval/select_oauth.py
       - name: Behavioral eval suite (in Docker; pass@k; --require-executed always armed)
         uses: nick-fields/retry@ad984534de44a9489a53aefd81eb77f87c70dc60  # v4
         env:
-          # Both credentials are wired so the `credential` input is a pure config flip.
-          # The DEFAULT lane (subscription_oauth) authenticates via
-          # CLAUDE_CODE_OAUTH_TOKEN; an api_key run authenticates via
-          # ANTHROPIC_API_KEY. `T3_AGENT_HARNESS_PROVIDER` selects which one every eval
-          # chokepoint (make_runner, the judge, the docker `-e` passthrough) resolves,
-          # and docker forwards only the SELECTED credential's var into the container.
-          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          # `CLAUDE_CODE_OAUTH_TOKEN` and `T3_AGENT_HARNESS_PROVIDER` are exported by the
+          # "Select the freshest eval OAuth account" step above via `$GITHUB_ENV` — that
+          # step owns the credential decision (the freshest OAuth account, or an api_key
+          # fallback), so they are deliberately NOT pinned here: a step-level `env:`
+          # would OVERRIDE the dynamic `$GITHUB_ENV` value. `ANTHROPIC_API_KEY` stays
+          # wired so an api_key run — or the exhausted-OAuth fallback — can authenticate;
+          # docker forwards only the SELECTED credential's var into the container.
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
-          T3_AGENT_HARNESS_PROVIDER: ${{ inputs.credential || 'subscription_oauth' }}
-          # Trials per scenario — default 2, so the subscription lane stays inside
-          # the plan's usage window.
-          EVAL_TRIALS: ${{ inputs.trials || '2' }}
+          # Trials per scenario. WEEKLY (schedule) = the BASELINE: a SINGLE trial
+          # per scenario at its baseline-pinned tier. A manual run defaults to 2
+          # (both '1' and '2' are truthy, so the `x && '1' || '2'` ternary is safe
+          # here — unlike the empty-effort case above).
+          EVAL_TRIALS: ${{ inputs.trials || (github.event_name == 'schedule' && '1' || '2') }}
+          # WEEKLY (schedule) runs each scenario at its baseline-pinned cheapest-
+          # passing tier via `--preset baseline` (evals/presets/baseline.yaml). A
+          # scenario absent from the map falls through to its own YAML tier — never
+          # silently cheapened. Empty on a manual run, which keeps the per-scenario
+          # tier / the `--model` override. 'baseline' is truthy, so the
+          # `x && 'baseline' || ''` ternary yields it on schedule and '' otherwise.
+          # `--preset` is mutually exclusive with `--model`, but the scheduled run
+          # never sets a model (EVAL_MODEL is empty), so the two never collide.
+          EVAL_PRESET: ${{ github.event_name == 'schedule' && 'baseline' || '' }}
           # This leg meters exactly ONE shard of ONE lane (the matrix values), so the
           # per-shard subset is bounded by the LANE's ceiling — clean_room ≤14,
           # under_load ≤4 (#2683) — and fits the 2x80min budget where the full suite,
@@ -424,8 +460,10 @@ jobs:
             [ -n "$EVAL_EFFORT" ] && EFFORT_FLAG="--effort $EVAL_EFFORT"
             MODEL_FLAG=""
             [ -n "$EVAL_MODEL" ] && MODEL_FLAG="--model $EVAL_MODEL"
+            PRESET_FLAG=""
+            [ -n "$EVAL_PRESET" ] && PRESET_FLAG="--preset $EVAL_PRESET"
             uv run t3 eval run --trials "$EVAL_TRIALS" --require any --backend "$EVAL_BACKEND" \
-              --lane "$EVAL_LANE" --shard "$EVAL_SHARD" $EFFORT_FLAG \
+              --lane "$EVAL_LANE" --shard "$EVAL_SHARD" $EFFORT_FLAG $PRESET_FLAG \
               --require-executed --docker \
               --transcript-html "$RUNNER_TEMP/eval-transcripts.html" \
               --summary-md "$RUNNER_TEMP/eval-summary-${{ steps.artifact.outputs.suffix }}.md" \

@@ -118,14 +118,25 @@ class TestBaselinePreset:
         assert out.exit_code == 0, out.output
         assert _StubRunner.seen_models == [resolve_tier("frontier")]
 
-    def test_mapped_scenario_uses_its_baseline_tier(self, tmp_path: Path) -> None:
+    def test_mapped_scenario_with_no_declared_tier_uses_its_baseline_tier(self, tmp_path: Path) -> None:
+        baseline = tmp_path / "baseline.yaml"
+        baseline.write_text("scenarios:\n  alpha: cheap\n", encoding="utf-8")
+        specs = [_spec("alpha")]
+        with patch("teatree.eval.presets.BASELINE_PRESET_PATH", baseline):
+            out = _invoke(["--preset", "baseline", "--no-persist"], specs)
+        assert out.exit_code == 0, out.output
+        assert _StubRunner.seen_models == [resolve_tier("cheap")]
+
+    def test_mapped_scenario_pinned_below_its_declared_tier_is_floored_up(self, tmp_path: Path) -> None:
+        # A stale `cheap` pin under a scenario declaring `tier: frontier` resolves
+        # to FRONTIER — the declared tier is the floor the baseline can't drop below.
         baseline = tmp_path / "baseline.yaml"
         baseline.write_text("scenarios:\n  alpha: cheap\n", encoding="utf-8")
         specs = [_spec("alpha", tier="frontier")]
         with patch("teatree.eval.presets.BASELINE_PRESET_PATH", baseline):
             out = _invoke(["--preset", "baseline", "--no-persist"], specs)
         assert out.exit_code == 0, out.output
-        assert _StubRunner.seen_models == [resolve_tier("cheap")]
+        assert _StubRunner.seen_models == [resolve_tier("frontier")]
 
 
 class TestPresetMutualExclusivity:

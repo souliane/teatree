@@ -3,7 +3,13 @@
 This scanner reconciles teatree **Task** rows (the DB-backed lifecycle work
 units), never the agent harness's working list of session items. The candidate
 set is the open :class:`Task` rows (status ``PENDING`` or ``CLAIMED``) whose
-``Ticket`` carries an ``issue_url``. Each tick the scanner walks those tasks
+``Ticket`` carries an ``issue_url``, EXCLUDING every task anchored on the synthetic
+loop umbrella (:func:`~teatree.utils.url_slug.is_synthetic_loop_umbrella_url`) —
+the directive interpret/implement and outer-loop experiment tickets whose completion
+the loop FSM owns rather than an upstream artifact. Their umbrella ``issue_url`` is a
+routing device, not a trackable issue, so sweeping them on the umbrella's closed state
+would complete a live task and strand the loop work regardless of phase (#3706). Each
+tick the scanner walks those tasks
 and, for each, verifies the underlying artifact's *terminal* state — is the
 upstream issue closed / the PR merged? — via the overlay's ``is_issue_done()``
 hook (the same independent-evidence check ``TicketCompletionScanner`` uses for
@@ -38,6 +44,7 @@ from django.utils import timezone
 from teatree.backends.loader import get_code_host_for_url
 from teatree.core.overlay import OverlayBase
 from teatree.loop.scanners.base import ScanSignal
+from teatree.utils.url_slug import is_synthetic_loop_umbrella_url
 
 if TYPE_CHECKING:
     from teatree.core.models import Task
@@ -94,11 +101,17 @@ class TaskSweepScanner:
         if self.overlay_name:
             qs = qs.filter(ticket__overlay=self.overlay_name)
         try:
-            return list(qs.only("id", "status", "ticket__id", "ticket__issue_url", "last_sweep_check_ts"))
+            rows = list(qs.only("id", "status", "ticket__id", "ticket__issue_url", "last_sweep_check_ts"))
         except (OperationalError, ProgrammingError):
             # Pre-migration install: the table or the new column does not exist
             # yet. The next tick after ``migrate`` picks the tasks up.
             return []
+        # A synthetic loop ticket (directive interpret/implement, outer-loop experiment)
+        # anchors on the shared north-star umbrella issue via a URL fragment. Its task
+        # lifecycle is owned by the loop FSM, not by the umbrella issue's upstream state,
+        # so a sweep on the umbrella's closed state would wrongly complete a live task and
+        # silently strand the loop work — regardless of phase (#3706).
+        return [row for row in rows if not is_synthetic_loop_umbrella_url(row.ticket.issue_url)]
 
     def _claim_for_sweep(self, *, task_id: int, now: datetime) -> bool:
         """Atomically stamp ``last_sweep_check_ts``; True iff this tick won the race."""
