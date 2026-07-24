@@ -17,7 +17,7 @@ from unittest.mock import patch
 import pytest
 from django.test import TestCase
 
-from teatree.config import AgentHarnessProvider
+from teatree.config import AgentHarness, AgentHarnessProvider
 from teatree.core.models import ConfigSetting
 from teatree.credential_config import resolve_eval_credential
 from teatree.eval.api_runner import ApiInProcessRunner
@@ -54,6 +54,17 @@ class TestProviderToCredentialMapping(TestCase):
             if provider is None:
                 continue
             with self.subTest(provider=str(provider)):
+                # Clear the previous iteration's provider, then pin the harness
+                # this provider is valid under before setting it, so the #3688
+                # cross-key write guard accepts the pair (switching harness while
+                # an incompatible provider is still pinned is itself rejected).
+                harness = (
+                    AgentHarness.PYDANTIC_AI
+                    if provider in AgentHarnessProvider.valid_for(AgentHarness.PYDANTIC_AI)
+                    else AgentHarness.CLAUDE_SDK
+                )
+                ConfigSetting.objects.clear("agent_harness_provider")
+                ConfigSetting.objects.set_value("agent_harness", harness.value)
                 ConfigSetting.objects.set_value("agent_harness_provider", provider.value)
                 assert isinstance(resolve_eval_credential(), expected)
 
