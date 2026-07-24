@@ -67,9 +67,11 @@ class FeatureFlag:
 
 
 # ``outer_loop_enabled`` is the canonical DARK flag (the OFF switch the T4
-# autoresearch outer loop ships behind). The live registry is mostly ``DARK`` plus
-# one ``SETTLING`` flag (``incremental_push_gate``, graduated by #122 once its CI
-# selection-audit soak came clean); ``REMOVE`` is not represented live, so the
+# autoresearch outer loop ships behind). The live registry is mostly ``DARK`` plus a
+# couple of ``SETTLING`` flags (``incremental_push_gate``, graduated by #122 once its
+# CI selection-audit soak came clean, and ``limit_autorecovery_enabled``, graduated by
+# #3691 so a fresh deploy self-recovers from an exhausted usage window); ``REMOVE`` is
+# not represented live, so the
 # stage-discrimination machinery (:func:`dark_flags`, :func:`render_flags_audit`) is
 # proven non-vacuously over a MIXED FIXTURE in the conformance suite rather than over
 # the live set's accidental composition.
@@ -159,11 +161,13 @@ FEATURE_FLAGS: dict[str, FeatureFlag] = {
     ),
     "limit_autorecovery_enabled": FeatureFlag(
         field="limit_autorecovery_enabled",
-        stage=FlagStage.DARK,
-        tracking_issue="souliane/teatree — Directive #3 idle usage-window auto-recovery",
+        stage=FlagStage.SETTLING,
+        tracking_issue="souliane/teatree#3691",
         summary=(
-            "The OFF switch for park-not-fail on a Claude usage-window limit + the self-rescheduling "
-            "usage_window_recovery re-arm; ships dark (a limit stays a terminal FAILED) until enabled."
+            "Resilience default: park-not-fail on a Claude usage-window limit + the self-rescheduling "
+            "usage_window_recovery re-arm. Default ON (graduated DARK->SETTLING by #3691) so a fresh deploy "
+            "self-recovers from an exhausted usage window instead of idling; survives as a per-overlay escape "
+            "hatch during the soak. OFF restores the pre-graduation terminal-FAILED behaviour."
         ),
     ),
     "ci_eval_heal_autofix_enabled": FeatureFlag(

@@ -159,9 +159,84 @@ def _run_diff_detectors(text: str) -> list[dict[str, str | int]]:
 
 
 def _scan_text(text: str, terms: tuple[str, ...], allowlist: tuple[str, ...]) -> list[dict[str, str | int]]:
-    """Per-line + whole-text findings for one text blob (no file attribution)."""
+    """Per-line + whole-text findings for one text blob (no file attribution).
+
+    Whole-file mode: every line is scanned. Used for filesystem targets (the
+    directory tree/core scan and a single-file scan), where each line is raw
+    content, never a diff.
+    """
     findings: list[dict[str, str | int]] = []
     for lineno, line in enumerate(text.splitlines(), 1):
+        findings.extend(
+            {"line": lineno, "category": category, "match": match}
+            for category, match in _scan_line(line, terms, allowlist)
+        )
+    findings.extend(_run_diff_detectors(text))
+    return findings
+
+
+#: A unified-diff hunk header — ``@@ … @@`` (2-way) or ``@@@ … @@@`` (combined,
+#: one extra ``@`` per parent). The leading run of ``@`` gives the marker-column
+#: width: ``len(run) - 1`` columns precede each hunk-body line.
+_HUNK_HEADER_RE = re.compile(r"^(@{2,}) ")
+
+
+def _is_hunk_body(raw: str, marker_width: int) -> bool:
+    """True when ``raw`` is a diff hunk-body line for the current marker width.
+
+    A body line begins with ``marker_width`` marker characters, each one of
+    space (context), ``+`` (added) or ``-`` (removed). Anything else (a file
+    header, a commit-message line, plain text) is not a body line and ends the
+    current hunk.
+    """
+    return len(raw) >= marker_width and all(char in " +-" for char in raw[:marker_width])
+
+
+def _diff_scan_lines(text: str) -> Iterator[tuple[int, str]]:
+    """Yield ``(lineno, content)`` for each diff line the per-line scan should inspect.
+
+    Diff-mode scoping for the push-gate path (souliane/teatree#3681). A unified
+    diff's *context* (`` ``) and *removed* (``-``) hunk lines are already-public
+    by definition — they exist unchanged on the parent commit the push builds
+    onto — so a credential/PII finding on them is a false positive that blocks a
+    legitimate push (a refactor pulling synthetic fixtures into the diff as
+    context/removed lines). They are skipped. Every other line is yielded
+    verbatim: *added* (``+``) hunk lines carry the genuinely-new content the
+    gate must still catch, and lines outside any hunk — commit-message bodies
+    (the push-gate scans ``%B`` alongside the patch, the #703 case) or plain
+    text piped with no diff structure — are new content too and are scanned
+    exactly as in whole-file mode.
+
+    Combined diffs (``git show --cc`` on merge commits) carry one marker column
+    per parent; a line counts as added when any column is ``+``, which keeps a
+    merge's conflict resolutions in scope.
+    """
+    in_hunk = False
+    marker_width = 1
+    for lineno, raw in enumerate(text.splitlines(), 1):
+        header = _HUNK_HEADER_RE.match(raw)
+        if header is not None:
+            marker_width = len(header.group(1)) - 1
+            in_hunk = marker_width >= 1
+            continue
+        if in_hunk and _is_hunk_body(raw, marker_width):
+            if "+" in raw[:marker_width]:
+                yield lineno, raw
+            continue
+        in_hunk = False
+        yield lineno, raw
+
+
+def _scan_diff(text: str, terms: tuple[str, ...], allowlist: tuple[str, ...]) -> list[dict[str, str | int]]:
+    """Diff-mode findings: per-line detectors over ADDED lines only, plus whole-text detectors.
+
+    The per-line credential/PII detectors run over :func:`_diff_scan_lines`
+    (added + non-hunk lines), so already-public context/removed lines never
+    trip them. The whole-text diff detectors still see the full text — they are
+    already added-line-scoped internally.
+    """
+    findings: list[dict[str, str | int]] = []
+    for lineno, line in _diff_scan_lines(text):
         findings.extend(
             {"line": lineno, "category": category, "match": match}
             for category, match in _scan_line(line, terms, allowlist)
@@ -265,9 +340,13 @@ def main(
     target = None if input_file == "-" else Path(input_file)
     if target is not None and target.is_dir():
         all_findings = _scan_directory(target, terms, allowlist)
+    elif target is None:
+        # stdin is the push-gate path: a unified diff (or a `%B` message +
+        # patch blob). Scope the per-line detectors to added / non-hunk lines.
+        all_findings = _scan_diff(sys.stdin.read(), terms, allowlist)
     else:
-        text = sys.stdin.read() if target is None else target.read_text(encoding="utf-8")
-        all_findings = _scan_text(text, terms, allowlist)
+        # A filesystem file is raw content, not a diff — scan every line.
+        all_findings = _scan_text(target.read_text(encoding="utf-8"), terms, allowlist)
 
     all_findings.sort(key=lambda f: (str(f.get("file", "")), int(f["line"])))
 

@@ -65,7 +65,7 @@ on:
         default: ""
         type: string
       efforts:
-        description: "Comma-separated reasoning-effort tiers to fan the matrix across (e.g. 'low,medium,high'); empty = no effort axis (single tier at the lane default). The scheduled weekly run still fans all three."
+        description: "Comma-separated reasoning-effort tiers to fan the matrix across (e.g. 'low,medium,high'); empty = no effort axis (single tier at the lane default). This reusable is the MANUAL benchmark, so the fan is exactly what the caller passes — the weekly cron (eval.yml) runs the cheap --preset baseline leg, not this 3-tier fan."
         required: false
         default: ""
         type: string
@@ -174,23 +174,25 @@ jobs:
       # Compute the {lane, shard[, effort]} matrix the eval job fans out over.
       # Empty `lane` = every permitted lane, sharded into budget-safe legs on the
       # lane-aware ceiling. `efforts` adds the model-tier axis: each {lane, shard}
-      # leg runs once per reasoning-effort tier. The SCHEDULED cron run defaults to
-      # all three (low,medium,high), so the weekly run measures pass-rate vs effort
-      # across the whole suite; a manual run with an empty `efforts` keeps the
-      # single-tier {lane, shard} matrix (lane default). The 3-tier default is keyed
-      # on the schedule EVENT (not a blanket `|| 'low,medium,high'`, which would fan
-      # a blank field 3x and triple the metered spend). `shards` narrows the matrix
-      # to a subset of shard indices (per lane) so a caller can dispatch a few legs
-      # at a time — empty keeps the full fan-out. An unknown lane/effort, or a
-      # `shards` request that matches no leg, fails loud here rather than producing
-      # an empty/invalid matrix. All three inputs are routed through `env:` vars
-      # (never inlined into the script).
+      # leg runs once per reasoning-effort tier. This reusable is the MANUAL
+      # benchmark (invoked by eval-benchmark.yml's workflow_dispatch), so the
+      # effort axis is exactly what the caller passes in `efforts` — an empty
+      # `efforts` keeps the single-tier {lane, shard} matrix (lane default), and a
+      # `low,medium,high` fans all three. There is no scheduled caller, so the
+      # matrix is never keyed on the schedule event: the WEEKLY cron is eval.yml,
+      # which runs the cheap `--preset baseline` leg (one per scenario, no effort
+      # fan) — a 3-tier fan belongs only to this manual benchmark. `shards` narrows
+      # the matrix to a subset of shard indices (per lane) so a caller can dispatch
+      # a few legs at a time — empty keeps the full fan-out. An unknown lane/effort,
+      # or a `shards` request that matches no leg, fails loud here rather than
+      # producing an empty/invalid matrix. All three inputs are routed through
+      # `env:` vars (never inlined into the script).
       - name: Compute the lane+shard+effort matrix
         id: matrix
         if: steps.gate.outputs.run_eval == 'true'
         env:
           EVAL_LANE: ${{ inputs.lane }}
-          EVAL_EFFORTS: ${{ inputs.efforts || (github.event_name == 'schedule' && 'low,medium,high' || '') }}
+          EVAL_EFFORTS: ${{ inputs.efforts }}
           EVAL_SHARDS: ${{ inputs.shards }}
         run: |
           MATRIX="$(uv run python scripts/eval/lane_matrix.py --lane "$EVAL_LANE" --efforts "$EVAL_EFFORTS" --shards "$EVAL_SHARDS")"

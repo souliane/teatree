@@ -10,10 +10,11 @@ not a real ``bool``-or-``StrEnum`` ``UserSettings`` field registered in
 ON value — the Goodhart guard that keeps the outer loop's OFF switch un-flippable
 without a code-reviewed stage demotion.
 
-The live registry is seeded with several real flags — mostly ``DARK`` plus one
-``SETTLING`` (``incremental_push_gate``, graduated by #122). ``REMOVE`` is not
-represented live, so the stage-discrimination invariants are proven non-vacuously
-over a MIXED FIXTURE rather than the live set's accidental composition.
+The live registry is seeded with several real flags — mostly ``DARK`` plus a couple
+of ``SETTLING`` (``incremental_push_gate``, graduated by #122, and
+``limit_autorecovery_enabled``, graduated by #3691). ``REMOVE`` is not represented
+live, so the stage-discrimination invariants are proven non-vacuously over a MIXED
+FIXTURE rather than the live set's accidental composition.
 """
 
 import dataclasses
@@ -164,6 +165,44 @@ class TestDarkDefaultsOff:
         for ships_off_default, off_value in ((True, inverted.off_value), (False, positive.off_value)):
             assert ships_off_default == off_value
             assert (not ships_off_default) != off_value
+
+
+class TestResilienceRecoveryGraduation:
+    """The idle usage-window auto-recovery flag graduated DARK -> SETTLING (default ON).
+
+    A fresh deploy self-recovers from an exhausted usage window out of the box; the
+    recovery flag survives only as a per-overlay escape hatch during its soak. The
+    deep-merge SAFETY-posture gates are deliberately left DARK — this is a resilience
+    default, not a safety loosening.
+    """
+
+    def test_limit_autorecovery_graduated_to_settling(self) -> None:
+        flag = FEATURE_FLAGS["limit_autorecovery_enabled"]
+        assert flag.stage is FlagStage.SETTLING
+        assert flag.off_value is False
+
+    def test_limit_autorecovery_defaults_on_for_a_fresh_deploy(self) -> None:
+        # The whole point of the graduation: a fresh deploy no longer idles on the
+        # first usage-window exhaustion — the recovery chain arms by default.
+        assert UserSettings().limit_autorecovery_enabled is True
+
+    def test_safety_posture_gates_stay_dark(self) -> None:
+        # The deep-merge / safety-posture dark gates MUST NOT graduate alongside the
+        # resilience-recovery flag: they stay OFF by default, each equal to its off_value.
+        defaults = UserSettings()
+        safety_posture_flags = {
+            "require_plan_adequacy",
+            "critic_gate_mode",
+            "send_proxy_mode",
+            "require_debt_delta",
+            "require_executed_repro",
+            "require_merge_quality_verdict",
+            "ci_eval_heal_autofix_enabled",
+        }
+        for key in safety_posture_flags:
+            flag = FEATURE_FLAGS[key]
+            assert flag.stage is FlagStage.DARK, f"{key!r} must stay DARK — it is a safety-posture gate"
+            assert getattr(defaults, key) == flag.off_value, f"{key!r} must ship OFF by default"
 
 
 class TestQueryHelpers:

@@ -170,19 +170,19 @@ class _LoopFlagAndCredentialSettings:
     db_backup_disabled: bool = False
     db_backup_cadence_hours: int = 24
     db_backup_retention_days: int = 7
-    # Directive #3 — the OFF switch for idle usage-window auto-recovery, and a DARK
-    # ``FEATURE_FLAGS`` entry. When OFF (the default) a Claude usage-window limit
-    # (~5h session / 7-day weekly) is recorded as a terminal FAILED attempt EXACTLY as
-    # today — no park, no admission guard, no recovery chain (behaviorally inert). When
-    # ON, a limit hit PARKS the task (returns it to the queue with a ``not_before`` at
-    # the window's re-arm instant) instead of failing, an admission guard quietly parks
-    # further LLM dispatches on the exhausted lane, and the self-rescheduling
-    # ``usage_window_recovery`` loop-timer chain clears the window + releases the parked
-    # tasks + pumps the loop at reset — unattended, no OS cron. DB-home (#1775),
-    # per-overlay overridable. The conformance suite pins stage=DARK => this default ==
-    # its off_value (False), so it can never ship default-ON without a code-reviewed
-    # stage demotion.
-    limit_autorecovery_enabled: bool = False
+    # Directive #3 — idle usage-window auto-recovery, a SETTLING ``FEATURE_FLAGS``
+    # entry (graduated DARK->SETTLING by #3691, default ON). When ON (the default) a
+    # Claude usage-window limit (~5h session / 7-day weekly) PARKS the task (returns it
+    # to the queue with a ``not_before`` at the window's re-arm instant) instead of
+    # failing, an admission guard quietly parks further LLM dispatches on the exhausted
+    # lane, and the self-rescheduling ``usage_window_recovery`` loop-timer chain clears
+    # the window + releases the parked tasks + pumps the loop at reset — unattended, no
+    # OS cron. So a fresh deploy self-recovers from an exhausted usage window rather than
+    # idling until a human intervenes. OFF restores the pre-graduation behaviour: a limit
+    # is recorded as a terminal FAILED attempt — no park, no admission guard, no recovery
+    # chain. Survives as a per-overlay escape hatch during the soak. DB-home (#1775),
+    # per-overlay overridable.
+    limit_autorecovery_enabled: bool = True
     # #3201 PR-3b — the OFF switch the CI-eval self-heal AUTONOMOUS FIXER ships
     # behind, and a DARK ``FEATURE_FLAGS`` entry. Ships behaviorally inert: the
     # ``ci_eval_heal`` loop stays OBSERVE-ONLY (dispatch a behavioral eval, poll,

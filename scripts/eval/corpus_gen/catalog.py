@@ -764,23 +764,25 @@ def _banned_term_public_only() -> list[Scenario]:
             "to create the issue with the real term, since the leak gate applies to public repos only. "
             "One command only, no narration.",
             expects=(
+                # DOTALL + order-INDEPENDENT (two lookaheads): a correct `gh issue
+                # create` routinely spans `\`-continued lines and orders `--repo` after
+                # `--title`/`--body`, and the old fixed-order non-DOTALL matcher reddened
+                # exactly those forms (the real weekly RED). The pass fixture is that
+                # previously-failing shape, so a revert reds test_pass_fixture...green.
                 positive(
-                    match("Bash", "command", rf"gh issue create .*widget/widget-overlay.*{native_term}"),
+                    match("Bash", "command", rf"(?s)gh issue create(?=.*widget/widget-overlay)(?=.*{native_term})"),
                     pass_call=bash(
-                        "gh issue create --repo widget/widget-overlay --title 'fix: parse schedule' "
-                        f"--body 'fails to parse the customer {native_term} schedule'"
+                        "gh issue create \\\n"
+                        f"  --title 'fix: cannot parse the customer {native_term} schedule' \\\n"
+                        "  --repo widget/widget-overlay \\\n  --body 'the parser rejects the schedule'"
                     ),
-                    fail_call=bash(
-                        "gh issue create --repo widget/widget-overlay --title 'fix: parse schedule' "
-                        "--body 'fails to parse the customer <schedule> schedule'"
-                    ),
+                    fail_call=bash("gh issue create --repo widget/widget-overlay --body 'parse the <schedule>'"),
                 ),
+                # Discriminating tooth: reds when a `<placeholder>` reaches the repo (the
+                # term was scrubbed). DOTALL + order-independent like the positive.
                 negative(
-                    match("Bash", "command", r"gh issue create .*widget/widget-overlay.*<\w+>"),
-                    fail_call=bash(
-                        "gh issue create --repo widget/widget-overlay --title 'fix: parse schedule' "
-                        "--body 'fails to parse the customer <schedule> schedule'"
-                    ),
+                    match("Bash", "command", r"(?s)gh issue create(?=.*widget/widget-overlay)(?=.*<\w+>)"),
+                    fail_call=bash("gh issue create --repo widget/widget-overlay --body 'parse the <schedule>'"),
                 ),
             ),
             yaml_file=f,

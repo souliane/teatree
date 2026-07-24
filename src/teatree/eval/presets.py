@@ -18,7 +18,9 @@ module. Precedence with a preset active, highest first:
 
 1.  ``spec.model`` (non-empty) — an explicit scenario pin always wins.
 2.  The preset's own entry — its uniform ``tier``, or (for a per-scenario
-    preset) the map entry for this scenario's name.
+    preset) the map entry for this scenario's name, RAISED to the scenario's
+    explicitly declared ``tier:`` floor (:func:`floor_to_declared_tier`) so a
+    stale cheap pin can never resolve below the author's asserted minimum.
 3.  A scenario absent from a per-scenario preset's map falls through to
     :func:`~teatree.eval.model_resolution.resolve_eval_model` — the scenario's
     own ``tier`` / ``phase`` / :data:`~teatree.agents.model_tiering.DEFAULT_TIER`.
@@ -35,6 +37,7 @@ from pathlib import Path
 import yaml
 
 from teatree.agents.model_tiering import TIER_MODELS, resolve_tier
+from teatree.core.cost import tier_rank
 from teatree.eval.model_resolution import resolve_eval_model
 from teatree.eval.models import EvalSpec
 
@@ -86,6 +89,24 @@ CHEAP_PRESET = Preset(name="cheap", tier=_CHEAP_TIER)
 FRONTIER_PRESET = Preset(name="frontier", tier=_FRONTIER_TIER)
 
 
+def floor_to_declared_tier(pin: str, spec: EvalSpec) -> str:
+    """Raise a baseline *pin* to *spec*'s explicitly declared ``tier:`` floor.
+
+    A scenario's explicit ``tier:`` is the author's ASSERTED minimum model, so a
+    per-scenario preset pin below it — a stale or wrong ``t3 eval set-baseline``
+    entry that cheapened the scenario under a tier where it does not pass — is
+    lifted back up to the declared tier along the ``cheap`` < ``balanced`` <
+    ``frontier`` capability order (:func:`~teatree.core.cost.tier_rank`). A
+    scenario that declares no explicit ``tier:`` asserts no floor: the pin
+    applies unchanged (its ``phase``/default resolution is teatree's own choice,
+    not an author assertion, so the baseline is free to cheapen it).
+    """
+    declared = spec.tier.strip()
+    if declared and tier_rank(declared) > tier_rank(pin):
+        return declared
+    return pin
+
+
 def resolve_preset_model(spec: EvalSpec, preset: Preset) -> str:
     """Resolve *spec*'s concrete model id under *preset* — the composition seam.
 
@@ -93,7 +114,9 @@ def resolve_preset_model(spec: EvalSpec, preset: Preset) -> str:
     entry > (per-scenario preset only) fall through to
     :func:`~teatree.eval.model_resolution.resolve_eval_model` — *spec*'s own
     ``tier`` / ``phase`` / default tier. A scenario absent from a per-scenario
-    preset's map is NEVER silently cheapened.
+    preset's map is NEVER silently cheapened; a scenario PRESENT in the map is
+    floored to its explicitly declared ``tier:`` (:func:`floor_to_declared_tier`)
+    so a stale cheap pin can never resolve below the author's asserted minimum.
     """
     if spec.model.strip():
         return spec.model
@@ -101,7 +124,7 @@ def resolve_preset_model(spec: EvalSpec, preset: Preset) -> str:
         return resolve_tier(preset.tier)
     entry = preset.scenario_tiers.get(spec.name)
     if entry is not None:
-        return resolve_tier(entry)
+        return resolve_tier(floor_to_declared_tier(entry, spec))
     return resolve_eval_model(spec)
 
 

@@ -95,6 +95,24 @@ class TestIntakeBranches(TestCase):
         result = run_tick(settings=_open_settings(), seams=_seams())
         assert result.action == "interpret_dispatched"
 
+    def test_captured_rearms_a_fresh_interpreter_after_the_prior_one_died_uninterpreted(self) -> None:
+        # The silent-drop invariant: a CAPTURED directive whose interpret task went
+        # terminal without recording an interpretation (governor-refused → swept
+        # complete) is RE-ATTEMPTED on a later tick, not stranded by the dedup.
+        directive = Directive.objects.capture("do X", source=Directive.Source.CLI)
+        assert run_tick(settings=_open_settings(), seams=_seams()).action == "interpret_dispatched"
+        first_task = DirectiveDispatch.objects.get(directive=directive).task
+        assert first_task is not None
+        first_task.complete()  # completed with no interpretation envelope
+        directive.refresh_from_db()
+        assert directive.state == Directive.State.CAPTURED  # never advanced
+
+        result = run_tick(settings=_open_settings(), seams=_seams())
+        assert result.action == "interpret_dispatched"  # re-armed, not idle/waiting
+        rearmed_task = DirectiveDispatch.objects.get(directive=directive).task
+        assert rearmed_task is not None
+        assert rearmed_task.pk != first_task.pk  # a fresh interpreter
+
     def test_interpreted_asks_ratification(self) -> None:
         directive = Directive.objects.capture("do X", source=Directive.Source.CLI)
         directive.record_interpretation(sketch_from_envelope(valid_envelope()), constraint_statement="c")
