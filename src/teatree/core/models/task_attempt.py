@@ -4,6 +4,7 @@ from django.db import models
 
 from teatree.core.modelkit.gate_registry import get
 from teatree.core.models.task import Task
+from teatree.core.models.usage_window_state import LIMIT_PARKED_PREFIX
 from teatree.core.repair_loop import terminal_reason_fingerprint
 
 if TYPE_CHECKING:
@@ -196,5 +197,10 @@ class TaskAttempt(models.Model):
         """
         if not self.error_fingerprint:
             self.error_fingerprint = terminal_reason_fingerprint(self.error)
-        if not self.iteration and self.task_id:  # ty: ignore[unresolved-attribute]
+        # A limit-park records a scheduling event, not a work iteration (#3689): the
+        # budget query (task_repair.phase_attempts) already EXCLUDES park rows, so
+        # stamping one here disagrees with that query and leaves the park row carrying a
+        # bogus work-iteration number that corrupts the "attempt N/max" display and the
+        # S5 signal. Leave it at the 0 sentinel so the stamp and the budget query agree.
+        if not self.iteration and self.task_id and not self.error.startswith(LIMIT_PARKED_PREFIX):  # ty: ignore[unresolved-attribute]
             self.iteration = self.task.phase_iteration_count() + 1

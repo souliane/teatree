@@ -26,12 +26,22 @@ from teatree.core.models.review_verdict import ReviewVerdict, Severity
 from teatree.core.models.task_attempt import TaskAttempt
 from teatree.core.models.ticket import Ticket
 from teatree.core.models.transition import TicketTransition
+from teatree.core.models.usage_window_state import LIMIT_PARKED_PREFIX
+from teatree.llm.anthropic_limits import recoverable_exhaustion_cause
 from teatree.utils.url_slug import pr_ref_from_url
 
 # A five-observation floor keeps the thresholds stable at solo-factory volume;
 # a stale actionable CLEAR older than STALE_CLEAR_HOURS is a stalled merge loop.
 MIN_SAMPLE = 5
 STALE_CLEAR_HOURS = 48.0
+# S5 companion volume detector (#3690): a window where most work attempts crash or
+# refuse is broken regardless of how few successes remain to measure — the
+# mean-terminal-iteration scalar reads low (or insufficient) precisely when the loop
+# thrashes hardest and produces almost no success groups. Trip a hard-red when the
+# failure fraction is this high AND the window carries at least MIN_SAMPLE work attempts,
+# so a small sample is treated as noise, not a fleet-scale collapse.
+HIGH_FAILURE_FRACTION = 0.5
+
 
 _CATCH_SEVERITIES = frozenset({Severity.BLOCKER, Severity.MAJOR})
 
@@ -487,14 +497,26 @@ def compute_s4(window: Window, overlay: str, now: datetime) -> Computation:
 
 
 def compute_s5(window: Window, overlay: str, now: datetime) -> Computation:  # noqa: ARG001 — uniform compute signature
-    """S5 repair_iteration_burn: mean terminal iteration per succeeded (ticket, phase)."""
-    attempts = TaskAttempt.objects.filter(
-        started_at__gte=window.start,
-        started_at__lt=window.end,
-    ).select_related("task")
+    """S5 repair_iteration_burn: mean terminal iteration per succeeded (ticket, phase).
+
+    Scheduling-event attempts (limit-parks, recoverable-exhaustion dips) are excluded,
+    the same rows ``task_repair.phase_attempts`` drops from the budget query and by the
+    same idiom (a DB-level park exclude for the perf win over the 340k-row park backlog,
+    then a Python recoverable-exhaustion filter) — they are capacity events, not work
+    iterations, so they neither inflate the burn mean nor the failure fraction
+    (#3689/#3690). A high failure fraction over a meaningful sample trips a companion
+    hard-red the scalar mean alone cannot see: a window where nearly every attempt fails
+    leaves too few success groups to measure, so the mean reads low (or insufficient)
+    while the loop is on fire.
+    """
+    attempts = (
+        TaskAttempt.objects.filter(started_at__gte=window.start, started_at__lt=window.end)
+        .exclude(error__startswith=LIMIT_PARKED_PREFIX)
+        .select_related("task")
+    )
     if overlay:
         attempts = attempts.filter(task__ticket__overlay=overlay)
-    rows = list(attempts)
+    rows = [attempt for attempt in attempts if recoverable_exhaustion_cause(attempt.error) is None]
     total = len(rows)
     groups: dict[tuple[int, str], list[int]] = defaultdict(list)
     failed = 0
@@ -511,11 +533,24 @@ def compute_s5(window: Window, overlay: str, now: datetime) -> Computation:  # n
             failed += 1
     terminal_iters = [max(iters) for iters in groups.values()]
     sample = len(terminal_iters)
+    failed_fraction = failed / total if total else 0.0
+    hard_red = total >= MIN_SAMPLE and failed_fraction >= HIGH_FAILURE_FRACTION
+    reason = f"{round(failed_fraction, 3)} of {total} work attempts failed" if hard_red else ""
     evidence: S5Evidence = {
         "attempts": total,
         "success_groups": sample,
-        "failed_fraction": round(failed / total, 3) if total else 0.0,
+        "failed_fraction": round(failed_fraction, 3),
     }
     if sample < MIN_SAMPLE:
-        return Computation(SignalReading(0.0, sample, window.days, SignalStatus.INSUFFICIENT_DATA), evidence)
-    return Computation(SignalReading(round(mean(terminal_iters), 3), sample, window.days, SignalStatus.OK), evidence)
+        return Computation(
+            SignalReading(0.0, sample, window.days, SignalStatus.INSUFFICIENT_DATA),
+            evidence,
+            hard_red=hard_red,
+            hard_red_reason=reason,
+        )
+    return Computation(
+        SignalReading(round(mean(terminal_iters), 3), sample, window.days, SignalStatus.OK),
+        evidence,
+        hard_red=hard_red,
+        hard_red_reason=reason,
+    )

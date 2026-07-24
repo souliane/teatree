@@ -13,6 +13,7 @@ from django.utils import timezone
 
 from teatree.core.models import Session, Task, TaskAttempt, Ticket
 from teatree.core.models.deferred_question import DeferredQuestion
+from teatree.core.models.usage_window_state import LIMIT_PARKED_PREFIX
 from teatree.core.repair_loop import (
     IterationStalled,
     MaxIterationsExceeded,
@@ -28,6 +29,16 @@ def _failed_attempt(task: Task, *, error: str) -> TaskAttempt:
         ended_at=timezone.now(),
         exit_code=1,
         error=error,
+    )
+
+
+def _park_attempt(task: Task) -> TaskAttempt:
+    return TaskAttempt.objects.create(
+        task=task,
+        execution_target=task.execution_target,
+        ended_at=timezone.now(),
+        exit_code=1,
+        error=f"{LIMIT_PARKED_PREFIX}session window active",
     )
 
 
@@ -71,6 +82,23 @@ class TestIterationCounter(TestCase):
         _failed_attempt(review, error="r1")
         second = _failed_attempt(reviewing, error="r2")
         assert second.iteration == 2
+
+    def test_park_rows_are_not_stamped_and_do_not_advance_real_iteration(self) -> None:
+        # #3689: a limit_parked attempt is a scheduling event, not a work iteration.
+        # The budget query (task_repair.phase_attempts) already EXCLUDES park rows, so
+        # the stamp must too — otherwise park rows carry bogus work-iteration numbers
+        # (observed max 281 vs a cap of 5) that corrupt "attempt N/max" and the S5
+        # signal. Real attempts count only real attempts; parks stay at the 0 sentinel.
+        ticket = Ticket.objects.create()
+        task = self._phase_task(ticket, phase="coding")
+        first = _failed_attempt(task, error="boom-1")
+        park1 = _park_attempt(task)
+        second = _failed_attempt(task, error="boom-2")
+        park2 = _park_attempt(task)
+        third = _failed_attempt(task, error="boom-3")
+        assert [first.iteration, second.iteration, third.iteration] == [1, 2, 3]
+        assert park1.iteration == 0
+        assert park2.iteration == 0
 
 
 class TestTerminalReasonFingerprint(TestCase):
