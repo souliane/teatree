@@ -17,7 +17,7 @@ from django.utils import timezone
 
 from teatree.cli.doctor import checks_reconciliation as recon
 from teatree.cli.doctor.checks_reconciliation import reconcile_and_notify, run_reconciliation_checks
-from teatree.core.models import DeferredQuestion, EvalRunRecord, Loop, Session, Task, TaskAttempt, Ticket
+from teatree.core.models import DeferredQuestion, EvalRunRecord, IncomingEvent, Loop, Session, Task, TaskAttempt, Ticket
 from teatree.core.models.eval_run import EvalVerdict
 from teatree.core.models.usage_window_state import LIMIT_PARKED_PREFIX
 
@@ -333,6 +333,7 @@ class DoctorHookTestCase(TestCase):
             "halt_count_24h",
             "open_question_age",
             "duplicate_execution_count",
+            "high_churn_table_size",
         }
 
 
@@ -367,3 +368,37 @@ class DegradedReadTestCase(TestCase):
             result = recon._check_reconciliation_ledger()
         assert result is True
         assert "Reconciliation ledger crashed" in buf.getvalue()
+
+
+class HighChurnTableSizeTestCase(TestCase):
+    def test_under_ceiling_is_ok(self) -> None:
+        ticket = Ticket.objects.create()
+        _attempt(ticket)
+        finding = recon._check_high_churn_table_size()
+        assert finding.level == "ok"
+        assert "TaskAttempt" in finding.message
+
+    def test_task_attempt_over_ceiling_alarms(self) -> None:
+        ticket = Ticket.objects.create()
+        _attempt(ticket)
+        _attempt(ticket)
+        with patch.object(recon, "MAX_TASK_ATTEMPT_ROWS", 1):
+            finding = recon._check_high_churn_table_size()
+        assert finding.is_alarm
+        assert "TaskAttempt" in finding.message
+        assert "retention prune" in finding.message
+
+    def test_incoming_event_over_ceiling_alarms(self) -> None:
+        IncomingEvent.objects.create(source=IncomingEvent.Source.SLACK, idempotency_key="e1")
+        IncomingEvent.objects.create(source=IncomingEvent.Source.SLACK, idempotency_key="e2")
+        with patch.object(recon, "MAX_INCOMING_EVENT_ROWS", 1):
+            finding = recon._check_high_churn_table_size()
+        assert finding.is_alarm
+        assert "IncomingEvent" in finding.message
+
+    def test_at_ceiling_is_ok(self) -> None:
+        ticket = Ticket.objects.create()
+        _attempt(ticket)
+        with patch.object(recon, "MAX_TASK_ATTEMPT_ROWS", 1):
+            finding = recon._check_high_churn_table_size()
+        assert finding.level == "ok"

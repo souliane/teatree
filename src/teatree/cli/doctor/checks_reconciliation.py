@@ -58,6 +58,12 @@ MAX_HALTS_PER_DAY = 5
 #: Age of the oldest unanswered question above which head-of-line intake block is
 #: alarmed — one unanswered question stalls the whole intake pipeline.
 MAX_OPEN_QUESTION_AGE = dt.timedelta(hours=24)
+#: Row-count ceilings for the high-churn control-DB tables above which unbounded
+#: growth is surfaced (#3693). Advisory only: a bloated table is a "run the prune"
+#: nudge, never a reason to redden the doctor exit code. The park-spin residue
+#: reached ~340k rows, so this flags growth well before it becomes operational.
+MAX_TASK_ATTEMPT_ROWS = 100_000
+MAX_INCOMING_EVENT_ROWS = 100_000
 
 
 class _Level:
@@ -346,6 +352,37 @@ def _check_duplicate_execution(now: dt.datetime | None = None) -> Reconciliation
     )
 
 
+def _check_high_churn_table_size(now: dt.datetime | None = None) -> ReconciliationFinding:
+    """ALARM when a high-churn table's row count exceeds its ceiling (#3693).
+
+    Query: total ``TaskAttempt`` / ``IncomingEvent`` row counts. Thresholds:
+    :data:`MAX_TASK_ATTEMPT_ROWS` / :data:`MAX_INCOMING_EVENT_ROWS`. Advisory —
+    surfaces DB growth and points at ``retention prune`` before it bites.
+    """
+    del now  # a total row count, no time window
+    check_id = "high_churn_table_size"
+    try:
+        from teatree.core.models import IncomingEvent, TaskAttempt  # noqa: PLC0415 — ORM import needs the app registry
+
+        attempts = TaskAttempt.objects.count()
+        events = IncomingEvent.objects.count()
+    except Exception as exc:  # noqa: BLE001 — a reconciliation read must never crash the doctor run
+        return _degraded(check_id, exc)
+    over: list[str] = []
+    if attempts > MAX_TASK_ATTEMPT_ROWS:
+        over.append(f"`TaskAttempt` at `{attempts}` (ceiling `{MAX_TASK_ATTEMPT_ROWS}`)")
+    if events > MAX_INCOMING_EVENT_ROWS:
+        over.append(f"`IncomingEvent` at `{events}` (ceiling `{MAX_INCOMING_EVENT_ROWS}`)")
+    if not over:
+        return _ok(check_id, f"{attempts} TaskAttempt / {events} IncomingEvent rows")
+    return _alarm(
+        check_id,
+        f"High-churn table size alarm: {', '.join(over)}. The control DB is growing unbounded — "
+        f"prune terminal-owned old rows with `t3 <overlay> retention prune` (dry-run) then "
+        f"`t3 <overlay> retention prune --apply`.",
+    )
+
+
 #: Every reconciliation check, in a stable report order.
 CHECKS: tuple = (
     _check_park_spin,
@@ -356,6 +393,7 @@ CHECKS: tuple = (
     _check_halt_count,
     _check_open_question_age,
     _check_duplicate_execution,
+    _check_high_churn_table_size,
 )
 
 

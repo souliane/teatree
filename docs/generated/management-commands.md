@@ -424,6 +424,14 @@ Group root — forces sub-commands to be addressed by name.
 | `record-red` | Record the harness-run FAILING RED reproduction for a FIX ticket (#118) |
 | `record-green` | Record the harness-run PASSING GREEN and freeze the provenance verdict (#118) |
 
+## `retention`
+
+``t3 <overlay> retention`` group root.
+
+| Subcommand | Description |
+| --- | --- |
+| `prune` | Prune old rows from the high-churn tables (dry-run unless --apply) |
+
 ## `retro`
 
 ``t3 <overlay> retro`` group root.
