@@ -135,6 +135,25 @@ class TestRecordResultEnvelope(TestCase):
         )
         assert attempt.lane == ""
 
+    def test_success_stamps_reasoning_effort_and_skills(self) -> None:
+        task = self._claimed()
+        attempt = record_result_envelope(
+            task,
+            {"summary": "done", "files_modified": [{"path": "a.py", "action": "modified"}]},
+            usage=AttemptUsage(reasoning_effort="xhigh", skills_loaded=["t3:code", "t3:rules"]),
+        )
+        assert attempt.reasoning_effort == "xhigh"
+        assert attempt.skills_loaded == ["t3:code", "t3:rules"]
+
+    def test_reasoning_effort_and_skills_default_empty(self) -> None:
+        task = self._claimed()
+        attempt = record_result_envelope(
+            task,
+            {"summary": "done", "files_modified": [{"path": "a.py", "action": "modified"}]},
+        )
+        assert attempt.reasoning_effort == ""
+        assert attempt.skills_loaded == []
+
     def test_evidence_gate_fails_task(self) -> None:
         task = self._claimed()
         record_result_envelope(task, {"summary": "nothing changed"})
