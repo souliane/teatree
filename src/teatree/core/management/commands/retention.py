@@ -18,6 +18,7 @@ import typer
 from django_typer.management import TyperCommand, command, initialize
 
 from teatree.core.machine_output import emit
+from teatree.core.retention import apply_retention, plan_retention
 from teatree.core.table_output import print_table
 
 logger = logging.getLogger(__name__)
@@ -60,11 +61,6 @@ class Command(TyperCommand):
         Conservative: only rows past the retention window whose owning task AND
         ticket are terminal are ever deleted. A live/in-flight row is never touched.
         """
-        from teatree.core.retention import (  # noqa: PLC0415 — deferred: keeps command import light
-            apply_retention,
-            plan_retention,
-        )
-
         plan = apply_retention() if apply else plan_retention()
         payload: RetentionReport = {
             "applied": plan.applied,

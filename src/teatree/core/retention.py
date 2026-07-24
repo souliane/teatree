@@ -17,8 +17,15 @@ through them, so the guard is defined in exactly one place.
 import dataclasses
 import datetime as dt
 
+from django.db import models, transaction
+from django.db.models import Q
+from django.utils import timezone
+
 from teatree.config import get_effective_settings
 from teatree.config.settings import UserSettings
+from teatree.core.models import IncomingEvent, TaskAttempt, Ticket
+from teatree.core.models.task import Task
+from teatree.core.models.usage_window_state import LIMIT_PARKED_PREFIX
 
 
 @dataclasses.dataclass(frozen=True, slots=True)
@@ -47,18 +54,14 @@ class RetentionPlan:
 
 
 def _now(now: dt.datetime | None) -> dt.datetime:
-    if now is not None:
-        return now
-    from django.utils import timezone  # noqa: PLC0415 — deferred: Django import at call time
-
-    return timezone.now()
+    return now if now is not None else timezone.now()
 
 
 def _cutoff(now: dt.datetime, days: int) -> dt.datetime:
     return now - dt.timedelta(days=days)
 
 
-def task_attempts_prunable(cutoff: dt.datetime):  # noqa: ANN201 — returns the ORM queryset; annotating it drags the model import to module load
+def task_attempts_prunable(cutoff: dt.datetime) -> models.QuerySet:
     """Attempts safe to delete (#3693): the conservative double guard.
 
     An attempt is prunable ONLY when it started before *cutoff* AND its owning task
@@ -68,9 +71,6 @@ def task_attempts_prunable(cutoff: dt.datetime):  # noqa: ANN201 — returns the
     An attempt of an active task, or of a live ticket, is NEVER prunable — deleting
     a referenced/in-flight row is far worse than a bloated DB.
     """
-    from teatree.core.models import TaskAttempt, Ticket  # noqa: PLC0415 — ORM import needs the app registry
-    from teatree.core.models.task import Task  # noqa: PLC0415 — ORM import needs the app registry
-
     finished = Ticket.marker_release_states() | {Ticket.State.RETROSPECTED}
     return TaskAttempt.objects.filter(
         started_at__lt=cutoff,
@@ -79,25 +79,19 @@ def task_attempts_prunable(cutoff: dt.datetime):  # noqa: ANN201 — returns the
     )
 
 
-def incoming_events_prunable(cutoff: dt.datetime):  # noqa: ANN201 — returns the ORM queryset; see task_attempts_prunable
+def incoming_events_prunable(cutoff: dt.datetime) -> models.QuerySet:
     """Events safe to delete (#3693): only a FINISHED event received before *cutoff*.
 
     Finished = already drained (``processed_at`` set) or dead-lettered. An
     un-processed, non-dead-lettered event is still in-flight (awaiting its first
     drain or a backoff retry), so it is NEVER prunable however old it is.
     """
-    from django.db.models import Q  # noqa: PLC0415 — deferred: Django import at call time
-
-    from teatree.core.models import IncomingEvent  # noqa: PLC0415 — ORM import needs the app registry
-
     return IncomingEvent.objects.filter(received_at__lt=cutoff).filter(
         Q(processed_at__isnull=False) | Q(dead_lettered_at__isnull=False)
     )
 
 
-def _junk_count(task_attempt_qs) -> int:  # noqa: ANN001 — a TaskAttempt queryset; see task_attempts_prunable
-    from teatree.core.models.usage_window_state import LIMIT_PARKED_PREFIX  # noqa: PLC0415 — ORM-adjacent constant
-
+def _junk_count(task_attempt_qs: models.QuerySet) -> int:
     return task_attempt_qs.filter(error__startswith=LIMIT_PARKED_PREFIX).count()
 
 
@@ -127,8 +121,6 @@ def plan_retention(now: dt.datetime | None = None, *, settings: UserSettings | N
 
 def apply_retention(now: dt.datetime | None = None, *, settings: UserSettings | None = None) -> RetentionPlan:
     """Delete the prunable rows per table, inside one transaction. Returns the applied plan."""
-    from django.db import transaction  # noqa: PLC0415 — deferred: Django import at call time
-
     moment = _now(now)
     cfg = settings or get_effective_settings()
 
