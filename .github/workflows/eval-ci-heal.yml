@@ -58,7 +58,7 @@
 #   downloads it to the box for the fix agent to read; it is NEVER published.
 # ============================================================
 
-name: Eval CI heal
+name: Manual · Eval CI heal
 
 on:
   workflow_dispatch:

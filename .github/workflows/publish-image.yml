@@ -17,7 +17,7 @@
 # OWNER-INFRA NOTE: this workflow's PUSH step cannot be validated without the
 # target registry. On a fork PR or when registry credentials do not resolve it
 # runs in BUILD-ONLY mode (proves the image builds, pushes nothing).
-name: Publish teatree image
+name: Push · Publish deploy image
 
 on:
   workflow_dispatch:

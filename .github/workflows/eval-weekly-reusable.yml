@@ -42,6 +42,10 @@
 #   failed-run email (no extra secret, no bot).
 # ============================================================
 
+# TRIGGER: workflow_call only — invoked by `eval-benchmark.yml` (manual dispatch)
+# and by an overlay's thin weekly caller; it is never triggered on its own.
+name: Reusable · Weekly benchmark eval
+
 on:
   workflow_call:
     inputs:

@@ -84,7 +84,10 @@
 #   prek and the regression corpus is asserted every PR via pytest.
 # ============================================================
 
-name: CI
+# TRIGGER: primarily pull_request (the PR merge pipeline — hence the `CI ·`
+# name). ALSO runs on push to main and a daily schedule as full-tree backstops
+# (see the CONCURRENCY note above); those secondary triggers are declared below.
+name: CI · Lint, test & quality gates
 
 on:
   push:
