@@ -2898,7 +2898,7 @@ name = "shadowcopy"
 version = "0.0.4"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "wmi", marker = "sys_platform == 'win32'" },
+    { name = "wmi" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/12/44/c00420a3b7bcdf830529b933392b566c876a4944a24f31e126eb6fd28647/shadowcopy-0.0.4.tar.gz", hash = "sha256:ed89817dda065f893607a04c0b7d6b3b34c3507a4711f441111a4bcb1b1826c0", size = 4138, upload-time = "2023-07-08T00:01:35.266Z" }
 wheels = [
@@ -3068,6 +3068,7 @@ dependencies = [
     { name = "mcp" },
     { name = "pillow" },
     { name = "pydantic-ai-slim", extra = ["anthropic", "openai"] },
+    { name = "pydantic-settings" },
     { name = "pyyaml" },
     { name = "tomlkit" },
     { name = "whitenoise" },
@@ -3145,6 +3146,7 @@ requires-dist = [
     { name = "mcp", specifier = ">=1.27" },
     { name = "pillow", specifier = ">=12.3" },
     { name = "pydantic-ai-slim", extras = ["anthropic", "openai"], specifier = ">=2.3" },
+    { name = "pydantic-settings", specifier = ">=2.14.2" },
     { name = "pyyaml", specifier = ">=6" },
     { name = "slack-sdk", marker = "extra == 'slack'", specifier = ">=3.35" },
     { name = "tomlkit", specifier = ">=0.13" },
@@ -3515,7 +3517,7 @@ name = "wmi"
 version = "1.5.1"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "pywin32", marker = "sys_platform == 'win32'" },
+    { name = "pywin32" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/d4/66/6364deb0a03415f96c66803d8c4379f808f2401da3bdb183348487b10510/WMI-1.5.1.tar.gz", hash = "sha256:b6a6be5711b1b6c8d55bda7a8befd75c48c12b770b9d227d31c1737dbf0d40a6", size = 26254, upload-time = "2020-04-28T08:22:58.096Z" }
 wheels = [
