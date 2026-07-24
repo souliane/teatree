@@ -20,7 +20,7 @@ from teatree.core.models import Session, Task, TaskAttempt, Ticket
 from teatree.core.models.deferred_question import DeferredQuestion
 from teatree.loop.repair_halt_reconcile import resolve_reconciled_repair_halts
 from teatree.loop.tick_recovery import _reap_stale_task_claims
-from teatree.loop.transient_requeue import HALT_STAMP, requeue_transient_failed
+from teatree.loop.transient_requeue import HALT_STAMP, escalation_marker, requeue_transient_failed
 
 
 def _failed_task(*, phase: str = "coding", state: str = Ticket.State.STARTED) -> Task:
@@ -165,6 +165,13 @@ class TestRepairHaltReconcile(TestCase):
         assert resolve_reconciled_repair_halts() == 1
         # Idempotent: a second pass finds it already dismissed and drains nothing.
         assert resolve_reconciled_repair_halts() == 0
+
+    def test_reconcile_keys_on_the_same_marker_the_escalation_writes(self) -> None:
+        # The reconcile re-derives a parked task's marker to map it back to its question,
+        # so the derivation MUST equal the dedupe_marker the escalation recorded.
+        task = _escalated_halt_task()
+        question = DeferredQuestion.objects.get(dedupe_marker__startswith="repair-halt:")
+        assert escalation_marker(task) == question.dedupe_marker
 
     def test_reconcile_is_wired_into_tick_recovery(self) -> None:
         task = _escalated_halt_task()
