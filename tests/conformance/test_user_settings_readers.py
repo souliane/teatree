@@ -299,6 +299,17 @@ def _walk_py_files(reader: Callable[[ast.Module, set[str]], set[str]], field_nam
         for path in root.rglob("*.py"):
             if path.resolve() == _SETTINGS_DEF:
                 continue
+            # Migration files are FROZEN ORM state, never live settings readers. A
+            # squash migration collapses the data-op bodies of the whole chain
+            # into one file, so a ``ConfigSetting = apps.get_model(...)`` reference
+            # (a resolution marker) sits alongside every frozen model field-name
+            # string literal — flipping ``_module_resolves_settings`` True and
+            # falsely counting field-name strings (``"timezone"``, ``"payload"``) as
+            # settings reads. Excluding ``migrations/`` scopes the matcher to live
+            # code; no real reader lives in a migration (proven: only the coincidental
+            # ``timezone`` string was ever migration-only).
+            if "migrations" in path.parts:
+                continue
             try:
                 tree = ast.parse(path.read_text(encoding="utf-8", errors="ignore"), filename=str(path))
             except SyntaxError:
