@@ -398,11 +398,13 @@ RESULT_JSON_SCHEMA: JSONSchema = {
 #: - ``answering``: an ``answer`` draft returned — same shell-denied hand-back;
 #:   a summary-only run dropped the drafted reply.
 #:
-#: Phases not in this map carry no evidence requirement. Of those, the
-#: intentionally-lightweight ``scoping`` and ``retro`` phases additionally
-#: accept a prose-only summary when the agent emits no JSON envelope at all —
-#: see :data:`PROSE_SUMMARY_ACCEPTED_PHASES`, the sibling that gates the
-#: no-envelope fallback for every OTHER uncovered phase.
+#: Phases not in this map carry no evidence requirement of their own.
+#: ``scoping`` and ``retro`` are intentionally lightweight and may complete on
+#: prose alone (:data:`PROSE_SUMMARY_ACCEPTED_PHASES`); every OTHER absent phase
+#: — ``debugging``, ``bughunt``, ``e2e``, ``e2e_reviewing``, ``requesting_review``,
+#: ``architectural_review``, ``backlog_sweep``, ``dogfood_smoke``, ``eval_local``,
+#: the ``codex_*`` review variants, and any free-form phase — must still RETURN a
+#: result envelope, which :func:`prose_summary_allowed` enforces.
 PHASE_REQUIRED_EVIDENCE: dict[str, tuple[str, ...]] = {
     "planning": ("plan_text",),
     "coding": ("files_modified",),
@@ -424,18 +426,51 @@ def required_evidence_for_phase(phase: str) -> tuple[str, ...]:
 
 
 #: Phases whose no-envelope run may still record the prose-only ``{"summary":
-#: ...}`` fallback — exactly the intentionally-lightweight phases the sibling
-#: :data:`PHASE_REQUIRED_EVIDENCE` block calls out. Data, not harness logic: a
-#: run on ANY other phase that emits no JSON result envelope is a contract
-#: violation (``prompt.py`` demands a final JSON object from every phase), so
-#: ``_record_success`` refuses it rather than laundering prose into a false
-#: success. Widen this table — never the harness — to exempt a new phase.
+#: ...}`` fallback because the prose IS the deliverable — exactly the two the
+#: :data:`PHASE_REQUIRED_EVIDENCE` block calls intentionally lightweight. Data,
+#: not harness logic: widen this table — never the runner — to exempt a new phase.
 PROSE_SUMMARY_ACCEPTED_PHASES: frozenset[str] = frozenset({"scoping", "retro"})
 
 
-def prose_summary_accepted(phase: str) -> bool:
-    """Whether ``phase`` may record a prose summary when the agent emits no JSON envelope."""
-    return normalize_phase(phase) in PROSE_SUMMARY_ACCEPTED_PHASES
+class ProseSummaryPolicy:
+    """Phase predicates gating the envelope-less prose-only ``{"summary": ...}`` fallback."""
+
+    @staticmethod
+    def accepted(phase: str) -> bool:
+        """Whether ``phase`` may record a prose summary when the agent emits no JSON envelope."""
+        return normalize_phase(phase) in PROSE_SUMMARY_ACCEPTED_PHASES
+
+    @staticmethod
+    def allowed(phase: str) -> bool:
+        """Whether ``_record_success`` may hand an envelope-less run on *phase* to the recorder.
+
+        The runner-side sibling of :meth:`accepted`, and deliberately wider than
+        it. ``_record_success`` manufactures ``{"summary":
+        agent_text[:1000]}`` when :func:`~teatree.agents.headless_result.parse_result`
+        finds no JSON anywhere in the agent's output. That fallback is what let a run
+        which produced *nothing* — the model asked for tools it did not have and
+        stopped early — record COMPLETED and advance the ticket FSM: every gate in
+        ``record_result_envelope`` passes, because a phase absent from
+        :data:`PHASE_REQUIRED_EVIDENCE` has nothing to check. The generic task brief
+        demands a final JSON object from EVERY phase (``agents/prompt.py``), so
+        prose-only is a contract violation on every lane; the fallback laundered it
+        into a completion.
+
+        Two disjoint reasons the runner still hands the manufactured summary on
+        rather than refusing it outright:
+
+        * :meth:`accepted` — the lightweight phases, exempt by design.
+        * A phase that HAS an evidence requirement — the manufactured summary is
+            already refused downstream by :func:`check_evidence`, with a message naming
+            the missing field, and only after ``attempt_recorder._salvage_coding_result``
+            has had its chance to rescue a coder that committed real work but omitted the
+            envelope (#3263). Refusing here would preempt both, replacing a specific
+            diagnosis with a generic one and stranding a landed branch.
+
+        Every other phase has no gate at all, so this is the only thing between a
+        vacuous run and a completed task.
+        """
+        return ProseSummaryPolicy.accepted(phase) or normalize_phase(phase) in PHASE_REQUIRED_EVIDENCE
 
 
 type AgentResultBlob = dict[str, object]

@@ -126,7 +126,7 @@ class CloseDeadIssueRoutesThroughSeamTests(TestCase):
         host = _Host()
         with (
             _patched(host, is_public=True),
-            patch("teatree.core.gates.privacy_gate._overlay_privacy_rules", return_value=([], [])),
+            patch("teatree.core.gates.privacy_gate.overlay_privacy_rules", return_value=([], [])),
         ):
             close_dead_issue({"url": _URL, "reason": "already_shipped"})
         assert len(host.closed) == 1
@@ -140,7 +140,7 @@ class CloseDeadIssueRoutesThroughSeamTests(TestCase):
         # must still be caught by the seam before the comment reaches a public forge.
         with (
             _patched(host, is_public=True),
-            patch("teatree.core.gates.privacy_gate._overlay_privacy_rules", return_value=(["exact"], [])),
+            patch("teatree.core.gates.privacy_gate.overlay_privacy_rules", return_value=(["exact"], [])),
         ):
             close_dead_issue({"url": _URL, "reason": "exact_duplicate"})  # must not raise
         # The leaking comment is never posted and the close is skipped.

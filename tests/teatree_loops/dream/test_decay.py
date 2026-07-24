@@ -38,6 +38,24 @@ from teatree.loops.dream.decay import BudgetTier, DecayPolicy, _MemoryFile, deca
 
 _NOW = datetime(2026, 6, 16, 12, tzinfo=UTC)
 
+#: A long descriptive slug tail (kept within the real ~86-char filename max) so the
+#: COMPACT bare-pointer index reaches the ~24 KB byte budget at a few-hundred-file
+#: corpus: filenames, not per-line summaries, are what fill the re-indexed hot index
+#: (#2755), so the budget-tier fixtures reach budget through realistic filename length.
+_BUDGET_SLUG = "with_a_realistic_fairly_long_low_signal_descriptive_tag"
+
+#: Em-dash (U+2014) padding — 40 chars but 120 bytes — so a char-counting budget check
+#: would UNDERCOUNT a padded filename; the tier must measure ENCODED bytes (#2755).
+_MB_PAD = "—" * 40
+
+
+def _budget_name(prefix: str, i: int) -> str:
+    return f"{prefix}_{_BUDGET_SLUG}_{i:04d}"
+
+
+def _mb_name(prefix: str, i: int) -> str:
+    return f"{prefix}_{_MB_PAD}_{i:04d}"
+
 
 def _policy(*, retention_days: int = 30, budget_tier: bool = False) -> DecayPolicy:
     """Build a DecayPolicy from the legacy retention/budget-tier kwargs the tests use."""
@@ -353,11 +371,13 @@ class BudgetDecayTierTestCase(SimpleTestCase):
 
         The bodies carry per-file keyword tokens so no two are near-duplicates — the
         OLD captured-elsewhere rail would retain every one (RED), the NEW signal-scored
-        tier archives the lowest until under budget (GREEN).
+        tier archives the lowest until under budget (GREEN). Filenames are long and
+        realistic so a few-hundred-file corpus reaches the ~24 KB budget in the compact
+        bare-pointer index (#2755).
         """
         for i in range(count):
             self._write(
-                f"feedback_filler_{i:04d}",
+                _budget_name("feedback_filler", i),
                 f"lesson keyword{i:04d}alpha keyword{i:04d}beta about a niche low-signal note",
                 age_days=age_days,
             )
@@ -434,8 +454,8 @@ class BudgetDecayTierTestCase(SimpleTestCase):
 
     def test_cold_index_signature_is_uncapped(self) -> None:
         # The cold MEMORY_ARCHIVE.md keeps the FULL signature (uncapped) — retention
-        # needs the verbatim line — even though the hot index clips lines to 140.
-        long_sig = "a long unique low-signal lesson that exceeds the hot per-line cap " + "x" * 200
+        # needs the verbatim line — unlike the hot index's bare `- name.md` pointers.
+        long_sig = "a long unique low-signal lesson that exceeds any per-line cap " + "x" * 200
         self._seed_low_signal(359)
         long_file = self._write("feedback_long_signature", long_sig, age_days=300)
         self._seed_index()
@@ -443,8 +463,7 @@ class BudgetDecayTierTestCase(SimpleTestCase):
         assert long_file.name in self._archived_sources(result)
         cold = (self.dir / "MEMORY_ARCHIVE.md").read_text(encoding="utf-8")
         cold_line = next(line for line in cold.splitlines() if line.startswith("- feedback_long_signature.md"))
-        assert len(cold_line) > reindex._LINE_MAX_CHARS  # uncapped, unlike the hot index
-        assert long_sig in cold_line
+        assert long_sig in cold_line  # verbatim, uncapped
 
     def test_nothing_archived_while_under_budget(self) -> None:
         # A handful of files + a small index: the tier does not fire (no pressure).
@@ -454,10 +473,11 @@ class BudgetDecayTierTestCase(SimpleTestCase):
         assert result.archived_count == 0
 
     def test_short_lines_use_byte_headroom_archiving_fewer_than_a_line_cap_would(self) -> None:
-        # #2755 core win: with SHORT index lines, FAR more than the retired 150-line cap
-        # fit the 24 KB byte budget, so the byte-only tier archives NOTHING here — where a
-        # 150-line cap would have archived (count - 150) files. The byte headroom is USED,
-        # not wasted. Anti-vacuous: reintroduce a 150-line cap and archived_count goes > 0.
+        # #2755 core win: bytes are the only constraint, so FAR more than the retired
+        # 150-line cap fit the 24 KB byte budget — the byte-only tier archives NOTHING
+        # here, where a 150-line cap would have archived (count - 150) files. The byte
+        # headroom is USED, not wasted. Anti-vacuous: reintroduce a 150-line cap and
+        # archived_count goes > 0.
         count = 250  # > the retired 150-line cap, yet the rendered index stays < 24 KB
         self._seed_low_signal(count)
         self._seed_index()
@@ -524,16 +544,15 @@ class BudgetDecayTierTestCase(SimpleTestCase):
         assert on.archived_count > 0, "tier on must archive the lowest-signal files"
 
     def _seed_dense_multibyte(self, count: int, *, age_days: int = 120) -> None:
-        """Seed *count* stale low-signal files whose hooks are DENSE multibyte.
+        """Seed *count* stale low-signal files with DENSE multibyte FILENAMES.
 
-        A hook of 3-byte UTF-8 chars (``—``) makes each clipped line ≈161 bytes, so the
-        byte counting that drives the budget tier must measure ENCODED bytes, not chars
-        — a char-counting tier would mis-size a multibyte index. This exercises that
-        byte-exact path (#2755: bytes are the only constraint).
+        A bare pointer carries only the filename, so the multibyte bytes now live in the
+        name (``—`` = 3 bytes/char): each pointer line is ≈145 bytes but only ≈63 chars.
+        A char-counting tier would mis-size the index; the tier must measure ENCODED
+        bytes (#2755: bytes are the only constraint). This exercises that byte-exact path.
         """
-        dense = "—" * 200  # U+2014 em-dash, 3 bytes/char
         for i in range(count):
-            self._write(f"feedback_mb_{i:04d}", dense, age_days=age_days)
+            self._write(_mb_name("feedback_mb", i), f"a niche low-signal note {i:04d}", age_days=age_days)
 
     def test_multibyte_index_archives_until_under_byte_budget(self) -> None:
         # #2755: a dense multibyte index over the BYTE budget is archived down until its
@@ -558,7 +577,7 @@ class BudgetDecayTierTestCase(SimpleTestCase):
         # corpus bug). The fix archives referenced low-signal files too — just enough to
         # bring the index back under budget — so the tier always converges.
         self._seed_low_signal(360)
-        links = " ".join(f"[[feedback_filler_{i:04d}]]" for i in range(360))
+        links = " ".join(f"[[{_budget_name('feedback_filler', i)}]]" for i in range(360))
         self._write("feedback_hub", f"a hub that links everything {links}", age_days=400)
         self._seed_index()
         result = self._decay(budget_tier=True)
@@ -570,29 +589,30 @@ class BudgetDecayTierTestCase(SimpleTestCase):
     def _seed_cross_linked_corpus(self) -> tuple[Path, Path, Path, Path]:
         """Seed an over-byte-budget corpus where MOST entries are [[ ]]-cross-link-referenced.
 
-        180 feedback fillers with DENSE multibyte hooks form a reference RING (each links
-        the next, the last links the first) so EVERY filler is referenced; the first 30
-        also link a hub, so the hub is the MOST-LINKED entry. The multibyte hooks make each
-        index line ~3x the ASCII size, so ~180 entries blow the ~24 KB byte budget while
-        the ages still map to STRICTLY-DECREASING recency (no floor, no ties) — making the
-        OLDEST ring filler the uniquely lowest signal. A user memory and a BINDING memory
-        are the highest-signal entries (unreferenced — to make the pre-fix bug stark: the
-        old budget tier could only archive the unreferenced high-signal entries, the exact
-        wrong ones, and still never converge). Returns ``(user, binding, hub, oldest_filler)``.
+        180 feedback fillers with DENSE multibyte FILENAMES form a reference RING (each
+        links the next, the last links the first) so EVERY filler is referenced; the first
+        30 also link a hub, so the hub is the MOST-LINKED entry. The multibyte filenames
+        make each pointer line ~3x the ASCII size, so ~180 entries blow the ~24 KB byte
+        budget while the ages still map to STRICTLY-DECREASING recency (no floor, no ties)
+        — making the OLDEST ring filler the uniquely lowest signal. A user memory and a
+        BINDING memory are the highest-signal entries (unreferenced — to make the pre-fix
+        bug stark: the old budget tier could only archive the unreferenced high-signal
+        entries, the exact wrong ones, and still never converge). Returns
+        ``(user, binding, hub, oldest_filler)``.
         """
         n = 180
         for i in range(n):
             nxt = (i + 1) % n
             hub_link = " [[feedback_popular_hub]]" if i < 30 else ""
             self._write(
-                f"feedback_chain_{i:04d}",
-                f"{'—' * 60} see [[feedback_chain_{nxt:04d}]]{hub_link}",
+                _mb_name("feedback_chain", i),
+                f"see [[{_mb_name('feedback_chain', nxt)}]]{hub_link}",
                 age_days=31 + i,  # ages 31..210 -> recency 199..20, strictly decreasing (no ties)
             )
         user = self._write("user_special_preference", "the user's own durable editor preference", mtype="user")
         binding = self._write("feedback_binding_doctrine", "BINDING the load-bearing doctrine")
         hub = self._write("feedback_popular_hub", "a popular hub many memories point at", age_days=300)
-        oldest = self.dir / f"feedback_chain_{n - 1:04d}.md"
+        oldest = self.dir / f"{_mb_name('feedback_chain', n - 1)}.md"
         self._seed_index()
         return user, binding, hub, oldest
 
@@ -769,7 +789,7 @@ class OverBudgetDecayEndToEndTestCase(TestCase):
     def test_over_budget_index_fails_gate_then_decays_under_budget_next_pass(self) -> None:
         for i in range(360):
             self._write(
-                f"feedback_low_{i:04d}",
+                _budget_name("feedback_low", i),
                 f"lesson keyword{i:04d}gamma keyword{i:04d}delta a niche low-signal note",
                 age_days=120 + (i % 90),
             )
@@ -821,8 +841,8 @@ class OverBudgetDecayEndToEndTestCase(TestCase):
         for i in range(n):
             nxt = (i + 1) % n
             self._write(
-                f"feedback_ring_{i:04d}",
-                f"lesson token{i:04d} a niche low-signal ring note see [[feedback_ring_{nxt:04d}]]",
+                _budget_name("feedback_ring", i),
+                f"lesson token{i:04d} a niche low-signal ring note see [[{_budget_name('feedback_ring', nxt)}]]",
                 age_days=31 + i,  # older entries score lower -> archived first under pressure
             )
         self._write("feedback_binding_rule", "the load-bearing binding doctrine", age_days=80, binding=True)

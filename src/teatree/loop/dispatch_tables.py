@@ -150,6 +150,11 @@ STATUSLINE_DROP_PREFIXES: tuple[str, ...] = (
     "outbound.",
     "review_nag.",
     "review_request_merge_react.",
+    # The review-DONE ack is the same shape as its merge-react sibling: the
+    # reaction IS the user-visible outcome, posted on the colleague's broadcast.
+    # Re-rendering it as a statusline row would duplicate a signal the user
+    # already sees in Slack, once per tick until the window closes.
+    "review_done_ack.",
     "architectural_review.",
     "dogfood_smoke.",
     "scanning_news.",

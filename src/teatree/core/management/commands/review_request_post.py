@@ -30,7 +30,12 @@ from django_typer.management import TyperCommand, command
 
 from teatree.core.backend_factory import messaging_from_overlay
 from teatree.core.gates.review_request_draft_gate import is_draft_mr
-from teatree.core.gates.review_request_guard import canonical_mr_url, resolve_guard_target, should_post_review_request
+from teatree.core.gates.review_request_guard import (
+    canonical_mr_url,
+    overlay_for_mr_url,
+    resolve_guard_target,
+    should_post_review_request,
+)
 from teatree.core.gates.review_request_state_gate import check_reviewed_state, reviewed_state_required
 from teatree.core.modelkit.notify_policy import NotifyAudience
 from teatree.core.models import Ticket
@@ -141,7 +146,8 @@ class Command(TyperCommand):
                 exit_code=2,
             )
 
-        target = resolve_guard_target()
+        overlay_name = overlay_for_mr_url(mr_url)
+        target = resolve_guard_target(overlay_name=overlay_name)
         if target is None:
             # The review channel is unpostable (e.g. a Slack Connect channel
             # that requires a user xoxp token the bot doesn't hold — #2231).
@@ -161,7 +167,7 @@ class Command(TyperCommand):
 
         # Draft gate: a draft MR is not ready for review — refuse BEFORE the
         # dedup claim so no orphan ``ReviewRequestPost`` row is left to roll back.
-        if is_draft_mr(canonical):
+        if is_draft_mr(canonical, overlay_name=overlay_name):
             self._emit(
                 {"action": "refused", "reason": "draft_mr", "mr_url": canonical},
                 exit_code=2,
@@ -191,7 +197,7 @@ class Command(TyperCommand):
                 exit_code=2,
             )
 
-        messaging = messaging_from_overlay()
+        messaging = messaging_from_overlay(overlay_name or None)
         if messaging is None:
             self._emit(
                 {"action": "suppress", "reason": "no_messaging_backend", "mr_url": canonical},

@@ -238,6 +238,11 @@ layer = "domain"
 depends_on = []
 
 [[modules]]
+path = "teatree.core.managers_issue_match"
+layer = "domain"
+depends_on = []
+
+[[modules]]
 path = "teatree.core.managers"
 layer = "domain"
 depends_on = [
@@ -246,6 +251,7 @@ depends_on = [
   "teatree.core.modelkit",
   "teatree.core.models.errors",
   "teatree.core.loop_lease_manager",
+  "teatree.core.managers_issue_match",
   "teatree.core.managers_overlay",
   "teatree.core.managers_task_claim",
   "teatree.core.repair_loop",
@@ -486,6 +492,7 @@ depends_on = [
   "teatree.loop.statusline_render",
   "teatree.loop.url_specificity",
   "teatree.loop.review_claim_signals",
+  "teatree.loop.review_done_reactions",
   "teatree.loop.loop_state_db",
   "teatree.loop.review_request_tracker",
   "teatree.loop.dispatch_tables",
@@ -582,6 +589,17 @@ layer = "domain"
 depends_on = ["teatree.types", "teatree.core.models", "teatree.loop.loop_state_db"]
 
 [[modules]]
+path = "teatree.loop.review_done_reactions"
+layer = "domain"
+depends_on = [
+  "teatree.types",
+  "teatree.utils",
+  "teatree.core",
+  "teatree.core.models",
+  "teatree.loop.review_claim_signals"
+]
+
+[[modules]]
 path = "teatree.loop.loop_state_db"
 layer = "domain"
 depends_on = ["teatree.core.models", "teatree.loop.preset_resolution"]
@@ -610,6 +628,7 @@ depends_on = [
   "teatree.teams",
   "teatree.loop.url_specificity",
   "teatree.loop.review_claim_signals",
+  "teatree.loop.review_done_reactions",
   "teatree.loop.review_request_tracker",
   "teatree.loop.pr_ticket_index"
 ]

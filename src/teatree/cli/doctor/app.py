@@ -332,6 +332,7 @@ def run_doctor_checks(*, repair: bool = False, slack_roundtrip: bool = False) ->
     # Detect a relocated/same-name-hijacked editable install: the active t3 shim's
     # uv receipt editable source no longer matches the expected checkout ($T3_REPO).
     # Unlike the dangling check, this catches a target that EXISTS but is wrong.
+    # `--repair` re-points it via
     # `--repair` re-points it via `uv tool install --editable <checkout> --force`.
     ok = _check_t3_shim_receipt(repair=repair) and ok
     # ``check`` is a plain Typer command in the Django-free CLI group, so Django is

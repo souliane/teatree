@@ -12,7 +12,7 @@ from typing import Protocol, cast
 
 from teatree.backends.slack.bot_errors import GLOBAL_TOKEN_FAILURES
 from teatree.backends.slack.pagination import next_cursor
-from teatree.types import RawAPIDict, ScannerError
+from teatree.types import ChannelReadRefusedError, RawAPIDict, ScannerError
 
 # Bounds the members walk at ~10k users so a lookup of a genuinely-absent handle
 # terminates rather than paging an entire enterprise workspace.
@@ -21,6 +21,16 @@ _MAX_USER_PAGES = 50
 
 class Getter(Protocol):
     def __call__(self, method: str, params: dict[str, str | int], *, token: str = "") -> RawAPIDict: ...
+
+
+def read_channel_history_or_refuse(*, get: Getter, channel: str, token: str, limit: int = 50) -> list[RawAPIDict]:
+    """Like :func:`read_channel_history` but RAISES on a channel-scoped refusal.
+
+    The seam for interactive, single-channel callers (the MCP Slack group). The
+    scanner keeps the swallowing variant; nobody has to choose between a resilient
+    poll loop and an honest answer.
+    """
+    return _read_channel_history(get=get, channel=channel, token=token, limit=limit, refuse=True)
 
 
 def read_channel_history(*, get: Getter, channel: str, token: str, limit: int = 50) -> list[RawAPIDict]:
@@ -36,8 +46,21 @@ def read_channel_history(*, get: Getter, channel: str, token: str, limit: int = 
     deactivated) raises :class:`ScannerError` so the dispatcher records it and DMs
     the user (#1287); a channel-scoped failure returns ``[]`` so one slow channel
     never breaks the scan loop (#1255). ``channel`` is stamped on each message so
-    downstream consumers don't have to thread it back in.
+    downstream consumers don't have to thread it back in. An interactive caller that
+    must distinguish "empty" from "unreadable" uses
+    :func:`read_channel_history_or_refuse` instead.
     """
+    return _read_channel_history(get=get, channel=channel, token=token, limit=limit, refuse=False)
+
+
+def _read_channel_history(
+    *,
+    get: Getter,
+    channel: str,
+    token: str,
+    limit: int,
+    refuse: bool,
+) -> list[RawAPIDict]:
     data = get(
         "conversations.history",
         {"channel": channel, "limit": max(1, min(limit, 200))},
@@ -51,6 +74,8 @@ def read_channel_history(*, get: Getter, channel: str, token: str, limit: int = 
                 error_class=GLOBAL_TOKEN_FAILURES[error_code],
                 detail=f"conversations.history on {channel}: {error_code}",
             )
+        if refuse:
+            raise ChannelReadRefusedError(channel, error_code or "unknown_error")
         return []
     messages = data.get("messages")
     if not isinstance(messages, list):

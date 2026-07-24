@@ -11,13 +11,15 @@ from contextlib import suppress
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from teatree.config import clone_root
 from teatree.core.cleanup.clean_ignore import is_clean_ignored
-from teatree.core.cleanup.cleanup import _ref_captured_by_merge, _remote_tracking_ref_exists
+from teatree.core.cleanup.cleanup import _ref_captured_by_merge, _remote_tracking_ref_exists, cleanup_worktree
 from teatree.core.cleanup.cleanup_busy_guards import WorktreeBusyError, guard_live_worktree
 from teatree.core.intake.resolve import match_worktree_by_path
 from teatree.core.management.commands._workspace.preview import preview_line
 from teatree.core.models import Worktree
 from teatree.core.worktree.branch_classification import _branch_tree_matches_squash, is_squash_merged
+from teatree.core.worktree.clone_paths import resolve_clone_path
 from teatree.core.worktree.worktree_env import CACHE_DIRNAME, CACHE_FILENAME, write_env_cache
 from teatree.utils import git
 from teatree.utils.db import drop_db
@@ -484,6 +486,40 @@ def _raise_on_cleanup_failures(
         raise SystemExit(1)
 
 
+def _teardown_dir_gone_row(row: Worktree, path: Path) -> str:
+    """Tear a dir-gone ``Worktree`` row down for REAL, or keep it under the guards.
+
+    Blanking the row's ``extra`` used to leave the row itself behind forever —
+    ghost rows accumulated, each pinning its ``db_name`` and thereby shielding
+    the leaked per-worktree database from the orphan-DB reaper. Routes through
+    :func:`cleanup_worktree` so every data-loss guard still applies: a surviving
+    branch ref with unpushed commits (#706) or a live worktree keeps the row.
+
+    A PURE ghost — clone resolved, dir gone, and NO local branch ref — has
+    positively nothing on disk to lose, so it tears down with ``force=True``:
+    the #706 probe on a nonexistent ref fails closed (it cannot prove commits
+    shipped for a branch that never existed) and would otherwise pin the ghost
+    forever. Anything short of that positive proof takes the fully-guarded path.
+    """
+    clone = resolve_clone_path(clone_root(), row)
+    pure_ghost = (
+        clone is not None
+        and not path.is_dir()
+        and not git.check(
+            repo=str(clone),
+            args=["show-ref", "--verify", "--quiet", f"refs/heads/{row.branch}"],
+        )
+    )
+    try:
+        if pure_ghost:
+            cleanup_worktree(row, force=True)
+            return f"tore down ghost wt#{row.pk} (path gone: {path})"
+        cleanup_worktree(row)
+    except (WorktreeBusyError, RuntimeError, CommandFailedError) as guard:
+        return f"kept wt#{row.pk} (path gone: {path}): {guard}"
+    return f"tore down wt#{row.pk} (path gone: {path})"
+
+
 def _fix_drift(drift: "Drift") -> list[str]:
     """Apply reconciler fixes for one ticket's drift.
 
@@ -501,21 +537,29 @@ def _fix_drift(drift: "Drift") -> list[str]:
         fixes.append(f"dropped orphan DB {d.db_name}")
 
     for missing_wt in drift.missing_worktree_dirs:
-        Worktree.objects.filter(pk=missing_wt.worktree_pk).update(extra={})
-        fixes.append(f"cleared worktree_path on wt#{missing_wt.worktree_pk} (path gone: {missing_wt.path})")
+        row = Worktree.objects.filter(pk=missing_wt.worktree_pk).first()
+        if row is None:
+            continue
+        fixes.append(_teardown_dir_gone_row(row, missing_wt.path))
 
     fixes.extend(
         f"stale worktree dir {stale.path} — remove manually with `git worktree remove`"
         for stale in drift.stale_worktree_dirs
     )
 
+    # ``filter().first()`` (not ``get``): the dir-gone teardown above may have
+    # already deleted the same row this finding references.
     for missing_cache in drift.missing_env_caches:
-        wt = Worktree.objects.get(pk=missing_cache.worktree_pk)
+        wt = Worktree.objects.filter(pk=missing_cache.worktree_pk).first()
+        if wt is None:
+            continue
         write_env_cache(wt)
         fixes.append(f"regenerated env cache for wt#{missing_cache.worktree_pk}")
 
     for cache_drift in drift.env_cache_drifts:
-        wt = Worktree.objects.get(pk=cache_drift.worktree_pk)
+        wt = Worktree.objects.filter(pk=cache_drift.worktree_pk).first()
+        if wt is None:
+            continue
         write_env_cache(wt)
         fixes.append(f"rewrote drifted env cache for wt#{cache_drift.worktree_pk}")
 

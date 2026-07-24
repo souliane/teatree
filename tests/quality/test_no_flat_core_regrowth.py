@@ -95,7 +95,18 @@ _CORE_DIR = Path(__file__).resolve().parents[2] / "src" / "teatree" / "core"
 # mirroring managers_overlay.py beside managers.py.
 # 93: +headless_admission.py — the F9 headless-lane admission chokepoint (governor consult)
 # 94: +managers_task_claim.py — the claim-admission/ordering concern carved from managers.py (module health)
-PINNED_FLAT_CORE_MODULES = 94
+# 96: +notify_types.py / notify_ledger.py — carved out of notify.py to hold it under the 500-LOC
+# module-health cap. notify_types (the NotifyKind/NotifyReason/NotifyOutcome/NotifyOptions value
+# vocabulary) and notify_ledger (the BotPing/OutboundClaim/PendingChatInjection durable-audit ops)
+# are flat leaf helpers of the flat root notify.py hub, mirroring notify_targets.py beside notify.py.
+# Owned by no existing subpackage.
+# 97: +managers_issue_match.py — the issue-URL alias-collapse Q-builder (matching_issue_q) carved
+# out of managers.py to hold it under the 500-LOC module-health cap. A pure Q-builder leaf helper of
+# the flat root managers.py queryset hub, mirroring managers_overlay.py / managers_task_claim.py.
+# 98: +overlay_name_resolution.py — the overlay-name resolvers (cwd_overlay_name / overlay_name_of /
+# resolve_overlay_name) carved out of overlay_loader.py to hold it under the 500-LOC module-health cap.
+# A leaf helper of the flat root overlay_loader.py hub, owned by no existing subpackage.
+PINNED_FLAT_CORE_MODULES = 98
 
 
 def _flat_core_modules() -> list[str]:

@@ -1089,8 +1089,13 @@ class TestPydanticAiStepCap(TestCase):
 class TestPydanticAiMaxTokens(TestCase):
     """The per-request ``max_tokens`` ceiling reaches the model settings (binding-agnostic)."""
 
-    def test_default_setting_is_generous(self) -> None:
-        assert get_effective_settings().pydantic_ai_max_tokens == 16384
+    def test_default_setting_is_the_owner_chosen_ceiling(self) -> None:
+        from teatree.config.settings import PYDANTIC_AI_MAX_TOKENS_DEFAULT  # noqa: PLC0415 — test-local
+
+        # The owner chose 16384 (a generous ceiling paired with a truncation alert), carried
+        # in a named constant, not a magic literal on the field.
+        assert PYDANTIC_AI_MAX_TOKENS_DEFAULT == 16384
+        assert get_effective_settings().pydantic_ai_max_tokens == PYDANTIC_AI_MAX_TOKENS_DEFAULT
 
     def test_resolve_harness_reads_the_configured_max_tokens_synchronously(self) -> None:
         # Resolved SYNC in resolve_harness (before asyncio.run) — a read inside the

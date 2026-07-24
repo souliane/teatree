@@ -8,7 +8,7 @@ valid.
 
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, Final
 
 from teatree.config.agent_enums import AgentHarness, AgentHarnessProvider, AgentRuntime
 from teatree.config.enums import (
@@ -75,6 +75,17 @@ class _WorkspaceCoreSettings:
     timezone: str = ""
     contribute: bool = False
     excluded_skills: list[str] = field(default_factory=list)
+
+
+#: Owner-chosen per-request output-token ceiling for the ``pydantic_ai`` harness
+#: (:attr:`_ModeHarnessSettings.pydantic_ai_max_tokens`). Generous by design — a ceiling
+#: only bills for tokens actually generated, and the real spend guards on this lane are the
+#: watchdog cost ceiling and ``pydantic_ai_request_limit``, not this cap. Should a run STILL
+#: hit it, the truncation is recorded FAILED AND escalated to the owner
+#: (:func:`teatree.agents.headless_truncation.alert_owner_max_tokens_truncation`) so the ceiling can be
+#: raised deliberately rather than failing silently. pydantic_ai's Anthropic binding otherwise
+#: defaults to 4096, which truncates a long result envelope mid-JSON.
+PYDANTIC_AI_MAX_TOKENS_DEFAULT: Final[int] = 16384
 
 
 @dataclass
@@ -158,13 +169,15 @@ class _ModeHarnessSettings:
     # Per-request output-token ceiling for the ``pydantic_ai`` harness, passed as the base
     # ``max_tokens`` ``ModelSettings`` key on every run (both the OpenAI-compatible and native Anthropic
     # bindings honour it). pydantic_ai's Anthropic binding otherwise defaults to 4096, which
-    # truncates a long result envelope mid-JSON and destroys it; the default is deliberately
-    # GENEROUS (16384) because a generous ceiling only bills for tokens actually generated — the
-    # real spend guards on this lane are the watchdog cost ceiling and ``pydantic_ai_request_limit``,
-    # not this cap. Keep it ≤ the model's own output limit. Applies ONLY to the ``pydantic_ai``
-    # harness, so it is inert until an overlay opts into ``agent_harness=pydantic_ai``. ``0``
-    # leaves the binding's own default. Per-overlay overridable.
-    pydantic_ai_max_tokens: int = 16384
+    # truncates a long result envelope mid-JSON and destroys it. The default is the owner-chosen
+    # :data:`PYDANTIC_AI_MAX_TOKENS_DEFAULT` (16384) — deliberately generous because a ceiling
+    # only bills for tokens actually generated. Should a run STILL hit it, the truncation is
+    # recorded FAILED AND escalated to the owner
+    # (``teatree.agents.headless_truncation.alert_owner_max_tokens_truncation``) so the ceiling is raised
+    # deliberately rather than failing silently. Keep it ≤ the model's own output limit. Applies
+    # ONLY to the ``pydantic_ai`` harness, so it is inert until an overlay opts into
+    # ``agent_harness=pydantic_ai``. ``0`` leaves the binding's own default. Per-overlay overridable.
+    pydantic_ai_max_tokens: int = PYDANTIC_AI_MAX_TOKENS_DEFAULT
     # The generic OpenAI-compatible backend (#3666) — where, which model, whose key.
     # A provider is ORDINARY CONFIGURATION here, never a code path: pointing the
     # ``pydantic_ai`` harness at a different OpenAI-compatible API is these settings,

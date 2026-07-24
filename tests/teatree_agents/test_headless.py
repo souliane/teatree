@@ -34,7 +34,7 @@ from teatree.agents.headless_usage import _safe_float, _safe_int
 from teatree.agents.model_tiering import TIER_EFFORT, TIER_MODELS
 from teatree.agents.pydantic_ai_resume import persist_parked_thread
 from teatree.config import AgentHarnessProvider
-from teatree.core.models import ConfigSetting, Session, Task, TaskAttempt, Ticket
+from teatree.core.models import ConfigSetting, Session, Task, TaskAttempt, Ticket, Worktree
 from teatree.llm.anthropic_limits import LimitCause
 from teatree.llm.credentials import CredentialError
 from tests.teatree_agents._sdk_fake import assistant_text as _assistant_text
@@ -42,6 +42,7 @@ from tests.teatree_agents._sdk_fake import fake_sdk as _fake_sdk
 from tests.teatree_agents._sdk_fake import rate_limit_event as _rate_limit_event
 from tests.teatree_agents._sdk_fake import result_message as _result_message
 from tests.teatree_agents._sdk_fake import success_stream as _success_stream
+from tests.teatree_core.models._shared import _init_repo_with_branch
 
 
 class TestRunHeadless(TestCase):
@@ -142,9 +143,12 @@ class TestRunHeadless(TestCase):
         assert task.status == Task.Status.COMPLETED
 
     def test_no_json_fails_phase_with_evidence_requirement(self) -> None:
-        # A no-JSON run on a non-exempt phase is refused for the root cause (no
-        # result envelope at all) BEFORE the per-field evidence gate — the more
-        # precise diagnostic. The outcome (FAILED) is unchanged.
+        # A phase that carries its OWN evidence requirement is NOT refused early by the
+        # no-envelope guard: it is handed to the recorder so `check_evidence` can name
+        # the missing field AND `_salvage_coding_result` (#3263) can still rescue a coder
+        # that committed real work but omitted the envelope. Refusing here would strand
+        # a landed branch behind a generic diagnostic. The envelope guard covers the
+        # phases with no gate at all — see test_headless_no_envelope_guard.py.
         with _fake_sdk([_assistant_text("no structured output"), _result_message()]):
             session = Session.objects.create(ticket=self.ticket)
             task = Task.objects.create(ticket=self.ticket, session=session)
@@ -153,7 +157,7 @@ class TestRunHeadless(TestCase):
 
         task.refresh_from_db()
         assert attempt.exit_code == 0
-        assert attempt.error.startswith("no_result_envelope:")
+        assert "missing required evidence for phase 'coding'" in attempt.error
         assert task.status == Task.Status.FAILED
 
     def test_fails_when_result_violates_schema(self) -> None:
@@ -196,6 +200,126 @@ class TestRunHeadless(TestCase):
         ).first()
         assert followup is not None
         assert "Need design decision" in followup.execution_reason
+
+
+class TestNoResultEnvelopeGuard(TestCase):
+    """A run that returned NO result envelope must not be recorded as a success.
+
+    Observed live on the ``pydantic_ai`` lane: the model asked for shell commands
+    it had no tools for, produced no JSON, and the run still finished COMPLETED
+    with the phase attested on the session. ``_record_success``'s
+    ``{"summary": agent_text}`` fallback manufactured an envelope the agent never
+    emitted, and every ``record_result_envelope`` gate then passed because the
+    phase has no ``PHASE_REQUIRED_EVIDENCE`` entry. The fallback is shared by both
+    transports, so the guard is too.
+    """
+
+    def _task(self, *, phase: str) -> Task:
+        ticket = Ticket.objects.create(role=Ticket.Role.AUTHOR, state=Ticket.State.STARTED)
+        session = Session.objects.create(ticket=ticket, agent_id="agent-1")
+        return Task.objects.create(ticket=ticket, session=session, phase=phase)
+
+    def test_prose_only_run_on_an_ungated_phase_is_refused(self) -> None:
+        task = self._task(phase="debugging")
+        with _fake_sdk([_assistant_text("I would need to run `git log`, but I have no shell."), _result_message()]):
+            attempt = run_headless(task, phase="debugging", overlay_skill_metadata={})
+
+        task.refresh_from_db()
+        assert task.status == Task.Status.FAILED
+        assert attempt.error.startswith("no_result_envelope:")
+        # exit_code 0 WITH an error is the envelope-refusal class (#16), not a crash.
+        assert attempt.exit_code == 0
+        assert attempt.outcome == TaskAttempt.Outcome.REFUSAL
+        # The prose is preserved for diagnosis — never as the completion's evidence.
+        assert "no shell" in attempt.result["summary"]
+
+    def test_refusal_does_not_attest_the_phase_on_the_session(self) -> None:
+        # ``Session.visited_phases`` is the shipping gate's single source of truth
+        # (#694), written by ``Task._record_phase_visit`` on completion. A vacuous
+        # run must not leave a phase attestation behind.
+        task = self._task(phase="e2e")
+        with _fake_sdk([_assistant_text("Nothing to report."), _result_message()]):
+            run_headless(task, phase="e2e", overlay_skill_metadata={})
+
+        task.refresh_from_db()
+        task.session.refresh_from_db()
+        assert task.status == Task.Status.FAILED
+        assert "e2e" not in task.session.visited_phases
+
+    def test_repeated_refusals_fingerprint_identically(self) -> None:
+        # The repair loop escalates on two consecutive IDENTICAL failures
+        # (``TaskAttempt.error_fingerprint`` / ``repair_loop.is_stalled``). The
+        # refusal reason is therefore a constant: folding the agent's prose in
+        # would make every no-envelope run look like a brand-new failure.
+        attempts = []
+        for prose in ("First attempt, no envelope.", "Completely different second attempt."):
+            task = self._task(phase="debugging")
+            with _fake_sdk([_assistant_text(prose), _result_message()]):
+                attempts.append(run_headless(task, phase="debugging", overlay_skill_metadata={}))
+
+        assert attempts[0].error_fingerprint == attempts[1].error_fingerprint
+        assert attempts[0].error_fingerprint != ""
+
+    def test_pydantic_ai_lane_is_refused_identically(self) -> None:
+        # The lane the hole was observed on, driven through a REAL PydanticAiHarness
+        # with a TestModel double (no network): the guard is genuinely shared, not
+        # a claude-lane special case.
+        task = self._task(phase="debugging")
+        harness = PydanticAiHarness(model=TestModel(custom_output_text="I cannot run commands here."))
+        with (
+            patch.object(headless_mod, "resolve_harness", return_value=harness),
+            patch.object(headless_mod.TaskUsage, "for_task", classmethod(lambda cls, t: TaskUsage(0, 0.0))),
+        ):
+            attempt = run_headless(task, phase="debugging", overlay_skill_metadata={})
+
+        task.refresh_from_db()
+        assert task.status == Task.Status.FAILED
+        assert attempt.error.startswith("no_result_envelope:")
+
+    def test_exempt_phase_still_completes_on_prose(self) -> None:
+        # ``retro`` is the second PROSE_SUMMARY_ACCEPTED_PHASES member (``scoping``
+        # is pinned by TestRunHeadless above) — byte-identical to before the guard.
+        task = self._task(phase="retro")
+        with _fake_sdk([_assistant_text("Lessons: be terser."), _result_message()]):
+            attempt = run_headless(task, phase="retro", overlay_skill_metadata={})
+
+        task.refresh_from_db()
+        assert task.status == Task.Status.COMPLETED
+        assert attempt.error == ""
+        assert "be terser" in attempt.result["summary"]
+
+
+class TestNoResultEnvelopeGuardLeavesEvidenceGatedPhasesAlone(TestCase):
+    """An evidence-gated phase keeps its own, more specific refusal AND its salvage.
+
+    The guard is deliberately scoped to phases with no ``PHASE_REQUIRED_EVIDENCE``
+    entry. A phase that HAS one is already refused downstream by ``check_evidence``
+    — naming the missing field — and only after ``_salvage_coding_result`` has had
+    its chance to rescue a coder that committed real work but omitted the envelope
+    (#3263). Refusing earlier would preempt both.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _inject_tmp_path(self, tmp_path: Path) -> None:
+        self._tmp_path = tmp_path
+
+    def test_coding_prose_only_with_a_landed_commit_is_still_salvaged(self) -> None:
+        ticket = Ticket.objects.create(role=Ticket.Role.AUTHOR, state=Ticket.State.STARTED)
+        session = Session.objects.create(ticket=ticket, agent_id="coding")
+        task = Task.objects.create(ticket=ticket, session=session, phase="coding")
+        repo_dir = self._tmp_path / f"repo-{ticket.pk}"
+        branch = f"feature-{ticket.pk}"
+        _init_repo_with_branch(repo_dir, branch=branch, commits_ahead=1)
+        Worktree.objects.create(
+            ticket=ticket, repo_path=str(repo_dir), branch=branch, extra={"worktree_path": str(repo_dir)}
+        )
+
+        with _fake_sdk([_assistant_text("implemented it, forgot the envelope"), _result_message()]):
+            attempt = run_headless(task, phase="coding", overlay_skill_metadata={})
+
+        task.refresh_from_db()
+        assert task.status == Task.Status.COMPLETED
+        assert attempt.result["files_modified"] == [{"path": "f0.txt", "action": "modified"}]
 
 
 class _UnresolvableStageConfig:
@@ -434,6 +558,61 @@ class TestRunHeadlessUsageLimit(TestCase):
         task.refresh_from_db()
         assert attempt.exit_code != 0
         assert task.status == Task.Status.FAILED
+
+
+class TestRunHeadlessMaxTokensTruncationAlert(TestCase):
+    """A max-tokens truncation is recorded FAILED AND escalated to the owner — never silent.
+
+    A run cut off at the ``max_tokens`` ceiling (the pydantic_ai lane's
+    ``error_max_tokens`` terminal) amputates the result envelope. It must still record the
+    failed attempt, and it must ALSO DM the owner through the audited egress so the ceiling
+    can be raised — the alert names the phase and the ceiling, never the truncated content.
+    The alert is scoped to truncation: an ordinary failed run does not fire it.
+    """
+
+    @classmethod
+    def setUpTestData(cls) -> None:
+        cls.ticket = Ticket.objects.create()
+
+    def _run_with_terminal(self, terminal: Any) -> tuple[TaskAttempt, Task, Any]:
+        with (
+            _fake_sdk([_assistant_text('{"summary": "partial"}'), terminal]),
+            patch("teatree.agents.headless_truncation.notify_user", return_value=True) as notify,
+        ):
+            session = Session.objects.create(ticket=self.ticket)
+            task = Task.objects.create(ticket=self.ticket, session=session, phase="coding")
+            attempt = run_headless(task, phase="coding", overlay_skill_metadata={})
+        task.refresh_from_db()
+        return attempt, task, notify
+
+    def test_truncation_records_failed_and_alerts_the_owner(self) -> None:
+        from teatree.core.modelkit.notify_policy import NotifyAudience  # noqa: PLC0415 — test-local
+
+        terminal = _result_message(
+            subtype="error_max_tokens", is_error=True, result="response truncated at the max_tokens ceiling"
+        )
+        attempt, task, notify = self._run_with_terminal(terminal)
+
+        assert attempt.exit_code != 0
+        assert task.status == Task.Status.FAILED
+        assert notify.call_count == 1
+        alert_text = notify.call_args.args[0]
+        assert notify.call_args.kwargs["audience"] is NotifyAudience.OWNER_ESCALATION
+        # Names the phase and the ceiling so the owner can raise it; never the truncated body.
+        assert "coding" in alert_text
+        assert "16384" in alert_text
+        assert "max_tokens" in alert_text
+        assert "response truncated at the max_tokens ceiling" not in alert_text
+
+    def test_ordinary_failure_does_not_alert_the_owner(self) -> None:
+        terminal = _result_message(
+            subtype="error_during_execution", is_error=True, result="The agent crashed with an unhandled exception."
+        )
+        attempt, task, notify = self._run_with_terminal(terminal)
+
+        assert attempt.exit_code != 0
+        assert task.status == Task.Status.FAILED
+        notify.assert_not_called()
 
 
 class TestRunHeadlessTypedRateLimitWindow(TestCase):

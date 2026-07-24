@@ -13,7 +13,8 @@ from django.test import TestCase
 from teatree.core import notify as notify_module
 from teatree.core.modelkit.notify_policy import NotifyAudience
 from teatree.core.models import BotPing, IncomingEvent
-from teatree.core.notify import NotifyKind, notify_user
+from teatree.core.notify import NotifyKind, notify_user, resolve_owner_dm_backend
+from teatree.core.notify_types import NotifyReason
 
 _DB_LOCKED = OperationalError("database is locked")
 
@@ -687,3 +688,11 @@ class TestResolveUserId(TestCase):
             with patch.dict(os.environ, {"T3_CONFIG_DB": str(db)}):
                 os.environ.pop("T3_OVERLAY_NAME", None)
                 assert notify_module.resolve_user_id() == ""
+
+
+class ResolveOwnerDmBackendFailClosedTests(TestCase):
+    def test_a_broken_transport_resolution_is_treated_as_no_transport(self) -> None:
+        with patch("teatree.core.notify.messaging_from_overlay", side_effect=RuntimeError("bad entry point")):
+            backend, reason = resolve_owner_dm_backend()
+        assert backend is None
+        assert reason is NotifyReason.NO_MESSAGING_BACKEND

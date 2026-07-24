@@ -24,6 +24,7 @@ from teatree.skill_support.ref_validator import (
     validate_skill_refs,
     validate_supplementary_config,
 )
+from tests._unreadable_file import skip_if_root
 
 
 def _seed_canonical(root: Path, names: list[str]) -> Path:
@@ -180,6 +181,7 @@ class TestAgentFrontmatter:
         findings = validate_agent_frontmatter(agent, {"rules"})
         assert [f.name for f in findings] == ["bogus-companion"]
 
+    @skip_if_root
     def test_unreadable_agent_fails_open(self, tmp_path: Path) -> None:
         agent = self._write_agent(tmp_path / "coder.md", ["rules"])
         agent.chmod(0o000)

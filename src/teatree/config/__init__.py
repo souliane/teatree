@@ -36,6 +36,7 @@ from teatree.config.enums import (
 )
 from teatree.config.feature_flags import FEATURE_FLAGS, FeatureFlag, FlagStage, dark_flags, is_feature_flag
 from teatree.config.homes import BOOTSTRAP_ENV_ONLY_SETTINGS, DERIVED_FIELDS, SETTING_HOMES, SettingHome
+from teatree.config.known_settings import ALL_KNOWN_CONFIG_SETTINGS
 from teatree.config.loader import (
     check_for_updates,
     clone_root,
@@ -74,6 +75,7 @@ from teatree.config.trusted_authors import effective_trusted_issue_authors
 from teatree.paths import DATA_DIR, get_data_dir
 
 __all__ = [
+    "ALL_KNOWN_CONFIG_SETTINGS",
     "BOOTSTRAP_ENV_ONLY_SETTINGS",
     "COLD_HOOK_SETTINGS",
     "COLD_SETTINGS",

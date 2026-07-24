@@ -341,7 +341,7 @@ class TestEgressReactPayload(_GateOffTestCase):
         backend = _FakeMessaging()
         captured: list[dict[str, str]] = []
 
-        with patch("teatree.loop.review_claim.OnBehalfSlackEgress", self._captured_react_kwargs(captured)):
+        with patch("teatree.loop.review_done_reactions.OnBehalfSlackEgress", self._captured_react_kwargs(captured)):
             posted = emit_review_done_reactions(slug="team/project", pr_id=7567, emojis=("eyes",), messaging=backend)
 
         assert posted == ["eyes"]

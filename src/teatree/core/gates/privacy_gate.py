@@ -22,7 +22,7 @@ from dataclasses import dataclass
 
 from django.core.exceptions import ImproperlyConfigured
 
-from teatree.core.overlay_loader import get_overlay
+from teatree.core.overlay_loader import get_all_overlays, get_overlay
 from teatree.hooks import term_match
 from teatree.utils.throttled_log import warn_throttled
 
@@ -167,18 +167,50 @@ def _target_is_public(target_repo: str, forge: str) -> bool:
         return True
 
 
-def _overlay_privacy_rules() -> tuple[list[str], list[str]] | None:
-    """The active overlay's ``(privacy_redact_terms, privacy_block_patterns)``, or ``None``.
+def _registered_overlay_rules_union() -> tuple[list[str], list[str]]:
+    """Every registered overlay's privacy rules, unioned — the AMBIGUITY fail-safe.
+
+    When more than one overlay is installed and nothing disambiguates them,
+    ``get_overlay()`` raises ``Multiple overlays found`` — but the rules of BOTH
+    still bind: the running agent may be operating under either, and a term one
+    overlay marks private does not stop being private because a sibling overlay
+    is also installed. Unioning can only refuse MORE, never leak more, which is
+    the only safe direction for a confidentiality boundary.
+
+    An EMPTY registry genuinely has no rules to lose, and a registry that cannot
+    be enumerated has none to offer, so both yield ``([], [])`` — the built-in
+    quote anchors stay the floor and the gate never goes inert.
+    """
+    try:
+        configs = [overlay.config for overlay in get_all_overlays().values()]
+        redact = [term for config in configs for term in config.privacy_redact_terms]
+        block = [pattern for config in configs for pattern in config.privacy_block_patterns]
+    except Exception as exc:  # noqa: BLE001 — an unenumerable registry offers no rules; the built-ins stay the floor.
+        logger.debug("publication privacy gate: overlay registry not enumerable (%s) — built-in detectors only", exc)
+        return [], []
+    return list(dict.fromkeys(redact)), list(dict.fromkeys(block))
+
+
+def overlay_privacy_rules(overlay_name: str = "") -> tuple[list[str], list[str]] | None:
+    """The applicable ``(privacy_redact_terms, privacy_block_patterns)``, or ``None``.
 
     Overlay-specific ADDITIONS to the always-on built-in quote anchors
-    (:data:`_DEFAULT_QUOTE_PATTERNS`). Two outcomes are distinguished so a
-    confidentiality boundary never silently loses the overlay's own rules:
+    (:data:`_DEFAULT_QUOTE_PATTERNS`). *overlay_name* selects the overlay
+    explicitly for a caller that knows which one it is acting for; blank means
+    "resolve ambiently". Three outcomes are distinguished so a confidentiality
+    boundary never silently loses a configured rule:
 
-    * **No single overlay resolves** — none installed, several with no
+    * **One overlay resolves** — its own two lists, and nothing else.
+
+    * **No SINGLE overlay resolves** — none installed, several with no
         ``T3_OVERLAY_NAME`` to disambiguate, an unknown name, or Django not yet set
         up (:class:`ImproperlyConfigured`, exactly what :func:`get_overlay` raises).
-        There ARE no overlay rules to lose, so both lists are empty ``([], [])`` and
-        only the built-in detectors apply — the gate still scans a public target.
+        This is NOT "there are no rules to lose": a fork that installs two overlays
+        is permanently in this state, and treating it as empty dropped BOTH
+        overlays' rules from every public-target scan. Resolution falls back to
+        :func:`_registered_overlay_rules_union`, so an installed overlay's rules
+        survive the ambiguity; only a genuinely empty registry degrades to the
+        built-in floor.
 
     * **A genuine resolution FAILURE** — an overlay IS present but its
         ``config`` / ``privacy_redact_terms`` / ``privacy_block_patterns`` could not
@@ -188,12 +220,12 @@ def _overlay_privacy_rules() -> tuple[list[str], list[str]] | None:
         only the two generic built-ins.
     """
     try:
-        config = get_overlay().config
+        config = get_overlay(overlay_name or None).config
     except ImproperlyConfigured as exc:
-        # No single overlay resolves — there are no overlay rules to drop, so the
-        # built-in detectors are the floor and the gate stays live (not a failure).
-        logger.debug("publication privacy gate: no single overlay resolves (%s) — built-in detectors only", exc)
-        return [], []
+        # No SINGLE overlay resolves. Every registered overlay's rules still bind —
+        # dropping them here is the #1295 fail-open this fallback closes.
+        logger.debug("publication privacy gate: no single overlay resolves (%s) — unioning the registry", exc)
+        return _registered_overlay_rules_union()
     except Exception as exc:  # noqa: BLE001 — a genuine resolution failure must fail CLOSED, never scan-with-builtins-only.
         warn_throttled(
             logger,
@@ -268,7 +300,7 @@ def scan_outbound_text(*, text: str, target_repo: str, forge: str = "") -> Priva
     whole-token :mod:`teatree.hooks.term_match` matcher via :func:`scan_for_publication`.
 
     Two fail-CLOSED refusals guard a public target: when the overlay's privacy
-    rules cannot be resolved (:func:`_overlay_privacy_rules` returns ``None``) the
+    rules cannot be resolved (:func:`overlay_privacy_rules` returns ``None``) the
     gate REFUSES with a synthetic ``overlay-rules-unresolvable`` match, and when the
     banned-terms source is unreadable (:func:`_db_banned_terms` returns ``None``) it
     REFUSES with a ``banned-terms-unresolvable`` match — a confidentiality boundary
@@ -277,7 +309,7 @@ def scan_outbound_text(*, text: str, target_repo: str, forge: str = "") -> Priva
     """
     if not _target_is_public(target_repo, forge):
         return PrivacyGateResult(target_repo=target_repo, is_public=False)
-    rules = _overlay_privacy_rules()
+    rules = overlay_privacy_rules()
     if rules is None:
         warn_throttled(
             logger,
@@ -336,7 +368,7 @@ def redact_for_local_display(text: str) -> str:
     detectors always apply, so a display path degrades to fewer masks, never a
     crash and never a bypass of the built-ins.
     """
-    overlay_rules = _overlay_privacy_rules()
+    overlay_rules = overlay_privacy_rules()
     redact_terms = list(overlay_rules[0]) if overlay_rules else []
     block_patterns = list(overlay_rules[1]) if overlay_rules else []
     banned = _db_banned_terms()

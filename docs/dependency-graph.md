@@ -69,6 +69,7 @@ graph TD
     teatree.core.managers --> teatree.core.modelkit
     teatree.core.managers --> teatree.core.models.errors
     teatree.core.managers --> teatree.core.loop_lease_manager
+    teatree.core.managers --> teatree.core.managers_issue_match
     teatree.core.managers --> teatree.core.managers_overlay
     teatree.core.managers --> teatree.core.managers_task_claim
     teatree.core.managers --> teatree.core.repair_loop
@@ -216,6 +217,7 @@ graph TD
     teatree.loop --> teatree.loop.statusline_render
     teatree.loop --> teatree.loop.url_specificity
     teatree.loop --> teatree.loop.review_claim_signals
+    teatree.loop --> teatree.loop.review_done_reactions
     teatree.loop --> teatree.loop.loop_state_db
     teatree.loop --> teatree.loop.review_request_tracker
     teatree.loop --> teatree.loop.dispatch_tables
@@ -252,6 +254,11 @@ graph TD
     teatree.loop.review_claim_signals --> teatree.types
     teatree.loop.review_claim_signals --> teatree.core.models
     teatree.loop.review_claim_signals --> teatree.loop.loop_state_db
+    teatree.loop.review_done_reactions --> teatree.types
+    teatree.loop.review_done_reactions --> teatree.utils
+    teatree.loop.review_done_reactions --> teatree.core
+    teatree.loop.review_done_reactions --> teatree.core.models
+    teatree.loop.review_done_reactions --> teatree.loop.review_claim_signals
     teatree.loop.loop_state_db --> teatree.core.models
     teatree.loop.loop_state_db --> teatree.loop.preset_resolution
     teatree.loop.preset_resolution --> teatree.core.models
@@ -270,6 +277,7 @@ graph TD
     teatree.loop.scanners --> teatree.teams
     teatree.loop.scanners --> teatree.loop.url_specificity
     teatree.loop.scanners --> teatree.loop.review_claim_signals
+    teatree.loop.scanners --> teatree.loop.review_done_reactions
     teatree.loop.scanners --> teatree.loop.review_request_tracker
     teatree.loop.scanners --> teatree.loop.pr_ticket_index
     teatree.loop.dispatch_reducer --> teatree.url_classify
@@ -372,6 +380,7 @@ graph TD
     teatree.core.repair_loop
     teatree.core.managers_overlay
     teatree.core.managers_task_claim
+    teatree.core.managers_issue_match
     teatree.backends.errors
     teatree.backends.types
     teatree.cli._format_opts

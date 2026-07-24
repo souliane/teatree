@@ -184,6 +184,29 @@ class ScannerError(RuntimeError):
         super().__init__(message)
 
 
+class ChannelReadRefusedError(RuntimeError):
+    """A messaging backend was refused a CHANNEL-scoped read (never "the channel is empty").
+
+    The single-channel counterpart to the empty-return convention :class:`ScannerError`
+    protects for scanners. A bot token reads only channels the bot was invited to, and
+    Slack reports that as ``not_in_channel`` / ``channel_not_found`` — swallowing it into
+    ``[]`` tells an interactive caller "this channel is quiet", the opposite of the truth.
+    Poll loops keep the swallowing read; anyone asking about ONE channel gets this.
+
+    Lives in :mod:`teatree.types` (no deps) so the noop backend can raise it without
+    depending on the Slack package.
+    """
+
+    def __init__(self, channel: str, error_code: str) -> None:
+        super().__init__(
+            f"Cannot read channel {channel!r}: {error_code}. A bot token reads only channels the bot has been "
+            f"invited to — invite it (`/invite @<bot>` in {channel}) or pass a channel id it is a member of. "
+            f"This is NOT an empty channel.",
+        )
+        self.channel = channel
+        self.error_code = error_code
+
+
 @dataclass(frozen=True)
 class RunCommand:
     """Structured run command with explicit working directory.

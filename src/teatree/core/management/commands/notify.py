@@ -9,7 +9,8 @@ the parent turn for a follow-up dispatch — the parent turn ending before
 re-relaying would otherwise lose the news, and the user only reads Slack,
 not chat. It delegates every hard invariant (idempotency, ``BotPing``
 audit, ``OutboundClaim`` ledger, the on-behalf-post discipline baked
-into ``notify_user``) to :func:`teatree.core.notify.notify_user`.
+into the egress) to :func:`teatree.core.notify.notify_user_outcome`, whose
+:class:`~teatree.core.notify.NotifyReason` becomes the non-zero exit's stderr line.
 
 ``post`` / ``react`` are the destination-routed peers (#1750). The
 binding routing rule is a *single deterministic destination test*,
@@ -28,7 +29,7 @@ must re-auth.
 Every subcommand resolves the backend via
 :func:`~teatree.core.backend_factory.messaging_from_overlay`, setting
 ``T3_OVERLAY_NAME`` for the duration of the call so the right
-per-overlay credentials resolve. ``notify_user`` is imported from
+per-overlay credentials resolve. The egress is imported from
 ``teatree.core`` directly, not the ``teatree.core.notify`` re-export, so the
 module graph stays acyclic — ``teatree.core.management`` may not depend
 on the top-level ``teatree.core.notify``.
@@ -46,7 +47,7 @@ from django_typer.management import TyperCommand, command, initialize
 from teatree.core.backend_factory import messaging_from_overlay
 from teatree.core.backend_protocols import MessagingBackend
 from teatree.core.modelkit.notify_policy import NotifyAudience
-from teatree.core.notify import NotifyKind, notify_user
+from teatree.core.notify import NotifyKind, NotifyOptions, notify_user_outcome
 from teatree.core.on_behalf_egress import OnBehalfPostBlockedError, OnBehalfSlackEgress
 from teatree.types import RawAPIDict
 
@@ -138,25 +139,22 @@ class Command(TyperCommand):
 
         audience = NotifyAudience.OWNER_QUESTION if kind_value == NotifyKind.QUESTION else NotifyAudience.OWNER_DELIVERY
         with _overlay_env(overlay):
-            delivered = notify_user(
+            outcome = notify_user_outcome(
                 text,
                 kind=kind_value,
                 idempotency_key=idempotency_key,
                 audience=audience,
-                user_id=user_id or None,
+                options=NotifyOptions(user_id=user_id or None),
             )
 
-        if not delivered:
-            # Surface *why* delivery failed instead of a bare rc=1 (#1181):
-            # the recorded BotPing row distinguishes a NOOP (no backend /
-            # user_id configured) from a FAILED transport error and carries
-            # the error detail, so the #1173 silent-rc=1 class is diagnosable
-            # at the CLI edge and a wrapper can decide whether to fall back.
-            from teatree.core.models import BotPing  # noqa: PLC0415 — deferred: ORM import needs the app registry
-
-            row = BotPing.objects.filter(idempotency_key=idempotency_key).first()
-            reason = (row.error_message or row.status) if row is not None else "no audit row recorded"
-            self.stderr.write(f"notify_user did not deliver for key={idempotency_key}: {reason}")
+        if not outcome.sent:
+            # Surface *why* delivery failed instead of a bare rc=1 (#1181). The
+            # egress names its own reason, so the branches that leave no audit row
+            # (a disabled feature, a lost delivery claim) are diagnosable too — the
+            # #1173 silent-rc=1 class — and a wrapper can decide whether to fall back.
+            self.stderr.write(
+                f"notify_user did not deliver for key={idempotency_key}: {outcome.reason.value}: {outcome.detail}",
+            )
             raise SystemExit(1)
         return f"sent ({idempotency_key})."
 

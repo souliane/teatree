@@ -45,7 +45,7 @@ class ReviewFindingsRouteThroughSeam(TestCase):
         host = _FakeHost()
         with (
             patch("teatree.core.gates.privacy_gate._target_is_public", return_value=True),
-            patch("teatree.core.gates.privacy_gate._overlay_privacy_rules", return_value=(["SECRETCORP"], [])),
+            patch("teatree.core.gates.privacy_gate.overlay_privacy_rules", return_value=(["SECRETCORP"], [])),
         ):
             result = file_class_c_issue(
                 host, finding=_finding(body="Leak SECRETCORP here."), enforcement="add a gate", context=_CONTEXT

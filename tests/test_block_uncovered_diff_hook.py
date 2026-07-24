@@ -60,6 +60,19 @@ class TestMergeClassMutationDetection:
     def test_non_bash_tool_is_not_merge_class(self):
         assert _is_merge_class_mutation({"tool_name": "Read", "tool_input": {"file_path": "/x"}}) is False
 
+    def test_mention_inside_quoted_argument_is_not_merge_class(self):
+        # The verb is detected on the quote/heredoc-stripped skeleton: a commit
+        # message (or any quoted argument) that merely MENTIONS the create verb
+        # must not fire the gate against the session repo's uncommitted diff.
+        cmd = 'git commit -m "docs: describe the glab mr create flow"'
+        assert _is_merge_class_mutation({"tool_name": "Bash", "tool_input": {"command": cmd}}) is False
+
+    def test_mention_inside_heredoc_body_is_not_merge_class(self):
+        # A python script fed via heredoc naming the verb in a string literal
+        # false-fired the gate and denied an unrelated read-only script.
+        cmd = "python3 - <<'EOF'\nCMD = \"glab mr create -R o/r\"\nprint(CMD)\nEOF"
+        assert _is_merge_class_mutation({"tool_name": "Bash", "tool_input": {"command": cmd}}) is False
+
 
 def _finding_json(*, uncovered: list[dict] | None = None, symbols: list[str] | None = None) -> str:
     return json.dumps(
@@ -292,6 +305,76 @@ class TestMeasuresTheGatedCommandsWorktree:
         # when the command runs there), never a bare cwd-less run.
         assert Path(captured["cwd"]).resolve() == y.resolve()
         assert "--repo" in captured["argv"]
+
+
+class TestScopesToThePublishedRepo:
+    """A publish to repo X is never gated on uncommitted symbols in repo Y (§17.6.3).
+
+    A cross-repo ship — ``glab mr create -R other-org/other-repo`` issued from an
+    unrelated clone (the session repo, carrying its own large uncommitted diff) —
+    used to measure the SESSION repo and deny the create on symbols the published
+    repo never sees. When the command names an explicit target repo that is NOT
+    the measured repo's own git-remote slug, the measurement is skipped entirely;
+    a matching (or absent) target keeps the established enforcement.
+    """
+
+    def _repo(self, root: Path, name: str, remote: str) -> Path:
+        repo = root / name
+        repo.mkdir()
+        subprocess.run(["git", "-C", str(repo), "init", "-q", "-b", "main"], check=True)  # noqa: S607 — real git under tmp_path (repo test doctrine)
+        subprocess.run(["git", "-C", str(repo), "remote", "add", "origin", remote], check=True)  # noqa: S607 - git resolved on PATH (test)
+        return repo
+
+    def test_cross_repo_target_skips_the_session_repo_measurement(self, tmp_path, monkeypatch):
+        session_repo = self._repo(
+            tmp_path,
+            "session-clone",
+            "git@gitlab.com:my-org/session-repo.git",  # privacy-scan:allow
+        )
+        monkeypatch.setattr(router.shutil, "which", lambda _: "/usr/local/bin/t3")
+        data = {
+            "tool_name": "Bash",
+            "tool_input": {"command": "glab mr create -R other-org/other-repo --title t --description d"},
+            "cwd": str(session_repo),
+        }
+        with patch.object(router.subprocess, "run") as run:
+            assert handle_block_uncovered_diff(data) is False
+        run.assert_not_called()
+
+    def test_matching_target_still_enforces(self, tmp_path, monkeypatch):
+        # Anti-vacuity: an explicit target that IS the measured repo (bare slug
+        # vs host-qualified remote) keeps the gate enforcing.
+        session_repo = self._repo(
+            tmp_path,
+            "session-clone",
+            "git@gitlab.com:my-org/my-repo.git",  # privacy-scan:allow
+        )
+        monkeypatch.setattr(router.shutil, "which", lambda _: "/usr/local/bin/t3")
+        rejected = subprocess.CompletedProcess(args=[], returncode=1, stdout=_finding_json(), stderr="")
+        data = {
+            "tool_name": "Bash",
+            "tool_input": {"command": "glab mr create -R my-org/my-repo --title t --description d"},
+            "cwd": str(session_repo),
+        }
+        with patch.object(router.subprocess, "run", return_value=rejected):
+            assert handle_block_uncovered_diff(data) is True
+
+    def test_flagless_create_keeps_the_cwd_scope(self, tmp_path, monkeypatch):
+        # No explicit target: the cwd repo IS the publish target — enforced.
+        session_repo = self._repo(
+            tmp_path,
+            "session-clone",
+            "git@gitlab.com:my-org/my-repo.git",  # privacy-scan:allow
+        )
+        monkeypatch.setattr(router.shutil, "which", lambda _: "/usr/local/bin/t3")
+        rejected = subprocess.CompletedProcess(args=[], returncode=1, stdout=_finding_json(), stderr="")
+        data = {
+            "tool_name": "Bash",
+            "tool_input": {"command": "glab mr create --title t --description d"},
+            "cwd": str(session_repo),
+        }
+        with patch.object(router.subprocess, "run", return_value=rejected):
+            assert handle_block_uncovered_diff(data) is True
 
 
 class TestRegisteredInPreToolUseChain:

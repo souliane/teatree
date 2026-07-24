@@ -11,7 +11,7 @@ import subprocess
 import pytest
 
 from teatree.loop.scanners.base import ScannerError
-from teatree.loop.scanners.slack_broadcast_mr_classifier import GlabGhMrStateClassifier
+from teatree.loop.scanners.slack_broadcast_mr_classifier import GlabGhMrStateClassifier, _classifier_head_sha
 
 GH_URL = "https://github.com/team/project/pull/42"
 GL_URL = "https://gitlab.example.com/team/project/-/merge_requests/7"
@@ -64,3 +64,17 @@ class TestFailureIsNotAVerdict:
         )
         with pytest.raises(ScannerError):
             GlabGhMrStateClassifier(glab_token="glpat-fake")([GL_URL])
+
+
+class TestClassifierHeadSha:
+    """`_classifier_head_sha` falls back to `diff_refs.head_sha` and degrades to ``""``."""
+
+    def test_prefers_the_top_level_key(self) -> None:
+        assert _classifier_head_sha({"sha": "top123"}, key="sha") == "top123"
+
+    def test_falls_back_to_nested_diff_refs_head_sha(self) -> None:
+        assert _classifier_head_sha({"diff_refs": {"head_sha": "nested456"}}, key="sha") == "nested456"
+
+    def test_degrades_to_empty_when_no_head_is_present(self) -> None:
+        assert _classifier_head_sha({}, key="sha") == ""
+        assert _classifier_head_sha({"diff_refs": {"other": 1}}, key="sha") == ""

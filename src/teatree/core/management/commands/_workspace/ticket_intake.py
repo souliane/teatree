@@ -28,6 +28,7 @@ from teatree.core.models import Ticket
 from teatree.core.models.external_delivery import mark_external_delivery
 from teatree.core.models.project_learning import ProjectLearning
 from teatree.core.models.ticket_display import format_intake_summary
+from teatree.core.overlay_loader import overlay_name_of
 from teatree.core.runners import WorktreeProvisioner
 from teatree.core.worktree.dev_repo import parse_repo_branch_map, resolve_repo_names
 from teatree.core.worktree.worktree_collision import find_foreign_issue_worktrees
@@ -223,6 +224,7 @@ def locked_get_or_create_ticket(
     repo_names: list[str],
     *,
     kind: Ticket.Kind = Ticket.Kind.FEATURE,
+    overlay_name: str = "",
 ) -> Ticket:
     """Get-or-create the ticket and lock it for the provisioning RMW.
 
@@ -234,12 +236,16 @@ def locked_get_or_create_ticket(
     ``ticket.py``); a freshly-created row is already exclusive to this
     transaction. Caller must be inside ``transaction.atomic()``.
 
-    ``kind`` (#17) is stamped only on a freshly-created row (``defaults``), so
-    re-running ``workspace ticket`` never reclassifies an existing ticket.
+    ``kind`` (#17) and ``overlay_name`` are stamped only on a freshly-created
+    row (``defaults``), so re-running ``workspace ticket`` never reclassifies
+    an existing ticket nor re-attributes it to another overlay. Stamping the
+    INVOKING overlay is what keeps attribution independent of
+    ``Ticket.save()``'s URL inference, which returns blank for an issue filed
+    in a tracker repo no overlay declares among its workspace repos.
     """
     ticket, created = Ticket.objects.get_or_create(
         issue_url=issue_url,
-        defaults={"variant": variant, "repos": repo_names, "kind": kind},
+        defaults={"overlay": overlay_name, "variant": variant, "repos": repo_names, "kind": kind},
     )
     if created:
         return ticket
@@ -268,6 +274,7 @@ def build_ticket(
             intake.variant,
             intake.repo_names,
             kind=classify_ticket_kind(title=description, explicit=intake.kind),
+            overlay_name=overlay_name_of(overlay),
         )
 
         # Refuse a silent rebind when --variant disagrees with the existing ticket's variant (#1306).

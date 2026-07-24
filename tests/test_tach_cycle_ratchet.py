@@ -74,7 +74,16 @@ _TACH = _REPO / "tach.toml"
 # .utils / .docker / .visual_qa), so it legitimately depends on teatree.core —
 # an integration-layer facade over the domain layer, the correct lower→higher
 # direction. One new fan-in entry; nothing in core imports it back.
-_CORE_FANIN_BASELINE = 22
+# Bumped 22 → 23 (#2413 review-claim outcome stratum): the review-DONE reaction
+# poster is carved out of the orchestration-top teatree.loop.review_claim into
+# its own leaf node (teatree.loop.review_done_reactions) so the review_done_ack
+# scanner reaches it without the scanners → orchestration back-edge tach rejects.
+# The carved code's `teatree.core.on_behalf_egress` import is unchanged — it was
+# already core-coupled inside the teatree.loop node — and teatree.loop keeps its
+# own independent core coupling, so it does not drop out to offset. One new
+# fan-in entry in the correct lower→higher direction; a pure carve artifact that
+# adds no new coupling.
+_CORE_FANIN_BASELINE = 23
 _MAX_DECLARED_TWO_CYCLES = 0
 
 

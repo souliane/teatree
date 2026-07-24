@@ -40,3 +40,20 @@ class TestIsDraftMr:
     def test_read_error_fails_open_to_false(self) -> None:
         with patch(_FACTORY, return_value=_Host(draft=RuntimeError("boom"))):
             assert is_draft_mr(_MR_URL) is False
+
+    def test_named_overlay_selects_the_probing_credentials(self) -> None:
+        """The probe must reach the named overlay's forge, not the ambient default.
+
+        On the in-process MCP surface every overlay is registered and no
+        ``T3_OVERLAY_NAME`` is exported, so an ambient
+        ``code_host_from_overlay()`` resolves no host at all and a genuinely
+        DRAFT MR reads as "not a draft" — the gate silently stops firing.
+        """
+        with patch(_FACTORY, return_value=_Host(draft=True)) as factory:
+            assert is_draft_mr(_MR_URL, overlay_name="t3-acme") is True
+        factory.assert_called_once_with("t3-acme")
+
+    def test_blank_overlay_keeps_the_ambient_default(self) -> None:
+        with patch(_FACTORY, return_value=_Host(draft=False)) as factory:
+            assert is_draft_mr(_MR_URL) is False
+        factory.assert_called_once_with(None)

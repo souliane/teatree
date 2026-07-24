@@ -15,6 +15,7 @@ from asgiref.sync import async_to_sync
 from django.test import TestCase
 
 from teatree.core.models import DeferredQuestion, Task
+from teatree.core.notify import NotifyOutcome, NotifyReason
 from teatree.mcp import build_server
 from tests.factories import TicketFactory
 
@@ -71,7 +72,10 @@ class TestTaskCreate(TestCase):
 
 class TestNotifyUser(TestCase):
     def test_routes_through_the_audited_notify_egress(self) -> None:
-        with patch("teatree.mcp.write_tools.notify_user", return_value=True) as seam:
+        with patch(
+            "teatree.mcp.write_tools.notify_user_outcome",
+            return_value=NotifyOutcome(sent=True),
+        ) as seam:
             result = _call(
                 "notify_user",
                 {"text": "build is green", "idempotency_key": "mcp-test-1"},
@@ -80,3 +84,30 @@ class TestNotifyUser(TestCase):
         assert result["ok"] is True
         assert seam.call_args.kwargs["idempotency_key"] == "mcp-test-1"
         assert seam.call_args.args[0] == "build is green"
+
+    def test_a_non_delivery_names_its_reason_instead_of_a_bare_false(self) -> None:
+        """A bare ``sent=false`` is unactionable — the caller cannot escalate on it."""
+        with patch(
+            "teatree.mcp.write_tools.notify_user_outcome",
+            return_value=NotifyOutcome(sent=False, reason=NotifyReason.NO_MESSAGING_BACKEND),
+        ):
+            result = _call(
+                "notify_user",
+                {"text": "five reviews are done", "idempotency_key": "mcp-test-2"},
+            )
+
+        assert result["sent"] is False
+        assert result["reason"] == "no_messaging_backend"
+        assert result["detail"] == NotifyReason.NO_MESSAGING_BACKEND.detail
+
+    def test_an_unknown_kind_is_refused_with_the_valid_set_named(self) -> None:
+        # NotifyKind('action_required') used to escape as a bare enum traceback
+        # ("'action_required' is not a valid NotifyKind") — loud but unactionable.
+        with pytest.raises(Exception, match="valid kinds") as exc_info:
+            _call(
+                "notify_user",
+                {"text": "act on this", "kind": "action_required", "idempotency_key": "mcp-kind-1"},
+            )
+
+        assert "answer | question | info" in str(exc_info.value)
+        assert "kind='question'" in str(exc_info.value)

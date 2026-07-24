@@ -33,7 +33,6 @@ from pathlib import Path
 # (stdlib only), so importing them keeps this core hook-importable without Django.
 from teatree.loops.dream.decay import _ARCHIVE_INDEX_NAME as COLD_INDEX_NAME
 from teatree.loops.dream.reindex import _INDEX_NAME as HOT_INDEX_NAME
-from teatree.loops.dream.reindex import _SUMMARY_MAX_CHARS as _HOT_SUMMARY_MAX_CHARS
 
 #: Max hits surfaced per turn.
 RECALL_LIMIT = 5
@@ -78,11 +77,13 @@ _BINDING_MARKERS = ("binding", "non-negotiable")
 _BINDING_BOOST = 3
 _USER_BOOST = 2
 
-#: Dedup-prefix length for the renamed-file guard. The hot index clips a summary to
-#: ``_HOT_SUMMARY_MAX_CHARS`` (then rstrips one trailing space), so a long cold
-#: signature is never a verbatim substring of the hot text — compare a prefix bounded
-#: just under that clip so a clipped, renamed rule is still recognised as already hot.
-_DEDUP_PREFIX_CHARS = _HOT_SUMMARY_MAX_CHARS - 2
+#: Dedup-prefix length for the renamed-file guard. The hot index used to clip a
+#: per-line summary to 45 chars (then rstrip one trailing space) before it became a
+#: bare-pointer index, so a long cold signature is never a verbatim substring of hot
+#: text carried over from that era (curated ``[Title](name.md) — summary`` lines are
+#: still legitimate in the hot index) — compare a prefix bounded just under that clip
+#: so a clipped, renamed rule is still recognised as already hot.
+_DEDUP_PREFIX_CHARS = 43
 
 #: A small high-frequency stopword set dropped from query tokens so common words
 #: never inflate a match. Sub-3-char tokens are dropped separately.

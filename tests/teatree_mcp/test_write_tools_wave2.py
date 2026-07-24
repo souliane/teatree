@@ -22,7 +22,7 @@ from teatree.backends.types import Service
 from teatree.core.gates.review_request_guard import GuardTarget
 from teatree.core.overlay import OverlayConfig
 from teatree.mcp import build_server
-from teatree.mcp.write_tools import _last_json_object, _run_emitting_command
+from teatree.mcp.write_tool_run import _last_json_object, run_command, run_emitting_command
 
 
 def _payloads(result: Any) -> list[Any]:
@@ -122,10 +122,37 @@ class TestJsonEmittingCommandHelpers(TestCase):
             raise SystemExit(2)
 
         with (
-            patch("teatree.mcp.write_tools.call_command", side_effect=_boom),
+            patch("teatree.mcp.write_tool_run.call_command", side_effect=_boom),
             pytest.raises(RuntimeError, match="boom: bad input"),
         ):
-            _run_emitting_command("review_request_post", "--mr-url", "x")
+            run_emitting_command("review_request_post", "--mr-url", "x")
+
+    def test_run_command_returns_the_command_result(self) -> None:
+        with patch("teatree.mcp.write_tool_run.call_command", return_value="done") as call:
+            assert run_command("workspace", "teardown", path="/x") == "done"
+        call.assert_called_once()
+
+    def test_run_command_converts_a_system_exit_into_a_runtime_error(self) -> None:
+        def _boom(command: str, *_args: object, stderr: object = None, **_kwargs: object) -> None:
+            if stderr is not None:
+                stderr.write("refused: not clear")
+            raise SystemExit(2)
+
+        # FastMCP only converts Exception (not BaseException) — run_command must
+        # re-raise the SystemExit as a plain RuntimeError carrying the stderr message.
+        with (
+            patch("teatree.mcp.write_tool_run.call_command", side_effect=_boom),
+            pytest.raises(RuntimeError, match="refused: not clear"),
+        ):
+            run_command("ticket", "merge", "7")
+
+    def test_run_command_defaults_the_exit_code_when_none_is_carried(self) -> None:
+        # a bare SystemExit carries code=None; run_command falls back to exit_code/1
+        with (
+            patch("teatree.mcp.write_tool_run.call_command", side_effect=SystemExit()),
+            pytest.raises(RuntimeError, match="exit 1"),
+        ):
+            run_command("ticket", "merge", "7")
 
 
 class TestSlackReactTool(TestCase):

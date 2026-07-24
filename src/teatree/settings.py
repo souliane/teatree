@@ -8,6 +8,7 @@ import os
 from pathlib import Path
 
 from teatree.config import default_logging
+from teatree.config.db_router import CONFIG_DB_ALIAS, pinned_config_db
 from teatree.config.setting_parsers import _parse_env_bool_default_on
 from teatree.paths import CANONICAL_DB, DATA_DIR, DATA_DIR_AUTO_ISOLATED, seed_isolated_db
 from teatree.timeouts import CORE_DEFAULTS
@@ -160,6 +161,23 @@ DATABASES = {
         "OPTIONS": SQLITE_WRITE_SERIALIZATION_OPTIONS,
     },
 }
+
+# Config is install-wide operator intent, so it lives in ONE place even when the
+# rest of the control DB is auto-isolated onto a per-worktree copy. From a
+# worktree ``pinned_config_db`` returns the primary ``~/.local/share/teatree``
+# DB — the same file the Django-free cold reader already targets — and
+# ``ConfigSettingRouter`` sends every ConfigSetting read/write there. From a
+# primary clone it returns None, no second connection is registered, and the
+# router is a no-op. See teatree/config/db_router.py.
+_PINNED_CONFIG_DB = pinned_config_db(default_db=CANONICAL_DB)
+if _PINNED_CONFIG_DB is not None:
+    DATABASES[CONFIG_DB_ALIAS] = {
+        "ENGINE": "django.db.backends.sqlite3",
+        "NAME": str(_PINNED_CONFIG_DB),
+        "OPTIONS": SQLITE_WRITE_SERIALIZATION_OPTIONS,
+    }
+
+DATABASE_ROUTERS = ["teatree.config.db_router.ConfigSettingRouter"]
 
 LANGUAGE_CODE = "en-us"
 TIME_ZONE = "UTC"

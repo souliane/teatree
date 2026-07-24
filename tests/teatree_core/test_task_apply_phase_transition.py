@@ -1,24 +1,35 @@
 """Regression tests for ``Task._apply_phase_transition`` (#1000).
 
 The #998/#999 orphan sweep can mark a second reviewing task COMPLETED on a
-reviewer-role ticket that already advanced to DELIVERED. Without a state
-guard on the ``phase == "reviewing" and role == REVIEWER`` branch the FSM
-raises ``TransitionNotAllowed`` and the loop tick crashes.
+reviewer-role ticket that already advanced to REVIEW_POSTED, and a re-review of
+a new head SHA does the same deliberately. Either way the tick must survive and
+the ticket must stay REVIEW_POSTED — ``mark_reviewed_externally`` self-loops there
+rather than raising ``TransitionNotAllowed``, the same shape #1431 gave its
+sibling ``mark_review_no_action``.
 """
 
 from unittest.mock import patch
 
-import pytest
 from django.test import TestCase
-from django_fsm import TransitionNotAllowed
 
 from teatree.core.models import Session, Task, Ticket
 
 
 class TestApplyPhaseTransitionGuardsTerminalReviewer(TestCase):
-    """#1000: reviewer-ticket already in REVIEW_POSTED must not re-fire the FSM."""
+    """#1000: completing a reviewing task on a REVIEW_POSTED reviewer ticket never crashes the tick.
 
-    def test_completed_reviewing_task_on_terminal_ticket_no_ops(self) -> None:
+    The invariant #1000 protects is "the tick survives and the ticket stays
+    REVIEW_POSTED", not "the FSM refuses". The refusal was only ever the
+    mechanism, and it was the *crash source*: a second reviewing task on a
+    terminal ticket raised ``TransitionNotAllowed`` and the guard in
+    ``_apply_phase_transition`` had to skip it. ``mark_reviewed_externally``
+    now self-loops on REVIEW_POSTED — the same fix #1431 applied to its sibling
+    ``mark_review_no_action`` in the same file — so the completion is an
+    idempotent no-op at the FSM level and the re-review of a new head SHA can
+    re-stamp the reviewed-at record.
+    """
+
+    def test_completed_reviewing_task_on_terminal_ticket_stays_review_posted(self) -> None:
         # Reviewer-role ticket already advanced through review and is now
         # REVIEW_POSTED (terminal). The #999 orphan sweep then completes a
         # second reviewing task on the same ticket.
@@ -36,10 +47,9 @@ class TestApplyPhaseTransitionGuardsTerminalReviewer(TestCase):
         )
 
         # Pre-#1000 this raised TransitionNotAllowed and crashed the tick.
-        fired = task._apply_phase_transition()
+        task._apply_phase_transition()
 
         ticket.refresh_from_db()
-        assert fired is False, "no transition should fire on a terminal-state reviewer ticket"
         assert ticket.state == Ticket.State.REVIEW_POSTED, f"ticket state must remain REVIEW_POSTED, got {ticket.state}"
 
     def test_reviewer_ticket_in_source_state_still_advances(self) -> None:
@@ -66,10 +76,10 @@ class TestApplyPhaseTransitionGuardsTerminalReviewer(TestCase):
         assert fired is True, "reviewer ticket in a source state must advance"
         assert ticket.state == Ticket.State.REVIEW_POSTED
 
-    def test_mark_reviewed_externally_still_raises_when_called_directly_on_terminal(self) -> None:
-        # Sanity: the guard lives in _apply_phase_transition, not in the
-        # FSM. Calling the transition directly on a REVIEW_POSTED ticket
-        # still raises — proving the guard is what protects the loop.
+    def test_mark_reviewed_externally_is_idempotent_when_called_directly_on_terminal(self) -> None:
+        # The crash is gone at the source: the transition self-loops on
+        # REVIEW_POSTED instead of raising, so neither the orphan sweep nor a
+        # re-review of a new head SHA can wedge the tick.
         ticket = Ticket.objects.create(
             overlay="test",
             role=Ticket.Role.REVIEWER,
@@ -83,8 +93,9 @@ class TestApplyPhaseTransitionGuardsTerminalReviewer(TestCase):
             status=Task.Status.COMPLETED,
         )
 
-        with pytest.raises(TransitionNotAllowed):
-            ticket.mark_reviewed_externally()
+        ticket.mark_reviewed_externally()
+
+        assert ticket.state == Ticket.State.REVIEW_POSTED
 
 
 class TestApplyPhaseTransitionChainsParentTask(TestCase):
@@ -326,6 +337,10 @@ class TestTransitionSourceStatesDerivation(TestCase):
             Ticket.State.CODED,
             Ticket.State.TESTED,
             Ticket.State.REVIEWED,
+            # The re-review self-loop: a new head SHA schedules a second review
+            # on an already-REVIEW_POSTED reviewer ticket, whose completion must
+            # be able to re-stamp the reviewed-at record.
+            Ticket.State.REVIEW_POSTED,
         }
 
     def test_wildcard_transition_yields_empty_set(self) -> None:

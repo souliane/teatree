@@ -67,8 +67,8 @@ class TestDocsCommand:
 
     def test_runs_mkdocs_serve(self, tmp_path, monkeypatch):
         """Docs command runs mkdocs serve when everything is available."""
-        import sys  # noqa: PLC0415
-        import types  # noqa: PLC0415
+        import sys  # noqa: PLC0415 - deferred: local import
+        import types  # noqa: PLC0415 - deferred: local import
 
         monkeypatch.chdir(tmp_path)
         (tmp_path / "pyproject.toml").write_text("[project]\n")
@@ -864,6 +864,37 @@ class TestEnsureEditableIfContributing:
         ):
             _ensure_editable_if_contributing()
         mock_make.assert_called_once_with("myoverlay-dist", Path("/fake/overlay"))
+
+    def test_skips_overlay_already_editable_from_source_tree(self, tmp_path, monkeypatch) -> None:
+        # An overlay imported from a real checkout (outside site-packages) is
+        # already editable — local edits take effect — so the reinstall must be
+        # SKIPPED even when packages_distributions() has no package->dist reverse
+        # mapping (a bare-.pth editable install). Without the source-tree guard
+        # the fallback dist name is unknown, editable_info reports it
+        # non-editable, and make_editable runs a noisy reinstall on every call.
+        import sys  # noqa: PLC0415 - deferred: local import
+        import types  # noqa: PLC0415 - deferred: local import
+
+        mock_overlay = MagicMock()
+        type(mock_overlay).__module__ = "srcoverlay.overlay"
+        source_module = types.ModuleType("srcoverlay")
+        source_module.__file__ = str(tmp_path / "srcoverlay" / "__init__.py")
+        monkeypatch.setitem(sys.modules, "srcoverlay", source_module)
+
+        with (
+            patch.object(cold_reader_mod, "bool_setting", return_value=True),
+            patch.object(
+                IntrospectionHelpers,
+                "editable_info",
+                side_effect=[(True, "/teatree"), (False, "")],
+            ),
+            patch.object(overlay_loader_mod, "get_all_overlays", return_value={"src": mock_overlay}),
+            patch("importlib.metadata.packages_distributions", return_value={}),
+            patch.object(DoctorService, "find_overlay_repo", return_value=Path("/fake/overlay")),
+            patch.object(DoctorService, "make_editable") as mock_make,
+        ):
+            _ensure_editable_if_contributing()
+        mock_make.assert_not_called()
 
     def test_packages_distributions_resolved_once_across_overlays(self) -> None:
         # The dist map is invariant across overlays — it must be resolved ONCE,

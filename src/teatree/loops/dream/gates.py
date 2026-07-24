@@ -59,10 +59,20 @@ _INDEX_NAME = "MEMORY.md"
 #: ``- [name.md](name.md) — summary`` markdown-link form). Anchored on the
 #: line-leading pointer position, NOT any ``.md`` token mid-line, so a ``.md``
 #: filename merely mentioned in the free-text summary never counts as the line's
-#: target — only a reworded pointer to a still-present memory homes the line; a
-#: genuinely lost pointer stays unhomed even if its summary name-drops a
-#: surviving memory.
+#: target.
 _MEMORY_REF_RE = re.compile(r"^\s*-\s+\[?([\w.\-/]+\.md)\b")
+#: The memory-file(s) a curated index line POINTS AT via a markdown link TARGET —
+#: ``- [Human Title](name.md)``, where the bracket holds a HUMAN TITLE (not the
+#: filename) and the memory lives in the ``](...)`` target. This is the format the
+#: hand-curated ``MEMORY.md`` uses (one line per memory, plus cluster aliases
+#: ``[alias](other.md)``). When re-index reformats such a line to the auto
+#: ``- name.md — summary`` pointer form, the line is "pruned" while the memory
+#: SURVIVES — so homing must read the link target, else every curated line reads as
+#: a lost lesson (the observed "N pruned index line(s) have no confirmed durable
+#: home" staleness defect). Keyed on the STRUCTURAL ``](name.md)`` link syntax only,
+#: never a bare ``.md`` name-dropped in free-text prose — so a genuinely lost pointer
+#: stays unhomed even if its summary name-drops a surviving memory.
+_MEMORY_LINK_TARGET_RE = re.compile(r"\]\(([\w.\-/]+\.md)\)")
 
 #: Load budget for the rendered ``MEMORY.md`` index (gate d). The index is one
 #: short line per memory and is read WHOLE at every session load; the harness
@@ -191,15 +201,22 @@ def _normalize(text: str) -> str:
 
 
 def _line_targets(line: str, names: Container[str]) -> bool:
-    """Whether a pruned index *line*'s leading ``.md`` pointer is one of *names*.
+    """Whether a pruned index *line*'s ``.md`` pointer(s) are among *names*.
 
     The shared homing test — a pruned line is NOT a lost lesson when its pointer targets a
-    memory still present after the pass (re-index merely reworded the summary) OR a file
-    archived this pass (a restorable durable home in ``archive/`` + the cold
-    ``MEMORY_ARCHIVE.md``, #2723, resolving the #2546 transfer-before-prune tension). Keys
-    on the line-leading pointer only, never a ``.md`` token in the free-text summary.
+    memory still present after the pass (re-index merely reworded/reformatted the line) OR a
+    file archived this pass (a restorable durable home in ``archive/`` + the cold
+    ``MEMORY_ARCHIVE.md``, #2723, resolving the #2546 transfer-before-prune tension). Reads
+    BOTH the line-leading pointer (``- name.md`` / ``- [name.md](...)``) AND the curated
+    markdown link TARGET(s) (``- [Human Title](name.md)``, incl. cluster aliases), because
+    the hand-curated ``MEMORY.md`` carries the filename in the ``](...)`` target while the
+    bracket holds a human title — so a faithful re-index reformat of a curated line stays
+    homed. Keys on those STRUCTURAL pointers only, never a bare ``.md`` name-dropped in the
+    free-text summary — a genuinely lost pointer stays unhomed even when the summary
+    name-drops a surviving memory.
     """
-    return any(ref in names for ref in _MEMORY_REF_RE.findall(line))
+    refs = _MEMORY_REF_RE.findall(line) + _MEMORY_LINK_TARGET_RE.findall(line)
+    return any(ref in names for ref in refs)
 
 
 def snapshot_memory_dir(memory_dir: Path) -> MemorySnapshot:

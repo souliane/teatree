@@ -5,9 +5,8 @@ teatree's own repo, skills, and GitHub project as the target.
 """
 
 from pathlib import Path
-from typing import override
+from typing import TYPE_CHECKING, override
 
-from teatree.core.models import Worktree
 from teatree.overlay_sdk import (
     OverlayBase,
     OverlayConfig,
@@ -25,6 +24,9 @@ from teatree.overlay_sdk import (
     reap_compose_project,
     run_checked,
 )
+
+if TYPE_CHECKING:
+    from teatree.core.models import Worktree
 
 _SETTINGS_MODULE = "teatree.contrib.t3_teatree.overlay_settings"
 _DEFAULT_FOLLOWUP_REPOS = ["souliane/teatree"]
@@ -102,18 +104,18 @@ class TeatreeConnectors(OverlayConnectors):
 
 class TeatreeProvisioning(OverlayProvisioning):
     @override
-    def reap_external_resources(self, worktree: Worktree) -> list[str]:
+    def reap_external_resources(self, worktree: "Worktree") -> list[str]:
         result = reap_compose_project(compose_project(worktree))
         return [] if result.is_noop else [str(result)]
 
 
 class TeatreeRuntime(OverlayRuntime):
     @override
-    def test_command(self, worktree: Worktree) -> list[str]:
+    def test_command(self, worktree: "Worktree") -> list[str]:
         return ["uv", "run", "pytest"]
 
     @override
-    def lint_command(self, worktree: Worktree) -> list[str]:
+    def lint_command(self, worktree: "Worktree") -> list[str]:
         return ["prek", "run", "--all-files"]
 
 
@@ -166,7 +168,7 @@ class TeatreeOverlay(OverlayBase):
         return discovered or self.get_repos()
 
     @override
-    def get_provision_steps(self, worktree: Worktree) -> list[ProvisionStep]:
+    def get_provision_steps(self, worktree: "Worktree") -> list[ProvisionStep]:
         # ``worktree.repo_path`` is the repo identifier (e.g. ``souliane/teatree``),
         # NOT a filesystem path — the on-disk worktree path lives in ``extra['worktree_path']``
         # and is exposed via ``worktree.worktree_path``. Before #941 this method used

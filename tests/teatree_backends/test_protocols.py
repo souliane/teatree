@@ -255,6 +255,10 @@ class _FakeMessaging:
         _ = (channel, limit)
         return []
 
+    def fetch_channel_history_or_refuse(self, *, channel: str, limit: int = 50) -> list[dict[str, object]]:
+        _ = (channel, limit)
+        return []
+
     def post_message(self, *, channel: str, text: str, thread_ts: str = "") -> dict[str, object]:
         _ = (channel, text, thread_ts)
         return {}

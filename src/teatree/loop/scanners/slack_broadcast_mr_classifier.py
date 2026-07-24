@@ -59,6 +59,26 @@ def _classifier_int(data: RawAPIDict, key: str) -> int:
     return value if isinstance(value, int) else 0
 
 
+def _classifier_head_sha(data: RawAPIDict, *, key: str) -> str:
+    """The MR's head commit from the payload the classifier already fetched.
+
+    GitLab's ``glab mr view -F json`` carries the head at top-level ``sha``
+    with ``diff_refs.head_sha`` as the authoritative sibling; GitHub's
+    ``gh pr view --json headRefOid`` carries ``headRefOid``. An unreadable
+    value degrades to ``""`` — a fail-open "unknown head" the re-review path
+    never mistakes for a moved head.
+    """
+    direct = data.get(key)
+    if isinstance(direct, str) and direct:
+        return direct
+    diff_refs = data.get("diff_refs")
+    if isinstance(diff_refs, dict):
+        nested = cast("RawAPIDict", diff_refs).get("head_sha")
+        if isinstance(nested, str):
+            return nested
+    return ""
+
+
 def _classifier_author(data: RawAPIDict, *, key: str) -> str:
     """The forge author's username from ``data["author"][key]`` (GitLab ``username`` / GitHub ``login``)."""
     author = data.get("author")
@@ -144,7 +164,13 @@ class GlabGhMrStateClassifier:
         upvotes = _classifier_int(data, "upvotes")
         approved = upvotes > 0 or merged
         author_username = _classifier_author(data, key="username")
-        return MrState(url=url, merged=merged, approved=approved, author_username=author_username)
+        return MrState(
+            url=url,
+            merged=merged,
+            approved=approved,
+            author_username=author_username,
+            head_sha=_classifier_head_sha(data, key="sha"),
+        )
 
     def _classify_github(self, url: str) -> MrState:
         from teatree.utils.run import run_allowed_to_fail  # noqa: PLC0415 — deferred: loaded at tick time, not import
@@ -153,7 +179,7 @@ class GlabGhMrStateClassifier:
         env = {**os.environ, "GH_TOKEN": self.github_token} if self.github_token else None
         try:
             result = run_allowed_to_fail(
-                [gh, "pr", "view", url, "--json", "state,reviewDecision,author"],
+                [gh, "pr", "view", url, "--json", "state,reviewDecision,author,headRefOid"],
                 expected_codes=None,
                 env=env,
             )
@@ -170,4 +196,10 @@ class GlabGhMrStateClassifier:
         merged = state == "MERGED"
         approved = review_decision == "APPROVED" or merged
         author_username = _classifier_author(data, key="login")
-        return MrState(url=url, merged=merged, approved=approved, author_username=author_username)
+        return MrState(
+            url=url,
+            merged=merged,
+            approved=approved,
+            author_username=author_username,
+            head_sha=_classifier_head_sha(data, key="headRefOid"),
+        )

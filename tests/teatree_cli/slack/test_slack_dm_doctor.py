@@ -1,4 +1,9 @@
-"""``t3 doctor`` Slack DM-readiness — fail-loud per-overlay DM/read diagnosis.
+"""``t3 doctor`` Slack DM CONFIG completeness — fail-loud per-overlay config diagnosis.
+
+Scope check included: the OK line must read as "config filled in", never as
+"notifications work". This check resolves each overlay BY NAME while the headless
+egress resolves ambiently, so the two can disagree — deliverability is the Slack
+round-trip gate's job, not this one's.
 
 Overlays are sourced from the DB ``overlays`` registry (read via the Django ORM
 by the doctor, which runs after ``ensure_django``), so the cases seed via
@@ -8,7 +13,7 @@ so no live Slack call is made.
 
 from unittest.mock import patch
 
-import pytest
+from django.test import TestCase
 
 from teatree.backends.messaging_noop import NoopMessagingBackend
 from teatree.cli.slack.dm_doctor import check_slack_dm_ready
@@ -24,9 +29,7 @@ def _seed(overlays: dict[str, dict]) -> None:
     ConfigSetting.objects.set_value("overlays", overlays)
 
 
-# ast-grep-ignore: ac-django-no-pytest-django-db
-@pytest.mark.django_db
-class TestDmReadiness:
+class TestDmReadiness(TestCase):
     def test_noop_backend_despite_slack_is_fail(self) -> None:
         _seed({"t3": {"messaging_backend": "slack", "slack_user_id": "U1", "slack_dm_channel_id": "D1"}})
         with patch("teatree.cli.slack.dm_doctor.messaging_from_overlay", return_value=NoopMessagingBackend()):
@@ -63,7 +66,21 @@ class TestDmReadiness:
         with patch("teatree.cli.slack.dm_doctor.messaging_from_overlay", return_value=_FakeSlackBackend()):
             outcome = check_slack_dm_ready()
         assert outcome.ok
-        assert any(f.level is Level.OK and "DM-ready" in f.message for f in outcome.findings)
+        assert any(f.level is Level.OK and "Slack DM config complete" in f.message for f in outcome.findings)
+
+    def test_the_ok_line_cannot_be_read_as_a_promise_that_notifications_deliver(self) -> None:
+        """This check resolves BY NAME; the runtime resolves ambiently, so it proves config only.
+
+        Wording it as readiness is what let a green doctor sit beside a totally dead
+        notification path for a day — the operator read "DM-ready" as "DMs work".
+        """
+        _seed({"t3": {"messaging_backend": "slack", "slack_user_id": "U1", "slack_dm_channel_id": "D1"}})
+        with patch("teatree.cli.slack.dm_doctor.messaging_from_overlay", return_value=_FakeSlackBackend()):
+            outcome = check_slack_dm_ready()
+        message = next(f.message for f in outcome.findings if f.level is Level.OK)
+        assert "config only" in message
+        assert "NOT proof a DM delivers" in message
+        assert "DM-ready" not in message
 
     def test_no_slack_overlays_yields_no_findings(self) -> None:
         _seed({"t3": {"path": "/repo"}})
