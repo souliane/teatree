@@ -85,6 +85,10 @@
         {
           "help": "List every DB config override row, naming each row's scope (read-only)",
           "name": "list"
+        },
+        {
+          "help": "Load a ``config_setting export`` TOML dump into the store \u2014 the inverse of ``export``",
+          "name": "import"
         }
       ]
     },

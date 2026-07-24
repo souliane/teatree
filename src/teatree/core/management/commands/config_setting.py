@@ -24,6 +24,8 @@ Non-zero exits use ``raise SystemExit(N)`` — this runs under Django's
 """
 
 import json
+import sys
+import tomllib
 from pathlib import Path
 from typing import Annotated
 
@@ -33,7 +35,7 @@ from django_typer.management import TyperCommand, command
 
 from teatree.config import ALL_KNOWN_CONFIG_SETTINGS, COLD_HOOK_SETTINGS, FEATURE_FLAGS, get_effective_settings
 from teatree.config.feature_flags import flag_trailer, render_flags_audit
-from teatree.core.config_migration import export_db_to_toml
+from teatree.core.config_migration import export_db_to_toml, import_toml_to_db
 from teatree.core.models import ConfigSetting
 from teatree.core.models.config_setting import ENTRYPOINT_SEEDER
 
@@ -305,3 +307,47 @@ class Command(TyperCommand):
             self.stdout.write(f"  exported config store to {output}")
             return
         self.stdout.write(result.toml, ending="")
+
+    @command(name="import")
+    def import_config(
+        self,
+        *,
+        input_path: Annotated[
+            str,
+            typer.Option("--input", help="Read the TOML dump from this path; omit to read stdin."),
+        ] = "",
+        dry_run: Annotated[
+            bool,
+            typer.Option(
+                "--dry-run", help="Classify every row (folded / written / skipped / rejected); write nothing."
+            ),
+        ] = False,
+    ) -> None:
+        """Load a ``config_setting export`` TOML dump into the store — the inverse of ``export``.
+
+        Retired aliases fold onto their live key; unknown keys and secret/personal-identifier
+        rows are REJECTED and the WHOLE import is refused (nothing written) so one bad key never
+        leaves a partial store; every value is validated through the same registry parser the
+        resolver applies on read. A value equal to the shipped default writes NO row (so a dump of
+        ``defaults.toml`` imports to zero rows). ``--dry-run`` classifies without writing.
+        """
+        text = Path(input_path).expanduser().read_text(encoding="utf-8") if input_path else sys.stdin.read()
+        try:
+            result = import_toml_to_db(text, dry_run=dry_run)
+        except tomllib.TOMLDecodeError as exc:
+            self.stderr.write(f"  invalid TOML: {exc}")
+            raise SystemExit(2) from exc
+        for old, new in result.folded:
+            self.stdout.write(f"  folded retired alias {old} -> {new}")
+        for row in result.rejected:
+            self.stderr.write(f"  rejected {row.key}  [{_scope_label(row.scope)}]  ({row.reason})")
+        if result.rejected:
+            self.stderr.write(f"  {len(result.rejected)} row(s) rejected; nothing was imported.")
+            raise SystemExit(2)
+        verb = "would import" if dry_run else "imported"
+        for row in result.written:
+            self.stdout.write(f"  {verb} {row.key} = {row.value!r}  [{_scope_label(row.scope)}]")
+        self.stdout.write(
+            f"  {verb} {len(result.written)} row(s); "
+            f"{len(result.skipped_default)} equal to the shipped default (no row)."
+        )

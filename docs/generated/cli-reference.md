@@ -10384,7 +10384,27 @@ Usage: t3 teatree config_setting list [OPTIONS]
 ```
 Usage: t3 teatree config_setting import [OPTIONS]
 
- Seed the DB store from operational  toml keys (one-time).
+ Load a ``config_setting export`` TOML dump into the store — the inverse of
+ ``export``.
+
+ Retired aliases fold onto their live key; unknown keys and
+ secret/personal-identifier
+ rows are REJECTED and the WHOLE import is refused (nothing written) so one bad
+ key never
+ leaves a partial store; every value is validated through the same registry
+ parser the
+ resolver applies on read. A value equal to the shipped default writes NO row
+ (so a dump of
+ ``defaults.toml`` imports to zero rows). ``--dry-run`` classifies without
+ writing.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --input          TEXT  Read the TOML dump from this path; omit to read       │
+│                        stdin.                                                │
+│ --dry-run              Classify every row (folded / written / skipped /      │
+│                        rejected); write nothing.                             │
+│ --help                 Show this message and exit.                           │
+╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
 #### `t3 teatree approval_dial`

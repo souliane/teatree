@@ -18,7 +18,8 @@ import pytest
 from django.test import TestCase
 
 from teatree.config import COLD_HOOK_SETTINGS, OVERLAY_OVERRIDABLE_SETTINGS
-from teatree.core.config_migration import _resolve_export_scan_terms, export_db_to_toml
+from teatree.config.schema import _DEFAULTS_TOML
+from teatree.core.config_migration import _resolve_export_scan_terms, export_db_to_toml, import_toml_to_db
 from teatree.core.models import ConfigSetting
 
 
@@ -200,3 +201,134 @@ class TestExportScanTermsRoutesThroughRegistry:
         monkeypatch.delenv("T3_BANNED_TERMS", raising=False)
         monkeypatch.delenv("TEATREE_TERM_REGISTRY", raising=False)
         assert set(_resolve_export_scan_terms()) == {"democorp", "widget-margin", "acme-internal"}
+
+
+class TestImportTomlToDb(TestCase):
+    """``import_toml_to_db`` — the precise inverse of ``export_db_to_toml`` (PR: phase 4).
+
+    Loads a ``config_setting export`` dump back into the store: retired aliases fold,
+    unknown/secret rows are rejected wholesale, every value is validated through the
+    resolver's own parser, and a value equal to the shipped default writes no row.
+    """
+
+    def test_round_trip_writes_values_into_the_store(self) -> None:
+        result = import_toml_to_db('[teatree]\nmode = "auto"\nissue_implementer_max_concurrent = 9\n', scan_terms=())
+        assert result.rejected == ()
+        assert ConfigSetting.objects.get_effective("mode") == "auto"
+        assert ConfigSetting.objects.get_effective("issue_implementer_max_concurrent") == 9
+
+    def test_unknown_key_rejects_the_whole_import(self) -> None:
+        result = import_toml_to_db('[teatree]\nnot_a_setting = 1\nmode = "auto"\n', scan_terms=())
+        assert [(r.key, r.reason) for r in result.rejected] == [("not_a_setting", "unknown key")]
+        # Atomic: the clean `mode` row is NOT written when a sibling row is rejected.
+        assert result.written == ()
+        assert ConfigSetting.objects.count() == 0
+
+    def test_secret_key_is_rejected(self) -> None:
+        result = import_toml_to_db('[teatree]\nbanned_terms = ["synthetic"]\n', scan_terms=())
+        assert len(result.rejected) == 1
+        assert result.rejected[0].key == "banned_terms"
+        assert "private-key" in result.rejected[0].reason
+        assert ConfigSetting.objects.count() == 0
+
+    def test_value_carrying_a_banned_term_is_rejected(self) -> None:
+        result = import_toml_to_db(
+            '[overlays.proj]\nban_close_trailers_on_namespaces = ["acmecorp"]\n', scan_terms=("acmecorp",)
+        )
+        assert len(result.rejected) == 1
+        assert result.rejected[0].reason == "secret (banned-term:acmecorp)"
+
+    def test_removed_key_is_rejected_loudly(self) -> None:
+        result = import_toml_to_db('[teatree]\nbranch_prefix = "x"\n', scan_terms=())
+        assert len(result.rejected) == 1
+        assert result.rejected[0].key == "branch_prefix"
+        assert result.rejected[0].reason.startswith("removed")
+
+    def test_retired_alias_folds_onto_its_replacement(self) -> None:
+        # `speed` was renamed to `wip`; the stored value migrates onto the live key.
+        result = import_toml_to_db('[teatree]\nspeed = "full"\n', scan_terms=())
+        assert result.rejected == ()
+        assert ("speed", "wip") in result.folded
+        assert [(r.scope, r.key) for r in result.written] == [("", "wip")]
+        assert ConfigSetting.objects.get_effective("wip") == "full"
+        assert ConfigSetting.objects.get_effective("speed") is None
+
+    def test_invalid_value_is_rejected(self) -> None:
+        # A quoted "false" for a bool-typed setting fails the strict parser (#258).
+        result = import_toml_to_db('[teatree]\nissue_implementer_enabled = "false"\n', scan_terms=())
+        assert len(result.rejected) == 1
+        assert result.rejected[0].reason.startswith("invalid")
+        assert ConfigSetting.objects.count() == 0
+
+    def test_value_equal_to_shipped_default_writes_no_row(self) -> None:
+        # issue_implementer_enabled's shipped default is False.
+        result = import_toml_to_db("[teatree]\nissue_implementer_enabled = false\n", scan_terms=())
+        assert result.rejected == ()
+        assert result.written == ()
+        assert [(r.scope, r.key) for r in result.skipped_default] == [("", "issue_implementer_enabled")]
+        assert ConfigSetting.objects.count() == 0
+
+    def test_defaults_toml_imports_to_zero_rows(self) -> None:
+        # Every key in the shipped defaults equals its own default, so a clean import
+        # of defaults.toml stores nothing — preserving the #3676 zero-seed property.
+        result = import_toml_to_db(_DEFAULTS_TOML.read_text(encoding="utf-8"), scan_terms=())
+        assert result.rejected == ()
+        assert result.written == ()
+        assert len(result.skipped_default) > 0
+        assert ConfigSetting.objects.count() == 0
+
+    def test_dry_run_classifies_without_writing(self) -> None:
+        result = import_toml_to_db('[teatree]\nmode = "auto"\n', scan_terms=(), dry_run=True)
+        assert result.dry_run is True
+        assert [(r.scope, r.key) for r in result.written] == [("", "mode")]
+        assert ConfigSetting.objects.count() == 0
+
+    def test_overlay_scope_and_registry_definition_keys_split(self) -> None:
+        # An `[overlays.<name>]` table splits: a per-overlay SETTING becomes a scope row,
+        # a definition key (class/path) folds back into the `overlays` registry row.
+        toml = '[overlays.myov]\nmode = "auto"\nclass = "pkg.settings"\n'
+        result = import_toml_to_db(toml, scan_terms=())
+        assert result.rejected == ()
+        assert ConfigSetting.objects.get_effective("mode", scope="myov") == "auto"
+        assert ConfigSetting.objects.get_effective("overlays") == {"myov": {"class": "pkg.settings"}}
+
+
+class TestExportImportRoundTripIsByteStable(TestCase):
+    """``export -> import -> export`` is a fixed point at the byte level (phase 4 golden).
+
+    A shared export withholds Secret values but INCLUDES Personal ones; feeding it back
+    through import rebuilds the identical store, so the second export is byte-for-byte the
+    first. All values are non-default (a default value imports to no row) and span every
+    section: global settings, a Personal key, per-overlay scope rows, the overlays
+    definition registry, and the e2e-repos registry.
+    """
+
+    def _seed_representative_store(self) -> None:
+        ConfigSetting.objects.set_value("issue_implementer_enabled", value=True)
+        ConfigSetting.objects.set_value("issue_implementer_max_concurrent", 9)
+        ConfigSetting.objects.set_value("excluded_skills", ["zzz"])
+        ConfigSetting.objects.set_value("workspace_dir", "/tmp/ws")  # Personal — included in a shared export
+        ConfigSetting.objects.set_value("mode", "auto", scope="myov")
+        ConfigSetting.objects.set_value("boost_concurrency", 5, scope="myov")
+        ConfigSetting.objects.set_value("overlays", {"myov": {"class": "pkg.settings"}})
+        ConfigSetting.objects.set_value("e2e_repos", {"myrepo": {"branch": "dev", "url": "git@x:r.git"}})
+
+    def test_export_import_export_is_byte_identical(self) -> None:
+        self._seed_representative_store()
+        export1 = export_db_to_toml(scan_terms=()).toml
+        ConfigSetting.objects.all().delete()
+
+        result = import_toml_to_db(export1, scan_terms=())
+        assert result.rejected == ()
+
+        export2 = export_db_to_toml(scan_terms=()).toml
+        assert export2 == export1
+
+    def test_secret_value_is_withheld_from_export_and_personal_is_kept(self) -> None:
+        self._seed_representative_store()
+        ConfigSetting.objects.set_value("banned_brands", ["synthetic"])  # Secret
+        dump = export_db_to_toml(scan_terms=()).toml
+        assert "banned_brands" not in dump  # Secret withheld
+        assert "/tmp/ws" in dump  # Personal kept
+        # And the withheld Secret never round-trips back in.
+        assert import_toml_to_db(dump, scan_terms=()).rejected == ()
