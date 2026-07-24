@@ -73,18 +73,18 @@ The repo's `AGENTS.md` § "Test-Writing Doctrine" carries the authoritative rule
 `t3 tool affected-tests` selects only the pytest tests a diff affects, for a fast local inner loop on the teatree repo. It is **safety-biased**: it over-selects (never under-selects) and degrades to the whole-tree run on anything it cannot prove local. It is **opt-in local tooling** — the whole-tree 12-shard CI run stays the merge/coverage gate, and the selector is **never** wired into the pre-push gate.
 
 ```bash
-t3 tool affected-tests                 # human report: SCOPED (N files + floor) or FULL + reason
-t3 tool affected-tests --pytest-args   # emit the pytest positional args (for xargs)
+t3 tool affected-tests                 # human report: SCOPED (tach plugin + force-keep) or FULL + reason
+t3 tool affected-tests --pytest-args   # emit the pytest invocation (the --tach flags + force-keep plugin)
 t3 tool affected-tests --json          # machine-readable selection
-t3 tool affected-tests --explain all   # trace why each test was selected (the import chain)
+t3 tool affected-tests --explain all   # trace why each test is force-kept over the plugin
 t3 tool affected-tests --explain tests/teatree_core/test_x.py   # trace one test
 
 bash dev/test-affected.sh              # select + run the fast lane (--full to force whole suite)
 ```
 
-How it selects: a changed `src/teatree/**` module → its transitive dependents (the reverse-import closure from `tach map --direction dependents`) → every test whose first-party imports hit any module in the closure, unioned with the mirror-convention test path and an always-run floor (`tests/quality`, `tests/integration`, `tests/conformance`). A changed test file selects itself; the changed src modules run under `--doctest-modules` to match the CI shard flags.
+How it selects (#3672): the **tach pytest plugin** is the impact engine — `--tach --tach-base origin/main` walks the reverse-import graph natively and deselects the tests a diff cannot reach, in one session. `t3 tool affected-tests` decides FULL-vs-scoped from the escalation policy and, on a scoped run, layers our **force-keep** plugin (`-p teatree.quality.force_keep_plugin`) over the deselection: the always-run floor (`tests/quality`, `tests/integration`, `tests/conformance`), the doc-reader tests for a changed doc, the mirror-convention test path, and the changed test files themselves are kept regardless of what the graph says. The changed src modules run under `--doctest-modules` to match the CI shard flags. Zero test runs twice.
 
-Degrades to a whole-tree FULL run (deterministically — over-run, never under-run) on any of: a changed `conftest.py` / `factories.py`; test settings (`tests/django_settings*`, `tests/config/**`); a migration (adds `--create-db`); a non-`.py` data file under `src/`/`tests/`; any file outside the modelled roots (`scripts/`, `hooks/`, `e2e/`, docs/skills `.md`); any deletion/rename; a dirty merge-base; or an unavailable `tach` map. When the report says FULL, run the whole suite.
+Degrades to a whole-tree FULL run with the plugin OFF (deterministically — over-run, never under-run) on any of: a changed `conftest.py` / `factories.py`; test settings (`tests/django_settings*`, `tests/config/**`); a migration (adds `--create-db`); a non-`.py` data file under `src/`/`tests/`; any file outside the modelled roots (`scripts/`, `hooks/`, `e2e/`, docs/skills `.md`); any deletion/rename; or a dirty merge-base. When the report says FULL, run the whole suite.
 
 **Not a gate.** This is fast feedback only; a subset run cannot prove the 93% whole-tree coverage floor. Before pushing, the coverage gate is still `bash dev/ci-parity.sh` and CI's sharded `test (3.13)` lane.
 
