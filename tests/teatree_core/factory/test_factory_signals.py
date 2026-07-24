@@ -33,6 +33,7 @@ from teatree.core.merge.pr_slug_resolution import resolve_pr_repo_slug
 from teatree.core.models.task_attempt import TaskAttempt
 from teatree.core.models.ticket import Ticket
 from teatree.core.models.transition import TicketTransition
+from teatree.core.models.usage_window_state import LIMIT_PARKED_PREFIX
 from tests.factories import (
     MergeAuditFactory,
     MergeClearFactory,
@@ -323,6 +324,22 @@ class S2DefectEscapeTests(FactorySignalsTestBase):
         assert reading.status == SignalStatus.OK
         assert reading.value == pytest.approx(0.0)
 
+    def test_escape_at_or_above_red_floor_trips_red(self) -> None:
+        # #3690 RED-first: 5 preceding merges and 6 escaped corrections (fix tickets)
+        # in-window is a defect-escape rate of 1.2 — corrections outpace merges. With
+        # red_when=None this reported OK regardless of value; it must now trip RED.
+        for i in range(5):
+            self._merge(pr_id=700 + i, days_ago=40)
+        for _ in range(6):
+            self._fix_ticket(days_ago=5)
+        report = compute_factory_signals(now=self.now)
+        row = _row(report, "defect_escape")
+        assert row.reading.value == pytest.approx(1.2)
+        assert row.reading.status == SignalStatus.OK
+        assert row.tripped is True
+        assert row.verdict == SignalVerdict.RED
+        assert report.verdict == SignalVerdict.RED
+
 
 class S3ReviewCatchTests(FactorySignalsTestBase):
     def test_rubber_stamp_window_is_hard_red(self) -> None:
@@ -513,6 +530,22 @@ class S4MergeLatencyTests(FactorySignalsTestBase):
         assert row.tripped is True
         assert row.verdict == SignalVerdict.RED
 
+    def test_median_latency_at_or_above_red_floor_trips_red(self) -> None:
+        # #3690 RED-first: 5 merges whose CLEARs are all CONSUMED (so the stale-CLEAR
+        # companion never fires — stale_clear_hours stays 0) but each sat 30h between
+        # CLEAR and merge. The median latency of 30h crosses the 24h scalar red floor.
+        # With red_when=None this reported OK at any latency; it must now trip RED on
+        # the scalar alone, independent of the staleness companion.
+        for i in range(5):
+            self._merge(pr_id=901 + i, days_ago=5, latency_hours=30.0)
+        report = compute_factory_signals(now=self.now)
+        row = _row(report, "merge_latency")
+        assert row.reading.value == pytest.approx(30.0)
+        assert row.reading.status == SignalStatus.OK
+        assert row.evidence["stale_clear_hours"] == pytest.approx(0.0)
+        assert row.tripped is True
+        assert row.verdict == SignalVerdict.RED
+
 
 class S5RepairBurnTests(FactorySignalsTestBase):
     def test_low_burn_is_ok(self) -> None:
@@ -566,6 +599,53 @@ class S5RepairBurnTests(FactorySignalsTestBase):
         assert row.reading.value == pytest.approx(3.0)
         assert row.baseline_value == pytest.approx(1.0)
         assert row.verdict == SignalVerdict.REGRESSING
+
+    def test_mean_terminal_iteration_at_or_above_red_floor_trips_red(self) -> None:
+        # #3690 RED-first: 5 succeeded phases each landing at terminal iteration 5 —
+        # the phases that DO complete nearly exhaust the 5-iteration budget every time.
+        # The mean of 5.0 crosses the 4.0 scalar red floor. With red_when=None this
+        # reported OK at any burn (the observed 11.756 stayed "ok"); it must now RED.
+        for _ in range(5):
+            self._attempt(days_ago=5, iteration=5)
+        report = compute_factory_signals(now=self.now)
+        row = _row(report, "repair_burn")
+        assert row.reading.value == pytest.approx(5.0)
+        assert row.reading.status == SignalStatus.OK
+        assert row.tripped is True
+        assert row.verdict == SignalVerdict.RED
+
+    def test_high_failure_fraction_trips_hard_red_even_below_success_sample(self) -> None:
+        # #3690 companion volume detector: a window where almost every work attempt
+        # crashes leaves too few success groups to measure, so the scalar mean reads
+        # INSUFFICIENT_DATA and the pathology (observed failed_fraction 0.996) was
+        # invisible. 8 crashes + 1 success is failed_fraction 0.889 over 9 attempts —
+        # the companion must trip a hard RED despite the thin success sample.
+        for _ in range(8):
+            self._attempt(days_ago=5, iteration=1, exit_code=1, error="boom")
+        self._attempt(days_ago=5, iteration=1)
+        report = compute_factory_signals(now=self.now)
+        row = _row(report, "repair_burn")
+        assert row.evidence["failed_fraction"] == pytest.approx(0.889, abs=0.001)
+        assert row.reading.status == SignalStatus.INSUFFICIENT_DATA
+        assert row.tripped is True
+        assert row.verdict == SignalVerdict.RED
+        assert report.verdict == SignalVerdict.RED
+
+    def test_limit_park_rows_do_not_inflate_failure_fraction(self) -> None:
+        # #3689/#3690: a usage-window outage records many limit_parked TaskAttempts.
+        # They are scheduling events, not work failures, so they must be excluded from
+        # the failure fraction — otherwise the companion detector false-REDs a healthy
+        # factory that merely hit its window. 5 clean successes + 10 parks reads 0.0.
+        for _ in range(5):
+            self._attempt(days_ago=5, iteration=1)
+        for _ in range(10):
+            self._attempt(days_ago=5, iteration=0, exit_code=1, error=f"{LIMIT_PARKED_PREFIX}session window active")
+        report = compute_factory_signals(now=self.now)
+        row = _row(report, "repair_burn")
+        assert row.evidence["attempts"] == 5
+        assert row.evidence["failed_fraction"] == pytest.approx(0.0)
+        assert row.tripped is False
+        assert row.verdict == SignalVerdict.OK
 
 
 class ReportShapeTests(FactorySignalsTestBase):
