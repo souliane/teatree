@@ -1,28 +1,26 @@
 """Phase 5 of the dream pass — regenerate the ``MEMORY.md`` index (#1933 § 6).
 
-``MEMORY.md`` is the index of the memory set: one line per memory file, a bare
-filename pointer plus a tight one-line summary (a brief hook), so a reader scans
-the index and opens the topic file for detail. This phase REGENERATES that index
-from the current ``*.md`` set under a ``memory_dir`` — it never moves content INTO
-the index (the body stays in the topic file), only re-derives the one-line pointers.
+``MEMORY.md`` is the index of the memory set: one BARE ``- name.md`` filename
+pointer per memory file, so a reader scans the index and opens the topic file for
+detail. This phase REGENERATES that index from the current ``*.md`` set under a
+``memory_dir`` — it never moves content INTO the index (the body stays in the topic
+file), only re-derives the one-line pointers.
 
-Each line is ``- name.md — summary`` — a SINGLE bare filename pointer, not the former
-``[name.md](name.md)`` markdown link that listed the filename twice and inflated
-the index. The summary is a SHORT terse reminder clipped to ``_SUMMARY_MAX_CHARS`` and
-the WHOLE line is capped at ``_LINE_MAX_CHARS`` (filename intact, summary absorbing the
-cap): the descriptive filename slug carries most of the meaning, so a brief summary
-lets MANY more short pointers fit the ~24 KB session-load BYTE budget gate (d)
-enforces (#2723, #2755).
+Each line is a bare ``- name.md`` pointer with NO free-text summary. Dropping the
+per-line summary is what keeps the WHOLE index under the ~24 KB session-load BYTE
+budget gate (d) enforces (#2723, #2755): at a realistic corpus (~230
+memories with ~50-byte filenames) even a 45-char summary pushes the index OVER the
+budget — undoing any curated compaction and forcing needless archival — whereas
+bare pointers fit every pointer with room to spare. The descriptive filename slug
+IS the hook, and the retention lesson still lives in the memory body (and, for
+archived files, the cold ``MEMORY_ARCHIVE.md`` via :func:`signature_text`), so a
+pure pointer list loses no lesson. This matches the hot-index form the decay phase
+already documents (``- name.md`` pointers never dangle).
 
-The regeneration is PURE and idempotent: the summary of each memory is derived
-deterministically by the shared :func:`signature_text` extractor — its
-frontmatter ``description``/``summary``, else its first substantive non-heading
-body line (metadata ``key:`` lines such as ``node_type: memory`` are skipped so
-the real lesson is lifted, not the type marker), else its first BINDING /
-Non-Negotiable line — then clipped. Lines are deduped by target filename and
-stably ordered (filename sort), and a header preamble is preserved. A re-run on
-an unchanged memory set produces a BYTE-IDENTICAL file — the property the test
-pins. It NEVER touches the real ``~/.claude``: the caller passes an explicit
+The regeneration is PURE and idempotent: lines are deduped by target filename and
+stably ordered (filename sort), and a header preamble is preserved. A re-run on an
+unchanged memory set produces a BYTE-IDENTICAL file — the property the test pins.
+It NEVER touches the real ``~/.claude``: the caller passes an explicit
 ``memory_dir``; a missing dir is a clean no-op.
 """
 
@@ -37,14 +35,6 @@ _INDEX_NAME = "MEMORY.md"
 #: It is NEVER re-indexed into the hot ``MEMORY.md`` — excluded here exactly like the
 #: hot index — so its one-line-per-archived-entry signatures do not re-bloat the index.
 _ARCHIVE_INDEX_NAME = "MEMORY_ARCHIVE.md"
-
-#: Per-summary clip and per-line cap (#2723, #2755). The summary is clipped first; the
-#: whole line is then capped so a long filename plus a long summary can never blow the
-#: per-line budget. Kept SHORT on purpose: the descriptive filename slug carries most
-#: of the meaning and the summary is a brief reminder, so many more short pointers fit
-#: the ~24 KB session-load BYTE budget gate (d) enforces.
-_SUMMARY_MAX_CHARS = 45
-_LINE_MAX_CHARS = 130
 
 _HEADER = (
     "# Auto Memory — Index\n\n"
@@ -137,35 +127,14 @@ def signature_text(text: str) -> str:
     return _first_binding_line(body)
 
 
-def _summary_for(text: str) -> str:
-    summary = signature_text(text)
-    if len(summary) > _SUMMARY_MAX_CHARS:
-        summary = summary[: _SUMMARY_MAX_CHARS - 1].rstrip() + "…"
-    return summary
-
-
-def _index_line(md: Path, summary: str) -> str:
-    if not summary:
-        return f"- {md.name}"
-    line = f"- {md.name} — {summary}"
-    if len(line) <= _LINE_MAX_CHARS:
-        return line
-    # Whole-line cap: keep the pointer filename intact, clip the summary so the
-    # line fits the per-line budget regardless of how long the filename is.
-    keep = _LINE_MAX_CHARS - len(f"- {md.name} — ") - 1
-    if keep <= 0:
-        return f"- {md.name}"
-    return f"- {md.name} — {summary[:keep].rstrip()}…"
-
-
-def index_line_for(name: str, text: str) -> str:
-    """The single ``MEMORY.md`` index line for one memory — the pure per-file renderer.
+def index_line_for(name: str) -> str:
+    """The single ``MEMORY.md`` index line for one memory — a bare ``- name.md`` pointer.
 
     Exposed so the decay phase can PROJECT the post-archival index byte-for-byte the
     way the re-index will render it (#2723), keeping the budget-tier stop condition
     exact w.r.t. the gate-(d) byte budget.
     """
-    return _index_line(Path(name), _summary_for(text))
+    return f"- {Path(name).name}"
 
 
 def render_index_lines(lines: Iterable[str]) -> str:
@@ -181,22 +150,19 @@ def render_index_lines(lines: Iterable[str]) -> str:
 def render_index(memory_dir: Path) -> str:
     """Render the full ``MEMORY.md`` text for the current memory set (deterministic).
 
-    Lines are deduped by filename and stably ordered (filename sort), so the
-    output is a pure function of the memory set's content — a re-run with no
-    changes renders the identical string. Both the hot ``MEMORY.md`` and the cold
-    ``MEMORY_ARCHIVE.md`` are excluded so neither index re-bloats the hot index.
+    Each line is a bare ``- name.md`` pointer, deduped by filename and stably
+    ordered (filename sort), so the output is a pure function of the memory set's
+    filenames — a re-run with no changes renders the identical string. Both the hot
+    ``MEMORY.md`` and the cold ``MEMORY_ARCHIVE.md`` are excluded so neither index
+    re-bloats the hot index; non-file ``*.md`` entries (a stray directory) are skipped.
     """
     seen: set[str] = set()
     lines: list[str] = []
     for md in sorted(memory_dir.glob("*.md")):
-        if md.name in {_INDEX_NAME, _ARCHIVE_INDEX_NAME} or md.name in seen:
+        if md.name in {_INDEX_NAME, _ARCHIVE_INDEX_NAME} or md.name in seen or not md.is_file():
             continue
         seen.add(md.name)
-        try:
-            text = md.read_text(encoding="utf-8")
-        except OSError:
-            continue
-        lines.append(index_line_for(md.name, text))
+        lines.append(index_line_for(md.name))
     return render_index_lines(lines)
 
 

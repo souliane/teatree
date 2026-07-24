@@ -14,7 +14,7 @@ import json
 import uuid
 from collections.abc import AsyncIterator, Iterator
 from contextlib import suppress
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Final
 
 from claude_agent_sdk import AssistantMessage, ResultMessage, TextBlock, ToolResultBlock, ToolUseBlock
 from pydantic_ai import Agent
@@ -31,6 +31,23 @@ if TYPE_CHECKING:
 #: The response-usage keys A metered OpenAI-compatible endpoint may
 #: carry its own per-request cost under, when pydantic_ai threads it through ``RunUsage.details``.
 _ROUTER_COST_KEYS = ("cost", "cost_usd", "total_cost", "total_cost_usd")
+
+#: The pydantic_ai provider/run failures a turn maps onto an ERROR ``ResultMessage``
+#: instead of letting them escape as a raw exception. NARROW on purpose — it covers the
+#: five provider/run errors and nothing else: :class:`~pydantic_ai.exceptions.ModelHTTPError`
+#: subclasses ``ModelAPIError`` and :class:`~pydantic_ai.exceptions.ContentFilterError`
+#: subclasses ``UnexpectedModelBehavior``. A programming error (``TypeError`` &c.) still
+#: propagates, so a defect in teatree's own code keeps landing as the driver's durable
+#: ``sdk_error`` FAILED-with-traceback rather than being laundered into a transport
+#: failure; and ``asyncio.CancelledError`` is untouched (it is not an ``Exception``), so
+#: the interrupt / external-cancel disambiguation in :meth:`receive_response` stays intact.
+_RUN_ERRORS = (ModelAPIError, UnexpectedModelBehavior, UsageLimitExceeded)
+
+#: The terminal ``ResultMessage.subtype`` a max-tokens truncation is surfaced under by
+#: :meth:`PydanticAiHarnessSession.receive_response`. Shared with the headless driver
+#: (:func:`teatree.agents.headless._outcome_failure`) so the "detect here, alert the owner
+#: there" seam keys on ONE constant rather than a literal duplicated across two modules.
+MAX_TOKENS_TRUNCATION_SUBTYPE: Final[str] = "error_max_tokens"
 
 
 def _router_reported_cost(run_usage: object) -> float | None:
@@ -74,7 +91,26 @@ class _MaxTokensTruncationError(RuntimeError):
 
 
 def _hit_max_tokens(messages: "list[ModelMessage]") -> bool:
-    """Whether the final ``ModelResponse`` stopped on a max-tokens (``'length'``) finish reason."""
+    """Whether the final ``ModelResponse`` stopped on a max-tokens (``'length'``) finish reason.
+
+    Reads pydantic_ai's OWN native, normalized terminal signal — the typed
+    :attr:`~pydantic_ai.messages.ModelResponse.finish_reason`
+    (:data:`~pydantic_ai.messages.FinishReason`). The Anthropic binding maps the provider
+    ``stop_reason`` onto it via its ``_FINISH_REASON_MAP`` (``'max_tokens' -> 'length'``,
+    ``'model_context_window_exceeded' -> 'length'``) on both the streamed and non-streamed
+    paths, so ``finish_reason == 'length'`` IS the library's contract for "cut off at the
+    token ceiling" — not a bespoke stop-reason scrape.
+
+    Deliberately NOT ``UsageLimits(output_tokens_limit=…)``: that is a CUMULATIVE client-side
+    output budget checked across the whole run (``check_tokens(run_usage)``, strict ``>``) that
+    raises ``UsageLimitExceeded`` and never inspects the provider truncation signal. It answers
+    a different question (did the run's TOTAL output exceed a budget) than a per-response
+    ceiling hit, cannot be aligned to ``max_tokens`` (a later short turn would false-fire, and
+    an exact-ceiling hit fails the strict ``>``), and would collide with the lane's existing
+    ``UsageLimitExceeded`` → ``error_max_turns`` request-cap handling. A ``max_tokens``
+    truncation itself never raises in pydantic_ai — it returns this ``ModelResponse`` — so
+    ``finish_reason`` is the only faithful detector.
+    """
     for message in reversed(messages):
         if isinstance(message, ModelResponse):
             return message.finish_reason == "length"
@@ -145,6 +181,17 @@ def _retry_text(part: RetryPromptPart) -> str:
     return content if isinstance(content, str) else str(content)
 
 
+def _turns_made(stream: "StreamedRunResult[None, str] | None") -> int:
+    """The model requests a FAILED turn actually made — never zero.
+
+    ``None`` is the provider refusing the very FIRST request: the error escapes
+    ``run_stream``'s context entry, so no stream ever existed. That is still one
+    attempted turn, and recording zero would under-count the ``LoopWatchdog`` ceiling
+    exactly the way the hardcoded ``1`` over-counted a multi-request run.
+    """
+    return max(stream.usage.requests, 1) if stream is not None else 1
+
+
 class PydanticAiHarnessSession:
     """The ``pydantic_ai`` in-flight session — the ``HarnessSession`` surface over an ``Agent``.
 
@@ -192,6 +239,15 @@ class PydanticAiHarnessSession:
     ``ClaudeSDKClient``'s ``--resume`` continuation contract. The
     :attr:`history` property exposes the accumulated conversation so a caller
     (:func:`headless._collect`) can persist it back out on a subsequent park.
+
+    The terminal ``ResultMessage`` is TRUTHFUL about the turn — that is what makes
+    the driver's transport-agnostic failure taxonomy work on this lane at all. It
+    keys entirely on ``is_error``, so a session that always reported ``success``
+    made a bad run indistinguishable from a good one: a provider throttle escaped as
+    a raw exception and landed as an ``sdk_error`` traceback, ``park_or_rotate_on_limit``
+    unreachable. :meth:`receive_response` maps the provider/run failures
+    (:data:`_RUN_ERRORS`) onto an error result carrying the provider's own text, and
+    reports the run's real request count and this session's own correlation handle.
     """
 
     def __init__(
@@ -239,6 +295,16 @@ class PydanticAiHarnessSession:
         self._pending_prompt = prompt
 
     async def receive_response(self) -> AsyncIterator[object]:
+        """Drive one queued turn, yielding it in the ``claude_agent_sdk`` vocabulary.
+
+        A provider/run failure (:data:`_RUN_ERRORS`) ends the turn with an
+        ``is_error`` :class:`~claude_agent_sdk.ResultMessage` instead of escaping as a
+        raw exception, so the driver's own taxonomy —
+        :func:`teatree.agents.headless._limit_match` → ``park_or_rotate_on_limit``,
+        :func:`teatree.agents.headless._error_result_reason` → ``_record_failure`` —
+        fires on this lane exactly as it does on the ``claude_sdk`` one, with no
+        driver change and no transport special-casing.
+        """
         if self._pending_prompt is None:
             return
         prompt, self._pending_prompt = self._pending_prompt, None
@@ -302,7 +368,7 @@ class PydanticAiHarnessSession:
                     "the pydantic_ai response was truncated at the max_tokens ceiling "
                     "(finish_reason='length'); the result envelope is incomplete"
                 ),
-                subtype="error_max_tokens",
+                subtype=MAX_TOKENS_TRUNCATION_SUBTYPE,
                 num_turns=run_usage.requests,
             )
             return
@@ -317,6 +383,9 @@ class PydanticAiHarnessSession:
             duration_ms=0,
             duration_api_ms=0,
             is_error=False,
+            # pydantic_ai's canonical per-run model-request counter — the same
+            # per-attempt semantics ``TaskUsage.for_task`` sums and the ``LoopWatchdog``
+            # turn ceiling evaluates. A hardcoded 1 left a runaway session unbounded.
             num_turns=run_usage.requests,
             session_id=self._session_id,
             # #3157 E5: pass the metered router's OWN reported cost through when it surfaces

@@ -8,7 +8,9 @@ the helpers consume is fed by that registry, so the tests drive it by
 injecting the resolved config directly.
 """
 
+import os
 from collections.abc import Iterator
+from contextlib import ExitStack
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -16,10 +18,15 @@ from unittest.mock import patch
 
 import pytest
 
+import teatree.core.overlay_loader as overlay_loader_mod
 from teatree.backends.github import GitHubCodeHost
 from teatree.backends.gitlab import GitLabCodeHost
 from teatree.backends.slack.bot import SlackBotBackend
+from teatree.backends.types import Service
 from teatree.core import backend_factory, toml_backends
+from teatree.core.backend_factory import OwnerMessagingTransport
+from teatree.core.notify import NotifyReason, resolve_owner_dm_backend
+from teatree.core.overlay import OverlayBase, OverlayConfig
 
 
 @dataclass
@@ -282,6 +289,70 @@ class TestLoopAssemblySurvivesMalformedUserToken:
         # Slack degraded to bot-only rather than vanishing entirely.
         assert isinstance(acme.messaging, SlackBotBackend)
         assert acme.messaging.user_token == ""
+
+
+class _NoopOverlay(OverlayBase):
+    config = OverlayConfig(messaging_backend="noop", required_third_party_services=frozenset({Service.SLACK}))
+
+    def get_repos(self) -> list[str]:
+        return []
+
+    def get_provision_steps(self, worktree):
+        return []
+
+
+_PATH_ONLY_SLACK = {
+    "path": "~/workspace/product",
+    "messaging_backend": "slack",
+    "slack_token_ref": "product/slack",
+    "slack_user_id": "U_OWNER",
+}
+_PASS = {"product/slack-bot": "xoxb-bot-tok", "product/slack-app": "xapp-app-tok"}
+
+
+class TestCredentialedMessagingIncludesPathOnlyOverlays:
+    """A path-only overlay's Slack transport is a credentialed owner-DM egress (F6).
+
+    The two-overlay diagnostic false-positive: the only messaging-capable
+    overlay on the box is registered path-only (a ``path``, no instantiable
+    ``class``), so ``get_all_overlays()`` never sees it. Enumerating the
+    credentialed transports through it — the pre-fix behaviour of
+    :meth:`OwnerMessagingTransport.credentialed_backends` — misses the sole real transport, so
+    :func:`resolve_owner_dm_backend` reports ``no_messaging_backend`` and
+    ``t3 doctor`` reports "ambient egress DEAD" while
+    ``messaging_from_overlay('product')`` by name resolves the very same bot. The
+    verdict must not depend on which overlay owns the cwd.
+    """
+
+    def _two_overlay_box(self, *, active_overlay: str, product: dict[str, Any]) -> ExitStack:
+        stack = ExitStack()
+        stack.enter_context(
+            patch.object(overlay_loader_mod, "_discover_overlays", return_value={"t3-teatree": _NoopOverlay()}),
+        )
+        stack.enter_context(patch("teatree.config.load_config", return_value=_config_with({"product": product})))
+        stack.enter_context(patch("teatree.utils.secrets.read_pass", side_effect=lambda k: _PASS.get(k, "")))
+        stack.enter_context(patch.dict(os.environ, {"T3_OVERLAY_NAME": active_overlay}))
+        return stack
+
+    def test_credentialed_backends_include_the_path_only_slack_overlay(self) -> None:
+        with self._two_overlay_box(active_overlay="", product=_PATH_ONLY_SLACK):
+            backends = OwnerMessagingTransport.credentialed_backends()
+        assert [type(b).__name__ for b in backends] == [SlackBotBackend.__name__]
+
+    def test_owner_dm_resolves_the_path_only_transport_whichever_overlay_is_cwd_active(self) -> None:
+        for active in ("", "t3-teatree"):
+            backend_factory.reset_backend_caches()
+            with self._two_overlay_box(active_overlay=active, product=_PATH_ONLY_SLACK):
+                backend, refusal = resolve_owner_dm_backend()
+            assert isinstance(backend, SlackBotBackend), active
+            assert refusal is NotifyReason.NONE, active
+
+    def test_still_dead_when_no_registered_overlay_carries_a_transport(self) -> None:
+        non_slack = {**_PATH_ONLY_SLACK, "messaging_backend": "teams"}
+        with self._two_overlay_box(active_overlay="", product=non_slack):
+            backend, refusal = resolve_owner_dm_backend()
+        assert backend is None
+        assert refusal is NotifyReason.NO_MESSAGING_BACKEND
 
 
 class TestFindExternalDb:

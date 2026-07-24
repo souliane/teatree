@@ -23,6 +23,7 @@ from teatree.core.overlay import (
     OverlayReview,
     OverlayRuntime,
 )
+from teatree.overlay_sdk._lazy import FACTORY_EXPORTS
 
 overlay_sdk = teatree.overlay_sdk
 
@@ -309,3 +310,10 @@ def test_snapshot_detects_a_signature_change():
     drifted = dict(_signatures(OverlayProvisioning))
     drifted["env_extra"] = "(self, worktree: 'Worktree', extra_arg: str) -> dict[str, str]"
     assert drifted != EXPECTED_PROVISIONING_SIGNATURES
+
+
+def test_dir_advertises_the_lazy_factory_exports() -> None:
+    """``__dir__`` merges the lazily-exported factory names so tab-completion sees them."""
+    listed = dir(teatree.overlay_sdk)
+    assert set(listed) >= FACTORY_EXPORTS
+    assert listed == sorted(listed)

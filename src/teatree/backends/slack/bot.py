@@ -62,9 +62,9 @@ from teatree.backends.slack.voice_classifier import ClassifierMode as VoiceClass
 from teatree.backends.slack.voice_classifier import SlackVoiceMismatchError, VoiceTokenGate
 from teatree.backends.slack.web_ops import join_conversation as join_slack_conversation
 from teatree.backends.slack.web_ops import open_im_channel, read_permalink, run_auth_test
-from teatree.backends.slack.web_reads import read_channel_history, read_reactions
+from teatree.backends.slack.web_reads import read_channel_history, read_channel_history_or_refuse, read_reactions
 from teatree.backends.slack.web_reads import resolve_user_id as resolve_slack_user_id
-from teatree.types import RawAPIDict
+from teatree.types import ChannelReadRefusedError, RawAPIDict
 
 __all__ = [
     "SingleEmojiBodyRefusedError",
@@ -407,6 +407,20 @@ class SlackBotBackend:  # noqa: PLR0904 — method count reflects the MessagingB
             return []
         token = self._channel_token(channel, op=SlackOp.WRITE)
         messages = read_channel_history(get=self._get, channel=channel, token=token, limit=limit)
+        return self._strip_own_tts_audio(messages)
+
+    def fetch_channel_history_or_refuse(self, *, channel: str, limit: int = 50) -> list[RawAPIDict]:
+        """Like :meth:`fetch_channel_history` but raises :class:`ChannelReadRefusedError`.
+
+        The seam for a caller asking about ONE channel interactively, where an empty
+        list is a misleading answer: a bot token reads only channels the bot was
+        invited to, and Slack reports that as ``not_in_channel`` /
+        ``channel_not_found`` — a fact the caller must hear, not a silent ``[]``.
+        """
+        if not channel:
+            raise ChannelReadRefusedError(channel, "empty_channel_argument")
+        token = self._channel_token(channel, op=SlackOp.WRITE)
+        messages = read_channel_history_or_refuse(get=self._get, channel=channel, token=token, limit=limit)
         return self._strip_own_tts_audio(messages)
 
     def _own_identity(self) -> OwnSlackIdentity | None:

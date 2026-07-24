@@ -203,3 +203,30 @@ class TestWatchdog:
         run = runner.run(spec)
         assert run.is_error is True
         assert run.terminal_reason == "timeout"
+
+
+class TestProviderFailureFoldsIntoTheRun:
+    """A provider error is a GRADED error run, not a crash out of the scenario.
+
+    ``PydanticAiRunner._drive`` reuses ``PydanticAiHarnessSession``, so the session's
+    failure mapping reaches this lane too: a throttled or refused request now ends the
+    scenario as an ``is_error`` run the report can record, where it previously escaped
+    ``asyncio.run`` and took the whole scenario down with a traceback.
+    """
+
+    def test_a_refused_request_ends_the_scenario_as_an_error_run(self) -> None:
+        async def stream_fn(_messages: object, _info: AgentInfo) -> AsyncIterator[str]:
+            await asyncio.sleep(0)
+            raise ModelHTTPError(
+                status_code=429,
+                model_name="claude-sonnet-5",
+                body={"type": "error", "error": {"type": "rate_limit_error", "message": "slow down"}},
+            )
+            yield ""  # unreachable — the ``yield`` is what makes this an async GENERATOR
+
+        spec = _spec(Matcher(kind="positive", tool="Bash", arg_path="command", operator="contains", value="x"))
+        run = PydanticAiRunner(model=FunctionModel(stream_function=stream_fn)).run(spec)
+
+        assert run.is_error is True
+        assert run.terminal_reason == "error_during_execution"
+        assert not evaluate(spec, run).passed, "a run that never happened must never grade green"

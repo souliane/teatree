@@ -74,7 +74,6 @@
 "src/teatree/core/management/commands/loop_owner.py" = 4
 "src/teatree/core/management/commands/loop_self_improve.py" = 1
 "src/teatree/core/management/commands/loop_slack_answer.py" = 1
-"src/teatree/core/management/commands/notify.py" = 1
 "src/teatree/core/management/commands/pr.py" = 1
 "src/teatree/core/management/commands/retro.py" = 1
 "src/teatree/core/management/commands/review.py" = 2
@@ -119,7 +118,19 @@
 "src/teatree/core/models/ticket_introspection.py" = 1
 "src/teatree/core/models/ticket_phase_sessions.py" = 1
 "src/teatree/core/models/ticket_scheduling.py" = 7
-"src/teatree/core/notify.py" = 4
+# `teatree.settings._discover_overlay_apps()` `ep.load()`s every `teatree.overlays`
+# entry point at SETTINGS-IMPORT time, before Django can be configured — so any
+# overlay module whose import chain reaches `teatree.core.models` is silently dropped
+# from INSTALLED_APPS, taking its models, migrations and management commands with it.
+# Deferring the ORM imports in the modules an overlay's hook surface pulls in (notify,
+# worktree_env, visual_qa) is what keeps that surface import-safe pre-`django.setup()`;
+# those edges are load-bearing and stay.
+"src/teatree/core/notify.py" = 5
+# notify_ledger.py carries the ORM (BotPing/OutboundClaim/PendingChatInjection) call-time
+# imports that moved out of notify.py when the durable-audit helpers were split off to hold
+# notify.py under the 500-LOC module-health cap. Same pre-`django.setup()` import-safety
+# deferral as notify.py above — the app registry must be ready before these ORM imports resolve.
+"src/teatree/core/notify_ledger.py" = 7
 "src/teatree/core/on_behalf_egress.py" = 2
 "src/teatree/core/on_behalf_gate_recorded.py" = 6
 "src/teatree/core/on_behalf_post_receipt.py" = 1
@@ -127,6 +138,11 @@
 # build its default probes without an import cycle (connector_probes → overlay) (#3333).
 "src/teatree/core/overlay.py" = 4
 "src/teatree/core/overlay_loader.py" = 1
+# overlay_name_of / resolve_overlay_name defer `from teatree.core.overlay_loader import
+# get_all_overlays / OverlayConfigResolver` — these name resolvers were carved out of
+# overlay_loader.py (module-health cap) and call back into it, so the edge is call-time to
+# avoid the loader import cycle.
+"src/teatree/core/overlay_name_resolution.py" = 2
 "src/teatree/core/overlay_metadata.py" = 1
 # overlay_skill_metadata defers `from teatree.core.overlay_loader import get_overlay`
 # so the CLI-build-time caller resolves it only when Django is up (#3355).
@@ -171,6 +187,9 @@
 # repo resolver — deferred for import-weight (merge/__init__ pulls the whole merge
 # subtree, factory_signal_queries the signal stack) to keep waiting.py light.
 "src/teatree/core/waiting.py" = 3
+# Same pre-`django.setup()` import-safety deferral as notify.py above: worktree_env
+# is on the overlay hook surface, so its ORM imports are call-time.
+"src/teatree/core/worktree/worktree_env.py" = 6
 "src/teatree/core/worktree/worktree_tasks.py" = 1
 
 [intra_loop]

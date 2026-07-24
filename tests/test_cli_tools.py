@@ -99,6 +99,44 @@ class TestToolCommands:
             result = runner.invoke(app, ["tool", "diff-coverage", "--repo", str(tmp_path)])
         assert result.exit_code == 0
 
+    def test_diff_coverage_default_base_is_repo_default_branch_not_hardcoded_main(self, tmp_path):
+        # A repo whose REAL default branch is ``master`` (``origin/HEAD`` -> master),
+        # not ``main``. Without an explicit ``--base`` the gate must diff against the
+        # repo's actual default, never a hardcoded ``origin/main`` — the latter grades
+        # a whole fork/branch as new code (the fork-bootstrap coverage-gate blocker).
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        subprocess.run([_GIT, "init", "-q", "-b", "master", str(repo)], check=True)
+        subprocess.run(
+            [_GIT, "-C", str(repo), "symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/master"],
+            check=True,
+        )
+        with (
+            patch("teatree.utils.git.branch_diff", return_value="") as branch_diff,
+            patch("teatree.utils.diff_coverage.measure_diff_coverage") as mock,
+        ):
+            mock.return_value = MagicMock(passes=lambda: True, summary=lambda: "clean")
+            result = runner.invoke(app, ["tool", "diff-coverage", "--repo", str(repo)])
+        assert result.exit_code == 0
+        branch_diff.assert_called_once_with(str(repo), "origin/master")
+
+    def test_diff_coverage_env_configured_base_branch_wins(self, tmp_path, monkeypatch):
+        # The configured base branch (``T3_DIFF_COVERAGE_BASE``) overrides the default:
+        # a fork-bootstrap fix aims the gate at the live integration branch instead of
+        # the stale ``origin/main`` the whole branch would otherwise diff against.
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        subprocess.run([_GIT, "init", "-q", "-b", "main", str(repo)], check=True)
+        monkeypatch.setenv("T3_DIFF_COVERAGE_BASE", "chore/integration-branch")
+        with (
+            patch("teatree.utils.git.branch_diff", return_value="") as branch_diff,
+            patch("teatree.utils.diff_coverage.measure_diff_coverage") as mock,
+        ):
+            mock.return_value = MagicMock(passes=lambda: True, summary=lambda: "clean")
+            result = runner.invoke(app, ["tool", "diff-coverage", "--repo", str(repo)])
+        assert result.exit_code == 0
+        branch_diff.assert_called_once_with(str(repo), "origin/chore/integration-branch")
+
     def test_diff_coverage_fails_exit_one_and_reports(self, tmp_path):
         report = MagicMock(
             passes=lambda: False,

@@ -224,6 +224,13 @@ class TicketExtra(TypedDict, total=False):
     # Answerer: the inbound event id + the question detail.
     answer_event_id: int
     answer_detail: str
+    # Per-phase attempt budget for scanner-enqueued phases whose deliverable is a
+    # field on THIS row (``short_describe`` -> ``short_description``). Such a
+    # scanner dedups on the artifact, not on a terminal task, so a phase that
+    # never manages to write its field would otherwise re-enqueue every tick
+    # forever. ``Ticket.consume_phase_attempt`` bumps the phase's counter on each
+    # enqueue and refuses past the ceiling, making the give-up terminal.
+    phase_attempts: dict[str, int]
 
 
 class ReviewSkillRun(TypedDict, total=False):

@@ -259,6 +259,7 @@ stateDiagram-v2
     retrospected --> ignored : ignore
     delivered --> reviewed : reopen_for_followup
     review_posted --> review_posted : mark_review_no_action
+    review_posted --> review_posted : mark_reviewed_externally
 ```
 <!-- END GENERATED: ticket-fsm -->
 

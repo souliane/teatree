@@ -67,6 +67,8 @@ from hooks.scripts.config_overwrite_guard import handle_block_config_overwrite
 from hooks.scripts.coverage_gate import coverage_gate_repo_dir as _coverage_gate_repo_dir
 from hooks.scripts.coverage_gate import diff_coverage_argv as _diff_coverage_argv
 from hooks.scripts.coverage_gate import diff_coverage_finding as _diff_coverage_finding
+from hooks.scripts.coverage_gate import is_merge_class_command as _is_merge_class_command
+from hooks.scripts.coverage_gate import measured_repo_is_publish_target as _measured_repo_is_publish_target
 from hooks.scripts.cron_tracking import (
     cron_cadence_seconds as _cron_cadence_seconds,  # noqa: F401 re-export for test access
 )
@@ -2492,10 +2494,6 @@ def _run_dispatch_quote_scanner_on_task_create(data: dict) -> bool:
 # a merge-class mutation. Treating a crash as a coverage finding turned
 # every ``gh pr create`` into a deny; that is the bug this closes.
 
-_GH_PR_READY_RE = re.compile(r"\bgh\s+pr\s+ready\b")
-_PR_MR_CREATE_RE = re.compile(r"\b(?:gh\s+pr\s+create|glab\s+mr\s+create)\b")
-_DRAFT_FLAG_RE = re.compile(r"(?:^|\s)(?:--draft|--undo)\b")
-
 
 def _is_merge_class_mutation(data: dict) -> bool:
     """Whether this tool call moves a PR toward review/merge.
@@ -2504,19 +2502,14 @@ def _is_merge_class_mutation(data: dict) -> bool:
     ``glab mr create`` or a ``gh api``/``glab api`` POST to a PR/MR
     collection endpoint (F2 — same semantic effect, same gate coverage
     needed). ``gh pr ready --undo`` (return-to-draft, the gate's own
-    remediation) and ``--draft`` creation are excluded.
+    remediation) and ``--draft`` creation are excluded. The verb detection
+    (:func:`coverage_gate.is_merge_class_command`) runs on the quote/heredoc-
+    stripped skeleton, so a mere MENTION inside a quoted argument or heredoc
+    body never fires the gate.
     """
     if data.get("tool_name") != "Bash":
         return False
-    command = data.get("tool_input", {}).get("command", "")
-    if _GH_PR_READY_RE.search(command):
-        return not _DRAFT_FLAG_RE.search(command)
-    if _PR_MR_CREATE_RE.search(command):
-        return not _DRAFT_FLAG_RE.search(command)
-    # F2: gh/glab api POST to a PR/MR create endpoint is merge-class too.
-    if re.search(r"\b(?:gh|glab)\s+api\b", command) and _is_api_create_endpoint_write(command):
-        return not _DRAFT_FLAG_RE.search(command)
-    return False
+    return _is_merge_class_command(data.get("tool_input", {}).get("command", ""))
 
 
 def handle_block_uncovered_diff(data: dict) -> bool:
@@ -2548,6 +2541,11 @@ def handle_block_uncovered_diff(data: dict) -> bool:
     # unrelated worktree.
     command = data.get("tool_input", {}).get("command", "")
     repo_dir = _coverage_gate_repo_dir(command, data.get("cwd"))
+    # A publish to repo X must never be gated on uncommitted symbols in repo Y:
+    # when the command names an explicit target repo that is NOT the measured
+    # repo, skip the measurement entirely (§17.6.3 scope, fail-open #122).
+    if not _measured_repo_is_publish_target(command, repo_dir):
+        return False
     argv = _diff_coverage_argv(repo_dir)
     if argv is None:
         return False

@@ -1,6 +1,8 @@
 """``NoopMessagingBackend`` — default for overlays that don't declare a chat backend."""
 
-from teatree.types import RawAPIDict
+from typing import ClassVar
+
+from teatree.types import ChannelReadRefusedError, RawAPIDict
 
 
 class NoopMessagingBackend:
@@ -9,7 +11,14 @@ class NoopMessagingBackend:
     Selected when an overlay sets ``messaging_backend = "noop"`` (the default)
     or omits the field entirely. Allows agents and scanners to call the
     Protocol uniformly without per-call ``if backend is not None`` guards.
+
+    ``is_noop`` is the capability marker ``core`` consults where a REAL
+    transport is required (owner DMs, ``resolve_owner_dm_backend``): ``core``
+    cannot import this class (the core → backends DAG cut, #1922), so the
+    marker travels on the instance instead of an ``isinstance`` check.
     """
+
+    is_noop: ClassVar[bool] = True
 
     @staticmethod
     def fetch_mentions(*, since: str = "") -> list[RawAPIDict]:
@@ -40,6 +49,11 @@ class NoopMessagingBackend:
     def fetch_channel_history(*, channel: str, limit: int = 50) -> list[RawAPIDict]:
         _ = channel, limit
         return []
+
+    @staticmethod
+    def fetch_channel_history_or_refuse(*, channel: str, limit: int = 50) -> list[RawAPIDict]:
+        _ = limit
+        raise ChannelReadRefusedError(channel, "noop_messaging_backend")
 
     @staticmethod
     def post_message(

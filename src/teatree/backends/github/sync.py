@@ -80,7 +80,7 @@ class GitHubSyncBackend(SyncBackend):
                 "updated_at": item.updated_at,
             }
 
-            tickets = list(Ticket.objects.filter(issue_url=item.url).order_by("pk"))
+            tickets = list(Ticket.objects.matching_issue(item.url).order_by("pk"))
             if not tickets:
                 created = Ticket.objects.create(
                     issue_url=item.url,

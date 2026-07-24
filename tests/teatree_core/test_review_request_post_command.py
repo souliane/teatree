@@ -245,6 +245,51 @@ class TestReviewRequestPostReviewedStateGate(_DataDirMixin, TestCase):
         assert payload["action"] == "post"
 
 
+class TestReviewRequestPostOverlayResolution(_DataDirMixin, TestCase):
+    """The post resolves the MR's owning overlay, exactly as ``check`` does.
+
+    ``review_request_check`` was taught to thread the URL-owning overlay so the
+    in-process MCP surface (no ``T3_OVERLAY_NAME``, every overlay registered)
+    stops answering ``no_review_channel_or_token`` on a perfectly postable
+    channel. The POST half kept calling ``resolve_guard_target()`` bare, so on
+    that same surface the guard's swallowed ``Multiple overlays found`` turned a
+    real broadcast into the #2231 "channel unpostable — forward it yourself" DM.
+    The two halves must resolve the same overlay for the same MR.
+    """
+
+    def test_threads_the_url_owning_overlay_into_guard_draft_and_messaging(self) -> None:
+        seen: dict[str, object] = {}
+        backend = _FakeBackend()
+        OnBehalfApproval.record(target=_MR_URL, action="review_request_post", approver_id="souliane")
+
+        def _guard(**kw: object) -> GuardTarget:
+            seen["guard"] = kw.get("overlay_name")
+            return _TARGET
+
+        def _draft(mr_url: str, *, overlay_name: str = "") -> bool:
+            seen["draft"] = overlay_name
+            return False
+
+        def _messaging(name: str | None = None) -> _FakeBackend:
+            seen["messaging"] = name
+            return backend
+
+        with (
+            patch.dict(os.environ),
+            patch(f"{_CMD}.overlay_for_mr_url", return_value="t3-acme"),
+            patch(f"{_CMD}.resolve_guard_target", side_effect=_guard),
+            patch(f"{_CMD}.is_draft_mr", side_effect=_draft),
+            patch(f"{_CMD}.should_post_review_request", return_value=GuardDecision(action="post")),
+            patch(f"{_CMD}.messaging_from_overlay", side_effect=_messaging),
+        ):
+            os.environ.pop("T3_OVERLAY_NAME", None)
+            code, payload = _run("--title", "t")
+
+        assert code == 0, payload
+        assert payload["action"] == "post"
+        assert seen == {"guard": "t3-acme", "draft": "t3-acme", "messaging": "t3-acme"}
+
+
 class TestReviewRequestPostDedup(TestCase):
     def test_no_review_channel_or_token_falls_back_to_draft_dm(self) -> None:
         """#2231: unpostable Connect channel → draft DM, not silent suppress."""

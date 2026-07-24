@@ -8,14 +8,17 @@ channels let it hand the work back through the result envelope, and
 
 from typing import Any, cast
 
+import pytest
+
 from teatree.agents.result_schema import (
+    PHASE_REQUIRED_EVIDENCE,
     PROSE_SUMMARY_ACCEPTED_PHASES,
     RESULT_JSON_SCHEMA,
     DirectiveCandidateEnvelope,
+    ProseSummaryPolicy,
     SingleTestResult,
     candidate_carries_payload,
     check_evidence,
-    prose_summary_accepted,
     required_evidence_for_phase,
 )
 
@@ -194,6 +197,46 @@ class TestDirectiveCandidateEvidenceGate:
         assert check_evidence(result, "directive_reading") == ""
 
 
+class TestProseSummaryAllowed:
+    """Which phases may complete on prose when the agent returned no envelope at all."""
+
+    @pytest.mark.parametrize("phase", ["scoping", "scope", "retro", "retrospecting"])
+    def test_the_lightweight_phases_are_exempt(self, phase: str) -> None:
+        # Accepts every alias — the exemption is keyed on the canonical token.
+        assert ProseSummaryPolicy.allowed(phase) is True
+
+    @pytest.mark.parametrize("phase", ["coding", "code", "testing", "reviewing", "answering", "scanning_news"])
+    def test_an_evidence_gated_phase_defers_to_its_own_gate(self, phase: str) -> None:
+        # Not an exemption: check_evidence refuses the manufactured summary downstream
+        # with a message naming the missing field, after the #3263 coding salvage.
+        assert ProseSummaryPolicy.allowed(phase) is True
+
+    @pytest.mark.parametrize(
+        "phase",
+        [
+            "debugging",
+            "bughunt",
+            "e2e",
+            "e2e_reviewing",
+            "requesting_review",
+            "architectural_review",
+            "backlog_sweep",
+            "dogfood_smoke",
+            "eval_local",
+            "codex_reviewing",
+            "some_free_form_phase",
+            "",
+        ],
+    )
+    def test_an_ungated_phase_must_return_an_envelope(self, phase: str) -> None:
+        assert ProseSummaryPolicy.allowed(phase) is False
+
+    def test_every_exempt_phase_is_absent_from_the_evidence_map(self) -> None:
+        # The two tables partition the "may complete on prose" decision; an overlap
+        # would mean a phase is exempt AND gated, which no reader could resolve.
+        assert PROSE_SUMMARY_ACCEPTED_PHASES.isdisjoint(PHASE_REQUIRED_EVIDENCE)
+
+
 class TestProseSummaryAcceptedPhases:
     """The no-envelope fallback is accepted only for the intentionally-light phases."""
 
@@ -201,18 +244,18 @@ class TestProseSummaryAcceptedPhases:
         assert frozenset({"scoping", "retro"}) == PROSE_SUMMARY_ACCEPTED_PHASES
 
     def test_exempt_phases_accept_the_prose_fallback(self) -> None:
-        assert prose_summary_accepted("scoping")
-        assert prose_summary_accepted("retro")
+        assert ProseSummaryPolicy.accepted("scoping")
+        assert ProseSummaryPolicy.accepted("retro")
 
     def test_aliases_normalize_before_the_lookup(self) -> None:
         # ``scope``/``retrospect`` normalize UP to the canonical exempt tokens.
-        assert prose_summary_accepted("scope")
-        assert prose_summary_accepted("RETROSPECT")
+        assert ProseSummaryPolicy.accepted("scope")
+        assert ProseSummaryPolicy.accepted("RETROSPECT")
 
     def test_non_exempt_phases_refuse_the_prose_fallback(self) -> None:
-        assert not prose_summary_accepted("debugging")
-        assert not prose_summary_accepted("coding")
-        assert not prose_summary_accepted("reviewing")
+        assert not ProseSummaryPolicy.accepted("debugging")
+        assert not ProseSummaryPolicy.accepted("coding")
+        assert not ProseSummaryPolicy.accepted("reviewing")
 
 
 class TestSingleTestResultShape:

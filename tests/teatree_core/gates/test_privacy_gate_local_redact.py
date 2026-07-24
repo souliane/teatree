@@ -15,7 +15,7 @@ from teatree.core.gates.privacy_gate import LEAK_MASK, redact_for_local_display
 @pytest.fixture
 def set_rules(monkeypatch: pytest.MonkeyPatch):
     def _set(*, redact: list[str] | None = None, block: list[str] | None = None, banned=()) -> None:
-        monkeypatch.setattr(privacy_gate, "_overlay_privacy_rules", lambda: (redact or [], block or []))
+        monkeypatch.setattr(privacy_gate, "overlay_privacy_rules", lambda: (redact or [], block or []))
         monkeypatch.setattr(privacy_gate, "_db_banned_terms", lambda: tuple(banned))
 
     return _set

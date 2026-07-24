@@ -14,10 +14,21 @@ class LocalPortDetectionTests(SimpleTestCase):
 
     @staticmethod
     def _listener(family: int, address: str) -> socket.socket:
-        """An OS-assigned listening socket bound to *address* only."""
+        """An OS-assigned listening socket bound to *address* only.
+
+        Closed on a failed bind/listen: a host with no IPv6 loopback raises from
+        ``bind``, and the caller's ``except OSError: skipTest`` never sees the
+        half-built socket. Leaked, it surfaces much later as a ResourceWarning that
+        pytest raises as ``PytestUnraisableExceptionWarning`` against whatever
+        unrelated test happens to be running when the GC finalizes it.
+        """
         server = socket.socket(family, socket.SOCK_STREAM)
-        server.bind((address, 0))
-        server.listen(1)
+        try:
+            server.bind((address, 0))
+            server.listen(1)
+        except OSError:
+            server.close()
+            raise
         return server
 
     def test_detects_ipv6_only_listener(self) -> None:

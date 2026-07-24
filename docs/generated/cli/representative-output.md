@@ -75,8 +75,11 @@ Usage: t3 [OPTIONS] COMMAND [ARGS]...
 │ worker          The singleton loop-timer worker (#1796 / PR-28). Bare `t3    │
 │                 worker` runs it (the cadence owner, default ON via           │
 │                 `loop_runner_enabled`). `status` reports the live holder +   │
-│                 resolved kill-switch; `ensure` spawns a detached worker iff  │
-│                 enabled and the flock is free.                               │
+│                 resolved kill-switch + whether loops actually tick (it EXITS │
+│                 NON-ZERO on a stale fleet); `ensure` spawns a detached       │
+│                 worker iff enabled and the flock is free; `drain` quiesces   │
+│                 admission without stopping anything; `stop` / `restart` end  │
+│                 the live worker and verify it against the flock.             │
 │ loops           Manage DB-configured autonomous loops (#1796).               │
 │ mcp             Read-only MCP server exposing teatree's structured search    │
 │                 (stdio).                                                     │

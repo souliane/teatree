@@ -420,6 +420,18 @@ class MessagingBackend(Protocol):
 
     def fetch_channel_history(self, *, channel: str, limit: int = 50) -> list[RawAPIDict]: ...  # pragma: no branch
 
+    # The honest peer of ``fetch_channel_history``: same read, but a channel the
+    # backend may not read RAISES instead of returning ``[]``. Poll loops keep the
+    # swallowing form (one unreadable channel must not break a scan over many);
+    # interactive single-channel callers use this one, because "quiet" and "the bot
+    # was never invited" are opposite facts an empty list cannot tell apart.
+    def fetch_channel_history_or_refuse(  # pragma: no branch
+        self,
+        *,
+        channel: str,
+        limit: int = 50,
+    ) -> list[RawAPIDict]: ...
+
     def post_message(  # pragma: no branch
         self,
         *,

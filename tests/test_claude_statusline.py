@@ -54,6 +54,12 @@ def _run(
         (state_dir / f"{session_id}.teatree-active").touch()
     env = os.environ.copy()
     env["T3_AUTOLOAD"] = "1"
+    # Pin the width these CONTENT tests render at. `statusline.sh` caps every line to
+    # `COLUMNS`, and the resource group ahead of the assertion tokens is host-sized
+    # (3-digit `cpu=`, 2-digit GB) — so on a runner that exports `COLUMNS=80` the
+    # segment under test is exactly what the `…` cuts off. The cap itself is covered
+    # by TestWidthCap, which builds its own env and sets COLUMNS per case.
+    env["COLUMNS"] = "1000"
     env["TEATREE_CLAUDE_STATUSLINE_STATE_DIR"] = str(state_dir)
     # Isolate the harness config dir onto the test's state dir so the developer's
     # real ~/.claude/settings.json effortLevel never bleeds into these tests; the

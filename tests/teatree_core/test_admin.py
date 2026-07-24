@@ -6,7 +6,6 @@ disabled there.
 """
 
 import datetime as dt
-import json
 
 import django.http
 import django.test
@@ -41,6 +40,11 @@ class TestConfigSettingAdminSaves(django.test.TestCase):
     ``statusline_chain = []`` means "override the shipped non-empty default with
     nothing". These tests POST through the real admin views — the coverage gap
     that let a blanket non-empty requirement on the storage field ship.
+
+    Every row is seeded NON-empty and emptied by the POST, so the stored-value
+    assertion fails on a rejected save. Seeding a row already at the value the
+    test then posts leaves ``assert row.value == []`` true whether or not the
+    save landed, and only the ``302`` carries any signal.
     """
 
     def setUp(self) -> None:
@@ -55,56 +59,76 @@ class TestConfigSettingAdminSaves(django.test.TestCase):
         url = reverse("admin:core_configsetting_change", args=[row.pk])
         return self.client.post(url, self._change_form_post(row, value))
 
+    def _post_changelist(self, submitted: list[tuple[ConfigSetting, str]]) -> django.http.HttpResponse:
+        data = {
+            "form-TOTAL_FORMS": str(len(submitted)),
+            "form-INITIAL_FORMS": str(len(submitted)),
+            "form-MIN_NUM_FORMS": "0",
+            "form-MAX_NUM_FORMS": "1000",
+            "_save": "Save",
+        }
+        for index, (row, rendered) in enumerate(submitted):
+            data[f"form-{index}-id"] = str(row.pk)
+            data[f"form-{index}-value"] = rendered
+        return self.client.post(reverse("admin:core_configsetting_changelist"), data)
+
     @staticmethod
     def _change_form_errors(response: django.http.HttpResponse) -> dict[str, list[str]]:
         return dict(response.context["adminform"].form.errors) if response.status_code == 200 else {}
 
+    @staticmethod
+    def _changelist_errors(response: django.http.HttpResponse) -> list[dict[str, list[str]]]:
+        return response.context["cl"].formset.errors if response.status_code == 200 else []
+
     def test_change_form_saves_an_empty_list_value(self) -> None:
-        row = ConfigSetting.objects.set_value("statusline_chain", [])
+        row = ConfigSetting.objects.set_value("statusline_chain", ["branch", "model"])
         response = self._post_change_form(row, "[]")
         assert response.status_code == 302, self._change_form_errors(response)
         row.refresh_from_db()
         assert row.value == []
 
     def test_change_form_saves_an_empty_dict_value(self) -> None:
-        row = ConfigSetting.objects.set_value("agent_skill_models", {})
+        row = ConfigSetting.objects.set_value("agent_skill_models", {"coder": "opus"})
         response = self._post_change_form(row, "{}")
         assert response.status_code == 302, self._change_form_errors(response)
         row.refresh_from_db()
         assert row.value == {}
 
-    def test_changelist_saves_every_row_at_its_current_value(self) -> None:
+    def test_changelist_empties_every_affected_row_in_one_save(self) -> None:
         """The real-world failure: ``list_editable`` makes the whole page ONE formset.
 
         A single rejected empty row fails ``formset.is_valid()`` and NOTHING on
-        the page saves, so re-submitting unchanged live rows must be a no-op
-        save, not a page-wide validation failure.
+        the page saves. These are the three live rows the reported outage hit.
         """
-        rows = [
-            ConfigSetting.objects.set_value("statusline_chain", []),
-            ConfigSetting.objects.set_value("banned_terms_allowlist", []),
-            ConfigSetting.objects.set_value("agent_skill_models", {}),
-            ConfigSetting.objects.set_value("mode", "auto"),
-        ]
-        data = {
-            "form-TOTAL_FORMS": str(len(rows)),
-            "form-INITIAL_FORMS": str(len(rows)),
-            "form-MIN_NUM_FORMS": "0",
-            "form-MAX_NUM_FORMS": "1000",
-            "_save": "Save",
-        }
-        for index, row in enumerate(rows):
-            data[f"form-{index}-id"] = str(row.pk)
-            data[f"form-{index}-value"] = json.dumps(row.value)
+        statusline = ConfigSetting.objects.set_value("statusline_chain", ["branch"])
+        allowlist = ConfigSetting.objects.set_value("banned_terms_allowlist", ["acme"])
+        skill_models = ConfigSetting.objects.set_value("agent_skill_models", {"coder": "opus"})
 
-        response = self.client.post(reverse("admin:core_configsetting_changelist"), data)
+        response = self._post_changelist([(statusline, "[]"), (allowlist, "[]"), (skill_models, "{}")])
 
-        errors = response.context["cl"].formset.errors if response.status_code == 200 else []
-        assert response.status_code == 302, errors
-        for row in rows:
-            expected = row.value
+        assert response.status_code == 302, self._changelist_errors(response)
+        for row in (statusline, allowlist, skill_models):
             row.refresh_from_db()
-            assert row.value == expected
+        assert statusline.value == []
+        assert allowlist.value == []
+        assert skill_models.value == {}
+
+    def test_one_empty_row_does_not_block_the_rest_of_the_changelist(self) -> None:
+        """The reported symptom: one legitimately-empty row broke saving ANY setting.
+
+        The sibling row changes value, so its persistence is observable
+        independently of the response status.
+        """
+        emptied = ConfigSetting.objects.set_value("banned_terms_allowlist", ["acme"])
+        unrelated = ConfigSetting.objects.set_value("issue_implementer_label", "before")
+
+        response = self._post_changelist([(emptied, "[]"), (unrelated, '"after"')])
+
+        assert response.status_code == 302, self._changelist_errors(response)
+        emptied.refresh_from_db()
+        unrelated.refresh_from_db()
+        assert emptied.value == []
+        assert unrelated.value == "after"
 
     def test_change_form_rejects_an_empty_value_with_a_field_error(self) -> None:
         """An empty textarea is a form error, never a NOT NULL ``IntegrityError``.

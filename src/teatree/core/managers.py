@@ -17,6 +17,7 @@ from teatree.core.loop_lease_manager import (
     is_per_loop_owner_slot,
     per_loop_owner_slot,
 )
+from teatree.core.managers_issue_match import matching_issue_q
 from teatree.core.managers_overlay import for_overlay as _for_overlay
 from teatree.core.managers_overlay import overlay_scope_q
 from teatree.core.managers_task_claim import ClaimOrder, _claimable_now_q
@@ -95,6 +96,11 @@ class TicketQuerySet(models.QuerySet):
             msg = f"No ticket matching {ref!r} (looked up by pk, issue_url, and repo_namespaced_key)"
             raise ticket_model.DoesNotExist(msg)
         return ticket
+
+    def matching_issue(self, issue_url: str) -> models.QuerySet:
+        # Tickets that ARE the given issue — the issue-URL alias-collapse predicate
+        # (#2293) lives in :func:`~teatree.core.managers_issue_match.matching_issue_q`.
+        return self.filter(matching_issue_q(issue_url))
 
     def in_flight(self, overlay: str | None = None) -> models.QuerySet:
         ticket_model = cast("type[Ticket]", apps.get_model("core", "Ticket"))

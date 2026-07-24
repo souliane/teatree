@@ -14,13 +14,14 @@ from typing import TYPE_CHECKING
 
 from django.core.exceptions import ImproperlyConfigured
 
+from teatree.core.account_fingerprint import current_account_fingerprint
 from teatree.core.backend_protocols import CIService, CodeHostBackend, MessagingBackend
 from teatree.core.backend_registry import get_backend_provider
 
 if TYPE_CHECKING:
     from teatree.core.backend_registry import NotionPageClient, SentryReadClient, SharePointReadClient
 from teatree.core.overlay import OverlayBase
-from teatree.core.overlay_loader import get_all_overlays, get_overlay
+from teatree.core.overlay_loader import OverlayConfigResolver, get_all_overlays, get_overlay
 from teatree.core.toml_backends import (
     _apply_voice_classifier_mode,
     _code_host_from_toml_overlay,
@@ -77,6 +78,27 @@ class OverlayBackends:
 _code_host_cache: dict[str, CodeHostBackend] = {}
 _messaging_cache: dict[str, MessagingBackend] = {}
 
+
+@dataclass(slots=True)
+class _CacheAccountState:
+    """The Claude account fingerprint the process-wide backend caches hold.
+
+    A ``/login`` switch invalidates every resolved backend — the old account's
+    Slack workspace is no longer reachable — but long-lived processes (the
+    ``t3 mcp serve`` server, the loop worker) never re-run the SessionStart switch
+    detector, so they keep serving the stale backend and ``notify_user`` drops
+    every owner DM silently until restart. The cache-read path compares this
+    against the live fingerprint and self-resets on a change, so each process
+    re-resolves on its next call — no restart needed. ``None`` means "no cache
+    populated yet" (also the state right after a reset). Held on a mutable object
+    so the cache-read path mutates an attribute rather than rebinding a global.
+    """
+
+    fingerprint: str | None = None
+
+
+_cache_account_state = _CacheAccountState()
+
 # A resolved backend is cached for the process lifetime; a ``None`` result is
 # cached only for this brief monotonic window (F4.5). A single transient tick
 # where credentials momentarily fail to resolve returned ``None`` — which the
@@ -100,6 +122,24 @@ def _active_overlay_name(overlay_name: str | None) -> str:
     return os.environ.get("T3_OVERLAY_NAME", "") or ""
 
 
+def _reset_caches_if_account_switched() -> None:
+    """Self-heal the backend caches after a Claude ``/login`` account switch.
+
+    Long-lived processes never re-run the SessionStart switch detector; without
+    this guard they keep serving the backend resolved under the old account and
+    drop every owner DM silently. Comparing the live account fingerprint to the
+    one the caches were populated under, and resetting on a change, re-resolves
+    on the next call. An empty fingerprint ("cannot tell" — an unreadable
+    ``~/.claude.json``) never claims a switch, matching ``fingerprint_switched``.
+    """
+    current = current_account_fingerprint()
+    if not current:
+        return
+    if _cache_account_state.fingerprint and _cache_account_state.fingerprint != current:
+        reset_backend_caches()
+    _cache_account_state.fingerprint = current
+
+
 def code_host_from_overlay(overlay_name: str | None = None) -> CodeHostBackend | None:
     """Build a code-host backend using the active overlay's credentials.
 
@@ -113,6 +153,7 @@ def code_host_from_overlay(overlay_name: str | None = None) -> CodeHostBackend |
     overlays (no ``class:`` key) are supported via a TOML fallback so a
     bare ``django.setup()`` resolves the right credentials.
     """
+    _reset_caches_if_account_switched()
     key = _active_overlay_name(overlay_name)
     if key in _code_host_cache:
         return _code_host_cache[key]
@@ -180,6 +221,7 @@ def messaging_from_overlay(overlay_name: str | None = None) -> MessagingBackend 
     the correct overlay's Slack bot instead of silently falling back to
     no-backend.
     """
+    _reset_caches_if_account_switched()
     key = _active_overlay_name(overlay_name)
     if key in _messaging_cache:
         return _messaging_cache[key]
@@ -205,10 +247,63 @@ def _build_messaging(overlay_name: str) -> MessagingBackend | None:
     try:
         overlay = get_overlay(overlay_name or None)
     except ImproperlyConfigured:
-        return _messaging_from_toml_overlay(overlay_name)
+        if overlay_name:
+            return _messaging_from_toml_overlay(overlay_name)
+        return OwnerMessagingTransport.sole() or _messaging_from_toml_overlay(overlay_name)
     backend = get_backend_provider().get_messaging(overlay)
     _apply_voice_classifier_mode(backend)
     return backend
+
+
+class OwnerMessagingTransport:
+    """Owner-DM transport resolution across every registered overlay (credentials, not count)."""
+
+    @staticmethod
+    def credentialed_backends() -> list[MessagingBackend]:
+        """One messaging backend per registered overlay that carries a real transport.
+
+        Credentials, not count: overlays whose ``messaging_backend`` is noop/empty
+        carry no transport and are excluded (via
+        :func:`configured_messaging_from_overlay`), so the list length IS the
+        disambiguation signal — one entry is an unambiguous owner transport, several
+        are a real ambiguity the caller must name rather than guess through. The
+        owner-DM egress (:func:`teatree.core.notify.resolve_owner_dm_backend`) reads
+        this to split "no transport anywhere" from "several transports, pick one".
+
+        Enumerated through :meth:`OverlayConfigResolver.all_names` — NOT
+        ``get_all_overlays()`` — so a **path-only** TOML overlay (a ``path`` but no
+        instantiable ``class``) carrying real Slack credentials still contributes its
+        transport. ``configured_messaging_from_overlay`` already resolves such an
+        overlay by name through the TOML fallback; iterating only the instantiable
+        set made the sole credentialed overlay on a two-overlay box (a path-only
+        product overlay beside the noop ``t3-teatree``) resolve to no backend,
+        parking every headless ``notify_user`` owner DM undelivered and reddening the
+        doctor's ambient-egress gate from whichever cwd the noop overlay owned.
+        """
+        return [
+            backend
+            for name in OverlayConfigResolver.all_names()
+            if (backend := configured_messaging_from_overlay(name)) is not None
+        ]
+
+    @staticmethod
+    def sole() -> MessagingBackend | None:
+        """The one registered overlay carrying a real messaging transport, or ``None``.
+
+        The env-independent AMBIENT tier, symmetric with ``notify_targets._sole_overlay_field``:
+        the headless worker and the MCP server export no ``T3_OVERLAY_NAME``, so
+        ``get_overlay(None)`` raises ``Multiple overlays found`` the moment a second
+        overlay is registered. Without this tier that ambiguity collapsed to "no backend"
+        and :func:`teatree.core.notify.notify_user` silently no-op'd every owner DM.
+
+        Ambiguity is resolved by CREDENTIALS, not by count (see
+        :meth:`credentialed_backends`): two credentialed overlays still return
+        ``None`` — a multi-transport box must never guess which workspace the owner reads.
+        """
+        credentialed = OwnerMessagingTransport.credentialed_backends()
+        if len(credentialed) != 1:
+            return None
+        return credentialed[0]
 
 
 def configured_messaging_from_overlay(overlay_name: str | None = None) -> MessagingBackend | None:
@@ -430,11 +525,13 @@ def reset_backend_caches() -> None:
     _messaging_cache.clear()
     _code_host_none_until.clear()
     _messaging_none_until.clear()
+    _cache_account_state.fingerprint = None
     get_backend_provider().reset_caches()
 
 
 __all__ = [
     "OverlayBackends",
+    "OwnerMessagingTransport",
     "ci_service_from_overlay",
     "code_host_for_repo_from_overlay",
     "code_host_from_overlay",

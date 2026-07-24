@@ -5,6 +5,7 @@ from pathlib import Path
 from django.core.management import call_command
 from django.test import TestCase
 
+from teatree.config import COLD_HOOK_SETTINGS
 from teatree.core.models import ConfigSetting, DeferredQuestion
 from teatree.mcp import introspection
 from teatree.mcp.introspection import question_list
@@ -52,6 +53,25 @@ class TestConfigSettingGet(TestCase):
         assert row["source"] == "db"
         assert row["scope"] == "overlay:t3-teatree"
         assert row["overlay"] == "t3-teatree"
+
+    def test_cold_setting_key_reads_its_db_row(self) -> None:
+        # A COLD_SETTINGS key (set by the CLI, read by the cold-reader hooks)
+        # must be known on the MCP surface too — it was reported known=False
+        # because only two of the four key registries were consulted.
+        call_command("config_setting", "set", "internal_publish_namespaces", '["acme-internal"]')
+
+        row = introspection.config_setting_get(key="internal_publish_namespaces")
+
+        assert row["known"] is True
+        assert row["value"] == ["acme-internal"]
+        assert row["source"] == "db"
+
+    def test_cold_hook_key_without_row_reports_its_code_default(self) -> None:
+        row = introspection.config_setting_get(key="out_of_band_merge_gate_enabled")
+
+        assert row["known"] is True
+        assert row["value"] == COLD_HOOK_SETTINGS["out_of_band_merge_gate_enabled"].default
+        assert row["source"] == "code default"
 
     def test_unknown_key_is_flagged_not_raised(self) -> None:
         row = introspection.config_setting_get(key="not_a_real_setting")

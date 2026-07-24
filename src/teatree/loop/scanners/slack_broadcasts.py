@@ -30,9 +30,16 @@ Idempotency
 -----------
 
 The :class:`ScannedBroadcast` ledger key ``(channel, slack_ts)`` makes
-re-scanning safe. A re-classification (pending → all_merged once the
-last open MR closes) updates the row and re-reacts; an unchanged
-classification is a no-op.
+re-scanning safe: one row per broadcast, whatever the tick count. A
+re-classification (pending → all_merged once the last open MR closes)
+updates the row and re-reacts.
+
+Emission is gated separately, on
+:attr:`~teatree.core.models.ScannedBroadcast.awaiting_reviewer_dispatch` —
+a pending broadcast no reviewer task covers is emitted again, so a dispatch
+lost to a dead worker or an exhausted budget is recoverable rather than
+unreachable forever. Duplicate work is prevented downstream, where
+``persist_agent_actions`` reuses the existing Ticket + open reviewing Task.
 
 Channel-list and MR-state lookup are dependency-injected
 -------------------------------------------------------
@@ -114,12 +121,23 @@ class MrState:
     ``author.username`` / GitHub ``user.login``) so the scanner can skip
     the ``:eyes:`` review reaction on the user's own MR broadcasts (#1384).
     Empty when the classifier could not read it — treated as "not mine".
+
+    ``head_sha`` carries the MR's current head commit so the review-intent
+    signal can seed ``Ticket.extra["reviewed_sha"]`` the same way the
+    forge-assignment path does. Without it the whole at-head dedup chain
+    (``_already_reviewed_at_head``, ``mark_reviewed_externally``'s stamp,
+    ``ReviewedPrHeadScanner``) has nothing to key on and a broadcast MR is
+    reviewed exactly once, forever — the 2026-07-22 incident. The classifier
+    already fetches the full forge JSON, so this costs no extra I/O. Empty
+    when the classifier could not read it — a fail-open "unknown head", never
+    treated as a moved head.
     """
 
     url: str
     merged: bool
     approved: bool
     author_username: str = ""
+    head_sha: str = ""
 
 
 MrStateClassifier = Callable[[Sequence[str]], list[MrState]]
@@ -534,6 +552,12 @@ def _signal_for_pending_mr(state: MrState, row: ScannedBroadcast, *, overlay: st
     signal kind, no parallel dispatch path. An untrusted author on a PUBLIC
     repo flags the signal ADVERSARIAL (#1773) so the reviewer treats it as a
     potential malicious actor rather than a colleague MR.
+
+    ``head_sha`` rides the payload so ``persistence._handle_reviewer`` seeds
+    ``Ticket.extra["reviewed_sha"]`` — the key every downstream at-head check
+    reads. Before this the broadcast path was the ONLY discovery route that
+    recorded no SHA, which is why a broadcast-discovered MR was reviewed once
+    and then invisible to a colleague's later push (2026-07-22 incident).
     """
     mr_url = state.url
     ref = pr_ref_from_url(mr_url)
@@ -544,6 +568,7 @@ def _signal_for_pending_mr(state: MrState, row: ScannedBroadcast, *, overlay: st
         payload={
             "url": mr_url,
             "mr_url": mr_url,
+            "head_sha": state.head_sha,
             "channel": row.channel,
             "ts": row.slack_ts,
             "trigger": "broadcast",

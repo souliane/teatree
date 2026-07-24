@@ -11,6 +11,7 @@ from django_typer.management import TyperCommand, command
 
 from teatree.config import worktree_root as _config_worktree_root
 from teatree.core.gates.local_stack_gate import acquire_or_enqueue
+from teatree.core.gates.open_pr_teardown_gate import check_no_open_prs
 from teatree.core.intake.issue_ref import InvalidIssueRefError, canonicalize_issue_ref
 from teatree.core.intake.resolve import WorktreeNotFoundError, _get_user_cwd, resolve_worktree, workspace_owner_ticket
 from teatree.core.management.commands._workspace import helpers as _wh
@@ -18,6 +19,7 @@ from teatree.core.management.commands._workspace.clean_all import CleanAllIO, ru
 from teatree.core.management.commands._workspace.cleanup import _die, _fix_drift
 from teatree.core.management.commands._workspace.docker import reap_stale_local_stacks, reap_stale_report
 from teatree.core.management.commands._workspace.finalize import run_finalize
+from teatree.core.management.commands._workspace.forge_pr_state import read_live_pr_state
 from teatree.core.management.commands._workspace.landscape import LandscapeReport, run_landscape
 from teatree.core.management.commands._workspace.provision_parallel import (
     provision_worktree_subprocess,
@@ -329,6 +331,10 @@ class Command(TyperCommand):
             default=False,
             help="Tear down even when a branch has commits not on any remote (data loss).",
         ),
+        allow_open_prs: bool = typer.Option(
+            default=False,
+            help="Reclaim the workspace even while one of the ticket's PRs/MRs is still open.",
+        ),
     ) -> str:
         """Tear down every worktree in the current ticket workspace.
 
@@ -336,10 +342,19 @@ class Command(TyperCommand):
         per-worktree failures to maximise cleanup; surfaces them in the
         final summary. Refuses to remove a worktree whose branch carries
         unpushed commits unless ``--force`` is passed.
+
+        Teardown is TICKET-scoped: it reclaims EVERY worktree of the resolved
+        ticket, siblings included. That scope is only safe once the ticket is
+        actually done, so the command is gated on the forge state of the
+        ticket's PRs/MRs — a ticket carrying an open one is refused before any
+        worktree is touched, and a sibling worktree whose branch backs a
+        still-open MR is never reclaimed as collateral. ``--allow-open-prs`` is
+        the explicit override, deliberately separate from ``--force``.
         """
         ticket = _resolve_workspace_ticket(path)
 
         worktrees = list(Worktree.objects.filter(ticket=ticket))
+        check_no_open_prs(ticket, worktrees, read_pr_state=read_live_pr_state, allow_open_prs=allow_open_prs)
         labels: list[str] = []
         failures: list[str] = []
         for wt in worktrees:

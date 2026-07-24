@@ -343,6 +343,60 @@ class TestGateC(SimpleTestCase):
         )
         assert not result.passed  # gone_x.md is gone; the summary's mention of a live file must not home it
 
+    def test_line_targets_reads_a_curated_title_link_target_not_just_leading_pointer(self) -> None:
+        # The real hand-curated MEMORY.md writes each line as `- [Human Title](name.md)`,
+        # where the memory filename lives in the markdown link TARGET and the bracket holds
+        # a HUMAN TITLE (not the filename) — plus optional cluster aliases `[alias](x.md)`.
+        # Homing must read those link targets, else the leading-pointer-only regex extracts
+        # nothing and every curated line reads as a lost lesson.
+        line = "- [Took over = do ALL the work](feedback_took_over.md); [ask](feedback_ask.md)"
+        assert gates._line_targets(line, {"feedback_took_over.md"})  # primary link target homes it
+        assert gates._line_targets(line, {"feedback_ask.md"})  # a cluster alias target homes it too
+        # teeth: a title-link whose target is GONE stays unhomed (fix homes on survival, not format)
+        assert not gates._line_targets(line, {"unrelated.md"})
+        # teeth: a bare `.md` name-dropped in prose (no `](...)` link) must NOT home the line
+        assert not gates._line_targets("- [Title](gone.md) — see also survivor.md", {"survivor.md"})
+
+    def test_homes_a_curated_title_link_index_reformatted_to_pointer_form(self) -> None:
+        # The real staleness defect: the on-disk curated index uses `- [Human Title](name.md)`
+        # link-title lines; re-index (phase 5) reformats every one to the auto
+        # `- name.md — summary` pointer form, so the ENTIRE curated index is "pruned" while
+        # every memory SURVIVES. Homing must read each pruned line's link target — else a
+        # LOSSLESS reformat is flagged as N unhomed lost lessons and the marker never stamps
+        # (observed live: "87 pruned index line(s) have no confirmed durable home").
+        memories = {
+            "feedback_took_over.md": "body one",
+            "feedback_blocked.md": "body two",
+            "feedback_ask.md": "body three",
+        }
+        curated = (
+            "- [Took over = do ALL the work](feedback_took_over.md)\n"
+            "- [Blockers: stop and ask](feedback_blocked.md); [ask](feedback_ask.md)\n"
+        )
+        reformatted = (
+            "- feedback_took_over.md — took over means do all the work\n"
+            "- feedback_blocked.md — stop and ask\n"
+            "- feedback_ask.md — ask first\n"
+        )
+        before = _snapshot(memories, index=curated)
+        after = _snapshot(memories, index=reformatted)
+        result = Gate.consolidation_happened(
+            before, after, schema_before=0, schema_after=0, homed_index_lines=set(), clusters_recorded=3
+        )
+        assert result.passed  # every curated line's link target survives -> homed, not a lost lesson
+
+    def test_curated_title_link_to_a_vanished_memory_is_still_unhomed(self) -> None:
+        # Teeth for the reformat fix: a curated `- [Title](name.md)` line whose target is
+        # GENUINELY GONE (archived/deleted, not findable elsewhere) must stay unhomed, so the
+        # link-target reading never launders a real loss into a pass.
+        curated = "- [A real lesson](feedback_gone.md)\n- [Kept](feedback_kept.md)\n"
+        before = _snapshot({"feedback_gone.md": "lost body", "feedback_kept.md": "kept body"}, index=curated)
+        after = _snapshot({"feedback_kept.md": "kept body"}, index="- feedback_kept.md — kept\n")
+        result = Gate.consolidation_happened(
+            before, after, schema_before=0, schema_after=0, homed_index_lines=set(), clusters_recorded=3
+        )
+        assert not result.passed  # feedback_gone.md vanished -> its curated line is a genuine unhomed prune
+
 
 class TestGateD(SimpleTestCase):
     def test_passes_under_budget(self) -> None:
@@ -395,11 +449,13 @@ class TestGateDLoadability(SimpleTestCase):
             )
 
     def test_large_real_corpus_index_fails_the_budget(self) -> None:
-        self._write_corpus(682)
+        # The bare-pointer index is compact, so it takes ~1000 pointers to exceed the
+        # ~24 KB byte budget — gate (d) must still catch a genuinely over-budget index.
+        self._write_corpus(1000)
         rendered = reindex.render_index(self.dir)
         after = _snapshot({}, index=rendered)
         result = Gate.index_budget(after)
-        assert not result.passed, "a 682-file index exceeds the session-load budget and must FAIL gate (d)"
+        assert not result.passed, "a 1000-pointer index exceeds the session-load budget and must FAIL gate (d)"
 
     def test_small_corpus_index_passes_the_budget(self) -> None:
         self._write_corpus(20)

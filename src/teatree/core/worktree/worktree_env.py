@@ -18,12 +18,12 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, cast
 
-from teatree.core.models import Ticket, Worktree, WorktreeEnvOverride
-from teatree.core.models.types import WorktreeExtra, validated_worktree_extra
 from teatree.core.overlay_loader import get_overlay_for_worktree
 from teatree.utils.postgres_secret import PASS_KEY_ENV
 
 if TYPE_CHECKING:
+    from teatree.core.models import Ticket, Worktree
+    from teatree.core.models.types import WorktreeExtra
     from teatree.core.overlay import OverlayBase
 
 CACHE_DIRNAME = ".t3-cache"
@@ -53,7 +53,7 @@ class EnvCacheSpec:
     content: str
 
 
-def compose_project(worktree: Worktree) -> str:
+def compose_project(worktree: "Worktree") -> str:
     """Return the docker-compose project name for *worktree*.
 
     Single source of truth for the project key — every consumer (the env cache,
@@ -88,7 +88,7 @@ def _cache_path_for(wt_path: Path) -> Path:
     return wt_path.parent / CACHE_DIRNAME / wt_path.name / CACHE_FILENAME
 
 
-def env_cache_path(worktree: Worktree) -> Path | None:
+def env_cache_path(worktree: "Worktree") -> Path | None:
     """Return the canonical env-cache path ``<ticket_dir>/.t3-cache/<repo>/.t3-env.cache``.
 
     ``None`` when the worktree has not been materialised on disk yet (no
@@ -111,8 +111,10 @@ def _docker_host_address() -> str:
     return "172.17.0.1"
 
 
-def _core_env_pairs(worktree: Worktree) -> list[tuple[str, str]]:
+def _core_env_pairs(worktree: "Worktree") -> list[tuple[str, str]]:
     """Return the key-value pairs that core contributes to every cache."""
+    from teatree.core.models.types import validated_worktree_extra  # noqa: PLC0415 — deferred: needs the app registry
+
     extra: WorktreeExtra = validated_worktree_extra(worktree.extra)
     wt_path_str = extra.get("worktree_path")
     if not wt_path_str:
@@ -155,7 +157,7 @@ def _check_overlay_does_not_collide_with_core(overlay: "OverlayBase") -> None:
         raise RuntimeError(msg)
 
 
-def render_env_cache(worktree: Worktree, *, overlay: "OverlayBase | None" = None) -> EnvCacheSpec | None:
+def render_env_cache(worktree: "Worktree", *, overlay: "OverlayBase | None" = None) -> EnvCacheSpec | None:
     """Render the env cache content for *worktree* without touching disk.
 
     Returns ``None`` when the worktree has no ``worktree_path`` yet (not
@@ -168,6 +170,8 @@ def render_env_cache(worktree: Worktree, *, overlay: "OverlayBase | None" = None
     instance — the provision/start runners — pass it via *overlay* to skip
     re-resolution.
     """
+    from teatree.core.models.types import validated_worktree_extra  # noqa: PLC0415 — deferred: needs the app registry
+
     extra: WorktreeExtra = validated_worktree_extra(worktree.extra)
     wt_path_str = extra.get("worktree_path")
     if not wt_path_str:
@@ -201,7 +205,7 @@ def render_env_cache(worktree: Worktree, *, overlay: "OverlayBase | None" = None
     return EnvCacheSpec(path=cache_path, keys=ordered_keys, content=_HEADER + body)
 
 
-def write_env_cache(worktree: Worktree, *, overlay: "OverlayBase | None" = None) -> EnvCacheSpec | None:
+def write_env_cache(worktree: "Worktree", *, overlay: "OverlayBase | None" = None) -> EnvCacheSpec | None:
     """Write the env cache to the out-of-repo ``.t3-cache/`` home.
 
     Idempotent.  Writes the file ``chmod 444``.  Callers that modify the
@@ -223,6 +227,8 @@ def write_env_cache(worktree: Worktree, *, overlay: "OverlayBase | None" = None)
     if spec is None:
         return None
 
+    from teatree.core.models.types import validated_worktree_extra  # noqa: PLC0415 — deferred: needs the app registry
+
     extra: WorktreeExtra = validated_worktree_extra(worktree.extra)
     wt_path = Path(extra["worktree_path"])
 
@@ -240,7 +246,7 @@ def write_env_cache(worktree: Worktree, *, overlay: "OverlayBase | None" = None)
 
 
 def worktree_pg_connection(
-    worktree: Worktree, *, overlay: "OverlayBase | None" = None
+    worktree: "Worktree", *, overlay: "OverlayBase | None" = None
 ) -> tuple[str, str, dict[str, str]]:
     """Resolve ``(user, host, env)`` for connecting to *worktree*'s postgres.
 
@@ -254,6 +260,7 @@ def worktree_pg_connection(
     Returns ``("", "", {})`` for an unprovisioned worktree so callers fall
     back to the plain ``db_exists`` defaults.
     """
+    from teatree.core.models.types import validated_worktree_extra  # noqa: PLC0415 — deferred: needs the app registry
     from teatree.utils.db import pg_env  # noqa: PLC0415 — deferred: call-time import, kept lazy
 
     extra: WorktreeExtra = validated_worktree_extra(worktree.extra)
@@ -269,7 +276,7 @@ def worktree_pg_connection(
     return resolved.get("POSTGRES_USER", ""), resolved.get("POSTGRES_HOST", ""), pg_env(env)
 
 
-def detect_drift(worktree: Worktree, *, overlay: "OverlayBase | None" = None) -> tuple[bool, Path | None]:
+def detect_drift(worktree: "Worktree", *, overlay: "OverlayBase | None" = None) -> tuple[bool, Path | None]:
     """Return ``(is_drifted, cache_path)``.
 
     Drift = file on disk differs from a fresh DB render, OR file is
@@ -284,8 +291,10 @@ def detect_drift(worktree: Worktree, *, overlay: "OverlayBase | None" = None) ->
     return on_disk != spec.content, spec.path
 
 
-def set_override(worktree: Worktree, key: str, value: str) -> None:
+def set_override(worktree: "Worktree", key: str, value: str) -> None:
     """Persist a ``WorktreeEnvOverride`` row and refresh the cache."""
+    from teatree.core.models import WorktreeEnvOverride  # noqa: PLC0415 — deferred: ORM import needs the app registry
+
     reserved = _declared_core_keys()
     if key in reserved:
         msg = f"{key} is owned by core — edit the model field, not the env cache."
@@ -299,6 +308,8 @@ def set_override(worktree: Worktree, key: str, value: str) -> None:
     write_env_cache(worktree)
 
 
-def load_overrides(worktree: Worktree) -> dict[str, str]:
+def load_overrides(worktree: "Worktree") -> dict[str, str]:
     """Return user-provided overrides for *worktree*."""
+    from teatree.core.models import WorktreeEnvOverride  # noqa: PLC0415 — deferred: ORM import needs the app registry
+
     return dict(WorktreeEnvOverride.objects.filter(worktree=worktree).values_list("key", "value"))

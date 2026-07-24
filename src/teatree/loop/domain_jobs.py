@@ -48,6 +48,8 @@ from teatree.loop.scanners import (
     PendingTasksScanner,
     PrApprovalScanner,
     RedCardScanner,
+    ReviewDoneAckScanner,
+    ReviewedPrHeadScanner,
     ReviewerPrsScanner,
     ReviewNagScanner,
     ReviewRequestMergeReactScanner,
@@ -258,23 +260,50 @@ def _review_jobs_for_overlay(
                 code_host=code_host,
                 all_backends=all_backends,
             )
-            jobs.append(
-                _ScannerJob(
-                    scanner=ReviewerPrsScanner(
-                        host=code_host,
-                        identities=backend.identities,
-                        overlay_name=tag,
-                        allowed_url_prefixes=url_prefixes,
-                        competing_url_prefixes=competing_prefixes,
-                        trusted_authors=reviewer_trusted,
-                        admit_label=reviewer_admit_label,
+            # A colleague MR discovered from a Slack broadcast never gets a forge
+            # reviewer assignment, so ``ReviewerPrsScanner`` (a
+            # ``list_review_requested_prs`` filter) is structurally blind to it
+            # after the first pass. ``ReviewedPrHeadScanner`` watches the LOCAL
+            # reviewer tickets instead, so a discharged review re-opens on a new
+            # head whatever route discovered it.
+            jobs.extend(
+                (
+                    _ScannerJob(
+                        scanner=ReviewerPrsScanner(
+                            host=code_host,
+                            identities=backend.identities,
+                            overlay_name=tag,
+                            allowed_url_prefixes=url_prefixes,
+                            competing_url_prefixes=competing_prefixes,
+                            trusted_authors=reviewer_trusted,
+                            admit_label=reviewer_admit_label,
+                        ),
+                        overlay=tag,
                     ),
-                    overlay=tag,
-                ),
+                    _ScannerJob(
+                        scanner=ReviewedPrHeadScanner(
+                            host=code_host,
+                            overlay_name=tag,
+                            allowed_url_prefixes=url_prefixes,
+                            competing_url_prefixes=competing_prefixes,
+                        ),
+                        overlay=tag,
+                    ),
+                )
             )
     broadcasts_scanner = _slack_broadcasts_scanner_for(backend)
     if broadcasts_scanner is not None:
         jobs.append(_ScannerJob(scanner=broadcasts_scanner, overlay=tag))
+    if backend.messaging is not None:
+        # The colleague-visible review-DONE ack. Binding it to the reviewer
+        # ticket's DELIVERED state (not to an optional ``review record`` CLI
+        # call) is what makes a completed review visible to colleagues at all.
+        jobs.append(
+            _ScannerJob(
+                scanner=ReviewDoneAckScanner(messaging=backend.messaging, overlay_name=tag),
+                overlay=tag,
+            ),
+        )
     return jobs
 
 

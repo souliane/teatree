@@ -27,6 +27,41 @@ class TicketEvidenceModel(TicketFacet):
     def _extra(self) -> "TicketExtra":
         return validated_ticket_extra(self.extra)
 
+    def consume_phase_attempt(self, phase: str, *, max_attempts: int) -> bool:
+        """Spend one *phase* attempt from this ticket's budget; False once it is exhausted.
+
+        The durable bound behind an artifact-dedup scanner. Such a scanner asks "is
+        the field this phase owed still blank?" rather than "did a task run?", which
+        is the only honest question — a terminal task proves an attempt happened,
+        never that it delivered. That honesty is what lets a lying completion heal,
+        and it is also what makes an undeliverable phase re-enqueue every tick, so
+        the budget is the other half of the same change. The mechanism lives here;
+        *max_attempts* is the caller's policy, since what counts as enough tries
+        depends on the phase's runner, not on the ticket.
+
+        Counted in ``extra["phase_attempts"]`` rather than by counting terminal
+        ``Task`` rows: a ticket's existing terminal tasks were produced by whatever
+        mechanism ran before, and charging those to the current one attributes old
+        failures to a path that never made them. A fresh key starts every ticket at
+        zero. The budget is spent monotonically and is never refunded by a
+        completion — a completion that left the artifact absent is precisely the
+        failure being bounded, so refunding on one turns the ceiling into a
+        livelock. Exhaustion is therefore terminal, not a backoff: a permanently
+        broken write path is not a slow one.
+
+        The decision and the increment share one locked row so two concurrent
+        scanners cannot both read the same remaining budget; the mutation itself
+        still routes through ``merge_extra``, the single ``extra`` RMW primitive.
+        """
+        with transaction.atomic():
+            locked = type(self).objects.select_for_update().get(pk=self.pk)
+            spent = dict((locked.extra or {}).get("phase_attempts") or {})
+            already = int(spent.get(phase, 0))
+            if already >= max_attempts:
+                return False
+            self.merge_extra(merge_into_dicts={"phase_attempts": {phase: already + 1}})
+            return True
+
     def merge_extra(
         self,
         *,
