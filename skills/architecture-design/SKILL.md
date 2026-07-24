@@ -17,6 +17,12 @@ This is a companion gate. Implementation skills (`t3:code`, `t3:ticket` for new 
 
 Generic planning methodology is delegated to `obra/superpowers/writing-plans`. The teatree-specific value-add is the ten-check architecture pass below, plus the template the implementer fills in before touching `src/` — worktree-local as `ARCHITECTURE.md` (gitignored scratch) and surfaced to the reviewer as a `## Architecture pre-check` section in the PR body.
 
+## Scope, and the OPTIONAL vendor architecture skill
+
+This skill is scoped to **THIS repo's conventions** — BLUEPRINT alignment, FSM phase boundaries, extension-point contracts, dependency direction. It answers "does this change fit teatree's architecture", not "how do you structure agent work at all".
+
+The layer beneath that — provider-level agent-architecture decision-trees (single call vs workflow vs agent, tool-surface orchestration, agent tiering, resiliency patterns) — is covered by the agent-platform vendor's `claude-api` skill. That skill is **Anthropic-specific**: its guidance is load-bearing on Claude/Anthropic API primitives (adaptive thinking, effort, programmatic tool calling, context editing, prompt-caching breakpoints, the Managed Agents API), and its own frontmatter directs the reader to SKIP it for non-Claude providers. So teatree does **not** install it by default — it is an OPTIONAL recommendation (`t3 doctor check` surfaces it as an INFO when absent) that an operator running on Claude may install with `apm install anthropics/skills/skills/claude-api#<pin>`. There is no scope overlap to reconcile: local = repo conventions; vendor = provider-level agent architecture. The recommendation datum (source pin, caveat, boundary) lives in `src/teatree/provisioning/recommended.py`.
+
 ## When the gate fires
 
 The ten checks apply when the work meets any of:
