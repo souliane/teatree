@@ -290,3 +290,42 @@ jobs:
           name: eval-pr-transcripts
           path: ${{ runner.temp }}/eval-transcripts.html
           if-no-files-found: warn
+
+  # EVAL-GATE: the single always-reporting merge gate an overlay caller pins as a
+  # required status check. A conditionally-skipped job (the `eval` job skips when no
+  # scenario changed) is a fragile required check — GitHub leaves a skipped required
+  # context pending, wedging every no-change PR. This job ALWAYS runs (`if:
+  # always()`), so it emits exactly ONE conclusive success/failure check (KEEP THE
+  # JOB KEY `eval-gate` STABLE). It PASSes when detection succeeded AND the eval
+  # passed or was legitimately skipped (no scenario changed); it FAILs when
+  # detection failed, when the eval failed (a real regression OR the vacuous
+  # zero-executed case that `exit 1`s inside the eval job), or when either job was
+  # cancelled.
+  eval-gate:
+    needs: [detect, eval]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Conclude the selective-eval merge gate
+        env:
+          DETECT_RESULT: ${{ needs.detect.result }}
+          EVAL_RESULT: ${{ needs.eval.result }}
+          CHANGED: ${{ needs.detect.outputs.run }}
+        run: |
+          echo "detect=$DETECT_RESULT eval=$EVAL_RESULT changed_scenarios=$CHANGED"
+          if [ "$DETECT_RESULT" != "success" ]; then
+            echo "::error::eval-gate FAIL — scenario detection did not succeed (detect=$DETECT_RESULT); cannot prove the PR's eval coverage."
+            exit 1
+          fi
+          case "$EVAL_RESULT" in
+            success)
+              echo "eval-gate PASS — the PR's changed scenarios ran and passed."
+              ;;
+            skipped)
+              echo "eval-gate PASS — no scenario changed; nothing to eval."
+              ;;
+            *)
+              echo "::error::eval-gate FAIL — the selective eval did not pass (eval=$EVAL_RESULT): a changed scenario failed, the run executed zero scenarios (vacuous), or the job was cancelled."
+              exit 1
+              ;;
+          esac
