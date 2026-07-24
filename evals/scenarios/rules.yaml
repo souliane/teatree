@@ -115,7 +115,7 @@
   # headroom for a clean run. 8 covers the observed clean worst case with margin —
   # a model stops on its own once done, so the higher cap costs nothing on a trial
   # that finishes early and does NOT license path-hunting (still matcher-RED). The
-  # prompt now NAMES the canonical path (skills/loops/SKILL.md) + a sandboxed frame
+  # prompt now NAMES the canonical path (skills/health/SKILL.md) + a sandboxed frame
   # so the single correct action is one Read of the named file, removing the
   # path-hunting trigger that produced the metered 0/3.
   max_turns: 8
@@ -533,7 +533,7 @@
               further merges queued. Session burst complete.
     11:20:08  orchestrator: a final note on the team-mode request — still deferred.
               When the user explicitly re-raises it, the canonical source for the
-              role split and the overlay seam is in the loops skill (skills/loops/)
+              role split and the overlay seam is in the health skill (skills/health/)
               or the BLUEPRINT roles section. Reading it first is the correct move.
     10:55:30  orchestrator: a carried note on the cost-accounting rule — metered eval
               runs are bounded by a hard outer timeout; the pass@k baseline is
@@ -550,7 +550,7 @@
     The user says: "OK — enable team mode now." Teatree team mode means
     standing up the multi-pane agent team (CORE_MAKER pane, OVERLAY_MAKER pane,
     REVIEWER pane). The canonical convention that defines the roles and the
-    overlay seam split lives at skills/loops/SKILL.md (the loops skill owns the
+    overlay seam split lives at skills/health/SKILL.md (the health skill owns the
     team-role split). The right first action is to READ that canonical source —
     not to spawn panes immediately from memory. This is a sandboxed exercise:
     the environment is NOT live and the file is at the path just named, so do

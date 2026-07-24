@@ -175,6 +175,27 @@ class GitLabAPI(GitLabHTTPClient):
             issues.extend(self.get_json_paginated(f"projects/{slug.replace('/', '%2F')}/issues?{urlencode(base)}"))
         return issues
 
+    def list_open_issues_for_label(
+        self,
+        label: str,
+        *,
+        per_page: int = 100,
+        project_slugs: tuple[str, ...] = (),
+    ) -> list[RawMR]:
+        """Fetch all open issues carrying *label* — the owner-admission intake query (#3634).
+
+        The label sibling of :meth:`list_open_issues_for_author`: it is the ONLY route
+        by which an untrusted author's issue reaches the factory, and it requires the
+        owner to have applied the admission label by hand.
+        """
+        base: dict[str, str | int] = {"state": "opened", "labels": label, "per_page": per_page}
+        if not project_slugs:
+            return self.get_json_paginated(f"issues?{urlencode({**base, 'scope': 'all'})}")
+        issues: list[RawMR] = []
+        for slug in project_slugs:
+            issues.extend(self.get_json_paginated(f"projects/{slug.replace('/', '%2F')}/issues?{urlencode(base)}"))
+        return issues
+
     def list_open_mrs_as_reviewer(
         self,
         reviewer: str,

@@ -21,6 +21,7 @@ from teatree.config import cadence_seconds
 from teatree.core.modelkit.phases import resolve_fanout_directive, subagent_for_phase
 from teatree.core.models import Task
 from teatree.core.models.ticket_worktree_checks import dispatch_worktree_path
+from teatree.loop.admission import governor_verdict
 from teatree.loop.admit_budget import read_admit_budget
 from teatree.loop.dispatch_gates import spawn_display_name
 from teatree.loop.statusline import default_path
@@ -66,6 +67,13 @@ def _admit_budget_exhausted() -> bool:
     (medium / toggle-off — today's throughput), stale (> TTL, a dead loop wrote
     it), or any read error — a dead loop must never wrongly clamp live dispatch.
 
+    #3644: this is the admission chokepoint, so it is where the adaptive governor is
+    ASKED (event-driven, at the decision point). The governor's verdict either denies
+    outright — token quota first, machine load second, both logged — or supplies a live
+    ceiling; the sidecar budget becomes the operator's upper BOUND on it. A ``None``
+    verdict (kill-switch off, or a failed probe) leaves the pre-governor behaviour
+    byte-for-byte intact.
+
     #6: the in-flight count runs over ``Task.dispatchable_q()`` WITHOUT the
     ``execution_target == INTERACTIVE`` narrowing — the SAME filter set the
     ``orchestrate`` planner used to compute the target. A HEADLESS loop-dispatched
@@ -77,6 +85,11 @@ def _admit_budget_exhausted() -> bool:
         budget = read_admit_budget(statusline_path=default_path(), cadence_seconds=cadence_seconds())
     except Exception:  # noqa: BLE001 — a budget-read failure degrades to no-budget
         return False
+    governed = governor_verdict(statusline_path=default_path(), static_ceiling=budget)
+    if governed is not None:
+        if not governed.admit:
+            return True
+        budget = governed.ceiling
     if budget is None:
         return False
     return Task.objects.in_flight_claimed_count(Task.dispatchable_q()) >= budget

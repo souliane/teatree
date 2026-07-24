@@ -61,17 +61,19 @@ if ! [ -t 0 ] && command -v jq >/dev/null 2>&1; then
     fi
 fi
 
-# The render gate is the `autoload` owner flag ALONE (below), NOT the per-session
-# `.teatree-active` marker. That marker is written by SessionStart-engage / a
-# teatree-skill load, but the harness runs the loop in a background `bg-spare`
-# daemon session (which gets the marker and owns the tick) while the owner's
-# foreground TUI sessions frequently never get it — so ANDing the marker with
-# autoload blanked the statusline in exactly the sessions the owner looks at.
-# `autoload` is the ONE owner flag that "engages the session", so it alone gates
-# whether the statusline is shown here. Loop *arming* keeps its stricter
+# The render gate is primarily the `autoload` owner flag (below), NOT the per-session
+# `.teatree-active` marker as a hard requirement. That marker is written by
+# SessionStart-engage / a teatree-skill load, but the harness runs the loop in a
+# background `bg-spare` daemon session (which gets the marker and owns the tick) while
+# the owner's foreground TUI sessions frequently never get it — so ANDing the marker
+# with autoload blanked the statusline in exactly the sessions the owner looks at.
+# `autoload` is the ONE owner flag that "engages the session", so it is the PRIMARY
+# gate here. A secondary opt-in — `statusline_engaged_render` (#3502, default false) —
+# ADDITIONALLY renders in a session the owner explicitly engaged by hand (an engage
+# marker present) even with autoload off. Loop *arming* keeps its stricter
 # `marker AND autoload` gate (hook_router._loop_auto_load_active); this is display
-# *visibility*, which the owner wants in every one of their sessions. The #256
-# colleague guarantee still holds: `autoload` off is blank regardless of the marker.
+# *visibility*. The #256 colleague guarantee still holds: with `autoload` off and the
+# opt-in unset the bar shows only the neutral hint, regardless of the marker.
 
 # The canonical ConfigSetting store's GLOBAL `autoload` value, JSON-decoded:
 # `true` / `false` / empty. Read-only via the sqlite3 CLI (so the statusline needs
@@ -124,7 +126,36 @@ autoload_enabled() {
     return 1
 }
 
-if [ -n "$session_id" ] && ! autoload_enabled; then
+# The canonical ConfigSetting store's GLOBAL `statusline_engaged_render` value
+# (#3502), JSON-decoded: `true` / `false` / empty. Read-only via the sqlite3 CLI
+# with the same WAL fallback and fail-silent-empty contract as `_autoload_db_value`.
+_statusline_engaged_render_db_value() {
+    command -v sqlite3 >/dev/null 2>&1 || return 0
+    local db="${T3_CONFIG_DB:-${XDG_DATA_HOME:-$HOME/.local/share}/teatree/db.sqlite3}"
+    [ -f "$db" ] || return 0
+    local q="SELECT value FROM teatree_config_setting WHERE scope='' AND key='statusline_engaged_render' LIMIT 1;"
+    sqlite3 "file:${db}?mode=ro" "$q" 2>/dev/null \
+        || sqlite3 "file:${db}?immutable=1" "$q" 2>/dev/null \
+        || return 0
+}
+
+# A session is explicitly engaged when it carries either engage marker under
+# `state_dir`: `.teatree-active` (SessionStart-engage / a teatree-requiring skill)
+# or `.t3-engaged` (any `t3:` skill loaded).
+session_engaged() {
+    [ -n "$1" ] && { [ -f "$state_dir/$1.teatree-active" ] || [ -f "$state_dir/$1.t3-engaged" ]; }
+}
+
+# The opt-in render path: the flag is a strict-bool `true` AND this session is
+# explicitly engaged. Default false → a colleague never reaches it (#256).
+engaged_render_enabled() {
+    case "$(_statusline_engaged_render_db_value)" in
+        true) session_engaged "$1" ;;
+        *) return 1 ;;
+    esac
+}
+
+if [ -n "$session_id" ] && ! autoload_enabled && ! engaged_render_enabled "$session_id"; then
     # #3233: CC discards zero-byte statusline output, so a silent ``exit 0``
     # here renders a mysteriously BLANK bar under the non-TTY CC invocation
     # (session_id set) — invisible to every run-the-script-by-hand debug pass.

@@ -35,11 +35,11 @@ from teatree.loop.scanner_factory_config import (
     _gitlab_approvals_enabled,
     _user_identity_aliases_for_overlay,
     _user_slack_id_for_overlay,
+    stranger_pr_admission,
 )
 from teatree.loop.scanners import (
     ActiveTicketsScanner,
     AskUserQuestionReplyScanner,
-    AssignedIssuesScanner,
     DeferredQuestionPosterScanner,
     GitLabApprovalsScanner,
     IncomingEventsScanner,
@@ -48,6 +48,8 @@ from teatree.loop.scanners import (
     PendingTasksScanner,
     PrApprovalScanner,
     RedCardScanner,
+    ReviewDoneAckScanner,
+    ReviewedPrHeadScanner,
     ReviewerPrsScanner,
     ReviewNagScanner,
     ReviewRequestMergeReactScanner,
@@ -250,6 +252,7 @@ def _review_jobs_for_overlay(
     if self_pr_scanner is not None:
         jobs.append(_ScannerJob(scanner=self_pr_scanner, overlay=tag))
     if _admit_colleague_prs_to_board(tag):
+        reviewer_trusted, reviewer_admit_label = stranger_pr_admission(tag)
         for code_host in backend.hosts:
             url_prefixes = _allowed_url_prefixes_for_host(backend, code_host)
             competing_prefixes = _competing_url_prefixes(
@@ -257,42 +260,57 @@ def _review_jobs_for_overlay(
                 code_host=code_host,
                 all_backends=all_backends,
             )
-            jobs.append(
-                _ScannerJob(
-                    scanner=ReviewerPrsScanner(
-                        host=code_host,
-                        identities=backend.identities,
-                        overlay_name=tag,
-                        allowed_url_prefixes=url_prefixes,
-                        competing_url_prefixes=competing_prefixes,
+            # A colleague MR discovered from a Slack broadcast never gets a forge
+            # reviewer assignment, so ``ReviewerPrsScanner`` (a
+            # ``list_review_requested_prs`` filter) is structurally blind to it
+            # after the first pass. ``ReviewedPrHeadScanner`` watches the LOCAL
+            # reviewer tickets instead, so a discharged review re-opens on a new
+            # head whatever route discovered it.
+            jobs.extend(
+                (
+                    _ScannerJob(
+                        scanner=ReviewerPrsScanner(
+                            host=code_host,
+                            identities=backend.identities,
+                            overlay_name=tag,
+                            allowed_url_prefixes=url_prefixes,
+                            competing_url_prefixes=competing_prefixes,
+                            trusted_authors=reviewer_trusted,
+                            admit_label=reviewer_admit_label,
+                        ),
+                        overlay=tag,
                     ),
-                    overlay=tag,
-                ),
+                    _ScannerJob(
+                        scanner=ReviewedPrHeadScanner(
+                            host=code_host,
+                            overlay_name=tag,
+                            allowed_url_prefixes=url_prefixes,
+                            competing_url_prefixes=competing_prefixes,
+                        ),
+                        overlay=tag,
+                    ),
+                )
             )
     broadcasts_scanner = _slack_broadcasts_scanner_for(backend)
     if broadcasts_scanner is not None:
         jobs.append(_ScannerJob(scanner=broadcasts_scanner, overlay=tag))
+    if backend.messaging is not None:
+        # The colleague-visible review-DONE ack. Binding it to the reviewer
+        # ticket's DELIVERED state (not to an optional ``review record`` CLI
+        # call) is what makes a completed review visible to colleagues at all.
+        jobs.append(
+            _ScannerJob(
+                scanner=ReviewDoneAckScanner(messaging=backend.messaging, overlay_name=tag),
+                overlay=tag,
+            ),
+        )
     return jobs
 
 
 def _followup_jobs_for_overlay(backend: OverlayBackends) -> list[_ScannerJob]:
-    """Assigned-issue intake (per host) + the single review-nag (overlay-scoped)."""
+    """The single review-nag (overlay-scoped). Intake is the unified ``issue_intake`` job."""
     tag = backend.name
-    jobs: list[_ScannerJob] = [
-        _ScannerJob(
-            scanner=AssignedIssuesScanner(
-                host=code_host,
-                ready_labels=backend.ready_labels,
-                exclude_labels=backend.exclude_labels,
-                auto_start=backend.auto_start_assigned_issues,
-                max_concurrent=backend.max_concurrent_auto_starts,
-                overlay_name=tag,
-                identities=backend.identities,
-            ),
-            overlay=tag,
-        )
-        for code_host in backend.hosts
-    ]
+    jobs: list[_ScannerJob] = []
     if backend.messaging is not None:
         jobs.extend(
             (

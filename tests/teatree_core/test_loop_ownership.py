@@ -39,6 +39,25 @@ from teatree.core.models import LoopLease
 from teatree.settings import SQLITE_WRITE_SERIALIZATION_OPTIONS
 
 
+def _seed_dead_pid_lease(slot: str, *, session_id: str, owner_pid: int, ttl_seconds: int) -> None:
+    """Write a live-TTL lease anchored on a DEAD pid, bypassing the claim path.
+
+    The claim path refuses to anchor on a provably-dead pid (#3646), so this
+    state only arises when the owning process dies mid-lease — which is exactly
+    what ``evict_stale_owner``'s dead-pid branch exists to resolve.
+    """
+    now = timezone.now()
+    LoopLease.objects.update_or_create(
+        name=slot,
+        defaults={
+            "session_id": session_id,
+            "owner_pid": owner_pid,
+            "acquired_at": now,
+            "lease_expires_at": now + timedelta(seconds=ttl_seconds),
+        },
+    )
+
+
 class TestClaimOwnership(TestCase):
     def test_unowned_row_is_claimable(self) -> None:
         won, owner = LoopLease.objects.claim_ownership("t3-master", session_id="sess-A")
@@ -456,7 +475,7 @@ class TestEvictStaleOwner(TestCase):
 
     def test_live_dead_pid_is_evicted(self) -> None:
         """Live lease whose owner process is dead → EVICT."""
-        LoopLease.objects.claim_ownership("t3-master", session_id="dead-owner", ttl_seconds=1800, owner_pid=999999)
+        _seed_dead_pid_lease("t3-master", session_id="dead-owner", owner_pid=999999, ttl_seconds=1800)
 
         evicted = LoopLease.objects.evict_stale_owner("t3-master", keep_session_id="new", current_pid=None)
         assert evicted == 1
@@ -623,7 +642,7 @@ class TestPerLoopOwnershipReusesGlobalMachinery(TestCase):
     def test_per_loop_dead_pid_evicted(self) -> None:
         """evict_stale_owner decision table applies per-loop (dead pid → EVICT)."""
         slot = per_loop_owner_slot("dispatch")
-        LoopLease.objects.claim_ownership(slot, session_id="dead-owner", ttl_seconds=1800, owner_pid=999999)
+        _seed_dead_pid_lease(slot, session_id="dead-owner", owner_pid=999999, ttl_seconds=1800)
         evicted = LoopLease.objects.evict_stale_owner(slot, keep_session_id="new", current_pid=None)
         assert evicted == 1
         assert LoopLease.objects.get(name=slot).session_id == ""

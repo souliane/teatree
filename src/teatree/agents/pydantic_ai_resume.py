@@ -23,7 +23,7 @@ instant, so the narrow TOCTOU window that pattern accepts is unchanged here.
 
 Prompt-cache fallback policy (#2886): resending the rehydrated history is the
 WHOLE mechanism — no manual ``cache_control`` markers are sent (prompt-cache
-semantics differ per provider behind OrcaRouter's OpenAI-compatible surface,
+semantics differ per provider behind the OpenAI-compatible surface,
 and are opaque to teatree). When the provider recognizes the resent prefix it
 reports non-zero ``cache_read_tokens`` (logged on the resuming ``TaskAttempt``
 — the same columns the claude_sdk lane already populates); when it does not,
@@ -37,7 +37,7 @@ still consumes the entry the moment it is READ, not the moment it is
 actually driven through a harness — cheaper than plumbing a commit-on-success
 callback through the async driver. A caller (:mod:`teatree.agents.headless`)
 that refuses the dispatch this seeded BEFORE the harness genuinely opens (an
-over-budget ticket, a failed OrcaRouter credential) must restore the popped
+over-budget ticket, a failed backend credential) must restore the popped
 entry via :func:`persist_parked_thread`, or a run that never happened
 silently and irrecoverably destroys the parked conversation.
 """
@@ -84,16 +84,23 @@ def maybe_persist_on_park(task: Task, result: AgentResultBlob, thread: "list[Mod
     An ordinary completed run (or one with no ``thread`` — claude_sdk, or a
     watchdog-interrupted run) has nothing to resume.
 
-    Known limitation (souliane/teatree#3605): this persists ONLY on a
-    ``needs_user_input`` park, keyed under *task*'s pk, and
-    :func:`rehydrate_thread_for_resume` walks ``parent_task`` only. A
-    usage-LIMIT-parked run (``usage_window.park_or_rotate_on_limit``) re-queues as
-    ITSELF, so it neither persists here nor rehydrates on resume — it resumes with
-    a fresh conversation. The fix (persist under the task's own pk on a limit-park +
-    rehydrate from ``task`` itself) is tracked separately; a cache miss is a cost,
-    never an error.
+    The sibling park is a usage LIMIT, which never produces a result envelope —
+    :func:`maybe_persist_on_limit_park` covers it.
     """
     if result.get("needs_user_input") and thread:
+        persist_parked_thread(task, thread)
+
+
+def maybe_persist_on_limit_park(task: Task, thread: "list[ModelMessage] | None") -> None:
+    """Persist *thread* for a usage-limit park (souliane/teatree#3605) — else a no-op.
+
+    A limit-parked run (``usage_window.park_or_rotate_on_limit``) is re-queued as
+    ITSELF, so there is no child task whose ``parent_task`` points at the parked one:
+    the entry is stored under *task*'s own pk and :func:`rehydrate_thread_for_resume`
+    reads *task* first. Without this the resume re-paid the whole accumulated context
+    as fresh input — a cost, never an error, which is why it went unnoticed.
+    """
+    if thread:
         persist_parked_thread(task, thread)
 
 
@@ -103,7 +110,7 @@ class ResumedThread:
 
     *ancestor* travels alongside *history* so a caller that refuses the
     dispatch this seeded BEFORE the harness genuinely opens (an over-budget
-    ticket, an OrcaRouter credential failure) can restore the entry via
+    ticket, a backend credential failure) can restore the entry via
     :func:`persist_parked_thread` — the pop is meant to be single-use only
     once a run actually consumes the conversation, not merely once it is read
     (souliane/teatree#2916).
@@ -114,15 +121,17 @@ class ResumedThread:
 
 
 def rehydrate_thread_for_resume(task: Task) -> "ResumedThread | None":
-    """Reload the nearest parked ancestor's thread, or ``None`` when none parked.
+    """Reload the nearest parked thread — *task*'s own, else an ancestor's.
 
-    Walks ``parent_task`` exactly like
+    *task* itself is checked first: a usage-limit park re-queues the same row, so its
+    conversation is keyed under its own pk (#3605). Otherwise the walk follows
+    ``parent_task`` exactly like
     :func:`~teatree.agents._headless_options._get_resume_session_id`, so a
     pydantic_ai resume finds the SAME ancestor a claude_sdk resume would.
     Consumes the entry on read (single-use). Never raises — see the module
     docstring's fallback policy.
     """
-    current = task.parent_task
+    current: Task | None = task
     while current is not None:
         history = _pop_thread(current)
         if history is not None:

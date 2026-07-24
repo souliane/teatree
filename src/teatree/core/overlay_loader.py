@@ -5,7 +5,7 @@ of whether the overlay was registered via ``pip install`` (entry point) or the
 DB-home ``overlays`` registry (injected into ``load_config().raw``).
 """
 
-import importlib
+import importlib.metadata
 import logging
 import os
 from collections.abc import Callable
@@ -15,6 +15,8 @@ from urllib.parse import urlparse
 
 from django.core.exceptions import ImproperlyConfigured
 
+from teatree.core.overlay_conformance import conforming_or_none, conforming_or_raise
+from teatree.core.overlay_name_resolution import cwd_overlay_name, overlay_name_of, resolve_overlay_name
 from teatree.core.overlay_url import get_overlay_for_url
 from teatree.core.overlays.overlay_code_defaults_provider import build_and_register as _register_overlay_code_defaults
 from teatree.utils.url_slug import slug_from_issue_or_pr_url
@@ -37,6 +39,7 @@ __all__ = [
     "get_overlay_for_url",
     "get_overlay_for_worktree",
     "infer_overlay_for_url",
+    "overlay_name_of",
     "reset_overlay_cache",
     "resolve_overlay_name",
     "ticket_repo_is_overlay_own",
@@ -65,6 +68,10 @@ def get_overlay(name: str | None = None) -> "OverlayBase":
 
     if len(overlays) == 1:
         return next(iter(overlays.values()))
+
+    ambient = cwd_overlay_name(overlays)
+    if ambient is not None:
+        return overlays[ambient]
 
     msg = f"Multiple overlays found ({', '.join(sorted(overlays))}). Pass an explicit name to get_overlay()."
     raise ImproperlyConfigured(msg)
@@ -311,32 +318,6 @@ def frontend_repos_for_overlay(name: str | None) -> list[str]:
     return OverlayConfigResolver.frontend_repos(name)
 
 
-def resolve_overlay_name(name: str) -> str | None:
-    """Return the canonical registered overlay name for *name*, or ``None``.
-
-    The single source of truth for "is this overlay name dispatchable, and
-    under what canonical name". A name that is already a registered overlay
-    returns unchanged; a legacy short alias folds onto its registered
-    entry-point via the same ``_match_canonical_ep`` rule the config loader
-    uses (``teatree`` → ``t3-teatree``). A name that matches nothing — a
-    removed overlay, a synthetic scanner tag, a typo — returns ``None`` so
-    callers can fail it permanently instead of crashing on every retry
-    (souliane/teatree#1959 poison-pill).
-
-    Callers asking only "is this dispatchable?" test ``resolve_overlay_name(x)
-    is not None``; an empty/blank ``name`` is the ambient single-overlay default
-    and is the caller's responsibility to special-case (it returns ``None``).
-    """
-    from teatree.config import _match_canonical_ep  # noqa: PLC0415 — deferred: call-time import, kept lazy
-
-    if not name:
-        return None
-    known = set(OverlayConfigResolver.all_names())
-    if name in known:
-        return name
-    return _match_canonical_ep(name, known)
-
-
 def _url_to_slug(url: str) -> str:
     """Normalize ``url`` to an ``owner/name`` slug for ownership matching.
 
@@ -524,8 +505,6 @@ def _overlay_repo_slugs_for_inference() -> "list[tuple[str, list[str]]]":
 
 @lru_cache(maxsize=1)
 def _discover_overlays() -> "dict[str, OverlayBase]":
-    import importlib.metadata  # noqa: PLC0415 — deferred: loaded only on this code path
-
     from teatree.core.overlay import OverlayBase  # noqa: PLC0415 — deferred: call-time import, kept lazy
     from teatree.utils.django_bootstrap import ensure_django  # noqa: PLC0415 — deferred: call-time import, kept lazy
 
@@ -549,7 +528,7 @@ def _discover_overlays() -> "dict[str, OverlayBase]":
         # registry-only overlays. Without this, OverlayConfig subclasses
         # would have to opt in by passing overlay_name to super().__init__.
         overlay.config.apply_toml_overrides(ep.name)
-        result[ep.name] = overlay
+        result[ep.name] = conforming_or_raise(overlay, ep.name)
 
     # 2. Registry-configured overlays (not already found via entry points)
     result.update(_discover_toml_overlays(OverlayBase, set(result)))
@@ -581,12 +560,12 @@ def _discover_toml_overlays(
 
         try:
             module_path, class_name = class_path.rsplit(":", 1)
-            mod = importlib.import_module(module_path)
-            cls = getattr(mod, class_name)
+            cls = getattr(importlib.import_module(module_path), class_name)
             if not issubclass(cls, base_class):
                 logger.warning("TOML overlay %r class %s does not subclass OverlayBase", name, class_path)
                 continue
-            result[name] = cls()
+            if instance := conforming_or_none(cls(), name):
+                result[name] = instance
         except (ImportError, AttributeError) as exc:
             logger.warning("TOML overlay %r failed to load class %s: %s", name, class_path, exc)
 

@@ -7,12 +7,14 @@ publication scanner, never a stub.
 """
 
 import json
+import os
+import tempfile
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
-import pytest
 from django.core.exceptions import ImproperlyConfigured
+from django.test import TestCase
 from typer.testing import CliRunner
 
 from teatree.cli import app
@@ -67,9 +69,7 @@ def _label_yaml(entry_id: str, *, labelled_by: str = "human:rev", rule_author: s
     )
 
 
-# ast-grep-ignore: ac-django-no-pytest-django-db
-@pytest.mark.django_db
-class TestLabelNominate:
+class TestLabelNominate(TestCase):
     def test_lists_nominated_records_with_slugs(self) -> None:
         _record("sess-nom", nominated=True)
         _record("sess-quiet", nominated=False)
@@ -87,14 +87,19 @@ class TestLabelNominate:
         assert "(no records nominated for labelling)" in result.output
 
 
-# ast-grep-ignore: ac-django-no-pytest-django-db
-@pytest.mark.django_db
-class TestLabelAdd:
-    def test_scaffolds_session_copy_and_label_template(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setenv("HOME", str(tmp_path))
-        corpus_dir = tmp_path / "corpus"
+class TestLabelAdd(TestCase):
+    def setUp(self) -> None:
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.tmp_path = Path(tmp.name)
+        env = patch.dict(os.environ, {"HOME": str(self.tmp_path)})
+        env.start()
+        self.addCleanup(env.stop)
+
+    def test_scaffolds_session_copy_and_label_template(self) -> None:
+        corpus_dir = self.tmp_path / "corpus"
         _record("sess-add")
-        _write_session(tmp_path, "sess-add", _assistant_bash("ls"))
+        _write_session(self.tmp_path, "sess-add", _assistant_bash("ls"))
         result = CliRunner().invoke(
             app, ["eval", "label", "add", "sess-add", "--dir", str(corpus_dir), "--entry-id", "my_entry"]
         )
@@ -108,130 +113,135 @@ class TestLabelAdd:
         assert '"sess-add"' in label_text
         assert str(corpus_dir / "my_entry.label.yaml") in result.output
 
-    def test_default_entry_id_is_sanitized_from_session_id(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        monkeypatch.setenv("HOME", str(tmp_path))
-        corpus_dir = tmp_path / "corpus"
+    def test_default_entry_id_is_sanitized_from_session_id(self) -> None:
+        corpus_dir = self.tmp_path / "corpus"
         _record("Sess-Add.01")
-        _write_session(tmp_path, "Sess-Add.01", _assistant_bash("ls"))
+        _write_session(self.tmp_path, "Sess-Add.01", _assistant_bash("ls"))
         result = CliRunner().invoke(app, ["eval", "label", "add", "Sess-Add.01", "--dir", str(corpus_dir)])
         assert result.exit_code == 0, result.output
         assert (corpus_dir / "sess_add_01.label.yaml").is_file()
 
-    def test_redaction_hit_refuses_and_writes_nothing(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setenv("HOME", str(tmp_path))
-        corpus_dir = tmp_path / "corpus"
+    def test_redaction_hit_refuses_and_writes_nothing(self) -> None:
+        corpus_dir = self.tmp_path / "corpus"
         _record("sess-leak")
-        _write_session(tmp_path, "sess-leak", _assistant_bash("echo the user said verbatim do it"))
+        _write_session(self.tmp_path, "sess-leak", _assistant_bash("echo the user said verbatim do it"))
         result = CliRunner().invoke(app, ["eval", "label", "add", "sess-leak", "--dir", str(corpus_dir)])
         assert result.exit_code == 1, result.output
         assert "REFUSED" in result.output
         assert not corpus_dir.exists() or not list(corpus_dir.glob("*"))
 
-    def test_host_path_refuses_and_writes_nothing(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setenv("HOME", str(tmp_path))
-        corpus_dir = tmp_path / "corpus"
+    def test_host_path_refuses_and_writes_nothing(self) -> None:
+        corpus_dir = self.tmp_path / "corpus"
         _record("sess-path")
-        _write_session(tmp_path, "sess-path", _assistant_bash("cat /Users/alice/.ssh/id_rsa"))
+        _write_session(
+            self.tmp_path,
+            "sess-path",
+            _assistant_bash("cat /Users/alice/.ssh/id_rsa"),  # privacy-scan:allow
+        )
         result = CliRunner().invoke(app, ["eval", "label", "add", "sess-path", "--dir", str(corpus_dir)])
         assert result.exit_code == 1, result.output
         assert "REFUSED" in result.output
         assert not corpus_dir.exists() or not list(corpus_dir.glob("*"))
 
-    def test_token_shape_refuses_and_writes_nothing(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setenv("HOME", str(tmp_path))
-        corpus_dir = tmp_path / "corpus"
+    def test_token_shape_refuses_and_writes_nothing(self) -> None:
+        corpus_dir = self.tmp_path / "corpus"
         _record("sess-token")
         # Assembled at runtime so the source carries no static token literal the
         # secrets scanner would flag — the captured body still has the shape.
         token = "ghp_" + "x" * 36
-        _write_session(tmp_path, "sess-token", _assistant_bash(f"export TOK={token}"))
+        _write_session(self.tmp_path, "sess-token", _assistant_bash(f"export TOK={token}"))
         result = CliRunner().invoke(app, ["eval", "label", "add", "sess-token", "--dir", str(corpus_dir)])
         assert result.exit_code == 1, result.output
         assert "REFUSED" in result.output
         assert not corpus_dir.exists() or not list(corpus_dir.glob("*"))
 
-    def test_anthropic_api_key_shape_refuses_and_writes_nothing(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_anthropic_api_key_shape_refuses_and_writes_nothing(self) -> None:
         # A real Anthropic API key `sk-ant-api03-…` has a hyphen after `sk-ant`,
         # so the generic `sk-[A-Za-z0-9]{16,}` pattern stops at the hyphen and
         # MISSES it — the default block set must catch the real `sk-ant-` shape.
-        monkeypatch.setenv("HOME", str(tmp_path))
-        corpus_dir = tmp_path / "corpus"
+        corpus_dir = self.tmp_path / "corpus"
         _record("sess-anthropic-api")
         # Assembled at runtime so the source carries no static key literal.
         key = "sk-ant-api03-" + "A" * 40
-        _write_session(tmp_path, "sess-anthropic-api", _assistant_bash(f"export ANTHROPIC_API_KEY={key}"))
+        _write_session(self.tmp_path, "sess-anthropic-api", _assistant_bash(f"export ANTHROPIC_API_KEY={key}"))
         result = CliRunner().invoke(app, ["eval", "label", "add", "sess-anthropic-api", "--dir", str(corpus_dir)])
         assert result.exit_code == 1, result.output
         assert "REFUSED" in result.output
         assert not corpus_dir.exists() or not list(corpus_dir.glob("*"))
 
-    def test_anthropic_oauth_token_shape_refuses_and_writes_nothing(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_anthropic_oauth_token_shape_refuses_and_writes_nothing(self) -> None:
         # The Claude Code OAuth token `sk-ant-oat01-…` is the same shape gap.
-        monkeypatch.setenv("HOME", str(tmp_path))
-        corpus_dir = tmp_path / "corpus"
+        corpus_dir = self.tmp_path / "corpus"
         _record("sess-anthropic-oat")
         token = "sk-ant-oat01-" + "B" * 40
-        _write_session(tmp_path, "sess-anthropic-oat", _assistant_bash(f"export CLAUDE_CODE_OAUTH_TOKEN={token}"))
+        _write_session(self.tmp_path, "sess-anthropic-oat", _assistant_bash(f"export CLAUDE_CODE_OAUTH_TOKEN={token}"))
         result = CliRunner().invoke(app, ["eval", "label", "add", "sess-anthropic-oat", "--dir", str(corpus_dir)])
         assert result.exit_code == 1, result.output
         assert "REFUSED" in result.output
         assert not corpus_dir.exists() or not list(corpus_dir.glob("*"))
 
-    def test_active_overlay_redact_term_refuses(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setenv("HOME", str(tmp_path))
-        corpus_dir = tmp_path / "corpus"
+    def test_active_overlay_redact_term_refuses(self) -> None:
+        corpus_dir = self.tmp_path / "corpus"
         _record("sess-brand")
-        _write_session(tmp_path, "sess-brand", _assistant_bash("echo working on AcmeCorp tenant"))
+        _write_session(self.tmp_path, "sess-brand", _assistant_bash("echo working on AcmeCorp tenant"))
         fake_overlay = SimpleNamespace(
             config=SimpleNamespace(privacy_redact_terms=["AcmeCorp"], privacy_block_patterns=[])
         )
-        with patch("teatree.core.overlay_loader.get_overlay", return_value=fake_overlay):
+        with patch("teatree.core.gates.privacy_gate.get_overlay", return_value=fake_overlay):
             result = CliRunner().invoke(app, ["eval", "label", "add", "sess-brand", "--dir", str(corpus_dir)])
         assert result.exit_code == 1, result.output
         assert "REFUSED" in result.output
         assert not corpus_dir.exists() or not list(corpus_dir.glob("*"))
 
-    def test_default_block_set_applies_when_no_overlay_resolves(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        monkeypatch.setenv("HOME", str(tmp_path))
-        corpus_dir = tmp_path / "corpus"
+    def test_default_block_set_applies_when_no_overlay_is_installed(self) -> None:
+        corpus_dir = self.tmp_path / "corpus"
         _record("sess-nooverlay")
-        _write_session(tmp_path, "sess-nooverlay", _assistant_bash("cat /Users/bob/secret"))
-        with patch("teatree.core.overlay_loader.get_overlay", side_effect=ImproperlyConfigured("no overlay")):
+        _write_session(
+            self.tmp_path,
+            "sess-nooverlay",
+            _assistant_bash("cat /Users/bob/secret"),  # privacy-scan:allow
+        )
+        # An EMPTY registry has no overlay terms to lose; the public-corpus default
+        # block set still catches the host path. An AMBIGUOUS registry is a different
+        # case entirely — see TestLabelAddMultiOverlay.
+        with (
+            patch("teatree.core.gates.privacy_gate.get_overlay", side_effect=ImproperlyConfigured("no overlay")),
+            patch("teatree.core.gates.privacy_gate.get_all_overlays", dict),
+        ):
             result = CliRunner().invoke(app, ["eval", "label", "add", "sess-nooverlay", "--dir", str(corpus_dir)])
-        # Overlay terms are lost, but the public-corpus default block set still
-        # catches the host path — the guard never silently weakens.
         assert result.exit_code == 1, result.output
         assert "REFUSED" in result.output
 
-    def test_no_audit_record_exits_2(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setenv("HOME", str(tmp_path))
-        _write_session(tmp_path, "sess-x", _assistant_bash("ls"))
-        result = CliRunner().invoke(app, ["eval", "label", "add", "sess-x", "--dir", str(tmp_path / "corpus")])
+    def test_unresolvable_overlay_rules_refuse_the_public_corpus_copy(self) -> None:
+        # A body with nothing a built-in pattern would catch: the ONLY reason to
+        # refuse is that the rules could not be resolved. Fails CLOSED, writes nothing.
+        corpus_dir = self.tmp_path / "corpus"
+        _record("sess-unresolvable")
+        _write_session(self.tmp_path, "sess-unresolvable", _assistant_bash("ls"))
+        with patch("teatree.cli.eval.label.overlay_privacy_rules", return_value=None):
+            result = CliRunner().invoke(app, ["eval", "label", "add", "sess-unresolvable", "--dir", str(corpus_dir)])
+        assert result.exit_code == 1, result.output
+        assert "REFUSED" in result.output
+        assert not corpus_dir.exists() or not list(corpus_dir.glob("*"))
+
+    def test_no_audit_record_exits_2(self) -> None:
+        _write_session(self.tmp_path, "sess-x", _assistant_bash("ls"))
+        result = CliRunner().invoke(app, ["eval", "label", "add", "sess-x", "--dir", str(self.tmp_path / "corpus")])
         assert result.exit_code == 2
         assert "no audit record" in result.output
 
-    def test_missing_session_file_exits_2(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setenv("HOME", str(tmp_path))
+    def test_missing_session_file_exits_2(self) -> None:
         _record("sess-gone")
-        result = CliRunner().invoke(app, ["eval", "label", "add", "sess-gone", "--dir", str(tmp_path / "corpus")])
+        result = CliRunner().invoke(app, ["eval", "label", "add", "sess-gone", "--dir", str(self.tmp_path / "corpus")])
         assert result.exit_code == 2
         assert "no session jsonl found" in result.output
 
-    def test_existing_entry_is_refused(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setenv("HOME", str(tmp_path))
-        corpus_dir = tmp_path / "corpus"
+    def test_existing_entry_is_refused(self) -> None:
+        corpus_dir = self.tmp_path / "corpus"
         corpus_dir.mkdir()
         (corpus_dir / "my_entry.label.yaml").write_text("existing", encoding="utf-8")
         _record("sess-dup")
-        _write_session(tmp_path, "sess-dup", _assistant_bash("ls"))
+        _write_session(self.tmp_path, "sess-dup", _assistant_bash("ls"))
         result = CliRunner().invoke(
             app, ["eval", "label", "add", "sess-dup", "--dir", str(corpus_dir), "--entry-id", "my_entry"]
         )

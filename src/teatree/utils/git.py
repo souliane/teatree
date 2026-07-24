@@ -26,6 +26,7 @@ from teatree.utils.git_branch import (
     current_branch,
     default_branch,
     head_sha,
+    resolve_diff_base,
 )
 from teatree.utils.git_commit import (
     branch_diff,
@@ -98,6 +99,7 @@ __all__ = [
     "recovered_head_sha_after_ref_gone",
     "remote_slug",
     "remote_url",
+    "resolve_diff_base",
     "rev_count",
     "run",
     "run_strict",

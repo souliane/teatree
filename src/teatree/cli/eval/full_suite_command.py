@@ -27,7 +27,7 @@ def register_full_suite_callback(eval_app: typer.Typer) -> None:
                 "explicit opt-in), 'anthropic_api' (RUN the same Claude model fresh through the "
                 "Anthropic Messages API DIRECTLY, no `claude` CLI child — the CLI-free lane, metered "
                 "on ANTHROPIC_API_KEY), or 'pydantic_ai' (RUN a non-Claude model through the "
-                "provider-agnostic harness seam, OrcaRouter BYOK)."
+                "provider-agnostic harness seam, the OpenAI-compatible backend)."
             ),
         ),
         transcript_dir: Path | None = typer.Option(

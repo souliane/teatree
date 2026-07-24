@@ -28,7 +28,9 @@ from teatree.config.enums import Autonomy, Mode, OnBehalfPostMode
 from teatree.config.homes import SETTING_HOMES, SettingHome
 from teatree.config.mr_reminder import mr_reminder_from_table
 from teatree.config.overlay_code_defaults import overlay_code_defaults
-from teatree.config.settings import ENV_SETTING_OVERRIDES, OVERLAY_OVERRIDABLE_SETTINGS, OverlayEntry, UserSettings
+from teatree.config.retired_settings import RENAMED_SETTING_KEYS, removed_setting, warn_removed_setting
+from teatree.config.setting_registries import ENV_SETTING_OVERRIDES, OVERLAY_OVERRIDABLE_SETTINGS
+from teatree.config.settings import OverlayEntry, UserSettings
 from teatree.config.speak import speak_from_subtable
 from teatree.types import SpeakConfig
 
@@ -280,36 +282,14 @@ def _db_overlay_overrides(overlay_name: str = "") -> dict[str, Any]:
     return _coerce_db_rows(_load_overlay_rows(overlay_name))
 
 
-# Retired ConfigSetting keys mapped to their current ``UserSettings`` field.
-# A row written under the old name on an install that pre-dates a rename still
-# resolves to the renamed field. The canonical key always wins when both rows
-# exist (the alias only fills a gap). ``todo_sweep_*`` → ``task_sweep_*`` (#129):
-# the loop unit reconciles teatree Task rows, not the harness TODO list, so the
-# settings follow the scanner's name. ``speed`` → ``wip`` (#2951/#3109): the old
-# ``Speed`` enum's value set was identical to ``Wip`` (slow/medium/full/boost,
-# aliases low/normal/high), so a plain key alias restores the stored value with
-# no remapping.
-_LEGACY_SETTING_ALIASES: dict[str, str] = {
-    "todo_sweep_disabled": "task_sweep_disabled",
-    "todo_sweep_recheck_interval_hours": "task_sweep_recheck_interval_hours",
-    "speed": "wip",
-}
-
-
-# Every key that has ever been a DB-home settings field name and was RENAMED (not
-# removed-dead — a removed field intentionally resolves to nothing and is pinned by
-# ``tests/config/test_removed_dead_settings.py``). This is the explicitly-maintained
-# history the guard in ``tests/config/test_legacy_setting_aliases.py`` reads: because
-# no record of the dataclass's past field names exists in code, retiring a key must
-# be a deliberate edit here, and the guard then forces its ``_LEGACY_SETTING_ALIASES``
-# entry so a stored row under the old key can never be silently dropped.
-_RETIRED_SETTING_KEYS: frozenset[str] = frozenset(
-    {
-        "todo_sweep_disabled",
-        "todo_sweep_recheck_interval_hours",
-        "speed",
-    }
-)
+# Retired ConfigSetting keys mapped to their current ``UserSettings`` field, and
+# the retired keys with no replacement. Both are DERIVED from the one registry in
+# ``config.retired_settings`` (#3527) so a retirement is recorded exactly once: a
+# renamed key's stored row resolves onto the replacement field (the canonical key
+# still wins when both rows exist), and a removed key's stored row is reported
+# loudly rather than dropped in silence.
+_LEGACY_SETTING_ALIASES: dict[str, str] = RENAMED_SETTING_KEYS
+_RETIRED_SETTING_KEYS: frozenset[str] = frozenset(RENAMED_SETTING_KEYS)
 
 
 def _coerce_db_rows(rows: dict[str, Any]) -> dict[str, Any]:
@@ -321,6 +301,11 @@ def _coerce_db_rows(rows: dict[str, Any]) -> dict[str, Any]:
     written under a retired key (``_LEGACY_SETTING_ALIASES``) is folded onto its
     current field name; the canonical key wins when both rows are present.
 
+    A row under a REMOVED key (``retired_settings.REMOVED_SETTING_KEYS``) has no
+    field to resolve onto, so it is reported on stderr naming the key, the reason
+    and the remedy before falling through to the default (#3527) — loud rather
+    than fatal, so a stale row never locks an operator out of their own factory.
+
     A per-row parser failure means a stored value is invalid for its setting's
     type (an out-of-enum ``mode``, a quoted ``"false"`` for a bool). Write-time
     validation (``config_setting set``, #258) means such a row can only exist via
@@ -330,6 +315,10 @@ def _coerce_db_rows(rows: dict[str, Any]) -> dict[str, Any]:
     overrides: dict[str, Any] = {}
     fields_from_canonical_key: set[str] = set()
     for key, value in rows.items():
+        removed = removed_setting(key)
+        if removed is not None:
+            warn_removed_setting(removed)
+            continue
         is_alias = key in _LEGACY_SETTING_ALIASES
         field_name = _LEGACY_SETTING_ALIASES.get(key, key)
         if field_name in _BESPOKE_STRUCTURED_FIELDS:
@@ -423,9 +412,14 @@ def _overlay_overrides_by_name(overlay_name: str) -> dict[str, Any]:
     return {}
 
 
+#: The approval gates an autonomous tier collapses. ``require_human_approval_to_merge``
+#: is deliberately absent (#3630): "carry the work end to end" and "merge without a
+#: review gate" are different decisions, and a tier switch that silently made the second
+#: one for the operator removed review-before-merge with no signal. Merging without
+#: review is now its own named opt-in — an explicit
+#: ``require_human_approval_to_merge = false`` — which every tier reads unchanged.
 _AUTONOMY_COLLAPSED_GATE_VALUES: dict[str, Any] = {
     "on_behalf_post_mode": OnBehalfPostMode.IMMEDIATE,
-    "require_human_approval_to_merge": False,
     "require_human_approval_to_answer": False,
 }
 
@@ -483,7 +477,10 @@ def _drop_db_home_overlay_keys(overrides: dict[str, Any], overlay_name: str) -> 
 
 
 def _apply_autonomy(settings: UserSettings, *, hard_pinned: set[str], global_pinned: set[str]) -> UserSettings:
-    """Collapse the three approval gates for an autonomous tier (``full`` / ``notify``).
+    """Collapse the tier-governed approval gates for ``full`` / ``notify``.
+
+    The set is :data:`_AUTONOMY_COLLAPSED_GATE_VALUES`, which excludes
+    ``require_human_approval_to_merge`` (#3630) — no tier removes review before merge.
 
     Both autonomous tiers fill only the gates the user left unpinned and pin
     ``mode`` to ``auto`` (the merge-autonomy path is gated on ``mode == AUTO``,

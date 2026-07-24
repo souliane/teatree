@@ -19,7 +19,7 @@ Two distinct hand-offs share this skill:
 
 ## Session → session hand-off
 
-The hand-off payload is the SAME durable-state snapshot the PreCompact hook builds (active tickets, worktree paths/branches, in-flight sub-agent ids+tasks, open PRs, approach/decisions, failing tests, loaded skills, t3-master status). A `SessionHandover` DB row is the source of truth; an XDG file (`[teatree] handover_mirror_path`, default `${XDG_STATE_HOME:-~/.local/state}/teatree/handover/latest.md`) mirrors it for human-readability and brand-new-session bootstrap.
+The hand-off payload is the SAME durable-state snapshot the PreCompact hook builds (active tickets, worktree paths/branches, in-flight sub-agent ids+tasks, open PRs, approach/decisions, failing tests, loaded skills, t3-master status). A session that has not compacted yet still hands over its work: with no snapshot on disk the payload is DERIVED from live DB state (worktrees, active tickets, open PRs). A `SessionHandover` DB row is the source of truth; a file mirror (the DB-home `handover_mirror_path` setting, default `${T3_DATA_DIR:-${XDG_DATA_HOME:-~/.local/share}/teatree}/handover/latest.md`) mirrors it for human-readability and brand-new-session bootstrap. The mirror lives under the SHARED data dir on purpose — it is the one directory the host and the worker container both see, so a hand-off created on either side bootstraps a session on the other. The `latest.md` pointer resolves to the newest mirror IN that directory (filenames embed a fixed-width `created_at` stamp, so lexicographic order is chronological), not to whichever file happened to be written last.
 
 ### Hand off this session's work
 
@@ -28,7 +28,9 @@ t3 <overlay> handover create            # hand to the LIVE loop owner; if none, 
 t3 <overlay> handover create --to <id>  # hand to a specific session id
 ```
 
-No `--to` resolves the target to the live `t3-master` slot holder; if there is no live owner the hand-off is parked for whichever session starts next to claim. The row is always persisted AND mirrored to the XDG file.
+No `--to` resolves the target to the live `t3-master` slot holder; if there is no live owner the hand-off is parked for whichever session starts next to claim. The row is always persisted AND mirrored to the file.
+
+**A hand-off that transfers nothing is refused.** When both payload sources are empty (no snapshot and no live DB state), `handover create` exits 1 and reports `"ok": false` in its JSON — reporting OK over an empty payload would leave the receiving session claiming a row with nothing in it.
 
 ### Know your own session id
 
@@ -42,7 +44,9 @@ t3 <overlay> handover whoami
 
 ### Takeover (automatic, zero copy-paste)
 
-A fresh / non-owner session claims an unclaimed hand-off (targeted at it, or parked for "next session") on `SessionStart` and injects the payload as `additionalContext` — no command needed. The claim is marked once so it injects exactly once. `t3 <overlay> handover claim-on-start --session <id>` is the hook entry point; you do not normally run it by hand.
+A fresh / non-owner session DRAINS every hand-off claimable by it (targeted at it, plus everything parked for "next session") on `SessionStart` and injects the payload as `additionalContext` — no command needed. Each claim is marked once so it injects exactly once. `t3 <overlay> handover claim-on-start --session <id>` is the hook entry point; you do not normally run it by hand.
+
+The queue is drained, not sampled: a hand-off targeted AT this session leads (more specific than the open broadcast), then the parked tier follows OLDEST-first, so the backlog makes progress instead of one newest row starving every older one forever. When several hand-offs arrive together each renders behind its own `## Hand-off N of M — from <session>` fence, so the receiver does not read N authors' state as one narrative. Both pickup call sites go through the single `handover.claim_handovers` seam, so neither can drift back to a claim-one policy.
 
 ## Session recovery — MCP connectors after a network change, account switch, or restart
 

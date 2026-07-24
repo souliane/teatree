@@ -124,6 +124,13 @@ class UncoveredFile:
     lines: list[int]
 
 
+UNREFERENCED_SYMBOL_IMPORT_HINT = (
+    "    workaround: this check reads a changed test's import statements only — a "
+    "`module.symbol(...)` call does not count as a reference; when the symbol is already "
+    "exercised, add `from module import symbol` to a changed test to make the reference visible"
+)
+
+
 @dataclass(frozen=True)
 class DiffCoverageReport:
     uncovered: list[UncoveredFile] = field(default_factory=list)
@@ -138,10 +145,11 @@ class DiffCoverageReport:
         rows: list[str] = ["Per-diff coverage gate: FAILED"]
         rows.extend(f"  uncovered new lines in {uf.path}: {uf.lines}" for uf in self.uncovered)
         if self.unreferenced_symbols:
-            rows.append(
+            symbol_row = (
                 "  new production symbols not referenced by any changed test "
                 f"(test-a-local-copy vacuity risk): {sorted(self.unreferenced_symbols)}"
             )
+            rows.extend((symbol_row, UNREFERENCED_SYMBOL_IMPORT_HINT))
         return "\n".join(rows)
 
 

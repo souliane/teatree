@@ -123,3 +123,39 @@ def _check_dream_transcript_visibility() -> bool:
         "a permanent no-op (marker never stamped succeeded).",
     )
     return False
+
+
+def _check_compose_output_root_pinned() -> bool:
+    """Warn when a compose service does not pin the agent output root (#3641).
+
+    ``deploy/entrypoint.sh`` exports ``TMPDIR`` for a service's MAIN process, but
+    ``docker exec`` does not run the entrypoint — an exec'd agent's transcripts
+    then land under a second, ephemeral root, so every transcript consumer must
+    scan both or silently miss half the data. Only an inline ``environment``
+    entry reaches an exec'd process. Crash-proof: any error degrades to OK.
+    """
+    from teatree.cli.doctor.self_heal import _Probe  # noqa: PLC0415 — deferred: lazy CLI import
+    from teatree.docker.output_root import (  # noqa: PLC0415 — deferred: lazy CLI import
+        OUTPUT_ROOT_ENV,
+        services_missing_output_root,
+    )
+    from teatree.docker.workflow import compose_path  # noqa: PLC0415 — deferred: lazy CLI import
+
+    try:
+        clone = _Probe.runtime_clone_root()
+        if clone is None:
+            return True
+        missing = services_missing_output_root(compose_path(clone))
+    except Exception as exc:  # noqa: BLE001 — doctor check must never crash the run
+        typer.echo(f"WARN  Compose-output-root check crashed: {exc.__class__.__name__}: {exc}")
+        return True
+    if not missing:
+        return True
+    typer.echo(
+        f"WARN  {len(missing)} compose service(s) do not pin {OUTPUT_ROOT_ENV} in their "
+        f"`environment` ({', '.join(missing)}). A `docker exec` into them bypasses the "
+        f"entrypoint export, so agent output splits across two roots and every "
+        f"transcript consumer must scan both. Declare {OUTPUT_ROOT_ENV} per service in "
+        "deploy/docker-compose.yml.",
+    )
+    return False

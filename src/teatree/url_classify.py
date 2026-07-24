@@ -22,6 +22,12 @@ _GITHUB_MARKERS = ("/pull/", "/pulls/")
 
 _PR_URL_RE = re.compile(r"https?://[^\s|>]+/(?:merge_requests|pull|pulls)/\d+")
 
+#: PR/MR **or** issue references — the superset a consumer wants when it looks a
+#: URL up against teatree's own records, which track both ``PullRequest.url`` and
+#: ``Ticket.issue_url``. Non-greedy so a run-on sentence yields one URL per
+#: reference rather than one URL swallowing the tail.
+_FORGE_URL_RE = re.compile(r"https?://\S*?/(?:merge_requests|pull|pulls|issues)/\d+")
+
 
 class Forge(StrEnum):
     """Which forge a PR/MR URL belongs to. ``UNKNOWN`` for a non-PR/MR URL."""
@@ -78,6 +84,16 @@ def find_pr_urls(text: str) -> list[str]:
     return _PR_URL_RE.findall(text)
 
 
+def find_forge_urls(text: str) -> list[str]:
+    """Every PR/MR **or issue** URL embedded in free *text*, in order of appearance.
+
+    The superset of :func:`find_pr_urls`, for a consumer that resolves a URL
+    against teatree's own records — where an issue reference is as answerable as
+    a pull-request one.
+    """
+    return _FORGE_URL_RE.findall(text)
+
+
 def first_pr_url(text: str) -> str:
     """The first PR/MR URL in *text* (trailing slash and ``#`` fragment stripped), or ``""``."""
     match = _PR_URL_RE.search(text)
@@ -89,6 +105,7 @@ def first_pr_url(text: str) -> str:
 __all__ = [
     "Forge",
     "PrRef",
+    "find_forge_urls",
     "find_pr_urls",
     "first_pr_url",
     "forge_of",

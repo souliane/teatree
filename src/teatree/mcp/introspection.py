@@ -10,8 +10,7 @@ Same contract as ``search``: synchronous, JSON-safe, never mutates.
 
 from typing import Any
 
-from teatree.config import COLD_HOOK_SETTINGS, OVERLAY_OVERRIDABLE_SETTINGS, cold_reader, get_effective_settings
-from teatree.config.registries import REGISTRY_SETTINGS
+from teatree.config import ALL_KNOWN_CONFIG_SETTINGS, COLD_HOOK_SETTINGS, cold_reader, get_effective_settings
 from teatree.core.models import ConfigSetting, DeferredQuestion
 from teatree.mcp import command_catalogue
 from teatree.mcp.search import _capped
@@ -101,20 +100,35 @@ def config_setting_get(*, key: str, overlay: str | None = None) -> dict[str, Any
     """The effective value of a config setting and where it resolves from.
 
     The read side of the DB override store, mirroring ``t3 <overlay>
-    config_setting get``: a ``ConfigSetting`` row in the requested scope is
-    reported as ``source == "db"``; otherwise the value falls through to the
-    file/env layer (``source == "file/env"``). ``overlay`` reads that overlay's
-    scope. A key in neither the overridable nor the registry partition is
-    reported ``known == False`` (value ``None``) rather than raising — the read
-    surface stays crash-proof on a typo.
+    config_setting get``: key-ness resolves through the SAME unified known-key
+    set the CLI consults (``ALL_KNOWN_CONFIG_SETTINGS`` — the ``UserSettings``
+    partition, the injected registries, the cold-read keys, and the cold-hook
+    gate flags), so a key the CLI can ``set`` is never reported unknown here. A
+    ``ConfigSetting`` row in the requested scope is reported as
+    ``source == "db"``; a cold-hook key with no row reports its in-code default
+    (``source == "code default"``, the CLI ``get`` fallback); every other key
+    falls through to the file/env layer (``source == "file/env"``). ``overlay``
+    reads that overlay's scope. A key in no registry is reported
+    ``known == False`` (value ``None``) rather than raising — the read surface
+    stays crash-proof on a typo.
     """
     scope = overlay or ""
     label = _scope_label(scope)
-    if key not in OVERLAY_OVERRIDABLE_SETTINGS and key not in REGISTRY_SETTINGS:
+    if key not in ALL_KNOWN_CONFIG_SETTINGS:
         return {"key": key, "known": False, "value": None, "source": None, "scope": label, "overlay": scope}
     stored = ConfigSetting.objects.get_effective(key, scope=scope)
     if stored is not None:
         return {"key": key, "known": True, "value": _jsonable(stored), "source": "db", "scope": label, "overlay": scope}
+    cold_hook = COLD_HOOK_SETTINGS.get(key)
+    if cold_hook is not None:
+        return {
+            "key": key,
+            "known": True,
+            "value": _jsonable(cold_hook.default),
+            "source": "code default",
+            "scope": label,
+            "overlay": scope,
+        }
     fallback = getattr(get_effective_settings(overlay or None), key, None)
     return {
         "key": key,

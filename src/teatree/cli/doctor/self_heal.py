@@ -13,7 +13,7 @@ of the stack it watches) can restart the stack and DM the owner:
 - a PENDING ``interactive`` task under ``agent_runtime=headless`` (unrunnable),
 - a FAILED task on a still-live ticket (the silent-freeze signature),
 - a runtime clone that has drifted off its default branch,
-- a slack-drain sidecar failing every pass or gone silent, so inbound Slack stops being answered,
+- a slack-drain sidecar failing every pass or gone silent (``self_heal_slack_drain``),
 - a ``loop:<name>``/``t3-master`` lease held by a dead session past TTL (this one AUTO-REPAIRS).
 
 Each returns ``bool`` — ``False`` is a hard FAIL that reddens ``t3 doctor`` (and so
@@ -28,12 +28,11 @@ import json
 import os
 import shutil
 from collections.abc import Callable
-from dataclasses import dataclass
 from pathlib import Path
 
 import typer
 
-from teatree.paths import DATA_DIR
+from teatree.cli.doctor.self_heal_slack_drain import check_slack_drain_alive
 
 #: The compose project the box runs the factory under (``deploy/docker-compose.yml``).
 _COMPOSE_PROJECT = "teatree"
@@ -49,28 +48,6 @@ _LONG_RUNNING_SERVICES = ("teatree-worker", "teatree-admin")
 _DOWN_STATES = frozenset({"created", "exited", "dead", "restarting", "paused"})
 #: The tab-separated ``service\tstate\tstatus`` fields the docker probe emits.
 _STATE_ROW_FIELDS = 3
-
-#: The slack-drain sidecar heartbeat filename under :data:`teatree.paths.DATA_DIR`
-#: (the shared data bind mount). ``deploy/entrypoint.sh``'s ``slack_drain_loop``
-#: rewrites it every pass; doctor — running in another container — reads it here.
-#: The filename is pinned to the entrypoint by ``tests/test_deploy_slack_listener.py``.
-_SLACK_DRAIN_HEARTBEAT_FILENAME = "slack-drain-heartbeat.json"
-#: A drain that has failed this many passes in a row is a real, non-transient break.
-_MAX_DRAIN_CONSECUTIVE_FAILURES = 5
-#: The heartbeat must refresh within max(this x its interval, floor) or the sidecar
-#: is dead/wedged. The multiplier absorbs a slow pass; the floor covers a fast cadence.
-_DRAIN_HEARTBEAT_STALE_MULTIPLIER = 4
-_DRAIN_HEARTBEAT_STALE_FLOOR_SECONDS = 120
-
-
-@dataclass(frozen=True, slots=True)
-class DrainBeat:
-    """One parsed slack-drain heartbeat: when it last ran and its failure streak."""
-
-    updated_at: dt.datetime
-    consecutive_failures: int
-    interval_seconds: int
-
 
 #: A READY loop timer older than this multiple of its cadence is a stalled drain.
 _STALE_TIMER_CADENCE_MULTIPLIER = 2
@@ -105,7 +82,7 @@ def _parse_compose_state_rows(text: str) -> list[tuple[str, str, str]]:
 def _compose_states_from_handoff() -> list[tuple[str, str, str]] | None:
     """Compose states handed off by the socket-holding watchdog, or ``None`` when absent.
 
-    ``t3 doctor`` runs inside ``teatree-admin`` (docker CLI but no
+    ``t3 doctor`` runs inside an app container (docker CLI but no
     ``/var/run/docker.sock``), so only the socket-holding watchdog can gather the
     states; it passes them in via :data:`_COMPOSE_STATES_ENV` (base64 of the
     tab-separated ``docker ps`` output). ``None`` when the env var is unset/empty
@@ -256,28 +233,6 @@ class _Probe:
             message = line[len(token) :].strip() if level != "INFO" else line.strip()
             findings.append({"level": level, "message": message})
         return findings
-
-    @staticmethod
-    def slack_drain_heartbeat() -> "DrainBeat | None":
-        """The slack-drain sidecar's last heartbeat, or ``None`` when absent/unreadable.
-
-        ``None`` means the box runs no slack-drain sidecar (a dev machine, or a
-        deploy without the listener) OR the file is unparsable — the caller
-        degrades to a pass, never a false FAIL. Read from
-        :data:`teatree.paths.DATA_DIR` so a test can repoint the whole probe by
-        patching that name on this module.
-        """
-        path = DATA_DIR / _SLACK_DRAIN_HEARTBEAT_FILENAME
-        try:
-            raw = json.loads(path.read_text(encoding="utf-8"))
-            updated = dt.datetime.fromtimestamp(int(raw["updated_at"]), tz=dt.UTC)
-            return DrainBeat(
-                updated_at=updated,
-                consecutive_failures=int(raw["consecutive_failures"]),
-                interval_seconds=int(raw.get("interval_seconds", 0)),
-            )
-        except (OSError, ValueError, TypeError, KeyError, json.JSONDecodeError):
-            return None
 
 
 def _check_compose_stack() -> bool:
@@ -448,15 +403,29 @@ def _check_failed_tasks_on_live_tickets() -> bool:
     A FAILED task whose ticket has not reached a terminal/retrospected state is
     work that died with nothing advancing the ticket: the silent-freeze pattern
     the incident exhibited. Reports the count and the affected ticket numbers.
+
+    Synthetic rows are excluded (souliane/teatree#3492). A
+    ``<scheme>://<overlay>`` loop-cadence anchor is a recurring schedule with no
+    terminal state to reach, and a bare-number ``issue_url`` is malformed debris
+    whose real, terminal ticket exists separately. Neither is frozen deliverable
+    work, yet both render as forge-looking numbers and pin a permanent,
+    unactionable FAIL — which trains operators to ignore the one line that would
+    flag a real freeze. A ticket with no forge issue at all (``""`` /
+    ``auto:<branch>``) is ordinary work and still counts.
     """
     try:
+        from teatree.core.forge_url import (  # noqa: PLC0415 — deferred: ORM import needs the app registry
+            is_synthetic_ticket_url,
+        )
         from teatree.core.models import Task, Ticket  # noqa: PLC0415 — deferred: ORM import needs the app registry
 
         terminal = set(Ticket._TERMINAL_STATES) | {Ticket.State.RETROSPECTED}  # noqa: SLF001 — the model's SSOT terminal set
         frozen = (
             Task.objects.filter(status=Task.Status.FAILED).exclude(ticket__state__in=terminal).select_related("ticket")
         )
-        numbers = sorted({task.ticket.ticket_number for task in frozen})
+        numbers = sorted(
+            {task.ticket.ticket_number for task in frozen if not is_synthetic_ticket_url(task.ticket.issue_url)}
+        )
     except Exception as exc:  # noqa: BLE001 — a self-heal probe must never crash the doctor run
         typer.echo(f"WARN  Failed-task-on-live-ticket check crashed: {exc.__class__.__name__}: {exc}")
         return True
@@ -498,44 +467,6 @@ def _check_runtime_clone_on_default_branch() -> bool:
         f"is running drifted code. Restore it: `git -C {root} checkout {default} && git -C {root} pull`."
     )
     return False
-
-
-def _check_slack_drain_alive() -> bool:
-    """FAIL when the slack-drain sidecar is failing every pass or has gone silent.
-
-    The ``teatree-slack-listener`` service drains inbound Slack every ~15s
-    (``deploy/entrypoint.sh`` ``slack_drain_loop``) and rewrites a heartbeat with
-    its consecutive-failure count. A drain failing pass after pass (``t3 slack
-    check`` erroring — Django won't boot, DB unreachable) or a heartbeat gone
-    stale (the loop died or hung) both mean captured DMs never reach the answer
-    pipeline: teatree reacts 👀 but silently stops answering. Best-effort — an
-    absent/unreadable heartbeat (no sidecar on this box) degrades to a pass.
-    """
-    try:
-        beat = _Probe.slack_drain_heartbeat()
-        now = _now()
-    except Exception as exc:  # noqa: BLE001 — a self-heal probe must never crash the doctor run
-        typer.echo(f"WARN  Slack-drain check crashed: {exc.__class__.__name__}: {exc}")
-        return True
-    if beat is None:
-        return True
-    stale_after = max(_DRAIN_HEARTBEAT_STALE_MULTIPLIER * beat.interval_seconds, _DRAIN_HEARTBEAT_STALE_FLOOR_SECONDS)
-    age = (now - beat.updated_at).total_seconds()
-    if age > stale_after:
-        typer.echo(
-            f"FAIL  Slack-drain heartbeat is stale ({int(age)}s old, past {stale_after}s) — the "
-            f"`teatree-slack-listener` drain loop has died or hung, so inbound Slack is no longer drained "
-            f"or answered. Restart it: `docker compose -p {_COMPOSE_PROJECT} up -d teatree-slack-listener`."
-        )
-        return False
-    if beat.consecutive_failures >= _MAX_DRAIN_CONSECUTIVE_FAILURES:
-        typer.echo(
-            f"FAIL  Slack drain has failed {beat.consecutive_failures} passes in a row — `t3 slack check` "
-            f"keeps erroring in the `teatree-slack-listener` sidecar, so captured DMs never get 👀-acked or "
-            f"answered. Inspect `docker compose -p {_COMPOSE_PROJECT} logs teatree-slack-listener`."
-        )
-        return False
-    return True
 
 
 def _check_dead_owner_lease() -> bool:
@@ -580,7 +511,7 @@ def run_self_heal_checks() -> bool:
         _check_interactive_task_under_headless,
         _check_failed_tasks_on_live_tickets,
         _check_runtime_clone_on_default_branch,
-        _check_slack_drain_alive,
+        check_slack_drain_alive,
         _check_dead_owner_lease,
     )
     ok = True

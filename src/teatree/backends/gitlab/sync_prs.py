@@ -114,7 +114,7 @@ def upsert_ticket_from_pr(
     pr_entry_dict = pr_entry.to_dict()
     inferred_state = infer_state_from_prs({web_url: pr_entry_dict})
 
-    tickets = list(Ticket.objects.filter(issue_url=lookup_url).order_by("pk"))
+    tickets = list(Ticket.objects.matching_issue(lookup_url).order_by("pk"))
     if not tickets:
         new_ticket = Ticket(
             issue_url=lookup_url,

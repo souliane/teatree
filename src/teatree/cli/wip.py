@@ -3,6 +3,8 @@
 The ``wip`` dial (``slow`` < ``medium`` < ``full`` < ``boost``, default
 ``medium``) governs how much new work a loop tick admits at once —
 orthogonal to ``mode``/``autonomy``, which gate *whether* a publish proceeds.
+``wip split N`` sets the #3634 phase split: implementation runs ``N`` wide, the
+merge lane stays single-flight.
 The ``/t3:wip`` skill calls ``t3 <overlay> wip set <level>`` so the dial is
 persisted in one place rather than hand-edited.
 
@@ -30,6 +32,8 @@ from teatree.config import Wip
 
 WIP_KEY = "wip"
 BOOST_CONCURRENCY_KEY = "boost_concurrency"
+WRITE_WIP_KEY = "write_wip"
+MERGE_WIP_KEY = "merge_wip"
 
 
 def _set_wip(level: Wip) -> None:
@@ -45,11 +49,11 @@ def _set_wip(level: Wip) -> None:
     managepy_core("config_setting", "set", WIP_KEY, json.dumps(level.value))
 
 
-def _set_boost_concurrency(target: int) -> None:
-    """Persist the GLOBAL-scope ``boost_concurrency`` row (same subprocess seam as ``_set_wip``)."""
+def _set_int(key: str, value: int) -> None:
+    """Persist a GLOBAL-scope integer row (same subprocess seam as ``_set_wip``)."""
     from teatree.cli.overlay import managepy_core  # noqa: PLC0415 — deferred: breaks wip ↔ overlay cycle
 
-    managepy_core("config_setting", "set", BOOST_CONCURRENCY_KEY, json.dumps(target))
+    managepy_core("config_setting", "set", key, json.dumps(value))
 
 
 def register_wip_commands(overlay_app: typer.Typer) -> None:
@@ -69,6 +73,8 @@ def register_wip_commands(overlay_app: typer.Typer) -> None:
         ensure_django()
         settings = get_effective_settings()
         typer.echo(settings.wip.value)
+        typer.echo(f"{WRITE_WIP_KEY} = {settings.write_wip} (parallel)")
+        typer.echo(f"{MERGE_WIP_KEY} = {min(max(0, settings.merge_wip), 1)} (serial)")
         if settings.wip is Wip.BOOST and settings.boost_concurrency > 0:
             typer.echo(f"{BOOST_CONCURRENCY_KEY} = {settings.boost_concurrency}")
 
@@ -97,7 +103,23 @@ def register_wip_commands(overlay_app: typer.Typer) -> None:
             typer.echo(f"boost_concurrency must be a positive integer, got {concurrency}", err=True)
             raise typer.Exit(code=1)
         _set_wip(Wip.BOOST)
-        _set_boost_concurrency(concurrency)
+        _set_int(BOOST_CONCURRENCY_KEY, concurrency)
         typer.echo(f"wip = {Wip.BOOST.value}, {BOOST_CONCURRENCY_KEY} = {concurrency} — wrote both rows")
+
+    @wip_group.command(name="split")
+    def split(
+        write: int = typer.Argument(help="WRITE-lane width N — how many implementation workers run in parallel."),
+    ) -> None:
+        """Set the WRITE/MERGE phase split: ``write_wip = N``, merge stays single-flight.
+
+        The merge lane is deliberately not settable above 1 — serializing merges is
+        what guarantees the next PR rebases against what just landed.
+        """
+        if write < 1:
+            typer.echo(f"write_wip must be a positive integer, got {write}", err=True)
+            raise typer.Exit(code=1)
+        _set_int(WRITE_WIP_KEY, write)
+        _set_int(MERGE_WIP_KEY, 1)
+        typer.echo(f"{WRITE_WIP_KEY} = {write} (parallel), {MERGE_WIP_KEY} = 1 (serial) — wrote both rows")
 
     overlay_app.add_typer(wip_group, name="wip")

@@ -135,17 +135,22 @@ def _resolve_overlay_placeholder(raw: str) -> str:
 
 
 def _is_placeholder_only(raw: str) -> bool:
-    """True for a generic CLI mention whose command path is a placeholder.
+    """True for a generic CLI mention whose command path names no concrete command.
 
-    The first token after ``t3`` is a placeholder (``t3 …``, ``t3 <command> …``),
-    so the invocation names no concrete command — it is documentation, never
-    drift. The overlay slot is resolved upstream by
-    :func:`_resolve_overlay_placeholder`, so a ``t3 <overlay> <group> <sub>``
-    template reaches here already carrying a concrete command path.
+    Two shapes qualify. The first token after ``t3`` is a placeholder (``t3 …``,
+    ``t3 <command> …``). Or the token AFTER the overlay slot is — a
+    ``t3 <overlay> <group> <sub>`` template, whose overlay
+    :func:`_resolve_overlay_placeholder` substitutes upstream. An overlay is a
+    command GROUP, never a leaf, so substituting it does not by itself produce a
+    concrete path: checking only the first token reported that template as drift
+    against every registry where the overlay is a group.
     """
-    toks = raw.split()
-    first_arg = toks[1] if len(toks) > 1 else None
-    return first_arg is not None and bool(_PLACEHOLDER.match(first_arg))
+    toks = raw.split()[1:]
+    if not toks:
+        return False
+    if _PLACEHOLDER.match(toks[0]):
+        return True
+    return toks[0] == _REPRESENTATIVE_OVERLAY and len(toks) > 1 and bool(_PLACEHOLDER.match(toks[1]))
 
 
 def _iter_skill_docs(skills_dir: Path) -> Iterable[tuple[str, Path]]:

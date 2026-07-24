@@ -35,6 +35,17 @@
 # NO-SILENT-GREEN
 #   `--require-executed` is passed unconditionally and `claude --version` is
 #   asserted before the eval, so a missing binary / all-skipped run fails RED.
+#   ZERO-IS-RED closes the last vacuous gap: when `detect` promised scenarios
+#   (`run=true`) the eval job asserts it executed >=1 — a run that was SUPPOSED
+#   to execute scenarios but executed ZERO fails, never passes green.
+#
+# SCENARIO-REACHABILITY (advisory, F12 / #3566)
+#   The `detect` job runs `t3 eval reachability` on every PR: it walks every
+#   `t3 …` invocation the shipped scenarios + fixtures cite against the LIVE CLI
+#   registry and reports references that resolve to nothing. ADVISORY (report +
+#   exit 0) — the corpus still carries known false positives (overlay-slot
+#   fixture names, prose fragments) — so it gives the check a live caller without
+#   reddening a PR.
 #
 # TRIALS — single trial + adaptive escalate-on-fail
 #   This PR lane runs `--trials 1` for fast/cheap feedback. A single LLM trial is
@@ -86,7 +97,7 @@ jobs:
       names: ${{ steps.select.outputs.names }}
       run: ${{ steps.select.outputs.run }}
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           # fetch-depth: 0 so the PR-vs-base `git diff` resolves.
           fetch-depth: 0
@@ -97,7 +108,7 @@ jobs:
       # `teatree-repo`, so this step is a no-op for it.
       - name: Check out and symlink the teatree host (overlay callers only)
         if: inputs.teatree-repo != ''
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           repository: ${{ inputs.teatree-repo }}
           ref: ${{ inputs.teatree-ref }}
@@ -108,7 +119,7 @@ jobs:
       - uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78  # v7
         with:
           enable-cache: true
-      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405  # v6
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v6
         with:
           python-version: ${{ inputs.python-version }}
       - name: Sync dependencies (retry on transient network failure)
@@ -147,6 +158,13 @@ jobs:
             echo "run=false" >> "$GITHUB_OUTPUT"
             echo "No scenario file changed → skipping the metered PR eval."
           fi
+      # ADVISORY reachability report (F12 / #3566): give the reachability check a
+      # live production caller. It walks every `t3 …` the shipped scenarios +
+      # fixtures cite against the LIVE CLI registry. ADVISORY by default (exits 0
+      # even with unreachable references) so it never reds a PR; a crash (broken
+      # wiring) still fails loud. Runs on every PR, not only when a scenario changed.
+      - name: Report scenario-reachability (advisory)
+        run: uv run t3 eval reachability
 
   # EVAL: run ONLY the changed scenarios (single trial), in the CI container.
   # Skipped entirely when no scenario changed.
@@ -159,10 +177,10 @@ jobs:
     # diagnosable run instead of stalling to the 6h default.
     timeout-minutes: 90
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
       - name: Check out and symlink the teatree host (overlay callers only)
         if: inputs.teatree-repo != ''
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           repository: ${{ inputs.teatree-repo }}
           ref: ${{ inputs.teatree-ref }}
@@ -173,7 +191,7 @@ jobs:
       - uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78  # v7
         with:
           enable-cache: true
-      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405  # v6
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v6
         with:
           python-version: ${{ inputs.python-version }}
       - name: Sync dependencies (retry on transient network failure)
@@ -233,10 +251,12 @@ jobs:
             set -euo pipefail
             : > "$RUNNER_TEMP/eval-summary.md"
             rc=0
+            ran=0
             IFS=',' read -ra NAMES <<< "$EVAL_NAMES"
             for name in "${NAMES[@]}"; do
               name="$(echo "$name" | xargs)"
               [ -z "$name" ] && continue
+              ran=$((ran + 1))
               uv run t3 eval run "$name" --backend api \
                 --escalate-on-fail --escalate-trials 3 \
                 --require-executed --docker \
@@ -244,6 +264,12 @@ jobs:
                 --summary-md "$RUNNER_TEMP/eval-summary-$name.md" || rc=$?
               [ -f "$RUNNER_TEMP/eval-summary-$name.md" ] && cat "$RUNNER_TEMP/eval-summary-$name.md" >> "$RUNNER_TEMP/eval-summary.md"
             done
+            # ZERO-IS-RED: detect reached this job only with run=true (>=1 changed
+            # scenario), so executing ZERO here is a vacuous green, never a pass.
+            if [ "$ran" -eq 0 ]; then
+              echo "::error::detect selected scenarios (run=true) but the eval executed ZERO — vacuous green, failing." >&2
+              exit 1
+            fi
             exit "$rc"
       # Append the sanitized summary to the PR's step summary (the in-container run
       # could not write $GITHUB_STEP_SUMMARY directly). The summary is the

@@ -15,7 +15,11 @@ import typer
 from django_typer.management import TyperCommand, command
 
 from teatree.core.gates.review_request_draft_gate import is_draft_mr
-from teatree.core.gates.review_request_guard import peek_should_post_review_request, resolve_guard_target
+from teatree.core.gates.review_request_guard import (
+    overlay_for_mr_url,
+    peek_should_post_review_request,
+    resolve_guard_target,
+)
 from teatree.types import RawAPIDict
 
 
@@ -32,10 +36,11 @@ class Command(TyperCommand):
         suppressed by a live-channel match. The caller MUST abort the
         post on ``suppress``.
         """
-        if is_draft_mr(mr_url):
+        overlay_name = overlay_for_mr_url(mr_url)
+        if is_draft_mr(mr_url, overlay_name=overlay_name):
             return {"action": "refused", "reason": "draft_mr", "mr_url": mr_url}
 
-        target = resolve_guard_target()
+        target = resolve_guard_target(overlay_name=overlay_name)
         if target is None:
             return {
                 "action": "suppress",

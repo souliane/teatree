@@ -36,7 +36,6 @@ def stub_backend() -> Any:
     backend.identities = ("alice",)
     backend.ready_labels = ()
     backend.exclude_labels = ()
-    backend.auto_start_assigned_issues = False
     backend.max_concurrent_auto_starts = 1
     backend.stale_threshold_days = 3
     backend.external_db = None
@@ -186,14 +185,12 @@ class TestFollowupLoopBuildJobs:
     def test_returns_empty_with_no_inputs(self) -> None:
         assert FOLLOWUP_LOOP.build_jobs() == []
 
-    def test_host_only_path(self) -> None:
-        host = MagicMock()
-        jobs = FOLLOWUP_LOOP.build_jobs(host=host, ready_labels=("ready",))
-        assert len(jobs) == 1
-        assert jobs[0].scanner.name == "assigned_issues"
+    def test_host_only_path_builds_nothing(self) -> None:
+        """Intake moved to the unified ``issue_intake`` scanner (#3634); followup is nag-only."""
+        assert FOLLOWUP_LOOP.build_jobs(host=MagicMock(), ready_labels=("ready",)) == []
 
     def test_backends_path(self, stub_backend: Any) -> None:
-        # No hosts on the stub → no AssignedIssuesScanner jobs.
+        # No hosts on the stub → no per-host scanner jobs.
         # messaging None → no ReviewNagScanner / ReviewRequestMergeReactScanner job.
         jobs = FOLLOWUP_LOOP.build_jobs(backends=[stub_backend])
         assert jobs == []

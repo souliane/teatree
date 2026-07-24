@@ -28,6 +28,7 @@ from teatree.agents.model_tiering import (
     TIER_EFFORT,
     TIER_MODELS,
     VERIFICATION_PHASES,
+    UnconfiguredOpenAICompatibleModelError,
     _resolve_pydantic_ai_tier,
     model_supports_thinking,
     resolve_phase_harness,
@@ -499,56 +500,49 @@ class TestHarnessScopedEffortDefaultHarness(TestCase):
 
 
 class TestPydanticAiTierModels:
-    """:data:`PYDANTIC_AI_TIER_MODELS` — the OrcaRouter catalog, SEPARATE from :data:`TIER_MODELS`."""
+    """:data:`PYDANTIC_AI_TIER_MODELS` — operator-supplied, SEPARATE from :data:`TIER_MODELS`."""
 
-    def test_three_named_tiers_collapse_to_the_router_handle(self) -> None:
-        # All abstract tiers point at ONE router handle — the router's own bandit
-        # does the mundane-vs-hard tiering (OrcaRouter setup plan §3.3).
-        assert set(PYDANTIC_AI_TIER_MODELS) == {"frontier", "balanced", "cheap"}
-        assert set(PYDANTIC_AI_TIER_MODELS.values()) == {"orcarouter/teatree-factory"}
+    def test_ships_empty_so_no_third_party_catalog_is_assumed(self) -> None:
+        # teatree carries no opinion about another provider's model ids (#3666).
+        assert PYDANTIC_AI_TIER_MODELS == {}
 
-    def test_orca_catalog_never_carries_a_claude_dash_form_id(self) -> None:
-        # The whole reason the table is forked: Orca does not carry the dash-form
-        # Claude ids TIER_MODELS emits.
-        for handle in PYDANTIC_AI_TIER_MODELS.values():
-            assert "claude-" not in handle
+    def test_an_unconfigured_tier_fails_loud_rather_than_fabricating_an_id(self) -> None:
+        with pytest.raises(UnconfiguredOpenAICompatibleModelError, match="openai_compatible_model"):
+            _resolve_pydantic_ai_tier("frontier")
 
-    def test_resolve_pydantic_ai_tier_reads_the_constant(self) -> None:
-        for tier, handle in PYDANTIC_AI_TIER_MODELS.items():
-            assert _resolve_pydantic_ai_tier(tier) == handle
+    def test_config_supplies_a_pydantic_ai_tier(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        _seeded_db(tmp_path, monkeypatch, agent_pydantic_ai_tier_models={"frontier": "vendor/other-model"})
+        assert _resolve_pydantic_ai_tier("frontier") == "vendor/other-model"
 
-    def test_unknown_tier_falls_back_to_the_default_handle(self) -> None:
-        # NEVER passed through as a bare tier name — Orca would reject it.
-        assert _resolve_pydantic_ai_tier("nonsense") == PYDANTIC_AI_TIER_MODELS[DEFAULT_TIER]
-
-    def test_config_overrides_a_pydantic_ai_tier(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-        _seeded_db(tmp_path, monkeypatch, agent_pydantic_ai_tier_models={"frontier": "orcarouter/other-router"})
-        assert _resolve_pydantic_ai_tier("frontier") == "orcarouter/other-router"
-        # An untouched tier keeps the shipped handle.
-        assert _resolve_pydantic_ai_tier("balanced") == PYDANTIC_AI_TIER_MODELS["balanced"]
+    def test_unknown_tier_falls_back_to_the_configured_default_tier(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # NEVER passed through as a bare tier name — the endpoint would reject it.
+        _seeded_db(tmp_path, monkeypatch, agent_pydantic_ai_tier_models={DEFAULT_TIER: "vendor/default-model"})
+        assert _resolve_pydantic_ai_tier("nonsense") == "vendor/default-model"
 
     def test_pydantic_ai_override_does_not_leak_into_claude_tier_models(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        # The two catalogs are independent: overriding the OrcaRouter table never
+        # The two catalogs are independent: supplying the OpenAI-compatible table never
         # touches the claude_sdk TIER_MODELS resolution.
-        _seeded_db(tmp_path, monkeypatch, agent_pydantic_ai_tier_models={"frontier": "orcarouter/other-router"})
+        _seeded_db(tmp_path, monkeypatch, agent_pydantic_ai_tier_models={"frontier": "vendor/other-model"})
         assert resolve_tier("frontier") == TIER_MODELS["frontier"]
 
 
 class TestResolvePydanticAiModel:
-    """:func:`resolve_pydantic_ai_model` — THE dash-form id normalisation (plan §3.2)."""
+    """:func:`resolve_pydantic_ai_model` — THE dash-form id normalisation."""
 
     @pytest.mark.parametrize("claude_id", list(TIER_MODELS.values()))
-    def test_a_claude_dash_form_default_maps_to_the_router_handle(self, claude_id: str) -> None:
+    def test_a_claude_dash_form_default_maps_to_the_configured_model(self, claude_id: str) -> None:
         # The bug: options.model is a teatree-abstract-tier default in Claude
-        # dash-form, which OrcaRouter does not carry. It must NOT be sent verbatim.
-        resolved = resolve_pydantic_ai_model(claude_id)
-        assert resolved == "orcarouter/teatree-factory"
+        # dash-form, which the endpoint does not carry. It must NOT be sent verbatim.
+        resolved = resolve_pydantic_ai_model(claude_id, configured_model="vendor/some-model")
+        assert resolved == "vendor/some-model"
         assert resolved != claude_id
 
-    def test_none_maps_to_the_default_router_handle(self) -> None:
-        assert resolve_pydantic_ai_model(None) == PYDANTIC_AI_TIER_MODELS[DEFAULT_TIER]
+    def test_none_maps_to_the_configured_model(self) -> None:
+        assert resolve_pydantic_ai_model(None, configured_model="vendor/some-model") == "vendor/some-model"
 
     def test_each_claude_tier_maps_to_its_pydantic_tier_handle(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -558,42 +552,39 @@ class TestResolvePydanticAiModel:
         _seeded_db(
             tmp_path,
             monkeypatch,
-            agent_pydantic_ai_tier_models={"frontier": "orcarouter/hard", "cheap": "orcarouter/mundane"},
+            agent_pydantic_ai_tier_models={"frontier": "vendor/hard", "cheap": "vendor/mundane"},
         )
-        assert resolve_pydantic_ai_model(TIER_MODELS["frontier"]) == "orcarouter/hard"
-        assert resolve_pydantic_ai_model(TIER_MODELS["cheap"]) == "orcarouter/mundane"
+        assert resolve_pydantic_ai_model(TIER_MODELS["frontier"]) == "vendor/hard"
+        assert resolve_pydantic_ai_model(TIER_MODELS["cheap"]) == "vendor/mundane"
 
     @pytest.mark.parametrize(
-        "orca_native_id",
-        ["deepseek/deepseek-v4-pro", "anthropic/claude-opus-4.8", "orcarouter/teatree-factory", "qwen/qwen3.6-plus"],
+        "backend_native_id",
+        ["deepseek/deepseek-v4-pro", "anthropic/claude-opus-4.8", "vendor/some-model", "qwen/qwen3.6-plus"],
     )
-    def test_an_explicit_orca_native_pin_passes_through_unchanged(self, orca_native_id: str) -> None:
-        # A provider-prefixed id is an explicit operator pin in Orca's own
+    def test_an_explicit_backend_native_pin_passes_through_unchanged(self, backend_native_id: str) -> None:
+        # A provider-prefixed id is an explicit operator pin in the OpenAI-compatible backend's own
         # namespace — never remapped to the router handle.
-        assert resolve_pydantic_ai_model(orca_native_id) == orca_native_id
+        assert resolve_pydantic_ai_model(backend_native_id) == backend_native_id
 
-    def test_router_name_override_replaces_the_default_handle(self) -> None:
-        # The per-overlay router-name selection (secondary-router vs teatree-factory):
-        # when the id normalises UP to a handle, the config/overlay override wins.
+    def test_configured_model_replaces_the_per_tier_entry(self) -> None:
+        # The whole-lane ``openai_compatible_model`` setting: when the id normalises
+        # UP, the config/overlay value wins over the per-tier table.
+        assert resolve_pydantic_ai_model(None, configured_model="vendor/other-model") == "vendor/other-model"
         assert (
-            resolve_pydantic_ai_model(None, router_name="orcarouter/secondary-factory")
-            == "orcarouter/secondary-factory"
-        )
-        assert (
-            resolve_pydantic_ai_model("claude-opus-4-8", router_name="orcarouter/secondary-factory")
-            == "orcarouter/secondary-factory"
+            resolve_pydantic_ai_model("claude-opus-4-8", configured_model="vendor/other-model") == "vendor/other-model"
         )
 
-    def test_router_name_override_does_not_touch_an_explicit_orca_native_pin(self) -> None:
-        # An explicit provider-prefixed pin is authoritative — the overlay handle
-        # override applies ONLY to the normalise-up branch.
+    def test_configured_model_does_not_touch_an_explicit_provider_native_pin(self) -> None:
+        # An explicit provider-prefixed pin is authoritative — the whole-lane model
+        # applies ONLY to the normalise-up branch.
         assert (
-            resolve_pydantic_ai_model("deepseek/deepseek-v4-pro", router_name="orcarouter/secondary-factory")
+            resolve_pydantic_ai_model("deepseek/deepseek-v4-pro", configured_model="vendor/other-model")
             == "deepseek/deepseek-v4-pro"
         )
 
-    def test_no_router_name_override_keeps_the_default_handle(self) -> None:
-        assert resolve_pydantic_ai_model(None, router_name=None) == "orcarouter/teatree-factory"
+    def test_no_configured_model_and_no_tier_entry_fails_loud(self) -> None:
+        with pytest.raises(UnconfiguredOpenAICompatibleModelError):
+            resolve_pydantic_ai_model(None, configured_model=None)
 
 
 class TestResolvePhaseHarness:

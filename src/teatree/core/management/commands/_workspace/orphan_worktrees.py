@@ -32,6 +32,7 @@ import logging
 from pathlib import Path
 
 from teatree.core.cleanup.clean_ignore import is_clean_ignored
+from teatree.core.management.commands._workspace.preview import preview_line
 from teatree.core.models import Worktree
 from teatree.core.worktree.branch_classification import is_squash_merged
 from teatree.core.worktree.clone_paths import resolve_clone_path
@@ -144,7 +145,7 @@ def _remove_orphan(repo: str, wt_path: str, branch: str) -> bool:
     return True
 
 
-def _reap_one_orphan(repo: str, wt_path: str, branch: str) -> str:
+def _reap_one_orphan(repo: str, wt_path: str, branch: str, *, dry_run: bool = False) -> str:
     """Dispose of one orphaned raw worktree under the keep-unproven-work policy."""
     label = f"{branch} ({wt_path})"
     if is_clean_ignored(branch):
@@ -153,12 +154,14 @@ def _reap_one_orphan(repo: str, wt_path: str, branch: str) -> str:
         return f"KEPT orphan '{label}': uncommitted changes — never reaped"
     if _branch_has_unique_work(repo, branch, wt_path):
         return f"KEPT orphan '{label}': unpushed work not on any remote — push it to salvage, never reaped"
+    if dry_run:
+        return preview_line(f"Reap orphan worktree (work already on remote): {label}", dry_run=True)
     if _remove_orphan(repo, wt_path, branch):
         return f"Reaped orphan worktree (work already on remote): {label}"
     return f"SKIPPED orphan '{label}': git worktree remove failed"
 
 
-def reap_orphan_raw_worktrees(workspace: Path) -> list[str]:
+def reap_orphan_raw_worktrees(workspace: Path, *, dry_run: bool = False) -> list[str]:
     """Discover and dispose of raw git worktrees no ``Worktree`` row tracks (#2361).
 
     For every main clone teatree knows about, every linked worktree whose
@@ -198,5 +201,5 @@ def reap_orphan_raw_worktrees(workspace: Path) -> list[str]:
             )
             continue
         for wt_path, branch in orphans:
-            cleaned.append(_reap_one_orphan(repo, wt_path, branch))
+            cleaned.append(_reap_one_orphan(repo, wt_path, branch, dry_run=dry_run))
     return cleaned

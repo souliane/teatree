@@ -342,6 +342,23 @@ def _contribute_enabled() -> bool:
     return cold_reader.bool_setting("contribute", default=False)
 
 
+def _overlay_editable_from_source(top_package: str) -> bool:
+    """True when *top_package* already imports from a real source tree.
+
+    An editable / dogfooding install resolves the overlay package to a checkout
+    outside ``site-packages``, so local edits already take effect and no
+    reinstall is needed. This is the signal ``packages_distributions()`` misses
+    when the editable install registered only a bare ``.pth`` (no package->dist
+    reverse mapping) — which would otherwise make ``editable_info`` report the
+    overlay as non-editable and trigger a redundant, noisy reinstall on every
+    ``t3`` invocation under ``contribute=true``.
+    """
+    origin = getattr(sys.modules.get(top_package), "__file__", None)
+    if origin is None:
+        return False
+    return "site-packages" not in Path(origin).resolve().parts
+
+
 def _reinstall_editable_if_needed() -> None:
     """Re-editable teatree + every overlay whose distribution is not editable.
 
@@ -360,6 +377,8 @@ def _reinstall_editable_if_needed() -> None:
     dist_map = packages_distributions()
     for overlay_inst in get_all_overlays().values():
         top_package = type(overlay_inst).__module__.split(".", maxsplit=1)[0]
+        if _overlay_editable_from_source(top_package):
+            continue
         dist_names = dist_map.get(top_package, [top_package])
         overlay_dist = dist_names[0] if dist_names else top_package
         if IntrospectionHelpers.editable_info(overlay_dist)[0]:

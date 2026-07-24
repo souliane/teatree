@@ -9,6 +9,7 @@ exercised end to end.
 """
 
 import datetime as dt
+import os
 from typing import TYPE_CHECKING
 from unittest.mock import patch
 
@@ -25,6 +26,7 @@ from teatree.core.gates.review_request_guard import (
     GuardTarget,
     _default_options,
     _live_matches,
+    overlay_for_mr_url,
     peek_should_post_review_request,
     reconcile_out_of_band,
     resolve_guard_target,
@@ -383,6 +385,33 @@ class TestResolveGuardTarget(TestCase):
             return_value={"test": _bare_overlay()},
         ):
             assert resolve_guard_target() is None
+
+    def test_ambiguous_registry_resolves_via_explicit_overlay_name(self) -> None:
+        """An ambiguous registry must not degrade into a bogus "no channel".
+
+        The in-process MCP server registers EVERY overlay and sets no
+        ``T3_OVERLAY_NAME``, so a no-arg ``get_overlay`` raises ``Multiple
+        overlays found``. That raise was swallowed into ``None`` and surfaced
+        as ``no_review_channel_or_token`` — a false negative making a
+        genuinely-unposted MR read as already handled, while the CLI (which
+        sets the env var) reported the truth on the same MR. Naming the
+        overlay resolves the same target, and the messaging backend must be
+        built for that SAME overlay so the bot token is not read for another.
+        """
+        registry = {"other": _bare_overlay(), "test": _overlay_with_channel()}
+        with (
+            patch("teatree.core.overlay_loader._discover_overlays", return_value=registry),
+            patch("teatree.core.backend_factory.messaging_from_overlay", return_value=None) as messaging,
+            patch.dict(os.environ),
+        ):
+            os.environ.pop("T3_OVERLAY_NAME", None)
+            assert resolve_guard_target() is None
+            target = resolve_guard_target(overlay_name="test")
+
+        assert target is not None
+        assert target.channel_id == _CHANNEL_ID
+        assert target.token == "xoxb-sync"
+        messaging.assert_called_once_with("test")
 
     def test_uses_sync_token_when_messaging_not_bot(self) -> None:
         overlay = _overlay_with_channel()
@@ -867,3 +896,21 @@ class TestNoLoopTaskTouched(TestCase):
                 target=GuardTarget(channel_id=_CHANNEL_ID, channel_name=_CHANNEL_NAME, token="xoxb-bot"),
             )
         assert Task.objects.count() == before
+
+
+class TestOverlayForMrUrl(TestCase):
+    """The shared precedence rule: env pin wins, else infer from repo ownership (#1310)."""
+
+    def test_explicit_env_pin_defers_to_the_ambient_default(self) -> None:
+        with patch.dict(os.environ, {"T3_OVERLAY_NAME": "acme"}, clear=False):
+            # an explicit T3_OVERLAY_NAME is consumed by get_overlay — return "" here
+            assert overlay_for_mr_url(_MR_URL) == ""
+
+    def test_without_env_pin_infers_from_repo_ownership(self) -> None:
+        with (
+            patch.dict(os.environ, {}, clear=False),
+            patch("teatree.core.gates.review_request_guard.infer_overlay_for_url", return_value="widget") as infer,
+        ):
+            os.environ.pop("T3_OVERLAY_NAME", None)
+            assert overlay_for_mr_url(_MR_URL) == "widget"
+        infer.assert_called_once_with(_MR_URL)

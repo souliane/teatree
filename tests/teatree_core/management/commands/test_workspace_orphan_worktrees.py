@@ -69,7 +69,7 @@ class _OrphanWorktreeFixture(TestCase):
             env=_clean_env(),
         ).stdout
 
-    def _reap(self) -> list[str]:
+    def _reap(self, *, dry_run: bool = False) -> list[str]:
         # Force cwd-based clone discovery onto the tmp main clone.
         with (
             patch(
@@ -81,7 +81,7 @@ class _OrphanWorktreeFixture(TestCase):
                 return_value=self.repo_main,
             ),
         ):
-            return reap_orphan_raw_worktrees(self.workspace)
+            return reap_orphan_raw_worktrees(self.workspace, dry_run=dry_run)
 
 
 class TestRawWorktreeDiscovery(_OrphanWorktreeFixture):
@@ -126,6 +126,17 @@ class TestReapsMergedOrphan(_OrphanWorktreeFixture):
         results = self._reap()
         assert not wt_path.exists()
         assert any("Reaped orphan worktree" in line for line in results)
+
+    def test_dry_run_previews_the_reap_without_removing(self) -> None:
+        # #3489: a reapable orphan is PREVIEWED, prefixed WOULD, and left on disk.
+        wt_path = self._add_orphan("synced-preview", files={"f.txt": "hi"})
+        _run_git("push", "-q", "-u", "origin", "synced-preview", cwd=wt_path)
+
+        results = self._reap(dry_run=True)
+
+        assert wt_path.exists(), "dry-run must not remove the orphan worktree"
+        assert str(wt_path) in self._registered_paths()
+        assert any(line.startswith("WOULD Reap orphan worktree") and "synced-preview" in line for line in results)
 
 
 class TestKeepsUnpushedOrphan(_OrphanWorktreeFixture):

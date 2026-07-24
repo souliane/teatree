@@ -398,6 +398,17 @@ class Ticket(
             State.CODED,
             State.TESTED,
             State.REVIEWED,
+            # A re-review on a NEW head SHA (``ReviewedPrHeadScanner`` →
+            # ``reviewer_pr.new_sha``) schedules its task on a ticket that is
+            # already REVIEW_POSTED from the previous pass. Without this
+            # self-transition ``Task.complete()``'s derived-source guard skips
+            # the FSM advance and ``last_review_state`` is never re-stamped, so
+            # the reviewed-at record stays half-written and the ticket drops out
+            # of the re-review watch set after the first push. Same shape and
+            # same rationale as #1431's self-transition on the sibling
+            # ``mark_review_no_action`` below; SHIPPED/MERGED/IGNORED stay out
+            # for the same reason (an IGNORED→REVIEW_POSTED move would resurrect).
+            State.REVIEW_POSTED,
         ],
         target=State.REVIEW_POSTED,
         conditions=[
@@ -408,12 +419,11 @@ class Ticket(
     def mark_reviewed_externally(self) -> None:
         """Reviewer-role short-circuit: any pre-shipped state → REVIEW_POSTED.
 
-        External review tickets bypass the implementation lifecycle. Once the
-        reviewing task completes the ticket is done. Lands ``REVIEW_POSTED``,
-        NOT ``DELIVERED`` (author work merged to main), so the board never shows
-        a reviewer ghost as "Landed". Also stamps the head SHA +
-        ``last_review_state`` on ``extra`` so ``ReviewerPrsScanner`` won't
-        re-spawn the reviewer agent until the SHA moves or the approval drops.
+        External review tickets bypass the implementation lifecycle: the reviewer posts on
+        someone else's PR, so this lands ``REVIEW_POSTED`` not ``DELIVERED`` (no reviewer ghost
+        shown as "Landed") and stamps the head SHA + ``last_review_state`` so ``ReviewerPrsScanner``
+        won't re-spawn until the SHA moves or the approval drops. Idempotent at REVIEW_POSTED —
+        a re-review at a new head re-stamps and stays put.
         """
         sha = str(self._extra().get("reviewed_sha", ""))
         if self.issue_url and sha:

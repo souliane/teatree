@@ -54,6 +54,23 @@ class TestConfigSettingStore(TestCase):
         assert "issue_implementer_enabled" in str(row)
 
 
+class TestConfigSettingEmptyValuesRoundTrip(TestCase):
+    """``[]``/``{}`` survive the manager's write→read path, not just ``full_clean``.
+
+    ``TestConfigSettingValueValidation`` covers the form/validation layer; these
+    prove an empty override actually comes back out of the store, so a caller
+    reading ``statusline_chain`` gets the override rather than the shipped default.
+    """
+
+    def test_empty_list_round_trips(self) -> None:
+        ConfigSetting.objects.set_value("statusline_chain", [])
+        assert ConfigSetting.objects.get_effective("statusline_chain") == []
+
+    def test_empty_dict_round_trips(self) -> None:
+        ConfigSetting.objects.set_value("agent_skill_models", {})
+        assert ConfigSetting.objects.get_effective("agent_skill_models") == {}
+
+
 class TestConfigSettingScope(TestCase):
     """Per-overlay scope on the DB override tier (per-overlay + global).
 

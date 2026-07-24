@@ -12,7 +12,6 @@ invoke Claude — that is the dispatcher's job.
 from teatree.loop.scanners.active_tickets import ActiveTicketsScanner
 from teatree.loop.scanners.architectural_review import ArchitecturalReviewScanner
 from teatree.loop.scanners.askuserquestion_reply import AskUserQuestionReplyScanner
-from teatree.loop.scanners.assigned_issues import AssignedIssuesScanner
 from teatree.loop.scanners.backlog_sweep import BacklogSweepScanner
 from teatree.loop.scanners.base import Scanner, ScanSignal
 from teatree.loop.scanners.ci_eval_heal import CiEvalHealScanner
@@ -24,7 +23,7 @@ from teatree.loop.scanners.gitlab_approvals import GitLabApprovalsScanner
 from teatree.loop.scanners.idle_stack_reaper import IdleStackReaperScanner
 from teatree.loop.scanners.incoming_events import IncomingEventsScanner
 from teatree.loop.scanners.issue_disposition import IssueDispositionScanner
-from teatree.loop.scanners.issue_implementer import IssueImplementerScanner
+from teatree.loop.scanners.issue_intake import IssueIntakeScanner
 from teatree.loop.scanners.local_stack_queue_drainer import LocalStackQueueDrainerScanner
 from teatree.loop.scanners.my_prs import MyPrsScanner
 from teatree.loop.scanners.notion_view import NotionViewScanner
@@ -44,8 +43,10 @@ from teatree.loop.scanners.provision_smoke import ProvisionSmokeScanner
 from teatree.loop.scanners.pull_main_clone import PullMainCloneScanner
 from teatree.loop.scanners.red_card import RedCardScanner
 from teatree.loop.scanners.resource_pressure import ResourcePressureScanner
+from teatree.loop.scanners.review_done_ack import ReviewDoneAckScanner
 from teatree.loop.scanners.review_nag import ReviewNagScanner
 from teatree.loop.scanners.review_request_merge_react import ReviewRequestMergeReactScanner
+from teatree.loop.scanners.reviewed_pr_head import ReviewedPrHeadScanner
 from teatree.loop.scanners.reviewer_prs import ReviewerPrsScanner
 from teatree.loop.scanners.scanning_news import ScanningNewsScanner
 from teatree.loop.scanners.self_pr_review import ClaudeSelfPrReviewScanner
@@ -69,7 +70,6 @@ __all__ = [
     "ActiveTicketsScanner",
     "ArchitecturalReviewScanner",
     "AskUserQuestionReplyScanner",
-    "AssignedIssuesScanner",
     "AutoReviewTaskDispatcher",
     "BackendChannelHistoryFetcher",
     "BacklogSweepScanner",
@@ -87,7 +87,7 @@ __all__ = [
     "IdleStackReaperScanner",
     "IncomingEventsScanner",
     "IssueDispositionScanner",
-    "IssueImplementerScanner",
+    "IssueIntakeScanner",
     "LocalStackQueueDrainerScanner",
     "MyPrsScanner",
     "NotionViewScanner",
@@ -101,8 +101,10 @@ __all__ = [
     "PullMainCloneScanner",
     "RedCardScanner",
     "ResourcePressureScanner",
+    "ReviewDoneAckScanner",
     "ReviewNagScanner",
     "ReviewRequestMergeReactScanner",
+    "ReviewedPrHeadScanner",
     "ReviewerPrsScanner",
     "ScanSignal",
     "Scanner",

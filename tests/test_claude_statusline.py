@@ -54,6 +54,12 @@ def _run(
         (state_dir / f"{session_id}.teatree-active").touch()
     env = os.environ.copy()
     env["T3_AUTOLOAD"] = "1"
+    # Pin the width these CONTENT tests render at. `statusline.sh` caps every line to
+    # `COLUMNS`, and the resource group ahead of the assertion tokens is host-sized
+    # (3-digit `cpu=`, 2-digit GB) — so on a runner that exports `COLUMNS=80` the
+    # segment under test is exactly what the `…` cuts off. The cap itself is covered
+    # by TestWidthCap, which builds its own env and sets COLUMNS per case.
+    env["COLUMNS"] = "1000"
     env["TEATREE_CLAUDE_STATUSLINE_STATE_DIR"] = str(state_dir)
     # Isolate the harness config dir onto the test's state dir so the developer's
     # real ~/.claude/settings.json effortLevel never bleeds into these tests; the
@@ -602,7 +608,9 @@ class TestHarnessTodoSummary:
         plain = _strip_ansi(result.stdout)
         # The harness store's counts win (1/2), never the stale mirror's (0/3).
         assert "TODO 1/2 ✓" in plain, plain
-        assert "0/3" not in plain, plain
+        # Scoped to the TODO chip: a bare "0/3" also matches the RAM chip on a host
+        # whose reading renders as e.g. "26.0/30G".
+        assert "TODO 0/3" not in plain, plain
 
     def test_renders_compact_done_over_total(self, tmp_path: Path) -> None:
         state_dir = tmp_path / "state"

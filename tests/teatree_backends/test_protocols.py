@@ -151,6 +151,9 @@ class _FakeCodeHost:
         _ = assignee
         return []
 
+    def list_labeled_issues(self, *, label: str, repo_slugs: tuple[str, ...] = ()) -> list[dict[str, object]]:
+        return []
+
     def list_authored_issues(self, *, author: str, repo_slugs: tuple[str, ...] = ()) -> list[dict[str, object]]:
         _ = author, repo_slugs
         return []
@@ -249,6 +252,10 @@ class _FakeMessaging:
         return []
 
     def fetch_channel_history(self, *, channel: str, limit: int = 50) -> list[dict[str, object]]:
+        _ = (channel, limit)
+        return []
+
+    def fetch_channel_history_or_refuse(self, *, channel: str, limit: int = 50) -> list[dict[str, object]]:
         _ = (channel, limit)
         return []
 

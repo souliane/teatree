@@ -9,6 +9,16 @@
 
 [intra_core]
 "src/teatree/core/_checking_gather.py" = 5
+# souliane/teatree#3526: the load-time conformance checker resolves `OverlayBase` at
+# call time because `teatree.core.overlay` reaches back into the loader that imports
+# this module — a genuine cycle, not a lazy-import convenience.
+"src/teatree/core/overlay_conformance.py" = 1
+# 1: #3658 resolves a thread's subject against teatree's own `Ticket` rows — an ORM
+# import that must resolve after the app registry is ready, so it stays call-time.
+"src/teatree/core/owner_dm_sweep.py" = 1
+# 1: the token-budget read (`AnthropicTokenUsage`) is an ORM import that must resolve
+# after the app registry is ready, so it stays call-time.
+"src/teatree/core/admission_governor.py" = 1
 "src/teatree/core/apps.py" = 2
 "src/teatree/core/checking.py" = 2
 "src/teatree/core/cleanup/cleanup.py" = 1
@@ -32,7 +42,10 @@
 "src/teatree/core/gates/review_request_draft_gate.py" = 1
 "src/teatree/core/gates/review_request_guard.py" = 6
 "src/teatree/core/gates/rubric_gate.py" = 2
-"src/teatree/core/handover.py" = 2
+# 6: #3551/#3555 made the hand-off derive live state when the snapshot payload is
+# empty — Worktree / Ticket / PullRequest / LoopLease / SessionHandover are all ORM
+# reads that must resolve after the app registry is ready, so each stays call-time.
+"src/teatree/core/handover.py" = 6
 "src/teatree/core/headless_dispatch.py" = 1
 # _reenqueue_provision defers `from teatree.core.tasks import execute_provision`
 # (call-time, kept lazy) — tasks.py pulls the whole task-execution graph
@@ -52,14 +65,15 @@
 "src/teatree/core/management/commands/dream.py" = 2
 "src/teatree/core/management/commands/e2e.py" = 1
 "src/teatree/core/management/commands/followup.py" = 2
-"src/teatree/core/management/commands/handover.py" = 1
+# 0: #3555 moved the claim/drain logic onto the shared `handover.claim_handovers`
+# seam, so the command no longer defers an intra-core import of its own.
+"src/teatree/core/management/commands/handover.py" = 0
 "src/teatree/core/management/commands/lifecycle.py" = 3
 "src/teatree/core/management/commands/loop_dispatch.py" = 3
 "src/teatree/core/management/commands/loop_drain_queue.py" = 1
 "src/teatree/core/management/commands/loop_owner.py" = 4
 "src/teatree/core/management/commands/loop_self_improve.py" = 1
 "src/teatree/core/management/commands/loop_slack_answer.py" = 1
-"src/teatree/core/management/commands/notify.py" = 1
 "src/teatree/core/management/commands/pr.py" = 1
 "src/teatree/core/management/commands/retro.py" = 1
 "src/teatree/core/management/commands/review.py" = 2
@@ -71,7 +85,9 @@
 # god-module split, taking one deferred teatree.core import with them; the four
 # left here (DodE2EOverride, E2EBypassApproval, two get_all_overlays) are real.
 "src/teatree/core/management/commands/ticket.py" = 4
-"src/teatree/core/management/commands/ticket_short_describe.py" = 2
+# 1: #3570 moved the runner to `agents/ticket_short_description.py` (registered at
+# app-ready), so the command defers one intra-core import instead of two.
+"src/teatree/core/management/commands/ticket_short_describe.py" = 1
 "src/teatree/core/management/commands/worktree.py" = 1
 "src/teatree/core/managers.py" = 2
 "src/teatree/core/mcp_connectivity.py" = 1
@@ -79,8 +95,12 @@
 # so the single-credential-reader routes through the proxy without dragging the ORM
 # model registry in pre-app-registry (#3334).
 "src/teatree/core/messaging_tokens.py" = 1
-"src/teatree/core/merge/authorization.py" = 5
+"src/teatree/core/merge/authorization.py" = 4
 "src/teatree/core/merge/execution.py" = 4
+# substrate_standing defers `from teatree.core.overlay_loader import infer_overlay_for_url`
+# so resolving a repo's owning overlay stays a call-time read of the live overlay
+# registry — the edge moved here verbatim from merge/authorization.py (#3648).
+"src/teatree/core/merge/substrate_standing.py" = 1
 "src/teatree/core/model_registries.py" = 5
 "src/teatree/core/models/auto_review_dispatch.py" = 3
 "src/teatree/core/models/implemented_issue_marker.py" = 1
@@ -98,7 +118,19 @@
 "src/teatree/core/models/ticket_introspection.py" = 1
 "src/teatree/core/models/ticket_phase_sessions.py" = 1
 "src/teatree/core/models/ticket_scheduling.py" = 7
-"src/teatree/core/notify.py" = 4
+# `teatree.settings._discover_overlay_apps()` `ep.load()`s every `teatree.overlays`
+# entry point at SETTINGS-IMPORT time, before Django can be configured — so any
+# overlay module whose import chain reaches `teatree.core.models` is silently dropped
+# from INSTALLED_APPS, taking its models, migrations and management commands with it.
+# Deferring the ORM imports in the modules an overlay's hook surface pulls in (notify,
+# worktree_env, visual_qa) is what keeps that surface import-safe pre-`django.setup()`;
+# those edges are load-bearing and stay.
+"src/teatree/core/notify.py" = 5
+# notify_ledger.py carries the ORM (BotPing/OutboundClaim/PendingChatInjection) call-time
+# imports that moved out of notify.py when the durable-audit helpers were split off to hold
+# notify.py under the 500-LOC module-health cap. Same pre-`django.setup()` import-safety
+# deferral as notify.py above — the app registry must be ready before these ORM imports resolve.
+"src/teatree/core/notify_ledger.py" = 7
 "src/teatree/core/on_behalf_egress.py" = 2
 "src/teatree/core/on_behalf_gate_recorded.py" = 6
 "src/teatree/core/on_behalf_post_receipt.py" = 1
@@ -106,6 +138,11 @@
 # build its default probes without an import cycle (connector_probes → overlay) (#3333).
 "src/teatree/core/overlay.py" = 4
 "src/teatree/core/overlay_loader.py" = 1
+# overlay_name_of / resolve_overlay_name defer `from teatree.core.overlay_loader import
+# get_all_overlays / OverlayConfigResolver` — these name resolvers were carved out of
+# overlay_loader.py (module-health cap) and call back into it, so the edge is call-time to
+# avoid the loader import cycle.
+"src/teatree/core/overlay_name_resolution.py" = 2
 "src/teatree/core/overlay_metadata.py" = 1
 # overlay_skill_metadata defers `from teatree.core.overlay_loader import get_overlay`
 # so the CLI-build-time caller resolves it only when Django is up (#3355).
@@ -119,7 +156,7 @@
 "src/teatree/core/safe_kill.py" = 1
 "src/teatree/core/intake/scope_cache.py" = 1
 "src/teatree/core/send_proxy.py" = 3
-"src/teatree/core/signals.py" = 5
+"src/teatree/core/signals.py" = 6 # +1: F9 headless-admission consult (lazy, avoids app-registry-at-load)
 "src/teatree/core/speak.py" = 1
 "src/teatree/core/provision/step_runner.py" = 1
 # #61 availability+preset merge: the unified operating-mode resolver defers its
@@ -127,14 +164,16 @@
 # availability presence heartbeat + fast-hook mirror, and the deferred-question drain
 # — cycle-safe and app-registry-safe (mode_resolution is imported by early hooks via
 # speak.py before Django apps are ready).
-"src/teatree/core/mode_resolution.py" = 9
+"src/teatree/core/mode_resolution.py" = 8
 # #61: stop_snapshot's resume-plan defers `resolve_active_mode` + `ConfigSetting`
 # (ORM/app-registry) to render the mode/schedule lines.
 "src/teatree/core/stop_snapshot.py" = 2
 # _record_attachment_hold_question defers `from teatree.core.models.
 # deferred_question import DeferredQuestion` (ORM/app-registry) to escalate an
 # intake attachment-gate hold instead of silently freezing the ticket.
-"src/teatree/core/tasks.py" = 6
+"src/teatree/core/tasks.py" = 8 # +2: F4 claim-CAS + F9 headless_admission lazy imports
+"src/teatree/core/headless_admission.py" = 1 # F9: lazy governor import, avoids app-registry-at-load
+"src/teatree/core/models/task_claim.py" = 1 # F5: lazy _claimable_now_q park predicate import
 # PR #3479 module-health split: the path-only-TOML backend construction moved
 # out of backend_factory.py into toml_backends.py, carrying the same three
 # function-scoped intra-core imports verbatim (two `send_proxy.read_posting_credential`
@@ -148,6 +187,9 @@
 # repo resolver — deferred for import-weight (merge/__init__ pulls the whole merge
 # subtree, factory_signal_queries the signal stack) to keep waiting.py light.
 "src/teatree/core/waiting.py" = 3
+# Same pre-`django.setup()` import-safety deferral as notify.py above: worktree_env
+# is on the overlay hook surface, so its ORM imports are call-time.
+"src/teatree/core/worktree/worktree_env.py" = 6
 "src/teatree/core/worktree/worktree_tasks.py" = 1
 
 [intra_loop]

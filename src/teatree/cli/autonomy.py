@@ -1,11 +1,13 @@
 """``t3 <overlay> autonomy`` — show / set the per-overlay trust switch.
 
 The ``autonomy`` switch (``babysit`` < ``notify`` < ``full``, default
-``babysit``) is the single per-overlay knob that collapses the three
-user-in-the-loop approval gates — ``on_behalf_post_mode`` (which gates
-colleague auto-approve / on-behalf posts), ``require_human_approval_to_merge``,
-``require_human_approval_to_answer`` — and pins ``mode = auto`` so the
-loop's auto-merge path is reachable. It also drives review-request blocking off
+``babysit``) is the single per-overlay knob that collapses the user-in-the-loop
+approval gates — ``on_behalf_post_mode`` (which gates colleague auto-approve /
+on-behalf posts) and ``require_human_approval_to_answer`` — and pins ``mode = auto``
+so the loop's auto-merge path is reachable. It deliberately does NOT touch
+``require_human_approval_to_merge`` (#3630): how far the agent carries work on its
+own and whether a merge needs review are separate decisions, so merging without a
+review gate stays its own named opt-in. It also drives review-request blocking off
 the tier (#2579): the ``notify`` tier resolves ``review_request_post_disabled =
 True`` (a collaborative/customer surface never auto-requests review), while
 ``full`` resolves it ``False`` (a solo tooling surface auto-requests). The

@@ -72,8 +72,11 @@ Usage: t3 [OPTIONS] COMMAND [ARGS]...
 │ worker          The singleton loop-timer worker (#1796 / PR-28). Bare `t3    │
 │                 worker` runs it (the cadence owner, default ON via           │
 │                 `loop_runner_enabled`). `status` reports the live holder +   │
-│                 resolved kill-switch; `ensure` spawns a detached worker iff  │
-│                 enabled and the flock is free.                               │
+│                 resolved kill-switch + whether loops actually tick (it EXITS │
+│                 NON-ZERO on a stale fleet); `ensure` spawns a detached       │
+│                 worker iff enabled and the flock is free; `drain` quiesces   │
+│                 admission without stopping anything; `stop` / `restart` end  │
+│                 the live worker and verify it against the flock.             │
 │ loops           Manage DB-configured autonomous loops (#1796).               │
 │ mcp             Read-only MCP server exposing teatree's structured search    │
 │                 (stdio).                                                     │
@@ -1496,8 +1499,8 @@ Usage: t3 eval [OPTIONS] COMMAND [ARGS]...
 │                                  CLI-free lane, metered on                   │
 │                                  ANTHROPIC_API_KEY), or 'pydantic_ai' (RUN a │
 │                                  non-Claude model through the                │
-│                                  provider-agnostic harness seam, OrcaRouter  │
-│                                  BYOK).                                      │
+│                                  provider-agnostic harness seam, the         │
+│                                  OpenAI-compatible backend).                 │
 │                                  [default: transcript]                       │
 │ --transcript-dir        PATH     Directory of <scenario>.jsonl transcripts   │
 │                                  for the AI lane (default: cwd).             │
@@ -1534,6 +1537,8 @@ Usage: t3 eval [OPTIONS] COMMAND [ARGS]...
 │                           real gate/checker code paths.                      │
 │ skill-command-validity    Validate every backticked ``t3 …`` in the skill    │
 │                           docs against the live CLI registry.                │
+│ reachability              Report scenario/fixture ``t3 …`` invocations that  │
+│                           name no live CLI command.                          │
 │ skill-prose-judge         Score each skill's prose for clarity/actionability │
 │                           via the LLM judge (ADVISORY).                      │
 │ audit                     Audit captured sessions into the durable ledger    │
@@ -1790,6 +1795,32 @@ Usage: t3 eval skill-command-validity [OPTIONS]
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --format        TEXT  Report format: text or json. [default: text]           │
 │ --help                Show this message and exit.                            │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+#### `t3 eval reachability`
+
+```
+Usage: t3 eval reachability [OPTIONS]
+
+ Report scenario/fixture ``t3 …`` invocations that name no live CLI command.
+
+ Tier-1 (deterministic, free, no ``claude`` run): each scenario YAML and each
+ ``_pass``/``_fail`` transcript fixture is scanned for ``t3 …`` runs, which are
+ token-walked against the live typer command tree. A reference that resolves to
+ nothing grades a path the product cannot take. ADVISORY by default (the
+ shipped
+ corpus carries known false positives from two precision gaps — overlay-slot
+ fixture names and prose fragments); ``--fail-on-unreachable`` flips it to a
+ gate.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --format                     TEXT  Report format: text or json.              │
+│                                    [default: text]                           │
+│ --fail-on-unreachable              Exit non-zero on any unreachable          │
+│                                    reference; default is advisory (report +  │
+│                                    exit 0).                                  │
+│ --help                             Show this message and exit.               │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -2416,8 +2447,9 @@ Usage: t3 eval run [OPTIONS] [NAME]
 │                                                     'pydantic_ai' (RUN a     │
 │                                                     non-Claude model through │
 │                                                     the provider-agnostic    │
-│                                                     harness seam, OrcaRouter │
-│                                                     BYOK — the               │
+│                                                     harness seam, the        │
+│                                                     OpenAI-compatible        │
+│                                                     backend — the            │
 │                                                     model-evolution lane).   │
 │                                                     --trials and --models    │
 │                                                     require --backend api.   │
@@ -3347,8 +3379,12 @@ Usage: t3 tool diff-coverage [OPTIONS]
  Per-diff coverage + mutation/revert gate (BLUEPRINT §17.6 gate 12, #836).
 
  Measures coverage on the *branch's* added production lines — the committed
- diff against its merge-base with ``--base`` (default ``origin/main``), NOT the
- clone's working tree, so unrelated uncommitted edits never enter the gate.
+ diff against its merge-base with ``--base``, NOT the clone's working tree, so
+ unrelated uncommitted edits never enter the gate. When ``--base`` is omitted
+ it
+ resolves the configured base branch (``T3_DIFF_COVERAGE_BASE``) or the repo's
+ ACTUAL default branch, never a hardcoded ``origin/main`` — the latter grades a
+ ``master``-default repo or a fork's whole integration branch as new/uncovered.
  Requires every new/changed production symbol to be imported by a changed test
  (the test-a-local-copy anti-vacuity check). Exits non-zero when a new line is
  uncovered or a symbol is unreferenced.
@@ -3357,8 +3393,9 @@ Usage: t3 tool diff-coverage [OPTIONS]
 │ --repo                 PATH  Repo root (default: cwd)                        │
 │                              [default: <bound method PathBase.cwd of <class  │
 │                              'pathlib._local.Path'>>]                        │
-│ --base                 TEXT  Ref to diff against (merge-base..HEAD)          │
-│                              [default: origin/main]                          │
+│ --base                 TEXT  Ref to diff against (merge-base..HEAD).         │
+│                              Default: T3_DIFF_COVERAGE_BASE, else the repo's │
+│                              default branch.                                 │
 │ --coverage-file        PATH  Path to .coverage data file                     │
 │                              [default: .coverage]                            │
 │ --json                       Emit machine-readable JSON.                     │
@@ -4908,20 +4945,26 @@ Usage: t3 worker [OPTIONS] COMMAND [ARGS]...
 
  The singleton loop-timer worker (#1796 / PR-28). Bare `t3 worker` runs it (the
  cadence owner, default ON via `loop_runner_enabled`). `status` reports the
- live holder + resolved kill-switch; `ensure` spawns a detached worker iff
- enabled and the flock is free.
+ live holder + resolved kill-switch + whether loops actually tick (it EXITS
+ NON-ZERO on a stale fleet); `ensure` spawns a detached worker iff enabled and
+ the flock is free; `drain` quiesces admission without stopping anything;
+ `stop` / `restart` end the live worker and verify it against the flock.
 
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --help          Show this message and exit.                                  │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ╭─ Commands ───────────────────────────────────────────────────────────────────╮
-│ run     Run the singleton loop-timer worker — the cadence owner (#1796).     │
-│ status  Report the worker: the live flock holder, the resolved kill-switch + │
-│         tier, timer counts.                                                  │
-│ ensure  Spawn a detached worker iff ``loop_runner_enabled`` is ON and the    │
-│         flock is free.                                                       │
-│ drain   Quiesce the worker and wait for in-flight tasks to finish            │
-│         (drain-then-deploy).                                                 │
+│ run      Run the singleton loop-timer worker — the cadence owner (#1796).    │
+│ status   Report the worker: flock holder, kill-switch + tier, timer counts,  │
+│          and whether loops tick.                                             │
+│ ensure   Spawn a detached worker iff ``loop_runner_enabled`` is ON and the   │
+│          flock is free.                                                      │
+│ drain    Quiesce the worker and wait for in-flight tasks to finish           │
+│          (drain-then-deploy).                                                │
+│ stop     Stop the running singleton worker gracefully and VERIFY that it     │
+│          exited.                                                             │
+│ restart  Stop the running worker, start a fresh one, and PROVE the new one   │
+│          holds the flock.                                                    │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -4942,8 +4985,10 @@ Usage: t3 worker run [OPTIONS]
 ```
 Usage: t3 worker status [OPTIONS]
 
- Report the worker: the live flock holder, the resolved kill-switch + tier,
- timer counts.
+ Report the worker: flock holder, kill-switch + tier, timer counts, and whether
+ loops tick.
+
+ Exits NON-ZERO when the loop fleet is stale.
 
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --json          Emit the status as JSON.                                     │
@@ -4965,9 +5010,18 @@ Usage: t3 worker ensure [OPTIONS]
  install or
  a headless box, sharing the ONE spawner with the SessionStart supervisor.
 
+ A spawn is only reported as such once the worker ACTUALLY holds the flock: the
+ spawner itself returns success as soon as the ``t3`` binary resolves, so a
+ startup
+ crash would otherwise read as a healthy start. When the flock stays free the
+ child's
+ captured stderr is printed and the command exits non-zero.
+
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
-│ --json          Emit the outcome as JSON.                                    │
-│ --help          Show this message and exit.                                  │
+│ --start-timeout        FLOAT  Seconds to wait for the spawned worker.        │
+│                               [default: 60.0]                                │
+│ --json                        Emit the outcome as JSON.                      │
+│ --help                        Show this message and exit.                    │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -4984,7 +5038,17 @@ Usage: t3 worker drain [OPTIONS]
  when the worker is drained; exits ``_GRACE_EXCEEDED_EXIT`` (naming the still-
  CLAIMED task pks) when the grace lapses, so a deploy can proceed knowing a
  stuck
- task re-queues via its lease lapse. The fresh worker's init clears the gate.
+ task re-queues via its lease lapse.
+
+ THE WORKER IS LEFT QUIESCED: this command stops nothing, and the gate it sets
+ is
+ cleared only by a fresh container boot (``deploy/entrypoint.sh``). On a bare
+ host
+ nothing clears it, so the box keeps running while admitting no work until you
+ run
+ `t3 <overlay> config_setting set worker_quiescing false` or `t3 worker
+ restart`.
+ To end the worker rather than merely quiesce it, use `t3 worker stop`.
 
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --timeout              INTEGER  Grace seconds to wait for in-flight tasks to │
@@ -4994,6 +5058,84 @@ Usage: t3 worker drain [OPTIONS]
 │                                 [default: 5.0]                               │
 │ --json                          Emit the outcome as JSON.                    │
 │ --help                          Show this message and exit.                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+#### `t3 worker stop`
+
+```
+Usage: t3 worker stop [OPTIONS]
+
+ Stop the running singleton worker gracefully and VERIFY that it exited.
+
+ Drains first (the same ``drain_worker`` `t3 worker drain` runs) so no
+ in-flight
+ sub-agent is killed, then SIGTERMs the flock holder — located by the kernel
+ flock
+ probe plus the pid the holder recorded under the lock, never by a scan for a
+ plausible pid — and waits up to ``--exit-timeout`` for the flock to be
+ RELEASED.
+ A worker that does not exit is reported as such, with its pid, and exits
+ non-zero.
+
+ ``worker_quiescing`` is always put back exactly as the stop found it, so a
+ failed
+ stop can never leave the box admitting nothing; whenever the gate is still ON
+ at
+ the end (you had quiesced it yourself before), the output says so and names
+ the
+ command that clears it.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --drain           --no-drain             Quiesce and wait for in-flight      │
+│                                          tasks before signalling (default).  │
+│                                          [default: drain]                    │
+│ --timeout                       INTEGER  Grace seconds for the drain         │
+│                                          (ignored with --no-drain).          │
+│                                          [default: 1800]                     │
+│ --exit-timeout                  FLOAT    Seconds to wait for the flock to be │
+│                                          released.                           │
+│                                          [default: 60.0]                     │
+│ --json                                   Emit the outcome as JSON.           │
+│ --help                                   Show this message and exit.         │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+#### `t3 worker restart`
+
+```
+Usage: t3 worker restart [OPTIONS]
+
+ Stop the running worker, start a fresh one, and PROVE the new one holds the
+ flock.
+
+ `stop` then the same spawn `t3 worker ensure` uses — and then an independent
+ check,
+ because the spawner reports success as soon as the ``t3`` binary exists (the
+ child's
+ streams go to ``DEVNULL``, so a startup crash is invisible in its verdict).
+ Success
+ is claimed only once the flock is held by a pid that is not the stopped one.
+
+ This is also the one-command recovery from a stuck quiesce: the gate is
+ cleared
+ before the fresh worker is spawned, exactly as a container boot's init does.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --drain            --no-drain             Quiesce and wait for in-flight     │
+│                                           tasks before signalling (default). │
+│                                           [default: drain]                   │
+│ --timeout                        INTEGER  Grace seconds for the drain        │
+│                                           (ignored with --no-drain).         │
+│                                           [default: 1800]                    │
+│ --exit-timeout                   FLOAT    Seconds to wait for the flock to   │
+│                                           be released.                       │
+│                                           [default: 60.0]                    │
+│ --start-timeout                  FLOAT    Seconds to wait for the FRESH      │
+│                                           worker.                            │
+│                                           [default: 60.0]                    │
+│ --json                                    Emit the outcome as JSON.          │
+│ --help                                    Show this message and exit.        │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -5084,6 +5226,11 @@ Usage: t3 mcp [OPTIONS] COMMAND [ARGS]...
 Usage: t3 mcp serve [OPTIONS]
 
  Run the structured-search MCP server over stdio (blocks until stdin closes).
+
+ Every start first reaps orphaned predecessors (servers reparented to PID 1 —
+ their client is gone, they can never serve again) and arms the parent-death
+ watchdog so THIS server exits even when a leaked fd keeps its stdin from
+ ever reaching EOF. See :mod:`teatree.mcp.serve_lifecycle`.
 
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --help          Show this message and exit.                                  │
@@ -6676,6 +6823,8 @@ Usage: t3 teatree wip [OPTIONS] COMMAND [ARGS]...
 │ set    Persist the global `` wip`` dial. A typo is rejected.                 │
 │ boost  Arm boost mode with a live-worker target: sets ``wip = boost`` and    │
 │        ``boost_concurrency = N``.                                            │
+│ split  Set the WRITE/MERGE phase split: ``write_wip = N``, merge stays       │
+│        single-flight.                                                        │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -6724,6 +6873,26 @@ Usage: t3 teatree wip boost [OPTIONS] CONCURRENCY
 │ *    concurrency      INTEGER  Target live worker count N the boost pool     │
 │                                refills to.                                   │
 │                                [required]                                    │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 teatree wip split`
+
+```
+Usage: t3 teatree wip split [OPTIONS] WRITE
+
+ Set the WRITE/MERGE phase split: ``write_wip = N``, merge stays single-flight.
+
+ The merge lane is deliberately not settable above 1 — serializing merges is
+ what guarantees the next PR rebases against what just landed.
+
+╭─ Arguments ──────────────────────────────────────────────────────────────────╮
+│ *    write      INTEGER  WRITE-lane width N — how many implementation        │
+│                          workers run in parallel.                            │
+│                          [required]                                          │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --help          Show this message and exit.                                  │
@@ -7160,13 +7329,28 @@ Usage: t3 teatree workspace teardown [OPTIONS]
  final summary. Refuses to remove a worktree whose branch carries
  unpushed commits unless ``--force`` is passed.
 
+ Teardown is TICKET-scoped: it reclaims EVERY worktree of the resolved
+ ticket, siblings included. That scope is only safe once the ticket is
+ actually done, so the command is gated on the forge state of the
+ ticket's PRs/MRs — a ticket carrying an open one is refused before any
+ worktree is touched, and a sibling worktree whose branch backs a
+ still-open MR is never reclaimed as collateral. ``--allow-open-prs`` is
+ the explicit override, deliberately separate from ``--force``.
+
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
-│ --path                   TEXT  Worktree path inside the workspace            │
-│                                (auto-detects from PWD).                      │
-│ --force    --no-force          Tear down even when a branch has commits not  │
-│                                on any remote (data loss).                    │
-│                                [default: no-force]                           │
-│ --help                         Show this message and exit.                   │
+│ --path                                     TEXT  Worktree path inside the    │
+│                                                  workspace (auto-detects     │
+│                                                  from PWD).                  │
+│ --force             --no-force                   Tear down even when a       │
+│                                                  branch has commits not on   │
+│                                                  any remote (data loss).     │
+│                                                  [default: no-force]         │
+│ --allow-open-prs    --no-allow-open-prs          Reclaim the workspace even  │
+│                                                  while one of the ticket's   │
+│                                                  PRs/MRs is still open.      │
+│                                                  [default:                   │
+│                                                  no-allow-open-prs]          │
+│ --help                                           Show this message and exit. │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -7254,10 +7438,13 @@ Usage: t3 teatree workspace clean-all [OPTIONS]
 │ --keep-dslr                    INTEGER  Number of DSLR snapshots to keep per │
 │                                         tenant.                              │
 │                                         [default: 1]                         │
-│ --dry-run      --no-dry-run             Preview only: list each worktree     │
-│                                         that WOULD WIPE (with its            │
-│                                         done-signal source) or be KEPT,      │
-│                                         removing nothing.                    │
+│ --dry-run      --no-dry-run             Preview only: every pass reports     │
+│                                         what it WOULD do — each worktree     │
+│                                         that would WIPE (with its            │
+│                                         done-signal source) or be KEPT, plus │
+│                                         the branch, stash, orphan            │
+│                                         DB/docker/env-root, raw-worktree and │
+│                                         DSLR candidates — removing nothing.  │
 │                                         [default: no-dry-run]                │
 │ --help                                  Show this message and exit.          │
 ╰──────────────────────────────────────────────────────────────────────────────╯

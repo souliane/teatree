@@ -57,6 +57,26 @@ import sys
 from pathlib import Path
 
 
+def _local_commit_verdict_is_warn(term: str) -> bool:
+    """Whether the ONE policy downgrades *term* to a warning on a LOCAL commit.
+
+    Arm (4)'s downgrade is a policy decision, so it is read from
+    :func:`teatree.hooks.leak_policy.decide` rather than restated here. The
+    destination is ``UNKNOWN`` because a local commit has no resolved publish
+    target — the conservative input, so a class the policy would hard-block on an
+    egress still hard-blocks here. A registry read that fails resolves the term to
+    a blocking class, which on this surface is exactly the WARN this arm emits.
+    """
+    from teatree.hooks import banned_term_registry, leak_policy  # noqa: PLC0415 — deferred cold-hook import
+
+    verdict = leak_policy.decide(
+        banned_term_registry.class_of_term(term),
+        leak_policy.Visibility.UNKNOWN,
+        leak_policy.Surface.LOCAL_COMMIT,
+    )
+    return verdict is not leak_policy.Verdict.BLOCK
+
+
 def emit_banned_term_deny(tool_name: str, command: str, payload: str, term: str, cwd_repo: Path | None) -> bool:
     from hooks.scripts.hook_router import emit_pretooluse_deny  # noqa: PLC0415 deferred back-import
     from teatree.hooks import (  # noqa: PLC0415 — deferred: cold-hook import after sys.path setup
@@ -87,7 +107,11 @@ def emit_banned_term_deny(tool_name: str, command: str, payload: str, term: str,
             "the overlay's own configured repo; downgraded to warn. The address of the repo is not a leak.\n"
         )
         return False
-    if tool_name == "Bash" and publish_surface.command_targets_local_commit(command, cwd_repo):
+    if (
+        tool_name == "Bash"
+        and publish_surface.command_targets_local_commit(command, cwd_repo)
+        and _local_commit_verdict_is_warn(term)
+    ):
         sys.stderr.write(
             f"WARNING: banned-terms gate (#1415) — term '{term}' on a LOCAL git commit; "
             "downgraded to warn (#126). The #703 pre-push gate re-scans commit messages for "

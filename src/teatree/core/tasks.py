@@ -6,11 +6,12 @@ from django.tasks import task
 
 from teatree.config import get_effective_settings, worktree_root
 from teatree.core.backend_factory import code_host_from_overlay
+from teatree.core.deterministic_phases import run_deterministic_phase
 from teatree.core.gates.critic_gate import record_critic_findings
 from teatree.core.intake.attachment_manifest import attachment_gate_refusal, attachments_dir_for, ticket_text_sources
 from teatree.core.intake.landscape_gather import run_landscape
 from teatree.core.models import LandscapeArtifact, Task, Ticket
-from teatree.core.models.errors import CriticGateError
+from teatree.core.models.errors import CriticGateError, InvalidTransitionError
 from teatree.core.models.external_delivery import under_external_delivery
 from teatree.core.models.trivial_plan_skip import is_trivial_plan_skip
 from teatree.core.runners import RetroExecutor, ShipExecutor, WorktreeProvisioner, WorktreeTeardown
@@ -94,16 +95,29 @@ def execute_headless_task(task_id: int, phase: str) -> dict[str, object]:
 
     task_obj = Task.objects.get(pk=task_id)
 
+    # The atomic claim is the SOLE admission decision (F4). Win the compare-and-swap
+    # BEFORE any work runs — including the poison-pill and routing failure paths — so a
+    # re-delivered COMPLETED/FAILED task, or one a live rival already holds, is a
+    # successful no-op instead of a second billed execution on the same row (the
+    # measured 74%-duplicate mechanism: two DBTaskResult jobs for one Task, or a
+    # redelivered terminal job, both executing in full). ``claim`` raises
+    # ``InvalidTransitionError`` when the row is terminal or held under a live lease.
+    # The heartbeat-matched lease means a starved first heartbeat cannot let the initial
+    # 300s window lapse and re-queue this live task (_HEADLESS_CLAIM_LEASE_SECONDS).
+    try:
+        task_obj.claim(claimed_by="headless-worker", lease_seconds=_HEADLESS_CLAIM_LEASE_SECONDS)
+    except InvalidTransitionError as exc:
+        logger.info("Task %s not admitted (%s); skipping — claim is the sole admission decision", task_obj.pk, exc)
+        return {"skipped": "not claimable (claimed elsewhere or terminal)"}
+
     # Poison-pill guard (souliane/teatree#1959): a task whose ticket names a
     # non-empty overlay that no longer resolves crashes ``get_overlay_for_ticket``
     # on every drain. Fail it permanently here — a recorded FAILED attempt the
     # operator can inspect — instead of raising an exception that re-fires next
-    # tick.
+    # tick. The claim above already made this worker the owner.
     if not task_obj.ticket.has_dispatchable_overlay():
         reason = f"unknown overlay {task_obj.ticket.overlay!r}: ticket {task_obj.ticket_id} cannot be dispatched"
         logger.warning("Task %s: %s", task_obj.pk, reason)
-        if task_obj.status == Task.Status.PENDING:
-            task_obj.claim(claimed_by="unknown-overlay-guard")
         task_obj.complete_with_attempt(exit_code=1, error=reason, result={"unknown_overlay": reason})
         return {"exit_code": 1, "unknown_overlay": reason}
 
@@ -119,16 +133,15 @@ def execute_headless_task(task_id: int, phase: str) -> dict[str, object]:
     routing_refusal = loop_dispatch_refusal(task_obj)
     if routing_refusal is not None:
         logger.warning("Task %s: %s", task_obj.pk, routing_refusal)
-        if task_obj.status == Task.Status.PENDING:
-            task_obj.claim(claimed_by="headless-routing-guard")
         task_obj.complete_with_attempt(exit_code=1, error=routing_refusal, result={"routing_error": routing_refusal})
         return {"exit_code": 1, "routing_error": routing_refusal}
 
-    # Claim here (when the worker actually starts) instead of at enqueue time.
-    # Use the heartbeat-matched lease so a starved first heartbeat cannot let the
-    # initial 300s window lapse and re-queue this live task (_HEADLESS_CLAIM_LEASE_SECONDS).
-    if task_obj.status == Task.Status.PENDING:
-        task_obj.claim(claimed_by="headless-worker", lease_seconds=_HEADLESS_CLAIM_LEASE_SECONDS)
+    # A non-agentic phase runs its own implementation, not a generic ticket-work
+    # brief its least-privilege toolset cannot satisfy (#3570). Shared with the
+    # ``work-next-headless`` lane so the two entry points cannot drift.
+    if (deterministic := run_deterministic_phase(task_obj)) is not None:
+        return dict(deterministic)
+
     try:
         from teatree.core.headless_dispatch import get_headless_runner  # noqa: PLC0415 — deferred: call-time import
 
@@ -185,21 +198,38 @@ def drain_headless_queue_body() -> dict[str, list[int]]:
     (:func:`teatree.loops.timer_reconciler.drain_headless_chain`) that schedules
     it, so the two call sites can never drift.
     """
+    from django.utils import timezone  # noqa: PLC0415 — deferred: call-time import, kept lazy
+
     from teatree.config import AgentRuntime, get_effective_settings  # noqa: PLC0415 — deferred: call-time import
+    from teatree.core.headless_admission import headless_admission_denied_reason  # noqa: PLC0415 — deferred: call-time
     from teatree.core.headless_dispatch import runs_in_session  # noqa: PLC0415 — deferred: call-time import, kept lazy
+    from teatree.core.managers import _claimable_now_q  # noqa: PLC0415 — deferred: single-source park predicate
 
     headless_runtime = get_effective_settings().agent_runtime is AgentRuntime.HEADLESS
     targets = [Task.ExecutionTarget.HEADLESS]
     if headless_runtime:
         targets.append(Task.ExecutionTarget.INTERACTIVE)
+    # Honour ``not_before`` (F5): a usage-limit-parked task is PENDING with a future
+    # ``not_before``. Draining it here would re-enqueue it, let the runner pre-flight
+    # re-park it, and churn a junk park attempt every ~5 min for the whole park window.
+    # The same ``_claimable_now_q`` gate the claim path uses skips it until its window
+    # re-arms, so the park is honoured once at both the drain and the claim seam.
     pending = (
         Task.objects.filter(
             execution_target__in=targets,
             status=Task.Status.PENDING,
         )
+        .filter(_claimable_now_q(timezone.now()))
         .select_related("ticket")
         .only("pk", "phase", "execution_target", "ticket__role", "ticket__overlay")
     )
+    # Consult the admission governor once per drain (F9). A DENY applies
+    # backpressure to the ENQUEUE step only — poison rows are still failed and
+    # cleaned this tick; live rows stay PENDING for the next admitted drain.
+    # Fail-open (None) leaves the pre-governor behaviour byte-for-byte intact.
+    admission_denied = headless_admission_denied_reason()
+    if admission_denied is not None:
+        logger.warning("Governor DENIED headless drain admission: %s (pending rows stay queued)", admission_denied)
     enqueued: list[int] = []
     rerouted: list[int] = []
     failed_unknown_overlay: list[int] = []
@@ -212,6 +242,8 @@ def drain_headless_queue_body() -> dict[str, list[int]]:
             task_obj.claim(claimed_by="unknown-overlay-guard")
             task_obj.complete_with_attempt(exit_code=1, error=reason, result={"unknown_overlay": reason})
             failed_unknown_overlay.append(task_obj.pk)
+            continue
+        if admission_denied is not None:
             continue
         if task_obj.execution_target == Task.ExecutionTarget.INTERACTIVE:
             task_obj.route_to_headless(

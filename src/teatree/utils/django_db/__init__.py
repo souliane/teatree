@@ -12,12 +12,13 @@ submodules while keeping ``teatree.utils.django_db`` a stable import path:
 - :mod:`~teatree.utils.django_db.importer` — the ``DjangoDbImporter`` orchestrator.
 - :mod:`~teatree.utils.django_db.dslr` — DSLR snapshot primitives.
 - :mod:`~teatree.utils.django_db.reconcile` — renumbered-migration reconcile.
+- :mod:`~teatree.utils.django_db.dslr_prune` — DSLR snapshot retention (stale selection + delete).
 - :mod:`~teatree.utils.django_db.snapshot_warmer` — out-of-band snapshot refresh.
 - :mod:`~teatree.utils.django_db.testdb_clone` — clone the app DB into the test DB, re-cloning on drift (#3326).
 """
 
 from teatree.utils.django_db.config import DjangoDbImportConfig
-from teatree.utils.django_db.dslr import prune_dslr_snapshots
+from teatree.utils.django_db.dslr_prune import prune_dslr_snapshots, stale_dslr_snapshots
 from teatree.utils.django_db.helpers import is_loopback_host, rewrite_url_host, url_host
 from teatree.utils.django_db.importer import DjangoDbImporter, django_db_import
 from teatree.utils.django_db.restore import validate_dump
@@ -41,6 +42,7 @@ __all__ = [
     "prune_dslr_snapshots",
     "rewrite_url_host",
     "runner_prefix",
+    "stale_dslr_snapshots",
     "url_host",
     "validate_dump",
 ]

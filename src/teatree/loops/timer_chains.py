@@ -56,6 +56,7 @@ successors, so a double delivery never doubles the chain.
 """
 
 import datetime as dt
+import enum
 import logging
 import os
 import signal
@@ -125,21 +126,50 @@ DEADLINE_CADENCE_MULTIPLIER = 3
 DAILY_TICK_DEADLINE_SECONDS = 1800.0
 
 
-def _loop_runner_enabled() -> bool:
-    """Whether the ``loop_runner_enabled`` kill-switch resolves ON (fail-safe OFF).
+class LoopRunnerState(enum.Enum):
+    """The three-valued kill-switch verdict (F7).
 
-    The single reader the worker's executor pool AND every :func:`loop_timer` fire
-    consult, so the kill-switch can never be honoured by one and silently bypassed by
-    the other. A read failure degrades to OFF: a kill-switch that cannot confirm it is
-    ON must not keep the chain alive.
+    A bare boolean cannot distinguish a legitimate OFF from a transient read
+    FAILURE, so a failed DB read of the switch looked identical to "operator turned
+    it off" — the worker then clean-exited 0 and ``restart: on-failure`` never
+    restarted a worker downed by a blip. ``UNREADABLE`` names the "cannot confirm"
+    case so the worker can crash-restart on it while a genuine OFF still stops cleanly.
+    """
+
+    ON = "on"
+    OFF = "off"
+    UNREADABLE = "unreadable"
+
+
+def read_loop_runner_state() -> LoopRunnerState:
+    """The ``loop_runner_enabled`` kill-switch as ON / OFF / UNREADABLE (F7).
+
+    A successful read maps to ON/OFF. A read that RAISES (a transient sqlite error, a
+    connector blip) is ``UNREADABLE`` — NOT collapsed to OFF — logged at WARNING so the
+    failure is loud, never a silent DEBUG line. The worker treats ``UNREADABLE`` as a
+    retry-then-crash so the supervisor restarts it; the chain's fail-safe wrapper
+    (:func:`_loop_runner_enabled`) maps ``UNREADABLE`` to "not ON" so it still refuses
+    to perpetuate a chain it cannot confirm should run.
     """
     try:
         from teatree.config import get_effective_settings  # noqa: PLC0415 — deferred read
 
-        return get_effective_settings().loop_runner_enabled
+        return LoopRunnerState.ON if get_effective_settings().loop_runner_enabled else LoopRunnerState.OFF
     except Exception:
-        logger.debug("loop_runner_enabled read failed — treating the loop runner as disabled", exc_info=True)
-        return False
+        logger.warning("loop_runner_enabled read failed — cannot confirm kill-switch state", exc_info=True)
+        return LoopRunnerState.UNREADABLE
+
+
+def _loop_runner_enabled() -> bool:
+    """Whether the kill-switch resolves ON (fail-safe: anything but ON is OFF).
+
+    The single boolean reader every :func:`loop_timer` fire consults, so the
+    kill-switch can never be honoured by one path and silently bypassed by another. A
+    read failure (``UNREADABLE``) degrades to False here: a kill-switch that cannot
+    confirm it is ON must not keep the chain alive. The worker instead consults
+    :func:`read_loop_runner_state` directly so it can tell OFF from UNREADABLE (F7).
+    """
+    return read_loop_runner_state() is LoopRunnerState.ON
 
 
 def _loop_timer_path() -> str:
@@ -277,7 +307,7 @@ def _escalate_tick_timeout(name: str, *, deadline: float) -> None:
     DeferredQuestion.record(question, session_id="", dedupe_marker=marker)
 
 
-def loop_admitted(name: str, now: dt.datetime) -> bool:
+def _loop_admitted(name: str, now: dt.datetime) -> bool:
     """Whether *name* passes the unified enabled+due+reachable verdict right now.
 
     Reuses :func:`teatree.loops.loop_table.admitted_loop_names` scoped to the one
@@ -450,7 +480,7 @@ def loop_timer(context: object, name: str) -> TimerResult:
     enqueue_loop_timer(name, run_after=_idle_successor_run_after(row, now))
 
     # (3) admission — a held/disabled/not-due loop is a free no-op.
-    if not loop_admitted(name, now):
+    if not _loop_admitted(name, now):
         refine_successor(name, run_after=_idle_successor_run_after(row, now))
         return {"loop": name, "action": "skipped"}
 

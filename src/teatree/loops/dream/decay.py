@@ -477,7 +477,7 @@ def _budget_tier_candidates(
     ordered = sorted(
         files, key=lambda m: _signal_score(m, inbound_links=inbound.get(m.name, 0), now=now, retention=retention)
     )
-    line_bytes = {m.path: len(reindex.index_line_for(m.path.name, m.text).encode("utf-8")) for m in files}
+    line_bytes = {m.path: len(reindex.index_line_for(m.path.name).encode("utf-8")) for m in files}
     header = reindex.render_index_lines([])
     header_bytes = len(header.encode("utf-8"))
     survivor_count = len(files)

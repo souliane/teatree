@@ -3,7 +3,7 @@
 ``resolve_harness`` reads the DB-home ``agent_harness`` setting and returns the
 transport backend: the default resolves to :class:`ClaudeSdkHarness`
 (byte-identical to the pre-seam transport), ``pydantic_ai`` resolves to
-:class:`PydanticAiHarness` (#2885's OrcaRouter-BYOK, OpenAI-compatible backend),
+:class:`PydanticAiHarness` (#2885's the OpenAI-compatible backend-BYOK, OpenAI-compatible backend),
 and the ``T3_AGENT_HARNESS`` env / ``ConfigSetting`` store are the switch.
 ``_drive_with_heartbeat`` talks only to the narrow ``HarnessSession`` surface, so
 an arbitrary backend drives a run — both backends yield the SAME
@@ -46,18 +46,20 @@ from teatree.agents.harness import (
 )
 from teatree.agents.harness_options import HarnessOptions
 from teatree.agents.headless import LoopWatchdog, TaskUsage, _build_options, _drive_with_heartbeat, run_headless
+from teatree.agents.model_tiering import UnconfiguredOpenAICompatibleModelError
 from teatree.agents.pydantic_ai_config import (
     LANE_BULK,
     LANE_EVAL,
     LANE_FACTORY,
-    OrcaLaneConfig,
+    OpenAICompatibleLaneConfig,
     PydanticAiModelConfig,
-    build_orca_provider,
+    build_openai_compatible_provider,
 )
 from teatree.agents.pydantic_ai_resume import persist_parked_thread
 from teatree.config import get_effective_settings
 from teatree.core.models import ConfigSetting, Session, Task, TaskAttempt, Ticket, UsageWindowState
-from teatree.llm.credentials import CredentialError, OrcaRouterProviderConfig
+from teatree.llm.credentials import CredentialError
+from teatree.llm.openai_compatible import OpenAICompatibleBackend
 from tests.teatree_agents._sdk_fake import FakeHarness, FakeHarnessSession, assistant_text, result_message
 
 
@@ -130,7 +132,7 @@ class TestResolveHarness(TestCase):
 
     def test_stored_pydantic_ai_resolves_to_pydantic_ai_backend(self) -> None:
         ConfigSetting.objects.set_value("agent_harness", "pydantic_ai")
-        # Resolving the backend never itself requires a live OrcaRouter
+        # Resolving the backend never itself requires a live the OpenAI-compatible backend
         # credential — that resolves LAZILY inside PydanticAiHarness.open.
         assert isinstance(resolve_harness(), PydanticAiHarness)
 
@@ -286,21 +288,22 @@ class TestRunHeadlessDrivesPydanticAiHarness(TestCase):
         assert self.task.status == Task.Status.COMPLETED
         assert attempt.result["summary"] == "test summary"
 
-    def test_missing_orca_router_credential_records_a_clean_failure(self) -> None:
-        # No injected model, no ORCA_ROUTER_BASE_URL/ORCA_ROUTER_API_KEY in the
+    def test_missing_backend_router_credential_records_a_clean_failure(self) -> None:
+        # No injected model, no OPENAI_COMPATIBLE_BASE_URL/OPENAI_COMPATIBLE_API_KEY in the
         # environment — the lazily-resolved CredentialError is caught and
         # recorded, never an uncaught exception.
+        ConfigSetting.objects.set_value("openai_compatible_model", "vendor/some-model")
         with (
             patch.dict(os.environ, {}, clear=False),
             patch.object(headless_mod.TaskUsage, "for_task", classmethod(lambda cls, task: TaskUsage(0, 0.0))),
         ):
-            os.environ.pop("ORCA_ROUTER_BASE_URL", None)
-            os.environ.pop("ORCA_ROUTER_API_KEY", None)
+            os.environ.pop("OPENAI_COMPATIBLE_BASE_URL", None)
+            os.environ.pop("OPENAI_COMPATIBLE_API_KEY", None)
             attempt = run_headless(self.task, phase="coding", overlay_skill_metadata={})
 
         self.task.refresh_from_db()
         assert attempt.exit_code == 1
-        assert "ORCA_ROUTER" in attempt.error
+        assert "openai_compatible_base_url" in attempt.error
         assert self.task.status == Task.Status.FAILED
         # Refused before any attempt work beyond the failure record.
         assert TaskAttempt.objects.filter(task=self.task).count() == 1
@@ -308,7 +311,7 @@ class TestRunHeadlessDrivesPydanticAiHarness(TestCase):
     def test_missing_credential_on_resume_preserves_the_parked_thread(self) -> None:
         # (souliane/teatree#2916 review) `resolve_harness` pops the parked
         # ancestor's thread as a side effect of BUILDING the harness — before
-        # `harness.open()` ever runs, the only point OrcaRouter's credential
+        # `harness.open()` ever runs, the only point the OpenAI-compatible backend's credential
         # resolves. A credential failure must restore what it just consumed,
         # or the conversation is lost even though the run never happened.
         from teatree.agents.pydantic_ai_resume import persist_parked_thread  # noqa: PLC0415
@@ -318,18 +321,19 @@ class TestRunHeadlessDrivesPydanticAiHarness(TestCase):
         parked = Task.objects.create(ticket=self.ticket, session=self.session)
         persist_parked_thread(parked, history)
         resumed_task = Task.objects.create(ticket=self.ticket, session=self.session, phase="coding", parent_task=parked)
+        ConfigSetting.objects.set_value("openai_compatible_model", "vendor/some-model")
 
         with (
             patch.dict(os.environ, {}, clear=False),
             patch.object(headless_mod.TaskUsage, "for_task", classmethod(lambda cls, task: TaskUsage(0, 0.0))),
         ):
-            os.environ.pop("ORCA_ROUTER_BASE_URL", None)
-            os.environ.pop("ORCA_ROUTER_API_KEY", None)
+            os.environ.pop("OPENAI_COMPATIBLE_BASE_URL", None)
+            os.environ.pop("OPENAI_COMPATIBLE_API_KEY", None)
             attempt = run_headless(resumed_task, phase="coding", overlay_skill_metadata={})
 
         resumed_task.refresh_from_db()
         assert attempt.exit_code == 1
-        assert "ORCA_ROUTER" in attempt.error
+        assert "openai_compatible_base_url" in attempt.error
         assert resumed_task.status == Task.Status.FAILED
         self.ticket.refresh_from_db()
         assert str(parked.pk) in self.ticket.extra.get("pydantic_ai_threads", {})
@@ -348,13 +352,13 @@ class TestRunHeadlessDrivesPydanticAiHarness(TestCase):
         resumed_task = Task.objects.create(ticket=self.ticket, session=self.session, phase="coding", parent_task=parked)
 
         def _boom(_self: PydanticAiHarness, _options: object) -> object:
-            msg = "orca router transport unavailable"
+            msg = "backend router transport unavailable"
             raise RuntimeError(msg)
 
         with (
             patch.object(harness_mod.PydanticAiHarness, "_resolve_model", _boom),
             patch.object(headless_mod.TaskUsage, "for_task", classmethod(lambda cls, task: TaskUsage(0, 0.0))),
-            pytest.raises(RuntimeError, match="orca router transport unavailable"),
+            pytest.raises(RuntimeError, match="backend router transport unavailable"),
         ):
             run_headless(resumed_task, phase="coding", overlay_skill_metadata={})
 
@@ -685,16 +689,15 @@ class TestRunHeadlessCachedResumeParity(TestCase):
 
 
 class TestPydanticAiHarnessRegulatedPathGate(TestCase):
-    """#2887: on a regulated lane, a model off the allowlist never reaches the OrcaRouter provider."""
+    """#2887: on a regulated lane, a model off the allowlist never reaches the provider."""
 
     def setUp(self) -> None:
-        os.environ.pop("ORCA_ROUTER_BASE_URL", None)
-        os.environ.pop("ORCA_ROUTER_API_KEY", None)
+        os.environ.pop("OPENAI_COMPATIBLE_BASE_URL", None)
+        os.environ.pop("OPENAI_COMPATIBLE_API_KEY", None)
 
     def test_model_off_the_allowlist_raises_before_credential_resolution(self) -> None:
-        # No OrcaRouter credential configured — proves the regulated-path allowlist
-        # check fires FIRST (a config-policy ValueError), not the credential check
-        # (which would instead raise CredentialError naming ORCA_ROUTER).
+        # No backend credential configured — proves the regulated-path allowlist check
+        # fires FIRST (a config-policy ValueError), not the credential/endpoint check.
         ConfigSetting.objects.set_value("enforce_regulated_path", value=True)
         ConfigSetting.objects.set_value("regulated_path_model_allowlist", value=["anthropic/"])
         options = ClaudeAgentOptions(model="deepseek/deepseek-v4-pro")
@@ -707,7 +710,7 @@ class TestPydanticAiHarnessRegulatedPathGate(TestCase):
         # so resolution proceeds to the (here unconfigured) credential step.
         options = ClaudeAgentOptions(model="deepseek/deepseek-v4-pro")
 
-        with pytest.raises(CredentialError, match="ORCA_ROUTER"):
+        with pytest.raises(CredentialError, match="openai_compatible_base_url"):
             PydanticAiHarness()._resolve_model(options)
 
     def test_allowlisted_model_reaches_the_credential_step(self) -> None:
@@ -715,7 +718,7 @@ class TestPydanticAiHarnessRegulatedPathGate(TestCase):
         ConfigSetting.objects.set_value("regulated_path_model_allowlist", value=["deepseek/"])
         options = ClaudeAgentOptions(model="deepseek/deepseek-v4-pro")
 
-        with pytest.raises(CredentialError, match="ORCA_ROUTER"):
+        with pytest.raises(CredentialError, match="openai_compatible_base_url"):
             PydanticAiHarness()._resolve_model(options)
 
 
@@ -922,78 +925,86 @@ class TestResolveEffort:
 
 
 class TestPydanticAiModelIdNormalization(TestCase):
-    """``_resolve_model`` sends OrcaRouter an id its catalog carries (plan §3.2 bug fix)."""
+    """``_resolve_model`` sends the endpoint an id its catalog carries."""
 
     @pytest.fixture(autouse=True)
-    def _orca_env(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setenv("ORCA_ROUTER_BASE_URL", "https://api.orcarouter.ai/v1")
-        monkeypatch.setenv("ORCA_ROUTER_API_KEY", "sk-orca-test")
+    def _backend_env(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("OPENAI_COMPATIBLE_BASE_URL", "https://api.example.invalid/v1")
+        monkeypatch.setenv("OPENAI_COMPATIBLE_API_KEY", "dummy-backend-test-value")
 
-    def test_claude_dash_form_default_is_normalised_to_the_router_handle(self) -> None:
+    @staticmethod
+    def _configured_harness() -> PydanticAiHarness:
+        return PydanticAiHarness(
+            config=PydanticAiModelConfig(backend=OpenAICompatibleLaneConfig(model="vendor/some-model"))
+        )
+
+    def test_claude_dash_form_default_is_normalised_to_the_configured_model(self) -> None:
         # The bug: options.model carries a teatree-abstract-tier default in Claude
-        # dash-form (claude-opus-4-8), which OrcaRouter does NOT carry. It must be
-        # normalised to the router handle, never sent verbatim.
-        model = PydanticAiHarness()._resolve_model(HarnessOptions(model="claude-opus-4-8"))
-        assert model.model_name == "orcarouter/teatree-factory"
+        # dash-form (claude-opus-4-8), which the endpoint does NOT carry. It must be
+        # normalised to the configured id, never sent verbatim.
+        model = self._configured_harness()._resolve_model(HarnessOptions(model="claude-opus-4-8"))
+        assert model.model_name == "vendor/some-model"
 
-    def test_no_model_pin_resolves_to_the_router_handle(self) -> None:
-        model = PydanticAiHarness()._resolve_model(HarnessOptions())
-        assert model.model_name == "orcarouter/teatree-factory"
+    def test_no_model_pin_resolves_to_the_configured_model(self) -> None:
+        model = self._configured_harness()._resolve_model(HarnessOptions())
+        assert model.model_name == "vendor/some-model"
 
-    def test_explicit_orca_native_pin_passes_through(self) -> None:
-        model = PydanticAiHarness()._resolve_model(HarnessOptions(model="deepseek/deepseek-v4-pro"))
+    def test_explicit_provider_native_pin_passes_through(self) -> None:
+        model = self._configured_harness()._resolve_model(HarnessOptions(model="deepseek/deepseek-v4-pro"))
         assert model.model_name == "deepseek/deepseek-v4-pro"
 
     def test_a_model_off_the_regulated_allowlist_is_refused(self) -> None:
         ConfigSetting.objects.set_value("enforce_regulated_path", value=True)
         ConfigSetting.objects.set_value("regulated_path_model_allowlist", value=["anthropic/"])
         with pytest.raises(ValueError, match="not eligible for the regulated path"):
-            PydanticAiHarness()._resolve_model(HarnessOptions(model="deepseek/deepseek-v4-pro"))
+            self._configured_harness()._resolve_model(HarnessOptions(model="deepseek/deepseek-v4-pro"))
 
 
-class TestBuildOrcaProvider(TestCase):
-    """``_build_orca_provider`` — the OrcaRouter provider + x-lane header (plan §3.4)."""
+class TestBuildOpenAICompatibleProvider(TestCase):
+    """``build_openai_compatible_provider`` — the configured provider + the x-lane header."""
 
     @pytest.fixture(autouse=True)
-    def _orca_env(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setenv("ORCA_ROUTER_BASE_URL", "https://api.orcarouter.ai/v1")
-        monkeypatch.setenv("ORCA_ROUTER_API_KEY", "sk-orca-test")
+    def _backend_env(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("OPENAI_COMPATIBLE_BASE_URL", "https://api.example.invalid/v1")
+        monkeypatch.setenv("OPENAI_COMPATIBLE_API_KEY", "dummy-backend-test-value")
 
     def test_factory_lane_rides_the_x_lane_header(self) -> None:
-        provider = build_orca_provider(lane=LANE_FACTORY)
+        provider = build_openai_compatible_provider(OpenAICompatibleLaneConfig(lane=LANE_FACTORY))
         assert provider.client.default_headers["x-lane"] == "factory"
-        assert str(provider.client.base_url).rstrip("/") == "https://api.orcarouter.ai/v1"
+        assert str(provider.client.base_url).rstrip("/") == "https://api.example.invalid/v1"
 
     def test_eval_lane_rides_the_x_lane_header(self) -> None:
-        provider = build_orca_provider(lane=LANE_EVAL)
+        provider = build_openai_compatible_provider(OpenAICompatibleLaneConfig(lane=LANE_EVAL))
         assert provider.client.default_headers["x-lane"] == "eval"
 
     def test_bulk_lane_rides_the_x_lane_header(self) -> None:
         # A secondary overlay's cheap bulk-leg lane: a router DSL rule keys on
         # ``headers["x-lane"] == "bulk"``.
-        provider = build_orca_provider(lane=LANE_BULK)
+        provider = build_openai_compatible_provider(OpenAICompatibleLaneConfig(lane=LANE_BULK))
         assert provider.client.default_headers["x-lane"] == "bulk"
 
     def _capture_pass_path(self, pass_path: str | None) -> str:
         captured: dict[str, str] = {}
 
-        def _spy(*, credential: object) -> object:
+        def _spy(*, base_url: str, model: str, credential: object) -> object:
             captured["path"] = credential._effective_spec().pass_path
-            return OrcaRouterProviderConfig(api_key="sk", base_url="https://api.orcarouter.ai/v1")
+            return OpenAICompatibleBackend(
+                api_key="sk", base_url="https://api.example.invalid/v1", model="vendor/some-model"
+            )
 
-        with patch.object(pyconfig_mod, "resolve_orca_router_provider_config", _spy):
-            build_orca_provider(lane=LANE_FACTORY, pass_path=pass_path)
+        with patch.object(pyconfig_mod, "resolve_openai_compatible_backend", _spy):
+            build_openai_compatible_provider(OpenAICompatibleLaneConfig(lane=LANE_FACTORY, credential_entry=pass_path))
         return captured["path"]
 
     def test_configured_pass_path_is_injected_into_the_credential(self) -> None:
-        # The orca_router_pass_path DB-home setting points teatree at an existing
+        # The openai_compatible_credential_entry DB-home setting points teatree at an existing
         # per-account pass entry with NO copy (plan §3.6 / task item 4).
-        path = "orcarouter/office@example.com/api-key"
+        path = "vendor/office@example.com/api-key"
         assert self._capture_pass_path(path) == path
 
     def test_empty_pass_path_has_no_builtin(self) -> None:
-        # No built-in default: with no configured orca_router_pass_path the credential's
-        # effective pass_path stays None — it resolves from ORCA_ROUTER_API_KEY or fails loud.
+        # No built-in default: with no configured openai_compatible_credential_entry the credential's
+        # effective pass_path stays None — it resolves from OPENAI_COMPATIBLE_API_KEY or fails loud.
         assert self._capture_pass_path(None) is None
 
 
@@ -1019,11 +1030,11 @@ class TestPydanticAiStepCap(TestCase):
         ConfigSetting.objects.set_value("pydantic_ai_request_limit", value=3)
         harness = resolve_harness(phase="coding")
         assert isinstance(harness, PydanticAiHarness)
-        assert harness._orca.request_limit == 3
+        assert harness._backend.request_limit == 3
 
     def test_open_threads_the_request_limit_into_the_session(self) -> None:
         harness = PydanticAiHarness(
-            model=TestModel(), config=PydanticAiModelConfig(orca=OrcaLaneConfig(request_limit=4))
+            model=TestModel(), config=PydanticAiModelConfig(backend=OpenAICompatibleLaneConfig(request_limit=4))
         )
 
         async def drive() -> int | None:
@@ -1035,7 +1046,7 @@ class TestPydanticAiStepCap(TestCase):
 
     def test_positive_max_turns_wins_over_request_limit(self) -> None:
         harness = PydanticAiHarness(
-            model=TestModel(), config=PydanticAiModelConfig(orca=OrcaLaneConfig(request_limit=4))
+            model=TestModel(), config=PydanticAiModelConfig(backend=OpenAICompatibleLaneConfig(request_limit=4))
         )
 
         async def drive() -> int | None:
@@ -1049,7 +1060,7 @@ class TestPydanticAiStepCap(TestCase):
         # Headless dispatch sends max_turns=0 → the lane's request_limit is untouched, so an
         # uncapped dispatch stays byte-identical and only a positive caller cap changes behaviour.
         harness = PydanticAiHarness(
-            model=TestModel(), config=PydanticAiModelConfig(orca=OrcaLaneConfig(request_limit=4))
+            model=TestModel(), config=PydanticAiModelConfig(backend=OpenAICompatibleLaneConfig(request_limit=4))
         )
 
         async def drive() -> int | None:
@@ -1069,15 +1080,22 @@ class TestPydanticAiStepCap(TestCase):
 
         assert asyncio.run(drive()) is True
 
-    def test_default_setting_is_a_conservative_cap(self) -> None:
-        assert get_effective_settings().pydantic_ai_request_limit == 5
+    def test_default_setting_is_a_real_turn_budget(self) -> None:
+        # A live Lane-B task runs ~16 model requests, so the cap is a generous budget
+        # well above that reality (the old 5 refused mid-task before ``open()``).
+        assert get_effective_settings().pydantic_ai_request_limit == 40
 
 
 class TestPydanticAiMaxTokens(TestCase):
     """The per-request ``max_tokens`` ceiling reaches the model settings (binding-agnostic)."""
 
-    def test_default_setting_is_generous(self) -> None:
-        assert get_effective_settings().pydantic_ai_max_tokens == 16384
+    def test_default_setting_is_the_owner_chosen_ceiling(self) -> None:
+        from teatree.config.settings import PYDANTIC_AI_MAX_TOKENS_DEFAULT  # noqa: PLC0415 — test-local
+
+        # The owner chose 16384 (a generous ceiling paired with a truncation alert), carried
+        # in a named constant, not a magic literal on the field.
+        assert PYDANTIC_AI_MAX_TOKENS_DEFAULT == 16384
+        assert get_effective_settings().pydantic_ai_max_tokens == PYDANTIC_AI_MAX_TOKENS_DEFAULT
 
     def test_resolve_harness_reads_the_configured_max_tokens_synchronously(self) -> None:
         # Resolved SYNC in resolve_harness (before asyncio.run) — a read inside the
@@ -1124,103 +1142,105 @@ class TestVerifierPinnedToClaude(TestCase):
         assert isinstance(resolve_harness(), PydanticAiHarness)
 
 
-class TestOrcaRouterLaneAndRouterNameCallSite(TestCase):
-    """The two-router call-site plumbing: config-driven lane + router-handle, resolved TOGETHER.
+class TestOpenAICompatibleLaneAndModelCallSite(TestCase):
+    """The call-site plumbing: config-driven endpoint + model + lane, resolved TOGETHER.
 
-    ``resolve_harness`` resolves the DB-home ``orca_router_lane`` / ``orca_router_name``
-    settings SYNCHRONOUSLY into ``OrcaLaneConfig``, and ``_resolve_model`` binds the
-    OrcaRouter base_url + key + router handle + ``x-lane`` header together for the
-    selected lane — never a half-swap.
+    ``resolve_harness`` resolves the generic DB-home backend settings SYNCHRONOUSLY into
+    ``OpenAICompatibleLaneConfig``, and ``_resolve_model`` binds base_url + key + model +
+    ``x-lane`` together for the selected lane — never a half-swap.
     """
 
     @pytest.fixture(autouse=True)
     def _isolate_env(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.delenv("T3_AGENT_HARNESS", raising=False)
         monkeypatch.delenv("T3_OVERLAY_NAME", raising=False)
-        monkeypatch.delenv("T3_ORCA_ROUTER_LANE", raising=False)
-        monkeypatch.delenv("T3_ORCA_ROUTER_NAME", raising=False)
-        monkeypatch.setenv("ORCA_ROUTER_BASE_URL", "https://api.orcarouter.ai/v1")
-        monkeypatch.setenv("ORCA_ROUTER_API_KEY", "sk-orca-test")
+        monkeypatch.delenv("T3_OPENAI_COMPATIBLE_LANE", raising=False)
+        monkeypatch.delenv("T3_OPENAI_COMPATIBLE_MODEL", raising=False)
+        monkeypatch.setenv("OPENAI_COMPATIBLE_BASE_URL", "https://api.example.invalid/v1")
+        monkeypatch.setenv("OPENAI_COMPATIBLE_API_KEY", "dummy-backend-test-value")
 
-    def test_router_name_config_threads_into_the_resolved_model(self) -> None:
-        # The secondary-router selection: an overlay pointing at its own named router
-        # resolves the handle, driven by config — not hardcoded to teatree-factory.
+    def test_configured_model_threads_into_the_resolved_model(self) -> None:
+        # The whole-lane model selection: an overlay pointing at its own model id
+        # resolves it, driven by config — never a hardcoded provider handle.
         harness = PydanticAiHarness(
-            config=PydanticAiModelConfig(orca=OrcaLaneConfig(router_name="orcarouter/secondary-factory"))
+            config=PydanticAiModelConfig(backend=OpenAICompatibleLaneConfig(model="vendor/other-model"))
         )
         model = harness._resolve_model(HarnessOptions(model="claude-opus-4-8"))
-        assert model.model_name == "orcarouter/secondary-factory"
+        assert model.model_name == "vendor/other-model"
 
-    def test_default_orca_lane_config_keeps_the_teatree_factory_handle(self) -> None:
-        model = PydanticAiHarness()._resolve_model(HarnessOptions(model="claude-opus-4-8"))
-        assert model.model_name == "orcarouter/teatree-factory"
+    def test_an_unconfigured_model_fails_loud_rather_than_guessing(self) -> None:
+        with pytest.raises(UnconfiguredOpenAICompatibleModelError, match="openai_compatible_model"):
+            PydanticAiHarness()._resolve_model(HarnessOptions(model="claude-opus-4-8"))
 
-    def test_resolve_harness_reads_lane_and_router_name_synchronously(self) -> None:
+    def test_resolve_harness_reads_the_generic_backend_settings_synchronously(self) -> None:
         ConfigSetting.objects.set_value("agent_harness", "pydantic_ai")
-        ConfigSetting.objects.set_value("orca_router_lane", "bulk")
-        ConfigSetting.objects.set_value("orca_router_name", "orcarouter/secondary-factory")
+        ConfigSetting.objects.set_value("openai_compatible_lane", "bulk")
+        ConfigSetting.objects.set_value("openai_compatible_model", "vendor/other-model")
+        ConfigSetting.objects.set_value("openai_compatible_base_url", "https://db.example.invalid/v1")
+        ConfigSetting.objects.set_value("openai_compatible_credential_entry", "vendor/account/api-key")
         harness = resolve_harness(phase="coding")
         assert isinstance(harness, PydanticAiHarness)
-        assert harness._orca.lane == "bulk"
-        assert harness._orca.router_name == "orcarouter/secondary-factory"
+        assert harness._backend.lane == "bulk"
+        assert harness._backend.model == "vendor/other-model"
+        assert harness._backend.base_url == "https://db.example.invalid/v1"
+        assert harness._backend.credential_entry == "vendor/account/api-key"
 
-    def test_default_lane_is_factory(self) -> None:
+    def test_default_lane_is_factory_with_nothing_configured(self) -> None:
         ConfigSetting.objects.set_value("agent_harness", "pydantic_ai")
         harness = resolve_harness(phase="coding")
         assert isinstance(harness, PydanticAiHarness)
-        assert harness._orca.lane == "factory"
-        assert harness._orca.router_name is None
+        assert harness._backend.lane == "factory"
+        assert harness._backend.model is None
+        assert harness._backend.credential_entry is None
 
     def test_base_url_key_model_and_x_lane_resolve_together_for_the_lane(self) -> None:
-        # (a): with OrcaRouter configured, one call binds base_url + key + router
-        # handle + x-lane for the right lane — a whole binding, not a half-swap.
+        # One call binds base_url + key + model + x-lane for the right lane — a whole
+        # binding, not a half-swap.
         harness = PydanticAiHarness(
-            config=PydanticAiModelConfig(
-                orca=OrcaLaneConfig(lane=LANE_BULK, router_name="orcarouter/secondary-factory")
-            )
+            config=PydanticAiModelConfig(backend=OpenAICompatibleLaneConfig(lane=LANE_BULK, model="vendor/other-model"))
         )
         model = harness._resolve_model(HarnessOptions(model="claude-opus-4-8"))
-        assert model.model_name == "orcarouter/secondary-factory"
+        assert model.model_name == "vendor/other-model"
         client = model.client
-        assert str(client.base_url).rstrip("/") == "https://api.orcarouter.ai/v1"
-        assert client.api_key == "sk-orca-test"
+        assert str(client.base_url).rstrip("/") == "https://api.example.invalid/v1"
+        assert client.api_key == "dummy-backend-test-value"
         assert client.default_headers["x-lane"] == "bulk"
 
 
-class TestOrcaRouterInertByDefault(TestCase):
-    """(b): default config → ZERO OrcaRouter involvement. The whole feature ships DARK."""
+class TestOpenAICompatibleInertByDefault(TestCase):
+    """(b): default config → ZERO the OpenAI-compatible backend involvement. The whole feature ships DARK."""
 
     @pytest.fixture(autouse=True)
     def _isolate_env(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.delenv("T3_AGENT_HARNESS", raising=False)
         monkeypatch.delenv("T3_OVERLAY_NAME", raising=False)
-        # No ORCA_ROUTER_* configured, and no agent_harness row: the default path
-        # must never touch OrcaRouter credential/base-url resolution.
-        monkeypatch.delenv("ORCA_ROUTER_BASE_URL", raising=False)
-        monkeypatch.delenv("ORCA_ROUTER_API_KEY", raising=False)
+        # Nothing configured, and no agent_harness row: the default path
+        # must never touch the OpenAI-compatible backend credential/base-url resolution.
+        monkeypatch.delenv("OPENAI_COMPATIBLE_BASE_URL", raising=False)
+        monkeypatch.delenv("OPENAI_COMPATIBLE_API_KEY", raising=False)
 
-    def test_default_harness_is_claude_sdk_and_never_resolves_orca(self) -> None:
+    def test_default_harness_is_claude_sdk_and_never_resolves_backend(self) -> None:
         for phase in (None, "coding", "planning", "reviewing"):
             with self.subTest(phase=phase):
                 assert isinstance(resolve_harness(phase=phase), ClaudeSdkHarness)
 
-    def test_default_settings_do_not_route_to_orca(self) -> None:
+    def test_default_settings_do_not_route_to_backend(self) -> None:
         settings = get_effective_settings()
         assert settings.agent_harness.value == "claude_sdk"
-        assert settings.orca_router_lane == "factory"
-        assert settings.orca_router_name == ""
+        assert settings.openai_compatible_lane == "factory"
+        assert settings.openai_compatible_model == ""
 
-    def test_building_the_default_harness_makes_no_orca_credential_call(self) -> None:
-        # Selecting the default backend must not itself resolve an OrcaRouter
+    def test_building_the_default_harness_makes_no_backend_credential_call(self) -> None:
+        # Selecting the default backend must not itself resolve an the OpenAI-compatible backend
         # credential/base-url — proves the DARK feature stays inert with no key set.
-        with patch.object(pyconfig_mod, "resolve_orca_router_provider_config") as spy:
+        with patch.object(pyconfig_mod, "resolve_openai_compatible_backend") as spy:
             harness = resolve_harness(phase="coding")
         assert isinstance(harness, ClaudeSdkHarness)
         spy.assert_not_called()
 
 
-class TestOrcaInertByDefault(TestCase):
-    """DEFAULT config keeps every dispatch on claude_sdk — OrcaRouter is inert until enabled."""
+class TestOpenAICompatibleDispatchInertByDefault(TestCase):
+    """DEFAULT config keeps every dispatch on claude_sdk — the backend is inert until enabled."""
 
     @pytest.fixture(autouse=True)
     def _isolate_env(self, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -1235,8 +1255,8 @@ class TestOrcaInertByDefault(TestCase):
             with self.subTest(phase=phase):
                 assert isinstance(resolve_harness(phase=phase), ClaudeSdkHarness)
 
-    def test_orca_credential_is_never_resolved_on_the_default_path(self) -> None:
-        with patch.object(pyconfig_mod, "resolve_orca_router_provider_config") as resolve_orca:
+    def test_backend_credential_is_never_resolved_on_the_default_path(self) -> None:
+        with patch.object(pyconfig_mod, "resolve_openai_compatible_backend") as resolve_backend:
             harness = resolve_harness(phase="coding")
             assert isinstance(harness, ClaudeSdkHarness)
-        resolve_orca.assert_not_called()
+        resolve_backend.assert_not_called()

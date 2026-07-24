@@ -162,17 +162,18 @@ class TestAutonomyCollapseWithDbHomeGates(TestCase):
     def test_full_autonomy_collapses_unpinned_db_home_gates(self) -> None:
         ConfigSetting.objects.set_value("autonomy", "full")
         settings = get_effective_settings()
-        assert settings.require_human_approval_to_merge is False
         assert settings.require_human_approval_to_answer is False
         assert settings.on_behalf_post_mode is OnBehalfPostMode.IMMEDIATE
         assert settings.mode is Mode.AUTO
+        # #3630: the merge review gate is not tier-governed and keeps its default.
+        assert settings.require_human_approval_to_merge is True
 
     def test_autonomy_collapse_respects_db_global_pin(self) -> None:
         ConfigSetting.objects.set_value("autonomy", "full")
-        ConfigSetting.objects.set_value("require_human_approval_to_merge", value=True)
+        ConfigSetting.objects.set_value("require_human_approval_to_answer", value=True)
         settings = get_effective_settings()
-        assert settings.require_human_approval_to_merge is True
-        assert settings.require_human_approval_to_answer is False
+        assert settings.require_human_approval_to_answer is True
+        assert settings.on_behalf_post_mode is OnBehalfPostMode.IMMEDIATE
 
 
 class TestSpeakAndMrReminderDbHome(TestCase):

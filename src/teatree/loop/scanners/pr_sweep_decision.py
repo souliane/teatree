@@ -14,7 +14,7 @@ from typing import TYPE_CHECKING
 
 from teatree.core.merge import classify_required_rollup, failing_required_names
 from teatree.core.models.merge_clear import MergeClear
-from teatree.core.review.author_trust import classify_pr_provenance
+from teatree.core.review.author_trust import AuthorSubject, AutonomyGate, TrustVerdict, decide_author_trust
 from teatree.core.review.review_candidate import author_is_self
 from teatree.loop.pr_ticket_index import resolve_author_ticket
 from teatree.loop.scanners.pr_sweep_types import REPO_STATE_CHECK_NAMES, UV_AUDIT_CHECK_NAME, PrSummary
@@ -32,9 +32,12 @@ def untrusted_merge_provenance(pr: PrSummary) -> bool:
     author is a trusted identity — the strict fork-holds model. A same-repo head
     (``same_repo is True``) is trusted. Unreported provenance (``None``) fails
     closed to the identity+visibility author check. Delegates to the shared
-    :func:`classify_pr_provenance` so this rung and the merge keystone cannot drift.
+    :func:`decide_author_trust` at the ``MERGE`` gate — the ONE autonomy decision
+    issue intake also applies (#3577) — so this rung, the merge keystone and the
+    intake gate cannot drift.
     """
-    return classify_pr_provenance(pr.slug, pr.author, same_repo=pr.same_repo).untrusted
+    subject = AuthorSubject(slug=pr.slug, author=pr.author, same_repo=pr.same_repo)
+    return decide_author_trust(subject, gate=AutonomyGate.MERGE) is TrustVerdict.HUMAN_REVIEW
 
 
 def pr_authored_by_self(*, author: str, self_identities: Iterable[str]) -> bool:

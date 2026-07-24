@@ -80,7 +80,7 @@ class TestWorkerMemoryCapCheck:
         assert capsys.readouterr().out == ""
 
     def test_lean_admin_cap_never_warns(self, tmp_path: Path, capsys) -> None:
-        # Admin is correctly small (512m) — a non-worker role must NOT warn even under the floor.
+        # A non-worker role must NOT warn even when its cap sits under the worker floor.
         v2, v1 = _cgroup(tmp_path, v2=str(512 * 1024 * 1024))
         assert _check_worker_memory_cap(role="admin", v2=v2, v1=v1) is True
         assert capsys.readouterr().out == ""

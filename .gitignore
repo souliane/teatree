@@ -95,3 +95,12 @@ deploy/teatree.env
 # only ever built by tests/conftest.py::django_db_setup into a runner-local
 # or actions/cache-restored path.
 /.cache/django-test-template/
+
+# working notes for the mega consolidation - never commit
+MEGA_NOTES.md
+
+# one-shot analyses / plans - never committed (owner decision 2026-07-23)
+docs/audits/
+docs/research/
+
+.coverage*

@@ -17,11 +17,16 @@ non-blank ``extra["issue_title"]`` but blank ``short_description``,
 the scanner enqueues a ``Task(phase="short_describe",
 execution_target=HEADLESS)``. The actual LLM call lives in the
 headless worker — no synchronous LLM in scan().
+
+That enqueue dedups on the ARTIFACT, not on a task: only in-flight work
+suppresses a duplicate, because a terminal task proves an attempt was made
+and never that the field was written. The per-ticket attempt budget
+(``Ticket.consume_phase_attempt``) is what keeps dedup-by-artifact bounded.
 """
 
 import logging
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING, Final, cast
 
 from django.apps import apps
 
@@ -34,6 +39,17 @@ if TYPE_CHECKING:
     from teatree.core.models import Ticket
 
 _TERMINAL_STATES: frozenset[str] = frozenset({"delivered", "review_posted", "ignored"})
+
+#: How many ``short_describe`` tasks this scanner may enqueue for one ticket before
+#: giving up on it permanently. Three covers a transient failure of the one-shot turn
+#: (timeout, backend blip); past that the write path is broken rather than unlucky,
+#: because the deterministic runner is a single pass that falls back to truncating the
+#: cached title, so a run that neither writes nor raises will not write on a fourth try
+#: either. Giving up is safe rather than lossy — ``title`` below already falls back to
+#: the cached tracker title, so a spent ticket renders exactly as it did before the
+#: summariser existed. Mirrors ``IncomingEvent``'s ``MAX_INGEST_ATTEMPTS``: a module
+#: constant owned by the caller, not a config setting.
+SHORT_DESCRIBE_MAX_ATTEMPTS: Final[int] = 3
 
 
 @dataclass(slots=True)
@@ -84,19 +100,36 @@ class ActiveTicketsScanner:
 def _enqueue_short_describe(ticket: "Ticket") -> None:
     """Idempotently enqueue a headless ``short_describe`` task for *ticket*.
 
-    Skips when a non-terminal task with the same phase already exists for
-    the ticket — at-least-once delivery from django-tasks means the loop
-    may scan again before the previous task lands.
+    Dedups on IN-FLIGHT work only (``Task.Status.active()``), the same filter
+    every sibling scanner uses: at-least-once delivery from django-tasks means
+    the loop may scan again before the previous task lands, so a PENDING or
+    CLAIMED task is a real duplicate.
+
+    A TERMINAL task is deliberately NOT a duplicate. The caller reaches here
+    only when ``short_description`` is blank — it has just observed that the
+    artifact this phase owed is absent — so treating a COMPLETED task as "handled"
+    would contradict the very condition that got us here. A task is evidence that
+    an attempt happened, never that it delivered; only the field itself is
+    evidence of the field. Counting a completion as done is what let an agent that
+    called ``task_complete`` without writing anything wedge a ticket blank
+    permanently, since the dedup then matched forever and no tick could re-enqueue.
+
+    ``consume_phase_attempt`` is the other half: dedup-by-artifact re-enqueues for
+    as long as the artifact is missing, so a phase that can never write its field
+    would spin every tick. The budget bounds that and gives up terminally; a spent
+    ticket keeps rendering its cached tracker title.
     """
     from teatree.core.models import Task  # noqa: PLC0415 — deferred: ORM import needs the app registry
     from teatree.core.models.session import Session  # noqa: PLC0415 — deferred: ORM import needs the app registry
 
-    existing = Task.objects.filter(
+    in_flight = Task.objects.filter(
         ticket=ticket,
         phase=SHORT_DESCRIBE_PHASE,
-        status__in=[Task.Status.PENDING, Task.Status.CLAIMED, Task.Status.COMPLETED],
+        status__in=Task.Status.active(),
     )
-    if existing.exists():
+    if in_flight.exists():
+        return
+    if not ticket.consume_phase_attempt(SHORT_DESCRIBE_PHASE, max_attempts=SHORT_DESCRIBE_MAX_ATTEMPTS):
         return
     session = Session.objects.create(ticket=ticket, agent_id="short-describe")
     Task.objects.create(

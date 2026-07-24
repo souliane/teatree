@@ -11,9 +11,9 @@ from django_typer.management import TyperCommand, command
 from teatree.agents._headless_options import UUID_RE
 from teatree.agents.prompt import build_interactive_context
 from teatree.agents.skill_bundle import resolve_skill_bundle
+from teatree.core.deterministic_phases import run_deterministic_phase
 from teatree.core.intake.ticket_kind_classification import classify_ticket_kind
 from teatree.core.machine_output import emit
-from teatree.core.management.commands._deterministic_phases import run_deterministic_phase
 from teatree.core.management.commands.tasks_session_view import (
     TaskRow,
     render_reconcile_checklist,
@@ -378,7 +378,7 @@ class Command(TyperCommand):
         render the harness TODO list: that list is the agent's live in-memory
         ``TaskCreate`` / ``TaskUpdate`` state, which a CLI subprocess cannot read
         (it can only see a stale on-disk snapshot that lags the live session).
-        ``/t3:todos`` builds the harness half from the live ``TaskList`` harness
+        ``/t3:checking`` builds the harness half from the live ``TaskList`` harness
         tool instead, so this view never masquerades as the live session list.
         """
         session_id = current_session_id()

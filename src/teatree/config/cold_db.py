@@ -27,23 +27,26 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import cast
 
+from teatree.paths import ControlDb
+
 _RUNNABLE_LOOP_STATUS = "enabled"
 
 
 def canonical_config_db(env: Mapping[str, str] = os.environ, home: Path | None = None) -> Path:
     """Resolve the PRIMARY config DB path, never the per-worktree isolated one.
 
-    `T3_CONFIG_DB` wins (an explicit test/override hook), then `XDG_DATA_HOME`,
-    else `~/.local/share`. This intentionally ignores the worktree-isolation
-    logic in `teatree.paths.resolve_data_dir` so a worktree checkout resolves to
-    the same DB the installed `t3` uses.
+    Delegates to the ONE resolution seam (:meth:`teatree.paths.ControlDb.primary`,
+    #3514) rather than re-implementing the `T3_CONFIG_DB` → `XDG_DATA_HOME` →
+    `~/.local/share` precedence: two copies of that precedence is how subcommands
+    came to disagree about which database they were talking to. It intentionally
+    takes the PRIMARY branch of the seam, so a worktree checkout resolves the same
+    DB the installed `t3` uses.
+
+    An absent `home` is left for the seam to default LAZILY, never pre-resolved here:
+    an explicit `T3_CONFIG_DB` fixes the answer before any home lookup, so a cold read
+    under that override must not touch the home tree at all.
     """
-    override = env.get("T3_CONFIG_DB")
-    if override:
-        return Path(override)
-    xdg = env.get("XDG_DATA_HOME")
-    base = Path(xdg) if xdg else (home or Path.home()) / ".local" / "share"
-    return base / "teatree" / "db.sqlite3"
+    return ControlDb(env, home).primary()
 
 
 def _open_readonly(db: Path, parameters: str) -> sqlite3.Connection:

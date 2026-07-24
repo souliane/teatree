@@ -36,36 +36,36 @@ def _tool(toolset, name):
 class TestFilesystemTools:
     def test_write_then_read_round_trips(self, tmp_path: Path) -> None:
         ts = build_filesystem_toolset(tmp_path)
-        _tool(ts, "write_file")("notes/a.txt", "hello")
+        _tool(ts, "Write")("notes/a.txt", "hello")
         assert (tmp_path / "notes/a.txt").read_text() == "hello"
-        assert _tool(ts, "read_file")("notes/a.txt") == "hello"
+        assert _tool(ts, "Read")("notes/a.txt") == "hello"
 
     def test_edit_replaces_first_occurrence(self, tmp_path: Path) -> None:
         ts = build_filesystem_toolset(tmp_path)
         (tmp_path / "f.txt").write_text("aXaXa")
-        _tool(ts, "edit_file")("f.txt", "X", "Y")
+        _tool(ts, "Edit")("f.txt", "X", "Y")
         assert (tmp_path / "f.txt").read_text() == "aYaXa"
 
     def test_edit_missing_substring_raises(self, tmp_path: Path) -> None:
         ts = build_filesystem_toolset(tmp_path)
         (tmp_path / "f.txt").write_text("abc")
         with pytest.raises(ValueError, match="substring not found"):
-            _tool(ts, "edit_file")("f.txt", "zzz", "y")
+            _tool(ts, "Edit")("f.txt", "zzz", "y")
 
     def test_search_finds_matching_files(self, tmp_path: Path) -> None:
         ts = build_filesystem_toolset(tmp_path)
         (tmp_path / "a.py").write_text("needle here")
         (tmp_path / "b.py").write_text("nothing")
-        assert _tool(ts, "search_files")("needle") == ["a.py"]
+        assert _tool(ts, "Grep")("needle") == ["a.py"]
 
     def test_read_only_toolset_has_no_write_tools(self, tmp_path: Path) -> None:
         ts = build_filesystem_toolset(tmp_path, allow_write=False)
-        assert "read_file" in ts.tools
-        assert "search_files" in ts.tools
-        assert "write_file" not in ts.tools
-        assert "edit_file" not in ts.tools
+        assert "Read" in ts.tools
+        assert "Grep" in ts.tools
+        assert "Write" not in ts.tools
+        assert "Edit" not in ts.tools
 
     def test_write_outside_root_is_refused(self, tmp_path: Path) -> None:
         ts = build_filesystem_toolset(tmp_path)
         with pytest.raises(PathTraversalError):
-            _tool(ts, "write_file")("../escape.txt", "x")
+            _tool(ts, "Write")("../escape.txt", "x")

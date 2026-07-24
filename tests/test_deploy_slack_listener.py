@@ -97,11 +97,11 @@ class TestSlackListenerRole:
 
     def test_drain_writes_a_heartbeat_doctor_reads(self) -> None:
         # The heartbeat filename is the doctor↔entrypoint contract; the doctor
-        # side (`self_heal._SLACK_DRAIN_HEARTBEAT_FILENAME`) must name the same file.
-        from teatree.cli.doctor.self_heal import _SLACK_DRAIN_HEARTBEAT_FILENAME  # noqa: PLC0415 — test-local import
+        # side (`self_heal_slack_drain._HEARTBEAT_FILENAME`) must name the same file.
+        from teatree.cli.doctor.self_heal_slack_drain import _HEARTBEAT_FILENAME  # noqa: PLC0415 — test-local import
 
         body = _drain_loop_body()
-        assert _SLACK_DRAIN_HEARTBEAT_FILENAME in body
+        assert _HEARTBEAT_FILENAME in body
         assert "consecutive_failures" in body, "the heartbeat must carry the failure count doctor gates on"
 
     def test_role_is_documented_and_validated(self) -> None:

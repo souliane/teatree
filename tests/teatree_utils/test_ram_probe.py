@@ -208,8 +208,8 @@ class TestDeriveWorkerCpus:
 
 class TestDeriveWorkerMemLimitMib:
     def test_reserves_siblings_and_headroom(self) -> None:
-        # (32000 - 1280) * 0.8 = 24576.
-        assert derive_worker_mem_limit_mib(total_ram_mib=32000) == 24576
+        # (32000 - 3328) * 0.8 = 22937.
+        assert derive_worker_mem_limit_mib(total_ram_mib=32000) == 22937
 
     def test_floors_at_two_gib(self) -> None:
         # A tiny host still gets a usable worker cap, even above its RAM (a cap only).
@@ -221,7 +221,7 @@ class TestDeriveWorkerMemLimitMib:
 
     def test_reads_host_total_when_unset(self) -> None:
         with patch("teatree.utils.ram_probe.host_total_ram_mib", return_value=32000):
-            assert derive_worker_mem_limit_mib() == 24576
+            assert derive_worker_mem_limit_mib() == 22937
 
 
 class TestComposeSizingMain:

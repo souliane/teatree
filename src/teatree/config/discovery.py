@@ -11,7 +11,8 @@ from pathlib import Path
 from typing import Any
 
 import teatree.config as _facade
-from teatree.config.settings import OVERLAY_OVERRIDABLE_SETTINGS, TOML_OVERLAY_OVERRIDABLE_SETTINGS, OverlayEntry
+from teatree.config.setting_registries import OVERLAY_OVERRIDABLE_SETTINGS, TOML_OVERLAY_OVERRIDABLE_SETTINGS
+from teatree.config.settings import OverlayEntry
 
 
 def discover_overlays() -> list[OverlayEntry]:

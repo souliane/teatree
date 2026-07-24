@@ -1,0 +1,69 @@
+{% if config.error %}<div class="banner-red">{{ config.error }}</div>{% endif %}
+
+<section class="band">
+  <h2>Model &amp; reasoning effort</h2>
+  <table class="dash">
+    <thead><tr><th>setting</th><th>value</th></tr></thead>
+    <tbody>
+      {% for row in config.models %}<tr><td>{{ row.name }}</td><td class="mono">{{ row.value }}</td></tr>{% endfor %}
+      {% for row in config.agent %}<tr><td>{{ row.name }}</td><td class="mono">{{ row.value }}</td></tr>{% endfor %}
+    </tbody>
+  </table>
+</section>
+
+<section class="band">
+  <h2>Credentials</h2>
+  <p class="muted">Entry names only — a credential value is never rendered here.</p>
+  <table class="dash">
+    <thead><tr><th>setting</th><th>pass entry</th><th>resolves</th></tr></thead>
+    <tbody>
+      {% for entry in config.credentials %}
+        <tr class="{% if not entry.resolves %}stalled{% endif %}">
+          <td>{{ entry.setting }}</td>
+          <td class="mono">{{ entry.entry_name }}</td>
+          <td><strong class="{% if entry.resolves %}eff-yes{% else %}eff-no{% endif %}">{{ entry.resolves|yesno:"yes,no" }}</strong></td>
+        </tr>
+      {% empty %}
+        <tr><td colspan="3" class="muted">No credential entry is configured.</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</section>
+
+<section class="band">
+  <h2>Kill switches</h2>
+  <table class="dash">
+    <thead><tr><th>switch</th><th>state</th></tr></thead>
+    <tbody>
+      {% for row in config.kill_switches %}
+        <tr><td>{{ row.name }}</td><td><strong class="{% if row.value == 'on' %}eff-yes{% else %}eff-no{% endif %}">{{ row.value }}</strong></td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</section>
+
+<section class="band">
+  <h2>Concurrency &amp; memory caps</h2>
+  <table class="dash">
+    <thead><tr><th>dial</th><th class="num">value</th></tr></thead>
+    <tbody>
+      {% for row in config.concurrency %}<tr><td>{{ row.name }}</td><td class="num mono">{{ row.value }}</td></tr>{% endfor %}
+      {% for row in config.memory %}<tr><td>{{ row.name }}</td><td class="num mono">{{ row.value }}</td></tr>{% endfor %}
+    </tbody>
+  </table>
+</section>
+
+<section class="band">
+  <h2>Self-repairs</h2>
+  <p class="muted">Config breaches with exactly one valid resolution, corrected without paging anyone.</p>
+  <table class="dash">
+    <thead><tr><th>task</th><th>phase</th><th>correction</th></tr></thead>
+    <tbody>
+      {% for row in config.self_repairs %}
+        <tr><td class="mono">{{ row.task_id }}</td><td>{{ row.phase }}</td><td class="mono">{{ row.correction }}</td></tr>
+      {% empty %}
+        <tr><td colspan="3" class="muted">Nothing has needed a self-repair.</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</section>

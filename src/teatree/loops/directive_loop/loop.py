@@ -21,7 +21,7 @@ if TYPE_CHECKING:
 
 DIRECTIVE_LOOP_NAME = "directive_loop"
 DIRECTIVE_LOOP_LEASE_NAME = "directive-loop-tick"
-DIRECTIVE_LOOP_DEFAULT_CADENCE_SECONDS = 24 * 3600  # daily; the cron drives the actual firing.
+DIRECTIVE_LOOP_DEFAULT_CADENCE_SECONDS = 3600  # hourly (#3649); the cron drives the actual firing.
 DIRECTIVE_LOOP_LEASE_SECONDS = 10 * 60
 
 

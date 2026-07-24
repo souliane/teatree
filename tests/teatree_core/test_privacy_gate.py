@@ -6,9 +6,11 @@ text for the overlay's redact-terms + the default quote-anchor
 patterns, and refuses when any match fires.
 """
 
+from unittest.mock import patch
+
 import pytest
 
-from teatree.core.gates.privacy_gate import format_refusal, scan_for_publication
+from teatree.core.gates.privacy_gate import _registered_overlay_rules_union, format_refusal, scan_for_publication
 
 PUBLIC = "souliane/teatree"
 PRIVATE = "private-org/internal-repo"
@@ -178,3 +180,9 @@ def test_format_refusal_renders_matches_block() -> None:
     # No self-asserted bypass is advertised — the remedy is to redact.
     assert "--privacy-ok" not in rendered
     assert "Redact" in rendered
+
+
+def test_registered_overlay_rules_union_is_empty_when_the_registry_is_unenumerable() -> None:
+    """An unenumerable overlay registry offers no rules — the built-in anchors stay the floor."""
+    with patch("teatree.core.gates.privacy_gate.get_all_overlays", side_effect=RuntimeError("registry down")):
+        assert _registered_overlay_rules_union() == ([], [])

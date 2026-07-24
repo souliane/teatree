@@ -9,7 +9,6 @@ rather than composed attributes.
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from teatree.config.enums import AdmissionPolicy
 from teatree.config.setting_parsers import _default_handover_mirror_path
 
 
@@ -23,20 +22,12 @@ class _LoopFlagAndCredentialSettings:
     # the ``scanning_news_*`` cadence pattern. This PR adds only the config
     # surface — the scanner and dispatch land in later PRs.
     issue_implementer_enabled: bool = False
-    # Label marking an issue as auto-implement. Consulted ONLY when
-    # ``issue_implementer_require_label`` is on — since #3235 intake is decided by
-    # the issue's trusted AUTHOR, not by a hand-applied label. With the flag on,
-    # an empty label means no issue is ever dispatched even when the loop is
-    # enabled (defence-in-depth: the master gate AND a non-empty label are both
-    # required before any work is picked up).
+    # #3634 The owner-applied ADMISSION label — rule 4 of the intake decision
+    # table, and the label-scoped discovery query. It is the ONLY route by which an
+    # UNTRUSTED author's issue reaches the factory; a trusted author needs no label
+    # at all. Empty resolves to the shipped ``t3-auto`` convention
+    # (``factory_admission.DEFAULT_ADMIT_LABEL``).
     issue_implementer_label: str = ""
-    # #3235 Opt-in, default-FALSE: restore the pre-#3235 label filter as a
-    # MANDATORY second gate on top of author trust. OFF (the default) means the
-    # label is NOT required — every open issue authored by a TRUSTED author is
-    # intaken, because the owner will not hand-tag tickets. The label filter can
-    # only ever NARROW intake; it never widens it, and it can never launder an
-    # untrusted author (the per-issue author gate refuses those regardless).
-    issue_implementer_require_label: bool = False
     # #3235 The allowlist of OTHER humans whose issues the factory may act on (a
     # colleague, an operator account) — one of the three UNION sources of the
     # trusted-author set, alongside the owner's own ``user_identity_aliases`` and
@@ -51,17 +42,6 @@ class _LoopFlagAndCredentialSettings:
     # governs INTAKE only; merge authority is untouched (a substrate PR still
     # needs a recorded human approver).
     trusted_issue_authors: list[str] = field(default_factory=list)
-    # The per-overlay AUTONOMOUS-admission verdict both issue-intake scanners
-    # (``assigned_issues``, ``issue_implementer``) run before creating
-    # ``Ticket(role=author)`` + ``Task(phase=coding)``. Default
-    # ``ASSIGNED_AND_LABELED`` (the strictest) is SAFE for a colleague repo: a
-    # freshly-configured overlay never auto-works a colleague's ticket by accident.
-    # ``t3-teatree`` (the owner's dogfood overlay) promotes this to ``ALL`` as an
-    # overlay code default. Resolved by
-    # ``teatree.core.intake.admission_policy.admit_issue``; DB-home (#1775),
-    # per-overlay overridable, promoted to an overlay code default (#36) so the
-    # overlay's ``OverlayConfig`` supplies the value BELOW any DB/env override.
-    admission_policy: AdmissionPolicy = AdmissionPolicy.ASSIGNED_AND_LABELED
     # Cap on simultaneously in-flight auto-implement tickets.
     issue_implementer_max_concurrent: int = 3
     # Internal dispatch-rate floor (hours) between auto-implement pickups.
@@ -121,6 +101,12 @@ class _LoopFlagAndCredentialSettings:
     # judged once this many days elapse. DB-home, per-overlay overridable. Inert while
     # ``directive_loop_enabled`` is off (nothing reaches VERIFYING).
     directive_verify_days: int = 7
+    # #3649 — how many directives one tick may advance through the INERT pre-admission
+    # arc (interpret → clarify → ratify-ask → admit). Execution stays one directive per
+    # tick regardless: this bounds only the arc that writes nothing and terminates at the
+    # human ratify gate, so a backlog reaches the owner in a bounded number of ticks
+    # instead of one directive per tick. DB-home, per-overlay overridable.
+    directive_intake_per_tick: int = 25
     # T4-PR-3 — the autoresearch outer-loop runtime bounds (guard chain G4). Inert
     # while the flag is off: the measurement horizon after an experiment merges,
     # the max experiments admitted per rolling 7-day window, and the convergence

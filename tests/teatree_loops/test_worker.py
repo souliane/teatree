@@ -10,6 +10,7 @@ import contextlib
 import datetime as dt
 import os
 import sqlite3
+from typing import TYPE_CHECKING
 
 import pytest
 from django.db import connection
@@ -21,6 +22,7 @@ from django_tasks_db.models import DBTaskResult
 from teatree.core.tasks import refresh_followup_snapshot
 from teatree.loops import timer_chains
 from teatree.loops import worker as worker_mod
+from teatree.loops.timer_chains import LoopRunnerState
 from teatree.loops.worker import (
     DEFAULT_QUEUE_FLOOR,
     LOOPS_EXECUTOR_FLOOR,
@@ -33,6 +35,18 @@ from teatree.loops.worker import (
 )
 from teatree.utils.run import spawn_session_leader
 from teatree.utils.singleton import pid_alive
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
+
+
+def _state_from_bool(enabled: "Callable[[], bool]") -> LoopRunnerState:
+    """Adapt a legacy bool-returning ``enabled`` seam into the three-valued read_state.
+
+    The existing suite exercises the ON→OFF supervision transitions with bool
+    callables; the read-failure (UNREADABLE) case has its own dedicated tests.
+    """
+    return LoopRunnerState.ON if enabled() else LoopRunnerState.OFF
 
 
 class _FakeExecutor:
@@ -72,7 +86,7 @@ def _make_worker(*, enabled, sleep, **seam_overrides):
         return handle
 
     seams = WorkerSeams(
-        enabled=enabled,
+        read_state=lambda: _state_from_bool(enabled),
         reconcile=seam_overrides.get("reconcile") or (lambda: None),
         seed_chains=seam_overrides.get("seed_chains") or (lambda: None),
         expire=seam_overrides.get("expire") or (lambda: None),
@@ -180,7 +194,7 @@ def test_stop_signal_tears_the_pool_down() -> None:
 
 def _liveness_seams(*, enabled, spawn, make_executor, **overrides) -> WorkerSeams:
     return WorkerSeams(
-        enabled=enabled,
+        read_state=lambda: _state_from_bool(enabled),
         reconcile=lambda: None,
         seed_chains=lambda: None,
         expire=lambda: None,
@@ -287,7 +301,7 @@ class TestStartupExpiryBeforeSpawn:
             # Build WorkerSeams directly so `expire` keeps its REAL default
             # (expire_stale_default_jobs) — `_make_worker` stubs it to a no-op.
             seams = WorkerSeams(
-                enabled=lambda: False,  # exit right after startup
+                read_state=lambda: LoopRunnerState.OFF,  # exit right after startup
                 reconcile=lambda: None,
                 seed_chains=lambda: None,
                 make_executor=make_executor,

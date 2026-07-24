@@ -13,6 +13,7 @@ import pytest
 from django.test import TestCase
 
 from teatree.config import Mode, OnBehalfPostMode, get_effective_settings, load_config
+from teatree.config.setting_parsers import _parse_env_positive_int, _parse_overridable_positive_int
 from teatree.config.settings import UserSettings
 from teatree.core.models import ConfigSetting
 
@@ -101,10 +102,12 @@ class TestDbTierDefaults(TestCase):
         assert settings.auto_update_reinstall is False
 
 
-def test_handover_mirror_path_defaults_under_xdg_state(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+def test_handover_mirror_path_defaults_under_xdg_data(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    # #3563: the mirror lives under the SHARED data dir (bind-mounted), not the XDG state dir.
     monkeypatch.delenv("T3_OVERLAY_NAME", raising=False)
-    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
-    assert get_effective_settings().handover_mirror_path == tmp_path / "state" / "teatree" / "handover" / "latest.md"
+    monkeypatch.delenv("T3_DATA_DIR", raising=False)
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "data"))
+    assert get_effective_settings().handover_mirror_path == tmp_path / "data" / "teatree" / "handover" / "latest.md"
 
 
 class TestDbTierGlobalResolution(TestCase):
@@ -236,31 +239,26 @@ class TestPaneBudgetParsers:
     """Pure-logic coverage of the fail-safe positive-int coercers (#1838 PR#7a)."""
 
     def test_env_parser_accepts_positive_int(self) -> None:
-        from teatree.config.settings import _parse_env_positive_int  # noqa: PLC0415
 
         assert _parse_env_positive_int(1)("4") == 4
 
     def test_env_parser_fails_safe_on_non_positive(self) -> None:
-        from teatree.config.settings import _parse_env_positive_int  # noqa: PLC0415
 
         parse = _parse_env_positive_int(7)
         assert parse("0") == 7
         assert parse("-3") == 7
 
     def test_env_parser_fails_safe_on_non_int(self) -> None:
-        from teatree.config.settings import _parse_env_positive_int  # noqa: PLC0415
 
         parse = _parse_env_positive_int(9)
         assert parse("garbage") == 9
         assert parse("") == 9
 
     def test_overridable_parser_accepts_positive_int(self) -> None:
-        from teatree.config.settings import _parse_overridable_positive_int  # noqa: PLC0415
 
         assert _parse_overridable_positive_int(1)(5) == 5
 
     def test_overridable_parser_rejects_bool(self) -> None:
-        from teatree.config.settings import _parse_overridable_positive_int  # noqa: PLC0415
 
         # ``bool`` is an ``int`` subclass — it must NOT slip through as 1/0.
         parse = _parse_overridable_positive_int(1)
@@ -270,25 +268,21 @@ class TestPaneBudgetParsers:
         assert parse(falsy) == 1
 
     def test_overridable_parser_non_positive_int_fails_safe(self) -> None:
-        from teatree.config.settings import _parse_overridable_positive_int  # noqa: PLC0415
 
         assert _parse_overridable_positive_int(3)(0) == 3
         assert _parse_overridable_positive_int(3)(-1) == 3
 
     def test_overridable_parser_accepts_numeric_string(self) -> None:
-        from teatree.config.settings import _parse_overridable_positive_int  # noqa: PLC0415
 
         # The DB tier may store ``"6"``; a positive numeric string is honoured.
         assert _parse_overridable_positive_int(1)("6") == 6
         assert _parse_overridable_positive_int(1)("0") == 1
 
     def test_overridable_parser_non_numeric_string_fails_safe(self) -> None:
-        from teatree.config.settings import _parse_overridable_positive_int  # noqa: PLC0415
 
         assert _parse_overridable_positive_int(4)("lots") == 4
 
     def test_overridable_parser_other_types_fail_safe(self) -> None:
-        from teatree.config.settings import _parse_overridable_positive_int  # noqa: PLC0415
 
         assert _parse_overridable_positive_int(2)([3]) == 2
         assert _parse_overridable_positive_int(2)(None) == 2

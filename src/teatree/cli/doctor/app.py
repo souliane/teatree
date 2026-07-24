@@ -8,7 +8,6 @@ The :class:`DoctorService` / :class:`IntrospectionHelpers` services live in
 stay intact.
 """
 
-import shutil
 from importlib.metadata import PackageNotFoundError
 
 import typer
@@ -20,9 +19,11 @@ from teatree.cli.doctor.checks_bootstrap import (
     _check_provision_concurrency_from_host,
     run_bootstrap_checks,
 )
+from teatree.cli.doctor.checks_cold_hooks import _check_cold_hook_settings_readable
 from teatree.cli.doctor.checks_docker import _check_docker_workflow_wired
 from teatree.cli.doctor.checks_environment import (
     _check_configured_review_skills,
+    _check_control_db_agreement,
     _check_dangling_editable_pth,
     _check_editable_sanity,
     _check_entrypoint_is_primary_clone,
@@ -33,7 +34,9 @@ from teatree.cli.doctor.checks_environment import (
     _check_stale_uv_venv,
     _check_t3_shim_receipt,
 )
+from teatree.cli.doctor.checks_intent import _check_intent_freshness
 from teatree.cli.doctor.checks_loop import (
+    _check_compose_output_root_pinned,
     _check_dream_staleness,
     _check_dream_transcript_visibility,
     _check_loop_presets,
@@ -45,6 +48,8 @@ from teatree.cli.doctor.checks_mcp import (
     _check_mcp_connectivity,
     _check_teatree_mcp_registration,
 )
+from teatree.cli.doctor.checks_provisioning import _check_declared_dependencies_provisioned
+from teatree.cli.doctor.checks_reconciliation import _check_reconciliation_ledger
 from teatree.cli.doctor.checks_resources import (
     _check_pyright_lsp_plugin,
     _check_tmp_tmpfs_headroom,
@@ -58,7 +63,9 @@ from teatree.cli.doctor.checks_session import (
     _check_interactive_permission_mode,
     _check_slack_socket_mode,
 )
+from teatree.cli.doctor.checks_slack_engagement import check_slack_engagement
 from teatree.cli.doctor.checks_slack_roundtrip import check_slack_roundtrip
+from teatree.cli.doctor.checks_worktree_health import check_worktree_health
 from teatree.cli.doctor.dev_sources import (
     _find_host_project_root,
     _find_teatree_pyproject_from_cwd,
@@ -88,12 +95,10 @@ from teatree.utils.django_bootstrap import ensure_django
 
 doctor_app = typer.Typer(no_args_is_help=False, help="Smoke-test hooks, imports, services.")
 doctor_app.command()(authorizations)
-_REQUIRED_TOOLS = ("direnv", "git", "jq")
 
 __all__ = (
     "AGENT_SKILL_RUNTIMES",
     "_CLAUDE_PLUGIN_ID",
-    "_REQUIRED_TOOLS",
     "DoctorService",
     "IntrospectionHelpers",
     "PackageNotFoundError",
@@ -102,15 +107,20 @@ __all__ = (
     "_check_availability_override_staleness",
     "_check_chrome_devtools_mcp_suggestion",
     "_check_claude_settings_drift",
+    "_check_cold_hook_settings_readable",
+    "_check_compose_output_root_pinned",
     "_check_configured_review_skills",
     "_check_connector_manifest",
+    "_check_control_db_agreement",
     "_check_dangling_editable_pth",
+    "_check_declared_dependencies_provisioned",
     "_check_docker_workflow_wired",
     "_check_dream_staleness",
     "_check_dream_transcript_visibility",
     "_check_editable_sanity",
     "_check_entrypoint_is_primary_clone",
     "_check_gh_token_permissions",
+    "_check_intent_freshness",
     "_check_interactive_permission_mode",
     "_check_legacy_overlay_alias",
     "_check_loop_presets",
@@ -118,6 +128,7 @@ __all__ = (
     "_check_mcp_connectivity",
     "_check_provision_concurrency_from_host",
     "_check_pyright_lsp_plugin",
+    "_check_reconciliation_ledger",
     "_check_single_db",
     "_check_singletons",
     "_check_skills",
@@ -144,6 +155,7 @@ __all__ = (
     "_write_dev_sources_marker",
     "agent_skill_dirs",
     "check",
+    "check_slack_engagement",
     "check_slack_roundtrip",
     "check_statusline",
     "check_statusline_freshness",
@@ -221,6 +233,24 @@ def _run_worker_gates() -> bool:
     return running and skills and memory
 
 
+def _run_loop_intent_gates() -> bool:
+    """The ORM-reading loop/intent checks, grouped to keep ``run_doctor_checks`` lean.
+
+    ``_check_loop_presets`` (#3159, dangling preset/loop/schedule refs) and
+    ``_check_marker_jam`` (#3275, orphaned issue-markers stranding the intake budget)
+    are surfacing-only WARNs — their return values are deliberately discarded so
+    neither can become a gate by accident. ``_check_intent_freshness`` is the "no
+    owner-intent silently rots" gate: it HARD-FAILs when a consumable intent queue is
+    non-empty while its consumer is not live — masked/disabled/held, or refused by the
+    consumer's own guard chain (the directive-loop silent-freeze incident — directives
+    stuck at CAPTURED behind an idle loop, zero signal), so its verdict IS returned for
+    the caller's ``ok`` aggregation.
+    """
+    _check_loop_presets()
+    _check_marker_jam()
+    return _check_intent_freshness()
+
+
 def _check_claude_session_posture() -> bool:
     """The Claude-session checks: account-switch recovery, then permission posture.
 
@@ -242,13 +272,36 @@ def _check_enabled_but_unprovisioned() -> bool:
     A dependency the operator ENABLED but nothing installed reads as configured while
     silently doing nothing: a ``review_skill`` naming an absent SKILL.md (#3352), or the
     ``pyright-lsp`` plugin enabled without its ``pyright-langserver`` binary (#3568, the
-    LSP never starts). Both HARD-FAIL. Each runs independently (no short-circuit) so
-    every finding is emitted; returns their AND. The review-skill check reads the
-    ConfigSetting store, so the caller runs this after :func:`ensure_django`.
+    LSP never starts). ``_check_declared_dependencies_provisioned`` is the GENERAL gate
+    over the same class (#3652) — it enumerates every mandate from the declaration
+    surfaces, so a newly mandated skill / binary / integration is covered with no change
+    here. All HARD-FAIL, and each runs independently (no short-circuit) so every finding
+    is emitted; returns their AND. The review-skill check reads the ConfigSetting store,
+    so the caller runs this after :func:`ensure_django`.
     """
+    declared = _check_declared_dependencies_provisioned()
     review_skills = _check_configured_review_skills()
     pyright_lsp = _check_pyright_lsp_plugin()
-    return review_skills and pyright_lsp
+    return declared and review_skills and pyright_lsp
+
+
+def _run_daily_advisories() -> None:
+    """Post-ensure_django surfacing-only daily advisories — never gate the exit code.
+
+    The idle-time dream-distiller staleness alarm (#1933) + its transcript-
+    visibility companion, the compose output-root pin check (#3641), and the Plan-2
+    Wave B reconciliation ledger — a daily set of end-to-end outcome assertions (park
+    spin, cost-per-delivery, dead-ticket spend, loop freeze, vacuous eval gates, halt
+    count, open-question age, duplicate execution) checked against production telemetry
+    and DM'd loud to the owner via the notify seam under a per-day idempotency key (so
+    the watchdog's frequent doctor runs fire at most one DM per finding per day). All
+    read the ORM, so this runs after ``ensure_django``; every one is surfacing-only, so
+    its return value is deliberately discarded and none can redden the exit code.
+    """
+    _check_dream_staleness()
+    _check_dream_transcript_visibility()
+    _check_compose_output_root_pinned()
+    _check_reconciliation_ledger()
 
 
 def run_doctor_checks(*, repair: bool = False, slack_roundtrip: bool = False) -> bool:
@@ -267,12 +320,10 @@ def run_doctor_checks(*, repair: bool = False, slack_roundtrip: bool = False) ->
         typer.echo(f"FAIL  Import check: {exc}")
         return False
 
+    # Required tools are no longer a list here: they are declared in pyproject's
+    # [tool.teatree.provisioning] required_binaries and gated by the general
+    # provisioning check inside _check_enabled_but_unprovisioned below (#3652).
     ok = True
-    for tool in _REQUIRED_TOOLS:
-        if not shutil.which(tool):
-            typer.echo(f"FAIL  Required tool not found: {tool}")
-            ok = False
-
     # Must precede _check_editable_sanity: under contribute=true that check can
     # auto-make-editable against the cwd worktree, creating the exact stale
     # worktree-anchored install this guard exists to catch (#1507).
@@ -283,6 +334,7 @@ def run_doctor_checks(*, repair: bool = False, slack_roundtrip: bool = False) ->
     # Detect a relocated/same-name-hijacked editable install: the active t3 shim's
     # uv receipt editable source no longer matches the expected checkout ($T3_REPO).
     # Unlike the dangling check, this catches a target that EXISTS but is wrong.
+    # `--repair` re-points it via
     # `--repair` re-points it via `uv tool install --editable <checkout> --force`.
     ok = _check_t3_shim_receipt(repair=repair) and ok
     # ``check`` is a plain Typer command in the Django-free CLI group, so Django is
@@ -304,10 +356,16 @@ def run_doctor_checks(*, repair: bool = False, slack_roundtrip: bool = False) ->
     # its `pyright-langserver` binary (the LSP then silently never starts). Runs after
     # ensure_django() above: the review-skill check reads the ConfigSetting store.
     ok = _check_enabled_but_unprovisioned() and ok
+    ok = check_worktree_health() and ok
     ok = _check_single_db() and ok
+    ok = _check_control_db_agreement() and ok
     ok = _check_stale_uv_venv() and ok
     ok = _check_stale_path_t3() and ok
     ok = _check_agent_session_pins() and ok
+    # #3499: the hooks read settings through a DIFFERENT interpreter than the CLI, so a
+    # store the CLI reads fine can be unreadable to every cold-hook gate. Runs after
+    # ensure_django() above: it compares the hook's answer against the Django-side one.
+    ok = _check_cold_hook_settings_readable() and ok
     # Verify the Claude Code statusLine block (PR-17: present, absolute path, executable
     # target — a missing block WARNs, a relative/non-executable one hard-FAILs) AND its
     # freshness. The freshness backstop hard-FAILs a pre-rendered statusline gone stale past
@@ -344,20 +402,10 @@ def run_doctor_checks(*, repair: bool = False, slack_roundtrip: bool = False) ->
 
     ok = run_self_heal_checks() and ok
 
-    # #3159: warn on a dangling loop-preset reference (deleted preset / loop /
-    # schedule). Surfacing-only (never gates the exit code), like the sibling
-    # ORM-reading advisories below: the by-name references fail OPEN at read time
-    # (resolve to base config), so a dangling target is a WARN to fix, not a hard
-    # doctor failure. Reads the ORM, so it runs post-ensure_django.
-    _check_loop_presets()
-
-    # #3275: warn when orphaned issue-markers strand the issue_implementer intake
-    # budget (their tickets are terminal/gone but the markers never left
-    # `dispatched`). Surfacing-only (never gates the exit code), like the sibling
-    # ORM-reading advisories: the loop self-heals each tick and the operator can
-    # force it with `t3 loop reclaim-markers`. Reads the ORM, so it runs
-    # post-ensure_django.
-    _check_marker_jam()
+    # The ORM-reading loop/intent advisories, grouped so run_doctor_checks stays lean.
+    # Runs post-ensure_django (all read the ORM); returns the intent-freshness gating
+    # verdict for the caller's `ok` aggregation.
+    ok = _run_loop_intent_gates() and ok
 
     # Fresh-box bootstrap-hardening gates (umbrella #3404): the GitHub token lacks a
     # write permission the loop needs (#3405, hard FAIL); a stale small-box
@@ -380,12 +428,11 @@ def run_doctor_checks(*, repair: bool = False, slack_roundtrip: bool = False) ->
 
     ok = doctor_check_clone_currency(_collect_repos()) and ok
 
-    # Idle-time dream consolidation staleness alarm (#1933). Runs after
-    # ``ensure_django`` because it reads the ``DreamRunMarker`` row. A WARN
-    # (not a hard FAIL): a stale dream cron means memories pile up unpromoted,
-    # which the operator should fix, but it must not red the whole doctor run.
-    _check_dream_staleness()
-    _check_dream_transcript_visibility()
+    # Post-ensure_django, surfacing-only daily advisories, grouped to keep
+    # run_doctor_checks lean: the dream-distiller staleness/transcript alarms
+    # (#1933), the compose output-root pin check (#3641), and the Plan-2 Wave B
+    # reconciliation ledger. None gate the exit code.
+    _run_daily_advisories()
 
     # #3274: WARN on a no-expiry away / autonomous_away availability override that
     # has sat past the staleness threshold — it silently suppresses the
@@ -419,6 +466,12 @@ def run_doctor_checks(*, repair: bool = False, slack_roundtrip: bool = False) ->
     # must be a doctor FAILURE, not a surprise. `--slack-roundtrip` adds a live
     # auth.test. A silent no-op with no Slack-backed overlay (Slack stays optional).
     ok = check_slack_roundtrip(deep=slack_roundtrip) and ok
+
+    # Slack engagement (#256): WARN when `autoload` is OFF yet a Slack posting token
+    # is configured — with engagement default-off a session never engages teatree, so
+    # a configured bot never routes Slack through the MCP tools. Surfacing-only (never
+    # gates the exit code): `autoload` off is a legitimate colleague/opted-out posture.
+    check_slack_engagement()
 
     ok = _check_claude_session_posture() and ok
 

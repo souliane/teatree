@@ -47,7 +47,7 @@ class TestReplyTransportPrivacyGate(TestCase):
     def _inject(self, *, public: bool, redact: Sequence[str] = (), block: Sequence[str] = ()) -> None:
         for attr, value in (
             ("_target_is_public", lambda _repo, _forge: public),
-            ("_overlay_privacy_rules", lambda: (list(redact), list(block))),
+            ("overlay_privacy_rules", lambda: (list(redact), list(block))),
         ):
             patcher = mock.patch.object(privacy_gate, attr, value)
             patcher.start()

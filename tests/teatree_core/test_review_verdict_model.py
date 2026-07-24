@@ -10,7 +10,14 @@ round-trip, and the staleness / safe-to-approve logic the status command reads.
 import pytest
 from django.test import TestCase
 
-from teatree.core.models import Finding, MergeClear, MRReviewLock, ReviewVerdict, ReviewVerdictError
+from teatree.core.models import (
+    Finding,
+    MergeClear,
+    MRReviewLock,
+    ReviewVerdict,
+    ReviewVerdictError,
+    normalize_reviewer_identity,
+)
 
 # ast-grep-ignore: ac-django-no-pytest-django-db
 pytestmark = pytest.mark.django_db
@@ -210,6 +217,88 @@ class TestCarryForward(TestCase):
         with pytest.raises(ReviewVerdictError, match="never carry gh_verify_result=failed"):
             unwaivable.carry_forward(reviewed_sha=_OTHER_SHA)
         assert not ReviewVerdict.objects.filter(reviewed_sha=_OTHER_SHA).exists()
+
+
+class TestReviewerIdentityIdempotency(TestCase):
+    """The (slug, pr, sha, normalized-identity) idempotency contract (F8)."""
+
+    def test_normalize_collapses_case_and_whitespace_only(self) -> None:
+        assert normalize_reviewer_identity("  Codex  Reviewer ") == normalize_reviewer_identity("codex reviewer")
+        # Genuinely distinct identities stay distinct — no role-prefix stripping.
+        assert normalize_reviewer_identity("t3:reviewer") != normalize_reviewer_identity("reviewer")
+
+    def test_re_review_of_one_head_by_one_identity_is_a_single_row(self) -> None:
+        first = ReviewVerdict.record(
+            pr_id=1,
+            slug="souliane/teatree",
+            reviewed_sha=_SHA,
+            verdict="hold",
+            reviewer_identity="Codex",
+            gh_verify_result="failed",
+        )
+        second = ReviewVerdict.record(
+            pr_id=1,
+            slug="souliane/teatree",
+            reviewed_sha=_SHA,
+            verdict="merge_safe",
+            reviewer_identity="codex ",  # same identity, different spelling
+        )
+        assert ReviewVerdict.objects.for_pr("souliane/teatree", 1).count() == 1
+        assert second.pk == first.pk
+        assert second.is_merge_safe()  # newest verdict wins in the one row
+
+    def test_distinct_identities_at_one_head_coexist(self) -> None:
+        ReviewVerdict.record(
+            pr_id=1,
+            slug="souliane/teatree",
+            reviewed_sha=_SHA,
+            verdict="hold",
+            reviewer_identity="reviewer-a",
+            gh_verify_result="failed",
+        )
+        ReviewVerdict.record(
+            pr_id=1,
+            slug="souliane/teatree",
+            reviewed_sha=_SHA,
+            verdict="merge_safe",
+            reviewer_identity="reviewer-b",
+        )
+        assert ReviewVerdict.objects.for_pr("souliane/teatree", 1).count() == 2
+
+    def test_a_moved_head_records_a_fresh_row(self) -> None:
+        ReviewVerdict.record(
+            pr_id=1,
+            slug="souliane/teatree",
+            reviewed_sha=_SHA,
+            verdict="merge_safe",
+            reviewer_identity="reviewer-a",
+        )
+        ReviewVerdict.record(
+            pr_id=1,
+            slug="souliane/teatree",
+            reviewed_sha=_OTHER_SHA,
+            verdict="merge_safe",
+            reviewer_identity="reviewer-a",
+        )
+        assert ReviewVerdict.objects.for_pr("souliane/teatree", 1).count() == 2
+
+    def test_has_verdict_for_identity_answers_the_query(self) -> None:
+        ReviewVerdict.record(
+            pr_id=1,
+            slug="souliane/teatree",
+            reviewed_sha=_SHA,
+            verdict="merge_safe",
+            reviewer_identity="Codex Reviewer",
+        )
+        assert ReviewVerdict.objects.has_verdict_for_identity(
+            slug="souliane/teatree", pr_id=1, reviewed_sha=_SHA, reviewer_identity="codex reviewer"
+        )
+        assert not ReviewVerdict.objects.has_verdict_for_identity(
+            slug="souliane/teatree", pr_id=1, reviewed_sha=_SHA, reviewer_identity="someone-else"
+        )
+        assert not ReviewVerdict.objects.has_verdict_for_identity(
+            slug="souliane/teatree", pr_id=1, reviewed_sha=_OTHER_SHA, reviewer_identity="codex reviewer"
+        )
 
 
 class TestQueryHelpers(TestCase):

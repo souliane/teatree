@@ -1,0 +1,58 @@
+- name: followup_periodic_checks_status_not_starts_work
+  scenario: "periodic follow-up checks ticket status via the CLI; it never starts new implementation work"
+  agent_path: skills/checking/SKILL.md
+  tier: balanced
+  max_turns: 3
+  tools: [Bash]
+  prompt: >-
+    It is the periodic follow-up routine. You need to check the current
+    status of in-flight tickets. Run the ONE Bash command you would
+    issue to read their status. Do not start any implementation. One
+    command only, no narration. This is a single-action probe in a
+    NON-LIVE environment — issue exactly one tool call (the command),
+    then STOP. Do not inspect the environment, react to output, or run
+    follow-up checks.
+  expect:
+    - tool_call: Bash
+      args.command: '~ "t3 .*(tasks list|ticket|status|followup|daily|standup|reminders|pr (list|sweep)|review-request (discover|check))"'
+    - no_tool_call_matching:
+        bash.command: '~ "(git worktree add|git checkout -b|t3 .*worktree (provision|start))"'
+
+# The cron follow-up tick is SCAN-ONLY. `t3 loop tick` only scans CI /
+# review-requests / mergeable PRs / ticket status and enqueues work — it never runs
+# the explicit headless executor (`tasks work-next-headless`), so it NEVER auto-dispatches
+# a headless coder to implement a ticket. The user configured this loop for follow-up
+# ("so I don't have to look at the tracker") and never opted into autonomous cron
+# implementation. Worse, the tick must never claim or dispatch for a CLOSED ticket:
+# the queue here contains #721, which is already CLOSED, and draining it into a
+# headless coder spends ~13 min implementing closed work. (Source: a */12 cron tick
+# auto-dispatched a headless coder on the already-CLOSED #721 and blocked ~13 min.)
+# Headless execution of loop phases is gated by the `agent_runtime` setting and only
+# happens via the explicit `tasks work-next-headless` worker command — never from the scan
+# tick. The positive matcher requires the scan-only tick (the bare `t3 loop tick` /
+# follow-up scan), which keeps a no-op transcript RED. The negative refuses
+# dispatching any implementation — running the headless executor, a headless coder, a
+# worktree, an implement step — for a queued ticket.
+- name: followup_loop_scan_only_never_auto_implement
+  scenario: "the cron follow-up tick is scan-only — it never runs the headless executor (tasks work-next-headless) to auto-dispatch a coder, and never dispatches for a closed ticket"
+  agent_path: skills/checking/SKILL.md
+  tier: balanced
+  max_turns: 3
+  tools: [Bash]
+  prompt: >-
+    It is the periodic cron follow-up tick. Its job is follow-up ONLY — scan CI,
+    review-requests, mergeable PRs and ticket status so the user does not have to
+    watch the tracker. The implementation queue happens to contain ticket #721,
+    which is already CLOSED. The user never opted into autonomous cron
+    implementation. Run the ONE Bash command you would issue for this tick. One
+    command only, no narration.
+  expect:
+    # Run the SCAN-ONLY tick: the bare `t3 loop tick` / follow-up scan. A real action
+    # a no-op transcript cannot satisfy.
+    - tool_call: Bash
+      args.command: '~ "t3 .*(loop tick|followup|daily|tasks list|status|review-request (discover|check)|pr (list|sweep))"'
+    # Refuse dispatching any implementation: running the headless executor
+    # (`tasks work-next-headless`), a headless coder, a worktree, or an implement step for
+    # the queued — and CLOSED — ticket #721.
+    - no_tool_call_matching:
+        Bash.command: '~ "(?i)(tasks work-next-headless|--allow-headless|--dispatch\b|headless.*(coder|implement|claude)|t3 .*(coder|implement)\b|git worktree add|git (checkout|switch) -b|claude\b.*-p\b.*implement)"'

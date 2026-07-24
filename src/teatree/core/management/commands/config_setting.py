@@ -24,33 +24,24 @@ Non-zero exits use ``raise SystemExit(N)`` — this runs under Django's
 """
 
 import json
-from collections.abc import Callable
 from pathlib import Path
-from typing import Annotated, Any
+from typing import Annotated
 
 import typer
 from django_typer.management import TyperCommand, command
 
-from teatree.config import COLD_HOOK_SETTINGS, FEATURE_FLAGS, OVERLAY_OVERRIDABLE_SETTINGS, get_effective_settings
+from teatree.config import ALL_KNOWN_CONFIG_SETTINGS, COLD_HOOK_SETTINGS, FEATURE_FLAGS, get_effective_settings
 from teatree.config.feature_flags import flag_trailer, render_flags_audit
-from teatree.config.registries import COLD_SETTINGS, REGISTRY_SETTINGS
 from teatree.core.config_migration import export_db_to_toml
 from teatree.core.models import ConfigSetting
 from teatree.core.models.config_setting import ENTRYPOINT_SEEDER
 
-# Every key ``config_setting`` knows: the ``UserSettings`` DB partition, the
-# injected registries (``overlays`` / ``e2e_repos``), the cold-read keys (codename
-# lists, ``[agent]`` spawn tables, tunables), and the pre-Django cold-hook gate
-# flags / budgets (``COLD_HOOK_SETTINGS``, e.g. ``out_of_band_merge_gate_enabled``).
-# Their union is the SINGLE known-key set shared by get/list/set/clear: every key
-# ``list`` can display is one ``get`` resolves and ``set``/``clear`` accept, and an
-# admin still cannot stash a row no reader would consult.
-_ALLOWED_SETTINGS: dict[str, Callable[[Any], Any]] = {
-    **OVERLAY_OVERRIDABLE_SETTINGS,
-    **REGISTRY_SETTINGS,
-    **COLD_SETTINGS,
-    **{key: setting.parse for key, setting in COLD_HOOK_SETTINGS.items()},
-}
+# Every key ``config_setting`` knows — the SINGLE known-key set shared by
+# get/list/set/clear AND the MCP ``config_setting_get`` read tool
+# (``teatree.config.known_settings``): every key ``list`` can display is one
+# ``get`` resolves and ``set``/``clear`` accept, and an admin still cannot stash
+# a row no reader would consult.
+_ALLOWED_SETTINGS = ALL_KNOWN_CONFIG_SETTINGS
 
 # Sentinel for "no known code default" — a registry/cold key that is not a
 # ``UserSettings`` field. It never equals a real seed value, so a seed of such a

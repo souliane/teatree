@@ -60,7 +60,7 @@ def _check_agent_session_pins() -> bool:
     an abstract tier (``frontier``), a shipped tier-model id, a Claude family
     (``opus`` short-name or a dated id), or the operator's OWN ``agent_tier_models``
     value; a provider-prefixed id (anything carrying a ``/`` — ``deepseek/…``,
-    ``orcarouter/…``) is a deliberate non-Claude pin and always passes. Only a
+    ``vendor/…``) is a deliberate non-Claude pin and always passes. Only a
     bare token that is NONE of these (a genuine typo) warns.
     """
     from teatree.agents.model_tiering import known_model_vocabulary  # noqa: PLC0415 — deferred: keep import light
@@ -77,7 +77,7 @@ def _check_agent_session_pins() -> bool:
 
     def _unrecognised(model: str) -> bool:
         lowered = model.lower()
-        if "/" in lowered:  # a deliberate provider-native pin (deepseek/…, orcarouter/…)
+        if "/" in lowered:  # a deliberate provider-native pin (vendor/…)
             return False
         if any(family in lowered for family in FAMILY_TO_TIER):  # a Claude family short-name or dated id
             return False
@@ -132,6 +132,12 @@ _INTERACTIVE_PERMISSION_MODE_KEY = "defaultMode"
 _CLASSIFIER_GATED_MODE = "auto"
 _ALLOW_ALL_MODE = "bypassPermissions"
 
+#: Modes that hand-approve the long tail of routine tool calls teatree's workflows are
+#: made of — worktree creation, test runs, gate scripts, forge reads, DB queries. That
+#: friction is exactly what teatree exists to remove, and new operators do not
+#: necessarily know ``auto`` exists (souliane/teatree#3495).
+_HAND_APPROVING_MODES = ("default", "acceptEdits", "plan")
+
 
 def _check_interactive_permission_mode() -> bool:
     """Advise when the interactive session runs wider than it needs to (#3497).
@@ -173,5 +179,15 @@ def _check_interactive_permission_mode() -> bool:
             f"(Every unattended lane reads the same file but pins --permission-mode of its own — headless "
             f'dispatch, `t3 loop start`, and `t3 agent "<task>"` alike — so they stay on {_ALLOW_ALL_MODE} '
             f"and are unaffected.)",
+        )
+        return True
+    if mode is None or mode in _HAND_APPROVING_MODES:
+        configured = f"is {mode}" if mode is not None else "is unset (the Claude Code default applies)"
+        typer.echo(
+            f"WARN  Interactive permission mode {configured}, so you hand-approve the routine tool "
+            f"calls teatree's workflows run on. Enable auto-mode: /config -> permission mode "
+            f"{_CLASSIFIER_GATED_MODE} (or set permissions.{_INTERACTIVE_PERMISSION_MODE_KEY} to "
+            f'"{_CLASSIFIER_GATED_MODE}" in ~/.claude/settings.json). Advisory — teatree never '
+            f"changes your permissions posture for you.",
         )
     return True

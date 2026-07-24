@@ -62,6 +62,14 @@ class _HealthyBaseline(TestCase):
         self.messaging = self._stack.enter_context(
             patch("teatree.core.backend_factory.messaging_from_overlay", return_value=self._backend)
         )
+        # The ambient probe rides ``resolve_owner_dm_backend``, which reads the
+        # notify module's own import-time bindings — pin its active-overlay tier
+        # to the same healthy backend (and its fallback tier empty) so the
+        # baseline stays healthy regardless of which module imported first.
+        self._stack.enter_context(patch("teatree.core.notify.messaging_from_overlay", return_value=self._backend))
+        self._stack.enter_context(
+            patch("teatree.core.backend_factory.OwnerMessagingTransport.credentialed_backends", return_value=[])
+        )
         self.resolve_user_id = self._stack.enter_context(
             patch("teatree.core.notify.resolve_user_id", return_value="U_OWNER")
         )

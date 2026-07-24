@@ -27,15 +27,17 @@ from claude_agent_sdk import AssistantMessage, ClaudeAgentOptions, RateLimitEven
 from claude_agent_sdk.types import RateLimitInfo
 from django.utils import timezone
 
-from teatree.agents._headless_env import _overlay_scope, _provider_child_env
+from teatree.agents._headless_env import _overlay_scope, _provider_child_env, with_test_worker_cap
 from teatree.agents._headless_options import _build_options
 from teatree.agents.harness import Harness, HarnessSession, pydantic_ai_thread, resolve_harness
 from teatree.agents.harness_registry import InvalidHarnessProviderError, UnknownHarnessError
 from teatree.agents.headless_budget import TicketBudget
+from teatree.agents.headless_truncation import alert_owner_max_tokens_truncation, is_max_tokens_truncation
 from teatree.agents.headless_usage import _attempt_usage
 from teatree.agents.headless_watchdog import LoopWatchdog, TaskUsage, _sample_usage_closing_connection
-from teatree.agents.pydantic_ai_resume import maybe_persist_on_park
+from teatree.agents.pydantic_ai_resume import maybe_persist_on_limit_park, maybe_persist_on_park
 from teatree.agents.reader_profile import is_reader_phase, reader_child_env, reader_env_hermetic
+from teatree.agents.result_schema import AgentResultBlob, ProseSummaryPolicy
 from teatree.agents.skill_bundle import active_overlay_stage_skills, resolve_skill_bundle
 from teatree.agents.usage_window import (
     maybe_park_for_active_window,
@@ -80,6 +82,21 @@ _LEASE_SECONDS = 15 * _HEARTBEAT_INTERVAL  # 900s
 
 _STUCK_LOOP_PREFIX = "stuck_loop: "
 _RESULT_ERROR_PREFIX = "result_error: "
+_NO_ENVELOPE_PREFIX = "no_result_envelope: "
+
+#: The refusal recorded when an agent finished cleanly but returned no result
+#: envelope on a phase that requires one (see
+#: :meth:`~teatree.agents.result_schema.ProseSummaryPolicy.allowed`). Deliberately a
+#: CONSTANT: ``TaskAttempt.error_fingerprint`` hashes this reason, and the repair
+#: loop escalates on two consecutive identical fingerprints — folding the agent's
+#: (always-different) prose into the reason would make every no-envelope run look
+#: like a fresh failure and defeat the stall check. The prose itself is preserved
+#: on the failed attempt's ``result`` for diagnosis, the same way every other
+#: envelope refusal keeps its offending blob.
+_NO_ENVELOPE_ERROR = f"{_NO_ENVELOPE_PREFIX}agent produced no JSON result envelope; refusing to record success"
+
+#: Truncation applied to the agent's raw text when it stands in for an envelope.
+_PROSE_SUMMARY_CHARS = 1000
 
 
 def _error_result_reason(message: ResultMessage | None) -> str | None:
@@ -234,7 +251,7 @@ def run_headless(
         _restore_unconsumed_resume_thread(harness)
         raise
 
-    failure = _outcome_failure(task, outcome, lane=lane)
+    failure = _outcome_failure(task, outcome, phase=phase, lane=lane)
     if failure is not None:
         return failure
     return _record_success(task, outcome, phase=phase, lane=lane)
@@ -341,16 +358,32 @@ def _resolve_child_env_or_failure(
         # reader instead pins exactly the allowlist (inference credential survives if
         # ambiently present, everything else dropped).
         return reader_child_env(base_env if base_env is not None else dict(os.environ))
-    return base_env
+    return with_test_worker_cap(base_env, active_agents=_active_agent_count())
 
 
-def _outcome_failure(task: Task, outcome: HarnessOutcome, *, lane: str = "") -> TaskAttempt | None:
+def _active_agent_count() -> int:
+    """Live headless agents in flight — the divisor for the test-worker budget (#3644/F9).
+
+    ``live_headless_agent_count`` counts EVERY claimed live-lease headless agent,
+    including the free-form phases (``architectural_review`` …) that go through
+    this very cap. The prior ``in_flight_claimed_count(dispatchable_q())`` counted
+    only registered-phase tasks, so it undercounted this set and handed each agent
+    too many pytest workers — the melt direction.
+    """
+    return max(1, Task.objects.live_headless_agent_count())
+
+
+def _outcome_failure(task: Task, outcome: HarnessOutcome, *, phase: str = "", lane: str = "") -> TaskAttempt | None:
     """Fold a non-success drive outcome into a recorded failure (or park), or ``None``.
 
     Collapses the stuck-loop / usage-limit / error-result terminal cases into a
     single return so ``run_headless`` stays within its early-return budget. A usage-limit
     hit is PARKED not FAILED when Directive #3 auto-recovery is enabled (the flag-off
-    default records the terminal FAILED exactly as before).
+    default records the terminal FAILED exactly as before). A park keeps the run's
+    conversation so the resume continues it rather than restarting (#3605). A max-tokens
+    truncation is a failed run that ALSO escalates to the owner
+    (:func:`_alert_owner_max_tokens_truncation`) so a silently-amputated envelope surfaces
+    loud, not just as one more failed attempt.
     """
     if outcome.stuck_reason is not None:
         return _record_failure(task, error=f"{_STUCK_LOOP_PREFIX}{outcome.stuck_reason}")
@@ -359,24 +392,27 @@ def _outcome_failure(task: Task, outcome: HarnessOutcome, *, lane: str = "") -> 
         sdk_resets_at = outcome.rate_limit_info.resets_at if outcome.rate_limit_info is not None else None
         parked = park_or_rotate_on_limit(task, limit, sdk_resets_at=sdk_resets_at, lane=lane)
         if parked is not None:
+            maybe_persist_on_limit_park(task, outcome.thread)
             return parked
         reason = limit.as_reason()
         logger.warning("Task %s hit a model-access limit (%s): %s", task.pk, limit.cause.value, reason)
         return _record_failure(task, error=reason)
     error_reason = _error_result_reason(outcome.result_message)
     if error_reason is not None:
+        if is_max_tokens_truncation(outcome.result_message):
+            alert_owner_max_tokens_truncation(task, phase=phase)
         logger.warning("Task %s ended in a failed run: %s", task.pk, error_reason)
         return _record_failure(task, error=error_reason)
     return None
 
 
 # souliane/teatree#657: the Layer-2 lane (subscription vs metered) each
-# ``AgentHarnessProvider`` authenticates through — ORCA_ROUTER_BYOK is a
+# ``AgentHarnessProvider`` authenticates through — OPENAI_COMPATIBLE is a
 # metered BYOK key, same lane as API_KEY.
 _LANE_BY_PROVIDER: dict[AgentHarnessProvider, str] = {
     AgentHarnessProvider.SUBSCRIPTION_OAUTH: TaskAttempt.Lane.SUBSCRIPTION,
     AgentHarnessProvider.API_KEY: TaskAttempt.Lane.METERED,
-    AgentHarnessProvider.ORCA_ROUTER_BYOK: TaskAttempt.Lane.METERED,
+    AgentHarnessProvider.OPENAI_COMPATIBLE: TaskAttempt.Lane.METERED,
 }
 
 
@@ -384,7 +420,7 @@ def _resolve_dispatch_lane(harness: Harness, provider: AgentHarnessProvider | No
     """The Layer-2 lane (souliane/teatree#657/#2887) this dispatch authenticated through.
 
     A :class:`~teatree.agents.harness.PydanticAiHarness` run always rides
-    OrcaRouter's BYOK metered credential — the only Layer-2 provider valid
+    the configured OpenAI-compatible credential — the only Layer-2 provider valid
     under ``agent_harness=pydantic_ai`` — so it is unconditionally METERED. A
     :class:`ClaudeSdkHarness` run is attributable only when an explicit
     Layer-2 pin (*provider*) was configured: the ambient-credential default
@@ -544,10 +580,6 @@ async def _collect(session: HarnessSession, prompt: str) -> HarnessOutcome:
     )
 
 
-#: Head of the agent's prose folded into a no-envelope refusal for diagnosis.
-_NO_ENVELOPE_TEXT_HEAD_CHARS = 500
-
-
 def _record_success(task: Task, outcome: HarnessOutcome, *, phase: str = "", lane: str = "") -> TaskAttempt:
     """Record a successful SDK run via the shared recorder.
 
@@ -557,41 +589,56 @@ def _record_success(task: Task, outcome: HarnessOutcome, *, phase: str = "", lan
     result-envelope contract. *lane* is the resolved Layer-2 lane
     (souliane/teatree#657) this dispatch authenticated through.
 
-    When the agent emits NO parseable JSON result envelope, the phase decides
-    the outcome. ``prompt.py`` demands a final JSON object from every phase, so
-    prose-only output is a contract violation: for a phase NOT in
-    :data:`~teatree.agents.result_schema.PROSE_SUMMARY_ACCEPTED_PHASES` this
-    records a FAILED attempt with a ``no_result_envelope:`` diagnostic rather
-    than laundering the prose into a false success. The exempt phases
-    (``scoping``, ``retro``) keep the ``{"summary": ...}`` fallback unchanged.
-    This is lane-agnostic — both harness backends funnel through here.
+    A run that returned NO envelope at all is refused HERE, before the recorder,
+    on every phase that requires one
+    (:meth:`~teatree.agents.result_schema.ProseSummaryPolicy.allowed`). ``prompt.py``
+    demands a final JSON object from every phase, so prose-only output is a
+    contract violation, and the ``{"summary": agent_text}`` fallback below is the
+    vacuous-success hole: it manufactures an envelope the agent never produced,
+    and on a phase with no
+    :data:`~teatree.agents.result_schema.PHASE_REQUIRED_EVIDENCE` entry every
+    recorder gate then passes, so a run that did nothing completes and advances
+    the ticket FSM. Lane-agnostic on purpose — both harness backends funnel
+    through here, so the refusal is shared (the ``pydantic_ai`` lane merely makes
+    it likelier: no built-in tools, so the model stops early). The exempt phases
+    (``scoping``, ``retro``) keep the fallback byte-identically, and a phase that
+    carries its own evidence requirement is still handed on so the recorder's
+    per-field diagnosis and the #3263 coding salvage both get their turn.
     """
     from teatree.agents.attempt_recorder import record_result_envelope  # noqa: PLC0415 — deferred: call-time import
     from teatree.agents.headless_result import parse_result  # noqa: PLC0415 — deferred: call-time import
-    from teatree.agents.result_schema import prose_summary_accepted  # noqa: PLC0415 — deferred: call-time import
 
     result = parse_result(outcome.agent_text)
     if not result:
-        if not prose_summary_accepted(phase or task.phase):
-            head = outcome.agent_text.strip()[:_NO_ENVELOPE_TEXT_HEAD_CHARS]
-            error = (
-                "no_result_envelope: agent produced no JSON result envelope; "
-                f"refusing to record success (agent text head: {head!r})"
-            )
-            return _record_failure(task, exit_code=0, error=error)
-        result = {"summary": outcome.agent_text[:1000]}
+        prose: AgentResultBlob = {"summary": outcome.agent_text[:_PROSE_SUMMARY_CHARS]}
+        if not ProseSummaryPolicy.allowed(phase or task.phase):
+            logger.warning("Task %s produced no result envelope; refusing to record success", task.pk)
+            return _record_failure(task, exit_code=0, error=_NO_ENVELOPE_ERROR, result=prose)
+        result = prose
 
     maybe_persist_on_park(task, result, outcome.thread)  # (#2886)
     return record_result_envelope(task, result, phase=phase, usage=_attempt_usage(outcome.result_message, lane=lane))
 
 
-def _record_failure(task: Task, *, exit_code: int = 1, error: str = "") -> TaskAttempt:
+def _record_failure(
+    task: Task, *, exit_code: int = 1, error: str = "", result: AgentResultBlob | None = None
+) -> TaskAttempt:
+    """Record a FAILED attempt carrying *error*, and fail the task.
+
+    ``exit_code=1`` (the default) is a crash — the run never produced a usable
+    outcome. An ENVELOPE refusal passes ``exit_code=0``: the agent ran cleanly and
+    the recording was refused on its content, which
+    :meth:`~teatree.core.models.TaskAttempt._classify_outcome` reads as
+    ``REFUSAL`` rather than ``CRASH``, matching the sibling refusals in
+    ``attempt_recorder``. *result* persists the offending payload for diagnosis.
+    """
     attempt = TaskAttempt.objects.create(
         task=task,
         execution_target=task.execution_target,
         ended_at=timezone.now(),
         exit_code=exit_code,
         error=error,
+        result=result or {},
     )
     task.fail()
     return attempt

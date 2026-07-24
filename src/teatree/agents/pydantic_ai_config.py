@@ -1,7 +1,7 @@
 """Config + model/provider builders for the ``pydantic_ai`` harness backend.
 
 Split out of :mod:`teatree.agents.harness` (module-health LOC cap): the pure config types
-(the OrcaRouter lane knobs, the model-construction bundle, the router-vs-native binding, the
+(the OpenAI-compatible backend knobs, the model-construction bundle, the binding, the
 per-backend capability constants) and the two provider/model builders. They depend on neither
 the ``Harness`` protocol nor the registry-resolution glue, so they live below the harness
 module with no import cycle. Re-exported from ``teatree.agents.harness`` for back-compat.
@@ -22,15 +22,15 @@ from teatree.agents.harness_options import HarnessOptions
 from teatree.agents.harness_registry import HarnessCapabilities
 from teatree.agents.model_tiering import DEFAULT_TIER, resolve_tier
 from teatree.agents.regulated_path import assert_model_allowed_on_regulated_path
-from teatree.llm.credentials import AnthropicApiKeyCredential, OrcaRouterCredential, resolve_orca_router_provider_config
+from teatree.llm.credentials import AnthropicApiKeyCredential
+from teatree.llm.openai_compatible import OpenAICompatibleCredential, resolve_openai_compatible_backend
 
-# The OrcaRouter dispatch-lane header (OrcaRouter setup plan §3.4). Rides every
-# ``pydantic_ai`` request as ``x-lane: <factory|eval|bulk>`` so the named router's
-# analytics — and a DSL rule that keys on it (a secondary router's ``headers["x-lane"]
-# == "bulk"`` cheap-bulk rule) — can tell the three call-site lanes apart: the
-# headless factory dispatch (``factory``), the eval CI job (``eval``), and a
-# secondary overlay's cheap bulk legs (``bulk``). The value is the DB-home
-# ``orca_router_lane`` setting, resolved SYNCHRONOUSLY in :func:`resolve_harness`.
+# The dispatch-lane header. Rides every ``pydantic_ai`` request as
+# ``x-lane: <factory|eval|bulk>`` so the endpoint's analytics — and any routing rule
+# keying on it — can tell the three call-site lanes apart: the headless factory
+# dispatch (``factory``), the eval CI job (``eval``), and a secondary overlay's cheap
+# bulk legs (``bulk``). The value is the DB-home ``openai_compatible_lane`` setting,
+# resolved SYNCHRONOUSLY in :func:`resolve_harness`.
 _X_LANE_HEADER = "x-lane"
 LANE_FACTORY = "factory"
 LANE_EVAL = "eval"
@@ -40,7 +40,7 @@ LANE_BULK = "bulk"
 class PydanticAiBinding(StrEnum):
     """Which model binding the ``pydantic_ai`` harness constructs (#3157 E1b).
 
-    *   :attr:`ROUTER` (default) — an ``OpenAIChatModel`` against OrcaRouter's
+    *   :attr:`ROUTER` (default) — an ``OpenAIChatModel`` against the configured
         OpenAI-compatible endpoint. Prompt-cache semantics are opaque behind that
         surface, so ``cache_control`` is unreachable.
     *   :attr:`NATIVE_ANTHROPIC` — a native ``pydantic_ai`` Anthropic model against the
@@ -53,7 +53,7 @@ class PydanticAiBinding(StrEnum):
     NATIVE_ANTHROPIC = "native_anthropic"
 
 
-#: The OpenAI-compatible OrcaRouter binding's capabilities: MCP toolsets; no hooks port yet,
+#: The OpenAI-compatible binding's capabilities: MCP toolsets; no hooks port yet,
 #: no server-side resume (client-side thread reseed), no reachable cache-control (opaque router
 #: surface), and no schema-enforced structured output (the lane scrapes the last JSON line of
 #: agent text, it does not enforce a result schema). Dispatch-lane hints (#3157 AH-5): the
@@ -86,8 +86,8 @@ class NativeAnthropicUnavailableError(RuntimeError):
 
 
 @dataclass(frozen=True)
-class OrcaLaneConfig:
-    """The OrcaRouter per-dispatch runtime knobs threaded into :class:`PydanticAiHarness`.
+class OpenAICompatibleLaneConfig:
+    """The generic OpenAI-compatible backend's per-dispatch knobs (#3666).
 
     Bundled into one cohesive config object (composition) so the harness
     constructor stays narrow, and — critically — so ALL of these DB-home settings
@@ -95,23 +95,26 @@ class OrcaLaneConfig:
     ``open`` runs (a ``get_effective_settings`` read from inside the ``asyncio.run``
     event loop fails safe to defaults under Django's async-unsafe guard).
 
-    *   ``lane`` — the ``x-lane`` header (``factory`` | ``eval`` | ``bulk``, plan §3.4).
-    *   ``request_limit`` — the per-run sequential-request cap (plan §4 #1);
-        ``None``/``<= 0`` leaves the run uncapped.
-    *   ``pass_path`` — the ``orca_router_pass_path`` override (plan §3.6). The
-        credential has NO built-in default, so ``None`` means it resolves only from
-        ``ORCA_ROUTER_API_KEY`` (or fails loud naming ``orca_router_pass_path``).
-    *   ``router_name`` — the per-overlay OrcaRouter router handle
-        (``orca_router_name``, e.g. ``orcarouter/secondary-factory``) the ``teatree-native``
-        model id normalises UP to; ``None`` keeps the ``PYDANTIC_AI_TIER_MODELS``
-        default (``orcarouter/teatree-factory``). The config/overlay-driven
-        ``teatree-factory`` vs secondary-router selection.
+    *   ``lane`` — the ``x-lane`` header (``factory`` | ``eval`` | ``bulk``).
+    *   ``request_limit`` — the per-run sequential-request cap; ``None``/``<= 0``
+        leaves the run uncapped.
+    *   ``base_url`` — the ``openai_compatible_base_url`` endpoint. Empty falls back
+        to the ``OPENAI_COMPATIBLE_BASE_URL`` env var, then fails loud: teatree never
+        guesses an endpoint.
+    *   ``credential_entry`` — the NAME of the credential-store entry the API key is
+        read from (``openai_compatible_credential_entry``), never a key value.
+        ``None`` means the credential resolves from ``OPENAI_COMPATIBLE_API_KEY``
+        alone (or fails loud naming the setting).
+    *   ``model`` — the ``openai_compatible_model`` id an unpinned teatree-native
+        dispatch normalises UP to; ``None`` keeps the ``PYDANTIC_AI_TIER_MODELS``
+        default for the dispatch's abstract tier.
     """
 
     lane: str = LANE_FACTORY
     request_limit: int | None = None
-    pass_path: str | None = None
-    router_name: str | None = None
+    base_url: str = ""
+    credential_entry: str | None = None
+    model: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -121,14 +124,14 @@ class PydanticAiModelConfig:
     Bundles the model-construction knobs into one config object so the harness
     constructor stays narrow:
 
-    *   ``orca`` — the OrcaRouter per-dispatch runtime knobs (:class:`OrcaLaneConfig`),
-        used by the router binding.
-    *   ``binding`` — router (OrcaRouter OpenAI-compatible) vs native Anthropic Messages
+    *   ``backend`` — the generic OpenAI-compatible backend's per-dispatch knobs
+        (:class:`OpenAICompatibleLaneConfig`), used by the router binding.
+    *   ``binding`` — the generic OpenAI-compatible backend vs native Anthropic Messages
         API (#3157 E1b, ``agent_harness_provider=anthropic_api``), selected by
         :func:`resolve_harness` from the provider.
     *   ``max_tokens`` — the per-request output-token ceiling. Binding-AGNOSTIC (``max_tokens``
         is a base ``ModelSettings`` key both bindings honour), so it lives here rather than on
-        the router-only :class:`OrcaLaneConfig`. Resolved SYNCHRONOUSLY by :func:`resolve_harness`
+        the router-only :class:`OpenAICompatibleLaneConfig`. Resolved SYNCHRONOUSLY by :func:`resolve_harness`
         from the ``pydantic_ai_max_tokens`` setting; ``None`` leaves the binding's own default.
 
     Prompt-cache breakpoints (the :class:`~teatree.agents.context_plan.ContextPlan`
@@ -142,7 +145,7 @@ class PydanticAiModelConfig:
     against it; only the never-fed harness passthrough was removed (AH-1).
     """
 
-    orca: OrcaLaneConfig = field(default_factory=OrcaLaneConfig)
+    backend: OpenAICompatibleLaneConfig = field(default_factory=OpenAICompatibleLaneConfig)
     binding: PydanticAiBinding = PydanticAiBinding.ROUTER
     max_tokens: int | None = None
 
@@ -155,9 +158,9 @@ def native_anthropic_model_name(options: HarnessOptions) -> str:
     CONCRETE Claude id (:func:`resolve_tier`, e.g. ``claude-sonnet-5``).
 
     Critically it must NOT go through :func:`~teatree.agents.model_tiering.resolve_pydantic_ai_model`,
-    which normalises an unpinned id UP to an ``orcarouter/…`` router HANDLE. That handle is
-    meaningless to the direct Anthropic Messages API (it would 404 the request) — router-handle
-    normalisation belongs ONLY to the OpenAI-compatible router binding, never this native path.
+    which normalises an unpinned id UP to the configured OpenAI-compatible model id. That id is
+    meaningless to the direct Anthropic Messages API (it would 404 the request) — the normalise-UP
+    step belongs ONLY to the OpenAI-compatible binding, never this native path.
     """
     return options.model or resolve_tier(DEFAULT_TIER)
 
@@ -170,8 +173,8 @@ def resolve_native_anthropic_model(options: HarnessOptions) -> Model:
     OpenAI-compatible router client. ``pydantic_ai``'s Anthropic binding is an OPTIONAL
     dependency (``pydantic-ai-slim[anthropic]``); it is imported lazily so a router-only
     install never pays for it, and its absence fails LOUD with the install hint only when
-    this binding is actually selected — the same late-fail contract the OrcaRouter credential
-    uses. The model id (:func:`native_anthropic_model_name`) is gated by the regulated-path
+    this binding is actually selected — the same late-fail contract the OpenAI-compatible
+    credential uses. The model id (:func:`native_anthropic_model_name`) is gated by the regulated-path
     allowlist first.
     """
     model_name = native_anthropic_model_name(options)
@@ -237,21 +240,22 @@ def build_model_settings(
     return cast("ModelSettings", settings) if settings else None
 
 
-def build_orca_provider(*, lane: str, pass_path: str | None = None) -> OpenAIProvider:
-    """Build the OrcaRouter OpenAI-compatible provider with the ``x-lane`` header (§3.4).
+def build_openai_compatible_provider(config: OpenAICompatibleLaneConfig) -> OpenAIProvider:
+    """Build the configured OpenAI-compatible provider with the ``x-lane`` header.
 
-    Resolves the BYOK credential + base_url
-    (:func:`~teatree.llm.credentials.resolve_orca_router_provider_config`).
-    *pass_path* is the DB-home ``orca_router_pass_path`` override (resolved
-    SYNCHRONOUSLY by :func:`resolve_harness`, never here — this runs in the async
-    event loop), so an operator can point teatree at an existing per-account
-    ``pass`` entry with no copy. The credential has NO built-in default, so
-    ``None``/empty means it resolves only from the ``ORCA_ROUTER_API_KEY`` env var
-    (which still wins over ``pass``) and otherwise fails loud. The
-    provider is built from an :class:`~openai.AsyncOpenAI` client carrying a
-    default ``x-lane: <lane>`` header on every request — the only way to inject a
-    default header, since :class:`OpenAIProvider` sets none itself.
+    Every provider-specific fact — the endpoint, the credential-store entry name —
+    arrives as ordinary configuration on *config*, resolved SYNCHRONOUSLY by
+    :func:`resolve_harness` (never here: this runs in the async event loop). The
+    provider is built from an :class:`~openai.AsyncOpenAI` client carrying a default
+    ``x-lane: <lane>`` header on every request — the only way to inject a default
+    header, since :class:`OpenAIProvider` sets none itself.
     """
-    config = resolve_orca_router_provider_config(credential=OrcaRouterCredential(pass_path_override=pass_path or None))
-    client = AsyncOpenAI(base_url=config.base_url, api_key=config.api_key, default_headers={_X_LANE_HEADER: lane})
+    backend = resolve_openai_compatible_backend(
+        base_url=config.base_url,
+        model=config.model or "",
+        credential=OpenAICompatibleCredential(pass_path_override=config.credential_entry or None),
+    )
+    client = AsyncOpenAI(
+        base_url=backend.base_url, api_key=backend.api_key, default_headers={_X_LANE_HEADER: config.lane}
+    )
     return OpenAIProvider(openai_client=client)

@@ -149,9 +149,19 @@ EXEMPT: dict[str, str] = {
     "teatree.core.factory.chokepoint_registry:_REGISTRY": "import-populated chokepoint registry; process-stable",
     "teatree.core.modelkit.gate_registry:_REGISTRY": "import-populated modelkit gate registry; process-stable",
     "teatree.core.intake.attachment_fetch_registry:_fetchers": "app-ready-populated fetcher registry; process-stable",
+    "teatree.core.deterministic_phases:_RUNNERS": (
+        "app-ready-populated deterministic-phase runner registry (#3570); process-stable — the one test "
+        "that varies it patches the binding rather than mutating it"
+    ),
+    "teatree.agents.model_tiering:PYDANTIC_AI_TIER_MODELS": (
+        "empty-by-default tier catalog merged UNDER config (#3666), never accumulated at runtime; "
+        "resetting it would clear nothing"
+    ),
     "teatree.core.presence:_FACTORIES": "import-populated presence-factory registry; process-stable",
     "teatree.cli.overlay:OVERLAY_PROXY_COMMANDS": "import-populated command map; not mutated at runtime",
-    "teatree.config.settings:TOML_OVERLAY_OVERRIDABLE_SETTINGS": "import-populated constant; not mutated at runtime",
+    "teatree.config.setting_registries:TOML_OVERLAY_OVERRIDABLE_SETTINGS": (
+        "import-populated constant; not mutated at runtime"
+    ),
     "teatree.loops.timer_chains:_LIVE_TICK_PGIDS": "live tick subprocess PGIDs; process-lifecycle, not a per-test memo",
 }
 

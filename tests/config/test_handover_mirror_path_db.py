@@ -37,12 +37,20 @@ class _MirrorPathCase(TestCase):
         self.enterContext(patch.object(Path, "home", return_value=self.home))
         os.environ["HOME"] = str(self.home)
         os.environ.pop("XDG_STATE_HOME", None)
+        os.environ.pop("XDG_DATA_HOME", None)
+        os.environ.pop("T3_DATA_DIR", None)
         os.environ.pop("T3_OVERLAY_NAME", None)
 
 
 class TestDbConfigSetting(_MirrorPathCase):
-    def test_no_row_falls_back_to_default_under_xdg_state(self) -> None:
-        assert mirror_path() == self.home / ".local" / "state" / "teatree" / "handover" / "latest.md"
+    def test_no_row_falls_back_to_the_shared_data_dir(self) -> None:
+        # #3563: the mirror lives under the SHARED data dir, not the runtime-local
+        # XDG state dir a container cannot expose to the host.
+        assert mirror_path() == self.home / ".local" / "share" / "teatree" / "handover" / "latest.md"
+
+    def test_t3_data_dir_wins_over_the_xdg_default(self) -> None:
+        os.environ["T3_DATA_DIR"] = "/srv/shared/teatree"
+        assert mirror_path() == Path("/srv/shared/teatree/handover/latest.md")
 
     def test_global_scope_row_overrides_default(self) -> None:
         ConfigSetting.objects.set_value("handover_mirror_path", "/srv/ho/latest.md", scope="")

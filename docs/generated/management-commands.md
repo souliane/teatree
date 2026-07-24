@@ -480,6 +480,9 @@ Session-lifecycle operations.
 | Subcommand | Description |
 | --- | --- |
 | `prepare-stop` | Refresh the durable recovery artifacts (idempotent, safe to re-run) |
+| `todo-add` | Append an item to this session's durable working list |
+| `todo-list` | List this session's working items, in working order |
+| `todo-set` | Move one working item to *status* |
 
 ## `signals`
 

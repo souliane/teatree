@@ -12,7 +12,7 @@ through the shared one-shot seam
 state digest (the same statusline content), NO skills / tools / loop
 context. The seam resolves the ``cheap`` tier to a concrete model id and
 routes the turn through the active harness (``claude_sdk`` or
-``pydantic_ai``/OrcaRouter), so the answer follows a swapped tier-model DB
+``pydantic_ai``), so the answer follows a swapped tier-model DB
 row and works off-Claude — never a hardcoded model id. It is hard-gated by
 ``T3_SLACK_ANSWER_TOKEN_BUDGET`` (reusing the self-improve
 :func:`precheck_budget`). If the model decides it must read code /

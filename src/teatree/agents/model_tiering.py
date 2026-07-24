@@ -2,7 +2,7 @@
 
 On the DISPATCH-RESOLUTION path, every concrete Claude model id lives in ONE
 place: the :data:`TIER_MODELS` constant below (the ``claude_sdk`` catalog; the
-``pydantic_ai``/OrcaRouter harness has its own :data:`PYDANTIC_AI_TIER_MODELS`
+``pydantic_ai`` harness has its own :data:`PYDANTIC_AI_TIER_MODELS`
 catalog — see the harness-scoped note below). Production phase dispatch and the
 eval scenarios reference an abstract TIER (``frontier`` / ``balanced`` /
 ``cheap``), never a concrete model id, so adopting a new model for a live spawn
@@ -30,14 +30,14 @@ spawns emit no effort and inherit the SDK default.
 
 **Harness-scoped model + effort ([#2885](https://github.com/souliane/teatree/issues/2885)).**
 :data:`TIER_MODELS` is the ``claude_sdk`` catalog — Claude ids in DASH-form
-(``claude-opus-4-8``). The ``pydantic_ai`` harness's OrcaRouter provider does NOT
-carry those dash-form ids (Orca serves provider-prefixed ids —
+(``claude-opus-4-8``). The ``pydantic_ai`` harness's OpenAI-compatible provider does
+NOT carry those dash-form ids (those serve provider-prefixed ids —
 ``anthropic/claude-opus-4.8``, the open-source pool, and named router handles), so its
 catalog is the SEPARATE :data:`PYDANTIC_AI_TIER_MODELS` (all tiers collapsing to
 one router handle; the router's own bandit does the mundane-vs-hard tiering).
 :func:`resolve_pydantic_ai_model` is the boundary that normalises a resolved
-teatree-native id UP to that router handle for the OrcaRouter harness, while an
-explicit Orca-native pin passes through. The reasoning-EFFORT dial is
+teatree-native id UP to the configured id for the OpenAI-compatible harness, while
+an explicit provider-native pin passes through. The reasoning-EFFORT dial is
 similarly harness-scoped: the two harnesses' supported effort vocabularies are not identical —
 the ``claude-agent-sdk`` CLI's scale tops out at ``max``
 (:data:`teatree.config.agent_spawn.EFFORT_SCALE`), while ``pydantic_ai``'s OpenAI-compatible
@@ -81,23 +81,17 @@ TIER_MODELS: dict[str, str] = {
     "cheap": "claude-haiku-4-5",
 }
 
-# The ``pydantic_ai``/OrcaRouter parallel of :data:`TIER_MODELS`. The
-# ``claude_sdk`` harness serves the Claude dash-form ids above; the
-# ``pydantic_ai`` harness (:class:`~teatree.agents.harness.PydanticAiHarness`)
-# serves OrcaRouter's provider-prefixed catalog, so its tier map is SEPARATE —
-# :data:`TIER_MODELS`'s dash-form ids (``claude-opus-4-8``) do NOT exist in
-# OrcaRouter's catalog (Orca carries ``anthropic/claude-opus-4.8`` dot-form and
-# provider-prefixed open-source ids), so trusting them here would send an unresolvable id.
-# All three abstract tiers collapse to ONE router handle by design: the router's
-# own adaptive/gated bandit does the mundane-vs-hard tiering, so teatree's
-# abstract tiers need not fan out on this harness. Overridable per tier via
-# ``agent_pydantic_ai_tier_models`` (merged OVER this default) — if the
-# dashboard keeps a different router name, that is the one string to change.
-PYDANTIC_AI_TIER_MODELS: dict[str, str] = {
-    "frontier": "orcarouter/teatree-factory",
-    "balanced": "orcarouter/teatree-factory",
-    "cheap": "orcarouter/teatree-factory",
-}
+# The ``pydantic_ai`` parallel of :data:`TIER_MODELS`. The ``claude_sdk`` harness
+# serves the Claude dash-form ids above; the ``pydantic_ai`` harness serves an
+# OpenAI-compatible provider's PROVIDER-PREFIXED catalog, so its tier map is
+# SEPARATE — :data:`TIER_MODELS`'s dash-form ids (``claude-opus-4-8``) do not exist
+# there, so trusting them here would send an unresolvable id. This shipped default
+# is EMPTY: teatree carries no opinion about a third party's catalog. The operator
+# supplies the id through the generic ``openai_compatible_model`` setting (the
+# whole-lane answer) or per tier via ``agent_pydantic_ai_tier_models`` (merged OVER
+# this default), and an unpinned lane with neither fails loud rather than sending a
+# fabricated model name (#3666).
+PYDANTIC_AI_TIER_MODELS: dict[str, str] = {}
 
 # THE SINGLE SOURCE OF TRUTH for per-tier reasoning EFFORT — the parallel of
 # :data:`TIER_MODELS` for the effort axis. Abstract tier name -> CLI effort level
@@ -170,8 +164,8 @@ DEFAULT_PHASE_MODELS: dict[str, str] = {
 VERIFICATION_PHASES: frozenset[str] = frozenset({"reviewing", "requesting_review", "testing"})
 
 # Phases PINNED to a specific harness regardless of the overlay's ``agent_harness``
-# setting — the cheap-model verifier backstop (OrcaRouter setup plan §4 guardrail #2).
-# When a MAKER phase runs on a cheap open-source model via ``pydantic_ai``/OrcaRouter,
+# setting — the cheap-model verifier backstop.
+# When a MAKER phase runs on a cheap open-source model via ``pydantic_ai``,
 # the VERIFICATION phases (the checker in the maker≠checker pipeline) stay on the
 # trusted ``claude_sdk`` lane, so the reliability backstop is a Claude verifier +
 # CI, never the cheap maker model checking its own work. Data-driven so the pinned
@@ -215,7 +209,7 @@ def known_model_vocabulary() -> frozenset[str]:
 
     The abstract tier NAMES (``frontier`` / ``balanced`` / ``cheap``), the shipped
     concrete tier-model ids of BOTH catalogs, and the price-table family
-    short-names. A provider-prefixed id (``deepseek/…``, ``orcarouter/…`` — any id
+    short-names. A provider-prefixed id (``vendor/…`` — any id
     carrying a ``/``) and an operator's OWN ``agent_tier_models`` values are
     explicit pins the caller trusts separately, so they are NOT enumerated here —
     this is only the shipped vocabulary a bare pin is checked against before the
@@ -241,49 +235,101 @@ def resolve_tier(tier: str) -> str:
     return merged.get(tier, tier)
 
 
+# Capacity-exhaustion fallback ladder: a spawn's model degrades ONE rung down this
+# order (frontier -> balanced -> cheap) when its primary capacity pool is exhausted,
+# so the run continues for a turn on a less-loaded pool instead of parking. The
+# cheapest rung has no fallback.
+_FALLBACK_LADDER: tuple[str, ...] = ("frontier", "balanced", "cheap")
+
+
+def _recognized_tier_of(model: str | None) -> str | None:
+    """The abstract tier of *model* when its family is KNOWN, else ``None``.
+
+    Unlike :func:`_abstract_tier_of` (which defaults an unrecognised id to
+    :data:`DEFAULT_TIER`), this returns ``None`` for a pinned id whose family
+    teatree does not carry — the fallback resolver must not guess a cross-family
+    degrade for an unknown pin.
+    """
+    lowered = (model or "").lower()
+    for family, tier in FAMILY_TO_TIER.items():
+        if family in lowered:
+            return tier
+    return None
+
+
+def resolve_fallback_model(model: str | None) -> str | None:
+    """The next-cheaper catalog model the ``claude_sdk`` spawn degrades to on exhaustion.
+
+    ``fallback_model`` (claude-agent-sdk ``types.py``) lets a spawn continue on a
+    model in a LESS-exhausted capacity pool for a turn instead of parking when the
+    primary 429s / overloads. The ladder is the tier catalog (:data:`TIER_MODELS`,
+    :func:`resolve_tier` honouring any ``agent_tier_models`` override) walked down
+    one rung along :data:`_FALLBACK_LADDER`. A model already at the cheapest rung —
+    or a pinned id whose family teatree does not recognise — has NO defined fallback
+    (``None``): teatree never guesses a cross-family degrade.
+    """
+    tier = _recognized_tier_of(model)
+    if tier is None:
+        return None
+    index = _FALLBACK_LADDER.index(tier)
+    if index + 1 >= len(_FALLBACK_LADDER):
+        return None
+    return resolve_tier(_FALLBACK_LADDER[index + 1])
+
+
+class UnconfiguredOpenAICompatibleModelError(RuntimeError):
+    """The ``pydantic_ai`` lane resolved no model id from any configured source."""
+
+
 def _resolve_pydantic_ai_tier(tier: str) -> str:
-    """Resolve an abstract *tier* to its OrcaRouter router handle for the pydantic_ai harness.
+    """Resolve an abstract *tier* to the configured model id for the pydantic_ai harness.
 
     The :func:`resolve_tier` sibling for the ``pydantic_ai`` harness: reads
     :data:`PYDANTIC_AI_TIER_MODELS`, each entry OVERRIDABLE via
     ``agent_pydantic_ai_tier_models`` (merged OVER the shipped default). Unlike
     :func:`resolve_tier` — which passes an unknown *tier* through unchanged so a
     caller may hand it a concrete id — an unknown tier here falls back to the
-    :data:`DEFAULT_TIER` handle: the ``pydantic_ai`` harness MUST resolve to a
-    handle OrcaRouter's catalog carries, never a bare tier name it would reject.
+    :data:`DEFAULT_TIER` entry: the ``pydantic_ai`` harness MUST resolve to an id the
+    configured endpoint carries, never a bare tier name it would reject. With nothing
+    configured it raises rather than fabricating an id for a third party's catalog.
     """
     config = resolve_agent_config()
     merged = {**PYDANTIC_AI_TIER_MODELS, **config.pydantic_ai_tier_models}
-    return merged.get(tier) or merged.get(DEFAULT_TIER, PYDANTIC_AI_TIER_MODELS[DEFAULT_TIER])
+    resolved = merged.get(tier) or merged.get(DEFAULT_TIER)
+    if not resolved:
+        msg = (
+            "no model id configured for the OpenAI-compatible lane. Set the "
+            "`openai_compatible_model` setting (or a per-tier `agent_pydantic_ai_tier_models` "
+            "entry) — teatree never guesses a third party's model name."
+        )
+        raise UnconfiguredOpenAICompatibleModelError(msg)
+    return resolved
 
 
-def resolve_pydantic_ai_model(model_name: str | None, *, router_name: str | None = None) -> str:
-    """Normalise a resolved model id for the ``pydantic_ai`` (OrcaRouter) harness.
+def resolve_pydantic_ai_model(model_name: str | None, *, configured_model: str | None = None) -> str:
+    """Normalise a resolved model id for the ``pydantic_ai`` (OpenAI-compatible) harness.
 
-    THE dash-form id normalisation (OrcaRouter setup plan §3.2). teatree's abstract
-    tiers resolve (via :data:`TIER_MODELS`) to Claude ids in DASH-form
-    (``claude-opus-4-8``) that OrcaRouter's catalog does NOT carry — Orca serves
-    PROVIDER-PREFIXED ids (``anthropic/claude-opus-4.8``, ``deepseek/deepseek-v4-pro``,
-    ``orcarouter/teatree-factory``). So a teatree-native id (no provider ``/``
-    prefix — the :data:`TIER_MODELS` default form, or ``None``) is normalised UP to
-    the OrcaRouter router handle for the id's abstract tier
-    (:func:`_resolve_pydantic_ai_tier`). An explicit Orca-native pin (ANY
-    provider-prefixed id, e.g. an operator ``phase_models`` override to
-    ``deepseek/deepseek-v4-pro``) passes through UNCHANGED — the caller then still
-    runs it past :func:`teatree.agents.regulated_path.assert_model_allowed_on_regulated_path`.
+    THE dash-form id normalisation. teatree's abstract tiers resolve (via
+    :data:`TIER_MODELS`) to Claude ids in DASH-form (``claude-opus-4-8``) that an
+    OpenAI-compatible provider's catalog does NOT carry — those serve
+    PROVIDER-PREFIXED ids (``anthropic/claude-opus-4.8``, ``vendor/some-model``). So a
+    teatree-native id (no provider ``/`` prefix — the :data:`TIER_MODELS` default
+    form, or ``None``) is normalised UP to the configured id for its abstract tier
+    (:func:`_resolve_pydantic_ai_tier`). An explicit provider-native pin (ANY
+    provider-prefixed id, e.g. an operator ``phase_models`` override) passes through
+    UNCHANGED — the caller then still runs it past
+    :func:`teatree.agents.regulated_path.assert_model_allowed_on_regulated_path`.
 
-    *router_name* is the per-overlay OrcaRouter router handle (the DB-home
-    ``orca_router_name`` setting, e.g. ``orcarouter/secondary-factory``) that selects
-    the overlay's own named router — the ``teatree-factory`` vs secondary-router
-    two-router split, config/overlay-driven, not hardcoded. It applies ONLY to the
-    normalise-UP branch (a teatree-native id / ``None``), so an explicit Orca-native
-    pin still wins; ``None``/empty falls back to the :data:`PYDANTIC_AI_TIER_MODELS`
-    handle (``orcarouter/teatree-factory``).
+    *configured_model* is the DB-home ``openai_compatible_model`` setting — the
+    whole-lane model id, config/overlay-driven, never hardcoded. It applies ONLY to
+    the normalise-UP branch (a teatree-native id / ``None``), so an explicit
+    provider-native pin still wins; ``None``/empty falls back to the per-tier
+    :data:`PYDANTIC_AI_TIER_MODELS` entry.
     """
     if model_name and "/" in model_name:
         return model_name
-    if router_name:
-        return router_name
+    if configured_model:
+        return configured_model
     return _resolve_pydantic_ai_tier(_abstract_tier_of(model_name))
 
 

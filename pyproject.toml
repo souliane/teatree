@@ -434,6 +434,15 @@ modules = [
   "teatree.loops.tickets",
 ]
 
+# Binaries teatree's runtime MANDATES. Read by the general provisioning gate
+# (``teatree.provisioning.declared``): `t3 doctor` FAILs, naming the tool and the
+# remediation, when a declared one is absent from PATH. Adding an entry here is
+# the whole change — the gate enumerates this table rather than carrying its own
+# list, so a newly mandated tool cannot be forgotten (#3652, epic #3445).
+
+[tool.teatree.provisioning]
+required_binaries = [ "direnv", "git", "jq" ]
+
 [tool.teatree.coverage]
 per_module_floors = [
   { path = "src/teatree/loop/persistence.py", floor = 80 },

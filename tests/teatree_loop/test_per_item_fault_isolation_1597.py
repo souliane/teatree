@@ -14,7 +14,7 @@ Covered scanners:
 - RedCardScanner (reaction loop + DM loop)
 - SlackReviewIntentScanner (reaction loop + mention loop)
 - TaskSweepScanner
-- IssueImplementerScanner
+- IssueIntakeScanner
 - SlackDmInboundScanner
 """
 
@@ -27,13 +27,12 @@ from django.test import TestCase
 
 from teatree.core.backend_protocols import PrOpenState, ReviewState
 from teatree.core.models import ImplementedIssueMarker
-from teatree.core.models.config_setting import ConfigSetting
 from teatree.core.models.session import Session
 from teatree.core.models.task import Task
 from teatree.core.models.ticket import Ticket
 from teatree.core.overlay import OverlayBase
 from teatree.loop.scanners.active_tickets import ActiveTicketsScanner
-from teatree.loop.scanners.issue_implementer import IssueImplementerScanner
+from teatree.loop.scanners.issue_intake import IssueIntakeScanner
 from teatree.loop.scanners.red_card import RedCardScanner
 from teatree.loop.scanners.reviewer_prs import ReviewerPrsScanner
 from teatree.loop.scanners.slack_broadcasts import ConnectChannelBotRestrictedError, MrState, SlackBroadcastsScanner
@@ -655,7 +654,7 @@ class TestTaskSweepIsolation(TestCase):
 
 
 # ---------------------------------------------------------------------------
-# IssueImplementerScanner
+# IssueIntakeScanner
 # ---------------------------------------------------------------------------
 
 
@@ -674,6 +673,10 @@ class _ImplementerHost:
     def list_authored_issues(self, *, author: str, repo_slugs: tuple[str, ...] = ()) -> list[RawAPIDict]:
         _ = author, repo_slugs
         return self.issues
+
+    def list_labeled_issues(self, *, label: str, repo_slugs: tuple[str, ...] = ()) -> list[RawAPIDict]:
+        _ = label, repo_slugs
+        return []
 
     def list_my_prs(self, *, author: str, updated_after: str | None = None) -> list[RawAPIDict]:
         _ = (author, updated_after)
@@ -696,9 +699,6 @@ class TestIssueImplementerIsolation(TestCase):
         patcher = patch("teatree.core.review.author_trust.repo_is_internal", return_value=False)
         patcher.start()
         self.addCleanup(patcher.stop)
-        # Isolation is orthogonal to the admission policy; pin ``all`` so the
-        # unassigned/unlabeled trusted-author issues are admitted.
-        ConfigSetting.objects.set_value("admission_policy", "all")
 
     def _issue(self, url: str) -> RawAPIDict:
         return {
@@ -711,9 +711,9 @@ class TestIssueImplementerIsolation(TestCase):
 
     def test_failing_first_issue_does_not_suppress_second_issue_signal(self) -> None:
         host = _ImplementerHost(issues=[self._issue(IMPL_URL_A), self._issue(IMPL_URL_B)])
-        scanner = IssueImplementerScanner(
+        scanner = IssueIntakeScanner(
             host=host,
-            label=IMPL_LABEL,
+            admit_label=IMPL_LABEL,
             overlay_name="acme",
             trusted_authors=(IMPL_AUTHOR,),
         )

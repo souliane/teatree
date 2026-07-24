@@ -24,6 +24,15 @@ metadata:
 6. **Never invent stories.** If a source fetch fails, omit that source and note the failure in the envelope `summary`.
 7. **Every cited URL must resolve (PR-15).** A fabricated or 404 article link is dropped, not queued. The loop's recorder probes each URL via `teatree.verification.url_check.check_url` and DROPS an `UNRESOLVED` (2xx/3xx = ok, 4xx/5xx = drop) one, so a hallucinated citation never reaches the backlog. A `NETWORK_ERROR` (teatree could not tell) records the candidate anyway — a transient failure never drops a real article. Do the URL-presence pass yourself too (step 6b) and drop obvious 404s before returning, so you never hand back a known-dead link.
 
+## Sources
+
+The merged source table lives in `src/teatree/core/news_sources.py` and reaches you as
+the `SOURCES:` block in the task directive — never hard-code a feed list here. It is the
+union of the loop's original edition-dated AI newsletters and the wider press-review feed
+set, deduped by normalised feed URL (an overlapping source keeps the edition-dated row).
+Rolling dedupe across days needs no state file: the loop's recorder is idempotent by
+source URL.
+
 ## How candidates are recorded — envelope hand-back (no shell)
 
 You run **shell-denied**: do NOT run `manage.py`, `gh`, or `t3`. You RETURN every
@@ -35,6 +44,9 @@ the loop persists and surfaces them for you:
 - **URL verification:** the recorder drops an `UNRESOLVED` URL (Non-Negotiable 7).
 - **Batch-approval DM:** after it records the batch, the loop DMs the user ONE
   approval message listing each candidate. You do NOT post any Slack DM yourself.
+- **Slack press-review digest:** the loop also DMs the rendered digest — one clickable
+  link per candidate, code symbols and file paths in monospace. Deduped per task, and
+  never posted for an empty scan.
 - **Filing:** only the user, on approval, files a `from-news-scan` issue — never
   the scan.
 
@@ -55,18 +67,30 @@ Return shape:
 
 Read the workspace clock; format `YYYY-MM-DD`. Use this string consistently for both fetches and in the envelope `summary`.
 
-### 2. Fetch TLDR AI
+### 2. Fetch every source in the dispatch directive
 
-URL: `https://tldr.tech/ai/<YYYY-MM-DD>`. Use the WebFetch prompt in `references/fetch-prompts.md`.
+The task's `execution_reason` carries a `SOURCES:` block — the merged table from
+`teatree.core.news_sources` (the two edition-dated AI newsletters the loop has always
+read, plus the wider press-review feed set: web-dev / devops / infosec / Python
+newsletters and Hacker News). Fetch every line. Each names the bucket, the label, the
+URL, the item cap, and whether it is edition-dated.
 
-Apply the two gates (Non-Negotiables 1 + 2). On mismatch:
+**Only an `edition-dated` source gets the date gate** (Non-Negotiable 1). A rolling RSS
+feed has no edition to verify; applying the gate to one would drop every item.
+
+For `TLDR AI`, the dated page is `https://tldr.tech/ai/<YYYY-MM-DD>` — use the WebFetch
+prompt in `references/fetch-prompts.md` and apply both gates (Non-Negotiables 1 + 2). On
+mismatch:
 
 - Edition date < today's date → today's issue is not yet published (TLDR drops in US morning). Use the latest published edition; record the actual issue date for the DM.
 - Aggregator detected → re-fetch with the stricter prompt; if still aggregator, treat as fetch failure.
 
-### 3. Fetch The Rundown AI
+For `The Rundown AI` there is no clean dated URL pattern: start from the archive URL in
+the directive, discover today's post, then fetch it. Same gates.
 
-The Rundown AI does not have a clean dated URL pattern. Start from `https://www.therundown.ai/` or the archive `https://www.therundown.ai/archive`. Discover today's post URL from the landing/archive, then fetch it. Apply the same date and content-shape gates.
+Breadth does not replace the filter. The merged sources widen what is READ; step 4's
+teatree-relevance triage still decides what survives, and it is the reason this loop
+exists at all.
 
 ### 4. Triage for relevance to teatree
 
@@ -121,7 +145,15 @@ The dispatched task's `execution_reason` carries the gate directive (the `ASK-GA
 
 ### 8. Hand back the envelope
 
-You do NOT post a Slack DM — the loop posts the batch-approval DM after it records your candidates. Return the envelope (see "How candidates are recorded" above) with a one-line `summary` and every candidate in `article_suggestions`. Fold the step-6b drop count into the `summary`.
+You do NOT post a Slack DM — the loop posts both the batch-approval DM and the Slack
+**press-review digest** after it records your candidates. Return the envelope (see "How
+candidates are recorded" above) with a one-line `summary` and every candidate in
+`article_suggestions`. Fold the step-6b drop count into the `summary`.
+
+Write each `rationale` so it renders well in the digest: name real file paths and
+symbols (`src/teatree/loop/run.py`, `teatree.core.tasks.claim`) rather than paraphrasing
+them. `teatree.core.news_digest` renders every citation as a clickable Slack link and
+puts paths/symbols in monospace, per the owner's standing Slack-formatting directive.
 
 ## Periodic Mode
 

@@ -67,6 +67,8 @@ from hooks.scripts.config_overwrite_guard import handle_block_config_overwrite
 from hooks.scripts.coverage_gate import coverage_gate_repo_dir as _coverage_gate_repo_dir
 from hooks.scripts.coverage_gate import diff_coverage_argv as _diff_coverage_argv
 from hooks.scripts.coverage_gate import diff_coverage_finding as _diff_coverage_finding
+from hooks.scripts.coverage_gate import is_merge_class_command as _is_merge_class_command
+from hooks.scripts.coverage_gate import measured_repo_is_publish_target as _measured_repo_is_publish_target
 from hooks.scripts.cron_tracking import (
     cron_cadence_seconds as _cron_cadence_seconds,  # noqa: F401 re-export for test access
 )
@@ -90,6 +92,7 @@ from hooks.scripts.direct_command_guard import deny_match as _deny_match  # noqa
 from hooks.scripts.direct_command_guard import handle_block_direct_commands
 from hooks.scripts.django_bootstrap import bootstrap_teatree_django
 from hooks.scripts.engagement import engage
+from hooks.scripts.engagement_advisory import session_start_advisory as _session_start_advisory
 from hooks.scripts.forge_api_detect import (
     _API_CREATE_ENDPOINT_RE,  # noqa: F401 re-export for test access
     _GLAB_GH_API_RE,
@@ -143,6 +146,7 @@ from hooks.scripts.plan_edit_gate import skip_plan_gate_token
 from hooks.scripts.question_gates import (
     FENCED_CODE_RE,
     STRUCTURED_QUESTION_BLOCK,
+    handle_resolve_answered_question,
     handle_warn_batched_questions,
     is_user_directed_question,
     preceding_user_rejected_question_and_asked_clarify,
@@ -177,6 +181,8 @@ from hooks.scripts.teatree_settings import autoload_enabled as _autoload_enabled
 from hooks.scripts.teatree_settings import teatree_bool_setting as _teatree_bool_setting
 from hooks.scripts.teatree_settings import teatree_bool_setting_loud as _teatree_bool_setting_loud
 from hooks.scripts.teatree_settings import teatree_int_setting as _teatree_int_setting
+from hooks.scripts.turn_inspect import current_turn_assistant_text as _current_turn_assistant_text
+from hooks.scripts.turn_inspect import current_turn_edits as _current_turn_edits
 from hooks.scripts.turn_inspect import current_turn_tool_commands
 from hooks.scripts.unknown_repo_push_gate import handle_block_unknown_repo_push
 from hooks.scripts.ups_fastpath import has_pending_chat_work, has_pending_question_work, record_presence
@@ -2488,10 +2494,6 @@ def _run_dispatch_quote_scanner_on_task_create(data: dict) -> bool:
 # a merge-class mutation. Treating a crash as a coverage finding turned
 # every ``gh pr create`` into a deny; that is the bug this closes.
 
-_GH_PR_READY_RE = re.compile(r"\bgh\s+pr\s+ready\b")
-_PR_MR_CREATE_RE = re.compile(r"\b(?:gh\s+pr\s+create|glab\s+mr\s+create)\b")
-_DRAFT_FLAG_RE = re.compile(r"(?:^|\s)(?:--draft|--undo)\b")
-
 
 def _is_merge_class_mutation(data: dict) -> bool:
     """Whether this tool call moves a PR toward review/merge.
@@ -2500,19 +2502,14 @@ def _is_merge_class_mutation(data: dict) -> bool:
     ``glab mr create`` or a ``gh api``/``glab api`` POST to a PR/MR
     collection endpoint (F2 — same semantic effect, same gate coverage
     needed). ``gh pr ready --undo`` (return-to-draft, the gate's own
-    remediation) and ``--draft`` creation are excluded.
+    remediation) and ``--draft`` creation are excluded. The verb detection
+    (:func:`coverage_gate.is_merge_class_command`) runs on the quote/heredoc-
+    stripped skeleton, so a mere MENTION inside a quoted argument or heredoc
+    body never fires the gate.
     """
     if data.get("tool_name") != "Bash":
         return False
-    command = data.get("tool_input", {}).get("command", "")
-    if _GH_PR_READY_RE.search(command):
-        return not _DRAFT_FLAG_RE.search(command)
-    if _PR_MR_CREATE_RE.search(command):
-        return not _DRAFT_FLAG_RE.search(command)
-    # F2: gh/glab api POST to a PR/MR create endpoint is merge-class too.
-    if re.search(r"\b(?:gh|glab)\s+api\b", command) and _is_api_create_endpoint_write(command):
-        return not _DRAFT_FLAG_RE.search(command)
-    return False
+    return _is_merge_class_command(data.get("tool_input", {}).get("command", ""))
 
 
 def handle_block_uncovered_diff(data: dict) -> bool:
@@ -2544,6 +2541,11 @@ def handle_block_uncovered_diff(data: dict) -> bool:
     # unrelated worktree.
     command = data.get("tool_input", {}).get("command", "")
     repo_dir = _coverage_gate_repo_dir(command, data.get("cwd"))
+    # A publish to repo X must never be gated on uncommitted symbols in repo Y:
+    # when the command names an explicit target repo that is NOT the measured
+    # repo, skip the measurement entirely (§17.6.3 scope, fail-open #122).
+    if not _measured_repo_is_publish_target(command, repo_dir):
+        return False
     argv = _diff_coverage_argv(repo_dir)
     if argv is None:
         return False
@@ -2566,10 +2568,10 @@ def handle_block_uncovered_diff(data: dict) -> bool:
 
     return _fail_open_or_deny(
         data,
-        "BLOCKED: per-diff coverage gate 12 failed (BLUEPRINT §17.6.3). "
-        "An added production line is uncovered or a changed symbol is not "
-        "referenced by a changed test. Cover/reference it, then re-mark the "
-        "PR ready (resolve the finding before re-requesting review).\n" + finding,
+        "BLOCKED: per-diff coverage gate 12 failed (BLUEPRINT §17.6.3). An added production line is uncovered, or a "
+        "changed symbol is not imported by a changed test — it reads name-level imports only, not `mod.sym()` "
+        "attribute access. If the symbol is already exercised, add `from <module> import <symbol>` to a changed "
+        "test to make the reference visible, then re-mark the PR ready (resolve the finding first).\n" + finding,
     )
 
 
@@ -3358,6 +3360,11 @@ def handle_read_dedup(data: dict) -> None:
         "\n".join(f"{mtime}\t{path}" for path, mtime in reads.items()) + "\n",
         encoding="utf-8",
     )
+
+
+# ``handle_resolve_answered_question`` (+ its ``_answer_text_from_tool_response``
+# helper) lives in the ``question_gates`` sibling — the AskUserQuestion
+# decision-policy home — and is imported into the PostToolUse chain above.
 
 
 # ── PostToolUse: capture Agent-tool sub-agent dispatches ───────────
@@ -4256,12 +4263,9 @@ def _claim_session_handover(session_id: str) -> str | None:
     from_session = ""
     if bootstrap_teatree_django():
         try:
-            from teatree.core.models import SessionHandover  # noqa: PLC0415 — deferred: ORM/app-registry
+            from teatree.core.handover import claim_handovers  # noqa: PLC0415 — deferred: ORM/app-registry
 
-            claimed = SessionHandover.objects.claim_next(session_id)
-            if claimed is not None:
-                payload = claimed.payload
-                from_session = claimed.from_session
+            payload, from_session = claim_handovers(session_id)
         except Exception:  # noqa: BLE001 — never block SessionStart on a DB hiccup
             payload = ""
 
@@ -4436,14 +4440,6 @@ def _merge_session_start_context(context: str, session_id: str, source: str) -> 
     return context
 
 
-# #256 one-line how-to-start advisory for a default-off, not-yet-engaged session.
-# autoload is DB-home: the auto-start opt-in is set via the ConfigSetting store.
-_TEATREE_NOT_ACTIVE_ADVISORY = (
-    "teatree is installed but not active in this session — run /teatree to start it "
-    "(or run `t3 <overlay> config_setting set autoload true` to start it automatically)."
-)
-
-
 def _emit_session_start_context(context: str) -> None:
     # #1452: the harness silently drops the legacy flat top-level
     # ``{"additionalContext": ...}`` form for SessionStart; the documented schema
@@ -4500,7 +4496,7 @@ def handle_session_start_bootstrap(data: dict) -> None:
     if _autoload_enabled():
         engage(session_id, seed_skills=True)
     elif not _teatree_active(session_id):
-        advisory = "" if source in {"compact", "resume"} else _TEATREE_NOT_ACTIVE_ADVISORY
+        advisory = "" if source in {"compact", "resume"} else _session_start_advisory()
         _emit_session_start_context(_merge_session_start_context(advisory, session_id, source))
         return
     if not _loop_auto_load_active(session_id):
@@ -5380,22 +5376,32 @@ def handle_mirror_question_to_slack(data: dict) -> bool:
     already short-circuited an away turn). Three present-mode arms:
 
     - live user turn (the user typed a prompt seconds ago, in this
-    session) — mirror to Slack and return ``False`` so the question
+    session) — capture and mirror, then return ``False`` so the question
     renders in-client. Preserves ``TestPresentModeMirrorsButDoesNotDeny``
     and the #189 live-turn escape.
     - attended non-owner turn (a different live session owns the loop; a
-    human is reading the prose) — mirror and return ``False``.
+    human is reading the prose) — same: capture, mirror, return ``False``.
     - loop-driven / autonomous turn (this session drives the loop, or
     there is no live owner) — the broken path: rendering in-client
     suspends the session with no way for a Slack reply to reach it.
     Instead capture a generation-stamped mirror-linked
     ``DeferredQuestion``, then deny so the agent narrates the deferral and
     proceeds; the answer arrives later via ``additionalContext``.
+
+    All three arms now record the question (#3642). The interactive arms used to
+    post the DM WITHOUT a row, which made the mirror unanswerable — a Slack reply had
+    no live generation to bind, and an owner who walked away from the terminal lost the
+    question entirely. Recording puts it in the same owner-thread queue the headless
+    lane feeds (:mod:`teatree.core.owner_threads`); the fast path is unchanged because
+    the arm still returns ``False`` and the modal renders. An in-client answer resolves
+    the row via :func:`handle_resolve_answered_question`, so neither surface can apply
+    an answer the other already took.
     """
     if data.get("tool_name") != "AskUserQuestion":
         return False
     if _is_live_user_turn(data) or not _session_drives_loop(str(data.get("session_id", ""))):
-        _post_question_to_slack(data)
+        if _capture_and_defer_question(data, mode="present") is None:
+            _post_question_to_slack(data)
         return False
     if not str(_first_question(data).get("question", "")).strip():
         _post_question_to_slack(data)
@@ -5918,79 +5924,6 @@ def classify_session_edit(file_path: str) -> str | None:
     return None
 
 
-_EDIT_TOOL_NAMES = frozenset({"Edit", "Write", "NotebookEdit"})
-
-
-def _edit_block_path(block: dict) -> str | None:
-    """File path for an ``Edit``/``Write``/``NotebookEdit`` tool_use block.
-
-    Caller pre-filters with ``isinstance(block, dict)`` (mirrors the
-    ``_block_is_settings_write`` contract).
-    """
-    if block.get("type") != "tool_use":
-        return None
-    name = block.get("name")
-    if name not in _EDIT_TOOL_NAMES:
-        return None
-    tool_input = block.get("input")
-    if not isinstance(tool_input, dict):
-        return None
-    raw = tool_input.get("file_path") or tool_input.get("notebook_path")
-    if isinstance(raw, str) and raw:
-        return raw
-    return None
-
-
-def _current_turn_edits(transcript_path: str) -> list[str]:
-    """File paths edited by the assistant in the most recent turn.
-
-    Walks the transcript newest→oldest; the most recent ``user`` entry
-    is the boundary. Returns the file paths from every ``Edit`` /
-    ``Write`` / ``NotebookEdit`` ``tool_use`` block after that
-    boundary, in transcript order. Duplicates kept — the caller
-    classifies + dedupes.
-    """
-    entries = _read_transcript_entries(transcript_path)
-    if not entries:
-        return []
-    edits: list[str] = []
-    for entry in reversed(entries):
-        role = _entry_role(entry)
-        if role == "user":
-            break
-        if role != "assistant":
-            continue
-        for block in _entry_content(entry):
-            if not isinstance(block, dict):
-                continue
-            path = _edit_block_path(block)
-            if path is not None:
-                edits.append(path)
-    edits.reverse()
-    return edits
-
-
-def _current_turn_assistant_text(transcript_path: str) -> str:
-    """Concatenated assistant text blocks in the most recent turn.
-
-    Used to detect a teatree-issue reference that clears the gate.
-    """
-    chunks: list[str] = []
-    entries = _read_transcript_entries(transcript_path)
-    for entry in reversed(entries):
-        role = _entry_role(entry)
-        if role == "user":
-            break
-        if role != "assistant":
-            continue
-        for block in _entry_content(entry):
-            if isinstance(block, dict) and block.get("type") == "text":
-                text = block.get("text")
-                if isinstance(text, str):
-                    chunks.append(text)
-    return "\n".join(chunks)
-
-
 # ── Stop: speak-on-stop arm (local == all, #2060) ───────────────────────────
 
 
@@ -6245,6 +6178,7 @@ _HANDLERS: dict[str, list] = {
         handle_track_cron_jobs,
         handle_read_dedup,
         handle_track_agents,
+        handle_resolve_answered_question,
     ],
     "TaskCreated": [
         handle_enforce_skill_loading_on_task_create,

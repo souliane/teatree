@@ -5,11 +5,13 @@ from typing import TYPE_CHECKING, TypedDict
 if TYPE_CHECKING:
     from django.http import HttpRequest
 
-# The three top-level pages, in nav order: (url-name, label).
+# The top-level pages, in nav order: (url-name, label).
 NAV_ITEMS: tuple[tuple[str, str], ...] = (
     ("dash:board", "Board"),
     ("dash:health", "Health"),
     ("dash:loops", "Loops"),
+    ("dash:presets", "Schedule"),
+    ("dash:config", "Config"),
 )
 
 

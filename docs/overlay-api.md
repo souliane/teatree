@@ -29,6 +29,14 @@ The overlay is the integration point between teatree (generic) and your project 
 
 The overlay loader discovers all installed overlays from entry points at startup, instantiates each class once, and caches them. Teatree calls overlay methods from management commands when it needs project-specific information. If multiple overlays are installed, commands accept an overlay name to disambiguate.
 
+> **Import-timing contract.** Entry points load during CLI assembly, **before**
+> `django.setup()`. The overlay module — and every module it imports at module
+> level — must import cleanly with Django unconfigured: no module-level
+> `teatree.core.models` (ORM) imports. Annotate hooks with the frozen
+> `teatree.overlay_sdk.WorktreeLike` / `TicketLike` protocols (or use an
+> `if TYPE_CHECKING:` import) and defer runtime ORM access to function bodies.
+> Guarded by `tests/teatree_core/test_overlay_ep_import_pre_django.py`.
+
 ## Configuration via `OverlayConfig`
 
 Overlay-specific configuration (tokens, URLs, service credentials) lives on `OverlayConfig`, accessed as `overlay.config`. Configure via an `overlay_settings` module (Django-style) or via the overlay's `overlays` registry row in the DB `ConfigSetting` store.

@@ -1,7 +1,8 @@
 """Phase 5 — regenerate the ``MEMORY.md`` index from the memory set (#1933 § 6).
 
-Fixture-only: tmp dir, never the real ``~/.claude``. The contract: one line per
-memory (a bare ``name.md`` pointer + a brief ≤45-char hook), deduped, stably
+Fixture-only: tmp dir, never the real ``~/.claude``. The contract: one bare
+``- name.md`` pointer per memory (no free-text summary, so the whole index stays
+under the ~24 KB byte budget at a realistic corpus, #2755), deduped, stably
 ordered, no content moved into the index, and BYTE-IDENTICAL on a re-run with no
 changes.
 """
@@ -11,8 +12,8 @@ from pathlib import Path
 
 from django.test import SimpleTestCase
 
-from teatree.loops.dream import reindex
-from teatree.loops.dream.reindex import reindex_memory, render_index
+from teatree.loops.dream import gates, reindex
+from teatree.loops.dream.reindex import index_line_for, reindex_memory, render_index
 
 
 class ReindexTestCase(SimpleTestCase):
@@ -24,48 +25,30 @@ class ReindexTestCase(SimpleTestCase):
         path.write_text(text, encoding="utf-8")
         return path
 
-    def test_one_line_per_memory_with_summary(self) -> None:
+    def test_index_line_for_is_a_bare_basename_pointer(self) -> None:
+        # the decay phase projects the post-archival index byte-for-byte via this helper
+        assert index_line_for("mem_a") == "- mem_a"
+        assert index_line_for("nested/dir/mem_b.md") == "- mem_b.md"
+
+    def test_one_bare_pointer_per_memory(self) -> None:
         self._write("mem_a", "---\nname: mem_a\nsummary: the lease guard rejects an empty owner\n---\n# H\nbody")
         self._write("mem_b", "---\nname: mem_b\n---\n# H\nthe first prose line is the summary")
         result = reindex_memory(self.dir)
         index = (self.dir / "MEMORY.md").read_text(encoding="utf-8")
         assert result.lines_indexed == 2
-        # #2723: a single bare filename pointer, no `[name.md](name.md)` href duplication.
-        assert "- mem_a.md — the lease guard rejects an empty owner" in index
-        assert "- mem_b.md — the first prose line is the summary" in index
+        # #2755: a bare filename pointer, no free-text summary — the slug is the hook.
+        assert "- mem_a.md\n" in index
+        assert "- mem_b.md\n" in index
+        assert all(" — " not in line for line in index.splitlines() if line.startswith("- "))
 
     def test_no_href_duplication(self) -> None:
-        # #2723: the old `[name.md](name.md)` listed the filename TWICE per line,
-        # inflating the index. The pointer is now a single bare filename.
+        # #2723/#2755: no `[name.md](name.md)` href duplication and no summary — the
+        # pointer is a single bare filename mentioned exactly once.
         self._write("mem_a", "---\nname: mem_a\nsummary: a lesson\n---\nbody")
         index = render_index(self.dir)
         assert "(mem_a.md)" not in index
         assert "[mem_a.md]" not in index
         assert index.count("mem_a.md") == 1
-
-    def test_hook_is_clipped_to_45_chars(self) -> None:
-        # #2755: the hook is clipped to a SHORT 45 chars (was 110) so many more bare
-        # pointers fit the ~24 KB byte budget.
-        long = "x" * 500
-        self._write("mem_long", f"---\nname: mem_long\nsummary: {long}\n---\nbody")
-        index = render_index(self.dir)
-        line = next(line for line in index.splitlines() if "mem_long.md" in line)
-        summary = line.split(" — ", 1)[1]
-        assert reindex._SUMMARY_MAX_CHARS == 45
-        assert len(summary) <= reindex._SUMMARY_MAX_CHARS
-        assert summary.endswith("…")
-
-    def test_line_max_chars_pinned_to_130_and_hot_lines_capped(self) -> None:
-        # #2755: the hot per-line cap is 130 (was 140) so `- <name>.md — <hook>` stays
-        # tight. The cold MEMORY_ARCHIVE.md is uncapped — that is decay's concern, pinned
-        # in test_decay.py::...::test_cold_index_signature_is_uncapped.
-        assert reindex._LINE_MAX_CHARS == 130
-        self._write("mem_long", f"---\nname: mem_long\nsummary: {'z' * 400}\n---\nbody")
-        index = render_index(self.dir)
-        hot_lines = [line for line in index.splitlines() if line.startswith("- ")]
-        assert hot_lines
-        for line in hot_lines:
-            assert len(line) <= 130
 
     def test_archive_index_is_not_re_indexed_into_the_hot_index(self) -> None:
         # #2723: MEMORY_ARCHIVE.md lives in the memory dir but must never appear as a
@@ -77,23 +60,13 @@ class ReindexTestCase(SimpleTestCase):
         assert "archived_x.md" not in index
         assert "mem_a.md" in index
 
-    def test_whole_line_is_capped(self) -> None:
-        # #2723: the WHOLE line (filename + summary) is capped, so a long filename
-        # plus a long summary can never blow the per-line byte budget. The pointer
-        # filename is preserved intact; only the summary absorbs the cap.
-        self._write("mem_with_a_very_long_descriptive_filename", f"---\nsummary: {'y' * 500}\n---\nbody")
+    def test_long_filename_renders_as_the_bare_pointer(self) -> None:
+        # A long descriptive filename is preserved intact as the pointer — there is no
+        # per-line summary to cap, so the whole line is just `- <name>.md`.
+        self._write("mem_with_a_very_long_descriptive_filename", "---\nsummary: irrelevant\n---\nbody")
         index = render_index(self.dir)
         line = next(line for line in index.splitlines() if line.startswith("- "))
-        assert len(line) <= reindex._LINE_MAX_CHARS
-        assert "mem_with_a_very_long_descriptive_filename.md" in line
-
-    def test_filename_alone_over_budget_drops_the_summary(self) -> None:
-        # #2723 edge: when the bare pointer filename ALONE exceeds the per-line budget
-        # there is no room for any summary, so the line degrades to just the pointer
-        # rather than emitting a negative-length clip.
-        long_name = Path("m" * (reindex._LINE_MAX_CHARS + 10) + ".md")
-        line = reindex._index_line(long_name, "a summary that cannot fit")
-        assert line == f"- {long_name.name}"
+        assert line == "- mem_with_a_very_long_descriptive_filename.md"
 
     def test_idempotent_rerun_is_byte_identical(self) -> None:
         self._write("mem_a", "---\nname: mem_a\nsummary: a\n---\nbody")
@@ -123,9 +96,10 @@ class ReindexTestCase(SimpleTestCase):
         body = "this is a long multi-line body that must NOT be copied into the index wholesale"
         self._write("mem_a", f"---\nname: mem_a\nsummary: short summary\n---\n{body}\n{body}\n{body}")
         index = render_index(self.dir)
-        # The index carries the one-line summary, not the repeated body.
+        # The index carries only the bare pointer, never body content or the summary.
         assert index.count(body) == 0
-        assert "short summary" in index
+        assert "short summary" not in index
+        assert "- mem_a.md\n" in index
 
     def test_dry_run_writes_nothing(self) -> None:
         self._write("mem_a", "---\nname: mem_a\nsummary: a\n---\nbody")
@@ -138,20 +112,15 @@ class ReindexTestCase(SimpleTestCase):
         assert result.lines_indexed == 0
         assert result.changed is False
 
-    def test_unterminated_frontmatter_falls_back_to_body(self) -> None:
-        # A "---" with no closing fence is not real frontmatter; the whole text is
-        # treated as body and the first non-heading prose line becomes the summary
-        # (the bare "---" line strips to empty and is skipped).
-        self._write("mem_a", "---\nname: mem_a\nthe lesson with no closing fence")
+    def test_every_memory_renders_as_a_bare_pointer_regardless_of_body(self) -> None:
+        # The line is the bare pointer whether the body has prose, only headings, or an
+        # unterminated frontmatter fence — the body never leaks into the hot index.
+        self._write("mem_prose", "---\nname: mem_prose\nthe lesson with no closing fence")
+        self._write("mem_headings", "---\nname: mem_headings\n---\n# Only A Heading\n## And Another")
         index = render_index(self.dir)
-        line = next(line for line in index.splitlines() if "mem_a.md" in line)
-        assert " — " in line  # a summary was derived from the body, not empty
-
-    def test_memory_with_only_headings_has_no_summary(self) -> None:
-        self._write("mem_a", "---\nname: mem_a\n---\n# Only A Heading\n## And Another")
-        index = render_index(self.dir)
-        # No prose line -> pointer only, no " — summary".
-        assert "- mem_a.md\n" in index
+        assert "- mem_prose.md\n" in index
+        assert "- mem_headings.md\n" in index
+        assert all(" — " not in line for line in index.splitlines() if line.startswith("- "))
 
     def test_empty_dir_renders_header_only(self) -> None:
         index = render_index(self.dir)
@@ -164,6 +133,33 @@ class ReindexTestCase(SimpleTestCase):
         index = render_index(self.dir)
         assert "mem_a.md" in index
         assert "broken.md" not in index
+
+    def test_realistic_corpus_stays_under_budget(self) -> None:
+        # #2755: the re-index must keep the WHOLE index under the ~24 KB
+        # session-load byte budget at a realistic corpus. The old
+        # ``- name.md — summary`` form rendered ~228 memories with ~50-byte filenames
+        # OVER budget (undoing curated compaction); the bare ``- name.md`` pointer form
+        # fits every pointer with room to spare. Anti-vacuous: this fixture renders
+        # ~25 KB under the old summary generator (RED against both thresholds) and
+        # ~14 KB under the bare-pointer one (GREEN), and every memory keeps one pointer.
+        count = 228
+        names = []
+        for i in range(count):
+            stem = f"feedback_realistic_descriptive_memory_lesson_slug_{i:04d}"
+            names.append(f"{stem}.md")
+            self._write(
+                stem,
+                f"---\nname: {stem}\n"
+                f"summary: a recurring lesson about subsystem {i} the agent keeps relearning across sessions\n"
+                f"---\nthe load-bearing body for lesson {i}\n",
+            )
+        index = render_index(self.dir)
+        size = len(index.encode("utf-8"))
+        assert size < 17_000, f"index is {size} bytes; must stay under the ~17 KB curated target"
+        assert size < gates.INDEX_BYTE_BUDGET
+        pointer_lines = [line for line in index.splitlines() if line.startswith("- ")]
+        assert len(pointer_lines) == count  # one pointer line per memory
+        assert all(index.count(name) == 1 for name in names)  # every file linked exactly once
 
 
 class SignatureTextTestCase(SimpleTestCase):
@@ -213,23 +209,14 @@ class SignatureTextTestCase(SimpleTestCase):
         assert reindex.signature_text(text) == ""
 
     def test_signature_is_uncapped(self) -> None:
-        # Unlike the hot index line, the signature is never clipped.
+        # The cold signature (retention + cold index) is never clipped, unlike the
+        # bare-pointer hot index which carries no signature at all.
         long = "a long lesson " + "x" * 400
         text = f"---\nname: m\ndescription: {long}\n---\nbody"
         assert reindex.signature_text(text) == long
-        assert len(reindex.signature_text(text)) > reindex._LINE_MAX_CHARS
+        assert len(reindex.signature_text(text)) > 200
 
     def test_returned_signature_is_a_substring_of_the_text(self) -> None:
         # The retention contract: the signature stays findable in the body.
         sig = reindex.signature_text(self._NODE_TYPED)
         assert " ".join(sig.split()).lower() in " ".join(self._NODE_TYPED.split()).lower()
-
-    def test_summary_for_shares_signature_text_then_clips(self) -> None:
-        # The hot index summary is signature_text clipped to the per-summary cap.
-        long = "y" * 400
-        text = f"---\nname: m\ndescription: {long}\n---\nbody"
-        summary = reindex._summary_for(text)
-        assert len(summary) <= reindex._SUMMARY_MAX_CHARS
-        assert summary.endswith("…")
-        # The cold signature stays uncapped for the same text.
-        assert len(reindex.signature_text(text)) > reindex._SUMMARY_MAX_CHARS

@@ -1,3 +1,5 @@
+# test-path: cross-cutting — asserts a skills/e2e/SKILL.md doc invariant; the
+# browser_diagnosis import is only the shared flag constant, not the unit under test.
 """e2e/SKILL.md must document chrome-devtools-mcp as the default browser tool.
 
 chrome-devtools-mcp replaced the Claude-in-Chrome extension as teatree's browser
@@ -13,6 +15,8 @@ anchor token rather than keying on the first match.
 """
 
 from pathlib import Path
+
+from teatree.core.evidence.browser_diagnosis import CHROME_DEVTOOLS_HEADLESS_FLAG
 
 _E2E_SKILL = Path(__file__).resolve().parents[1] / "skills" / "e2e" / "SKILL.md"
 
@@ -64,6 +68,19 @@ class TestE2ESkillDocumentsBrowserTool:
         assert "claude mcp add chrome-devtools" in text, (
             "e2e/SKILL.md must show the `claude mcp add chrome-devtools` registration line."
         )
+
+    def test_registration_line_is_headless(self) -> None:
+        text = _E2E_SKILL.read_text(encoding="utf-8")
+        assert f"chrome-devtools-mcp@latest {CHROME_DEVTOOLS_HEADLESS_FLAG}" in text, (
+            "e2e/SKILL.md's registration line must carry the headless flag — upstream defaults it "
+            "to false, so omitting it opens a visible Chrome window on the user's desktop."
+        )
+        assert _any_window_contains(
+            text,
+            "--headless",
+            must_include="never headed",
+            radius=600,
+        ), "e2e/SKILL.md must state teatree always runs the browser headless, never headed."
 
     def test_documents_unattended_allow_rule(self) -> None:
         text = _E2E_SKILL.read_text(encoding="utf-8")

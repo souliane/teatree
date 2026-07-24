@@ -98,15 +98,29 @@ class ReviewService:
 
     @staticmethod
     def _resolve_base_url() -> str:
-        """Resolve GitLab API base URL from overlay config or env, defaulting to gitlab.com."""
+        """The GitLab API base URL every review post is addressed to — overlay first, then env.
+
+        REFUSES rather than guessing (#3509). This used to swallow an unreadable overlay
+        config and fall back to ``$GITLAB_URL`` / ``gitlab.com`` with no log, so a broken
+        overlay config could silently redirect an outbound review post to a DIFFERENT
+        GitLab instance. An explicitly-set ``$GITLAB_URL`` is still honoured — that is an
+        operator's stated choice, not a guess — but with nothing to fall back to the read
+        raises :class:`~teatree.cli.review.guarded_read.ReadRefusedError`.
+        """
         import os  # noqa: PLC0415 — deferred: loaded only when this command runs
 
-        try:
+        from teatree.cli.review.guarded_read import guarded_read, read_or_refuse  # noqa: PLC0415 — deferred CLI import
+
+        def _overlay_url() -> str:
             from teatree.core.overlay_loader import get_overlay  # noqa: PLC0415 — deferred: keeps CLI startup light
 
             return get_overlay().config.gitlab_url
-        except Exception:  # noqa: BLE001 — an unresolvable GitLab URL degrades to the env/default
-            return os.environ.get("GITLAB_URL", "https://gitlab.com/api/v4")
+
+        env_url = os.environ.get("GITLAB_URL", "").strip()
+        if not env_url:
+            return read_or_refuse("the review GitLab base URL from the overlay config", _overlay_url)
+        outcome = guarded_read("the review GitLab base URL from the overlay config", _overlay_url, neutral=env_url)
+        return outcome.value or env_url
 
     def _post_draft_note_impl(self, repo: str, mr: int, note: str, *, file: str, line: int) -> tuple[str, int]:
         """The pre-gate-passed body of :meth:`post_draft_note` (extracted to :mod:`review_post_impl`)."""

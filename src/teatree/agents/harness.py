@@ -11,7 +11,7 @@ PR-1 (#2565, #2883) shipped :class:`ClaudeSdkHarness`, wrapping today's
 byte-identical to before the seam existed. PR-2
 ([#2885](https://github.com/souliane/teatree/issues/2885)) ships the
 provider-agnostic backend, :class:`PydanticAiHarness`: a Pydantic AI
-:class:`~pydantic_ai.Agent` targeting OrcaRouter's OpenAI-compatible, BYOK,
+:class:`~pydantic_ai.Agent` targeting the configured OpenAI-compatible,
 metered endpoint. Both backends yield the SAME ``claude_agent_sdk`` message
 vocabulary (``AssistantMessage`` / ``ResultMessage``) from :meth:`HarnessSession.receive_response`
 so the driver (:func:`teatree.agents.headless._collect`) never special-cases the
@@ -51,11 +51,11 @@ from teatree.agents.model_tiering import HARNESS_EFFORT_SCALE, resolve_phase_har
 from teatree.agents.pydantic_ai_config import (
     PYDANTIC_AI_NATIVE_CAPABILITIES,
     PYDANTIC_AI_ROUTER_CAPABILITIES,
-    OrcaLaneConfig,
+    OpenAICompatibleLaneConfig,
     PydanticAiBinding,
     PydanticAiModelConfig,
     build_model_settings,
-    build_orca_provider,
+    build_openai_compatible_provider,
     resolve_native_anthropic_model,
 )
 from teatree.agents.pydantic_ai_resume import persist_parked_thread, rehydrate_thread_for_resume
@@ -167,16 +167,17 @@ def resolve_effort(options: HarnessOptions) -> ReasoningEffort | None:
 
 
 class PydanticAiHarness:
-    """The ``pydantic_ai`` backend — OrcaRouter BYOK, OpenAI-compatible transport.
+    """The ``pydantic_ai`` backend — the generic OpenAI-compatible transport.
 
     ``open`` builds a fresh :class:`~pydantic_ai.Agent` from *options* (model,
     system prompt, and reasoning effort — MCP servers, hooks, and tool
     permissions are the ``claude-agent-sdk``-specific surface the strangler-fig
     migration re-homes in a later PR, per the redesign doc's port-surface table)
-    targeting OrcaRouter's OpenAI-compatible endpoint with the BYOK metered
-    credential (:func:`~teatree.llm.credentials.resolve_orca_router_provider_config`).
+    targeting the configured OpenAI-compatible endpoint with the credential the
+    ``openai_compatible_credential_entry`` setting names
+    (:func:`~teatree.llm.openai_compatible.resolve_openai_compatible_backend`).
 
-    *model* is INJECTABLE (default ``None`` triggers the real OrcaRouter
+    *model* is INJECTABLE (default ``None`` triggers the real backend
     resolution lazily, INSIDE ``open`` — never at construction time, so building
     the harness never requires a live credential) so tests drive it with
     pydantic_ai's own :class:`~pydantic_ai.models.test.TestModel` /
@@ -196,13 +197,13 @@ class PydanticAiHarness:
     *resume_source* (souliane/teatree#2916) is the parked ``Task`` *history*
     was popped from, when this harness seeds a resume — ``None`` for a fresh
     dispatch. ``resolve_harness`` pops that thread the moment it BUILDS this
-    harness, before ``open`` ever runs and resolves the OrcaRouter credential
+    harness, before ``open`` ever runs and resolves the backend credential
     — so a caller that refuses dispatch after construction but before a
     successful ``open`` (a budget breach, a credential failure) can restore
     the popped entry via :attr:`history` + *resume_source*.
 
     The dispatch-lane hints live on :attr:`capabilities` (#3157 AH-5): ``metered_lane`` is
-    ``True`` (a ``pydantic_ai`` run always authenticates on the metered lane — OrcaRouter BYOK
+    ``True`` (a ``pydantic_ai`` run always authenticates on the metered lane — the configured key
     or the native Anthropic key — the transport fixes it) and ``spawns_cli_child`` is ``False``
     (no bundled CLI child; the credential resolves in-process inside ``open``).
     """
@@ -223,11 +224,11 @@ class PydanticAiHarness:
         # phase resolves the phase-scoped, gated toolsets (:mod:`teatree.agents.lane_b`).
         # ``None`` (the default) keeps a text-in/text-out Agent with no tools.
         self._phase = phase
-        # The model-construction bundle (OrcaRouter knobs + binding), resolved
+        # The model-construction bundle (backend knobs + binding), resolved
         # SYNCHRONOUSLY by :func:`resolve_harness`. Absent → the defaults (router
         # binding, factory lane, uncapped).
         cfg = config or PydanticAiModelConfig()
-        self._orca = cfg.orca
+        self._backend = cfg.backend
         self._binding = cfg.binding
         self._max_tokens = cfg.max_tokens
 
@@ -264,23 +265,20 @@ class PydanticAiHarness:
             return self._model
         if self._binding is PydanticAiBinding.NATIVE_ANTHROPIC:
             return resolve_native_anthropic_model(options)
-        # Normalise the resolved id to what OrcaRouter's catalog actually carries
-        # (OrcaRouter setup plan §3.2): ``options.model`` is a teatree-abstract-tier
-        # default in Claude DASH-form (``claude-opus-4-8``), which Orca does NOT
-        # carry — so it maps to the router handle; an explicit Orca-native pin
-        # passes through. ``router_name`` selects the overlay's own named router
-        # (``teatree-factory`` vs secondary-router) for the normalise-UP branch.
-        model_name = resolve_pydantic_ai_model(options.model, router_name=self._orca.router_name)
+        # Normalise the resolved id to what the configured endpoint actually serves:
+        # ``options.model`` is a teatree-abstract-tier default in Claude DASH-form
+        # (``claude-opus-4-8``) an OpenAI-compatible provider does NOT carry, so it maps
+        # to the configured ``openai_compatible_model``; an explicit provider-native pin
+        # passes through.
+        model_name = resolve_pydantic_ai_model(options.model, configured_model=self._backend.model)
         # Regulated-path allowlist gate on the ORIGINAL pin (before normalisation
-        # laundered a bare ineligible id into the router handle) — a config-policy
+        # laundered a bare ineligible id into the configured id) — a config-policy
         # refusal that must surface BEFORE the credential step, so it fires even when
-        # OrcaRouter credentials are absent. ``options.model`` catches both a bare
+        # the backend credential is absent. ``options.model`` catches both a bare
         # ineligible name and an explicit provider-prefixed pin (which passes through
-        # normalisation unchanged); an absent pin falls back to the resolved handle.
+        # normalisation unchanged); an absent pin falls back to the resolved id.
         assert_model_allowed_on_regulated_path(options.model or model_name)
-        return OpenAIChatModel(
-            model_name, provider=build_orca_provider(lane=self._orca.lane, pass_path=self._orca.pass_path)
-        )
+        return OpenAIChatModel(model_name, provider=build_openai_compatible_provider(self._backend))
 
     @asynccontextmanager
     async def open(self, options: ClaudeAgentOptions) -> AsyncIterator[HarnessSession]:
@@ -310,13 +308,13 @@ class PydanticAiHarness:
             tool_timeout=config.shell_timeout_seconds if self._phase else None,
         )
         # ``async with agent:`` enters the model so the provider's HTTP client
-        # (OrcaRouter's OpenAI-compatible connection pool) closes cleanly on
+        # (the OpenAI-compatible connection pool) closes cleanly on
         # exit — a bare ``Agent(...)`` never closes it, leaking a client per
         # dispatch until GC.
         # A positive caller ``max_turns`` (an OneShotSpec cap, an eval override) wins over the
         # lane's own ``request_limit``; ``0`` (a headless dispatch, an SDK-``None`` coercion)
         # keeps ``request_limit`` — so every uncapped dispatch stays byte-identical.
-        request_limit = harness_options.max_turns if harness_options.max_turns > 0 else self._orca.request_limit
+        request_limit = harness_options.max_turns if harness_options.max_turns > 0 else self._backend.request_limit
         async with agent:
             yield PydanticAiHarnessSession(
                 agent,
@@ -335,13 +333,13 @@ def _build_claude_sdk_harness(context: HarnessBuildContext) -> Harness:  # noqa:
 def _build_pydantic_ai_harness(context: HarnessBuildContext) -> Harness:
     """The built-in ``pydantic_ai`` factory ([#2885](https://github.com/souliane/teatree/issues/2885)).
 
-    Resolves the OrcaRouter call-site knobs SYNCHRONOUSLY (the ``x-lane`` value, the
-    per-overlay router handle, the per-run step cap, the pass-path override) rather than
+    Resolves the OpenAI-compatible backend knobs SYNCHRONOUSLY (the ``x-lane`` value, the
+    endpoint, the model id, the per-run step cap, the credential-store entry) rather than
     inside the async ``open`` where a DB read fails safe to defaults, rehydrates any
     resumable ancestor's parked thread (a DB read only, never a network call — so selecting
     this backend never itself requires a live credential), and selects the model binding from
     ``agent_harness_provider``: ``anthropic_api`` → the native Anthropic Messages-API binding
-    (#3157 E1b, real ``cache_control``), else the OrcaRouter OpenAI-compatible binding.
+    (#3157 E1b, real ``cache_control``), else the generic OpenAI-compatible binding.
 
     The rehydration POPS the ancestor's entry (single-use), so the built harness's
     ``resume_source`` records which ancestor it came from — a caller that refuses the
@@ -362,11 +360,12 @@ def _build_pydantic_ai_harness(context: HarnessBuildContext) -> Harness:
         config=PydanticAiModelConfig(
             binding=binding,
             max_tokens=settings.pydantic_ai_max_tokens,
-            orca=OrcaLaneConfig(
-                lane=settings.orca_router_lane,
+            backend=OpenAICompatibleLaneConfig(
+                lane=settings.openai_compatible_lane,
                 request_limit=settings.pydantic_ai_request_limit,
-                pass_path=settings.orca_router_pass_path or None,
-                router_name=settings.orca_router_name or None,
+                base_url=settings.openai_compatible_base_url,
+                credential_entry=settings.openai_compatible_credential_entry or None,
+                model=settings.openai_compatible_model or None,
             ),
         ),
     )
@@ -382,8 +381,19 @@ register_harness(
     AgentHarness.PYDANTIC_AI.value,
     _build_pydantic_ai_harness,
     capabilities=PYDANTIC_AI_ROUTER_CAPABILITIES,
-    valid_providers=frozenset({AgentHarnessProvider.ORCA_ROUTER_BYOK.value, AgentHarnessProvider.ANTHROPIC_API.value}),
+    valid_providers=frozenset({AgentHarnessProvider.OPENAI_COMPATIBLE.value, AgentHarnessProvider.ANTHROPIC_API.value}),
 )
+
+
+def _task_overlay(task: "Task | None") -> str | None:
+    """The overlay name a dispatch's config resolves under — the task's ticket overlay.
+
+    ``None`` (no task, or a task whose ticket carries no overlay) keeps the
+    active-overlay resolution so the interactive/default path is unchanged.
+    """
+    if task is None:
+        return None
+    return task.ticket.overlay or None
 
 
 def resolve_harness(task: "Task | None" = None, *, phase: str | None = None) -> Harness:
@@ -402,10 +412,17 @@ def resolve_harness(task: "Task | None" = None, *, phase: str | None = None) -> 
 
     The configured ``agent_harness`` is first run through
     :func:`~teatree.agents.model_tiering.resolve_phase_harness`, which PINS a verification
-    *phase* to ``claude_sdk`` regardless of the setting (OrcaRouter setup plan §4 guardrail
+    *phase* to ``claude_sdk`` regardless of the setting (the metered-lane guardrail
     #2) — so when a MAKER phase rides a cheap model on ``pydantic_ai``, the checker stays on
     the trusted Claude lane. A verification phase therefore never rehydrates a pydantic_ai
     resume thread (its factory is the claude_sdk one).
+
+    Settings are resolved at the TASK's OVERLAY scope (``task.ticket.overlay``), not
+    global/active-only: whether an overlay runs Lane B (``agent_harness=pydantic_ai``)
+    and its endpoint / credential / request cap are all per-overlay overridable, and a
+    headless dispatch runs per-task, so a per-overlay override for a NON-active overlay
+    must apply. A task-less ``resolve_harness()`` (the interactive/default path) keeps
+    the active-overlay resolution (env layer included).
 
     Before building, the CONFIGURED ``(agent_harness, agent_harness_provider)`` pair is
     validated against the resolved backend's registry-declared ``valid_providers`` (#3157
@@ -415,7 +432,7 @@ def resolve_harness(task: "Task | None" = None, *, phase: str | None = None) -> 
     provider valid for the configured harness into a spurious failure; an unpinned provider
     always passes.
     """
-    settings = get_effective_settings()
+    settings = get_effective_settings(_task_overlay(task))
     provider = settings.agent_harness_provider
     assert_provider_valid_for_harness(settings.agent_harness, provider.value if provider is not None else None)
     harness_name = resolve_phase_harness(settings.agent_harness, phase)

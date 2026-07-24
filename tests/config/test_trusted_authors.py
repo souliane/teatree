@@ -13,7 +13,7 @@ ever intaken on author trust until the operator names a trusted author.
 """
 
 from teatree.config import OVERLAY_OVERRIDABLE_SETTINGS, UserSettings, effective_trusted_issue_authors
-from teatree.config.settings import ENV_SETTING_OVERRIDES
+from teatree.config.setting_registries import ENV_SETTING_OVERRIDES
 
 
 class TestEffectiveTrustedIssueAuthors:
@@ -54,17 +54,11 @@ class TestEffectiveTrustedIssueAuthors:
 
 
 class TestTrustedIssueAuthorSettingsSurface:
-    def test_require_label_defaults_off(self) -> None:
-        """The label is NOT required by default — author trust is the intake gate."""
-        assert UserSettings().issue_implementer_require_label is False
-
     def test_trusted_issue_authors_defaults_empty(self) -> None:
         assert UserSettings().trusted_issue_authors == []
 
-    def test_both_settings_are_overlay_overridable(self) -> None:
+    def test_trusted_issue_authors_is_overlay_overridable(self) -> None:
         assert "trusted_issue_authors" in OVERLAY_OVERRIDABLE_SETTINGS
-        assert "issue_implementer_require_label" in OVERLAY_OVERRIDABLE_SETTINGS
 
-    def test_both_settings_have_an_env_override(self) -> None:
+    def test_trusted_issue_authors_has_an_env_override(self) -> None:
         assert ENV_SETTING_OVERRIDES["T3_TRUSTED_ISSUE_AUTHORS"][0] == "trusted_issue_authors"
-        assert ENV_SETTING_OVERRIDES["T3_ISSUE_IMPLEMENTER_REQUIRE_LABEL"][0] == "issue_implementer_require_label"

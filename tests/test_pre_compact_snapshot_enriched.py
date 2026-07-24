@@ -210,7 +210,7 @@ class TestSnapshotTodosFromHarnessStore:
     only reads it best-effort here for the recovery snapshot. There is no
     teatree-written ``<session>.todos`` mirror — that materialiser was a stale
     mistake-source and was removed; the in-session reconciliation discipline
-    (``/t3:todos`` § "Harness-TODO maintenance") keeps the LIVE list faithful.
+    (``/t3:checking`` § "Harness-TODO maintenance") keeps the LIVE list faithful.
     """
 
     def test_snapshot_renders_harness_store_todos(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

@@ -96,14 +96,17 @@ class TestHeadlessReviewerRecordsVerdictWithoutBash(TestCase):
         task.refresh_from_db()
         assert task.status == Task.Status.FAILED
 
-    def test_reviewing_task_without_verdict_envelope_is_unchanged(self) -> None:
+    def test_reviewing_task_without_verdict_envelope_fails_loudly(self) -> None:
+        # #3654: this used to COMPLETE, which is how 138 reviewing tasks finished
+        # having recorded nothing while every open PR stayed unmergeable.
         task, _ = _reviewing_task_via_dispatch()
-        record_result_envelope(task, {"summary": "Reviewed.", "decisions": ["looks good"]}, phase="reviewing")
+        attempt = record_result_envelope(task, {"summary": "Reviewed.", "decisions": ["looks good"]}, phase="reviewing")
 
         assert not ReviewVerdict.objects.filter(slug=_SLUG, pr_id=_PR_ID).exists()
         assert MRReviewLock.objects.get(slug=_SLUG, pr_id=_PR_ID).state == MRReviewLock.State.REVIEW_DISPATCHED
         task.refresh_from_db()
-        assert task.status == Task.Status.COMPLETED
+        assert task.status == Task.Status.FAILED
+        assert "review_verdict" in attempt.error
 
 
 class TestOrchestratorRecordingAdvancesReviewLoop(TestCase):
@@ -134,8 +137,17 @@ class TestReviewingEvidenceAcceptsVerdict(TestCase):
         assert check_evidence(envelope, "reviewing") == ""
         assert validate_result_keys(envelope) == ""
 
-    def test_reviewing_without_verdict_or_decisions_still_fails_evidence(self) -> None:
+    def test_reviewing_without_a_verdict_fails_evidence(self) -> None:
         assert "missing required evidence" in check_evidence({"summary": "looked at it"}, "reviewing")
+
+    def test_decisions_alone_no_longer_substitutes_for_the_verdict(self) -> None:
+        # #3654: `decisions` was an accepted alternative, so a reviewer that never
+        # returned a verdict completed indistinguishably from one that did.
+        assert "missing required evidence" in check_evidence({"decisions": ["looks good"]}, "reviewing")
+
+    def test_verdict_outside_the_recorder_vocabulary_fails_evidence(self) -> None:
+        envelope = {"review_verdict": {"verdict": "PASS", "reviewer_identity": "cold-reviewer-agent"}}
+        assert "missing required evidence" in check_evidence(envelope, "reviewing")
 
 
 def _loop_reviewer_task(loop: ReviewLoop) -> Task:

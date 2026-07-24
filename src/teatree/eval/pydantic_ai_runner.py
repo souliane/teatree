@@ -3,7 +3,7 @@
 The third :class:`~teatree.eval.backends.EvalRunner`, and the model-evolution
 unblock. Where the ``api`` backend runs the Claude CLI via ``claude-agent-sdk`` and
 ``transcript`` replays recorded Claude Code JSONL, this backend drives a
-``pydantic_ai`` :class:`~pydantic_ai.Agent` (OrcaRouter BYOK, OpenAI-compatible) so
+``pydantic_ai`` :class:`~pydantic_ai.Agent` (OpenAI-compatible) so
 the behavioral eval lane can grade a **non-Claude** model — a GPT/open-source swap
 becomes a config change (``agent_harness`` + a tier-model/router row), not a code
 change, and a swapped model is no longer unverifiable.
@@ -39,7 +39,7 @@ from pydantic_ai.toolsets import FunctionToolset
 from teatree.agents.harness import resolve_effort
 from teatree.agents.harness_options import HarnessOptions
 from teatree.agents.model_tiering import resolve_pydantic_ai_model
-from teatree.agents.pydantic_ai_config import LANE_EVAL, OrcaLaneConfig
+from teatree.agents.pydantic_ai_config import LANE_EVAL, OpenAICompatibleLaneConfig
 from teatree.agents.pydantic_ai_session import PydanticAiHarnessSession
 from teatree.agents.regulated_path import assert_model_allowed_on_regulated_path
 from teatree.config import get_effective_settings
@@ -51,9 +51,9 @@ from teatree.eval.models import EvalRun, EvalSpec
 from teatree.eval.prompt_framing import LIVE_ENV_FRAMING
 from teatree.eval.resource_caps import resolve_watchdog_seconds
 from teatree.eval.under_load import build_system_prompt, build_user_prompt
-from teatree.llm.credentials import OrcaRouterCredential, resolve_orca_router_provider_config
+from teatree.llm.openai_compatible import OpenAICompatibleCredential, resolve_openai_compatible_backend
 
-#: The OrcaRouter dispatch-lane header (mirrors ``teatree.agents.harness._X_LANE_HEADER``).
+#: The dispatch-lane header (mirrors ``teatree.agents.harness._X_LANE_HEADER``).
 _X_LANE_HEADER = "x-lane"
 
 
@@ -105,7 +105,7 @@ def _model_settings(effort: EffortLevel | None) -> ModelSettings | None:
 class PydanticAiRunner:
     """Run an :class:`EvalSpec` through the ``pydantic_ai`` harness — the non-Claude lane.
 
-    *model* is INJECTABLE (default ``None`` resolves the real OrcaRouter model lazily
+    *model* is INJECTABLE (default ``None`` resolves the real backend model lazily
     inside :meth:`run`, so building the runner never needs a live credential): a test
     drives it with pydantic_ai's own :class:`~pydantic_ai.models.test.TestModel` /
     :class:`~pydantic_ai.models.function.FunctionModel` doubles, no network, no token.
@@ -117,14 +117,14 @@ class PydanticAiRunner:
         model: Model | None = None,
         max_turns_override: int | None = None,
         effort: EffortLevel | None = None,
-        orca: OrcaLaneConfig | None = None,
+        backend: OpenAICompatibleLaneConfig | None = None,
     ) -> None:
         self._model = model
         self._max_turns_override = max_turns_override
         #: Lane-level representative reasoning effort applied when a scenario declares
         #: no ``model@effort`` of its own (a declared effort wins).
         self._effort = effort
-        self._orca = orca or OrcaLaneConfig(lane=LANE_EVAL)
+        self._backend = backend or OpenAICompatibleLaneConfig(lane=LANE_EVAL)
 
     def run(self, spec: EvalSpec) -> EvalRun:
         # Resolve the abstract tier/phase to a concrete model id (a no-op when the
@@ -141,20 +141,22 @@ class PydanticAiRunner:
     def _resolve_model(self, spec: EvalSpec) -> Model:
         if self._model is not None:
             return self._model
-        # Build the real OrcaRouter model on the eval lane. The abstract-tier→router
-        # handle normalisation and the regulated-path allowlist gate are the shared
-        # PUBLIC functions the harness uses; only the provider client (mirroring
-        # ``teatree.agents.harness._build_orca_provider``) is built here so the eval
-        # runner never reaches into the harness's private surface. Credential
-        # resolution is lazy (never at runner construction).
+        # Build the real backend model on the eval lane. The model normalisation and
+        # the regulated-path allowlist gate are the shared PUBLIC functions the harness
+        # uses; only the provider client (mirroring
+        # ``teatree.agents.pydantic_ai_config.build_openai_compatible_provider``) is built
+        # here so the eval runner never reaches into the harness's private surface.
+        # Credential resolution is lazy (never at runner construction).
         pinned = parse_model_variant(spec.model).model
-        resolved = resolve_pydantic_ai_model(pinned, router_name=self._orca.router_name)
+        resolved = resolve_pydantic_ai_model(pinned, configured_model=self._backend.model)
         assert_model_allowed_on_regulated_path(pinned or resolved)
-        config = resolve_orca_router_provider_config(
-            credential=OrcaRouterCredential(pass_path_override=self._orca.pass_path or None)
+        backend = resolve_openai_compatible_backend(
+            base_url=self._backend.base_url,
+            model=resolved,
+            credential=OpenAICompatibleCredential(pass_path_override=self._backend.credential_entry or None),
         )
         client = AsyncOpenAI(
-            base_url=config.base_url, api_key=config.api_key, default_headers={_X_LANE_HEADER: self._orca.lane}
+            base_url=backend.base_url, api_key=backend.api_key, default_headers={_X_LANE_HEADER: self._backend.lane}
         )
         return OpenAIChatModel(resolved, provider=OpenAIProvider(openai_client=client))
 
@@ -170,9 +172,11 @@ class PydanticAiRunner:
             model_settings=_model_settings(effort),
             toolsets=[build_eval_toolset(spec.tools)],
         )
-        # An explicit ``--max-turns`` caps the request loop; else the OrcaRouter
+        # An explicit ``--max-turns`` caps the request loop; else the backend
         # per-run guardrail; else uncapped (the watchdog is the hang backstop).
-        request_limit = self._max_turns_override if self._max_turns_override is not None else self._orca.request_limit
+        request_limit = (
+            self._max_turns_override if self._max_turns_override is not None else self._backend.request_limit
+        )
         # ``async with agent`` enters the model so the provider's HTTP client closes
         # cleanly on exit rather than leaking one per run.
         async with agent:
@@ -199,10 +203,10 @@ def build_pydantic_ai_eval_runner(
     max_turns_override: int | None = None,
     effort: EffortLevel | None = None,
 ) -> PydanticAiRunner:
-    """Build the ``pydantic_ai`` eval runner with the eval-lane OrcaRouter knobs.
+    """Build the ``pydantic_ai`` eval runner with the eval-lane backend knobs.
 
-    The DB-home OrcaRouter settings (the per-run step cap, the pass-path override,
-    the per-overlay router handle) are resolved SYNCHRONOUSLY here — never inside the
+    The DB-home backend settings (the per-run step cap, the endpoint, the model id,
+    the credential-store entry) are resolved SYNCHRONOUSLY here — never inside the
     async ``run``, where a ``get_effective_settings`` read fails safe to defaults
     under Django's async guard — and pinned to the ``eval`` dispatch lane
     (``x-lane: eval``). This mirrors :func:`teatree.agents.harness.resolve_harness`.
@@ -211,11 +215,12 @@ def build_pydantic_ai_eval_runner(
     return PydanticAiRunner(
         max_turns_override=max_turns_override,
         effort=effort,
-        orca=OrcaLaneConfig(
+        backend=OpenAICompatibleLaneConfig(
             lane=LANE_EVAL,
             request_limit=settings.pydantic_ai_request_limit,
-            pass_path=settings.orca_router_pass_path or None,
-            router_name=settings.orca_router_name or None,
+            base_url=settings.openai_compatible_base_url,
+            credential_entry=settings.openai_compatible_credential_entry or None,
+            model=settings.openai_compatible_model or None,
         ),
     )
 

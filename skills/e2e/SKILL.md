@@ -32,6 +32,11 @@ Always start dev servers via `t3 <overlay> worktree start` before running tests.
 
 Agentic browser work — driving a deployed page (navigate/click/fill/upload) and inspecting it (network / console / DOM / screenshots) — runs through **chrome-devtools-mcp**, teatree's default browser tool. It is Google's `chrome-devtools-mcp` server, driving its own Chrome over the DevTools Protocol. Crucially it needs **no claude.ai account and no browser-extension pairing** — the whole account-switch / extension-popup / "logged in ≠ connected" fragility of the old Claude-in-Chrome extension is gone. Deterministic E2E stays on **Playwright** (below); chrome-devtools-mcp is the agentic nav/interaction + diagnosis lane, never the perf/trace enforcement lane.
 
+**Always headless, never headed (non-negotiable).** Every browser teatree drives — chrome-devtools-mcp *and* Playwright — runs headless. A visible window on the user's desktop is never acceptable from a background/headless agent.
+
+- **chrome-devtools-mcp:** upstream's `--headless` option defaults to `false`, so a registration that omits the flag pops a visible Chrome window on **every** navigation. `chrome_devtools_add_command()` (`core/evidence/browser_diagnosis`) appends `--headless=true` off the default-on `chrome_devtools_headless` setting, so the line `t3 mcp browser-diagnosis` prints is headless unless an operator deliberately opts into a headed browser. Never turn that setting off, and re-register any server you find registered without the flag.
+- **Playwright:** `t3 <overlay> e2e run` is headless by default — never pass `--headed`, and never hand-roll a `npx playwright test --headed` / `--ui` / `headless: false` invocation. `--headed` exists for a human debugging at their own keyboard; an agent never selects it.
+
 **Register it (default on):**
 
 ```bash
@@ -40,7 +45,7 @@ t3 mcp browser-diagnosis   # prints the `claude mcp add` line; the flag ships ON
 # t3 <overlay> config_setting set chrome_devtools_mcp_enabled false
 ```
 
-The registration is `claude mcp add chrome-devtools -- npx -y chrome-devtools-mcp@latest`, so the tools surface as `mcp__chrome-devtools__*` — `navigate_page`, `click`, `fill` / `fill_form`, `type_text`, `upload_file`, `wait_for`, `take_snapshot`, `take_screenshot`, `list_console_messages`, `list_network_requests`, `evaluate_script`. Browser-visible breakage (a blank render, a failed XHR, a console error, a wrong DOM state) is diagnosed **in the browser** with these before any root-cause claim, not guessed from the server side.
+The registration is `claude mcp add chrome-devtools -- npx -y chrome-devtools-mcp@latest --headless=true`, so the tools surface as `mcp__chrome-devtools__*` — `navigate_page`, `click`, `fill` / `fill_form`, `type_text`, `upload_file`, `wait_for`, `take_snapshot`, `take_screenshot`, `list_console_messages`, `list_network_requests`, `evaluate_script`. Browser-visible breakage (a blank render, a failed XHR, a console error, a wrong DOM state) is diagnosed **in the browser** with these before any root-cause claim, not guessed from the server side.
 
 **Optional aid for authoring/debugging Playwright specs, never required (#3271).** The same live DOM/console/network view makes *writing* a Playwright spec (finding the right selector, confirming the expected DOM state) and *debugging* a red one far more tractable than working blind. It is purely a developer-experience aid — teatree's runtime requires **zero** MCP, so its absence gates nothing: `t3 doctor` only ever emits an INFO suggestion for it, never a WARN/FAIL. Prerequisite: a Chrome/Chromium executable on the host (the server launches its own Chrome over the DevTools Protocol).
 
@@ -462,6 +467,13 @@ Capture the red-boxed shot only after the settle (visible + network idle) above 
 - **A re-run replaces a whole side, not one workflow:** supplying a `dev` (or `local`) block replaces that ENTIRE side — commits, `missing_on_dev`, and ALL its workflows. To update one workflow on a side, re-send every workflow for that side or the others vanish (workflows are keyed by name; `steps` persist across runs).
 
 On the slower DEV stack the injected red box can render as ~0 px for a visible-element assertion even when the element is on screen (a timing/scroll/crop race the local stack doesn't hit). Mitigate by `scrollIntoViewIfNeeded()`, waiting for the outline to actually apply, and cropping so the outline is inside the captured region — before the screenshot, not after.
+
+**A capture that a control run would reproduce is not evidence (Non-Negotiable).** Before posting an image, ask: *would navigating without the thing under test produce a visually identical shot?* If yes, the image proves nothing, however clean and well-boxed it is. This is the trap when the assertion is about a **URL, a parameter, a redirect, or a token** — none of those live in pixels, and a viewport screenshot has no address bar, so a page reached *with* the deep link and a page reached *without* it look the same. It bites hardest with a synthetic/fabricated probe value: nothing rendered can depend on a value the backend rejects, so the capture degenerates into "a page loaded". Two consequences:
+
+- Post such an AC as `link-api` (the URL trail + request/response transcript IS the evidence), not as a boxed screenshot.
+- Never repair the gap by **annotating** the image — no injected URL stamp, banner, caption, arrow, or any other synthetic overlay. An evidence capture must contain only real page content plus the sanctioned red outline; painting the missing proof onto the pixels misrepresents what the app rendered. If the claim is not visible in real page content, the modality is wrong.
+
+Also check what the box actually bounds: **a red outline on a full-bleed layout container frames the whole viewport and highlights nothing** (and still clears a naive pixel count, so the gate will not save you). Walk down from the layout container to the bounded child — the card/panel/field the AC is about — and assert its `getBoundingClientRect()` is materially narrower than the viewport before capturing. A red bounding box spanning the full image width means the wrong element was boxed.
 
 Before claiming E2E success or posting screenshots as evidence, **visually inspect every screenshot** for environment issues. Reject and fix if any of these are present:
 

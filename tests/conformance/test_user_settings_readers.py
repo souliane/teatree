@@ -121,11 +121,24 @@ def _is_config_expr(node: ast.expr, config_vars: set[str]) -> bool:
 
 
 def _is_settings_expr(node: ast.expr, settings_vars: set[str], config_vars: set[str]) -> bool:
-    """``node`` evaluates to a ``UserSettings`` — an accessor call, ``.user``, or a bound/known var."""
+    """``node`` evaluates to a ``UserSettings`` — an accessor call, ``.user``, a var, or an injectable default.
+
+    The injectable-default idiom binds an optional caller-supplied settings object
+    to the live accessor: ``settings if settings is not None else
+    get_effective_settings(...)`` (ternary) or ``settings or
+    get_effective_settings(...)`` (boolean). Both evaluate to a ``UserSettings``,
+    and EVERY branch must itself resolve to one, so recursing here cannot admit a
+    non-settings receiver — it only stops a real reader behind a defaulted
+    parameter from reading as dead config.
+    """
     if isinstance(node, ast.Call) and _callee_name(node.func) in _SETTINGS_ACCESSORS:
         return True
     if isinstance(node, ast.Attribute) and node.attr == "user" and _is_config_expr(node.value, config_vars):
         return True
+    if isinstance(node, ast.IfExp):
+        return all(_is_settings_expr(branch, settings_vars, config_vars) for branch in (node.body, node.orelse))
+    if isinstance(node, ast.BoolOp) and isinstance(node.op, ast.Or):
+        return all(_is_settings_expr(value, settings_vars, config_vars) for value in node.values)
     return isinstance(node, ast.Name) and (node.id in settings_vars or node.id in _SETTINGS_RECEIVERS)
 
 
@@ -285,6 +298,17 @@ def _walk_py_files(reader: Callable[[ast.Module, set[str]], set[str]], field_nam
     for root in _PY_ROOTS:
         for path in root.rglob("*.py"):
             if path.resolve() == _SETTINGS_DEF:
+                continue
+            # Migration files are FROZEN ORM state, never live settings readers. A
+            # squash migration collapses the data-op bodies of the whole chain
+            # into one file, so a ``ConfigSetting = apps.get_model(...)`` reference
+            # (a resolution marker) sits alongside every frozen model field-name
+            # string literal — flipping ``_module_resolves_settings`` True and
+            # falsely counting field-name strings (``"timezone"``, ``"payload"``) as
+            # settings reads. Excluding ``migrations/`` scopes the matcher to live
+            # code; no real reader lives in a migration (proven: only the coincidental
+            # ``timezone`` string was ever migration-only).
+            if "migrations" in path.parts:
                 continue
             try:
                 tree = ast.parse(path.read_text(encoding="utf-8", errors="ignore"), filename=str(path))

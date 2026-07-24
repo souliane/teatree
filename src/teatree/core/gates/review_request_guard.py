@@ -53,6 +53,7 @@ independent review).
 
 import datetime as dt
 import logging
+import os
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
@@ -61,6 +62,7 @@ from django.db import transaction
 from django.utils import timezone
 
 from teatree.core.models import PullRequest, ReviewRequestPost
+from teatree.core.overlay_loader import infer_overlay_for_url
 
 if TYPE_CHECKING:
     from teatree.core.backend_protocols import MessagingBackend
@@ -420,7 +422,24 @@ def _ts_epoch(ts: str) -> float:
         return 0.0
 
 
-def resolve_guard_target(channel_id: str = "", channel_name: str = "") -> GuardTarget | None:
+def overlay_for_mr_url(mr_url: str) -> str:
+    """The overlay owning *mr_url*, or ``""`` to defer to the ambient default.
+
+    The single precedence rule every review-request surface shares (#1310): an
+    explicit ``T3_OVERLAY_NAME`` — what the ``t3 <overlay>`` CLI bridge sets —
+    wins and is consumed by :func:`get_overlay`; otherwise the URL's owning
+    overlay is inferred from repo ownership. Without it the in-process MCP
+    surface (which sets no env var and registers EVERY overlay) resolves no
+    overlay at all, and the guard's swallowed ``Multiple overlays found``
+    becomes a bogus ``no_review_channel_or_token`` on a perfectly postable
+    channel.
+    """
+    if os.environ.get("T3_OVERLAY_NAME"):
+        return ""
+    return infer_overlay_for_url(mr_url)
+
+
+def resolve_guard_target(channel_id: str = "", channel_name: str = "", overlay_name: str = "") -> GuardTarget | None:
     """Resolve the review channel and the post-token for the active overlay.
 
     The token is the one an outbound post to the review channel would use:
@@ -430,6 +449,14 @@ def resolve_guard_target(channel_id: str = "", channel_name: str = "") -> GuardT
     is not a bot-backed Slack instance. Returns ``None`` when no review
     channel / token is configured (the caller treats that as "cannot
     dedup live → fall back to the DB-only behaviour").
+
+    *overlay_name* selects the overlay explicitly, for callers that do not
+    run under the CLI's ``T3_OVERLAY_NAME`` bridge — notably the in-process
+    MCP server, where every installed overlay is registered and a no-arg
+    :func:`get_overlay` raises ``Multiple overlays found``. That raise was
+    swallowed into a ``None`` here, degrading into a bogus
+    ``no_review_channel_or_token`` (the same mis-routing class as #147).
+    Threading the name keeps the MCP and CLI surfaces on one answer.
     """
     from django.core.exceptions import ImproperlyConfigured  # noqa: PLC0415 — deferred: Django import at call time
 
@@ -437,7 +464,7 @@ def resolve_guard_target(channel_id: str = "", channel_name: str = "") -> GuardT
     from teatree.core.overlay_loader import get_overlay  # noqa: PLC0415 — deferred: call-time import, kept lazy
 
     try:
-        overlay = get_overlay()
+        overlay = get_overlay(overlay_name or None)
     except ImproperlyConfigured:
         return None
     if not channel_id or not channel_name:
@@ -445,7 +472,7 @@ def resolve_guard_target(channel_id: str = "", channel_name: str = "") -> GuardT
     if not channel_id:
         return None
 
-    token = _channel_token(messaging_from_overlay(), channel_id, overlay)
+    token = _channel_token(messaging_from_overlay(overlay_name or None), channel_id, overlay)
     if not token:
         return None
     return GuardTarget(channel_id=channel_id, channel_name=channel_name, token=token)

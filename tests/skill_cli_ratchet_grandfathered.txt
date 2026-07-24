@@ -6,6 +6,8 @@
 # The gate is RED on any LIVE raw call NOT listed here (a NEW shell-out, named) and RED on any listed
 # key that no longer occurs (forced banking -- remove it once migrated). Per-item, set-union mergeable.
 # Regenerate the exact live set with: python -m teatree.quality.skill_cli_ratchet --update-baseline
+skills/checking/SKILL.md::gh api user
+skills/checking/SKILL.md::glab auth status
 skills/contribute/SKILL.md::gh pr create
 skills/contribute/references/upstream-issue.md::gh auth status
 skills/contribute/references/upstream-issue.md::gh issue create
@@ -15,8 +17,6 @@ skills/dogfooding-teatree/SKILL.md::gh issue create
 skills/e2e-review/SKILL.md::gh pr approve
 skills/e2e-review/SKILL.md::gh pr review
 skills/e2e-review/SKILL.md::glab mr approve
-skills/followup/SKILL.md::gh api user
-skills/followup/SKILL.md::glab auth status
 skills/platforms/references/github.md::gh api
 skills/platforms/references/github.md::gh api title
 skills/platforms/references/github.md::gh auth status
