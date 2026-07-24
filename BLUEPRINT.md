@@ -595,7 +595,7 @@ Reference DB architecture, the import fallback chain (`DjangoDbImportConfig` str
 
 ```toml
 asgiref>=3.8
-claude-agent-sdk==0.2.94
+claude-agent-sdk==0.2.125
 coverage>=7
 croniter>=6.2.2
 django>=6,<6.1

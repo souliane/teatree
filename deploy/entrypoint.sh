@@ -615,7 +615,7 @@ init)
         # PATH; install it as a standalone uv tool (pinned to the lockfile) into the
         # shared teatree_uv volume so every role sees it. Runtime (not Dockerfile):
         # /opt/teatree/uv is a named volume that shadows any image-baked install.
-        uv tool install prek==0.3.13
+        uv tool install prek==0.4.10
     else
         # OFFLINE: the interpreter, editable install, and prek are baked into the
         # image, so init proceeds with no cold fetch. Fail loud only if the image
