@@ -176,11 +176,15 @@ jobs:
           claude --version
       - name: Migrate the self-DB (the eval run-history ledger persists into it)
         run: uv run python -m teatree migrate --no-input
-      # Run the changed scenarios at the DEFAULT per-tier lane. `--only` is gone;
-      # the positional NAME filter runs one scenario, so the comma-joined detect
-      # list is looped one scenario per `t3 eval run <name>`. Each run is the
-      # DEFAULT single trial at the scenario's OWN resolved tier/phase model (no
-      # forced model), with `--escalate-on-fail --escalate-trials 3` re-running a
+      # Run the changed scenarios AGAINST BASELINE (`--preset baseline`) — the
+      # same cheapest-passing per-scenario tier the weekly run pins
+      # (evals/presets/baseline.yaml), so a PR's eval verdict matches the weekly's.
+      # A scenario absent from the baseline map (a brand-new scenario the PR adds)
+      # falls through to its own YAML tier — never silently cheapened. `--only` is
+      # gone; the positional NAME filter runs one scenario, so the comma-joined
+      # detect list is looped one scenario per `t3 eval run <name>`. Each run is a
+      # single trial at the baseline-pinned tier, with
+      # `--escalate-on-fail --escalate-trials 3` re-running a
       # failed scenario 3 more times and reading only on a CONFIRMED failure (a
       # recovered trial is flaky-but-passing, not red). `--require-executed` and
       # the asserted CLI keep a no-coverage run from passing green; `--docker`
@@ -211,7 +215,7 @@ jobs:
               name="$(echo "$name" | xargs)"  # trim whitespace
               [ -z "$name" ] && continue
               ran=$((ran + 1))
-              uv run t3 eval run "$name" --backend api \
+              uv run t3 eval run "$name" --backend api --preset baseline \
                 --escalate-on-fail --escalate-trials 3 \
                 --require-executed --docker \
                 --transcript-html "$RUNNER_TEMP/eval-transcripts-$name.html" \
