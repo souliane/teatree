@@ -260,24 +260,23 @@ class SlackBotBackend:  # noqa: PLR0904 — method count reflects the MessagingB
 
         The single, deterministic token-selection policy consulted by
         every outbound surface — ``post_message`` / ``post_reply`` /
-        ``react`` / ``get_reactions`` (all ``SlackOp.WRITE``) — and, via
-        the shared
+        ``react`` / ``get_reactions`` (all ``SlackOp.WRITE``) and the
+        genuine-viewing ``fetch_channel_history_or_refuse``
+        (``SlackOp.READ``) — and, via the shared
         :func:`teatree.backends.slack.token_policy.channel_token` helper,
         by the review-request dedup guard's read-as-the-post
-        (``resolve_channel_token`` → ``SlackOp.WRITE``, so read-token ==
-        post-token #1084). Connect membership is only probed when both
-        credentials exist (the helper short-circuits the single-token /
-        DM cases first), preserving the legacy no-probe behaviour. When
-        the probe cannot confirm membership the policy falls back by
-        ``op``: a ``READ`` fails safe to the bot token (a bot-token read
-        of an unreachable Connect channel is empty at worst), a ``WRITE``
-        fails toward the user ``xoxp`` token (the bot token is rejected
-        on a Connect channel and the partner write is silently dropped).
+        (``resolve_channel_token`` → ``SlackOp.WRITE``, read-token ==
+        post-token #1084). Connect membership is probed only for a WRITE
+        with both credentials (single-token / DM short-circuit first). A
+        ``READ`` routes to the user token on any non-DM channel without
+        probing — the bot ``conversations.info`` call would be wasted, and
+        a transport failure on it would spuriously abort a read the user
+        token could serve.
         """
         assert_owner_dm(
             channel, owner_dm_only=self._owner_dm_only, dm_channel_id=self._dm_channel_id, user_id=self._user_id
         )
-        if not self._user_token or not self._bot_token or channel.startswith("D"):
+        if not self._user_token or not self._bot_token or channel.startswith("D") or op is SlackOp.READ:
             return channel_token(
                 channel,
                 bot_token=self._bot_token,
@@ -412,14 +411,15 @@ class SlackBotBackend:  # noqa: PLR0904 — method count reflects the MessagingB
     def fetch_channel_history_or_refuse(self, *, channel: str, limit: int = 50) -> list[RawAPIDict]:
         """Like :meth:`fetch_channel_history` but raises :class:`ChannelReadRefusedError`.
 
-        The seam for a caller asking about ONE channel interactively, where an empty
-        list is a misleading answer: a bot token reads only channels the bot was
-        invited to, and Slack reports that as ``not_in_channel`` /
-        ``channel_not_found`` — a fact the caller must hear, not a silent ``[]``.
+        The MCP ``slack_channel_history`` seam — a GENUINE viewing read, not a
+        read-as-post — so it routes under :attr:`SlackOp.READ` through the user
+        ``xoxp`` token: the agent sees the same channels and history the user sees,
+        not the bot's view of only the channels it was invited to. A channel neither
+        can read still refuses loudly, never a misleading ``[]``.
         """
         if not channel:
             raise ChannelReadRefusedError(channel, "empty_channel_argument")
-        token = self._channel_token(channel, op=SlackOp.WRITE)
+        token = self._channel_token(channel, op=SlackOp.READ)
         messages = read_channel_history_or_refuse(get=self._get, channel=channel, token=token, limit=limit)
         return self._strip_own_tts_audio(messages)
 

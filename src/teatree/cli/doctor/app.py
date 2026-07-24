@@ -63,6 +63,7 @@ from teatree.cli.doctor.checks_session import (
     _check_interactive_permission_mode,
     _check_slack_socket_mode,
 )
+from teatree.cli.doctor.checks_slack_engagement import check_slack_engagement
 from teatree.cli.doctor.checks_slack_roundtrip import check_slack_roundtrip
 from teatree.cli.doctor.checks_worktree_health import check_worktree_health
 from teatree.cli.doctor.dev_sources import (
@@ -154,6 +155,7 @@ __all__ = (
     "_write_dev_sources_marker",
     "agent_skill_dirs",
     "check",
+    "check_slack_engagement",
     "check_slack_roundtrip",
     "check_statusline",
     "check_statusline_freshness",
@@ -464,6 +466,12 @@ def run_doctor_checks(*, repair: bool = False, slack_roundtrip: bool = False) ->
     # must be a doctor FAILURE, not a surprise. `--slack-roundtrip` adds a live
     # auth.test. A silent no-op with no Slack-backed overlay (Slack stays optional).
     ok = check_slack_roundtrip(deep=slack_roundtrip) and ok
+
+    # Slack engagement (#256): WARN when `autoload` is OFF yet a Slack posting token
+    # is configured — with engagement default-off a session never engages teatree, so
+    # a configured bot never routes Slack through the MCP tools. Surfacing-only (never
+    # gates the exit code): `autoload` off is a legitimate colleague/opted-out posture.
+    check_slack_engagement()
 
     ok = _check_claude_session_posture() and ok
 

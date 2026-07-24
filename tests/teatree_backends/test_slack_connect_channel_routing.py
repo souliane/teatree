@@ -300,16 +300,18 @@ class TestChannelTokenIsTheSingleSelectionPoint:
         backend = SlackBotBackend(bot_token="xoxb-bot", user_token="xoxp-user")
         assert backend._channel_token(_EXT_SHARED, op=slack_bot.SlackOp.WRITE) == "xoxp-user"
 
-    def test_channel_token_read_still_uses_bot_on_info_failure(
+    def test_channel_token_read_uses_user_token_and_skips_the_probe(
         self,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        """A READ in an ambiguous channel stays on the bot token.
+        """A genuine READ routes to the user token and never probes membership.
 
-        The bot can always read its own metadata; on an unreachable
-        Connect channel a bot-token history read returns an empty list
-        at worst — which the #1084 dedup tolerates. READ stays
-        conservative on the bot token; only WRITE fails toward xoxp.
+        The pre-flip policy routed an ambiguous READ to the bot token
+        (asserted ``== "xoxb-bot"`` here). The new intent: a general
+        viewing read goes out under the user ``xoxp`` on any non-DM
+        channel so the agent sees what the user sees — and because a READ
+        never consults ``is_ext_shared``, the bot ``conversations.info``
+        probe is skipped entirely (no GET is issued).
         """
         captured: list[dict[str, object]] = []
 
@@ -328,7 +330,8 @@ class TestChannelTokenIsTheSingleSelectionPoint:
         monkeypatch.setattr(slack_http.httpx, "post", fake_post)
 
         backend = SlackBotBackend(bot_token="xoxb-bot", user_token="xoxp-user")
-        assert backend._channel_token(_EXT_SHARED, op=slack_bot.SlackOp.READ) == "xoxb-bot"
+        assert backend._channel_token(_EXT_SHARED, op=slack_bot.SlackOp.READ) == "xoxp-user"
+        assert captured == []  # no conversations.info probe for a READ
 
     def test_react_on_info_failed_channel_uses_user_token(
         self,
