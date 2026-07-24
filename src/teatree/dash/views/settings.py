@@ -1,0 +1,126 @@
+"""The model-driven settings-editor POSTs — list/edit every config key from the dashboard (D7).
+
+Coordinate only: parse the POST, write through ``ConfigSetting.set_value`` (the same seam
+``config_setting set`` uses, so the #258 coercion + #3688 cross-key checks fire), audit,
+redirect. Restore-to-default deletes the row; a safety-posture key needs the extra confirm
+phrase; import previews with a dry-run before an explicit apply. A secret's value never
+enters the page — the editor surface masks it before the context is built.
+"""
+
+import json
+from typing import TYPE_CHECKING
+
+from django.core.exceptions import ValidationError
+from django.http import HttpResponse, HttpResponseBadRequest
+from django.shortcuts import redirect, render
+from django.views.decorators.http import require_GET, require_POST
+
+from teatree.config import ALL_KNOWN_CONFIG_SETTINGS
+from teatree.config.setting_registries import SAFETY_POSTURE_KEYS
+from teatree.core.config_migration import import_toml_to_db
+from teatree.core.models import ConfigSetting
+from teatree.dash import audit
+from teatree.dash.settings_editor import build_settings_editor, export_text, import_preview, is_secret_setting
+from teatree.dash.views.access import require_loopback_or_staff
+from teatree.dash.views.base import actor, nav_context
+
+if TYPE_CHECKING:
+    from django.http import HttpRequest
+
+#: The phrase an operator must type to change a safety-posture key (write-is-authorization).
+SAFETY_CONFIRM_PHRASE = "change-safety-posture"
+
+
+def _audit_after(key: str, canonical: object) -> str:
+    """The audit ``after`` value — never the real value of a secret key."""
+    return "***" if is_secret_setting(key) else str(canonical)
+
+
+@require_loopback_or_staff
+@require_GET
+def settings(request: "HttpRequest") -> "HttpResponse":
+    """The full model-driven editor — every schema key, secret values masked."""
+    scope = request.GET.get("scope", "").strip()
+    view = build_settings_editor(scope)
+    context = {**nav_context("dash:settings"), "editor": view, "confirm_phrase": SAFETY_CONFIRM_PHRASE}
+    return render(request, "dash/settings.html", context)
+
+
+@require_loopback_or_staff
+@require_POST
+def settings_set(request: "HttpRequest") -> "HttpResponse":
+    """POST one setting → the DB store, through the validating ``set_value`` seam."""
+    key = request.POST.get("key", "").strip()
+    scope = request.POST.get("scope", "").strip()
+    if key not in ALL_KNOWN_CONFIG_SETTINGS:
+        return HttpResponseBadRequest(f"unknown setting {key!r}")
+    if key in SAFETY_POSTURE_KEYS and request.POST.get("confirm", "").strip() != SAFETY_CONFIRM_PHRASE:
+        return HttpResponseBadRequest(f"a safety-posture key needs the confirm phrase {SAFETY_CONFIRM_PHRASE!r}")
+    try:
+        parsed = json.loads(request.POST.get("value", ""))
+    except json.JSONDecodeError as exc:
+        return HttpResponseBadRequest(f"invalid JSON value: {exc}")
+    try:
+        canonical = ALL_KNOWN_CONFIG_SETTINGS[key](parsed)
+    except (ValueError, TypeError, AttributeError) as exc:
+        return HttpResponseBadRequest(f"invalid value for {key}: {exc}")
+    try:
+        ConfigSetting.objects.set_value(key, canonical, scope=scope)
+    except ValidationError as exc:
+        return HttpResponseBadRequest(f"inconsistent config for {key}: {exc.messages[0]}")
+    audit.record(actor=actor(request), action="settings:set", target=key, after=_audit_after(key, canonical))
+    return _back(scope)
+
+
+@require_loopback_or_staff
+@require_POST
+def settings_restore(request: "HttpRequest") -> "HttpResponse":
+    """POST a restore-to-default — DELETE the DB row so the setting resolves its default again."""
+    key = request.POST.get("key", "").strip()
+    scope = request.POST.get("scope", "").strip()
+    if ConfigSetting.objects.clear(key, scope=scope):
+        audit.record(actor=actor(request), action="settings:restore", target=key)
+    return _back(scope)
+
+
+@require_loopback_or_staff
+@require_GET
+def settings_export(_request: "HttpRequest") -> "HttpResponse":
+    """Download the shareable export — secrets withheld, personal included."""
+    response = HttpResponse(export_text(), content_type="text/plain; charset=utf-8")
+    response["Content-Disposition"] = 'attachment; filename="teatree-config.toml"'
+    return response
+
+
+@require_loopback_or_staff
+@require_POST
+def settings_import(request: "HttpRequest") -> "HttpResponse":
+    """POST an import — a dry-run preview by default, an actual write only with ``apply``.
+
+    A rejected row refuses the whole import (Phase-4 atomicity); the result rides back onto
+    the page so the operator sees exactly what changed (or would change) and what was refused.
+    """
+    text = request.POST.get("toml", "")
+    applied = request.POST.get("apply", "").strip() == "1"
+    preview = import_preview(text)
+    write = applied and not preview.rejected
+    result = import_toml_to_db(text) if write else preview
+    if write:
+        audit.record(actor=actor(request), action="settings:import", after=f"{len(result.written)} row(s)")
+    view = build_settings_editor()
+    context = {
+        **nav_context("dash:settings"),
+        "editor": view,
+        "confirm_phrase": SAFETY_CONFIRM_PHRASE,
+        "import_result": result,
+        "import_applied": write,
+    }
+    return render(request, "dash/settings.html", context)
+
+
+def _back(scope: str) -> "HttpResponse":
+    """Redirect to the editor, keeping the edited scope selected."""
+    target = redirect("dash:settings")
+    if scope:
+        target["Location"] = f"{target['Location']}?scope={scope}"
+    return target
