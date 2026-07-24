@@ -16,7 +16,7 @@
 # Also triggerable on-demand via workflow_dispatch.
 # ============================================================
 
-name: Weekly uv.lock refresh
+name: Scheduled · Weekly uv.lock refresh
 
 on:
   schedule:

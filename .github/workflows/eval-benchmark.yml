@@ -26,7 +26,7 @@
 # `api_key` stays selectable wherever the metered secret does exist.
 # ============================================================
 
-name: Behavioral benchmark
+name: Manual · Full benchmark eval
 
 on:
   workflow_dispatch:

@@ -65,7 +65,7 @@
 #   step appends that file to `$GITHUB_STEP_SUMMARY`.
 # ============================================================
 
-name: Selective PR eval
+name: CI · Selective PR eval
 
 on:
   pull_request:

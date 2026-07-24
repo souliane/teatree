@@ -7,7 +7,7 @@
 # Hetzner Cloud. No box-identifying info lives here — the host/IP, SSH
 # user/port, host key, and private key all come from secrets, and the host/IP
 # is masked out of the logs. Uses no third-party actions (nothing to SHA-pin).
-name: Deploy teatree
+name: Push · Deploy to box
 
 on:
   workflow_dispatch:
