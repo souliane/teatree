@@ -432,6 +432,13 @@ class TestRunHeadlessUsageLimit(TestCase):
     def setUpTestData(cls) -> None:
         cls.ticket = Ticket.objects.create()
 
+    def setUp(self) -> None:
+        # These pin the terminal-FAILED CLASSIFICATION path; with autorecovery now
+        # default-ON a subscription-window limit would PARK instead. The park-vs-fail
+        # decision is covered by TestRunHeadlessAllAccountsExhausted's explicit pair.
+        super().setUp()
+        ConfigSetting.objects.set_value("limit_autorecovery_enabled", value=False)
+
     def test_weekly_limit_error_recorded_as_usage_limit_not_generic(self) -> None:
         # is_error result whose text names a weekly limit must NOT be a silent
         # success and must NOT be a generic crash — it is a clear limit signal.
@@ -646,6 +653,13 @@ class TestRunHeadlessTypedRateLimitWindow(TestCase):
     @classmethod
     def setUpTestData(cls) -> None:
         cls.ticket = Ticket.objects.create()
+
+    def setUp(self) -> None:
+        # Exercises the terminal-FAILED classification of a TYPED weekly window; with
+        # autorecovery now default-ON such a window would PARK instead (see the explicit
+        # flag pair in TestRunHeadlessAllAccountsExhausted).
+        super().setUp()
+        ConfigSetting.objects.set_value("limit_autorecovery_enabled", value=False)
 
     def _run_with_window(self, window: RateLimitType) -> TaskAttempt:
         event = _rate_limit_event(window)
