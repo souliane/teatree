@@ -70,20 +70,24 @@ class TestGitHubOAuthLaneIsRightSized:
         assert default == "high", "the single representative tier is `high`."
 
     def test_matrix_effort_fallback_is_a_single_tier(self) -> None:
-        # The scheduled cron run passes no inputs, so the fallback on the matrix
-        # step is what sizes it. The SCHEDULED branch legitimately fans all three
-        # (low,medium,high — the weekly run measures pass-rate vs effort across the
-        # whole suite); every OTHER trigger (a manual run with a blank `efforts`
-        # field) must fall back to the single 'high' tier, never the unconditional
-        # 3x low,medium,high axis (souliane/teatree#2878).
+        # The scheduled weekly cron runs the BASELINE (an EMPTY effort axis +
+        # `--preset baseline`, one leg per scenario — see
+        # test_eval_ci_require_executed_gate.py), never a 3-tier fan. A manual run
+        # with a blank `efforts` field falls back to the single 'high' tier —
+        # computed in shell (`EVAL_EFFORTS="${INPUT_EFFORTS:-high}"`) because a
+        # GitHub-Actions `x && '' || y` ternary can never yield the empty string the
+        # scheduled leg needs. Never the money-burning unconditional low,medium,high
+        # axis (souliane/teatree#2878).
         text = _GH_EVAL.read_text(encoding="utf-8")
         assert "inputs.efforts || 'low,medium,high'" not in text, (
             "the matrix effort fallback must not restore the UNCONDITIONAL 3x low,medium,high axis."
         )
-        assert "github.event_name == 'schedule'" in text, (
-            "the 3-tier fallback must be gated on the schedule event, not a blanket coercion."
+        assert "'schedule' && 'low,medium,high'" not in text, (
+            "the weekly cron must be the cheap baseline — never a schedule-keyed 3-tier fan."
         )
-        assert "|| 'high'" in text, "the non-schedule fallback must resolve to the single 'high' tier."
+        assert "${INPUT_EFFORTS:-high}" in text, (
+            "a blank manual `efforts` field must fall back to the single 'high' tier."
+        )
 
     def test_trials_input_defaults_below_three(self) -> None:
         default = int(_gh_inputs()["trials"]["default"])
