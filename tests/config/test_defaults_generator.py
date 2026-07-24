@@ -10,9 +10,11 @@ PERSONAL / stale / overlay-scope rows are reported, never emitted.
 import tomllib
 from typing import Any
 
-from teatree.config.defaults_generator import WORKFLOW_ENGAGEMENT_KEYS, generate_defaults
+from teatree.config.defaults_generator import WORKFLOW_ENGAGEMENT_KEYS, conservative_keys, generate_defaults
+from teatree.config.feature_flags import dark_flags
 from teatree.config.known_settings import ALL_KNOWN_CONFIG_SETTINGS
 from teatree.config.schema import _DEFAULTS_TOML, Category, setting_meta
+from teatree.config.setting_registries import SAFETY_POSTURE_KEYS
 
 
 def _baseline() -> dict[str, Any]:
@@ -75,6 +77,17 @@ class TestKeepConservative:
 
     def test_the_five_owner_named_keys_are_all_conservative(self) -> None:
         assert {"wip", "mode", "autoload", "contribute", "agent_runtime"} <= WORKFLOW_ENGAGEMENT_KEYS
+
+    def test_conservative_keys_is_the_union_of_safety_dark_and_workflow(self) -> None:
+        assert conservative_keys() == SAFETY_POSTURE_KEYS | frozenset(dark_flags()) | WORKFLOW_ENGAGEMENT_KEYS
+
+    def test_a_malformed_live_value_is_kept_default_never_fatal(self) -> None:
+        # A live row whose value fails its coercer keeps the in-code default rather than crash.
+        base = _baseline()["issue_implementer_max_concurrent"]
+        result = _generate({"issue_implementer_max_concurrent": []})
+        emitted = tomllib.loads(result.toml)["teatree"]
+        assert emitted["issue_implementer_max_concurrent"] == base
+        assert {a.key for a in result.report.adopted} == set()
 
 
 class TestBannedTermAbort:

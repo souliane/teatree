@@ -17,6 +17,7 @@ from pathlib import Path
 import pytest
 
 from teatree.config import cold_defaults
+from teatree.config.cold_defaults import default_for, shipped_defaults_table
 from teatree.config.cold_hook_settings import COLD_HOOK_SETTINGS
 from teatree.config.schema import Category, TeatreeSettingsSchema, setting_meta, shipped_defaults
 
@@ -27,10 +28,10 @@ _NON_DEFAULT_KEYS = sorted(k for k in _FIELDS if setting_meta(k).category is not
 
 class TestReadsTheShippedTable:
     def test_table_carries_the_default_category_keys(self) -> None:
-        assert set(cold_defaults.shipped_defaults_table()) == set(_DEFAULT_KEYS)
+        assert set(shipped_defaults_table()) == set(_DEFAULT_KEYS)
 
     def test_default_for_scalar_key(self) -> None:
-        assert cold_defaults.default_for("agent_harness") == "claude_sdk"
+        assert default_for("agent_harness") == "claude_sdk"
 
     def test_default_for_sub_table_key(self) -> None:
         assert cold_defaults.default_for("speak") == {"local": "off", "slack": False}

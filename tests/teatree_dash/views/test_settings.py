@@ -55,6 +55,29 @@ class TestSettingsSet(TestCase):
         body = self.client.get(reverse("dash:settings"), **_LOOPBACK).content.decode()
         assert "hushword" not in body
 
+    def test_set_rejects_a_non_json_value(self) -> None:
+        response = self.client.post(reverse("dash:settings_set"), {"key": "mode", "value": "not-json"}, **_LOOPBACK)
+        assert response.status_code == 400
+        assert "invalid JSON" in response.content.decode()
+        assert ConfigSetting.objects.count() == 0
+
+    def test_set_rejects_a_cross_field_inconsistent_value(self) -> None:
+        # Coerces fine, but set_value's #258 consistency check refuses the pair (harness != pydantic_ai).
+        response = self.client.post(
+            reverse("dash:settings_set"), {"key": "agent_harness_provider", "value": '"openai_compatible"'}, **_LOOPBACK
+        )
+        assert response.status_code == 400
+        assert "inconsistent config" in response.content.decode()
+        assert ConfigSetting.objects.count() == 0
+
+    def test_a_scoped_write_redirects_back_keeping_the_scope(self) -> None:
+        response = self.client.post(
+            reverse("dash:settings_set"), {"key": "mode", "value": '"auto"', "scope": "proj"}, **_LOOPBACK
+        )
+        assert response.status_code == 302
+        assert response["Location"].endswith("?scope=proj")
+        assert ConfigSetting.objects.get_effective("mode", scope="proj") == "auto"
+
 
 class TestSafetyPostureConfirm(TestCase):
     def test_a_safety_posture_key_is_refused_without_the_confirm_phrase(self) -> None:

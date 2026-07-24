@@ -1,5 +1,7 @@
 """The model-driven settings-editor surface — masking, restore state, export/preview (D7)."""
 
+from unittest.mock import patch
+
 from django.test import TestCase
 
 from teatree.config.schema import TeatreeSettingsSchema
@@ -16,6 +18,11 @@ class TestIsSecretSetting:
     def test_an_ordinary_dial_is_not_secret(self) -> None:
         assert is_secret_setting("mode") is False
         assert is_secret_setting("issue_implementer_enabled") is False
+
+    def test_an_unknown_non_schema_key_is_not_secret(self) -> None:
+        # A key that is neither a secret/personal/credential coordinate NOR a model field
+        # (a stale or bogus key) is safely reported non-secret, never a KeyError.
+        assert is_secret_setting("a_removed_or_unknown_key") is False
 
 
 class TestBuildSettingsEditor(TestCase):
@@ -49,6 +56,16 @@ class TestBuildSettingsEditor(TestCase):
     def test_safety_posture_keys_are_flagged(self) -> None:
         assert self._row("enforce_regulated_path").is_safety_posture is True
         assert self._row("mode").is_safety_posture is False
+
+    def test_a_read_failure_degrades_to_a_visible_error_page(self) -> None:
+        with patch(
+            "teatree.dash.settings_editor.ConfigSetting.objects.overrides_for_scope",
+            side_effect=RuntimeError("db down"),
+        ):
+            view = build_settings_editor()
+        assert view.settings == ()
+        assert view.error is not None
+        assert "read failed" in view.error
 
 
 class TestExportAndPreview(TestCase):

@@ -283,6 +283,20 @@ class TestImportTomlToDb(TestCase):
         assert [(r.scope, r.key) for r in result.written] == [("", "mode")]
         assert ConfigSetting.objects.count() == 0
 
+    def test_overlay_scoped_overridable_key_writes_a_scoped_row(self) -> None:
+        # An `[overlays.<name>]` table with an OVERRIDABLE key imports as a scope-tagged row.
+        result = import_toml_to_db('[overlays.proj]\nmode = "auto"\n', scan_terms=())
+        assert result.rejected == ()
+        assert [(r.scope, r.key) for r in result.written] == [("proj", "mode")]
+        assert ConfigSetting.objects.get_effective("mode", scope="proj") == "auto"
+
+    def test_a_non_dict_overlays_entry_is_skipped_not_fatal(self) -> None:
+        # A malformed `overlays.<name>` scalar (not a sub-table) is defensively skipped.
+        result = import_toml_to_db('[overlays]\nfoo = "bar"\n', scan_terms=())
+        assert result.rejected == ()
+        assert result.written == ()
+        assert ConfigSetting.objects.count() == 0
+
     def test_overlay_scope_and_registry_definition_keys_split(self) -> None:
         # An `[overlays.<name>]` table splits: a per-overlay SETTING becomes a scope row,
         # a definition key (class/path) folds back into the `overlays` registry row.

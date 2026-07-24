@@ -414,6 +414,14 @@ class TestConfigSettingImport(TestCase):
         assert "folded retired alias speed -> wip" in out.getvalue()
         assert ConfigSetting.objects.get_effective("wip") == "full"
 
+    def test_import_rejects_invalid_toml_and_writes_nothing(self) -> None:
+        path = self._write_toml("[teatree\nmode = broken")  # malformed TOML
+        err = StringIO()
+        with pytest.raises(SystemExit):
+            call_command("config_setting", "import", "--input", str(path), stdout=StringIO(), stderr=err)
+        assert "invalid TOML" in err.getvalue()
+        assert ConfigSetting.objects.count() == 0
+
 
 class TestConfigSettingSeed(TestCase):
     """`config_setting seed` — the provenance-aware DEPLOY seed (#3435).
