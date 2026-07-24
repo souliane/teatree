@@ -1,24 +1,20 @@
 #!/usr/bin/env bash
-# Opt-in fast-feedback lane: run only the tests a diff affects (#113).
+# Opt-in fast-feedback lane: run only the tests a diff affects (#113, #3672).
 #
-# Safety-biased selection (`t3 tool affected-tests`): a changed src module expands to
-# its transitive reverse-import dependents + the tests importing any of them + the
-# mirror path + an always-run floor. ANY unclassifiable EXECUTABLE change (conftest/
-# settings/migrations/data files/deletions/files outside the modelled roots) degrades
-# to the WHOLE suite.
+# The impact engine is the tach pytest plugin (`--tach --tach-base origin/main`): it
+# walks the reverse-import graph natively and deselects the tests a diff cannot reach.
+# `t3 tool affected-tests` decides FULL-vs-scoped from the ESCALATION policy and emits
+# the pytest invocation: a scoped run activates the plugin AND loads our force-keep
+# layer (`-p teatree.quality.force_keep_plugin`), which keeps the floor dirs, the
+# doc-reader tests, the mirror paths, and the changed test files over the plugin's
+# deselection — in ONE session, so zero test runs twice.
 #
-# Under-run is a false green, so the escalation stays. Over-run is not free either
-# (#3645): a measured escalation ran 30182 tests in 59m32s for a one-module fix and
-# manufactured 30 shared-box artifact failures that then had to be disproved. Docs
-# (markdown / the docs tree / mkdocs config) are therefore classified as having no
-# executable semantics and select only the tests that READ them, rather than the tree.
-#
-# The report step also prints the #3672 ADVISORY `selector-comparison` line: the tach
-# pytest plugin's impact verdict, computed report-only and NEVER applied, diffed against
-# our selection. `theirs_only` (tests the plugin keeps and we drop) is the only direction
-# that could ever produce a false green, so it is counted separately. Collect that
-# divergence over real diffs — it is the gate for a later cutover, and changes nothing
-# today. The `--pytest-args` path does not compute it, so the hot path is unaffected.
+# ANY unclassifiable EXECUTABLE change (conftest/settings/migrations/data files/
+# deletions/files outside the modelled roots) degrades to the WHOLE suite with the
+# plugin OFF. Under-run is a false green, so the escalation stays. Over-run is not free
+# either (#3645): a measured escalation ran 30182 tests in 59m32s for a one-module fix.
+# Docs (markdown / the docs tree / mkdocs config) are therefore classified as having no
+# executable semantics and force-keep only the tests that READ them, rather than the tree.
 #
 # NOT a gate. The 12-shard CI run + 93% combined-coverage floor stays the merge gate,
 # and pre-push is untouched (`tests/test_no_full_suite_on_pre_push.py`). Use this while
@@ -49,12 +45,13 @@ if [[ "$FULL" == "1" ]]; then
     exec uv run pytest --no-cov -n auto --reuse-db "${PYTEST_EXTRA[@]}"
 fi
 
-# The selector emits the one-line over-run report to the human report; --pytest-args
-# emits exactly the positional args (test files, --doctest-modules targets, floor dirs,
-# and --create-db when a migration forced FULL+create-db).
+# The selector prints the FULL-vs-scoped report; --pytest-args emits the invocation:
+# a scoped run adds `--tach --tach-base <base> -p teatree.quality.force_keep_plugin`
+# (plugin deselects, force-keep layer re-adds our escalations) plus any --doctest-modules
+# targets and --create-db; a FULL run emits at most --create-db and runs the whole suite.
 t3 tool affected-tests --base "$BASE"
 echo "==="
 
 read -r -a SELECTED <<< "$(t3 tool affected-tests --base "$BASE" --pytest-args)"
-# No positional args ⇒ a FULL verdict (empty selection) ⇒ run the whole suite.
+# A FULL verdict emits no --tach flag ⇒ the whole suite runs.
 exec uv run pytest --no-cov -n auto --reuse-db "${SELECTED[@]}" "${PYTEST_EXTRA[@]}"
