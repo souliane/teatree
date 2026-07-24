@@ -416,3 +416,76 @@ class TestPrivacyScanAllowlistFromRegistry:
         result = _run_env("the acme-product repo\n", {"T3_CONFIG_DB": str(db)})
         assert result.returncode == PRIVACY_FINDINGS_EXIT_CODE, result.stdout + result.stderr
         assert "banned_term" in result.stdout
+
+
+class TestPrivacyScanDiffAddedLineScoping:
+    """The per-line detectors scan ADDED diff lines only, not context/removed (#3681).
+
+    A context (`` ``) or removed (``-``) hunk line is already-public by
+    definition — it exists unchanged on the parent commit the push builds
+    onto — so a credential/PII finding on it is a false positive that blocks
+    a legitimate push (a synthetic-fixture refactor pulling the fixtures into
+    the diff as context/removed lines). Every genuinely-new secret still
+    appears as an added (``+``) line or in a commit-message body, so the
+    gate's teeth are preserved.
+    """
+
+    def test_removed_line_match_is_not_flagged(self) -> None:
+        # RED before fix: the removed line's home-path tripped the scanner.
+        diff = (
+            "diff --git a/x.py b/x.py\n"
+            "--- a/x.py\n"
+            "+++ b/x.py\n"
+            "@@ -1,1 +1,1 @@\n"
+            '-old = "/Users/someone/secret/path"\n'  # privacy-scan:allow self-fixture
+            '+new = "a clean replacement value"\n'
+        )
+        result = _run(diff)
+        assert result.returncode == 0, result.stdout + result.stderr
+
+    def test_context_line_match_is_not_flagged(self) -> None:
+        # RED before fix: the unchanged context line's home-path tripped it.
+        diff = (
+            "diff --git a/x.py b/x.py\n"
+            "--- a/x.py\n"
+            "+++ b/x.py\n"
+            "@@ -1,2 +1,2 @@\n"
+            ' ctx = "/home/carol/data/store"\n'  # privacy-scan:allow self-fixture
+            "-removed = 1\n"
+            "+added = 2\n"
+        )
+        result = _run(diff)
+        assert result.returncode == 0, result.stdout + result.stderr
+
+    def test_added_line_match_still_flagged(self) -> None:
+        # Anti-vacuity: the SAME match on an added line keeps the gate's teeth.
+        diff = (
+            "diff --git a/x.py b/x.py\n"
+            "--- a/x.py\n"
+            "+++ b/x.py\n"
+            "@@ -1,1 +1,2 @@\n"
+            " ctx = 1\n"
+            '+leak = "/Users/someone/secret/path"\n'  # privacy-scan:allow self-fixture
+        )
+        result = _run(diff)
+        assert result.returncode == PRIVACY_FINDINGS_EXIT_CODE, result.stdout + result.stderr
+        assert "home_path" in result.stdout
+
+    def test_commit_message_body_line_still_flagged(self) -> None:
+        # The push-gate blob is `%B` message + patch; a message-body line is new
+        # content on the pushed range (the #703 Co-authored-by case) and must
+        # still be scanned — the added-only scoping must not silence it.
+        blob = (
+            "Fix the thing\n"
+            "\n"
+            "Co-authored-by: someone@gmail.com\n"  # privacy-scan:allow (dummy example address, test input)
+            "diff --git a/x.py b/x.py\n"
+            "--- a/x.py\n"
+            "+++ b/x.py\n"
+            "@@ -1,1 +1,1 @@\n"
+            "-old = 1\n"
+            "+new = 2\n"
+        )
+        result = _run(blob)
+        assert result.returncode == PRIVACY_FINDINGS_EXIT_CODE, result.stdout + result.stderr
+        assert "email" in result.stdout
