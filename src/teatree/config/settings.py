@@ -844,6 +844,14 @@ class _ResourcePressureSettings:
     # overridable: a heavy overlay can cap to ``1`` while a cheap dogfood
     # overlay stays unbounded (``0``).
     max_concurrent_local_stacks: int = 1
+    # #3693 retention windows for the high-churn control-DB tables. A ``prune``
+    # deletes rows OLDER than the window whose owning ticket/task is TERMINAL —
+    # never a live/in-flight row, and never within the window. Days, not a byte
+    # ceiling: age is the operator-legible, safe-by-construction lever. Both
+    # default to a conservative 30 so a fresh install never prunes recent history;
+    # ``0`` disables that table's pruning entirely. Per-overlay overridable.
+    task_attempt_retention_days: int = 30
+    incoming_event_retention_days: int = 30
 
 
 @dataclass

@@ -852,6 +852,16 @@
       ]
     },
     {
+      "help": "``t3 <overlay> retention`` group root.",
+      "name": "retention",
+      "subcommands": [
+        {
+          "help": "Prune old rows from the high-churn tables (dry-run unless --apply)",
+          "name": "prune"
+        }
+      ]
+    },
+    {
       "help": "``t3 <overlay> retro`` group root.",
       "name": "retro",
       "subcommands": [

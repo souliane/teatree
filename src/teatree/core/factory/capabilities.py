@@ -43,6 +43,12 @@ class Capability:
 CAPABILITIES: tuple[Capability, ...] = (
     # PR-30-converted lifecycle leaves (--json on stdout, human on stderr).
     Capability("teatree queue status", json_output=True, exit_codes=("0",)),
+    Capability(
+        "teatree retention prune",
+        json_output=True,
+        exit_codes=("0",),
+        note="--json emits the per-table retention plan; dry-run unless --apply (#3693)",
+    ),
     Capability("teatree tasks list", json_output=True, exit_codes=("0",)),
     Capability(
         "teatree tasks create",

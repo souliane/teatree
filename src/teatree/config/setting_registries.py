@@ -168,6 +168,8 @@ OVERLAY_OVERRIDABLE_SETTINGS: dict[str, Callable[[Any], Any]] = {
     "task_sweep_disabled": _parse_strict_bool,
     "task_sweep_recheck_interval_hours": _parse_strict_int,
     "max_concurrent_local_stacks": _parse_strict_int,
+    "task_attempt_retention_days": _parse_strict_int,
+    "incoming_event_retention_days": _parse_strict_int,
     "provision_step_timeout_seconds": _parse_strict_int,
     "idle_stack_reaper_disabled": _parse_strict_bool,
     "idle_stack_idle_minutes": _parse_strict_int,

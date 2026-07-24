@@ -1,4 +1,4 @@
-"""The unified ``pydantic-settings`` model over teatree's 235 config keys.
+"""The unified ``pydantic-settings`` model over teatree's 237 config keys.
 
 ``TeatreeSettingsSchema`` is the BASE-LAYER schema: it hosts the shipped default
 VALUES (``defaults.toml``) behind teatree's existing per-key coercers and carries
@@ -134,7 +134,7 @@ class _TeatreeTableTomlSource(TomlConfigSettingsSource):
 
 
 class TeatreeSettingsSchema(BaseSettings):
-    """The 235-key config schema. See the module docstring for the design."""
+    """The 237-key config schema. See the module docstring for the design."""
 
     model_config = SettingsConfigDict(extra="forbid", validate_default=True, frozen=True)
 
@@ -228,6 +228,7 @@ class TeatreeSettingsSchema(BaseSettings):
     idle_stack_idle_minutes: Annotated[int, BeforeValidator(_parse_strict_int), _DEFAULT_OVERLAY]
     idle_stack_reaper_cadence_minutes: Annotated[int, BeforeValidator(_parse_strict_int), _DEFAULT_OVERLAY]
     idle_stack_reaper_disabled: Annotated[bool, BeforeValidator(_parse_strict_bool), _DEFAULT_OVERLAY]
+    incoming_event_retention_days: Annotated[int, BeforeValidator(_parse_strict_int), _DEFAULT_OVERLAY]
     incremental_push_gate: Annotated[bool, BeforeValidator(_parse_strict_bool), _DEFAULT_OVERLAY]
     issue_implementer_cadence_hours: Annotated[int, BeforeValidator(_parse_strict_int), _DEFAULT_OVERLAY]
     issue_implementer_enabled: Annotated[bool, BeforeValidator(_parse_strict_bool), _DEFAULT_OVERLAY]
@@ -321,6 +322,7 @@ class TeatreeSettingsSchema(BaseSettings):
     statusline_engaged_render: Annotated[bool, BeforeValidator(_parse_strict_bool), _DEFAULT_OVERLAY]
     substrate_auto_merge_authorized_by: Annotated[str, BeforeValidator(_parse_strict_str), _DEFAULT_OVERLAY]
     substrate_self_signoff: Annotated[bool, BeforeValidator(_parse_strict_bool), _DEFAULT_OVERLAY]
+    task_attempt_retention_days: Annotated[int, BeforeValidator(_parse_strict_int), _DEFAULT_OVERLAY]
     task_sweep_disabled: Annotated[bool, BeforeValidator(_parse_strict_bool), _DEFAULT_OVERLAY]
     task_sweep_recheck_interval_hours: Annotated[int, BeforeValidator(_parse_strict_int), _DEFAULT_OVERLAY]
     teams_display: Annotated[TeamsDisplay, BeforeValidator(TeamsDisplay.parse), _DEFAULT_OVERLAY]

@@ -223,6 +223,16 @@ DJANGO_GROUPS: dict[str, DjangoGroup] = {
         ],
         core_dispatch=True,
     ),
+    "retention": DjangoGroup(
+        "Age-based pruning of the high-churn control-DB tables (#3693).",
+        [
+            ("prune", "Prune terminal-owned rows past the retention window (dry-run unless --apply)."),
+        ],
+        # Reads/deletes rows in the teatree-core control DB — dispatch via
+        # ``python -m teatree`` so a cwd inside a ticket worktree resolves core,
+        # not that worktree's per-worktree DB (same #2925/#126 class as queue).
+        core_dispatch=True,
+    ),
     "followup": DjangoGroup(
         "Follow-up snapshots.",
         [

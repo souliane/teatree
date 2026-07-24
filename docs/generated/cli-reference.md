@@ -6041,6 +6041,8 @@ Usage: t3 teatree [OPTIONS] COMMAND [ARGS]...
 │ pr              Pull request helpers.                                        │
 │ tasks           Async task queue.                                            │
 │ queue           Background-task DB queue (inspect, expire stale jobs).       │
+│ retention       Age-based pruning of the high-churn control-DB tables        │
+│                 (#3693).                                                     │
 │ followup        Follow-up snapshots.                                         │
 │ standup         Auto-generated daily update (read-only).                     │
 │ checking        Terse 'what did I miss' report since the last check          │
@@ -8803,6 +8805,41 @@ Usage: t3 teatree queue expire-stale [OPTIONS]
 │                                       mutating any rows.                     │
 │                                       [default: no-dry-run]                  │
 │ --help                                Show this message and exit.            │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+#### `t3 teatree retention`
+
+```
+Usage: t3 teatree retention [OPTIONS] COMMAND [ARGS]...
+
+ Age-based pruning of the high-churn control-DB tables (#3693).
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Commands ───────────────────────────────────────────────────────────────────╮
+│ prune  Prune terminal-owned rows past the retention window (dry-run unless   │
+│        --apply).                                                             │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 teatree retention prune`
+
+```
+Usage: t3 teatree retention prune [OPTIONS]
+
+ Prune old rows from the high-churn tables (dry-run unless --apply).
+
+ Conservative: only rows past the retention window whose owning task AND
+ ticket are terminal are ever deleted. A live/in-flight row is never touched.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --apply          Actually delete the prunable rows. Without it, this is a    │
+│                  dry run.                                                    │
+│ --json           Emit the retention report as JSON on stdout instead of the  │
+│                  human view.                                                 │
+│ --help           Show this message and exit.                                 │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 

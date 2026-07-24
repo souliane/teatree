@@ -2,11 +2,11 @@
 """Conformance suite pinning ``TeatreeSettingsSchema`` + ``defaults.toml`` to the registries.
 
 The load-bearing guard on the Phase-1 foundation: the schema must cover EXACTLY the
-235 known config keys, ``defaults.toml`` must carry EXACTLY the Default-category keys
+237 known config keys, ``defaults.toml`` must carry EXACTLY the Default-category keys
 at canonical values, the taxonomy must classify every credential/secret key correctly,
 and — the key risk — the model-derived per-field validator must behave IDENTICALLY to
 the pre-change registry coercer (the parity matrix). A drift in any of these turns the
-suite red before the 235-key mapping can silently rot.
+suite red before the 237-key mapping can silently rot.
 """
 
 import tomllib

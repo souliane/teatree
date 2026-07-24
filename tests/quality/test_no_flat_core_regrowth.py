@@ -106,7 +106,10 @@ _CORE_DIR = Path(__file__).resolve().parents[2] / "src" / "teatree" / "core"
 # 98: +overlay_name_resolution.py — the overlay-name resolvers (cwd_overlay_name / overlay_name_of /
 # resolve_overlay_name) carved out of overlay_loader.py to hold it under the 500-LOC module-health cap.
 # A leaf helper of the flat root overlay_loader.py hub, owned by no existing subpackage.
-PINNED_FLAT_CORE_MODULES = 98
+# 99: +retention.py (#3693) — the age-based prune of the high-churn control-DB tables. A genuine new
+# root data-lifecycle concern: it spans TaskAttempt + IncomingEvent + Ticket and fits no existing
+# subpackage (cleanup/ is worktree/branch/stash reaping, not DB-row retention).
+PINNED_FLAT_CORE_MODULES = 99
 
 
 def _flat_core_modules() -> list[str]:
