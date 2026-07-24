@@ -252,6 +252,10 @@ def default_projects_dir() -> Path:
 
 
 #: Both roots task-output transcripts land under; the split is temporal residue (#3585).
+#: Since #3641 pinned TMPDIR in every compose service's environment, all NEW output
+#: lands under the disk-backed /var/tmp even for `docker exec`-started processes, so
+#: scanning /tmp is now redundant belt-and-braces — retained only to still find any
+#: pre-fix or non-container residual transcripts.
 _TASK_OUTPUT_TMP_BASES: tuple[str, ...] = ("/tmp", "/var/tmp")  # noqa: S108 — fixed agent-controlled paths
 
 
