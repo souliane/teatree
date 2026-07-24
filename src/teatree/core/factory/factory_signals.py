@@ -93,6 +93,26 @@ __all__ = [
 
 DEFAULT_WINDOW_DAYS = 28
 
+# Hard red floors for the three signals that shipped with ``red_when=None`` and so
+# could never trip, letting the exact pathology that hit the factory pass silently
+# (#3690). Each sits at a "the factory is broken" level, not a nudge — a RED verdict
+# is the operator's primary alarm, so the floor is set well above the regress band to
+# stay quiet on ordinary drift and fire only on a genuine collapse.
+#
+# defect_escape (corrections per preceding merge, LOWER_IS_BETTER): at 1.0 the factory
+# mints as many fix tickets + red cards as it merges — breakage outpaces throughput.
+DEFECT_ESCAPE_RED = 1.0
+# merge_latency (median CLEAR→merge hours, LOWER_IS_BETTER): half the 48h stale-CLEAR
+# companion floor — a median clear-to-merge past a full day is a merge loop that is
+# draining, but far too slowly.
+MERGE_LATENCY_RED_HOURS = 24.0
+# repair_burn (mean terminal iteration per succeeded phase, LOWER_IS_BETTER): the phase
+# cap is MAX_PHASE_ITERATIONS = 5, so a mean of 4 means the phases that DO land are
+# almost exhausting their repair budget every time. The high-failure companion detector
+# in factory_signal_queries.compute_s5 catches the orthogonal collapse the scalar mean
+# misses — a window where nearly every attempt fails and the few successes read low.
+REPAIR_BURN_RED_ITERS = 4.0
+
 
 class SignalVerdict(enum.StrEnum):
     """A per-signal-row (and top-level report) verdict.
@@ -222,10 +242,18 @@ class SignalSpec:
 
 SIGNALS: tuple[SignalSpec, ...] = (
     SignalSpec("first_try_green", "quant", Direction.HIGHER_IS_BETTER, compute_s1, 0.5, 0.1),
-    SignalSpec("defect_escape", "quant", Direction.LOWER_IS_BETTER, compute_s2, None, 0.1),
+    SignalSpec("defect_escape", "quant", Direction.LOWER_IS_BETTER, compute_s2, DEFECT_ESCAPE_RED, 0.1),
     SignalSpec("review_catch", "quant", Direction.HIGHER_IS_BETTER, compute_s3, 0.0, 0.1),
-    SignalSpec("merge_latency", "quant", Direction.LOWER_IS_BETTER, compute_s4, None, 2.0, regress_multiplicative=True),
-    SignalSpec("repair_burn", "quant", Direction.LOWER_IS_BETTER, compute_s5, None, 0.5),
+    SignalSpec(
+        "merge_latency",
+        "quant",
+        Direction.LOWER_IS_BETTER,
+        compute_s4,
+        MERGE_LATENCY_RED_HOURS,
+        2.0,
+        regress_multiplicative=True,
+    ),
+    SignalSpec("repair_burn", "quant", Direction.LOWER_IS_BETTER, compute_s5, REPAIR_BURN_RED_ITERS, 0.5),
 )
 
 

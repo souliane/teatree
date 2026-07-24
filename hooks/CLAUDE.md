@@ -39,3 +39,43 @@ See the root [`CLAUDE.md`](../CLAUDE.md) for the code-quality bar. This file add
 - **The out-of-band raw-merge gate has a `gate raw-merge` kill-switch and fail-open-routes (FIX-EXPEDITE PART B).** `handle_block_out_of_band_merge` (in the router — it shares the effective-HTTP-method regexes with the sibling gates) denies raw `gh pr merge` / `glab mr merge` / a REST-API `.../pulls|merge_requests/<n>/merge` WRITE / a graphql merge-mutation on a teatree-managed repo, forcing the keystone `t3 <overlay> ticket merge <clear_id>` (BLUEPRINT §17.4). It was the ONLY merge-adjacent gate denying via a bare `emit_pretooluse_deny` — honouring neither the self-rescue allowlist, the master `danger_gate_fail_open`, nor a per-gate kill-switch. It now reads `out_of_band_merge_gate_enabled` (default True, registered in `COLD_HOOK_SETTINGS`) and early-returns allow when disabled; both deny sites route through `_fail_open_or_deny` so the self-rescue allowlist + master fail-open apply. Never-lockout: `t3 <overlay> gate raw-merge disable` (the kill-switch CLI, in `SELF_RESCUE_ALLOWLIST` so it is never itself denied) and the `= false` config flip. The never-lockout contract (`tests/test_gate_never_lockout_contract.py`) now verifies the route structurally rather than via a narrow-exemption allowlist entry.
 - **Hooks must be crash-proof and fast.** `hooks.json` sets a 30s timeout ceiling; a hook that raises or hangs blocks the user, so stay fast regardless of the ceiling. Fail open and stay silent on the happy path.
 - **Statusline state** is regenerated, not authored: `/tmp/claude-statusline/<session>.<suffix>` (override dir via `TEATREE_CLAUDE_STATUSLINE_STATE_DIR`). Never read it as a source of truth.
+
+## Escape markers & kill-switches (canonical reference)
+
+Every over-deny gate ships a never-lockout path. This is the ONE catalog of them — the per-gate bullets above carry the gate-specific detail; this table is the flat index. `docs/blueprint/configuration.md` (the kill-switch config settings) and `hooks/scripts/deny_circuit_breaker.py` (the signature-strip set) cross-link here.
+
+**Per-call escape marker tokens** — a `[<token>: <reason>]` in the current tool call ALLOWs that single call only. An **empty reason is rejected** (a bare `[fg-ok:]` / `[fg-ok: ]` does not unblock — the reason must be non-empty).
+
+| Marker | Gate it relaxes | Where the hook reads it |
+|---|---|---|
+| `[fg-ok: <reason>]` | orchestrator heavy-Bash gate + foreground-`Agent`-dispatch gate | Bash `command` text / `Agent` `prompt` (first 512 chars) |
+| `[skip-plan-gate: <reason>]` | plan-before-code edit-block gate | Edit `new_string` / Write `content` / `file_path` (first 512) |
+| `[skill-load-ok: <reason>]` | skill-loading `PreToolUse` gate | Bash `command` / Edit-Write args (first 512) |
+| `[skip-skill-gate: <reason>]` | skill-loading-on-`TaskCreated` gate | task subject / description |
+| `[quote-ok: <reason>]` | dispatch-prompt quote scanner (`PreToolUse` + `TaskCreated` arms) | `Agent`/`Task` prompt / task fields |
+| `[config-overwrite-ok: <reason>]` | read-before-overwrite config/dotfile gate | Edit / Write args |
+| `[scope-push-ok: <reason>]` | unknown-owned-repo push/merge gate | Bash `command` |
+| `[reviewer-ok: <reason>]` | no-self-reviewer-assign gate | Bash `command` |
+| `[standing-goal-hold: <token> <reason>]` | standing verified-green `Stop` gate (single-use minted token; holds ONE stop) | turn text |
+| `[fp-confirmed: <reason>]` | repeated-denial circuit breaker (session-scoped confirmed-FP grant; NEVER the public-egress leak gate — that is fail-CLOSED always) | Bash `command` / Edit-Write args |
+| `--allow-banned-term` / `ALLOW_BANNED_TERM=1` | banned-terms gate on a LOCAL surface (never a public-egress post) | CLI flag / env var |
+| `ALLOW_GATE_RELAX='<reason>'` | anti-relaxation + tach-soundness prek gate | env var |
+
+**Config kill-switches (self-rescue CLI)** — each flips a DB-home `ConfigSetting` flag (out-of-repo, survives `t3 update`); the equivalent `t3 <overlay> config_setting set <key> false` also works.
+
+| Command | Gate disabled |
+|---|---|
+| `t3 <overlay> gate disable` | orchestrator heavy-Bash gate — the PRIMARY self-rescue, always reachable (`t3 …` never matches the heavy denylist) |
+| `t3 <overlay> gate skill-loading disable` | skill-loading gate |
+| `t3 <overlay> gate plan disable` | plan-before-code edit-block gate |
+| `t3 <overlay> gate config-overwrite disable` | read-before-overwrite config/dotfile gate |
+| `t3 <overlay> gate completion-claim disable` | completion-claim `Stop` gate |
+| `t3 <overlay> gate main-clone disable` | main-clone working-tree mutation gate |
+| `t3 <overlay> gate memory-recall disable` | cold-tier memory-recall injector |
+| `t3 <overlay> gate snapshot-baseline disable` | snapshot-baseline attestation gate |
+| `t3 <overlay> gate gate-relaxation disable` | anti-relaxation + tach-soundness gate |
+| `t3 <overlay> gate raw-merge disable` | out-of-band raw-merge gate |
+| `t3 <overlay> gate standing-goal disable` | standing verified-green `Stop` gate |
+| `t3 review gate fail-open enable` | master `danger_gate_fail_open` — flips EVERY over-deny gate to fail-open (PUBLIC-egress gate excluded) |
+
+Every gate's deny routes through `_fail_open_or_deny`, so the `SELF_RESCUE_ALLOWLIST` (`src/teatree/hooks/self_rescue.py`) — the fixed set of `t3 … gate … disable` self-rescue commands — is never itself denied, and the master `danger_gate_fail_open` switch relaxes them all at once.

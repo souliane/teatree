@@ -329,6 +329,12 @@ The code registries are the single source of truth — the curated table below
 explains why representative keys are per-overlay-overridable; consult the
 registries for the full set, type signatures, and defaults.
 
+The `*_gate_enabled` kill-switch keys below each disable one over-deny gate. For
+the flat catalog of EVERY gate's never-lockout paths — the per-call escape marker
+tokens (`[fg-ok: …]`, `[skip-plan-gate: …]`, …), the `t3 <overlay> gate …
+disable` self-rescue CLIs, and the master `danger_gate_fail_open` switch — see
+`hooks/CLAUDE.md` § "Escape markers & kill-switches".
+
 | Key | Why overridable |
 |-----|------------------|
 | `mode` | `auto` for a personal dogfooding overlay, `interactive` for a client overlay |
