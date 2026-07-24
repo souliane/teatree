@@ -23,6 +23,7 @@ from teatree.dash.views.presets import (
     schedule_slot,
     schedule_slot_delete,
 )
+from teatree.dash.views.settings import settings, settings_export, settings_import, settings_restore, settings_set
 from teatree.dash.views.tickets import ticket_drawer, ticket_transition
 from teatree.dash.views.transcript import transcript
 
@@ -52,6 +53,11 @@ __all__ = [
     "schedule_activate",
     "schedule_slot",
     "schedule_slot_delete",
+    "settings",
+    "settings_export",
+    "settings_import",
+    "settings_restore",
+    "settings_set",
     "ticket_drawer",
     "ticket_transition",
     "transcript",

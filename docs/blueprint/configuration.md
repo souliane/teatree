@@ -12,8 +12,9 @@ to one overlay; omit it for the global default). There is no config file to edit
 The overlay-definition registry (`overlays`) and the external-E2E registry
 (`e2e_repos`) are DB-home too — each is one JSON-dict `ConfigSetting` row that
 `loader._inject_db_registries` injects into `config.raw`, so teatree boots fully
-from the DB. `config_setting export` dumps the store to a TOML backup for a
-round-trip interchange.
+from the DB. `config_setting export` / `import` are a byte-stable round-trip
+interchange; the shipped default VALUES, the pydantic schema that hosts them + the
+category taxonomy, and the model-derived registries are described in §10.7.
 
 The keys and value shapes below are illustrative — set each one with
 `config_setting set`; the `[table]` syntax only shows how a key is scoped
@@ -659,6 +660,64 @@ Every term-scanning gate resolves through one class-tagged source: the DB-home `
 * the eval-fixture personal-marker / profanity guard — a generic fixture-hygiene check.
 
 **Secret / defaults boundary.** Every registry class carries operator-private codenames, so the five term keys (`banned_terms`, `banned_terms_allowlist`, `banned_brands`, `overlay_leak_terms`, `banned_term_registry`) are all in `SECRET_SETTINGS`: DB-only, empty in code, and withheld from a shared `config_setting export`. They must never appear in a committed defaults file — a forward guard asserts `SECRET_SETTINGS` is disjoint from any `config/defaults.toml` that ever ships.
+
+### 10.7 Shipped defaults + the unified settings schema
+
+The shipped default VALUES live in one hand-editable, committed file —
+`src/teatree/config/defaults.toml` — in EXACTLY the `config_setting export` / `import`
+shape (a `[teatree]` table with `speak` / `mr_reminder` sub-tables). It is NOT a
+per-install config file (there is still nothing to edit per box — operator config lives
+in the DB store); it is the shipped **code-default layer**, the last tier of every
+resolution chain above. It carries EXACTLY the `Category.DEFAULT` keys at their ship
+values; `Personal` and `Secret` keys are ABSENT by construction (they hold the empty code
+default and are never written to a shareable file). Safety-posture keys and dark
+feature-flags are pinned to their fail-closed / off literals. Regenerate it from the live
+box (secret / personal / safety-safe) with `manage.py generate_settings_defaults`; a
+maintainer may hand-edit a per-key value and re-run the generator's conformance tests.
+
+`src/teatree/config/schema.py` is the single source of truth for the key set, the value
+taxonomy, and validation. `TeatreeSettingsSchema` is a `pydantic-settings` model over all
+~235 config keys: each field wraps the SAME per-key coercer the four config registries
+already use (as a `BeforeValidator`), so the model HOSTS teatree's #258 strictness rather
+than reinventing pydantic's own rules, and each field carries a `SettingMeta` marker with
+its `Category` (`default` / `personal` / `secret`) and `Registry` (which of the four
+registries it belongs to). `shipped_defaults()` is the `@lru_cache` singleton constructed
+from `defaults.toml`, so a malformed file fails once, loudly.
+
+* **The registries are DERIVED from the model.** `OVERLAY_OVERRIDABLE_SETTINGS`,
+  `COLD_SETTINGS`, `COLD_HOOK_SETTINGS`, and `REGISTRY_SETTINGS` are the `{key: coercer}`
+  maps the resolver / CLI / MCP / import all share; `schema.derive_*` rebuilds each by
+  walking `model_fields` filtered on the field's `Registry` marker. A parity matrix
+  (`tests/config/test_registry_derivation.py`) proves each derived registry equals its
+  hand-maintained counterpart key-for-key and coercer-for-coercer, so the model's taxonomy
+  is the authoritative partition. The runtime dicts stay hand-maintained only because they
+  sit on the cold path (below) — the model binds them by test, not at runtime.
+* **Two default readers, one file.** The Django / hot path reads defaults through the
+  pydantic model (~110ms). The pre-Django cold path (hook leaves, statusline) reads the
+  SAME `defaults.toml` through `config/cold_defaults.py` — stdlib `tomllib` only, an
+  mtime-keyed process cache, ~2ms — so a cold leaf never pays the pydantic import. A
+  coherence test pins the cold default equal to the model default for every
+  Default-category key.
+
+**Import (`import_toml_to_db(text, dry_run)` + `t3 <overlay> config_setting import`).** The
+precise inverse of `export`: it loads a dump back into the store. Retired aliases fold onto
+their live key; unknown keys and secret / personal-identifier keys are REJECTED, and one
+rejection refuses the WHOLE import (nothing written) so a bad key never leaves a partial
+store — the reject rule reuses the export withhold taxonomy, so a shared export's rows
+import back exactly and a secret can never round-trip in. Every value is validated through
+the resolver's own registry parser. **Zero-row normalization:** a value equal to the shipped
+default writes NO row (preserving the zero-seed + `restore = delete row` property), so a
+dump of `defaults.toml` itself imports to zero rows. Export key-sorts every table/scope, so
+`export → import → export` is byte-stable; a shareable export withholds Secret values and
+keeps Personal ones.
+
+**Dashboard settings editor** (`/dash/settings/`). The model-driven, EDITABLE companion to
+the read-only `/dash/config/` page: it walks the schema so every key is listable with no
+hand-kept list, writes each edit through `ConfigSetting.set_value` (the same validating
+seam), restores-to-default by DELETING the row, gates a safety-posture key behind an extra
+confirm phrase, and offers export + a dry-run import preview. A SECRET value AND its shipped
+default are masked to `***` before the row enters the response context — pinned by a test
+asserting a configured secret never appears in the response bytes.
 
 ### 10.4 Data Storage
 

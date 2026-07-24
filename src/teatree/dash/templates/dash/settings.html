@@ -1,0 +1,83 @@
+{% extends "dash/base.html" %}
+{% block title %}Settings{% endblock %}
+{% block content %}
+  <section class="band">
+    <h2>Settings</h2>
+    <p class="muted">Every config key, from the schema. Edits write to the DB store; a secret value is never shown (<span class="mono">***</span>) and its input is write-only. Restore-to-default deletes the row.</p>
+    <p class="toolbar">
+      <a class="btn" href="{% url 'dash:settings_export' %}">Export (secrets withheld)</a>
+    </p>
+  </section>
+
+  <section class="band">
+    <h2>Import</h2>
+    <form method="post" action="{% url 'dash:settings_import' %}">
+      {% csrf_token %}
+      <textarea name="toml" rows="6" class="mono" placeholder="paste a config_setting export dump"></textarea>
+      <p class="toolbar">
+        <button type="submit" name="apply" value="">Preview (dry-run)</button>
+        <button type="submit" name="apply" value="1">Apply</button>
+      </p>
+    </form>
+    {% if import_result %}
+      <div class="import-result">
+        <h3>{% if import_applied %}Imported{% else %}Import preview — dry-run, nothing written{% endif %}</h3>
+        {% if import_result.rejected %}
+          <p class="banner-red">{{ import_result.rejected|length }} row(s) rejected — the whole import was refused, nothing was written.</p>
+          <ul>
+            {% for r in import_result.rejected %}
+              <li class="mono">{{ r.key }} [{{ r.scope|default:"global" }}] — {{ r.reason }}</li>
+            {% endfor %}
+          </ul>
+        {% else %}
+          <p>{{ import_result.written|length }} row(s) {% if import_applied %}written{% else %}would be written{% endif %}; {{ import_result.skipped_default|length }} equal the shipped default (no row).</p>
+          <ul>
+            {% for row in import_result.written %}<li class="mono">{{ row.key }} = {{ row.value }} [{{ row.scope|default:"global" }}]</li>{% endfor %}
+          </ul>
+        {% endif %}
+        {% for old, new in import_result.folded %}<p class="muted">folded retired alias {{ old }} → {{ new }}</p>{% endfor %}
+      </div>
+    {% endif %}
+  </section>
+
+  {% if editor.error %}<div class="banner-red">{{ editor.error }}</div>{% endif %}
+
+  <section class="band">
+    <table class="dash">
+      <thead><tr><th>setting</th><th>category</th><th>value</th><th>edit</th></tr></thead>
+      <tbody>
+        {% for s in editor.settings %}
+          <tr class="{% if s.is_safety_posture %}stalled{% endif %}">
+            <td class="mono">{{ s.name }}{% if s.is_safety_posture %} <span class="muted">(safety-posture)</span>{% endif %}</td>
+            <td>{{ s.category }}</td>
+            <td class="mono">{{ s.value }}</td>
+            <td>
+              <form class="row-actions" method="post" action="{% url 'dash:settings_set' %}">
+                {% csrf_token %}
+                <input type="hidden" name="key" value="{{ s.name }}">
+                <input type="hidden" name="scope" value="{{ editor.scope }}">
+                {% if s.is_secret %}
+                  <input type="password" name="value" placeholder="new JSON value (write-only)" autocomplete="off">
+                {% else %}
+                  <input type="text" name="value" placeholder="JSON value, e.g. true / 3 / &quot;x&quot;">
+                {% endif %}
+                {% if s.is_safety_posture %}
+                  <input type="text" name="confirm" placeholder="confirm: {{ confirm_phrase }}" autocomplete="off">
+                {% endif %}
+                <button type="submit">Save</button>
+              </form>
+              {% if s.is_overridden %}
+                <form class="row-actions" method="post" action="{% url 'dash:settings_restore' %}">
+                  {% csrf_token %}
+                  <input type="hidden" name="key" value="{{ s.name }}">
+                  <input type="hidden" name="scope" value="{{ editor.scope }}">
+                  <button type="submit">Restore default</button>
+                </form>
+              {% endif %}
+            </td>
+          </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </section>
+{% endblock %}

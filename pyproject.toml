@@ -69,6 +69,13 @@ dependencies = [
   # that forbids the Claude Code CLI can adopt these eval lanes
   # ([#3222](https://github.com/souliane/teatree/issues/3222)).
   "pydantic-ai-slim[anthropic,openai]>=2.3",
+  # ``teatree.config.schema.TeatreeSettingsSchema`` is a ``pydantic_settings``
+  # ``BaseSettings`` model whose TOML source reads the shipped ``defaults.toml`` —
+  # a RUNTIME import (``shipped_defaults()``), same class as the runtime deps
+  # above, so it must be in the installed tool env, not only transitively via
+  # ``mcp``. The ``>=2.14.2`` floor stays in ``constraint-dependencies`` below
+  # (GHSA-4xgf-cpjx-pc3j) and continues to gate this direct dependency.
+  "pydantic-settings>=2.14.2",
   # ``teatree.eval.loader`` imports ``yaml`` at module load, and that module
   # is reached from ``teatree.cli.__init__`` — so a missing ``pyyaml`` crashes
   # EVERY ``t3`` invocation, which in turn makes the §17.6 gate-15

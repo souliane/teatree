@@ -9,19 +9,26 @@ content scan); ``--include-private`` exports everything for a personal backup.
 """
 
 import json
+import tomllib
 from dataclasses import dataclass
 from typing import Any
 
 import tomlkit
 from tomlkit import items as tomlkit_items
 
+from teatree.config.known_settings import ALL_KNOWN_CONFIG_SETTINGS
 from teatree.config.registries import REGISTRY_KEYS
+from teatree.config.retired_settings import REMOVED_SETTING_KEYS, RENAMED_SETTING_KEYS, removed_setting
 from teatree.config.secret_settings import PERSONAL_IDENTIFIERS, SECRET_SETTINGS, is_credential_reference
+from teatree.config.setting_registries import OVERLAY_OVERRIDABLE_SETTINGS
 from teatree.core.models import ConfigSetting
 from teatree.core.models.config_setting import ConfigValue
 from teatree.hooks.term_match import matched_term
 
 GLOBAL_SCOPE = ""
+_TEATREE_TABLE = "teatree"
+_OVERLAYS_TABLE = "overlays"
+_E2E_REPOS_TABLE = "e2e_repos"
 
 
 def _scope_label(scope: str) -> str:
@@ -171,10 +178,14 @@ def _registry_value(global_rows: dict[str, ConfigValue], key: str) -> dict[str, 
 
 
 def _toml_table(rows: dict[str, ConfigValue]) -> tomlkit_items.Table:
-    """A ``[table]`` of *rows*, each native value rendered as its TOML scalar."""
+    """A ``[table]`` of *rows* (key-sorted), each native value rendered as its TOML scalar.
+
+    Sorted so the dump is a deterministic function of the store's CONTENT, not the DB
+    insertion order — the property ``export -> import -> export`` byte-stability rests on.
+    """
     table = tomlkit.table()
-    for key, value in rows.items():
-        table[key] = value
+    for key in sorted(rows):
+        table[key] = rows[key]
     return table
 
 
@@ -196,7 +207,7 @@ def _emit_overlay_tables(
     """
     overlays = tomlkit.table(is_super_table=True)
     emitted = False
-    for name in dict.fromkeys([*overlays_registry, *scopes]):
+    for name in sorted(dict.fromkeys([*overlays_registry, *scopes])):
         merged = {**overlays_registry.get(name, {}), **ConfigSetting.objects.overrides_for_scope(name)}
         rows = _exportable_rows(merged, name, guard=guard)
         if rows:
@@ -220,7 +231,8 @@ def _emit_e2e_repos_tables(
     """
     repos = tomlkit.table(is_super_table=True)
     emitted = False
-    for name, entry in e2e_repos_registry.items():
+    for name in sorted(e2e_repos_registry):
+        entry = e2e_repos_registry[name]
         if not isinstance(entry, dict):
             continue
         rows = _exportable_rows(entry, f"e2e_repos.{name}", guard=guard)
@@ -229,3 +241,143 @@ def _emit_e2e_repos_tables(
             emitted = True
     if emitted:
         document["e2e_repos"] = repos
+
+
+# ---- import (the inverse of export) -----------------------------------------------------
+
+
+@dataclass(frozen=True)
+class RejectedRow:
+    """One import row the validator refused, with the reason it was not stored."""
+
+    scope: str
+    key: str
+    reason: str  # "unknown key" / "secret (<class>)" / "removed (<why>)" / "invalid: <msg>"
+
+
+@dataclass(frozen=True)
+class ImportedRow:
+    """One import row that was (or, under ``dry_run``, would be) written to the store."""
+
+    scope: str
+    key: str
+    value: ConfigValue
+
+
+@dataclass(frozen=True)
+class ConfigImport:
+    """The outcome of an ``import_toml_to_db`` run — all four dispositions, plus the mode.
+
+    ``rejected`` non-empty means the import was REFUSED wholesale: nothing was written,
+    even the clean rows, so a partial store can never result from one bad key.
+    """
+
+    written: tuple[ImportedRow, ...]
+    skipped_default: tuple[ImportedRow, ...]
+    folded: tuple[tuple[str, str], ...]  # (retired alias, canonical replacement)
+    rejected: tuple[RejectedRow, ...]
+    dry_run: bool
+
+
+_NO_DEFAULT: object = object()
+
+
+def _shipped_default(key: str) -> object:
+    """The model's shipped default for *key* — the value a row equal to it is redundant against."""
+    # Deferred (PLC0415): the pydantic model import costs ~110ms; only the Django/import
+    # path pays it, never a cold reader.
+    from teatree.config.schema import shipped_defaults  # noqa: PLC0415 — deferred: heavy pydantic import
+
+    return getattr(shipped_defaults(), key, _NO_DEFAULT)
+
+
+def _import_candidates(doc: dict[str, Any]) -> list[tuple[str, str, ConfigValue]]:
+    """Flatten a parsed export document into ``(scope, key, value)`` candidate rows.
+
+    Reverses the export layout: the ``[teatree]`` table -> global settings; each
+    ``[overlays.<name>]`` table splits into per-overlay SETTING rows (keys in
+    ``OVERLAY_OVERRIDABLE_SETTINGS``) and overlay-DEFINITION keys (``path`` / ``class`` /
+    …, folded back into the ``overlays`` registry row); each ``[e2e_repos.<name>]`` table
+    rebuilds the ``e2e_repos`` registry row.
+    """
+    candidates: list[tuple[str, str, ConfigValue]] = []
+    for key, value in doc.get(_TEATREE_TABLE, {}).items():
+        candidates.append((GLOBAL_SCOPE, key, value))
+    overlays_registry: dict[str, Any] = {}
+    for name, table in doc.get(_OVERLAYS_TABLE, {}).items():
+        if not isinstance(table, dict):
+            continue
+        for key, value in table.items():
+            if key in OVERLAY_OVERRIDABLE_SETTINGS:
+                candidates.append((name, key, value))
+            else:
+                overlays_registry.setdefault(name, {})[key] = value
+    if overlays_registry:
+        candidates.append((GLOBAL_SCOPE, _OVERLAYS_TABLE, overlays_registry))
+    e2e_registry: dict[str, Any] = {n: dict(t) for n, t in doc.get(_E2E_REPOS_TABLE, {}).items() if isinstance(t, dict)}
+    if e2e_registry:
+        candidates.append((GLOBAL_SCOPE, _E2E_REPOS_TABLE, e2e_registry))
+    return candidates
+
+
+def _classify_import_row(key: str, value: ConfigValue, terms: tuple[str, ...]) -> tuple[str, ConfigValue]:
+    """Decide one row's disposition: ``("reject", reason)`` / ``("skip"|"write", canonical)``.
+
+    Reject a removed key (loud, no home), an unknown key, and a secret/personal-identifier
+    row (reusing the export withhold rule so a shared TOML never smuggles customer data back
+    in). Otherwise coerce through the same registry parser the resolver uses; a value equal to
+    the shipped default is redundant (``skip``), leaving ``restore = delete row`` intact.
+    """
+    if key in REMOVED_SETTING_KEYS:
+        entry = removed_setting(key)
+        return ("reject", f"removed ({entry.reason if entry is not None else 'the setting was removed'})")
+    if key not in ALL_KNOWN_CONFIG_SETTINGS:
+        return ("reject", "unknown key")
+    if (secret := _redaction_reason(key, value, terms)) is not None:
+        return ("reject", f"secret ({secret})")
+    try:
+        canonical = ALL_KNOWN_CONFIG_SETTINGS[key](value)
+    except (ValueError, TypeError, AttributeError) as exc:
+        return ("reject", f"invalid: {exc}")
+    return ("skip", canonical) if canonical == _shipped_default(key) else ("write", canonical)
+
+
+def import_toml_to_db(
+    text: str,
+    *,
+    dry_run: bool = False,
+    scan_terms: tuple[str, ...] | None = None,
+) -> ConfigImport:
+    """Load a ``config_setting export`` TOML dump into the ``ConfigSetting`` store — the export inverse.
+
+    Retired aliases fold onto their live key; unknown keys and secret/personal-identifier
+    rows are REJECTED (the whole import is refused if any row is rejected, so a bad key never
+    leaves a partial store); every value is validated through the same registry parser the
+    resolver applies on read. A value equal to the shipped default writes NO row (the #3676
+    zero-seed + ``restore = delete row`` property), so a dump of ``defaults.toml`` imports to
+    zero rows. ``dry_run`` classifies without writing. Raises ``tomllib.TOMLDecodeError`` on
+    malformed input.
+    """
+    doc = tomllib.loads(text)
+    terms = scan_terms if scan_terms is not None else _resolve_export_scan_terms()
+    to_write: list[ImportedRow] = []
+    skipped: list[ImportedRow] = []
+    folded: list[tuple[str, str]] = []
+    rejected: list[RejectedRow] = []
+    for scope, raw_key, value in _import_candidates(doc):
+        key = RENAMED_SETTING_KEYS.get(raw_key, raw_key)
+        if key != raw_key:
+            folded.append((raw_key, key))
+        kind, payload = _classify_import_row(key, value, terms)
+        if kind == "reject":
+            rejected.append(RejectedRow(scope, key, str(payload)))
+        elif kind == "skip":
+            skipped.append(ImportedRow(scope, key, payload))
+        else:
+            to_write.append(ImportedRow(scope, key, payload))
+    if rejected:
+        return ConfigImport((), tuple(skipped), tuple(folded), tuple(rejected), dry_run)
+    if not dry_run:
+        for row in to_write:
+            ConfigSetting.objects.set_value(row.key, row.value, scope=row.scope)
+    return ConfigImport(tuple(to_write), tuple(skipped), tuple(folded), (), dry_run)
