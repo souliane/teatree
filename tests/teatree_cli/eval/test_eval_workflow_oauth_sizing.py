@@ -55,10 +55,16 @@ class TestGitHubEvalDefaultsToSubscriptionOAuth:
         )
 
     def test_eval_step_wires_both_secrets_and_the_knob(self) -> None:
+        # The "Select the freshest eval OAuth account" step owns the credential decision:
+        # it wires both secrets + the EVAL_OAUTH_TOKENS pool and resolves the `credential`
+        # knob (EVAL_CREDENTIAL), exporting the chosen CLAUDE_CODE_OAUTH_TOKEN +
+        # T3_AGENT_HARNESS_PROVIDER into $GITHUB_ENV. The aggregated job env still carries
+        # both secrets and the knob.
         env = _gh_eval_step_env()
         assert env.get("CLAUDE_CODE_OAUTH_TOKEN") == "${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}"
+        assert env.get("EVAL_OAUTH_TOKENS") == "${{ secrets.EVAL_OAUTH_TOKENS }}"
         assert env.get("ANTHROPIC_API_KEY") == "${{ secrets.ANTHROPIC_API_KEY }}"
-        assert env.get("T3_AGENT_HARNESS_PROVIDER") == "${{ inputs.credential || 'subscription_oauth' }}"
+        assert env.get("EVAL_CREDENTIAL") == "${{ inputs.credential || 'subscription_oauth' }}"
 
 
 class TestGitHubOAuthLaneIsRightSized:
@@ -102,10 +108,13 @@ class TestGitHubOAuthLaneIsRightSized:
 
 class TestGitHubPrEvalRidesSubscriptionOAuth:
     def test_pr_eval_step_defaults_to_subscription_oauth(self) -> None:
+        # The credential knob now rides the select step's EVAL_CREDENTIAL; the eval step
+        # reads the resolved T3_AGENT_HARNESS_PROVIDER + CLAUDE_CODE_OAUTH_TOKEN from
+        # $GITHUB_ENV.
         env: dict[str, str] = {}
         for step in cast("list[dict[str, Any]]", _load(_GH_EVAL_PR)["jobs"]["eval"]["steps"]):
             env.update(cast("dict[str, str]", step.get("env", {})))
-        assert env.get("T3_AGENT_HARNESS_PROVIDER") == "subscription_oauth"
+        assert env.get("EVAL_CREDENTIAL") == "subscription_oauth"
         assert env.get("CLAUDE_CODE_OAUTH_TOKEN") == "${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}"
 
 

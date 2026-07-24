@@ -60,8 +60,12 @@ class TestNightlySmokeLane:
         assert "--require-executed" in text
 
     def test_nightly_defaults_to_the_no_per_token_subscription_credential(self) -> None:
+        # The credential knob now rides the "Select the freshest eval OAuth account"
+        # step's EVAL_CREDENTIAL (that step owns the credential decision and exports
+        # T3_AGENT_HARNESS_PROVIDER into $GITHUB_ENV), defaulting to subscription_oauth.
         text = _NIGHTLY.read_text(encoding="utf-8")
-        assert "T3_AGENT_HARNESS_PROVIDER: ${{ inputs.credential || 'subscription_oauth' }}" in text
+        assert "EVAL_CREDENTIAL: ${{ inputs.credential || 'subscription_oauth' }}" in text
+        assert "scripts/eval/select_oauth.py" in text
 
 
 class TestWeeklyCatalogUntouched:

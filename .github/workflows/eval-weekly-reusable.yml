@@ -108,6 +108,9 @@ on:
       subscription-oauth-token:
         description: "The plan's CLAUDE_CODE_OAUTH_TOKEN, used when `credential` is subscription_oauth (the default)."
         required: false
+      eval-oauth-tokens:
+        description: "Newline-separated subscription OAuth tokens; the pre-eval step probes each and rides the FRESHEST. Omit to use `subscription-oauth-token` unchanged."
+        required: false
       anthropic-api-key:
         description: "The metered API key (sk-ant-api03…), used when `credential` is api_key."
         required: false
@@ -315,17 +318,35 @@ jobs:
           ACCOUNT="${{ vars.CLAUDE_CODE_OAUTH_ACCOUNT }}"
           echo "### Cost basis" >> "$GITHUB_STEP_SUMMARY"
           echo "OAuth account: ${ACCOUNT:-unrecorded}" >> "$GITHUB_STEP_SUMMARY"
+      # Point CLAUDE_CODE_OAUTH_TOKEN at the FRESHEST subscription account before the
+      # benchmark runs, so a large fan-out never lands every leg on one
+      # throttled/exhausted window. `eval-oauth-tokens` (a newline-separated secret the
+      # caller may pass) is probed per token for remaining usage-window headroom
+      # (scripts/eval/select_oauth.py) and the freshest is exported — masked — into
+      # $GITHUB_ENV, which the eval step below reads. BACKWARD-SAFE: with the secret
+      # unset/empty it passes the existing single `subscription-oauth-token` through
+      # unchanged. This step OWNS the credential decision, so it also exports
+      # T3_AGENT_HARNESS_PROVIDER (an all-exhausted set flips to api_key ONLY when the
+      # opt-in EVAL_API_KEY_FALLBACK repo variable is set, else it fails loud). NOTE: on a
+      # dynamic multi-account run the selected account is in this step's log, not the
+      # cost-basis var above (which tracks the single-secret host switcher).
+      - name: Select the freshest eval OAuth account
+        env:
+          EVAL_CREDENTIAL: ${{ inputs.credential || 'subscription_oauth' }}
+          EVAL_OAUTH_TOKENS: ${{ secrets.eval-oauth-tokens }}
+          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.subscription-oauth-token }}
+          EVAL_API_KEY_FALLBACK: ${{ vars.EVAL_API_KEY_FALLBACK }}
+        run: uv run python scripts/eval/select_oauth.py
       - name: Metered behavioral benchmark suite (in Docker; 3-tier matrix; --require-executed always armed)
         uses: nick-fields/retry@ad984534de44a9489a53aefd81eb77f87c70dc60  # v4
         env:
-          # Both credentials are wired so the `credential` knob is a pure config
-          # flip, exactly like `eval.yml`. `T3_AGENT_HARNESS_PROVIDER` selects which one
-          # every eval chokepoint (make_runner, the judge, the docker `-e`
-          # passthrough) resolves; docker forwards only the SELECTED credential's
-          # var into the container.
-          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.subscription-oauth-token }}
+          # `CLAUDE_CODE_OAUTH_TOKEN` and `T3_AGENT_HARNESS_PROVIDER` come from the
+          # "Select the freshest eval OAuth account" step above via `$GITHUB_ENV` (that
+          # step owns the credential decision) — NOT pinned here, since a step-level
+          # `env:` would override the dynamic `$GITHUB_ENV` value. `ANTHROPIC_API_KEY`
+          # stays wired for an api_key run / exhausted-OAuth fallback; docker forwards
+          # only the SELECTED credential's var into the container.
           ANTHROPIC_API_KEY: ${{ secrets.anthropic-api-key }}
-          T3_AGENT_HARNESS_PROVIDER: ${{ inputs.credential || 'subscription_oauth' }}
           EVAL_LANE: ${{ matrix.lane }}
           EVAL_SHARD: ${{ matrix.shard }}
           EVAL_EFFORT: ${{ matrix.effort }}
