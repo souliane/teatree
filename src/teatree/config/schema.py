@@ -20,6 +20,7 @@ the stdlib cold readers), so they never pay the ~110ms. ``shipped_defaults()`` i
 the ``@lru_cache`` singleton entry point.
 """
 
+from collections.abc import Callable
 from dataclasses import dataclass
 from enum import StrEnum, auto
 from functools import lru_cache
@@ -30,6 +31,7 @@ from pydantic import BeforeValidator
 from pydantic_settings import BaseSettings, PydanticBaseSettingsSource, SettingsConfigDict, TomlConfigSettingsSource
 
 from teatree.config.agent_enums import AgentHarnessProvider, AgentRuntime, parse_harness_name
+from teatree.config.cold_hook_settings import ColdHookSetting
 from teatree.config.enums import (
     Autonomy,
     CriticGateMode,
@@ -43,6 +45,7 @@ from teatree.config.enums import (
 from teatree.config.mr_reminder import parse_mr_reminder_setting
 from teatree.config.registries import _parse_registry_dict
 from teatree.config.setting_parsers import (
+    _parse_handover_mirror_path,
     _parse_overridable_positive_int,
     _parse_str_list,
     _parse_strict_bool,
@@ -418,3 +421,60 @@ def shipped_defaults() -> TeatreeSettingsSchema:
     dict so the type checker doesn't read the source-filled fields as unpassed.
     """
     return TeatreeSettingsSchema(**_NO_INIT_OVERRIDES)
+
+
+# The two keys whose RESOLVE-tier registry coercer differs from the model's
+# STORAGE-tier ``BeforeValidator`` (the same pair the Phase-1 parity matrix
+# documents via its ``_STORAGE_COERCER`` override). The resolver needs a real
+# ``Path`` / a None-rejecting parse, while the model stores a ``str`` / tolerates
+# the ``None`` default — so the derivation re-sources the registry coercer for
+# these two rather than reusing the field validator.
+_RESOLVE_TIER_COERCER: dict[str, Callable[[Any], Any]] = {
+    "handover_mirror_path": _parse_handover_mirror_path,
+    "agent_harness_provider": AgentHarnessProvider.parse,
+}
+
+
+def _before_validator(key: str) -> Callable[[Any], Any]:
+    return next(m.func for m in TeatreeSettingsSchema.model_fields[key].metadata if isinstance(m, BeforeValidator))
+
+
+def _registry_coercer(key: str) -> Callable[[Any], Any]:
+    """The resolve-tier coercer a derived registry binds for *key*.
+
+    The storage-tier ``BeforeValidator`` for every key but the two documented
+    resolve-tier ones above, which re-source their registry coercer.
+    """
+    return _RESOLVE_TIER_COERCER.get(key) or _before_validator(key)
+
+
+def _keys_in(registry: Registry) -> list[str]:
+    return [k for k in TeatreeSettingsSchema.model_fields if setting_meta(k).registry is registry]
+
+
+def derive_overlay_overridable_settings() -> dict[str, Callable[[Any], Any]]:
+    """The ``OVERLAY_OVERRIDABLE_SETTINGS`` registry, derived from the model taxonomy."""
+    return {k: _registry_coercer(k) for k in _keys_in(Registry.OVERLAY)}
+
+
+def derive_cold_settings() -> dict[str, Callable[[Any], Any]]:
+    """The ``COLD_SETTINGS`` registry, derived from the model taxonomy."""
+    return {k: _registry_coercer(k) for k in _keys_in(Registry.COLD)}
+
+
+def derive_registry_settings() -> dict[str, Callable[[Any], Any]]:
+    """The ``REGISTRY_SETTINGS`` registry, derived from the model taxonomy."""
+    return {k: _registry_coercer(k) for k in _keys_in(Registry.REGISTRY)}
+
+
+def derive_cold_hook_settings() -> dict[str, ColdHookSetting]:
+    """The ``COLD_HOOK_SETTINGS`` registry, derived from the model taxonomy + defaults.
+
+    Each cold-hook key is Default-category (present in ``defaults.toml``), so its
+    in-code fallback is the model's shipped default; the scope is GLOBAL (``""``) —
+    cold-hook settings are never per-overlay overridable.
+    """
+    defaults = shipped_defaults()
+    return {
+        k: ColdHookSetting(_registry_coercer(k), default=getattr(defaults, k)) for k in _keys_in(Registry.COLD_HOOK)
+    }
