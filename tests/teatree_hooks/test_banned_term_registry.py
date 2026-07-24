@@ -26,7 +26,13 @@ import pytest
 from teatree.config.registries import COLD_SETTINGS
 from teatree.config.secret_settings import SECRET_SETTINGS
 from teatree.hooks import banned_term_registry
-from teatree.hooks.banned_term_registry import allowlist_terms, load_registry, registry_terms_for_gate, terms_for_gate
+from teatree.hooks.banned_term_registry import (
+    allowlist_terms,
+    export_scan_terms,
+    load_registry,
+    registry_terms_for_gate,
+    terms_for_gate,
+)
 from teatree.hooks.banned_terms_cli import resolve_banned_terms
 from teatree.hooks.banned_terms_tree_scan import BannedTermsUnsetError, load_brand_terms
 
@@ -348,7 +354,7 @@ class TestExportScanTermsUnion:
                 "allow": ["myorg-product"],
             },
         )
-        terms = set(banned_term_registry.export_scan_terms(db_path=db))
+        terms = set(export_scan_terms(db_path=db))
         assert terms == {"democorp", "widget-margin", "synergy", "acme-internal"}
         assert "myorg-product" not in terms
 
@@ -356,7 +362,7 @@ class TestExportScanTermsUnion:
         db = _seed(tmp_path, banned_terms=["acme"], banned_brands=["democorp"], overlay_leak_terms=["acme-internal"])
         # Registry unset -> the legacy two rows only (overlay_leak_terms is NOT part of
         # the pre-registry export scan set).
-        assert set(banned_term_registry.export_scan_terms(db_path=db)) == {"acme", "democorp"}
+        assert set(export_scan_terms(db_path=db)) == {"acme", "democorp"}
 
     def test_fail_safe_to_empty_when_all_unset(self, tmp_path: Path) -> None:
-        assert banned_term_registry.export_scan_terms(db_path=_empty_db(tmp_path)) == ()
+        assert export_scan_terms(db_path=_empty_db(tmp_path)) == ()
