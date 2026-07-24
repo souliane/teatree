@@ -13,6 +13,7 @@ from django.core.management import call_command
 from django.test import TestCase
 from django.utils import timezone
 
+from teatree.core.management.commands.retention import Command, RetentionReport
 from teatree.core.models import IncomingEvent, Session, Task, TaskAttempt, Ticket
 
 _OLD = timezone.now() - dt.timedelta(days=60)
@@ -34,6 +35,15 @@ def _old_processed_event(key: str) -> IncomingEvent:
         received_at=_OLD,
         processed_at=timezone.now(),
     )
+
+
+class RetentionCommandStructureTestCase(TestCase):
+    def test_command_exposes_prune(self) -> None:
+        assert callable(Command.prune)
+
+    def test_report_payload_keys(self) -> None:
+        report: RetentionReport = {"applied": False, "total_rows": 0, "tables": []}
+        assert set(report) == {"applied", "total_rows", "tables"}
 
 
 class RetentionPruneCommandTestCase(TestCase):
