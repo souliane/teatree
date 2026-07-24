@@ -6,9 +6,11 @@ nothing said so. This is the fallback that makes ``t3 setup`` provision them
 anyway, idempotently, from two sources in order:
 
 1.  the PLUGIN's own ``skills/`` tree, when it already carries a skill by that
-    name (#3668) — no network, no cache, deterministic. This is how the
-    recommended set (the software-architecture skill above all) installs on a box
-    with no reachable source repo.
+    name — no network, no cache, deterministic. This is how a plugin-carried
+    mandated skill (the local ``architecture-design`` skill) installs on a box
+    with no reachable source repo. (The Anthropic-specific vendor architecture
+    skill is NOT mandated — it is an OPTIONAL recommendation, see
+    :mod:`teatree.provisioning.recommended` — so it never travels this path.)
 2.  the declared source repo — cloned into a cache and symlinked from its declared
     subpath, for a skill the plugin does not carry.
 """

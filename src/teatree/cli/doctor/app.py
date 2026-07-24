@@ -49,6 +49,7 @@ from teatree.cli.doctor.checks_mcp import (
     _check_teatree_mcp_registration,
 )
 from teatree.cli.doctor.checks_provisioning import _check_declared_dependencies_provisioned
+from teatree.cli.doctor.checks_recommendations import _check_recommended_skills
 from teatree.cli.doctor.checks_reconciliation import _check_reconciliation_ledger
 from teatree.cli.doctor.checks_resources import (
     _check_pyright_lsp_plugin,
@@ -128,6 +129,7 @@ __all__ = (
     "_check_mcp_connectivity",
     "_check_provision_concurrency_from_host",
     "_check_pyright_lsp_plugin",
+    "_check_recommended_skills",
     "_check_reconciliation_ledger",
     "_check_single_db",
     "_check_singletons",
@@ -207,6 +209,9 @@ def _optional_tooling_advisories() -> None:
     container and on a host that never opted in. The tmpfs-headroom check WARNs when
     a RAM-backed ``/tmp`` is filling toward ENOSPC (the fill that wedges the box);
     runtime temp is routed to disk and the watchdog trims stale scratch on a cadence.
+    #3668 INFO-suggests each OPTIONAL provider-specific RECOMMENDED skill when absent
+    (the Anthropic-specific vendor architecture skill), offered with its caveat rather
+    than installed by default.
     (The critical worker gates — skills-present, memory-adequate, and the enabled
     pyright-lsp plugin's langserver being provisioned — are HARD FAILs in
     :func:`run_doctor_checks`, not advisories here.)
@@ -215,6 +220,7 @@ def _optional_tooling_advisories() -> None:
     _check_chrome_devtools_mcp_suggestion()
     _check_docker_workflow_wired()
     _check_tmp_tmpfs_headroom()
+    _check_recommended_skills()
 
 
 def _run_worker_gates() -> bool:
