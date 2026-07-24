@@ -305,6 +305,11 @@
       "subcommands": []
     },
     {
+      "help": "Regenerate config/defaults.toml from in-code defaults + safe live-adopted tunables.",
+      "name": "generate_settings_defaults",
+      "subcommands": []
+    },
+    {
       "help": "Generate the skills catalogue from skills/*/SKILL.md frontmatter.",
       "name": "generate_skill_catalogue",
       "subcommands": []
