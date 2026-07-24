@@ -73,7 +73,7 @@ ticket IGNORED), never reopened: a verdict can never land on a dead PR, so
 re-dispatching only burns a session that re-confirms the close (3556). Fail-OPEN on an
 UNKNOWN PR state so a transient forge hiccup never retires a live review.
 
-A once-escalated task is stamped (:data:`_HALT_STAMP` in ``execution_reason``) and
+A once-escalated task is stamped (:data:`HALT_STAMP` in ``execution_reason``) and
 excluded from every subsequent scan, so the dead-letter set never grows the per-tick
 work unboundedly. The ``DeferredQuestion`` itself is deduped by a STABLE key —
 ``(ticket, phase, failure-fingerprint)``, NOT the task pk — so the fresh ``Task`` rows
@@ -113,7 +113,7 @@ logger = logging.getLogger(__name__)
 #: Stamped onto ``execution_reason`` when a task is escalated (dead-lettered), so it
 #: is excluded from every future scan — bounds per-tick work and makes the escalation
 #: durably once-per-task regardless of whether the question is later answered.
-_HALT_STAMP = "[repair-halt-parked]"
+HALT_STAMP = "[repair-halt-parked]"
 #: Stamped onto ``execution_reason`` when a SUPERSEDED FAILED task is retired (its
 #: phase output the ticket's FSM already reached). It is marked COMPLETED and drops
 #: out of the scan — the away-mode queue is never asked about a phase the ticket
@@ -325,7 +325,7 @@ def _latest_error(task: Task) -> str:
 def _non_terminal_failed_tasks() -> list[Task]:
     """FAILED tasks on a non-terminal ticket, minus already-parked rows, attempts prefetched.
 
-    Excluding the parked rows — :data:`_HALT_STAMP` (escalated) and
+    Excluding the parked rows — :data:`HALT_STAMP` (escalated) and
     :data:`_LIVE_SUCCESSOR_STAMP` (a live successor holds the phase) — keeps the
     per-tick scan bounded as dead letters pile up (a monotonically growing FAILED set
     would otherwise degrade tick latency linearly); prefetching ``attempts`` removes the
@@ -334,7 +334,7 @@ def _non_terminal_failed_tasks() -> list[Task]:
     return list(
         Task.objects.filter(status=Task.Status.FAILED)
         .exclude(ticket__state__in=Ticket._TERMINAL_STATES)  # noqa: SLF001 — the model's SSOT terminal set
-        .exclude(execution_reason__contains=_HALT_STAMP)
+        .exclude(execution_reason__contains=HALT_STAMP)
         .exclude(execution_reason__contains=_LIVE_SUCCESSOR_STAMP)
         .select_related("ticket")
         .prefetch_related("attempts"),
@@ -383,17 +383,17 @@ def _reopen(task: Task) -> int:
 
 
 def _stamp_halt(task: Task) -> None:
-    """Park *task* out of future scans by stamping :data:`_HALT_STAMP` onto ``execution_reason``.
+    """Park *task* out of future scans by stamping :data:`HALT_STAMP` onto ``execution_reason``.
 
     Idempotent — a no-op once the stamp is present. The per-task park: an escalated
     row is excluded from :func:`_non_terminal_failed_tasks`, so answering or dismissing
     the question can never resurrect a fresh escalation for THIS row. Cross-row
     collapse of the fresh ``Task`` rows a stuck phase mints each cycle is the separate
-    job of the stable ``dedupe_marker`` (:func:`_escalation_marker`).
+    job of the stable ``dedupe_marker`` (:func:`escalation_marker`).
     """
-    if _HALT_STAMP in task.execution_reason:
+    if HALT_STAMP in task.execution_reason:
         return
-    reason = f"{task.execution_reason}\n{_HALT_STAMP}".strip() if task.execution_reason else _HALT_STAMP
+    reason = f"{task.execution_reason}\n{HALT_STAMP}".strip() if task.execution_reason else HALT_STAMP
     Task.objects.filter(pk=task.pk).update(execution_reason=reason)
 
 
@@ -560,7 +560,7 @@ def _retire_superseded(task: Task) -> None:
     )
 
 
-def _escalation_marker(task: Task) -> str:
+def escalation_marker(task: Task) -> str:
     """Stable dedupe key for a halted task's escalation — ``(phase, failure)``, ticket-agnostic.
 
     Keyed on the canonical phase + the NORMALIZED failure fingerprint — NOT the task pk
@@ -585,8 +585,8 @@ def _escalation_marker(task: Task) -> str:
 def _escalate_once(task: Task, *, reason: str) -> None:
     """Record a durable escalation for a halted task, then park the row. Deduped by condition.
 
-    The row is stamped (:data:`_HALT_STAMP`) so it drops out of every future scan; the
-    ``DeferredQuestion`` is deduped by the STABLE :func:`_escalation_marker` (ticket +
+    The row is stamped (:data:`HALT_STAMP`) so it drops out of every future scan; the
+    ``DeferredQuestion`` is deduped by the STABLE :func:`escalation_marker` (ticket +
     phase + failure fingerprint) through the model's indexed ``dedupe_marker`` — so the
     fresh ``Task`` rows a stuck phase mints each redispatch cycle collapse to a SINGLE
     open question instead of one per cycle. Reuses the §17.1 invariant 9 surface
@@ -603,5 +603,5 @@ def _escalate_once(task: Task, *, reason: str) -> None:
     DeferredQuestion.record(
         question,
         session_id=str(task.session_id or ""),  # ty: ignore[unresolved-attribute]
-        dedupe_marker=_escalation_marker(task),
+        dedupe_marker=escalation_marker(task),
     )
