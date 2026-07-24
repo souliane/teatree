@@ -289,11 +289,11 @@ def read_thread_activity(request: SlackThreadActivityRequest) -> ThreadActivityR
     if parent.get("subtype") == "tombstone":
         return ThreadActivityRead(ok=True, exists=False)
     reply_dicts = [cast("RawAPIDict", m) for m in messages[1:] if isinstance(m, dict)]
-    reply_tss = [str(m.get("ts", "")) for m in reply_dicts if m.get("ts")]
+    reply_timestamps = [str(m.get("ts", "")) for m in reply_dicts if m.get("ts")]
     return ThreadActivityRead(
         ok=True,
         exists=True,
         parent_ts=str(parent.get("ts", "")),
-        latest_reply_ts=max(reply_tss, key=_ts_key, default=""),
+        latest_reply_ts=max(reply_timestamps, key=_ts_key, default=""),
         has_reaction=bool(parent.get("reactions")),
     )
