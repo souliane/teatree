@@ -56,6 +56,10 @@
 #   PR pays nothing extra (only failures are re-run).
 # ============================================================
 
+# TRIGGER: workflow_call only — invoked by the host's `eval-pr.yml` and by an
+# overlay's thin caller; it is never triggered on its own.
+name: Reusable · Selective PR eval
+
 on:
   workflow_call:
     inputs:

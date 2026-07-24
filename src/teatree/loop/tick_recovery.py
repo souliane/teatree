@@ -41,12 +41,17 @@ def _reap_stale_task_claims(errors: dict[str, str] | None = None) -> None:
     failure surfaces loudly instead of freezing the factory in silence.
     """
     from teatree.core.worktree.recovery_sweeps import run_boot_sweeps  # noqa: PLC0415 — deferred: loaded at tick time
-    from teatree.loop import stuck_ticket_redispatch, transient_requeue  # noqa: PLC0415 — deferred: loaded at tick time
+    from teatree.loop import (  # noqa: PLC0415 — deferred: loaded at tick time
+        repair_halt_reconcile,
+        stuck_ticket_redispatch,
+        transient_requeue,
+    )
 
     sweeps: tuple[tuple[str, Callable[[], object]], ...] = (
         ("recovery:boot_sweeps", run_boot_sweeps),
         ("recovery:transient_requeue", transient_requeue.requeue_transient_failed),
         ("recovery:stuck_redispatch", stuck_ticket_redispatch.redispatch_stuck_tickets),
+        ("recovery:repair_halt_reconcile", repair_halt_reconcile.resolve_reconciled_repair_halts),
     )
     for label, sweep in sweeps:
         try:

@@ -43,7 +43,7 @@
 #   rather than passing green with zero coverage (mirrors eval.yml / eval-pr.yml).
 # ============================================================
 
-name: Nightly smoke eval
+name: Scheduled · Nightly smoke eval
 
 on:
   schedule:

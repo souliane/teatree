@@ -7,12 +7,25 @@ of ``agents/headless.py`` so the run/dispatch logic and this accounting concern
 each stay a focused module.
 """
 
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 from claude_agent_sdk import ResultMessage
 
 if TYPE_CHECKING:
     from teatree.agents.attempt_recorder import AttemptUsage
+
+
+@dataclass(frozen=True, slots=True)
+class DispatchProvenance:
+    """The dispatch-time pins (#3673 Tier 3) stamped onto a recorded attempt.
+
+    Resolved before the run — independent of the harness outcome — so the drawer
+    shows the reasoning effort and skill bundle the dispatch actually ran with.
+    """
+
+    reasoning_effort: str = ""
+    skills_loaded: tuple[str, ...] = ()
 
 
 def _safe_int(value: object) -> int | None:
@@ -33,22 +46,29 @@ def _safe_float(value: object) -> float | None:
         return None
 
 
-def _attempt_usage(message: ResultMessage | None, *, lane: str = "") -> "AttemptUsage":
+def _attempt_usage(
+    message: ResultMessage | None,
+    *,
+    lane: str = "",
+    reasoning_effort: str = "",
+    skills_loaded: list[str] | None = None,
+) -> "AttemptUsage":
     """Map a :class:`~claude_agent_sdk.ResultMessage` to ``AttemptUsage``.
 
     Token counts come from the nested ``usage`` dict (``input_tokens`` /
     ``output_tokens`` / ``cache_creation_input_tokens`` /
     ``cache_read_input_tokens``), the billed model from the single key of
     ``model_usage`` (e.g. ``claude-opus-4-8[1m]``), the cost from
-    ``total_cost_usd`` (else the price-table estimate). *lane* is the resolved
-    Layer-2 lane (souliane/teatree#657) this dispatch authenticated through —
-    independent of the message, so it is stamped even when *message* is
-    ``None``.
+    ``total_cost_usd`` (else the price-table estimate). *lane*,
+    *reasoning_effort* and *skills_loaded* are dispatch provenance
+    (souliane/teatree#657, #3673) resolved before the run — independent of the
+    message, so they are stamped even when *message* is ``None``.
     """
     from teatree.agents.attempt_recorder import AttemptUsage  # noqa: PLC0415 — deferred: call-time import, kept lazy
 
+    skills = list(skills_loaded or [])
     if message is None:
-        return AttemptUsage(lane=lane)
+        return AttemptUsage(lane=lane, reasoning_effort=reasoning_effort, skills_loaded=skills)
     usage = message.usage if isinstance(message.usage, dict) else {}
     model = _billed_model(message.model_usage)
     cost_usd, estimated = _resolve_cost_usd(message, usage=usage, model=model)
@@ -63,6 +83,8 @@ def _attempt_usage(message: ResultMessage | None, *, lane: str = "") -> "Attempt
         num_turns=message.num_turns,
         lane=lane,
         cost_is_estimated=estimated,
+        reasoning_effort=reasoning_effort,
+        skills_loaded=skills,
     )
 
 

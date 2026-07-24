@@ -35,15 +35,19 @@ class TransitionRow:
 
 @dataclass(frozen=True, slots=True)
 class AttemptRow:
-    """One :class:`TaskAttempt`'s already-recorded provenance (#3673 Tier 1).
+    """One :class:`TaskAttempt`'s recorded dispatch provenance (#3673 Tier 1 + 3).
 
-    Display-only over columns the model already carries — no migration. ``cost_usd``
-    is paired with ``cost_is_estimated`` so the drawer can mark a price-table guess
-    distinctly from a reported figure (never a bare number, per the ask).
+    Display-only over columns the model carries: the Tier 1 usage set (model, cost,
+    tokens, lane, outcome) plus the Tier 3 dispatch pins ``reasoning_effort`` and
+    ``skills_loaded``. ``cost_usd`` is paired with ``cost_is_estimated`` so the
+    drawer can mark a price-table guess distinctly from a reported figure (never a
+    bare number, per the ask).
     """
 
     attempt_id: int
     model: str
+    reasoning_effort: str
+    skills_loaded: tuple[str, ...]
     duration: str
     cost_usd: float | None
     cost_is_estimated: bool
@@ -195,6 +199,8 @@ def _attempt_row(attempt: TaskAttempt) -> AttemptRow:
     return AttemptRow(
         attempt_id=attempt.pk,
         model=attempt.model,
+        reasoning_effort=attempt.reasoning_effort,
+        skills_loaded=tuple(attempt.skills_loaded or []),
         duration=_attempt_duration(attempt),
         cost_usd=attempt.cost_usd,
         cost_is_estimated=attempt.cost_is_estimated,

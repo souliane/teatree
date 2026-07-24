@@ -59,3 +59,13 @@ def test_a_non_mapping_document_reports_nothing(tmp_path: Path) -> None:
 def test_a_non_mapping_services_key_reports_nothing(tmp_path: Path) -> None:
     # `services` present but not a mapping (a list) — no service names to inspect.
     assert services_missing_output_root(_compose(tmp_path, "services:\n  - worker\n")) == []
+
+
+def test_shipped_compose_pins_the_output_root_for_every_service() -> None:
+    # #3641 acceptance: every service declares the output root, so a `docker exec`
+    # into any of them resolves the same disk-backed root as its main process. A
+    # real exec is infeasible under pytest (no daemon, no running stack), so this
+    # pins the container-level guarantee at its source — the shipped compose file.
+    real_compose = Path(__file__).resolve().parents[2] / "deploy" / "docker-compose.yml"
+    assert real_compose.is_file()
+    assert services_missing_output_root(real_compose) == []

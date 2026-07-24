@@ -5,6 +5,7 @@ from collections.abc import Callable
 from typing import cast
 
 from teatree.agents.coding_prompt import _VERIFY_GATES_COMMAND, _coding_phase_directive, _stack_overlay_load_names
+from teatree.agents.context_budget import MAX_APPEND_BYTES, enforce_budget
 from teatree.agents.dispatch_preflight import (
     declared_seams_brief_lines,
     head_state_brief_lines,
@@ -27,6 +28,14 @@ _CODING_PHASE_ALWAYS_FULL = frozenset({"architecture-design"})
 
 
 _MAX_PARENT_SUMMARY_LEN = 2000
+
+# Where the byte-budget markers point the agent when a block is elided. Ordered
+# by truncation priority in ``_enforce_context_budget``: survey first (fully
+# re-derivable), then skills (loadable on demand), then the parent context last
+# (most load-bearing for continuity).
+_SURVEY_POINTER = "the intake landscape survey (re-derive with `t3 <overlay> workspace landscape`)"
+_SKILLS_POINTER = "the full skill body (load it on demand via the Skill tool)"
+_PARENT_POINTER = "the parent task's recorded result"
 
 
 def _parent_result_summary(task: Task) -> str:
@@ -291,18 +300,30 @@ def _intake_landscape_lines(task: Task) -> tuple[str, ...]:
     instead of re-deriving it. Empty when intake recorded none (forge outage),
     so the planner falls back to ``t3 <overlay> workspace landscape``.
     """
-    from teatree.core.models.landscape_artifact import LandscapeArtifact  # noqa: PLC0415 — deferred: ORM/app-registry
-
-    latest = LandscapeArtifact.latest_for(task.ticket)
-    if latest is None:
+    survey_json = _intake_survey_json(task)
+    if not survey_json:
         return ()
     return (
         "",
         "INTAKE LANDSCAPE SURVEY (produced by ticket-intake — CONSUME, do not re-derive):",
         "Plan AGAINST this: an open PR for the issue → finish+merge it, not fresh; a merged",
         "PR → surface for close; an in-flight worktree → build on it, never overwrite.",
-        json.dumps(latest.survey, sort_keys=True),
+        survey_json,
     )
+
+
+def _intake_survey_json(task: Task) -> str:
+    """The latest intake landscape survey as compact JSON, or ``""`` when none persisted.
+
+    Single source of truth for the survey block string, so the byte-budget pass
+    can re-derive the exact substring it needs to truncate.
+    """
+    from teatree.core.models.landscape_artifact import LandscapeArtifact  # noqa: PLC0415 — deferred: ORM/app-registry
+
+    latest = LandscapeArtifact.latest_for(task.ticket)
+    if latest is None:
+        return ""
+    return json.dumps(latest.survey, sort_keys=True)
 
 
 def _planning_phase_lines(task: Task) -> tuple[str, ...]:
@@ -448,6 +469,7 @@ def build_system_context(
     stage_present = stage_skills_present(task, skills, configured=stage_skills)
     stage_exclude = frozenset(_explicit_load_name(s) for s in stage_present)
 
+    skill_content = ""
     if skills:
         if lifecycle_skill:
             # Stage skills embed IN FULL — a no-Skill-tool maker cannot load them
@@ -510,7 +532,28 @@ def build_system_context(
         ),
     )
 
-    return "\n".join(lines)
+    return _enforce_context_budget("\n".join(lines), task, parent_summary=parent_summary, skill_content=skill_content)
+
+
+def _enforce_context_budget(text: str, task: Task, *, parent_summary: str, skill_content: str) -> str:
+    """Bound the assembled append under the argv-element byte limit (E2BIG guard).
+
+    The claude-agent-sdk passes the whole append as ONE ``--append-system-prompt``
+    argv element, and Linux caps a single element at 128 KiB — an oversized
+    survey/skills/parent block makes the ``claude`` spawn die with E2BIG. The
+    largest uncapped blocks are truncated with a pointer marker, survey first
+    (re-derivable), then skills (loadable), then the parent context last. The
+    survey is re-derived only on the over-budget path, so a normal-sized context
+    is one build with no extra query and byte-identical output.
+    """
+    if len(text.encode()) <= MAX_APPEND_BYTES:
+        return text
+    blocks = (
+        (_intake_survey_json(task), _SURVEY_POINTER),
+        (skill_content, _SKILLS_POINTER),
+        (parent_summary, _PARENT_POINTER),
+    )
+    return enforce_budget(text, blocks)
 
 
 type _TicketExtra = dict[str, object]

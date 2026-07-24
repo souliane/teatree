@@ -33,8 +33,9 @@ from teatree.agents.harness import Harness, HarnessSession, pydantic_ai_thread, 
 from teatree.agents.harness_registry import InvalidHarnessProviderError, UnknownHarnessError
 from teatree.agents.headless_budget import TicketBudget
 from teatree.agents.headless_truncation import alert_owner_max_tokens_truncation, is_max_tokens_truncation
-from teatree.agents.headless_usage import _attempt_usage
+from teatree.agents.headless_usage import DispatchProvenance, _attempt_usage
 from teatree.agents.headless_watchdog import LoopWatchdog, TaskUsage, _sample_usage_closing_connection
+from teatree.agents.model_tiering import resolve_spawn_effort
 from teatree.agents.pydantic_ai_resume import maybe_persist_on_limit_park, maybe_persist_on_park
 from teatree.agents.reader_profile import is_reader_phase, reader_child_env, reader_env_hermetic
 from teatree.agents.result_schema import AgentResultBlob, ProseSummaryPolicy
@@ -254,7 +255,17 @@ def run_headless(
     failure = _outcome_failure(task, outcome, phase=phase, lane=lane)
     if failure is not None:
         return failure
-    return _record_success(task, outcome, phase=phase, lane=lane)
+    # #3673 Tier 3 provenance: resolve the per-tier effort the same way
+    # ``_build_options`` pins it on the spawn (a deterministic settings read, so
+    # the two resolutions never diverge) and pair it with the resolved skill
+    # bundle, so the recorded attempt carries exactly what this dispatch ran with.
+    return _record_success(
+        task,
+        outcome,
+        phase=phase,
+        lane=lane,
+        provenance=DispatchProvenance(reasoning_effort=resolve_spawn_effort(phase) or "", skills_loaded=tuple(skills)),
+    )
 
 
 def _restore_unconsumed_resume_thread(harness: Harness) -> None:
@@ -580,7 +591,14 @@ async def _collect(session: HarnessSession, prompt: str) -> HarnessOutcome:
     )
 
 
-def _record_success(task: Task, outcome: HarnessOutcome, *, phase: str = "", lane: str = "") -> TaskAttempt:
+def _record_success(
+    task: Task,
+    outcome: HarnessOutcome,
+    *,
+    phase: str = "",
+    lane: str = "",
+    provenance: DispatchProvenance | None = None,
+) -> TaskAttempt:
     """Record a successful SDK run via the shared recorder.
 
     The schema-key check, the #1284 phase-evidence gate, and the
@@ -617,7 +635,14 @@ def _record_success(task: Task, outcome: HarnessOutcome, *, phase: str = "", lan
         result = prose
 
     maybe_persist_on_park(task, result, outcome.thread)  # (#2886)
-    return record_result_envelope(task, result, phase=phase, usage=_attempt_usage(outcome.result_message, lane=lane))
+    provenance = provenance or DispatchProvenance()
+    usage = _attempt_usage(
+        outcome.result_message,
+        lane=lane,
+        reasoning_effort=provenance.reasoning_effort,
+        skills_loaded=list(provenance.skills_loaded),
+    )
+    return record_result_envelope(task, result, phase=phase, usage=usage)
 
 
 def _record_failure(

@@ -6,6 +6,7 @@ from unittest.mock import patch
 
 from django.test import TestCase
 
+from teatree.agents.context_budget import MAX_APPEND_BYTES
 from teatree.agents.prompt import (
     _parent_result_summary,
     build_interactive_context,
@@ -13,7 +14,7 @@ from teatree.agents.prompt import (
     build_system_context,
     build_task_prompt,
 )
-from teatree.core.models import Session, Task, TaskAttempt, Ticket
+from teatree.core.models import LandscapeArtifact, Session, Task, TaskAttempt, Ticket
 
 # --- build_task_prompt ---
 
@@ -378,6 +379,55 @@ class TestBuildSystemContext(TestCase):
 
         assert "Context Budget" in ctx
         assert "Truncate file reads" in ctx
+
+
+class TestSystemContextByteBudget(TestCase):
+    """The assembled append never exceeds the argv-element byte budget (E2BIG guard).
+
+    The claude-agent-sdk passes the whole system context as ONE
+    ``--append-system-prompt`` argv element; Linux caps a single element at 128
+    KiB, so an oversized survey/skills/parent block makes the spawn die with
+    ``OSError: [Errno 7] Argument list too long``. The builder must bound the
+    append under :data:`MAX_APPEND_BYTES`, truncating largest-first with a marker.
+    """
+
+    def test_oversized_survey_is_truncated_under_budget(self) -> None:
+        ticket = Ticket.objects.create()
+        session = Session.objects.create(ticket=ticket)
+        task = Task.objects.create(ticket=ticket, session=session, phase="planning")
+        # A survey whose JSON alone dwarfs the budget — the live P0 shape.
+        survey = {"blob": "x" * (MAX_APPEND_BYTES * 2), "warnings": [], "recommendations": []}
+        LandscapeArtifact.record(ticket=ticket, survey=survey, recorded_by="t3:intake")
+
+        ctx = build_system_context(task, skills=[])
+
+        assert len(ctx.encode()) <= MAX_APPEND_BYTES
+        assert "…truncated" in ctx
+        assert "landscape survey" in ctx
+
+    def test_oversized_skills_are_truncated_under_budget(self) -> None:
+        ticket = Ticket.objects.create()
+        session = Session.objects.create(ticket=ticket)
+        task = Task.objects.create(ticket=ticket, session=session)
+
+        with patch("teatree.agents.prompt._read_skill_contents", return_value="S" * (MAX_APPEND_BYTES * 2)):
+            ctx = build_system_context(task, skills=["huge-skill"])
+
+        assert len(ctx.encode()) <= MAX_APPEND_BYTES
+        assert "…truncated" in ctx
+        assert "Skill tool" in ctx
+
+    def test_normal_context_passes_through_byte_identical(self) -> None:
+        ticket = Ticket.objects.create(issue_url="https://example.com/issues/11")
+        session = Session.objects.create(ticket=ticket)
+        task = Task.objects.create(ticket=ticket, session=session)
+
+        ctx = build_system_context(task, skills=[])
+
+        # A normal-sized context is never rewritten — no truncation marker, and
+        # well under the budget so nothing was elided.
+        assert len(ctx.encode()) < MAX_APPEND_BYTES
+        assert "…truncated" not in ctx
 
 
 # --- build_interactive_context ---

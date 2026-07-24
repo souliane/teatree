@@ -1,4 +1,6 @@
-name: Docs
+# TRIGGER: push to main only — regenerate the docs and deploy them to GitHub Pages
+# on every merge.
+name: Push · Publish docs (Pages)
 
 on:
   push:

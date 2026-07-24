@@ -225,10 +225,72 @@ def _failed_task_signals() -> list[HealthSignal]:
     ]
 
 
+def _harness_provider_consistency_signals() -> list[HealthSignal]:
+    """One CRITICAL per scope whose effective (agent_harness, agent_harness_provider) pair is inconsistent (#3688).
+
+    A pair the harness registry would refuse at dispatch — set before the
+    write-time guard existed, or via a path the guard does not cover — otherwise
+    fails EVERY dispatch in that scope, one repair-halt at a time. Surfacing it as
+    a single loud health-red replaces that per-task flood with one visible signal.
+    The effective pair is resolved exactly as dispatch resolves it
+    (:func:`~teatree.config.get_effective_settings`, env → DB → default) for the
+    global/active scope and each registered overlay; an overlay-registered harness
+    is unconstrained here (its constraint lives in the open registry). Per-scope
+    fail-open so one broken resolve never suppresses another scope's signal.
+    """
+    from teatree.config import get_effective_settings  # noqa: PLC0415 — deferred to keep the module cold-import cheap
+    from teatree.config.cross_key_consistency import (  # noqa: PLC0415 — deferred: same cold-import discipline
+        check_harness_provider_pair,
+    )
+
+    signals: list[HealthSignal] = []
+    seen: set[str] = set()
+    scopes: list[str | None] = [None, *sorted(get_all_overlays())]
+    for scope in scopes:
+        try:
+            settings = get_effective_settings(scope)
+            provider = settings.agent_harness_provider
+            reason = check_harness_provider_pair(
+                settings.agent_harness,
+                provider.value if provider is not None else None,
+            )
+        except Exception:  # noqa: BLE001 — fail-open: a broken health read must never crash the tick or blank the chip
+            warn_throttled(
+                logger,
+                f"health-harness-pair:{scope or 'global'}",
+                "harness/provider consistency health read failed for scope %s — skipped",
+                scope or "global",
+                exc_info=True,
+            )
+            continue
+        if reason is None:
+            continue
+        label = scope or "global"
+        fingerprint = f"harness-provider-drift:{label}"
+        if fingerprint in seen:
+            continue
+        seen.add(fingerprint)
+        signals.append(
+            HealthSignal(
+                fingerprint=fingerprint,
+                severity=KnownIssue.Severity.CRITICAL,
+                kind="config_pair_drift",
+                overlay=scope or "",
+                summary=f"agent_harness/agent_harness_provider mismatch [{label}]: {reason}",
+            ),
+        )
+    return signals
+
+
 # The deterministic signal collectors, run in order. Each is fail-open on its
 # own so one broken read never suppresses the others; adding a new signal family
 # (default-branch CI, stale 404 refs, …) is one entry here plus its collector.
-_COLLECTORS = (_overlay_health_signals, _stale_tick_signals, _failed_task_signals)
+_COLLECTORS = (
+    _overlay_health_signals,
+    _stale_tick_signals,
+    _failed_task_signals,
+    _harness_provider_consistency_signals,
+)
 
 
 def collect_signals() -> list[HealthSignal]:

@@ -66,6 +66,22 @@ class ProvenanceReadModelTestCase(TestCase):
         assert row.launch_url == "https://example.test/run/1"
         assert row.artifact_path == "/tmp/artifact.json"
 
+    def test_tier3_effort_and_skills_are_exposed(self) -> None:
+        ticket = TicketFactory(state=State.STARTED)
+        task = TaskFactory(ticket=ticket, phase="coding")
+        _attempt(task, model="m", reasoning_effort="xhigh", skills_loaded=["t3:code", "t3:rules"])
+        row = build_ticket_detail(ticket.pk).tasks[0].attempts[0]
+        assert row.reasoning_effort == "xhigh"
+        assert row.skills_loaded == ("t3:code", "t3:rules")
+
+    def test_tier3_fields_default_empty_for_a_legacy_attempt(self) -> None:
+        ticket = TicketFactory(state=State.STARTED)
+        task = TaskFactory(ticket=ticket, phase="coding")
+        _attempt(task, model="m")  # no effort/skills recorded (a pre-#3673 row)
+        row = build_ticket_detail(ticket.pk).tasks[0].attempts[0]
+        assert row.reasoning_effort == ""
+        assert row.skills_loaded == ()
+
     def test_running_attempt_has_blank_duration(self) -> None:
         # A still-running attempt has no ended_at, so its duration renders blank
         # (the elapsed span is not derivable yet) rather than crashing the drawer.
@@ -111,3 +127,12 @@ class ProvenanceDrawerRenderTestCase(TestCase):
         _attempt(task, model="claude-sonnet", cost_usd=0.9, cost_is_estimated=False)
         body = self.client.get(reverse("dash:ticket_drawer", args=[ticket.pk])).content.decode()
         assert "reported" in body.lower()
+
+    def test_drawer_renders_effort_and_skill_chips(self) -> None:
+        ticket = TicketFactory(state=State.STARTED)
+        task = TaskFactory(ticket=ticket, phase="coding")
+        _attempt(task, model="m", reasoning_effort="xhigh", skills_loaded=["t3:code", "t3:rules"])
+        body = self.client.get(reverse("dash:ticket_drawer", args=[ticket.pk])).content.decode()
+        assert "xhigh" in body
+        assert "t3:code" in body
+        assert "t3:rules" in body

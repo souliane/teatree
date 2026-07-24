@@ -106,7 +106,7 @@
 # `shutil.which("claude")` is still the provisioning gate) lives here.
 # ============================================================
 
-name: Behavioral eval
+name: Scheduled · Weekly behavioral eval
 
 on:
   schedule:

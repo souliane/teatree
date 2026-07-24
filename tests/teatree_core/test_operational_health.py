@@ -17,13 +17,15 @@ from teatree.core.factory.operational_health import (
     HealthSignal,
     HealthStatus,
     _failed_task_signals,
+    _harness_provider_consistency_signals,
     _overlay_health_signals,
     _stale_tick_signals,
     _status_from_issues,
     read_health,
     reconcile_health,
 )
-from teatree.core.models import Session, Task, Ticket
+from teatree.core.models import ConfigSetting, Session, Task, Ticket
+from teatree.core.models.config_setting import GLOBAL_SCOPE
 from teatree.core.models.known_issue import KnownIssue
 from teatree.utils.throttled_log import reset_throttle
 
@@ -213,3 +215,37 @@ class TestOverlaySignalCollector:
         warnings = [r for r in caplog.records if r.name == logger_name and r.levelname == "WARNING"]
         assert warnings, "expected a throttled WARNING for the broken overlay health read"
         assert "broken" in warnings[0].getMessage()
+
+
+class TestHarnessProviderConsistencyCollector:
+    """The loop-admission / health guard for the coupled harness/provider pair (#3688).
+
+    A pair set before the write-time guard existed (or via an uncovered path)
+    surfaces as ONE loud CRITICAL health-red, not a per-task repair-halt flood.
+    Rows are created directly via the ORM to model that pre-existing state — the
+    write-time guard would refuse the inconsistent ``set_value``.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _clean_env(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.delenv("T3_AGENT_HARNESS", raising=False)
+        monkeypatch.delenv("T3_AGENT_HARNESS_PROVIDER", raising=False)
+        monkeypatch.delenv("T3_OVERLAY_NAME", raising=False)
+
+    def test_consistent_effective_pair_yields_nothing(self) -> None:
+        with patch("teatree.core.factory.operational_health.get_all_overlays", return_value={}):
+            assert _harness_provider_consistency_signals() == []
+
+    def test_preexisting_inconsistent_pair_yields_a_critical_signal(self) -> None:
+        ConfigSetting.objects.create(scope=GLOBAL_SCOPE, key="agent_harness_provider", value="openai_compatible")
+        with patch("teatree.core.factory.operational_health.get_all_overlays", return_value={}):
+            signals = _harness_provider_consistency_signals()
+        assert len(signals) == 1
+        assert signals[0].severity == KnownIssue.Severity.CRITICAL
+        assert signals[0].kind == "config_pair_drift"
+
+    def test_inconsistent_pair_reddens_the_chip_via_reconcile(self) -> None:
+        ConfigSetting.objects.create(scope=GLOBAL_SCOPE, key="agent_harness_provider", value="openai_compatible")
+        with patch("teatree.core.factory.operational_health.get_all_overlays", return_value={}):
+            report = reconcile_health()
+        assert report.status is HealthStatus.RED

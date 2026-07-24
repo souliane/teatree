@@ -99,8 +99,15 @@ services:
   # on the shared clone never races.
   teatree-init:
     <<: *teatree-common
+    # TMPDIR pins the disk-backed agent output root at the CONTAINER level so a
+    # `docker exec` into this service inherits it too (#3641). The entrypoint's
+    # export covers only the service MAIN process — an exec'd process bypasses the
+    # entrypoint, so without this pin its scratch/transcripts land under a second,
+    # ephemeral root. The `${TEATREE_DISK_TMPDIR:-/var/tmp}` default matches
+    # deploy/entrypoint.sh's setup_disk_tmpdir.
     environment:
       TEATREE_ROLE: init
+      TMPDIR: ${TEATREE_DISK_TMPDIR:-/var/tmp}
     restart: "no"
 
   # The loop cadence owner. DEBUG off — a long-running DEBUG Django process grows
@@ -110,6 +117,7 @@ services:
     environment:
       TEATREE_ROLE: worker
       T3_DEBUG: "0"
+      TMPDIR: ${TEATREE_DISK_TMPDIR:-/var/tmp}
     depends_on:
       teatree-init:
         condition: service_completed_successfully
@@ -154,6 +162,7 @@ services:
     environment:
       TEATREE_ROLE: admin
       T3_DEBUG: "0"
+      TMPDIR: ${TEATREE_DISK_TMPDIR:-/var/tmp}
     depends_on:
       teatree-init:
         condition: service_completed_successfully
@@ -186,6 +195,7 @@ services:
     environment:
       TEATREE_ROLE: slack-listener
       T3_DEBUG: "0"
+      TMPDIR: ${TEATREE_DISK_TMPDIR:-/var/tmp}
     depends_on:
       teatree-init:
         condition: service_completed_successfully
@@ -219,6 +229,11 @@ services:
     environment:
       TEATREE_ROLE: watchdog
       TEATREE_WATCHDOG_INTERVAL: "300"
+      # The watchdog role execs watchdog.sh before the entrypoint's TMPDIR export
+      # and runs no agents, so it never writes scratch to this root — but #3641's
+      # contract is that EVERY service declares the output root explicitly, so the
+      # pin is uniform and the doctor check (services_missing_output_root) stays green.
+      TMPDIR: ${TEATREE_DISK_TMPDIR:-/var/tmp}
     # root so /var/run/docker.sock is readable regardless of the host docker gid
     # (the socket is root-equivalent anyway; see README § security posture).
     user: "0:0"

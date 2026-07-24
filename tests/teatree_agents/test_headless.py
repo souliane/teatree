@@ -100,6 +100,24 @@ class TestRunHeadless(TestCase):
         assert attempt.model == "claude-opus-4-8[1m]"
         assert attempt.num_turns == 4
 
+    def test_completed_result_stamps_dispatch_provenance(self) -> None:
+        # #3673 Tier 3: the attempt records the resolved skill bundle and the
+        # per-tier reasoning effort the dispatch actually ran at. coding is a
+        # frontier phase, so the effort is xhigh (never blank), and the skill
+        # bundle threaded through is the one the run resolved.
+        result = {"summary": "Done", "files_modified": [{"path": "src/x.py", "action": "modified"}]}
+        with (
+            _fake_sdk(_success_stream(result)),
+            patch.object(headless_mod, "resolve_skill_bundle", return_value=["t3:code", "t3:rules"]),
+        ):
+            session = Session.objects.create(ticket=self.ticket)
+            task = Task.objects.create(ticket=self.ticket, session=session)
+            attempt = run_headless(task, phase="coding", overlay_skill_metadata={})
+
+        attempt.refresh_from_db()
+        assert attempt.reasoning_effort == "xhigh"
+        assert attempt.skills_loaded == ["t3:code", "t3:rules"]
+
     def test_estimates_cost_from_price_table_when_sdk_cost_absent(self) -> None:
         result = {"summary": "Done", "files_modified": [{"path": "src/x.py", "action": "modified"}]}
         stream = _success_stream(
