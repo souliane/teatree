@@ -127,6 +127,13 @@ class TaskAttempt(models.Model):
     # exit_code + error on every save (see _classify_outcome). Blank while the
     # attempt is still in flight (no exit_code yet).
     outcome = models.CharField(max_length=16, choices=Outcome.choices, blank=True, default="")
+    # #3673 Tier 3: dispatch provenance the drawer surfaces alongside model/lane.
+    # reasoning_effort is the per-tier effort the spawn resolved (an EFFORT_SCALE
+    # member, or blank when the tier inherits the SDK default); skills_loaded is
+    # the resolved skill-bundle name list. Captured going forward only — a
+    # historical row keeps the blank/empty defaults, never backfilled.
+    reasoning_effort = models.CharField(max_length=16, blank=True, default="")
+    skills_loaded = models.JSONField(default=list, blank=True)
 
     objects = TaskAttemptQuerySet.as_manager()
 

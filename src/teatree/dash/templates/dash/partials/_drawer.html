@@ -75,7 +75,7 @@
         <table class="dash provenance">
           <thead>
             <tr>
-              <th>model</th><th>lane / target</th><th>duration</th><th>cost</th>
+              <th>model</th><th>effort</th><th>lane / target</th><th>duration</th><th>cost</th>
               <th class="num">turns</th><th>tokens (in/out · cache r/w)</th><th>outcome</th>
             </tr>
           </thead>
@@ -83,6 +83,7 @@
             {% for a in task.attempts %}
               <tr>
                 <td class="mono">{{ a.model|default:"—" }}</td>
+                <td class="mono small">{{ a.reasoning_effort|default:"—" }}</td>
                 <td>{{ a.lane|default:"—" }} · {{ a.execution_target }}</td>
                 <td>{{ a.duration|default:"—" }}</td>
                 <td>
@@ -101,10 +102,15 @@
                   {% if a.exit_code is not None %}<span class="chip small" title="exit code">exit {{ a.exit_code }}</span>{% endif %}
                 </td>
               </tr>
-              {% if a.error or a.artifact_path or a.launch_url or a.agent_session_id %}
+              {% if a.error or a.artifact_path or a.launch_url or a.agent_session_id or a.skills_loaded %}
                 <tr class="provenance-extra">
-                  <td colspan="7">
+                  <td colspan="8">
                     {% if a.error %}<div class="attempt-error" title="fingerprint {{ a.error_fingerprint }}">{{ a.error }}</div>{% endif %}
+                    {% if a.skills_loaded %}
+                      <div class="attempt-skills card-meta" title="skills loaded at dispatch">
+                        {% for skill in a.skills_loaded %}<span class="chip mono small">{{ skill }}</span>{% endfor %}
+                      </div>
+                    {% endif %}
                     <div class="attempt-refs card-meta">
                       {% if a.launch_url %}<a class="chip" href="{{ a.launch_url }}" target="_blank" rel="noopener">launch ↗</a>{% endif %}
                       {% if a.artifact_path %}<span class="chip mono small" title="artifact">{{ a.artifact_path }}</span>{% endif %}
