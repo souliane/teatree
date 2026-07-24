@@ -28,6 +28,7 @@ from pathlib import Path
 from typing import Annotated
 
 import typer
+from django.core.exceptions import ValidationError
 from django_typer.management import TyperCommand, command
 
 from teatree.config import ALL_KNOWN_CONFIG_SETTINGS, COLD_HOOK_SETTINGS, FEATURE_FLAGS, get_effective_settings
@@ -129,7 +130,15 @@ class Command(TyperCommand):
         # type — scalar, list, or a ``StrEnum`` (which a ``JSONField`` persists as
         # its string value) — so the parsed value round-trips through the store
         # and the read tier re-coerces it to the same value.
-        ConfigSetting.objects.set_value(key, canonical, scope=overlay)
+        try:
+            ConfigSetting.objects.set_value(key, canonical, scope=overlay)
+        except ValidationError as exc:
+            # A coupled-key inconsistency (#3688) — e.g. an agent_harness_provider
+            # no resulting agent_harness would accept at dispatch. Refuse loudly at
+            # write time, leaving the store untouched, instead of a fleet-wide
+            # repair-halt flood on every later dispatch.
+            self.stderr.write(f"  refusing inconsistent config for {key!r}: {exc.messages[0]}")
+            raise SystemExit(2) from exc
         # Verify-by-re-read: report the stored value the resolver will now see.
         stored = ConfigSetting.objects.get_effective(key, scope=overlay)
         self.stdout.write(f"  set {key} = {stored!r}  [{_scope_label(overlay)}]{_flag_suffix(key)}")

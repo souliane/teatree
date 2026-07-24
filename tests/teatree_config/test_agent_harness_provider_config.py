@@ -35,6 +35,10 @@ class TestAgentHarnessProviderResolution(TestCase):
         assert get_effective_settings().agent_harness_provider is AgentHarnessProvider.API_KEY
 
     def test_stored_openai_compatible(self) -> None:
+        # openai_compatible is valid only under agent_harness=pydantic_ai (#3688
+        # cross-key guard), so arrange the consistent pair before checking that the
+        # stored provider resolves.
+        ConfigSetting.objects.set_value("agent_harness", "pydantic_ai")
         ConfigSetting.objects.set_value("agent_harness_provider", "openai_compatible")
         assert get_effective_settings().agent_harness_provider is AgentHarnessProvider.OPENAI_COMPATIBLE
 

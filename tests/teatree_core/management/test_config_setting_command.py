@@ -75,6 +75,20 @@ class TestConfigSettingSet(TestCase):
         # The store is untouched, so config reads still resolve.
         assert get_effective_settings().mode is not None
 
+    def test_set_rejects_inconsistent_harness_provider_pair(self) -> None:
+        # #3688: an agent_harness_provider valid only under pydantic_ai, written
+        # while agent_harness sits at its claude_sdk default, is refused at WRITE
+        # time (exit 2) with the store left untouched — one loud error instead of
+        # a fleet-wide repair-halt flood on every later dispatch.
+        with pytest.raises(SystemExit):
+            call_command("config_setting", "set", "agent_harness_provider", '"openai_compatible"')
+        assert ConfigSetting.objects.filter(key="agent_harness_provider").exists() is False
+
+    def test_set_accepts_consistent_harness_provider_pair(self) -> None:
+        call_command("config_setting", "set", "agent_harness", '"pydantic_ai"')
+        call_command("config_setting", "set", "agent_harness_provider", '"openai_compatible"')
+        assert ConfigSetting.objects.get_effective("agent_harness_provider") == "openai_compatible"
+
     def test_set_rejects_quoted_bool_string(self) -> None:
         # #258 blocker 2: a JSON string ``"false"`` for a bool-typed setting
         # must be rejected, not truthy-coerced via ``bool("false") == True``.

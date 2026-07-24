@@ -102,6 +102,28 @@ class ConfigSettingManager(models.Manager["ConfigSetting"]):
         row = self.filter(scope=scope, key=key).first()
         return row.value if row is not None else None
 
+    def _reject_inconsistent_cross_key(self, key: str, value: ConfigValue, scope: str) -> None:
+        """Raise :class:`ValidationError` when this write would land an inconsistent coupled pair (#3688).
+
+        Delegates to the config-layer :func:`~teatree.config.cross_key_consistency.validate_cross_key_write`,
+        resolving the paired key's current effective value from the DB tier
+        (overlay-scope row, then global-scope row) so the RESULTING pair — not
+        just the value in hand — is judged. A no-op for any key in no coupled
+        pair. Imported lazily to keep the model module's cold-import cheap.
+        """
+        from teatree.config.cross_key_consistency import (  # noqa: PLC0415 — deferred: heavy config import
+            validate_cross_key_write,
+        )
+
+        def resolve_other(other_key: str) -> ConfigValue | None:
+            stored = self.get_effective(other_key, scope=scope)
+            if stored is None and scope != GLOBAL_SCOPE:
+                stored = self.get_effective(other_key, GLOBAL_SCOPE)
+            return stored
+
+        if reason := validate_cross_key_write(key, value, resolve_other):
+            raise ValidationError(reason)
+
     def set_value(self, key: str, value: ConfigValue, scope: str = GLOBAL_SCOPE) -> "ConfigSetting":
         """Upsert the override row for *key* in *scope* to *value* (admin path).
 
@@ -114,7 +136,15 @@ class ConfigSettingManager(models.Manager["ConfigSetting"]):
         seed provenance (``seeded_by`` → ``""``, ``seed_value`` → ``None``): the
         row becomes operator-owned, and no later deploy re-seed or ``t3 doctor
         --repair`` autofix may overwrite or delete it (#3435 / #3434).
+
+        Raises :class:`~django.core.exceptions.ValidationError` when the write
+        would land an INCONSISTENT coupled-key pair (#3688) — e.g. an
+        ``agent_harness_provider`` that no harness the resulting ``agent_harness``
+        names would accept at dispatch. Rejecting at write time turns one bad
+        config into one loud error, not a fleet-wide repair-halt flood on every
+        later dispatch. The store is left untouched on rejection.
         """
+        self._reject_inconsistent_cross_key(key, value, scope)
         row, _ = self.update_or_create(
             scope=scope,
             key=key,

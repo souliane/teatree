@@ -203,3 +203,53 @@ class TestConfigSettingValueValidation(TestCase):
         with pytest.raises(ValidationError) as caught:
             row.full_clean()
         assert "value" in caught.value.message_dict
+
+
+class TestConfigSettingCrossKeyConsistency(TestCase):
+    """``set_value`` rejects an inconsistent (agent_harness, agent_harness_provider) pair (#3688).
+
+    A provider valid only under ``pydantic_ai`` written while ``agent_harness``
+    sits at its ``claude_sdk`` default would be accepted silently today, then fail
+    EVERY later dispatch. The guard moves that rejection to write time; the store
+    is left untouched on rejection.
+    """
+
+    def test_provider_inconsistent_with_default_harness_is_rejected(self) -> None:
+        with pytest.raises(ValidationError):
+            ConfigSetting.objects.set_value("agent_harness_provider", "openai_compatible")
+        assert ConfigSetting.objects.get_effective("agent_harness_provider") is None
+
+    def test_retired_orca_router_byok_under_default_harness_is_rejected(self) -> None:
+        # The exact production trigger from #3688.
+        with pytest.raises(ValidationError):
+            ConfigSetting.objects.set_value("agent_harness_provider", "orca_router_byok")
+
+    def test_provider_valid_under_default_harness_is_accepted(self) -> None:
+        ConfigSetting.objects.set_value("agent_harness_provider", "subscription_oauth")
+        assert ConfigSetting.objects.get_effective("agent_harness_provider") == "subscription_oauth"
+
+    def test_harness_then_matching_provider_is_accepted(self) -> None:
+        ConfigSetting.objects.set_value("agent_harness", "pydantic_ai")
+        ConfigSetting.objects.set_value("agent_harness_provider", "openai_compatible")
+        assert ConfigSetting.objects.get_effective("agent_harness_provider") == "openai_compatible"
+
+    def test_harness_change_conflicting_with_stored_provider_is_rejected(self) -> None:
+        ConfigSetting.objects.set_value("agent_harness", "pydantic_ai")
+        ConfigSetting.objects.set_value("agent_harness_provider", "openai_compatible")
+        with pytest.raises(ValidationError):
+            ConfigSetting.objects.set_value("agent_harness", "claude_sdk")
+        # The harness row is unchanged — the rejected write left the store intact.
+        assert ConfigSetting.objects.get_effective("agent_harness") == "pydantic_ai"
+
+    def test_overlay_scope_pair_is_checked_against_the_default_harness(self) -> None:
+        with pytest.raises(ValidationError):
+            ConfigSetting.objects.set_value("agent_harness_provider", "openai_compatible", scope="acme")
+
+    def test_overlay_scope_provider_matches_overlay_scope_harness(self) -> None:
+        ConfigSetting.objects.set_value("agent_harness", "pydantic_ai", scope="acme")
+        ConfigSetting.objects.set_value("agent_harness_provider", "openai_compatible", scope="acme")
+        assert ConfigSetting.objects.get_effective("agent_harness_provider", scope="acme") == "openai_compatible"
+
+    def test_unrelated_key_write_is_never_touched(self) -> None:
+        ConfigSetting.objects.set_value("issue_implementer_enabled", value=True)
+        assert ConfigSetting.objects.get_effective("issue_implementer_enabled") is True
