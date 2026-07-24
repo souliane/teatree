@@ -108,20 +108,29 @@ class TestGitHubRequireExecutedUnconditional:
         assert "--local" not in command, "The CI metered eval must never use --local (a host run)."
 
     def test_default_wires_the_oauth_token_and_keeps_the_metered_key_selectable(self) -> None:
-        # #2707 is REVERSED: the eval lane DEFAULTS to the subscription OAuth token.
-        # Both secrets are wired so the `credential` input (T3_AGENT_HARNESS_PROVIDER) is a
-        # pure config flip; the default resolves subscription_oauth.
+        # #2707 is REVERSED: the eval lane DEFAULTS to the subscription OAuth token. The
+        # "Select the freshest eval OAuth account" step OWNS the credential decision — it
+        # wires the fallback CLAUDE_CODE_OAUTH_TOKEN secret + the EVAL_OAUTH_TOKENS pool
+        # and resolves the `credential` knob (EVAL_CREDENTIAL), exporting the chosen
+        # CLAUDE_CODE_OAUTH_TOKEN + T3_AGENT_HARNESS_PROVIDER into $GITHUB_ENV (so they
+        # are NOT pinned on the eval step, where a step-level `env:` would shadow the
+        # dynamic value). The aggregated job env therefore still carries both secrets.
         env = _gh_eval_step_env()
         assert env.get("CLAUDE_CODE_OAUTH_TOKEN") == "${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}", (
-            "The eval step must wire CLAUDE_CODE_OAUTH_TOKEN from the repo secret — the eval "
-            "lane defaults to the subscription OAuth token (#2707 reversal)."
+            "The select step must wire CLAUDE_CODE_OAUTH_TOKEN from the repo secret — the eval "
+            "lane defaults to the subscription OAuth token (#2707 reversal), passed through "
+            "unchanged when the EVAL_OAUTH_TOKENS pool is unset."
+        )
+        assert env.get("EVAL_OAUTH_TOKENS") == "${{ secrets.EVAL_OAUTH_TOKENS }}", (
+            "The select step must wire the EVAL_OAUTH_TOKENS pool so the freshest OAuth "
+            "account is picked before the eval spends its usage window."
         )
         assert env.get("ANTHROPIC_API_KEY") == "${{ secrets.ANTHROPIC_API_KEY }}", (
             "The metered ANTHROPIC_API_KEY must stay wired so `api_key` is selectable "
             "via the credential knob without editing the workflow."
         )
-        assert env.get("T3_AGENT_HARNESS_PROVIDER") == "${{ inputs.credential || 'subscription_oauth' }}", (
-            "The eval step must resolve the credential knob (default subscription_oauth)."
+        assert env.get("EVAL_CREDENTIAL") == "${{ inputs.credential || 'subscription_oauth' }}", (
+            "The select step must resolve the credential knob (default subscription_oauth)."
         )
 
 

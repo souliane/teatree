@@ -176,6 +176,24 @@ jobs:
           claude --version
       - name: Migrate the self-DB (the eval run-history ledger persists into it)
         run: uv run python -m teatree migrate --no-input
+      # Point CLAUDE_CODE_OAUTH_TOKEN at the FRESHEST subscription account before the
+      # eval runs. `EVAL_OAUTH_TOKENS` (a newline-separated repo secret) is probed per
+      # token for remaining usage-window headroom (scripts/eval/select_oauth.py) and the
+      # freshest is exported — masked — into $GITHUB_ENV, which the eval step below
+      # reads. BACKWARD-SAFE: with EVAL_OAUTH_TOKENS unset/empty it passes the existing
+      # single CLAUDE_CODE_OAUTH_TOKEN secret through unchanged. This step OWNS the
+      # credential decision (it also exports T3_AGENT_HARNESS_PROVIDER — an all-exhausted
+      # set flips to api_key ONLY when the opt-in EVAL_API_KEY_FALLBACK repo variable is
+      # set, else it fails loud). This PR lane is tiny (only changed scenarios, single
+      # trial), so it barely touches a window — but a freshest pick still avoids a
+      # depleted account.
+      - name: Select the freshest eval OAuth account
+        env:
+          EVAL_CREDENTIAL: subscription_oauth
+          EVAL_OAUTH_TOKENS: ${{ secrets.EVAL_OAUTH_TOKENS }}
+          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          EVAL_API_KEY_FALLBACK: ${{ vars.EVAL_API_KEY_FALLBACK }}
+        run: uv run python scripts/eval/select_oauth.py
       # Run the changed scenarios at the DEFAULT per-tier lane. `--only` is gone;
       # the positional NAME filter runs one scenario, so the comma-joined detect
       # list is looped one scenario per `t3 eval run <name>`. Each run is the
@@ -190,12 +208,13 @@ jobs:
       - name: Metered behavioral eval — the changed scenarios (in Docker)
         uses: nick-fields/retry@ad984534de44a9489a53aefd81eb77f87c70dc60  # v4
         env:
-          # Both credentials wired so the provider is a pure config flip; the
-          # DEFAULT rides CLAUDE_CODE_OAUTH_TOKEN (subscription), docker forwards
-          # only the selected one and the isolation env strips the other.
-          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          # `CLAUDE_CODE_OAUTH_TOKEN` and `T3_AGENT_HARNESS_PROVIDER` come from the
+          # "Select the freshest eval OAuth account" step above via `$GITHUB_ENV` (that
+          # step owns the credential decision) — NOT pinned here, since a step-level
+          # `env:` would override the dynamic `$GITHUB_ENV` value. `ANTHROPIC_API_KEY`
+          # stays wired for an exhausted-OAuth api_key fallback; docker forwards only the
+          # selected credential's var into the container.
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
-          T3_AGENT_HARNESS_PROVIDER: subscription_oauth
           EVAL_NAMES: ${{ needs.detect.outputs.names }}
         with:
           timeout_minutes: 80

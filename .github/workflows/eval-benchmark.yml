@@ -65,4 +65,5 @@ jobs:
       shards: ${{ inputs.shards }}
     secrets:
       subscription-oauth-token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+      eval-oauth-tokens: ${{ secrets.EVAL_OAUTH_TOKENS }}
       anthropic-api-key: ${{ secrets.ANTHROPIC_API_KEY }}
