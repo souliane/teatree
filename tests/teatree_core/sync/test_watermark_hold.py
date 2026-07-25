@@ -15,9 +15,10 @@ import pytest
 from django.core.cache import cache
 from django.test import TestCase
 
+from teatree.backends.gitlab.sync_terminal import detect_closed_prs, detect_merged_prs
 from teatree.core.models import Ticket
 from teatree.core.sync import sync_followup
-from teatree.types import LAST_SYNC_CACHE_KEY
+from teatree.types import LAST_SYNC_CACHE_KEY, SyncResult
 from tests.teatree_core.sync._overlays import SyncOverlay, _make_mock_client, _patch_overlay
 
 _WATERMARK = "2020-01-01T00:00:00+00:00"
@@ -47,6 +48,40 @@ class _WindowedMergedFetcher:
         if updated_after is not None and updated_after > _MERGED_INSIDE_WINDOW:
             return []
         return [_MERGED_MR]
+
+
+class TestTerminalDetectionReportsWhetherItReadTheWindow(TestCase):
+    """An empty window and a failed read are different outcomes, reported apart."""
+
+    def test_merged_detection_reports_read_on_an_empty_window(self) -> None:
+        client = MagicMock()
+        client.list_recently_merged_mrs.return_value = []
+        result = SyncResult()
+
+        assert detect_merged_prs(client, "testuser", result, None) is True
+        assert result.errors == []
+
+    def test_merged_detection_reports_unread_on_a_failed_fetch(self) -> None:
+        client = MagicMock()
+        client.list_recently_merged_mrs.side_effect = httpx.HTTPError("502 Bad Gateway")
+        result = SyncResult()
+
+        assert detect_merged_prs(client, "testuser", result, None) is False
+        assert result.errors == ["Merged PR fetch failed: 502 Bad Gateway"]
+
+    def test_closed_detection_reports_read_on_an_empty_window(self) -> None:
+        client = MagicMock()
+        client.list_recently_closed_mrs.return_value = []
+
+        assert detect_closed_prs(client, "testuser", SyncResult(), None) is True
+
+    def test_closed_detection_reports_unread_on_a_failed_fetch(self) -> None:
+        client = MagicMock()
+        client.list_recently_closed_mrs.side_effect = httpx.HTTPError("502 Bad Gateway")
+        result = SyncResult()
+
+        assert detect_closed_prs(client, "testuser", result, None) is False
+        assert result.errors == ["Closed PR fetch failed: 502 Bad Gateway"]
 
 
 class TestWatermarkHeldOnFailedIncrementalFetch(TestCase):
